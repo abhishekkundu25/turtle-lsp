@@ -1,0 +1,36 @@
+{
+  "name": "turtle-node-lsp",
+  "version": "0.1.0",
+  "description": "Local Turtle/TTL language server for Neovim config",
+  "type": "commonjs",
+  "bin": {
+    "turtle-node-lsp": "./dist/turtle-node-lsp.js"
+  },
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node ./dist/server.js --stdio",
+    "lint": "echo \"no lint configured\"",
+    "test": "echo \"no tests\""
+  },
+  "keywords": [
+    "turtle",
+    "ttl",
+    "lsp",
+    "rdf"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "millan": "^5.4.0",
+    "n3": "^1.23.1",
+    "stardog-language-utils": "^1.15.0",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/n3": "^1.26.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
