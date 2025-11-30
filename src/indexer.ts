@@ -176,7 +176,7 @@ export class Indexer {
 		} catch {
 			const lines = text.split(/\r?\n/)
 			lines.forEach((line, idx) => {
-				const match = line.trim().match(/^@?prefix\s+([A-Za-z][\w-]*):\s*<([^>]+)>/i)
+				const match = line.trim().match(/^@?prefix\s+([A-Za-z0-9_\-]*):\s*<([^>]+)>/i)
 				if (match) {
 					const [, prefix, iri] = match
 					const start = line.indexOf(prefix)
@@ -248,7 +248,7 @@ export class Indexer {
 			lines.forEach((line, idx) => {
 				const trimmed = line.trim()
 				if (!trimmed || trimmed.startsWith("@") || trimmed.startsWith("#")) return
-				const subjectMatch = trimmed.match(/^([A-Za-z][\w-]*:[\w-]+)/)
+				const subjectMatch = trimmed.match(/^([A-Za-z0-9_\-]*:[\w-]+)/)
 				if (subjectMatch) {
 					const label = subjectMatch[1]
 					if (seen.has(label)) return
@@ -291,7 +291,7 @@ export class Indexer {
 		const results: Array<{ label: string; range: Range }> = []
 		const lines = text.split(/\r?\n/)
 		lines.forEach((line, idx) => {
-			const matches = line.matchAll(/([A-Za-z][\w-]*:[\w-]+)/g)
+			const matches = line.matchAll(/([A-Za-z0-9_\-]*:[\w-]+)/g)
 			for (const m of matches) {
 				const label = m[1]
 				const start = m.index ?? 0
