@@ -9,21 +9,21 @@ import { getCommonCompletionItemsGivenNamespaces } from "stardog-language-utils"
 import { Indexer } from "./indexer"
 import { abbreviateWithPrefixes, currentWord, currentWordRange, detectPrefixAtPosition, extractPrefix } from "./util"
 
-// UPDATED: Use named exports from the root package to avoid ENOENT errors
+// UPDATED: Import the main factory function and prefixes
 import { vocabularies, prefixes } from '@zazuko/rdf-vocabularies'
 
 // Common vocabularies we want to preload for instant access
 const COMMON_VOCABS = ['rdf', 'rdfs', 'owl', 'xsd', 'skos', 'sh', 'dcterms', 'foaf', 'schema'];
 
 export class CompletionEngine {
-  // PRO TIP: Cache the processed completion items. 
-  // Querying the dataset on every keystroke is O(n) and slow. 
-  // A Map lookup is O(1).
+  // Cache the processed completion items.
   private cachedVocabs: Map<string, CompletionItem[]> = new Map();
 
+  // Track ongoing fetch requests to prevent duplicate loading
+  private loadingPromises: Map<string, Promise<void>> = new Map();
+
   constructor(private indexer: Indexer) {
-    // We still preload the basics because they are often used without explicit prefixes
-    // or implied in many environments.
+    // Fire-and-forget preload
     this.preloadVocabularies();
   }
 
@@ -31,11 +31,10 @@ export class CompletionEngine {
    * Pre-computes completion items for common vocabularies.
    * This ensures the first autocomplete trigger is snappy.
    */
-  private preloadVocabularies() {
+  private async preloadVocabularies() {
     console.log('Pre-loading common RDF vocabularies for autocomplete...');
-    for (const prefix of COMMON_VOCABS) {
-      this.loadVocabularyIntoCache(prefix);
-    }
+    // Load in parallel
+    await Promise.all(COMMON_VOCABS.map(prefix => this.loadVocabularyIntoCache(prefix)));
   }
 
   /**
@@ -43,15 +42,16 @@ export class CompletionEngine {
    * It scans the document for prefixes (e.g. "@prefix foaf: ...") and loads the corresponding vocabulary
    * data into memory so it's ready when the user types.
    */
-  public preloadFromDocument(doc: TextDocument) {
+  public async preloadFromDocument(doc: TextDocument) {
     const text = doc.getText();
     const foundPrefixes = this.scanForPrefixes(text);
 
     for (const prefix of foundPrefixes) {
-      // Only load if we haven't cached it already
-      if (!this.cachedVocabs.has(prefix)) {
+      if (!this.cachedVocabs.has(prefix) && !this.loadingPromises.has(prefix)) {
         console.log(`Auto-detected prefix '${prefix}' in file. Pre-loading vocabulary...`);
-        this.loadVocabularyIntoCache(prefix);
+        // We don't await this loop to avoid blocking the main thread; 
+        // let them load in the background
+        this.loadVocabularyIntoCache(prefix).catch(err => console.error(`Failed to load ${prefix}`, err));
       }
     }
   }
@@ -77,92 +77,103 @@ export class CompletionEngine {
   }
 
   /**
-   * Loads a vocabulary from Zazuko, processes the triples, and caches the result.
+   * Loads a vocabulary from Zazuko using the async factory pattern.
+   * This aligns with the documentation: vocabularies({ only: [...] })
    */
-  private loadVocabularyIntoCache(prefix: string) {
+  private async loadVocabularyIntoCache(prefix: string): Promise<void> {
     if (this.cachedVocabs.has(prefix)) return;
+    if (this.loadingPromises.has(prefix)) return this.loadingPromises.get(prefix);
 
-    // Check if Zazuko has this vocabulary
-    if (!(prefix in vocabularies)) {
-      return;
-    }
-
-    // Typescript casting for the dynamic access
-    const dataset = (vocabularies as any)[prefix];
-
-    // UPDATED: Access the prefixes object directly
-    const namespaceUri = (prefixes as any)[prefix];
-
-    if (!dataset || !namespaceUri) return;
-
-    const items: CompletionItem[] = [];
-
-    // We use a temporary map to merge properties (labels, comments, types) 
-    // for the same term before creating the final CompletionItem
-    const termData = new Map<string, { kind: CompletionItemKind, docs: string[], label: string }>();
-
-    for (const quad of dataset) {
-      const subject = quad.subject.value;
-
-      // Only process terms strictly within this namespace
-      if (!subject.startsWith(namespaceUri)) continue;
-
-      // Extract local name (e.g., "Person" from "http://xmlns.com/foaf/0.1/Person")
-      const localName = subject.substring(namespaceUri.length);
-      if (!localName) continue; // Skip the ontology definition itself if it matches the base URI
-
-      if (!termData.has(localName)) {
-        termData.set(localName, {
-          kind: CompletionItemKind.Property, // Default to Property
-          docs: [],
-          label: localName
-        });
+    const loadPromise = (async () => {
+      // Check if Zazuko supports this prefix before trying to fetch
+      // Note: 'prefixes' object gives us quick synchronous check
+      if (!((prefixes as any)[prefix])) {
+        return;
       }
 
-      const data = termData.get(localName)!;
-      const pred = quad.predicate.value;
-      const obj = quad.object.value;
+      try {
+        // DOCS: "Loading only some Vocabularies as Datasets"
+        // This returns a Promise<Record<string, Dataset>>
+        const datasets = await vocabularies({ only: [prefix] });
+        const dataset = datasets[prefix];
+        const namespaceUri = (prefixes as any)[prefix];
 
-      // Heuristics to determine Icon/Kind
-      if (pred === 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type') {
-        if (obj.includes('Class') || obj.includes('Shape')) {
-          data.kind = CompletionItemKind.Class;
-        } else if (obj.includes('Property')) {
-          data.kind = CompletionItemKind.Property;
+        if (!dataset || !namespaceUri) return;
+
+        const items: CompletionItem[] = [];
+        const termData = new Map<string, { kind: CompletionItemKind, docs: string[], label: string }>();
+
+        for (const quad of dataset) {
+          const subject = quad.subject.value;
+
+          // Only process terms strictly within this namespace
+          if (!subject.startsWith(namespaceUri)) continue;
+
+          // Extract local name (e.g., "Person" from "http://xmlns.com/foaf/0.1/Person")
+          const localName = subject.substring(namespaceUri.length);
+          if (!localName) continue;
+
+          if (!termData.has(localName)) {
+            termData.set(localName, {
+              kind: CompletionItemKind.Property,
+              docs: [],
+              label: localName
+            });
+          }
+
+          const data = termData.get(localName)!;
+          const pred = quad.predicate.value;
+          const obj = quad.object.value;
+
+          // Heuristics to determine Icon/Kind
+          if (pred === 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type') {
+            if (obj.includes('Class') || obj.includes('Shape')) {
+              data.kind = CompletionItemKind.Class;
+            } else if (obj.includes('Property')) {
+              data.kind = CompletionItemKind.Property;
+            }
+          }
+
+          // Capture documentation
+          if (pred === 'http://www.w3.org/2000/01/rdf-schema#comment' ||
+            pred === 'http://www.w3.org/2004/02/skos/core#definition' ||
+            pred === 'http://purl.org/dc/terms/description') {
+            if (quad.object.value) {
+              data.docs.push(quad.object.value);
+            }
+          }
         }
-      }
 
-      // Capture documentation
-      if (pred === 'http://www.w3.org/2000/01/rdf-schema#comment' ||
-        pred === 'http://www.w3.org/2004/02/skos/core#definition' ||
-        pred === 'http://purl.org/dc/terms/description') {
-        if (quad.object.value) {
-          data.docs.push(quad.object.value);
+        // Convert processed data to LSP CompletionItems
+        for (const [localName, data] of termData) {
+          items.push({
+            label: `${prefix}:${localName}`,
+            kind: data.kind,
+            detail: `${prefix} ${(CompletionItemKind as any)[data.kind]}`,
+            documentation: {
+              kind: MarkupKind.Markdown,
+              value: data.docs.join('\n\n') || `Term from ${prefix} vocabulary.`
+            },
+            data: { localName, prefix }
+          });
         }
+
+        this.cachedVocabs.set(prefix, items);
+      } catch (err) {
+        console.error(`Error loading vocabulary ${prefix}:`, err);
       }
-    }
+    })();
 
-    // Convert processed data to LSP CompletionItems
-    for (const [localName, data] of termData) {
-      items.push({
-        label: `${prefix}:${localName}`,
-        kind: data.kind,
-        // FIXED: Cast CompletionItemKind to any to allow numeric indexing for the label
-        detail: `${prefix} ${(CompletionItemKind as any)[data.kind]}`,
-        documentation: {
-          kind: MarkupKind.Markdown,
-          value: data.docs.join('\n\n') || `Term from ${prefix} vocabulary.`
-        },
-        // We set insertText in the build method based on range, 
-        // but we store the clean name here for matching
-        data: { localName, prefix }
-      });
-    }
+    this.loadingPromises.set(prefix, loadPromise);
 
-    this.cachedVocabs.set(prefix, items);
+    // Cleanup promise from map when done (success or fail)
+    loadPromise.finally(() => this.loadingPromises.delete(prefix));
+
+    return loadPromise;
   }
 
-  build(params: TextDocumentPositionParams, doc: TextDocument, namespaces: any[], namespaceMap: Record<string, string>) {
+  // UPDATED: Build is now async to allow waiting for lazy-loaded vocabs
+  async build(params: TextDocumentPositionParams, doc: TextDocument, namespaces: any[], namespaceMap: Record<string, string>): Promise<CompletionItem[]> {
     const text = doc.getText()
     const subjectSet = this.collectSubjectSet(text)
     const current = currentWord(doc, params.position) || ""
@@ -221,14 +232,14 @@ export class CompletionEngine {
     }
 
     // 5. Merge all items
-    // UPDATED: Use fuzzy logic by returning ALL vocab items if strict prefix isn't found
+    const loadedVocabItems = await this.vocabFromPrefix(currentPrefix, replaceRange);
+
     const vocabItems = vocabItemsRaw.map(normalizeVocab)
-      .concat(this.vocabFromPrefix(currentPrefix, replaceRange))
+      .concat(loadedVocabItems)
 
     const allItems: CompletionItem[] = [...vocabItems, ...subjectItems, ...prefixItems, ...keywordItems]
 
     // 6. Professional Sorting Logic
-    // We want exact matches to appear first, then prefix matches, then others.
     const queryLower = current.toLowerCase();
 
     const withSort = allItems.map((item) => {
@@ -237,27 +248,17 @@ export class CompletionEngine {
       const itemPrefix = extractPrefix(label);
 
       // BUCKET STRATEGY
-      // 000: User has typed a prefix (e.g. "owl") and item matches that prefix exactly (e.g. "owl:")
-      // 010: Item is inside the currently active prefix (e.g. "owl:Class" when "owl" is active)
-      // 020: Item starts with exactly what user typed (e.g. "owl" -> "owl:Class")
-      // 050: References (Local subjects)
-      // 100: Keywords
-      // 900: Fallback
-
       let bucket = "900";
 
       if (currentPrefix && itemPrefix === currentPrefix) {
-        // We are strictly inside a namespace (e.g. "owl:...")
+        // We are strictly inside a namespace
         bucket = "010";
-
-        // Boost strict matches within the namespace (e.g. "owl:Cl" -> "owl:Class")
         if (labelLower.startsWith(queryLower)) {
           bucket = "005";
         }
       }
       else if (!currentPrefix && labelLower.startsWith(queryLower)) {
-        // No specific prefix active, but label starts with query
-        // e.g. typed "ow" -> match "owl:"
+        // Fuzzy match on prefix
         bucket = "020";
       }
       else if (item.kind === CompletionItemKind.Reference) {
@@ -267,8 +268,6 @@ export class CompletionEngine {
         bucket = "100";
       }
 
-      // Final sort text: Bucket + Label
-      // This ensures "010_owl:Class" comes before "010_owl:Thing" (alphabetical within bucket)
       return {
         ...item,
         sortText: `${bucket}_${label}`
@@ -284,7 +283,6 @@ export class CompletionEngine {
       deduped.push(item)
     }
 
-    // Standard string sort on the generated sortText
     return deduped.sort((a, b) => (a.sortText || "").localeCompare(b.sortText || ""))
   }
 
@@ -307,29 +305,25 @@ export class CompletionEngine {
 
   /**
    * Retrieve items from the cache for the current prefix.
-   * * LOGIC UPDATE:
-   * 1. If 'currentPrefix' is provided (e.g. "owl"), we strictly return "owl:..." items.
-   * 2. If 'currentPrefix' is EMPTY (user just typing "Class"), we return ALL cached vocab items.
-   * This allows VS Code's fuzzy matcher to find "owl:Class" when you type "Class".
+   * UPDATED: Returns Promise because loading might happen on demand.
    */
-  private vocabFromPrefix(currentPrefix: string, replaceRange: any): CompletionItem[] {
+  private async vocabFromPrefix(currentPrefix: string, replaceRange: any): Promise<CompletionItem[]> {
     let items: CompletionItem[] = [];
 
     if (currentPrefix) {
       // Strict mode: User has typed "owl:", so we only show "owl" terms
-      if (!this.cachedVocabs.has(currentPrefix) && (currentPrefix in vocabularies)) {
-        this.loadVocabularyIntoCache(currentPrefix);
+      // If not in cache, try to load it now
+      if (!this.cachedVocabs.has(currentPrefix) && (currentPrefix in vocabularies || (prefixes as any)[currentPrefix])) {
+        await this.loadVocabularyIntoCache(currentPrefix);
       }
       items = this.cachedVocabs.get(currentPrefix) || [];
     } else {
-      // Fuzzy mode: User hasn't chosen a prefix yet. Show EVERYTHING.
-      // This ensures typing "Action" suggests "schema:Action", "owl:Action", etc.
+      // Fuzzy mode: Return EVERYTHING in cache.
       for (const vocabItems of this.cachedVocabs.values()) {
         items = items.concat(vocabItems);
       }
     }
 
-    // Map to apply the textEdit (replacement range) dynamically
     return items.map(item => ({
       ...item,
       textEdit: replaceRange ? { newText: item.label, range: replaceRange } : undefined,
