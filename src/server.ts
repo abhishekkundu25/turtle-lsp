@@ -269,7 +269,7 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
       // Supports "...", '...', """...""", '''...'''
       // Also remove IRIs <...> and comments #... to avoid false positives
       const sanitized = trimmed
-        .replace(/("""[^"]*"""|'''[^']*'''|"[^"\\]*"|'[^'\\]*')/g, "") // Strings
+        .replace(/("""(?:[^"\\]|\\.)*?"""|'''(?:[^'\\]|\\.)*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, "") // Strings
         .replace(/<[^>]*>/g, "") // IRIs
         .replace(/#.*$/, "") // Comments
 
