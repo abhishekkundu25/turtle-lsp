@@ -107,7 +107,8 @@ export class CompletionEngine {
       items.push({
         label: `${prefix}:${localName}`,
         kind: data.kind,
-        detail: `${prefix} ${CompletionItemKind[data.kind]}`,
+        // FIXED: Cast CompletionItemKind to any to allow numeric indexing for the label
+        detail: `${prefix} ${(CompletionItemKind as any)[data.kind]}`,
         documentation: {
           kind: MarkupKind.Markdown,
           value: data.docs.join('\n\n') || `Term from ${prefix} vocabulary.`
