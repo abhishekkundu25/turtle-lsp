@@ -9,6 +9,9 @@ import {
   TextDocumentChangeEvent,
   Diagnostic,
   DiagnosticSeverity,
+  DocumentOnTypeFormattingParams,
+  Hover,
+  TextEdit,
 } from "vscode-languageserver/node"
 import { TextDocument } from "vscode-languageserver-textdocument"
 import { AbstractLanguageServer, errorMessageProvider } from "stardog-language-utils"
@@ -16,6 +19,7 @@ import { TurtleParser, ModeString } from "millan"
 import { CompletionEngine } from "./completion"
 import { Indexer } from "./indexer"
 import { NavigationEngine } from "./navigation"
+import { currentWord } from "./util"
 // UPDATED: Import Zazuko for vocabulary validation
 import { vocabularies, prefixes as zazukoPrefixes } from '@zazuko/rdf-vocabularies'
 
@@ -57,6 +61,63 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
       const namespaceMap = this.buildPrefixMap(text, namespaces)
       return this.completionEngine.build(params, doc, namespaces, namespaceMap)
     })
+    this.conn.onHover(async (params) => {
+      const doc = this.documents.get(params.textDocument.uri)
+      if (!doc) return null
+      const word = currentWord(doc, params.position)
+      if (!word) return null
+
+      // Check for prefix:term pattern
+      const match = word.match(/^([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+)$/)
+      if (match) {
+        const prefix = match[1]
+        const suffix = match[2]
+        const documentation = await this.completionEngine.getTermDocumentation(prefix, suffix)
+        if (documentation) {
+          return { contents: documentation }
+        }
+      }
+      return null
+    })
+    this.conn.onDocumentOnTypeFormatting((params: DocumentOnTypeFormattingParams) => {
+      const doc = this.documents.get(params.textDocument.uri)
+      if (!doc) return []
+      
+      const { position } = params
+      if (position.line === 0) return []
+
+      // Get previous line content
+      const prevLineText = doc.getText({
+        start: { line: position.line - 1, character: 0 },
+        end: { line: position.line - 1, character: Number.MAX_VALUE }
+      })
+
+      // Logic: 
+      // 1. Remove comments from prev line to check terminator
+      // 2. If ends with '.', new indent is 0.
+      // 3. Else, copy indent from prev line.
+      const cleanPrevLine = prevLineText.replace(/#.*$/, "").trimEnd()
+      
+      let newIndent = ""
+      if (!cleanPrevLine.endsWith(".")) {
+        const match = prevLineText.match(/^(\s*)/)
+        if (match) newIndent = match[1]
+      }
+
+      return [
+        TextEdit.replace(
+          {
+            start: { line: position.line, character: 0 },
+            end: { line: position.line, character: params.options.insertSpaces ? params.options.tabSize : 999 } 
+            // Note: Simple replacement of leading space. To be safe, we replace current indentation.
+            // But on a fresh newline, indentation is usually empty or auto-inserted by editor. 
+            // We replace a small range to enforce our indent.
+          },
+          newIndent
+        )
+      ]
+    })
+
     this.conn.onDocumentSymbol((params) => {
       const doc = this.documents.get(params.textDocument.uri)
       if (!doc) return []
@@ -92,6 +153,7 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
         textDocumentSync: TextDocumentSyncKind.Full,
         foldingRangeProvider: true,
         hoverProvider: true,
+        documentOnTypeFormattingProvider: { firstTriggerCharacter: "\n" },
         completionProvider: { triggerCharacters: [":", "@"] },
         documentSymbolProvider: true,
         definitionProvider: true,

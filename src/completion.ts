@@ -381,6 +381,25 @@ export class CompletionEngine {
   }
 
   /**
+   * Retrieves documentation for a specific term from the loaded vocabularies.
+   * Used for Hover support.
+   */
+  public async getTermDocumentation(prefix: string, term: string): Promise<MarkupKind | string | any | undefined> {
+    // Ensure vocab is loaded
+    if (!this.cachedVocabs.has(prefix) && (prefix in vocabularies || (prefixes as any)[prefix])) {
+      await this.loadVocabularyIntoCache(prefix);
+    }
+
+    const items = this.cachedVocabs.get(prefix);
+    if (!items) return undefined;
+
+    const fullLabel = `${prefix}:${term}`;
+    const item = items.find(i => i.label === fullLabel);
+
+    return item ? item.documentation : undefined;
+  }
+
+  /**
    * Calculates where to insert a new @prefix declaration.
    * Looks for the last existing @prefix or PREFIX line and appends after it.
    * Defaults to top of file if none found.
