@@ -22,6 +22,8 @@ export class CompletionEngine {
   private cachedVocabs: Map<string, CompletionItem[]> = new Map();
 
   constructor(private indexer: Indexer) {
+    // We still preload the basics because they are often used without explicit prefixes
+    // or implied in many environments.
     this.preloadVocabularies();
   }
 
@@ -34,6 +36,44 @@ export class CompletionEngine {
     for (const prefix of COMMON_VOCABS) {
       this.loadVocabularyIntoCache(prefix);
     }
+  }
+
+  /**
+   * PUBLIC API: Call this method from your `documents.onDidOpen` or `documents.onDidChangeContent` handler.
+   * It scans the document for prefixes (e.g. "@prefix foaf: ...") and loads the corresponding vocabulary
+   * data into memory so it's ready when the user types.
+   */
+  public preloadFromDocument(doc: TextDocument) {
+    const text = doc.getText();
+    const foundPrefixes = this.scanForPrefixes(text);
+
+    for (const prefix of foundPrefixes) {
+      // Only load if we haven't cached it already
+      if (!this.cachedVocabs.has(prefix)) {
+        console.log(`Auto-detected prefix '${prefix}' in file. Pre-loading vocabulary...`);
+        this.loadVocabularyIntoCache(prefix);
+      }
+    }
+  }
+
+  /**
+   * Simple regex scanner to find prefixes used in the document.
+   * Supports both Turtle ("@prefix") and SPARQL ("PREFIX") styles.
+   */
+  private scanForPrefixes(text: string): string[] {
+    const found = new Set<string>();
+    // Regex explanation:
+    // (?:@prefix|PREFIX) -> match either style, non-capturing group
+    // \s+                -> whitespace
+    // ([\w-]+)           -> CAPTURE GROUP 1: The prefix key (e.g., "foaf")
+    // :                  -> the colon separator
+    const regex = /(?:@prefix|PREFIX)\s+([\w-]+):/gi;
+
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      found.add(match[1]);
+    }
+    return Array.from(found);
   }
 
   /**
@@ -139,17 +179,16 @@ export class CompletionEngine {
         detail: iri,
         textEdit: replaceRange ? { newText: label, range: replaceRange } : undefined,
         insertText: replaceRange ? undefined : label,
-        sortText: `400_${label}`,
       }
     })
 
     // 2. Syntax Keywords
     const keywordItems = [
-      { label: "@prefix", kind: CompletionItemKind.Keyword, detail: "Declare namespace prefix", insertText: "@prefix ", sortText: "500_prefix" },
-      { label: "@base", kind: CompletionItemKind.Keyword, detail: "Set base IRI", insertText: "@base ", sortText: "500_base" },
-      { label: "a", kind: CompletionItemKind.Keyword, detail: "rdf:type shortcut", insertText: "a ", sortText: "500_a" },
-      { label: "BASE", kind: CompletionItemKind.Keyword, sortText: "500_BASE" },
-      { label: "PREFIX", kind: CompletionItemKind.Keyword, sortText: "500_PREFIX" },
+      { label: "@prefix", kind: CompletionItemKind.Keyword, detail: "Declare namespace prefix", insertText: "@prefix " },
+      { label: "@base", kind: CompletionItemKind.Keyword, detail: "Set base IRI", insertText: "@base " },
+      { label: "a", kind: CompletionItemKind.Keyword, detail: "rdf:type shortcut", insertText: "a " },
+      { label: "BASE", kind: CompletionItemKind.Keyword, insertText: "BASE " },
+      { label: "PREFIX", kind: CompletionItemKind.Keyword, insertText: "PREFIX " },
     ]
 
     // 3. Local Subjects
@@ -171,45 +210,69 @@ export class CompletionEngine {
 
     const normalizeVocab = (item: any) => {
       const label = item.label || item.insertText || ""
-      const prefix = extractPrefix(label)
       const textEdit = replaceRange ? { newText: label, range: replaceRange } : undefined
       const insertText = replaceRange ? undefined : item.insertText ?? label
-      const sortBucket = prefix && prefix === currentPrefix ? "020" : "350"
       return {
         ...item,
         label,
         textEdit,
         insertText,
-        sortText: `${sortBucket}_${label}`,
       }
     }
 
     // 5. Merge all items
-    // Note: We use vocabFromPrefix (the cached Zazuko data) here
+    // UPDATED: Use fuzzy logic by returning ALL vocab items if strict prefix isn't found
     const vocabItems = vocabItemsRaw.map(normalizeVocab)
       .concat(this.vocabFromPrefix(currentPrefix, replaceRange))
 
     const allItems: CompletionItem[] = [...vocabItems, ...subjectItems, ...prefixItems, ...keywordItems]
 
-    // 6. Sorting Logic
+    // 6. Professional Sorting Logic
+    // We want exact matches to appear first, then prefix matches, then others.
+    const queryLower = current.toLowerCase();
+
     const withSort = allItems.map((item) => {
       const label = item.label || ""
-      const prefix = extractPrefix(label)
-      let bucket = "900"
-      if (item.kind === CompletionItemKind.Reference && (currentPrefix === "" || currentPrefix === ":")) {
-        bucket = "010"
-      } else if (item.kind === CompletionItemKind.Reference) {
-        bucket = "120"
-      } else if (prefix && prefix === currentPrefix) {
-        bucket = "020"
-      } else if (item.kind === CompletionItemKind.Keyword && label.startsWith("@")) {
-        bucket = "500"
-      } else if (item.kind === CompletionItemKind.Keyword) {
-        bucket = "450"
-      } else if (!prefix && label.startsWith(":")) {
-        bucket = "030"
+      const labelLower = label.toLowerCase();
+      const itemPrefix = extractPrefix(label);
+
+      // BUCKET STRATEGY
+      // 000: User has typed a prefix (e.g. "owl") and item matches that prefix exactly (e.g. "owl:")
+      // 010: Item is inside the currently active prefix (e.g. "owl:Class" when "owl" is active)
+      // 020: Item starts with exactly what user typed (e.g. "owl" -> "owl:Class")
+      // 050: References (Local subjects)
+      // 100: Keywords
+      // 900: Fallback
+
+      let bucket = "900";
+
+      if (currentPrefix && itemPrefix === currentPrefix) {
+        // We are strictly inside a namespace (e.g. "owl:...")
+        bucket = "010";
+
+        // Boost strict matches within the namespace (e.g. "owl:Cl" -> "owl:Class")
+        if (labelLower.startsWith(queryLower)) {
+          bucket = "005";
+        }
       }
-      return { ...item, sortText: item.sortText || `${bucket}_${label}` }
+      else if (!currentPrefix && labelLower.startsWith(queryLower)) {
+        // No specific prefix active, but label starts with query
+        // e.g. typed "ow" -> match "owl:"
+        bucket = "020";
+      }
+      else if (item.kind === CompletionItemKind.Reference) {
+        bucket = "050";
+      }
+      else if (item.kind === CompletionItemKind.Keyword) {
+        bucket = "100";
+      }
+
+      // Final sort text: Bucket + Label
+      // This ensures "010_owl:Class" comes before "010_owl:Thing" (alphabetical within bucket)
+      return {
+        ...item,
+        sortText: `${bucket}_${label}`
+      };
     })
 
     const deduped: CompletionItem[] = []
@@ -221,6 +284,7 @@ export class CompletionEngine {
       deduped.push(item)
     }
 
+    // Standard string sort on the generated sortText
     return deduped.sort((a, b) => (a.sortText || "").localeCompare(b.sortText || ""))
   }
 
@@ -243,20 +307,29 @@ export class CompletionEngine {
 
   /**
    * Retrieve items from the cache for the current prefix.
-   * If it's a known Zazuko prefix but not cached yet, we cache it now.
+   * * LOGIC UPDATE:
+   * 1. If 'currentPrefix' is provided (e.g. "owl"), we strictly return "owl:..." items.
+   * 2. If 'currentPrefix' is EMPTY (user just typing "Class"), we return ALL cached vocab items.
+   * This allows VS Code's fuzzy matcher to find "owl:Class" when you type "Class".
    */
   private vocabFromPrefix(currentPrefix: string, replaceRange: any): CompletionItem[] {
-    if (!currentPrefix) return [];
+    let items: CompletionItem[] = [];
 
-    // If we haven't cached this valid prefix yet, try to load it on the fly
-    if (!this.cachedVocabs.has(currentPrefix) && (currentPrefix in vocabularies)) {
-      this.loadVocabularyIntoCache(currentPrefix);
+    if (currentPrefix) {
+      // Strict mode: User has typed "owl:", so we only show "owl" terms
+      if (!this.cachedVocabs.has(currentPrefix) && (currentPrefix in vocabularies)) {
+        this.loadVocabularyIntoCache(currentPrefix);
+      }
+      items = this.cachedVocabs.get(currentPrefix) || [];
+    } else {
+      // Fuzzy mode: User hasn't chosen a prefix yet. Show EVERYTHING.
+      // This ensures typing "Action" suggests "schema:Action", "owl:Action", etc.
+      for (const vocabItems of this.cachedVocabs.values()) {
+        items = items.concat(vocabItems);
+      }
     }
 
-    const items = this.cachedVocabs.get(currentPrefix) || [];
-
-    // We must map the cached items to new objects to apply the specific 
-    // replaceRange (TextEdit) for the current cursor position
+    // Map to apply the textEdit (replacement range) dynamically
     return items.map(item => ({
       ...item,
       textEdit: replaceRange ? { newText: item.label, range: replaceRange } : undefined,
