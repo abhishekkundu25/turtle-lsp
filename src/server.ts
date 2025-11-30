@@ -92,30 +92,25 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
         end: { line: position.line - 1, character: Number.MAX_VALUE }
       })
 
-      // Logic: 
-      // 1. Remove comments from prev line to check terminator
-      // 2. If ends with '.', new indent is 0.
-      // 3. Else, copy indent from prev line.
       const cleanPrevLine = prevLineText.replace(/#.*$/, "").trimEnd()
       
-      let newIndent = ""
-      if (!cleanPrevLine.endsWith(".")) {
-        const match = prevLineText.match(/^(\s*)/)
-        if (match) newIndent = match[1]
+      // ONLY interfere if the previous line ends with '.', indicating end of statement.
+      // In this case, we want to RESET indentation (dedent).
+      // Otherwise, we let the editor's native auto-indent handle the "keep indentation" behavior.
+      if (cleanPrevLine.endsWith(".")) {
+        return [
+          TextEdit.replace(
+            {
+              start: { line: position.line, character: 0 },
+              // Replace existing indentation (if any auto-inserted) with empty string
+              end: { line: position.line, character: 999 } 
+            },
+            ""
+          )
+        ]
       }
 
-      return [
-        TextEdit.replace(
-          {
-            start: { line: position.line, character: 0 },
-            end: { line: position.line, character: params.options.insertSpaces ? params.options.tabSize : 999 } 
-            // Note: Simple replacement of leading space. To be safe, we replace current indentation.
-            // But on a fresh newline, indentation is usually empty or auto-inserted by editor. 
-            // We replace a small range to enforce our indent.
-          },
-          newIndent
-        )
-      ]
+      return []
     })
 
     this.conn.onDocumentSymbol((params) => {
