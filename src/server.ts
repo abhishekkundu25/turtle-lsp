@@ -227,6 +227,13 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
     const diagnostics: Diagnostic[] = []
     const namespaceEntries = this.collectNamespaceEntries(text)
     const prefixMap = this.buildPrefixMap(text, namespaceEntries)
+    
+    // Build a set of explicitly declared prefixes for strict validation
+    const declaredPrefixes = new Set<string>()
+    for (const entry of namespaceEntries) {
+      declaredPrefixes.add(normalizePrefix(entry.prefix))
+    }
+
     const lines = text.split(/\r?\n/)
     const prefixUsage: Record<string, number> = {}
     const seenPrefixDecl: Record<string, number> = {}
@@ -278,16 +285,18 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
 
         prefixUsage[normalized] = (prefixUsage[normalized] || 0) + 1
 
-        // 1. Check if Prefix is Defined
-        if (!prefixMap[normalized]) {
+        // 1. Check if Prefix is Declared (Strict check)
+        if (!declaredPrefixes.has(normalized)) {
           diagnostics.push({
             severity: DiagnosticSeverity.Warning,
             range,
             message: `Prefix '${displayPrefix(pref)}' is not declared`,
             source: "turtle-node-lsp",
           })
-        } else {
-          // 2. Check if Suffix is Valid (only for known vocabularies)
+        }
+
+        // 2. Check if Suffix is Valid (if the prefix resolves to a namespace we know)
+        if (prefixMap[normalized]) {
           // We verify if this prefix maps to a standard URI that Zazuko knows
           const iri = prefixMap[normalized];
           // Simple check: does the prefix key exist in Zazuko? 
