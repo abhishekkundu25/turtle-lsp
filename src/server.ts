@@ -267,11 +267,16 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
 
       // Sanitize strings to avoid checking terms inside quotes
       // Supports "...", '...', """...""", '''...'''
-      const sanitized = trimmed.replace(/("""[^"]*"""|'''[^']*'''|"[^"\\]*"|'[^'\\]*')/g, "")
+      // Also remove IRIs <...> and comments #... to avoid false positives
+      const sanitized = trimmed
+        .replace(/("""[^"]*"""|'''[^']*'''|"[^"\\]*"|'[^'\\]*')/g, "") // Strings
+        .replace(/<[^>]*>/g, "") // IRIs
+        .replace(/#.*$/, "") // Comments
 
       // Regex to find 'prefix:suffix' patterns
       // Captures: prefix (group 1), suffix (group 2)
-      const uses = [...sanitized.matchAll(/([A-Za-z0-9_\-]*):([A-Za-z0-9_\-]+)/g)]
+      // Suffix can be empty (e.g. ":" or "ex:")
+      const uses = [...sanitized.matchAll(/([A-Za-z0-9_\-]*):([A-Za-z0-9_\-]*)/g)]
 
       for (const match of uses) {
         const pref = match[1]
