@@ -79,39 +79,6 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
       }
       return null
     })
-    this.conn.onDocumentOnTypeFormatting((params: DocumentOnTypeFormattingParams) => {
-      const doc = this.documents.get(params.textDocument.uri)
-      if (!doc) return []
-      
-      const { position } = params
-      if (position.line === 0) return []
-
-      // Get previous line content
-      const prevLineText = doc.getText({
-        start: { line: position.line - 1, character: 0 },
-        end: { line: position.line - 1, character: Number.MAX_VALUE }
-      })
-
-      const cleanPrevLine = prevLineText.replace(/#.*$/, "").trimEnd()
-      
-      // ONLY interfere if the previous line ends with '.', indicating end of statement.
-      // In this case, we want to RESET indentation (dedent).
-      // Otherwise, we let the editor's native auto-indent handle the "keep indentation" behavior.
-      if (cleanPrevLine.endsWith(".")) {
-        return [
-          TextEdit.replace(
-            {
-              start: { line: position.line, character: 0 },
-              // Replace existing indentation (if any auto-inserted) with empty string
-              end: { line: position.line, character: 999 } 
-            },
-            ""
-          )
-        ]
-      }
-
-      return []
-    })
 
     this.conn.onDocumentSymbol((params) => {
       const doc = this.documents.get(params.textDocument.uri)
@@ -148,7 +115,6 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
         textDocumentSync: TextDocumentSyncKind.Full,
         foldingRangeProvider: true,
         hoverProvider: true,
-        documentOnTypeFormattingProvider: { firstTriggerCharacter: "\n" },
         completionProvider: { triggerCharacters: [":", "@"] },
         documentSymbolProvider: true,
         definitionProvider: true,
