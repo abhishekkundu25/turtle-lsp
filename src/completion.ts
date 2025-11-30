@@ -234,7 +234,8 @@ export class CompletionEngine {
 
     // 5. Merge all items
     // Pass existing prefixes (keys of namespaceMap) to handle auto-import
-    const declaredPrefixes = new Set(Object.keys(namespaceMap));
+    // FIX: Use 'namespaces' (explicit declarations) instead of 'namespaceMap' (which includes implicit defaults)
+    const declaredPrefixes = new Set(namespaces.map((n: any) => n.prefix));
     const loadedVocabItems = await this.vocabFromPrefix(currentPrefix, replaceRange, declaredPrefixes, text);
 
     let allItems = [
