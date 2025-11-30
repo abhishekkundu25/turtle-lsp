@@ -264,7 +264,7 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
 
       // Regex to find 'prefix:suffix' patterns
       // Captures: prefix (group 1), suffix (group 2)
-      const uses = [...sanitized.matchAll(/([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+)/g)]
+      const uses = [...sanitized.matchAll(/([A-Za-z0-9_\-]*):([A-Za-z0-9_\-]+)/g)]
 
       for (const match of uses) {
         const pref = match[1]
