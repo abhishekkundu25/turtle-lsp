@@ -262,7 +262,9 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
       const closeParens = countChars(sanitized, ")")
       const depthAfter = Math.max(0, depthBefore + openBrackets - closeBrackets + openParens - closeParens)
 
-      if (depthBefore === 0 && depthAfter === 0 && !/[.;,\]\)]\s*$/.test(sanitized)) {
+      // Warn only if we are at top level, line has content (predicate/object implied by whitespace), and no terminator
+      // We check /\s/ to skip single-token lines (likely just a Subject, e.g. "core:Metadata")
+      if (depthBefore === 0 && depthAfter === 0 && !/[.;,\]\)]\s*$/.test(sanitized) && /\s/.test(sanitized)) {
         diagnostics.push({
           severity: DiagnosticSeverity.Warning,
           range: {
