@@ -3,7 +3,8 @@ import {
   CompletionItem,
   TextDocument,
   TextDocumentPositionParams,
-  MarkupKind
+  MarkupKind,
+  TextEdit
 } from "vscode-languageserver/node"
 import { getCommonCompletionItemsGivenNamespaces } from "stardog-language-utils"
 import { Indexer } from "./indexer"
@@ -232,7 +233,9 @@ export class CompletionEngine {
     }
 
     // 5. Merge all items
-    const loadedVocabItems = await this.vocabFromPrefix(currentPrefix, replaceRange);
+    // Pass existing prefixes (keys of namespaceMap) to handle auto-import
+    const declaredPrefixes = new Set(Object.keys(namespaceMap));
+    const loadedVocabItems = await this.vocabFromPrefix(currentPrefix, replaceRange, declaredPrefixes, text);
 
     let allItems = [
       ...vocabItemsRaw.map(normalizeVocab),
@@ -323,8 +326,14 @@ export class CompletionEngine {
   /**
    * Retrieve items from the cache for the current prefix.
    * UPDATED: Returns Promise because loading might happen on demand.
+   * UPDATED: Adds auto-import TextEdit if prefix is missing.
    */
-  private async vocabFromPrefix(currentPrefix: string, replaceRange: any): Promise<CompletionItem[]> {
+  private async vocabFromPrefix(
+    currentPrefix: string, 
+    replaceRange: any, 
+    existingPrefixes: Set<string>,
+    docText: string
+  ): Promise<CompletionItem[]> {
     let items: CompletionItem[] = [];
 
     if (currentPrefix) {
@@ -341,10 +350,64 @@ export class CompletionEngine {
       }
     }
 
-    return items.map(item => ({
-      ...item,
-      textEdit: replaceRange ? { newText: item.label, range: replaceRange } : undefined,
-      insertText: replaceRange ? undefined : item.label,
-    }));
+    // Determine where to insert new prefixes if needed
+    // We compute this once to avoid re-scanning for every item
+    // (Scanning is cheap relative to 1000s of items, but still good practice)
+    // However, we only need it if we actually find a missing prefix.
+    
+    return items.map(item => {
+      const result: CompletionItem = {
+        ...item,
+        textEdit: replaceRange ? { newText: item.label, range: replaceRange } : undefined,
+        insertText: replaceRange ? undefined : item.label,
+      };
+
+      // Auto-Import Logic
+      const itemPrefix = (item.data as any)?.prefix;
+      if (itemPrefix && !existingPrefixes.has(itemPrefix)) {
+        // This prefix is known by Zazuko but NOT in the document.
+        // Add an edit to insert it.
+        const namespaceUri = (prefixes as any)[itemPrefix];
+        if (namespaceUri) {
+          result.additionalTextEdits = [this.createPrefixInsertion(docText, itemPrefix, namespaceUri)];
+          // Add detail to show user it will be imported
+          result.detail = `${result.detail} (Auto-Import)`;
+        }
+      }
+
+      return result;
+    });
+  }
+
+  /**
+   * Calculates where to insert a new @prefix declaration.
+   * Looks for the last existing @prefix or PREFIX line and appends after it.
+   * Defaults to top of file if none found.
+   */
+  private createPrefixInsertion(text: string, prefix: string, iri: string): TextEdit {
+    const lines = text.split(/\r?\n/);
+    let lastPrefixLine = -1;
+
+    // Scan for the last import to keep things tidy
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("@prefix") || line.match(/^PREFIX\s/i)) {
+        lastPrefixLine = i;
+      }
+    }
+
+    // Insert after the last prefix, or at line 0 if none
+    const insertLine = lastPrefixLine + 1;
+    
+    // Use standard Turtle syntax
+    const newText = `@prefix ${prefix}: <${iri}> .\n`;
+
+    return {
+      range: {
+        start: { line: insertLine, character: 0 },
+        end: { line: insertLine, character: 0 }
+      },
+      newText
+    };
   }
 }
