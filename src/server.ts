@@ -244,16 +244,25 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
       const trimmed = line.trim()
       if (!trimmed || trimmed.startsWith("@") || trimmed.startsWith("#")) return
 
+      // Sanitize strings to avoid checking terms inside quotes and comments
+      // Supports "...", '...', """...""", '''...'''
+      // Also remove IRIs <...> and comments #... to avoid false positives
+      const sanitized = trimmed
+        .replace(/("""(?:[^"\\]|\\.)*?"""|'''(?:[^'\\]|\\.)*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, "") // Strings
+        .replace(/<[^>]*>/g, "") // IRIs
+        .replace(/#.*$/, "") // Comments
+
       const depthBefore = bracketDepth + parenDepth
 
       // Terminator check
-      const openBrackets = countChars(trimmed, "[")
-      const closeBrackets = countChars(trimmed, "]")
-      const openParens = countChars(trimmed, "(")
-      const closeParens = countChars(trimmed, ")")
+      // Use sanitized string to ignore brackets/parens inside strings and comments
+      const openBrackets = countChars(sanitized, "[")
+      const closeBrackets = countChars(sanitized, "]")
+      const openParens = countChars(sanitized, "(")
+      const closeParens = countChars(sanitized, ")")
       const depthAfter = Math.max(0, depthBefore + openBrackets - closeBrackets + openParens - closeParens)
 
-      if (depthBefore === 0 && depthAfter === 0 && !/[.;,\]\)]\s*$/.test(trimmed)) {
+      if (depthBefore === 0 && depthAfter === 0 && !/[.;,\]\)]\s*$/.test(sanitized)) {
         diagnostics.push({
           severity: DiagnosticSeverity.Warning,
           range: {
@@ -264,14 +273,6 @@ class TurtleLanguageServer extends AbstractLanguageServer<TurtleParser> {
           source: "turtle-node-lsp",
         })
       }
-
-      // Sanitize strings to avoid checking terms inside quotes
-      // Supports "...", '...', """...""", '''...'''
-      // Also remove IRIs <...> and comments #... to avoid false positives
-      const sanitized = trimmed
-        .replace(/("""(?:[^"\\]|\\.)*?"""|'''(?:[^'\\]|\\.)*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, "") // Strings
-        .replace(/<[^>]*>/g, "") // IRIs
-        .replace(/#.*$/, "") // Comments
 
       // Regex to find 'prefix:suffix' patterns
       // Captures: prefix (group 1), suffix (group 2)
