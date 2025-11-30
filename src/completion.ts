@@ -234,10 +234,27 @@ export class CompletionEngine {
     // 5. Merge all items
     const loadedVocabItems = await this.vocabFromPrefix(currentPrefix, replaceRange);
 
-    const vocabItems = vocabItemsRaw.map(normalizeVocab)
-      .concat(loadedVocabItems)
+    let allItems = [
+      ...vocabItemsRaw.map(normalizeVocab),
+      ...loadedVocabItems,
+      ...subjectItems,
+      ...prefixItems,
+      ...keywordItems
+    ];
 
-    const allItems: CompletionItem[] = [...vocabItems, ...subjectItems, ...prefixItems, ...keywordItems]
+    // FILTERING FIX: Strict Prefix Matching
+    // If the user is typing inside a namespace (e.g. "owl:"), strictly filter out 
+    // items from other namespaces (e.g. "stardog:", "rdf:").
+    // This ensures the fuzzy matcher isn't polluted by irrelevant noise.
+    if (currentPrefix) {
+      allItems = allItems.filter(item => {
+        const itemPrefix = extractPrefix(item.label || "");
+        // Keep if:
+        // 1. It has no prefix (keywords like '@base', 'a')
+        // 2. It matches the current active prefix (e.g. "owl")
+        return !itemPrefix || itemPrefix === currentPrefix;
+      });
+    }
 
     // 6. Professional Sorting Logic
     const queryLower = current.toLowerCase();
