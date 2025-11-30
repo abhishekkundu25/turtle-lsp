@@ -22,6 +22,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@zazuko/rdf-vocabularies": "^2023.1.19",
     "millan": "^5.4.0",
     "n3": "^1.23.1",
     "stardog-language-utils": "^1.15.0",
