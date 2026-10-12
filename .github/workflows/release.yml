@@ -1,0 +1,82 @@
+name: Release
+
+# Push a tag like v0.1.0 to build every platform, create a GitHub Release with
+# the .vsix files, and publish them to the VS Code Marketplace.
+# Needs the repository secret VSCE_PAT (Azure DevOps token, Marketplace: Manage).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.vsce }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, vsce: darwin-arm64, cargo: aarch64-apple-darwin }
+          - { os: macos-latest, vsce: darwin-x64, cargo: x86_64-apple-darwin }
+          - { os: ubuntu-latest, vsce: linux-x64, cargo: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, vsce: linux-arm64, cargo: aarch64-unknown-linux-musl }
+          - { os: ubuntu-latest, vsce: alpine-x64, cargo: x86_64-unknown-linux-musl }
+          - { os: windows-latest, vsce: win32-x64, cargo: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cargo }}
+      - name: Install musl tools
+        if: contains(matrix.cargo, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check the tag matches the extension version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          v=$(node -p "require('./editors/vscode/package.json').version")
+          test "v$v" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != package.json v$v"; exit 1; }
+      - working-directory: editors/vscode
+        run: npm ci
+      - name: Package
+        working-directory: editors/vscode
+        env:
+          VSCE_TARGET: ${{ matrix.vsce }}
+          CARGO_TARGET: ${{ matrix.cargo }}
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.vsce }}
+          path: editors/vscode/*.vsix
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.vsix
+          generate_release_notes: true
+      - name: Publish to the VS Code Marketplace
+        working-directory: editors/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          npm ci
+          for f in ../../dist/*.vsix; do npx vsce publish --packagePath "$f"; done
