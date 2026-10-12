@@ -4,3 +4,4 @@ server
 .vscode-test
 *.vsix
 LICENSE
+CHANGELOG.md

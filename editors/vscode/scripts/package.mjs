@@ -24,7 +24,7 @@ fs.rmSync(path.join(here, "server"), { recursive: true, force: true })
 fs.mkdirSync(path.join(here, "server"))
 fs.copyFileSync(built, path.join(here, "server", exe))
 fs.chmodSync(path.join(here, "server", exe), 0o755)
-fs.copyFileSync(path.join(repo, "LICENSE"), path.join(here, "LICENSE"))
+for (const f of ["LICENSE", "CHANGELOG.md"]) fs.copyFileSync(path.join(repo, f), path.join(here, f))
 
 run("npm", ["run", "build"])
 const version = JSON.parse(fs.readFileSync(path.join(here, "package.json"), "utf8")).version
