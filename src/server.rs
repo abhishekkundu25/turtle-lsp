@@ -28,6 +28,8 @@ pub struct Server {
     enc: Encoding,
     dirty: FxHashSet<String>,
     index_rx: Receiver<Vec<(String, Analysis)>>,
+    /// The initial workspace index has been merged.
+    indexed: bool,
     watch_dynamic: bool,
     next_id: i32,
 }
@@ -115,6 +117,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         enc,
         dirty: FxHashSet::default(),
         index_rx,
+        indexed: false,
         watch_dynamic,
         next_id: 0,
     };
@@ -194,11 +197,7 @@ impl Server {
             let msg = select! {
                 recv(self.conn.receiver) -> m => match m { Ok(m) => m, Err(_) => return Ok(()) },
                 recv(self.index_rx) -> files => {
-                    if let Ok(files) = files {
-                        for (uri, a) in files {
-                            self.ws.disk.entry(uri).or_insert_with(|| Arc::new(a));
-                        }
-                    }
+                    self.merge_index(files.ok());
                     continue;
                 }
             };
@@ -224,6 +223,7 @@ impl Server {
                 }
                 // Requests see the current text, so pending diagnostics go out first.
                 self.publish_dirty();
+                self.ensure_indexed();
                 let id = req.id.clone();
                 let method = req.method.clone();
                 // A bug in one feature must not take the server down for the session.
@@ -294,6 +294,23 @@ impl Server {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn merge_index(&mut self, files: Option<Vec<(String, Analysis)>>) {
+        for (uri, a) in files.into_iter().flatten() {
+            self.ws.disk.entry(uri).or_insert_with(|| Arc::new(a));
+        }
+        self.indexed = true;
+    }
+
+    /// Answers that look across the workspace (definition, references, rename,
+    /// ...) must not come from a half-built index: a rename sent right after
+    /// start-up would silently miss files. Wait for the initial index once.
+    fn ensure_indexed(&mut self) {
+        if !self.indexed {
+            let files = self.index_rx.recv().ok();
+            self.merge_index(files);
         }
     }
 

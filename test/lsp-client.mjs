@@ -2,7 +2,9 @@ import { spawn, spawnSync } from "node:child_process"
 import { Transform } from "node:stream"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import rpc from "vscode-jsonrpc/node.js"
+import { createRequire } from "node:module"
+// require() resolves "vscode-jsonrpc/node" in both v8 (node.js file) and v9 (exports map).
+const rpc = createRequire(import.meta.url)("vscode-jsonrpc/node")
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 // The server binary under test; override with TURTLE_LSP_BIN.

@@ -86,3 +86,8 @@ jobs:
       - if: runner.os != 'Linux'
         working-directory: editors/vscode
         run: npm test
+      # Catches packaging errors (e.g. @types/vscode newer than engines.vscode)
+      # before a release does.
+      - if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        run: npm run package
