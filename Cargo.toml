@@ -2,6 +2,9 @@
 name = "turtle-lsp"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Fast language server for RDF Turtle"
+repository = "https://github.com/abhishekkundu25/turtle-lsp"
 
 [dependencies]
 crossbeam-channel = "0.5.17"

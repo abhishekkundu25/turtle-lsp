@@ -1,5 +1,7 @@
 <p align="center"><img src="assets/logo.png" alt="turtle-lsp" width="640"></p>
 
+<p align="center"><a href="https://github.com/abhishekkundu25/turtle-lsp/actions/workflows/ci.yml"><img src="https://github.com/abhishekkundu25/turtle-lsp/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2BD98F" alt="MIT license"></a></p>
+
 # turtle-lsp
 
 A fast language server for RDF Turtle (`.ttl`), written in Rust.
@@ -104,6 +106,14 @@ code --install-extension turtle-lsp-*.vsix
 
 Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
 (prefixes for every file), `turtle.trace.server` (log LSP traffic).
+
+## Releasing
+
+Push a tag that matches `editors/vscode/package.json`'s version (for example
+`v0.1.0`). The release workflow builds the server for macOS (arm64, x64),
+Linux (x64, arm64, Alpine) and Windows (x64), attaches a `.vsix` per platform
+to a GitHub Release, and publishes them to the VS Code Marketplace. It needs a
+`VSCE_PAT` repository secret.
 
 ## Development
 

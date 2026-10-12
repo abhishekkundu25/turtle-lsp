@@ -155,7 +155,11 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
     let mut prev_line = 0;
     for t in a.parsed.tokens.iter().filter(|t| t.kind != Kind::Comment) {
         let closes = match t.kind {
-            Kind::LBracket | Kind::LParen | Kind::LAnnotation | Kind::LTriple | Kind::LTripleTerm => {
+            Kind::LBracket
+            | Kind::LParen
+            | Kind::LAnnotation
+            | Kind::LTriple
+            | Kind::LTripleTerm => {
                 open.push((t.kind, t.start));
                 None
             }
@@ -167,13 +171,17 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
             _ => None,
         };
         let here = line(t.start);
-        if let Some(opener) = closes {
-            if let Some(i) = open.iter().rposition(|(k, _)| *k == opener) {
-                let (_, start) = open.remove(i);
-                let end_line = if here > prev_line { here - 1 } else { here };
-                if end_line > line(start) {
-                    nested.push(FoldingRange { start_line: line(start), end_line, ..Default::default() });
-                }
+        if let Some(opener) = closes
+            && let Some(i) = open.iter().rposition(|(k, _)| *k == opener)
+        {
+            let (_, start) = open.remove(i);
+            let end_line = if here > prev_line { here - 1 } else { here };
+            if end_line > line(start) {
+                nested.push(FoldingRange {
+                    start_line: line(start),
+                    end_line,
+                    ..Default::default()
+                });
             }
         }
         prev_line = here;

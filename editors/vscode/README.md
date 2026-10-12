@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/logo.png" alt="turtle-lsp" width="640"></p>
+
 # Turtle (RDF) for VS Code
 
 Language support for RDF Turtle (`.ttl`) powered by

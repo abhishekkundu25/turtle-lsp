@@ -371,8 +371,7 @@ impl<'a> Lexer<'a> {
         // PN_LOCAL
         let mut last_ok = j;
         let mut first = true;
-        loop {
-            let Some(c) = self.char_at(j) else { break };
+        while let Some(c) = self.char_at(j) {
             let plx = self.plx(j);
             if let Some(len) = plx {
                 j += len;

@@ -22,7 +22,9 @@ use std::sync::Arc;
 
 const LIMIT: usize = 200;
 /// Vocabularies searched by local name even when their prefix is not declared.
-const COMMON: &[&str] = &["rdf", "rdfs", "owl", "xsd", "skos", "sh", "dcterms", "foaf", "schema", "prov"];
+const COMMON: &[&str] = &[
+    "rdf", "rdfs", "owl", "xsd", "skos", "sh", "dcterms", "foaf", "schema", "prov",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Slot {
@@ -211,14 +213,27 @@ pub fn complete(
         if typed.chars().count() >= 2 && !typed.starts_with('@') {
             let lower = typed.to_lowercase();
             let mut seen_ns = FxHashSet::default();
-            let in_scope = prefixes.iter().filter_map(|(p, ns)| VOCABS.by_namespace(ns).map(|v| (p.clone(), v, None)));
-            let common = COMMON.iter().filter_map(|p| VOCABS.by_prefix(p)).map(|v| (v.prefix.to_string(), v, Some((v.prefix.to_string(), v.namespace.to_string()))));
+            let in_scope = prefixes
+                .iter()
+                .filter_map(|(p, ns)| VOCABS.by_namespace(ns).map(|v| (p.clone(), v, None)));
+            let common = COMMON.iter().filter_map(|p| VOCABS.by_prefix(p)).map(|v| {
+                (
+                    v.prefix.to_string(),
+                    v,
+                    Some((v.prefix.to_string(), v.namespace.to_string())),
+                )
+            });
             for (pfx, v, import) in in_scope.chain(common) {
                 // A common vocabulary already bound under another name is covered by in_scope.
-                if !seen_ns.insert(v.namespace) || (import.is_some() && prefixes.contains_key(&pfx)) {
+                if !seen_ns.insert(v.namespace) || (import.is_some() && prefixes.contains_key(&pfx))
+                {
                     continue;
                 }
-                for t in v.terms().iter().filter(|t| t.local.to_lowercase().starts_with(&lower)) {
+                for t in v
+                    .terms()
+                    .iter()
+                    .filter(|t| t.local.to_lowercase().starts_with(&lower))
+                {
                     cands.push(Candidate {
                         label: format!("{pfx}:{}", t.local),
                         kind: match t.kind {
@@ -226,7 +241,11 @@ pub fn complete(
                             TermKind::Property => CompletionItemKind::PROPERTY,
                             TermKind::Individual => CompletionItemKind::ENUM_MEMBER,
                         },
-                        detail: if t.label.is_empty() { format!("{}{}", v.namespace, t.local) } else { t.label.clone() },
+                        detail: if t.label.is_empty() {
+                            format!("{}{}", v.namespace, t.local)
+                        } else {
+                            t.label.clone()
+                        },
                         iri: Some(format!("{}{}", v.namespace, t.local)),
                         rank: rank(slot, t.kind) + 2 + u8::from(t.deprecated) * 5,
                         import: import.clone(),

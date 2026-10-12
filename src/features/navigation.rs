@@ -108,10 +108,23 @@ pub fn definition(
 }
 
 /// Where the resource's classes are described (`gy` in Neovim).
-pub fn type_definition(a: &Analysis, all: &[Arc<Analysis>], enc: Encoding, pos: Position) -> Vec<Location> {
-    let Some(offset) = a.offset(enc, pos) else { return vec![] };
-    let Some((Target::Iri(iri), _)) = target_at(a, offset) else { return vec![] };
-    let types: FxHashSet<&String> = all.iter().filter_map(|o| o.types.get(&iri)).flatten().collect();
+pub fn type_definition(
+    a: &Analysis,
+    all: &[Arc<Analysis>],
+    enc: Encoding,
+    pos: Position,
+) -> Vec<Location> {
+    let Some(offset) = a.offset(enc, pos) else {
+        return vec![];
+    };
+    let Some((Target::Iri(iri), _)) = target_at(a, offset) else {
+        return vec![];
+    };
+    let types: FxHashSet<&String> = all
+        .iter()
+        .filter_map(|o| o.types.get(&iri))
+        .flatten()
+        .collect();
     let mut out = Vec::new();
     for other in all {
         for ty in &types {
@@ -124,12 +137,26 @@ pub fn type_definition(a: &Analysis, all: &[Arc<Analysis>], enc: Encoding, pos: 
 }
 
 /// Instances, subclasses and subproperties of the IRI under the cursor.
-pub fn implementations(a: &Analysis, all: &[Arc<Analysis>], enc: Encoding, pos: Position) -> Vec<Location> {
-    let Some(offset) = a.offset(enc, pos) else { return vec![] };
-    let Some((Target::Iri(iri), _)) = target_at(a, offset) else { return vec![] };
+pub fn implementations(
+    a: &Analysis,
+    all: &[Arc<Analysis>],
+    enc: Encoding,
+    pos: Position,
+) -> Vec<Location> {
+    let Some(offset) = a.offset(enc, pos) else {
+        return vec![];
+    };
+    let Some((Target::Iri(iri), _)) = target_at(a, offset) else {
+        return vec![];
+    };
     let mut out = Vec::new();
     for other in all {
-        let related = other.types.iter().chain(other.supers.iter()).filter(|(_, objs)| objs.contains(&iri)).map(|(s, _)| s);
+        let related = other
+            .types
+            .iter()
+            .chain(other.supers.iter())
+            .filter(|(_, objs)| objs.contains(&iri))
+            .map(|(s, _)| s);
         let mut seen = FxHashSet::default();
         for s in related {
             if !seen.insert(s) {

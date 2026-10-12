@@ -391,14 +391,24 @@ impl Server {
                 let p = params!(GotoDefinitionParams);
                 let (_, a) = doc!(p.text_document_position_params.text_document.uri);
                 let all = self.ws.all();
-                let locs = navigation::type_definition(&a, &all, enc, p.text_document_position_params.position);
+                let locs = navigation::type_definition(
+                    &a,
+                    &all,
+                    enc,
+                    p.text_document_position_params.position,
+                );
                 json(serde_json::to_value(GotoDefinitionResponse::Array(locs)))
             }
             GotoImplementation::METHOD => {
                 let p = params!(GotoDefinitionParams);
                 let (_, a) = doc!(p.text_document_position_params.text_document.uri);
                 let all = self.ws.all();
-                let locs = navigation::implementations(&a, &all, enc, p.text_document_position_params.position);
+                let locs = navigation::implementations(
+                    &a,
+                    &all,
+                    enc,
+                    p.text_document_position_params.position,
+                );
                 json(serde_json::to_value(GotoDefinitionResponse::Array(locs)))
             }
             References::METHOD => {

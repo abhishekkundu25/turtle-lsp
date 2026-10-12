@@ -109,7 +109,15 @@ fn workspace_fixtures_match_oxttl() {
 fn project_fragments_match_oxttl() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/fixtures/project");
     let header = fs::read_to_string(dir.join("prefixes.ttl")).unwrap();
-    for name in ["core/vocab.ttl", "shapes/asset-shapes.ttl", "data/instances.ttl", "data/observations.ttl"] {
-        check(name, &(header.clone() + &fs::read_to_string(dir.join(name)).unwrap()));
+    for name in [
+        "core/vocab.ttl",
+        "shapes/asset-shapes.ttl",
+        "data/instances.ttl",
+        "data/observations.ttl",
+    ] {
+        check(
+            name,
+            &(header.clone() + &fs::read_to_string(dir.join(name)).unwrap()),
+        );
     }
 }
