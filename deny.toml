@@ -1,0 +1,24 @@
+# cargo deny check: vulnerable crates, licences, duplicate/banned crates and
+# where crates may come from. Run in CI; locally: cargo deny check
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on any RustSec advisory (vulnerable, unmaintained, unsound, yanked).
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

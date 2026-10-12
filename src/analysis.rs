@@ -24,6 +24,8 @@ pub enum Encoding {
 
 pub struct Analysis {
     pub uri: String,
+    /// The text this analysis was computed from.
+    pub text: Arc<str>,
     pub parsed: Parsed,
     pub lines: LineIndex,
     /// Prefixes supplied from outside the document (prefixes.ttl / settings).
@@ -87,6 +89,7 @@ impl Analysis {
         }
         Analysis {
             uri,
+            text: Arc::from(text),
             lines: LineIndex::new(text),
             parsed,
             external,
@@ -149,11 +152,23 @@ impl Analysis {
     }
 
     pub fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
-        offset_in(&self.lines, enc, pos)
+        offset_in(&self.lines, &self.text, enc, pos)
     }
 }
 
-pub fn offset_in(lines: &LineIndex, enc: Encoding, pos: Position) -> Option<u32> {
+/// Byte offset of an LSP position. Clients send positions past the end of a
+/// line or of the file, and (in UTF-8 mode) columns inside a multi-byte
+/// character; all of these are clamped to a valid character boundary.
+pub fn offset_in(lines: &LineIndex, text: &str, enc: Encoding, pos: Position) -> Option<u32> {
+    let Some(line) = lines.line(pos.line) else {
+        return Some(text.len() as u32);
+    };
+    let (start, end) = (
+        u32::from(line.start()) as usize,
+        u32::from(line.end()) as usize,
+    );
+    // The line's content, without its line break.
+    let content_end = text[start..end].trim_end_matches(['\n', '\r']).len() + start;
     let lc = match enc {
         Encoding::Utf8 => line_index::LineCol {
             line: pos.line,
@@ -167,9 +182,36 @@ pub fn offset_in(lines: &LineIndex, enc: Encoding, pos: Position) -> Option<u32>
             },
         )?,
     };
-    lines.offset(lc).map(u32::from).or_else(|| {
-        // Past the end of a line: clamp to the line end (clients do send these).
-        let line = lines.line(pos.line)?;
-        Some(u32::from(line.end()))
-    })
+    let mut off = (start + lc.col as usize).min(content_end);
+    while !text.is_char_boundary(off) {
+        off -= 1;
+    }
+    Some(off as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_from_clients_are_clamped_to_valid_offsets() {
+        let text = "ex:é a ex:B .\r\nab\n";
+        let lines = LineIndex::new(text);
+        let at = |enc, line, character| {
+            offset_in(&lines, text, enc, Position::new(line, character)).unwrap() as usize
+        };
+        // Past the end of a line: the end of its content, before \r\n.
+        assert_eq!(at(Encoding::Utf16, 0, 500), text.find('\r').unwrap());
+        // Past the last line: the end of the text.
+        assert_eq!(at(Encoding::Utf8, 9, 0), text.len());
+        // UTF-8 column inside 'é' (2 bytes): snapped back to its start.
+        assert_eq!(at(Encoding::Utf8, 0, 4), 3);
+        for line in 0..4 {
+            for col in 0..40 {
+                for enc in [Encoding::Utf8, Encoding::Utf16] {
+                    assert!(text.is_char_boundary(at(enc, line, col)));
+                }
+            }
+        }
+    }
 }

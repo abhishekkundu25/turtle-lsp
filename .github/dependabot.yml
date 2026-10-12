@@ -1,0 +1,23 @@
+# Weekly updates for dependencies and for the pinned GitHub Actions SHAs.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      test-tooling: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule: { interval: weekly }
+    groups:
+      vscode-extension: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }

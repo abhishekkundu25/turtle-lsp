@@ -1,12 +1,15 @@
 name: Release
 
 # Push a tag like v0.1.0 to build every platform, create a GitHub Release with
-# the .vsix files, and publish them to the VS Code Marketplace.
-# Needs the repository secret VSCE_PAT (Azure DevOps token, Marketplace: Manage).
+# the .vsix files, checksums and build attestations, and publish to the VS Code
+# Marketplace. Needs the secret VSCE_PAT (Azure DevOps token, Marketplace: Manage).
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -23,14 +26,15 @@ jobs:
           - { os: ubuntu-latest, vsce: alpine-x64, cargo: x86_64-unknown-linux-musl }
           - { os: windows-latest, vsce: win32-x64, cargo: x86_64-pc-windows-msvc }
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          targets: ${{ matrix.cargo }}
+          persist-credentials: false
+      # The compiler pinned in rust-toolchain.toml, plus the target to build for.
+      - run: rustup toolchain install && rustup target add ${{ matrix.cargo }}
       - name: Install musl tools
         if: contains(matrix.cargo, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: Check the tag matches the extension version
@@ -47,32 +51,49 @@ jobs:
           VSCE_TARGET: ${{ matrix.vsce }}
           CARGO_TARGET: ${{ matrix.cargo }}
         run: npm run package
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vsix-${{ matrix.vsce }}
           path: editors/vscode/*.vsix
+          if-no-files-found: error
 
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # Only this job can write: the release itself and the provenance attestations.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: vsix-*
           merge-multiple: true
           path: dist
-      - uses: actions/setup-node@v4
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.vsix > SHA256SUMS && cat SHA256SUMS
+      # Signed statement that these files were built by this workflow from this commit.
+      # Verify with: gh attestation verify <file>.vsix --repo abhishekkundu25/turtle-lsp
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.vsix
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: dist/*.vsix
+          files: |
+            dist/*.vsix
+            dist/SHA256SUMS
           generate_release_notes: true
+          fail_on_unmatched_files: true
       - name: Publish to the VS Code Marketplace
         working-directory: editors/vscode
         env:

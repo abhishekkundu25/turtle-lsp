@@ -1,13 +1,17 @@
 {
   "name": "turtle-language-server",
-  "displayName": "Turtle (RDF) \u2014 turtle-lsp",
-  "description": "Fast language support for RDF Turtle: diagnostics, completion, hover, navigation, rename and quick fixes.",
-  "version": "0.1.0",
+  "displayName": "Turtle RDF Language Server (TTL, OWL, SHACL)",
+  "description": "Fast Turtle (.ttl) and RDF 1.2 support written in Rust: syntax highlighting, error checking, completion of 80+ vocabularies (rdf, rdfs, owl, skos, shacl, schema.org, foaf), hover docs, go to definition, rename and quick fixes for ontologies and linked data.",
+  "version": "0.1.1",
   "publisher": "abhishekkundu25",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/abhishekkundu25/turtle-lsp"
+  },
+  "homepage": "https://github.com/abhishekkundu25/turtle-lsp#readme",
+  "bugs": {
+    "url": "https://github.com/abhishekkundu25/turtle-lsp/issues"
   },
   "icon": "images/icon.png",
   "galleryBanner": {
@@ -19,20 +23,46 @@
   },
   "categories": [
     "Programming Languages",
-    "Linters"
+    "Linters",
+    "Data Science"
   ],
   "keywords": [
     "turtle",
     "ttl",
     "rdf",
+    "rdf 1.2",
     "owl",
+    "ontology",
     "shacl",
-    "semantic web"
+    "skos",
+    "sparql",
+    "linked data",
+    "semantic web",
+    "knowledge graph",
+    "schema.org",
+    "foaf",
+    "lsp",
+    "language server",
+    "rdfs",
+    "triples"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
     "workspaceContains:**/*.{ttl,turtle}"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In untrusted workspaces turtle.server.path is ignored, so the bundled server is always used.",
+      "restrictedConfigurations": [
+        "turtle.server.path"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The language server reads Turtle files from disk."
+    }
+  },
   "contributes": {
     "languages": [
       {
@@ -64,7 +94,8 @@
         "turtle.server.path": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Path to the `turtle-lsp` binary. Leave empty to use the one bundled with the extension, then `turtle-lsp` on `PATH`."
+          "markdownDescription": "Path to the `turtle-lsp` binary. Leave empty to use the one bundled with the extension, then `turtle-lsp` on `PATH`. This is a machine setting: a project's own `.vscode/settings.json` cannot change it, so opening a repository never runs a binary it chose.",
+          "scope": "machine"
         },
         "turtle.prefixes": {
           "type": "object",
@@ -96,7 +127,7 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/grammar.test.mjs && node test/run.mjs",
+    "test": "npm run build && node --test test/grammar.test.mjs test/manifest.test.mjs && node test/run.mjs",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {

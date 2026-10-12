@@ -25,6 +25,8 @@ const SKIP_DIRS: &[&str] = &[
     "__pycache__",
 ];
 pub const MAX_FILES: usize = 20_000;
+/// Files larger than this are not indexed (an open file is still analyzed).
+pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 pub struct Doc {
     pub text: String,
@@ -119,8 +121,8 @@ impl Workspace {
                 Some(r) => {
                     let lines = LineIndex::new(&doc.text);
                     let (Some(s), Some(e)) = (
-                        offset_in(&lines, enc, r.start),
-                        offset_in(&lines, enc, r.end),
+                        offset_in(&lines, &doc.text, enc, r.start),
+                        offset_in(&lines, &doc.text, enc, r.end),
                     ) else {
                         continue;
                     };
@@ -252,7 +254,10 @@ impl Workspace {
                     if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_ref()) {
                         stack.push(e.path());
                     }
-                } else if ft.is_file() && is_turtle(&e.path()) {
+                } else if ft.is_file()
+                    && is_turtle(&e.path())
+                    && e.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
+                {
                     out.push(e.path());
                     if out.len() >= MAX_FILES {
                         return out;
@@ -276,6 +281,9 @@ impl Workspace {
         let results: Vec<(String, Analysis)> = jobs
             .into_par_iter()
             .filter_map(|(uri, path, ext)| {
+                if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
+                    return None;
+                }
                 let text = std::fs::read_to_string(&path).ok()?;
                 Some((uri.clone(), Analysis::new(uri, &text, ext, false)))
             })

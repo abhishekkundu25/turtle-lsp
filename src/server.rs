@@ -158,6 +158,31 @@ fn capabilities(enc: Encoding) -> ServerCapabilities {
     }
 }
 
+/// Run `f`, turning a panic into an error message. The default panic hook has
+/// already printed the details to stderr (stdout carries the protocol).
+fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        let detail = e
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        format!("turtle-lsp internal error in {what}: {detail}")
+    })
+}
+
+fn internal_error_diagnostic(msg: &str) -> Diagnostic {
+    Diagnostic {
+        range: Range::default(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some(diagnostics::SOURCE.to_string()),
+        message: format!(
+            "{msg}. The rest of the server keeps working; please report this file at https://github.com/abhishekkundu25/turtle-lsp/issues"
+        ),
+        ..Default::default()
+    }
+}
+
 fn parse<T: DeserializeOwned>(v: Value) -> Option<T> {
     serde_json::from_value(v).ok()
 }
@@ -200,13 +225,20 @@ impl Server {
                 // Requests see the current text, so pending diagnostics go out first.
                 self.publish_dirty();
                 let id = req.id.clone();
-                let resp = match self.request(req) {
+                let method = req.method.clone();
+                // A bug in one feature must not take the server down for the session.
+                let result = guard(&method, || self.request(req))
+                    .unwrap_or_else(|msg| Err((ErrorCode::InternalError, msg)));
+                let resp = match result {
                     Ok(v) => Response::new_ok(id, v),
                     Err((code, message)) => Response::new_err(id, code as i32, message),
                 };
                 self.conn.sender.send(Message::Response(resp))?;
             }
-            Message::Notification(n) => self.notification(n),
+            Message::Notification(n) => {
+                let method = n.method.clone();
+                let _ = guard(&method, || self.notification(n));
+            }
             Message::Response(_) => {}
         }
         Ok(false)
@@ -276,10 +308,20 @@ impl Server {
     fn publish_dirty(&mut self) {
         let dirty: Vec<String> = self.dirty.drain().collect();
         for uri in dirty {
-            if let Some(a) = self.ws.analysis(&uri) {
-                let version = self.ws.open.get(&uri).map(|d| d.version);
-                let diags = diagnostics::diagnostics(&a, self.enc);
-                self.send_diagnostics(&uri, diags, version);
+            let version = self.ws.open.get(&uri).map(|d| d.version);
+            let enc = self.enc;
+            let diags = guard("diagnostics", || {
+                self.ws
+                    .analysis(&uri)
+                    .map(|a| diagnostics::diagnostics(&a, enc))
+            });
+            match diags {
+                Ok(Some(d)) => self.send_diagnostics(&uri, d, version),
+                Ok(None) => {}
+                // Tell the user instead of silently showing nothing.
+                Err(msg) => {
+                    self.send_diagnostics(&uri, vec![internal_error_diagnostic(&msg)], version)
+                }
             }
         }
     }
@@ -348,9 +390,9 @@ impl Server {
         match req.method.as_str() {
             Completion::METHOD => {
                 let p = params!(CompletionParams);
-                let (u, a) = doc!(p.text_document_position.text_document.uri);
+                let (_, a) = doc!(p.text_document_position.text_document.uri);
                 let all = self.ws.all();
-                let text = self.ws.text(&u).unwrap_or_default().to_string();
+                let text = a.text.clone();
                 json(serde_json::to_value(completion::complete(
                     &a,
                     &text,
@@ -458,15 +500,9 @@ impl Server {
             }
             DocumentSymbolRequest::METHOD => {
                 let p = params!(DocumentSymbolParams);
-                let (u, a) = doc!(p.text_document.uri);
-                let text = self
-                    .ws
-                    .text(&u)
-                    .map(str::to_string)
-                    .or_else(|| uri_to_path(&u).and_then(|p| std::fs::read_to_string(p).ok()))
-                    .unwrap_or_default();
+                let (_, a) = doc!(p.text_document.uri);
                 json(serde_json::to_value(DocumentSymbolResponse::Nested(
-                    symbols::document_symbols(&a, &text, enc),
+                    symbols::document_symbols(&a, &a.text, enc),
                 )))
             }
             WorkspaceSymbolRequest::METHOD => {
@@ -483,8 +519,8 @@ impl Server {
             }
             CodeActionRequest::METHOD => {
                 let p = params!(CodeActionParams);
-                let (u, a) = doc!(p.text_document.uri);
-                let text = self.ws.text(&u).unwrap_or_default().to_string();
+                let (_, a) = doc!(p.text_document.uri);
+                let text = a.text.clone();
                 json(serde_json::to_value(diagnostics::code_actions(
                     &a, &text, enc, &p,
                 )))
@@ -510,5 +546,21 @@ impl Server {
             Arc::new(Default::default()),
             false,
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guard;
+
+    #[test]
+    fn guard_turns_a_panic_into_an_error() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let r: Result<(), String> = guard("hover", || panic!("boom"));
+        std::panic::set_hook(prev);
+        let msg = r.unwrap_err();
+        assert!(msg.contains("hover") && msg.contains("boom"), "{msg}");
+        assert_eq!(guard("x", || 7), Ok(7));
     }
 }

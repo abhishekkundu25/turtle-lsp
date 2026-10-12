@@ -18,7 +18,7 @@ const target = process.env.VSCE_TARGET ?? `${process.platform}-${process.arch}`
 const triple = process.env.CARGO_TARGET
 const exe = target.startsWith("win32") ? "turtle-lsp.exe" : "turtle-lsp"
 
-run("cargo", ["build", "--release", ...(triple ? ["--target", triple] : [])], repo)
+run("cargo", ["build", "--release", "--locked", ...(triple ? ["--target", triple] : [])], repo)
 const built = path.join(repo, "target", ...(triple ? [triple] : []), "release", exe)
 fs.rmSync(path.join(here, "server"), { recursive: true, force: true })
 fs.mkdirSync(path.join(here, "server"))

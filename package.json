@@ -3,10 +3,10 @@
   "private": true,
   "description": "End-to-end tests and benchmarks for the turtle-lsp Rust server",
   "scripts": {
-    "test": "cargo build --release && cargo test --release && node --test --test-timeout=30000 \"test/*.test.mjs\"",
-    "bench": "cargo build --release && node bench/perf.mjs",
+    "test": "cargo build --release --locked && cargo test --release --locked && node --test --test-timeout=30000 \"test/*.test.mjs\"",
+    "bench": "cargo build --release --locked && node bench/perf.mjs",
     "vocab": "node tools/build-vocab.mjs",
-    "test:vscode": "cargo build --release && cd editors/vscode && npm install --silent && npm test"
+    "test:vscode": "cargo build --release --locked && cd editors/vscode && npm install --silent && npm test"
   },
   "devDependencies": {
     "@zazuko/rdf-vocabularies": "^2023.1.19",

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only by default; no job here needs to write anything.
+permissions:
+  contents: read
+
+# Actions are pinned to full commit SHAs (tags can be moved); Dependabot bumps them.
 jobs:
   test:
     name: Tests (${{ matrix.os }})
@@ -14,22 +19,46 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      # Installs the compiler pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: Install Neovim (for the editor checks)
-        uses: rhysd/action-setup-vim@v1
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
         with:
           neovim: true
           version: stable
-      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo fmt --check
+      - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: npm ci
       - run: npm test
+      - name: Chaos test, longer run
+        env:
+          CHAOS_ITERS: "30000"
+        run: cargo test --release --locked --test chaos
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Vulnerable crates, licences, banned crates, crate sources (deny.toml).
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # The extension ships only its runtime dependencies; dev tools stay local.
+      - working-directory: editors/vscode
+        run: npm audit --omit=dev --audit-level=moderate
 
   vscode:
     name: VS Code extension (${{ matrix.os }})
@@ -39,13 +68,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - working-directory: editors/vscode
         run: npm ci && npm run typecheck
       # VS Code needs a display on Linux.
