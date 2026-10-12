@@ -11,6 +11,9 @@ about 9 ms.
 - Diagnostics: syntax errors with recovery, undeclared/unused prefixes, unknown or deprecated terms of 80+ well-known vocabularies, with quick fixes.
 - Completion of prefixes and terms (adds the `@prefix` line for you), hover docs, go to definition, type definition, implementation, references, rename, outline, workspace symbols, folding.
 
+Install from the Marketplace (`abhishekkundu25.turtle-language-server`), or
+run `code --install-extension abhishekkundu25.turtle-language-server`.
+
 ## Project prefixes
 
 If your files share a prefix header, put it in a `prefixes.ttl`: every Turtle

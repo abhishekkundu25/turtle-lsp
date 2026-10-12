@@ -39,7 +39,7 @@ const check = (name, fn) => checks.push({ name, fn })
 check("extension activates and the server starts", async () => {
   const doc = await open(path.join(ws, "people.ttl"))
   assert.equal(doc.languageId, "turtle")
-  const ext = vscode.extensions.getExtension("abhishekkundu25.turtle-lsp")
+  const ext = vscode.extensions.getExtension("abhishekkundu25.turtle-language-server")
   assert.ok(ext, "extension not found")
   const api = await ext.activate()
   for (let i = 0; i < 100 && !api.client()?.isRunning(); i++) await sleep(50)
