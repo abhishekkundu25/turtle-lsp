@@ -14,6 +14,10 @@ updates:
   - package-ecosystem: npm
     directory: /editors/vscode
     schedule: { interval: weekly }
+    # Must not be newer than engines.vscode in package.json, or vsce refuses to
+    # package. Raise both together by hand.
+    ignore:
+      - dependency-name: "@types/vscode"
     groups:
       vscode-extension: { patterns: ["*"] }
   - package-ecosystem: github-actions
