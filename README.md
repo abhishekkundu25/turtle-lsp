@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" alt="turtle-lsp" width="640"></p>
+
 # turtle-lsp
 
 A fast language server for RDF Turtle (`.ttl`), written in Rust.
@@ -88,6 +90,21 @@ vim.api.nvim_create_autocmd("BufReadPre", {
 
 With lazy.nvim, set `build = "cargo build --release"` on the plugin spec.
 
+## VS Code
+
+The extension in [`editors/vscode`](editors/vscode) bundles the server and adds
+syntax highlighting. Build and install it:
+
+```sh
+cd editors/vscode
+npm install
+npm run package   # builds the server and writes turtle-lsp-<platform>-<version>.vsix
+code --install-extension turtle-lsp-*.vsix
+```
+
+Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
+(prefixes for every file), `turtle.trace.server` (log LSP traffic).
+
 ## Development
 
 ```sh
@@ -95,12 +112,14 @@ npm install     # test tooling only (LSP client, vocabulary generator)
 npm test        # cargo tests, parser cross-check against oxttl, end-to-end LSP tests, Neovim checks
 npm run bench   # latency benchmark on a 30k-line file in a 200-file workspace
 npm run vocab   # regenerate data/vocab.tsv from @zazuko/rdf-vocabularies
+npm run test:vscode  # VS Code extension: grammar tests, then checks inside a downloaded VS Code
 ```
 
 - `test/lsp.test.mjs`: behaviour over stdio, the way an editor talks to the server.
 - `test/project.test.mjs`: a project of headerless fragments sharing one `prefixes.ttl` (`test/fixtures/project`).
 - `test/real.test.mjs`: optional private fragments in `test/fixtures/real` (gitignored, skipped when absent).
 - `test/nvim/spec.lua`: runs inside headless Neovim with its built-in LSP client.
+- `editors/vscode/test/suite.cjs`: runs inside VS Code with the extension loaded; `editors/vscode/test/grammar.test.mjs` checks the highlighting grammar.
 - `tests/oxttl_oracle.rs`: on every valid fixture, the parser must produce the same triples as [oxttl](https://crates.io/crates/oxttl).
 
 Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license.

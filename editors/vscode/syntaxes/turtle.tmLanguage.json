@@ -1,0 +1,99 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Turtle",
+  "scopeName": "source.turtle",
+  "fileTypes": ["ttl", "turtle"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#directive" },
+    { "include": "#string" },
+    { "include": "#iri" },
+    { "include": "#langtag" },
+    { "include": "#datatype-marker" },
+    { "include": "#blank-node" },
+    { "include": "#prefixed-name" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.turtle"
+    },
+    "directive": {
+      "patterns": [
+        {
+          "match": "(@prefix|(?i:\\bPREFIX\\b))\\s+((?:[A-Za-z\\x{00C0}-\\x{FFFD}][\\w.\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]*)?)(:)",
+          "captures": {
+            "1": { "name": "keyword.other.directive.prefix.turtle" },
+            "2": { "name": "entity.name.namespace.turtle" },
+            "3": { "name": "punctuation.separator.namespace.turtle" }
+          }
+        },
+        {
+          "match": "@base|@version|(?i:\\bBASE\\b)|(?i:\\bVERSION\\b)",
+          "name": "keyword.other.directive.turtle"
+        }
+      ]
+    },
+    "iri": {
+      "match": "<(?!<)[^<>\"{}|^`\\\\\\s]*>",
+      "name": "markup.underline.link.iri.turtle"
+    },
+    "string": {
+      "patterns": [
+        { "begin": "\"\"\"", "end": "\"\"\"(?!\")", "name": "string.quoted.triple.double.turtle", "patterns": [{ "include": "#escape" }] },
+        { "begin": "'''", "end": "'''(?!')", "name": "string.quoted.triple.single.turtle", "patterns": [{ "include": "#escape" }] },
+        { "begin": "\"", "end": "\"|$", "name": "string.quoted.double.turtle", "patterns": [{ "include": "#escape" }] },
+        { "begin": "'", "end": "'|$", "name": "string.quoted.single.turtle", "patterns": [{ "include": "#escape" }] }
+      ]
+    },
+    "escape": {
+      "match": "\\\\(?:[tbnrf\"'\\\\]|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})",
+      "name": "constant.character.escape.turtle"
+    },
+    "langtag": {
+      "match": "(?<=[\"'])@[a-zA-Z]+(?:-[a-zA-Z0-9]+)*(?:--(?:ltr|rtl))?",
+      "name": "constant.language.language-tag.turtle"
+    },
+    "datatype-marker": {
+      "match": "\\^\\^",
+      "name": "keyword.operator.datatype.turtle"
+    },
+    "blank-node": {
+      "match": "_:[\\w\\x{00C0}-\\x{FFFD}](?:[\\w.\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]*[\\w\\-\\x{00B7}\\x{00C0}-\\x{FFFD}])?",
+      "name": "variable.other.blank-node.turtle"
+    },
+    "prefixed-name": {
+      "match": "((?:[A-Za-z\\x{00C0}-\\x{FFFD}](?:[\\w.\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]*[\\w\\-\\x{00B7}\\x{00C0}-\\x{FFFD}])?)?)(:)((?:[\\w:\\x{00C0}-\\x{FFFD}]|%[0-9A-Fa-f]{2}|\\\\[_~.\\-!$&'()*+,;=/?#@%])(?:(?:[\\w.:\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]|%[0-9A-Fa-f]{2}|\\\\[_~.\\-!$&'()*+,;=/?#@%])*(?:[\\w:\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]|%[0-9A-Fa-f]{2}|\\\\[_~.\\-!$&'()*+,;=/?#@%]))?)?",
+      "captures": {
+        "1": { "name": "entity.name.namespace.turtle" },
+        "2": { "name": "punctuation.separator.namespace.turtle" },
+        "3": { "name": "entity.name.type.local-name.turtle" }
+      }
+    },
+    "number": {
+      "match": "(?<![\\w:])[+-]?(?:\\d+\\.\\d*[eE][+-]?\\d+|\\.\\d+[eE][+-]?\\d+|\\d+[eE][+-]?\\d+|\\d*\\.\\d+|\\d+)(?![\\w:])",
+      "name": "constant.numeric.turtle"
+    },
+    "keyword": {
+      "patterns": [
+        { "match": "(?<![\\w:])a(?![\\w:])", "name": "keyword.other.rdf-type.turtle" },
+        { "match": "(?<![\\w:])(?:true|false)(?![\\w:])", "name": "constant.language.boolean.turtle" }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": "<<\\(|\\)>>|<<|>>", "name": "punctuation.section.triple-term.turtle" },
+        { "match": "\\{\\||\\|\\}", "name": "punctuation.section.annotation.turtle" },
+        { "match": "~", "name": "keyword.operator.reifier.turtle" },
+        { "match": "[\\[\\]]", "name": "punctuation.section.brackets.turtle" },
+        { "match": "[()]", "name": "punctuation.section.parens.turtle" },
+        { "match": "\\.", "name": "punctuation.terminator.statement.turtle" },
+        { "match": ";", "name": "punctuation.separator.predicate.turtle" },
+        { "match": ",", "name": "punctuation.separator.object.turtle" }
+      ]
+    }
+  }
+}

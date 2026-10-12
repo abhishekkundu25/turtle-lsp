@@ -5,7 +5,8 @@
   "scripts": {
     "test": "cargo build --release && cargo test --release && node --test --test-timeout=30000 test/",
     "bench": "cargo build --release && node bench/perf.mjs",
-    "vocab": "node tools/build-vocab.mjs"
+    "vocab": "node tools/build-vocab.mjs",
+    "test:vscode": "cargo build --release && cd editors/vscode && npm install --silent && npm test"
   },
   "devDependencies": {
     "@zazuko/rdf-vocabularies": "^2023.1.19",

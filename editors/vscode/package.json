@@ -1,0 +1,115 @@
+{
+  "name": "turtle-lsp",
+  "displayName": "Turtle (RDF) \u2014 turtle-lsp",
+  "description": "Fast language support for RDF Turtle: diagnostics, completion, hover, navigation, rename and quick fixes.",
+  "version": "0.1.0",
+  "publisher": "abhishekkundu25",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abhishekkundu25/turtle-lsp"
+  },
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#0F2A22",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "turtle",
+    "ttl",
+    "rdf",
+    "owl",
+    "shacl",
+    "semantic web"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/*.{ttl,turtle}"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "turtle",
+        "aliases": [
+          "Turtle",
+          "turtle"
+        ],
+        "extensions": [
+          ".ttl",
+          ".turtle"
+        ],
+        "mimetypes": [
+          "text/turtle"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "turtle",
+        "scopeName": "source.turtle",
+        "path": "./syntaxes/turtle.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Turtle",
+      "properties": {
+        "turtle.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `turtle-lsp` binary. Leave empty to use the one bundled with the extension, then `turtle-lsp` on `PATH`."
+        },
+        "turtle.prefixes": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Prefixes available in every Turtle file, e.g. `{ \"ex\": \"http://example.org/\" }`. A `prefixes.ttl` in the project does the same per folder."
+        },
+        "turtle.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Log the communication between VS Code and the server (Output panel \u2192 Turtle)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "turtle.restartServer",
+        "title": "Turtle: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/grammar.test.mjs && node test/run.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/vscode": "1.91.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "3.2.1",
+    "esbuild": "0.24.0",
+    "typescript": "5.7.2",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.2.0"
+  }
+}

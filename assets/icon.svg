@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0F2A22"/>
+      <stop offset="1" stop-color="#06140F"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.56" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#2BD98F" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#2BD98F" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="shell" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#C8F57A"/>
+      <stop offset="0.55" stop-color="#4FD38C"/>
+      <stop offset="1" stop-color="#1E9E6A"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5FE0A0"/>
+      <stop offset="1" stop-color="#22A06B"/>
+    </linearGradient>
+    <linearGradient id="streak" gradientUnits="userSpaceOnUse" x1="132" y1="0" x2="24" y2="0">
+      <stop offset="0" stop-color="#FF8A2A"/>
+      <stop offset="1" stop-color="#FF8A2A" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="hot" cx="0.38" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#FFC07A"/>
+      <stop offset="1" stop-color="#FF6A00"/>
+    </radialGradient>
+  </defs>
+
+  <!-- tile -->
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#glow)"/>
+
+  <!-- speed streaks -->
+  <g stroke="url(#streak)" stroke-linecap="round">
+    <line x1="44" y1="200" x2="132" y2="200" stroke-width="16"/>
+    <line x1="24" y1="256" x2="112" y2="256" stroke-width="20"/>
+    <line x1="44" y1="312" x2="132" y2="312" stroke-width="16"/>
+  </g>
+
+  <g transform="translate(-22 0)">
+  <g stroke="#06140F" stroke-width="10" stroke-linejoin="round">
+    <!-- flippers -->
+    <ellipse cx="362" cy="148" rx="54" ry="24" transform="rotate(-38 362 148)" fill="url(#skin)"/>
+    <ellipse cx="362" cy="364" rx="54" ry="24" transform="rotate(38 362 364)" fill="url(#skin)"/>
+    <ellipse cx="192" cy="146" rx="42" ry="21" transform="rotate(36 192 146)" fill="url(#skin)"/>
+    <ellipse cx="192" cy="366" rx="42" ry="21" transform="rotate(-36 192 366)" fill="url(#skin)"/>
+    <!-- tail -->
+    <path d="M168 238 L128 256 L168 274 Z" fill="url(#skin)"/>
+    <!-- head -->
+    <ellipse cx="428" cy="256" rx="46" ry="38" fill="url(#skin)"/>
+    <!-- shell -->
+    <path d="M404 256 L342 363 L218 363 L156 256 L218 149 L342 149 Z" fill="url(#shell)" stroke-width="12"/>
+  </g>
+  <path d="M388 256 L334 349 L226 349 L172 256 L226 163 L334 163 Z" fill="none" stroke="#FFFFFF" stroke-opacity="0.28" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- eyes -->
+  <circle cx="446" cy="238" r="7" fill="#06140F"/>
+  <circle cx="446" cy="274" r="7" fill="#06140F"/>
+  <circle cx="448" cy="236" r="2.2" fill="#FFFFFF"/>
+  <circle cx="448" cy="272" r="2.2" fill="#FFFFFF"/>
+
+  <!-- RDF graph on the shell: spokes and ring -->
+  <g stroke="#06140F" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M341 221 L280 186 L219 221 L219 291 L280 326 L341 291 Z"/>
+    <line x1="280" y1="256" x2="341" y2="221"/>
+    <line x1="280" y1="256" x2="280" y2="186"/>
+    <line x1="280" y1="256" x2="219" y2="221"/>
+    <line x1="280" y1="256" x2="219" y2="291"/>
+    <line x1="280" y1="256" x2="280" y2="326"/>
+    <line x1="280" y1="256" x2="341" y2="291"/>
+  </g>
+  <g fill="#FFF6DC" stroke="#06140F" stroke-width="7">
+    <circle cx="341" cy="221" r="15"/>
+    <circle cx="280" cy="186" r="15"/>
+    <circle cx="219" cy="221" r="15"/>
+    <circle cx="219" cy="291" r="15"/>
+    <circle cx="280" cy="326" r="15"/>
+    <circle cx="341" cy="291" r="15"/>
+  </g>
+  <circle cx="280" cy="256" r="24" fill="url(#hot)" stroke="#06140F" stroke-width="8"/>
+  </g>
+</svg>
