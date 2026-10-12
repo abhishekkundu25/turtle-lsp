@@ -1,2 +1,5 @@
 node_modules
+target
 dist
+# Real-world fixtures copied from a private repo; never published.
+test/fixtures/real/

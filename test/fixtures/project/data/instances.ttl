@@ -1,0 +1,20 @@
+# Instance data (fragment)
+obj:pos-mc2 a sd:Position ;
+    rdfs:label "Milling cell 2"@en ;
+    sd:designation "=MC2" ;
+    sd:hasFunction fn:Milling .
+
+obj:mill-0517 a sd:Asset ;
+    rdfs:label "Mill 0517" ;
+    sd:designation "=MC2.M05" ;
+    sd:fillsPosition obj:pos-mc2 ;
+    prov:generatedAtTime "2026-03-01T08:00:00Z"^^xsd:dateTime ;
+    dcterms:description '''Five-axis mill.
+Replaced the spindle in "2025".''' .
+
+obj:mp-0517-temp a sd:MeasurementPoint ;
+    sd:locatedIn obj:pos-mc2 ;
+    sosa:observes obj:spindle-temperature ;
+    qudt:unit unit:DEG_C ;
+    sd:threshold 85.0 , 9.5e1 , 100 ;
+    sd:active true .

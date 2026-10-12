@@ -1,0 +1,43 @@
+# Core vocabulary (fragment: prefixes come from ../prefixes.ttl)
+<https://ontology.example.com/plant/core/> a owl:Ontology ;
+    dcterms:title "Plant core"@en ;
+    owl:versionInfo "0.3" .
+
+sd:PhysicalObject a owl:Class ;
+    rdfs:label "Physical object"@en ;
+    rdfs:comment "Anything that occupies space in the plant."@en .
+
+sd:Asset a owl:Class ;
+    rdfs:subClassOf sd:PhysicalObject ;
+    rdfs:label "Asset"@en ;
+    rdfs:comment """An item the plant tracks, maintains and eventually retires.
+Assets fill positions; positions outlive the assets in them."""@en .
+
+sd:Position a owl:Class ;
+    rdfs:label "Position"@en ;
+    skos:definition "A functional place in the plant, independent of what is installed there."@en .
+
+sd:MeasurementPoint a owl:Class ;
+    rdfs:subClassOf sd:PhysicalObject , sosa:Sensor ;
+    rdfs:label "Measurement point"@en .
+
+sd:locatedIn a owl:ObjectProperty ;
+    rdfs:domain sd:PhysicalObject ;
+    rdfs:range sd:Position ;
+    rdfs:label "located in"@en .
+
+sd:fillsPosition a owl:ObjectProperty , owl:FunctionalProperty ;
+    rdfs:subPropertyOf sd:locatedIn ;
+    rdfs:label "fills position"@en .
+
+sd:designation a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:label "designation"@en .
+
+sd:hasFunction a owl:ObjectProperty ;
+    rdfs:range skos:Concept .
+
+fn:Milling a skos:Concept ;
+    skos:prefLabel "Milling"@en , "Fräsen"@de ;
+    skos:inScheme fn:Functions .
+fn:Functions a skos:ConceptScheme .

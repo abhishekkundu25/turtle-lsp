@@ -1,0 +1,203 @@
+//! Well-known RDF vocabularies, embedded at build time (data/vocab.tsv, generated
+//! by tools/build-vocab.mjs from @zazuko/rdf-vocabularies). Vocabularies are
+//! looked up by namespace IRI, never by prefix name, so `sd:` bound to your own
+//! namespace is never checked against SPARQL Service Description.
+
+use rustc_hash::FxHashMap;
+use std::sync::{LazyLock, OnceLock};
+
+static DATA: &str = include_str!("../data/vocab.tsv");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermKind {
+    Class,
+    Property,
+    Individual,
+}
+
+#[derive(Debug)]
+pub struct Term {
+    pub local: String,
+    pub kind: TermKind,
+    pub deprecated: bool,
+    pub label: String,
+    pub comment: String,
+}
+
+pub struct Vocabulary {
+    pub prefix: &'static str,
+    pub namespace: &'static str,
+    body: &'static str,
+    terms: OnceLock<Vec<Term>>,
+    index: OnceLock<FxHashMap<String, usize>>,
+}
+
+impl Vocabulary {
+    pub fn terms(&self) -> &[Term] {
+        self.terms
+            .get_or_init(|| self.body.lines().filter_map(parse_term).collect())
+    }
+
+    pub fn term(&self, local: &str) -> Option<&Term> {
+        let index = self.index.get_or_init(|| {
+            self.terms()
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (t.local.clone(), i))
+                .collect()
+        });
+        index.get(local).map(|i| &self.terms()[*i])
+    }
+
+    /// Closest defined term by edit distance, for "did you mean" fixes.
+    pub fn suggest(&self, local: &str) -> Option<&Term> {
+        let lower = local.to_lowercase();
+        let max = (local.chars().count() / 3).clamp(1, 3);
+        self.terms()
+            .iter()
+            .map(|t| (levenshtein(&lower, &t.local.to_lowercase()), t))
+            .filter(|(d, _)| *d <= max)
+            .min_by_key(|(d, t)| (*d, t.local.len()))
+            .map(|(_, t)| t)
+    }
+}
+
+pub struct Vocabularies {
+    pub all: Vec<Vocabulary>,
+    by_prefix: FxHashMap<&'static str, usize>,
+    by_namespace: FxHashMap<&'static str, usize>,
+}
+
+pub static VOCABS: LazyLock<Vocabularies> = LazyLock::new(load);
+
+impl Vocabularies {
+    pub fn by_prefix(&self, prefix: &str) -> Option<&Vocabulary> {
+        self.by_prefix.get(prefix).map(|i| &self.all[*i])
+    }
+
+    pub fn by_namespace(&self, ns: &str) -> Option<&Vocabulary> {
+        self.by_namespace.get(ns).map(|i| &self.all[*i])
+    }
+
+    /// Split an IRI into (vocabulary, local name) if it falls in a known namespace.
+    pub fn lookup<'a>(&self, iri: &'a str) -> Option<(&Vocabulary, &'a str)> {
+        let cut = iri.rfind(['#', '/', ':'])? + 1;
+        let (ns, local) = iri.split_at(cut);
+        self.by_namespace(ns).map(|v| (v, local))
+    }
+}
+
+fn load() -> Vocabularies {
+    let mut all = Vec::new();
+    let mut sections: Vec<(usize, usize, &str, &str)> = Vec::new();
+    let mut offset = 0;
+    for line in DATA.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("@ns\t") {
+            let mut f = rest.trim_end().split('\t');
+            let (p, ns) = (f.next().unwrap_or(""), f.next().unwrap_or(""));
+            if let Some(last) = sections.last_mut() {
+                last.1 = offset;
+            }
+            sections.push((offset + line.len(), DATA.len(), p, ns));
+        }
+        offset += line.len();
+    }
+    for (start, end, prefix, namespace) in sections {
+        all.push(Vocabulary {
+            prefix,
+            namespace,
+            body: &DATA[start..end],
+            terms: OnceLock::new(),
+            index: OnceLock::new(),
+        });
+    }
+    let by_prefix = all.iter().enumerate().map(|(i, v)| (v.prefix, i)).collect();
+    let mut by_namespace = FxHashMap::default();
+    for (i, v) in all.iter().enumerate() {
+        by_namespace.entry(v.namespace).or_insert(i);
+    }
+    Vocabularies {
+        all,
+        by_prefix,
+        by_namespace,
+    }
+}
+
+fn parse_term(line: &str) -> Option<Term> {
+    let mut f = line.strip_prefix("term\t")?.split('\t');
+    let local = unescape(f.next()?);
+    let kind = match f.next()? {
+        "C" => TermKind::Class,
+        "P" => TermKind::Property,
+        _ => TermKind::Individual,
+    };
+    let deprecated = f.next()? == "D";
+    let label = unescape(f.next().unwrap_or(""));
+    let comment = unescape(f.next().unwrap_or(""));
+    Some(Term {
+        local,
+        kind,
+        deprecated,
+        label,
+        comment,
+    })
+}
+
+fn unescape(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(o) => out.push(o),
+                None => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+pub fn levenshtein(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j + 1] + 1)
+                .min(cur[j] + 1)
+                .min(prev[j] + usize::from(ca != *cb));
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn foaf_by_namespace() {
+        let (v, local) = VOCABS.lookup("http://xmlns.com/foaf/0.1/Person").unwrap();
+        assert_eq!(v.prefix, "foaf");
+        assert_eq!(v.term(local).unwrap().kind, TermKind::Class);
+        assert_eq!(v.suggest("Persn").unwrap().local, "Person");
+    }
+
+    #[test]
+    fn custom_namespace_is_unknown() {
+        assert!(
+            VOCABS
+                .lookup("https://ontology.example.com/core/fillsSlot")
+                .is_none()
+        );
+    }
+}

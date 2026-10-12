@@ -1,0 +1,20 @@
+# SHACL shapes (fragment)
+sdsh:AssetShape a sh:NodeShape ;
+    sh:targetClass sd:Asset ;
+    sh:property [
+        sh:path sd:designation ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:pattern "^=[A-Z0-9.]+$" ;
+        sh:message "Every asset needs exactly one designation like =MC2.M05"@en
+    ] , [
+        sh:path sd:fillsPosition ;
+        sh:class sd:Position ;
+        sh:maxCount 1
+    ] ;
+    sh:property [
+        sh:path ( sd:fillsPosition sd:hasFunction ) ;
+        sh:in ( fn:Milling ) ;
+        sh:severity sh:Warning
+    ] .

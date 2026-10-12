@@ -1,0 +1,19 @@
+# Shared prefixes for every Turtle file in this project. The fragments below
+# have no @prefix lines of their own.
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix sosa: <http://www.w3.org/ns/sosa/> .
+@prefix qudt: <http://qudt.org/schema/qudt/> .
+@prefix unit: <http://qudt.org/vocab/unit/> .
+# "sd" is also the well-known prefix of SPARQL Service Description; here it is
+# a project namespace and must not be checked against that vocabulary.
+@prefix sd: <https://ontology.example.com/plant/core/> .
+@prefix sdsh: <https://shape.example.com/plant/core/> .
+@prefix fn: <https://vocab.example.com/plant/function/> .
+@prefix obj: <https://data.example.com/plant/obj/> .

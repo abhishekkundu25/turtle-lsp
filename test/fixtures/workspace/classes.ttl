@@ -1,0 +1,12 @@
+@prefix ex: <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+
+ex:Employee a rdfs:Class ;
+    rdfs:subClassOf foaf:Person .
+
+ex:Manager a rdfs:Class ;
+    rdfs:subClassOf ex:Employee .
+
+ex:dave a ex:Manager .
+ex:erin a ex:Employee .
