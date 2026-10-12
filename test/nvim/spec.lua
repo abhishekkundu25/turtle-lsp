@@ -3,7 +3,7 @@
 -- Prints one "ok - name" / "not ok - name: reason" line per check, then exits 0 or 1.
 
 local server = assert(os.getenv("TURTLE_LSP_SERVER"), "TURTLE_LSP_SERVER unset")
-local fixtures = assert(os.getenv("TURTLE_LSP_FIXTURES"), "TURTLE_LSP_FIXTURES unset")
+local fixtures = vim.fs.normalize(assert(os.getenv("TURTLE_LSP_FIXTURES"), "TURTLE_LSP_FIXTURES unset"))
 local ws = fixtures .. "/workspace"
 local real = fixtures .. "/real"
 local project = fixtures .. "/project"
@@ -198,7 +198,8 @@ check("go to definition from org.ttl lands on ex:alice in people.ttl", function(
   local locs = r and (r.uri and { r } or r) or {}
   assert(#locs == 1, #locs .. " locations: " .. vim.inspect(locs))
   local loc = locs[1]
-  assert(vim.uri_to_fname(loc.uri or loc.targetUri) == people, "wrong file " .. (loc.uri or loc.targetUri))
+  local got = vim.fs.normalize(vim.uri_to_fname(loc.uri or loc.targetUri))
+  assert(got:lower() == vim.fs.normalize(people):lower(), "wrong file " .. (loc.uri or loc.targetUri))
   local range = loc.range or loc.targetSelectionRange
   assert(range.start.line == 4, "wrong line " .. range.start.line)
 end)

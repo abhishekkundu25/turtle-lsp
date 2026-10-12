@@ -43,7 +43,31 @@ pub struct Workspace {
 }
 
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    url::Url::parse(uri).ok()?.to_file_path().ok()
+    let path = url::Url::parse(uri).ok()?.to_file_path().ok()?;
+    Some(normalize_drive(path))
+}
+
+/// Windows: `c:\x` and `C:\x` are the same file; use the upper-case drive letter.
+fn normalize_drive(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    let b = s.as_bytes();
+    if cfg!(windows) && b.len() >= 2 && b[1] == b':' && b[0].is_ascii_lowercase() {
+        let mut fixed = s.into_owned();
+        fixed[..1].make_ascii_uppercase();
+        return PathBuf::from(fixed);
+    }
+    path
+}
+
+/// One spelling per file. Clients differ (`file:///c%3A/x` from VS Code on
+/// Windows, `file:///C:/x` elsewhere); every document is keyed by this form.
+pub fn normalize_uri(uri: &str) -> String {
+    if !uri.starts_with("file:") {
+        return uri.to_string();
+    }
+    uri_to_path(uri)
+        .and_then(|p| path_to_uri(&p))
+        .unwrap_or_else(|| uri.to_string())
 }
 
 pub fn path_to_uri(path: &Path) -> Option<String> {
@@ -268,5 +292,32 @@ impl Workspace {
         } else {
             self.disk.remove(&uri);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_uri_is_stable() {
+        let dir = std::env::temp_dir().join("turtle lsp");
+        let uri = path_to_uri(&dir.join("a.ttl")).unwrap();
+        assert_eq!(normalize_uri(&uri), uri);
+        assert_eq!(normalize_uri(&normalize_uri(&uri)), uri);
+        assert_eq!(normalize_uri("untitled:Untitled-1"), "untitled:Untitled-1");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn vscode_and_url_spellings_of_a_windows_path_match() {
+        assert_eq!(
+            normalize_uri("file:///c%3A/Users/x/a.ttl"),
+            normalize_uri("file:///C:/Users/x/a.ttl")
+        );
+        assert_eq!(
+            normalize_uri("file:///c:/Users/x/a.ttl"),
+            "file:///C:/Users/x/a.ttl"
+        );
     }
 }

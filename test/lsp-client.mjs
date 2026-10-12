@@ -6,7 +6,8 @@ import rpc from "vscode-jsonrpc/node.js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 // The server binary under test; override with TURTLE_LSP_BIN.
-export const serverPath = process.env.TURTLE_LSP_BIN ?? path.join(root, "target", "release", "turtle-lsp")
+export const serverPath =
+  process.env.TURTLE_LSP_BIN ?? path.join(root, "target", "release", process.platform === "win32" ? "turtle-lsp.exe" : "turtle-lsp")
 export const fixtures = path.join(root, "test", "fixtures")
 
 export function uriOf(file) {

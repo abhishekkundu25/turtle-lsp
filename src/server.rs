@@ -8,7 +8,9 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::{completion, diagnostics, hover, navigation, symbols};
-use crate::workspace::{PREFIX_FILE, Workspace, is_turtle, path_to_uri, uri_to_path};
+use crate::workspace::{
+    PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
+};
 use crossbeam_channel::{Receiver, select, unbounded};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
@@ -215,7 +217,7 @@ impl Server {
         match n.method.as_str() {
             DidOpenTextDocument::METHOD => {
                 if let Some(p) = parse::<DidOpenTextDocumentParams>(n.params) {
-                    let uri = p.text_document.uri.as_str().to_string();
+                    let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws
                         .open_doc(uri.clone(), p.text_document.text, p.text_document.version);
                     self.after_edit(&uri);
@@ -223,7 +225,7 @@ impl Server {
             }
             DidChangeTextDocument::METHOD => {
                 if let Some(p) = parse::<DidChangeTextDocumentParams>(n.params) {
-                    let uri = p.text_document.uri.as_str().to_string();
+                    let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws
                         .change_doc(&uri, p.text_document.version, p.content_changes, self.enc);
                     self.after_edit(&uri);
@@ -231,7 +233,7 @@ impl Server {
             }
             DidCloseTextDocument::METHOD => {
                 if let Some(p) = parse::<DidCloseTextDocumentParams>(n.params) {
-                    let uri = p.text_document.uri.as_str().to_string();
+                    let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws.close_doc(&uri);
                     self.dirty.remove(&uri);
                     // Clear diagnostics for the closed buffer.
@@ -249,7 +251,7 @@ impl Server {
                             continue;
                         }
                         prefixes_changed |= path.file_name().is_some_and(|f| f == PREFIX_FILE);
-                        if !self.ws.open.contains_key(ch.uri.as_str()) {
+                        if !self.ws.open.contains_key(&normalize_uri(ch.uri.as_str())) {
                             self.ws.reindex_disk_file(&path);
                         }
                     }
@@ -333,7 +335,7 @@ impl Server {
         }
         macro_rules! doc {
             ($uri:expr) => {{
-                let u = $uri.as_str().to_string();
+                let u = normalize_uri($uri.as_str());
                 match self.ws.analysis(&u) {
                     Some(a) => (u, a),
                     None => return ok(Value::Null),
