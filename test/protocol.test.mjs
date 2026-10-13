@@ -3,7 +3,8 @@
 import { test, describe, before, after } from "node:test"
 import assert from "node:assert/strict"
 import path from "node:path"
-import { startServer, uriOf, fixtures } from "./lsp-client.mjs"
+import { spawn } from "node:child_process"
+import { startServer, uriOf, fixtures, serverPath } from "./lsp-client.mjs"
 
 const ws = path.join(fixtures, "workspace")
 const scratch = (name) => uriOf(path.join(ws, `__protocol-${name}.ttl`))
@@ -174,4 +175,21 @@ describe("cancellation", () => {
     assert.ok(Array.isArray((await s.rawResponse("raw-slow")).result))
     s.close(uri)
   })
+})
+
+test("the server exits when the editor goes away without shutdown", async () => {
+  // A crashed or killed editor closes the pipe; the server must not linger.
+  const proc = spawn(serverPath, [], { cwd: ws, stdio: ["pipe", "ignore", "ignore"] })
+  const frame = (o) => {
+    const body = JSON.stringify(o)
+    return `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+  }
+  proc.stdin.write(frame({ jsonrpc: "2.0", id: 1, method: "initialize", params: { capabilities: {}, rootUri: uriOf(ws) } }))
+  proc.stdin.write(frame({ jsonrpc: "2.0", method: "initialized", params: {} }))
+  await sleep(300)
+  const exited = new Promise((r) => proc.on("exit", () => r(true)))
+  proc.stdin.end()
+  const ok = await Promise.race([exited, sleep(5000).then(() => false)])
+  if (!ok) proc.kill()
+  assert.ok(ok, "server still running 5 s after stdin closed")
 })

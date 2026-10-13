@@ -199,6 +199,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         refresh_needed: false,
     };
     server.main_loop()?;
+    // The writer thread ends only when every sender is gone; joining while the
+    // server still holds one would keep the process alive forever after the
+    // editor disappears (stdin closed without shutdown/exit).
+    drop(server);
     io.join()?;
     Ok(())
 }
