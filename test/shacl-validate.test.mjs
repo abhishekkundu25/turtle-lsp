@@ -209,3 +209,29 @@ test("shacl.enabled false: no validation", async () => {
     await w.end()
   }
 })
+
+test("TriG datasets are validated with the shared graph but never merged with each other", async () => {
+  // Two simulation runs reuse the same IRIs; a third gives one asset two designations.
+  const run = (designations) => `{ obj:pump-08 a sd:Asset ;\n    sd:designation ${designations} . }\n`
+  const { s, dir, end } = await session({}, {
+    "run1.trig": run('"=P08A"'),
+    "run2.trig": run('"=P08B"'),
+    "run3.trig": run('"=P08A" , "=P08B"'),
+  })
+  try {
+    const open = (f) => {
+      const uri = uriOf(path.join(dir, f))
+      s.conn.sendNotification("textDocument/didOpen", {
+        textDocument: { uri, languageId: "trig", version: 1, text: fs.readFileSync(path.join(dir, f), "utf8") },
+      })
+      s.notify("textDocument/didSave", { textDocument: { uri } })
+      return uri
+    }
+    const [r1, r2, r3] = ["run1.trig", "run2.trig", "run3.trig"].map(open)
+    const d3 = await until(s, r3, (d) => shacl(d).length > 0)
+    assert.equal(shacl(d3).length, 1, JSON.stringify(shacl(d3)))
+    for (const uri of [r1, r2]) assert.deepEqual(shacl(await s.diagnosticsFor(uri)), [])
+  } finally {
+    await end()
+  }
+})

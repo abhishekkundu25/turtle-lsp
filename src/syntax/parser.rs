@@ -1739,6 +1739,19 @@ mod tests {
             Syntax::Turtle
         );
         assert_eq!(Syntax::detect(None, "untitled:Untitled-1"), Syntax::Turtle);
+        // An editor that calls every RDF file "turtle".
+        assert_eq!(
+            Syntax::detect(Some("turtle"), "file:///a.trig"),
+            Syntax::TriG
+        );
+        assert_eq!(
+            Syntax::detect(Some("turtle"), "file:///a.nt"),
+            Syntax::NTriples
+        );
+        assert_eq!(
+            Syntax::detect(Some("turtle"), "file:///a.ttl"),
+            Syntax::Turtle
+        );
         assert_eq!(Syntax::from_extension("C:\\x\\a.trig"), Some(Syntax::TriG));
         assert_eq!(Syntax::from_extension("/x/notes.txt"), None);
     }

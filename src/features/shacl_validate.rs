@@ -2,7 +2,8 @@
 //!
 //! The server hands a [`Job`] (the analyses of every workspace and external
 //! source, shared, so the snapshot is cheap) to a [`Worker`] on save and once
-//! after the initial index. The worker validates the union of their triples
+//! after the initial index. The worker validates the union of the Turtle
+//! documents' triples, and each TriG / N-Triples dataset together with them,
 //! as data and shapes graph and sends back diagnostics per document. Each job
 //! carries a generation; a newer job makes the worker abandon the current
 //! one, and the server drops results whose generation is not the latest.
@@ -115,38 +116,29 @@ pub fn has_shapes(a: &Analysis) -> bool {
 }
 
 /// Diagnostics for every workspace document, or `None` when cancelled.
+///
+/// Turtle documents are fragments of one workspace graph, so they are
+/// validated together. A TriG or N-Triples document is a dataset of its own
+/// (generated runs, dumps, snapshots that reuse the same IRIs): it is validated
+/// with the Turtle documents (ontology, shapes, shared data) but never merged
+/// with another dataset, which would turn two versions of a node into one
+/// node with two values.
 pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     let mut docs: Vec<&(Source, Arc<Analysis>)> = job.docs.iter().collect();
     docs.sort_by(|a, b| (a.0, &a.1.uri).cmp(&(b.0, &b.1.uri)));
-    let workspace = |s: Source| s != Source::External;
-    let mut out = ByUri::default();
-    if !docs.iter().any(|(s, a)| workspace(*s) && has_shapes(a)) {
-        return Some(out);
-    }
-    let total: u64 = docs.iter().map(|d| d.1.parsed.triples.len() as u64).sum();
-    if total > job.max_triples {
-        for (_, a) in docs.iter().filter(|(s, a)| workspace(*s) && has_shapes(a)) {
-            out.insert(
-                a.uri.clone(),
-                vec![skipped(a, job.enc, total, job.max_triples)],
-            );
-        }
-        return Some(out);
-    }
-    let triples: Vec<&[crate::syntax::Triple]> =
-        docs.iter().map(|d| d.1.parsed.triples.as_slice()).collect();
-    let g = Graph::new(&triples);
-    let results = validate(&g, cancelled)?;
-    let mut place = Placer {
-        g: &g,
-        docs: &docs,
-        enc: job.enc,
-        prefixes: FxHashMap::default(),
+    let dataset = |d: &&(Source, Arc<Analysis>)| {
+        d.0 != Source::External && d.1.parsed.syntax != crate::syntax::Syntax::Turtle
     };
-    for r in &results {
-        if let Some((uri, d)) = place.diagnostic(r) {
-            out.entry(uri).or_default().push(d);
-        }
+    let shared: Vec<&(Source, Arc<Analysis>)> =
+        docs.iter().copied().filter(|d| !dataset(d)).collect();
+    let mut out = ByUri::default();
+    // The shared graph, its results placed in the Turtle documents.
+    validate_unit(job, &shared, None, cancelled, &mut out)?;
+    for d in docs.iter().copied().filter(dataset) {
+        let mut unit = shared.clone();
+        unit.push(d);
+        // Results in the shared documents were reported above.
+        validate_unit(job, &unit, Some(&d.1.uri), cancelled, &mut out)?;
     }
     for list in out.values_mut() {
         let mut seen = rustc_hash::FxHashSet::default();
@@ -164,6 +156,51 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
         }
     }
     Some(out)
+}
+
+/// Validate one data graph (`docs` merged); keep results placed in `only`
+/// when given. `None` when cancelled.
+fn validate_unit(
+    job: &Job,
+    docs: &[&(Source, Arc<Analysis>)],
+    only: Option<&str>,
+    cancelled: &dyn Fn() -> bool,
+    out: &mut ByUri,
+) -> Option<()> {
+    let workspace = |s: Source| s != Source::External;
+    let shaped = |(s, a): &&&(Source, Arc<Analysis>)| workspace(*s) && has_shapes(a);
+    if !docs.iter().any(|d| shaped(&d)) {
+        return Some(());
+    }
+    let total: u64 = docs.iter().map(|d| d.1.parsed.triples.len() as u64).sum();
+    if total > job.max_triples {
+        let skip = NumberOrString::String(SKIPPED_CODE.into());
+        for (_, a) in docs.iter().filter(|d| shaped(d)) {
+            let list = out.entry(a.uri.clone()).or_default();
+            if !list.iter().any(|d| d.code.as_ref() == Some(&skip)) {
+                list.push(skipped(a, job.enc, total, job.max_triples));
+            }
+        }
+        return Some(());
+    }
+    let triples: Vec<&[crate::syntax::Triple]> =
+        docs.iter().map(|d| d.1.parsed.triples.as_slice()).collect();
+    let g = Graph::new(&triples);
+    let results = validate(&g, cancelled)?;
+    let mut place = Placer {
+        g: &g,
+        docs,
+        enc: job.enc,
+        prefixes: FxHashMap::default(),
+    };
+    for r in &results {
+        if let Some((uri, d)) = place.diagnostic(r)
+            && only.is_none_or(|u| u == uri)
+        {
+            out.entry(uri).or_default().push(d);
+        }
+    }
+    Some(())
 }
 
 fn skipped(a: &Analysis, enc: Encoding, total: u64, max: u64) -> Diagnostic {

@@ -47,13 +47,15 @@ impl Syntax {
         }
     }
 
-    /// The language id wins when it names one of ours; else the extension;
-    /// else Turtle.
+    /// A `trig` or `ntriples` language id wins; otherwise (no id, an unknown
+    /// one, or the generic `turtle`) the extension decides; else Turtle.
     pub fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
-        language_id
-            .and_then(Syntax::from_language_id)
-            .or_else(|| Syntax::from_extension(uri))
-            .unwrap_or_default()
+        match language_id.and_then(Syntax::from_language_id) {
+            // `turtle` is what editors send when they lump RDF files together:
+            // a `.trig` or `.nt` name is the better witness then.
+            Some(Syntax::Turtle) | None => Syntax::from_extension(uri).unwrap_or_default(),
+            Some(specific) => specific,
+        }
     }
 
     /// Whether the document can use prefixes (N-Triples cannot).
