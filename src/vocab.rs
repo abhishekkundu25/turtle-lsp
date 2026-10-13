@@ -22,6 +22,12 @@ pub struct Term {
     pub deprecated: bool,
     pub label: String,
     pub comment: String,
+    /// Direct super terms (rdfs:subClassOf / rdfs:subPropertyOf), as full IRIs.
+    pub supers: Box<[String]>,
+    /// rdfs:domain (schema:domainIncludes for schema.org), as full IRIs.
+    pub domain: Box<[String]>,
+    /// rdfs:range (schema:rangeIncludes for schema.org), as full IRIs.
+    pub range: Box<[String]>,
 }
 
 pub struct Vocabulary {
@@ -34,8 +40,12 @@ pub struct Vocabulary {
 
 impl Vocabulary {
     pub fn terms(&self) -> &[Term] {
-        self.terms
-            .get_or_init(|| self.body.lines().filter_map(parse_term).collect())
+        self.terms.get_or_init(|| {
+            self.body
+                .lines()
+                .filter_map(|l| parse_term(l, self.namespace))
+                .collect()
+        })
     }
 
     pub fn term(&self, local: &str) -> Option<&Term> {
@@ -123,7 +133,7 @@ fn load() -> Vocabularies {
     }
 }
 
-fn parse_term(line: &str) -> Option<Term> {
+fn parse_term(line: &str, namespace: &str) -> Option<Term> {
     let mut f = line.strip_prefix("term\t")?.split('\t');
     let local = unescape(f.next()?);
     let kind = match f.next()? {
@@ -134,13 +144,38 @@ fn parse_term(line: &str) -> Option<Term> {
     let deprecated = f.next()? == "D";
     let label = unescape(f.next().unwrap_or(""));
     let comment = unescape(f.next().unwrap_or(""));
+    let mut list = || terms_of(f.next().unwrap_or(""), namespace);
+    let (supers, domain, range) = (list(), list(), list());
     Some(Term {
         local,
         kind,
         deprecated,
         label,
         comment,
+        supers,
+        domain,
+        range,
     })
+}
+
+/// A space-separated term list as written by tools/build-vocab.mjs: `local`
+/// (same namespace), `prefix:local` (another vocabulary) or `<iri>`.
+fn terms_of(field: &str, namespace: &str) -> Box<[String]> {
+    field
+        .split(' ')
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| {
+            if let Some(iri) = t.strip_prefix('<').and_then(|t| t.strip_suffix('>')) {
+                return Some(iri.to_string());
+            }
+            match t.split_once(':') {
+                Some((p, local)) => VOCABS
+                    .by_prefix(p)
+                    .map(|v| format!("{}{local}", v.namespace)),
+                None => Some(format!("{namespace}{t}")),
+            }
+        })
+        .collect()
 }
 
 fn unescape(s: &str) -> String {
@@ -190,6 +225,22 @@ mod tests {
         assert_eq!(v.prefix, "foaf");
         assert_eq!(v.term(local).unwrap().kind, TermKind::Class);
         assert_eq!(v.suggest("Persn").unwrap().local, "Person");
+    }
+
+    #[test]
+    fn terms_carry_domain_range_and_supers() {
+        let (v, local) = VOCABS.lookup("http://xmlns.com/foaf/0.1/knows").unwrap();
+        let t = v.term(local).unwrap();
+        assert_eq!(&*t.range, ["http://xmlns.com/foaf/0.1/Person"]);
+        assert_eq!(&*t.domain, ["http://xmlns.com/foaf/0.1/Person"]);
+        let (v, local) = VOCABS.lookup("http://xmlns.com/foaf/0.1/Person").unwrap();
+        let supers = &v.term(local).unwrap().supers;
+        assert!(
+            supers
+                .iter()
+                .any(|s| s == "http://xmlns.com/foaf/0.1/Agent"),
+            "{supers:?}"
+        );
     }
 
     #[test]

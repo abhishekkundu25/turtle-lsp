@@ -12,13 +12,13 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::prefix_insertion;
+use crate::knowledge::Knowledge;
 use crate::syntax::lexer::{Kind, is_pn_chars};
 use crate::syntax::{RDF_TYPE, Role, Span};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use serde_json::json;
-use std::sync::Arc;
 
 const LIMIT: usize = 200;
 /// Vocabularies searched by local name even when their prefix is not declared.
@@ -47,7 +47,7 @@ struct Candidate {
 pub fn complete(
     a: &Analysis,
     text: &str,
-    all: &[Arc<Analysis>],
+    k: &Knowledge,
     enc: Encoding,
     pos: Position,
 ) -> CompletionResponse {
@@ -103,23 +103,15 @@ pub fn complete(
             }
         }
         // Terms the workspace defines or uses in this namespace.
-        let mut ws: FxHashMap<&str, TermKind> = FxHashMap::default();
-        for other in all {
-            for iri in other.refs_by_iri.keys() {
-                if let Some(l) = iri.strip_prefix(ns.as_str())
-                    && !l.is_empty()
-                    && !seen.contains(l)
-                    && is_local_name(l)
-                    && fuzzy(local, l)
-                {
-                    ws.entry(iri.as_str())
-                        .or_insert_with(|| guess_kind(all, iri));
-                }
+        for iri in k.terms_in(&ns) {
+            let Some(l) = iri.strip_prefix(ns.as_str()) else {
+                continue;
+            };
+            if l.is_empty() || seen.contains(l) || !is_local_name(l) || !fuzzy(local, l) {
+                continue;
             }
-        }
-        for (iri, kind) in ws {
-            let l = &iri[ns.len()..];
-            let label = all.iter().find_map(|o| o.label(iri));
+            let kind = guess_kind(k, &iri);
+            let label = k.label(&iri);
             cands.push(Candidate {
                 label: format!("{pfx}:{l}"),
                 kind: match kind {
@@ -127,7 +119,7 @@ pub fn complete(
                     TermKind::Property => CompletionItemKind::PROPERTY,
                     TermKind::Individual => CompletionItemKind::REFERENCE,
                 },
-                detail: label.unwrap_or(iri).to_string(),
+                detail: label.unwrap_or(&iri).to_string(),
                 iri: Some(iri.to_string()),
                 rank: rank(slot, kind),
                 import: import.clone(),
@@ -186,20 +178,18 @@ pub fn complete(
         // Resources described in the workspace, written with this file's prefixes.
         if !typed.is_empty() && matches!(slot, Slot::Subject | Slot::Object | Slot::Class) {
             let mut seen = FxHashSet::default();
-            for other in all {
-                for iri in other.defs.keys() {
-                    if let Some(short) = shorten(iri, &prefixes) {
-                        let local = short.split_once(':').map_or("", |x| x.1);
-                        if fuzzy(typed, local) && seen.insert(short.clone()) {
-                            cands.push(Candidate {
-                                label: short,
-                                kind: CompletionItemKind::REFERENCE,
-                                detail: other.label(iri).unwrap_or(iri).to_string(),
-                                iri: Some(iri.to_string()),
-                                rank: 3,
-                                import: None,
-                            });
-                        }
+            for iri in k.described_terms() {
+                if let Some(short) = shorten(&iri, &prefixes) {
+                    let local = short.split_once(':').map_or("", |x| x.1);
+                    if fuzzy(typed, local) && seen.insert(short.clone()) {
+                        cands.push(Candidate {
+                            label: short,
+                            kind: CompletionItemKind::REFERENCE,
+                            detail: k.label(&iri).unwrap_or(&iri).to_string(),
+                            iri: Some(iri.to_string()),
+                            rank: 3,
+                            import: None,
+                        });
                     }
                 }
             }
@@ -298,7 +288,7 @@ pub fn complete(
 }
 
 /// Fill in documentation lazily so the list itself stays small.
-pub fn resolve(mut item: CompletionItem, all: &[Arc<Analysis>]) -> CompletionItem {
+pub fn resolve(mut item: CompletionItem, k: &Knowledge) -> CompletionItem {
     let Some(iri) = item
         .data
         .as_ref()
@@ -307,7 +297,7 @@ pub fn resolve(mut item: CompletionItem, all: &[Arc<Analysis>]) -> CompletionIte
     else {
         return item;
     };
-    if let Some(md) = super::hover::describe_iri(&iri, &item.label, all) {
+    if let Some(md) = super::hover::describe_iri(&iri, &item.label, k, &Default::default()) {
         item.documentation = Some(Documentation::MarkupContent(MarkupContent {
             kind: MarkupKind::Markdown,
             value: md,
@@ -329,25 +319,18 @@ fn rank(slot: Slot, kind: TermKind) -> u8 {
     }
 }
 
-fn guess_kind(all: &[Arc<Analysis>], iri: &str) -> TermKind {
-    for a in all {
-        if let Some(types) = a.types.get(iri) {
-            if types
-                .iter()
-                .any(|t| t.ends_with("Class") || t.ends_with("NodeShape"))
-            {
-                return TermKind::Class;
-            }
-            if types.iter().any(|t| t.ends_with("Property")) {
-                return TermKind::Property;
-            }
-            return TermKind::Individual;
-        }
-        if a.refs_of(iri).any(|r| r.role == Role::Predicate) {
-            return TermKind::Property;
-        }
+fn guess_kind(k: &Knowledge, iri: &crate::syntax::Iri) -> TermKind {
+    let types = k.types(iri);
+    if types
+        .iter()
+        .any(|t| t.ends_with("Class") || t.ends_with("NodeShape"))
+    {
+        TermKind::Class
+    } else if types.iter().any(|t| t.ends_with("Property")) || k.used_as_predicate(iri) {
+        TermKind::Property
+    } else {
+        TermKind::Individual
     }
-    TermKind::Individual
 }
 
 /// What kind of term belongs at `offset`, from the tokens before it.

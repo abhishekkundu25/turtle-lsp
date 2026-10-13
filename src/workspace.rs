@@ -5,6 +5,7 @@
 //! below it, plus any `prefixes` given in the client's initializationOptions.
 
 use crate::analysis::{Analysis, Encoding, offset_in};
+use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::syntax::PrefixMap;
 use line_index::LineIndex;
 use lsp_types::TextDocumentContentChangeEvent;
@@ -40,6 +41,9 @@ pub struct Workspace {
     pub open: FxHashMap<String, Doc>,
     pub disk: FxHashMap<String, Arc<Analysis>>,
     pub settings_prefixes: PrefixMap,
+    /// Facts from every analysis: the open document's when it is open, else
+    /// the disk copy's. Kept current by every method that changes either.
+    knowledge: Knowledge,
     /// Directory -> prefixes from the nearest prefixes.ttl (None = no file found).
     prefix_cache: FxHashMap<PathBuf, Arc<PrefixMap>>,
 }
@@ -142,6 +146,45 @@ impl Workspace {
         if let Some(path) = uri_to_path(uri) {
             self.reindex_disk_file(&path);
         }
+        self.sync(uri);
+    }
+
+    /// Register the winning analysis of `uri` with the knowledge index: the
+    /// open document's (once analyzed), else the disk copy's.
+    fn sync(&mut self, uri: &str) {
+        match self.open.get(uri) {
+            Some(d) => {
+                if let Some(a) = &d.analysis {
+                    self.knowledge.set(uri, Source::Open, a.clone());
+                }
+                // Not analyzed yet: the previous contribution stands until it is.
+            }
+            None => match self.disk.get(uri) {
+                Some(a) => self.knowledge.set(uri, Source::Disk, a.clone()),
+                None => self.knowledge.remove(uri),
+            },
+        }
+    }
+
+    /// The knowledge index, after analyzing open documents edited since the
+    /// last call.
+    pub fn knowledge(&mut self) -> &Knowledge {
+        let stale: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_, d)| d.analysis.is_none())
+            .map(|(u, _)| u.clone())
+            .collect();
+        for uri in stale {
+            self.analysis(&uri);
+        }
+        &self.knowledge
+    }
+
+    /// Read-only sources (e.g. imported ontologies): they add facts to the
+    /// knowledge index but are never diagnosed.
+    pub fn knowledge_mut(&mut self) -> &mut Knowledge {
+        &mut self.knowledge
     }
 
     pub fn analysis(&mut self, uri: &str) -> Option<Arc<Analysis>> {
@@ -153,6 +196,7 @@ impl Workspace {
         let doc = self.open.get_mut(uri)?;
         let a = Arc::new(Analysis::new(uri.to_string(), &doc.text, external, true));
         doc.analysis = Some(a.clone());
+        self.knowledge.set(uri, Source::Open, a.clone());
         Some(a)
     }
 
@@ -270,6 +314,32 @@ impl Workspace {
 
     /// Parse files in parallel and add them to the disk index.
     pub fn index_paths(&mut self, paths: Vec<PathBuf>) {
+        let parsed = self.parse_paths(paths);
+        self.add_disk(parsed, true);
+    }
+
+    /// Add analyses parsed elsewhere (the initial index, built on another
+    /// thread). With `replace` false, files indexed meanwhile are kept.
+    pub fn add_disk(&mut self, files: Vec<(String, Analysis)>, replace: bool) {
+        let files: Vec<(String, Arc<Analysis>, DocFacts)> = files
+            .into_par_iter()
+            .filter(|(uri, _)| replace || !self.disk.contains_key(uri))
+            .map(|(uri, a)| {
+                let facts = DocFacts::new(&a);
+                (uri, Arc::new(a), facts)
+            })
+            .collect();
+        for (uri, a, facts) in files {
+            if !self.open.contains_key(&uri) {
+                self.knowledge
+                    .set_prepared(&uri, Source::Disk, a.clone(), facts);
+            }
+            self.disk.insert(uri, a);
+        }
+    }
+
+    /// Parse files in parallel, without adding them to anything.
+    pub fn parse_paths(&mut self, paths: Vec<PathBuf>) -> Vec<(String, Analysis)> {
         let jobs: Vec<(String, PathBuf, Arc<PrefixMap>)> = paths
             .into_iter()
             .filter_map(|p| {
@@ -278,8 +348,7 @@ impl Workspace {
                 Some((uri, p, ext))
             })
             .collect();
-        let results: Vec<(String, Analysis)> = jobs
-            .into_par_iter()
+        jobs.into_par_iter()
             .filter_map(|(uri, path, ext)| {
                 if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
                     return None;
@@ -287,10 +356,7 @@ impl Workspace {
                 let text = std::fs::read_to_string(&path).ok()?;
                 Some((uri.clone(), Analysis::new(uri, &text, ext, false)))
             })
-            .collect();
-        for (uri, a) in results {
-            self.disk.insert(uri, Arc::new(a));
-        }
+            .collect()
     }
 
     pub fn reindex_disk_file(&mut self, path: &Path) {
@@ -299,6 +365,7 @@ impl Workspace {
             self.index_paths(vec![path.to_path_buf()]);
         } else {
             self.disk.remove(&uri);
+            self.sync(&uri);
         }
     }
 }

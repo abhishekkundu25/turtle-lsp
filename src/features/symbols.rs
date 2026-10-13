@@ -2,13 +2,17 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::navigation::uri;
-use crate::syntax::Span;
+use crate::knowledge::{DocId, Knowledge, Source};
 use crate::syntax::lexer::Kind;
+use crate::syntax::{Iri, PrefixMap, Span};
 use lsp_types::*;
-use std::sync::Arc;
+use rustc_hash::FxHashMap;
 
 fn kind_for(a: &Analysis, iri: &str) -> SymbolKind {
-    let types = a.types.get(iri).map(Vec::as_slice).unwrap_or(&[]);
+    kind_of(a.types.get(iri).map(Vec::as_slice).unwrap_or(&[]))
+}
+
+fn kind_of(types: &[Iri]) -> SymbolKind {
     if types.iter().any(|t| t.ends_with("Class")) {
         SymbolKind::CLASS
     } else if types.iter().any(|t| t.ends_with("Property")) {
@@ -90,19 +94,22 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
 }
 
 #[allow(deprecated)]
-pub fn workspace_symbols(
-    all: &[Arc<Analysis>],
-    enc: Encoding,
-    query: &str,
-) -> Vec<SymbolInformation> {
+pub fn workspace_symbols(k: &Knowledge, enc: Encoding, query: &str) -> Vec<SymbolInformation> {
     let q = query.to_lowercase();
     let mut out = Vec::new();
-    for a in all {
-        let prefixes = a.prefix_map();
-        for (iri, spans) in &a.defs {
-            let name = crate::features::completion::shorten(iri, &prefixes)
-                .unwrap_or_else(|| format!("<{iri}>"));
-            let label = a.label(iri);
+    // Each description site is a symbol, named with that file's prefixes.
+    let mut prefixes: FxHashMap<DocId, PrefixMap> = FxHashMap::default();
+    for iri in k.described_terms() {
+        let label = k.label(&iri);
+        let mut kind = None;
+        for d in k.descriptions(&iri) {
+            if d.source == Source::External {
+                continue;
+            }
+            let a = d.analysis;
+            let p = prefixes.entry(d.doc).or_insert_with(|| a.prefix_map());
+            let name =
+                crate::features::completion::shorten(&iri, p).unwrap_or_else(|| format!("<{iri}>"));
             if !q.is_empty()
                 && !name.to_lowercase().contains(&q)
                 && !label.is_some_and(|l| l.to_lowercase().contains(&q))
@@ -111,12 +118,12 @@ pub fn workspace_symbols(
             }
             out.push(SymbolInformation {
                 name,
-                kind: kind_for(a, iri),
+                kind: *kind.get_or_insert_with(|| kind_of(&k.types(&iri))),
                 tags: None,
                 deprecated: None,
                 location: Location {
                     uri: uri(&a.uri),
-                    range: a.range(enc, spans[0]),
+                    range: a.range(enc, d.spans[0]),
                 },
                 container_name: label.map(str::to_string),
             });

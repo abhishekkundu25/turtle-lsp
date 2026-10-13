@@ -1,15 +1,64 @@
 //! Diagnostics and the quick fixes attached to them.
 
 use crate::analysis::{Analysis, Encoding};
+use crate::knowledge::Knowledge;
 use crate::syntax::{Form, Severity};
 use crate::vocab::VOCABS;
 use lsp_types::*;
 use rustc_hash::FxHashMap;
-use serde_json::json;
+use serde_json::{Value, json};
 
 pub const SOURCE: &str = "turtle";
 
-pub fn diagnostics(a: &Analysis, enc: Encoding) -> Vec<Diagnostic> {
+/// A namespace to bind an undeclared prefix name to.
+pub struct PrefixCandidate {
+    pub namespace: String,
+    /// Workspace files that bind the name to it (0 for a well-known one the
+    /// project does not use).
+    pub files: u32,
+}
+
+/// Namespaces for prefix `name`, best first: the project's most common
+/// binding, then the well-known vocabulary's if different.
+pub fn prefix_candidates(name: &str, k: &Knowledge) -> Vec<PrefixCandidate> {
+    // The empty prefix is file-local by convention: no project binding for it.
+    let project = if name.is_empty() {
+        vec![]
+    } else {
+        k.bindings(name)
+    };
+    let mut out: Vec<PrefixCandidate> = project
+        .into_iter()
+        .take(1)
+        .map(|(ns, files)| PrefixCandidate {
+            namespace: ns.to_string(),
+            files,
+        })
+        .collect();
+    if let Some(v) = VOCABS.by_prefix(name)
+        && !out.iter().any(|c| c.namespace == v.namespace)
+    {
+        out.push(PrefixCandidate {
+            namespace: v.namespace.to_string(),
+            files: 0,
+        });
+    }
+    out
+}
+
+fn candidate_title(prefix: &str, c: &Value) -> Option<(String, String)> {
+    let ns = c["namespace"].as_str()?;
+    let files = c["files"].as_u64().unwrap_or(0);
+    let mut title = format!("Add @prefix {prefix}: <{ns}>");
+    match files {
+        0 => {}
+        1 => title.push_str(" (used in 1 file)"),
+        n => title.push_str(&format!(" (used in {n} files)")),
+    }
+    Some((title, ns.to_string()))
+}
+
+pub fn diagnostics(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mk = |span, severity, code: &str, message: String| Diagnostic {
         range: a.range(enc, span),
@@ -28,7 +77,8 @@ pub fn diagnostics(a: &Analysis, enc: Encoding) -> Vec<Diagnostic> {
         out.push(mk(e.span, sev, "syntax", e.message.clone()));
     }
 
-    // Undeclared prefixes, with an "add @prefix" fix when the namespace is known.
+    // Undeclared prefixes, with "add @prefix" fixes for every known namespace.
+    let mut candidates: FxHashMap<&str, Vec<PrefixCandidate>> = FxHashMap::default();
     for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {
         let shown = if u.name.is_empty() {
             ":".to_string()
@@ -41,10 +91,20 @@ pub fn diagnostics(a: &Analysis, enc: Encoding) -> Vec<Diagnostic> {
             "undeclared-prefix",
             format!("Undeclared prefix '{shown}'"),
         );
-        if let Some(v) = VOCABS.by_prefix(&u.name) {
+        let cands = candidates
+            .entry(u.name.as_str())
+            .or_insert_with(|| prefix_candidates(&u.name, k));
+        if let Some(first) = cands.first() {
             d.message
-                .push_str(&format!(" (add @prefix {shown} <{}>)", v.namespace));
-            d.data = Some(json!({ "prefix": u.name, "namespace": v.namespace }));
+                .push_str(&format!(" (add @prefix {shown} <{}>)", first.namespace));
+            d.data = Some(json!({
+                "prefix": u.name,
+                "namespace": first.namespace,
+                "candidates": cands
+                    .iter()
+                    .map(|c| json!({ "namespace": c.namespace, "files": c.files }))
+                    .collect::<Vec<_>>(),
+            }));
         } else {
             d.message
                 .push_str(". Declare it, or add it to a prefixes.ttl in the project");
@@ -162,6 +222,7 @@ pub fn diagnostics(a: &Analysis, enc: Encoding) -> Vec<Diagnostic> {
 /// Quick fixes for the diagnostics above, plus "add all missing prefixes".
 pub fn code_actions(
     a: &Analysis,
+    k: &Knowledge,
     text: &str,
     enc: Encoding,
     params: &CodeActionParams,
@@ -176,7 +237,7 @@ pub fn code_actions(
             ..Default::default()
         })
     };
-    let mut missing: Vec<(String, String)> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     for d in &params.context.diagnostics {
         if d.source.as_deref() != Some(SOURCE) {
             continue;
@@ -188,24 +249,32 @@ pub fn code_actions(
         let data = d.data.as_ref();
         match code {
             "undeclared-prefix" => {
-                let (Some(p), Some(ns)) = (
-                    data.and_then(|x| x["prefix"].as_str()),
-                    data.and_then(|x| x["namespace"].as_str()),
-                ) else {
+                let Some(p) = data.and_then(|x| x["prefix"].as_str()) else {
                     continue;
                 };
-                if missing.iter().any(|(q, _)| q == p) {
+                if missing.iter().any(|q| q == p) {
                     continue;
                 }
-                missing.push((p.to_string(), ns.to_string()));
-                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: format!("Add @prefix {p}: <{ns}>"),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: Some(vec![d.clone()]),
-                    edit: edit(vec![prefix_insertion(a, text, enc, p, ns)]),
-                    is_preferred: Some(true),
-                    ..Default::default()
-                }));
+                missing.push(p.to_string());
+                // Older diagnostics carry one namespace and no candidate list.
+                let single = data.map(|x| vec![json!({ "namespace": x["namespace"] })]);
+                let cands = match data.map(|x| &x["candidates"]) {
+                    Some(Value::Array(c)) => c.clone(),
+                    _ => single.unwrap_or_default(),
+                };
+                for (i, c) in cands.iter().enumerate() {
+                    let Some((title, ns)) = candidate_title(p, c) else {
+                        continue;
+                    };
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title,
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![d.clone()]),
+                        edit: edit(vec![prefix_insertion(a, text, enc, p, &ns)]),
+                        is_preferred: Some(i == 0),
+                        ..Default::default()
+                    }));
+                }
             }
             "unused-prefix" | "duplicate-prefix" => {
                 let start = a.offset(enc, d.range.start).unwrap_or(0) as usize;
@@ -254,10 +323,10 @@ pub fn code_actions(
     // Offer "add all" whenever the file has more than one fixable undeclared prefix.
     let mut all: Vec<(String, String)> = Vec::new();
     for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {
-        if let Some(v) = VOCABS.by_prefix(&u.name)
-            && !all.iter().any(|(p, _)| *p == u.name)
+        if !all.iter().any(|(p, _)| *p == u.name)
+            && let Some(c) = prefix_candidates(&u.name, k).into_iter().next()
         {
-            all.push((u.name.to_string(), v.namespace.to_string()));
+            all.push((u.name.to_string(), c.namespace));
         }
     }
     if all.len() > 1 {

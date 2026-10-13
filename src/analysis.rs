@@ -156,6 +156,27 @@ impl Analysis {
         self.comments.get(iri).map(|&i| self.literal(i))
     }
 
+    /// [`Analysis::label`] and whether it is English or untagged.
+    pub fn label_en<K: IriKey + ?Sized>(&self, iri: &K) -> Option<(&str, bool)> {
+        self.labels
+            .get(iri)
+            .map(|&i| (self.literal(i), self.is_en(i)))
+    }
+
+    /// [`Analysis::comment`] and whether it is English or untagged.
+    pub fn comment_en<K: IriKey + ?Sized>(&self, iri: &K) -> Option<(&str, bool)> {
+        self.comments
+            .get(iri)
+            .map(|&i| (self.literal(i), self.is_en(i)))
+    }
+
+    fn is_en(&self, i: u32) -> bool {
+        match &self.parsed.triples[i as usize].o {
+            Node::Literal { lang, .. } => lang.is_none_or(|l| l.starts_with("en")),
+            _ => false,
+        }
+    }
+
     /// All prefixes in scope at the end of the document: external, then declared.
     pub fn prefix_map(&self) -> PrefixMap {
         let mut m = (*self.external).clone();

@@ -3,6 +3,7 @@
 //! prefix instead.
 
 use crate::analysis::{Analysis, Encoding};
+use crate::knowledge::{Knowledge, Source};
 use crate::syntax::{Form, Iri, Role, Span};
 use crate::workspace::{PREFIX_FILE, path_to_uri};
 use lsp_types::*;
@@ -58,7 +59,7 @@ fn loc(a: &Analysis, enc: Encoding, span: Span) -> Location {
 
 pub fn definition(
     a: &Analysis,
-    all: &[Arc<Analysis>],
+    k: &Knowledge,
     enc: Encoding,
     pos: Position,
     prefix_file: Option<Arc<Analysis>>,
@@ -84,9 +85,9 @@ pub fn definition(
         }
         Some((Target::Iri(iri), _)) => {
             let mut out = Vec::new();
-            for other in all {
-                for span in other.defs.get(&iri).into_iter().flatten() {
-                    out.push(loc(other, enc, *span));
+            for d in k.descriptions(&iri) {
+                for span in d.spans {
+                    out.push(loc(d.analysis, enc, *span));
                 }
             }
             out.sort_by(|x, y| {
@@ -108,29 +109,18 @@ pub fn definition(
 }
 
 /// Where the resource's classes are described (`gy` in Neovim).
-pub fn type_definition(
-    a: &Analysis,
-    all: &[Arc<Analysis>],
-    enc: Encoding,
-    pos: Position,
-) -> Vec<Location> {
+pub fn type_definition(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Vec<Location> {
     let Some(offset) = a.offset(enc, pos) else {
         return vec![];
     };
     let Some((Target::Iri(iri), _)) = target_at(a, offset) else {
         return vec![];
     };
-    let types: FxHashSet<Iri> = all
-        .iter()
-        .filter_map(|o| o.types.get(&iri))
-        .flatten()
-        .copied()
-        .collect();
     let mut out = Vec::new();
-    for other in all {
-        for ty in &types {
-            for span in other.defs.get(ty).into_iter().flatten() {
-                out.push(loc(other, enc, *span));
+    for ty in k.types(&iri) {
+        for d in k.descriptions(&ty) {
+            for span in d.spans {
+                out.push(loc(d.analysis, enc, *span));
             }
         }
     }
@@ -138,32 +128,19 @@ pub fn type_definition(
 }
 
 /// Instances, subclasses and subproperties of the IRI under the cursor.
-pub fn implementations(
-    a: &Analysis,
-    all: &[Arc<Analysis>],
-    enc: Encoding,
-    pos: Position,
-) -> Vec<Location> {
+pub fn implementations(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Vec<Location> {
     let Some(offset) = a.offset(enc, pos) else {
         return vec![];
     };
     let Some((Target::Iri(iri), _)) = target_at(a, offset) else {
         return vec![];
     };
+    // Each instance or sub term where it is linked to the IRI.
     let mut out = Vec::new();
-    for other in all {
-        let related = other
-            .types
-            .iter()
-            .chain(other.supers.iter())
-            .filter(|(_, objs)| objs.contains(&iri))
-            .map(|(s, _)| s);
-        let mut seen = FxHashSet::default();
+    for (doc, related) in k.related_by_doc(&iri) {
+        let other = k.doc(doc);
         for s in related {
-            if !seen.insert(s) {
-                continue;
-            }
-            for span in other.defs.get(s).into_iter().flatten() {
+            for span in other.defs.get(&s).into_iter().flatten() {
                 out.push(loc(other, enc, *span));
             }
         }
@@ -173,7 +150,7 @@ pub fn implementations(
 
 pub fn references(
     a: &Analysis,
-    all: &[Arc<Analysis>],
+    k: &Knowledge,
     enc: Encoding,
     pos: Position,
     include_decl: bool,
@@ -208,7 +185,10 @@ pub fn references(
             );
         }
         Some((Target::Iri(iri), _)) => {
-            for other in all {
+            for (_, _, other) in k
+                .docs_referencing(&iri)
+                .filter(|(_, src, _)| *src != Source::External)
+            {
                 let mut seen = FxHashSet::default();
                 for r in other.refs_of(&iri) {
                     if (include_decl || r.role != Role::Subject) && seen.insert(r.span) {
@@ -279,7 +259,7 @@ pub fn prepare_rename(a: &Analysis, enc: Encoding, pos: Position) -> Option<Prep
 /// or a full IRI (`<http://...>`); each occurrence keeps its file's style.
 pub fn rename(
     a: &Analysis,
-    all: &[Arc<Analysis>],
+    k: &Knowledge,
     enc: Encoding,
     pos: Position,
     new_name: &str,
@@ -333,7 +313,10 @@ pub fn rename(
                     let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
                     format!("{}{new_name}", &old[..cut])
                 };
-            for other in all {
+            for (_, _, other) in k
+                .docs_referencing(&old)
+                .filter(|(_, src, _)| *src != Source::External)
+            {
                 let prefixes = other.prefix_map();
                 let mut seen = FxHashSet::default();
                 let mut edits = Vec::new();

@@ -1,13 +1,13 @@
 //! Hover: what a term is, where it is described, and its label/comment.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::syntax::Form;
+use crate::knowledge::Knowledge;
+use crate::syntax::{Form, Iri, PrefixMap};
 use crate::vocab::{TermKind, VOCABS};
 use crate::workspace::uri_to_path;
 use lsp_types::*;
-use std::sync::Arc;
 
-pub fn hover(a: &Analysis, all: &[Arc<Analysis>], enc: Encoding, pos: Position) -> Option<Hover> {
+pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Option<Hover> {
     let offset = a.offset(enc, pos)?;
 
     // On a prefix declaration's name: show the namespace.
@@ -51,16 +51,36 @@ pub fn hover(a: &Analysis, all: &[Arc<Analysis>], enc: Encoding, pos: Position) 
         Form::A => Some("a (rdf:type)".to_string()),
         Form::Iri => None,
     };
-    let label = text_label.unwrap_or_else(|| {
-        crate::features::completion::shorten(&r.iri, &a.prefix_map())
-            .unwrap_or_else(|| format!("<{}>", r.iri))
-    });
-    let body = describe_iri(&r.iri, &label, all)?;
+    let prefixes = a.prefix_map();
+    let label = text_label.unwrap_or_else(|| short(&r.iri, &prefixes));
+    let body = describe_iri(&r.iri, &label, k, &prefixes)?;
     Some(md(body, a.range(enc, r.span)))
 }
 
+/// `iri` as `prefix:local` with the document's prefixes, else with the
+/// well-known vocabulary's prefix, else `<iri>`.
+pub fn short(iri: &str, prefixes: &PrefixMap) -> String {
+    crate::features::completion::shorten(iri, prefixes)
+        .or_else(|| {
+            let (v, local) = VOCABS.lookup(iri)?;
+            crate::features::completion::shorten(
+                iri,
+                &PrefixMap::from_iter([(v.prefix.to_string(), v.namespace.to_string())]),
+            )
+            .filter(|_| !local.is_empty())
+        })
+        .unwrap_or_else(|| format!("<{iri}>"))
+}
+
+fn shorts(iris: &[Iri], prefixes: &PrefixMap) -> String {
+    iris.iter()
+        .map(|i| short(i, prefixes))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Markdown description of an IRI from the workspace and bundled vocabularies.
-pub fn describe_iri(iri: &str, label: &str, all: &[Arc<Analysis>]) -> Option<String> {
+pub fn describe_iri(iri: &str, label: &str, k: &Knowledge, prefixes: &PrefixMap) -> Option<String> {
     let mut out = format!("**{label}**");
     let mut kind = None;
     let mut text_label = None;
@@ -85,30 +105,23 @@ pub fn describe_iri(iri: &str, label: &str, all: &[Arc<Analysis>]) -> Option<Str
         }
     }
 
-    let mut defined_in = Vec::new();
-    let mut types: Vec<String> = Vec::new();
-    for a in all {
-        if let Some(spans) = a.defs.get(iri) {
+    let mut defined_in: Vec<String> = k
+        .descriptions(iri)
+        .iter()
+        .map(|d| {
+            let a = d.analysis;
             let file = uri_to_path(&a.uri)
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                 .unwrap_or_else(|| a.uri.clone());
-            let line = a.position(Encoding::Utf8, spans[0].start).line + 1;
-            defined_in.push(format!("{file}:{line}"));
-        }
-        text_label = text_label.or_else(|| a.label(iri).map(str::to_string));
-        comment = comment.or_else(|| a.comment(iri).map(str::to_string));
-        if let Some(t) = a.types.get(iri) {
-            for ty in t {
-                let short = crate::features::completion::shorten(ty, &a.prefix_map())
-                    .unwrap_or_else(|| format!("<{ty}>"));
-                if !types.contains(&short) {
-                    types.push(short);
-                }
-            }
-        }
-    }
+            let line = a.position(Encoding::Utf8, d.spans[0].start).line + 1;
+            format!("{file}:{line}")
+        })
+        .collect();
+    text_label = text_label.or_else(|| k.label(iri).map(str::to_string));
+    comment = comment.or_else(|| k.comment(iri).map(str::to_string));
+    let types = k.types(iri);
     if !types.is_empty() {
-        out.push_str(&format!(" · {}", types.join(", ")));
+        out.push_str(&format!(" · {}", shorts(&types, prefixes)));
     } else if let Some(k) = kind {
         out.push_str(&format!(" · {k}"));
     }
@@ -120,6 +133,17 @@ pub fn describe_iri(iri: &str, label: &str, all: &[Arc<Analysis>]) -> Option<Str
     }
     if let Some(c) = comment {
         out.push_str(&format!("\n\n{c}"));
+    }
+    let (domains, ranges) = (k.domains(iri), k.ranges(iri));
+    let mut dr = Vec::new();
+    if !domains.is_empty() {
+        dr.push(format!("Domain: {}", shorts(&domains, prefixes)));
+    }
+    if !ranges.is_empty() {
+        dr.push(format!("Range: {}", shorts(&ranges, prefixes)));
+    }
+    if !dr.is_empty() {
+        out.push_str(&format!("\n\n{}", dr.join(" · ")));
     }
     if !defined_in.is_empty() {
         defined_in.sort();

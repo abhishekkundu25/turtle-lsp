@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::analysis::{Analysis, Encoding};
 use turtle_lsp::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
+use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::syntax::{PrefixMap, Severity, parse};
 
 struct Rng(u64);
@@ -170,7 +171,7 @@ fn mutate(rng: &mut Rng, text: &str) -> String {
     s
 }
 
-fn exercise(rng: &mut Rng, text: &str, all: &[Arc<Analysis>]) {
+fn exercise(rng: &mut Rng, text: &str, k: &mut Knowledge) {
     // The parser alone: every span must be inside the text and on char boundaries.
     let p = parse(text, &PrefixMap::default());
     for span in p
@@ -195,8 +196,10 @@ fn exercise(rng: &mut Rng, text: &str, all: &[Arc<Analysis>]) {
         Arc::new(PrefixMap::default()),
         true,
     ));
-    let mut docs = all.to_vec();
-    docs.push(a.clone());
+    // The document joins the index (and leaves it again below), as an edited
+    // open document does.
+    k.set("file:///chaos/doc.ttl", Source::Open, a.clone());
+    let docs = &*k;
     // Formatting: refused on errors, else a fixed point.
     let opts = format::Options::default();
     let formatted = format::format(text, &a.parsed, &a.external, &opts);
@@ -225,42 +228,57 @@ fn exercise(rng: &mut Rng, text: &str, all: &[Arc<Analysis>]) {
     }
     for enc in [Encoding::Utf8, Encoding::Utf16] {
         let _ = format::formatting(&a, enc, &opts);
-        let _ = diagnostics::diagnostics(&a, enc);
+        let _ = diagnostics::diagnostics(&a, docs, enc);
         let _ = symbols::document_symbols(&a, text, enc);
         let _ = symbols::folding_ranges(&a);
-        let _ = symbols::workspace_symbols(&docs, enc, "a");
+        let _ = symbols::workspace_symbols(docs, enc, "a");
         for _ in 0..4 {
             let off = char_boundary(text, rng.below(text.len() + 1)) as u32;
             let pos: Position = a.position(enc, off);
-            let _ = completion::complete(&a, text, &docs, enc, pos);
-            let _ = hover::hover(&a, &docs, enc, pos);
-            let _ = navigation::definition(&a, &docs, enc, pos, None);
-            let _ = navigation::type_definition(&a, &docs, enc, pos);
-            let _ = navigation::implementations(&a, &docs, enc, pos);
-            let _ = navigation::references(&a, &docs, enc, pos, true);
+            let _ = completion::complete(&a, text, docs, enc, pos);
+            let _ = hover::hover(&a, docs, enc, pos);
+            let _ = navigation::definition(&a, docs, enc, pos, None);
+            let _ = navigation::type_definition(&a, docs, enc, pos);
+            let _ = navigation::implementations(&a, docs, enc, pos);
+            let _ = navigation::references(&a, docs, enc, pos, true);
             let _ = navigation::highlights(&a, enc, pos);
             let _ = navigation::prepare_rename(&a, enc, pos);
-            let _ = navigation::rename(&a, &docs, enc, pos, "renamed");
+            let _ = navigation::rename(&a, docs, enc, pos, "renamed");
             // Positions past the end of a line or of the file, as clients sometimes send.
             let wild = Position::new(
                 pos.line + rng.below(3) as u32,
                 pos.character + rng.below(200) as u32,
             );
-            let _ = completion::complete(&a, text, &docs, enc, wild);
-            let _ = hover::hover(&a, &docs, enc, wild);
+            let _ = completion::complete(&a, text, docs, enc, wild);
+            let _ = hover::hover(&a, docs, enc, wild);
             let (from, to) = if rng.below(2) == 0 {
                 (pos, wild)
             } else {
                 (wild, pos)
             };
-            code_actions_keep_the_graph(&a, text, enc, Range::new(from, to), rng.below(2) == 0);
+            code_actions_keep_the_graph(
+                &a,
+                docs,
+                text,
+                enc,
+                Range::new(from, to),
+                rng.below(2) == 0,
+            );
         }
     }
+    k.remove("file:///chaos/doc.ttl");
 }
 
 /// Every code action must not panic; on a file without syntax errors, every
 /// refactoring must leave the parsed triples unchanged.
-fn code_actions_keep_the_graph(a: &Analysis, text: &str, enc: Encoding, range: Range, lazy: bool) {
+fn code_actions_keep_the_graph(
+    a: &Analysis,
+    k: &Knowledge,
+    text: &str,
+    enc: Encoding,
+    range: Range,
+    lazy: bool,
+) {
     let params = CodeActionParams {
         text_document: lsp_types::TextDocumentIdentifier {
             uri: "file:///chaos/doc.ttl".parse().unwrap(),
@@ -270,7 +288,20 @@ fn code_actions_keep_the_graph(a: &Analysis, text: &str, enc: Encoding, range: R
         work_done_progress_params: Default::default(),
         partial_result_params: Default::default(),
     };
-    let _ = diagnostics::code_actions(a, text, enc, &params);
+    let context = lsp_types::CodeActionContext {
+        diagnostics: diagnostics::diagnostics(a, k, enc),
+        ..Default::default()
+    };
+    let _ = diagnostics::code_actions(
+        a,
+        k,
+        text,
+        enc,
+        &CodeActionParams {
+            context,
+            ..params.clone()
+        },
+    );
     let actions = refactor::code_actions(a, enc, &params, lazy);
     if !a.parsed.errors.is_empty() {
         return;
@@ -310,24 +341,18 @@ fn mutated_turtle_never_panics() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(3000usize);
     let corpus = corpus();
-    let base: Vec<Arc<Analysis>> = corpus
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            Arc::new(Analysis::new(
-                format!("file:///chaos/{i}.ttl"),
-                t,
-                Arc::new(PrefixMap::default()),
-                true,
-            ))
-        })
-        .collect();
+    let mut base = Knowledge::default();
+    for (i, t) in corpus.iter().enumerate() {
+        let uri = format!("file:///chaos/{i}.ttl");
+        let a = Analysis::new(uri.clone(), t, Arc::new(PrefixMap::default()), true);
+        base.set(&uri, Source::Disk, Arc::new(a));
+    }
     let mut rng = Rng(seed);
     for i in 0..iters {
         let pick = rng.below(corpus.len());
         let text = mutate(&mut rng, &corpus[pick]);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            exercise(&mut Rng(seed ^ i as u64 ^ 0x9E37), &text, &base)
+            exercise(&mut Rng(seed ^ i as u64 ^ 0x9E37), &text, &mut base)
         }));
         if r.is_err() {
             let dump = std::env::temp_dir().join(format!("turtle-chaos-{seed}-{i}.ttl"));

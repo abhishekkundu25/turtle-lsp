@@ -159,13 +159,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     std::thread::spawn(move || {
         let mut tmp = Workspace::new(roots.clone(), prefixes);
         let files = Workspace::scan_roots(&roots);
-        tmp.index_paths(files);
-        let out: Vec<(String, Analysis)> = tmp
-            .disk
-            .into_iter()
-            .filter_map(|(u, a)| Arc::try_unwrap(a).ok().map(|a| (u, a)))
-            .collect();
-        let _ = tx.send(out);
+        let _ = tx.send(tmp.parse_paths(files));
     });
 
     let (inbox_tx, inbox) = unbounded();
@@ -529,6 +523,9 @@ impl Server {
     /// diagnostics: pulled reports handed out so far are stale.
     fn knowledge_changed(&mut self) {
         self.generation += 1;
+        // Diagnostics read the knowledge index (add-prefix candidates, lints),
+        // so every open document is due again.
+        self.dirty.extend(self.ws.open.keys().cloned());
         if self.reported {
             self.refresh_needed = true;
         }
@@ -545,9 +542,7 @@ impl Server {
     }
 
     fn merge_index(&mut self, files: Option<Vec<(String, Analysis)>>) {
-        for (uri, a) in files.into_iter().flatten() {
-            self.ws.disk.entry(uri).or_insert_with(|| Arc::new(a));
-        }
+        self.ws.add_disk(files.unwrap_or_default(), false);
         self.indexed = true;
         // The sender is gone now; a disconnected channel is always ready, which
         // would wake the main loop forever.
@@ -580,7 +575,7 @@ impl Server {
         guard("diagnostics", || {
             self.ws
                 .analysis(uri)
-                .map(|a| diagnostics::diagnostics(&a, enc))
+                .map(|a| diagnostics::diagnostics(&a, self.ws.knowledge(), enc))
         })
     }
 
@@ -705,28 +700,28 @@ impl Server {
             Completion::METHOD => {
                 let p = params!(CompletionParams);
                 let (_, a) = doc!(p.text_document_position.text_document.uri);
-                let all = self.ws.all();
                 let text = a.text.clone();
                 json(serde_json::to_value(completion::complete(
                     &a,
                     &text,
-                    &all,
+                    self.ws.knowledge(),
                     enc,
                     p.text_document_position.position,
                 )))
             }
             ResolveCompletionItem::METHOD => {
                 let item = params!(CompletionItem);
-                let all = self.ws.all();
-                json(serde_json::to_value(completion::resolve(item, &all)))
+                json(serde_json::to_value(completion::resolve(
+                    item,
+                    self.ws.knowledge(),
+                )))
             }
             HoverRequest::METHOD => {
                 let p = params!(HoverParams);
                 let (_, a) = doc!(p.text_document_position_params.text_document.uri);
-                let all = self.ws.all();
                 json(serde_json::to_value(hover::hover(
                     &a,
-                    &all,
+                    self.ws.knowledge(),
                     enc,
                     p.text_document_position_params.position,
                 )))
@@ -734,11 +729,10 @@ impl Server {
             GotoDefinition::METHOD => {
                 let p = params!(GotoDefinitionParams);
                 let (u, a) = doc!(p.text_document_position_params.text_document.uri);
-                let all = self.ws.all();
                 let prefix_file = self.prefix_file_for(&u);
                 let locs = navigation::definition(
                     &a,
-                    &all,
+                    self.ws.knowledge(),
                     enc,
                     p.text_document_position_params.position,
                     prefix_file,
@@ -748,10 +742,9 @@ impl Server {
             GotoTypeDefinition::METHOD => {
                 let p = params!(GotoDefinitionParams);
                 let (_, a) = doc!(p.text_document_position_params.text_document.uri);
-                let all = self.ws.all();
                 let locs = navigation::type_definition(
                     &a,
-                    &all,
+                    self.ws.knowledge(),
                     enc,
                     p.text_document_position_params.position,
                 );
@@ -760,10 +753,9 @@ impl Server {
             GotoImplementation::METHOD => {
                 let p = params!(GotoDefinitionParams);
                 let (_, a) = doc!(p.text_document_position_params.text_document.uri);
-                let all = self.ws.all();
                 let locs = navigation::implementations(
                     &a,
-                    &all,
+                    self.ws.knowledge(),
                     enc,
                     p.text_document_position_params.position,
                 );
@@ -772,10 +764,9 @@ impl Server {
             References::METHOD => {
                 let p = params!(ReferenceParams);
                 let (_, a) = doc!(p.text_document_position.text_document.uri);
-                let all = self.ws.all();
                 json(serde_json::to_value(navigation::references(
                     &a,
-                    &all,
+                    self.ws.knowledge(),
                     enc,
                     p.text_document_position.position,
                     p.context.include_declaration,
@@ -800,10 +791,9 @@ impl Server {
             Rename::METHOD => {
                 let p = params!(RenameParams);
                 let (_, a) = doc!(p.text_document_position.text_document.uri);
-                let all = self.ws.all();
                 match navigation::rename(
                     &a,
-                    &all,
+                    self.ws.knowledge(),
                     enc,
                     p.text_document_position.position,
                     &p.new_name,
@@ -821,9 +811,8 @@ impl Server {
             }
             WorkspaceSymbolRequest::METHOD => {
                 let p = params!(WorkspaceSymbolParams);
-                let all = self.ws.all();
                 json(serde_json::to_value(WorkspaceSymbolResponse::Flat(
-                    symbols::workspace_symbols(&all, enc, &p.query),
+                    symbols::workspace_symbols(self.ws.knowledge(), enc, &p.query),
                 )))
             }
             FoldingRangeRequest::METHOD => {
@@ -840,15 +829,16 @@ impl Server {
                 let (_, a) = doc!(p.text_document.uri);
                 let text = a.text.clone();
                 let only = p.context.only.as_deref();
-                let mut actions: Vec<_> = diagnostics::code_actions(&a, &text, enc, &p)
-                    .into_iter()
-                    .filter(|c| match c {
-                        CodeActionOrCommand::CodeAction(c) => {
-                            c.kind.as_ref().is_none_or(|k| refactor::wanted(only, k))
-                        }
-                        CodeActionOrCommand::Command(_) => true,
-                    })
-                    .collect();
+                let mut actions: Vec<_> =
+                    diagnostics::code_actions(&a, self.ws.knowledge(), &text, enc, &p)
+                        .into_iter()
+                        .filter(|c| match c {
+                            CodeActionOrCommand::CodeAction(c) => {
+                                c.kind.as_ref().is_none_or(|k| refactor::wanted(only, k))
+                            }
+                            CodeActionOrCommand::Command(_) => true,
+                        })
+                        .collect();
                 actions.extend(refactor::code_actions(&a, enc, &p, self.resolve_edits));
                 json(serde_json::to_value(actions))
             }
