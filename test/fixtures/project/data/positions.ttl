@@ -1,0 +1,8 @@
+# Positions (fragment): a subclass of sd:Position and its instances
+sd:Workcell a owl:Class ;
+    rdfs:subClassOf sd:Position ;
+    rdfs:label "Work cell"@en .
+
+obj:cell-3 a sd:Workcell ;
+    rdfs:label "Cell 3"@en ;
+    sd:designation "=MC3" .

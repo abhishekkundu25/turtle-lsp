@@ -66,11 +66,11 @@ const rssIndexed = rss(s.proc.pid)
 
 // Completion at end of file after "foaf:" and at an empty position.
 const lines = text.split("\n")
-const compl = async (suffix) => {
-  const doc = text + `\nex:new a ${suffix}`
+const compl = async (suffix, line = `ex:new a ${suffix}`) => {
+  const doc = text + `\n${line}`
   s.change(uri, doc)
   await s.diagnosticsFor(uri, 120000)
-  const pos = { line: doc.split("\n").length - 1, character: `ex:new a ${suffix}`.length }
+  const pos = { line: doc.split("\n").length - 1, character: line.length }
   const samples = []
   let bytes = 0
   let count = 0
@@ -88,6 +88,10 @@ let c = await compl("foaf:")
 record("completion after 'foaf:'", c.samples, c.extra)
 c = await compl("")
 record("completion at empty position", c.samples, c.extra)
+c = await compl("foaf:Person ; ")
+record("completion of a predicate, ranked by type", c.samples, c.extra)
+c = await compl("", "ex:new foaf:knows ")
+record("completion of an object, ranked by range", c.samples, c.extra)
 
 const defs = []
 let defCount = 0

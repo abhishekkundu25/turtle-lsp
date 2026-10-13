@@ -7,14 +7,18 @@
 //!   resources described in the workspace.
 //!
 //! Candidates are ranked by position: after `a` classes come first, in predicate
-//! position properties come first. Results are capped; `isIncomplete` makes the
+//! position properties come first. Before that, [`ranking`] puts what the
+//! ontology and the SHACL shapes expect at the cursor on top (and offers it even
+//! when nothing is typed yet). Results are capped; `isIncomplete` makes the
 //! client ask again as the user types.
+
+mod ranking;
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::prefix_insertion;
-use crate::knowledge::Knowledge;
+use crate::knowledge::{Knowledge, namespace_of};
 use crate::syntax::lexer::{Kind, is_pn_chars};
-use crate::syntax::{RDF_TYPE, Role, Span};
+use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -36,6 +40,8 @@ enum Slot {
 }
 
 struct Candidate {
+    /// Ranking tier (see [`ranking`]); sorts before everything else.
+    tier: u8,
     label: String,
     kind: CompletionItemKind,
     detail: String,
@@ -62,6 +68,14 @@ pub fn complete(
     let slot = slot_at(a, start as u32);
     let prefixes = a.prefix_map();
 
+    let ranked = match slot {
+        Slot::Predicate => ranking::predicates(a, k, start as u32, &prefixes),
+        Slot::Object => ranking::objects(a, k, start as u32, &prefixes, &|iri| {
+            may_match(&iri, typed, &prefixes)
+        }),
+        _ => ranking::Ranking::default(),
+    };
+
     let mut cands: Vec<Candidate> = Vec::new();
     let mut incomplete = false;
 
@@ -85,6 +99,7 @@ pub fn complete(
                 }
                 seen.insert(t.local.clone());
                 cands.push(Candidate {
+                    tier: ranking::NONE,
                     label: format!("{pfx}:{}", t.local),
                     kind: match t.kind {
                         TermKind::Class => CompletionItemKind::CLASS,
@@ -113,6 +128,7 @@ pub fn complete(
             let kind = guess_kind(k, &iri);
             let label = k.label(&iri);
             cands.push(Candidate {
+                tier: ranking::NONE,
                 label: format!("{pfx}:{l}"),
                 kind: match kind {
                     TermKind::Class => CompletionItemKind::CLASS,
@@ -132,6 +148,7 @@ pub fn complete(
             if fuzzy(typed, p) {
                 pfx_seen.insert(p.clone());
                 cands.push(Candidate {
+                    tier: ranking::NONE,
                     label: format!("{p}:"),
                     kind: CompletionItemKind::MODULE,
                     detail: ns.clone(),
@@ -144,6 +161,7 @@ pub fn complete(
         for v in &VOCABS.all {
             if !pfx_seen.contains(v.prefix) && !typed.is_empty() && v.prefix.starts_with(typed) {
                 cands.push(Candidate {
+                    tier: ranking::NONE,
                     label: format!("{}:", v.prefix),
                     kind: CompletionItemKind::MODULE,
                     detail: format!("{} (adds @prefix)", v.namespace),
@@ -166,6 +184,7 @@ pub fn complete(
         for (k, d) in keywords {
             if typed.is_empty() || k.starts_with(typed) {
                 cands.push(Candidate {
+                    tier: ranking::NONE,
                     label: k.to_string(),
                     kind: CompletionItemKind::KEYWORD,
                     detail: d.to_string(),
@@ -183,6 +202,7 @@ pub fn complete(
                     let local = short.split_once(':').map_or("", |x| x.1);
                     if fuzzy(typed, local) && seen.insert(short.clone()) {
                         cands.push(Candidate {
+                            tier: ranking::NONE,
                             label: short,
                             kind: CompletionItemKind::REFERENCE,
                             detail: k.label(&iri).unwrap_or(&iri).to_string(),
@@ -221,6 +241,7 @@ pub fn complete(
                     .filter(|t| t.local.to_lowercase().starts_with(&lower))
                 {
                     cands.push(Candidate {
+                        tier: ranking::NONE,
                         label: format!("{pfx}:{}", t.local),
                         kind: match t.kind {
                             TermKind::Class => CompletionItemKind::CLASS,
@@ -241,11 +262,19 @@ pub fn complete(
         }
     }
 
+    incomplete |= apply_ranking(&mut cands, ranked, slot, typed, k, &prefixes);
+
     let lower = typed.rsplit(':').next().unwrap_or("").to_lowercase();
     cands.sort_by(|x, y| {
         let px = !local_of(&x.label).to_lowercase().starts_with(&lower);
         let py = !local_of(&y.label).to_lowercase().starts_with(&lower);
-        (x.rank, px, x.label.len(), &x.label).cmp(&(y.rank, py, y.label.len(), &y.label))
+        (x.tier, x.rank, px, x.label.len(), &x.label).cmp(&(
+            y.tier,
+            y.rank,
+            py,
+            y.label.len(),
+            &y.label,
+        ))
     });
     if cands.len() > LIMIT {
         cands.truncate(LIMIT);
@@ -304,6 +333,118 @@ pub fn resolve(mut item: CompletionItem, k: &Knowledge) -> CompletionItem {
         }));
     }
     item
+}
+
+/// Tag candidates the ranking knows about, and add the ranked ones that are
+/// not candidates yet (with nothing typed there are few). Returns whether
+/// the ranking left some out.
+fn apply_ranking(
+    cands: &mut Vec<Candidate>,
+    ranked: ranking::Ranking,
+    slot: Slot,
+    typed: &str,
+    k: &Knowledge,
+    prefixes: &PrefixMap,
+) -> bool {
+    if ranked.iris.is_empty() && ranked.literals.is_empty() {
+        return ranked.truncated;
+    }
+    let mut present: FxHashSet<Iri> = FxHashSet::default();
+    for c in cands.iter_mut() {
+        let Some(iri) = c.iri.as_deref().and_then(Iri::get) else {
+            continue;
+        };
+        present.insert(iri);
+        if let Some(h) = ranked.iris.get(&iri) {
+            c.tier = h.tier;
+            if let Some(d) = &h.detail {
+                c.detail = d.clone();
+            }
+        }
+    }
+    let wanted = |label: &str| match typed.split_once(':') {
+        Some((p, local)) => label
+            .strip_prefix(p)
+            .and_then(|l| l.strip_prefix(':'))
+            .is_some_and(|l| fuzzy(local, l)),
+        None => fuzzy(typed, local_of(label)),
+    };
+    for (iri, h) in &ranked.iris {
+        if present.contains(iri) {
+            continue;
+        }
+        let (label, import) = written(iri, prefixes);
+        if !wanted(&label) {
+            continue;
+        }
+        let vocab = VOCABS
+            .lookup(iri)
+            .and_then(|(v, l)| v.term(l))
+            .filter(|t| !t.label.is_empty());
+        let detail = h.detail.clone().unwrap_or_else(|| {
+            k.label(iri)
+                .or(vocab.map(|t| t.label.as_str()))
+                .unwrap_or(iri)
+                .to_string()
+        });
+        cands.push(Candidate {
+            tier: h.tier,
+            label,
+            kind: if slot == Slot::Predicate {
+                CompletionItemKind::PROPERTY
+            } else if h.enumerated {
+                CompletionItemKind::ENUM_MEMBER
+            } else {
+                CompletionItemKind::REFERENCE
+            },
+            detail,
+            iri: Some(iri.to_string()),
+            rank: 0,
+            import,
+        });
+    }
+    for (text, detail) in ranked.literals {
+        if typed.is_empty() || fuzzy(typed, &text) {
+            cands.push(Candidate {
+                tier: ranking::REQUIRED,
+                label: text,
+                kind: CompletionItemKind::VALUE,
+                detail,
+                iri: None,
+                rank: 0,
+                import: None,
+            });
+        }
+    }
+    ranked.truncated
+}
+
+/// How to write `iri` here: with a prefix in scope, else with a well-known
+/// vocabulary's prefix (added on accept), else in full.
+fn written(iri: &str, prefixes: &PrefixMap) -> (String, Option<(String, String)>) {
+    if let Some(short) = shorten(iri, prefixes) {
+        return (short, None);
+    }
+    if let Some((v, local)) = VOCABS.lookup(iri)
+        && !prefixes.contains_key(v.prefix)
+        && is_local_name(local)
+    {
+        return (
+            format!("{}:{local}", v.prefix),
+            Some((v.prefix.to_string(), v.namespace.to_string())),
+        );
+    }
+    (format!("<{iri}>"), None)
+}
+
+/// Whether `iri` could match what was typed, without building its label.
+fn may_match(iri: &str, typed: &str, prefixes: &PrefixMap) -> bool {
+    match typed.split_once(':') {
+        Some((p, local)) => prefixes
+            .get(p)
+            .is_some_and(|ns| iri.starts_with(ns.as_str()) && fuzzy(local, &iri[ns.len()..])),
+        None => fuzzy(typed, &iri[namespace_of(iri).len()..]),
+    }
 }
 
 fn local_of(label: &str) -> &str {
@@ -420,7 +561,7 @@ fn fuzzy(query: &str, cand: &str) -> bool {
 }
 
 /// `iri` as `prefix:local` using the longest matching namespace.
-pub fn shorten(iri: &str, prefixes: &crate::syntax::PrefixMap) -> Option<String> {
+pub fn shorten(iri: &str, prefixes: &PrefixMap) -> Option<String> {
     prefixes
         .iter()
         .filter(|(_, ns)| {
