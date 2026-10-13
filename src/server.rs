@@ -16,6 +16,7 @@
 //! (prefixes.ttl, the disk index, settings) bumps the generation.
 
 use crate::analysis::{Analysis, Encoding};
+use crate::features::hierarchy;
 use crate::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
 use crate::settings::Settings;
 use crate::workspace::{
@@ -68,6 +69,8 @@ pub struct Server {
     reported: bool,
     /// The generation moved after a report went out: refresh at end of batch.
     refresh_needed: bool,
+    /// The knowledge index's described generation last acted on.
+    described_seen: u64,
 }
 
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
@@ -151,7 +154,10 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
             version: Some(env!("CARGO_PKG_VERSION").into()),
         }),
     };
-    conn.initialize_finish(id, serde_json::to_value(result)?)?;
+    let mut result = serde_json::to_value(result)?;
+    // lsp-types 0.97 has no field for it.
+    result["capabilities"]["typeHierarchyProvider"] = Value::Bool(true);
+    conn.initialize_finish(id, result)?;
 
     // Index the workspace in the background.
     let (tx, index_rx) = unbounded();
@@ -193,6 +199,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         generation: 0,
         reported: false,
         refresh_needed: false,
+        described_seen: 0,
     };
     let clean = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
@@ -338,8 +345,20 @@ impl Server {
                     msg => self.handle(msg)?,
                 }
             }
+            self.check_described();
             self.publish_dirty();
             self.refresh_if_needed();
+        }
+    }
+
+    /// An edit that changes which terms are described (or which prefixes are
+    /// bound) changes other open documents' lint results; most keystrokes don't.
+    fn check_described(&mut self) {
+        // Analyzes the documents edited in this batch (diagnostics would anyway).
+        let g = self.ws.knowledge().described_generation();
+        if g != self.described_seen {
+            self.described_seen = g;
+            self.knowledge_changed();
         }
     }
 
@@ -575,9 +594,10 @@ impl Server {
     fn diagnostics_for(&mut self, uri: &str) -> Result<Option<Vec<Diagnostic>>, String> {
         let enc = self.enc;
         let indexed = self.indexed;
+        let opts = diagnostics::Options::from_settings(&self.settings);
         guard("diagnostics", || {
             self.ws.analysis(uri).map(|a| {
-                let mut d = diagnostics::diagnostics(&a, self.ws.knowledge(), enc);
+                let mut d = diagnostics::diagnostics_with(&a, self.ws.knowledge(), enc, &opts);
                 // "Known nowhere" findings wait for the initial index.
                 if !indexed {
                     d.retain(|d| !diagnostics::needs_index(d));
@@ -609,6 +629,8 @@ impl Server {
     /// the document nor the knowledge generation moved since `previousResultId`.
     fn pull_diagnostics(&mut self, p: DocumentDiagnosticParams) -> DocumentDiagnosticReportResult {
         let uri = normalize_uri(p.text_document.uri.as_str());
+        // Settle the generation first, so this report's result id stays valid.
+        self.check_described();
         let version = self
             .ws
             .open
@@ -864,6 +886,29 @@ impl Server {
                 let opts =
                     format::Options::from_lsp(&p.options, self.settings.format_line_width as usize);
                 json(serde_json::to_value(format::formatting(&a, enc, &opts)))
+            }
+            TypeHierarchyPrepare::METHOD => {
+                let p = params!(TypeHierarchyPrepareParams);
+                let (_, a) = doc!(p.text_document_position_params.text_document.uri);
+                json(serde_json::to_value(hierarchy::prepare(
+                    &a,
+                    self.ws.knowledge(),
+                    enc,
+                    p.text_document_position_params.position,
+                )))
+            }
+            TypeHierarchySupertypes::METHOD | TypeHierarchySubtypes::METHOD => {
+                let item = params!(TypeHierarchySupertypesParams).item;
+                let asking =
+                    hierarchy::asking_uri(&item).and_then(|u| self.ws.analysis(&normalize_uri(u)));
+                let k = self.ws.knowledge();
+                json(serde_json::to_value(
+                    if req.method == TypeHierarchySupertypes::METHOD {
+                        hierarchy::supertypes(&item, k, enc, asking.as_deref())
+                    } else {
+                        hierarchy::subtypes(&item, k, enc, asking.as_deref())
+                    },
+                ))
             }
             _ => Err((
                 ErrorCode::MethodNotFound,

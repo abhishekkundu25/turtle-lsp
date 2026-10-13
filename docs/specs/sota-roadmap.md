@@ -286,11 +286,19 @@ analysis plus the knowledge index)
 - **Workspace lint** (code `undescribed-term`): a ref to IRI *x* is flagged
   when *x*'s namespace is an "own" namespace and *x* is described nowhere
   (workspace, imports). Own namespace: not a well-known vocabulary, and the
-  workspace describes at least 3 terms in it and describes at least 20% of the
+  workspace describes at least 3 terms in it and describes at least 80% of the
   distinct terms it references there (keeps reference-heavy instance
-  namespaces quiet). Severity: warning when a described term within edit
-  distance ≤ 2 exists (with a replace quick fix), otherwise information. Refs in
-  subject position are descriptions and never flagged. Setting
+  namespaces quiet). Tuned on the private corpus: at 20% it raised 36
+  warnings and 555 information diagnostics, at 80% none and 9. Severity:
+  warning when a described term within edit distance ≤ 2 exists (≤ 1 for
+  local names of 3 to 5 characters, none for shorter ones; same first-letter
+  case; not differing only in digits), with a replace quick fix; otherwise information. Refs in
+  subject position are descriptions and never flagged, nor are objects of
+  ontology links (`owl:imports`, `owl:versionIRI`, `owl:priorVersion`,
+  `owl:backwardCompatibleWith`, `owl:incompatibleWith`). The SHACL shape
+  lint's "known nowhere" rules use a looser *project* namespace test (≥ 3
+  described, ≥ 20% of referenced) so a partly present ontology is still
+  checked; that stayed silent on the corpus. Setting
   `lint.undescribedTerms` (default true). Threshold values are tuned on the
   private real-world corpus (must stay near-silent there).
 - **Imports.** For `?o owl:imports <iri>`: resolve in this order, stopping at

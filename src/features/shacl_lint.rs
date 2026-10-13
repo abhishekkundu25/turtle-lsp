@@ -45,11 +45,11 @@ const NOT_DATATYPES: [&str; 2] = [
 ];
 
 /// Whether "described nowhere" means something for `iri`: its namespace is
-/// one the workspace describes (see [`Knowledge::is_own_namespace`]), not
+/// one the workspace describes (see [`Knowledge::is_project_namespace`]), not
 /// one it only references, such as an ontology that is not loaded. Never
 /// a well-known vocabulary: unknown-term covers typos there.
 fn judged(k: &Knowledge, iri: &str) -> bool {
-    k.is_own_namespace(namespace_of(iri))
+    k.is_project_namespace(namespace_of(iri))
 }
 
 struct Ctx<'a> {

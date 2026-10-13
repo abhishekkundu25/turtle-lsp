@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::analysis::{Analysis, Encoding};
+use turtle_lsp::features::hierarchy;
 use turtle_lsp::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
 use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse};
@@ -268,6 +269,10 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     for enc in [Encoding::Utf8, Encoding::Utf16] {
         let _ = format::formatting(&a, enc, &opts);
         let _ = diagnostics::diagnostics(&a, docs, enc);
+        let lint_off = diagnostics::Options {
+            lint_undescribed_terms: false,
+        };
+        let _ = diagnostics::diagnostics_with(&a, docs, enc, &lint_off);
         let _ = symbols::document_symbols(&a, text, enc);
         let _ = symbols::folding_ranges(&a);
         let _ = symbols::workspace_symbols(docs, enc, "a");
@@ -282,6 +287,12 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             let _ = navigation::references(&a, docs, enc, pos, true);
             let _ = navigation::highlights(&a, enc, pos);
             let _ = navigation::prepare_rename(&a, enc, pos);
+            for item in hierarchy::prepare(&a, docs, enc, pos).into_iter().flatten() {
+                for up in hierarchy::supertypes(&item, docs, enc, Some(&a)) {
+                    let _ = hierarchy::subtypes(&up, docs, enc, None);
+                }
+                let _ = hierarchy::subtypes(&item, docs, enc, Some(&a));
+            }
             let _ = navigation::rename(&a, docs, enc, pos, "renamed");
             // Positions past the end of a line or of the file, as clients sometimes send.
             let wild = Position::new(

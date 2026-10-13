@@ -15,7 +15,8 @@ pub const SOURCE: &str = "turtle";
 pub const NEEDS_INDEX: &[&str] = crate::features::shacl_lint::NEEDS_INDEX;
 
 pub fn needs_index(d: &Diagnostic) -> bool {
-    matches!(&d.code, Some(NumberOrString::String(c)) if NEEDS_INDEX.contains(&c.as_str()))
+    matches!(&d.code, Some(NumberOrString::String(c))
+        if NEEDS_INDEX.contains(&c.as_str()) || c == crate::features::lint::CODE)
 }
 
 /// A namespace to bind an undeclared prefix name to.
@@ -66,7 +67,39 @@ fn candidate_title(prefix: &str, c: &Value) -> Option<(String, String)> {
     Some((title, ns.to_string()))
 }
 
+/// Which optional diagnostics to compute (from the client's settings).
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub lint_undescribed_terms: bool,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            lint_undescribed_terms: true,
+        }
+    }
+}
+
+impl Options {
+    pub fn from_settings(s: &crate::settings::Settings) -> Options {
+        Options {
+            lint_undescribed_terms: s.lint_undescribed_terms,
+        }
+    }
+}
+
+/// [`diagnostics_with`] with default options.
 pub fn diagnostics(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic> {
+    diagnostics_with(a, k, enc, &Options::default())
+}
+
+pub fn diagnostics_with(
+    a: &Analysis,
+    k: &Knowledge,
+    enc: Encoding,
+    opts: &Options,
+) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mk = |span, severity, code: &str, message: String| Diagnostic {
         range: a.range(enc, span),
@@ -233,6 +266,9 @@ pub fn diagnostics(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic
         };
         out.push(mk(f.span, sev, f.code, f.message));
     }
+    if opts.lint_undescribed_terms {
+        out.extend(crate::features::lint::undescribed_terms(a, k, enc));
+    }
     out
 }
 
@@ -318,7 +354,7 @@ pub fn code_actions(
                     ..Default::default()
                 }));
             }
-            "unknown-term" => {
+            "unknown-term" | crate::features::lint::CODE => {
                 let Some(rep) = data.and_then(|x| x["replace"].as_str()) else {
                     continue;
                 };

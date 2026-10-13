@@ -55,3 +55,13 @@ for (const f of files) {
     }
   })
 }
+
+// The workspace lint must stay quiet on real data: no "did you mean" warnings.
+for (const f of files) {
+  test(`${f} as a fragment: no undescribed-term warnings`, async () => {
+    const uri = uriOf(path.join(dir, f))
+    s.open(uri, fs.readFileSync(path.join(dir, f), "utf8"))
+    const diags = (await s.diagnosticsFor(uri)).filter((d) => d.code === "undescribed-term" && d.severity <= 2)
+    assert.deepEqual(diags, [], fmt(diags))
+  })
+}

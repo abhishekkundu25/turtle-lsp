@@ -143,6 +143,11 @@ pub struct Knowledge {
     /// Prefix name -> namespace -> number of workspace files.
     bindings: FxHashMap<Iri, FxHashMap<Iri, u32>>,
     generation: u64,
+    /// See [`Knowledge::described_generation`].
+    described_generation: u64,
+    /// Scratch for one change: namespaces whose counts moved, with whether
+    /// they were own namespaces before it.
+    own_before: FxHashMap<Iri, bool>,
 }
 
 /// The namespace part of an IRI: up to and including its last `#`, `/` or `:`.
@@ -152,8 +157,15 @@ pub fn namespace_of(iri: &str) -> &str {
 
 /// The own-namespace rule: at least this many described terms...
 const OWN_MIN_DESCRIBED: u32 = 3;
-/// ...and at least 1 in this many referenced terms described (20%).
-const OWN_MIN_SHARE: u32 = 5;
+/// ...and at least this percentage of the referenced terms described. Tuned
+/// on a real-world corpus of example fragments: at 20% or 50% a namespace whose
+/// ontology lives outside the workspace, or an instance namespace, floods the
+/// lint; at 80% only namespaces the workspace (nearly) fully describes count.
+const OWN_MIN_SHARE_PERCENT: u32 = 80;
+/// A looser bar for "the project defines terms here" (SHACL references to
+/// classes and shapes): stays quiet for namespaces the workspace only
+/// references, but still covers an ontology that is partly in the workspace.
+const PROJECT_MIN_SHARE_PERCENT: u32 = 20;
 
 struct Preds {
     rdf_type: Iri,
@@ -476,10 +488,57 @@ fn step(n: &mut u32, add: bool) -> bool {
     }
 }
 
+impl Namespace {
+    /// [`Knowledge::is_own_namespace`] without the well-known vocabulary check.
+    fn is_own(&self) -> bool {
+        self.described >= OWN_MIN_DESCRIBED
+            && self.described * 100 >= OWN_MIN_SHARE_PERCENT * self.referenced
+    }
+
+    fn is_project(&self) -> bool {
+        self.described >= OWN_MIN_DESCRIBED
+            && self.described * 100 >= PROJECT_MIN_SHARE_PERCENT * self.referenced
+    }
+}
+
+/// Step one of a namespace's counters, remembering whether it was own before
+/// the change began.
+fn ns_step(
+    namespaces: &mut FxHashMap<Iri, Namespace>,
+    own_before: &mut FxHashMap<Iri, bool>,
+    ns: Iri,
+    add: bool,
+    field: fn(&mut Namespace) -> &mut u32,
+) {
+    let n = namespaces.entry(ns).or_default();
+    own_before.entry(ns).or_insert_with(|| n.is_own());
+    step(field(n), add);
+}
+
 impl Knowledge {
     /// Bumped on every change; lets callers tell whether cached results are stale.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Bumped only when a change can alter what other documents' lints say:
+    /// an IRI becomes described or stops being described, a namespace becomes
+    /// or stops being an own namespace, or a prefix binding appears or goes.
+    /// Ordinary keystrokes leave it alone.
+    pub fn described_generation(&self) -> u64 {
+        self.described_generation
+    }
+
+    /// Bump [`Knowledge::described_generation`] if a namespace changed sides.
+    fn settle_namespaces(&mut self) {
+        let mut flipped = false;
+        for (ns, before) in self.own_before.drain() {
+            let after = self.namespaces.get(&ns).is_some_and(Namespace::is_own);
+            flipped |= before != after && VOCABS.by_namespace(&ns).is_none();
+        }
+        if flipped {
+            self.described_generation += 1;
+        }
     }
 
     // ---- sources ----
@@ -572,12 +631,14 @@ impl Knowledge {
         if let Some(old) = self.by_key.insert(key, id) {
             self.release(old);
         }
+        self.settle_namespaces();
         self.generation += 1;
     }
 
     fn take(&mut self, key: &Key) {
         if let Some(id) = self.by_key.remove(key) {
             self.release(id);
+            self.settle_namespaces();
             self.generation += 1;
         }
     }
@@ -594,7 +655,9 @@ impl Knowledge {
         let f = &slot.facts;
         let ws = slot.source != Source::External;
         let namespaces = &mut self.namespaces;
+        let own_before = &mut self.own_before;
         let entries = &mut self.entries;
+        let mut described_moved = false;
         for &iri in &f.subjects {
             toggle(&mut entry(entries, iri).subject, id, add);
         }
@@ -618,29 +681,37 @@ impl Knowledge {
                 }
             }
             if ws && step(&mut e.refs_ws, add) {
-                step(&mut namespaces.entry(ns).or_default().referenced, add);
+                ns_step(namespaces, own_before, ns, add, |n| &mut n.referenced);
             }
         }
         for &iri in a.defs.keys() {
             let e = entry(entries, iri);
             let ns = e.ns.expect("set on creation");
+            let was = e.described_ws + e.described_ext > 0;
             if !ws {
                 step(&mut e.described_ext, add);
             } else if step(&mut e.described_ws, add) {
-                step(&mut namespaces.entry(ns).or_default().described, add);
+                ns_step(namespaces, own_before, ns, add, |n| &mut n.described);
             }
+            described_moved |= was != (e.described_ws + e.described_ext > 0);
         }
         if ws {
             for &(name, ns) in &f.bindings {
                 let by_ns = self.bindings.entry(name).or_default();
                 let n = by_ns.entry(ns).or_default();
-                if step(n, add) && !add {
-                    by_ns.remove(&ns);
-                    if by_ns.is_empty() {
-                        self.bindings.remove(&name);
+                if step(n, add) {
+                    described_moved = true;
+                    if !add {
+                        by_ns.remove(&ns);
+                        if by_ns.is_empty() {
+                            self.bindings.remove(&name);
+                        }
                     }
                 }
             }
+        }
+        if described_moved {
+            self.described_generation += 1;
         }
         if !add {
             let touched = f
@@ -869,7 +940,7 @@ impl Knowledge {
     }
 
     /// An "own" namespace: not a well-known vocabulary, at least 3 terms in
-    /// it described in the workspace, and at least 20% of the distinct terms
+    /// it described in the workspace, and at least 80% of the distinct terms
     /// the workspace references in it described.
     pub fn is_own_namespace(&self, ns: &str) -> bool {
         if VOCABS.by_namespace(ns).is_some() {
@@ -877,9 +948,19 @@ impl Knowledge {
         }
         Iri::get(ns)
             .and_then(|k| self.namespaces.get(&k))
-            .is_some_and(|n| {
-                n.described >= OWN_MIN_DESCRIBED && n.described * OWN_MIN_SHARE >= n.referenced
-            })
+            .is_some_and(Namespace::is_own)
+    }
+
+    /// Whether the project defines terms in `ns` (a looser test than
+    /// [`Knowledge::is_own_namespace`]): not a well-known vocabulary, at least
+    /// three terms described and at least 20% of those referenced.
+    pub fn is_project_namespace(&self, ns: &str) -> bool {
+        if VOCABS.by_namespace(ns).is_some() {
+            return false;
+        }
+        Iri::get(ns)
+            .and_then(|k| self.namespaces.get(&k))
+            .is_some_and(Namespace::is_project)
     }
 
     /// Every own namespace (see [`Knowledge::is_own_namespace`]), sorted.
@@ -1299,13 +1380,52 @@ mod tests {
             text.push_str(&format!("ex:t{i} a ex:C .\n"));
         }
         k.set("file:///a.ttl", Source::Disk, analysis("a", &text, &none));
-        // 3 described of 4 referenced (t0..t2, C).
-        assert!(k.is_own_namespace("http://ex.org/"));
-        for i in 0..20 {
-            text.push_str(&format!("ex:t0 ex:p ex:x{i} .\n"));
-        }
-        k.set("file:///a.ttl", Source::Disk, analysis("a", &text, &none));
-        // 3 of 25: below 20%.
+        // 3 described of 4 referenced (t0..t2, C): below 80%.
         assert!(!k.is_own_namespace("http://ex.org/"));
+        text.push_str("ex:C a ex:t0 .\n");
+        k.set("file:///a.ttl", Source::Disk, analysis("a", &text, &none));
+        // 4 of 4.
+        assert!(k.is_own_namespace("http://ex.org/"));
+        text.push_str("ex:t0 ex:t1 ex:x .\n");
+        k.set("file:///a.ttl", Source::Disk, analysis("a", &text, &none));
+        // 4 of 5: exactly 80%.
+        assert!(k.is_own_namespace("http://ex.org/"));
+        text.push_str("ex:t0 ex:t1 ex:y .\n");
+        k.set("file:///a.ttl", Source::Disk, analysis("a", &text, &none));
+        // 4 of 6.
+        assert!(!k.is_own_namespace("http://ex.org/"));
+    }
+
+    #[test]
+    fn described_generation_moves_only_when_the_described_set_does() {
+        let mut k = Knowledge::default();
+        let none = Arc::new(PrefixMap::default());
+        let header = "@prefix ex: <http://ex.org/> .\n";
+        let set = |k: &mut Knowledge, body: &str| {
+            let text = format!("{header}{body}");
+            k.set("file:///a.ttl", Source::Open, analysis("a", &text, &none));
+            k.described_generation()
+        };
+        let g = set(&mut k, "ex:a a ex:C .\n");
+        // Same described set, different text, objects and whitespace.
+        assert_eq!(set(&mut k, "ex:a  a ex:C .\n"), g);
+        assert_eq!(set(&mut k, "ex:a a ex:D .\n"), g);
+        assert_eq!(set(&mut k, "ex:a a ex:Dx ; ex:p ex:q .\n"), g);
+        // A new subject.
+        let g2 = set(&mut k, "ex:a a ex:C .\nex:b a ex:C .\n");
+        assert!(g2 > g);
+        // A new prefix binding.
+        let g3 = set(
+            &mut k,
+            "@prefix f: <http://f.org/> .\nex:a a ex:C .\nex:b a ex:C .\n",
+        );
+        assert!(g3 > g2);
+        // A namespace becoming own (3 of 3 described) without a 0<->1 change
+        // in what other files see is still a change for them.
+        let g4 = set(&mut k, "ex:a a ex:b .\nex:b a ex:c .\nex:c a ex:a .\n");
+        assert!(g4 > g3);
+        assert!(k.is_own_namespace("http://ex.org/"));
+        k.remove("file:///a.ttl");
+        assert!(k.described_generation() > g4);
     }
 }

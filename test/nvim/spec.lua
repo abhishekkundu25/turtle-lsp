@@ -272,6 +272,20 @@ check("a .nt buffer (filetype ntriples) attaches with no warnings", function()
   assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
 end)
 
+check("type hierarchy answers: sd:MeasurementPoint has sosa:Sensor as a supertype", function()
+  local b = open(project .. "/core/vocab.ttl")
+  local items = request(b, "textDocument/prepareTypeHierarchy", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, "sd:MeasurementPo"),
+  })
+  assert(items and #items == 1, "prepare: " .. vim.inspect(items))
+  local supers = request(b, "typeHierarchy/supertypes", { item = items[1] })
+  local names = vim.tbl_map(function(i)
+    return i.name
+  end, supers or {})
+  assert(vim.tbl_contains(names, "sosa:Sensor"), "supertypes: " .. vim.inspect(names))
+end)
+
 check("LSP folding works", function()
   local b = open(people)
   local r = request(b, "textDocument/foldingRange", { textDocument = vim.lsp.util.make_text_document_params(b) })

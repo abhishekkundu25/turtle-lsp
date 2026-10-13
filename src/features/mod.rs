@@ -1,7 +1,9 @@
 pub mod completion;
 pub mod diagnostics;
 pub mod format;
+pub mod hierarchy;
 pub mod hover;
+pub mod lint;
 pub mod navigation;
 pub mod refactor;
 pub mod shacl_lint;

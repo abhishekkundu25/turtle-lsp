@@ -125,7 +125,9 @@ describe("push diagnostics", () => {
   test("diagnostics are pushed; didSave and didChangeConfiguration are accepted", async () => {
     const uri = scratch("push")
     s.open(uri, "ex:s ex:p ex:o .\n")
-    assert.deepEqual(await s.diagnosticsFor(uri), [], "initializationOptions prefixes apply")
+    // ex: is described in the fixture workspace, so ex:p and ex:o are linted.
+    const notLint = (diags) => diags.filter((d) => d.code !== "undescribed-term")
+    assert.deepEqual(notLint(await s.diagnosticsFor(uri)), [], "initializationOptions prefixes apply")
 
     // Dropping the prefix from the settings makes ex: undeclared.
     s.notify("workspace/didChangeConfiguration", { settings: { turtle: { prefixes: {} } } })
