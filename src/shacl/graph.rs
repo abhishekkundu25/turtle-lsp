@@ -102,7 +102,9 @@ impl Rows {
 
 pub struct Graph<'a> {
     terms: Vec<Term<'a>>,
-    ids: FxHashMap<Term<'a>, Id>,
+    /// Term -> id. The `u32` scopes triple terms that contain blank nodes to
+    /// their document (u32::MAX otherwise), as blank nodes themselves are.
+    ids: FxHashMap<(Term<'a>, u32), Id>,
     pub triples: Vec<GTriple>,
     /// Per triple: (document, index into that document's triples).
     pub origin: Vec<(u32, u32)>,
@@ -156,16 +158,25 @@ impl<'a> Graph<'a> {
             }
             Node::Literal { .. } | Node::Triple(_) => Term::Value(n),
         };
-        self.intern(term)
+        let scope = if matches!(n, Node::Triple(_)) && has_blank(n) {
+            // Count the blank nodes inside, so the next document's start after them.
+            let mut b = 0;
+            blank_max(n, &mut b);
+            *max = (*max).max(b);
+            base
+        } else {
+            u32::MAX
+        };
+        self.intern(term, scope)
     }
 
-    fn intern(&mut self, t: Term<'a>) -> Id {
-        if let Some(&id) = self.ids.get(&t) {
+    fn intern(&mut self, t: Term<'a>, scope: u32) -> Id {
+        if let Some(&id) = self.ids.get(&(t, scope)) {
             return id;
         }
         let id = self.terms.len() as Id;
         self.terms.push(t);
-        self.ids.insert(t, id);
+        self.ids.insert((t, scope), id);
         id
     }
 
@@ -182,7 +193,8 @@ impl<'a> Graph<'a> {
     }
 
     pub fn id(&self, t: Term<'a>) -> Option<Id> {
-        self.ids.get(&t).copied()
+        // Lookups by content: triple terms with blank nodes are per document.
+        self.ids.get(&(t, u32::MAX)).copied()
     }
 
     pub fn iri(&self, i: Iri) -> Option<Id> {
@@ -271,6 +283,26 @@ impl<'a> Graph<'a> {
             cur = rest;
         }
         out
+    }
+}
+
+/// Whether a triple term contains a blank node (anywhere inside).
+fn has_blank(n: &Node) -> bool {
+    match n {
+        Node::Triple(t) => has_blank(&t.0) || has_blank(&t.2),
+        Node::Blank(_) => true,
+        _ => false,
+    }
+}
+
+fn blank_max(n: &Node, max: &mut u32) {
+    match n {
+        Node::Triple(t) => {
+            blank_max(&t.0, max);
+            blank_max(&t.2, max);
+        }
+        Node::Blank(BlankId(b)) => *max = (*max).max(b.saturating_add(1)),
+        _ => {}
     }
 }
 

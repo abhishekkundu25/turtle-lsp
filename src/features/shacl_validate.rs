@@ -20,7 +20,7 @@ use crate::features::hover::short;
 use crate::features::navigation;
 use crate::knowledge::Source;
 use crate::shacl::graph::{Graph, Id, Term};
-use crate::shacl::{Path, SH, ValidationResult, validate};
+use crate::shacl::{Path, SH, ValidationResult, validate_focus};
 use crate::syntax::{Iri, PrefixMap, Role, Span, XSD};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_types::*;
@@ -135,10 +135,11 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     // The shared graph, its results placed in the Turtle documents.
     validate_unit(job, &shared, None, cancelled, &mut out)?;
     for d in docs.iter().copied().filter(dataset) {
-        let mut unit = shared.clone();
-        unit.push(d);
-        // Results in the shared documents were reported above.
-        validate_unit(job, &unit, Some(&d.1.uri), cancelled, &mut out)?;
+        // The dataset first, so results it causes are placed in it; only its
+        // own nodes are focus nodes (the shared ones were validated above).
+        let mut unit = vec![d];
+        unit.extend(shared.iter().copied());
+        validate_unit(job, &unit, Some(&d.1), cancelled, &mut out)?;
     }
     for list in out.values_mut() {
         let mut seen = rustc_hash::FxHashSet::default();
@@ -158,12 +159,12 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     Some(out)
 }
 
-/// Validate one data graph (`docs` merged); keep results placed in `only`
-/// when given. `None` when cancelled.
+/// Validate one data graph (`docs` merged). With `dataset` (then `docs[0]`),
+/// only nodes that dataset mentions are focus nodes. `None` when cancelled.
 fn validate_unit(
     job: &Job,
     docs: &[&(Source, Arc<Analysis>)],
-    only: Option<&str>,
+    dataset: Option<&Arc<Analysis>>,
     cancelled: &dyn Fn() -> bool,
     out: &mut ByUri,
 ) -> Option<()> {
@@ -175,7 +176,12 @@ fn validate_unit(
     let total: u64 = docs.iter().map(|d| d.1.parsed.triples.len() as u64).sum();
     if total > job.max_triples {
         let skip = NumberOrString::String(SKIPPED_CODE.into());
-        for (_, a) in docs.iter().filter(|d| shaped(d)) {
+        // A dataset over the limit is the one to tell; else the shape files.
+        let told: Vec<&Arc<Analysis>> = match dataset {
+            Some(a) => vec![a],
+            None => docs.iter().filter(|d| shaped(d)).map(|d| &d.1).collect(),
+        };
+        for a in told {
             let list = out.entry(a.uri.clone()).or_default();
             if !list.iter().any(|d| d.code.as_ref() == Some(&skip)) {
                 list.push(skipped(a, job.enc, total, job.max_triples));
@@ -186,7 +192,16 @@ fn validate_unit(
     let triples: Vec<&[crate::syntax::Triple]> =
         docs.iter().map(|d| d.1.parsed.triples.as_slice()).collect();
     let g = Graph::new(&triples);
-    let results = validate(&g, cancelled)?;
+    let mine: Option<rustc_hash::FxHashSet<Id>> = dataset.map(|_| {
+        g.triples
+            .iter()
+            .zip(&g.origin)
+            .filter(|(_, o)| o.0 == 0)
+            .flat_map(|(t, _)| [t.s, t.o])
+            .collect()
+    });
+    let keep = |id: Id| mine.as_ref().is_none_or(|m| m.contains(&id));
+    let results = validate_focus(&g, cancelled, &keep)?;
     let mut place = Placer {
         g: &g,
         docs,
@@ -194,9 +209,7 @@ fn validate_unit(
         prefixes: FxHashMap::default(),
     };
     for r in &results {
-        if let Some((uri, d)) = place.diagnostic(r)
-            && only.is_none_or(|u| u == uri)
-        {
+        if let Some((uri, d)) = place.diagnostic(r) {
             out.entry(uri).or_default().push(d);
         }
     }

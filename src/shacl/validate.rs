@@ -1018,6 +1018,15 @@ pub fn has_targets(g: &Graph) -> bool {
 /// Validate `g` against the shapes in it. `cancelled` is polled between
 /// focus nodes; a run it stops returns `None`.
 pub fn validate(g: &Graph, cancelled: &dyn Fn() -> bool) -> Option<Vec<ValidationResult>> {
+    validate_focus(g, cancelled, &|_| true)
+}
+
+/// Like [`validate`], for the focus nodes `keep` accepts only.
+pub fn validate_focus(
+    g: &Graph,
+    cancelled: &dyn Fn() -> bool,
+    keep: &dyn Fn(Id) -> bool,
+) -> Option<Vec<ValidationResult>> {
     let v = v();
     // Shapes with targets, in graph order; shape-typed nodes may be class targets.
     let mut roots: Vec<Id> = Vec::new();
@@ -1060,6 +1069,9 @@ pub fn validate(g: &Graph, cancelled: &dyn Fn() -> bool) -> Option<Vec<Validatio
         for focus in run.focus_nodes(shape.node) {
             if cancelled() {
                 return None;
+            }
+            if !keep(focus) {
+                continue;
             }
             run.check(si, focus, &mut out, true);
         }

@@ -522,6 +522,8 @@ impl Server {
                     let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws
                         .change_doc(&uri, p.text_document.version, p.content_changes, self.enc);
+                    // SHACL results stay until the next save (they describe the
+                    // saved text, like a build-on-save checker's).
                     self.after_edit(&uri);
                 }
             }
@@ -535,6 +537,11 @@ impl Server {
                     let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws.close_doc(&uri);
                     self.dirty.remove(&uri);
+                    // Unsaved edits to a prefixes.ttl are gone with the buffer.
+                    if uri.ends_with(&format!("/{PREFIX_FILE}")) {
+                        self.ws.invalidate_prefixes();
+                        self.knowledge_changed();
+                    }
                     // Clear diagnostics for the closed buffer.
                     if !self.pull {
                         self.send_diagnostics(&uri, vec![], None);
@@ -582,7 +589,11 @@ impl Server {
     }
 
     /// A document was saved: a catalog or ontology file may have changed too.
-    fn on_save(&mut self, _uri: &str) {
+    fn on_save(&mut self, uri: &str) {
+        if uri.ends_with(&format!("/{PREFIX_FILE}")) {
+            self.ws.invalidate_prefixes();
+            self.knowledge_changed();
+        }
         self.imports.retry();
         self.validate_shacl();
     }
@@ -691,7 +702,9 @@ impl Server {
 
     fn after_edit(&mut self, uri: &str) {
         if uri.ends_with(&format!("/{PREFIX_FILE}")) {
-            self.ws.invalidate_prefixes();
+            // Open documents follow the edit; indexed files are re-read when
+            // it is saved (re-reading the workspace per keystroke stalls).
+            self.ws.invalidate_open_prefixes();
             self.dirty.extend(self.ws.open.keys().cloned());
             self.knowledge_changed();
         }

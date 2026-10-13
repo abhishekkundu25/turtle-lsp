@@ -9,6 +9,6 @@ pub mod validate;
 
 pub use graph::Graph;
 pub use shapes::{Path, Shape, ShapeKind, Shapes};
-pub use validate::{ValidationResult, validate};
+pub use validate::{ValidationResult, validate, validate_focus};
 
 pub const SH: &str = "http://www.w3.org/ns/shacl#";

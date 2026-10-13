@@ -235,3 +235,24 @@ test("TriG datasets are validated with the shared graph but never merged with ea
     await end()
   }
 })
+
+test("a violation that only exists with a dataset merged in is reported in that dataset", async () => {
+  // data/pump.ttl (shared) gives obj:pump-07 one designation; this run adds a second.
+  const { s, dir, end } = await session({}, { "run4.trig": '{ obj:pump-07 sd:designation "=P07B" . }\n' })
+  try {
+    const uri = uriOf(path.join(dir, "run4.trig"))
+    s.conn.sendNotification("textDocument/didOpen", {
+      textDocument: { uri, languageId: "trig", version: 1, text: fs.readFileSync(path.join(dir, "run4.trig"), "utf8") },
+    })
+    s.notify("textDocument/didSave", { textDocument: { uri } })
+    const d = shacl(await until(s, uri, (d) => shacl(d).length > 0))
+    assert.equal(d.length, 1, JSON.stringify(d))
+    assert.equal(d[0].range.start.line, 0)
+    // The shared file on its own conforms.
+    s.open(uriOf(path.join(dir, "data", "pump.ttl")), GOOD)
+    assert.deepEqual(shacl(await s.diagnosticsFor(uriOf(path.join(dir, "data", "pump.ttl")))), [])
+  } finally {
+    await end()
+  }
+})
+

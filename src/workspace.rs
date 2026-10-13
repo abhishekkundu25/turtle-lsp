@@ -154,7 +154,8 @@ impl Workspace {
     /// Closing a file keeps it indexed from disk.
     pub fn close_doc(&mut self, uri: &str) {
         self.open.remove(uri);
-        if let Some(path) = uri_to_path(uri) {
+        // Only RDF files belong in the index (a .txt opened as Turtle does not).
+        if let Some(path) = uri_to_path(uri).filter(|p| is_turtle(p)) {
             self.reindex_disk_file(&path);
         }
         self.sync(uri);
@@ -283,12 +284,17 @@ impl Workspace {
         None
     }
 
-    /// A prefixes.ttl changed: every analysis may resolve differently now.
-    pub fn invalidate_prefixes(&mut self) {
+    /// An open prefixes.ttl is being edited: open documents re-resolve.
+    pub fn invalidate_open_prefixes(&mut self) {
         self.prefix_cache.clear();
         for d in self.open.values_mut() {
             d.analysis = None;
         }
+    }
+
+    /// A prefixes.ttl changed: every analysis may resolve differently now.
+    pub fn invalidate_prefixes(&mut self) {
+        self.invalidate_open_prefixes();
         let paths: Vec<PathBuf> = self.disk.keys().filter_map(|u| uri_to_path(u)).collect();
         self.index_paths(paths);
     }

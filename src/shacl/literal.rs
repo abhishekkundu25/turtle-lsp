@@ -225,8 +225,19 @@ fn instant(k: Kind, s: &str) -> Option<(i128, bool)> {
 /// module does not know are taken as valid.
 pub fn well_formed(datatype: &str, lexical: &str) -> bool {
     match kind(datatype) {
-        Kind::Integer { min, max } => integer(lexical)
-            .is_some_and(|n| min.is_none_or(|m| n >= m) && max.is_none_or(|m| n <= m)),
+        Kind::Integer { min, max } => match integer(lexical) {
+            Some(n) => min.is_none_or(|m| n >= m) && max.is_none_or(|m| n <= m),
+            // Beyond i128 (xsd:integer is unbounded): valid when the side it
+            // overflows to has no bound.
+            None if digits(unsign(lexical)) => {
+                if lexical.starts_with('-') {
+                    min.is_none()
+                } else {
+                    max.is_none()
+                }
+            }
+            None => false,
+        },
         Kind::Decimal => decimal(lexical).is_some(),
         Kind::Float => float(lexical).is_some(),
         Kind::Boolean => matches!(lexical, "true" | "false" | "1" | "0"),
@@ -252,7 +263,11 @@ fn value<'a>(datatype: &str, lexical: &'a str) -> Option<Value<'a>> {
         return None;
     }
     Some(match k {
-        Kind::Integer { .. } => Value::Int(integer(lexical)?),
+        // Huge integers compare as doubles: close enough for ordering.
+        Kind::Integer { .. } => match integer(lexical) {
+            Some(n) => Value::Int(n),
+            None => Value::Num(lexical.parse().ok()?),
+        },
         Kind::Decimal => Value::Num(decimal(lexical)?),
         Kind::Float => Value::Num(float(lexical)?),
         Kind::Boolean => Value::Bool(matches!(lexical, "true" | "1")),
@@ -294,6 +309,11 @@ mod tests {
         assert!(!well_formed(&x("byte"), "300"));
         assert!(!well_formed(&x("byte"), "c"));
         assert!(well_formed(&x("integer"), "+5"));
+        let huge = "123456789012345678901234567890123456789012";
+        assert!(well_formed(&x("integer"), huge));
+        assert!(well_formed(&x("integer"), &format!("-{huge}")));
+        assert!(!well_formed(&x("negativeInteger"), huge));
+        assert!(!well_formed(&x("int"), huge));
         assert!(!well_formed(&x("integer"), "5.0"));
         assert!(well_formed(&x("decimal"), "-.5"));
         assert!(!well_formed(&x("decimal"), "."));
