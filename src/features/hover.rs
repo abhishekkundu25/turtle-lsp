@@ -33,7 +33,7 @@ pub fn hover(a: &Analysis, all: &[Arc<Analysis>], enc: Encoding, pos: Position) 
                     .prefix_uses
                     .iter()
                     .find(|u| u.span == r.span)
-                    .map(|u| u.name.clone())
+                    .map(|u| u.name.to_string())
                     .unwrap_or_default();
                 let ns = a.prefix_map().get(&name).cloned().unwrap_or_default();
                 let origin = if a.parsed.prefixes.iter().any(|p| p.name == name) {
@@ -95,8 +95,8 @@ pub fn describe_iri(iri: &str, label: &str, all: &[Arc<Analysis>]) -> Option<Str
             let line = a.position(Encoding::Utf8, spans[0].start).line + 1;
             defined_in.push(format!("{file}:{line}"));
         }
-        text_label = text_label.or_else(|| a.labels.get(iri).cloned());
-        comment = comment.or_else(|| a.comments.get(iri).cloned());
+        text_label = text_label.or_else(|| a.label(iri).map(str::to_string));
+        comment = comment.or_else(|| a.comment(iri).map(str::to_string));
         if let Some(t) = a.types.get(iri) {
             for ty in t {
                 let short = crate::features::completion::shorten(ty, &a.prefix_map())

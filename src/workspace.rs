@@ -197,7 +197,7 @@ impl Workspace {
             if let Some(text) = text {
                 let parsed = crate::syntax::parse(&text, &PrefixMap::default());
                 for p in parsed.prefixes {
-                    map.insert(p.name, p.iri);
+                    map.insert(p.name, p.iri.to_string());
                 }
             }
         }

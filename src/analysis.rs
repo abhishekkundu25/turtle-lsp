@@ -1,10 +1,9 @@
 //! Everything the editor features need from one document, computed once per
 //! version: the parse, line positions, and per-IRI indexes.
 
-use crate::syntax::{self, Node, Parsed, PrefixMap, Ref, Role, Span};
+use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Role, Span};
 use line_index::{LineIndex, TextSize, WideEncoding};
 use lsp_types::{Position, Range};
-use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
@@ -31,14 +30,55 @@ pub struct Analysis {
     /// Prefixes supplied from outside the document (prefixes.ttl / settings).
     pub external: Arc<PrefixMap>,
     /// IRI -> spans where it is the subject of a top-level statement.
-    pub defs: FxHashMap<String, Vec<Span>>,
+    pub defs: IriMap<Vec<Span>>,
     /// IRI -> indexes into `parsed.refs`.
-    pub refs_by_iri: FxHashMap<String, Vec<u32>>,
-    pub labels: FxHashMap<String, String>,
-    pub comments: FxHashMap<String, String>,
-    pub types: FxHashMap<String, Vec<String>>,
+    pub refs_by_iri: IriMap<Vec<u32>>,
+    /// IRI -> index into `parsed.triples` of its label; see [`Analysis::label`].
+    labels: IriMap<u32>,
+    /// IRI -> index into `parsed.triples` of its comment; see [`Analysis::comment`].
+    comments: IriMap<u32>,
+    pub types: IriMap<Vec<Iri>>,
     /// IRI -> direct superclasses / superproperties (rdfs:subClassOf, rdfs:subPropertyOf).
-    pub supers: FxHashMap<String, Vec<String>>,
+    pub supers: IriMap<Vec<Iri>>,
+}
+
+/// Which predicate feeds which index.
+#[derive(Clone, Copy)]
+enum Index {
+    Type,
+    Super,
+    Label,
+    Comment,
+}
+
+fn indexed_predicates() -> &'static [(Iri, Index)] {
+    static P: std::sync::OnceLock<Vec<(Iri, Index)>> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        [
+            (syntax::RDF_TYPE, Index::Type),
+            (RDFS_SUBCLASS_OF, Index::Super),
+            (RDFS_SUBPROPERTY_OF, Index::Super),
+            (RDFS_LABEL, Index::Label),
+            (SKOS_PREF_LABEL, Index::Label),
+            (SH_NAME, Index::Label),
+            (RDFS_COMMENT, Index::Comment),
+            (SKOS_DEFINITION, Index::Comment),
+            (DCT_DESCRIPTION, Index::Comment),
+        ]
+        .into_iter()
+        .map(|(p, i)| (Iri::intern(p), i))
+        .collect()
+    })
+}
+
+/// English (or untagged) text wins; otherwise the first one seen.
+fn prefer(map: &mut IriMap<u32>, triples: &[syntax::Triple], s: Iri, i: u32) {
+    let Node::Literal { lang, .. } = &triples[i as usize].o else {
+        return;
+    };
+    if lang.is_none_or(|l| l.starts_with("en")) || !map.contains_key(&s) {
+        map.insert(s, i);
+    }
 }
 
 impl Analysis {
@@ -48,41 +88,38 @@ impl Analysis {
             parsed.tokens = Vec::new();
             parsed.comments = Vec::new();
         }
-        let mut defs: FxHashMap<String, Vec<Span>> = FxHashMap::default();
-        let mut refs_by_iri: FxHashMap<String, Vec<u32>> = FxHashMap::default();
+        // Analyses live until the next edit (or for the session, for files on
+        // disk): drop the growth slack.
+        parsed.triples.shrink_to_fit();
+        parsed.refs.shrink_to_fit();
+        parsed.prefix_uses.shrink_to_fit();
+        parsed.statements.shrink_to_fit();
+        let mut defs: IriMap<Vec<Span>> = IriMap::default();
+        let mut refs_by_iri: IriMap<Vec<u32>> = IriMap::default();
         for (i, r) in parsed.refs.iter().enumerate() {
             if r.role == Role::Subject {
-                defs.entry(r.iri.clone()).or_default().push(r.span);
+                defs.entry(r.iri).or_default().push(r.span);
             }
-            refs_by_iri.entry(r.iri.clone()).or_default().push(i as u32);
+            refs_by_iri.entry(r.iri).or_default().push(i as u32);
         }
-        let mut labels = FxHashMap::default();
-        let mut comments = FxHashMap::default();
-        let mut types: FxHashMap<String, Vec<String>> = FxHashMap::default();
-        let mut supers: FxHashMap<String, Vec<String>> = FxHashMap::default();
-        for t in &parsed.triples {
-            let Node::Iri(s) = &t.s else { continue };
-            match (&*t.p, &t.o) {
-                (syntax::RDF_TYPE, Node::Iri(o)) => {
-                    types.entry(s.clone()).or_default().push(o.clone())
+        let mut labels = IriMap::default();
+        let mut comments = IriMap::default();
+        let mut types: IriMap<Vec<Iri>> = IriMap::default();
+        let mut supers: IriMap<Vec<Iri>> = IriMap::default();
+        let predicates = indexed_predicates();
+        for (i, t) in parsed.triples.iter().enumerate() {
+            let Node::Iri(s) = t.s else { continue };
+            let Some(&(_, index)) = predicates.iter().find(|(p, _)| *p == t.p) else {
+                continue;
+            };
+            match (index, &t.o) {
+                (Index::Type, Node::Iri(o)) => types.entry(s).or_default().push(*o),
+                (Index::Super, Node::Iri(o)) => supers.entry(s).or_default().push(*o),
+                (Index::Label, Node::Literal { .. }) => {
+                    prefer(&mut labels, &parsed.triples, s, i as u32)
                 }
-                (RDFS_SUBCLASS_OF | RDFS_SUBPROPERTY_OF, Node::Iri(o)) => {
-                    supers.entry(s.clone()).or_default().push(o.clone())
-                }
-                (RDFS_LABEL | SKOS_PREF_LABEL | SH_NAME, Node::Literal { value, lang, .. }) => {
-                    if lang.as_deref().is_none_or(|l| l.starts_with("en"))
-                        || !labels.contains_key(s)
-                    {
-                        labels.insert(s.clone(), value.clone());
-                    }
-                }
-                (
-                    RDFS_COMMENT | SKOS_DEFINITION | DCT_DESCRIPTION,
-                    Node::Literal { value, lang, .. },
-                ) if (lang.as_deref().is_none_or(|l| l.starts_with("en"))
-                    || !comments.contains_key(s)) =>
-                {
-                    comments.insert(s.clone(), value.clone());
+                (Index::Comment, Node::Literal { .. }) => {
+                    prefer(&mut comments, &parsed.triples, s, i as u32)
                 }
                 _ => {}
             }
@@ -102,11 +139,28 @@ impl Analysis {
         }
     }
 
+    fn literal(&self, i: u32) -> &str {
+        match &self.parsed.triples[i as usize].o {
+            Node::Literal { value, .. } => value,
+            _ => "",
+        }
+    }
+
+    /// The resource's label (rdfs:label, skos:prefLabel, sh:name), English preferred.
+    pub fn label<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
+        self.labels.get(iri).map(|&i| self.literal(i))
+    }
+
+    /// The resource's comment (rdfs:comment, skos:definition, dcterms:description).
+    pub fn comment<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
+        self.comments.get(iri).map(|&i| self.literal(i))
+    }
+
     /// All prefixes in scope at the end of the document: external, then declared.
     pub fn prefix_map(&self) -> PrefixMap {
         let mut m = (*self.external).clone();
         for p in &self.parsed.prefixes {
-            m.insert(p.name.clone(), p.iri.clone());
+            m.insert(p.name.clone(), p.iri.to_string());
         }
         m
     }
@@ -121,7 +175,10 @@ impl Analysis {
             .find(|r| r.span.contains(offset))
     }
 
-    pub fn refs_of<'a>(&'a self, iri: &str) -> impl Iterator<Item = &'a Ref> + 'a {
+    pub fn refs_of<'a, K: IriKey + ?Sized>(
+        &'a self,
+        iri: &K,
+    ) -> impl Iterator<Item = &'a Ref> + 'a {
         self.refs_by_iri
             .get(iri)
             .into_iter()

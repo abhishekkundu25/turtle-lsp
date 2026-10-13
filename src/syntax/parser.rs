@@ -7,8 +7,48 @@
 
 use super::lexer::{Kind, Token, tokenize};
 use super::*;
+use std::borrow::Cow;
+use std::sync::OnceLock;
 
 type R<T> = Result<T, ()>;
+
+/// IRIs the parser produces itself, interned once.
+struct Vocab {
+    rdf_type: Iri,
+    first: Iri,
+    rest: Iri,
+    nil: Iri,
+    reifies: Iri,
+    lang_string: Iri,
+    dir_lang_string: Iri,
+    string: Iri,
+    integer: Iri,
+    decimal: Iri,
+    double: Iri,
+    boolean: Iri,
+}
+
+fn vocab() -> &'static Vocab {
+    static V: OnceLock<Vocab> = OnceLock::new();
+    V.get_or_init(|| {
+        let rdf = |l: &str| Iri::intern(&format!("{RDF}{l}"));
+        let xsd = |l: &str| Iri::intern(&format!("{XSD}{l}"));
+        Vocab {
+            rdf_type: Iri::intern(RDF_TYPE),
+            first: rdf("first"),
+            rest: rdf("rest"),
+            nil: rdf("nil"),
+            reifies: rdf("reifies"),
+            lang_string: rdf("langString"),
+            dir_lang_string: rdf("dirLangString"),
+            string: xsd("string"),
+            integer: xsd("integer"),
+            decimal: xsd("decimal"),
+            double: xsd("double"),
+            boolean: xsd("boolean"),
+        }
+    })
+}
 
 pub fn parse(src: &str, external: &PrefixMap) -> Parsed {
     let all = tokenize(src);
@@ -35,12 +75,21 @@ pub fn parse(src: &str, external: &PrefixMap) -> Parsed {
         src,
         toks,
         pos: 0,
-        prefixes: external.clone(),
+        prefixes: external
+            .iter()
+            .map(|(k, v)| (k.clone(), Iri::intern(v)))
+            .collect(),
         base: None,
         out,
         bnodes: 0,
+        bnode_labels: FxHashMap::default(),
         quoted: 0,
         subject: None,
+        statement: 0,
+        iri_cache: FxHashMap::default(),
+        pname_cache: FxHashMap::default(),
+        buf: String::new(),
+        v: vocab(),
     };
     p.document();
     p.out
@@ -50,12 +99,25 @@ struct P<'a> {
     src: &'a str,
     toks: Vec<Token>,
     pos: usize,
-    prefixes: PrefixMap,
+    /// Prefix name -> namespace, as declared so far.
+    prefixes: FxHashMap<String, Iri>,
     base: Option<oxiri::Iri<String>>,
     out: Parsed,
     bnodes: u32,
+    /// `_:label` -> its number in this document.
+    bnode_labels: FxHashMap<&'a str, u32>,
     quoted: u32,
-    subject: Option<(String, Span)>,
+    subject: Option<(Iri, Span)>,
+    /// Index of the statement being parsed.
+    statement: u32,
+    /// `<iri>` and `@lang` token text -> interned value. Cleared when the base changes.
+    iri_cache: FxHashMap<&'a str, Iri>,
+    /// `prefix:local` token text -> (prefix name, IRI or the text if unresolved, resolved).
+    /// Cleared when a prefix is declared. Spares the global interner's locks.
+    pname_cache: FxHashMap<&'a str, (Iri, Iri, bool)>,
+    /// Scratch space for building IRIs from prefixed names.
+    buf: String,
+    v: &'static Vocab,
 }
 
 fn is_starter(k: Kind) -> bool {
@@ -177,15 +239,43 @@ impl<'a> P<'a> {
 
     fn fresh_bnode(&mut self) -> Node {
         self.bnodes += 1;
-        Node::Blank(format!("_:g{}", self.bnodes))
+        Node::Blank(BlankId(self.bnodes))
     }
 
-    fn emit(&mut self, s: &Node, p: &str, o: Node) {
+    /// A `_:label` token: the same label is the same node within a document.
+    fn labelled_bnode(&mut self) -> Node {
+        let t = self.bump();
+        let label = self.text(t);
+        let id = match self.bnode_labels.get(label) {
+            Some(&id) => id,
+            None => {
+                self.bnodes += 1;
+                self.bnode_labels.insert(label, self.bnodes);
+                self.bnodes
+            }
+        };
+        Node::Blank(BlankId(id))
+    }
+
+    fn emit(&mut self, s: &Node, p: Iri, o: Node, p_span: Span, o_span: Span) {
         self.out.triples.push(Triple {
             s: s.clone(),
-            p: p.to_string(),
+            p,
             o,
+            p_span,
+            o_span,
+            statement: self.statement,
         });
+    }
+
+    /// The span from token `from` to the last consumed token.
+    fn span_from(&self, from: u32) -> Span {
+        Span::new(from, self.prev_span().end.max(from))
+    }
+
+    fn start(&self) -> u32 {
+        self.peek()
+            .map_or_else(|| self.prev_span().end, |t| t.start)
     }
 
     // ---- document ----
@@ -273,9 +363,10 @@ impl<'a> P<'a> {
             _ => return self.expected("a namespace IRI like `<http://example.org/>`"),
         };
         let name = self.text(name_tok).trim_end_matches(':').to_string();
-        let iri = self.resolve_iri(iri_tok);
+        let iri = Iri::intern(&self.resolve_iri(iri_tok));
         self.end_statement(sparql)?;
-        self.prefixes.insert(name.clone(), iri.clone());
+        self.prefixes.insert(name.clone(), iri);
+        self.pname_cache.clear();
         self.out.prefixes.push(PrefixDecl {
             name,
             iri,
@@ -292,7 +383,8 @@ impl<'a> P<'a> {
             Some(t) if t.kind == Kind::Iri => self.bump(),
             _ => return self.expected("a base IRI"),
         };
-        let iri = self.resolve_iri(iri_tok);
+        let iri = self.resolve_iri(iri_tok).into_owned();
+        self.iri_cache.clear();
         match oxiri::Iri::parse(iri.clone()) {
             Ok(b) => self.base = Some(b),
             Err(e) => self.error(
@@ -320,6 +412,7 @@ impl<'a> P<'a> {
     fn statement(&mut self) -> R<()> {
         let start = self.peek().map_or(0, |t| t.start);
         self.subject = None;
+        self.statement = self.out.statements.len() as u32;
         let r = self.triples();
         let subject = self.subject.take();
         let end = self.prev_span().end.max(start);
@@ -365,14 +458,11 @@ impl<'a> P<'a> {
                 };
                 let iri = self.iri(role)?;
                 if role == Role::Subject && self.subject.is_none() {
-                    self.subject = Some((iri.clone(), Span::new(t.start, t.end)));
+                    self.subject = Some((iri, Span::new(t.start, t.end)));
                 }
                 Ok(Node::Iri(iri))
             }
-            Some(Kind::BNode) => {
-                let t = self.bump();
-                Ok(Node::Blank(self.text(t).to_string()))
-            }
+            Some(Kind::BNode) => Ok(self.labelled_bnode()),
             Some(Kind::LBracket)
                 if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
             {
@@ -387,8 +477,8 @@ impl<'a> P<'a> {
 
     fn predicate_object_list(&mut self, s: &Node) -> R<()> {
         loop {
-            let p = self.verb()?;
-            self.object_list(s, &p)?;
+            let (p, p_span) = self.verb()?;
+            self.object_list(s, p, p_span)?;
             if self.peek_kind() != Some(Kind::Semicolon) {
                 return Ok(());
             }
@@ -399,40 +489,39 @@ impl<'a> P<'a> {
         }
     }
 
-    fn verb(&mut self) -> R<String> {
-        match self.peek_kind() {
-            Some(Kind::A) => {
-                let t = self.bump();
-                let role = if self.quoted > 0 {
-                    Role::Quoted
-                } else {
-                    Role::Predicate
-                };
+    /// The predicate and its span.
+    fn verb(&mut self) -> R<(Iri, Span)> {
+        let role = if self.quoted > 0 {
+            Role::Quoted
+        } else {
+            Role::Predicate
+        };
+        match self.peek() {
+            Some(t) if t.kind == Kind::A => {
+                self.bump();
+                let span = Span::new(t.start, t.end);
                 self.out.refs.push(Ref {
-                    span: Span::new(t.start, t.end),
-                    iri: RDF_TYPE.to_string(),
+                    span,
+                    iri: self.v.rdf_type,
                     role,
                     form: Form::A,
                 });
-                Ok(RDF_TYPE.to_string())
+                Ok((self.v.rdf_type, span))
             }
-            Some(Kind::Iri | Kind::PName) => {
-                let role = if self.quoted > 0 {
-                    Role::Quoted
-                } else {
-                    Role::Predicate
-                };
-                self.iri(role)
+            Some(t) if matches!(t.kind, Kind::Iri | Kind::PName) => {
+                Ok((self.iri(role)?, Span::new(t.start, t.end)))
             }
             _ => self.expected("a predicate"),
         }
     }
 
-    fn object_list(&mut self, s: &Node, p: &str) -> R<()> {
+    fn object_list(&mut self, s: &Node, p: Iri, p_span: Span) -> R<()> {
         loop {
+            let start = self.start();
             let o = self.object()?;
-            self.emit(s, p, o.clone());
-            self.annotation(s, p, &o)?;
+            let o_span = self.span_from(start);
+            self.emit(s, p, o.clone(), p_span, o_span);
+            self.annotation(s, p, p_span, &o, o_span)?;
             if !self.eat(Kind::Comma) {
                 return Ok(());
             }
@@ -447,10 +536,7 @@ impl<'a> P<'a> {
         };
         match self.peek_kind() {
             Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(role)?)),
-            Some(Kind::BNode) => {
-                let t = self.bump();
-                Ok(Node::Blank(self.text(t).to_string()))
-            }
+            Some(Kind::BNode) => Ok(self.labelled_bnode()),
             Some(Kind::LBracket) => {
                 if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) {
                     self.pos += 2;
@@ -464,24 +550,24 @@ impl<'a> P<'a> {
             Some(Kind::Number) => {
                 let t = self.bump();
                 let text = self.text(t);
-                let dt = if text.contains(['e', 'E']) {
-                    "double"
+                let datatype = if text.contains(['e', 'E']) {
+                    self.v.double
                 } else if text.contains('.') {
-                    "decimal"
+                    self.v.decimal
                 } else {
-                    "integer"
+                    self.v.integer
                 };
                 Ok(Node::Literal {
-                    value: text.to_string(),
-                    datatype: format!("{XSD}{dt}"),
+                    value: text.into(),
+                    datatype,
                     lang: None,
                 })
             }
             Some(Kind::Boolean) => {
                 let t = self.bump();
                 Ok(Node::Literal {
-                    value: self.text(t).to_string(),
-                    datatype: format!("{XSD}boolean"),
+                    value: self.text(t).into(),
+                    datatype: self.v.boolean,
                     lang: None,
                 })
             }
@@ -493,7 +579,7 @@ impl<'a> P<'a> {
 
     fn rdf_literal(&mut self) -> R<Node> {
         let t = self.bump();
-        let value = string_value(self.text(t));
+        let value: Box<str> = string_value(self.text(t)).into();
         match self.peek_kind() {
             Some(Kind::LangTag) => {
                 let lt = self.bump();
@@ -518,14 +604,22 @@ impl<'a> P<'a> {
                     );
                 }
                 let datatype = if dir.is_some() {
-                    format!("{RDF}dirLangString")
+                    self.v.dir_lang_string
                 } else {
-                    format!("{RDF}langString")
+                    self.v.lang_string
+                };
+                let lang = match self.iri_cache.get(self.text(lt)) {
+                    Some(&l) => l,
+                    None => {
+                        let l = Iri::intern(&tag.to_ascii_lowercase());
+                        self.iri_cache.insert(self.text(lt), l);
+                        l
+                    }
                 };
                 Ok(Node::Literal {
                     value,
                     datatype,
-                    lang: Some(tag.to_ascii_lowercase()),
+                    lang: Some(lang),
                 })
             }
             Some(Kind::Caret2) => {
@@ -546,7 +640,7 @@ impl<'a> P<'a> {
             }
             _ => Ok(Node::Literal {
                 value,
-                datatype: format!("{XSD}string"),
+                datatype: self.v.string,
                 lang: None,
             }),
         }
@@ -579,24 +673,29 @@ impl<'a> P<'a> {
                     self.error(Span::new(open.start, open.end), "Unclosed '('");
                     return Err(());
                 }
-                _ => items.push(self.object()?),
+                _ => {
+                    let start = self.start();
+                    let item = self.object()?;
+                    items.push((item, self.span_from(start)));
+                }
             }
         }
-        let nil = Node::Iri(format!("{RDF}nil"));
+        let nil = Node::Iri(self.v.nil);
         if items.is_empty() {
             return Ok(nil);
         }
         let head = self.fresh_bnode();
         let mut cur = head.clone();
         let n = items.len();
-        for (i, item) in items.into_iter().enumerate() {
-            self.emit(&cur, &format!("{RDF}first"), item);
+        let (first, rest) = (self.v.first, self.v.rest);
+        for (i, (item, span)) in items.into_iter().enumerate() {
+            self.emit(&cur, first, item, span, span);
             let next = if i + 1 == n {
                 nil.clone()
             } else {
                 self.fresh_bnode()
             };
-            self.emit(&cur, &format!("{RDF}rest"), next.clone());
+            self.emit(&cur, rest, next.clone(), span, span);
             cur = next;
         }
         Ok(head)
@@ -608,7 +707,7 @@ impl<'a> P<'a> {
         self.quoted += 1;
         let r = (|| {
             let s = self.quoted_subject()?;
-            let p = self.verb()?;
+            let (p, _) = self.verb()?;
             let o = self.object()?;
             if !self.eat(Kind::RTripleTerm) {
                 return self.expected("')>>'");
@@ -622,10 +721,7 @@ impl<'a> P<'a> {
     fn quoted_subject(&mut self) -> R<Node> {
         match self.peek_kind() {
             Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(Role::Quoted)?)),
-            Some(Kind::BNode) => {
-                let t = self.bump();
-                Ok(Node::Blank(self.text(t).to_string()))
-            }
+            Some(Kind::BNode) => Ok(self.labelled_bnode()),
             Some(Kind::LBracket)
                 if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
             {
@@ -639,11 +735,11 @@ impl<'a> P<'a> {
 
     /// `<< s p o ~ r >>`: returns the reifier.
     fn reified_triple(&mut self) -> R<Node> {
-        self.bump();
+        let open = self.bump();
         self.quoted += 1;
         let r = (|| {
             let s = self.quoted_subject()?;
-            let p = self.verb()?;
+            let (p, _) = self.verb()?;
             let o = self.object()?;
             let reifier = if self.eat(Kind::Tilde) {
                 self.reifier()?
@@ -657,24 +753,24 @@ impl<'a> P<'a> {
         })();
         self.quoted -= 1;
         let (reifier, triple) = r?;
-        self.emit(&reifier, &format!("{RDF}reifies"), triple);
+        let span = self.span_from(open.start);
+        self.emit(&reifier, self.v.reifies, triple, span, span);
         Ok(reifier)
     }
 
     fn reifier(&mut self) -> R<Node> {
         match self.peek_kind() {
             Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(Role::Object)?)),
-            Some(Kind::BNode) => {
-                let t = self.bump();
-                Ok(Node::Blank(self.text(t).to_string()))
-            }
+            Some(Kind::BNode) => Ok(self.labelled_bnode()),
             _ => Ok(self.fresh_bnode()),
         }
     }
 
-    /// `~ reifier` and `{| ... |}` after an object.
-    fn annotation(&mut self, s: &Node, p: &str, o: &Node) -> R<()> {
+    /// `~ reifier` and `{| ... |}` after an object. The `rdf:reifies` triples
+    /// point at the annotated predicate and object.
+    fn annotation(&mut self, s: &Node, p: Iri, p_span: Span, o: &Node, o_span: Span) -> R<()> {
         let mut last: Option<Node> = None;
+        let reifies = self.v.reifies;
         loop {
             match self.peek_kind() {
                 Some(Kind::Tilde) => {
@@ -682,8 +778,10 @@ impl<'a> P<'a> {
                     let r = self.reifier()?;
                     self.emit(
                         &r,
-                        &format!("{RDF}reifies"),
-                        Node::Triple(Box::new((s.clone(), p.to_string(), o.clone()))),
+                        reifies,
+                        Node::Triple(Box::new((s.clone(), p, o.clone()))),
+                        p_span,
+                        o_span,
                     );
                     last = Some(r);
                 }
@@ -695,8 +793,10 @@ impl<'a> P<'a> {
                             let r = self.fresh_bnode();
                             self.emit(
                                 &r,
-                                &format!("{RDF}reifies"),
-                                Node::Triple(Box::new((s.clone(), p.to_string(), o.clone()))),
+                                reifies,
+                                Node::Triple(Box::new((s.clone(), p, o.clone()))),
+                                p_span,
+                                o_span,
                             );
                             r
                         }
@@ -716,14 +816,26 @@ impl<'a> P<'a> {
     /// Consume an IRIREF or prefixed name, record a [`Ref`], return the IRI.
     /// An undeclared prefix is not a parse failure: it is recorded in
     /// `prefix_uses` and reported by the diagnostics layer.
-    fn iri(&mut self, role: Role) -> R<String> {
+    fn iri(&mut self, role: Role) -> R<Iri> {
         let t = self.bump();
         let span = Span::new(t.start, t.end);
         if t.kind == Kind::Iri {
-            let iri = self.resolve_iri(t);
+            let text = self.text(t);
+            let iri = match self.iri_cache.get(text) {
+                Some(&iri) => iri,
+                None => {
+                    let warnings = self.out.errors.len();
+                    let iri = Iri::intern(&self.resolve_iri(t));
+                    // Invalid IRIs are not cached, so each occurrence is reported.
+                    if self.out.errors.len() == warnings {
+                        self.iri_cache.insert(text, iri);
+                    }
+                    iri
+                }
+            };
             self.out.refs.push(Ref {
                 span,
-                iri: iri.clone(),
+                iri,
                 role,
                 form: Form::Iri,
             });
@@ -731,44 +843,55 @@ impl<'a> P<'a> {
         }
         let text = self.text(t);
         let colon = text.find(':').unwrap_or(text.len());
-        let (name, local) = (&text[..colon], &text[colon + 1..]);
-        let resolved = self.prefixes.get(name).cloned();
-        self.out.prefix_uses.push(PrefixUse {
-            name: name.to_string(),
-            span,
-            resolved: resolved.is_some(),
-        });
-        match resolved {
-            Some(ns) => {
-                let iri = format!("{ns}{}", unescape_local(local));
-                self.out.refs.push(Ref {
-                    span,
-                    iri: iri.clone(),
-                    role,
-                    form: Form::PName {
-                        prefix_len: colon as u32,
-                    },
-                });
-                Ok(iri)
+        let (name, iri, resolved) = match self.pname_cache.get(text) {
+            Some(&hit) => hit,
+            None => {
+                let (name, local) = (&text[..colon], &text[colon + 1..]);
+                let entry = match self.prefixes.get(name) {
+                    Some(ns) => {
+                        self.buf.clear();
+                        self.buf.push_str(ns);
+                        unescape_local(local, &mut self.buf);
+                        (Iri::intern(name), Iri::intern(&self.buf), true)
+                    }
+                    None => (Iri::intern(name), Iri::intern(text), false),
+                };
+                self.pname_cache.insert(text, entry);
+                entry
             }
-            None => Ok(text.to_string()),
+        };
+        self.out.prefix_uses.push(PrefixUse {
+            name,
+            span,
+            resolved,
+        });
+        if resolved {
+            self.out.refs.push(Ref {
+                span,
+                iri,
+                role,
+                form: Form::PName {
+                    prefix_len: colon as u32,
+                },
+            });
         }
+        Ok(iri)
     }
 
-    fn resolve_iri(&mut self, t: Token) -> String {
+    fn resolve_iri(&mut self, t: Token) -> Cow<'a, str> {
         let text = self.text(t);
         let raw = text
             .strip_prefix('<')
             .and_then(|s| s.strip_suffix('>'))
             .unwrap_or(text);
-        let raw = if raw.contains('\\') {
-            unescape_iri(raw)
+        let raw: Cow<'a, str> = if raw.contains('\\') {
+            Cow::Owned(unescape_iri(raw))
         } else {
-            raw.to_string()
+            Cow::Borrowed(raw)
         };
         match &self.base {
-            Some(base) => match oxiri::IriRef::parse(raw.as_str()).and_then(|r| base.resolve(&r)) {
-                Ok(iri) => iri.into_inner(),
+            Some(base) => match oxiri::IriRef::parse(&*raw).and_then(|r| base.resolve(&r)) {
+                Ok(iri) => Cow::Owned(iri.into_inner()),
                 Err(e) => {
                     self.warning(Span::new(t.start, t.end), format!("Invalid IRI: {e}"));
                     raw
@@ -776,7 +899,7 @@ impl<'a> P<'a> {
             },
             None => {
                 if has_scheme(&raw)
-                    && let Err(e) = oxiri::Iri::parse(raw.as_str())
+                    && let Err(e) = oxiri::Iri::parse(&*raw)
                 {
                     self.warning(Span::new(t.start, t.end), format!("Invalid IRI: {e}"));
                 }
@@ -796,11 +919,12 @@ fn has_scheme(s: &str) -> bool {
         })
 }
 
-fn unescape_local(local: &str) -> String {
+/// Append `local` to `out` with backslash escapes removed.
+fn unescape_local(local: &str, out: &mut String) {
     if !local.contains('\\') {
-        return local.to_string();
+        out.push_str(local);
+        return;
     }
-    let mut out = String::with_capacity(local.len());
     let mut chars = local.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
@@ -811,7 +935,6 @@ fn unescape_local(local: &str) -> String {
             out.push(c);
         }
     }
-    out
 }
 
 fn unescape_iri(raw: &str) -> String {
@@ -920,7 +1043,7 @@ mod tests {
         let subjects: Vec<_> = r
             .statements
             .iter()
-            .filter_map(|s| s.subject.as_ref().map(|x| x.0.as_str()))
+            .filter_map(|s| s.subject.map(|x| x.0.as_str()))
             .collect();
         for s in [
             "http://e/a",
@@ -972,6 +1095,54 @@ mod tests {
                 >= 1
         ); // last line has no subject
         assert!(r.triples.iter().any(|t| t.p.ends_with("reifies")));
+    }
+
+    #[test]
+    fn triples_carry_predicate_and_object_spans() {
+        let src = "@prefix ex: <http://e/> .\nex:a ex:p \"x\"@en ;\n  ex:q [ ex:r ( ex:l1 ex:l2 ) ] .\nex:b ex:p ex:o ~ ex:r .\n";
+        let r = p(src);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let at = |sp: Span| &src[sp.start as usize..sp.end as usize];
+        let find = |p: &str| r.triples.iter().find(|t| t.p == p).unwrap();
+        let q = find("http://e/q");
+        assert_eq!(at(q.p_span), "ex:q");
+        assert_eq!(at(q.o_span), "[ ex:r ( ex:l1 ex:l2 ) ]");
+        assert_eq!(at(find("http://e/r").o_span), "( ex:l1 ex:l2 )");
+        let lit = find("http://e/p");
+        assert_eq!(at(lit.o_span), "\"x\"@en");
+        assert_eq!(lit.statement, 0);
+        let firsts: Vec<_> = r
+            .triples
+            .iter()
+            .filter(|t| t.p.ends_with("#first"))
+            .map(|t| at(t.o_span))
+            .collect();
+        assert_eq!(firsts, ["ex:l1", "ex:l2"]);
+        let reifies = r.triples.iter().find(|t| t.p.ends_with("reifies")).unwrap();
+        assert_eq!((at(reifies.p_span), at(reifies.o_span)), ("ex:p", "ex:o"));
+        assert_eq!(reifies.statement, 1);
+        let st = &r.statements[reifies.statement as usize];
+        assert_eq!(st.subject.unwrap().0, "http://e/b");
+    }
+
+    #[test]
+    fn blank_node_labels_are_unique_per_document() {
+        let r = p("@prefix ex: <http://e/> .\n_:g1 ex:p [ ex:q _:g1 ] .\n_:b1 ex:p _:g2 .\n");
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let bnode = |n: &Node| match n {
+            Node::Blank(b) => *b,
+            _ => panic!("not a blank node"),
+        };
+        let [inner, outer, last] = &r.triples[..] else {
+            panic!("{:?}", r.triples)
+        };
+        // `_:g1` is the same node both times, and not the generated `[ ]` node.
+        assert_eq!(bnode(&outer.s), bnode(&inner.o));
+        assert_ne!(bnode(&outer.s), bnode(&outer.o));
+        assert_eq!(bnode(&outer.o), bnode(&inner.s));
+        let all = [&outer.s, &outer.o, &last.s, &last.o].map(bnode);
+        let distinct: std::collections::BTreeSet<_> = all.iter().collect();
+        assert_eq!(distinct.len(), 4);
     }
 
     #[test]

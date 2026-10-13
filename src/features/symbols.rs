@@ -47,7 +47,7 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
                     .iter()
                     .map(|p| DocumentSymbol {
                         name: format!("{}:", p.name),
-                        detail: Some(p.iri.clone()),
+                        detail: Some(p.iri.to_string()),
                         kind: SymbolKind::NAMESPACE,
                         tags: None,
                         deprecated: None,
@@ -64,12 +64,12 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
         let Some((iri, span)) = &st.subject else {
             continue;
         };
-        let detail = a.labels.get(iri).cloned().or_else(|| {
+        let detail = a.label(iri).map(str::to_string).or_else(|| {
             a.types.get(iri).map(|ts| {
                 ts.iter()
                     .map(|t| {
                         crate::features::completion::shorten(t, &prefixes)
-                            .unwrap_or_else(|| t.clone())
+                            .unwrap_or_else(|| t.to_string())
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -102,7 +102,7 @@ pub fn workspace_symbols(
         for (iri, spans) in &a.defs {
             let name = crate::features::completion::shorten(iri, &prefixes)
                 .unwrap_or_else(|| format!("<{iri}>"));
-            let label = a.labels.get(iri);
+            let label = a.label(iri);
             if !q.is_empty()
                 && !name.to_lowercase().contains(&q)
                 && !label.is_some_and(|l| l.to_lowercase().contains(&q))
@@ -118,7 +118,7 @@ pub fn workspace_symbols(
                     uri: uri(&a.uri),
                     range: a.range(enc, spans[0]),
                 },
-                container_name: label.cloned(),
+                container_name: label.map(str::to_string),
             });
             if out.len() >= 500 {
                 return out;

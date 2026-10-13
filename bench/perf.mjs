@@ -3,6 +3,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { execSync } from "node:child_process"
 import { startServer, uriOf } from "../test/lsp-client.mjs"
 
 const SUBJECTS = Number(process.argv[2] ?? 5000)
@@ -33,6 +34,9 @@ const bigPath = path.join(ws, "big.ttl")
 const big = bigDoc(SUBJECTS)
 fs.writeFileSync(bigPath, big)
 
+// Resident memory of the server (ps reports KiB).
+const rss = (pid) => (Number(execSync(`ps -o rss= -p ${pid}`).toString().trim()) / 1024).toFixed(0)
+
 const pct = (xs, p) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor((p / 100) * xs.length))]
 const rows = []
 const record = (name, samples, extra = "") =>
@@ -58,6 +62,7 @@ for (let i = 0; i < 15; i++) {
   edits.push(performance.now() - t)
 }
 record("keystroke -> diagnostics", edits)
+const rssIndexed = rss(s.proc.pid)
 
 // Completion at end of file after "foaf:" and at an empty position.
 const lines = text.split("\n")
@@ -98,9 +103,12 @@ const t0 = performance.now()
 const syms = await s.request("textDocument/documentSymbol", { textDocument: { uri } })
 record("documentSymbol", [performance.now() - t0], `${syms.length} symbols`)
 
-const mem = (await import("node:child_process")).execSync(`ps -o rss= -p ${s.proc.pid}`).toString().trim()
+const rssEnd = rss(s.proc.pid)
 await s.stop()
 fs.rmSync(ws, { recursive: true, force: true })
 
-console.log(`\nturtle-lsp perf (${SUBJECTS} subjects in big.ttl, ${FILES} workspace files), server RSS ${(mem / 1024).toFixed(0)} MB\n`)
-console.table(rows.map((r) => ({ metric: r.name, "p50 ms": r.p50, "p95 ms": r.p95, n: r.n, notes: r.extra })))
+console.log(`\nturtle-lsp perf (${SUBJECTS} subjects in big.ttl, ${FILES} workspace files)\n`)
+const table = rows.map((r) => ({ metric: r.name, "p50 ms": r.p50, "p95 ms": r.p95, n: r.n, notes: r.extra }))
+table.push({ metric: "server RSS after indexing + open + edits", "p50 ms": "", "p95 ms": "", n: 1, notes: `${rssIndexed} MB` })
+table.push({ metric: "server RSS at the end", "p50 ms": "", "p95 ms": "", n: 1, notes: `${rssEnd} MB` })
+console.table(table)

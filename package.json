@@ -10,7 +10,6 @@
   },
   "devDependencies": {
     "@zazuko/rdf-vocabularies": "^2023.1.19",
-    "vscode-jsonrpc": "9.0.3",
-    "n3": "^2.13.11"
+    "vscode-jsonrpc": "9.0.3"
   }
 }

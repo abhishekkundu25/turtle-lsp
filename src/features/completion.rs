@@ -119,7 +119,7 @@ pub fn complete(
         }
         for (iri, kind) in ws {
             let l = &iri[ns.len()..];
-            let label = all.iter().find_map(|o| o.labels.get(iri)).cloned();
+            let label = all.iter().find_map(|o| o.label(iri));
             cands.push(Candidate {
                 label: format!("{pfx}:{l}"),
                 kind: match kind {
@@ -127,7 +127,7 @@ pub fn complete(
                     TermKind::Property => CompletionItemKind::PROPERTY,
                     TermKind::Individual => CompletionItemKind::REFERENCE,
                 },
-                detail: label.unwrap_or_else(|| iri.to_string()),
+                detail: label.unwrap_or(iri).to_string(),
                 iri: Some(iri.to_string()),
                 rank: rank(slot, kind),
                 import: import.clone(),
@@ -194,12 +194,8 @@ pub fn complete(
                             cands.push(Candidate {
                                 label: short,
                                 kind: CompletionItemKind::REFERENCE,
-                                detail: other
-                                    .labels
-                                    .get(iri)
-                                    .cloned()
-                                    .unwrap_or_else(|| iri.clone()),
-                                iri: Some(iri.clone()),
+                                detail: other.label(iri).unwrap_or(iri).to_string(),
+                                iri: Some(iri.to_string()),
                                 rank: 3,
                                 import: None,
                             });

@@ -3,7 +3,7 @@
 //! prefix instead.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::syntax::{Form, Role, Span};
+use crate::syntax::{Form, Iri, Role, Span};
 use crate::workspace::{PREFIX_FILE, path_to_uri};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -12,7 +12,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 pub enum Target {
-    Iri(String),
+    Iri(Iri),
     /// A prefix name, as used or declared in this document.
     Prefix(String),
 }
@@ -36,13 +36,13 @@ pub fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
             .iter()
             .find(|u| u.span == r.span)?
             .name
-            .clone();
+            .to_string();
         return Some((
             Target::Prefix(name),
             Span::new(r.span.start, r.span.start + prefix_len),
         ));
     }
-    Some((Target::Iri(r.iri.clone()), r.span))
+    Some((Target::Iri(r.iri), r.span))
 }
 
 pub fn uri(s: &str) -> Uri {
@@ -120,15 +120,16 @@ pub fn type_definition(
     let Some((Target::Iri(iri), _)) = target_at(a, offset) else {
         return vec![];
     };
-    let types: FxHashSet<&String> = all
+    let types: FxHashSet<Iri> = all
         .iter()
         .filter_map(|o| o.types.get(&iri))
         .flatten()
+        .copied()
         .collect();
     let mut out = Vec::new();
     for other in all {
         for ty in &types {
-            for span in other.defs.get(*ty).into_iter().flatten() {
+            for span in other.defs.get(ty).into_iter().flatten() {
                 out.push(loc(other, enc, *span));
             }
         }

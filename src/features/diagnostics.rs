@@ -143,7 +143,7 @@ pub fn diagnostics(a: &Analysis, enc: Encoding) -> Vec<Diagnostic> {
                                 .prefix_uses
                                 .iter()
                                 .find(|u| u.span == r.span)
-                                .map(|u| u.name.clone())
+                                .map(|u| u.name.to_string())
                                 .unwrap_or_default();
                             format!("{text_prefix}:{}", s.local)
                         }
@@ -257,7 +257,7 @@ pub fn code_actions(
         if let Some(v) = VOCABS.by_prefix(&u.name)
             && !all.iter().any(|(p, _)| *p == u.name)
         {
-            all.push((u.name.clone(), v.namespace.to_string()));
+            all.push((u.name.to_string(), v.namespace.to_string()));
         }
     }
     if all.len() > 1 {
