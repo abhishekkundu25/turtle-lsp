@@ -6,12 +6,12 @@
 //! both position encodings. Any panic fails the test. Deterministic: the seed
 //! is fixed, and CHAOS_SEED / CHAOS_ITERS override it.
 
-use lsp_types::Position;
+use lsp_types::{CodeActionOrCommand, CodeActionParams, Position, Range};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::analysis::{Analysis, Encoding};
-use turtle_lsp::features::{completion, diagnostics, hover, navigation, symbols};
+use turtle_lsp::features::{completion, diagnostics, hover, navigation, refactor, symbols};
 use turtle_lsp::syntax::{PrefixMap, parse};
 
 struct Rng(u64);
@@ -87,6 +87,9 @@ const SNIPPETS: &[&str] = &[
     "<http://x/ y>",
     "ex:a.b.",
     "VERSION \"1.2\"",
+    "<http://example.org/x>",
+    " a<http://xmlns.com/foaf/0.1/Person>",
+    "<http://new.example/ns/y> ",
 ];
 
 fn corpus() -> Vec<String> {
@@ -107,6 +110,25 @@ fn corpus() -> Vec<String> {
             }
         }
     }
+    // The same files with every prefixed name written as a full IRI, so the
+    // shorten and extract refactorings have work to do.
+    let expanded: Vec<String> = out
+        .iter()
+        .map(|t| {
+            let p = parse(t, &PrefixMap::default());
+            let mut s = t.clone();
+            for r in p.refs.iter().rev() {
+                if matches!(r.form, turtle_lsp::syntax::Form::PName { .. }) {
+                    s.replace_range(
+                        r.span.start as usize..r.span.end as usize,
+                        &format!(" <{}> ", r.iri),
+                    );
+                }
+            }
+            s
+        })
+        .collect();
+    out.extend(expanded);
     out
 }
 
@@ -198,7 +220,54 @@ fn exercise(rng: &mut Rng, text: &str, all: &[Arc<Analysis>]) {
             );
             let _ = completion::complete(&a, text, &docs, enc, wild);
             let _ = hover::hover(&a, &docs, enc, wild);
+            let (from, to) = if rng.below(2) == 0 {
+                (pos, wild)
+            } else {
+                (wild, pos)
+            };
+            code_actions_keep_the_graph(&a, text, enc, Range::new(from, to), rng.below(2) == 0);
         }
+    }
+}
+
+/// Every code action must not panic; on a file without syntax errors, every
+/// refactoring must leave the parsed triples unchanged.
+fn code_actions_keep_the_graph(a: &Analysis, text: &str, enc: Encoding, range: Range, lazy: bool) {
+    let params = CodeActionParams {
+        text_document: lsp_types::TextDocumentIdentifier {
+            uri: "file:///chaos/doc.ttl".parse().unwrap(),
+        },
+        range,
+        context: Default::default(),
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    };
+    let _ = diagnostics::code_actions(a, text, enc, &params);
+    let actions = refactor::code_actions(a, enc, &params, lazy);
+    if !a.parsed.errors.is_empty() {
+        return;
+    }
+    let triples = |t: &str| {
+        let mut v: Vec<String> = parse(t, &PrefixMap::default())
+            .triples
+            .iter()
+            .map(|t| format!("{t:?}"))
+            .collect();
+        v.sort();
+        v
+    };
+    let before = triples(text);
+    for c in actions {
+        let CodeActionOrCommand::CodeAction(c) = c else {
+            continue;
+        };
+        let after = refactor::apply(a, enc, &refactor::edits_of(a, enc, &c));
+        let reparsed = parse(&after, &PrefixMap::default());
+        assert!(
+            reparsed.errors.is_empty() && triples(&after) == before,
+            "'{}' changed the graph:\n{after}",
+            c.title
+        );
     }
 }
 

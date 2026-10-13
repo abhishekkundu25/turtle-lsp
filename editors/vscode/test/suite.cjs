@@ -124,6 +124,35 @@ check("quick fix adds a missing well-known prefix", async () => {
   await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 
+check("organise prefixes is offered as a source action", async () => {
+  const content = "@prefix z: <http://z/> .\n@prefix a: <http://a/> .\n@prefix u: <http://u/> .\na:x z:p a:y .\n"
+  const doc = await vscode.workspace.openTextDocument({ language: "turtle", content })
+  await vscode.window.showTextDocument(doc)
+  await settledDiagnostics(doc)
+  const range = new vscode.Range(0, 0, 0, 0)
+  const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", doc.uri, range, vscode.CodeActionKind.SourceOrganizeImports.value)
+  const organise = actions.find((a) => a.title === "Organise prefixes")
+  assert.ok(organise, actions.map((a) => a.title).join(", "))
+  assert.ok(vscode.CodeActionKind.SourceOrganizeImports.contains(organise.kind))
+  assert.ok(await vscode.workspace.applyEdit(organise.edit))
+  assert.equal(doc.getText(), "@prefix a: <http://a/> .\n@prefix z: <http://z/> .\na:x z:p a:y .\n")
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
+})
+
+check("shorten all IRIs is resolved and applied", async () => {
+  const content = "@prefix a: <http://a/> .\n<http://a/x> a:p <http://a/y> .\n"
+  const doc = await vscode.workspace.openTextDocument({ language: "turtle", content })
+  await vscode.window.showTextDocument(doc)
+  await settledDiagnostics(doc)
+  const range = new vscode.Range(1, 0, 1, 0)
+  const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", doc.uri, range, vscode.CodeActionKind.RefactorRewrite.value, 10)
+  const all = actions.find((a) => a.title === "Shorten all IRIs in file")
+  assert.ok(all?.edit, actions.map((a) => a.title).join(", "))
+  assert.ok(await vscode.workspace.applyEdit(all.edit))
+  assert.equal(doc.getText(), "@prefix a: <http://a/> .\na:x a:p a:y .\n")
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
+})
+
 check("outline lists subjects", async () => {
   const doc = await open(path.join(ws, "people.ttl"))
   const syms = await vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", doc.uri)

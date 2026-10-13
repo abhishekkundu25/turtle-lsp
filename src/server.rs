@@ -7,7 +7,7 @@
 //!   burst of keystrokes costs one analysis, not one per keystroke.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::features::{completion, diagnostics, hover, navigation, symbols};
+use crate::features::{completion, diagnostics, hover, navigation, refactor, symbols};
 use crate::workspace::{
     PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
 };
@@ -31,6 +31,8 @@ pub struct Server {
     /// The initial workspace index has been merged.
     indexed: bool,
     watch_dynamic: bool,
+    /// The client resolves a code action's edit lazily (`codeAction/resolve`).
+    resolve_edits: bool,
     next_id: i32,
 }
 
@@ -57,6 +59,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|w| w.did_change_watched_files.as_ref())
         .and_then(|d| d.dynamic_registration)
         .unwrap_or(false);
+
+    let resolve_edits = params
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|t| t.code_action.as_ref())
+        .and_then(|c| c.resolve_support.as_ref())
+        .is_some_and(|r| r.properties.iter().any(|p| p == "edit"));
 
     let mut roots: Vec<PathBuf> = params
         .workspace_folders
@@ -119,6 +129,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         index_rx,
         indexed: false,
         watch_dynamic,
+        resolve_edits,
         next_id: 0,
     };
     server.main_loop()?;
@@ -154,7 +165,12 @@ fn capabilities(enc: Encoding) -> ServerCapabilities {
         workspace_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            code_action_kinds: Some(vec![
+                CodeActionKind::QUICKFIX,
+                CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                CodeActionKind::REFACTOR_REWRITE,
+            ]),
+            resolve_provider: Some(true),
             ..Default::default()
         })),
         ..Default::default()
@@ -538,9 +554,26 @@ impl Server {
                 let p = params!(CodeActionParams);
                 let (_, a) = doc!(p.text_document.uri);
                 let text = a.text.clone();
-                json(serde_json::to_value(diagnostics::code_actions(
-                    &a, &text, enc, &p,
-                )))
+                let only = p.context.only.as_deref();
+                let mut actions: Vec<_> = diagnostics::code_actions(&a, &text, enc, &p)
+                    .into_iter()
+                    .filter(|c| match c {
+                        CodeActionOrCommand::CodeAction(c) => {
+                            c.kind.as_ref().is_none_or(|k| refactor::wanted(only, k))
+                        }
+                        CodeActionOrCommand::Command(_) => true,
+                    })
+                    .collect();
+                actions.extend(refactor::code_actions(&a, enc, &p, self.resolve_edits));
+                json(serde_json::to_value(actions))
+            }
+            CodeActionResolveRequest::METHOD => {
+                let action = params!(CodeAction);
+                let uri = action.data.as_ref().and_then(|d| d["uri"].as_str());
+                let Some(a) = uri.and_then(|u| self.ws.analysis(&normalize_uri(u))) else {
+                    return json(serde_json::to_value(action));
+                };
+                json(serde_json::to_value(refactor::resolve(&a, enc, action)))
             }
             _ => Err((
                 ErrorCode::MethodNotFound,
