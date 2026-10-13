@@ -39,3 +39,19 @@ for (const f of files) {
     assert.deepEqual(diags, [], fmt(diags))
   })
 }
+
+// The SHACL shape lint stays silent on the real shapes, with or without the header.
+for (const f of files) {
+  test(`${f}: no shacl-* diagnostics`, async () => {
+    for (const [name, text] of [
+      [`__shacl_full_${f}`, header + fs.readFileSync(path.join(dir, f), "utf8")],
+      [`__shacl_${f}`, fs.readFileSync(path.join(dir, f), "utf8")],
+    ]) {
+      const uri = uriOf(path.join(dir, name))
+      s.open(uri, text)
+      const diags = (await s.diagnosticsFor(uri)).filter((d) => String(d.code).startsWith("shacl-"))
+      s.close(uri)
+      assert.deepEqual(diags, [], `${name}\n${fmt(diags)}`)
+    }
+  })
+}

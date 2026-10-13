@@ -1,0 +1,39 @@
+@prefix ex: <http://example.com/shop/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Known classes: typed, in a hierarchy, or with instances.
+ex:Product a owl:Class .
+ex:Book rdfs:subClassOf ex:Product .
+ex:gadget1 a ex:Gadget .
+
+ex:Isbn a rdfs:Datatype ;
+    owl:onDatatype xsd:string .
+
+ex:NameShape a sh:PropertyShape ;
+    sh:path ex:name ;
+    sh:datatype xsd:string ;
+    sh:maxCount 1 .
+
+ex:ProductShape a sh:NodeShape ;
+    sh:targetClass ex:Product ;
+    sh:property ex:NameShape ;
+    sh:property [
+        sh:path ( ex:madeBy [ sh:inversePath ex:employs ] ) ;
+        sh:class ex:Gadget ;
+        sh:minCount 0 ;
+        sh:maxCount 3
+    ] ;
+    sh:property [
+        sh:path [ sh:alternativePath ( ex:isbn [ sh:zeroOrMorePath ex:edition ] ) ] ;
+        sh:datatype ex:Isbn ;
+        sh:qualifiedValueShape [ sh:datatype rdf:langString ] ;
+        sh:qualifiedMinCount 1 ;
+        sh:qualifiedMaxCount 2
+    ] ;
+    sh:or ( ex:NameShape [ sh:node ex:ProductShape ] ) ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type ) .

@@ -99,6 +99,9 @@ const SNIPPETS: &[&str] = &[
     "ex:g {\n",
     "_:g { ",
     "[] {",
+    " <http://www.w3.org/ns/shacl#property> [ <http://www.w3.org/ns/shacl#minCount> -1 ] ",
+    " <http://www.w3.org/ns/shacl#path> ( ",
+    " <http://www.w3.org/ns/shacl#or> ( ",
 ];
 
 fn corpus() -> Vec<(String, Syntax)> {
@@ -121,6 +124,7 @@ fn corpus() -> Vec<(String, Syntax)> {
         "format",
         "datasets",
         "oracle",
+        "shacl",
     ] {
         if let Ok(entries) = fs::read_dir(root.join(dir)) {
             for e in entries.flatten() {

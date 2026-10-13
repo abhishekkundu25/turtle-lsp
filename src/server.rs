@@ -574,10 +574,16 @@ impl Server {
     /// Diagnostics for `uri`, or the panic message if computing them failed.
     fn diagnostics_for(&mut self, uri: &str) -> Result<Option<Vec<Diagnostic>>, String> {
         let enc = self.enc;
+        let indexed = self.indexed;
         guard("diagnostics", || {
-            self.ws
-                .analysis(uri)
-                .map(|a| diagnostics::diagnostics(&a, self.ws.knowledge(), enc))
+            self.ws.analysis(uri).map(|a| {
+                let mut d = diagnostics::diagnostics(&a, self.ws.knowledge(), enc);
+                // "Known nowhere" findings wait for the initial index.
+                if !indexed {
+                    d.retain(|d| !diagnostics::needs_index(d));
+                }
+                d
+            })
         })
     }
 

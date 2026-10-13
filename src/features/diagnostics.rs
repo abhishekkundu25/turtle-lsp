@@ -10,6 +10,14 @@ use serde_json::{Value, json};
 
 pub const SOURCE: &str = "turtle";
 
+/// Codes of diagnostics that claim something is known nowhere in the
+/// workspace, so are only reported once the initial index is in.
+pub const NEEDS_INDEX: &[&str] = crate::features::shacl_lint::NEEDS_INDEX;
+
+pub fn needs_index(d: &Diagnostic) -> bool {
+    matches!(&d.code, Some(NumberOrString::String(c)) if NEEDS_INDEX.contains(&c.as_str()))
+}
+
 /// A namespace to bind an undeclared prefix name to.
 pub struct PrefixCandidate {
     pub namespace: String,
@@ -215,6 +223,15 @@ pub fn diagnostics(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic
                 out.push(d);
             }
         }
+    }
+
+    for f in crate::features::shacl_lint::lint(a, k) {
+        let sev = if f.error {
+            DiagnosticSeverity::ERROR
+        } else {
+            DiagnosticSeverity::WARNING
+        };
+        out.push(mk(f.span, sev, f.code, f.message));
     }
     out
 }
