@@ -11,6 +11,7 @@ crossbeam-channel = "0.5.17"
 line-index = "0.1.2"
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
+mimalloc = { version = "0.1", default-features = false }
 oxilangtag = "0.1.6"
 oxiri = "0.3.1"
 oxrdfxml = { version = "0.2.4", features = ["rdf-12"] }

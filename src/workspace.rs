@@ -105,6 +105,10 @@ impl Workspace {
     }
 
     pub fn open_doc_as(&mut self, uri: String, text: String, version: i32, syntax: Syntax) {
+        // The open text supersedes the indexed copy (re-read on close), and a
+        // second full analysis of a large file costs hundreds of MB. The index
+        // keeps its contribution until the open document is analyzed.
+        self.disk.remove(&uri);
         self.open.insert(
             uri,
             Doc {
@@ -331,6 +335,7 @@ impl Workspace {
     pub fn add_disk(&mut self, files: Vec<(String, Analysis)>, replace: bool) {
         let files: Vec<(String, Arc<Analysis>, DocFacts)> = files
             .into_par_iter()
+            .filter(|(uri, _)| !self.open.contains_key(uri))
             .filter(|(uri, _)| replace || !self.disk.contains_key(uri))
             .map(|(uri, a)| {
                 let facts = DocFacts::new(&a);
@@ -338,10 +343,8 @@ impl Workspace {
             })
             .collect();
         for (uri, a, facts) in files {
-            if !self.open.contains_key(&uri) {
-                self.knowledge
-                    .set_prepared(&uri, Source::Disk, a.clone(), facts);
-            }
+            self.knowledge
+                .set_prepared(&uri, Source::Disk, a.clone(), facts);
             self.disk.insert(uri, a);
         }
     }
