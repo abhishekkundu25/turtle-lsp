@@ -247,6 +247,31 @@ check("inlay hints show the label after an opaque name", async () => {
   await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 
+check("saving a file that violates the project shapes shows a SHACL violation", async () => {
+  // Created for this check and removed afterwards (the fixtures stay as they are).
+  const file = path.join(project, "data", "__vscode-shacl.ttl")
+  fs.writeFileSync(file, 'obj:pump-09 a sd:Asset ;\n    sd:designation "=P09" .\n')
+  try {
+    const doc = await open(file)
+    const edit = new vscode.WorkspaceEdit()
+    edit.replace(doc.uri, new vscode.Range(posOf(doc, '"=P09"', 1), posOf(doc, '"=P09"', 5)), "P09")
+    assert.ok(await vscode.workspace.applyEdit(edit))
+    assert.ok(await doc.save())
+    const code = (d) => (typeof d.code === "object" ? d.code.value : d.code)
+    let d = []
+    for (let i = 0; i < 100 && d.length === 0; i++) {
+      await sleep(50)
+      d = vscode.languages.getDiagnostics(doc.uri).filter((x) => code(x) === "shacl-violation")
+    }
+    assert.equal(d.length, 1, fmt(vscode.languages.getDiagnostics(doc.uri)))
+    assert.match(d[0].message, /designation/)
+    assert.equal(d[0].range.start.line, 1)
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor")
+  } finally {
+    fs.rmSync(file, { force: true })
+  }
+})
+
 exports.run = async function run() {
   let failed = 0
   for (const { name, fn } of checks) {

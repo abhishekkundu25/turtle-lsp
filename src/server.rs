@@ -18,7 +18,8 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::features::hierarchy;
 use crate::features::{
-    completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, symbols,
+    completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, shacl_validate,
+    symbols,
 };
 use crate::settings::Settings;
 use crate::workspace::{
@@ -78,6 +79,13 @@ pub struct Server {
     /// Knowledge changed since the last display refresh.
     display_stale: bool,
     imports: crate::imports::Imports,
+    /// SHACL validation thread, started when the workspace first has shapes.
+    shacl: Option<shacl_validate::Worker>,
+    shacl_rx: Receiver<shacl_validate::Outcome>,
+    /// The latest validation job; older results are dropped.
+    shacl_generation: u64,
+    /// The latest validation results per document.
+    shacl_diagnostics: shacl_validate::ByUri,
 }
 
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
@@ -228,6 +236,10 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         display_refresh,
         display_stale: false,
         imports: crate::imports::Imports::new(),
+        shacl: None,
+        shacl_rx: never(),
+        shacl_generation: 0,
+        shacl_diagnostics: Default::default(),
     };
     let clean = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
@@ -357,6 +369,17 @@ impl Server {
                 recv(self.imports.results()) -> done => {
                     if let Ok(done) = done {
                         self.imports_done(done);
+                    }
+                    None
+                }
+                recv(self.shacl_rx) -> outcome => {
+                    match outcome {
+                        Ok(o) => self.shacl_outcome(o),
+                        // The thread is gone: a disconnected channel is always ready.
+                        Err(_) => {
+                            self.shacl = None;
+                            self.shacl_rx = never();
+                        }
                     }
                     None
                 }
@@ -550,6 +573,7 @@ impl Server {
                     }
                     if prefixes_changed || disk_changed {
                         self.knowledge_changed();
+                        self.validate_shacl();
                     }
                 }
             }
@@ -560,6 +584,7 @@ impl Server {
     /// A document was saved: a catalog or ontology file may have changed too.
     fn on_save(&mut self, _uri: &str) {
         self.imports.retry();
+        self.validate_shacl();
     }
 
     /// Start resolving `owl:imports` if they changed (never before the
@@ -612,6 +637,7 @@ impl Server {
         self.settings = new;
         self.dirty.extend(self.ws.open.keys().cloned());
         self.knowledge_changed();
+        self.validate_shacl();
     }
 
     /// Something outside any one document changed that can change its
@@ -650,6 +676,7 @@ impl Server {
         // would wake the main loop forever.
         self.index_rx = never();
         self.knowledge_changed();
+        self.validate_shacl();
     }
 
     /// Answers that look across the workspace (definition, references, rename,
@@ -684,6 +711,9 @@ impl Server {
                     d.retain(|d| !diagnostics::needs_index(d));
                 }
                 d.extend(self.imports.diagnostics(&a, enc));
+                if let Some(shacl) = self.shacl_diagnostics.get(uri) {
+                    d.extend(shacl.iter().cloned());
+                }
                 d
             })
         })
@@ -1028,6 +1058,57 @@ impl Server {
                 format!("unhandled method {}", req.method),
             )),
         }
+    }
+
+    /// Start validating the workspace in the background (once indexed, when
+    /// enabled and some workspace document has shapes); otherwise clear the
+    /// results shown.
+    fn validate_shacl(&mut self) {
+        if !self.indexed {
+            return;
+        }
+        self.shacl_generation += 1;
+        let docs: Vec<_> = self
+            .ws
+            .knowledge()
+            .docs()
+            .map(|(_, s, a)| (s, a.clone()))
+            .collect();
+        let wanted = self.settings.shacl_enabled
+            && docs.iter().any(|(s, a)| {
+                *s != crate::knowledge::Source::External && shacl_validate::has_shapes(a)
+            });
+        if !wanted {
+            if let Some(w) = &self.shacl {
+                w.cancel(self.shacl_generation);
+            }
+            if !self.shacl_diagnostics.is_empty() {
+                self.shacl_diagnostics.clear();
+                self.knowledge_changed();
+            }
+            return;
+        }
+        if self.shacl.is_none() {
+            let (worker, rx) = shacl_validate::Worker::start();
+            self.shacl = Some(worker);
+            self.shacl_rx = rx;
+        }
+        if let Some(w) = &self.shacl {
+            w.submit(shacl_validate::Job {
+                generation: self.shacl_generation,
+                docs,
+                max_triples: self.settings.shacl_max_triples,
+                enc: self.enc,
+            });
+        }
+    }
+
+    fn shacl_outcome(&mut self, o: shacl_validate::Outcome) {
+        if o.generation != self.shacl_generation || o.diagnostics == self.shacl_diagnostics {
+            return;
+        }
+        self.shacl_diagnostics = o.diagnostics;
+        self.knowledge_changed();
     }
 
     fn prefix_file_for(&mut self, uri: &str) -> Option<Arc<Analysis>> {

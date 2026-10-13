@@ -9,4 +9,5 @@ pub mod navigation;
 pub mod refactor;
 pub mod semantic;
 pub mod shacl_lint;
+pub mod shacl_validate;
 pub mod symbols;

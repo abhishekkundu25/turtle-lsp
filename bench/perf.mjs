@@ -148,6 +148,57 @@ record(`format (${text.split("\n").length} lines)`, fmts, `${fmtEdits} edit(s)`)
 
 const rssEnd = rss(s.proc.pid)
 await s.stop()
+
+// Shapes present: a simple shape over every foaf:Person in the workspace.
+// Saving validates in the background; typing must stay as fast as above.
+fs.writeFileSync(
+  path.join(ws, "shapes.ttl"),
+  `@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.org/> .
+ex:PersonShape a sh:NodeShape ;
+    sh:targetClass foaf:Person ;
+    sh:property [ sh:path foaf:name ; sh:minCount 1 ; sh:pattern "^Person [0-9]+$" ] ;
+    sh:property [ sh:path foaf:knows ; sh:class foaf:Person ] .
+`
+)
+const s2 = await startServer({ cwd: ws })
+await s2.request("workspace/symbol", { query: "" })
+s2.open(uri, big)
+await s2.diagnosticsFor(uri, 120000)
+const isShacl = (d) => d.code === "shacl-violation"
+const saves = []
+const typing = []
+text = big
+let broken = 0
+// One more name that breaks the pattern per save, so each run changes the results.
+const saveAndBreak = async (keystrokes) => {
+  text = text.replace(`"Person ${broken}"`, `"Person ${broken}x"`)
+  broken++
+  s2.change(uri, text)
+  await s2.diagnosticsFor(uri, 120000)
+  const t1 = performance.now()
+  s2.notify("textDocument/didSave", { textDocument: { uri } })
+  // Keystrokes while the validation runs.
+  for (let k = 0; k < keystrokes; k++) {
+    const tk = performance.now()
+    s2.change(uri, `${text}\n# ${broken} ${k}\n`)
+    await s2.diagnosticsFor(uri, 120000)
+    typing.push(performance.now() - tk)
+  }
+  for (;;) {
+    const d = await s2.diagnosticsFor(uri, 120000)
+    if (d.filter(isShacl).length === broken) break
+    await new Promise((r) => setTimeout(r, 2))
+  }
+  return performance.now() - t1
+}
+for (let i = 0; i < 5; i++) saves.push(await saveAndBreak(0))
+for (let i = 0; i < 5; i++) await saveAndBreak(4)
+const triples = (FILES * 200 + SUBJECTS) * 4 + 6
+record(`didSave -> SHACL diagnostics (~${(triples / 1000).toFixed(0)}k triples, 1 shape)`, saves)
+record("keystroke -> diagnostics while validating", typing)
+await s2.stop()
 fs.rmSync(ws, { recursive: true, force: true })
 
 console.log(`\nturtle-lsp perf (${SUBJECTS} subjects in big.ttl, ${FILES} workspace files)\n`)

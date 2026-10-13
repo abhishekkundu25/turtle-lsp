@@ -22,6 +22,7 @@ server starts in about 1 ms.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
 - **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
+- **SHACL validation**: on save, the whole workspace is validated against its SHACL shapes in the background (SHACL Core; W3C SHACL Core suite 98/98, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled` and `turtle.shacl.maxTriples`.
 
 ## Performance
 

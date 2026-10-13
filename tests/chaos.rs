@@ -335,6 +335,18 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             );
         }
     }
+    // SHACL validation of the document with the corpus, as on save.
+    let job = turtle_lsp::features::shacl_validate::Job {
+        generation: 1,
+        docs: docs.docs().map(|(_, s, a)| (s, a.clone())).collect(),
+        max_triples: u64::MAX,
+        enc: if rng.below(2) == 0 {
+            Encoding::Utf8
+        } else {
+            Encoding::Utf16
+        },
+    };
+    let _ = turtle_lsp::features::shacl_validate::run(&job, &|| false);
     k.remove(doc_uri(syntax));
 }
 

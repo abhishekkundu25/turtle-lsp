@@ -3,6 +3,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { spawn } from "node:child_process"
 import { startServer, uriOf, fixtures, serverPath } from "./lsp-client.mjs"
@@ -16,12 +17,12 @@ const frame = (o) => {
 }
 
 // A server driven by raw frames, so a test can end the session any way it likes.
-function rawServer() {
-  const proc = spawn(serverPath, [], { cwd: ws, stdio: ["pipe", "ignore", "ignore"] })
+function rawServer(cwd = ws) {
+  const proc = spawn(serverPath, [], { cwd, stdio: ["pipe", "ignore", "ignore"] })
   proc.stdin.on("error", () => {})
   const exited = new Promise((r) => proc.on("exit", (code) => r(code)))
   const send = (o) => proc.stdin.write(frame(o))
-  send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { capabilities: {}, rootUri: uriOf(ws) } })
+  send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { capabilities: {}, rootUri: uriOf(cwd) } })
   send({ jsonrpc: "2.0", method: "initialized", params: {} })
   const exitCode = async (ms = 5000) => {
     const code = await Promise.race([exited, sleep(ms).then(() => "running")])
@@ -128,5 +129,47 @@ test("the imports thread costs nothing while idle, and a fetch in flight does no
     pending.forEach((r) => r.destroy())
     web.close()
     fs.rmSync(cache, { recursive: true, force: true })
+  }
+})
+
+test("an idle server uses no CPU with shapes present, after a validation run", async () => {
+  const project = path.join(fixtures, "project")
+  const s = await startServer({ cwd: project })
+  try {
+    // Not on disk: an open document with an asset that violates the project shapes.
+    const uri = uriOf(path.join(project, "data", "__resources-shacl.ttl"))
+    s.open(uri, 'obj:x a sd:Asset ;\n    sd:designation "bad" .\n')
+    s.notify("textDocument/didSave", { textDocument: { uri } })
+    const end = Date.now() + 5000
+    while (!(await s.diagnosticsFor(uri)).some((d) => d.code === "shacl-violation")) {
+      assert.ok(Date.now() < end, "no SHACL result within 5 s")
+      await sleep(25)
+    }
+    await sleep(300)
+    const before = cpuSeconds(s.proc.pid)
+    await sleep(2000)
+    const used = cpuSeconds(s.proc.pid) - before
+    assert.ok(used < 0.1, `idle server used ${used.toFixed(2)} s of CPU in 2 s`)
+  } finally {
+    await s.stop()
+  }
+})
+
+test("the server exits when the editor goes away during a validation", async () => {
+  // Validating a 10,000-node chain with an ex:next* path takes seconds.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-shacl-exit-"))
+  let chain = "@prefix ex: <http://example.com/chain/> .\n@prefix sh: <http://www.w3.org/ns/shacl#> .\n"
+  chain += "ex:S sh:targetSubjectsOf ex:next ; sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:minCount 1 ] .\n"
+  for (let i = 0; i < 10000; i++) chain += `ex:n${i} ex:next ex:n${i + 1} .\n`
+  fs.writeFileSync(path.join(dir, "chain.ttl"), chain)
+  try {
+    const s = rawServer(dir)
+    // The validation starts once the initial index is merged.
+    s.send({ jsonrpc: "2.0", id: 2, method: "workspace/symbol", params: { query: "" } })
+    await sleep(500)
+    s.proc.stdin.end()
+    assert.notEqual(await s.exitCode(), "running", "server still running 5 s after stdin closed")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })
