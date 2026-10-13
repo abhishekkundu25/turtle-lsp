@@ -935,9 +935,11 @@ impl Knowledge {
             return vec![];
         };
         let mut out: Vec<Iri> = Vec::new();
+        // A class can have tens of thousands of instances: dedup with a set.
+        let mut seen = rustc_hash::FxHashSet::default();
         for id in self.ordered(&e.object) {
             for i in get(&self.slot(id).facts, key).into_iter().flatten() {
-                if !out.contains(i) {
+                if seen.insert(*i) {
                     out.push(*i);
                 }
             }
