@@ -251,7 +251,7 @@ fn code_actions_keep_the_graph(a: &Analysis, text: &str, enc: Encoding, range: R
         let mut v: Vec<String> = parse(t, &PrefixMap::default())
             .triples
             .iter()
-            .map(|t| format!("{t:?}"))
+            .map(|t| format!("{:?} {:?} {:?}", t.s, t.p, t.o))
             .collect();
         v.sort();
         v

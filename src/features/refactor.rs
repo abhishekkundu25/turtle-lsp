@@ -184,7 +184,7 @@ fn scope_at(a: &Analysis, offset: u32) -> PrefixMap {
         .iter()
         .take_while(|p| p.span.end <= offset)
     {
-        m.insert(p.name.clone(), p.iri.clone());
+        m.insert(p.name.clone(), p.iri.to_string());
     }
     m
 }
@@ -217,7 +217,7 @@ fn each_shortenable(a: &Analysis, mut f: impl FnMut(&Ref, String) -> bool) {
     let mut decls = a.parsed.prefixes.iter().peekable();
     for r in a.parsed.refs.iter().filter(|r| r.form == Form::Iri) {
         while let Some(p) = decls.next_if(|p| p.span.end <= r.span.start) {
-            scope.insert(p.name.clone(), p.iri.clone());
+            scope.insert(p.name.clone(), p.iri.to_string());
         }
         if let Some(pname) = shorten(&r.iri, &scope)
             && !f(r, pname)
@@ -379,13 +379,13 @@ fn namespace_of(iri: &str) -> Option<&str> {
 fn taken_names(a: &Analysis) -> FxHashSet<String> {
     let mut names: FxHashSet<String> = a.external.keys().cloned().collect();
     names.extend(a.parsed.prefixes.iter().map(|p| p.name.clone()));
-    names.extend(a.parsed.prefix_uses.iter().map(|u| u.name.clone()));
+    names.extend(a.parsed.prefix_uses.iter().map(|u| u.name.to_string()));
     names
 }
 
 fn bound_namespaces(a: &Analysis) -> FxHashSet<String> {
     let mut ns: FxHashSet<String> = a.external.values().cloned().collect();
-    ns.extend(a.parsed.prefixes.iter().map(|p| p.iri.clone()));
+    ns.extend(a.parsed.prefixes.iter().map(|p| p.iri.to_string()));
     ns
 }
 
@@ -704,7 +704,11 @@ mod tests {
 
     fn triples(text: &str) -> Vec<String> {
         let p = crate::syntax::parse(text, &PrefixMap::default());
-        let mut t: Vec<String> = p.triples.iter().map(|t| format!("{t:?}")).collect();
+        let mut t: Vec<String> = p
+            .triples
+            .iter()
+            .map(|t| format!("{:?} {:?} {:?}", t.s, t.p, t.o))
+            .collect();
         t.sort();
         t
     }
