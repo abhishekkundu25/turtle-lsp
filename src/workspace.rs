@@ -214,19 +214,6 @@ impl Workspace {
         Some(a)
     }
 
-    /// Every analysis in the workspace: open documents win over their disk copy.
-    pub fn all(&mut self) -> Vec<Arc<Analysis>> {
-        let uris: Vec<String> = self.open.keys().cloned().collect();
-        let mut out: Vec<Arc<Analysis>> = uris.iter().filter_map(|u| self.analysis(u)).collect();
-        out.extend(
-            self.disk
-                .iter()
-                .filter(|(u, _)| !self.open.contains_key(*u))
-                .map(|(_, a)| a.clone()),
-        );
-        out
-    }
-
     pub fn text(&self, uri: &str) -> Option<&str> {
         self.open.get(uri).map(|d| d.text.as_str())
     }

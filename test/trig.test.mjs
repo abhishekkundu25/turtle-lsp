@@ -91,10 +91,12 @@ test("an .nt file with @prefix gets an error", async () => {
 
 test("prefixes.ttl does not apply to N-Triples", async () => {
   const text = "p:alice <https://data.example.net/def/name> \"Alice\" .\n"
-  const { diags } = await openAs(uriOf(path.join(dir, "__pname.nt")), text, "ntriples")
-  const msgs = diags.map((d) => d.message).join("\n")
-  assert.match(msgs, /Undeclared prefix 'p:'/)
-  assert.match(msgs, /not prefixed names/)
+  const uri = uriOf(path.join(dir, "__pname.nt"))
+  const { diags } = await openAs(uri, text, "ntriples")
+  assert.match(diags.map((d) => d.message).join("\n"), /not prefixed names/)
+  // Resolved through prefixes.ttl, hover would describe the IRI.
+  const hover = await s.request("textDocument/hover", { textDocument: { uri }, position: positionOf(text, "p:al") })
+  assert.equal(hover, null)
 })
 
 test("the language id decides the syntax", async () => {
@@ -126,4 +128,15 @@ test("the workspace index covers .trig and .nt files", async () => {
   assert.ok(dave.some((x) => x.location.uri.endsWith("/graphs.trig")), JSON.stringify(dave))
   const erin = await s.request("workspace/symbol", { query: "erin" })
   assert.ok(erin.some((x) => x.location.uri.endsWith("/people.nt")), JSON.stringify(erin))
+})
+
+test("N-Triples gets no prefix help: no completions, no add-prefix fix", async () => {
+  const uri = uriOf(path.join(dir, "__nt-prefix.nt"))
+  const text = "<http://example.com/a> foaf:name \"A\" .\n"
+  const { diags } = await openAs(uri, text, "ntriples")
+  assert.ok(diags.some((d) => d.severity === 1), fmt(diags))
+  assert.equal(diags.filter((d) => d.code === "undeclared-prefix").length, 0, fmt(diags))
+  const res = await s.request("textDocument/completion", { textDocument: { uri }, position: positionOf(text, "foaf:") })
+  const items = Array.isArray(res) ? res : res.items
+  assert.deepEqual(items, [])
 })

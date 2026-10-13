@@ -57,6 +57,11 @@ pub fn complete(
     enc: Encoding,
     pos: Position,
 ) -> CompletionResponse {
+    // Everything offered here is a prefixed name or a keyword, none of which
+    // N-Triples allows.
+    if a.parsed.syntax == crate::syntax::Syntax::NTriples {
+        return CompletionResponse::Array(vec![]);
+    }
     let Some(offset) = a.offset(enc, pos) else {
         return CompletionResponse::Array(vec![]);
     };

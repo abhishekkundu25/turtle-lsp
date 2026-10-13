@@ -120,7 +120,14 @@ pub fn diagnostics_with(
 
     // Undeclared prefixes, with "add @prefix" fixes for every known namespace.
     let mut candidates: FxHashMap<&str, Vec<PrefixCandidate>> = FxHashMap::default();
-    for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {
+    // N-Triples has no prefixes at all; the parser already reports the pname.
+    let ntriples = a.parsed.syntax == crate::syntax::Syntax::NTriples;
+    for u in a
+        .parsed
+        .prefix_uses
+        .iter()
+        .filter(|u| !u.resolved && !ntriples)
+    {
         let shown = if u.name.is_empty() {
             ":".to_string()
         } else {
