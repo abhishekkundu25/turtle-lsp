@@ -37,6 +37,7 @@ export async function startServer({
 } = {}) {
   warmUp()
   const proc = spawn(serverPath, [], { cwd, stdio: ["pipe", "pipe", "pipe"] })
+  const exited = new Promise((r) => proc.once("exit", () => r(true)))
   // The server may exit before our last write (e.g. after shutdown/exit).
   proc.stdin.on("error", () => {})
   let stderr = ""
@@ -143,8 +144,14 @@ export async function startServer({
         await Promise.race([conn.sendRequest("shutdown"), new Promise((r) => setTimeout(r, 500))])
         await conn.sendNotification("exit").catch(() => {})
       } catch {}
+      // Every test session must end the process; a server that lingers after
+      // shutdown/exit is a leak, not something to paper over with kill().
+      const gone = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 3000))])
       conn.dispose()
-      proc.kill()
+      if (!gone) {
+        proc.kill()
+        throw new Error("turtle-lsp did not exit within 3 s of shutdown/exit")
+      }
     },
   }
   return api

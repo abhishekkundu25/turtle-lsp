@@ -138,6 +138,7 @@ npm run test:vscode  # VS Code extension: grammar tests, then checks inside a do
 
 - `test/lsp.test.mjs`: behaviour over stdio, the way an editor talks to the server.
 - `test/project.test.mjs`: a project of headerless fragments sharing one `prefixes.ttl` (`test/fixtures/project`).
+- `test/resources.test.mjs`: an idle server uses no CPU, and the process ends however the session ends (`shutdown` + `exit` → 0, bare `exit` → 1, editor gone → exits). Every test session also fails if its server is still running 3 s after shutdown, and the Neovim and VS Code runs fail if a server outlives the editor.
 - `test/real.test.mjs`: optional private fragments in `test/fixtures/real` (gitignored, skipped when absent).
 - `test/nvim/spec.lua`: runs inside headless Neovim with its built-in LSP client.
 - `editors/vscode/test/suite.cjs`: runs inside VS Code with the extension loaded; `editors/vscode/test/grammar.test.mjs` checks the highlighting grammar.

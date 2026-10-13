@@ -70,7 +70,9 @@ pub struct Server {
     refresh_needed: bool,
 }
 
-pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// Returns whether the session ended cleanly (`shutdown` then `exit`); the
+/// process should exit with code 1 otherwise, as the LSP spec asks.
+pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let (conn, io) = Connection::stdio();
     let (id, raw) = conn.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(raw.clone())?;
@@ -198,13 +200,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         reported: false,
         refresh_needed: false,
     };
-    server.main_loop()?;
+    let clean = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
     // server still holds one would keep the process alive forever after the
     // editor disappears (stdin closed without shutdown/exit).
     drop(server);
     io.join()?;
-    Ok(())
+    Ok(clean)
 }
 
 fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
@@ -303,11 +305,13 @@ fn cancel_id(msg: &Message) -> Option<RequestId> {
 }
 
 impl Server {
-    fn main_loop(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// Returns true after `shutdown` + `exit`, false when the client went away
+    /// or sent `exit` without `shutdown`.
+    fn main_loop(&mut self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         self.register_watchers();
         loop {
             let first = select! {
-                recv(self.inbox) -> m => match m { Ok(m) => Some(m), Err(_) => return Ok(()) },
+                recv(self.inbox) -> m => match m { Ok(m) => Some(m), Err(_) => return Ok(false) },
                 recv(self.index_rx) -> files => {
                     self.merge_index(files.ok());
                     None
@@ -322,8 +326,12 @@ impl Server {
             while let Some(msg) = rest.next() {
                 match msg {
                     Message::Request(req) if req.method == lsp_types::request::Shutdown::METHOD => {
-                        self.shutdown(req, rest)?;
-                        return Ok(());
+                        return self.shutdown(req, rest);
+                    }
+                    Message::Notification(n)
+                        if n.method == lsp_types::notification::Exit::METHOD =>
+                    {
+                        return Ok(false);
                     }
                     Message::Request(req) if cancelled.contains(&req.id) => {
                         let resp = Response::new_err(
@@ -342,11 +350,12 @@ impl Server {
     }
 
     /// Answer `shutdown`, then wait for `exit`; other requests are refused.
+    /// Returns whether `exit` arrived.
     fn shutdown(
         &self,
         req: Request,
         rest: impl Iterator<Item = Message>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         self.conn.sender.send(Response::new_ok(req.id, ()).into())?;
         let mut rest = rest.map(Ok);
         let receiver = &self.inbox;
@@ -357,7 +366,7 @@ impl Server {
         while let Ok(msg) = next() {
             match msg {
                 Message::Notification(n) if n.method == lsp_types::notification::Exit::METHOD => {
-                    break;
+                    return Ok(true);
                 }
                 Message::Request(r) => {
                     let resp = Response::new_err(
@@ -370,7 +379,7 @@ impl Server {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn handle(&mut self, msg: Message) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -4,8 +4,13 @@ fn main() {
         eprintln!("turtle-lsp {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    if let Err(e) = turtle_lsp::server::run() {
-        eprintln!("turtle-lsp: {e}");
-        std::process::exit(1);
+    match turtle_lsp::server::run() {
+        Ok(true) => {}
+        // `exit` without `shutdown`, or the client went away.
+        Ok(false) => std::process::exit(1),
+        Err(e) => {
+            eprintln!("turtle-lsp: {e}");
+            std::process::exit(1);
+        }
     }
 }

@@ -5,6 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { runTests } from "@vscode/test-electron"
+import { processesOf, leftRunning } from "../../../test/procs.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const extensionDevelopmentPath = path.resolve(here, "..")
@@ -14,6 +15,17 @@ const fixtures = path.resolve(here, "../../../test/fixtures")
 // makes it longer than macOS allows (listen EINVAL). Use a short temp dir.
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "tvsc-"))
 
+// The extension runs a private copy of the freshly built server (set through
+// the user's turtle.server.path), so the test never picks up a stale bundled
+// binary and the leak check below sees only the servers VS Code started.
+const exe = process.platform === "win32" ? "turtle-lsp.exe" : "turtle-lsp"
+const built = path.resolve(here, "../../../target/release", exe)
+const server = path.join(userData, exe)
+fs.copyFileSync(built, server)
+fs.chmodSync(server, 0o755)
+fs.mkdirSync(path.join(userData, "User"), { recursive: true })
+fs.writeFileSync(path.join(userData, "User", "settings.json"), JSON.stringify({ "turtle.server.path": server }))
+
 try {
   await runTests({
     version: process.env.VSCODE_VERSION ?? "stable",
@@ -22,6 +34,10 @@ try {
     launchArgs: [fixtures, "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${userData}`],
     extensionTestsEnv: { TURTLE_FIXTURES: fixtures },
   })
+  // Quitting VS Code must not leave a server behind.
+  const alive = await leftRunning(server, processesOf(server))
+  if (alive.length > 0) throw new Error(`turtle-lsp still running after VS Code quit: ${alive.join(", ")}`)
+  console.log("ok - no turtle-lsp left running after VS Code quit")
 } catch (err) {
   console.error(err)
   process.exitCode = 1
