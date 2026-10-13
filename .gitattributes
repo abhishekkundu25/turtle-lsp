@@ -1,3 +1,4 @@
 # Positions in tests assume LF line endings on every platform.
 * text=auto eol=lf
 *.png binary
+tests/w3c/** -text
