@@ -1,0 +1,36 @@
+# A messy TriG dataset: every way to open a graph block.
+PREFIX ex:   <https://example.com/ns#>
+@prefix dct: <http://purl.org/dc/terms/> .
+
+ex:people dct:title "People"@en ;
+    dct:created "2026-10-01" .
+
+ex:people {
+    ex:alice a ex:Person ;
+        ex:name "Alice" , "Alicia"@es . # Alice
+
+    # Bob is next
+    ex:bob a ex:Person ;
+        ex:knows [ ex:name "Carol" ]
+}
+
+GRAPH ex:links {
+    ex:alice ex:knows ex:bob .
+
+    ex:bob ex:knows ( ex:alice ex:carol ) .
+}
+
+graph _:draft {
+    ex:dave ex:name "Dave" ~ ex:r {| dct:source ex:people |} .
+
+    # still drafting
+}
+
+{
+    ex:carol a ex:Person
+}
+
+[] {
+}
+
+ex:after ex:p ex:o .

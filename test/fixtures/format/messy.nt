@@ -1,0 +1,10 @@
+# A messy N-Triples file: tabs, runs of spaces and blank lines.
+<https://example.com/ns#alice>	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	<https://example.com/ns#Person>.
+   <https://example.com/ns#alice>   <https://example.com/ns#name>  "Alice"@en  .   # her name
+
+
+
+<https://example.com/ns#alice> <https://example.com/ns#age> "42"^^<http://www.w3.org/2001/XMLSchema#integer>.
+_:b0	<https://example.com/ns#name>	"Bob" .
+# a triple term
+<https://example.com/ns#alice> <https://example.com/ns#says> <<(  _:b0 <https://example.com/ns#knows>   <https://example.com/ns#alice>  )>> .

@@ -15,7 +15,12 @@
 //!   else broken with their contents one level in; `<< >>` and `<<( )>>` always
 //!   on one line;
 //! - an own-line comment stays above the token after it, a trailing comment
-//!   stays at the end of the line its token lands on.
+//!   stays at the end of the line its token lands on;
+//! - TriG: a graph block's opener (`GRAPH g {`, `g {` or `{`) on its own line,
+//!   its statements one level in under the same rules (the optional last `.`
+//!   kept or left out as written), and `}` on its own line;
+//! - N-Triples: one triple per line with single spaces, blank lines kept as
+//!   written (a run collapses to one) instead of one between statements.
 
 use crate::analysis::{Analysis, Encoding};
 use crate::syntax::lexer::{Kind, Token, tokenize};
@@ -69,10 +74,6 @@ pub fn formatting(a: &Analysis, enc: Encoding, opts: &Options) -> Vec<TextEdit> 
 /// `parsed` is the parse of `text` with `external` prefixes; when its tokens
 /// were dropped the text is tokenized again.
 pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options) -> Option<String> {
-    // TriG graph blocks and N-Triples line rules are not laid out yet.
-    if parsed.syntax != Syntax::Turtle {
-        return None;
-    }
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         return None;
     }
@@ -87,14 +88,21 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
     let items = Cst {
         t: &doc.toks,
         pos: 0,
+        trig: parsed.syntax == Syntax::TriG,
     }
     .document()?;
-    let out = Printer::new(&doc, opts).document(&items);
+    let out = Printer::new(&doc, opts, parsed.syntax).document(&items);
 
-    let again = parse(&out, external, Syntax::Turtle);
+    let again = parse(&out, external, parsed.syntax);
     let same = !again.errors.iter().any(|e| e.severity == Severity::Error)
         && again.comments.len() == doc.comments.len()
-        && same_triples(&again.triples, &parsed.triples);
+        && same_triples(&again.triples, &parsed.triples)
+        && again.graphs.len() == parsed.graphs.len()
+        && again
+            .graphs
+            .iter()
+            .zip(&parsed.graphs)
+            .all(|(x, y)| x.name == y.name);
     if !same {
         eprintln!(
             "turtle-lsp: formatter bug: the formatted text does not match the original \
@@ -109,13 +117,13 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
     Some(out)
 }
 
-/// Token order is kept, so the triples (and generated blank node labels) come
+/// Token order is kept, so the quads (and generated blank node labels) come
 /// out in the same order.
 fn same_triples(a: &[Triple], b: &[Triple]) -> bool {
     a.len() == b.len()
         && a.iter()
             .zip(b)
-            .all(|(x, y)| x.s == y.s && x.p == y.p && x.o == y.o)
+            .all(|(x, y)| x.s == y.s && x.p == y.p && x.o == y.o && x.graph == y.graph)
 }
 
 // ---- tokens and comment attachment ----
@@ -281,7 +289,17 @@ enum Item {
     Triples {
         subject: Term,
         pol: Vec<Po>,
-        dot: Ix,
+        /// Only the last statement of a TriG graph block may leave it out.
+        dot: Option<Ix>,
+    },
+    /// A TriG graph block: `GRAPH name { ... }`, `name { ... }` or `{ ... }`.
+    Graph {
+        kw: Option<Ix>,
+        name: Option<Term>,
+        open: Ix,
+        /// `Item::Triples` only.
+        body: Vec<Item>,
+        close: Ix,
     },
 }
 
@@ -334,6 +352,9 @@ impl Item {
         match self {
             Item::Directive { kw, .. } => *kw,
             Item::Triples { subject, .. } => subject.first(),
+            Item::Graph { kw, name, open, .. } => {
+                kw.or(name.as_ref().map(Term::first)).unwrap_or(*open)
+            }
         }
     }
 }
@@ -341,6 +362,7 @@ impl Item {
 struct Cst<'a> {
     t: &'a [Token],
     pos: usize,
+    trig: bool,
 }
 
 impl Cst<'_> {
@@ -365,7 +387,8 @@ impl Cst<'_> {
                 | Kind::SparqlBase
                 | Kind::VersionDirective
                 | Kind::SparqlVersion => self.directive(k)?,
-                _ => self.triples()?,
+                _ if self.graph_ahead() => self.graph()?,
+                _ => self.triples(false)?,
             });
         }
         Some(items)
@@ -397,11 +420,64 @@ impl Cst<'_> {
         })
     }
 
-    fn triples(&mut self) -> Option<Item> {
+    /// Length in tokens of a graph name at `ahead`: an IRI, `_:b` or `[]`.
+    fn label_len(&self, ahead: usize) -> Option<usize> {
+        match self.kind(ahead)? {
+            Kind::Iri | Kind::PName | Kind::BNode => Some(1),
+            Kind::LBracket if self.kind(ahead + 1) == Some(Kind::RBracket) => Some(2),
+            _ => None,
+        }
+    }
+
+    fn graph_ahead(&self) -> bool {
+        self.trig
+            && match self.kind(0) {
+                Some(Kind::LBrace | Kind::Graph) => true,
+                _ => self
+                    .label_len(0)
+                    .is_some_and(|n| self.kind(n) == Some(Kind::LBrace)),
+            }
+    }
+
+    fn graph(&mut self) -> Option<Item> {
+        let kw = self.eat(Kind::Graph);
+        let name = match self.label_len(0) {
+            Some(1) => {
+                let t = self.bump();
+                Some(Term::Atom(t, t))
+            }
+            Some(_) => Some(self.empty_pair()),
+            None => None,
+        };
+        let open = self.eat(Kind::LBrace)?;
+        let mut body = Vec::new();
+        let close = loop {
+            if let Some(close) = self.eat(Kind::RBrace) {
+                break close;
+            }
+            body.push(self.triples(true)?);
+        };
+        Some(Item::Graph {
+            kw,
+            name,
+            open,
+            body,
+            close,
+        })
+    }
+
+    /// A statement; `in_graph`: inside a TriG graph block, where the last one
+    /// may end at the `}` without a `.`.
+    fn triples(&mut self, in_graph: bool) -> Option<Item> {
+        let at_end = |c: &Self| match c.kind(0) {
+            Some(Kind::Dot) => true,
+            Some(Kind::RBrace) => in_graph,
+            _ => false,
+        };
         let (subject, pol) = match self.kind(0)? {
             Kind::LBracket if self.kind(1) != Some(Kind::RBracket) => {
                 let s = self.list(Kind::RBracket)?;
-                let pol = if self.kind(0) == Some(Kind::Dot) {
+                let pol = if at_end(self) {
                     Vec::new()
                 } else {
                     self.pol()?
@@ -410,7 +486,7 @@ impl Cst<'_> {
             }
             Kind::LTriple => {
                 let s = self.reified()?;
-                let pol = if self.kind(0) == Some(Kind::Dot) {
+                let pol = if at_end(self) {
                     Vec::new()
                 } else {
                     self.pol()?
@@ -422,7 +498,11 @@ impl Cst<'_> {
                 (s, self.pol()?)
             }
         };
-        let dot = self.eat(Kind::Dot)?;
+        let dot = match self.eat(Kind::Dot) {
+            Some(d) => Some(d),
+            None if in_graph && self.kind(0) == Some(Kind::RBrace) => None,
+            None => return None,
+        };
         Some(Item::Triples { subject, pol, dot })
     }
 
@@ -635,10 +715,12 @@ struct Printer<'a> {
     must_break: bool,
     /// The first token of the current item, whose comments are already out.
     skip_lead: Option<Ix>,
+    /// N-Triples: no blank line forced between statements.
+    ntriples: bool,
 }
 
 impl<'a> Printer<'a> {
-    fn new(d: &'a Doc<'a>, o: &Options) -> Printer<'a> {
+    fn new(d: &'a Doc<'a>, o: &Options, syntax: Syntax) -> Printer<'a> {
         let nl = match d.src.find('\n') {
             Some(i) if i > 0 && d.src.as_bytes()[i - 1] == b'\r' => "\r\n",
             _ => "\n",
@@ -662,6 +744,7 @@ impl<'a> Printer<'a> {
             pending: Vec::new(),
             must_break: false,
             skip_lead: None,
+            ntriples: syntax == Syntax::NTriples,
         }
     }
 
@@ -708,13 +791,15 @@ impl<'a> Printer<'a> {
         self.indent(level);
     }
 
-    /// Starts a top-level item at column 0, after a blank line if asked.
-    fn top_line(&mut self, blank: bool) {
+    /// Starts an item (a top-level one, or a statement in a graph block) at
+    /// `level`, after a blank line if asked.
+    fn top_line(&mut self, level: usize, blank: bool) {
         self.line(0);
         if blank && !self.out.is_empty() {
             self.out.push_str(self.nl);
             self.line_start = self.out.len();
         }
+        self.indent(level);
     }
 
     fn space(&mut self, level: usize) {
@@ -1002,9 +1087,9 @@ impl<'a> Printer<'a> {
                 } else {
                     self.d.blank_before[first as usize]
                 };
-                self.top_line(!both_directives || author_blank);
+                self.top_line(0, (!both_directives && !self.ntriples) || author_blank);
             }
-            self.item_leading(first);
+            self.item_leading(first, 0);
             self.skip_lead = Some(first);
             match it {
                 Item::Directive {
@@ -1032,14 +1117,14 @@ impl<'a> Printer<'a> {
                         self.punct(*d, 0);
                     }
                 }
-                Item::Triples { subject, pol, dot } => {
-                    self.term(subject, 0, false);
-                    if !pol.is_empty() {
-                        self.space(1);
-                        self.pol_from(pol, 1, false, true);
-                    }
-                    self.punct(*dot, 0);
-                }
+                Item::Triples { .. } => self.statement(it, 0),
+                Item::Graph {
+                    kw,
+                    name,
+                    open,
+                    body,
+                    close,
+                } => self.graph(*kw, name.as_ref(), *open, body, *close),
             }
             prev = Some(it);
         }
@@ -1048,7 +1133,7 @@ impl<'a> Printer<'a> {
         let (a, b) = self.d.leading(n);
         for c in a..b {
             if c > a || prev.is_some() {
-                self.top_line(self.d.comments[c as usize].blank_before);
+                self.top_line(0, self.d.comments[c as usize].blank_before);
             }
             self.write(self.d.comment(c));
         }
@@ -1058,19 +1143,64 @@ impl<'a> Printer<'a> {
         self.out
     }
 
-    /// Own-line comments above a top-level item, keeping single blank lines
+    /// Own-line comments above an item at `level`, keeping single blank lines
     /// between them and before the item.
-    fn item_leading(&mut self, first: Ix) {
+    fn item_leading(&mut self, first: Ix, level: usize) {
         let (a, b) = self.d.leading(first);
         for c in a..b {
             if c > a {
-                self.top_line(self.d.comments[c as usize].blank_before);
+                self.top_line(level, self.d.comments[c as usize].blank_before);
             }
             self.write(self.d.comment(c));
         }
         if a < b {
-            self.top_line(self.d.blank_before[first as usize]);
+            self.top_line(level, self.d.blank_before[first as usize]);
         }
+    }
+
+    /// A statement whose subject starts at `level` on the current line.
+    fn statement(&mut self, it: &Item, level: usize) {
+        let Item::Triples { subject, pol, dot } = it else {
+            return;
+        };
+        self.term(subject, level, false);
+        if !pol.is_empty() {
+            self.space(level + 1);
+            self.pol_from(pol, level + 1, false, true);
+        }
+        if let Some(d) = dot {
+            self.punct(*d, level);
+        }
+    }
+
+    /// A graph block starting on the current (top-level) line.
+    fn graph(&mut self, kw: Option<Ix>, name: Option<&Term>, open: Ix, body: &[Item], close: Ix) {
+        if let Some(k) = kw {
+            self.tok(k, 0);
+            self.space(1);
+        }
+        if let Some(n) = name {
+            self.term(n, 0, true);
+            self.space(1);
+        }
+        self.tok(open, 0);
+        for (k, it) in body.iter().enumerate() {
+            let first = it.first();
+            self.top_line(1, k > 0);
+            self.item_leading(first, 1);
+            self.skip_lead = Some(first);
+            self.statement(it, 1);
+        }
+        // Comments after the last statement stay inside the block.
+        let (a, b) = self.d.leading(close);
+        for c in a..b {
+            let blank = (c > a || !body.is_empty()) && self.d.comments[c as usize].blank_before;
+            self.top_line(1, blank);
+            self.write(self.d.comment(c));
+        }
+        self.skip_lead = Some(close);
+        self.line(0);
+        self.tok(close, 0);
     }
 }
 
@@ -1081,7 +1211,7 @@ impl<'a> Printer<'a> {
 fn hoisted_order(d: &Doc, items: &[Item]) -> Vec<usize> {
     let first_stmt = items
         .iter()
-        .position(|it| matches!(it, Item::Triples { .. }))
+        .position(|it| !matches!(it, Item::Directive { .. }))
         .unwrap_or(items.len());
     let mut first_use: FxHashMap<&str, Ix> = FxHashMap::default();
     for (i, t) in d.toks.iter().enumerate() {

@@ -238,11 +238,10 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // Formatting: refused on errors, else a fixed point.
     let opts = format::Options::default();
     let formatted = format::format(text, &a.parsed, &a.external, &opts);
-    if syntax == Syntax::Turtle
-        && a.parsed
-            .errors
-            .iter()
-            .all(|e| e.severity != Severity::Error)
+    if a.parsed
+        .errors
+        .iter()
+        .all(|e| e.severity != Severity::Error)
     {
         let out = formatted.expect("formatter refused a document without syntax errors");
         let again = format::format(

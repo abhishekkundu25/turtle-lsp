@@ -1,5 +1,6 @@
-// textDocument/formatting over stdio: the golden fixture, refusal on syntax
-// errors, no edits when already formatted, and the client's indent options.
+// textDocument/formatting over stdio: the golden fixtures (Turtle, TriG,
+// N-Triples), refusal on syntax errors, no edits when already formatted, and
+// the client's indent options.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -32,9 +33,10 @@ after(async () => {
 })
 
 let n = 0
-async function format(text, options = spaces) {
-  const uri = uriOf(path.join(dir, `doc${n++}.ttl`))
-  s.open(uri, text)
+async function format(text, options = spaces, ext = "ttl") {
+  const uri = uriOf(path.join(dir, `doc${n++}.${ext}`))
+  const languageId = { ttl: "turtle", trig: "trig", nt: "ntriples" }[ext]
+  s.conn.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } })
   await s.diagnosticsFor(uri)
   return s.request("textDocument/formatting", { textDocument: { uri }, options })
 }
@@ -49,6 +51,16 @@ test("formats the messy fixture into the golden file", async () => {
   assert.equal(edits.length, 1)
   assert.equal(apply(text, edits), read("expected.ttl"))
 })
+
+for (const ext of ["trig", "nt"]) {
+  test(`formats the messy ${ext} fixture into the golden file`, async () => {
+    const text = read(`messy.${ext}`)
+    const edits = await format(text, spaces, ext)
+    assert.equal(edits.length, 1)
+    assert.equal(apply(text, edits), read(`expected.${ext}`))
+    assert.deepEqual(await format(read(`expected.${ext}`), spaces, ext), [])
+  })
+}
 
 test("an already formatted document gets no edits", async () => {
   assert.deepEqual(await format(read("expected.ttl")), [])
