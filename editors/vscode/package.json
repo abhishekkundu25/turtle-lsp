@@ -209,6 +209,30 @@
         "command": "turtle.restartServer",
         "title": "Turtle: Restart Language Server"
       }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "undescribed",
+        "description": "A term in one of your own namespaces that no file in the workspace describes (often a typo)."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "turtle",
+        "scopes": {
+          "*.undescribed": [
+            "invalid.deprecated"
+          ]
+        }
+      },
+      {
+        "language": "trig",
+        "scopes": {
+          "*.undescribed": [
+            "invalid.deprecated"
+          ]
+        }
+      }
     ]
   },
   "scripts": {

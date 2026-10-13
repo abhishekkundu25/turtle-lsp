@@ -1,0 +1,18 @@
+@prefix ex: <https://example.com/plant#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:Asset a owl:Class ;
+    rdfs:label "Asset" .
+
+ex:Pump a owl:Class ;
+    rdfs:subClassOf ex:Asset ;
+    rdfs:label "Pump" .
+
+ex:P0042 a owl:DatatypeProperty ;
+    rdfs:label "pump pressure" ;
+    rdfs:range xsd:decimal .
+
+ex:locatedIn a owl:ObjectProperty ;
+    rdfs:label "located in" .

@@ -215,6 +215,38 @@ check("an N-Triples file is N-Triples: @prefix is an error", async () => {
   await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 
+check("semantic tokens provider returns tokens (foaf:Person is a class)", async () => {
+  const doc = await open(path.join(ws, "people.ttl"))
+  await settledDiagnostics(doc)
+  const legend = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", doc.uri)
+  const tokens = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", doc.uri)
+  assert.ok(legend && tokens?.data?.length > 0, "no semantic tokens")
+  const at = posOf(doc, "a foaf:", 0)
+  let line = 0
+  let char = 0
+  const found = []
+  for (let i = 0; i < tokens.data.length; i += 5) {
+    if (tokens.data[i] > 0) char = 0
+    line += tokens.data[i]
+    char += tokens.data[i + 1]
+    if (line === at.line) found.push(legend.tokenTypes[tokens.data[i + 3]])
+  }
+  assert.ok(found.includes("class") && found.includes("keyword"), found.join(", "))
+})
+
+check("inlay hints show the label after an opaque name", async () => {
+  const content = '@prefix ex: <http://e/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\nex:P0042 rdfs:label "pump pressure" .\nex:x ex:p ex:P0042 .\n'
+  const doc = await vscode.workspace.openTextDocument({ language: "turtle", content })
+  await vscode.window.showTextDocument(doc)
+  await settledDiagnostics(doc)
+  const range = new vscode.Range(0, 0, doc.lineCount, 0)
+  const hints = await vscode.commands.executeCommand("vscode.executeInlayHintProvider", doc.uri, range)
+  const labels = hints.map((h) => (typeof h.label === "string" ? h.label : h.label.map((p) => p.value).join("")))
+  assert.deepEqual(labels, ["pump pressure", "pump pressure"])
+  assert.equal(hints[1].position.line, 3)
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
+})
+
 exports.run = async function run() {
   let failed = 0
   for (const { name, fn } of checks) {

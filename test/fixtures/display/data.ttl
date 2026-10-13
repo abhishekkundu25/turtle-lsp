@@ -1,0 +1,9 @@
+@prefix ex: <https://example.com/plant#> .
+PREFIX vcard: <http://www.w3.org/2006/vcard/ns#>
+
+ex:pump1 a ex:Pump ;
+    ex:P0042 "4.2"^^<http://www.w3.org/2001/XMLSchema#decimal> ;
+    ex:locatedIn ex:hall7 ;
+    vcard:hasEmail [ a vcard:Email ] .
+
+ex:café ex:P0042 "1.5" .

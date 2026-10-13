@@ -308,6 +308,45 @@ check("vim.lsp.buf.format() lays out a scratch buffer", function()
   vim.cmd("bwipeout!")
 end)
 
+check("semantic tokens highlight a buffer (foaf:Person is a class)", function()
+  local b = open(people)
+  local at = pos_of(b, "a foaf:P")
+  local types = {}
+  local ok = vim.wait(TIMEOUT, function()
+    types = {}
+    for _, t in ipairs(vim.lsp.semantic_tokens.get_at_pos(b, at.line, at.character) or {}) do
+      table.insert(types, t.type)
+    end
+    return vim.tbl_contains(types, "class")
+  end, 20)
+  assert(ok, "token types at foaf:Person: " .. vim.inspect(types))
+  local r = request(b, "textDocument/semanticTokens/full", { textDocument = vim.lsp.util.make_text_document_params(b) })
+  assert(r and #r.data > 0 and #r.data % 5 == 0, "no semantic tokens")
+end)
+
+check("inlay hints show the label after an opaque name", function()
+  local b = open(ws .. "/__nvim_inlay.ttl")
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, {
+    "@prefix ex: <http://example.org/> .",
+    "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+    'ex:P0042 rdfs:label "pump pressure" .',
+    "ex:x ex:p ex:P0042 .",
+  })
+  wait_diagnostics(b)
+  vim.lsp.inlay_hint.enable(true, { bufnr = b })
+  local hints = {}
+  local ok = vim.wait(TIMEOUT, function()
+    hints = vim.lsp.inlay_hint.get({ bufnr = b })
+    return #hints == 2
+  end, 20)
+  assert(ok, "inlay hints: " .. vim.inspect(hints))
+  local h = hints[2].inlay_hint
+  assert(h.label == "pump pressure", vim.inspect(h))
+  assert(h.position.line == 3 and h.position.character == #"ex:x ex:p ex:P0042", vim.inspect(h.position))
+  vim.lsp.inlay_hint.enable(false, { bufnr = b })
+  vim.cmd("bwipeout!")
+end)
+
 check("no LSP errors surfaced to the user", function()
   assert(#client_errors == 0, table.concat(client_errors, " || "))
 end)

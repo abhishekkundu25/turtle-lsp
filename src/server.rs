@@ -17,7 +17,9 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::hierarchy;
-use crate::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
+use crate::features::{
+    completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, symbols,
+};
 use crate::settings::Settings;
 use crate::workspace::{
     PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
@@ -71,6 +73,10 @@ pub struct Server {
     refresh_needed: bool,
     /// The knowledge index's described generation last acted on.
     described_seen: u64,
+    /// `workspace/{inlayHint,semanticTokens}/refresh`, those the client supports.
+    display_refresh: Vec<&'static str>,
+    /// Knowledge changed since the last display refresh.
+    display_stale: bool,
 }
 
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
@@ -113,6 +119,24 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
             .text_document
             .as_ref()
             .is_some_and(|t| t.diagnostic.is_some());
+    let display_refresh = [
+        (
+            "inlayHint",
+            lsp_types::request::InlayHintRefreshRequest::METHOD,
+        ),
+        (
+            "semanticTokens",
+            lsp_types::request::SemanticTokensRefresh::METHOD,
+        ),
+    ]
+    .into_iter()
+    .filter(|(k, _)| {
+        raw.pointer(&format!("/capabilities/workspace/{k}/refreshSupport"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    })
+    .map(|(_, m)| m)
+    .collect();
     let config_pull = params
         .capabilities
         .workspace
@@ -200,6 +224,8 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         reported: false,
         refresh_needed: false,
         described_seen: 0,
+        display_refresh,
+        display_stale: false,
     };
     let clean = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
@@ -253,6 +279,15 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
         workspace_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: semantic::legend(),
+                range: Some(true),
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                work_done_progress_options: Default::default(),
+            },
+        )),
+        inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
             code_action_kinds: Some(vec![
                 CodeActionKind::QUICKFIX,
@@ -550,9 +585,16 @@ impl Server {
         if self.reported {
             self.refresh_needed = true;
         }
+        // Labels and term kinds shown in open documents may come from elsewhere.
+        self.display_stale = true;
     }
 
     fn refresh_if_needed(&mut self) {
+        if std::mem::take(&mut self.display_stale) {
+            for m in self.display_refresh.clone() {
+                self.send_request(m, ());
+            }
+        }
         if !std::mem::take(&mut self.refresh_needed) {
             return;
         }
@@ -909,6 +951,37 @@ impl Server {
                         hierarchy::subtypes(&item, k, enc, asking.as_deref())
                     },
                 ))
+            }
+            SemanticTokensFullRequest::METHOD => {
+                let p = params!(SemanticTokensParams);
+                let (_, a) = doc!(p.text_document.uri);
+                json(serde_json::to_value(semantic::full(
+                    &a,
+                    self.ws.knowledge(),
+                    enc,
+                )))
+            }
+            SemanticTokensRangeRequest::METHOD => {
+                let p = params!(SemanticTokensRangeParams);
+                let (_, a) = doc!(p.text_document.uri);
+                json(serde_json::to_value(semantic::range(
+                    &a,
+                    self.ws.knowledge(),
+                    enc,
+                    p.range,
+                )))
+            }
+            InlayHintRequest::METHOD => {
+                let p = params!(InlayHintParams);
+                let (_, a) = doc!(p.text_document.uri);
+                let mode = self.settings.inlay_hint_labels;
+                json(serde_json::to_value(inlay::inlay_hints(
+                    &a,
+                    self.ws.knowledge(),
+                    enc,
+                    p.range,
+                    mode,
+                )))
             }
             _ => Err((
                 ErrorCode::MethodNotFound,

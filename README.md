@@ -15,6 +15,7 @@ server starts in about 1 ms.
 - **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
 - **Hover**: label, comment, types and where a term is described.
 - **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix.
+- **Semantic highlighting and label hints**: IRIs are coloured by what they denote (class, property, individual, datatype), and an opaque name such as `ex:P0042` can show its label after it.
 - **Outline and search**: document symbols, workspace symbols, folding.
 - **Quick fixes**: add a missing prefix, add all missing prefixes, remove an unused prefix, fix a misspelled term.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
@@ -142,6 +143,49 @@ Other editors pass the server settings without the `turtle.` prefix, as
 
 ```lua
 init_options = { inlayHints = { labels = "all" }, format = { lineWidth = 80 } }
+```
+
+## Semantic highlighting and label hints
+
+The server sends semantic tokens for IRIs. Literals, numbers and comments are
+left to the syntax grammar.
+
+| Token type | Used for |
+|---|---|
+| `namespace` | the prefix part of `ex:a`, and prefix names in `@prefix` / `PREFIX` |
+| `class` | classes (`owl:Class`, `rdfs:Class`, `sh:NodeShape`, vocabulary classes, objects of `a`) |
+| `property` | properties (`rdf:Property`, `owl:*Property`, vocabulary properties, anything used as a predicate) |
+| `enumMember` | individuals (everything else) |
+| `type` | datatypes (`rdfs:Datatype`, XSD and `rdf:langString`-style datatypes, objects of `^^`) |
+| `keyword` | `a` and the directives `@prefix`, `@base`, `@version`, `PREFIX`, `BASE`, `VERSION` |
+
+| Modifier | Meaning |
+|---|---|
+| `declaration` | the term is the subject of a top-level statement, or a prefix is declared |
+| `deprecated` | the vocabulary marks the term deprecated |
+| `defaultLibrary` | the term is in one of the bundled well-known vocabularies |
+| `undescribed` | the term is in one of your own namespaces but no file describes it |
+
+In Neovim the highlight groups are `@lsp.type.<type>.turtle` and
+`@lsp.mod.<modifier>.turtle`, for example:
+
+```lua
+vim.api.nvim_set_hl(0, "@lsp.type.class.turtle", { link = "Type" })
+vim.api.nvim_set_hl(0, "@lsp.type.property.turtle", { link = "Identifier" })
+vim.api.nvim_set_hl(0, "@lsp.type.enumMember.turtle", { link = "Constant" })
+vim.api.nvim_set_hl(0, "@lsp.mod.undescribed.turtle", { undercurl = true })
+```
+
+Label inlay hints show the label (`rdfs:label`, `skos:prefLabel`, `sh:name`
+from any workspace file, else the vocabulary label) after a term whose
+written name does not already say it. The `inlayHints.labels` setting is
+`opaque` (default), `all` (every term with a label) or `off`. Neovim does not
+show inlay hints until you turn them on:
+
+```lua
+vim.api.nvim_create_autocmd("LspAttach", {
+  callback = function(ev) vim.lsp.inlay_hint.enable(true, { bufnr = ev.buf }) end,
+})
 ```
 
 ## Releasing

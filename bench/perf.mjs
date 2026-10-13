@@ -107,6 +107,31 @@ const t0 = performance.now()
 const syms = await s.request("textDocument/documentSymbol", { textDocument: { uri } })
 record("documentSymbol", [performance.now() - t0], `${syms.length} symbols`)
 
+const semTimes = []
+let semCount = 0
+for (let i = 0; i < 10; i++) {
+  const t1 = performance.now()
+  const res = await s.request("textDocument/semanticTokens/full", { textDocument: { uri } })
+  semTimes.push(performance.now() - t1)
+  semCount = res.data.length / 5
+}
+record(`semanticTokens/full (${text.split("\n").length} lines)`, semTimes, `${semCount} tokens`)
+
+// Labels for every term (the bench data has no opaque names), so there is work.
+s.notify("workspace/didChangeConfiguration", { settings: { turtle: { inlayHints: { labels: "all" } } } })
+await s.request("textDocument/inlayHint", { textDocument: { uri }, range: { start: { line: 0, character: 0 }, end: { line: 1, character: 0 } } })
+const hintTimes = []
+let hintCount = 0
+for (let i = 0; i < 10; i++) {
+  const line = 1000 + i * 500
+  const range = { start: { line, character: 0 }, end: { line: line + 100, character: 0 } }
+  const t1 = performance.now()
+  const res = await s.request("textDocument/inlayHint", { textDocument: { uri }, range })
+  hintTimes.push(performance.now() - t1)
+  hintCount = res.length
+}
+record("inlayHint (100-line range, labels: all)", hintTimes, `${hintCount} hints`)
+
 // Formatting the whole big file (squashed onto fewer lines so there is work to do).
 const messy = text.replaceAll(" ;\n    ", " ; ")
 s.change(uri, messy)

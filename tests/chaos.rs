@@ -12,8 +12,11 @@ use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::analysis::{Analysis, Encoding};
 use turtle_lsp::features::hierarchy;
-use turtle_lsp::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
+use turtle_lsp::features::{
+    completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, symbols,
+};
 use turtle_lsp::knowledge::{Knowledge, Source};
+use turtle_lsp::settings::InlayLabels;
 use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse};
 
 struct Rng(u64);
@@ -276,6 +279,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         let _ = symbols::document_symbols(&a, text, enc);
         let _ = symbols::folding_ranges(&a);
         let _ = symbols::workspace_symbols(docs, enc, "a");
+        tokens_are_well_formed(text, enc, &semantic::full(&a, docs, enc).data);
         for _ in 0..4 {
             let off = char_boundary(text, rng.below(text.len() + 1)) as u32;
             let pos: Position = a.position(enc, off);
@@ -306,6 +310,11 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             } else {
                 (wild, pos)
             };
+            let tokens = semantic::range(&a, docs, enc, Range::new(from, to)).data;
+            tokens_are_well_formed(text, enc, &tokens);
+            for mode in [InlayLabels::Opaque, InlayLabels::All, InlayLabels::Off] {
+                let _ = inlay::inlay_hints(&a, docs, enc, Range::new(from, to), mode);
+            }
             code_actions_keep_the_graph(
                 &a,
                 docs,
@@ -317,6 +326,32 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         }
     }
     k.remove(doc_uri(syntax));
+}
+
+/// Semantic tokens: sorted, non-empty, each inside one line, never overlapping.
+fn tokens_are_well_formed(text: &str, enc: Encoding, data: &[lsp_types::SemanticToken]) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let width = |l: &str| match enc {
+        Encoding::Utf8 => l.len() as u32,
+        Encoding::Utf16 => l.encode_utf16().count() as u32,
+    };
+    let (mut line, mut col, mut prev_len) = (0u32, 0u32, 0u32);
+    for (i, t) in data.iter().enumerate() {
+        if t.delta_line > 0 || i == 0 {
+            col = 0;
+        } else {
+            assert!(
+                t.delta_start >= prev_len,
+                "token {i} overlaps the previous one"
+            );
+        }
+        line += t.delta_line;
+        col += t.delta_start;
+        assert!(t.length > 0, "empty token {i}");
+        let l = lines.get(line as usize).expect("token past the last line");
+        assert!(col + t.length <= width(l), "token {i} runs past its line");
+        prev_len = t.length;
+    }
 }
 
 /// Every code action must not panic; on a file without syntax errors, every
