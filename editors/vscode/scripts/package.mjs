@@ -29,5 +29,11 @@ for (const f of ["LICENSE", "CHANGELOG.md"]) fs.copyFileSync(path.join(repo, f),
 run("npm", ["run", "build"])
 const version = JSON.parse(fs.readFileSync(path.join(here, "package.json"), "utf8")).version
 const out = `turtle-lsp-${target}-${version}.vsix`
-run("npx", ["vsce", "package", "--target", target, "--no-dependencies", "--out", out])
+try {
+  run("npx", ["vsce", "package", "--target", target, "--no-dependencies", "--out", out])
+} finally {
+  // The copied binary is only for the .vsix; left behind, the extension would
+  // prefer it over a fresh `cargo build` when run from this checkout.
+  fs.rmSync(path.join(here, "server"), { recursive: true, force: true })
+}
 console.log(`\nInstall with: code --install-extension ${path.join(here, out)}`)

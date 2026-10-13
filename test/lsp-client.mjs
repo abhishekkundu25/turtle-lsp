@@ -26,7 +26,15 @@ function warmUp() {
   spawnSync(serverPath, ["--version"])
 }
 
-export async function startServer({ cwd = path.join(fixtures, "workspace"), rootUri = uriOf(cwd) } = {}) {
+// `capabilities` and `initializationOptions` go into the initialize request;
+// `onRequest(method, params)` answers requests from the server (default null).
+export async function startServer({
+  cwd = path.join(fixtures, "workspace"),
+  rootUri = uriOf(cwd),
+  capabilities = {},
+  initializationOptions,
+  onRequest = () => null,
+} = {}) {
   warmUp()
   const proc = spawn(serverPath, [], { cwd, stdio: ["pipe", "pipe", "pipe"] })
   // The server may exit before our last write (e.g. after shutdown/exit).
@@ -36,7 +44,9 @@ export async function startServer({ cwd = path.join(fixtures, "workspace"), root
   // Strip (and record) any bytes written to stdout outside LSP frames, so one
   // stray console.log can be asserted on instead of hanging every test.
   const stray = []
-  const frames = framer(stray)
+  // Responses to requests sent with sendRaw (string ids), by id.
+  const rawResponses = new Map()
+  const frames = framer(stray, rawResponses)
   proc.stdout.pipe(frames)
   const conn = rpc.createMessageConnection(
     new rpc.StreamMessageReader(frames),
@@ -45,12 +55,18 @@ export async function startServer({ cwd = path.join(fixtures, "workspace"), root
   const diagnostics = new Map()
   const waiters = []
   const logs = []
+  const published = []
+  const serverRequests = []
   conn.onNotification("textDocument/publishDiagnostics", (p) => {
+    published.push(p.uri)
     diagnostics.set(p.uri, p.diagnostics)
     for (const w of waiters.splice(0)) w()
   })
   conn.onNotification("window/logMessage", (p) => logs.push(p.message))
-  conn.onRequest(() => null)
+  conn.onRequest((method, params) => {
+    serverRequests.push({ method, params })
+    return onRequest(method, params)
+  })
   conn.listen()
 
   const t0 = performance.now()
@@ -58,10 +74,11 @@ export async function startServer({ cwd = path.join(fixtures, "workspace"), root
     processId: process.pid,
     rootUri,
     workspaceFolders: [{ uri: rootUri, name: "ws" }],
-    capabilities: {},
+    capabilities,
+    initializationOptions,
   })
   const initMs = performance.now() - t0
-  conn.sendNotification("initialized", {})
+  await conn.sendNotification("initialized", {})
 
   const versions = new Map()
   const api = {
@@ -71,10 +88,26 @@ export async function startServer({ cwd = path.join(fixtures, "workspace"), root
     initMs,
     logs,
     stray,
+    published,
+    serverRequests,
     get stderr() {
       return stderr
     },
     request: (method, params) => conn.sendRequest(method, params),
+    notify: (method, params) => conn.sendNotification(method, params),
+    // Writes the messages in one chunk, so the server reads them together.
+    // Requests need string ids; their responses land in rawResponses.
+    sendRaw(messages) {
+      proc.stdin.write(messages.map((m) => frame({ jsonrpc: "2.0", ...m })).join(""))
+    },
+    async rawResponse(id, timeoutMs = 5000) {
+      const end = Date.now() + timeoutMs
+      while (!rawResponses.has(id)) {
+        if (Date.now() > end) throw new Error(`no response to ${id} within ${timeoutMs}ms`)
+        await new Promise((r) => setTimeout(r, 10))
+      }
+      return rawResponses.get(id)
+    },
     open(uri, text) {
       versions.set(uri, 1)
       diagnostics.delete(uri)
@@ -124,7 +157,12 @@ export function positionOf(text, needle, offsetInNeedle = needle.length) {
   return { line: before.length - 1, character: before[before.length - 1].length }
 }
 
-function framer(stray) {
+function frame(message) {
+  const body = JSON.stringify(message)
+  return `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+}
+
+function framer(stray, rawResponses) {
   let buf = Buffer.alloc(0)
   return new Transform({
     transform(chunk, _enc, done) {
@@ -141,6 +179,11 @@ function framer(stray) {
         const len = Number(/Content-Length:\s*(\d+)/.exec(buf.subarray(0, end).toString())[1])
         const total = end + 4 + len
         if (buf.length < total) break
+        const body = buf.subarray(end + 4, total).toString()
+        if (body.includes('"id":"raw-')) {
+          const msg = JSON.parse(body)
+          if (typeof msg.id === "string" && msg.method === undefined) rawResponses.set(msg.id, msg)
+        }
         this.push(buf.subarray(0, total))
         buf = buf.subarray(total)
       }

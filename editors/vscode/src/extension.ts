@@ -24,6 +24,20 @@ function findServer(context: vscode.ExtensionContext): string | undefined {
   return onPath.find((p) => fs.existsSync(p))
 }
 
+/** The `turtle.*` settings the server reads, as nested objects. */
+function serverSettings(): Record<string, unknown> {
+  const c = vscode.workspace.getConfiguration("turtle")
+  return {
+    prefixes: c.get<Record<string, string>>("prefixes") ?? {},
+    inlayHints: { labels: c.get<string>("inlayHints.labels") },
+    shacl: { enabled: c.get<boolean>("shacl.enabled"), maxTriples: c.get<number>("shacl.maxTriples") },
+    lint: { undescribedTerms: c.get<boolean>("lint.undescribedTerms") },
+    // A restricted setting: in an untrusted workspace VS Code returns only the user's value.
+    imports: { network: c.get<boolean>("imports.network") },
+    format: { lineWidth: c.get<number>("format.lineWidth") },
+  }
+}
+
 async function start(context: vscode.ExtensionContext): Promise<void> {
   const command = findServer(context)
   if (!command) {
@@ -38,9 +52,9 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
       { scheme: "file", language: "turtle" },
       { scheme: "untitled", language: "turtle" },
     ],
-    initializationOptions: {
-      prefixes: vscode.workspace.getConfiguration("turtle").get<Record<string, string>>("prefixes") ?? {},
-    },
+    initializationOptions: serverSettings(),
+    // Later changes reach the server as workspace/didChangeConfiguration.
+    synchronize: { configurationSection: "turtle" },
     outputChannelName: "Turtle",
   }
   client = new LanguageClient("turtle", "Turtle", serverOptions, clientOptions)
@@ -59,7 +73,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Turtle
       await start(context)
     }),
     vscode.workspace.onDidChangeConfiguration(async (e) => {
-      if (e.affectsConfiguration("turtle.server.path") || e.affectsConfiguration("turtle.prefixes")) {
+      if (e.affectsConfiguration("turtle.server.path")) {
         await vscode.commands.executeCommand("turtle.restartServer")
       }
     }),

@@ -80,6 +80,17 @@ vim.lsp.handlers["textDocument/publishDiagnostics"] = function(err, result, ctx,
   return orig_handler(err, result, ctx, cfg)
 end
 
+-- Neovim 0.11 pulls diagnostics (textDocument/diagnostic) from servers that
+-- offer it; the server then publishes nothing. Mark buffers on each report.
+local orig_pull_handler = vim.lsp.handlers["textDocument/diagnostic"]
+vim.lsp.handlers["textDocument/diagnostic"] = function(err, result, ctx, cfg)
+  local ret = orig_pull_handler(err, result, ctx, cfg)
+  if not err and result then
+    vim.b[vim.uri_to_bufnr(ctx.params.textDocument.uri)].turtle_published = true
+  end
+  return ret
+end
+
 local function request(buf, method, params)
   local res, err = vim.lsp.buf_request_sync(buf, method, params, TIMEOUT)
   assert(res, "request " .. method .. " failed: " .. tostring(err))

@@ -105,7 +105,18 @@ code --install-extension turtle-lsp-*.vsix
 ```
 
 Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
-(prefixes for every file), `turtle.trace.server` (log LSP traffic).
+(prefixes for every file), `turtle.trace.server` (log LSP traffic), and the
+server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
+`turtle.shacl.maxTriples`, `turtle.lint.undescribedTerms`,
+`turtle.imports.network` (off in untrusted workspaces) and
+`turtle.format.lineWidth`.
+
+Other editors pass the server settings without the `turtle.` prefix, as
+`init_options` or as the `turtle` section of `settings`:
+
+```lua
+init_options = { inlayHints = { labels = "all" }, format = { lineWidth = 80 } }
+```
 
 ## Releasing
 

@@ -53,9 +53,10 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces turtle.server.path is ignored, so the bundled server is always used.",
+      "description": "In untrusted workspaces turtle.server.path and turtle.imports.network are ignored: the bundled server is used and nothing is fetched over the network.",
       "restrictedConfigurations": [
-        "turtle.server.path"
+        "turtle.server.path",
+        "turtle.imports.network"
       ]
     },
     "virtualWorkspaces": {
@@ -104,6 +105,54 @@
             "type": "string"
           },
           "markdownDescription": "Prefixes available in every Turtle file, e.g. `{ \"ex\": \"http://example.org/\" }`. A `prefixes.ttl` in the project does the same per folder."
+        },
+        "turtle.inlayHints.labels": {
+          "type": "string",
+          "enum": [
+            "opaque",
+            "all",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Show labels only for terms whose IRI does not say what they are, such as `ex:P1234`.",
+            "Show the label of every term that has one.",
+            "Show no label hints."
+          ],
+          "default": "opaque",
+          "markdownDescription": "Which terms get their `rdfs:label` (or `skos:prefLabel`) shown as an inlay hint.",
+          "scope": "resource"
+        },
+        "turtle.shacl.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Validate data against the SHACL shapes in the workspace.",
+          "scope": "resource"
+        },
+        "turtle.shacl.maxTriples": {
+          "type": "integer",
+          "default": 2000000,
+          "minimum": 0,
+          "markdownDescription": "Skip SHACL validation when the workspace holds more triples than this.",
+          "scope": "resource"
+        },
+        "turtle.lint.undescribedTerms": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Warn about terms in your own namespaces that are used but described nowhere in the workspace.",
+          "scope": "resource"
+        },
+        "turtle.imports.network": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Fetch `owl:imports` that are not in the workspace over the network. Ignored in untrusted workspaces.",
+          "scope": "machine-overridable"
+        },
+        "turtle.format.lineWidth": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 20,
+          "markdownDescription": "Line width the formatter aims for.",
+          "scope": "resource"
         },
         "turtle.trace.server": {
           "type": "string",

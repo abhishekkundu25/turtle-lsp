@@ -5,13 +5,23 @@
 //!   rayon) and merged when it arrives, so `initialize` answers immediately;
 //! - diagnostics are published only after the incoming queue is drained, so a
 //!   burst of keystrokes costs one analysis, not one per keystroke.
+//!
+//! The queue is drained as one batch before anything is answered, so a request
+//! whose `$/cancelRequest` is already queued is never computed.
+//!
+//! Diagnostics are pushed (`publishDiagnostics`), or pulled
+//! (`textDocument/diagnostic`) when the client supports that. Pulled reports
+//! carry a result id made of the document version and the knowledge
+//! generation: anything outside the document that can change its diagnostics
+//! (prefixes.ttl, the disk index, settings) bumps the generation.
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::{completion, diagnostics, hover, navigation, refactor, symbols};
+use crate::settings::Settings;
 use crate::workspace::{
     PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
 };
-use crossbeam_channel::{Receiver, select, unbounded};
+use crossbeam_channel::{Receiver, never, select, unbounded};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
@@ -21,9 +31,14 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct Server {
     conn: Connection,
+    /// Every message read so far. lsp-server hands over messages through a
+    /// rendezvous channel, so without this queue a batch would never hold
+    /// more than one message.
+    inbox: Receiver<Message>,
     ws: Workspace,
     enc: Encoding,
     dirty: FxHashSet<String>,
@@ -34,12 +49,31 @@ pub struct Server {
     /// The client resolves a code action's edit lazily (`codeAction/resolve`).
     resolve_edits: bool,
     next_id: i32,
+    /// `initializationOptions` and the last `turtle` configuration section;
+    /// `settings` is the defaults overridden by these two, in that order.
+    init_options: Value,
+    config: Value,
+    settings: Settings,
+    /// The client can answer `workspace/configuration`.
+    config_pull: bool,
+    /// The pending `workspace/configuration` request.
+    config_request: Option<RequestId>,
+    /// The client pulls diagnostics; nothing is pushed to it.
+    pull: bool,
+    refresh_support: bool,
+    /// Bumped whenever knowledge outside a document changes (prefixes.ttl,
+    /// the disk index, settings). Part of every pulled report's result id.
+    generation: u64,
+    /// A pulled report went out since the last `workspace/diagnostic/refresh`.
+    reported: bool,
+    /// The generation moved after a report went out: refresh at end of batch.
+    refresh_needed: bool,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (conn, io) = Connection::stdio();
-    let (id, params) = conn.initialize_start()?;
-    let params: InitializeParams = serde_json::from_value(params)?;
+    let (id, raw) = conn.initialize_start()?;
+    let params: InitializeParams = serde_json::from_value(raw.clone())?;
 
     let utf8 = params
         .capabilities
@@ -59,6 +93,29 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|w| w.did_change_watched_files.as_ref())
         .and_then(|d| d.dynamic_registration)
         .unwrap_or(false);
+    // The spec names this `workspace.diagnostics`; lsp-types reads `diagnostic`.
+    let refresh_support = ["diagnostics", "diagnostic"].iter().any(|k| {
+        raw.pointer(&format!("/capabilities/workspace/{k}/refreshSupport"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    // Pull only when the client can also be told to pull again: a change in one
+    // file (prefixes.ttl, SHACL shapes) must reach every open document, and
+    // without refresh a pull client keeps stale diagnostics. Push covers that.
+    let pull = refresh_support
+        && params
+            .capabilities
+            .text_document
+            .as_ref()
+            .is_some_and(|t| t.diagnostic.is_some());
+    let config_pull = params
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|w| w.configuration)
+        .unwrap_or(false);
+    let init_options = params.initialization_options.clone().unwrap_or_default();
+    let settings = Settings::from_layers([&init_options]);
 
     let resolve_edits = params
         .capabilities
@@ -83,22 +140,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         roots.push(r);
     }
-    let mut ws = Workspace::new(roots.clone(), Default::default());
-    if let Some(Value::Object(p)) = params
-        .initialization_options
-        .as_ref()
-        .and_then(|o| o.get("prefixes"))
-    {
-        for (k, v) in p {
-            if let Some(v) = v.as_str() {
-                ws.settings_prefixes
-                    .insert(k.trim_end_matches(':').to_string(), v.to_string());
-            }
-        }
-    }
+    let ws = Workspace::new(roots.clone(), settings.prefixes.clone());
 
     let result = InitializeResult {
-        capabilities: capabilities(enc),
+        capabilities: capabilities(enc, pull),
         server_info: Some(ServerInfo {
             name: "turtle-lsp".into(),
             version: Some(env!("CARGO_PKG_VERSION").into()),
@@ -108,9 +153,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Index the workspace in the background.
     let (tx, index_rx) = unbounded();
-    let settings = ws.settings_prefixes.clone();
+    let prefixes = ws.settings_prefixes.clone();
     std::thread::spawn(move || {
-        let mut tmp = Workspace::new(roots.clone(), settings);
+        let mut tmp = Workspace::new(roots.clone(), prefixes);
         let files = Workspace::scan_roots(&roots);
         tmp.index_paths(files);
         let out: Vec<(String, Analysis)> = tmp
@@ -121,8 +166,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = tx.send(out);
     });
 
+    let (inbox_tx, inbox) = unbounded();
+    let incoming = conn.receiver.clone();
+    std::thread::spawn(move || {
+        for msg in incoming {
+            if inbox_tx.send(msg).is_err() {
+                break;
+            }
+        }
+    });
+
     let mut server = Server {
         conn,
+        inbox,
         ws,
         enc,
         dirty: FxHashSet::default(),
@@ -131,21 +187,46 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         watch_dynamic,
         resolve_edits,
         next_id: 0,
+        init_options,
+        config: Value::Null,
+        settings,
+        config_pull,
+        config_request: None,
+        pull,
+        refresh_support,
+        generation: 0,
+        reported: false,
+        refresh_needed: false,
     };
     server.main_loop()?;
     io.join()?;
     Ok(())
 }
 
-fn capabilities(enc: Encoding) -> ServerCapabilities {
+fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
     ServerCapabilities {
         position_encoding: Some(match enc {
             Encoding::Utf8 => PositionEncodingKind::UTF8,
             Encoding::Utf16 => PositionEncodingKind::UTF16,
         }),
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(
-            TextDocumentSyncKind::INCREMENTAL,
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                    include_text: Some(false),
+                })),
+                ..Default::default()
+            },
         )),
+        diagnostic_provider: pull.then(|| {
+            DiagnosticServerCapabilities::Options(DiagnosticOptions {
+                identifier: Some("turtle".into()),
+                inter_file_dependencies: true,
+                workspace_diagnostics: false,
+                work_done_progress_options: Default::default(),
+            })
+        }),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![":".into(), "@".into()]),
             resolve_provider: Some(true),
@@ -206,37 +287,90 @@ fn parse<T: DeserializeOwned>(v: Value) -> Option<T> {
     serde_json::from_value(v).ok()
 }
 
+/// The id a `$/cancelRequest` notification cancels.
+fn cancel_id(msg: &Message) -> Option<RequestId> {
+    match msg {
+        Message::Notification(n) if n.method == lsp_types::notification::Cancel::METHOD => {
+            serde_json::from_value(n.params.get("id")?.clone()).ok()
+        }
+        _ => None,
+    }
+}
+
 impl Server {
     fn main_loop(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.register_watchers();
         loop {
-            let msg = select! {
-                recv(self.conn.receiver) -> m => match m { Ok(m) => m, Err(_) => return Ok(()) },
+            let first = select! {
+                recv(self.inbox) -> m => match m { Ok(m) => Some(m), Err(_) => return Ok(()) },
                 recv(self.index_rx) -> files => {
                     self.merge_index(files.ok());
-                    continue;
+                    None
                 }
             };
-            if self.handle(msg)? {
-                return Ok(());
-            }
-            // Drain whatever else is queued before doing the expensive part.
-            while let Ok(msg) = self.conn.receiver.try_recv() {
-                if self.handle(msg)? {
-                    return Ok(());
+            // Take everything queued, so cancellations are known before any
+            // answer is computed and a burst of edits costs one analysis.
+            let mut batch: Vec<Message> = first.into_iter().collect();
+            batch.extend(self.inbox.try_iter());
+            let cancelled: FxHashSet<RequestId> = batch.iter().filter_map(cancel_id).collect();
+            let mut rest = batch.into_iter();
+            while let Some(msg) = rest.next() {
+                match msg {
+                    Message::Request(req) if req.method == lsp_types::request::Shutdown::METHOD => {
+                        self.shutdown(req, rest)?;
+                        return Ok(());
+                    }
+                    Message::Request(req) if cancelled.contains(&req.id) => {
+                        let resp = Response::new_err(
+                            req.id,
+                            ErrorCode::RequestCanceled as i32,
+                            "request cancelled".into(),
+                        );
+                        self.conn.sender.send(Message::Response(resp))?;
+                    }
+                    msg => self.handle(msg)?,
                 }
             }
             self.publish_dirty();
+            self.refresh_if_needed();
         }
     }
 
-    /// Returns true on exit.
-    fn handle(&mut self, msg: Message) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    /// Answer `shutdown`, then wait for `exit`; other requests are refused.
+    fn shutdown(
+        &self,
+        req: Request,
+        rest: impl Iterator<Item = Message>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.conn.sender.send(Response::new_ok(req.id, ()).into())?;
+        let mut rest = rest.map(Ok);
+        let receiver = &self.inbox;
+        let mut next = || {
+            rest.next()
+                .unwrap_or_else(|| receiver.recv_timeout(Duration::from_secs(30)))
+        };
+        while let Ok(msg) = next() {
+            match msg {
+                Message::Notification(n) if n.method == lsp_types::notification::Exit::METHOD => {
+                    break;
+                }
+                Message::Request(r) => {
+                    let resp = Response::new_err(
+                        r.id,
+                        ErrorCode::InvalidRequest as i32,
+                        "the server is shutting down".into(),
+                    );
+                    self.conn.sender.send(resp.into())?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn handle(&mut self, msg: Message) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match msg {
             Message::Request(req) => {
-                if self.conn.handle_shutdown(&req)? {
-                    return Ok(true);
-                }
                 // Requests see the current text, so pending diagnostics go out first.
                 self.publish_dirty();
                 self.ensure_indexed();
@@ -255,9 +389,17 @@ impl Server {
                 let method = n.method.clone();
                 let _ = guard(&method, || self.notification(n));
             }
-            Message::Response(_) => {}
+            Message::Response(r) => {
+                if self.config_request.as_ref() == Some(&r.id) {
+                    self.config_request = None;
+                    // One item per requested section: [turtle].
+                    if let Some(section) = r.response_result.ok().and_then(|v| v.get(0).cloned()) {
+                        let _ = guard("workspace/configuration", || self.set_config(section));
+                    }
+                }
+            }
         }
-        Ok(false)
+        Ok(())
     }
 
     fn notification(&mut self, n: Notification) {
@@ -279,18 +421,35 @@ impl Server {
                     self.after_edit(&uri);
                 }
             }
+            DidSaveTextDocument::METHOD => {
+                if let Some(p) = parse::<DidSaveTextDocumentParams>(n.params) {
+                    self.on_save(&normalize_uri(p.text_document.uri.as_str()));
+                }
+            }
             DidCloseTextDocument::METHOD => {
                 if let Some(p) = parse::<DidCloseTextDocumentParams>(n.params) {
                     let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws.close_doc(&uri);
                     self.dirty.remove(&uri);
                     // Clear diagnostics for the closed buffer.
-                    self.send_diagnostics(&uri, vec![], None);
+                    if !self.pull {
+                        self.send_diagnostics(&uri, vec![], None);
+                    }
+                }
+            }
+            DidChangeConfiguration::METHOD => {
+                let settings = n.params.get("settings").unwrap_or(&Value::Null);
+                match settings.get("turtle") {
+                    Some(section) => self.set_config(section.clone()),
+                    // Clients that only signal "something changed" are asked.
+                    None if self.config_pull => self.request_config(),
+                    None => {}
                 }
             }
             DidChangeWatchedFiles::METHOD => {
                 if let Some(p) = parse::<DidChangeWatchedFilesParams>(n.params) {
                     let mut prefixes_changed = false;
+                    let mut disk_changed = false;
                     for ch in p.changes {
                         let Some(path) = uri_to_path(ch.uri.as_str()) else {
                             continue;
@@ -301,15 +460,73 @@ impl Server {
                         prefixes_changed |= path.file_name().is_some_and(|f| f == PREFIX_FILE);
                         if !self.ws.open.contains_key(&normalize_uri(ch.uri.as_str())) {
                             self.ws.reindex_disk_file(&path);
+                            disk_changed = true;
                         }
                     }
                     if prefixes_changed {
                         self.ws.invalidate_prefixes();
                         self.dirty.extend(self.ws.open.keys().cloned());
                     }
+                    if prefixes_changed || disk_changed {
+                        self.knowledge_changed();
+                    }
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A document was saved. Nothing to do yet: the text is already current.
+    fn on_save(&mut self, _uri: &str) {}
+
+    fn request_config(&mut self) {
+        let params = ConfigurationParams {
+            items: vec![ConfigurationItem {
+                scope_uri: None,
+                section: Some("turtle".into()),
+            }],
+        };
+        let id = self.send_request(lsp_types::request::WorkspaceConfiguration::METHOD, params);
+        self.config_request = Some(id);
+    }
+
+    /// The client's `turtle` configuration section changed.
+    fn set_config(&mut self, section: Value) {
+        if section.is_null() {
+            return;
+        }
+        self.config = section;
+        let new = Settings::from_layers([&self.init_options, &self.config]);
+        if new == self.settings {
+            return;
+        }
+        if new.prefixes != self.settings.prefixes {
+            // The background index was built with the old prefixes.
+            self.ensure_indexed();
+            self.ws.settings_prefixes = new.prefixes.clone();
+            self.ws.invalidate_prefixes();
+        }
+        self.settings = new;
+        self.dirty.extend(self.ws.open.keys().cloned());
+        self.knowledge_changed();
+    }
+
+    /// Something outside any one document changed that can change its
+    /// diagnostics: pulled reports handed out so far are stale.
+    fn knowledge_changed(&mut self) {
+        self.generation += 1;
+        if self.reported {
+            self.refresh_needed = true;
+        }
+    }
+
+    fn refresh_if_needed(&mut self) {
+        if !std::mem::take(&mut self.refresh_needed) {
+            return;
+        }
+        self.reported = false;
+        if self.refresh_support {
+            self.send_request(lsp_types::request::WorkspaceDiagnosticRefresh::METHOD, ());
         }
     }
 
@@ -318,6 +535,10 @@ impl Server {
             self.ws.disk.entry(uri).or_insert_with(|| Arc::new(a));
         }
         self.indexed = true;
+        // The sender is gone now; a disconnected channel is always ready, which
+        // would wake the main loop forever.
+        self.index_rx = never();
+        self.knowledge_changed();
     }
 
     /// Answers that look across the workspace (definition, references, rename,
@@ -334,21 +555,29 @@ impl Server {
         if uri.ends_with(&format!("/{PREFIX_FILE}")) {
             self.ws.invalidate_prefixes();
             self.dirty.extend(self.ws.open.keys().cloned());
+            self.knowledge_changed();
         }
         self.dirty.insert(uri.to_string());
     }
 
+    /// Diagnostics for `uri`, or the panic message if computing them failed.
+    fn diagnostics_for(&mut self, uri: &str) -> Result<Option<Vec<Diagnostic>>, String> {
+        let enc = self.enc;
+        guard("diagnostics", || {
+            self.ws
+                .analysis(uri)
+                .map(|a| diagnostics::diagnostics(&a, enc))
+        })
+    }
+
     fn publish_dirty(&mut self) {
         let dirty: Vec<String> = self.dirty.drain().collect();
+        if self.pull {
+            return;
+        }
         for uri in dirty {
             let version = self.ws.open.get(&uri).map(|d| d.version);
-            let enc = self.enc;
-            let diags = guard("diagnostics", || {
-                self.ws
-                    .analysis(&uri)
-                    .map(|a| diagnostics::diagnostics(&a, enc))
-            });
-            match diags {
+            match self.diagnostics_for(&uri) {
                 Ok(Some(d)) => self.send_diagnostics(&uri, d, version),
                 Ok(None) => {}
                 // Tell the user instead of silently showing nothing.
@@ -357,6 +586,41 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// `textDocument/diagnostic`: a full report, or `unchanged` when neither
+    /// the document nor the knowledge generation moved since `previousResultId`.
+    fn pull_diagnostics(&mut self, p: DocumentDiagnosticParams) -> DocumentDiagnosticReportResult {
+        let uri = normalize_uri(p.text_document.uri.as_str());
+        let version = self
+            .ws
+            .open
+            .get(&uri)
+            .map_or_else(|| "disk".to_string(), |d| d.version.to_string());
+        let mut result_id = Some(format!("{version}:{}", self.generation));
+        self.reported = true;
+        if p.previous_result_id.is_some() && p.previous_result_id == result_id {
+            return DocumentDiagnosticReport::Unchanged(RelatedUnchangedDocumentDiagnosticReport {
+                related_documents: None,
+                unchanged_document_diagnostic_report: UnchangedDocumentDiagnosticReport {
+                    result_id: result_id.unwrap_or_default(),
+                },
+            })
+            .into();
+        }
+        let items = match self.diagnostics_for(&uri) {
+            Ok(d) => d.unwrap_or_default(),
+            Err(msg) => {
+                // Not cached: the next pull tries again.
+                result_id = None;
+                vec![internal_error_diagnostic(&msg)]
+            }
+        };
+        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+            related_documents: None,
+            full_document_diagnostic_report: FullDocumentDiagnosticReport { result_id, items },
+        })
+        .into()
     }
 
     fn send_diagnostics(&self, uri: &str, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
@@ -370,6 +634,15 @@ impl Server {
             params,
         );
         let _ = self.conn.sender.send(Message::Notification(n));
+    }
+
+    /// Send a request to the client; the answer is matched by the returned id.
+    fn send_request(&mut self, method: &str, params: impl serde::Serialize) -> RequestId {
+        self.next_id += 1;
+        let id = RequestId::from(format!("turtle-{}", self.next_id));
+        let req = Request::new(id.clone(), method.into(), params);
+        let _ = self.conn.sender.send(Message::Request(req));
+        id
     }
 
     fn register_watchers(&mut self) {
@@ -389,13 +662,7 @@ impl Server {
                 register_options: serde_json::to_value(opts).ok(),
             }],
         };
-        self.next_id += 1;
-        let req = Request::new(
-            RequestId::from(format!("turtle-{}", self.next_id)),
-            lsp_types::request::RegisterCapability::METHOD.into(),
-            params,
-        );
-        let _ = self.conn.sender.send(Message::Request(req));
+        self.send_request(lsp_types::request::RegisterCapability::METHOD, params);
     }
 
     fn request(&mut self, req: Request) -> Result<Value, (ErrorCode, String)> {
@@ -549,6 +816,10 @@ impl Server {
                 let p = params!(FoldingRangeParams);
                 let (_, a) = doc!(p.text_document.uri);
                 json(serde_json::to_value(symbols::folding_ranges(&a)))
+            }
+            DocumentDiagnosticRequest::METHOD => {
+                let p = params!(DocumentDiagnosticParams);
+                json(serde_json::to_value(self.pull_diagnostics(p)))
             }
             CodeActionRequest::METHOD => {
                 let p = params!(CodeActionParams);

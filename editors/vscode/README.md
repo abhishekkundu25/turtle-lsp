@@ -30,6 +30,11 @@ folder or below can then use those prefixes. Or set `turtle.prefixes`.
 - `turtle.prefixes`: prefixes available in every file, e.g. `{ "ex": "http://example.org/" }`.
 - `turtle.server.path`: use a different `turtle-lsp` binary (user settings only; ignored in untrusted workspaces).
 - `turtle.trace.server`: log the language server traffic to the Output panel.
+- `turtle.inlayHints.labels`: show labels as inlay hints for `opaque` IRIs (default), `all` terms, or `off`.
+- `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation and the size above which it is skipped (default 2,000,000 triples).
+- `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
+- `turtle.imports.network`: fetch `owl:imports` over the network (default off; ignored in untrusted workspaces).
+- `turtle.format.lineWidth`: line width for formatting (default 100).
 
 ## Also for Neovim and other editors
 
