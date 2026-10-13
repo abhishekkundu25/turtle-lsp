@@ -43,7 +43,7 @@ describe("pull diagnostics", () => {
     const first = await pull(uri)
     assert.equal(first.kind, "full")
     assert.ok(first.items.some((d) => d.severity === 1 && d.range.start.line === 1), JSON.stringify(first.items))
-    assert.match(first.resultId, /^1:\d+$/)
+    assert.match(first.resultId, /^1:\d+:\d+$/)
 
     const second = await pull(uri, first.resultId)
     assert.deepEqual(second, { kind: "unchanged", resultId: first.resultId })

@@ -173,3 +173,49 @@ test("the server exits when the editor goes away during a validation", async () 
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("deeply nested input is an error, not a crash (open file and indexed file)", async () => {
+  const deep = (n) => `@prefix ex: <http://example.org/> .\nex:s ex:p ${"[ ex:p ".repeat(n)}ex:o${" ]".repeat(n)} .\nex:t ex:p ( ${"( ".repeat(n)}${")".repeat(n)} ) .\n`
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-deep-"))
+  // The workspace index parses this one on a worker thread with a small stack.
+  fs.writeFileSync(path.join(dir, "deep.ttl"), deep(20000))
+  try {
+    const s = await startServer({ cwd: dir })
+    try {
+      await s.request("workspace/symbol", { query: "" })
+      const uri = uriOf(path.join(dir, "__open-deep.ttl"))
+      s.open(uri, deep(20000))
+      const diags = await s.diagnosticsFor(uri, 20000)
+      assert.ok(diags.some((d) => /Nested more than/.test(d.message)), JSON.stringify(diags.slice(0, 3)))
+      const edits = await s.request("textDocument/formatting", { textDocument: { uri }, options: { tabSize: 4, insertSpaces: true } })
+      assert.deepEqual(edits, [])
+    } finally {
+      await s.stop()
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a long chain of sh:node references validates without crashing", async () => {
+  let shapes = "@prefix ex: <http://example.com/chain/> .\n@prefix sh: <http://www.w3.org/ns/shacl#> .\n"
+  shapes += "ex:S0 a sh:NodeShape ; sh:targetClass ex:C .\nex:x a ex:C .\n"
+  for (let i = 0; i < 5000; i++) shapes += `ex:S${i} sh:node ex:S${i + 1} .\n`
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-chain-"))
+  fs.writeFileSync(path.join(dir, "shapes.ttl"), shapes)
+  try {
+    const s = await startServer({ cwd: dir })
+    try {
+      const uri = uriOf(path.join(dir, "shapes.ttl"))
+      s.open(uri, shapes)
+      s.notify("textDocument/didSave", { textDocument: { uri } })
+      await sleep(1500)
+      // Still answering: the SHACL thread did not take the process down.
+      assert.ok(await s.request("workspace/symbol", { query: "S1" }))
+    } finally {
+      await s.stop()
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

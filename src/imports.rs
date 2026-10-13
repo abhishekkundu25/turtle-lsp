@@ -47,6 +47,9 @@ const ACCEPT: &str = "text/turtle, application/n-triples;q=0.9, application/rdf+
 /// RDF/XML with a longer start tag is refused: quick-xml's cost per start tag
 /// grows faster than its size (RUSTSEC-2026-0194, RUSTSEC-2026-0195).
 const MAX_XML_TAG_BYTES: usize = 64 * 1024;
+/// Entity declarations allowed in an RDF/XML DOCTYPE, and their total size.
+const MAX_XML_ENTITIES: usize = 256;
+const MAX_XML_ENTITY_BYTES: usize = 64 * 1024;
 /// Prefix for external source keys in the knowledge index.
 const KEY_PREFIX: &str = "import:";
 
@@ -247,6 +250,7 @@ impl Imports {
             let out = self.results_tx.clone();
             let _ = std::thread::Builder::new()
                 .name("turtle-lsp-imports".into())
+                .stack_size(16 << 20)
                 .spawn(move || worker(rx, out));
             tx
         });
@@ -255,16 +259,11 @@ impl Imports {
     }
 
     /// Something on disk may have changed (a file was saved): resolve the
-    /// unresolved imports again on the next [`Imports::sync`].
+    /// imports again on the next [`Imports::sync`].
     pub fn retry(&mut self) {
-        if self
-            .status
-            .values()
-            .any(|s| matches!(s, Status::Unresolved(_)))
-        {
-            self.last = None;
-            self.seen = None;
-        }
+        // Loaded files may have changed too; unchanged ones come from the memo.
+        self.last = None;
+        self.seen = None;
     }
 
     /// Take a job's answer: register loaded ontologies with the knowledge
@@ -347,9 +346,9 @@ struct Memo {
 
 /// A failed fetch is not tried again for this long.
 const RETRY_FETCH_AFTER: Duration = Duration::from_secs(300);
-/// With the network on, a job waits this long for a newer one first, so
-/// editing an import IRI does not fetch every intermediate spelling.
-const NETWORK_DEBOUNCE: Duration = Duration::from_millis(300);
+/// A job waits this long for a newer one first, so editing an import IRI
+/// neither rescans the workspace nor fetches every intermediate spelling.
+const DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Clone)]
 struct Ontology {
@@ -365,10 +364,9 @@ fn worker(jobs: Receiver<Job>, out: Sender<Done>) {
             while let Ok(j) = jobs.try_recv() {
                 job = j;
             }
-            if !job.req.network {
-                break;
-            }
-            match jobs.recv_timeout(NETWORK_DEBOUNCE) {
+            // Every keystroke on an import line is a new job: wait for typing
+            // to pause before walking the workspace for catalogs (or fetching).
+            match jobs.recv_timeout(DEBOUNCE) {
                 Ok(j) => job = j,
                 Err(_) => break,
             }
@@ -419,11 +417,37 @@ fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool) -> Option<
         };
         status.push((iri, st));
     }
+    // `<x>` and `<x#>` are one import; each spelling gets its status.
+    for i in &req.imports {
+        if !status.iter().any(|(s, _)| s == i)
+            && let Some(st) = status
+                .iter()
+                .find(|(s, _)| norm(s) == norm(i))
+                .map(|(_, st)| st.clone())
+        {
+            status.push((i.clone(), st));
+        }
+    }
     Some(Done {
         generation: job.generation,
         status,
         loaded,
     })
+}
+
+/// Local imports are read only from inside the workspace: a cloned repository
+/// must not make the editor read arbitrary files of the user's.
+fn inside_workspace(path: &Path, roots: &[PathBuf]) -> Result<(), String> {
+    let real = path.canonicalize().map_err(|e| e.to_string())?;
+    if roots
+        .iter()
+        .filter_map(|r| r.canonicalize().ok())
+        .any(|r| real.starts_with(r))
+    {
+        Ok(())
+    } else {
+        Err("it is outside the workspace, so it is not read".into())
+    }
 }
 
 /// Load one import: (where from, the ontology, freshly parsed).
@@ -438,6 +462,13 @@ fn load(
     if let Some((target, cat)) = catalog.lookup(iri) {
         match target {
             Target::File(path) => {
+                inside_workspace(path, &req.roots).map_err(|e| {
+                    format!(
+                        "Import <{iri}> is mapped to {} by {}: {e}",
+                        path.display(),
+                        cat.display()
+                    )
+                })?;
                 return load_file(path, None, base, memo)
                     .map(|(o, fresh)| (path.display().to_string(), o, fresh))
                     .map_err(|e| {
@@ -456,6 +487,8 @@ fn load(
         .filter(|u| u.scheme() == "file")
         .and_then(|u| u.to_file_path().ok())
     {
+        inside_workspace(&path, &req.roots)
+            .map_err(|e| format!("Import <{iri}> names {}: {e}", path.display()))?;
         return load_file(&path, None, base, memo)
             .map(|(o, fresh)| (path.display().to_string(), o, fresh))
             .map_err(|e| {
@@ -651,6 +684,7 @@ fn parse(bytes: &[u8], format: Format, base: &str) -> Result<Ontology, String> {
 /// leaves no triple at all.
 pub fn rdf_xml_to_ntriples(bytes: &[u8], base: &str) -> Result<String, String> {
     check_xml_tags(bytes)?;
+    check_xml_entities(bytes)?;
     let parser = oxrdfxml::RdfXmlParser::new();
     let parser = parser.clone().with_base_iri(base).unwrap_or(parser);
     let mut out = String::new();
@@ -710,6 +744,68 @@ fn check_xml_tags(bytes: &[u8]) -> Result<(), String> {
         i = end;
     }
     Ok(())
+}
+
+/// Refuse DOCTYPE entities that could expand beyond the input: an entity whose
+/// value refers to another entity (the "billion laughs" pattern), parameter or
+/// external entities, and too many or too large declarations. Ontologies
+/// exported by Protégé and friends only use flat namespace entities
+/// (`<!ENTITY owl "http://www.w3.org/2002/07/owl#">`), which pass.
+fn check_xml_entities(bytes: &[u8]) -> Result<(), String> {
+    let Some(dt) = find(bytes, b"<!DOCTYPE") else {
+        return Ok(());
+    };
+    let refuse = |why: &str| {
+        Err(format!(
+            "its DOCTYPE {why}; refused to avoid entity expansion"
+        ))
+    };
+    let mut i = dt;
+    let (mut count, mut total) = (0usize, 0usize);
+    while let Some(off) = find(&bytes[i..], b"<!ENTITY") {
+        let mut j = i + off + b"<!ENTITY".len();
+        count += 1;
+        if count > MAX_XML_ENTITIES {
+            return refuse(&format!("declares more than {MAX_XML_ENTITIES} entities"));
+        }
+        while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+            j += 1;
+        }
+        if bytes.get(j) == Some(&b'%') {
+            return refuse("declares a parameter entity");
+        }
+        // Name, then either a quoted value or SYSTEM/PUBLIC (external).
+        while bytes.get(j).is_some_and(|b| !b.is_ascii_whitespace()) {
+            j += 1;
+        }
+        while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+            j += 1;
+        }
+        let Some(&q) = bytes.get(j).filter(|b| matches!(b, b'"' | b'\'')) else {
+            return refuse("declares an external entity");
+        };
+        let value_start = j + 1;
+        let Some(len) = bytes[value_start..].iter().position(|&b| b == q) else {
+            return refuse("has an unterminated entity value");
+        };
+        let value = &bytes[value_start..value_start + len];
+        if value.contains(&b'&') || value.contains(&b'%') {
+            return refuse("declares an entity that refers to another entity");
+        }
+        total += len;
+        if total > MAX_XML_ENTITY_BYTES {
+            return refuse(&format!(
+                "declares more than {} KiB of entity text",
+                MAX_XML_ENTITY_BYTES / 1024
+            ));
+        }
+        i = value_start + len + 1;
+    }
+    Ok(())
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// GET `url`: (body, content type, final URL after redirects).
@@ -990,6 +1086,25 @@ fn unescape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rdf_xml_entity_expansion_is_refused() {
+        let mut laughs =
+            String::from("<?xml version=\"1.0\"?>\n<!DOCTYPE rdf:RDF [\n<!ENTITY lol0 \"lol\">\n");
+        for n in 1..9 {
+            let refs: String = (0..10).map(|_| format!("&lol{};", n - 1)).collect();
+            laughs.push_str(&format!("<!ENTITY lol{n} \"{refs}\">\n"));
+        }
+        laughs.push_str("]>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"http://e/a\"><rdf:value>&lol8;</rdf:value></rdf:Description></rdf:RDF>\n");
+        assert!(check_xml_entities(laughs.as_bytes()).is_err());
+        let flat = "<!DOCTYPE rdf:RDF [\n <!ENTITY owl \"http://www.w3.org/2002/07/owl#\" >\n <!ENTITY xsd 'http://www.w3.org/2001/XMLSchema#'>\n]>\n<rdf:RDF/>";
+        assert!(check_xml_entities(flat.as_bytes()).is_ok());
+        assert!(
+            check_xml_entities(b"<!DOCTYPE x [<!ENTITY e SYSTEM \"file:///etc/passwd\">]>")
+                .is_err()
+        );
+        assert!(check_xml_entities(b"<!DOCTYPE x [<!ENTITY % p \"x\">]>").is_err());
+    }
     use std::fs;
 
     fn tmp(name: &str) -> PathBuf {
@@ -1098,6 +1213,36 @@ mod tests {
     }
 
     #[test]
+    fn local_imports_outside_the_workspace_are_not_read() {
+        let root = tmp("outside");
+        let ws = root.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(
+            root.join("private.ttl"),
+            "<http://ex.com/p> a <http://ex.com/C> .\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join(CATALOG_FILE),
+            r#"<catalog><uri name="http://ex.com/p" uri="../private.ttl"/></catalog>"#,
+        )
+        .unwrap();
+        let file_iri = url::Url::from_file_path(root.join("private.ttl"))
+            .unwrap()
+            .to_string();
+        let j = job(&["http://ex.com/p", &file_iri], &[], vec![ws.clone()], None);
+        let done = resolve(&j, &mut Memo::default(), &|| false).unwrap();
+        assert!(done.loaded.is_empty(), "{:?}", done.status);
+        for (_, st) in &done.status {
+            assert!(
+                matches!(st, Status::Unresolved(m) if m.contains("outside the workspace")),
+                "{st:?}"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn imports_resolve_transitively_through_catalog_and_cache_with_cycles() {
         let root = tmp("transitive");
         let ws = root.join("ws");
@@ -1106,12 +1251,12 @@ mod tests {
         fs::create_dir_all(&cache).unwrap();
         fs::write(
             ws.join("sub").join(CATALOG_FILE),
-            r#"<catalog><uri name="http://ex.com/a" uri="../../a.ttl"/></catalog>"#,
+            r#"<catalog><uri name="http://ex.com/a" uri="../a.ttl"/></catalog>"#,
         )
         .unwrap();
         // a imports b (cache) and itself; b imports a (cycle) and c (missing) and the local one.
         fs::write(
-            root.join("a.ttl"),
+            ws.join("a.ttl"),
             "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<> owl:imports <http://ex.com/b>, <http://ex.com/a> .\n<#T> a owl:Class .\n",
         )
         .unwrap();
@@ -1139,6 +1284,12 @@ mod tests {
         // The cycle back to a#: visited once.
         assert_eq!(done.status.len(), 4, "{st:?}");
         assert_eq!(done.loaded.len(), 2);
+        // a imports <http://ex.com/a#> (via b): the same import, same status.
+        assert!(
+            done.status
+                .iter()
+                .all(|(_, s)| !matches!(s, Status::Unresolved(m) if m.contains("http://ex.com/a")))
+        );
         // Relative IRIs resolve against the import IRI.
         let a = &done
             .loaded

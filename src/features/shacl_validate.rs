@@ -62,6 +62,8 @@ impl Worker {
         let seen = latest.clone();
         std::thread::Builder::new()
             .name("shacl".into())
+            // Defence in depth: recursion is bounded, but generously.
+            .stack_size(16 << 20)
             .spawn(move || {
                 while let Ok(mut job) = job_rx.recv() {
                     // Only the newest queued job matters.
@@ -73,13 +75,19 @@ impl Worker {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         run(&job, &cancelled)
                     }));
-                    if let Ok(Some(diagnostics)) = result
-                        && out_tx
-                            .send(Outcome {
-                                generation,
-                                diagnostics,
-                            })
-                            .is_err()
+                    let diagnostics = match result {
+                        Ok(Some(d)) => d,
+                        Ok(None) => continue,
+                        // A bug: say so on the shape files rather than leave
+                        // the last results standing with no explanation.
+                        Err(e) => crashed(&job, &e),
+                    };
+                    if out_tx
+                        .send(Outcome {
+                            generation,
+                            diagnostics,
+                        })
+                        .is_err()
                     {
                         break;
                     }
@@ -98,6 +106,31 @@ impl Worker {
         self.latest.store(job.generation, Ordering::Relaxed);
         let _ = self.jobs.send(job);
     }
+}
+
+/// Diagnostics for a validation that panicked: one error per shape file.
+fn crashed(job: &Job, panic: &(dyn std::any::Any + Send)) -> ByUri {
+    let detail = panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    job.docs
+        .iter()
+        .filter(|(s, a)| *s != Source::External && has_shapes(a))
+        .map(|(_, a)| {
+            let d = Diagnostic {
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String(CODE.into())),
+                source: Some(SOURCE.into()),
+                message: format!(
+                    "turtle-lsp internal error in SHACL validation: {detail}. Results are not shown; please report this at https://github.com/abhishekkundu25/turtle-lsp/issues"
+                ),
+                ..Default::default()
+            };
+            (a.uri.clone(), vec![d])
+        })
+        .collect()
 }
 
 /// Whether `a` declares shapes validation would act on (a target, or a

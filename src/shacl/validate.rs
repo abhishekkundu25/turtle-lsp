@@ -382,6 +382,10 @@ struct Compiler<'g, 'a> {
     g: &'g Graph<'a>,
     shapes: Vec<Shape>,
     index: FxHashMap<Id, ShapeIx>,
+    /// Shapes reserved but not built yet. Building one only reserves the
+    /// shapes it refers to, so a chain of thousands of `sh:node` references
+    /// compiles without recursion (and without overflowing the stack).
+    pending: Vec<(Id, ShapeIx)>,
 }
 
 impl Compiler<'_, '_> {
@@ -399,9 +403,16 @@ impl Compiler<'_, '_> {
             messages: Vec::new(),
             constraints: Vec::new(),
         });
-        let built = self.build(node);
-        self.shapes[ix as usize] = built;
+        self.pending.push((node, ix));
         ix
+    }
+
+    /// Build every reserved shape, including those found while building.
+    fn build_pending(&mut self) {
+        while let Some((node, ix)) = self.pending.pop() {
+            let built = self.build(node);
+            self.shapes[ix as usize] = built;
+        }
     }
 
     fn shapes(&mut self, nodes: Vec<Id>) -> Vec<ShapeIx> {
@@ -1050,8 +1061,10 @@ pub fn validate_focus(
         g,
         shapes: Vec::new(),
         index: FxHashMap::default(),
+        pending: Vec::new(),
     };
     let roots: Vec<ShapeIx> = roots.into_iter().map(|r| comp.shape(r)).collect();
+    comp.build_pending();
     let shapes = comp.shapes;
     let mut run = Run {
         g,

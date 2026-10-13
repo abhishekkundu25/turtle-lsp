@@ -192,3 +192,30 @@ describe("pull", () => {
     assert.deepEqual(lint(again.items), [])
   })
 })
+
+test("typing a new subject re-diagnoses other open files once typing pauses, not per keystroke", async () => {
+  const ws = workspace()
+  const s = await startServer({ cwd: ws })
+  try {
+    await s.request("workspace/symbol", { query: "" })
+    const other = uriOf(path.join(ws, "data", "__other.ttl"))
+    s.open(other, "obj:a sd:fillsPosition obj:b .\n")
+    await s.diagnosticsFor(other)
+    const mine = uriOf(path.join(ws, "data", "__typing.ttl"))
+    s.open(mine, "")
+    await s.diagnosticsFor(mine)
+    const before = s.published.filter((u) => u === other).length
+    // Each prefix of the new name is a new described subject.
+    const name = "obj:newThing"
+    for (let i = 5; i <= name.length; i++) {
+      s.change(mine, `${name.slice(0, i)} a sd:Asset .\n`)
+      await s.diagnosticsFor(mine)
+    }
+    await sleep(600)
+    const republished = s.published.filter((u) => u === other).length - before
+    assert.ok(republished <= 2, `other file re-published ${republished} times for ${name.length - 4} keystrokes`)
+  } finally {
+    await s.stop()
+    fs.rmSync(ws, { recursive: true, force: true })
+  }
+})

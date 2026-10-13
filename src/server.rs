@@ -37,6 +37,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Files that feed `owl:imports` without being Turtle documents themselves.
+fn is_import_source(path: &std::path::Path) -> bool {
+    path.file_name().is_some_and(|f| f == "catalog-v001.xml")
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("rdf") || e.eq_ignore_ascii_case("owl"))
+}
+
+/// Pause after a described-set change before other documents are refreshed.
+const DESCRIBED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
 pub struct Server {
     conn: Connection,
     /// Every message read so far. lsp-server hands over messages through a
@@ -74,6 +85,8 @@ pub struct Server {
     refresh_needed: bool,
     /// The knowledge index's described generation last acted on.
     described_seen: u64,
+    /// When to act on a described-set change (see `check_described`).
+    described_due: Option<std::time::Instant>,
     /// `workspace/{inlayHint,semanticTokens}/refresh`, those the client supports.
     display_refresh: Vec<&'static str>,
     /// Knowledge changed since the last display refresh.
@@ -91,6 +104,11 @@ pub struct Server {
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
 /// process should exit with code 1 otherwise, as the LSP spec asks.
 pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    // Workspace files are parsed on rayon threads; give them room beyond the
+    // 2 MB default (parser nesting is bounded, this is defence in depth).
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(8 << 20)
+        .build_global();
     let (conn, io) = Connection::stdio();
     let (id, raw) = conn.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(raw.clone())?;
@@ -233,6 +251,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         reported: false,
         refresh_needed: false,
         described_seen: 0,
+        described_due: None,
         display_refresh,
         display_stale: false,
         imports: crate::imports::Imports::new(),
@@ -366,6 +385,10 @@ impl Server {
                     self.merge_index(files.ok());
                     None
                 }
+                recv(self.described_due.map_or_else(never, crossbeam_channel::at)) -> _ => {
+                    self.described_settled();
+                    None
+                }
                 recv(self.imports.results()) -> done => {
                     if let Ok(done) = done {
                         self.imports_done(done);
@@ -428,8 +451,22 @@ impl Server {
 
     /// An edit that changes which terms are described (or which prefixes are
     /// bound) changes other open documents' lint results; most keystrokes don't.
+    ///
+    /// Typing a new subject changes the described set on every keystroke, so
+    /// other documents (and the client's semantic tokens and inlay hints) are
+    /// refreshed once typing pauses, not per keystroke; the edited document
+    /// itself is re-diagnosed right away as usual.
     fn check_described(&mut self) {
         // Analyzes the documents edited in this batch (diagnostics would anyway).
+        let g = self.ws.knowledge().described_generation();
+        if g != self.described_seen {
+            self.described_due = Some(std::time::Instant::now() + DESCRIBED_DEBOUNCE);
+        }
+    }
+
+    /// The pause after a described-set change has passed.
+    fn described_settled(&mut self) {
+        self.described_due = None;
         let g = self.ws.knowledge().described_generation();
         if g != self.described_seen {
             self.described_seen = g;
@@ -565,11 +602,19 @@ impl Server {
                         let Some(path) = uri_to_path(ch.uri.as_str()) else {
                             continue;
                         };
+                        if is_import_source(&path) {
+                            // A catalog or an imported RDF/XML ontology changed.
+                            self.imports.retry();
+                            continue;
+                        }
                         if !is_turtle(&path) {
                             continue;
                         }
-                        prefixes_changed |= path.file_name().is_some_and(|f| f == PREFIX_FILE);
-                        if !self.ws.open.contains_key(&normalize_uri(ch.uri.as_str())) {
+                        let open = self.ws.open.contains_key(&normalize_uri(ch.uri.as_str()));
+                        // An open prefixes.ttl was handled on save.
+                        prefixes_changed |=
+                            !open && path.file_name().is_some_and(|f| f == PREFIX_FILE);
+                        if !open {
                             self.ws.reindex_disk_file(&path);
                             disk_changed = true;
                         }
@@ -754,14 +799,15 @@ impl Server {
     /// the document nor the knowledge generation moved since `previousResultId`.
     fn pull_diagnostics(&mut self, p: DocumentDiagnosticParams) -> DocumentDiagnosticReportResult {
         let uri = normalize_uri(p.text_document.uri.as_str());
-        // Settle the generation first, so this report's result id stays valid.
-        self.check_described();
         let version = self
             .ws
             .open
             .get(&uri)
             .map_or_else(|| "disk".to_string(), |d| d.version.to_string());
-        let mut result_id = Some(format!("{version}:{}", self.generation));
+        // The described set is part of the id: other documents' edits that
+        // change it may not have bumped the generation yet (debounced).
+        let described = self.ws.knowledge().described_generation();
+        let mut result_id = Some(format!("{version}:{}:{described}", self.generation));
         self.reported = true;
         if p.previous_result_id.is_some() && p.previous_result_id == result_id {
             return DocumentDiagnosticReport::Unchanged(RelatedUnchangedDocumentDiagnosticReport {
@@ -815,7 +861,9 @@ impl Server {
         }
         let opts = DidChangeWatchedFilesRegistrationOptions {
             watchers: vec![FileSystemWatcher {
-                glob_pattern: GlobPattern::String("**/*.{ttl,turtle,trig,nt}".into()),
+                glob_pattern: GlobPattern::String(
+                    "**/{*.ttl,*.turtle,*.trig,*.nt,*.rdf,*.owl,catalog-v001.xml}".into(),
+                ),
                 kind: None,
             }],
         };

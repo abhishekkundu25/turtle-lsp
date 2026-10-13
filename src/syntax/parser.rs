@@ -21,6 +21,11 @@ use std::sync::OnceLock;
 
 type R<T> = Result<T, ()>;
 
+/// Deepest nesting of `[ ]`, `( )`, `<< >>` and `<<( )>>` the parser follows.
+/// Real data rarely goes past a dozen; thousands only come from generated or
+/// hostile input, and would overflow a worker thread's stack.
+pub const MAX_NESTING: u32 = 256;
+
 /// IRIs the parser produces itself, interned once.
 struct Vocab {
     rdf_type: Iri,
@@ -114,6 +119,7 @@ pub fn parse_with_base(
         bnodes: 0,
         bnode_labels: FxHashMap::default(),
         quoted: 0,
+        depth: 0,
         subject: None,
         statement: 0,
         trig: syntax == Syntax::TriG,
@@ -144,6 +150,8 @@ struct P<'a> {
     /// `_:label` -> its number in this document.
     bnode_labels: FxHashMap<&'a str, u32>,
     quoted: u32,
+    /// Open `[`, `(`, `<<` and `<<(` around the current position.
+    depth: u32,
     subject: Option<(Iri, Span)>,
     /// Index of the statement being parsed.
     statement: u32,
@@ -985,7 +993,28 @@ impl<'a> P<'a> {
         }
     }
 
+    /// Run `f` one nesting level deeper. Past [`MAX_NESTING`] the statement
+    /// is abandoned with an error: unbounded recursion would overflow the
+    /// stack, which no panic guard can catch.
+    fn nested(&mut self, f: impl FnOnce(&mut Self) -> R<Node>) -> R<Node> {
+        if self.depth >= MAX_NESTING {
+            let span = self
+                .peek()
+                .map_or(self.prev_span(), |t| Span::new(t.start, t.end));
+            self.error(span, format!("Nested more than {MAX_NESTING} levels deep"));
+            return Err(());
+        }
+        self.depth += 1;
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
     fn blank_node_property_list(&mut self) -> R<Node> {
+        self.nested(Self::blank_node_property_list_inner)
+    }
+
+    fn blank_node_property_list_inner(&mut self) -> R<Node> {
         let open = self.bump();
         let b = self.fresh_bnode();
         self.predicate_object_list(&b)?;
@@ -1000,6 +1029,10 @@ impl<'a> P<'a> {
     }
 
     fn collection(&mut self) -> R<Node> {
+        self.nested(Self::collection_inner)
+    }
+
+    fn collection_inner(&mut self) -> R<Node> {
         let open = self.bump();
         let mut items = Vec::new();
         loop {
@@ -1042,6 +1075,10 @@ impl<'a> P<'a> {
 
     /// `<<( s p o )>>`
     fn triple_term(&mut self) -> R<Node> {
+        self.nested(Self::triple_term_inner)
+    }
+
+    fn triple_term_inner(&mut self) -> R<Node> {
         self.bump();
         self.quoted += 1;
         let r = (|| {
@@ -1095,6 +1132,10 @@ impl<'a> P<'a> {
 
     /// `<< s p o ~ r >>`: returns the reifier.
     fn reified_triple(&mut self) -> R<Node> {
+        self.nested(Self::reified_triple_inner)
+    }
+
+    fn reified_triple_inner(&mut self) -> R<Node> {
         let open = self.bump();
         self.quoted += 1;
         let r = (|| {

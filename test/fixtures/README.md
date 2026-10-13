@@ -15,5 +15,6 @@
   `ontology-design/design/guide/check_examples.py` prepends before parsing.
 - `imports/`: `owl:imports` resolution (test/imports.test.mjs). `ws/` is the
   workspace: `main.ttl` imports through `ws/catalog-v001.xml`, which maps to
-  Turtle files in `vendor/` (outside the workspace, importing each other in a
-  cycle) and to RDF/XML in `ws/vendor/gear.rdf`.
+  Turtle files in `ws/vendor/` (importing each other in a cycle) and to
+  RDF/XML in `ws/vendor/gear.rdf`. Local imports outside the workspace are
+  never read.
