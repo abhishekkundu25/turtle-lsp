@@ -342,7 +342,8 @@ fn slot_at(a: &Analysis, offset: u32) -> Slot {
         return Slot::Subject;
     };
     match prev.kind {
-        Kind::Dot => Slot::Subject,
+        // TriG: `{` and `}` delimit graph blocks; `GRAPH` precedes a graph name.
+        Kind::Dot | Kind::LBrace | Kind::RBrace | Kind::Graph => Slot::Subject,
         Kind::Semicolon | Kind::LBracket | Kind::LAnnotation => Slot::Predicate,
         Kind::A => Slot::Class,
         Kind::Caret2 => Slot::Datatype,

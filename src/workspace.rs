@@ -1,12 +1,13 @@
 //! Open documents, indexed files on disk, and project prefixes.
 //!
 //! Project prefixes: the nearest `prefixes.ttl` in the file's directory or an
-//! ancestor (up to the workspace root) supplies prefixes to every Turtle file
-//! below it, plus any `prefixes` given in the client's initializationOptions.
+//! ancestor (up to the workspace root) supplies prefixes to every Turtle and
+//! TriG file below it, plus any `prefixes` given in the client's
+//! initializationOptions. N-Triples files have no prefixes.
 
 use crate::analysis::{Analysis, Encoding, offset_in};
 use crate::knowledge::{DocFacts, Knowledge, Source};
-use crate::syntax::PrefixMap;
+use crate::syntax::{PrefixMap, Syntax};
 use line_index::LineIndex;
 use lsp_types::TextDocumentContentChangeEvent;
 use rayon::prelude::*;
@@ -32,6 +33,7 @@ pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 pub struct Doc {
     pub text: String,
     pub version: i32,
+    pub syntax: Syntax,
     analysis: Option<Arc<Analysis>>,
 }
 
@@ -80,11 +82,9 @@ pub fn path_to_uri(path: &Path) -> Option<String> {
     url::Url::from_file_path(path).ok().map(|u| u.to_string())
 }
 
+/// A file this server reads: `.ttl`, `.turtle`, `.trig` or `.nt`.
 pub fn is_turtle(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("ttl" | "turtle")
-    )
+    Syntax::from_extension(&path.to_string_lossy()).is_some()
 }
 
 impl Workspace {
@@ -98,12 +98,19 @@ impl Workspace {
 
     // ---- documents ----
 
+    /// The syntax comes from the URI's extension.
     pub fn open_doc(&mut self, uri: String, text: String, version: i32) {
+        let syntax = Syntax::detect(None, &uri);
+        self.open_doc_as(uri, text, version, syntax);
+    }
+
+    pub fn open_doc_as(&mut self, uri: String, text: String, version: i32, syntax: Syntax) {
         self.open.insert(
             uri,
             Doc {
                 text,
                 version,
+                syntax,
                 analysis: None,
             },
         );
@@ -188,13 +195,20 @@ impl Workspace {
     }
 
     pub fn analysis(&mut self, uri: &str) -> Option<Arc<Analysis>> {
-        let external = match self.open.get(uri) {
+        let syntax = match self.open.get(uri) {
             Some(d) if d.analysis.is_some() => return d.analysis.clone(),
-            Some(_) => self.external_prefixes_for(uri),
+            Some(d) => d.syntax,
             None => return self.disk.get(uri).cloned(),
         };
+        let external = self.external_prefixes_as(uri, syntax);
         let doc = self.open.get_mut(uri)?;
-        let a = Arc::new(Analysis::new(uri.to_string(), &doc.text, external, true));
+        let a = Arc::new(Analysis::with_syntax(
+            uri.to_string(),
+            &doc.text,
+            external,
+            true,
+            syntax,
+        ));
         doc.analysis = Some(a.clone());
         self.knowledge.set(uri, Source::Open, a.clone());
         Some(a)
@@ -220,6 +234,13 @@ impl Workspace {
     // ---- prefixes ----
 
     pub fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
+        self.external_prefixes_as(uri, Syntax::detect(None, uri))
+    }
+
+    fn external_prefixes_as(&mut self, uri: &str, syntax: Syntax) -> Arc<PrefixMap> {
+        if !syntax.has_prefixes() {
+            return Arc::new(PrefixMap::default());
+        }
         let Some(path) = uri_to_path(uri) else {
             return Arc::new(self.settings_prefixes.clone());
         };
@@ -239,7 +260,7 @@ impl Workspace {
                 .map(|d| d.text.clone())
                 .or_else(|| std::fs::read_to_string(&file).ok());
             if let Some(text) = text {
-                let parsed = crate::syntax::parse(&text, &PrefixMap::default());
+                let parsed = crate::syntax::parse(&text, &PrefixMap::default(), Syntax::Turtle);
                 for p in parsed.prefixes {
                     map.insert(p.name, p.iri.to_string());
                 }

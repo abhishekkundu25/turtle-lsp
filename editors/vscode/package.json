@@ -48,7 +48,7 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.{ttl,turtle}"
+    "workspaceContains:**/*.{ttl,turtle,trig,nt}"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -80,6 +80,34 @@
           "text/turtle"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "trig",
+        "aliases": [
+          "TriG",
+          "trig"
+        ],
+        "extensions": [
+          ".trig"
+        ],
+        "mimetypes": [
+          "application/trig"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "ntriples",
+        "aliases": [
+          "N-Triples",
+          "ntriples"
+        ],
+        "extensions": [
+          ".nt"
+        ],
+        "mimetypes": [
+          "application/n-triples"
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
@@ -87,6 +115,16 @@
         "language": "turtle",
         "scopeName": "source.turtle",
         "path": "./syntaxes/turtle.tmLanguage.json"
+      },
+      {
+        "language": "trig",
+        "scopeName": "source.trig",
+        "path": "./syntaxes/trig.tmLanguage.json"
+      },
+      {
+        "language": "ntriples",
+        "scopeName": "source.ntriples",
+        "path": "./syntaxes/ntriples.tmLanguage.json"
       }
     ],
     "configuration": {

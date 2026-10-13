@@ -416,8 +416,10 @@ impl Server {
             DidOpenTextDocument::METHOD => {
                 if let Some(p) = parse::<DidOpenTextDocumentParams>(n.params) {
                     let uri = normalize_uri(p.text_document.uri.as_str());
+                    let doc = p.text_document;
+                    let syntax = crate::syntax::Syntax::detect(Some(&doc.language_id), &uri);
                     self.ws
-                        .open_doc(uri.clone(), p.text_document.text, p.text_document.version);
+                        .open_doc_as(uri.clone(), doc.text, doc.version, syntax);
                     self.after_edit(&uri);
                 }
             }
@@ -660,7 +662,7 @@ impl Server {
         }
         let opts = DidChangeWatchedFilesRegistrationOptions {
             watchers: vec![FileSystemWatcher {
-                glob_pattern: GlobPattern::String("**/*.{ttl,turtle}".into()),
+                glob_pattern: GlobPattern::String("**/*.{ttl,turtle,trig,nt}".into()),
                 kind: None,
             }],
         };

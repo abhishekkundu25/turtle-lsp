@@ -8,6 +8,7 @@ const vscode = require("vscode")
 const fixtures = process.env.TURTLE_FIXTURES
 const ws = path.join(fixtures, "workspace")
 const project = path.join(fixtures, "project")
+const datasets = path.join(fixtures, "datasets")
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 async function open(file) {
@@ -171,6 +172,47 @@ check("outline lists subjects", async () => {
   const syms = await vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", doc.uri)
   const names = syms.map((s) => s.name)
   assert.ok(names.includes("ex:alice") && names.includes("ex:bob"), names.join(", "))
+})
+
+check("a .trig file is TriG: no warnings, prefixes from prefixes.ttl", async () => {
+  const doc = await open(path.join(datasets, "graphs.trig"))
+  assert.equal(doc.languageId, "trig")
+  const d = problems(await settledDiagnostics(doc))
+  assert.deepEqual(d, [], fmt(d))
+})
+
+check("hover in a .trig graph block shows the vocabulary comment", async () => {
+  const doc = await open(path.join(datasets, "graphs.trig"))
+  const hovers = await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, posOf(doc, "a dx:Pers"))
+  const text = hovers.flatMap((h) => h.contents.map((c) => c.value ?? String(c))).join("\n")
+  assert.match(text, /Someone the dataset describes/)
+})
+
+check("a TriG syntax error is reported", async () => {
+  const doc = await vscode.workspace.openTextDocument({ language: "trig", content: "@prefix ex: <http://e/> .\nex:g {\n  ex:a ex:p ex:o .\n" })
+  await vscode.window.showTextDocument(doc)
+  let d = []
+  for (let i = 0; i < 40 && d.length === 0; i++) {
+    await sleep(50)
+    d = vscode.languages.getDiagnostics(doc.uri).filter((x) => x.severity === vscode.DiagnosticSeverity.Error)
+  }
+  assert.ok(d.some((x) => /Unclosed '\{'/.test(x.message)), fmt(d))
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
+})
+
+check("an N-Triples file is N-Triples: @prefix is an error", async () => {
+  const nt = await open(path.join(datasets, "people.nt"))
+  assert.equal(nt.languageId, "ntriples")
+  assert.deepEqual(problems(await settledDiagnostics(nt)), [])
+  const doc = await vscode.workspace.openTextDocument({ language: "ntriples", content: "@prefix ex: <http://e/> .\n<http://e/a> <http://e/p> <http://e/o> .\n" })
+  await vscode.window.showTextDocument(doc)
+  let d = []
+  for (let i = 0; i < 40 && d.length === 0; i++) {
+    await sleep(50)
+    d = vscode.languages.getDiagnostics(doc.uri).filter((x) => x.severity === vscode.DiagnosticSeverity.Error)
+  }
+  assert.ok(d.some((x) => /N-Triples does not allow directives/.test(x.message)), fmt(d))
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 
 exports.run = async function run() {

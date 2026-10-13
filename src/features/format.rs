@@ -19,7 +19,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::syntax::lexer::{Kind, Token, tokenize};
-use crate::syntax::{Parsed, PrefixMap, Severity, Triple, parse};
+use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple, parse};
 use lsp_types::{FormattingOptions, Position, Range, TextEdit};
 use rustc_hash::FxHashMap;
 
@@ -69,6 +69,10 @@ pub fn formatting(a: &Analysis, enc: Encoding, opts: &Options) -> Vec<TextEdit> 
 /// `parsed` is the parse of `text` with `external` prefixes; when its tokens
 /// were dropped the text is tokenized again.
 pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options) -> Option<String> {
+    // TriG graph blocks and N-Triples line rules are not laid out yet.
+    if parsed.syntax != Syntax::Turtle {
+        return None;
+    }
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         return None;
     }
@@ -87,7 +91,7 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
     .document()?;
     let out = Printer::new(&doc, opts).document(&items);
 
-    let again = parse(&out, external);
+    let again = parse(&out, external, Syntax::Turtle);
     let same = !again.errors.iter().any(|e| e.severity == Severity::Error)
         && again.comments.len() == doc.comments.len()
         && same_triples(&again.triples, &parsed.triples);

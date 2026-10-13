@@ -1,0 +1,10 @@
+<http://example.net/forms/a> <http://example.net/forms/p> <http://example.net/forms/o> .
+<http://example.net/forms/a> <http://example.net/forms/p> "plain" .
+<http://example.net/forms/a> <http://example.net/forms/p> "tab\tquote\"newline\n" .
+<http://example.net/forms/a> <http://example.net/forms/p> "chat"@fr .
+<http://example.net/forms/a> <http://example.net/forms/p> "rtl"@ar--rtl .
+<http://example.net/forms/a> <http://example.net/forms/p> "42"^^<http://www.w3.org/2001/XMLSchema#integer> .
+_:x <http://example.net/forms/p> _:y .
+<http://example.net/forms/A> <http://example.net/forms/p> <http://example.net/forms/o> .
+	<http://example.net/forms/a>	<http://example.net/forms/p>	<http://example.net/forms/o>	.	# tabs
+<http://example.net/forms/a> <http://example.net/forms/p> <<( _:x <http://example.net/forms/p> "o" )>> .

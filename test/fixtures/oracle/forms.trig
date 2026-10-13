@@ -1,0 +1,26 @@
+# Every way TriG writes a graph block, checked against oxttl's TriG parser.
+PREFIX ex: <http://example.net/forms/>
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+BASE <http://example.net/base/>
+
+ex:d ex:p ex:o .
+<relative> ex:p "resolved against BASE" .
+
+ex:g1 { ex:a ex:p ex:o }
+ex:g2{ex:a ex:p ex:o .ex:b ex:p 1, 2.5, 3e1, true}
+<http://example.net/forms/g3> {
+  ex:a ex:p "x"@en ; ex:q "y"^^xsd:string .
+}
+GRAPH ex:g4 { ex:a ex:p [ ex:q ( ex:l1 ex:l2 ) ] }
+graph _:b1 { _:b1 ex:p ex:o . }
+_:b2 { [ ex:p ex:o ] }
+[] { ( ex:x ) ex:p ex:o }
+{ ex:default ex:p ex:o . }
+{}
+ex:empty { }
+ex:g5 {
+  ex:a ex:p ex:o ~ ex:r {| ex:src ex:s |} .
+  << ex:a ex:p ex:o >> ex:q ex:z .
+  ex:x ex:y <<( ex:a ex:p ex:o )>> .
+}
+ex:after ex:p ex:o .

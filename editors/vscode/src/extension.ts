@@ -51,6 +51,10 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
     documentSelector: [
       { scheme: "file", language: "turtle" },
       { scheme: "untitled", language: "turtle" },
+      { scheme: "file", language: "trig" },
+      { scheme: "untitled", language: "trig" },
+      { scheme: "file", language: "ntriples" },
+      { scheme: "untitled", language: "ntriples" },
     ],
     initializationOptions: serverSettings(),
     // Later changes reach the server as workspace/didChangeConfiguration.

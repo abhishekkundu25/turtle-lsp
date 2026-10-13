@@ -64,10 +64,8 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
         });
     }
     let prefixes = a.prefix_map();
-    for st in &a.parsed.statements {
-        let Some((iri, span)) = &st.subject else {
-            continue;
-        };
+    let subject = |st: &crate::syntax::Statement| {
+        let (iri, span) = st.subject.as_ref()?;
         let detail = a.label(iri).map(str::to_string).or_else(|| {
             a.types.get(iri).map(|ts| {
                 ts.iter()
@@ -79,7 +77,7 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
                     .join(", ")
             })
         });
-        out.push(DocumentSymbol {
+        Some(DocumentSymbol {
             name: written(text, *span).to_string(),
             detail,
             kind: kind_for(a, iri),
@@ -88,8 +86,42 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
             range: a.range(enc, Span::new(st.span.start, st.span.end.max(span.end))),
             selection_range: a.range(enc, *span),
             children: None,
+        })
+    };
+    // TriG graph blocks are containers for the subjects inside them.
+    let statements = &a.parsed.statements;
+    let mut next = 0;
+    for g in &a.parsed.graphs {
+        let (from, to) = (g.statements.start as usize, g.statements.end as usize);
+        out.extend(statements[next.min(from)..from].iter().filter_map(subject));
+        let name_span = g
+            .name_span
+            .unwrap_or(Span::new(g.span.start, g.span.start + 1));
+        out.push(DocumentSymbol {
+            name: match g.name_span {
+                Some(s) => written(text, s).to_string(),
+                None => "{ } default graph".into(),
+            },
+            detail: Some("graph".into()),
+            kind: SymbolKind::NAMESPACE,
+            tags: None,
+            deprecated: None,
+            range: a.range(enc, g.span),
+            selection_range: a.range(enc, name_span),
+            children: Some(
+                statements[from.min(to)..to.min(statements.len())]
+                    .iter()
+                    .filter_map(subject)
+                    .collect(),
+            ),
         });
+        next = to;
     }
+    out.extend(
+        statements[next.min(statements.len())..]
+            .iter()
+            .filter_map(subject),
+    );
     out
 }
 
@@ -155,7 +187,7 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
     for st in &a.parsed.statements {
         push(st.span.start, st.span.end, None);
     }
-    // Nested [ ], ( ), {| |}, << >> blocks. When the closer starts its own line,
+    // Nested [ ], ( ), {| |}, << >> blocks and TriG graph blocks { }. When the closer starts its own line,
     // stop the fold one line earlier so the closer stays visible.
     let mut nested = Vec::new();
     let mut open: Vec<(Kind, u32)> = Vec::new();
@@ -166,10 +198,12 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
             | Kind::LParen
             | Kind::LAnnotation
             | Kind::LTriple
-            | Kind::LTripleTerm => {
+            | Kind::LTripleTerm
+            | Kind::LBrace => {
                 open.push((t.kind, t.start));
                 None
             }
+            Kind::RBrace => Some(Kind::LBrace),
             Kind::RBracket => Some(Kind::LBracket),
             Kind::RParen => Some(Kind::LParen),
             Kind::RAnnotation => Some(Kind::LAnnotation),

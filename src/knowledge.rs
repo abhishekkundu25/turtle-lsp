@@ -1070,7 +1070,7 @@ mod tests {
         )
         .unwrap();
         let mut m = PrefixMap::default();
-        for p in syntax::parse(&text, &PrefixMap::default()).prefixes {
+        for p in syntax::parse(&text, &PrefixMap::default(), syntax::Syntax::Turtle).prefixes {
             m.insert(p.name, p.iri.to_string());
         }
         Arc::new(m)

@@ -4,7 +4,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, Source};
-use crate::syntax::{Form, Iri, Role, Span};
+use crate::syntax::{Form, Iri, Span};
 use crate::workspace::{PREFIX_FILE, path_to_uri};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -191,7 +191,7 @@ pub fn references(
             {
                 let mut seen = FxHashSet::default();
                 for r in other.refs_of(&iri) {
-                    if (include_decl || r.role != Role::Subject) && seen.insert(r.span) {
+                    if (include_decl || !r.role.is_definition()) && seen.insert(r.span) {
                         out.push(loc(other, enc, r.span));
                     }
                 }
@@ -220,7 +220,7 @@ pub fn highlights(a: &Analysis, enc: Encoding, pos: Position) -> Vec<DocumentHig
     match target {
         Target::Iri(iri) => a
             .refs_of(&iri)
-            .map(|r| mk(r.span, r.role == Role::Subject))
+            .map(|r| mk(r.span, r.role.is_definition()))
             .collect(),
         Target::Prefix(name) => a
             .parsed

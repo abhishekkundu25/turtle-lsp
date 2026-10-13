@@ -1,6 +1,6 @@
 {
   "comments": { "lineComment": "#" },
-  "brackets": [["[", "]"], ["(", ")"], ["<<", ">>"], ["{|", "|}"]],
+  "brackets": [["[", "]"], ["(", ")"], ["<<", ">>"], ["{|", "|}"], ["{", "}"]],
   "autoClosingPairs": [
     { "open": "[", "close": "]" },
     { "open": "(", "close": ")" },
@@ -11,8 +11,8 @@
   "surroundingPairs": [["[", "]"], ["(", ")"], ["<", ">"], ["\"", "\""], ["'", "'"]],
   "wordPattern": "[A-Za-z_\\u00C0-\\uFFFD][\\w.\\-\\u00B7\\u00C0-\\uFFFD]*(:[\\w.\\-%\\u00B7\\u00C0-\\uFFFD]*)?|:[\\w.\\-%\\u00B7\\u00C0-\\uFFFD]+",
   "indentationRules": {
-    "increaseIndentPattern": "^((?!#).)*([;\\[(]|\\{\\|)\\s*(#.*)?$",
-    "decreaseIndentPattern": "^\\s*(\\]|\\)|\\|\\})"
+    "increaseIndentPattern": "^((?!#).)*([;\\[({]|\\{\\|)\\s*(#.*)?$",
+    "decreaseIndentPattern": "^\\s*(\\]|\\)|\\|\\}|\\})"
   },
   "onEnterRules": [
     { "beforeText": "\\.\\s*(#.*)?$", "action": { "indent": "outdent" } }

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "N-Triples",
+  "scopeName": "source.ntriples",
+  "fileTypes": ["nt"],
+  "patterns": [
+    { "include": "source.turtle#comment" },
+    { "include": "source.turtle#string" },
+    { "include": "source.turtle#iri" },
+    { "include": "source.turtle#langtag" },
+    { "include": "source.turtle#datatype-marker" },
+    { "include": "source.turtle#blank-node" },
+    { "include": "#triple-term" },
+    { "include": "#terminator" }
+  ],
+  "repository": {
+    "triple-term": {
+      "match": "<<\\(|\\)>>",
+      "name": "punctuation.section.triple-term.ntriples"
+    },
+    "terminator": {
+      "match": "\\.",
+      "name": "punctuation.terminator.statement.ntriples"
+    }
+  }
+}

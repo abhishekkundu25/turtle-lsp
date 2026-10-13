@@ -1,9 +1,18 @@
-//! Resilient recursive-descent parser for Turtle 1.2.
+//! Resilient recursive-descent parser for Turtle 1.2, TriG 1.2 and N-Triples 1.2.
 //!
 //! On a syntax error the current statement is abandoned and parsing resumes at
 //! the next `.`, or at the next line that starts at column 0 with something that
 //! can begin a statement. Triples and references found before the error are kept,
 //! so completion and navigation keep working while a statement is half typed.
+//!
+//! TriG: inside a graph block, recovery also stops at the `}` that closes it,
+//! and a line that opens another block closes an unclosed one (reported as a
+//! missing `}`), so one broken block does not swallow the rest of the file.
+//!
+//! N-Triples is parsed as Turtle; afterwards every construct N-Triples does not
+//! have (directives, prefixed names, `a`, `;` and `,`, `[ ]`, collections,
+//! unquoted literals, relative IRIs, reified triples and annotations, more or
+//! less than one triple per line) is reported as an error.
 
 use super::lexer::{Kind, Token, tokenize};
 use super::*;
@@ -50,9 +59,19 @@ fn vocab() -> &'static Vocab {
     })
 }
 
-pub fn parse(src: &str, external: &PrefixMap) -> Parsed {
-    let all = tokenize(src);
-    let mut out = Parsed::default();
+pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
+    let mut all = tokenize(src);
+    if syntax != Syntax::TriG {
+        // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
+        for t in all.iter_mut().filter(|t| t.kind == Kind::Graph) {
+            t.kind = Kind::Error;
+            t.error = Some(super::lexer::UNEXPECTED_WORD);
+        }
+    }
+    let mut out = Parsed {
+        syntax,
+        ..Parsed::default()
+    };
     for t in &all {
         if t.kind == Kind::Comment {
             out.comments.push(Span::new(t.start, t.end));
@@ -86,12 +105,19 @@ pub fn parse(src: &str, external: &PrefixMap) -> Parsed {
         quoted: 0,
         subject: None,
         statement: 0,
+        trig: syntax == Syntax::TriG,
+        graph: None,
+        in_graph: false,
+        graph_indent: None,
         iri_cache: FxHashMap::default(),
         pname_cache: FxHashMap::default(),
         buf: String::new(),
         v: vocab(),
     };
     p.document();
+    if syntax == Syntax::NTriples {
+        p.ntriples_restrictions();
+    }
     p.out
 }
 
@@ -110,6 +136,13 @@ struct P<'a> {
     subject: Option<(Iri, Span)>,
     /// Index of the statement being parsed.
     statement: u32,
+    trig: bool,
+    /// Name of the graph block being parsed (`None`: the default graph).
+    graph: Option<GraphName>,
+    /// Inside `{ ... }`: a `}` ends the statement and stops recovery.
+    in_graph: bool,
+    /// Indentation of the first statement in the block that starts a line.
+    graph_indent: Option<u32>,
     /// `<iri>` and `@lang` token text -> interned value. Cleared when the base changes.
     iri_cache: FxHashMap<&'a str, Iri>,
     /// `prefix:local` token text -> (prefix name, IRI or the text if unresolved, resolved).
@@ -138,6 +171,34 @@ fn is_starter(k: Kind) -> bool {
     )
 }
 
+/// The tokens N-Triples has no use for, and what to say about them.
+fn ntriples_forbids(k: Kind) -> Option<&'static str> {
+    Some(match k {
+        Kind::PrefixDirective
+        | Kind::BaseDirective
+        | Kind::VersionDirective
+        | Kind::SparqlPrefix
+        | Kind::SparqlBase
+        | Kind::SparqlVersion => "N-Triples does not allow directives",
+        Kind::PName => "N-Triples needs full IRIs like <http://example.org/x>, not prefixed names",
+        Kind::A => {
+            "N-Triples does not allow 'a': write <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>"
+        }
+        Kind::Semicolon | Kind::Comma => {
+            "N-Triples does not allow ';' or ',': write every triple in full"
+        }
+        Kind::LBracket => "N-Triples does not allow '[ ]': use a blank node label like _:b1",
+        Kind::LParen => "N-Triples does not allow collections '( )'",
+        Kind::Number | Kind::Boolean => {
+            "N-Triples literals must be quoted, e.g. \"1\"^^<http://www.w3.org/2001/XMLSchema#integer>"
+        }
+        Kind::LTriple | Kind::Tilde | Kind::LAnnotation => {
+            "N-Triples does not allow reified triples or annotations: use a triple term <<( s p o )>>"
+        }
+        _ => return None,
+    })
+}
+
 fn describe(k: Kind) -> &'static str {
     match k {
         Kind::Iri => "an IRI",
@@ -162,6 +223,9 @@ fn describe(k: Kind) -> &'static str {
         Kind::RTripleTerm => "')>>'",
         Kind::LAnnotation => "'{|'",
         Kind::RAnnotation => "'|}'",
+        Kind::LBrace => "'{'",
+        Kind::RBrace => "'}'",
+        Kind::Graph => "'GRAPH'",
         Kind::Tilde => "'~'",
         Kind::PrefixDirective | Kind::SparqlPrefix => "a PREFIX directive",
         Kind::BaseDirective | Kind::SparqlBase => "a BASE directive",
@@ -195,8 +259,29 @@ impl<'a> P<'a> {
     fn text(&self, t: Token) -> &'a str {
         t.text(self.src)
     }
+    /// Where a new statement can start, for recovery: column 0, or inside a
+    /// graph block, first on its line and no deeper than the block's statements.
     fn at_line_start(&self, t: Token) -> bool {
-        t.start == 0 || self.src.as_bytes()[t.start as usize - 1] == b'\n'
+        if t.start == 0 || self.src.as_bytes()[t.start as usize - 1] == b'\n' {
+            return true;
+        }
+        match self.graph_indent {
+            Some(indent) if self.in_graph => self.indent_of(t).is_some_and(|c| c <= indent),
+            _ => false,
+        }
+    }
+
+    /// The column of `t` if only spaces and tabs precede it on its line.
+    fn indent_of(&self, t: Token) -> Option<u32> {
+        let before = &self.src.as_bytes()[..t.start as usize];
+        let line_start = before
+            .iter()
+            .rposition(|c| *c == b'\n')
+            .map_or(0, |p| p + 1);
+        before[line_start..]
+            .iter()
+            .all(|c| matches!(c, b' ' | b'\t'))
+            .then_some((before.len() - line_start) as u32)
     }
     fn prev_span(&self) -> Span {
         match self.pos.checked_sub(1).and_then(|i| self.toks.get(i)) {
@@ -265,6 +350,7 @@ impl<'a> P<'a> {
             p_span,
             o_span,
             statement: self.statement,
+            graph: self.graph,
         });
     }
 
@@ -287,12 +373,17 @@ impl<'a> P<'a> {
                 Kind::PrefixDirective | Kind::SparqlPrefix => self.prefix_directive(),
                 Kind::BaseDirective | Kind::SparqlBase => self.base_directive(),
                 Kind::VersionDirective | Kind::SparqlVersion => self.version_directive(),
+                _ if self.graph_block_ahead() => self.graph_block(),
                 _ => self.statement(),
             };
             if ok.is_err() {
                 self.recover(start);
             }
         }
+    }
+
+    fn is_starter(&self, k: Kind) -> bool {
+        is_starter(k) || (self.trig && matches!(k, Kind::LBrace | Kind::Graph))
     }
 
     fn recover(&mut self, from: usize) {
@@ -304,10 +395,222 @@ impl<'a> P<'a> {
                 self.pos += 1;
                 return;
             }
-            if self.at_line_start(t) && is_starter(t.kind) {
+            if self.in_graph && t.kind == Kind::RBrace {
+                return;
+            }
+            if self.at_line_start(t) && self.is_starter(t.kind) {
                 return;
             }
             self.pos += 1;
+        }
+    }
+
+    // ---- TriG graph blocks ----
+
+    fn kind_at(&self, i: usize) -> Option<Kind> {
+        self.toks.get(i).map(|t| t.kind)
+    }
+
+    /// Length in tokens of a graph name at `i` (IRI, prefixed name, `_:b`, `[]`).
+    fn label_len(&self, i: usize) -> Option<usize> {
+        match self.kind_at(i)? {
+            Kind::Iri | Kind::PName | Kind::BNode => Some(1),
+            Kind::LBracket if self.kind_at(i + 1) == Some(Kind::RBracket) => Some(2),
+            _ => None,
+        }
+    }
+
+    /// `{`, `GRAPH`, or a graph name followed by `{` (TriG only).
+    fn graph_block_ahead(&self) -> bool {
+        if !self.trig {
+            return false;
+        }
+        match self.kind_at(self.pos) {
+            Some(Kind::LBrace | Kind::Graph) => true,
+            _ => self
+                .label_len(self.pos)
+                .is_some_and(|n| self.kind_at(self.pos + n) == Some(Kind::LBrace)),
+        }
+    }
+
+    fn graph_label(&mut self) -> R<(GraphName, Span)> {
+        const WHAT: &str = "a graph name (an IRI or a blank node)";
+        let Some(t) = self.peek() else {
+            return self.expected(WHAT);
+        };
+        match self.label_len(self.pos) {
+            Some(_) if matches!(t.kind, Kind::Iri | Kind::PName) => {
+                let iri = self.iri(Role::Graph)?;
+                Ok((GraphName::Iri(iri), Span::new(t.start, t.end)))
+            }
+            Some(n) => {
+                let node = if n == 1 {
+                    self.labelled_bnode()
+                } else {
+                    self.pos += 2;
+                    self.fresh_bnode()
+                };
+                let Node::Blank(b) = node else { unreachable!() };
+                Ok((GraphName::Blank(b), self.span_from(t.start)))
+            }
+            None => self.expected(WHAT),
+        }
+    }
+
+    /// `{ ... }`, `name { ... }` or `GRAPH name { ... }`. A graph block does
+    /// not end with `.`.
+    fn graph_block(&mut self) -> R<()> {
+        let first = self.peek().unwrap();
+        let mut name = None;
+        if first.kind == Kind::Graph {
+            self.bump();
+            if self.peek_kind() == Some(Kind::LBrace) {
+                let s = Span::new(first.start, first.end);
+                self.error(s, "Expected a graph name after GRAPH");
+            } else {
+                name = Some(self.graph_label()?);
+            }
+        } else if first.kind != Kind::LBrace {
+            name = Some(self.graph_label()?);
+        }
+        let Some(open) = self.peek().filter(|t| t.kind == Kind::LBrace) else {
+            return self.expected("'{'");
+        };
+        self.bump();
+        let first_statement = self.out.statements.len() as u32;
+        let index = self.out.graphs.len();
+        self.out.graphs.push(GraphBlock {
+            span: Span::new(first.start, open.end),
+            name: name.map(|(n, _)| n),
+            name_span: name.map(|(_, s)| s),
+            statements: first_statement..first_statement,
+        });
+        self.graph = name.map(|(n, _)| n);
+        self.in_graph = true;
+        self.graph_indent = None;
+        self.graph_body(Span::new(open.start, open.end));
+        self.in_graph = false;
+        self.graph = None;
+        let end = self.prev_span().end;
+        let statements = self.out.statements.len() as u32;
+        let g = &mut self.out.graphs[index];
+        g.span.end = g.span.end.max(end);
+        g.statements.end = statements;
+        Ok(())
+    }
+
+    /// The statements of a block up to and including its `}`.
+    fn graph_body(&mut self, open: Span) {
+        loop {
+            let Some(t) = self.peek() else {
+                self.error(open, "Unclosed '{': expected '}' to close the graph block");
+                return;
+            };
+            let span = Span::new(t.start, t.end);
+            match t.kind {
+                Kind::RBrace => {
+                    self.bump();
+                    return;
+                }
+                Kind::Dot => {
+                    self.bump();
+                    self.error(span, "Unexpected '.'");
+                }
+                // Another block: this one is missing its `}`.
+                _ if self.graph_block_ahead() => {
+                    let s = self.prev_span();
+                    self.error(s, "Expected '}' to close the graph block");
+                    return;
+                }
+                Kind::PrefixDirective
+                | Kind::SparqlPrefix
+                | Kind::BaseDirective
+                | Kind::SparqlBase
+                | Kind::VersionDirective
+                | Kind::SparqlVersion => {
+                    let start = self.pos;
+                    let ok = match t.kind {
+                        Kind::PrefixDirective | Kind::SparqlPrefix => self.prefix_directive(),
+                        Kind::BaseDirective | Kind::SparqlBase => self.base_directive(),
+                        _ => self.version_directive(),
+                    };
+                    let span = self.span_from(t.start);
+                    self.error(span, "Directives are not allowed inside a graph block");
+                    if ok.is_err() {
+                        self.recover(start);
+                    }
+                }
+                _ => {
+                    if self.graph_indent.is_none() {
+                        self.graph_indent = self.indent_of(t);
+                    }
+                    let start = self.pos;
+                    if self.statement().is_err() {
+                        self.recover(start);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- N-Triples ----
+
+    fn ntriples_restrictions(&mut self) {
+        let mut errors = Vec::new();
+        for t in &self.toks {
+            let msg = match t.kind {
+                Kind::String => {
+                    let text = self.text(*t);
+                    if text.starts_with('\'') || text.starts_with("\"\"\"") {
+                        Some("N-Triples strings use double quotes on one line: \"...\"")
+                    } else {
+                        None
+                    }
+                }
+                Kind::Iri if t.error.is_none() => {
+                    let text = self.text(*t);
+                    let raw = &text[1..text.len() - 1];
+                    let raw = if raw.contains('\\') {
+                        Cow::Owned(unescape_iri(raw))
+                    } else {
+                        Cow::Borrowed(raw)
+                    };
+                    (!has_scheme(&raw))
+                        .then_some("N-Triples needs absolute IRIs (no relative IRIs, no @base)")
+                }
+                k => ntriples_forbids(k),
+            };
+            if let Some(m) = msg {
+                errors.push((Span::new(t.start, t.end), m));
+            }
+        }
+        // One triple per line, each on a single line. Statements are in text
+        // order, so lines are counted in one pass.
+        let bytes = self.src.as_bytes();
+        let (mut at, mut line) = (0usize, 0usize);
+        let mut line_of = |off: u32| {
+            let off = off as usize;
+            let newlines = |r: &[u8]| r.iter().filter(|b| **b == b'\n').count();
+            if off >= at {
+                line += newlines(&bytes[at..off]);
+            } else {
+                line -= newlines(&bytes[off..at]);
+            }
+            at = off;
+            line
+        };
+        let mut prev_end_line = None;
+        for st in &self.out.statements {
+            let (l0, l1) = (line_of(st.span.start), line_of(st.span.end));
+            if prev_end_line == Some(l0) {
+                errors.push((st.span, "N-Triples allows one triple per line"));
+            } else if l1 > l0 {
+                errors.push((st.span, "An N-Triples triple must be on one line"));
+            }
+            prev_end_line = Some(l1);
+        }
+        for (span, m) in errors {
+            self.error(span, m);
         }
     }
 
@@ -334,7 +637,9 @@ impl<'a> P<'a> {
                 self.error(s, "Expected '.' to end the statement");
                 Ok(())
             }
-            Some(t) if self.at_line_start(t) && is_starter(t.kind) => {
+            // In a graph block, the closing `}` ends the last statement.
+            Some(t) if self.in_graph && t.kind == Kind::RBrace => Ok(()),
+            Some(t) if self.at_line_start(t) && self.is_starter(t.kind) => {
                 let s = self.prev_span();
                 self.error(s, "Expected '.' to end the statement");
                 Ok(())
@@ -429,13 +734,13 @@ impl<'a> P<'a> {
                 if self.toks.get(self.pos + 1).map(|t| t.kind) != Some(Kind::RBracket) =>
             {
                 let s = self.blank_node_property_list()?;
-                if self.peek_kind() != Some(Kind::Dot) {
+                if !self.at_statement_end() {
                     self.predicate_object_list(&s)?;
                 }
             }
             Some(Kind::LTriple) => {
                 let s = self.reified_triple()?;
-                if self.peek_kind() != Some(Kind::Dot) {
+                if !self.at_statement_end() {
                     self.predicate_object_list(&s)?;
                 }
             }
@@ -445,6 +750,14 @@ impl<'a> P<'a> {
             }
         }
         self.end_statement(false)
+    }
+
+    fn at_statement_end(&self) -> bool {
+        match self.peek_kind() {
+            Some(Kind::Dot) => true,
+            Some(Kind::RBrace) => self.in_graph,
+            _ => false,
+        }
     }
 
     fn subject(&mut self) -> R<Node> {
@@ -1014,7 +1327,19 @@ mod tests {
     use super::*;
 
     fn p(src: &str) -> Parsed {
-        parse(src, &PrefixMap::default())
+        parse(src, &PrefixMap::default(), Syntax::Turtle)
+    }
+
+    fn trig(src: &str) -> Parsed {
+        parse(src, &PrefixMap::default(), Syntax::TriG)
+    }
+
+    fn nt(src: &str) -> Parsed {
+        parse(src, &PrefixMap::default(), Syntax::NTriples)
+    }
+
+    fn messages(r: &Parsed) -> Vec<&str> {
+        r.errors.iter().map(|e| e.message.as_str()).collect()
     }
 
     #[test]
@@ -1071,7 +1396,7 @@ mod tests {
     fn external_prefixes() {
         let mut ext = PrefixMap::default();
         ext.insert("ex".into(), "http://e/".into());
-        let r = parse("ex:a ex:p ex:o .", &ext);
+        let r = parse("ex:a ex:p ex:o .", &ext, Syntax::Turtle);
         assert!(r.errors.is_empty());
         assert_eq!(r.triples[0].p, "http://e/p");
     }
@@ -1143,6 +1468,232 @@ mod tests {
         let all = [&outer.s, &outer.o, &last.s, &last.o].map(bnode);
         let distinct: std::collections::BTreeSet<_> = all.iter().collect();
         assert_eq!(distinct.len(), 4);
+    }
+
+    #[test]
+    fn trig_graph_blocks() {
+        let src = "@prefix ex: <http://e/> .\nex:d ex:p ex:o .\nex:g1 { ex:a ex:p ex:o . ex:b ex:p ex:o }\nGRAPH ex:g2 {\n  ex:c ex:p [ ex:q 1 ] .\n}\n{ ex:e ex:p ex:o }\n_:g { ex:f ex:p ex:o . }\n[] { ex:h ex:p ex:o }\n";
+        let r = trig(src);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let graph_of = |s: &str| {
+            let t = r
+                .triples
+                .iter()
+                .find(|t| t.s == Node::Iri(Iri::intern(s)))
+                .unwrap();
+            t.graph
+        };
+        assert_eq!(graph_of("http://e/d"), None);
+        assert_eq!(
+            graph_of("http://e/a"),
+            Some(GraphName::Iri(Iri::intern("http://e/g1")))
+        );
+        assert_eq!(
+            graph_of("http://e/b"),
+            Some(GraphName::Iri(Iri::intern("http://e/g1")))
+        );
+        assert_eq!(
+            graph_of("http://e/c"),
+            Some(GraphName::Iri(Iri::intern("http://e/g2")))
+        );
+        assert_eq!(graph_of("http://e/e"), None);
+        assert!(matches!(graph_of("http://e/f"), Some(GraphName::Blank(_))));
+        assert!(matches!(graph_of("http://e/h"), Some(GraphName::Blank(_))));
+        // The [ ex:q 1 ] triple is in ex:g2 too.
+        let q = r.triples.iter().find(|t| t.p == "http://e/q").unwrap();
+        assert_eq!(q.graph, Some(GraphName::Iri(Iri::intern("http://e/g2"))));
+        assert_eq!(r.graphs.len(), 5);
+        let at = |sp: Span| &src[sp.start as usize..sp.end as usize];
+        assert_eq!(
+            at(r.graphs[0].span),
+            "ex:g1 { ex:a ex:p ex:o . ex:b ex:p ex:o }"
+        );
+        assert_eq!(at(r.graphs[1].name_span.unwrap()), "ex:g2");
+        assert!(at(r.graphs[1].span).starts_with("GRAPH") && at(r.graphs[1].span).ends_with('}'));
+        assert_eq!(r.graphs[2].name, None);
+        // Statements inside blocks have their subjects; names are Graph refs.
+        let subjects: Vec<_> = r.graphs[0]
+            .statements
+            .clone()
+            .map(|i| r.statements[i as usize].subject.unwrap().0.as_str())
+            .collect();
+        assert_eq!(subjects, ["http://e/a", "http://e/b"]);
+        assert!(
+            r.refs
+                .iter()
+                .any(|x| x.iri == "http://e/g1" && x.role == Role::Graph)
+        );
+        assert!(
+            r.refs
+                .iter()
+                .any(|x| x.iri == "http://e/c" && x.role == Role::Subject)
+        );
+    }
+
+    #[test]
+    fn trig_recovers_inside_and_between_blocks() {
+        // Broken triple inside a block, unclosed block followed by another block,
+        // directive inside a block, nested block, unclosed block at the end.
+        let src = "@prefix ex: <http://e/> .\nex:g1 {\n  ex:a ex:p \"open .\n  ex:b ex:p ex:o .\n}\nex:g2 {\n  ex:c ex:p ex:o .\nex:g3 {\n  @prefix x: <http://x/> .\n  ex:d ex:p x:o\n}\nex:after ex:p ex:o .\nex:g4 { ex:e ex:p ex:o .\n";
+        let r = trig(src);
+        let msgs = messages(&r);
+        assert!(
+            msgs.iter().any(|m| m.contains("Unterminated string")),
+            "{msgs:?}"
+        );
+        assert!(msgs.iter().any(|m| m.contains("Expected '}'")), "{msgs:?}");
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("Directives are not allowed")),
+            "{msgs:?}"
+        );
+        assert!(msgs.iter().any(|m| m.contains("Unclosed '{'")), "{msgs:?}");
+        let graph_of = |s: &str| {
+            r.triples
+                .iter()
+                .find(|t| t.s == Node::Iri(Iri::intern(s)))
+                .unwrap_or_else(|| panic!("{s} lost: {msgs:?}"))
+                .graph
+        };
+        let g = |n: &str| Some(GraphName::Iri(Iri::intern(n)));
+        assert_eq!(graph_of("http://e/b"), g("http://e/g1"));
+        assert_eq!(graph_of("http://e/c"), g("http://e/g2"));
+        assert_eq!(graph_of("http://e/d"), g("http://e/g3"));
+        assert_eq!(graph_of("http://e/after"), None);
+        assert_eq!(graph_of("http://e/e"), g("http://e/g4"));
+        // A stray '}' and a missing graph name are reported, parsing goes on.
+        let r = trig("@prefix ex: <http://e/> .\n}\nGRAPH { ex:a ex:p ex:o }\nex:b ex:p ex:o .\n");
+        let msgs = messages(&r);
+        assert!(msgs.iter().any(|m| m.contains("found '}'")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("graph name")), "{msgs:?}");
+        assert_eq!(r.triples.len(), 2);
+        // Cut short anywhere: never a panic.
+        for src in [
+            "GRAPH",
+            "GRAPH ex:g",
+            "ex:g {",
+            "{ ex:a",
+            "_:b",
+            "[] {",
+            "{ [ ex:p",
+        ] {
+            trig(src);
+        }
+    }
+
+    #[test]
+    fn braces_and_graph_are_errors_in_turtle() {
+        let r = p(
+            "@prefix ex: <http://e/> .\nex:g { ex:a ex:p ex:o }\nGRAPH ex:g { }\nex:b ex:p ex:o .\n",
+        );
+        assert!(!r.errors.is_empty());
+        assert!(r.graphs.is_empty());
+        assert!(r.triples.iter().all(|t| t.graph.is_none()));
+        assert!(
+            r.statements
+                .iter()
+                .any(|s| s.subject.is_some_and(|x| x.0 == "http://e/b"))
+        );
+    }
+
+    #[test]
+    fn ntriples_accepts_ntriples() {
+        let r = nt(concat!(
+            "<http://e/a> <http://e/p> <http://e/o> .\n",
+            "# comment\n",
+            "_:b1 <http://e/p> \"x\\n\"@en-GB . # trailing\n",
+            "<http://e/a> <http://e/p> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .\n",
+            "<http://e/a> <http://e/p> <<( <http://e/s> <http://e/p> \"o\"@en--ltr )>> .\n",
+            "\n",
+        ));
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.triples.len(), 4);
+    }
+
+    #[test]
+    fn ntriples_reports_turtle_only_constructs() {
+        let cases = [
+            ("@prefix ex: <http://e/> .\n", "directives"),
+            ("PREFIX ex: <http://e/>\n", "directives"),
+            ("@base <http://e/> .\n", "directives"),
+            ("<http://e/a> <http://e/p> ex:o .\n", "prefixed names"),
+            ("<http://e/a> a <http://e/C> .\n", "'a'"),
+            (
+                "<http://e/a> <http://e/p> <http://e/o> ; <http://e/q> <http://e/o> .\n",
+                "';' or ','",
+            ),
+            (
+                "<http://e/a> <http://e/p> <http://e/o> , <http://e/o2> .\n",
+                "';' or ','",
+            ),
+            (
+                "<http://e/a> <http://e/p> [ <http://e/q> <http://e/o> ] .\n",
+                "'[ ]'",
+            ),
+            ("<http://e/a> <http://e/p> [] .\n", "'[ ]'"),
+            (
+                "<http://e/a> <http://e/p> ( <http://e/o> ) .\n",
+                "collections",
+            ),
+            ("<http://e/a> <http://e/p> 1 .\n", "must be quoted"),
+            ("<http://e/a> <http://e/p> true .\n", "must be quoted"),
+            ("<http://e/a> <http://e/p> 'x' .\n", "double quotes"),
+            (
+                "<http://e/a> <http://e/p> \"\"\"x\"\"\" .\n",
+                "double quotes",
+            ),
+            ("<a> <http://e/p> <http://e/o> .\n", "absolute IRIs"),
+            (
+                "<< <http://e/a> <http://e/p> <http://e/o> >> <http://e/q> <http://e/r> .\n",
+                "reified",
+            ),
+            (
+                "<http://e/a> <http://e/p> <http://e/o> {| <http://e/q> <http://e/r> |} .\n",
+                "annotations",
+            ),
+            (
+                "<http://e/a> <http://e/p> <http://e/o> . <http://e/b> <http://e/p> <http://e/o> .\n",
+                "one triple per line",
+            ),
+            (
+                "<http://e/a> <http://e/p>\n  <http://e/o> .\n",
+                "on one line",
+            ),
+        ];
+        for (src, want) in cases {
+            let r = nt(src);
+            let msgs = messages(&r);
+            assert!(msgs.iter().any(|m| m.contains(want)), "{src:?}: {msgs:?}");
+            // The same text is fine as Turtle (apart from the prefixed name).
+            if want != "prefixed names" {
+                assert!(p(src).errors.is_empty(), "{src:?}: {:?}", p(src).errors);
+            }
+        }
+    }
+
+    #[test]
+    fn syntax_detection() {
+        assert_eq!(Syntax::detect(Some("trig"), "file:///a.ttl"), Syntax::TriG);
+        assert_eq!(
+            Syntax::detect(Some("n-triples"), "file:///a"),
+            Syntax::NTriples
+        );
+        assert_eq!(
+            Syntax::detect(Some("ntriples"), "file:///a"),
+            Syntax::NTriples
+        );
+        assert_eq!(
+            Syntax::detect(Some("plaintext"), "file:///a.trig"),
+            Syntax::TriG
+        );
+        assert_eq!(Syntax::detect(None, "file:///x/a.nt"), Syntax::NTriples);
+        assert_eq!(
+            Syntax::detect(None, "file:///x.trig/a.turtle"),
+            Syntax::Turtle
+        );
+        assert_eq!(Syntax::detect(None, "untitled:Untitled-1"), Syntax::Turtle);
+        assert_eq!(Syntax::from_extension("C:\\x\\a.trig"), Some(Syntax::TriG));
+        assert_eq!(Syntax::from_extension("/x/notes.txt"), None);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Everything the editor features need from one document, computed once per
 //! version: the parse, line positions, and per-IRI indexes.
 
-use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Role, Span};
+use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Span, Syntax};
 use line_index::{LineIndex, TextSize, WideEncoding};
 use lsp_types::{Position, Range};
 use std::sync::Arc;
@@ -29,7 +29,8 @@ pub struct Analysis {
     pub lines: LineIndex,
     /// Prefixes supplied from outside the document (prefixes.ttl / settings).
     pub external: Arc<PrefixMap>,
-    /// IRI -> spans where it is the subject of a top-level statement.
+    /// IRI -> spans where it is the subject of a top-level statement or the
+    /// name of a TriG graph block.
     pub defs: IriMap<Vec<Span>>,
     /// IRI -> indexes into `parsed.refs`.
     pub refs_by_iri: IriMap<Vec<u32>>,
@@ -82,8 +83,21 @@ fn prefer(map: &mut IriMap<u32>, triples: &[syntax::Triple], s: Iri, i: u32) {
 }
 
 impl Analysis {
+    /// The syntax comes from the URI's extension (Turtle if it has none of ours).
     pub fn new(uri: String, text: &str, external: Arc<PrefixMap>, keep_tokens: bool) -> Analysis {
-        let mut parsed = syntax::parse(text, &external);
+        let syntax = Syntax::from_extension(&uri).unwrap_or_default();
+        Analysis::with_syntax(uri, text, external, keep_tokens, syntax)
+    }
+
+    /// For a document whose language is known, e.g. from the LSP language id.
+    pub fn with_syntax(
+        uri: String,
+        text: &str,
+        external: Arc<PrefixMap>,
+        keep_tokens: bool,
+        language: Syntax,
+    ) -> Analysis {
+        let mut parsed = syntax::parse(text, &external, language);
         if !keep_tokens {
             parsed.tokens = Vec::new();
             parsed.comments = Vec::new();
@@ -97,7 +111,7 @@ impl Analysis {
         let mut defs: IriMap<Vec<Span>> = IriMap::default();
         let mut refs_by_iri: IriMap<Vec<u32>> = IriMap::default();
         for (i, r) in parsed.refs.iter().enumerate() {
-            if r.role == Role::Subject {
+            if r.role.is_definition() {
                 defs.entry(r.iri).or_default().push(r.span);
             }
             refs_by_iri.entry(r.iri).or_default().push(i as u32);

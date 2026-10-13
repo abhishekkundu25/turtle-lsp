@@ -18,6 +18,7 @@ server starts in about 1 ms.
 - **Outline and search**: document symbols, workspace symbols, folding.
 - **Quick fixes**: add a missing prefix, add all missing prefixes, remove an unused prefix, fix a misspelled term.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
+- **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
 
 ## Performance
 
@@ -64,6 +65,26 @@ below it can use those prefixes. You can also pass prefixes from the editor:
 init_options = { prefixes = { ex = "http://example.org/" } }
 ```
 
+## TriG and N-Triples
+
+The server also reads TriG (`.trig`) and N-Triples (`.nt`) files. It takes the
+language from the editor's language id (`turtle`, `trig`, `ntriples` or
+`n-triples`). If the editor sends another id, the file extension decides.
+
+- **TriG**: graph blocks `{ ... }`, `ex:g { ... }` and `GRAPH ex:g { ... }`.
+  Triples outside a block are in the default graph. Go to definition on a
+  graph name finds its blocks and the statements about it. The outline shows
+  each block with its subjects, and blocks fold. A `prefixes.ttl` applies to
+  TriG files as it does to Turtle files.
+- **N-Triples**: one triple per line with full IRIs. The server reports
+  everything N-Triples does not allow as an error: directives, prefixed names,
+  `a`, `;` and `,`, `[ ]`, collections, unquoted numbers and booleans, single
+  quotes and long strings, relative IRIs, reified triples and annotations.
+  RDF 1.2 triple terms `<<( s p o )>>` are allowed. N-Triples files get no
+  prefixes from `prefixes.ttl` or the editor settings.
+
+The workspace index covers `.ttl`, `.turtle`, `.trig` and `.nt` files.
+
 ## Install
 
 ```sh
@@ -77,18 +98,22 @@ vim.filetype.add({ extension = { ttl = "turtle" } })
 
 vim.lsp.config("turtle", {
   cmd = { "/path/to/turtle-lsp/target/release/turtle-lsp" },
-  filetypes = { "turtle" },
+  filetypes = { "turtle", "trig", "ntriples" },
   root_markers = { "prefixes.ttl", ".git" },
 })
 vim.lsp.enable("turtle")
 
 -- "@prefix ex: <...>" looks like a Vim modeline (" ex:"), which raises
--- E518 on open. Turn modelines off for Turtle files.
+-- E518 on open. Turn modelines off for Turtle and TriG files.
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = { "*.ttl", "*.turtle" },
+  pattern = { "*.ttl", "*.turtle", "*.trig" },
   callback = function() vim.opt_local.modeline = false end,
 })
 ```
+
+Neovim already gives `.trig` files the filetype `trig` and `.nt` files the
+filetype `ntriples`. Keep `trig` and `ntriples` in `filetypes`, or the server
+does not attach to those files. Remove one to turn the server off for it.
 
 With lazy.nvim, set `build = "cargo build --release"` on the plugin spec.
 

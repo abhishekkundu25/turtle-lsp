@@ -1,0 +1,26 @@
+# A dataset: graph metadata in the default graph, people in named graphs.
+g:people dct:created "2026-10-01"^^xsd:date ;
+    dct:title "People"@en .
+
+g:people {
+    p:alice a dx:Person ;
+        dx:name "Alice" ;
+        dx:knows p:bob .
+
+    p:bob a dx:Person ;
+        dx:name "Bob"
+}
+
+GRAPH g:links {
+    p:alice dx:knows [ dx:name "Carol" ] .
+    p:bob dx:knows ( p:alice p:carol ) .
+}
+
+{
+    p:carol a dx:Person .
+}
+
+_:draft {
+    p:dave a dx:Person ;
+        dx:name "Dave" ~ _:r {| dct:source g:people |} .
+}

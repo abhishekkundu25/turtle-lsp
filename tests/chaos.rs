@@ -1,6 +1,6 @@
 //! Randomized robustness test ("fuzzing" on stable Rust).
 //!
-//! Takes real Turtle files, mutates them thousands of times (cuts, unbalanced
+//! Takes real Turtle, TriG and N-Triples files, mutates them thousands of times (cuts, unbalanced
 //! brackets, stray quotes, multi-byte characters, CRLF, truncation) and runs
 //! the parser and every editor feature on each result at random positions in
 //! both position encodings. Any panic fails the test. Deterministic: the seed
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use turtle_lsp::analysis::{Analysis, Encoding};
 use turtle_lsp::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
 use turtle_lsp::knowledge::{Knowledge, Source};
-use turtle_lsp::syntax::{PrefixMap, Severity, parse};
+use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse};
 
 struct Rng(u64);
 impl Rng {
@@ -91,11 +91,27 @@ const SNIPPETS: &[&str] = &[
     "<http://example.org/x>",
     " a<http://xmlns.com/foaf/0.1/Person>",
     "<http://new.example/ns/y> ",
+    "{",
+    "}",
+    "{ ",
+    " }\n",
+    "GRAPH ",
+    "ex:g {\n",
+    "_:g { ",
+    "[] {",
 ];
 
-fn corpus() -> Vec<String> {
+fn corpus() -> Vec<(String, Syntax)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/fixtures");
-    let mut out = vec![String::new(), "@prefix".into(), "ex:a ex:b ex:c".into()];
+    let mut out: Vec<(String, Syntax)> = ["", "@prefix", "ex:a ex:b ex:c"]
+        .into_iter()
+        .map(|t| (t.to_string(), Syntax::Turtle))
+        .collect();
+    out.push(("ex:g { ex:a ex:b ex:c }".into(), Syntax::TriG));
+    out.push((
+        "<http://e/a> <http://e/b> <http://e/c> .".into(),
+        Syntax::NTriples,
+    ));
     for dir in [
         "workspace",
         "project",
@@ -103,21 +119,24 @@ fn corpus() -> Vec<String> {
         "project/data",
         "project/shapes",
         "format",
+        "datasets",
+        "oracle",
     ] {
         if let Ok(entries) = fs::read_dir(root.join(dir)) {
             for e in entries.flatten() {
-                if e.path().extension().is_some_and(|x| x == "ttl") {
-                    out.push(fs::read_to_string(e.path()).unwrap());
+                if let Some(syntax) = Syntax::from_extension(&e.path().to_string_lossy()) {
+                    out.push((fs::read_to_string(e.path()).unwrap(), syntax));
                 }
             }
         }
     }
     // The same files with every prefixed name written as a full IRI, so the
     // shorten and extract refactorings have work to do.
-    let expanded: Vec<String> = out
+    let expanded: Vec<(String, Syntax)> = out
         .iter()
-        .map(|t| {
-            let p = parse(t, &PrefixMap::default());
+        .filter(|(_, syntax)| *syntax != Syntax::NTriples)
+        .map(|(t, syntax)| {
+            let p = parse(t, &PrefixMap::default(), *syntax);
             let mut s = t.clone();
             for r in p.refs.iter().rev() {
                 if matches!(r.form, turtle_lsp::syntax::Form::PName { .. }) {
@@ -127,7 +146,7 @@ fn corpus() -> Vec<String> {
                     );
                 }
             }
-            s
+            (s, *syntax)
         })
         .collect();
     out.extend(expanded);
@@ -171,14 +190,24 @@ fn mutate(rng: &mut Rng, text: &str) -> String {
     s
 }
 
-fn exercise(rng: &mut Rng, text: &str, k: &mut Knowledge) {
+fn doc_uri(syntax: Syntax) -> &'static str {
+    match syntax {
+        Syntax::Turtle => "file:///chaos/doc.ttl",
+        Syntax::TriG => "file:///chaos/doc.trig",
+        Syntax::NTriples => "file:///chaos/doc.nt",
+    }
+}
+
+fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // The parser alone: every span must be inside the text and on char boundaries.
-    let p = parse(text, &PrefixMap::default());
+    let p = parse(text, &PrefixMap::default(), syntax);
     for span in p
         .refs
         .iter()
         .map(|r| r.span)
         .chain(p.errors.iter().map(|e| e.span))
+        .chain(p.statements.iter().map(|s| s.span))
+        .chain(p.graphs.iter().map(|g| g.span))
     {
         assert!(
             span.start <= span.end && span.end as usize <= text.len(),
@@ -190,28 +219,35 @@ fn exercise(rng: &mut Rng, text: &str, k: &mut Knowledge) {
         );
     }
 
-    let a = Arc::new(Analysis::new(
-        "file:///chaos/doc.ttl".into(),
+    for g in &p.graphs {
+        assert!(g.statements.start <= g.statements.end);
+        assert!(g.statements.end as usize <= p.statements.len());
+    }
+
+    let a = Arc::new(Analysis::with_syntax(
+        doc_uri(syntax).into(),
         text,
         Arc::new(PrefixMap::default()),
         true,
+        syntax,
     ));
     // The document joins the index (and leaves it again below), as an edited
     // open document does.
-    k.set("file:///chaos/doc.ttl", Source::Open, a.clone());
+    k.set(doc_uri(syntax), Source::Open, a.clone());
     let docs = &*k;
     // Formatting: refused on errors, else a fixed point.
     let opts = format::Options::default();
     let formatted = format::format(text, &a.parsed, &a.external, &opts);
-    if a.parsed
-        .errors
-        .iter()
-        .all(|e| e.severity != Severity::Error)
+    if syntax == Syntax::Turtle
+        && a.parsed
+            .errors
+            .iter()
+            .all(|e| e.severity != Severity::Error)
     {
         let out = formatted.expect("formatter refused a document without syntax errors");
         let again = format::format(
             &out,
-            &parse(&out, &PrefixMap::default()),
+            &parse(&out, &PrefixMap::default(), syntax),
             &a.external,
             &opts,
         );
@@ -266,7 +302,7 @@ fn exercise(rng: &mut Rng, text: &str, k: &mut Knowledge) {
             );
         }
     }
-    k.remove("file:///chaos/doc.ttl");
+    k.remove(doc_uri(syntax));
 }
 
 /// Every code action must not panic; on a file without syntax errors, every
@@ -281,7 +317,7 @@ fn code_actions_keep_the_graph(
 ) {
     let params = CodeActionParams {
         text_document: lsp_types::TextDocumentIdentifier {
-            uri: "file:///chaos/doc.ttl".parse().unwrap(),
+            uri: doc_uri(a.parsed.syntax).parse().unwrap(),
         },
         range,
         context: Default::default(),
@@ -306,11 +342,12 @@ fn code_actions_keep_the_graph(
     if !a.parsed.errors.is_empty() {
         return;
     }
+    let syntax = a.parsed.syntax;
     let triples = |t: &str| {
-        let mut v: Vec<String> = parse(t, &PrefixMap::default())
+        let mut v: Vec<String> = parse(t, &PrefixMap::default(), syntax)
             .triples
             .iter()
-            .map(|t| format!("{:?} {:?} {:?}", t.s, t.p, t.o))
+            .map(|t| format!("{:?} {:?} {:?} {:?}", t.s, t.p, t.o, t.graph))
             .collect();
         v.sort();
         v
@@ -321,7 +358,7 @@ fn code_actions_keep_the_graph(
             continue;
         };
         let after = refactor::apply(a, enc, &refactor::edits_of(a, enc, &c));
-        let reparsed = parse(&after, &PrefixMap::default());
+        let reparsed = parse(&after, &PrefixMap::default(), syntax);
         assert!(
             reparsed.errors.is_empty() && triples(&after) == before,
             "'{}' changed the graph:\n{after}",
@@ -342,23 +379,35 @@ fn mutated_turtle_never_panics() {
         .unwrap_or(3000usize);
     let corpus = corpus();
     let mut base = Knowledge::default();
-    for (i, t) in corpus.iter().enumerate() {
+    for (i, (t, syntax)) in corpus.iter().enumerate() {
         let uri = format!("file:///chaos/{i}.ttl");
-        let a = Analysis::new(uri.clone(), t, Arc::new(PrefixMap::default()), true);
+        let a = Analysis::with_syntax(
+            uri.clone(),
+            t,
+            Arc::new(PrefixMap::default()),
+            true,
+            *syntax,
+        );
         base.set(&uri, Source::Disk, Arc::new(a));
     }
     let mut rng = Rng(seed);
     for i in 0..iters {
         let pick = rng.below(corpus.len());
-        let text = mutate(&mut rng, &corpus[pick]);
+        let (source, syntax) = &corpus[pick];
+        let mut syntax = *syntax;
+        let text = mutate(&mut rng, source);
+        // Turtle is nearly TriG: read some Turtle files as TriG too.
+        if syntax == Syntax::Turtle && rng.below(4) == 0 {
+            syntax = Syntax::TriG;
+        }
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            exercise(&mut Rng(seed ^ i as u64 ^ 0x9E37), &text, &mut base)
+            exercise(&mut Rng(seed ^ i as u64 ^ 0x9E37), &text, syntax, &mut base)
         }));
         if r.is_err() {
             let dump = std::env::temp_dir().join(format!("turtle-chaos-{seed}-{i}.ttl"));
             fs::write(&dump, &text).unwrap();
             panic!(
-                "iteration {i} (seed {seed}) panicked; input saved to {}",
+                "iteration {i} (seed {seed}, {syntax:?}) panicked; input saved to {}",
                 dump.display()
             );
         }

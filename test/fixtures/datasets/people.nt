@@ -1,0 +1,7 @@
+# N-Triples: one triple per line, full IRIs only.
+<https://data.example.net/person/erin> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://data.example.net/def/Person> .
+<https://data.example.net/person/erin> <https://data.example.net/def/name> "Erin"@en .
+<https://data.example.net/person/erin> <https://data.example.net/def/knows> <https://data.example.net/person/alice> .
+_:b0 <https://data.example.net/def/name> "Frédéric" .
+<https://data.example.net/person/erin> <http://purl.org/dc/terms/created> "2026-10-01"^^<http://www.w3.org/2001/XMLSchema#date> . # trailing comment
+<https://data.example.net/person/erin> <https://data.example.net/def/claims> <<( <https://data.example.net/person/erin> <https://data.example.net/def/knows> _:b0 )>> .

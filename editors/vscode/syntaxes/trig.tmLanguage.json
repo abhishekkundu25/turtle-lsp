@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "TriG",
+  "scopeName": "source.trig",
+  "fileTypes": ["trig"],
+  "patterns": [
+    { "include": "#graph-keyword" },
+    { "include": "#graph-block" },
+    { "include": "source.turtle" }
+  ],
+  "repository": {
+    "graph-keyword": {
+      "match": "(?i)(?<![\\w:\\-])GRAPH(?![\\w:\\-])",
+      "name": "keyword.other.graph.trig"
+    },
+    "graph-block": {
+      "comment": "Graph block braces; the annotation brackets {| and |} stay Turtle's.",
+      "match": "\\{(?!\\|)|(?<!\\|)\\}",
+      "name": "punctuation.section.graph.trig"
+    }
+  }
+}

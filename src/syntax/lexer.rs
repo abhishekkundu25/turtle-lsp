@@ -1,5 +1,7 @@
-//! Turtle 1.2 tokenizer. Never fails: anything unreadable becomes an `Error`
-//! token so the parser can report it and keep going.
+//! Turtle 1.2 / TriG 1.2 / N-Triples 1.2 tokenizer. Never fails: anything
+//! unreadable becomes an `Error` token so the parser can report it and keep
+//! going. The token set is the union of the three syntaxes; the parser decides
+//! what each one allows (`{`, `}` and `GRAPH` only mean something in TriG).
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -31,6 +33,9 @@ pub enum Kind {
     RTripleTerm, // )>>
     LAnnotation, // {|
     RAnnotation, // |}
+    LBrace,      // { (TriG graph block)
+    RBrace,      // }
+    Graph,       // GRAPH (TriG; case-insensitive)
     Tilde,
     Comment,
     Error,
@@ -71,6 +76,9 @@ pub fn is_pn_chars(c: char) -> bool {
         || ('\u{300}'..='\u{36F}').contains(&c)
         || ('\u{203F}'..='\u{2040}').contains(&c)
 }
+
+/// The message for a bare word that is not a keyword.
+pub const UNEXPECTED_WORD: &str = "Unexpected word (did you forget a prefix, e.g. `ex:`?)";
 
 const LOCAL_ESC: &[u8] = b"_~.-!$&'()*+,;=/?#@%";
 
@@ -144,6 +152,8 @@ impl<'a> Lexer<'a> {
                 b'^' if self.starts("^^") => self.push(Kind::Caret2, self.i + 2, None),
                 b'>' if self.starts(">>") => self.push(Kind::RTriple, self.i + 2, None),
                 b'{' if self.starts("{|") => self.push(Kind::LAnnotation, self.i + 2, None),
+                b'{' => self.push(Kind::LBrace, self.i + 1, None),
+                b'}' => self.push(Kind::RBrace, self.i + 1, None),
                 b'|' if self.starts("|}") => self.push(Kind::RAnnotation, self.i + 2, None),
                 b'~' => self.push(Kind::Tilde, self.i + 1, None),
                 _ => self.name_or_word(),
@@ -344,7 +354,7 @@ impl<'a> Lexer<'a> {
         (n > 0).then_some(k + n)
     }
 
-    /// PNAME_NS / PNAME_LN, or a bare word (a, true, false, PREFIX, BASE, VERSION).
+    /// PNAME_NS / PNAME_LN, or a bare word (a, true, false, PREFIX, BASE, VERSION, GRAPH).
     fn name_or_word(&mut self) {
         let start = self.i;
         let mut j = start;
@@ -417,13 +427,8 @@ impl<'a> Lexer<'a> {
             _ if w.eq_ignore_ascii_case("PREFIX") => Kind::SparqlPrefix,
             _ if w.eq_ignore_ascii_case("BASE") => Kind::SparqlBase,
             _ if w.eq_ignore_ascii_case("VERSION") => Kind::SparqlVersion,
-            _ => {
-                return self.push(
-                    Kind::Error,
-                    j,
-                    Some("Unexpected word (did you forget a prefix, e.g. `ex:`?)"),
-                );
-            }
+            _ if w.eq_ignore_ascii_case("GRAPH") => Kind::Graph,
+            _ => return self.push(Kind::Error, j, Some(UNEXPECTED_WORD)),
         };
         self.push(kind, j, None)
     }
@@ -483,5 +488,19 @@ mod tests {
         assert_eq!(k[4].0, Kind::RTripleTerm);
         assert!(k.iter().any(|t| t.0 == Kind::Tilde));
         assert!(k.contains(&(Kind::LangTag, "@en--ltr")));
+    }
+
+    #[test]
+    fn trig_braces_and_graph_keyword() {
+        let k = kinds("GRAPH ex:g { ex:a ex:b ex:c {| ex:p ex:o |} }{}graph:x Graph");
+        assert_eq!(k[0].0, Kind::Graph);
+        assert_eq!(k[2], (Kind::LBrace, "{"));
+        assert_eq!(k[6], (Kind::LAnnotation, "{|"));
+        assert_eq!(k[9], (Kind::RAnnotation, "|}"));
+        assert_eq!(k[10], (Kind::RBrace, "}"));
+        assert_eq!(k[11], (Kind::LBrace, "{"));
+        assert_eq!(k[12], (Kind::RBrace, "}"));
+        assert_eq!(k[13], (Kind::PName, "graph:x"));
+        assert_eq!(k[14].0, Kind::Graph);
     }
 }

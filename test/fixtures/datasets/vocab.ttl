@@ -1,0 +1,15 @@
+# Terms the dataset files use.
+dx:Person a rdfs:Class ;
+    rdfs:label "Person"@en ;
+    rdfs:comment "Someone the dataset describes."@en .
+
+dx:knows a rdf:Property ;
+    rdfs:label "knows"@en ;
+    rdfs:domain dx:Person ;
+    rdfs:range dx:Person .
+
+dx:name a rdf:Property ;
+    rdfs:label "name"@en .
+
+dx:claims a rdf:Property ;
+    rdfs:label "claims"@en .

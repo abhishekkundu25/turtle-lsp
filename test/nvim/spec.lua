@@ -7,6 +7,7 @@ local fixtures = vim.fs.normalize(assert(os.getenv("TURTLE_LSP_FIXTURES"), "TURT
 local ws = fixtures .. "/workspace"
 local real = fixtures .. "/real"
 local project = fixtures .. "/project"
+local datasets = fixtures .. "/datasets"
 local TIMEOUT = 10000
 
 vim.cmd("filetype on")
@@ -14,14 +15,15 @@ vim.filetype.add({ extension = { ttl = "turtle" } })
 -- "@prefix ex: <...>" looks like a Vim modeline (" ex:") and raises E518 on open.
 -- Turtle buffers need modelines off; see README "Neovim setup".
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = "*.ttl",
+  pattern = { "*.ttl", "*.trig" },
   callback = function()
     vim.opt_local.modeline = false
   end,
 })
 vim.lsp.config("turtle", {
   cmd = { server },
-  filetypes = { "turtle" },
+  -- Neovim's own filetypes for .trig and .nt files.
+  filetypes = { "turtle", "trig", "ntriples" },
   root_markers = { "prefixes.ttl", ".git" },
 })
 vim.lsp.enable("turtle")
@@ -247,6 +249,28 @@ if vim.fn.isdirectory(real) == 1 then
     assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
   end)
 end
+
+check("a .trig buffer (filetype trig) attaches with no warnings", function()
+  local b = open(datasets .. "/graphs.trig")
+  assert(vim.bo[b].filetype == "trig", "filetype " .. vim.bo[b].filetype)
+  local d = problems(wait_diagnostics(b))
+  assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
+  local r = request(b, "textDocument/definition", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, "a dx:Pers"),
+  })
+  local locs = r and (r.uri and { r } or r) or {}
+  assert(#locs == 1, #locs .. " locations: " .. vim.inspect(locs))
+  local got = vim.uri_to_fname(locs[1].uri or locs[1].targetUri)
+  assert(got:match("vocab%.ttl$"), "wrong file " .. got)
+end)
+
+check("a .nt buffer (filetype ntriples) attaches with no warnings", function()
+  local b = open(datasets .. "/people.nt")
+  assert(vim.bo[b].filetype == "ntriples", "filetype " .. vim.bo[b].filetype)
+  local d = problems(wait_diagnostics(b))
+  assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
+end)
 
 check("LSP folding works", function()
   local b = open(people)

@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use turtle_lsp::features::format::{Options, format};
 use turtle_lsp::syntax::lexer::{Kind, tokenize};
-use turtle_lsp::syntax::{PrefixMap, Severity, parse};
+use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("test/fixtures")
@@ -45,7 +45,7 @@ fn header_for(path: &Path) -> String {
 }
 
 fn ours(src: &str) -> Vec<String> {
-    let mut v: Vec<String> = parse(src, &PrefixMap::default())
+    let mut v: Vec<String> = parse(src, &PrefixMap::default(), Syntax::Turtle)
         .triples
         .iter()
         .map(|t| format!("{:?} {:?} {:?}", t.s, t.p, t.o))
@@ -106,7 +106,7 @@ fn comments(src: &str) -> Vec<String> {
 fn fmt(src: &str, o: &Options) -> Option<String> {
     format(
         src,
-        &parse(src, &PrefixMap::default()),
+        &parse(src, &PrefixMap::default(), Syntax::Turtle),
         &PrefixMap::default(),
         o,
     )
@@ -131,7 +131,7 @@ fn option_sets() -> Vec<Options> {
 fn check_file(path: &Path) -> bool {
     let name = path.strip_prefix(fixtures()).unwrap().display().to_string();
     let src = fs::read_to_string(path).unwrap();
-    let parsed = parse(&src, &PrefixMap::default());
+    let parsed = parse(&src, &PrefixMap::default(), Syntax::Turtle);
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         assert!(
             fmt(&src, &Options::default()).is_none(),

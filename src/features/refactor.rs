@@ -21,6 +21,10 @@ pub fn code_actions(
     params: &CodeActionParams,
     lazy: bool,
 ) -> Vec<CodeActionOrCommand> {
+    // Every refactoring here reads or writes prefixes, which N-Triples lacks.
+    if !a.parsed.syntax.has_prefixes() {
+        return Vec::new();
+    }
     let uri = &params.text_document.uri;
     let only = params.context.only.as_deref();
     let mut out = Vec::new();
@@ -703,7 +707,7 @@ mod tests {
     }
 
     fn triples(text: &str) -> Vec<String> {
-        let p = crate::syntax::parse(text, &PrefixMap::default());
+        let p = crate::syntax::parse(text, &PrefixMap::default(), Default::default());
         let mut t: Vec<String> = p
             .triples
             .iter()
