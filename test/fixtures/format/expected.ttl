@@ -1,0 +1,59 @@
+# Messy input for the formatter golden test.
+@prefix ex:   <https://example.com/ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+PREFIX xsd:   <http://www.w3.org/2001/XMLSchema#>
+
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix late: <https://example.com/late#> .
+
+ex:Pump a rdfs:Class ;
+    rdfs:label "Pump"@en , "Pumpe"@de ;
+    rdfs:comment """A machine
+that moves fluid."""@en .
+
+# Shapes
+ex:PumpShape a sh:NodeShape ;
+    sh:targetClass ex:Pump ; # the class
+    sh:property [
+        sh:path ex:flowRate ;
+        sh:datatype xsd:decimal ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:name "flow rate"
+    ] ;
+    sh:property [
+        sh:path [ sh:inversePath ex:partOf ] ;
+        sh:minCount 1
+    ] ;
+    sh:or (
+        [ sh:class ex:A ]
+        [ sh:class ex:B ]
+    ) .
+
+ex:p1 ex:list ( 1 2 3 ) ;
+    ex:tags "alpha" ,
+        "beta" ,
+        "gamma" ,
+        "delta" ,
+        "epsilon" ,
+        "zeta" ,
+        "eta" ,
+        "theta" ,
+        "iota" ,
+        "kappa" ,
+        "lambda" .
+
+ex:p1 ex:weight "12.5"^^xsd:decimal ;
+    # an own-line comment
+    ex:owner ex:alice .
+
+[ ex:anon true ] .
+
+<< ex:p1 ex:owner ex:alice ~ ex:claim1 >> ex:since 2020 .
+
+ex:p1 ex:says <<( ex:alice ex:knows ex:bob )>> .
+
+ex:p1 ex:owner ex:bob ~ ex:claim2 {| ex:source ex:registry ; ex:confidence 0.9 |} .
+
+late:x a ex:Pump .
+# end of file

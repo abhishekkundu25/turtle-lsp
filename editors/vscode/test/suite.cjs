@@ -153,6 +153,19 @@ check("shorten all IRIs is resolved and applied", async () => {
   await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 
+check("Format Document lays out the file", async () => {
+  const doc = await vscode.workspace.openTextDocument({ language: "turtle", content: "@prefix ex: <http://e/> .\nex:a a ex:Thing;ex:knows ex:b .\n" })
+  await vscode.window.showTextDocument(doc)
+  await settledDiagnostics(doc)
+  const edits = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", doc.uri, { tabSize: 4, insertSpaces: true })
+  assert.ok(edits?.length > 0, "no formatting edits")
+  const edit = new vscode.WorkspaceEdit()
+  edit.set(doc.uri, edits)
+  assert.ok(await vscode.workspace.applyEdit(edit))
+  assert.equal(doc.getText(), "@prefix ex: <http://e/> .\n\nex:a a ex:Thing ;\n    ex:knows ex:b .\n")
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
+})
+
 check("outline lists subjects", async () => {
   const doc = await open(path.join(ws, "people.ttl"))
   const syms = await vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", doc.uri)

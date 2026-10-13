@@ -16,7 +16,7 @@
 //! (prefixes.ttl, the disk index, settings) bumps the generation.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::features::{completion, diagnostics, hover, navigation, refactor, symbols};
+use crate::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
 use crate::settings::Settings;
 use crate::workspace::{
     PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
@@ -245,6 +245,7 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
             code_action_kinds: Some(vec![
                 CodeActionKind::QUICKFIX,
@@ -845,6 +846,13 @@ impl Server {
                     return json(serde_json::to_value(action));
                 };
                 json(serde_json::to_value(refactor::resolve(&a, enc, action)))
+            }
+            Formatting::METHOD => {
+                let p = params!(DocumentFormattingParams);
+                let (_, a) = doc!(p.text_document.uri);
+                let opts =
+                    format::Options::from_lsp(&p.options, self.settings.format_line_width as usize);
+                json(serde_json::to_value(format::formatting(&a, enc, &opts)))
             }
             _ => Err((
                 ErrorCode::MethodNotFound,

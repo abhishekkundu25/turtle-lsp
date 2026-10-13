@@ -254,6 +254,22 @@ check("LSP folding works", function()
   assert(r and #r > 0, "no folding ranges")
 end)
 
+check("vim.lsp.buf.format() lays out a scratch buffer", function()
+  local b = open(ws .. "/__nvim_format.ttl")
+  vim.bo[b].expandtab = true
+  vim.bo[b].shiftwidth = 4
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, {
+    "@prefix ex: <http://example.org/> .",
+    "ex:a a ex:Thing;ex:knows ex:b .",
+  })
+  wait_diagnostics(b)
+  vim.lsp.buf.format({ bufnr = b, async = false, timeout_ms = TIMEOUT })
+  local text = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+  local want = "@prefix ex: <http://example.org/> .\n\nex:a a ex:Thing ;\n    ex:knows ex:b ."
+  assert(text == want, "buffer after format:\n" .. text)
+  vim.cmd("bwipeout!")
+end)
+
 check("no LSP errors surfaced to the user", function()
   assert(#client_errors == 0, table.concat(client_errors, " || "))
 end)

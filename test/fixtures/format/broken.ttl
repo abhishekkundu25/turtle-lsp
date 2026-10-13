@@ -1,0 +1,3 @@
+@prefix ex: <https://example.com/ns#> .
+ex:a ex:b "unterminated .
+ex:c ex:d ex:e .

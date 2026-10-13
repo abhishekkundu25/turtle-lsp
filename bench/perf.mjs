@@ -103,6 +103,20 @@ const t0 = performance.now()
 const syms = await s.request("textDocument/documentSymbol", { textDocument: { uri } })
 record("documentSymbol", [performance.now() - t0], `${syms.length} symbols`)
 
+// Formatting the whole big file (squashed onto fewer lines so there is work to do).
+const messy = text.replaceAll(" ;\n    ", " ; ")
+s.change(uri, messy)
+await s.diagnosticsFor(uri, 120000)
+const fmts = []
+let fmtEdits = 0
+for (let i = 0; i < 10; i++) {
+  const t1 = performance.now()
+  const res = await s.request("textDocument/formatting", { textDocument: { uri }, options: { tabSize: 4, insertSpaces: true } })
+  fmts.push(performance.now() - t1)
+  fmtEdits = res.length
+}
+record(`format (${text.split("\n").length} lines)`, fmts, `${fmtEdits} edit(s)`)
+
 const rssEnd = rss(s.proc.pid)
 await s.stop()
 fs.rmSync(ws, { recursive: true, force: true })

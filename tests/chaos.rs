@@ -11,8 +11,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::analysis::{Analysis, Encoding};
-use turtle_lsp::features::{completion, diagnostics, hover, navigation, refactor, symbols};
-use turtle_lsp::syntax::{PrefixMap, parse};
+use turtle_lsp::features::{completion, diagnostics, format, hover, navigation, refactor, symbols};
+use turtle_lsp::syntax::{PrefixMap, Severity, parse};
 
 struct Rng(u64);
 impl Rng {
@@ -101,6 +101,7 @@ fn corpus() -> Vec<String> {
         "project/core",
         "project/data",
         "project/shapes",
+        "format",
     ] {
         if let Ok(entries) = fs::read_dir(root.join(dir)) {
             for e in entries.flatten() {
@@ -196,7 +197,34 @@ fn exercise(rng: &mut Rng, text: &str, all: &[Arc<Analysis>]) {
     ));
     let mut docs = all.to_vec();
     docs.push(a.clone());
+    // Formatting: refused on errors, else a fixed point.
+    let opts = format::Options::default();
+    let formatted = format::format(text, &a.parsed, &a.external, &opts);
+    if a.parsed
+        .errors
+        .iter()
+        .all(|e| e.severity != Severity::Error)
+    {
+        let out = formatted.expect("formatter refused a document without syntax errors");
+        let again = format::format(
+            &out,
+            &parse(&out, &PrefixMap::default()),
+            &a.external,
+            &opts,
+        );
+        assert_eq!(
+            again.as_deref(),
+            Some(out.as_str()),
+            "formatting is not idempotent"
+        );
+    } else {
+        assert!(
+            formatted.is_none(),
+            "formatted a document with syntax errors"
+        );
+    }
     for enc in [Encoding::Utf8, Encoding::Utf16] {
+        let _ = format::formatting(&a, enc, &opts);
         let _ = diagnostics::diagnostics(&a, enc);
         let _ = symbols::document_symbols(&a, text, enc);
         let _ = symbols::folding_ranges(&a);
