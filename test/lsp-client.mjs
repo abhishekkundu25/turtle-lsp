@@ -58,8 +58,12 @@ export async function startServer({
   const logs = []
   const published = []
   const serverRequests = []
+  const versions = new Map()
   conn.onNotification("textDocument/publishDiagnostics", (p) => {
     published.push(p.uri)
+    // A report for an older version than the one last sent (e.g. a republish
+    // after the initial index lands) is stale: the next one is the answer.
+    if (p.version != null && versions.has(p.uri) && p.version < versions.get(p.uri)) return
     diagnostics.set(p.uri, p.diagnostics)
     for (const w of waiters.splice(0)) w()
   })
@@ -81,7 +85,6 @@ export async function startServer({
   const initMs = performance.now() - t0
   await conn.sendNotification("initialized", {})
 
-  const versions = new Map()
   const api = {
     proc,
     conn,

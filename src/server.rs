@@ -365,12 +365,20 @@ impl Server {
             // answer is computed and a burst of edits costs one analysis.
             let mut batch: Vec<Message> = first.into_iter().collect();
             batch.extend(self.inbox.try_iter());
-            let cancelled: FxHashSet<RequestId> = batch.iter().filter_map(cancel_id).collect();
-            let mut rest = batch.into_iter();
-            while let Some(msg) = rest.next() {
+            let mut cancelled: FxHashSet<RequestId> = batch.iter().filter_map(cancel_id).collect();
+            let mut rest: std::collections::VecDeque<Message> = batch.into();
+            while let Some(msg) = rest.pop_front() {
+                // A cancel can arrive while earlier messages of the batch are
+                // handled: look again just before computing an answer.
+                if matches!(msg, Message::Request(_)) {
+                    for m in self.inbox.try_iter() {
+                        cancelled.extend(cancel_id(&m));
+                        rest.push_back(m);
+                    }
+                }
                 match msg {
                     Message::Request(req) if req.method == lsp_types::request::Shutdown::METHOD => {
-                        return self.shutdown(req, rest);
+                        return self.shutdown(req, rest.into_iter());
                     }
                     Message::Notification(n)
                         if n.method == lsp_types::notification::Exit::METHOD =>
