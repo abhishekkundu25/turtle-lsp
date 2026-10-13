@@ -82,3 +82,51 @@ test("the server exits when the editor goes away mid-request", async () => {
   s.proc.stdin.end()
   assert.notEqual(await s.exitCode(), "running", "server still running 5 s after stdin closed")
 })
+
+// owl:imports are resolved on a background thread: it must block while idle,
+// and a fetch in flight must not keep the process alive.
+test("the imports thread costs nothing while idle, and a fetch in flight does not delay exit", async () => {
+  const http = await import("node:http")
+  const os = await import("node:os")
+  // Answers nothing: a fetch hangs until its timeout.
+  const pending = []
+  const web = http.createServer((req, res) => pending.push(res))
+  await new Promise((r) => web.listen(0, "127.0.0.1", r))
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-resources-cache-"))
+  process.env.TURTLE_LSP_CACHE_DIR = cache
+  process.env.NO_PROXY = "127.0.0.1"
+  try {
+    const iri = `http://127.0.0.1:${web.address().port}/slow`
+    const text = `<http://example.com/ont/a> <http://www.w3.org/2002/07/owl#imports> <http://example.com/ont/missing> .\n`
+    const s = await startServer()
+    try {
+      const uri = uriOf(path.join(ws, "__resources-imports.ttl"))
+      s.open(uri, text)
+      await s.request("workspace/symbol", { query: "" })
+      // The unresolved import is reported once the thread has answered.
+      const unresolved = async () => (await s.diagnosticsFor(uri)).some((x) => x.code === "unresolved-import")
+      for (let i = 0; i < 100 && !(await unresolved()); i++) await sleep(50)
+      assert.ok(await unresolved(), "no unresolved-import diagnostic")
+      await sleep(300)
+      const before = cpuSeconds(s.proc.pid)
+      await sleep(2000)
+      const used = cpuSeconds(s.proc.pid) - before
+      assert.ok(used < 0.1, `idle server with imports used ${used.toFixed(2)} s of CPU in 2 s`)
+    } finally {
+      await s.stop()
+    }
+
+    const s2 = await startServer({ initializationOptions: { imports: { network: true } } })
+    const uri = uriOf(path.join(ws, "__resources-slow.ttl"))
+    s2.open(uri, `<http://example.com/ont/a> <http://www.w3.org/2002/07/owl#imports> <${iri}> .\n`)
+    await s2.request("workspace/symbol", { query: "" })
+    for (let i = 0; i < 100 && pending.length === 0; i++) await sleep(20)
+    assert.equal(pending.length, 1, "the import was not requested")
+    // stop() fails if the process outlives shutdown/exit by 3 s; the fetch would take 10 s.
+    await s2.stop()
+  } finally {
+    pending.forEach((r) => r.destroy())
+    web.close()
+    fs.rmSync(cache, { recursive: true, force: true })
+  }
+})

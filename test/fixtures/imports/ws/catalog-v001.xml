@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<catalog prefer="public" xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+    <uri id="ext" name="http://example.com/ont/ext" uri="../vendor/ext.ttl"/>
+    <uri id="ext2" name="http://example.com/ont/ext2" uri="../vendor/ext2.ttl"/>
+    <uri id="gear" name="http://example.com/ont/gear" uri="vendor/gear.rdf"/>
+</catalog>

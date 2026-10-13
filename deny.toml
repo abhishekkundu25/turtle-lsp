@@ -8,11 +8,31 @@ all-features = true
 # Fail on any RustSec advisory (vulnerable, unmaintained, unsound, yanked).
 version = 2
 yanked = "deny"
+ignore = [
+    # quick-xml < 0.41 (through oxrdfxml 0.2.4, the latest release): quadratic
+    # attribute-duplicate check and namespace allocation, both proportional to
+    # the size of one start tag. src/imports.rs refuses RDF/XML with any start
+    # tag over 64 KiB before parsing, on a background thread, from inputs of at
+    # most 20 MB (network) / 50 MB (files). Drop these once oxrdfxml moves on.
+    { id = "RUSTSEC-2026-0194", reason = "start tags capped at 64 KiB before parsing (src/imports.rs)" },
+    { id = "RUSTSEC-2026-0195", reason = "start tags capped at 64 KiB before parsing (src/imports.rs)" },
+]
 
 [licenses]
 version = 2
 confidence-threshold = 0.9
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense"]
+# ISC, BSD-3-Clause and CDLA-Permissive-2.0 come with the HTTPS client used to
+# fetch owl:imports (rustls, ring, rustls-webpki, untrusted, subtle,
+# webpki-roots); all are permissive, attribution-only licences.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "ISC",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+]
 
 [bans]
 multiple-versions = "warn"

@@ -77,6 +77,7 @@ pub struct Server {
     display_refresh: Vec<&'static str>,
     /// Knowledge changed since the last display refresh.
     display_stale: bool,
+    imports: crate::imports::Imports,
 }
 
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
@@ -226,6 +227,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         described_seen: 0,
         display_refresh,
         display_stale: false,
+        imports: crate::imports::Imports::new(),
     };
     let clean = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
@@ -352,6 +354,12 @@ impl Server {
                     self.merge_index(files.ok());
                     None
                 }
+                recv(self.imports.results()) -> done => {
+                    if let Ok(done) = done {
+                        self.imports_done(done);
+                    }
+                    None
+                }
             };
             // Take everything queued, so cancellations are known before any
             // answer is computed and a burst of edits costs one analysis.
@@ -382,6 +390,7 @@ impl Server {
             }
             self.check_described();
             self.publish_dirty();
+            self.sync_imports();
             self.refresh_if_needed();
         }
     }
@@ -540,8 +549,30 @@ impl Server {
         }
     }
 
-    /// A document was saved. Nothing to do yet: the text is already current.
-    fn on_save(&mut self, _uri: &str) {}
+    /// A document was saved: a catalog or ontology file may have changed too.
+    fn on_save(&mut self, _uri: &str) {
+        self.imports.retry();
+    }
+
+    /// Start resolving `owl:imports` if they changed (never before the
+    /// initial index, which may describe the imported ontologies).
+    fn sync_imports(&mut self) {
+        if !self.indexed {
+            return;
+        }
+        let roots = self.ws.roots.clone();
+        let network = self.settings.imports_network;
+        let k = self.ws.knowledge();
+        if let Some(done) = self.imports.sync(k, &roots, network) {
+            self.imports_done(done);
+        }
+    }
+
+    fn imports_done(&mut self, done: crate::imports::Done) {
+        if self.imports.apply(done, self.ws.knowledge_mut()) {
+            self.knowledge_changed();
+        }
+    }
 
     fn request_config(&mut self) {
         let params = ConfigurationParams {
@@ -644,6 +675,7 @@ impl Server {
                 if !indexed {
                     d.retain(|d| !diagnostics::needs_index(d));
                 }
+                d.extend(self.imports.diagnostics(&a, enc));
                 d
             })
         })

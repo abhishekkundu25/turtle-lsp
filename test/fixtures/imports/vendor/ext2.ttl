@@ -1,0 +1,11 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ext2: <http://example.com/ont/ext2#> .
+
+# Imports ext back: a cycle.
+<http://example.com/ont/ext2> a owl:Ontology ;
+    owl:imports <http://example.com/ont/ext> .
+
+ext2:size a owl:DatatypeProperty ;
+    rdfs:label "size in millimetres" ;
+    rdfs:domain <http://example.com/ont/ext#Widget> .

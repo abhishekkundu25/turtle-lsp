@@ -2,6 +2,7 @@
 
 pub mod analysis;
 pub mod features;
+pub mod imports;
 pub mod knowledge;
 pub mod server;
 pub mod settings;

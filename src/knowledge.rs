@@ -575,6 +575,21 @@ impl Knowledge {
         self.put(k, key, Source::External, a, facts);
     }
 
+    /// [`Knowledge::add_external`] with facts computed beforehand (e.g. on a
+    /// background thread).
+    pub fn add_external_prepared(&mut self, key: &str, a: Arc<Analysis>, facts: DocFacts) {
+        let k = Key::External(key.to_string());
+        if self.is_current(&k, Source::External, &a) {
+            return;
+        }
+        self.put(k, key, Source::External, a, facts);
+    }
+
+    /// Whether `key` is registered with exactly this analysis.
+    pub fn has_external(&self, key: &str, a: &Arc<Analysis>) -> bool {
+        self.is_current(&Key::External(key.to_string()), Source::External, a)
+    }
+
     pub fn remove_external(&mut self, key: &str) {
         self.take(&Key::External(key.to_string()));
     }

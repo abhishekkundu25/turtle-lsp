@@ -15,6 +15,7 @@ use turtle_lsp::features::hierarchy;
 use turtle_lsp::features::{
     completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, symbols,
 };
+use turtle_lsp::imports;
 use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::settings::InlayLabels;
 use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse};
@@ -232,6 +233,11 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         assert!(g.statements.end as usize <= p.statements.len());
     }
 
+    // Import sources: catalogs and RDF/XML come from outside too.
+    let _ = imports::parse_catalog(text, std::path::Path::new("/chaos"));
+    let _ = imports::sniff(text.as_bytes());
+    let _ = imports::rdf_xml_to_ntriples(text.as_bytes(), "http://example.com/chaos");
+
     let a = Arc::new(Analysis::with_syntax(
         doc_uri(syntax).into(),
         text,
@@ -276,6 +282,10 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             lint_undescribed_terms: false,
         };
         let _ = diagnostics::diagnostics_with(&a, docs, enc, &lint_off);
+        let unresolved = imports::Status::Unresolved("x".into());
+        for d in imports::diagnostics_with(&a, enc, |_| Some(&unresolved)) {
+            assert!(d.range.start <= d.range.end, "bad import diagnostic range");
+        }
         let _ = symbols::document_symbols(&a, text, enc);
         let _ = symbols::folding_ranges(&a);
         let _ = symbols::workspace_symbols(docs, enc, "a");
