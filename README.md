@@ -19,6 +19,7 @@ server starts in about 1 ms.
 - **Quick fixes**: add a missing prefix, add all missing prefixes, remove an unused prefix, fix a misspelled term.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
+- **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
 
 ## Performance
 
@@ -168,5 +169,6 @@ npm run test:vscode  # VS Code extension: grammar tests, then checks inside a do
 - `test/nvim/spec.lua`: runs inside headless Neovim with its built-in LSP client.
 - `editors/vscode/test/suite.cjs`: runs inside VS Code with the extension loaded; `editors/vscode/test/grammar.test.mjs` checks the highlighting grammar.
 - `tests/oxttl_oracle.rs`: on every valid fixture, the parser must produce the same triples as [oxttl](https://crates.io/crates/oxttl).
+- `tests/w3c_conformance.rs`: the vendored W3C suites (`tests/w3c`). Syntax tests must pass or fail as the manifest says; evaluation tests must give a dataset isomorphic to the expected N-Triples/N-Quads. Pass counts print on every run.
 
 Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license.

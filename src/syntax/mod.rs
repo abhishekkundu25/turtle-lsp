@@ -7,7 +7,7 @@ pub mod lexer;
 mod parser;
 
 pub use iri::{Iri, IriKey, IriMap};
-pub use parser::parse;
+pub use parser::{parse, parse_with_base};
 use rustc_hash::FxHashMap;
 
 pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";

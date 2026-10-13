@@ -60,6 +60,17 @@ fn vocab() -> &'static Vocab {
 }
 
 pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
+    parse_with_base(src, external, syntax, None)
+}
+
+/// [`parse`], with relative IRIs resolved against `base` (the document's own
+/// URL) until an `@base` replaces it. An invalid `base` is ignored.
+pub fn parse_with_base(
+    src: &str,
+    external: &PrefixMap,
+    syntax: Syntax,
+    base: Option<&str>,
+) -> Parsed {
     let mut all = tokenize(src);
     if syntax != Syntax::TriG {
         // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
@@ -98,7 +109,7 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
             .iter()
             .map(|(k, v)| (k.clone(), Iri::intern(v)))
             .collect(),
-        base: None,
+        base: base.and_then(|b| oxiri::Iri::parse(b.to_string()).ok()),
         out,
         bnodes: 0,
         bnode_labels: FxHashMap::default(),
@@ -578,6 +589,8 @@ impl<'a> P<'a> {
                     (!has_scheme(&raw))
                         .then_some("N-Triples needs absolute IRIs (no relative IRIs, no @base)")
                 }
+                // N-Triples 1.2 allows `VERSION "1.2"`, in upper case.
+                Kind::SparqlVersion if self.text(*t) == "VERSION" => None,
                 k => ntriples_forbids(k),
             };
             if let Some(m) = msg {
@@ -706,6 +719,13 @@ impl<'a> P<'a> {
         match self.peek() {
             Some(t) if t.kind == Kind::String => {
                 self.bump();
+                let text = self.text(t);
+                if text.starts_with("\"\"\"") || text.starts_with("'''") {
+                    self.error(
+                        Span::new(t.start, t.end),
+                        "A version is a single-line string like \"1.2\"",
+                    );
+                }
             }
             _ => return self.expected("a version string like \"1.2\""),
         }
@@ -902,7 +922,7 @@ impl<'a> P<'a> {
                     None => (tag, None),
                 };
                 if let Err(e) = oxilangtag::LanguageTag::parse(lang) {
-                    self.warning(
+                    self.error(
                         Span::new(lt.start, lt.end),
                         format!("Invalid language tag '{lang}': {e}"),
                     );
@@ -945,6 +965,12 @@ impl<'a> P<'a> {
                 } else {
                     Role::Datatype
                 })?;
+                if datatype == self.v.lang_string || datatype == self.v.dir_lang_string {
+                    self.error(
+                        self.prev_span(),
+                        "A language-tagged string is written \"text\"@lang, not with ^^",
+                    );
+                }
                 Ok(Node::Literal {
                     value,
                     datatype,
@@ -1021,7 +1047,7 @@ impl<'a> P<'a> {
         let r = (|| {
             let s = self.quoted_subject()?;
             let (p, _) = self.verb()?;
-            let o = self.object()?;
+            let o = self.quoted_object()?;
             if !self.eat(Kind::RTripleTerm) {
                 return self.expected("')>>'");
             }
@@ -1046,6 +1072,27 @@ impl<'a> P<'a> {
         }
     }
 
+    /// The object of a triple term or reified triple: no collections and no
+    /// `[ ... ]` with content. Those are reported and parsed anyway.
+    fn quoted_object(&mut self) -> R<Node> {
+        let nested = match self.peek_kind() {
+            Some(Kind::LParen) => true,
+            Some(Kind::LBracket) => {
+                self.toks.get(self.pos + 1).map(|t| t.kind) != Some(Kind::RBracket)
+            }
+            _ => false,
+        };
+        let start = self.start();
+        let o = self.object()?;
+        if nested {
+            self.error(
+                self.span_from(start),
+                "A triple cannot contain a collection '( )' or a '[ ... ]' with properties",
+            );
+        }
+        Ok(o)
+    }
+
     /// `<< s p o ~ r >>`: returns the reifier.
     fn reified_triple(&mut self) -> R<Node> {
         let open = self.bump();
@@ -1053,7 +1100,7 @@ impl<'a> P<'a> {
         let r = (|| {
             let s = self.quoted_subject()?;
             let (p, _) = self.verb()?;
-            let o = self.object()?;
+            let o = self.quoted_object()?;
             let reifier = if self.eat(Kind::Tilde) {
                 self.reifier()?
             } else {

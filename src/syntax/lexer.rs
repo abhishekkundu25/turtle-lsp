@@ -80,6 +80,9 @@ pub fn is_pn_chars(c: char) -> bool {
 /// The message for a bare word that is not a keyword.
 pub const UNEXPECTED_WORD: &str = "Unexpected word (did you forget a prefix, e.g. `ex:`?)";
 
+const BAD_STRING_ESCAPE: &str =
+    "Invalid escape: use \\t \\b \\n \\r \\f \\\" \\' \\\\, \\uXXXX or \\UXXXXXXXX (no surrogates)";
+
 const LOCAL_ESC: &[u8] = b"_~.-!$&'()*+,;=/?#@%";
 
 struct Lexer<'a> {
@@ -164,23 +167,33 @@ impl<'a> Lexer<'a> {
     fn string(&mut self, q: u8) {
         let long = self.b.len() >= self.i + 3 && self.b[self.i + 1] == q && self.b[self.i + 2] == q;
         let mut j = self.i + if long { 3 } else { 1 };
+        let mut bad_escape = false;
+        let escape_error = |e: bool| e.then_some(BAD_STRING_ESCAPE);
         while j < self.b.len() {
             let c = self.b[j];
             if c == b'\\' {
-                j += 2;
+                match self.b.get(j + 1) {
+                    Some(b't' | b'b' | b'n' | b'r' | b'f' | b'"' | b'\'' | b'\\') => j += 2,
+                    Some(&u @ (b'u' | b'U')) => {
+                        let n = if u == b'u' { 4 } else { 8 };
+                        if self.escaped_char(j + 2, n).is_none() {
+                            bad_escape = true;
+                        }
+                        j += 2;
+                    }
+                    _ => {
+                        bad_escape = true;
+                        j += 2;
+                    }
+                }
                 continue;
             }
             if long {
                 if c == q && self.b.get(j + 1) == Some(&q) && self.b.get(j + 2) == Some(&q) {
-                    // A long string may end with up to two extra quotes: """a""""" is valid.
-                    let mut end = j + 3;
-                    while self.b.get(end) == Some(&q) && end < j + 5 {
-                        end += 1;
-                    }
-                    return self.push(Kind::String, end, None);
+                    return self.push(Kind::String, j + 3, escape_error(bad_escape));
                 }
             } else if c == q {
-                return self.push(Kind::String, j + 1, None);
+                return self.push(Kind::String, j + 1, escape_error(bad_escape));
             } else if c == b'\n' || c == b'\r' {
                 return self.push(Kind::String, j, Some("Unterminated string"));
             }
@@ -215,12 +228,13 @@ impl<'a> Lexer<'a> {
                 b' ' | b'\t' | b'\r' | b'\n' => break,
                 b'<' | b'"' | b'{' | b'}' | b'|' | b'^' | b'`' => bad = true,
                 b'\\' => {
-                    let ok = match self.b.get(j + 1) {
-                        Some(b'u') => self.hex(j + 2, 4),
-                        Some(b'U') => self.hex(j + 2, 8),
-                        _ => false,
+                    // UCHAR only, and it must not spell a character IRIs forbid.
+                    let c = match self.b.get(j + 1) {
+                        Some(b'u') => self.escaped_char(j + 2, 4),
+                        Some(b'U') => self.escaped_char(j + 2, 8),
+                        _ => None,
                     };
-                    if !ok {
+                    if !c.is_some_and(|c| c > ' ' && !"<>\"{}|^`\\".contains(c)) {
                         bad = true
                     }
                 }
@@ -230,6 +244,16 @@ impl<'a> Lexer<'a> {
             j += 1;
         }
         self.push(Kind::Error, j, Some("Unterminated IRI: missing '>'"))
+    }
+
+    /// The character `n` hex digits at `at` encode, if they do (surrogates
+    /// do not).
+    fn escaped_char(&self, at: usize, n: usize) -> Option<char> {
+        let hex = self.src.get(at..at + n)?;
+        if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        char::from_u32(u32::from_str_radix(hex, 16).ok()?)
     }
 
     fn hex(&self, at: usize, n: usize) -> bool {
@@ -477,6 +501,23 @@ mod tests {
         assert_eq!(k[0].0, Kind::String);
         assert!(tokenize("\"open\n")[0].error.is_some());
         assert!(k.contains(&(Kind::PName, "ex:b")));
+    }
+
+    #[test]
+    fn escapes_are_checked() {
+        let err = |s: &str| tokenize(s)[0].error.is_some();
+        assert!(!err(r#""a\tb\u00e9\U0001F600\"\'\\""#));
+        assert!(err(r#""a\zb""#));
+        assert!(err(r#""\uD83C\uDCA1""#));
+        assert!(err(r#""\u12""#));
+        assert!(!err(r"<http://e/\u00e9>"));
+        assert!(err(r"<http://e/\u0020>"));
+        assert!(err(r"<http://e/\uD800>"));
+        // A long string's content cannot end with a quote: the fourth `"`
+        // opens a new string.
+        let k = kinds(r#""""abc"""" ."#);
+        assert_eq!(k[0], (Kind::String, r#""""abc""""#));
+        assert_eq!(k[1].0, Kind::String);
     }
 
     #[test]
