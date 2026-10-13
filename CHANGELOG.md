@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Formatting** for Turtle, TriG and N-Triples: idempotent, keeps comments
+  and statement order, never changes the graph, refuses files with syntax
+  errors.
+- **Semantic tokens** (classes, properties, individuals, datatypes, prefixes;
+  declaration, deprecated, library and undescribed modifiers) and **label
+  inlay hints** for opaque identifiers.
+- **Refactorings**: organise prefixes, shorten or expand an IRI, extract a
+  prefix for a namespace.
+- **Ontology-aware completion**: properties required by SHACL shapes or
+  fitting `rdfs:domain` first; instances fitting the range or `sh:class`
+  first; `sh:in` values offered.
+- **Type hierarchy** for classes and properties.
+- **Lints**: undescribed terms in your own namespaces (with "did you mean"),
+  and SHACL shape mistakes as you type.
+- **SHACL validation on save** with an in-house SHACL Core engine (W3C SHACL
+  Core suite: 98/98).
+- **`owl:imports`** from the workspace, a `catalog-v001.xml`, a cache, or the
+  network when `turtle.imports.network` is on (Turtle, N-Triples, RDF/XML).
+- **TriG and N-Triples** documents.
+- **Pull diagnostics** for clients that support refresh, request
+  cancellation, and live settings (`workspace/didChangeConfiguration`).
+- The add-prefix quick fix offers the project's own binding first.
+
+### Fixes
+
+- The server now exits when the editor goes away, after `shutdown`/`exit`,
+  and with code 1 on a bare `exit`. Before, every session left a process
+  behind, and once the index was built an idle server could use a full CPU
+  core.
+- W3C Turtle, TriG and N-Triples suites (982/982): stricter string and IRI
+  escapes, long-string endings, triple-term contents, language tags (invalid
+  tags are now errors).
+
+### Performance
+
+- Memory on the benchmark workspace went from 230 MB to about 140 MB
+  (interned IRIs), and editing a 10 MB TriG file went from 1.2 GB to under
+  600 MB (mimalloc; no second copy of open files). Keystroke → diagnostics
+  median: 8.5 → 4.3 ms.
+
 ## 0.1.1 — 2026-10-13
 
 ### Security

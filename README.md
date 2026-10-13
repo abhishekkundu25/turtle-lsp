@@ -6,23 +6,26 @@
 
 A fast language server for RDF Turtle (`.ttl`), written in Rust.
 
-A keystroke in a 30,000-line file gets fresh diagnostics in about 9 ms. The
-server starts in about 1 ms.
+A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
+the whole file formats in about 5 ms. The server starts in a few milliseconds.
 
 ## Features
 
 - **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags.
-- **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
+- **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Properties a SHACL shape requires for the subject's class come first ("required by …"), then properties whose `rdfs:domain` fits; after a property, instances of its range (or `sh:class`) come first and `sh:in` values are offered. Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
 - **Hover**: label, comment, types and where a term is described.
 - **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix.
 - **Semantic highlighting and label hints**: IRIs are coloured by what they denote (class, property, individual, datatype), and an opaque name such as `ex:P0042` can show its label after it.
 - **Outline and search**: document symbols, workspace symbols, folding.
-- **Quick fixes**: add a missing prefix, add all missing prefixes, remove an unused prefix, fix a misspelled term.
+- **Formatting**: one consistent layout for Turtle, TriG and N-Triples, built from the tokens: comments and statement order are kept, the graph never changes, and formatting twice changes nothing. Files with syntax errors are left alone.
+- **Quick fixes and refactorings**: add a missing prefix (your project's own binding first), add all missing prefixes, remove an unused prefix, fix a misspelled term; organise prefixes, shorten or expand an IRI, and extract a prefix for a repeated namespace.
+- **Type hierarchy**: super- and subclasses (and sub-properties) across the workspace, imports and vocabularies.
+- **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
 - **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, N-Triples or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints. An import that can't be resolved gets an information diagnostic saying how to resolve it.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
 - **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
-- **SHACL validation**: on save, the whole workspace is validated against its SHACL shapes in the background (SHACL Core; W3C SHACL Core suite 98/98, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled` and `turtle.shacl.maxTriples`.
+- **SHACL validation**: on save, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core; W3C SHACL Core suite 98/98, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled` and `turtle.shacl.maxTriples`.
 
 ## Performance
 
@@ -33,14 +36,20 @@ including JSON encoding and the pipe.
 
 | | Previous Node.js server | turtle-lsp (Rust) | Speedup |
 |---|---:|---:|---:|
-| Keystroke → diagnostics, median | 4,911 ms | **8.5 ms** | ~580× |
-| Keystroke → diagnostics, p95 | 8,341 ms | **8.9 ms** | ~940× |
-| Start-up (`initialize`) | 2,537 ms | **1.3 ms** | ~1,950× |
-| Open file → first diagnostics | 1,884 ms | **21 ms** | ~90× |
-| Completion after `foaf:` | 21 ms | **0.4 ms** | ~50× |
+| Keystroke → diagnostics, median | 4,911 ms | **4.3 ms** | ~1,100× |
+| Keystroke → diagnostics, p95 | 8,341 ms | **9.6 ms** ¹ | ~870× |
+| Start-up (`initialize`) | 2,537 ms | **4 ms** | ~600× |
+| Open file → first diagnostics | 1,884 ms | **30 ms** | ~60× |
+| Completion after `foaf:` | 21 ms | **0.2 ms** | ~100× |
 | Completion with nothing typed | 476 ms, 48,203 items, 9.5 MB | **0.1 ms**, 6 items, 1 KB | |
 | Go to definition | 0.1 ms, 7 locations (every use) | **0.1 ms**, 1 location (the definition) | |
-| Memory (resident) | 959 MB | **230 MB** | ~4× less |
+| Format the whole file | — | **5 ms** | |
+| Semantic tokens, whole file | — | **6 ms** | |
+| Save → SHACL results (~180k triples) | — | **13 ms** | |
+| Memory (resident, after indexing) | 959 MB | **138 MB** | ~7× less |
+
+¹ Only the first edit after opening the file is that slow (it takes over from
+the indexed copy); later keystrokes take 4.3–4.9 ms.
 
 Measured on an Apple M6 with macOS 27. Results vary a little between runs.
 Reproduce with `npm run bench`.
