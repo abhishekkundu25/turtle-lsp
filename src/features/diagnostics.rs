@@ -342,6 +342,22 @@ pub fn code_actions(
                         ..Default::default()
                     }));
                 }
+                for c in &cands {
+                    let Some(ns) = c["namespace"].as_str() else {
+                        continue;
+                    };
+                    let Some((onto, insert)) = import_insertion(a, k, text, enc, ns) else {
+                        continue;
+                    };
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Add prefix '{p}:' and import <{onto}>"),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![d.clone()]),
+                        edit: edit(vec![prefix_insertion(a, text, enc, p, ns), insert]),
+                        is_preferred: Some(false),
+                        ..Default::default()
+                    }));
+                }
             }
             "unused-prefix" | "duplicate-prefix" => {
                 let start = a.offset(enc, d.range.start).unwrap_or(0) as usize;
@@ -409,6 +425,83 @@ pub fn code_actions(
         }));
     }
     actions
+}
+
+const OWL: &str = "http://www.w3.org/2002/07/owl#";
+
+/// For a namespace described by an ontology in the workspace or an import
+/// (never a well-known vocabulary), the edit that makes this document's
+/// ontology import it: `<subject> owl:imports <ontology> .` after the
+/// ontology's statement. `None` when the document is no ontology, already
+/// imports it, or is that ontology's own source.
+fn import_insertion(
+    a: &Analysis,
+    k: &Knowledge,
+    text: &str,
+    enc: Encoding,
+    ns: &str,
+) -> Option<(String, TextEdit)> {
+    if VOCABS.by_namespace(ns).is_some() {
+        return None;
+    }
+    let ontology = crate::syntax::Iri::get(crate::knowledge::OWL_ONTOLOGY)?;
+    let imports = crate::syntax::Iri::get(crate::imports::OWL_IMPORTS);
+    // The document's ontology and its first statement ending in '.'.
+    let (subject, stmt) = a.parsed.statements.iter().find_map(|st| {
+        let (s, _) = st.subject.as_ref()?;
+        let typed = a.types.get(s).is_some_and(|t| t.contains(&ontology));
+        let closed = text[..st.span.end as usize].ends_with('.');
+        (typed && closed && st.span.end > st.span.start).then_some((*s, st))
+    })?;
+    let imported = |o: crate::syntax::Iri| {
+        a.parsed.triples.iter().any(|t| {
+            Some(t.p) == imports
+                && t.s == crate::syntax::Node::Iri(subject)
+                && t.o == crate::syntax::Node::Iri(o)
+        })
+    };
+    let (onto, _) = k
+        .ontologies_describing(ns)
+        .into_iter()
+        .find(|(o, uri)| *uri != a.uri && *o != subject)?;
+    if imported(onto) {
+        return None;
+    }
+    let predicate = owl_pname(a, stmt.span.start)
+        .map(|p| format!("{p}:imports"))
+        .unwrap_or_else(|| format!("<{OWL}imports>"));
+    let pos = a.position(enc, stmt.span.end);
+    Some((
+        onto.to_string(),
+        TextEdit {
+            range: Range::new(pos, pos),
+            new_text: format!("\n<{subject}> {predicate} <{onto}> ."),
+        },
+    ))
+}
+
+/// A prefix name bound to the OWL namespace at offset `at` (declared before
+/// it in the document, else from the project's prefixes file).
+fn owl_pname(a: &Analysis, at: u32) -> Option<String> {
+    let mut bound: FxHashMap<&str, &str> = FxHashMap::default();
+    for p in a.parsed.prefixes.iter().filter(|p| p.span.end <= at) {
+        bound.insert(&p.name, &p.iri);
+    }
+    let mut names: Vec<&str> = bound
+        .iter()
+        .filter(|(_, iri)| **iri == OWL)
+        .map(|(n, _)| *n)
+        .collect();
+    if names.is_empty() {
+        names = a
+            .external
+            .iter()
+            .filter(|(n, iri)| *iri == OWL && !bound.contains_key(n.as_str()))
+            .map(|(n, _)| n.as_str())
+            .collect();
+    }
+    names.sort_by_key(|n| (*n != "owl", *n));
+    names.first().map(|n| n.to_string())
 }
 
 fn prefix_line(a: &Analysis, prefix: &str, ns: &str) -> String {

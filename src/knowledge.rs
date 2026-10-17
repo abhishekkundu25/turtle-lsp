@@ -150,6 +150,8 @@ pub struct Knowledge {
     own_before: FxHashMap<Iri, bool>,
 }
 
+pub const OWL_ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
+
 /// The namespace part of an IRI: up to and including its last `#`, `/` or `:`.
 pub fn namespace_of(iri: &str) -> &str {
     iri.rfind(['#', '/', ':']).map_or("", |i| &iri[..=i])
@@ -944,6 +946,32 @@ impl Knowledge {
             .map(|(i, _)| *i)
     }
 
+    /// Ontologies (`<iri> a owl:Ontology`) whose describing source, workspace
+    /// or external, also describes terms in namespace `ns`, with the URI of
+    /// that source; most such terms first. Well-known vocabularies are not
+    /// sources, so never appear.
+    pub fn ontologies_describing(&self, ns: &str) -> Vec<(Iri, &str)> {
+        if ns.is_empty() {
+            return vec![];
+        }
+        let mut out: Vec<(Iri, &str, usize)> = Vec::new();
+        for o in self.instances(OWL_ONTOLOGY) {
+            for d in self.descriptions(&o) {
+                let n = d
+                    .analysis
+                    .defs
+                    .keys()
+                    .filter(|t| **t != o && t.len() > ns.len() && t.starts_with(ns))
+                    .count();
+                if n > 0 && !out.iter().any(|(x, ..)| *x == o) {
+                    out.push((o, d.analysis.uri.as_str(), n));
+                }
+            }
+        }
+        out.sort_by(|x, y| y.2.cmp(&x.2).then_with(|| x.0.cmp(&y.0)));
+        out.into_iter().map(|(o, u, _)| (o, u)).collect()
+    }
+
     /// Namespaces bound to prefix `name` across workspace files, most files first.
     pub fn bindings(&self, name: &str) -> Vec<(Iri, u32)> {
         let Some(by_ns) = Iri::get(name).and_then(|n| self.bindings.get(&n)) else {
@@ -1384,6 +1412,37 @@ mod tests {
         assert!(!k.is_described("http://ex.org/a"));
         assert!(k.generation() > g);
         assert!(k.snapshot().is_empty());
+    }
+
+    #[test]
+    fn ontologies_describing_a_namespace_include_external_sources() {
+        let mut k = Knowledge::default();
+        let none = Arc::new(PrefixMap::default());
+        let owl = "<http://www.w3.org/2002/07/owl#Ontology>";
+        let ext = format!("<http://ex.org/x> a {owl} .\n<http://ex.org/x#A> a <urn:c> .\n");
+        k.add_external("import:x", analysis("http://ex.org/x", &ext, &none));
+        let ws = format!("<http://ex.org/w> a {owl} .\n<http://ex.org/w#B> a <urn:c> .\n");
+        k.set(
+            "file:///w.ttl",
+            Source::Disk,
+            analysis("file:///w.ttl", &ws, &none),
+        );
+        let data = "<http://ex.org/d#C> a <urn:c> .\n";
+        k.set(
+            "file:///d.ttl",
+            Source::Disk,
+            analysis("file:///d.ttl", data, &none),
+        );
+        let names = |ns: &str| -> Vec<String> {
+            k.ontologies_describing(ns)
+                .iter()
+                .map(|(o, _)| o.to_string())
+                .collect()
+        };
+        assert_eq!(names("http://ex.org/x#"), ["http://ex.org/x"]);
+        assert_eq!(names("http://ex.org/w#"), ["http://ex.org/w"]);
+        assert!(names("http://ex.org/d#").is_empty());
+        assert!(names("http://xmlns.com/foaf/0.1/").is_empty());
     }
 
     #[test]
