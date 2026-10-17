@@ -671,6 +671,9 @@ impl Server {
     fn imports_done(&mut self, done: crate::imports::Done) {
         if self.imports.apply(done, self.ws.knowledge_mut()) {
             self.knowledge_changed();
+            // Loaded ontologies are data for SHACL, and unresolved imports
+            // soften its results.
+            self.validate_shacl();
         }
     }
 
@@ -1171,6 +1174,7 @@ impl Server {
                 docs,
                 max_triples: self.settings.shacl_max_triples,
                 enc: self.enc,
+                unresolved: self.imports.unresolved(),
             });
         }
     }

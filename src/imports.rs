@@ -185,6 +185,18 @@ impl Imports {
         self.status.get(iri)
     }
 
+    /// The workspace's imports that are not loaded, sorted.
+    pub fn unresolved(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .status
+            .iter()
+            .filter(|(_, s)| matches!(s, Status::Unresolved(_)))
+            .map(|(i, _)| i.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
     /// Look at the workspace's imports and start resolving them if they (or
     /// the setting) changed. Cheap when nothing did. With no imports at all
     /// the answer is immediate and returned.

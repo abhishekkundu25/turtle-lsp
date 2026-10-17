@@ -116,6 +116,35 @@ test("a component message names the path and value when there is no sh:message",
   }
 })
 
+test("an unresolved import turns a class violation into a warning naming it, until it resolves", async () => {
+  const ONTO = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<http://example.com/site> a owl:Ontology ;
+    owl:imports <http://example.invalid/units> .
+`
+  const w = await session({}, { "site.ttl": ONTO })
+  const file = path.join(w.dir, "data", "pump.ttl")
+  const site = path.join(w.dir, "site.ttl")
+  try {
+    const text = GOOD.replace(" .\n", " ;\n    sd:fillsPosition obj:mill-0517 .\n")
+    w.s.open(w.pump, text)
+    save(w.s, w.pump, file, text)
+    const [d] = shacl(await until(w.s, w.pump, (d) => shacl(d).some((x) => x.severity === 2)))
+    assert.equal(
+      d.message,
+      "obj:mill-0517 (sd:fillsPosition of obj:pump-07) is not an instance of sd:Position (may change once these imports resolve: http://example.invalid/units)",
+    )
+    // The import goes away: the next validation is strict again.
+    const resolved = ONTO.replace(" ;\n    owl:imports <http://example.invalid/units>", "")
+    const siteUri = uriOf(site)
+    w.s.open(siteUri, resolved)
+    save(w.s, siteUri, site, resolved)
+    const [e] = shacl(await until(w.s, w.pump, (d) => shacl(d).some((x) => x.severity === 1)))
+    assert.equal(e.message, "obj:mill-0517 (sd:fillsPosition of obj:pump-07) is not an instance of sd:Position")
+  } finally {
+    await w.end()
+  }
+})
+
 test("pull clients get the results after a refresh", async () => {
   const w = await session({
     capabilities: {

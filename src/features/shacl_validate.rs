@@ -40,6 +40,72 @@ pub struct Job {
     pub docs: Vec<(Source, Arc<Analysis>)>,
     pub max_triples: u64,
     pub enc: Encoding,
+    /// The workspace's `owl:imports` that are not loaded. While any is,
+    /// errors that the missing data could change are shown as warnings.
+    pub unresolved: Vec<String>,
+}
+
+/// How to soften errors while imports are unresolved.
+struct Soften {
+    /// Appended to a softened message.
+    note: String,
+    /// Namespaces some loaded document defines a term in.
+    described: rustc_hash::FxHashSet<String>,
+}
+
+impl Soften {
+    fn new(job: &Job) -> Option<Soften> {
+        if job.unresolved.is_empty() {
+            return None;
+        }
+        let mut named = job
+            .unresolved
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if job.unresolved.len() > 3 {
+            named.push_str(&format!(" and {} more", job.unresolved.len() - 3));
+        }
+        let described = job
+            .docs
+            .iter()
+            .flat_map(|(_, a)| a.defs.keys())
+            .map(|i| crate::knowledge::namespace_of(i.as_str()))
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .collect();
+        Some(Soften {
+            note: format!(" (may change once these imports resolve: {named})"),
+            described,
+        })
+    }
+
+    /// Whether data the unresolved imports may hold could change `r`: a
+    /// constraint that more triples can satisfy, or a focus node or value in
+    /// a namespace no loaded document describes.
+    fn applies(&self, g: &Graph, r: &ValidationResult) -> bool {
+        let component = r.component.as_str().strip_prefix(SH).unwrap_or("");
+        if matches!(
+            component,
+            "ClassConstraintComponent"
+                | "NodeConstraintComponent"
+                | "MinCountConstraintComponent"
+                | "QualifiedMinCountConstraintComponent"
+                | "QualifiedMaxCountConstraintComponent"
+        ) {
+            return true;
+        }
+        let unknown = |id: Id| match g.term(id) {
+            Term::Iri(i) => {
+                let ns = crate::knowledge::namespace_of(i.as_str());
+                !ns.is_empty() && !self.described.contains(ns)
+            }
+            _ => false,
+        };
+        unknown(r.focus) || r.value.is_some_and(unknown)
+    }
 }
 
 pub struct Outcome {
@@ -165,14 +231,16 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     let shared: Vec<&(Source, Arc<Analysis>)> =
         docs.iter().copied().filter(|d| !dataset(d)).collect();
     let mut out = ByUri::default();
+    let soften = Soften::new(job);
+    let soften = soften.as_ref();
     // The shared graph, its results placed in the Turtle documents.
-    validate_unit(job, &shared, None, cancelled, &mut out)?;
+    validate_unit(job, &shared, None, soften, cancelled, &mut out)?;
     for d in docs.iter().copied().filter(dataset) {
         // The dataset first, so results it causes are placed in it; only its
         // own nodes are focus nodes (the shared ones were validated above).
         let mut unit = vec![d];
         unit.extend(shared.iter().copied());
-        validate_unit(job, &unit, Some(&d.1), cancelled, &mut out)?;
+        validate_unit(job, &unit, Some(&d.1), soften, cancelled, &mut out)?;
     }
     for list in out.values_mut() {
         let mut seen = rustc_hash::FxHashSet::default();
@@ -198,6 +266,7 @@ fn validate_unit(
     job: &Job,
     docs: &[&(Source, Arc<Analysis>)],
     dataset: Option<&Arc<Analysis>>,
+    soften: Option<&Soften>,
     cancelled: &dyn Fn() -> bool,
     out: &mut ByUri,
 ) -> Option<()> {
@@ -240,6 +309,7 @@ fn validate_unit(
         docs,
         enc: job.enc,
         prefixes: FxHashMap::default(),
+        soften,
     };
     for r in &results {
         if let Some((uri, d)) = place.diagnostic(r) {
@@ -273,6 +343,7 @@ struct Placer<'p, 'g, 'a> {
     docs: &'p [&'p (Source, Arc<Analysis>)],
     enc: Encoding,
     prefixes: FxHashMap<u32, PrefixMap>,
+    soften: Option<&'p Soften>,
 }
 
 /// The first predicate a path follows, and whether it is followed backwards.
@@ -387,15 +458,22 @@ impl Placer<'_, '_, '_> {
     fn diagnostic(&mut self, r: &ValidationResult) -> Option<(String, Diagnostic)> {
         let (d, span) = self.location(r)?;
         let a = self.doc(d).clone();
-        let message = match pick_message(self.g, &r.messages) {
+        let mut message = match pick_message(self.g, &r.messages) {
             Some(m) => m,
             None => self.component_message(d, r),
         };
-        let severity = match r.severity.as_str().strip_prefix(SH) {
+        let mut severity = match r.severity.as_str().strip_prefix(SH) {
             Some("Warning") => DiagnosticSeverity::WARNING,
             Some("Info") => DiagnosticSeverity::INFORMATION,
             _ => DiagnosticSeverity::ERROR,
         };
+        if severity == DiagnosticSeverity::ERROR
+            && let Some(s) = self.soften
+            && s.applies(self.g, r)
+        {
+            severity = DiagnosticSeverity::WARNING;
+            message.push_str(&s.note);
+        }
         let (pd, ptr) = self.origin(r.param);
         let param_span = Span::new(ptr.p_span.start, ptr.o_span.end.max(ptr.p_span.end));
         let related = if self.in_workspace(pd) {
@@ -570,6 +648,7 @@ mod tests {
             docs,
             max_triples: max,
             enc: Encoding::Utf16,
+            unresolved: vec![],
         }
     }
 
@@ -631,5 +710,58 @@ mod tests {
         assert!(run(&job(vec![doc], 1000), &|| true).is_none());
         let plain = analysis("file:///w/b.ttl", &format!("{HEAD}ex:a ex:p ex:b .\n"));
         assert!(run(&job(vec![plain], 0), &|| false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unresolved_imports_soften_what_missing_data_could_change() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:P ;\n  sh:property [ sh:path ex:age ; sh:datatype <http://www.w3.org/2001/XMLSchema#integer> ] ;\n  sh:property [ sh:path ex:kind ; sh:class ex:Kind ] ;\n  sh:property [ sh:path ex:unit ; sh:in ( ex:metre ) ] ;\n  sh:property [ sh:path ex:name ; sh:minCount 1 ; sh:severity sh:Info ] .\n"
+            ),
+        );
+        let data = analysis(
+            "file:///w/data.ttl",
+            &format!(
+                "{HEAD}ex:a a ex:P ;\n  ex:age \"old\" ;\n  ex:kind ex:k ;\n  ex:unit <http://other.org/u#m> .\n"
+            ),
+        );
+        let by_message = |out: &ByUri, needle: &str| {
+            out["file:///w/data.ttl"]
+                .iter()
+                .find(|d| d.message.contains(needle))
+                .cloned()
+                .unwrap()
+        };
+        let mut j = job(vec![shapes, data], 1000);
+        let plain = run(&j, &|| false).unwrap();
+        assert_eq!(
+            by_message(&plain, "ex:kind").severity,
+            Some(DiagnosticSeverity::ERROR)
+        );
+        j.unresolved = ["a", "b", "c", "d"]
+            .map(|s| format!("http://x.org/{s}"))
+            .to_vec();
+        let out = run(&j, &|| false).unwrap();
+        let class = by_message(&out, "ex:kind");
+        assert_eq!(class.severity, Some(DiagnosticSeverity::WARNING));
+        assert!(
+            class.message.ends_with(
+                " (may change once these imports resolve: http://x.org/a, http://x.org/b, http://x.org/c and 1 more)"
+            ),
+            "{}",
+            class.message
+        );
+        // A value in a namespace nothing loaded describes.
+        let unit = by_message(&out, "ex:unit");
+        assert_eq!(unit.severity, Some(DiagnosticSeverity::WARNING));
+        // A literal on a described node: no import can fix it.
+        let age = by_message(&out, "ex:age");
+        assert_eq!(age.severity, Some(DiagnosticSeverity::ERROR));
+        assert!(!age.message.contains("imports"));
+        // Never raised, never annotated.
+        let name = by_message(&out, "ex:name");
+        assert_eq!(name.severity, Some(DiagnosticSeverity::INFORMATION));
+        assert!(!name.message.contains("imports"));
     }
 }
