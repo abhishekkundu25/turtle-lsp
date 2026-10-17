@@ -9,6 +9,10 @@ A fast language server for RDF Turtle (`.ttl`), written in Rust.
 A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
 the whole file formats in about 5 ms. The server starts in a few milliseconds.
 
+It is the only Turtle language server we know of that checks itself against
+the full W3C test suites and real public ontologies; see
+[Tested against the real world](#tested-against-the-real-world).
+
 ## Features
 
 - **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags.
@@ -26,6 +30,22 @@ the whole file formats in about 5 ms. The server starts in a few milliseconds.
 - **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
 - **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
 - **SHACL validation**: on save, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core; W3C SHACL Core suite 98/98, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled` and `turtle.shacl.maxTriples`.
+
+## Tested against the real world
+
+Every release is checked against the official W3C test suites and against
+public RDF files anyone can download (`npm run corpus`, results in
+[docs/research/corpus-validation.md](docs/research/corpus-validation.md)).
+
+| Check | Result |
+|---|---|
+| W3C Turtle, TriG and N-Triples suites | 982 / 982 |
+| W3C SHACL Core suite | 98 / 98 |
+| Parser vs. [Oxigraph](https://github.com/oxigraph/oxigraph) on public files (schema.org, Wikidata, DBpedia, QUDT, Brick, Gene Ontology, W3C vocabularies) | Same triples in all 68 cases (2.17 million triples) |
+| Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
+| Gene Ontology (118 MB, 1.28 million triples) | Parsed in 0.4 s, formatted in 0.8 s |
+| Fuzz testing | 20,000 randomly damaged files, every editor feature run on each, without a crash |
+| Resource checks | No CPU use while idle, no server left running after the editor quits |
 
 ## Performance
 
