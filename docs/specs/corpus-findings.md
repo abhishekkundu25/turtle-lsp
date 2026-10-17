@@ -37,7 +37,7 @@ a user opening well-known ontologies would hit:
    described by a file in my workspace or by a resolved `owl:imports` to count
    as defined, so that I can silence stale-snapshot warnings by providing the
    real vocabulary.
-5. As a user with a genuine typo (`foaf:nmae`), I want the warning and its
+5. As a user with a genuine typo (`foaf:namee`), I want the warning and its
    "did you mean" fix to stay exactly as before.
 6. As a Brick user without network imports, I want violations that depend on
    missing imports shown as warnings that name the missing imports, so that red
@@ -96,3 +96,11 @@ a user opening well-known ontologies would hit:
 - The formatter's safety check re-parsing without the document's base IRI
   (latent, unreachable from the server) is fixed alongside, as a one-line
   change.
+
+## Departures from the plan
+
+- The typo example was `foaf:nmae`, which never got a suggestion (a swap is two
+  edits; the limit for four letters is one); the tests use `foaf:namee`.
+- SHACL: the precise rule was built. The server also re-validates when import
+  resolution changes. The first validation after indexing can run before
+  imports resolve, so strict errors may show briefly before they soften.
