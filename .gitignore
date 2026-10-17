@@ -5,3 +5,5 @@ dist
 test/fixtures/real/
 # Public corpus downloaded by tools/corpus/fetch.sh.
 test/corpus/
+# VS Code downloaded by the extension tests.
+.vscode-test/

@@ -69,8 +69,8 @@ reported as you type.
 - Seam 2: end-to-end through the LSP client: a SPARQL violation appears on the
   offending triple after save; a message template is filled; a malformed query
   is reported in the shapes file as you type.
-- Validation outside the test suite: results compared with pySHACL's on the
-  same data and shapes for a real-world design repository's simulation graphs;
+- Validation outside the test suite: results compared with a reference
+  validator's on the same data and shapes for real-world simulation graphs;
   keystroke latency unchanged (`npm run bench`).
 
 ## Out of Scope

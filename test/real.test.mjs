@@ -1,4 +1,4 @@
-// Real-world Turtle from the ontology-design repo. See fixtures/README.md.
+// Real-world Turtle from a private design repository. See fixtures/README.md.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"

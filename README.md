@@ -29,7 +29,7 @@ the full W3C test suites and real public ontologies; see
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
 - **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
-- **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core; W3C SHACL Core suite 98/98, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
+- **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
 
 ## Tested against the real world
 
@@ -41,6 +41,7 @@ public RDF files anyone can download (`npm run corpus`, results in
 |---|---|
 | W3C Turtle, TriG and N-Triples suites | 982 / 982 |
 | W3C SHACL Core suite | 98 / 98 |
+| W3C SHACL-SPARQL suite | 23 / 23 |
 | Parser vs. [Oxigraph](https://github.com/oxigraph/oxigraph) on public files (schema.org, Wikidata, DBpedia, QUDT, Brick, Gene Ontology, W3C vocabularies) | Same triples in all 68 cases (2.17 million triples) |
 | Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
 | Gene Ontology (118 MB, 1.28 million triples) | Parsed in 0.4 s, formatted in 0.8 s |

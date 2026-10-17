@@ -1,15 +1,42 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-10-18
 
 ### Features
 
+- **SHACL-SPARQL**: `sh:sparql` constraints (`sh:SPARQLConstraint` with
+  `sh:select`) on node and property shapes, with pre-bound `$this`, `$PATH`,
+  `$currentShape` and `$shapesGraph`, `sh:prefixes` / `sh:declare`, message
+  templates (`{?value}`, `{$this}`) and `sh:deactivated`; SPARQL-based targets
+  and SPARQL-based constraint components. W3C SHACL-SPARQL suite: 23/23.
+- **SPARQL queries in shapes are checked as you type**: syntax errors and
+  undeclared prefixes (errors, on the exact spot in the query), and the
+  constructs SHACL-SPARQL forbids (MINUS, VALUES, SERVICE, LATERAL, rebinding
+  a pre-bound variable) as warnings.
 - **SHACL validation while typing**: the workspace is validated about a
   second after typing stops, on the unsaved text; saving still validates at
   once. Setting `turtle.shacl.onType` (default on) turns it off.
 - **Progress** for indexing, `owl:imports` resolution and SHACL runs that
   last more than 200 ms, for clients that support work done progress. A SHACL
-  run ends with a summary such as "3 violations in 2 files".
+  run ends with a summary such as "2 errors, 1 warning in 2 files".
+- The undeclared-prefix quick fix can also **add the `owl:imports`** of the
+  workspace ontology that defines the namespace.
+
+### Fixes
+
+- Unknown-term warnings no longer appear on terms the workspace or a resolved
+  import describes, and files with thousands of them stay fast (a 2.3 MB file
+  went from 2.3 s per edit to about 60 ms).
+- SHACL errors that unresolved `owl:imports` could change are shown as
+  warnings that name the missing imports.
+- The formatter's safety check keeps the document's base IRI, so documents
+  with relative IRIs are not refused.
+
+### Testing
+
+- `npm run corpus` checks the parser against oxttl and the formatter's
+  properties on public RDF files (68 cases, 2.17 million triples), and
+  measures the server on each.
 
 ## 0.2.0 — 2026-10-18
 
