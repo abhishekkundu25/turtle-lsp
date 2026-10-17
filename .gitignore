@@ -3,3 +3,5 @@ target
 dist
 # Real-world fixtures copied from a private repo; never published.
 test/fixtures/real/
+# Public corpus downloaded by tools/corpus/fetch.sh.
+test/corpus/
