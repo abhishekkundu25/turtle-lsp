@@ -440,6 +440,7 @@ struct Found {
     minus: bool,
     values: bool,
     service: bool,
+    lateral: bool,
     /// Pre-bound variables assigned with `AS`.
     assigned: Vec<String>,
     /// Subqueries so far.
@@ -473,6 +474,14 @@ fn unsupported(lit: &Lit, q: &Query, vars: &[String], out: &mut Vec<Finding>) {
             );
         }
     }
+    if f.lateral {
+        push(
+            out,
+            at_word("LATERAL", 0),
+            UNSUPPORTED,
+            "LATERAL is not standard SPARQL".to_owned(),
+        );
+    }
     for var in &f.assigned {
         let span = find_assignment(v, var).map_or(lit.span, |(s, e)| lit.span(s, e));
         push(
@@ -501,6 +510,11 @@ fn walk(p: &GraphPattern, top: bool, vars: &[String], f: &mut Found) {
     match p {
         GraphPattern::Bgp { .. } | GraphPattern::Path { .. } => {}
         GraphPattern::Join { left, right } | GraphPattern::Union { left, right } => {
+            walk(left, false, vars, f);
+            walk(right, false, vars, f);
+        }
+        GraphPattern::Lateral { left, right } => {
+            f.lateral = true;
             walk(left, false, vars, f);
             walk(right, false, vars, f);
         }
@@ -835,6 +849,15 @@ mod tests {
         assert_eq!(
             findings(&constraint(q)),
             vec![(UNSUPPORTED, "SERVICE".to_owned())]
+        );
+    }
+
+    #[test]
+    fn lateral_is_warned() {
+        let q = "\"\"\"SELECT $this WHERE { $this ?x ?any . LATERAL { SELECT $this ?any WHERE { $this ?b ?any } LIMIT 1 } }\"\"\"";
+        assert_eq!(
+            findings(&constraint(q)),
+            vec![(UNSUPPORTED, "LATERAL".to_owned())]
         );
     }
 

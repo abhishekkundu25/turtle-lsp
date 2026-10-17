@@ -30,7 +30,6 @@ use super::sparql::{self, Answer, Index, PreBound};
 use crate::syntax::{Iri, RDF, XSD};
 use regex::{Regex, RegexBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
-use spareval::QueryEvaluator;
 use spargebra::Query;
 use spargebra::term::{NamedNode, Term as RdfTerm, Variable};
 use std::cmp::Ordering;
@@ -906,7 +905,7 @@ struct Run<'r, 'g, 'a> {
     conforms: FxHashMap<(ShapeIx, Id), bool>,
     /// The graph as a SPARQL dataset, when the shapes use SPARQL.
     ix: Option<&'r Index<'g>>,
-    ev: QueryEvaluator,
+    ev: sparql::Engine,
     cancelled: &'r dyn Fn() -> bool,
     /// `cancelled` said so between two queries.
     stopped: bool,
@@ -1352,7 +1351,7 @@ impl Run<'_, '_, '_> {
                     .find(|b| b.0.as_str() == n)
                     .map(|b| b.1.clone())
             };
-            match sparql::run(&self.ev, ix, &check.query, bindings.clone()) {
+            match self.ev.run(ix, &check.query, bindings.clone()) {
                 Err(e) => self.fail(check.source, e),
                 Ok(Answer::Boolean(true)) => {}
                 Ok(Answer::Boolean(false)) => {
@@ -1406,11 +1405,10 @@ impl Run<'_, '_, '_> {
             return;
         };
         let graph = NamedNode::new_unchecked(sparql::SHAPES_GRAPH);
-        match sparql::run(
-            &self.ev,
+        match self.ev.run(
             ix,
             &query,
-            [(Variable::new_unchecked("shapesGraph"), graph.into())],
+            vec![(Variable::new_unchecked("shapesGraph"), graph.into())],
         ) {
             Ok(Answer::Solutions(sols)) => {
                 out.extend(
@@ -1570,7 +1568,7 @@ pub fn validate_report(
         supers: FxHashMap::default(),
         conforms: FxHashMap::default(),
         ix: ix.as_ref(),
-        ev: QueryEvaluator::new().without_optimizations(),
+        ev: sparql::Engine::default(),
         cancelled,
         stopped: false,
         failures: comp.failures,
@@ -1730,6 +1728,47 @@ mod tests {
         let body = format!("{RULE}ex:a a ex:C ; ex:p 2 .");
         assert!(report(&body, &cancelled).is_none());
         assert_eq!(calls.get(), 2);
+    }
+
+    /// Blank focus nodes are pre-bound like IRIs: in triple patterns, in
+    /// expressions, in EXISTS and as GROUP BY keys.
+    #[test]
+    fn sparql_on_blank_focus_nodes() {
+        let q = |sel: &str| {
+            format!(
+                "ex:S sh:targetClass ex:C ; sh:sparql [ sh:prefixes ex:P ; sh:select \"{sel}\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n[] a ex:C ; ex:p 2 .\n[] a ex:C ; ex:p 0 .\nex:i a ex:C ; ex:p 5 .\n"
+            )
+        };
+        let n = |sel: &str| report(&q(sel), &|| false).unwrap();
+        assert_eq!(
+            n("SELECT $this ?value WHERE { $this ex:p ?value . FILTER (?value > 1) }").0,
+            2
+        );
+        assert_eq!(n("SELECT $this WHERE { FILTER (isBlank($this)) }").0, 2);
+        assert_eq!(
+            n("SELECT $this WHERE { ?x ex:p 2 . FILTER (sameTerm(?x, $this)) }").0,
+            1
+        );
+        assert_eq!(
+            n("SELECT $this WHERE { FILTER NOT EXISTS { $this ex:p 0 } }").0,
+            2
+        );
+        assert_eq!(
+            n("SELECT $this (COUNT(*) AS ?n) WHERE { $this ex:p ?v } GROUP BY $this").0,
+            3
+        );
+        assert_eq!(
+            n("SELECT $this ?n WHERE { { SELECT (COUNT(?v) AS ?n) WHERE { $this ex:q ?v } } }").2,
+            1
+        );
+        assert_eq!(n("SELECT $this ?n WHERE { { SELECT $this (COUNT(?v) AS ?n) WHERE { $this ex:q ?v } GROUP BY $this } }").0, 0);
+    }
+
+    /// A NOT EXISTS over a subclass closure, the shape of a type check.
+    #[test]
+    fn sparql_not_exists_over_subclasses() {
+        let body = "ex:S sh:targetClass ex:Thing ; sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this ?value WHERE { $this ex:kind ?value . FILTER NOT EXISTS { $this a/<http://www.w3.org/2000/01/rdf-schema#subClassOf>* ?value } }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\nex:B <http://www.w3.org/2000/01/rdf-schema#subClassOf> ex:A .\nex:x a ex:Thing , ex:B ; ex:kind ex:A .\nex:y a ex:Thing ; ex:kind ex:A .\n[] a ex:Thing , ex:B ; ex:kind ex:A , ex:B , ex:Thing , ex:Z .";
+        assert_eq!(report(body, &|| false).unwrap().0, 2);
     }
 
     /// One SPARQL constraint on 10,000 focus nodes (run with --nocapture

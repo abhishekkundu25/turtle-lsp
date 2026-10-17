@@ -2,8 +2,8 @@
 //! constraint components and targets, and running them with `spareval` over
 //! the validation [`Graph`] in place (through [`Index`], no copy of the data).
 //!
-//! Pre-binding follows the SHACL specification: pre-bound variables are
-//! substituted as initial bindings that every part of the query sees, and the
+//! Pre-binding follows the SHACL specification: every occurrence of a
+//! pre-bound variable is replaced by its value (see [`Engine`]), and the
 //! constructs that would break that (MINUS, VALUES, SERVICE, `AS ?var` for a
 //! pre-bound variable, a subquery that does not return the pre-bound
 //! variables) are rejected. `$PATH` is replaced by the shape's path in SPARQL
@@ -17,8 +17,13 @@ use super::graph::{Graph, Id, Term as GTerm};
 use crate::syntax::{Iri, Node};
 use rustc_hash::FxHashMap;
 use spareval::{InternalQuad, QueryEvaluator, QueryResults, QuerySolution, QueryableDataset};
-use spargebra::algebra::{Expression, GraphPattern};
-use spargebra::term::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple, Variable};
+use spargebra::algebra::{
+    AggregateExpression, Expression, Function, GraphPattern, OrderExpression,
+};
+use spargebra::term::{
+    BlankNode, Literal, NamedNode, NamedNodePattern, NamedOrBlankNode, Term, TermPattern, Triple,
+    TriplePattern, Variable,
+};
 use spargebra::{Query, SparqlParser};
 use std::convert::Infallible;
 
@@ -71,6 +76,10 @@ impl<'a> Index<'a> {
     fn internal(&self, t: &Term) -> STerm {
         let found = match t {
             Term::NamedNode(n) if n.as_str() == SHAPES_GRAPH => return STerm::ShapesGraph,
+            Term::NamedNode(n) if n.as_str().starts_with(BLANK) => n.as_str()[BLANK.len()..]
+                .strip_prefix('g')
+                .and_then(|n| n.parse().ok())
+                .and_then(|n| self.g.id(GTerm::Blank(n))),
             Term::NamedNode(n) => match Iri::get(n.as_str()) {
                 Some(i) => return self.g.iri(i).map_or(STerm::Iri(i), STerm::Id),
                 None => None,
@@ -320,6 +329,7 @@ fn check(p: &GraphPattern, top: bool, pre: &PreBound) -> Result<(), String> {
             check_expr(expression, pre)?;
             check(inner, false, pre)
         }
+        G::Lateral { .. } => Err("LATERAL is not standard SPARQL".into()),
         G::Minus { .. } => Err("MINUS is not allowed with pre-bound variables".into()),
         G::Values { .. } => Err("VALUES is not allowed with pre-bound variables".into()),
         G::Service { .. } => Err("SERVICE is not allowed with pre-bound variables".into()),
@@ -432,24 +442,505 @@ pub enum Answer {
     Boolean(bool),
 }
 
-/// Runs `query` over `ix` with `bindings` substituted.
-pub fn run(
-    ev: &QueryEvaluator,
-    ix: &Index,
-    query: &Query,
-    bindings: impl IntoIterator<Item = (Variable, Term)>,
-) -> Result<Answer, String> {
-    let mut prepared = ev.prepare(query);
-    for (v, t) in bindings {
-        prepared = prepared.substitute_variable(v, t);
+/// Runs queries with pre-bound variables. The pre-bound values are written
+/// into the query as constants so the optimizer can plan the query around
+/// them; queries whose values cannot be written as constants (RDF-star
+/// triples) run unoptimized with the values as initial bindings.
+pub struct Engine {
+    optimized: QueryEvaluator,
+    plain: QueryEvaluator,
+}
+
+/// Blank nodes have no constant syntax: in triple patterns they become an IRI
+/// [`Index`] maps back to the node, in expressions a call to a function that
+/// returns the node.
+const BLANK: &str = "urn:x-shacl:blank:";
+
+impl Default for Engine {
+    fn default() -> Self {
+        Engine {
+            optimized: QueryEvaluator::new().with_custom_function(
+                NamedNode::new_unchecked(BLANK),
+                |args: &[Term]| match args {
+                    [Term::Literal(l)] => Some(BlankNode::new_unchecked(l.value()).into()),
+                    _ => None,
+                },
+            ),
+            plain: QueryEvaluator::new().without_optimizations(),
+        }
     }
-    match prepared.execute(ix).map_err(|e| e.to_string())? {
-        QueryResults::Solutions(s) => s
-            .collect::<Result<Vec<_>, _>>()
-            .map(Answer::Solutions)
-            .map_err(|e| e.to_string()),
-        QueryResults::Boolean(b) => Ok(Answer::Boolean(b)),
-        QueryResults::Graph(_) => Err("not a SELECT or ASK query".into()),
+}
+
+impl Engine {
+    /// Runs `query` over `ix` with `bindings` pre-bound.
+    pub fn run(
+        &self,
+        ix: &Index,
+        query: &Query,
+        bindings: Vec<(Variable, Term)>,
+    ) -> Result<Answer, String> {
+        let substituted = substitute(query, &bindings);
+        let prepared = match &substituted {
+            Some(q) => self.optimized.prepare(q),
+            None => {
+                let mut prepared = self.plain.prepare(query);
+                for (v, t) in bindings {
+                    prepared = prepared.substitute_variable(v, t);
+                }
+                prepared
+            }
+        };
+        match prepared.execute(ix).map_err(|e| e.to_string())? {
+            QueryResults::Solutions(s) => s
+                .collect::<Result<Vec<_>, _>>()
+                .map(Answer::Solutions)
+                .map_err(|e| e.to_string()),
+            QueryResults::Boolean(b) => Ok(Answer::Boolean(b)),
+            QueryResults::Graph(_) => Err("not a SELECT or ASK query".into()),
+        }
+    }
+}
+
+/// `query` with every occurrence of a pre-bound variable replaced by its
+/// value. A projection drops the variable (the caller knows its value), a
+/// GROUP BY keeps it as a key bound to the value. `None` when a value or a
+/// construct cannot be substituted.
+fn substitute(query: &Query, bindings: &[(Variable, Term)]) -> Option<Query> {
+    if bindings.iter().any(|(_, t)| matches!(t, Term::Triple(_))) {
+        return None;
+    }
+    let mut query = query.clone();
+    let pattern = match &mut query {
+        Query::Select { pattern, .. } | Query::Ask { pattern, .. } => pattern,
+        _ => return None,
+    };
+    let sub = Substitution(bindings);
+    if !sub.pattern(pattern) {
+        return None;
+    }
+    order_exists(pattern, &[]);
+    Some(query)
+}
+
+/// A variable or a blank node of a pattern, by name.
+type Name = String;
+
+fn term_name(t: &TermPattern) -> Option<Name> {
+    match t {
+        TermPattern::Variable(v) => Some(format!("?{}", v.as_str())),
+        TermPattern::BlankNode(b) => Some(format!("_:{}", b.as_str())),
+        _ => None,
+    }
+}
+
+/// The variables and blank nodes `p` mentions (a hint for join ordering).
+fn names(p: &GraphPattern, out: &mut Vec<Name>) {
+    use GraphPattern as G;
+    match p {
+        G::Bgp { patterns } => {
+            for tp in patterns {
+                out.extend(term_name(&tp.subject));
+                out.extend(term_name(&tp.object));
+                if let NamedNodePattern::Variable(v) = &tp.predicate {
+                    out.push(format!("?{}", v.as_str()));
+                }
+            }
+        }
+        G::Path {
+            subject, object, ..
+        } => {
+            out.extend(term_name(subject));
+            out.extend(term_name(object));
+        }
+        G::Join { left, right }
+        | G::Lateral { left, right }
+        | G::Union { left, right }
+        | G::LeftJoin { left, right, .. }
+        | G::Minus { left, right } => {
+            names(left, out);
+            names(right, out);
+        }
+        G::Extend {
+            inner, variable, ..
+        } => {
+            out.push(format!("?{}", variable.as_str()));
+            names(inner, out);
+        }
+        G::Project { variables, .. } => {
+            out.extend(variables.iter().map(|v| format!("?{}", v.as_str())));
+        }
+        G::Filter { inner, .. }
+        | G::Graph { inner, .. }
+        | G::OrderBy { inner, .. }
+        | G::Distinct { inner }
+        | G::Reduced { inner }
+        | G::Slice { inner, .. }
+        | G::Group { inner, .. }
+        | G::Service { inner, .. } => names(inner, out),
+        G::Values { variables, .. } => {
+            out.extend(variables.iter().map(|v| format!("?{}", v.as_str())));
+        }
+    }
+}
+
+/// The optimizer plans an EXISTS pattern without knowing which variables the
+/// solution being filtered binds, and evaluates it with hash joins: every
+/// part runs on its own, a `rdfs:subClassOf*` over the whole graph. Here the
+/// triples and paths of a plain EXISTS pattern are put in an order that
+/// starts from what the enclosing pattern binds and chained as nested loops
+/// (for triples and paths, a lateral join gives the same solutions as a join).
+fn order_exists(p: &mut GraphPattern, outer: &[Name]) {
+    use GraphPattern as G;
+    let scope = |inner: &G| {
+        let mut bound = outer.to_vec();
+        names(inner, &mut bound);
+        bound
+    };
+    match p {
+        G::Filter { expr, inner } => {
+            let bound = scope(inner);
+            order_exists_expr(expr, &bound);
+            order_exists(inner, outer);
+        }
+        G::LeftJoin {
+            left,
+            right,
+            expression,
+        } => {
+            if let Some(e) = expression {
+                let mut bound = scope(left);
+                names(right, &mut bound);
+                order_exists_expr(e, &bound);
+            }
+            order_exists(left, outer);
+            order_exists(right, outer);
+        }
+        G::Join { left, right }
+        | G::Lateral { left, right }
+        | G::Union { left, right }
+        | G::Minus { left, right } => {
+            order_exists(left, outer);
+            order_exists(right, outer);
+        }
+        G::Extend {
+            inner, expression, ..
+        } => {
+            let bound = scope(inner);
+            order_exists_expr(expression, &bound);
+            order_exists(inner, outer);
+        }
+        G::Graph { inner, .. }
+        | G::OrderBy { inner, .. }
+        | G::Project { inner, .. }
+        | G::Distinct { inner }
+        | G::Reduced { inner }
+        | G::Slice { inner, .. }
+        | G::Group { inner, .. } => order_exists(inner, outer),
+        G::Bgp { .. } | G::Path { .. } | G::Values { .. } | G::Service { .. } => {}
+    }
+}
+
+fn order_exists_expr(e: &mut Expression, bound: &[Name]) {
+    use Expression as E;
+    match e {
+        E::Exists(p) => {
+            let mut inner_bound = bound.to_vec();
+            names(p, &mut inner_bound);
+            order_exists(p, &inner_bound);
+            match p.as_mut() {
+                GraphPattern::Filter { inner, .. } => order_plain(inner, bound),
+                other => order_plain(other, bound),
+            }
+        }
+        E::Or(a, b)
+        | E::And(a, b)
+        | E::Equal(a, b)
+        | E::SameTerm(a, b)
+        | E::Greater(a, b)
+        | E::GreaterOrEqual(a, b)
+        | E::Less(a, b)
+        | E::LessOrEqual(a, b)
+        | E::Add(a, b)
+        | E::Subtract(a, b)
+        | E::Multiply(a, b)
+        | E::Divide(a, b) => {
+            order_exists_expr(a, bound);
+            order_exists_expr(b, bound);
+        }
+        E::UnaryPlus(a) | E::UnaryMinus(a) | E::Not(a) => order_exists_expr(a, bound),
+        E::If(a, b, c) => {
+            order_exists_expr(a, bound);
+            order_exists_expr(b, bound);
+            order_exists_expr(c, bound);
+        }
+        E::In(a, list) => {
+            order_exists_expr(a, bound);
+            list.iter_mut().for_each(|x| order_exists_expr(x, bound));
+        }
+        E::Coalesce(list) | E::FunctionCall(_, list) => {
+            list.iter_mut().for_each(|x| order_exists_expr(x, bound));
+        }
+        _ => {}
+    }
+}
+
+/// Reorders `p` when it is made of triples and paths only.
+fn order_plain(p: &mut GraphPattern, bound: &[Name]) {
+    fn flatten(p: &GraphPattern, out: &mut Vec<GraphPattern>) -> bool {
+        match p {
+            GraphPattern::Bgp { patterns } => {
+                out.extend(patterns.iter().map(|tp| GraphPattern::Bgp {
+                    patterns: vec![tp.clone()],
+                }));
+                true
+            }
+            GraphPattern::Path { .. } => {
+                out.push(p.clone());
+                true
+            }
+            GraphPattern::Join { left, right } => flatten(left, out) && flatten(right, out),
+            _ => false,
+        }
+    }
+    let mut items = Vec::new();
+    if !flatten(p, &mut items) || items.len() < 2 {
+        return;
+    }
+    let mut bound = bound.to_vec();
+    let mut chain: Option<GraphPattern> = None;
+    while !items.is_empty() {
+        let is_bound = |t: &TermPattern| term_name(t).is_none_or(|n| bound.contains(&n));
+        let cost = |item: &GraphPattern| match item {
+            GraphPattern::Bgp { patterns } => {
+                let tp = &patterns[0];
+                let p_bound = match &tp.predicate {
+                    NamedNodePattern::NamedNode(_) => true,
+                    NamedNodePattern::Variable(v) => bound.contains(&format!("?{}", v.as_str())),
+                };
+                match (is_bound(&tp.subject), p_bound, is_bound(&tp.object)) {
+                    (true, true, true) => 1,
+                    (true, true, false) => 10,
+                    (true, false, true) => 2,
+                    (false, true, true) => 10_000,
+                    (true, false, false) => 100,
+                    (false, false, true) => 100_000,
+                    (false, true, false) => 1_000_000,
+                    (false, false, false) => 1_000_000_000,
+                }
+            }
+            GraphPattern::Path {
+                subject, object, ..
+            } => match (is_bound(subject), is_bound(object)) {
+                (true, true) => 1,
+                (true, false) | (false, true) => 1_000,
+                (false, false) => 1_000_000_000,
+            },
+            _ => usize::MAX,
+        };
+        let next = (0..items.len())
+            .min_by_key(|&i| cost(&items[i]))
+            .unwrap_or(0);
+        let item = items.remove(next);
+        names(&item, &mut bound);
+        chain = Some(match chain {
+            None => item,
+            Some(left) => GraphPattern::Lateral {
+                left: Box::new(left),
+                right: Box::new(item),
+            },
+        });
+    }
+    if let Some(c) = chain {
+        *p = c;
+    }
+}
+
+struct Substitution<'b>(&'b [(Variable, Term)]);
+
+impl Substitution<'_> {
+    fn get(&self, v: &Variable) -> Option<&Term> {
+        self.0.iter().find(|b| b.0 == *v).map(|b| &b.1)
+    }
+
+    /// The value as a constant in a triple pattern.
+    fn iri_for(t: &Term) -> NamedNode {
+        match t {
+            Term::NamedNode(n) => n.clone(),
+            Term::BlankNode(b) => NamedNode::new_unchecked(format!("{BLANK}{}", b.as_str())),
+            // Matches nothing: no predicate or graph name is a literal.
+            _ => NamedNode::new_unchecked(format!("{BLANK}-")),
+        }
+    }
+
+    fn expr_for(t: &Term) -> Expression {
+        match t {
+            Term::NamedNode(n) => Expression::NamedNode(n.clone()),
+            Term::Literal(l) => Expression::Literal(l.clone()),
+            Term::BlankNode(b) => Expression::FunctionCall(
+                Function::Custom(NamedNode::new_unchecked(BLANK)),
+                vec![Expression::Literal(Literal::new_simple_literal(b.as_str()))],
+            ),
+            Term::Triple(_) => unreachable!("triples are not substituted"),
+        }
+    }
+
+    fn term(&self, t: &mut TermPattern) {
+        match t {
+            TermPattern::Variable(v) => {
+                if let Some(value) = self.get(v) {
+                    *t = match value {
+                        Term::Literal(l) => TermPattern::Literal(l.clone()),
+                        other => TermPattern::NamedNode(Self::iri_for(other)),
+                    };
+                }
+            }
+            TermPattern::Triple(tp) => self.triple(tp),
+            _ => {}
+        }
+    }
+
+    fn named(&self, n: &mut NamedNodePattern) {
+        if let NamedNodePattern::Variable(v) = n
+            && let Some(value) = self.get(v)
+        {
+            *n = NamedNodePattern::NamedNode(Self::iri_for(value));
+        }
+    }
+
+    fn triple(&self, tp: &mut TriplePattern) {
+        self.term(&mut tp.subject);
+        self.named(&mut tp.predicate);
+        self.term(&mut tp.object);
+    }
+
+    fn unbind(&self, vars: &mut Vec<Variable>) {
+        vars.retain(|v| self.get(v).is_none());
+    }
+
+    /// False when `p` holds a construct this does not handle.
+    #[must_use]
+    fn pattern(&self, p: &mut GraphPattern) -> bool {
+        use GraphPattern as G;
+        match p {
+            G::Bgp { patterns } => patterns.iter_mut().for_each(|tp| self.triple(tp)),
+            G::Path {
+                subject, object, ..
+            } => {
+                self.term(subject);
+                self.term(object);
+            }
+            G::Join { left, right }
+            | G::Lateral { left, right }
+            | G::Union { left, right }
+            | G::Minus { left, right } => {
+                return self.pattern(left) && self.pattern(right);
+            }
+            G::LeftJoin {
+                left,
+                right,
+                expression,
+            } => {
+                return self.pattern(left)
+                    && self.pattern(right)
+                    && expression.as_mut().is_none_or(|e| self.expr(e));
+            }
+            G::Filter { expr, inner } => return self.expr(expr) && self.pattern(inner),
+            G::Graph { name, inner } => {
+                self.named(name);
+                return self.pattern(inner);
+            }
+            G::Extend {
+                inner,
+                variable,
+                expression,
+            } => {
+                return self.get(variable).is_none()
+                    && self.expr(expression)
+                    && self.pattern(inner);
+            }
+            G::OrderBy { inner, expression } => {
+                return expression.iter_mut().all(|o| match o {
+                    OrderExpression::Asc(e) | OrderExpression::Desc(e) => self.expr(e),
+                }) && self.pattern(inner);
+            }
+            G::Project { inner, variables } => {
+                self.unbind(variables);
+                return self.pattern(inner);
+            }
+            G::Distinct { inner } | G::Reduced { inner } | G::Slice { inner, .. } => {
+                return self.pattern(inner);
+            }
+            G::Group {
+                inner,
+                variables,
+                aggregates,
+            } => {
+                if aggregates.iter().any(|(v, _)| self.get(v).is_some())
+                    || !aggregates.iter_mut().all(|(_, a)| match a {
+                        AggregateExpression::CountSolutions { .. } => true,
+                        AggregateExpression::FunctionCall { expr, .. } => self.expr(expr),
+                    })
+                    || !self.pattern(inner)
+                {
+                    return false;
+                }
+                // A key bound to the value keeps "no solutions, no groups".
+                for v in variables.iter() {
+                    if let Some(value) = self.get(v) {
+                        let body = std::mem::replace(inner.as_mut(), G::Bgp { patterns: vec![] });
+                        **inner = G::Extend {
+                            inner: Box::new(body),
+                            variable: v.clone(),
+                            expression: Self::expr_for(value),
+                        };
+                    }
+                }
+            }
+            G::Values { variables, .. } => return variables.iter().all(|v| self.get(v).is_none()),
+            #[allow(unreachable_patterns)]
+            _ => return false,
+        }
+        true
+    }
+
+    #[must_use]
+    fn expr(&self, e: &mut Expression) -> bool {
+        use Expression as E;
+        match e {
+            E::Variable(v) => {
+                if let Some(value) = self.get(v) {
+                    *e = Self::expr_for(value);
+                }
+            }
+            E::Bound(v) => {
+                if self.get(v).is_some() {
+                    *e = E::Literal(Literal::from(true));
+                }
+            }
+            E::Exists(p) => return self.pattern(p),
+            E::Or(a, b)
+            | E::And(a, b)
+            | E::Equal(a, b)
+            | E::SameTerm(a, b)
+            | E::Greater(a, b)
+            | E::GreaterOrEqual(a, b)
+            | E::Less(a, b)
+            | E::LessOrEqual(a, b)
+            | E::Add(a, b)
+            | E::Subtract(a, b)
+            | E::Multiply(a, b)
+            | E::Divide(a, b) => return self.expr(a) && self.expr(b),
+            E::UnaryPlus(a) | E::UnaryMinus(a) | E::Not(a) => return self.expr(a),
+            E::In(a, list) => return self.expr(a) && list.iter_mut().all(|x| self.expr(x)),
+            E::If(a, b, c) => return self.expr(a) && self.expr(b) && self.expr(c),
+            E::Coalesce(list) | E::FunctionCall(_, list) => {
+                return list.iter_mut().all(|x| self.expr(x));
+            }
+            E::NamedNode(_) | E::Literal(_) => {}
+            #[allow(unreachable_patterns)]
+            _ => return false,
+        }
+        true
     }
 }
 
@@ -505,6 +996,11 @@ mod tests {
             "SELECT $this WHERE { $this ?p ?o MINUS { $this ?p 1 } }"
         ));
         assert!(bad("SELECT $this WHERE { VALUES ?x { 1 } }"));
+        let lateral = "SELECT $this WHERE { $this ?p ?o LATERAL { SELECT $this ?o WHERE { $this ?q ?o } LIMIT 1 } }";
+        assert_eq!(
+            prepare(lateral, &[], None, &PRE).err().as_deref(),
+            Some("LATERAL is not standard SPARQL")
+        );
         assert!(bad("SELECT $this WHERE { BIND (1 AS $this) }"));
         assert!(bad(
             "SELECT $this WHERE { { SELECT ?o WHERE { ?s ?p ?o } } }"
