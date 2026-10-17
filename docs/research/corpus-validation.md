@@ -52,3 +52,15 @@ Server: every file opened, answered, went idle and exited cleanly. Findings:
    output without a base IRI, so a document parsed with one is refused when it
    has relative IRIs. The server never parses with a base, so users do not hit
    this today.
+
+## After the fixes (`docs/specs/corpus-findings.md`)
+
+- Findings 1, 2 and 5 fixed: `qudt-units.ttl` opens in 67 ms (was 2.3 s),
+  formats in 20 ms, and has 8,510 unknown-term warnings (was 9,609; the 1,099
+  on terms the file defines are gone). The rest come from the outdated bundled
+  QUDT snapshot; providing QUDT through `owl:imports` or a workspace file
+  silences them.
+- Finding 3 fixed: Brick's 24 SHACL violations are warnings naming the
+  unresolved imports, once import resolution has run (about a second after
+  start-up; the first validation before that still shows errors).
+- Finding 4 (N-Triples memory) is open.
