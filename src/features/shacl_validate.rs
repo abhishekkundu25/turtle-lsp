@@ -458,7 +458,11 @@ impl Placer<'_, '_, '_> {
     fn diagnostic(&mut self, r: &ValidationResult) -> Option<(String, Diagnostic)> {
         let (d, span) = self.location(r)?;
         let a = self.doc(d).clone();
-        let mut message = match pick_message(self.g, &r.messages) {
+        let computed = r
+            .computed_messages
+            .iter()
+            .map(|(text, lang)| (text.as_str(), *lang));
+        let mut message = match pick(computed).or_else(|| pick_message(self.g, &r.messages)) {
             Some(m) => m,
             None => self.component_message(d, r),
         };
@@ -568,10 +572,17 @@ impl Placer<'_, '_, '_> {
 
 /// `sh:message`: the one without a language tag or in English, else the first.
 fn pick_message(g: &Graph, messages: &[Id]) -> Option<String> {
-    let lits: Vec<(&str, Option<Iri>)> = messages
-        .iter()
-        .filter_map(|&m| g.term(m).literal().map(|l| (l.0, l.2)))
-        .collect();
+    pick(
+        messages
+            .iter()
+            .filter_map(|&m| g.term(m).literal().map(|l| (l.0, l.2))),
+    )
+}
+
+/// Of (text, language tag) messages, the one without a tag or in English,
+/// else the first.
+fn pick<'m>(messages: impl Iterator<Item = (&'m str, Option<Iri>)>) -> Option<String> {
+    let lits: Vec<(&str, Option<Iri>)> = messages.collect();
     let english = |l: &Option<Iri>| l.is_none_or(|t| t.as_str() == "en" || t.starts_with("en-"));
     lits.iter()
         .find(|l| english(&l.1))

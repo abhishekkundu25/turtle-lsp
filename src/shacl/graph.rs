@@ -188,6 +188,11 @@ impl<'a> Graph<'a> {
         self.triples.len()
     }
 
+    /// Every term with its id.
+    pub fn terms(&self) -> impl Iterator<Item = (Id, Term<'a>)> + '_ {
+        self.terms.iter().enumerate().map(|(i, t)| (i as Id, *t))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.triples.is_empty()
     }

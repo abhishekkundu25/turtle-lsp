@@ -5,10 +5,11 @@
 pub mod graph;
 pub mod literal;
 pub mod shapes;
+pub mod sparql;
 pub mod validate;
 
 pub use graph::Graph;
 pub use shapes::{Path, Shape, ShapeKind, Shapes};
-pub use validate::{ValidationResult, validate, validate_focus};
+pub use validate::{Failure, Report, ValidationResult, validate, validate_focus, validate_report};
 
 pub const SH: &str = "http://www.w3.org/ns/shacl#";

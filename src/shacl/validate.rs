@@ -6,6 +6,10 @@
 //! focus nodes. Covered: all targets (including implicit class targets and
 //! the `rdfs:subClassOf` closure), all property paths, and every SHACL Core
 //! constraint component; `sh:deactivated`, `sh:severity` and `sh:message`.
+//! SHACL-SPARQL: SPARQL-based constraints (`sh:sparql`), SPARQL-based
+//! constraint components (`sh:ConstraintComponent` with SELECT or ASK
+//! validators) and SPARQL-based targets (`sh:target` with `sh:select`), run
+//! through [`super::sparql`]. A query that cannot run is a [`Failure`].
 //!
 //! Choices where the spec leaves room:
 //! - a recursive shape reference (the same shape on the same focus node
@@ -22,9 +26,13 @@
 use super::Path;
 use super::graph::{Graph, Id, Term};
 use super::literal;
+use super::sparql::{self, Answer, Index, PreBound};
 use crate::syntax::{Iri, RDF, XSD};
 use regex::{Regex, RegexBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
+use spareval::QueryEvaluator;
+use spargebra::Query;
+use spargebra::term::{NamedNode, Term as RdfTerm, Variable};
 use std::cmp::Ordering;
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -43,10 +51,37 @@ pub struct ValidationResult {
     pub component: Iri,
     /// `sh:resultSeverity`: the shape's `sh:severity`, else `sh:Violation`.
     pub severity: Iri,
-    /// The shape's `sh:message` values.
+    /// The shape's `sh:message` values (for SPARQL, the constraint's or
+    /// validator's).
     pub messages: Vec<Id>,
+    /// Messages computed for this result: a SPARQL solution's `?message`, or
+    /// `messages` with their `{?var}` / `{$var}` templates filled, as (text,
+    /// language tag). When not empty, these replace `messages`.
+    pub computed_messages: Vec<(String, Option<Iri>)>,
+    /// `sh:sourceConstraint`: the SPARQL constraint that produced the result.
+    pub constraint: Option<Id>,
     /// The graph triple that states the constraint's parameter.
     pub param: u32,
+}
+
+/// A query in the shapes that could not run: it does not parse, breaks the
+/// SHACL-SPARQL restrictions, fails to evaluate, or a solution bound
+/// `?failure` to true. The SHACL specification calls the whole validation a
+/// failure then; the other results are still reported.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Failure {
+    /// The node whose `sh:select` / `sh:ask` failed.
+    pub node: Id,
+    /// The graph triple that states the query.
+    pub triple: Option<u32>,
+    pub message: String,
+}
+
+/// What a validation found.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub results: Vec<ValidationResult>,
+    pub failures: Vec<Failure>,
 }
 
 struct V {
@@ -80,6 +115,21 @@ struct V {
     qualified_disjoint: Iri,
     ignored_properties: Iri,
     xsd_boolean: Iri,
+    target: Iri,
+    sparql: Iri,
+    select: Iri,
+    ask: Iri,
+    prefixes: Iri,
+    declare: Iri,
+    prefix: Iri,
+    namespace: Iri,
+    owl_imports: Iri,
+    constraint_component: Iri,
+    parameter: Iri,
+    optional: Iri,
+    validator: Iri,
+    node_validator: Iri,
+    property_validator: Iri,
     /// Parameter -> component, for the parameters that need no extra lookup.
     params: FxHashMap<Iri, Param>,
 }
@@ -185,6 +235,21 @@ fn v() -> &'static V {
             qualified_disjoint: sh("qualifiedValueShapesDisjoint"),
             ignored_properties: sh("ignoredProperties"),
             xsd_boolean: Iri::intern(&format!("{XSD}boolean")),
+            target: sh("target"),
+            sparql: sh("sparql"),
+            select: sh("select"),
+            ask: sh("ask"),
+            prefixes: sh("prefixes"),
+            declare: sh("declare"),
+            prefix: sh("prefix"),
+            namespace: sh("namespace"),
+            owl_imports: Iri::intern("http://www.w3.org/2002/07/owl#imports"),
+            constraint_component: sh("ConstraintComponent"),
+            parameter: sh("parameter"),
+            optional: sh("optional"),
+            validator: sh("validator"),
+            node_validator: sh("nodeValidator"),
+            property_validator: sh("propertyValidator"),
             params: PARAMS.iter().map(|&(l, p)| (sh(l), p)).collect(),
         }
     })
@@ -236,6 +301,148 @@ enum C {
     Closed(FxHashSet<Iri>),
     HasValue(Id),
     In(FxHashSet<Id>),
+    Sparql(Rc<Check>),
+}
+
+/// A SPARQL-based constraint, or a shape's use of a SPARQL-based constraint
+/// component, ready to run.
+struct Check {
+    query: Query,
+    ask: bool,
+    /// `sh:sourceConstraint` (SPARQL constraints only).
+    constraint: Option<Id>,
+    component: Iri,
+    /// `sh:message` templates.
+    messages: Vec<Id>,
+    /// Component parameters, pre-bound by name.
+    bindings: Vec<(Variable, Id)>,
+    /// The node holding the query.
+    source: Id,
+}
+
+/// A SPARQL-based constraint component.
+struct Component {
+    iri: Iri,
+    /// (`sh:path`, variable name, `sh:optional`).
+    params: Vec<(Iri, String, bool)>,
+    node_validator: Option<Id>,
+    property_validator: Option<Id>,
+    validator: Option<Id>,
+}
+
+const SPARQL_CONSTRAINT: PreBound = PreBound {
+    names: &["this", "shapesGraph", "currentShape"],
+    required: &["this"],
+};
+
+/// The local name of `iri`: after its last `#`, `/` or `:`.
+fn local_name(iri: &str) -> &str {
+    iri.rsplit(['#', '/', ':']).next().unwrap_or(iri)
+}
+
+/// The prefixes `sh:prefixes` of `node` declares (`sh:declare`), following
+/// `owl:imports`.
+fn prefixes(g: &Graph, node: Id) -> Vec<(String, String)> {
+    let v = v();
+    let mut out = Vec::new();
+    let mut seen = FxHashSet::default();
+    let mut todo: Vec<Id> = g.objects(node, v.prefixes).collect();
+    while let Some(x) = todo.pop() {
+        if !seen.insert(x) {
+            continue;
+        }
+        for d in g.objects(x, v.declare) {
+            let text = |p: Iri| {
+                g.object(d, p).and_then(|o| match g.term(o) {
+                    Term::Iri(i) => Some(i.as_str()),
+                    t => t.literal().map(|l| l.0),
+                })
+            };
+            if let (Some(p), Some(ns)) = (text(v.prefix), text(v.namespace)) {
+                out.push((p.to_string(), ns.to_string()));
+            }
+        }
+        todo.extend(g.objects(x, v.owl_imports));
+    }
+    out
+}
+
+/// The `sh:select` (or, with `ask`, `sh:ask`) of `node`: (whether ASK, text,
+/// triple).
+fn query_text<'a>(g: &Graph<'a>, node: Id, ask: bool) -> Option<(bool, &'a str, u32)> {
+    let v = v();
+    g.out(node).find_map(|(i, t)| {
+        let is_ask = t.p == v.ask;
+        if t.p != v.select && !(ask && is_ask) {
+            return None;
+        }
+        g.term(t.o).literal().map(|l| (is_ask, l.0, i))
+    })
+}
+
+/// Prepares the query of `node`, or records why it cannot run.
+fn prepare(
+    g: &Graph,
+    node: Id,
+    ask: bool,
+    path: Option<&Path>,
+    pre: &PreBound,
+    failures: &mut Vec<Failure>,
+) -> Option<(Query, bool)> {
+    let (is_ask, text, triple) = query_text(g, node, ask)?;
+    match sparql::prepare(text, &prefixes(g, node), path, pre) {
+        Ok(q) => Some((q, is_ask)),
+        Err(message) => {
+            failures.push(Failure {
+                node,
+                triple: Some(triple),
+                message,
+            });
+            None
+        }
+    }
+}
+
+/// The SPARQL-based constraint components declared in `g`: instances of
+/// `sh:ConstraintComponent` (or a subclass) with an IRI and parameters.
+fn components(g: &Graph) -> Vec<Component> {
+    let v = v();
+    let Some(cc) = g.iri(v.constraint_component) else {
+        return Vec::new();
+    };
+    let mut classes = FxHashSet::default();
+    let mut todo = vec![cc];
+    let mut nodes = Vec::new();
+    while let Some(c) = todo.pop() {
+        if classes.insert(c) {
+            todo.extend(g.subjects(v.sub_class_of, c));
+            nodes.extend(g.subjects(v.rdf_type, c));
+        }
+    }
+    dedup(&mut nodes);
+    nodes
+        .into_iter()
+        .filter_map(|n| {
+            let iri = g.as_iri(n)?;
+            let params: Vec<(Iri, String, bool)> = g
+                .objects(n, v.parameter)
+                .filter_map(|p| {
+                    let path = g.as_iri(g.object(p, v.path)?)?;
+                    let optional = g.objects(p, v.optional).any(|o| {
+                        matches!(g.term(o).literal(), Some(("true", dt, _)) if dt == v.xsd_boolean)
+                    });
+                    Some((path, local_name(path.as_str()).to_string(), optional))
+                })
+                .collect();
+            (!params.is_empty()).then(|| Component {
+                iri,
+                params,
+                node_validator: g.object(n, v.node_validator),
+                property_validator: g.object(n, v.property_validator),
+                validator: g.object(n, v.validator),
+            })
+        })
+        .collect()
 }
 
 impl C {
@@ -270,6 +477,7 @@ impl C {
             C::Closed(_) => "Closed",
             C::HasValue(_) => "HasValue",
             C::In(_) => "In",
+            C::Sparql(c) => return c.component,
         })
     }
 }
@@ -386,6 +594,8 @@ struct Compiler<'g, 'a> {
     /// shapes it refers to, so a chain of thousands of `sh:node` references
     /// compiles without recursion (and without overflowing the stack).
     pending: Vec<(Id, ShapeIx)>,
+    components: Vec<Component>,
+    failures: Vec<Failure>,
 }
 
 impl Compiler<'_, '_> {
@@ -532,7 +742,113 @@ impl Compiler<'_, '_> {
                 shape.constraints.push((c, ti));
             }
         }
+        for &(ti, p, o) in &own {
+            if p == v.sparql {
+                self.sparql_constraint(&mut shape, ti, o);
+            }
+        }
+        self.component_uses(&mut shape, &own);
         shape
+    }
+
+    /// The SPARQL-based constraint `c` of `shape` (stated by triple `ti`).
+    fn sparql_constraint(&mut self, shape: &mut Shape, ti: u32, c: Id) {
+        let g = self.g;
+        let v = v();
+        if g.objects(c, v.deactivated).any(|d| self.is_true(d)) {
+            return;
+        }
+        let path = shape.path.as_ref();
+        if let Some((query, _)) = prepare(g, c, false, path, &SPARQL_CONSTRAINT, &mut self.failures)
+        {
+            let check = Check {
+                query,
+                ask: false,
+                constraint: Some(c),
+                component: sh("SPARQLConstraintComponent"),
+                messages: g.objects(c, v.message).collect(),
+                bindings: Vec::new(),
+                source: c,
+            };
+            shape.constraints.push((C::Sparql(Rc::new(check)), ti));
+        }
+    }
+
+    /// The SPARQL-based components whose mandatory parameters `shape` has.
+    fn component_uses(&mut self, shape: &mut Shape, own: &[(u32, Iri, Id)]) {
+        let g = self.g;
+        let v = v();
+        for comp in &self.components {
+            let mut bindings = Vec::new();
+            let mut first = None;
+            let complete = comp.params.iter().all(|(path, name, optional)| {
+                match own.iter().find(|t| t.1 == *path) {
+                    Some(&(ti, _, o)) => {
+                        first.get_or_insert(ti);
+                        bindings.push((Variable::new_unchecked(name.as_str()), o));
+                        true
+                    }
+                    None => *optional,
+                }
+            });
+            let Some(param) = first.filter(|_| complete) else {
+                continue;
+            };
+            let property = shape.path.is_some();
+            let specific = if property {
+                comp.property_validator
+            } else {
+                comp.node_validator
+            };
+            // sh:nodeValidator / sh:propertyValidator take SELECT queries,
+            // sh:validator ASK queries.
+            let Some((validator, ask)) = specific
+                .filter(|&s| query_text(g, s, false).is_some())
+                .map(|s| (s, false))
+                .or_else(|| comp.validator.map(|s| (s, true)))
+            else {
+                continue;
+            };
+            let mut names = vec!["this", "shapesGraph", "currentShape"];
+            let mut required = vec!["this"];
+            if ask {
+                names.push("value");
+                required.push("value");
+            }
+            for (_, name, _) in &comp.params {
+                names.push(name);
+                required.push(name);
+            }
+            let pre = PreBound {
+                names: &names,
+                required: &required,
+            };
+            let Some((query, is_ask)) = prepare(
+                g,
+                validator,
+                ask,
+                shape.path.as_ref(),
+                &pre,
+                &mut self.failures,
+            ) else {
+                continue;
+            };
+            let messages = if shape.messages.is_empty() {
+                g.objects(validator, v.message).collect()
+            } else {
+                shape.messages.clone()
+            };
+            let check = Check {
+                query,
+                ask: is_ask,
+                constraint: None,
+                component: comp.iri,
+                messages,
+                bindings,
+                source: validator,
+            };
+            shape.constraints.push((C::Sparql(Rc::new(check)), param));
+        }
     }
 
     /// `sh:qualifiedValueShape` with its counts and, when asked, the sibling
@@ -588,6 +904,13 @@ struct Run<'r, 'g, 'a> {
     stack: Vec<(ShapeIx, Id)>,
     supers: FxHashMap<Id, Rc<FxHashSet<Id>>>,
     conforms: FxHashMap<(ShapeIx, Id), bool>,
+    /// The graph as a SPARQL dataset, when the shapes use SPARQL.
+    ix: Option<&'r Index<'g>>,
+    ev: QueryEvaluator,
+    cancelled: &'r dyn Fn() -> bool,
+    /// `cancelled` said so between two queries.
+    stopped: bool,
+    failures: Vec<Failure>,
 }
 
 fn kind_bits(t: Term) -> u8 {
@@ -769,6 +1092,8 @@ impl Run<'_, '_, '_> {
                 component: c.component(),
                 severity: shape.severity,
                 messages: shape.messages.clone(),
+                computed_messages: Vec::new(),
+                constraint: None,
                 param,
             });
         };
@@ -944,6 +1269,157 @@ impl Run<'_, '_, '_> {
                 }
             }
             C::In(set) => each(out, &mut |x| !set.contains(&x)),
+            C::Sparql(check) => self.sparql(shape, check, param, focus, values, out),
+        }
+    }
+
+    fn fail(&mut self, node: Id, message: String) {
+        let f = Failure {
+            node,
+            triple: None,
+            message,
+        };
+        if !self.failures.contains(&f) {
+            self.failures.push(f);
+        }
+    }
+
+    /// Runs a SPARQL check on `focus`: a SELECT query once, an ASK query once
+    /// per value node.
+    fn sparql(
+        &mut self,
+        shape: &Shape,
+        check: &Check,
+        param: u32,
+        focus: Id,
+        values: &[Id],
+        out: &mut Vec<ValidationResult>,
+    ) {
+        let Some(ix) = self.ix else { return };
+        let g = self.g;
+        let var = Variable::new_unchecked;
+        let mut base: Vec<(Variable, RdfTerm)> = vec![
+            (var("this"), ix.term(focus)),
+            (var("currentShape"), ix.term(shape.node)),
+            (
+                var("shapesGraph"),
+                NamedNode::new_unchecked(sparql::SHAPES_GRAPH).into(),
+            ),
+        ];
+        base.extend(
+            check
+                .bindings
+                .iter()
+                .map(|(v, id)| (v.clone(), ix.term(*id))),
+        );
+        let fill = |lookup: &dyn Fn(&str) -> Option<RdfTerm>| -> Vec<(String, Option<Iri>)> {
+            check
+                .messages
+                .iter()
+                .filter_map(|&m| g.term(m).literal())
+                .map(|(text, _, lang)| (sparql::fill(text, lookup), lang))
+                .collect()
+        };
+        let result = |value: Option<Id>, path: Option<Path>, computed| ValidationResult {
+            focus,
+            path,
+            value,
+            shape: shape.node,
+            component: check.component,
+            severity: shape.severity,
+            messages: check.messages.clone(),
+            computed_messages: computed,
+            constraint: check.constraint,
+            param,
+        };
+        let asks: Vec<Option<Id>> = if check.ask {
+            values.iter().map(|&x| Some(x)).collect()
+        } else {
+            vec![None]
+        };
+        for value in asks {
+            if (self.cancelled)() {
+                self.stopped = true;
+                return;
+            }
+            let mut bindings = base.clone();
+            if let Some(x) = value {
+                bindings.push((var("value"), ix.term(x)));
+            }
+            let lookup_base = |n: &str| {
+                bindings
+                    .iter()
+                    .find(|b| b.0.as_str() == n)
+                    .map(|b| b.1.clone())
+            };
+            match sparql::run(&self.ev, ix, &check.query, bindings.clone()) {
+                Err(e) => self.fail(check.source, e),
+                Ok(Answer::Boolean(true)) => {}
+                Ok(Answer::Boolean(false)) => {
+                    out.push(result(value, shape.path.clone(), fill(&lookup_base)));
+                }
+                Ok(Answer::Solutions(solutions)) => {
+                    for sol in solutions {
+                        if matches!(sol.get("failure"), Some(RdfTerm::Literal(l)) if l.value() == "true")
+                        {
+                            self.fail(check.source, "a solution bound ?failure to true".into());
+                            continue;
+                        }
+                        let value = match sol.get("value") {
+                            Some(t) => ix.id(t),
+                            None => shape.path.is_none().then_some(focus),
+                        };
+                        let path = match sol.get("path") {
+                            Some(RdfTerm::NamedNode(n)) => {
+                                Some(Path::Predicate(Iri::intern(n.as_str())))
+                            }
+                            _ => shape.path.clone(),
+                        };
+                        let computed = match sol.get("message") {
+                            Some(RdfTerm::Literal(l)) => {
+                                vec![(l.value().to_string(), l.language().map(Iri::intern))]
+                            }
+                            _ => fill(&|n: &str| sol.get(n).cloned().or_else(|| lookup_base(n))),
+                        };
+                        out.push(result(value, path, computed));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The focus nodes a SPARQL-based target (`sh:target` with `sh:select`)
+    /// selects: the values of `?this`.
+    fn sparql_target(&mut self, target: Id, out: &mut Vec<Id>) {
+        let Some(ix) = self.ix else { return };
+        let g = self.g;
+        if g.objects(target, v().deactivated)
+            .any(|d| matches!(g.term(d).literal(), Some(("true", _, _))))
+        {
+            return;
+        }
+        let pre = PreBound {
+            names: &["shapesGraph"],
+            required: &[],
+        };
+        let Some((query, _)) = prepare(g, target, false, None, &pre, &mut self.failures) else {
+            return;
+        };
+        let graph = NamedNode::new_unchecked(sparql::SHAPES_GRAPH);
+        match sparql::run(
+            &self.ev,
+            ix,
+            &query,
+            [(Variable::new_unchecked("shapesGraph"), graph.into())],
+        ) {
+            Ok(Answer::Solutions(sols)) => {
+                out.extend(
+                    sols.iter()
+                        .filter_map(|s| s.get("this").and_then(|t| ix.id(t))),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => self.fail(target, e),
         }
     }
 
@@ -986,6 +1462,8 @@ impl Run<'_, '_, '_> {
                 && let Some(pi) = g.as_iri(o)
             {
                 out.extend(g.with_p(pi).map(|t| t.o));
+            } else if p == v.target {
+                self.sparql_target(o, &mut out);
             }
         }
         dedup(&mut out);
@@ -1017,6 +1495,7 @@ pub fn has_targets(g: &Graph) -> bool {
         v.target_node,
         v.target_subjects_of,
         v.target_objects_of,
+        v.target,
     ]
     .into_iter()
     .any(|p| g.with_p(p).next().is_some())
@@ -1038,6 +1517,16 @@ pub fn validate_focus(
     cancelled: &dyn Fn() -> bool,
     keep: &dyn Fn(Id) -> bool,
 ) -> Option<Vec<ValidationResult>> {
+    validate_report(g, cancelled, keep).map(|r| r.results)
+}
+
+/// Like [`validate_focus`], with the [`Failure`]s of SPARQL queries.
+/// `cancelled` is also polled between SPARQL queries.
+pub fn validate_report(
+    g: &Graph,
+    cancelled: &dyn Fn() -> bool,
+    keep: &dyn Fn(Id) -> bool,
+) -> Option<Report> {
     let v = v();
     // Shapes with targets, in graph order; shape-typed nodes may be class targets.
     let mut roots: Vec<Id> = Vec::new();
@@ -1046,6 +1535,7 @@ pub fn validate_focus(
         v.target_node,
         v.target_subjects_of,
         v.target_objects_of,
+        v.target,
     ] {
         roots.extend(g.with_p(p).map(|t| t.s));
     }
@@ -1062,16 +1552,28 @@ pub fn validate_focus(
         shapes: Vec::new(),
         index: FxHashMap::default(),
         pending: Vec::new(),
+        components: components(g),
+        failures: Vec::new(),
     };
     let roots: Vec<ShapeIx> = roots.into_iter().map(|r| comp.shape(r)).collect();
     comp.build_pending();
     let shapes = comp.shapes;
+    let uses_sparql = g.with_p(v.target).next().is_some()
+        || shapes
+            .iter()
+            .any(|s| s.constraints.iter().any(|c| matches!(c.0, C::Sparql(_))));
+    let ix = uses_sparql.then(|| Index::new(g));
     let mut run = Run {
         g,
         shapes: &shapes,
         stack: Vec::new(),
         supers: FxHashMap::default(),
         conforms: FxHashMap::default(),
+        ix: ix.as_ref(),
+        ev: QueryEvaluator::new().without_optimizations(),
+        cancelled,
+        stopped: false,
+        failures: comp.failures,
     };
     let mut out = Vec::new();
     for si in roots {
@@ -1087,9 +1589,17 @@ pub fn validate_focus(
                 continue;
             }
             run.check(si, focus, &mut out, true);
+            if run.stopped {
+                return None;
+            }
         }
     }
-    Some(out)
+    let mut failures = run.failures;
+    failures.dedup();
+    Some(Report {
+        results: out,
+        failures,
+    })
 }
 
 #[cfg(test)]
@@ -1148,5 +1658,95 @@ mod tests {
         );
         let g = Graph::new(&[&p.triples]);
         assert!(validate(&g, &|| true).is_none());
+    }
+
+    const HEAD: &str =
+        "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\n";
+
+    fn report(body: &str, cancelled: &dyn Fn() -> bool) -> Option<(usize, Vec<String>, usize)> {
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let g = Graph::new(&[&p.triples]);
+        let r = validate_report(&g, cancelled, &|_| true)?;
+        let messages = r
+            .results
+            .iter()
+            .flat_map(|x| x.computed_messages.iter().map(|m| m.0.clone()))
+            .collect();
+        Some((r.results.len(), messages, r.failures.len()))
+    }
+
+    const RULE: &str = "ex:S sh:targetClass ex:C ; sh:sparql [ sh:message \"{$this} has {?value}\" ; sh:prefixes ex:P ; sh:select \"SELECT $this ?value WHERE { $this ex:p ?value . FILTER (?value > 1) }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n";
+
+    #[test]
+    fn sparql_constraint_with_message_template() {
+        let (n, messages, failures) = report(
+            &format!("{RULE}ex:a a ex:C ; ex:p 1 , 2 .\nex:b a ex:C ; ex:p 3 ."),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!((n, failures), (2, 0));
+        assert!(
+            messages.contains(&"http://example.com/a has 2".to_string()),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn deactivated_sparql_constraint() {
+        let body = "ex:S sh:targetNode ex:a ; sh:sparql [ sh:deactivated true ; sh:select \"SELECT $this WHERE { }\" ] .";
+        assert_eq!(report(body, &|| false).unwrap().0, 0);
+    }
+
+    #[test]
+    fn sparql_target() {
+        let body = "ex:S sh:target [ a sh:SPARQLTarget ; sh:select \"SELECT ?this WHERE { ?this <http://example.com/p> 1 }\" ] ; sh:sparql [ sh:select \"SELECT $this WHERE { }\" ] .\nex:a ex:p 1 .\nex:b ex:p 2 .";
+        assert_eq!(report(body, &|| false).unwrap().0, 1);
+    }
+
+    #[test]
+    fn malformed_and_forbidden_queries_are_failures() {
+        for q in [
+            "SELECT $this WHERE { $this undeclared:p ?o }",
+            "SELECT $this WHERE { VALUES ?x { 1 } }",
+        ] {
+            let body = format!("ex:S sh:targetNode ex:a ; sh:sparql [ sh:select {q:?} ] .");
+            assert_eq!(report(&body, &|| false).unwrap().2, 1, "{q}");
+        }
+    }
+
+    #[test]
+    fn cancelled_between_queries() {
+        // Allow the poll before the focus node, stop at the one before the query.
+        let calls = std::cell::Cell::new(0);
+        let cancelled = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 1
+        };
+        let body = format!("{RULE}ex:a a ex:C ; ex:p 2 .");
+        assert!(report(&body, &cancelled).is_none());
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// One SPARQL constraint on 10,000 focus nodes (run with --nocapture
+    /// for the time).
+    #[test]
+    fn sparql_on_ten_thousand_focus_nodes() {
+        let mut body = RULE.to_string();
+        for i in 0..10_000 {
+            body.push_str(&format!("ex:n{i} a ex:C ; ex:p {} .\n", i % 3));
+        }
+        let start = std::time::Instant::now();
+        let (n, _, failures) = report(&body, &|| false).unwrap();
+        let took = start.elapsed();
+        println!("10,000 focus nodes, one SPARQL constraint: {took:?}");
+        assert_eq!((n, failures), (3333, 0));
+        if !cfg!(debug_assertions) {
+            assert!(took.as_secs_f64() < 1.0, "{took:?}");
+        }
     }
 }
