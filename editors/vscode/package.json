@@ -2,7 +2,7 @@
   "name": "turtle-language-server",
   "displayName": "Turtle RDF Language Server (TTL, OWL, SHACL)",
   "description": "Fast Turtle (.ttl) and RDF 1.2 support written in Rust: syntax highlighting, error checking, completion of 80+ vocabularies (rdf, rdfs, owl, skos, shacl, schema.org, foaf), hover docs, go to definition, rename and quick fixes for ontologies and linked data.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "abhishekkundu25",
   "license": "MIT",
   "repository": {

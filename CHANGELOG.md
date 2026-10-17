@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-10-18
 
 ### Features
 
@@ -36,6 +36,15 @@
 - W3C Turtle, TriG and N-Triples suites (982/982): stricter string and IRI
   escapes, long-string endings, triple-term contents, language tags (invalid
   tags are now errors).
+- Diagnostics are published under the URI the editor opened the file with.
+  Before, a path the editor spelled differently from the server (`%7E` for
+  `~`, as in Windows short names like `RUNNER~1`) got no diagnostics.
+
+### Security
+
+- `rustls` 0.23.46 (RUSTSEC-2026-0346 to 0349), used only when network
+  imports are on. RDF/XML imports cap entity expansion, so a small file can
+  no longer exhaust memory.
 
 ### Performance
 
