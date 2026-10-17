@@ -215,9 +215,27 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
             continue;
         };
         let mut parser = SparqlParser::new();
+        let mut unresolved = false;
         for p in ix.objects(&t.s, v.prefixes) {
             let decls = declared.entry(p).or_insert_with(|| declarations(a, k, p));
+            unresolved |= decls.is_empty();
             for (name, ns) in decls.iter() {
+                if let Ok(next) = parser.clone().with_prefix(name, ns) {
+                    parser = next;
+                }
+            }
+        }
+        // `sh:prefixes` names a node the workspace never declares (projects
+        // that keep the declarations outside their Turtle files): check the
+        // query against the prefixes in scope here instead of reporting every
+        // prefixed name.
+        if unresolved {
+            let in_scope = a
+                .external
+                .iter()
+                .map(|(n, ns)| (n.as_str(), ns.as_str()))
+                .chain(a.parsed.prefixes.iter().map(|d| (d.name.as_str(), &*d.iri)));
+            for (name, ns) in in_scope {
                 if let Ok(next) = parser.clone().with_prefix(name, ns) {
                     parser = next;
                 }
@@ -822,6 +840,23 @@ mod tests {
         let a = analysis("file:///w/s.ttl", &text);
         let msg = &shacl_lint(&a, &Knowledge::default())[0].message;
         assert!(msg.contains("foaf:"), "{msg}");
+    }
+
+    #[test]
+    fn an_undeclared_prefixes_node_falls_back_to_the_prefixes_in_scope() {
+        // Nothing in the workspace declares ex:elsewhere: `ex:` comes from the
+        // file's @prefix, `foaf:` from nowhere.
+        let body = |q: &str| {
+            format!("ex:S sh:sparql [ sh:prefixes ex:elsewhere ;\n  sh:select \"{q}\" ] .\n")
+        };
+        assert_eq!(
+            findings_with(&body("SELECT $this WHERE { $this ex:p ?v }"), &[]),
+            vec![]
+        );
+        assert_eq!(
+            findings_with(&body("SELECT $this WHERE { $this foaf:name ?v }"), &[]),
+            vec![(PREFIX, "foaf:name".to_owned())]
+        );
     }
 
     #[test]
