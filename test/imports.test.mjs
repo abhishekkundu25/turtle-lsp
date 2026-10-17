@@ -11,7 +11,7 @@ import fs from "node:fs"
 import http from "node:http"
 import os from "node:os"
 import path from "node:path"
-import { startServer, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
+import { startServer, tempDir as longTempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 process.env.NO_PROXY = "127.0.0.1,localhost"
@@ -46,7 +46,7 @@ after(() => web.close())
 const temps = []
 after(() => temps.forEach((d) => fs.rmSync(d, { recursive: true, force: true })))
 function tempDir(name) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `turtle-imports-${name}-`))
+  const d = longTempDir(`turtle-imports-${name}-`)
   temps.push(d)
   return d
 }

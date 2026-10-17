@@ -30,7 +30,7 @@ use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestI
 use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
 use lsp_types::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -57,6 +57,10 @@ pub struct Server {
     ws: Workspace,
     enc: Encoding,
     dirty: FxHashSet<String>,
+    /// How the client spelled an open document's URI, when that differs
+    /// from the key (`%7E` for `~`, `c%3A` for `C:`): diagnostics go back
+    /// under the client's spelling.
+    spelling: FxHashMap<String, String>,
     index_rx: Receiver<Vec<(String, Analysis)>>,
     /// The initial workspace index has been merged.
     indexed: bool,
@@ -235,6 +239,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         ws,
         enc,
         dirty: FxHashSet::default(),
+        spelling: FxHashMap::default(),
         index_rx,
         indexed: false,
         watch_dynamic,
@@ -548,6 +553,11 @@ impl Server {
                 if let Some(p) = parse::<DidOpenTextDocumentParams>(n.params) {
                     let uri = normalize_uri(p.text_document.uri.as_str());
                     let doc = p.text_document;
+                    if doc.uri.as_str() == uri {
+                        self.spelling.remove(&uri);
+                    } else {
+                        self.spelling.insert(uri.clone(), doc.uri.to_string());
+                    }
                     let syntax = crate::syntax::Syntax::detect(Some(&doc.language_id), &uri);
                     self.ws
                         .open_doc_as(uri.clone(), doc.text, doc.version, syntax);
@@ -583,6 +593,7 @@ impl Server {
                     if !self.pull {
                         self.send_diagnostics(&uri, vec![], None);
                     }
+                    self.spelling.remove(&uri);
                 }
             }
             DidChangeConfiguration::METHOD => {
@@ -835,7 +846,7 @@ impl Server {
 
     fn send_diagnostics(&self, uri: &str, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
         let params = PublishDiagnosticsParams {
-            uri: navigation::uri(uri),
+            uri: navigation::uri(self.spelling.get(uri).map_or(uri, String::as_str)),
             diagnostics,
             version,
         };

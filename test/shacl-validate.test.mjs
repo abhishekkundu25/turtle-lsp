@@ -7,7 +7,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { startServer, uriOf, fixtures } from "./lsp-client.mjs"
+import { startServer, tempDir, uriOf, fixtures } from "./lsp-client.mjs"
 
 const GOOD = `# A pump (fragment)
 obj:pump-07 a sd:Asset ;
@@ -19,7 +19,7 @@ const MESSAGE = "Every asset needs exactly one designation like =MC2.M05"
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function workspace(extra = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-shacl-"))
+  const dir = tempDir("turtle-shacl-")
   fs.cpSync(path.join(fixtures, "project"), dir, { recursive: true })
   fs.writeFileSync(path.join(dir, "data", "pump.ttl"), GOOD)
   for (const [f, text] of Object.entries(extra)) fs.writeFileSync(path.join(dir, f), text)

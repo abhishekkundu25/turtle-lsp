@@ -5,11 +5,11 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { startServer, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
+import { startServer, tempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
 
 let ws, s
 before(async () => {
-  ws = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-hierarchy-"))
+  ws = tempDir("turtle-hierarchy-")
   fs.cpSync(path.join(fixtures, "project"), ws, { recursive: true })
   s = await startServer({ cwd: ws })
 })

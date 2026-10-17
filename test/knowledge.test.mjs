@@ -8,14 +8,14 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { startServer, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
+import { startServer, tempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
 
 const PROJECT_SD = "https://ontology.example.com/plant/core/"
 const W3C_SD = "http://www.w3.org/ns/sparql-service-description#"
 
 let ws, s
 before(async () => {
-  ws = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-knowledge-"))
+  ws = tempDir("turtle-knowledge-")
   fs.cpSync(path.join(fixtures, "project"), path.join(ws, "project"), { recursive: true })
   fs.mkdirSync(path.join(ws, "outside"))
   s = await startServer({ cwd: ws })

@@ -324,3 +324,13 @@ test("workspace root comes from the client's rootUri, not the process cwd", asyn
     await other.stop()
   }
 })
+
+test("diagnostics come back under the client's spelling of the URI", async () => {
+  // `%7E` is `~` and `%2D` is `-`: the same file, spelled the way Node and
+  // VS Code spell some paths. A client matching URIs as strings needs its own.
+  const uri = scratch("spelled-uri").replace("spelled-uri", "spelled%2Duri%7E")
+  s.open(uri, "@prefix ex: <http://example.com/> .\nex:a ex:b ex:c ex:d .\n")
+  const diags = await s.diagnosticsFor(uri)
+  assert.ok(problems(diags).length > 0, fmt(diags))
+  s.close(uri)
+})

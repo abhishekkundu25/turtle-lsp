@@ -9,14 +9,14 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { startServer, uriOf, fixtures } from "./lsp-client.mjs"
+import { startServer, tempDir, uriOf, fixtures } from "./lsp-client.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const lint = (diags) => diags.filter((d) => d.code === "undescribed-term")
 const more = "sd:threshold a owl:DatatypeProperty .\nsd:active a owl:DatatypeProperty .\n"
 
 function workspace() {
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-lint-"))
+  const ws = tempDir("turtle-lint-")
   fs.cpSync(path.join(fixtures, "project"), ws, { recursive: true })
   fs.writeFileSync(path.join(ws, "core", "__more.ttl"), more)
   return ws

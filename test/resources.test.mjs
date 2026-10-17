@@ -6,7 +6,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { spawn } from "node:child_process"
-import { startServer, uriOf, fixtures, serverPath } from "./lsp-client.mjs"
+import { startServer, tempDir, uriOf, fixtures, serverPath } from "./lsp-client.mjs"
 import { cpuSeconds } from "./procs.mjs"
 
 const ws = path.join(fixtures, "workspace")
@@ -93,7 +93,7 @@ test("the imports thread costs nothing while idle, and a fetch in flight does no
   const pending = []
   const web = http.createServer((req, res) => pending.push(res))
   await new Promise((r) => web.listen(0, "127.0.0.1", r))
-  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-resources-cache-"))
+  const cache = tempDir("turtle-resources-cache-")
   process.env.TURTLE_LSP_CACHE_DIR = cache
   process.env.NO_PROXY = "127.0.0.1"
   try {
@@ -157,7 +157,7 @@ test("an idle server uses no CPU with shapes present, after a validation run", a
 
 test("the server exits when the editor goes away during a validation", async () => {
   // Validating a 10,000-node chain with an ex:next* path takes seconds.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-shacl-exit-"))
+  const dir = tempDir("turtle-shacl-exit-")
   let chain = "@prefix ex: <http://example.com/chain/> .\n@prefix sh: <http://www.w3.org/ns/shacl#> .\n"
   chain += "ex:S sh:targetSubjectsOf ex:next ; sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:minCount 1 ] .\n"
   for (let i = 0; i < 10000; i++) chain += `ex:n${i} ex:next ex:n${i + 1} .\n`
@@ -176,7 +176,7 @@ test("the server exits when the editor goes away during a validation", async () 
 
 test("deeply nested input is an error, not a crash (open file and indexed file)", async () => {
   const deep = (n) => `@prefix ex: <http://example.org/> .\nex:s ex:p ${"[ ex:p ".repeat(n)}ex:o${" ]".repeat(n)} .\nex:t ex:p ( ${"( ".repeat(n)}${")".repeat(n)} ) .\n`
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-deep-"))
+  const dir = tempDir("turtle-deep-")
   // The workspace index parses this one on a worker thread with a small stack.
   fs.writeFileSync(path.join(dir, "deep.ttl"), deep(20000))
   try {
@@ -201,7 +201,7 @@ test("a long chain of sh:node references validates without crashing", async () =
   let shapes = "@prefix ex: <http://example.com/chain/> .\n@prefix sh: <http://www.w3.org/ns/shacl#> .\n"
   shapes += "ex:S0 a sh:NodeShape ; sh:targetClass ex:C .\nex:x a ex:C .\n"
   for (let i = 0; i < 5000; i++) shapes += `ex:S${i} sh:node ex:S${i + 1} .\n`
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-chain-"))
+  const dir = tempDir("turtle-chain-")
   fs.writeFileSync(path.join(dir, "shapes.ttl"), shapes)
   try {
     const s = await startServer({ cwd: dir })

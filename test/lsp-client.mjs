@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process"
 import { Transform } from "node:stream"
+import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { createRequire } from "node:module"
@@ -11,6 +13,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 export const serverPath =
   process.env.TURTLE_LSP_BIN ?? path.join(root, "target", "release", process.platform === "win32" ? "turtle-lsp.exe" : "turtle-lsp")
 export const fixtures = path.join(root, "test", "fixtures")
+
+// A new temporary directory under its long name: Windows' temp path can be an
+// 8.3 short name (`RUNNER~1`), whose `~` clients and the server spell differently.
+export function tempDir(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
+}
 
 export function uriOf(file) {
   return pathToFileURL(file).toString()
