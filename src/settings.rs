@@ -26,6 +26,8 @@ pub struct Settings {
     pub shacl_enabled: bool,
     /// SHACL validation is skipped when the data has more triples than this.
     pub shacl_max_triples: u64,
+    /// Validate about a second after typing stops, not only on save.
+    pub shacl_on_type: bool,
     pub lint_undescribed_terms: bool,
     /// Fetch `owl:imports` over the network.
     pub imports_network: bool,
@@ -39,6 +41,7 @@ impl Default for Settings {
             inlay_hint_labels: InlayLabels::Opaque,
             shacl_enabled: true,
             shacl_max_triples: 2_000_000,
+            shacl_on_type: true,
             lint_undescribed_terms: true,
             imports_network: false,
             format_line_width: 100,
@@ -96,6 +99,7 @@ impl Settings {
                     self.shacl_max_triples = n;
                 }
             }
+            ["shacl", "onType"] => set_bool(&mut self.shacl_on_type, v),
             ["lint", "undescribedTerms"] => set_bool(&mut self.lint_undescribed_terms, v),
             ["imports", "network"] => set_bool(&mut self.imports_network, v),
             ["format", "lineWidth"] => {
@@ -146,7 +150,8 @@ mod tests {
     fn defaults() {
         let s = Settings::from_layers([]);
         assert_eq!(s.inlay_hint_labels, InlayLabels::Opaque);
-        assert!(s.shacl_enabled && s.lint_undescribed_terms && !s.imports_network);
+        assert!(s.shacl_enabled && s.shacl_on_type);
+        assert!(s.lint_undescribed_terms && !s.imports_network);
         assert_eq!(s.shacl_max_triples, 2_000_000);
         assert_eq!(s.format_line_width, 100);
         assert!(s.prefixes.is_empty());
@@ -157,7 +162,7 @@ mod tests {
         let nested = json!({
             "prefixes": {"ex:": "http://example.org/", "bad": 3},
             "inlayHints": {"labels": "all"},
-            "shacl": {"enabled": false, "maxTriples": 10},
+            "shacl": {"enabled": false, "maxTriples": 10, "onType": false},
             "lint": {"undescribedTerms": false},
             "imports": {"network": true},
             "format": {"lineWidth": 80},
@@ -168,6 +173,7 @@ mod tests {
             "inlayHints.labels": "all",
             "shacl.enabled": false,
             "shacl.maxTriples": 10,
+            "shacl.onType": false,
             "lint": {"undescribedTerms": false},
             "imports.network": true,
             "turtle.format.lineWidth": 80,
@@ -177,7 +183,8 @@ mod tests {
         assert_eq!(a.prefixes.len(), 1);
         assert_eq!(a.prefixes["ex"], "http://example.org/");
         assert_eq!(a.inlay_hint_labels, InlayLabels::All);
-        assert!(!a.shacl_enabled && !a.lint_undescribed_terms && a.imports_network);
+        assert!(!a.shacl_enabled && !a.shacl_on_type);
+        assert!(!a.lint_undescribed_terms && a.imports_network);
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
     }
 

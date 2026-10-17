@@ -48,6 +48,12 @@ fn is_import_source(path: &std::path::Path) -> bool {
 /// Pause after a described-set change before other documents are refreshed.
 const DESCRIBED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// Pause after the last edit before the workspace is validated (`shacl.onType`).
+const SHACL_TYPING_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// A SHACL run shows progress only once it has lasted this long.
+const SHACL_PROGRESS_DELAY: Duration = Duration::from_millis(200);
+
 pub struct Server {
     conn: Connection,
     /// Every message read so far. lsp-server hands over messages through a
@@ -103,6 +109,28 @@ pub struct Server {
     shacl_generation: u64,
     /// The latest validation results per document.
     shacl_diagnostics: shacl_validate::ByUri,
+    /// When to validate after typing stops (`shacl.onType`); each edit pushes it back.
+    shacl_typing_due: Option<std::time::Instant>,
+    /// When the running validation starts showing progress.
+    shacl_progress_due: Option<std::time::Instant>,
+    /// The client declared `window.workDoneProgress`.
+    work_done_progress: bool,
+    /// Tokens of the progress shown, per kind of work.
+    index_progress: Option<String>,
+    imports_progress: Option<String>,
+    shacl_progress: Option<String>,
+    /// Progress whose create request is unanswered, by that request's id.
+    progress_pending: FxHashMap<RequestId, PendingProgress>,
+    /// Tokens whose `begin` went out and whose `end` has not.
+    progress_live: FxHashSet<String>,
+}
+
+/// A progress waiting for the client to accept its token.
+struct PendingProgress {
+    token: String,
+    title: String,
+    /// The end message, when the work ended before the client answered.
+    ended: Option<String>,
 }
 
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
@@ -168,6 +196,10 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     })
     .map(|(_, m)| m)
     .collect();
+    let work_done_progress = raw
+        .pointer("/capabilities/window/workDoneProgress")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let config_pull = params
         .capabilities
         .workspace
@@ -264,6 +296,14 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         shacl_rx: never(),
         shacl_generation: 0,
         shacl_diagnostics: Default::default(),
+        shacl_typing_due: None,
+        shacl_progress_due: None,
+        work_done_progress,
+        index_progress: None,
+        imports_progress: None,
+        shacl_progress: None,
+        progress_pending: FxHashMap::default(),
+        progress_live: FxHashSet::default(),
     };
     let clean = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
@@ -383,6 +423,9 @@ impl Server {
     /// or sent `exit` without `shutdown`.
     fn main_loop(&mut self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         self.register_watchers();
+        if !self.indexed {
+            self.index_progress = self.progress_begin("Indexing workspace");
+        }
         loop {
             let first = select! {
                 recv(self.inbox) -> m => match m { Ok(m) => Some(m), Err(_) => return Ok(false) },
@@ -392,6 +435,16 @@ impl Server {
                 }
                 recv(self.described_due.map_or_else(never, crossbeam_channel::at)) -> _ => {
                     self.described_settled();
+                    None
+                }
+                recv(self.shacl_typing_due.map_or_else(never, crossbeam_channel::at)) -> _ => {
+                    self.shacl_typing_due = None;
+                    self.validate_shacl();
+                    None
+                }
+                recv(self.shacl_progress_due.map_or_else(never, crossbeam_channel::at)) -> _ => {
+                    self.shacl_progress_due = None;
+                    self.shacl_progress = self.progress_begin("Validating SHACL shapes");
                     None
                 }
                 recv(self.imports.results()) -> done => {
@@ -407,6 +460,9 @@ impl Server {
                         Err(_) => {
                             self.shacl = None;
                             self.shacl_rx = never();
+                            self.shacl_progress_due = None;
+                            let token = self.shacl_progress.take();
+                            self.progress_end(token, "Validation stopped".into());
                         }
                     }
                     None
@@ -450,6 +506,7 @@ impl Server {
             self.check_described();
             self.publish_dirty();
             self.sync_imports();
+            self.track_imports_progress();
             self.refresh_if_needed();
         }
     }
@@ -534,6 +591,9 @@ impl Server {
                 let _ = guard(&method, || self.notification(n));
             }
             Message::Response(r) => {
+                if let Some(p) = self.progress_pending.remove(&r.id) {
+                    self.progress_accepted(p, r.response_result.is_ok());
+                }
                 if self.config_request.as_ref() == Some(&r.id) {
                     self.config_request = None;
                     // One item per requested section: [turtle].
@@ -569,9 +629,12 @@ impl Server {
                     let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws
                         .change_doc(&uri, p.text_document.version, p.content_changes, self.enc);
-                    // SHACL results stay until the next save (they describe the
-                    // saved text, like a build-on-save checker's).
                     self.after_edit(&uri);
+                    // SHACL results stay until typing pauses (or the next save).
+                    if self.settings.shacl_on_type {
+                        self.shacl_typing_due =
+                            Some(std::time::Instant::now() + SHACL_TYPING_DEBOUNCE);
+                    }
                 }
             }
             DidSaveTextDocument::METHOD => {
@@ -651,6 +714,7 @@ impl Server {
             self.knowledge_changed();
         }
         self.imports.retry();
+        self.shacl_typing_due = None;
         self.validate_shacl();
     }
 
@@ -675,6 +739,105 @@ impl Server {
             // soften its results.
             self.validate_shacl();
         }
+        self.track_imports_progress();
+    }
+
+    /// Show progress while a resolution pass is running.
+    fn track_imports_progress(&mut self) {
+        match (self.imports.busy(), self.imports_progress.is_some()) {
+            (true, false) => {
+                self.imports_progress = self.progress_begin("Resolving owl:imports");
+            }
+            (false, true) => {
+                let n = self.imports.unresolved().len();
+                let msg = match n {
+                    0 => "All imports resolved".to_string(),
+                    1 => "1 import unresolved".to_string(),
+                    n => format!("{n} imports unresolved"),
+                };
+                let token = self.imports_progress.take();
+                self.progress_end(token, msg);
+            }
+            _ => {}
+        }
+    }
+
+    /// Ask the client for a progress token for `title`, when the client
+    /// supports progress. `begin` goes out once the client accepts the token
+    /// (see `progress_accepted`); the main loop never waits for that.
+    fn progress_begin(&mut self, title: &str) -> Option<String> {
+        if !self.work_done_progress {
+            return None;
+        }
+        let token = format!("turtle-progress-{}", self.next_id + 1);
+        let id = self.send_request(
+            lsp_types::request::WorkDoneProgressCreate::METHOD,
+            WorkDoneProgressCreateParams {
+                token: NumberOrString::String(token.clone()),
+            },
+        );
+        self.progress_pending.insert(
+            id,
+            PendingProgress {
+                token: token.clone(),
+                title: title.into(),
+                ended: None,
+            },
+        );
+        Some(token)
+    }
+
+    /// The client answered a create request: begin (and end, if the work is
+    /// already over). A refused token is dropped.
+    fn progress_accepted(&mut self, p: PendingProgress, ok: bool) {
+        if !ok {
+            return;
+        }
+        self.send_progress(
+            &p.token,
+            WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                title: p.title,
+                cancellable: Some(false),
+                ..Default::default()
+            }),
+        );
+        match p.ended {
+            Some(message) => self.send_end(&p.token, message),
+            None => {
+                self.progress_live.insert(p.token);
+            }
+        }
+    }
+
+    fn progress_end(&mut self, token: Option<String>, message: String) {
+        let Some(token) = token else { return };
+        if self.progress_live.remove(&token) {
+            self.send_end(&token, message);
+        } else if let Some(p) = self
+            .progress_pending
+            .values_mut()
+            .find(|p| p.token == token)
+        {
+            p.ended = Some(message);
+        }
+    }
+
+    fn send_end(&self, token: &str, message: String) {
+        self.send_progress(
+            token,
+            WorkDoneProgress::End(WorkDoneProgressEnd {
+                message: Some(message),
+            }),
+        );
+    }
+
+    fn send_progress(&self, token: &str, value: WorkDoneProgress) {
+        let params = ProgressParams {
+            token: NumberOrString::String(token.into()),
+            value: ProgressParamsValue::WorkDone(value),
+        };
+        let n = Notification::new(lsp_types::notification::Progress::METHOD.into(), params);
+        let _ = self.conn.sender.send(Message::Notification(n));
     }
 
     fn request_config(&mut self) {
@@ -740,7 +903,16 @@ impl Server {
     }
 
     fn merge_index(&mut self, files: Option<Vec<(String, Analysis)>>) {
-        self.ws.add_disk(files.unwrap_or_default(), false);
+        let files = files.unwrap_or_default();
+        let token = self.index_progress.take();
+        self.progress_end(
+            token,
+            match files.len() {
+                1 => "1 file".to_string(),
+                n => format!("{n} files"),
+            },
+        );
+        self.ws.add_disk(files, false);
         self.indexed = true;
         // The sender is gone now; a disconnected channel is always ready, which
         // would wake the main loop forever.
@@ -1157,6 +1329,9 @@ impl Server {
             if let Some(w) = &self.shacl {
                 w.cancel(self.shacl_generation);
             }
+            self.shacl_progress_due = None;
+            let token = self.shacl_progress.take();
+            self.progress_end(token, "Validation off".into());
             if !self.shacl_diagnostics.is_empty() {
                 self.shacl_diagnostics.clear();
                 self.knowledge_changed();
@@ -1167,6 +1342,13 @@ impl Server {
             let (worker, rx) = shacl_validate::Worker::start();
             self.shacl = Some(worker);
             self.shacl_rx = rx;
+        }
+        // A superseded run counts as the same validation going on.
+        if self.work_done_progress
+            && self.shacl_progress.is_none()
+            && self.shacl_progress_due.is_none()
+        {
+            self.shacl_progress_due = Some(std::time::Instant::now() + SHACL_PROGRESS_DELAY);
         }
         if let Some(w) = &self.shacl {
             w.submit(shacl_validate::Job {
@@ -1180,7 +1362,14 @@ impl Server {
     }
 
     fn shacl_outcome(&mut self, o: shacl_validate::Outcome) {
-        if o.generation != self.shacl_generation || o.diagnostics == self.shacl_diagnostics {
+        if o.generation != self.shacl_generation {
+            return;
+        }
+        self.shacl_progress_due = None;
+        if let Some(token) = self.shacl_progress.take() {
+            self.progress_end(Some(token), violation_summary(&o.diagnostics));
+        }
+        if o.diagnostics == self.shacl_diagnostics {
             return;
         }
         self.shacl_diagnostics = o.diagnostics;
@@ -1204,9 +1393,80 @@ impl Server {
     }
 }
 
+/// Counts of a validation's results by severity, e.g. "2 errors, 1 warning
+/// in 2 files", or "No problems". Skip notices are not results.
+fn violation_summary(by_uri: &shacl_validate::ByUri) -> String {
+    let is_result = |d: &&Diagnostic| !matches!(&d.code, Some(NumberOrString::String(c)) if c == shacl_validate::SKIPPED_CODE);
+    let (mut errors, mut warnings, mut info, mut files) = (0, 0, 0, 0);
+    for diags in by_uri.values() {
+        let mut any = false;
+        for d in diags.iter().filter(is_result) {
+            any = true;
+            match d.severity {
+                Some(DiagnosticSeverity::WARNING) => warnings += 1,
+                Some(DiagnosticSeverity::INFORMATION) | Some(DiagnosticSeverity::HINT) => info += 1,
+                _ => errors += 1,
+            }
+        }
+        files += usize::from(any);
+    }
+    let plural = |n: usize, one: &str, many: &str| match n {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        n => Some(format!("{n} {many}")),
+    };
+    let parts: Vec<String> = [
+        plural(errors, "error", "errors"),
+        plural(warnings, "warning", "warnings"),
+        plural(info, "info", "info"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if parts.is_empty() {
+        return "No problems".into();
+    }
+    let files = if files == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{files} files")
+    };
+    format!("{} in {files}", parts.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::guard;
+
+    #[test]
+    fn violation_summary_counts_results_and_files() {
+        use super::{Diagnostic, NumberOrString, violation_summary};
+        use lsp_types::DiagnosticSeverity as S;
+        let d = |code: &str, severity: S| Diagnostic {
+            code: Some(NumberOrString::String(code.into())),
+            severity: Some(severity),
+            ..Default::default()
+        };
+        let mut by = super::shacl_validate::ByUri::default();
+        assert_eq!(violation_summary(&by), "No problems");
+        by.insert("a".into(), vec![d("shacl-skipped", S::INFORMATION)]);
+        assert_eq!(violation_summary(&by), "No problems");
+        by.insert("b".into(), vec![d("shacl-violation", S::ERROR)]);
+        assert_eq!(violation_summary(&by), "1 error in 1 file");
+        by.insert(
+            "c".into(),
+            vec![
+                d("shacl-violation", S::ERROR),
+                d("shacl-violation", S::WARNING),
+            ],
+        );
+        assert_eq!(violation_summary(&by), "2 errors, 1 warning in 2 files");
+        by.insert("d".into(), vec![d("shacl-violation", S::INFORMATION)]);
+        assert_eq!(
+            violation_summary(&by),
+            "2 errors, 1 warning, 1 info in 3 files"
+        );
+    }
 
     #[test]
     fn guard_turns_a_panic_into_an_error() {

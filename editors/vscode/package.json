@@ -173,6 +173,12 @@
           "markdownDescription": "Skip SHACL validation when the workspace holds more triples than this.",
           "scope": "resource"
         },
+        "turtle.shacl.onType": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Also validate about a second after you stop typing, on the unsaved text. When off, validation runs on save only.",
+          "scope": "resource"
+        },
         "turtle.lint.undescribedTerms": {
           "type": "boolean",
           "default": true,

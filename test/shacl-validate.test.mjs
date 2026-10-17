@@ -1,4 +1,4 @@
-// SHACL validation on save. Each test runs in a temporary copy of
+// SHACL validation on save and after typing pauses. Each test runs in a temporary copy of
 // test/fixtures/project (whose data conforms to its shapes) with one more
 // data file, data/pump.ttl, that is valid until a test makes it violate
 // sdsh:AssetShape's designation pattern.
@@ -77,7 +77,7 @@ test("saving a violating file shows the violation on its triple; fixing it clear
     w.s.open(w.pump, GOOD)
     assert.deepEqual(shacl(await w.s.diagnosticsFor(w.pump)), [])
     w.s.change(w.pump, BAD)
-    // Typing alone does not validate.
+    // Typing validates only once it pauses for a second.
     await sleep(300)
     assert.deepEqual(shacl(await w.s.diagnosticsFor(w.pump)), [])
 
@@ -285,3 +285,156 @@ test("a violation that only exists with a dataset merged in is reported in that 
   }
 })
 
+
+test("typing validates the unsaved text once typing pauses; editing back clears it", async () => {
+  const w = await session()
+  try {
+    w.s.open(w.pump, GOOD)
+    assert.deepEqual(shacl(await w.s.diagnosticsFor(w.pump)), [])
+    w.s.change(w.pump, BAD)
+    const diags = shacl(await until(w.s, w.pump, (d) => shacl(d).length > 0, 5000))
+    assert.equal(diags.length, 1)
+    assert.equal(diags[0].message, MESSAGE)
+    w.s.change(w.pump, GOOD)
+    await until(w.s, w.pump, (d) => shacl(d).length === 0, 5000)
+  } finally {
+    await w.end()
+  }
+})
+
+test("a burst of edits is validated once, after it ends", async () => {
+  const w = await session()
+  try {
+    w.s.open(w.pump, GOOD)
+    assert.deepEqual(shacl(await w.s.diagnosticsFor(w.pump)), [])
+    const from = w.s.publications.length
+    // Alternate between violating and conforming text, ending violating: a
+    // validation during the burst would leave a violation on every later
+    // publication.
+    for (let i = 0; i < 20; i++) {
+      w.s.change(w.pump, i % 2 === 0 ? GOOD : BAD)
+      await sleep(50)
+    }
+    const burstEnd = performance.now()
+    await until(w.s, w.pump, (d) => shacl(d).length > 0, 5000)
+    await sleep(1500)
+    const withViolation = w.s.publications
+      .slice(from)
+      .filter((p) => p.uri === w.pump && shacl(p.diagnostics).length > 0)
+    assert.equal(withViolation.length, 1, `${withViolation.length} publications with the violation`)
+    assert.ok(withViolation[0].at - burstEnd > 800, `validated ${(withViolation[0].at - burstEnd).toFixed(0)} ms after the burst`)
+  } finally {
+    await w.end()
+  }
+})
+
+test("shacl.onType false: typing does not validate, saving does", async () => {
+  const w = await session({ initializationOptions: { shacl: { onType: false } } })
+  const file = path.join(w.dir, "data", "pump.ttl")
+  try {
+    w.s.open(w.pump, GOOD)
+    assert.deepEqual(shacl(await w.s.diagnosticsFor(w.pump)), [])
+    w.s.change(w.pump, BAD)
+    await sleep(1500)
+    assert.deepEqual(shacl(await w.s.diagnosticsFor(w.pump)), [])
+    save(w.s, w.pump, file, BAD)
+    await until(w.s, w.pump, (d) => shacl(d).length > 0)
+  } finally {
+    await w.end()
+  }
+})
+
+// The test client answers window/workDoneProgress/create with null (success).
+const PROGRESS = { window: { workDoneProgress: true } }
+
+// The progress of each token: { title, end } (end is the end message, or
+// true without one), in the order begun.
+function progressByToken(s) {
+  const by = new Map()
+  for (const { token, value } of s.progress) {
+    if (value.kind === "begin") by.set(token, { title: value.title, end: undefined })
+    else if (value.kind === "end" && by.has(token)) by.get(token).end = value.message ?? true
+  }
+  return by
+}
+
+test("progress: indexing is created, begun and ended", async () => {
+  const w = await session({ capabilities: PROGRESS })
+  try {
+    const created = w.s.serverRequests
+      .filter((r) => r.method === "window/workDoneProgress/create")
+      .map((r) => r.params.token)
+    // begin goes out once the client has answered create: wait for the end.
+    const indexed = () => [...progressByToken(w.s)].find(([, p]) => /index/i.test(p.title) && p.end)
+    for (let i = 0; i < 100 && !indexed(); i++) await sleep(20)
+    const indexing = indexed()
+    assert.ok(indexing, JSON.stringify(w.s.progress))
+    assert.ok(created.includes(indexing[0]), "token created before use")
+    assert.match(String(indexing[1].end), /\d+ files?/)
+  } finally {
+    await w.end()
+  }
+})
+
+const CHAIN_SHAPES = `@prefix ex: <http://example.com/chain/> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+ex:ChainShape sh:targetSubjectsOf ex:next ;
+  sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:minCount 1 ] .
+`
+function chain() {
+  let text = "@prefix ex: <http://example.com/chain/> .\n"
+  for (let i = 0; i < 8000; i++) text += `ex:n${i} ex:next ex:n${i + 1} .\n`
+  return text
+}
+
+test("progress: a slow SHACL run reports begin and ends with a count", async () => {
+  const w = await session({ capabilities: PROGRESS }, { "chain.ttl": chain(), "chain-shapes.ttl": CHAIN_SHAPES })
+  const file = path.join(w.dir, "data", "pump.ttl")
+  try {
+    w.s.open(w.pump, BAD)
+    save(w.s, w.pump, file, BAD)
+    await until(w.s, w.pump, (d) => shacl(d).length > 0, 20000)
+    await sleep(100)
+    const runs = [...progressByToken(w.s).values()].filter((p) => /SHACL/.test(p.title))
+    assert.ok(runs.length > 0, JSON.stringify(w.s.progress))
+    assert.ok(
+      runs.some((p) => /^\d+ errors? in \d+ files?$/.test(p.end)),
+      JSON.stringify(runs)
+    )
+    // No pop-ups.
+    assert.ok(!w.s.serverRequests.some((r) => r.method === "window/showMessageRequest"))
+  } finally {
+    await w.end()
+  }
+})
+
+test("progress: none without the client capability", async () => {
+  const w = await session({}, { "chain.ttl": chain(), "chain-shapes.ttl": CHAIN_SHAPES })
+  const file = path.join(w.dir, "data", "pump.ttl")
+  try {
+    w.s.open(w.pump, BAD)
+    save(w.s, w.pump, file, BAD)
+    await until(w.s, w.pump, (d) => shacl(d).length > 0, 20000)
+    assert.deepEqual(w.s.progress, [])
+    assert.ok(!w.s.serverRequests.some((r) => r.method === "window/workDoneProgress/create"))
+  } finally {
+    await w.end()
+  }
+})
+
+test("progress: nothing is sent for a token the client refuses", async () => {
+  const w = await session({
+    capabilities: PROGRESS,
+    onRequest: (method) => {
+      if (method === "window/workDoneProgress/create") throw new Error("no progress here")
+      return null
+    },
+  })
+  try {
+    assert.ok(w.s.serverRequests.some((r) => r.method === "window/workDoneProgress/create"))
+    await sleep(200)
+    assert.deepEqual(w.s.progress, [])
+  } finally {
+    await w.end()
+  }
+})

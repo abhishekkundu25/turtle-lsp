@@ -142,6 +142,8 @@ pub struct Imports {
     results_tx: Sender<Done>,
     results: Receiver<Done>,
     generation: u64,
+    /// The generation of the last answer taken (see [`Imports::busy`]).
+    answered: u64,
     last: Option<Request>,
     /// Knowledge generation and network setting the last request was built from.
     seen: Option<(u64, bool)>,
@@ -167,6 +169,7 @@ impl Imports {
             results_tx,
             results,
             generation: 0,
+            answered: 0,
             last: None,
             seen: None,
             status: FxHashMap::default(),
@@ -179,6 +182,11 @@ impl Imports {
     /// Answers from the background thread, for the main loop to select on.
     pub fn results(&self) -> &Receiver<Done> {
         &self.results
+    }
+
+    /// A resolution pass is running: its answer has not been taken yet.
+    pub fn busy(&self) -> bool {
+        self.answered != self.generation
     }
 
     pub fn status(&self, iri: &str) -> Option<&Status> {
@@ -284,6 +292,7 @@ impl Imports {
         if done.generation != self.generation {
             return false;
         }
+        self.answered = done.generation;
         let mut changed = false;
         let keep: FxHashSet<String> = done.loaded.iter().map(|l| l.key.clone()).collect();
         for key in self.registered.difference(&keep) {

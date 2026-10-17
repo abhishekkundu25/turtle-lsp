@@ -29,7 +29,7 @@ the full W3C test suites and real public ontologies; see
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
 - **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
-- **SHACL validation**: on save, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core; W3C SHACL Core suite 98/98, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled` and `turtle.shacl.maxTriples`.
+- **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core; W3C SHACL Core suite 98/98, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
 
 ## Tested against the real world
 
@@ -165,7 +165,7 @@ code --install-extension turtle-lsp-*.vsix
 Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
 (prefixes for every file), `turtle.trace.server` (log LSP traffic), and the
 server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
-`turtle.shacl.maxTriples`, `turtle.lint.undescribedTerms`,
+`turtle.shacl.maxTriples`, `turtle.shacl.onType`, `turtle.lint.undescribedTerms`,
 `turtle.imports.network` (off in untrusted workspaces) and
 `turtle.format.lineWidth`.
 

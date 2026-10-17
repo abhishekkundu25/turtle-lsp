@@ -65,10 +65,15 @@ export async function startServer({
   const waiters = []
   const logs = []
   const published = []
+  // Every publication in order, with its diagnostics.
+  const publications = []
+  // `$/progress` notifications ({ token, value }), in order.
+  const progress = []
   const serverRequests = []
   const versions = new Map()
   conn.onNotification("textDocument/publishDiagnostics", (p) => {
     published.push(p.uri)
+    publications.push({ at: performance.now(), ...p })
     // A report for an older version than the one last sent (e.g. a republish
     // after the initial index lands) is stale: the next one is the answer.
     if (p.version != null && versions.has(p.uri) && p.version < versions.get(p.uri)) return
@@ -76,6 +81,7 @@ export async function startServer({
     for (const w of waiters.splice(0)) w()
   })
   conn.onNotification("window/logMessage", (p) => logs.push(p.message))
+  conn.onNotification("$/progress", (p) => progress.push(p))
   conn.onRequest((method, params) => {
     serverRequests.push({ method, params })
     return onRequest(method, params)
@@ -101,6 +107,8 @@ export async function startServer({
     logs,
     stray,
     published,
+    publications,
+    progress,
     serverRequests,
     get stderr() {
       return stderr

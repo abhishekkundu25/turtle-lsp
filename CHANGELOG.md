@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **SHACL validation while typing**: the workspace is validated about a
+  second after typing stops, on the unsaved text; saving still validates at
+  once. Setting `turtle.shacl.onType` (default on) turns it off.
+- **Progress** for indexing, `owl:imports` resolution and SHACL runs that
+  last more than 200 ms, for clients that support work done progress. A SHACL
+  run ends with a summary such as "3 violations in 2 files".
+
 ## 0.2.0 — 2026-10-18
 
 ### Features
