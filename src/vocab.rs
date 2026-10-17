@@ -36,6 +36,8 @@ pub struct Vocabulary {
     body: &'static str,
     terms: OnceLock<Vec<Term>>,
     index: OnceLock<FxHashMap<String, usize>>,
+    /// Lowercase local name and its char count, parallel to `terms`.
+    lower: OnceLock<Vec<(String, usize)>>,
 }
 
 impl Vocabulary {
@@ -60,12 +62,27 @@ impl Vocabulary {
     }
 
     /// Closest defined term by edit distance, for "did you mean" fixes.
+    /// Ties go to the shorter name, then to the earlier term.
     pub fn suggest(&self, local: &str) -> Option<&Term> {
         let lower = local.to_lowercase();
+        let n = lower.chars().count();
         let max = (local.chars().count() / 3).clamp(1, 3);
+        let names = self.lower.get_or_init(|| {
+            self.terms()
+                .iter()
+                .map(|t| {
+                    let l = t.local.to_lowercase();
+                    let c = l.chars().count();
+                    (l, c)
+                })
+                .collect()
+        });
         self.terms()
             .iter()
-            .map(|t| (levenshtein(&lower, &t.local.to_lowercase()), t))
+            .zip(names)
+            // Edit distance is at least the difference in length.
+            .filter(|(_, (_, c))| c.abs_diff(n) <= max)
+            .map(|(t, (l, _))| (levenshtein(&lower, l), t))
             .filter(|(d, _)| *d <= max)
             .min_by_key(|(d, t)| (*d, t.local.len()))
             .map(|(_, t)| t)
@@ -119,6 +136,7 @@ fn load() -> Vocabularies {
             body: &DATA[start..end],
             terms: OnceLock::new(),
             index: OnceLock::new(),
+            lower: OnceLock::new(),
         });
     }
     let by_prefix = all.iter().enumerate().map(|(i, v)| (v.prefix, i)).collect();
@@ -241,6 +259,39 @@ mod tests {
                 .any(|s| s == "http://xmlns.com/foaf/0.1/Agent"),
             "{supers:?}"
         );
+    }
+
+    #[test]
+    fn suggest_matches_the_unpruned_search() {
+        let full = |v: &'static Vocabulary, local: &str| {
+            let lower = local.to_lowercase();
+            let max = (local.chars().count() / 3).clamp(1, 3);
+            v.terms()
+                .iter()
+                .map(|t| (levenshtein(&lower, &t.local.to_lowercase()), t))
+                .filter(|(d, _)| *d <= max)
+                .min_by_key(|(d, t)| (*d, t.local.len()))
+                .map(|(_, t)| t.local.as_str())
+        };
+        for v in &VOCABS.all {
+            for t in v.terms().iter().step_by(7).take(40) {
+                let l = &t.local;
+                for probe in [
+                    format!("{l}x"),
+                    l.chars().skip(1).collect::<String>(),
+                    l.to_uppercase(),
+                    format!("{l}Zzz"),
+                    l.chars().rev().collect::<String>(),
+                ] {
+                    assert_eq!(
+                        v.suggest(&probe).map(|t| t.local.as_str()),
+                        full(v, &probe),
+                        "{}:{probe}",
+                        v.prefix
+                    );
+                }
+            }
+        }
     }
 
     #[test]

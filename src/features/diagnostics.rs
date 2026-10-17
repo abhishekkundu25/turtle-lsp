@@ -209,6 +209,8 @@ pub fn diagnostics_with(
     }
 
     // Terms of well-known vocabularies (matched by namespace IRI, not prefix name).
+    // Suggestions are memoised: a file can use one unknown term thousands of times.
+    let mut suggestions: FxHashMap<(&str, &str), Option<&str>> = FxHashMap::default();
     for r in &a.parsed.refs {
         if matches!(r.form, Form::A) {
             continue;
@@ -231,6 +233,8 @@ pub fn diagnostics_with(
                 out.push(d);
             }
             Some(_) => {}
+            // Described by the workspace or a resolved import: newer than the snapshot.
+            None if k.is_described(&r.iri) => {}
             None => {
                 let mut msg = format!(
                     "'{local}' is not defined in the {} vocabulary <{}>",
@@ -242,8 +246,11 @@ pub fn diagnostics_with(
                     "unknown-term",
                     String::new(),
                 );
-                if let Some(s) = v.suggest(local) {
-                    msg.push_str(&format!(". Did you mean '{}'?", s.local));
+                let suggestion = *suggestions
+                    .entry((v.namespace, local))
+                    .or_insert_with(|| v.suggest(local).map(|t| t.local.as_str()));
+                if let Some(s) = suggestion {
+                    msg.push_str(&format!(". Did you mean '{s}'?"));
                     let replacement = match r.form {
                         Form::PName { .. } => {
                             let text_prefix = a
@@ -253,9 +260,9 @@ pub fn diagnostics_with(
                                 .find(|u| u.span == r.span)
                                 .map(|u| u.name.to_string())
                                 .unwrap_or_default();
-                            format!("{text_prefix}:{}", s.local)
+                            format!("{text_prefix}:{s}")
                         }
-                        _ => format!("<{}{}>", v.namespace, s.local),
+                        _ => format!("<{}{s}>", v.namespace),
                     };
                     d.data = Some(json!({ "replace": replacement }));
                 }
