@@ -231,6 +231,9 @@ pub struct Parsed {
     pub syntax: Syntax,
     pub prefixes: Vec<PrefixDecl>,
     pub base: Option<String>,
+    /// The base the parse started from (the document's URL), if any; `base`
+    /// is the last `@base` directive.
+    pub document_base: Option<String>,
     pub statements: Vec<Statement>,
     /// TriG graph blocks in text order (empty for Turtle and N-Triples).
     pub graphs: Vec<GraphBlock>,

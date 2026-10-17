@@ -86,6 +86,7 @@ pub fn parse_with_base(
     }
     let mut out = Parsed {
         syntax,
+        document_base: base.map(str::to_string),
         ..Parsed::default()
     };
     for t in &all {

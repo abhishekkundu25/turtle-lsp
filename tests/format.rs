@@ -468,3 +468,18 @@ fn w3c_trig_and_ntriples_files_format_safely() {
     );
     assert!(checked >= 100, "only {checked} W3C files checked");
 }
+
+#[test]
+fn relative_iris_format_when_parsed_with_a_base() {
+    let src = "<> a <Thing> .\n<a>   <b> <c> .\n";
+    let parsed = turtle_lsp::syntax::parse_with_base(
+        src,
+        &PrefixMap::default(),
+        Syntax::Turtle,
+        Some("http://example.com/doc"),
+    );
+    assert_eq!(
+        format(src, &parsed, &PrefixMap::default(), &Options::default()).as_deref(),
+        Some("<> a <Thing> .\n\n<a> <b> <c> .\n")
+    );
+}

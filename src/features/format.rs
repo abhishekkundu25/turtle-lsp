@@ -24,7 +24,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::syntax::lexer::{Kind, Token, tokenize};
-use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple, parse};
+use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple, parse_with_base};
 use lsp_types::{FormattingOptions, Position, Range, TextEdit};
 use rustc_hash::FxHashMap;
 
@@ -93,7 +93,8 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
     .document()?;
     let out = Printer::new(&doc, opts, parsed.syntax).document(&items);
 
-    let again = parse(&out, external, parsed.syntax);
+    // Same starting base as the original, or relative IRIs would not match.
+    let again = parse_with_base(&out, external, parsed.syntax, parsed.document_base.as_deref());
     let same = !again.errors.iter().any(|e| e.severity == Severity::Error)
         && again.comments.len() == doc.comments.len()
         && same_triples(&again.triples, &parsed.triples)
