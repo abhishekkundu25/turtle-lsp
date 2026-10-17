@@ -21,6 +21,8 @@ use crate::syntax::{Iri, Node, PrefixMap, RDF, Span, XSD};
 use crate::vocab::{TermKind, VOCABS};
 use rustc_hash::FxHashMap;
 
+mod sparql;
+
 /// Codes that depend on the whole workspace (see [`super::diagnostics::needs_index`]).
 pub const NEEDS_INDEX: &[&str] = &[
     // An IRI shape's sh:path may live in a file the index has not read yet.
@@ -28,6 +30,8 @@ pub const NEEDS_INDEX: &[&str] = &[
     "shacl-unknown-class",
     "shacl-bad-datatype",
     "shacl-dangling-shape",
+    // sh:prefixes may be declared in a file the index has not read yet.
+    sparql::PREFIX,
 ];
 
 pub struct Finding {
@@ -236,6 +240,8 @@ pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
             }
         }
     }
+
+    sparql::lint(a, k, &mut cx.out);
 
     cx.out.sort_by_key(|f| (f.span.start, f.span.end));
     cx.out
