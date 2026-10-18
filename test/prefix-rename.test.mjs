@@ -5,6 +5,7 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { startServer, tempDir, uriOf, positionOf } from "./lsp-client.mjs"
 
 const files = {
@@ -21,6 +22,8 @@ let ws, s
 const file = (name) => path.join(ws, name)
 const uri = (name) => uriOf(file(name))
 const text = (name) => fs.readFileSync(file(name), "utf8")
+// A URI from the server as a workspace-relative name with forward slashes.
+const nameOf = (u) => path.relative(ws, fileURLToPath(u)).split(path.sep).join("/")
 
 before(async () => {
   ws = tempDir("turtle-prefix-rename-")
@@ -56,7 +59,7 @@ async function rename(name, needle, newName, offset = 1) {
 function edited(edit) {
   const out = {}
   for (const [u, edits] of Object.entries(edit.changes ?? {})) {
-    const name = path.relative(ws, new URL(u).pathname)
+    const name = nameOf(u)
     out[name] = [...edits]
       .sort((a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character)
       .map((e) => `${e.range.start.line}:${e.range.start.character} ${e.newText}`)
@@ -94,7 +97,7 @@ test("after a shared rename no file has an undeclared prefix", async () => {
   const edit = await rename("prefixes.ttl", "ex:", "eg")
   const after = {}
   for (const [u, edits] of Object.entries(edit.changes)) {
-    const name = path.relative(ws, new URL(u).pathname)
+    const name = nameOf(u)
     after[name] = apply(text(name), edits)
   }
   assert.equal(after["prefixes.ttl"], "@prefix eg: <http://example.org/> .\n@prefix taken: <http://taken.org/> .\n")
