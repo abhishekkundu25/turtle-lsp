@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- Renaming a shared prefix back to a name that some other file declares for
+  itself is no longer refused when that file does not use the prefix being
+  renamed (for example renaming `ex:` to `eg:` and then back to `ex:`).
+
 ## 0.4.1 — 2026-10-19
 
 ### Fixes

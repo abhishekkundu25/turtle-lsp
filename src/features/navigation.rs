@@ -316,6 +316,9 @@ pub fn rename(
                         || d.uri == source.uri
                         || is_prefix_file(d)
                         || declares(d, &old)
+                        // A file that does not use it is not renamed, so its
+                        // own prefixes cannot clash with the new name.
+                        || !d.parsed.prefix_uses.iter().any(|u| u.name == old)
                     {
                         continue;
                     }

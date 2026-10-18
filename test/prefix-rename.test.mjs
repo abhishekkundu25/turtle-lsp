@@ -139,3 +139,34 @@ test("a prefix from the turtle.prefixes setting cannot be renamed in a file", as
   fs.writeFileSync(file("settings-use.ttl"), "fromsettings:a fromsettings:p fromsettings:b .\n")
   await assert.rejects(rename("settings-use.ttl", "fromsettings:a", "fs"), /turtle\.prefixes/)
 })
+
+test("a shared prefix can be renamed and then renamed back", async () => {
+  // own.ttl declares ex: itself but never uses eg:, so renaming eg: back to
+  // ex: does not touch it and must not be refused because of it.
+  const saved = {}
+  const save = async (edit) => {
+    for (const [u, edits] of Object.entries(edit.changes)) {
+      const name = nameOf(u)
+      saved[name] ??= text(name)
+      fs.writeFileSync(file(name), apply(text(name), edits))
+    }
+    s.notify("workspace/didChangeWatchedFiles", {
+      changes: Object.keys(edit.changes).map((uri) => ({ uri, type: 2 })),
+    })
+  }
+  try {
+    await save(await rename("prefixes.ttl", "ex:", "eg"))
+    const back = await rename("prefixes.ttl", "eg:", "ex")
+    const expected = Object.fromEntries(
+      Object.entries(shared).map(([name, edits]) => [name, edits.map((e) => e.replace(/ eg$/, " ex"))]),
+    )
+    assert.deepEqual(edited(back), expected)
+    await save(back)
+    for (const [name, original] of Object.entries(saved)) assert.equal(text(name), original, name)
+  } finally {
+    for (const [name, original] of Object.entries(saved)) fs.writeFileSync(file(name), original)
+    s.notify("workspace/didChangeWatchedFiles", {
+      changes: Object.keys(saved).map((name) => ({ uri: uri(name), type: 2 })),
+    })
+  }
+})
