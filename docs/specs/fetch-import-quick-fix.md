@@ -137,6 +137,24 @@ cannot open.
 | 1 `import-core` | `src/imports.rs`, `src/analysis.rs`, `src/features/hover.rs` | — | Unit tests above; `cargo test --release --locked --lib` green; clippy clean |
 | 2 `cache-docs` | `src/workspace.rs`, `src/server.rs` (only `diagnostics_for` and the open path) | — | Unit test: an open doc under the cache dir is not in the knowledge index and gets no diagnostics |
 | 3 `wiring` | `src/server.rs`, `test/imports.test.mjs`, `test/protocol.test.mjs`, `README.md`, `editors/vscode/README.md`, `CHANGELOG.md` | 1, 2 | End-to-end tests above green; docs describe the fix |
+| 4 `cache-hygiene` | `test/resources.test.mjs`, `test/lsp-client.mjs`, `test/procs.mjs`, `test/unknown-term.test.mjs` | 1, 2 (runs alongside 3) | Cache checks below green next to the idle-CPU and exit checks |
+
+### Cache hygiene checks (slice 4)
+
+Added to the resource hygiene suite, beside idle CPU and process exit:
+
+- The test suite never writes to the user's real cache: `startServer` gives
+  every server a private `TURTLE_LSP_CACHE_DIR` (a temp dir removed when the
+  test process exits) unless the test sets one. A test asserts that a fetch
+  lands in the test's cache dir and the real cache dir is not created or
+  changed.
+- After a fetch (by the quick fix and by the setting) the cache dir holds only
+  `<16 hex>.ttl` files: no `*.tmp<pid>` left from the atomic write.
+- A server that goes away mid-fetch leaves no temp file in the cache.
+- Opening and closing a cached copy leaves the cache files byte-identical.
+- An idle server uses no CPU after a quick-fix fetch has finished.
+- Temp dirs a test creates are removed (fixes `test/unknown-term.test.mjs`,
+  which never removed its workspace).
 
 Full validation (`npm test`, `npm run bench`, clippy, idle CPU and no stray
 server processes) runs once all three have landed.
