@@ -1,6 +1,6 @@
 # Fetch one import on request, and open cached imports
 
-Status: in progress · 2026-10-18 · Branch: `fetch-import-quick-fix`
+Status: done · 2026-10-18 · Branch: `fetch-import-quick-fix`
 
 ## Problem Statement
 
@@ -158,3 +158,17 @@ Added to the resource hygiene suite, beside idle CPU and process exit:
 
 Full validation (`npm test`, `npm run bench`, clippy, idle CPU and no stray
 server processes) runs once all three have landed.
+
+## Departures from the plan
+
+- `workspace/executeCommand` does not call the import sync itself: the main
+  loop already syncs imports after every batch of messages, and
+  `Imports::fetch` clears the request memo so that pass sends the job.
+- `fetch_actions` also requires the diagnostic's source to be turtle-lsp, as
+  the other quick fixes do.
+- A job superseded during the debounce passes its `refetch` on to the newer
+  job, so editing right after a click does not lose the retry.
+- Beyond slice 4: the Neovim and VS Code test runners also give their servers
+  a private import cache, and the Neovim test now removes its temp home.
+- The cached copy starts with an `@base` line, so hover's line next to the URL
+  is the cached file's line (one more than the original's).
