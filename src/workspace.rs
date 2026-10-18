@@ -35,6 +35,8 @@ pub struct Doc {
     pub version: i32,
     pub syntax: Syntax,
     analysis: Option<Arc<Analysis>>,
+    /// A cached copy of an import: the import already contributes its facts.
+    cached_import: bool,
 }
 
 #[derive(Default)]
@@ -48,6 +50,8 @@ pub struct Workspace {
     knowledge: Knowledge,
     /// Directory -> prefixes from the nearest prefixes.ttl (None = no file found).
     prefix_cache: FxHashMap<PathBuf, Arc<PrefixMap>>,
+    /// Where fetched imports are cached (canonical), if there is a cache.
+    import_cache: Option<PathBuf>,
 }
 
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
@@ -82,6 +86,17 @@ pub fn path_to_uri(path: &Path) -> Option<String> {
     url::Url::from_file_path(path).ok().map(|u| u.to_string())
 }
 
+/// `path` with symlinks resolved, as far as it exists (`/var` vs `/private/var`).
+fn canonical(path: &Path) -> PathBuf {
+    if let Ok(p) = path.canonicalize() {
+        return p;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) => canonical(dir).join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// A file this server reads: `.ttl`, `.turtle`, `.trig` or `.nt`.
 pub fn is_turtle(path: &Path) -> bool {
     Syntax::from_extension(&path.to_string_lossy()).is_some()
@@ -92,8 +107,15 @@ impl Workspace {
         Workspace {
             roots,
             settings_prefixes,
+            import_cache: crate::imports::cache_dir().map(|d| canonical(&d.join("imports"))),
             ..Default::default()
         }
+    }
+
+    /// An open document that is a cached copy of an import: analyzed, but
+    /// neither registered with the knowledge index nor diagnosed.
+    pub fn is_cached_import(&self, uri: &str) -> bool {
+        self.open.get(uri).is_some_and(|d| d.cached_import)
     }
 
     // ---- documents ----
@@ -105,10 +127,15 @@ impl Workspace {
     }
 
     pub fn open_doc_as(&mut self, uri: String, text: String, version: i32, syntax: Syntax) {
-        // The open text supersedes the indexed copy (re-read on close), and a
-        // second full analysis of a large file costs hundreds of MB. The index
-        // keeps its contribution until the open document is analyzed.
-        self.disk.remove(&uri);
+        let cached_import = self.import_cache.as_ref().is_some_and(|cache| {
+            uri_to_path(&uri).is_some_and(|p| canonical(&p).starts_with(cache))
+        });
+        if !cached_import {
+            // The open text supersedes the indexed copy (re-read on close), and
+            // a second full analysis of a large file costs hundreds of MB. The
+            // index keeps its contribution until the open document is analyzed.
+            self.disk.remove(&uri);
+        }
         self.open.insert(
             uri,
             Doc {
@@ -116,6 +143,7 @@ impl Workspace {
                 version,
                 syntax,
                 analysis: None,
+                cached_import,
             },
         );
     }
@@ -153,7 +181,9 @@ impl Workspace {
 
     /// Closing a file keeps it indexed from disk.
     pub fn close_doc(&mut self, uri: &str) {
-        self.open.remove(uri);
+        if self.open.remove(uri).is_some_and(|d| d.cached_import) {
+            return;
+        }
         // Only RDF files belong in the index (a .txt opened as Turtle does not).
         if let Some(path) = uri_to_path(uri).filter(|p| is_turtle(p)) {
             self.reindex_disk_file(&path);
@@ -165,6 +195,7 @@ impl Workspace {
     /// open document's (once analyzed), else the disk copy's.
     fn sync(&mut self, uri: &str) {
         match self.open.get(uri) {
+            Some(d) if d.cached_import => {}
             Some(d) => {
                 if let Some(a) = &d.analysis {
                     self.knowledge.set(uri, Source::Open, a.clone());
@@ -215,7 +246,9 @@ impl Workspace {
             syntax,
         ));
         doc.analysis = Some(a.clone());
-        self.knowledge.set(uri, Source::Open, a.clone());
+        if !doc.cached_import {
+            self.knowledge.set(uri, Source::Open, a.clone());
+        }
         Some(a)
     }
 
@@ -398,6 +431,37 @@ mod tests {
         assert_eq!(normalize_uri(&uri), uri);
         assert_eq!(normalize_uri(&normalize_uri(&uri)), uri);
         assert_eq!(normalize_uri("untitled:Untitled-1"), "untitled:Untitled-1");
+    }
+
+    #[test]
+    fn cached_imports_are_analyzed_but_not_registered() {
+        let dir = std::env::temp_dir().join(format!("turtle-lsp-cache-{}", std::process::id()));
+        let cache = dir.join("cache").join("imports");
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut ws = Workspace {
+            import_cache: Some(canonical(&cache)),
+            ..Default::default()
+        };
+        let text = "@prefix ex: <http://example.org/> .\nex:A a ex:B .\n";
+        let cached = path_to_uri(&cache.join("a.ttl")).unwrap();
+        let own = path_to_uri(&dir.join("b.ttl")).unwrap();
+        let import = Arc::new(Analysis::new(cached.clone(), text, Arc::default(), false));
+        ws.knowledge_mut()
+            .add_external("http://example.org/", import);
+
+        ws.open_doc(cached.clone(), text.into(), 1);
+        ws.open_doc(own.clone(), text.into(), 1);
+        assert!(ws.is_cached_import(&cached));
+        assert!(!ws.is_cached_import(&own));
+        assert!(ws.analysis(&cached).is_some());
+        assert!(ws.knowledge().get(&cached).is_none());
+        assert!(ws.knowledge().get(&own).is_some());
+        assert_eq!(ws.knowledge().docs().count(), 2);
+
+        ws.close_doc(&cached);
+        assert!(!ws.disk.contains_key(&cached));
+        assert_eq!(ws.knowledge().docs().count(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(windows)]

@@ -944,6 +944,10 @@ impl Server {
 
     /// Diagnostics for `uri`, or the panic message if computing them failed.
     fn diagnostics_for(&mut self, uri: &str) -> Result<Option<Vec<Diagnostic>>, String> {
+        // A cached copy of an import is read-only: nothing to fix there.
+        if self.ws.is_cached_import(uri) {
+            return Ok(Some(Vec::new()));
+        }
         let enc = self.enc;
         let indexed = self.indexed;
         let opts = diagnostics::Options::from_settings(&self.settings);
