@@ -1,5 +1,5 @@
 // Runs test/nvim/spec.lua in a headless, isolated Neovim and turns each check into a test.
-import { test } from "node:test"
+import { test, after } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
@@ -25,6 +25,7 @@ const run =
           XDG_STATE_HOME: home,
           XDG_DATA_HOME: home,
           XDG_CONFIG_HOME: home,
+          TURTLE_LSP_CACHE_DIR: path.join(home, "cache"),
         },
         encoding: "utf8",
         timeout: 120000,
@@ -33,6 +34,8 @@ const run =
 const output = run ? `${run.stdout}\n${run.stderr}` : ""
 const lines = output.split(/\r?\n/).filter((l) => /^(not )?ok - /.test(l))
 const log = path.join(home, "nvim", "lsp.log")
+
+after(() => fs.rmSync(home, { recursive: true, force: true }))
 
 if (run) {
   test("nvim leaves no turtle-lsp running after it quits", async () => {

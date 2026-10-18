@@ -32,7 +32,7 @@ try {
     extensionDevelopmentPath,
     extensionTestsPath: path.join(here, "suite.cjs"),
     launchArgs: [fixtures, "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${userData}`],
-    extensionTestsEnv: { TURTLE_FIXTURES: fixtures },
+    extensionTestsEnv: { TURTLE_FIXTURES: fixtures, TURTLE_LSP_CACHE_DIR: path.join(userData, "cache") },
   })
   // Quitting VS Code must not leave a server behind.
   const alive = await leftRunning(server, processesOf(server))
