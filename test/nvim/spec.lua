@@ -8,22 +8,24 @@ local ws = fixtures .. "/workspace"
 local real = fixtures .. "/real"
 local project = fixtures .. "/project"
 local datasets = fixtures .. "/datasets"
+local query = fixtures .. "/query"
 local TIMEOUT = 10000
 
 vim.cmd("filetype on")
-vim.filetype.add({ extension = { ttl = "turtle" } })
+-- .nq has no filetype and .ru is Ruby (Rack) by default; see README "Neovim setup".
+vim.filetype.add({ extension = { ttl = "turtle", nq = "nquads", ru = "sparql" }, filename = { ["config.ru"] = "ruby" } })
 -- "@prefix ex: <...>" looks like a Vim modeline (" ex:") and raises E518 on open.
 -- Turtle buffers need modelines off; see README "Neovim setup".
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = { "*.ttl", "*.trig" },
+  pattern = { "*.ttl", "*.trig", "*.rq", "*.sparql", "*.ru" },
   callback = function()
     vim.opt_local.modeline = false
   end,
 })
 vim.lsp.config("turtle", {
   cmd = { server },
-  -- Neovim's own filetypes for .trig and .nt files.
-  filetypes = { "turtle", "trig", "ntriples" },
+  -- Neovim's own filetypes for .trig, .nt, .rq and .sparql files.
+  filetypes = { "turtle", "trig", "ntriples", "nquads", "sparql" },
   root_markers = { "prefixes.ttl", ".git" },
 })
 vim.lsp.enable("turtle")
@@ -270,6 +272,34 @@ check("a .nt buffer (filetype ntriples) attaches with no warnings", function()
   assert(vim.bo[b].filetype == "ntriples", "filetype " .. vim.bo[b].filetype)
   local d = problems(wait_diagnostics(b))
   assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
+end)
+
+check("a .nq buffer (filetype nquads) attaches with no warnings", function()
+  local b = open(query .. "/data.nq")
+  assert(vim.bo[b].filetype == "nquads", "filetype " .. vim.bo[b].filetype)
+  local d = problems(wait_diagnostics(b))
+  assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
+end)
+
+check("a .rq buffer (filetype sparql) attaches: no warnings, definition into the ontology", function()
+  local b = open(query .. "/people.rq")
+  assert(vim.bo[b].filetype == "sparql", "filetype " .. vim.bo[b].filetype)
+  local d = problems(wait_diagnostics(b))
+  assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
+  local r = request(b, "textDocument/definition", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, "ex:worksF"),
+  })
+  local locs = r and (r.uri and { r } or r) or {}
+  assert(#locs == 1, #locs .. " locations: " .. vim.inspect(locs))
+  local got = vim.uri_to_fname(locs[1].uri or locs[1].targetUri)
+  assert(got:match("ontology%.ttl$"), "wrong file " .. got)
+end)
+
+check("a .ru buffer is SPARQL, config.ru stays Ruby", function()
+  local b = open(query .. "/update.ru")
+  assert(vim.bo[b].filetype == "sparql", "filetype " .. vim.bo[b].filetype)
+  assert(vim.filetype.match({ filename = "config.ru" }) == "ruby")
 end)
 
 check("type hierarchy answers: sd:MeasurementPoint has sosa:Sensor as a supertype", function()
