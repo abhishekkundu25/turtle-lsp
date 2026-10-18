@@ -20,6 +20,45 @@ export function tempDir(prefix) {
   return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
 }
 
+// Every server gets a private import cache (TURTLE_LSP_CACHE_DIR) unless the
+// caller's environment sets one, so the suite never touches the user's real
+// cache. The caches live under one temp dir, removed when the test process exits.
+let cacheRoot
+let caches = 0
+export function serverEnv() {
+  if (process.env.TURTLE_LSP_CACHE_DIR) return process.env
+  if (!cacheRoot) {
+    cacheRoot = tempDir("turtle-lsp-caches-")
+    process.once("exit", () => fs.rmSync(cacheRoot, { recursive: true, force: true }))
+  }
+  return { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(cacheRoot, String(++caches)) }
+}
+
+// The cache directory the server uses when TURTLE_LSP_CACHE_DIR is not set
+// (`cache_dir()` in src/imports.rs), or undefined if it has none.
+export function defaultCacheDir() {
+  const abs = (k) => (process.env[k] && path.isAbsolute(process.env[k]) ? process.env[k] : undefined)
+  const home = abs(process.platform === "win32" ? "USERPROFILE" : "HOME")
+  const base =
+    process.platform === "darwin"
+      ? home && path.join(home, "Library", "Caches")
+      : process.platform === "win32"
+        ? abs("LOCALAPPDATA")
+        : abs("XDG_CACHE_HOME") ?? (home && path.join(home, ".cache"))
+  return base && path.join(base, "turtle-lsp")
+}
+
+// Files in a cache dir that are not a finished import (`imports/<16 hex>.ttl`),
+// e.g. a temp file left by an interrupted write. Paths relative to `dir`.
+export function strayCacheFiles(dir) {
+  if (!fs.existsSync(dir)) return []
+  return fs
+    .readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((e) => !e.isDirectory())
+    .map((e) => path.relative(dir, path.join(e.parentPath ?? e.path, e.name)))
+    .filter((f) => !/^imports[\\/][0-9a-f]{16}\.ttl$/.test(f))
+}
+
 export function uriOf(file) {
   return pathToFileURL(file).toString()
 }
@@ -44,7 +83,8 @@ export async function startServer({
   onRequest = () => null,
 } = {}) {
   warmUp()
-  const proc = spawn(serverPath, [], { cwd, stdio: ["pipe", "pipe", "pipe"] })
+  const env = serverEnv()
+  const proc = spawn(serverPath, [], { cwd, env, stdio: ["pipe", "pipe", "pipe"] })
   const exited = new Promise((r) => proc.once("exit", () => r(true)))
   // The server may exit before our last write (e.g. after shutdown/exit).
   proc.stdin.on("error", () => {})
@@ -102,6 +142,8 @@ export async function startServer({
   const api = {
     proc,
     conn,
+    // The server's TURTLE_LSP_CACHE_DIR.
+    cacheDir: env.TURTLE_LSP_CACHE_DIR,
     init,
     initMs,
     logs,

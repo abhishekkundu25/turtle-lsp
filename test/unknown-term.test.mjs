@@ -2,6 +2,7 @@
 // the workspace describes count as known whatever the bundled snapshot says.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
+import fs from "node:fs"
 import path from "node:path"
 import { startServer, tempDir, uriOf } from "./lsp-client.mjs"
 
@@ -18,7 +19,11 @@ before(async () => {
   s = await startServer({ cwd: ws })
 })
 after(async () => {
-  await s.stop()
+  try {
+    await s?.stop()
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true })
+  }
 })
 
 test("10,000 uses of 2,000 distinct unknown terms are checked fast", async () => {
