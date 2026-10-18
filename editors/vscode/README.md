@@ -33,7 +33,7 @@ folder or below can then use those prefixes. Or set `turtle.prefixes`.
 - `turtle.inlayHints.labels`: show labels as inlay hints for `opaque` IRIs (default), `all` terms, or `off`.
 - `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation and the size above which it is skipped (default 2,000,000 triples).
 - `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
-- `turtle.imports.network`: fetch `owl:imports` over the network (default off; ignored in untrusted workspaces).
+- `turtle.imports.network`: fetch `owl:imports` over the network (default off; ignored in untrusted workspaces). With it off, the quick fix on an unresolved import fetches that one import and caches it.
 - `turtle.format.lineWidth`: line width for formatting (default 100).
 
 ## Also for Neovim and other editors

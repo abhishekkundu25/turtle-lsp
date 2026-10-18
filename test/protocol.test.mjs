@@ -122,6 +122,10 @@ describe("push diagnostics", () => {
     assert.equal(s.init.capabilities.diagnosticProvider, undefined)
   })
 
+  test("the fetch-import command is advertised", () => {
+    assert.ok(s.init.capabilities.executeCommandProvider.commands.includes("turtle.fetchImport"))
+  })
+
   test("diagnostics are pushed; didSave and didChangeConfiguration are accepted", async () => {
     const uri = scratch("push")
     s.open(uri, "ex:s ex:p ex:o .\n")

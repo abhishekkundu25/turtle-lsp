@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Fetch one import on request**: an unresolved web `owl:imports` has a
+  quick fix, "Fetch <IRI> and cache it", that fetches that one import and
+  caches it, with `turtle.imports.network` off (which stays the default).
+  Asking again after a failed fetch retries at once.
+- **Cached imports open as files**: go to definition on an imported term
+  opens the cached copy, and hover names the URL it came from. The cached copy
+  is read-only: it gets no diagnostics, and its terms are not counted twice.
+
 ## 0.3.0 — 2026-10-18
 
 ### Features

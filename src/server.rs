@@ -375,6 +375,10 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
             resolve_provider: Some(true),
             ..Default::default()
         })),
+        execute_command_provider: Some(ExecuteCommandOptions {
+            commands: vec![crate::imports::FETCH_COMMAND.into()],
+            work_done_progress_options: Default::default(),
+        }),
         ..Default::default()
     }
 }
@@ -1233,7 +1237,30 @@ impl Server {
                         })
                         .collect();
                 actions.extend(refactor::code_actions(&a, enc, &p, self.resolve_edits));
+                actions.extend(crate::imports::fetch_actions(&a, enc, &p));
                 json(serde_json::to_value(actions))
+            }
+            ExecuteCommand::METHOD => {
+                let p = params!(ExecuteCommandParams);
+                let iri = match (p.command.as_str(), p.arguments.as_slice()) {
+                    (crate::imports::FETCH_COMMAND, [Value::String(iri)]) => iri,
+                    (crate::imports::FETCH_COMMAND, _) => {
+                        return Err((
+                            ErrorCode::InvalidParams,
+                            format!("{} takes one IRI", p.command),
+                        ));
+                    }
+                    _ => {
+                        return Err((
+                            ErrorCode::InvalidParams,
+                            format!("unknown command {}", p.command),
+                        ));
+                    }
+                };
+                // The job starts when this batch ends; its answer republishes
+                // diagnostics like any other resolution pass.
+                self.imports.fetch(iri);
+                ok(Value::Null)
             }
             CodeActionResolveRequest::METHOD => {
                 let action = params!(CodeAction);

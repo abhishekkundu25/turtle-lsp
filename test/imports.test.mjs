@@ -1,6 +1,7 @@
 // owl:imports: resolved through a local catalog (Turtle and RDF/XML, with a
 // transitive cycle), unresolved imports diagnosed, and network access only
-// when turtle.imports.network is on, fetched once and cached.
+// when turtle.imports.network is on, fetched once and cached. With it off, a
+// quick fix fetches one import on request; its cached copy opens read-only.
 //
 // Each test gets its own temp workspace and import cache
 // (TURTLE_LSP_CACHE_DIR, inherited by the server), and a local HTTP server
@@ -11,6 +12,7 @@ import fs from "node:fs"
 import http from "node:http"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { startServer, tempDir as longTempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -90,6 +92,15 @@ async function hoverUntil(s, uri, pos, want, ms = 10000) {
     await sleep(50)
   }
   assert.fail(`hover never showed ${JSON.stringify(want)}; last: ${last}`)
+}
+
+async function fetchAction(s, uri, d) {
+  const actions = await s.request("textDocument/codeAction", {
+    textDocument: { uri },
+    range: d.range,
+    context: { diagnostics: [d] },
+  })
+  return actions.find((a) => a.command?.command === "turtle.fetchImport")
 }
 
 async function diagnosticsUntil(s, uri, pred, ms = 10000) {
@@ -211,4 +222,92 @@ test("a failed fetch is reported on the import", async () => {
     await s.stop()
   }
   assert.ok(!fs.existsSync(path.join(w.cache, "imports")), "nothing cached")
+})
+
+test("the quick fix fetches one import on request; its cached copy is what definition opens, read-only", async () => {
+  const before = hits.length
+  const iri = `${base}/onto.ttl`
+  const w = remoteWorkspace("quickfix", iri)
+  const pos = positionOf(w.text, "r:Remote", 3)
+  const s = await start(w.ws, w.cache)
+  try {
+    s.open(w.uri, w.text)
+    const diags = await diagnosticsUntil(s, w.uri, (d) => d.some((x) => x.code === "unresolved-import"))
+    const d = diags.find((x) => x.code === "unresolved-import")
+    assert.match(d.message, /quick fix/)
+    const action = await fetchAction(s, w.uri, d)
+    assert.equal(action.title, `Fetch ${iri} and cache it`)
+    assert.equal(action.kind, "quickfix")
+    assert.deepEqual(action.diagnostics, [d])
+    assert.deepEqual(action.command.arguments, [iri])
+    assert.equal(action.edit, undefined)
+    assert.equal(hits.length, before, "offering the fix fetches nothing")
+
+    assert.equal(await s.request("workspace/executeCommand", action.command), null)
+    await diagnosticsUntil(s, w.uri, (d) => !d.some((x) => x.code === "unresolved-import"))
+    // Hover names the URL the cached copy came from.
+    const hover = await hoverUntil(s, w.uri, pos, "Remote thing")
+    assert.ok(hover.includes(`Described in ${iri}:`), hover)
+    assert.deepEqual(hits.slice(before).map((h) => h.url), ["/onto.ttl"])
+
+    // Definition opens the cached file, not the URL.
+    const definition = () =>
+      s.request("textDocument/definition", { textDocument: { uri: w.uri }, position: pos })
+    const locs = await definition()
+    assert.equal(locs.length, 1, JSON.stringify(locs))
+    const cached = fileURLToPath(locs[0].uri)
+    assert.ok(cached.startsWith(path.join(w.cache, "imports") + path.sep), cached)
+    const text = fs.readFileSync(cached, "utf8")
+    assert.ok(text.endsWith(ONTO), text)
+
+    // Opened, the cached copy is a read-only view: no diagnostics, and its
+    // terms are not indexed a second time.
+    s.open(locs[0].uri, text)
+    assert.deepEqual(await s.diagnosticsFor(locs[0].uri), [])
+    assert.deepEqual(await definition(), locs)
+  } finally {
+    await s.stop()
+  }
+  assert.equal(hits.length, before + 1)
+})
+
+test("a fetch on request that fails keeps the diagnostic and the fix, and asking again retries at once", async () => {
+  const before = hits.length
+  const w = remoteWorkspace("quickfix-missing", `${base}/missing`)
+  const s = await start(w.ws, w.cache)
+  try {
+    s.open(w.uri, w.text)
+    let diags = await diagnosticsUntil(s, w.uri, (d) => d.some((x) => x.code === "unresolved-import"))
+    let action = await fetchAction(s, w.uri, diags.find((x) => x.code === "unresolved-import"))
+    await s.request("workspace/executeCommand", action.command)
+    const failed = (d) => d.some((x) => x.code === "unresolved-import" && /could not be fetched/.test(x.message))
+    diags = await diagnosticsUntil(s, w.uri, failed)
+    assert.deepEqual(hits.slice(before).map((h) => h.url), ["/missing"])
+    action = await fetchAction(s, w.uri, diags.find((x) => x.code === "unresolved-import"))
+    assert.ok(action, "the fix is still offered")
+
+    await s.request("workspace/executeCommand", action.command)
+    const end = Date.now() + 5000
+    while (hits.length < before + 2 && Date.now() < end) await sleep(50)
+    assert.deepEqual(hits.slice(before).map((h) => h.url), ["/missing", "/missing"])
+    await diagnosticsUntil(s, w.uri, failed)
+  } finally {
+    await s.stop()
+  }
+})
+
+test("workspace/executeCommand rejects an unknown command and bad arguments", async () => {
+  const w = remoteWorkspace("command", `${base}/onto.ttl`)
+  const s = await start(w.ws, w.cache)
+  try {
+    for (const params of [
+      { command: "turtle.nope", arguments: [] },
+      { command: "turtle.fetchImport", arguments: [] },
+      { command: "turtle.fetchImport", arguments: [42] },
+    ]) {
+      await assert.rejects(s.request("workspace/executeCommand", params), (e) => e.code === -32602)
+    }
+  } finally {
+    await s.stop()
+  }
 })
