@@ -23,6 +23,8 @@ pub enum Encoding {
 
 pub struct Analysis {
     pub uri: String,
+    /// The URL an import's text came from, when `uri` names its cached copy.
+    pub origin: Option<String>,
     /// The text this analysis was computed from.
     pub text: Arc<str>,
     pub parsed: Parsed,
@@ -140,6 +142,7 @@ impl Analysis {
         }
         Analysis {
             uri,
+            origin: None,
             text: Arc::from(text),
             lines: LineIndex::new(text),
             parsed,

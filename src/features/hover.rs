@@ -110,9 +110,12 @@ pub fn describe_iri(iri: &str, label: &str, k: &Knowledge, prefixes: &PrefixMap)
         .iter()
         .map(|d| {
             let a = d.analysis;
-            let file = uri_to_path(&a.uri)
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-                .unwrap_or_else(|| a.uri.clone());
+            // A cached import is named by the URL it came from.
+            let file = a.origin.clone().unwrap_or_else(|| {
+                uri_to_path(&a.uri)
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| a.uri.clone())
+            });
             let line = a.position(Encoding::Utf8, d.spans[0].start).line + 1;
             format!("{file}:{line}")
         })
@@ -162,5 +165,28 @@ fn md(value: String, range: Range) -> Hover {
             value,
         }),
         range: Some(range),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn hover_names_the_url_a_cached_import_came_from() {
+        let text = "\n<http://ex.com/x#T> a <http://www.w3.org/2002/07/owl#Class> .\n";
+        let mut a = Analysis::new(
+            "file:///cache/imports/0123456789abcdef.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            false,
+        );
+        a.origin = Some("http://ex.com/x".into());
+        let mut k = Knowledge::default();
+        k.add_external("import:http://ex.com/x", Arc::new(a));
+        let md = describe_iri("http://ex.com/x#T", "T", &k, &PrefixMap::default()).unwrap();
+        assert!(md.contains("_Described in http://ex.com/x:2_"), "{md}");
+        assert!(!md.contains("0123456789abcdef"), "{md}");
     }
 }

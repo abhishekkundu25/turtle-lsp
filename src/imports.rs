@@ -6,7 +6,8 @@
 //! 2. a `catalog-v001.xml` (Protégé convention) anywhere under the workspace
 //!    roots, mapping the IRI to a file (relative to the catalog) or a URL;
 //! 3. the per-user import cache;
-//! 4. the network, only when `turtle.imports.network` is on (then cached).
+//! 4. the network, when `turtle.imports.network` is on or the user asked to
+//!    fetch this import ([`Imports::fetch`]); then cached.
 //!
 //! Loaded ontologies are resolved transitively (up to [`MAX_DEPTH`] levels
 //! below a workspace import, cycles stop) and join the knowledge index as
@@ -27,9 +28,12 @@ use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::syntax::{self, Iri, Node, PrefixMap};
 use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, path_to_uri};
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
+use lsp_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, Command, Diagnostic,
+    DiagnosticSeverity, NumberOrString,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
@@ -52,6 +56,9 @@ const MAX_XML_ENTITIES: usize = 256;
 const MAX_XML_ENTITY_BYTES: usize = 64 * 1024;
 /// Prefix for external source keys in the knowledge index.
 const KEY_PREFIX: &str = "import:";
+/// Command that fetches one import (arguments: `[iri]`), offered as a quick fix
+/// on its unresolved-import diagnostic.
+pub const FETCH_COMMAND: &str = "turtle.fetchImport";
 
 /// How an import was resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,11 +81,15 @@ struct Request {
     roots: Vec<PathBuf>,
     cache: Option<PathBuf>,
     network: bool,
+    /// Imports the user asked to fetch, network or not (sorted, unique).
+    fetch: Vec<String>,
 }
 
 struct Job {
     generation: u64,
     req: Request,
+    /// An import to fetch again now, even if fetching it failed lately.
+    refetch: Option<String>,
 }
 
 /// One loaded ontology.
@@ -153,6 +164,10 @@ pub struct Imports {
     /// Workspace URI -> its analysis when [`DocOnto`] was computed.
     per_doc: FxHashMap<String, (Weak<Analysis>, DocOnto)>,
     cache: Option<PathBuf>,
+    /// Imports the user asked to fetch this session.
+    fetch: BTreeSet<String>,
+    /// For the next job: see [`Job::refetch`].
+    refetch: Option<String>,
 }
 
 impl Default for Imports {
@@ -176,6 +191,8 @@ impl Imports {
             registered: FxHashSet::default(),
             per_doc: FxHashMap::default(),
             cache: cache_dir().map(|d| d.join("imports")),
+            fetch: BTreeSet::new(),
+            refetch: None,
         }
     }
 
@@ -247,6 +264,7 @@ impl Imports {
             roots: roots.to_vec(),
             cache: self.cache.clone(),
             network,
+            fetch: self.fetch.iter().cloned().collect(),
         };
         if self.last.as_ref() == Some(&req) {
             return None;
@@ -264,6 +282,7 @@ impl Imports {
         let job = Job {
             generation: self.generation,
             req,
+            refetch: self.refetch.take(),
         };
         let jobs = self.jobs.get_or_insert_with(|| {
             let (tx, rx) = unbounded();
@@ -282,6 +301,16 @@ impl Imports {
     /// imports again on the next [`Imports::sync`].
     pub fn retry(&mut self) {
         // Loaded files may have changed too; unchanged ones come from the memo.
+        self.last = None;
+        self.seen = None;
+    }
+
+    /// The user asked to fetch `iri` (with [`FETCH_COMMAND`]): allow fetching
+    /// it for the rest of the session, and try it on the next
+    /// [`Imports::sync`] even if it failed a moment ago.
+    pub fn fetch(&mut self, iri: &str) {
+        self.fetch.insert(iri.to_string());
+        self.refetch = Some(iri.to_string());
         self.last = None;
         self.seen = None;
     }
@@ -355,6 +384,49 @@ pub fn diagnostics_with<'s>(
         .collect()
 }
 
+/// "Fetch <iri> and cache it" quick fixes for the unresolved web imports among
+/// the diagnostics of `params`; each runs [`FETCH_COMMAND`].
+pub fn fetch_actions(
+    a: &Analysis,
+    enc: Encoding,
+    params: &CodeActionParams,
+) -> Vec<CodeActionOrCommand> {
+    let only = params.context.only.as_deref();
+    if !crate::features::refactor::wanted(only, &CodeActionKind::QUICKFIX) {
+        return vec![];
+    }
+    let p = preds();
+    let mut out = Vec::new();
+    for d in &params.context.diagnostics {
+        if d.source.as_deref() != Some(SOURCE)
+            || d.code != Some(NumberOrString::String("unresolved-import".into()))
+        {
+            continue;
+        }
+        let Some(iri) = a.parsed.triples.iter().find_map(|t| match &t.o {
+            Node::Iri(o) if t.p == p.imports && a.range(enc, t.o_span) == d.range => Some(*o),
+            _ => None,
+        }) else {
+            continue;
+        };
+        if !(iri.starts_with("http://") || iri.starts_with("https://")) {
+            continue;
+        }
+        out.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Fetch {iri} and cache it"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![d.clone()]),
+            command: Some(Command {
+                title: format!("Fetch {iri} and cache it"),
+                command: FETCH_COMMAND.to_string(),
+                arguments: Some(vec![serde_json::Value::String(iri.to_string())]),
+            }),
+            ..Default::default()
+        }));
+    }
+    out
+}
+
 // ---- background thread ----
 
 #[derive(Default)]
@@ -381,14 +453,19 @@ fn worker(jobs: Receiver<Job>, out: Sender<Done>) {
     let mut memo = Memo::default();
     while let Ok(mut job) = jobs.recv() {
         // Only the latest job matters.
+        // A superseded job's refetch still counts.
+        let take = |job: &mut Job, mut j: Job| {
+            j.refetch = j.refetch.or(job.refetch.take());
+            *job = j;
+        };
         loop {
             while let Ok(j) = jobs.try_recv() {
-                job = j;
+                take(&mut job, j);
             }
             // Every keystroke on an import line is a new job: wait for typing
             // to pause before walking the workspace for catalogs (or fetching).
             match jobs.recv_timeout(DEBOUNCE) {
-                Ok(j) => job = j,
+                Ok(j) => take(&mut job, j),
                 Err(_) => break,
             }
         }
@@ -405,6 +482,9 @@ fn worker(jobs: Receiver<Job>, out: Sender<Done>) {
 /// Resolve a job's imports transitively; `None` when a newer job arrived.
 fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool) -> Option<Done> {
     let req = &job.req;
+    if let Some(iri) = &job.refetch {
+        memo.failed.remove(without_fragment(iri));
+    }
     let catalog = Catalog::scan(&req.roots);
     let local: FxHashSet<&str> = req.local.iter().map(String::as_str).collect();
     let mut queue: VecDeque<(String, u32)> = req.imports.iter().map(|i| (i.clone(), 0)).collect();
@@ -526,11 +606,12 @@ fn load(
         return Ok((url, o, fresh));
     }
     let web = url.starts_with("http://") || url.starts_with("https://");
-    if !req.network || !web {
+    let allowed = req.network || req.fetch.iter().any(|f| norm(f) == norm(iri));
+    if !allowed || !web {
         let how = if !web {
             "Map it to a local file in a catalog-v001.xml"
         } else {
-            "Map it to a local file in a catalog-v001.xml, or enable turtle.imports.network to fetch it once"
+            "Use the quick fix to fetch it once, map it to a local file in a catalog-v001.xml, or enable turtle.imports.network to fetch web imports automatically"
         };
         return Err(format!(
             "Import <{iri}> is not resolved: no ontology with this IRI in the workspace, no catalog-v001.xml entry and nothing in the import cache. {how}"
@@ -554,12 +635,15 @@ fn load(
             return Err(msg);
         }
     };
-    Arc::get_mut(&mut parsed.analysis)
-        .expect("fresh analysis")
-        .uri = url.clone();
-    if let Some(path) = &cached {
-        // A failed write only costs a fetch next time.
-        let _ = write_atomic(path, text.as_bytes());
+    let a = Arc::get_mut(&mut parsed.analysis).expect("fresh analysis");
+    a.uri = url.clone();
+    // A failed write only costs a fetch next time; locations then name the URL.
+    if let Some(path) = &cached
+        && write_atomic(path, text.as_bytes()).is_ok()
+        && let Some(file) = path_to_uri(path)
+    {
+        a.uri = file;
+        a.origin = Some(url.clone());
     }
     Ok((url, parsed, true))
 }
@@ -593,10 +677,11 @@ fn fetch_turtle(iri: &str, url: &str) -> Result<String, String> {
     })
 }
 
-/// Load an ontology file; its analysis is named `uri` (default: the file's URI).
+/// Load an ontology file; its analysis is named by the file's URI. `origin` is
+/// the URL a cached copy came from.
 fn load_file(
     path: &Path,
-    uri: Option<&str>,
+    origin: Option<&str>,
     base: &str,
     memo: &mut Memo,
 ) -> Result<(Ontology, bool), String> {
@@ -618,10 +703,18 @@ fn load_file(
         _ => sniff(&bytes),
     };
     let mut o = parse(&bytes, format, base)?;
-    // Hover names the file (or, for a cached copy, the URL) a term comes from.
-    if let Some(uri) = uri.map(str::to_string).or_else(|| path_to_uri(path)) {
-        let a = Arc::get_mut(&mut o.analysis).expect("fresh analysis");
-        a.uri = uri;
+    // Locations open the file; hover names the URL a cached copy came from.
+    let a = Arc::get_mut(&mut o.analysis).expect("fresh analysis");
+    match path_to_uri(path) {
+        Some(uri) => {
+            a.uri = uri;
+            a.origin = origin.map(str::to_string);
+        }
+        None => {
+            if let Some(origin) = origin {
+                a.uri = origin.to_string();
+            }
+        }
     }
     memo.files.insert(
         path.to_path_buf(),
@@ -1229,7 +1322,9 @@ mod tests {
                 roots,
                 cache,
                 network: false,
+                fetch: vec![],
             },
+            refetch: None,
         }
     }
 
@@ -1377,6 +1472,194 @@ mod tests {
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::INFORMATION));
         assert_eq!(d[0].range.start.character, 31);
         assert_eq!(d[0].message, "nope");
+    }
+
+    /// A local HTTP server: `/ok*` answers Turtle, anything else 404. Returns
+    /// its base URL and the log of requested paths.
+    fn serve() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = log.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]);
+                let path = head.split(' ').nth(1).unwrap_or("").to_string();
+                seen.lock().unwrap().push(path.clone());
+                let resp = if path.starts_with("/ok") {
+                    let body = "<#T> a <http://www.w3.org/2002/07/owl#Class> .\n";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/turtle\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .into()
+                };
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (base, log)
+    }
+
+    #[test]
+    fn fetch_loads_only_the_listed_import_and_names_it_by_its_cache_file() {
+        let root = tmp("fetch");
+        let cache = root.join("cache");
+        let (base, log) = serve();
+        let (a, b) = (format!("{base}/ok-a"), format!("{base}/ok-b"));
+        let mut j = job(&[&a, &b], &[], vec![root.clone()], Some(cache.clone()));
+        // Listed as `<a#>`: the same import.
+        j.req.fetch = vec![format!("{a}#")];
+        let mut memo = Memo::default();
+        let done = resolve(&j, &mut memo, &|| false).unwrap();
+        let st: FxHashMap<_, _> = done.status.iter().cloned().collect();
+        assert_eq!(st[&a], Status::Loaded(a.clone()));
+        assert!(
+            matches!(&st[&b], Status::Unresolved(m) if m.contains("quick fix") && m.contains("turtle.imports.network")),
+            "{st:?}"
+        );
+        assert_eq!(*log.lock().unwrap(), ["/ok-a"]);
+        let check = |done: &Done| {
+            let l = &done.loaded[0].analysis;
+            let path = crate::workspace::uri_to_path(&l.uri).unwrap();
+            assert_eq!(path, cache.join(format!("{}.ttl", hash_name(&a))));
+            assert_eq!(l.origin.as_deref(), Some(a.as_str()));
+            assert!(l.defs.contains_key(format!("{a}#T").as_str()));
+        };
+        check(&done);
+        // Next session: a cache hit, named the same way, without a request.
+        let j = job(&[&a], &[], vec![root.clone()], Some(cache.clone()));
+        let done = resolve(&j, &mut Memo::default(), &|| false).unwrap();
+        assert_eq!(done.status, [(a.clone(), Status::Loaded(a.clone()))]);
+        check(&done);
+        assert_eq!(log.lock().unwrap().len(), 1);
+        // No cache directory: named by the URL, as before.
+        let mut j = job(&[&a], &[], vec![root.clone()], None);
+        j.req.fetch = vec![a.clone()];
+        let done = resolve(&j, &mut Memo::default(), &|| false).unwrap();
+        assert_eq!(done.loaded[0].analysis.uri, a);
+        assert_eq!(done.loaded[0].analysis.origin, None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refetch_tries_a_recently_failed_import_again() {
+        let root = tmp("refetch");
+        let (base, log) = serve();
+        let c = format!("{base}/missing");
+        let mut j = job(&[&c], &[], vec![root.clone()], None);
+        j.req.fetch = vec![c.clone()];
+        let mut memo = Memo::default();
+        memo.failed
+            .insert(c.clone(), (Instant::now(), "earlier".into()));
+        let done = resolve(&j, &mut memo, &|| false).unwrap();
+        assert_eq!(
+            done.status,
+            [(c.clone(), Status::Unresolved("earlier".into()))]
+        );
+        assert!(log.lock().unwrap().is_empty());
+        j.refetch = Some(c.clone());
+        let done = resolve(&j, &mut memo, &|| false).unwrap();
+        assert!(
+            matches!(&done.status[0].1, Status::Unresolved(m) if m.contains("could not be fetched")),
+            "{:?}",
+            done.status
+        );
+        assert_eq!(*log.lock().unwrap(), ["/missing"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fetch_actions_are_offered_on_unresolved_web_imports() {
+        let text = format!(
+            "<http://ex.com/me> <{OWL_IMPORTS}> <http://ex.com/x>, <urn:x:y>, <https://ex.com/z> .\n"
+        );
+        let a = Analysis::new(
+            "file:///d.ttl".into(),
+            &text,
+            Arc::new(PrefixMap::default()),
+            false,
+        );
+        let missing = Status::Unresolved("nope".into());
+        let ok = Status::Local;
+        let diags = diagnostics_with(&a, Encoding::Utf16, |i| {
+            Some(if i.ends_with('z') { &ok } else { &missing })
+        });
+        assert_eq!(diags.len(), 2);
+        let mut params = CodeActionParams {
+            text_document: lsp_types::TextDocumentIdentifier {
+                uri: "file:///d.ttl".parse().unwrap(),
+            },
+            range: lsp_types::Range::default(),
+            context: lsp_types::CodeActionContext {
+                diagnostics: diags.clone(),
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let got = fetch_actions(&a, Encoding::Utf16, &params);
+        assert_eq!(got.len(), 1, "{got:?}");
+        let CodeActionOrCommand::CodeAction(action) = &got[0] else {
+            panic!("{got:?}")
+        };
+        assert_eq!(action.title, "Fetch http://ex.com/x and cache it");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        assert_eq!(action.diagnostics.as_deref(), Some(&diags[..1]));
+        assert!(action.edit.is_none());
+        let cmd = action.command.as_ref().unwrap();
+        assert_eq!(cmd.command, FETCH_COMMAND);
+        assert_eq!(
+            cmd.arguments,
+            Some(vec![serde_json::json!("http://ex.com/x")])
+        );
+        // A diagnostic on no import gets nothing.
+        let mut moved = diags[0].clone();
+        moved.range.start.character += 1;
+        params.context.diagnostics = vec![moved];
+        assert!(fetch_actions(&a, Encoding::Utf16, &params).is_empty());
+        params.context.diagnostics = diags;
+        params.context.only = Some(vec![CodeActionKind::REFACTOR]);
+        assert!(fetch_actions(&a, Encoding::Utf16, &params).is_empty());
+        params.context.only = Some(vec![CodeActionKind::QUICKFIX]);
+        assert_eq!(fetch_actions(&a, Encoding::Utf16, &params).len(), 1);
+    }
+
+    #[test]
+    fn fetch_sends_a_job_that_allows_and_refetches_the_import() {
+        let mut k = Knowledge::default();
+        let text = format!("<http://ex.com/me> <{OWL_IMPORTS}> <http://ex.com/other> .\n");
+        k.set(
+            "file:///a.ttl",
+            Source::Disk,
+            Arc::new(Analysis::new(
+                "file:///a.ttl".into(),
+                &text,
+                Arc::new(PrefixMap::default()),
+                false,
+            )),
+        );
+        let mut imports = Imports::new();
+        imports.cache = None;
+        imports.sync(&k, &[], false);
+        let g = imports.generation;
+        imports.fetch("http://ex.com/other");
+        imports.fetch("http://ex.com/other");
+        imports.sync(&k, &[], false);
+        assert_eq!(imports.generation, g + 1);
+        assert_eq!(
+            imports.last.as_ref().unwrap().fetch,
+            ["http://ex.com/other"]
+        );
+        assert!(imports.refetch.is_none());
+        // Asking again sends another job, though the request is the same.
+        imports.fetch("http://ex.com/other");
+        imports.sync(&k, &[], false);
+        assert_eq!(imports.generation, g + 2);
     }
 
     #[test]
