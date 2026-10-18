@@ -1,6 +1,7 @@
-// Tokenizes Turtle, TriG and N-Triples with the extension's TextMate grammars
-// using the same engine VS Code uses (vscode-textmate + oniguruma) and checks
-// the scopes. The TriG and N-Triples grammars include rules from Turtle's.
+// Tokenizes Turtle, TriG, N-Triples, N-Quads and SPARQL with the extension's
+// TextMate grammars using the same engine VS Code uses (vscode-textmate +
+// oniguruma) and checks the scopes. The TriG, N-Triples and N-Quads grammars
+// include rules from Turtle's.
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -14,7 +15,7 @@ await oniguruma.loadWASM(wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wa
 const registry = new vsctm.Registry({
   onigLib: Promise.resolve({ createOnigScanner: (p) => new oniguruma.OnigScanner(p), createOnigString: (s) => new oniguruma.OnigString(s) }),
   loadGrammar: async (scope) => {
-    const file = { "source.turtle": "turtle", "source.trig": "trig", "source.ntriples": "ntriples" }[scope]
+    const file = { "source.turtle": "turtle", "source.trig": "trig", "source.ntriples": "ntriples", "source.nquads": "nquads", "source.sparql": "sparql" }[scope]
     if (!file) return null
     const name = `${file}.tmLanguage.json`
     return vsctm.parseRawGrammar(fs.readFileSync(new URL(`../syntaxes/${name}`, import.meta.url), "utf8"), name)
@@ -23,6 +24,8 @@ const registry = new vsctm.Registry({
 const grammar = await registry.loadGrammar("source.turtle")
 const trig = await registry.loadGrammar("source.trig")
 const ntriples = await registry.loadGrammar("source.ntriples")
+const nquads = await registry.loadGrammar("source.nquads")
+const sparql = await registry.loadGrammar("source.sparql")
 
 /** Map each token text on the given lines to its innermost scope. */
 function scopes(src, g = grammar) {
@@ -117,15 +120,73 @@ test("N-Triples: Turtle-only syntax is not highlighted as such", () => {
   assert.equal(scopeOf(t, ";"), undefined)
 })
 
+test("N-Quads: a graph label after the object, and N-Triples tokens", () => {
+  const t = scopes('<http://e/s> <http://e/p> "v"@en <http://e/g> . # c\n_:b1 <http://e/p> <<( _:b1 <http://e/p> "o" )>> _:g .', nquads)
+  assert.equal(scopeOf(t, "<http://e/s>"), "markup.underline.link.iri.turtle")
+  assert.equal(scopeOf(t, "<http://e/g>"), "markup.underline.link.iri.turtle")
+  assert.equal(scopeOf(t, "_:g"), "variable.other.blank-node.turtle")
+  assert.equal(scopeOf(t, "@en"), "constant.language.language-tag.turtle")
+  assert.equal(scopeOf(t, "# c"), "comment.line.number-sign.turtle")
+  assert.equal(scopeOf(t, "<<("), "punctuation.section.triple-term.nquads")
+  assert.equal(scopeOf(t, "."), "punctuation.terminator.statement.nquads")
+})
+
+test("N-Quads: Turtle-only syntax is not highlighted as such", () => {
+  const t = scopes("ex:a a ex:B ;", nquads)
+  assert.equal(scopeOf(t, "a"), undefined)
+  assert.equal(scopeOf(t, ";"), undefined)
+})
+
+test("SPARQL: prologue, keywords in any case, variables, prefixed names", () => {
+  const t = scopes('PREFIX ex: <http://example.org/>\nselect ?name $alt WHERE {\n  ?s a ex:Person ; ex:name ?name .\n}', sparql)
+  assert.equal(scopeOf(t, "PREFIX"), "keyword.other.prefix.sparql")
+  assert.equal(scopeOf(t, "<http://example.org/>"), "markup.underline.link.iri.sparql")
+  assert.equal(scopeOf(t, "select"), "keyword.control.sparql")
+  assert.equal(scopeOf(t, "WHERE"), "keyword.control.sparql")
+  assert.equal(scopeOf(t, "?name"), "variable.other.sparql")
+  assert.equal(scopeOf(t, "$alt"), "variable.other.sparql")
+  assert.equal(scopeOf(t, "a"), "keyword.other.rdf-type.sparql")
+  assert.equal(scopeOf(t, "ex"), "entity.name.namespace.sparql")
+  assert.equal(scopeOf(t, "Person"), "entity.name.type.local-name.sparql")
+})
+
+test("SPARQL: functions, literals, comments, operators", () => {
+  const t = scopes('SELECT (COUNT(?x) AS ?n) WHERE { ?x ?p "v # not a comment"@en ; ?q 1.5e3 , true . FILTER(regex(str(?x), "a") && ?n >= 2) } # done', sparql)
+  assert.equal(scopeOf(t, "COUNT"), "support.function.builtin.sparql")
+  assert.equal(scopeOf(t, "regex"), "support.function.builtin.sparql")
+  assert.equal(scopeOf(t, "str"), "support.function.builtin.sparql")
+  assert.equal(scopeOf(t, "AS"), "keyword.control.sparql")
+  assert.ok(t.some(([text, scope]) => text.includes("v # not a comment") && scope.startsWith("string.")), JSON.stringify(t))
+  assert.equal(scopeOf(t, "@en"), "constant.language.language-tag.sparql")
+  assert.equal(scopeOf(t, "1.5e3"), "constant.numeric.sparql")
+  assert.equal(scopeOf(t, "true"), "constant.language.boolean.sparql")
+  assert.equal(scopeOf(t, "&&"), "keyword.operator.sparql")
+  assert.equal(scopeOf(t, "# done"), "comment.line.number-sign.sparql")
+})
+
+test("SPARQL: update keywords and long strings", () => {
+  const t = scopes('INSERT DATA { <http://e/a> <http://e/p> """first\nSELECT ?x # inside\nend""" } ;\nDELETE WHERE { ?s ?p ?o }', sparql)
+  assert.equal(scopeOf(t, "INSERT"), "keyword.control.sparql")
+  assert.equal(scopeOf(t, "DATA"), "keyword.control.sparql")
+  assert.equal(scopeOf(t, "SELECT ?x # inside"), "string.quoted.triple.double.sparql")
+  assert.equal(scopeOf(t, "DELETE"), "keyword.control.sparql")
+})
+
 test("every contributed language has a grammar, and the client serves it", () => {
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
   const extension = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8")
   const ids = pkg.contributes.languages.map((l) => l.id)
-  assert.deepEqual(ids, ["turtle", "trig", "ntriples"])
+  assert.deepEqual(ids, ["turtle", "trig", "ntriples", "nquads", "sparql"])
   for (const id of ids) {
     const g = pkg.contributes.grammars.find((x) => x.language === id)
     assert.ok(g && fs.existsSync(new URL(`../${g.path}`, import.meta.url)), `no grammar for ${id}`)
     assert.ok(extension.includes(`language: "${id}"`), `documentSelector misses ${id}`)
   }
   assert.ok(pkg.activationEvents.some((e) => e.includes("trig") && e.includes("nt")))
+  for (const ext of ["nq", "rq", "sparql", "ru"]) {
+    assert.ok(pkg.activationEvents.some((e) => e.includes(ext)), `no activation for .${ext}`)
+  }
+  const exts = Object.fromEntries(pkg.contributes.languages.map((l) => [l.id, l.extensions]))
+  assert.deepEqual(exts.nquads, [".nq"])
+  assert.deepEqual(exts.sparql, [".rq", ".sparql", ".ru"])
 })

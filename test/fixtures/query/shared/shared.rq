@@ -1,0 +1,4 @@
+SELECT ?p ?label WHERE {
+  ?p a ex:Person ;
+    rdfs:label ?label .
+}

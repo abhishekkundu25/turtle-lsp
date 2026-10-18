@@ -1,6 +1,7 @@
 //! Randomized robustness test ("fuzzing" on stable Rust).
 //!
-//! Takes real Turtle, TriG and N-Triples files, mutates them thousands of times (cuts, unbalanced
+//! Takes real Turtle, TriG, N-Triples and N-Quads files (and, in a second
+//! test, SPARQL queries and updates), mutates them thousands of times (cuts, unbalanced
 //! brackets, stray quotes, multi-byte characters, CRLF, truncation) and runs
 //! the parser and every editor feature on each result at random positions in
 //! both position encodings. Any panic fails the test. Deterministic: the seed
@@ -18,6 +19,7 @@ use turtle_lsp::features::{
 use turtle_lsp::imports;
 use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::settings::InlayLabels;
+use turtle_lsp::sparql::{self, Document, Level};
 use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse};
 
 struct Rng(u64);
@@ -120,6 +122,13 @@ fn corpus() -> Vec<(String, Syntax)> {
         "<http://e/a> <http://e/b> <http://e/c> .".into(),
         Syntax::NTriples,
     ));
+    if let Some(nquads) = Syntax::from_language_id("nquads") {
+        out.push((
+            "<http://e/a> <http://e/b> <http://e/c> <http://e/g> .\n_:s <http://e/b> \"x\" _:g ."
+                .into(),
+            nquads,
+        ));
+    }
     for dir in [
         "workspace",
         "project",
@@ -130,6 +139,7 @@ fn corpus() -> Vec<(String, Syntax)> {
         "datasets",
         "oracle",
         "shacl",
+        "query",
     ] {
         if let Ok(entries) = fs::read_dir(root.join(dir)) {
             for e in entries.flatten() {
@@ -488,6 +498,242 @@ fn mutated_turtle_never_panics() {
             fs::write(&dump, &text).unwrap();
             panic!(
                 "iteration {i} (seed {seed}, {syntax:?}) panicked; input saved to {}",
+                dump.display()
+            );
+        }
+    }
+}
+
+const SPARQL_SNIPPETS: &[&str] = &[
+    "{",
+    "}",
+    "(",
+    ")",
+    "[",
+    "]",
+    ".",
+    ";",
+    ",",
+    "?",
+    "$",
+    "?x",
+    "$x",
+    "?x ",
+    "<",
+    ">",
+    "<<",
+    ">>",
+    "<<(",
+    ")>>",
+    "{|",
+    "|}",
+    "~",
+    "\"",
+    "'",
+    "\"\"\"",
+    "'''",
+    "\\",
+    "\\u00",
+    "#",
+    "\n",
+    "\r\n",
+    "\t",
+    " ",
+    "a ",
+    "ex:",
+    ":x",
+    "_:b",
+    "[]",
+    "()",
+    "PREFIX ",
+    "PREFIX ex: <http://e/>\n",
+    "BASE <http://b/>\n",
+    "VERSION \"1.2\"\n",
+    "SELECT ",
+    "SELECT * ",
+    "WHERE ",
+    "WHERE { ",
+    "OPTIONAL { ",
+    "FILTER(",
+    "BIND(",
+    " AS ?v)",
+    "VALUES ?v { ",
+    "UNION ",
+    "MINUS { ",
+    "GRAPH ?g { ",
+    "SERVICE <http://s/> { ",
+    "GROUP BY ",
+    "ORDER BY ",
+    "LIMIT 1",
+    "OFFSET ",
+    "HAVING(",
+    "COUNT(*)",
+    "COUNT(DISTINCT ?x)",
+    "GROUP_CONCAT(?x; SEPARATOR=\",\")",
+    "STR(",
+    "REGEX(",
+    "EXISTS { ",
+    "NOT EXISTS { ",
+    "INSERT DATA { ",
+    "DELETE WHERE { ",
+    "INSERT { ",
+    "DELETE { ",
+    " ;\n",
+    "LOAD <http://l/> ",
+    "CLEAR ALL",
+    "WITH <http://w/> ",
+    "USING ",
+    "/",
+    "|",
+    "^",
+    "*",
+    "+",
+    "!",
+    "&&",
+    "||",
+    "=",
+    "!=",
+    "<=",
+    "1.5e",
+    "-.",
+    "true",
+    "@en",
+    "@en--ltr",
+    "^^",
+    "é",
+    "日本",
+    "😀",
+    "\u{200C}",
+    "\u{FFFD}",
+    "%4",
+    "%41",
+];
+
+fn sparql_corpus() -> Vec<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out: Vec<String> = ["", "SELECT", "SELECT * WHERE { ?s ?p ?o }"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let mut dirs = vec![
+        root.join("test/fixtures/query"),
+        root.join("test/fixtures/format"),
+    ];
+    for suite in [
+        "sparql11/syntax-query",
+        "sparql11/syntax-update-1",
+        "sparql12/syntax-triple-terms-positive",
+        "sparql12/version",
+    ] {
+        dirs.push(root.join("tests/w3c/sparql-tests").join(suite));
+    }
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        let mut files: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        files.sort();
+        for p in files {
+            if p.extension().is_some_and(|e| e == "rq" || e == "ru") {
+                out.push(fs::read_to_string(p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+fn sparql_mutate(rng: &mut Rng, text: &str) -> String {
+    let mut s = text.to_string();
+    for _ in 0..1 + rng.below(4) {
+        let at = char_boundary(&s, rng.below(s.len() + 1));
+        match rng.below(4) {
+            0 => s.insert_str(at, SPARQL_SNIPPETS[rng.below(SPARQL_SNIPPETS.len())]),
+            1 => {
+                let end = char_boundary(&s, at + rng.below(40));
+                s.replace_range(at..end, "");
+            }
+            2 => {
+                let end = char_boundary(&s, at + rng.below(60));
+                let chunk = s[at..end].to_string();
+                let to = char_boundary(&s, rng.below(s.len() + 1));
+                s.insert_str(to, &chunk);
+            }
+            _ => s.truncate(at),
+        }
+    }
+    s
+}
+
+/// Tokens and diagnostics stay inside the text and on character boundaries,
+/// tokens never overlap, and formatted text is valid and formats to itself.
+fn sparql_exercise(text: &str) {
+    let base = Some("http://example.com/chaos");
+    let prefixes = PrefixMap::default();
+    let doc = Document::parse(text, &prefixes, base);
+    let mut prev_end = 0;
+    for t in doc.tokens() {
+        assert!(
+            t.span.start < t.span.end && t.span.end as usize <= text.len(),
+            "token {t:?} out of bounds or empty"
+        );
+        assert!(
+            text.is_char_boundary(t.span.start as usize)
+                && text.is_char_boundary(t.span.end as usize),
+            "token {t:?} splits a character"
+        );
+        assert!(
+            t.span.start >= prev_end,
+            "token {t:?} overlaps the one before"
+        );
+        prev_end = t.span.end;
+    }
+    for d in doc.diagnostics() {
+        assert!(
+            d.span.start <= d.span.end && d.span.end as usize <= text.len(),
+            "diagnostic {d:?} out of bounds"
+        );
+        assert!(
+            text.is_char_boundary(d.span.start as usize)
+                && text.is_char_boundary(d.span.end as usize),
+            "diagnostic {d:?} splits a character"
+        );
+    }
+    let _ = doc.is_update();
+    let opts = format::Options::default();
+    if let Ok(out) = sparql::format(text, &prefixes, base, &opts) {
+        let again = Document::parse(&out, &prefixes, base);
+        assert!(
+            !again.diagnostics().iter().any(|d| d.level == Level::Error),
+            "formatted text has errors:\n{out}"
+        );
+        let twice =
+            sparql::format(&out, &prefixes, base, &opts).expect("formatted text formats again");
+        assert_eq!(twice, out, "formatting is not idempotent");
+    }
+}
+
+#[test]
+fn mutated_sparql_never_panics() {
+    let seed = std::env::var("CHAOS_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0x5EED_0011_u64);
+    let iters = std::env::var("CHAOS_ITERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3000usize);
+    let corpus = sparql_corpus();
+    let mut rng = Rng(seed);
+    for i in 0..iters {
+        let pick = rng.below(corpus.len());
+        let text = sparql_mutate(&mut rng, &corpus[pick]);
+        if std::panic::catch_unwind(|| sparql_exercise(&text)).is_err() {
+            // Under target/, not the system temp directory.
+            let dump =
+                Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("chaos-sparql-{seed}-{i}.rq"));
+            fs::write(&dump, &text).unwrap();
+            panic!(
+                "iteration {i} (seed {seed}) panicked; input saved to {}",
                 dump.display()
             );
         }

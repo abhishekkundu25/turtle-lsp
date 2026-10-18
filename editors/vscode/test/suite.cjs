@@ -9,6 +9,7 @@ const fixtures = process.env.TURTLE_FIXTURES
 const ws = path.join(fixtures, "workspace")
 const project = path.join(fixtures, "project")
 const datasets = path.join(fixtures, "datasets")
+const query = path.join(fixtures, "query")
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 async function open(file) {
@@ -197,6 +198,35 @@ check("a TriG syntax error is reported", async () => {
     d = vscode.languages.getDiagnostics(doc.uri).filter((x) => x.severity === vscode.DiagnosticSeverity.Error)
   }
   assert.ok(d.some((x) => /Unclosed '\{'/.test(x.message)), fmt(d))
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
+})
+
+check("an N-Quads file is N-Quads: no problems, graph labels allowed", async () => {
+  const doc = await open(path.join(query, "data.nq"))
+  assert.equal(doc.languageId, "nquads")
+  const d = problems(await settledDiagnostics(doc))
+  assert.deepEqual(d, [], fmt(d))
+})
+
+check("a SPARQL file is SPARQL: no problems, hover on a workspace term", async () => {
+  const doc = await open(path.join(query, "people.rq"))
+  assert.equal(doc.languageId, "sparql")
+  const d = problems(await settledDiagnostics(doc))
+  assert.deepEqual(d, [], fmt(d))
+  const hovers = await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, posOf(doc, "a ex:Pers"))
+  const text = hovers.flatMap((h) => h.contents.map((c) => c.value ?? String(c))).join("\n")
+  assert.match(text, /A human being the dataset describes/)
+})
+
+check("a SPARQL syntax error is reported", async () => {
+  const doc = await vscode.workspace.openTextDocument({ language: "sparql", content: "SELECT ?x WHERE { ?x ?p }\n" })
+  await vscode.window.showTextDocument(doc)
+  let d = []
+  for (let i = 0; i < 40 && d.length === 0; i++) {
+    await sleep(50)
+    d = vscode.languages.getDiagnostics(doc.uri).filter((x) => x.severity === vscode.DiagnosticSeverity.Error)
+  }
+  assert.ok(d.length > 0, "no SPARQL syntax error")
   await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 

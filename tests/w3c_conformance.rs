@@ -1,4 +1,5 @@
-//! Runs the vendored W3C Turtle, TriG and N-Triples suites (RDF 1.1 and 1.2)
+//! Runs the vendored W3C Turtle, TriG, N-Triples and N-Quads suites (RDF 1.1
+//! and 1.2)
 //! against the parser. Positive syntax tests must parse without errors,
 //! negative ones must report at least one error, and evaluation tests must
 //! give a dataset isomorphic to the expected N-Triples / N-Quads.
@@ -33,7 +34,8 @@ enum Kind {
 struct Test {
     iri: String,
     kind: Kind,
-    syntax: Syntax,
+    /// None for a syntax the parser does not know (yet).
+    syntax: Option<Syntax>,
     action: String,
     result: Option<String>,
 }
@@ -117,11 +119,13 @@ fn read_manifest(path: &Path) -> Vec<Test> {
         };
         let ty = ty.strip_prefix(RDFT).expect("an rdft: test type");
         let (syntax, rest) = if let Some(r) = ty.strip_prefix("TestTurtle") {
-            (Syntax::Turtle, r)
+            (Some(Syntax::Turtle), r)
         } else if let Some(r) = ty.strip_prefix("TestTrig") {
-            (Syntax::TriG, r)
+            (Some(Syntax::TriG), r)
         } else if let Some(r) = ty.strip_prefix("TestNTriples") {
-            (Syntax::NTriples, r)
+            (Some(Syntax::NTriples), r)
+        } else if let Some(r) = ty.strip_prefix("TestNQuads") {
+            (Syntax::from_language_id("nquads"), r)
         } else {
             panic!("unknown test type {ty}")
         };
@@ -264,7 +268,8 @@ fn first_lines(d: &Dataset) -> String {
 fn run(t: &Test) -> Result<(), String> {
     let path = local(&t.action);
     let src = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let parsed = parse_with_base(&src, &PrefixMap::default(), t.syntax, Some(&t.action));
+    let syntax = t.syntax.ok_or("the parser has no syntax for this suite")?;
+    let parsed = parse_with_base(&src, &PrefixMap::default(), syntax, Some(&t.action));
     // An undeclared prefix is not a parse error (a workspace `prefixes.ttl`
     // may declare it), but diagnostics report it as an error.
     let undeclared = parsed
@@ -345,7 +350,7 @@ fn w3c_suites() {
     );
     // Straight to stderr: the test harness captures `eprintln!`.
     std::io::stderr().write_all(report.as_bytes()).unwrap();
-    assert!(total > 950, "only {total} tests found");
+    assert!(total > 1100, "only {total} tests found");
     assert!(
         stale.is_empty(),
         "allow-listed tests now pass; remove them from ALLOWED:\n{}",

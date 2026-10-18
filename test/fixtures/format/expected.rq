@@ -1,0 +1,50 @@
+# Messy input for the SPARQL formatter golden test.
+PREFIX ex:   <https://query.example.org/def/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
+
+SELECT DISTINCT ?person ?name (COUNT(?org) AS ?orgs)
+WHERE {
+    ?person a ex:Person ;
+        ex:name ?name , ?alias .
+    OPTIONAL {
+        ?person ex:worksFor ?org .
+        ?org rdfs:label ?label
+    } # where they work
+    FILTER (STRLEN(?name) > 0 && !isBLANK(?person))
+    BIND (CONCAT(?name, " (", STR(?person), ")") AS ?display)
+
+    {
+        ?person ex:age ?age
+    } UNION {
+        ?person ex:born ?born
+    }
+    MINUS {
+        ?person ex:retired true
+    }
+    VALUES ?kind { ex:A ex:B }
+    GRAPH ?g {
+        ?person ex:seen ?when
+    }
+    {
+        SELECT ?person (MAX(?when) AS ?last)
+        WHERE {
+            ?person ex:seen ?when
+        }
+        GROUP BY ?person
+    }
+    ?person ex:knows/ex:name|^ex:alias ?other .
+    ?person ex:score ?score
+    FILTER (?score >= 1.5e0)
+    ?person ex:name "Al"@en , """long
+string"""^^xsd:string .
+    ?person ex:tags () .
+    ?person ex:nested [
+        ex:p [ ex:q ?deep ]
+    ] .
+}
+GROUP BY ?person ?name
+HAVING (COUNT(?org) > 1)
+ORDER BY DESC(?name) ?person
+LIMIT 10
+OFFSET 5

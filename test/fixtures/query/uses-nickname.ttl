@@ -1,0 +1,4 @@
+@prefix ex: <https://query.example.org/def/> .
+
+<https://query.example.org/id/alice> ex:nickname "Al" ;
+    ex:nicknam "Ally" .

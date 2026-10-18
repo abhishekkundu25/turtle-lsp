@@ -1,0 +1,10 @@
+# A messy N-Quads file: tabs, runs of spaces, blank lines, graphs.
+<https://example.com/ns#alice>	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	<https://example.com/ns#Person>	<https://example.com/g/people>.
+   <https://example.com/ns#alice>   <https://example.com/ns#name>  "Alice"@en   <https://example.com/g/people>  .   # her name
+
+
+
+<https://example.com/ns#alice> <https://example.com/ns#age> "42"^^<http://www.w3.org/2001/XMLSchema#integer>.
+_:b0	<https://example.com/ns#name>	"Bob"	_:g1 .
+# a triple term in a named graph
+<https://example.com/ns#alice> <https://example.com/ns#says> <<(  _:b0 <https://example.com/ns#knows>   <https://example.com/ns#alice>  )>>   <https://example.com/g/claims>.

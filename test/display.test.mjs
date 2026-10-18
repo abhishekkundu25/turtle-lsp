@@ -53,7 +53,8 @@ describe("display (UTF-16 positions)", () => {
     const p = s.init.capabilities.semanticTokensProvider
     assert.equal(p.full, true)
     assert.equal(p.range, true)
-    assert.deepEqual(legend.tokenTypes, ["namespace", "class", "property", "enumMember", "type", "keyword"])
+    // SPARQL adds variable and function after the RDF types, so their indices stay put.
+    assert.deepEqual(legend.tokenTypes, ["namespace", "class", "property", "enumMember", "type", "keyword", "variable", "function"])
     assert.deepEqual(legend.tokenModifiers, ["declaration", "deprecated", "defaultLibrary", "undescribed"])
     assert.equal(s.init.capabilities.inlayHintProvider, true)
   })

@@ -100,10 +100,12 @@ people work with every day get nothing:
     unsaved text, so that I never have to run the query to find them.
 22. As a query author, I want an undeclared prefix reported on the prefixed
     name, so that I find a missing `PREFIX` line before the endpoint does.
-23. As a query author, I want unused `PREFIX` lines reported as warnings
-    with a quick fix to remove them, so that queries stay tidy.
-24. As a query author, I want a prefix declared twice with different IRIs
-    reported, so that I notice the shadowing.
+23. As a query author, I want unused `PREFIX` lines shown as unnecessary
+    (a hint, as in Turtle) with a quick fix to remove them, so that queries
+    stay tidy.
+24. As a query author, I want a prefix declared twice reported (a hint when
+    the IRI is the same, a warning when it differs), so that I notice the
+    shadowing.
 25. As a query author, I want unknown or deprecated terms of well-known
     vocabularies (`rdfs:lable`, `owl:DeprecatedClass` misuse, `schema:` typos)
     reported with "did you mean" fixes, matched by namespace IRI as in
@@ -255,7 +257,9 @@ seam for the W3C SPARQL harness:
 - The formatter writes one quad per line: subject, predicate, object, graph
   (when present), single spaces, ` .`; comments and order kept; the same
   safety check (the output parses to the same dataset) as other syntaxes.
-- The outline groups statements under their graph, as for TriG.
+- The outline has one container per graph (in order of first appearance,
+  wherever its quads are in the file) holding one entry per distinct
+  subject; default-graph statements stay at the top level.
 - Workspace indexing picks up `.nq` files through the shared extension
   check.
 - The W3C suites: `rdf11/rdf-n-quads` and `rdf12/rdf-n-quads` vendored from
@@ -285,19 +289,46 @@ seam for the W3C SPARQL harness:
     uses, undescribed own terms (same setting), projected-but-unbound
     variables.
 - The new library seam: a SPARQL document is parsed from text plus a prefix
-  map and a base; it gives diagnostics (with stable codes, reusing the Turtle
-  codes where the meaning is the same: `undeclared-prefix`, `unused-prefix`,
-  `duplicate-prefix`, `unknown-term`, `deprecated-term`,
-  `undescribed-term`; new: `sparql-syntax`, `unbound-projection`) and
-  formatting.
-- **Formatter**: token-based and comment-keeping. Keywords upper case,
-  `PREFIX` block aligned, two-space indentation per group, one triple
-  pattern per line with `;` / `,` continuations indented, solution modifiers
-  on their own lines, `turtle.format.lineWidth` for long expressions. Safety
-  check: the output must parse to the same algebra as the input with
-  `spargebra` (same prefixes and base), and formatting the output again
-  must change nothing; otherwise the formatter returns no edits. Refused
-  when the document has syntax errors.
+  map and a base; it gives diagnostics and formatting. Diagnostic codes and
+  severities are the Turtle ones wherever the meaning is the same, so that
+  editors filter both alike: `syntax` (error), `undeclared-prefix` (error),
+  `unused-prefix` and `duplicate-prefix` (hints, unnecessary),
+  `redefined-prefix` (warning), `unknown-term` (warning), `deprecated-term`
+  (hint), `undescribed-term`; one new code, `unbound-projection` (warning).
+- Every undeclared prefix in a query is reported (not only the first one the
+  SPARQL parser stops at), and an undeclared prefix is never also reported
+  as a syntax error; syntax errors after it are still found.
+- **Formatter**: token-based and comment-keeping, following the Turtle
+  formatter's conventions (golden files: `test/fixtures/format/expected.rq`
+  and `expected.ru`):
+  - no token is added or removed (`SELECT * {` stays without `WHERE`);
+    keywords are upper-cased, built-in function names take their grammar
+    spelling (`STRLEN`, `isBLANK`, `langMatches`), `a` stays `a`;
+  - `PREFIX` IRIs aligned, one blank line after the prologue;
+  - indentation from the client's options, one level per group; a triple
+    pattern's subject and first predicate on one line, further predicates
+    one level in after ` ;`, object lists on one line joined by ` , ` when
+    they fit (else one per line); the optional last ` .` of a triple block
+    kept or left out as written; `[ ]` on one line when short and flat,
+    else broken, as in Turtle;
+  - group openers (`WHERE {`, `OPTIONAL {`, `GRAPH ?g {`, `{` of a group or
+    subquery) end their line, `}` on its own line, `} UNION {` joined, an
+    empty group `{ }`; `FILTER (`, `BIND (`, `HAVING (` with a space,
+    function calls without; binary operators spaced, property paths not;
+    `VALUES ?v { ... }` on one line when it fits;
+  - the projection on the query-form line, `WHERE {` on the next; solution
+    modifiers each on their own line; update operations separated by
+    ` ;` and a blank line;
+  - comments kept: own-line comments above the token after them, trailing
+    comments at the end of their line after one space; runs of blank lines
+    collapse to one;
+  - `turtle.format.lineWidth` breaks long projections and object lists.
+  Safety check: the output must parse to the same algebra as the input
+  with `spargebra` (same prefixes and base), compared with generated names
+  renumbered (blank node labels and the 32-hex-digit variables spargebra
+  makes up for aggregates), and formatting the output again must change
+  nothing; otherwise the formatter returns no edits. Refused when the
+  document has syntax errors (an undeclared prefix included).
 - **Documents**: the workspace keeps a document kind (RDF with a `Syntax`,
   or SPARQL). SPARQL documents never feed the knowledge index. SPARQL files
   on disk are not analysed at startup; references and rename of a term scan
@@ -308,6 +339,8 @@ seam for the W3C SPARQL harness:
   hints, semantic token types and modifiers, "did you mean"), on positions
   from the SPARQL structure. New semantic token types: `variable`,
   `keyword`, `function` (added to the legend; existing indices unchanged).
+- **Variable definition** is the variable's first occurrence in its scope
+  (the projection, when it is projected).
 - **Variable scope**: a group pattern is one scope; a subquery is its own
   scope whose projected variables are shared with the enclosing scope. Rename
   keeps `?` or `$`, accepts the new name with or without a sigil, and refuses
@@ -319,7 +352,15 @@ seam for the W3C SPARQL harness:
   SPARQL documents too (a prefixed name is renamed only when the new IRI
   keeps the same namespace, otherwise it becomes a full IRI).
 - **Server**: language ids `sparql` and `nquads`/`n-quads`; capabilities
-  unchanged except the semantic token legend. Every request handler routes
+  unchanged except the semantic token legend (`variable` and `function`
+  appended after the existing types) and the completion trigger characters
+  (`?` and `$` added).
+- **Messages and titles** follow the Turtle ones with SPARQL syntax: an
+  undeclared prefix says `(add PREFIX foaf: <ns>)`, its fix is titled
+  `Add PREFIX foaf: <ns>`; "Add all missing prefixes", "Remove unused
+  prefix", "Change to '...'", "Organise prefixes", "Shorten IRI to ...",
+  "Shorten all IRIs in file" as in Turtle. Nothing offered in a query
+  writes `@prefix` or touches `owl:imports`. Every request handler routes
   by document kind. SHACL validation ignores SPARQL documents; N-Quads data
   takes part like TriG data.
 - **Extension**: languages `nquads` (`.nq`) and `sparql` (`.rq`, `.sparql`,
@@ -346,7 +387,7 @@ seam for the W3C SPARQL harness:
     validity), plus a generated `NAME.gen.nq` from every Turtle file under
     5 MB (as `.gen.trig` is generated today);
   - SPARQL cases check that our diagnostics agree with `spargebra` on
-    validity (no `sparql-syntax` error exactly when spargebra parses it,
+    validity (no `syntax` error exactly when spargebra parses it,
     given the examples' shared prefixes), the lexer has no error tokens on
     valid queries, the formatter keeps the algebra, every comment, and is
     idempotent, nothing panics, and each case stays under the time limit;
@@ -385,8 +426,9 @@ seam for the W3C SPARQL harness:
     refusal on errors, line width.
   - `test/sparql-actions.test.mjs`: add / add all / remove prefix, fix
     misspelled term, organise prefixes, shorten / expand IRI.
-  - `test/protocol.test.mjs`: semantic token legend has the new types after
-    the existing ones.
+  - `test/display.test.mjs`: the semantic token legend has the new types
+    after the existing ones.
+  - `test/format.test.mjs`: the N-Quads golden files.
   - `test/resources.test.mjs`: idle CPU after opening, editing, formatting
     and closing `.nq` and `.rq` files; no stray processes or files.
 - **Conformance (Rust)**, prior art `tests/w3c_conformance.rs`,
@@ -400,7 +442,9 @@ seam for the W3C SPARQL harness:
 - **Fuzz**: the chaos test (`tests/chaos.rs`) also drives `.nq` and `.rq`
   documents.
 - **VS Code**: the extension test opens a `.nq` and a `.rq` file and sees
-  diagnostics from the server.
+  diagnostics and hover from the server; the grammar test checks the
+  N-Quads and SPARQL TextMate scopes, the contributed languages, their
+  extensions and activation.
 - **Corpus**: as above; run by hand (`npm run corpus`), not in CI.
 - Each slice runs its targeted tests while working; the full verification
   (cargo tests, clippy, fmt, `npm test`, `npm run bench`, VS Code tests,
@@ -429,9 +473,19 @@ seam for the W3C SPARQL harness:
   (syntax tests only).
 - Corpus: `sib-swiss/sparql-examples` commit
   `45e5b53a2d59a121221cd66a8596ef868cc58021`.
-- `spargebra` already passes the SPARQL syntax suites; what the harness tests
-  is our layer on top of it (lexer, structure, error positions, formatter),
-  and that our diagnostics never disagree with it.
+- `spargebra` disagrees with four of the vendored tests. It accepts three
+  negative tests (a triple term or a literal as the subject of a triple term
+  inside an expression, an aggregate inside an aggregate): the structure
+  layer rejects those itself. It rejects one positive SPARQL 1.2 test
+  (`select-variable-reuse`), which is the harness's one allowed deviation.
+- Test fixtures for both formats live in `test/fixtures/query` (an
+  ontology, a dataset in N-Quads, queries, an update, a folder with a
+  `prefixes.ttl`); `test/query-client.mjs` holds the helpers the SPARQL
+  tests share.
+- The SPARQL chaos test saves a failing input under `target/tmp`, not the
+  system temp directory.
+- Corpus sizes when fetched on 2026-10-19: the Web Data Commons slice is
+  16 MB (57,000 quads); the SIB repository has 1,327 `.ttl` files.
 
 ## Slices
 

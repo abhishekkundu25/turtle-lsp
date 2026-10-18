@@ -1,5 +1,5 @@
 // textDocument/formatting over stdio: the golden fixtures (Turtle, TriG,
-// N-Triples), refusal on syntax errors, no edits when already formatted, and
+// N-Triples, N-Quads), refusal on syntax errors, no edits when already formatted, and
 // the client's indent options.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
@@ -35,7 +35,7 @@ after(async () => {
 let n = 0
 async function format(text, options = spaces, ext = "ttl") {
   const uri = uriOf(path.join(dir, `doc${n++}.${ext}`))
-  const languageId = { ttl: "turtle", trig: "trig", nt: "ntriples" }[ext]
+  const languageId = { ttl: "turtle", trig: "trig", nt: "ntriples", nq: "nquads" }[ext]
   s.conn.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } })
   await s.diagnosticsFor(uri)
   return s.request("textDocument/formatting", { textDocument: { uri }, options })
@@ -52,7 +52,7 @@ test("formats the messy fixture into the golden file", async () => {
   assert.equal(apply(text, edits), read("expected.ttl"))
 })
 
-for (const ext of ["trig", "nt"]) {
+for (const ext of ["trig", "nt", "nq"]) {
   test(`formats the messy ${ext} fixture into the golden file`, async () => {
     const text = read(`messy.${ext}`)
     const edits = await format(text, spaces, ext)

@@ -144,6 +144,42 @@ test("an idle server uses no CPU", async () => {
   }
 })
 
+test("an idle server uses no CPU after opening, editing, formatting and closing .nq and .rq files", async () => {
+  const query = path.join(fixtures, "query")
+  const s = await startServer({ cwd: query })
+  try {
+    for (const [name, languageId] of [
+      ["data.nq", "nquads"],
+      ["people.rq", "sparql"],
+      ["update.ru", "sparql"],
+    ]) {
+      const uri = uriOf(path.join(query, name))
+      const text = fs.readFileSync(path.join(query, name), "utf8")
+      s.conn.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } })
+      await s.diagnosticsFor(uri)
+      s.change(uri, text + "\n# edited\n")
+      await s.diagnosticsFor(uri)
+      await s.request("textDocument/formatting", { textDocument: { uri }, options: { tabSize: 4, insertSpaces: true } })
+      await s.request("textDocument/completion", { textDocument: { uri }, position: { line: 1, character: 0 } })
+      await s.request("textDocument/semanticTokens/full", { textDocument: { uri } })
+      s.close(uri)
+    }
+    await assertIdle(s, "after N-Quads and SPARQL documents")
+  } finally {
+    await s.stop()
+  }
+})
+
+test("the server exits when the editor goes away while a long query is open", async () => {
+  const body = Array.from({ length: 5000 }, (_, i) => `?s${i} <https://e.org/p> ?o${i} .`).join("\n")
+  const s = rawServer(path.join(fixtures, "query"))
+  const uri = uriOf(path.join(fixtures, "query", "__long.rq"))
+  s.send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "sparql", version: 1, text: `SELECT * WHERE {\n${body}\n}\n` } } })
+  s.send({ jsonrpc: "2.0", id: 2, method: "textDocument/formatting", params: { textDocument: { uri }, options: { tabSize: 4, insertSpaces: true } } })
+  s.proc.stdin.end()
+  assert.notEqual(await s.exitCode(), "running", "server still running 5 s after stdin closed")
+})
+
 test("shutdown then exit ends the process with code 0", async () => {
   const s = rawServer()
   await sleep(200)

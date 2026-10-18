@@ -1,0 +1,29 @@
+# The ontology the queries and the dataset use.
+@prefix ex: <https://query.example.org/def/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:Person a owl:Class ;
+    rdfs:label "Person"@en ;
+    rdfs:comment "A human being the dataset describes."@en .
+
+ex:Organisation a owl:Class ;
+    rdfs:label "Organisation"@en .
+
+ex:name a owl:DatatypeProperty ;
+    rdfs:label "name"@en ;
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
+
+ex:worksFor a owl:ObjectProperty ;
+    rdfs:label "works for"@en ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Organisation .
+
+ex:founded a owl:DatatypeProperty ;
+    rdfs:label "founded"@en ;
+    rdfs:domain ex:Organisation .
+
+ex:acme a ex:Organisation ;
+    rdfs:label "Acme"@en .

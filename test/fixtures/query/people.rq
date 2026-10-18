@@ -1,0 +1,16 @@
+# People and where they work.
+PREFIX ex: <https://query.example.org/def/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?person ?name ?org
+WHERE {
+  ?person a ex:Person ;
+    ex:name ?name .
+  OPTIONAL {
+    ?person ex:worksFor ?org .
+    ?org rdfs:label ?orgLabel .
+  }
+  FILTER (STRLEN(?name) > 0)
+}
+ORDER BY ?name
+LIMIT 10

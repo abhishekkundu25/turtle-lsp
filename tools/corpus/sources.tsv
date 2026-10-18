@@ -1,5 +1,9 @@
 # name	format	url
-# format: ttl, nt, trig, or rdf (RDF/XML, converted to N-Triples by the harness)
+# format: ttl, nt, trig, nq, or rdf (RDF/XML, converted to N-Triples by the harness);
+# nq-head: the first megabytes of a gzipped N-Quads dump, cut at the last full line;
+# sparql-examples: a tarball of the SIB sparql-examples repository, unpacked into
+# NAME/; every sh:select / sh:ask / sh:construct / sh:describe / sh:update in
+# its .ttl files is a SPARQL case.
 schemaorg	ttl	https://schema.org/version/latest/schemaorg-current-https.ttl
 w3c-shacl	ttl	https://www.w3.org/ns/shacl.ttl
 w3c-prov	ttl	https://www.w3.org/ns/prov.ttl
@@ -39,3 +43,5 @@ w3c-activitystreams	ttl	https://www.w3.org/ns/activitystreams-owl
 gist-core	ttl	https://raw.githubusercontent.com/semanticarts/gist/develop/ontologies/gistCore.ttl
 dcat-ap-shacl	ttl	https://raw.githubusercontent.com/SEMICeu/DCAT-AP/master/releases/3.0.0/shacl/dcat-ap-SHACL.ttl
 shacl-shacl	ttl	https://raw.githubusercontent.com/w3c/data-shapes/gh-pages/shacl12-test-suite/tests/core/complex/shacl-shacl.ttl
+wdc-rdfa	nq-head	http://data.dws.informatik.uni-mannheim.de/structureddata/2023-12/quads/dpef.html-rdfa.nq-00000.gz
+sib-sparql-examples	sparql-examples	https://codeload.github.com/sib-swiss/sparql-examples/tar.gz/45e5b53a2d59a121221cd66a8596ef868cc58021
