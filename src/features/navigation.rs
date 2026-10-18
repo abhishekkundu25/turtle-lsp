@@ -5,7 +5,7 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::{Form, Iri, Span};
-use crate::workspace::{PREFIX_FILE, path_to_uri};
+use crate::workspace::{PREFIX_FILE, path_to_uri, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
 use std::collections::HashMap;
@@ -48,6 +48,11 @@ pub fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
 
 pub fn uri(s: &str) -> Uri {
     Uri::from_str(s).expect("valid uri")
+}
+
+/// A document's path for a message, else its URI.
+fn shown(uri: &str) -> String {
+    uri_to_path(uri).map_or_else(|| uri.to_string(), |p| p.display().to_string())
 }
 
 fn loc(a: &Analysis, enc: Encoding, span: Span) -> Location {
@@ -254,7 +259,17 @@ pub fn prepare_rename(a: &Analysis, enc: Encoding, pos: Position) -> Option<Prep
     Some(PrepareRenameResponse::Range(a.range(enc, span)))
 }
 
-/// Rename an IRI everywhere it occurs, or a prefix within this document.
+/// Where the prefixes of a document come from, for renaming one.
+pub struct PrefixScope<'a> {
+    /// The prefixes.ttl that supplies the document's prefixes, if any.
+    pub file: Option<Arc<Analysis>>,
+    /// The prefixes.ttl that supplies the document at a URI, if any.
+    pub file_of: &'a mut dyn FnMut(&str) -> Option<std::path::PathBuf>,
+}
+
+/// Rename an IRI everywhere it occurs, or a prefix. A prefix a document
+/// declares itself is renamed in that document; one a prefixes.ttl declares is
+/// renamed there and in every document that takes it from there.
 /// `new_name` may be a local name (`robert`), a prefixed name (`ex:robert`)
 /// or a full IRI (`<http://...>`); each occurrence keeps its file's style.
 pub fn rename(
@@ -263,6 +278,7 @@ pub fn rename(
     enc: Encoding,
     pos: Position,
     new_name: &str,
+    scope: PrefixScope,
 ) -> Result<WorkspaceEdit, String> {
     let offset = a.offset(enc, pos).ok_or("invalid position")?;
     let (target, _) = target_at(a, offset).ok_or("nothing to rename here")?;
@@ -273,30 +289,83 @@ pub fn rename(
             if new.contains(':') || new.contains(char::is_whitespace) {
                 return Err(format!("'{new_name}' is not a valid prefix name"));
             }
-            let mut edits: Vec<TextEdit> = a
-                .parsed
-                .prefixes
-                .iter()
-                .filter(|p| p.name == old)
-                .map(|p| TextEdit {
-                    range: a.range(enc, p.name_span),
-                    new_text: new.to_string(),
-                })
-                .collect();
-            edits.extend(
-                a.parsed
-                    .prefix_uses
+            let declares =
+                |d: &Analysis, name: &str| d.parsed.prefixes.iter().any(|p| p.name == name);
+            let is_prefix_file = |d: &Analysis| d.uri.ends_with(&format!("/{PREFIX_FILE}"));
+            // The prefixes.ttl declaring `old` for this document, if it is shared.
+            let shared: Option<&Analysis> = if declares(a, &old) {
+                is_prefix_file(a).then_some(a)
+            } else if let Some(pf) = scope.file.as_deref().filter(|pf| declares(pf, &old)) {
+                Some(pf)
+            } else if a.external.contains_key(&old) {
+                return Err(format!(
+                    "prefix '{old}:' comes from the turtle.prefixes setting; rename it there"
+                ));
+            } else {
+                None
+            };
+            let mut docs: Vec<&Analysis> = vec![shared.unwrap_or(a)];
+            if let Some(source) = shared {
+                let source_path = uri_to_path(&source.uri);
+                if !std::ptr::eq(source, a) {
+                    docs.push(a);
+                }
+                for (_, src, d) in k.docs() {
+                    if src == Source::External
+                        || d.uri == a.uri
+                        || d.uri == source.uri
+                        || is_prefix_file(d)
+                        || declares(d, &old)
+                    {
+                        continue;
+                    }
+                    if source_path.is_some() && (scope.file_of)(&d.uri) == source_path {
+                        docs.push(d);
+                    }
+                }
+            }
+            for d in &docs {
+                if declares(d, new) {
+                    return Err(format!(
+                        "prefix '{new}:' is already declared in {}",
+                        shown(&d.uri)
+                    ));
+                }
+                if d.parsed.prefix_uses.iter().any(|u| u.name == new) {
+                    return Err(format!(
+                        "prefix '{new}:' is already used in {}",
+                        shown(&d.uri)
+                    ));
+                }
+            }
+            for d in docs {
+                let mut edits: Vec<TextEdit> = d
+                    .parsed
+                    .prefixes
                     .iter()
-                    .filter(|u| u.name == old)
-                    .map(|u| TextEdit {
-                        range: a.range(
-                            enc,
-                            Span::new(u.span.start, u.span.start + old.len() as u32),
-                        ),
+                    .filter(|p| p.name == old)
+                    .map(|p| TextEdit {
+                        range: d.range(enc, p.name_span),
                         new_text: new.to_string(),
-                    }),
-            );
-            changes.insert(uri(&a.uri), edits);
+                    })
+                    .collect();
+                edits.extend(
+                    d.parsed
+                        .prefix_uses
+                        .iter()
+                        .filter(|u| u.name == old)
+                        .map(|u| TextEdit {
+                            range: d.range(
+                                enc,
+                                Span::new(u.span.start, u.span.start + old.len() as u32),
+                            ),
+                            new_text: new.to_string(),
+                        }),
+                );
+                if !edits.is_empty() || std::ptr::eq(d, a) {
+                    changes.insert(uri(&d.uri), edits);
+                }
+            }
         }
         Target::Iri(old) => {
             let new_iri =

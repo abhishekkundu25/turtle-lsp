@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Renaming a shared prefix**: renaming a prefix that a `prefixes.ttl`
+  declares, from that file or from a file that uses it, now renames it in
+  every file that takes it from there (open or not), and not in files that
+  declare it themselves. Before, only the current file changed, which left
+  the other files with an undeclared prefix. A rename to a name the affected
+  files already declare or use is refused, and a prefix from the
+  `turtle.prefixes` setting is refused with a pointer to the setting.
+
 ## 0.4.0 — 2026-10-19
 
 ### Features

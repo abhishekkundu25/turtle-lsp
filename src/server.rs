@@ -1187,13 +1187,27 @@ impl Server {
             }
             Rename::METHOD => {
                 let p = params!(RenameParams);
-                let (_, a) = doc!(p.text_document_position.text_document.uri);
+                let (u, a) = doc!(p.text_document_position.text_document.uri);
+                let file = self.prefix_file_for(&u);
+                let roots = self.ws.roots.clone();
+                let mut dirs: FxHashMap<PathBuf, Option<PathBuf>> = FxHashMap::default();
+                let mut file_of = |uri: &str| {
+                    let dir = uri_to_path(uri)?.parent()?.to_path_buf();
+                    dirs.entry(dir)
+                        .or_insert_with_key(|d| crate::workspace::find_prefix_file(&roots, d))
+                        .clone()
+                };
+                let scope = navigation::PrefixScope {
+                    file,
+                    file_of: &mut file_of,
+                };
                 match navigation::rename(
                     &a,
                     self.ws.knowledge(),
                     enc,
                     p.text_document_position.position,
                     &p.new_name,
+                    scope,
                 ) {
                     Ok(edit) => json(serde_json::to_value(edit)),
                     Err(msg) => Err((ErrorCode::InvalidParams, msg)),

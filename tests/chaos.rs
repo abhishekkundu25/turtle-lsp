@@ -307,7 +307,11 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
                 }
                 let _ = hierarchy::subtypes(&item, docs, enc, Some(&a));
             }
-            let _ = navigation::rename(&a, docs, enc, pos, "renamed");
+            let scope = navigation::PrefixScope {
+                file: None,
+                file_of: &mut |_| None,
+            };
+            let _ = navigation::rename(&a, docs, enc, pos, "renamed", scope);
             // Positions past the end of a line or of the file, as clients sometimes send.
             let wild = Position::new(
                 pos.line + rng.below(3) as u32,

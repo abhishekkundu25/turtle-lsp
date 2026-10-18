@@ -298,23 +298,7 @@ impl Workspace {
 
     /// The prefixes.ttl that supplies prefixes to files in `dir`, if any.
     pub fn find_prefix_file(&self, dir: &Path) -> Option<PathBuf> {
-        let root = self
-            .roots
-            .iter()
-            .filter(|r| dir.starts_with(r))
-            .max_by_key(|r| r.as_os_str().len());
-        let mut cur = Some(dir);
-        while let Some(d) = cur {
-            let candidate = d.join(PREFIX_FILE);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            if root.is_none_or(|r| d == r.as_path()) {
-                break;
-            }
-            cur = d.parent();
-        }
-        None
+        find_prefix_file(&self.roots, dir)
     }
 
     /// An open prefixes.ttl is being edited: open documents re-resolve.
@@ -418,6 +402,27 @@ impl Workspace {
             self.sync(&uri);
         }
     }
+}
+
+/// The prefixes.ttl that supplies prefixes to files in `dir` (searching up to
+/// the innermost workspace root), if any.
+pub fn find_prefix_file(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
+    let root = roots
+        .iter()
+        .filter(|r| dir.starts_with(r))
+        .max_by_key(|r| r.as_os_str().len());
+    let mut cur = Some(dir);
+    while let Some(d) = cur {
+        let candidate = d.join(PREFIX_FILE);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if root.is_none_or(|r| d == r.as_path()) {
+            break;
+        }
+        cur = d.parent();
+    }
+    None
 }
 
 #[cfg(test)]
