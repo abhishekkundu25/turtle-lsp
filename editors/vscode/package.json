@@ -1,7 +1,7 @@
 {
   "name": "turtle-language-server",
   "displayName": "Turtle RDF Language Server (TTL, OWL, SHACL)",
-  "description": "Fast Turtle (.ttl) and RDF 1.2 support written in Rust: syntax highlighting, error checking, completion of 80+ vocabularies (rdf, rdfs, owl, skos, shacl, schema.org, foaf), hover docs, go to definition, rename and quick fixes for ontologies and linked data.",
+  "description": "Fast Turtle (.ttl) and RDF 1.2 support written in Rust, also for TriG, N-Triples, N-Quads and SPARQL: syntax highlighting, error checking, completion of 80+ vocabularies (rdf, rdfs, owl, skos, shacl, schema.org, foaf), hover docs, go to definition, rename and quick fixes for ontologies, queries and linked data.",
   "version": "0.4.2",
   "publisher": "abhishekkundu25",
   "license": "MIT",
@@ -36,6 +36,8 @@
     "shacl",
     "skos",
     "sparql",
+    "n-quads",
+    "nquads",
     "linked data",
     "semantic web",
     "knowledge graph",
@@ -48,7 +50,7 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.{ttl,turtle,trig,nt}"
+    "workspaceContains:**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru}"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -108,6 +110,37 @@
           "application/n-triples"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "nquads",
+        "aliases": [
+          "N-Quads",
+          "nquads"
+        ],
+        "extensions": [
+          ".nq"
+        ],
+        "mimetypes": [
+          "application/n-quads"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "sparql",
+        "aliases": [
+          "SPARQL",
+          "sparql"
+        ],
+        "extensions": [
+          ".rq",
+          ".sparql",
+          ".ru"
+        ],
+        "mimetypes": [
+          "application/sparql-query",
+          "application/sparql-update"
+        ],
+        "configuration": "./sparql-language-configuration.json"
       }
     ],
     "grammars": [
@@ -125,6 +158,16 @@
         "language": "ntriples",
         "scopeName": "source.ntriples",
         "path": "./syntaxes/ntriples.tmLanguage.json"
+      },
+      {
+        "language": "nquads",
+        "scopeName": "source.nquads",
+        "path": "./syntaxes/nquads.tmLanguage.json"
+      },
+      {
+        "language": "sparql",
+        "scopeName": "source.sparql",
+        "path": "./syntaxes/sparql.tmLanguage.json"
       }
     ],
     "configuration": {
@@ -233,6 +276,30 @@
       },
       {
         "language": "trig",
+        "scopes": {
+          "*.undescribed": [
+            "invalid.deprecated"
+          ]
+        }
+      },
+      {
+        "language": "ntriples",
+        "scopes": {
+          "*.undescribed": [
+            "invalid.deprecated"
+          ]
+        }
+      },
+      {
+        "language": "nquads",
+        "scopes": {
+          "*.undescribed": [
+            "invalid.deprecated"
+          ]
+        }
+      },
+      {
+        "language": "sparql",
         "scopes": {
           "*.undescribed": [
             "invalid.deprecated"

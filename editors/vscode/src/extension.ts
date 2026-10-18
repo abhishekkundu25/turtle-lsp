@@ -55,6 +55,10 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
       { scheme: "untitled", language: "trig" },
       { scheme: "file", language: "ntriples" },
       { scheme: "untitled", language: "ntriples" },
+      { scheme: "file", language: "nquads" },
+      { scheme: "untitled", language: "nquads" },
+      { scheme: "file", language: "sparql" },
+      { scheme: "untitled", language: "sparql" },
     ],
     initializationOptions: serverSettings(),
     // Later changes reach the server as workspace/didChangeConfiguration.

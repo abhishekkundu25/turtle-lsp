@@ -2,8 +2,9 @@
 
 # Turtle RDF Language Server for VS Code
 
-Language support for **RDF Turtle (`.ttl`), TriG (`.trig`) and N-Triples
-(`.nt`)**: ontologies (OWL, RDFS, SKOS), SHACL shapes and linked data. Powered
+Language support for **RDF Turtle (`.ttl`), TriG (`.trig`), N-Triples (`.nt`),
+N-Quads (`.nq`) and SPARQL (`.rq`, `.sparql`, `.ru`)**: ontologies (OWL, RDFS,
+SKOS), SHACL shapes, linked data, and the queries and updates you run on them. Powered
 by [turtle-lsp](https://github.com/abhishekkundu25/turtle-lsp), a language
 server written in Rust: a keystroke in a 30,000-line file gets fresh
 diagnostics in about 9 ms.
@@ -13,7 +14,7 @@ Passes the W3C test suites: Turtle, TriG and N-Triples 982/982, SHACL Core
 
 ## Features
 
-- **Syntax highlighting** for Turtle, TriG, N-Triples and RDF 1.2 (triple terms `<<( )>>`, reifiers `~`, annotations `{| |}`), plus **semantic highlighting** of classes, properties, individuals, datatypes and deprecated terms.
+- **Syntax highlighting** for Turtle, TriG, N-Triples, N-Quads, SPARQL and RDF 1.2 (triple terms `<<( )>>`, reifiers `~`, annotations `{| |}`), plus **semantic highlighting** of classes, properties, individuals, datatypes and deprecated terms.
 - **Error checking as you type**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared, unused and duplicate prefixes, invalid IRIs and language tags.
 - **Vocabulary checks**: unknown or deprecated terms in 80+ well-known vocabularies (rdf, rdfs, owl, skos, sh, dcterms, foaf, schema.org, prov, sosa, qudt and more), with "did you mean" fixes. Matched by namespace IRI, so your own `ex:` or `sd:` prefixes are never checked against the wrong vocabulary. Terms in your own namespaces that nothing describes (often typos) are flagged too.
 - **SHACL validation**: data is checked against the shapes in your workspace about a second after you stop typing, and on save. SHACL Core and SHACL-SPARQL (`sh:sparql` constraints, SPARQL targets and components). SPARQL inside shapes is checked as you type, and mistakes in the shapes themselves are flagged.
@@ -26,11 +27,32 @@ Passes the W3C test suites: Turtle, TriG and N-Triples 982/982, SHACL Core
 - **Outline, workspace symbol search and folding.**
 - **Quick fixes and refactorings**: add a missing prefix (or the `owl:imports` that defines it), add all missing prefixes, remove an unused prefix, fix a misspelled term, organise prefixes, shorten or expand an IRI, extract a prefix for a namespace.
 
+## SPARQL
+
+SPARQL queries and updates (SPARQL 1.1 and 1.2) get the same knowledge of your
+workspace and the vocabularies:
+
+- Syntax errors as you type, at the token where the query stops making sense; undeclared, unused and duplicate prefixes; unknown or deprecated vocabulary terms and undescribed terms of your own, with "did you mean"; a projected variable that the `WHERE` clause never binds.
+- Completion of keywords, variables, prefixes, terms and built-in functions. Accepting a term adds its `PREFIX` line.
+- Hover and label inlay hints on terms, as in Turtle.
+- Go to definition, references and document highlight for terms, prefixes and variables.
+- Rename of variables, prefixes and terms. Renaming a term in a Turtle file also renames it in your queries, and the other way round.
+- Formatting that keeps comments and never changes what the query means.
+- Quick fixes: add a missing `PREFIX`, remove an unused one, fix a misspelled term; organise prefixes, shorten or expand an IRI.
+- Semantic highlighting, folding and an outline of the query or update operations.
+
+Queries are never run and no endpoint is contacted.
+
+## N-Quads
+
+`.nq` files get what N-Triples files get: syntax errors per line with recovery, hover, navigation, an outline grouped by graph, and formatting with one quad per line. Their quads join the workspace, so terms described in a dataset dump count as described in your Turtle files.
+
 ## Project prefixes
 
 If your Turtle files share a prefix header instead of declaring prefixes
-themselves, put the header in a `prefixes.ttl`. Every Turtle file in that
-folder or below can then use those prefixes. Or set `turtle.prefixes`.
+themselves, put the header in a `prefixes.ttl`. Every Turtle file and SPARQL
+query in that folder or below can then use those prefixes. Or set
+`turtle.prefixes`.
 
 ## Settings
 

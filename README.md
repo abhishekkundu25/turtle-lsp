@@ -4,7 +4,8 @@
 
 # turtle-lsp
 
-A fast language server for RDF Turtle (`.ttl`), written in Rust.
+A fast language server for RDF Turtle (`.ttl`), written in Rust. It also
+reads TriG, N-Triples and N-Quads, and SPARQL queries and updates.
 
 A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
 the whole file formats in about 5 ms. The server starts in a few milliseconds.
@@ -21,13 +22,14 @@ the full W3C test suites and real public ontologies; see
 - **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix.
 - **Semantic highlighting and label hints**: IRIs are coloured by what they denote (class, property, individual, datatype), and an opaque name such as `ex:P0042` can show its label after it.
 - **Outline and search**: document symbols, workspace symbols, folding.
-- **Formatting**: one consistent layout for Turtle, TriG and N-Triples, built from the tokens: comments and statement order are kept, the graph never changes, and formatting twice changes nothing. Files with syntax errors are left alone.
+- **Formatting**: one consistent layout for Turtle, TriG, N-Triples and N-Quads, built from the tokens: comments and statement order are kept, the graph never changes, and formatting twice changes nothing. Files with syntax errors are left alone.
 - **Quick fixes and refactorings**: add a missing prefix (your project's own binding first), add all missing prefixes, remove an unused prefix, fix a misspelled term; organise prefixes, shorten or expand an IRI, and extract a prefix for a repeated namespace.
 - **Type hierarchy**: super- and subclasses (and sub-properties) across the workspace, imports and vocabularies.
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
 - **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, N-Triples or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
-- **TriG and N-Triples**: `.trig` and `.nt` files get the same features. See [TriG and N-Triples](#trig-and-n-triples).
+- **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
+- **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. See [SPARQL](#sparql).
 - **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
 
@@ -99,11 +101,12 @@ below it can use those prefixes. You can also pass prefixes from the editor:
 init_options = { prefixes = { ex = "http://example.org/" } }
 ```
 
-## TriG and N-Triples
+## TriG, N-Triples and N-Quads
 
-The server also reads TriG (`.trig`) and N-Triples (`.nt`) files. It takes the
-language from the editor's language id (`turtle`, `trig`, `ntriples` or
-`n-triples`). If the editor sends another id, the file extension decides.
+The server also reads TriG (`.trig`), N-Triples (`.nt`) and N-Quads (`.nq`)
+files. It takes the language from the editor's language id (`turtle`, `trig`,
+`ntriples`, `n-triples`, `nquads` or `n-quads`). If the editor sends another
+id, the file extension decides.
 
 - **TriG**: graph blocks `{ ... }`, `ex:g { ... }` and `GRAPH ex:g { ... }`.
   Triples outside a block are in the default graph. Go to definition on a
@@ -116,8 +119,54 @@ language from the editor's language id (`turtle`, `trig`, `ntriples` or
   quotes and long strings, relative IRIs, reified triples and annotations.
   RDF 1.2 triple terms `<<( s p o )>>` are allowed. N-Triples files get no
   prefixes from `prefixes.ttl` or the editor settings.
+- **N-Quads**: N-Triples plus an optional graph label (an IRI or a blank node)
+  before the final `.`. Everything said about N-Triples above applies. A graph
+  label that is not an IRI or blank node, or a fifth term, is an error. The
+  outline groups statements by graph, and formatting writes one quad per line.
+  The quads join the workspace like a TriG file's, so terms described in a
+  `.nq` file count as described.
 
-The workspace index covers `.ttl`, `.turtle`, `.trig` and `.nt` files.
+The workspace index covers `.ttl`, `.turtle`, `.trig`, `.nt` and `.nq` files.
+
+## SPARQL
+
+SPARQL files (`.rq`, `.sparql`, `.ru`; language id `sparql`) get the
+language-server features of Turtle files, built on the same knowledge of the
+workspace and the vocabularies. Queries and updates, SPARQL 1.1 and 1.2, are
+accepted in any of these files: the server checks a document as what it holds,
+not by its extension.
+
+- **Diagnostics** as you type: syntax errors at the token where the query
+  stops making sense, undeclared, unused and duplicate prefixes, unknown or
+  deprecated vocabulary terms with "did you mean", terms in your own
+  namespaces that nothing describes (`turtle.lint.undescribedTerms`), and a
+  projected variable that the `WHERE` clause never binds.
+- **Completion** of keywords by context, variables after `?` or `$`,
+  prefixes, terms (classes after `a`, properties in predicate position,
+  properties whose `rdfs:domain` fits first) and built-in functions.
+  Accepting a term whose prefix is not declared adds its `PREFIX` line.
+- **Hover** and **label inlay hints** as in Turtle.
+- **Navigation**: go to definition (a term to where the workspace describes
+  it, a prefix to its `PREFIX` line, a variable to its first occurrence in
+  its scope), references (a term's uses in the workspace too), document
+  highlight.
+- **Rename** of variables (within their scope, keeping `?` or `$`), prefixes,
+  and terms: renaming a term in a Turtle file also renames it in the
+  workspace's SPARQL files, and the other way round.
+- **Formatting** that indents groups, puts one triple pattern per line,
+  aligns the `PREFIX` block and keeps comments. The formatted query must
+  parse to the same algebra, or nothing changes. Queries with syntax errors
+  are left alone.
+- **Quick fixes and refactorings**: add a missing `PREFIX`, add all missing
+  prefixes, remove an unused one, fix a misspelled term, organise prefixes,
+  shorten or expand an IRI.
+- **Semantic highlighting, folding and outline** (the query form, or each
+  update operation, with its clauses).
+
+Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
+queries too. SPARQL files add nothing to the workspace's knowledge, so a
+query never makes a misspelled term look described. The server never runs a
+query or contacts an endpoint.
 
 ## Install
 
@@ -128,25 +177,31 @@ cargo build --release   # binary: target/release/turtle-lsp
 ## Neovim (0.11+)
 
 ```lua
-vim.filetype.add({ extension = { ttl = "turtle" } })
+vim.filetype.add({
+  extension = { ttl = "turtle", nq = "nquads", ru = "sparql" },
+  filename = { ["config.ru"] = "ruby" }, -- Rack's config.ru stays Ruby
+})
 
 vim.lsp.config("turtle", {
   cmd = { "/path/to/turtle-lsp/target/release/turtle-lsp" },
-  filetypes = { "turtle", "trig", "ntriples" },
+  filetypes = { "turtle", "trig", "ntriples", "nquads", "sparql" },
   root_markers = { "prefixes.ttl", ".git" },
 })
 vim.lsp.enable("turtle")
 
--- "@prefix ex: <...>" looks like a Vim modeline (" ex:"), which raises
--- E518 on open. Turn modelines off for Turtle and TriG files.
+-- "@prefix ex: <...>" and "PREFIX ex: <...>" look like a Vim modeline
+-- (" ex:"), which raises E518 on open. Turn modelines off for Turtle, TriG
+-- and SPARQL files.
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = { "*.ttl", "*.turtle", "*.trig" },
+  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql", "*.ru" },
   callback = function() vim.opt_local.modeline = false end,
 })
 ```
 
-Neovim already gives `.trig` files the filetype `trig` and `.nt` files the
-filetype `ntriples`. Keep `trig` and `ntriples` in `filetypes`, or the server
+Neovim already gives `.trig` files the filetype `trig`, `.nt` files the
+filetype `ntriples`, and `.rq` and `.sparql` files the filetype `sparql`. It
+has no filetype for `.nq` and treats `.ru` as Ruby, hence the
+`vim.filetype.add` lines. Keep each filetype in `filetypes`, or the server
 does not attach to those files. Remove one to turn the server off for it.
 
 With lazy.nvim, set `build = "cargo build --release"` on the plugin spec.
@@ -154,7 +209,8 @@ With lazy.nvim, set `build = "cargo build --release"` on the plugin spec.
 ## VS Code
 
 The extension in [`editors/vscode`](editors/vscode) bundles the server and adds
-syntax highlighting. Build and install it:
+syntax highlighting for Turtle, TriG, N-Triples, N-Quads and SPARQL. Build and
+install it:
 
 ```sh
 cd editors/vscode
@@ -179,7 +235,8 @@ init_options = { inlayHints = { labels = "all" }, format = { lineWidth = 80 } }
 
 ## Semantic highlighting and label hints
 
-The server sends semantic tokens for IRIs. Literals, numbers and comments are
+The server sends semantic tokens for IRIs, and in SPARQL files also for
+variables, keywords and built-in functions. Literals, numbers and comments are
 left to the syntax grammar.
 
 | Token type | Used for |
@@ -189,7 +246,9 @@ left to the syntax grammar.
 | `property` | properties (`rdf:Property`, `owl:*Property`, vocabulary properties, anything used as a predicate) |
 | `enumMember` | individuals (everything else) |
 | `type` | datatypes (`rdfs:Datatype`, XSD and `rdf:langString`-style datatypes, objects of `^^`) |
-| `keyword` | `a` and the directives `@prefix`, `@base`, `@version`, `PREFIX`, `BASE`, `VERSION` |
+| `keyword` | `a` and the directives `@prefix`, `@base`, `@version`, `PREFIX`, `BASE`, `VERSION`; SPARQL keywords |
+| `variable` | SPARQL variables |
+| `function` | SPARQL built-in functions and aggregates |
 
 | Modifier | Meaning |
 |---|---|
@@ -199,7 +258,7 @@ left to the syntax grammar.
 | `undescribed` | the term is in one of your own namespaces but no file describes it |
 
 In Neovim the highlight groups are `@lsp.type.<type>.turtle` and
-`@lsp.mod.<modifier>.turtle`, for example:
+`@lsp.mod.<modifier>.turtle` (`.sparql` in SPARQL buffers), for example:
 
 ```lua
 vim.api.nvim_set_hl(0, "@lsp.type.class.turtle", { link = "Type" })
@@ -243,7 +302,7 @@ npm run test:vscode  # VS Code extension: grammar tests, then checks inside a do
 - `test/resources.test.mjs`: an idle server uses no CPU, and the process ends however the session ends (`shutdown` + `exit` → 0, bare `exit` → 1, editor gone → exits). Every test session also fails if its server is still running 3 s after shutdown, and the Neovim and VS Code runs fail if a server outlives the editor.
 - `test/real.test.mjs`: optional private fragments in `test/fixtures/real` (gitignored, skipped when absent).
 - `test/nvim/spec.lua`: runs inside headless Neovim with its built-in LSP client.
-- `editors/vscode/test/suite.cjs`: runs inside VS Code with the extension loaded; `editors/vscode/test/grammar.test.mjs` checks the highlighting grammar.
+- `editors/vscode/test/suite.cjs`: runs inside VS Code with the extension loaded; `editors/vscode/test/grammar.test.mjs` checks the highlighting grammars.
 - `tests/oxttl_oracle.rs`: on every valid fixture, the parser must produce the same triples as [oxttl](https://crates.io/crates/oxttl).
 - `tests/w3c_conformance.rs`: the vendored W3C suites (`tests/w3c`). Syntax tests must pass or fail as the manifest says; evaluation tests must give a dataset isomorphic to the expected N-Triples/N-Quads. Pass counts print on every run.
 
