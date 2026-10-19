@@ -9,13 +9,22 @@
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #12151b; --panel: #1a1e26; --panel-hd: #1f242d; --line: #2d333f; --line-soft: #272c36;
     --tx: #e4e7ee; --muted: #a2aab8; --faint: #6d7584; --acc: #6b93ff; --on-acc: #0d1018;
     --chip: #262b35; --bad-bg: #3a1d1f; --bad-tx: #ff9b94; --ok-bg: #16301f; --ok-tx: #7ddc96;
     --warn-bg: #3a2f12; --warn-tx: #f4cf75; --add-bg: #16301f; --del-bg: #3a1d1f; --cur-bg: #3a3415;
     --com: #7f8898; --str: #7ddc96; --iri: #8fb2ff; --lang: #f0a35c; --var: #d39cf2; --pn: #6fc3ef; --num: #ff8f87; --kw: #ff79b4;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1a1e26; --panel-hd: #1f242d; --line: #2d333f; --line-soft: #272c36;
+  --tx: #e4e7ee; --muted: #a2aab8; --faint: #6d7584; --acc: #6b93ff; --on-acc: #0d1018;
+  --chip: #262b35; --bad-bg: #3a1d1f; --bad-tx: #ff9b94; --ok-bg: #16301f; --ok-tx: #7ddc96;
+  --warn-bg: #3a2f12; --warn-tx: #f4cf75; --add-bg: #16301f; --del-bg: #3a1d1f; --cur-bg: #3a3415;
+  --com: #7f8898; --str: #7ddc96; --iri: #8fb2ff; --lang: #f0a35c; --var: #d39cf2; --pn: #6fc3ef; --num: #ff8f87; --kw: #ff79b4;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -109,7 +118,7 @@ button { cursor: pointer; }
 .section { margin-bottom: 18px; }
 
 .ft { padding: 4px 24px 24px; color: var(--faint); font-size: 12px; }
-.crash { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--bad-tx); color: #fff; padding: 8px 14px; border-radius: 8px; max-width: calc(100vw - 32px); z-index: 10; }
+.crash { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--bad-tx); color: var(--panel); padding: 8px 14px; border-radius: 8px; max-width: calc(100vw - 32px); z-index: 10; }
 
 @media (max-width: 760px) {
   .hd { padding: 10px 16px; }

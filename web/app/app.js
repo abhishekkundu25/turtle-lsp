@@ -546,7 +546,7 @@ function wire() {
     else if (d.fixAll !== undefined) fixAll(d.fixAll)
     else if (d.format !== undefined) applyFormat([d.format])
     else if (d.formatAll !== undefined) applyFormat(S.result.files.map((f) => f.name))
-    else if (d.copy !== undefined) navigator.clipboard?.writeText(resultOf(d.copy)?.format?.text ?? "")
+    else if (d.copy !== undefined) navigator.clipboard?.writeText(resultOf(d.copy)?.format?.text ?? "").catch(() => notify("Copying is not allowed here; select the text instead."))
   })
 
   $("paste").addEventListener("click", () => {
@@ -566,7 +566,7 @@ function wire() {
     readFiles(e.target.files)
     e.target.value = ""
   })
-  $("download").addEventListener("click", download)
+  $("download")?.addEventListener("click", download)
 
   const pane = document.querySelector(".pane.input")
   pane.addEventListener("dragover", (e) => {
