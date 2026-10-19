@@ -1,1 +1,15 @@
-/* Vim mode: the mode and the : command line in the status bar. */
+/* Vim mode: the mode and the : command line in the status bar. Each editor's
+   line is a .vim-status (monaco-vim's mode, command line, notification and
+   pending keys spans); only the focused editor's is shown. */
+#status-vim { font-family: var(--mono); min-width: 0; }
+/* monaco-vim sets the line's display inline, floats the pending keys right
+   and greys the prompt's help. */
+.vim-status:not([hidden]) { display: inline-flex !important; align-items: center; gap: 8px; min-width: 0; }
+.vim-status > span:empty { display: none; }
+.vim-status span { float: none !important; color: inherit !important; }
+.vim-status > span:first-child { font-weight: 600; }
+.vim-status input {
+  width: 24ch; height: 18px; padding: 0 2px; font: inherit; color: var(--status-fg);
+  background: rgba(255, 255, 255, .12); border: 0; border-radius: 2px; outline: none;
+}
+.vim-status .vim-notification { opacity: .85; }

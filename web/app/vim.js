@@ -1,6 +1,19 @@
 // Vim mode (Settings: Editor: Vim Mode), with monaco-vim, loaded the first
 // time it is turned on. Every editor group's editor is attached; the mode
-// and the `:` command line show in one status-bar element.
+// and the `:` command line show in one status-bar element, one line per
+// editor, the focused editor's shown. The page's own shortcuts get past Vim.
+
+// The name monaco-vim's UMD build asks the AMD loader for Monaco's API by.
+const API = "monaco-editor/esm/vs/editor/editor.api"
+
+// The page's shortcuts (editor.js's document keydown listener). Vim binds
+// some of them (Ctrl+P is `k`), so they are marked handled before Vim sees
+// them and go on to the page.
+function pageKey(e) {
+  const mod = e.ctrlKey || e.metaKey
+  const k = e.key.toLowerCase()
+  return e.key === "F1" || (mod && (["p", "t", "s", "\\"].includes(k) || (e.shiftKey && k === "f")))
+}
 
 /**
  * @param {object} o
@@ -11,6 +24,103 @@
  * @returns {{ set(enabled: boolean): void, attach(editor: object): void, detach(editor: object): void }}
  */
 export function createVim({ monaco, status, commands }) {
-  // Placeholder until the Vim slice lands.
-  return { set() {}, attach() {}, detach() {} }
+  const editors = new Map() // editor → its listeners
+  const sessions = new Map() // editor → { vim, node }
+  let enabled = false
+  let focused = null
+  let lib = null
+  let StatusBar = null
+  let loading = null
+
+  function load() {
+    loading ??= new Promise((resolve, reject) => {
+      window.define(API, [], () => monaco)
+      window.require(["vendor/monaco-vim/monaco-vim"], resolve, reject)
+    }).then((MV) => {
+      const { Vim } = MV.VimMode
+      Vim.defineEx("write", "w", () => commands.save())
+      Vim.defineEx("wall", "wa", () => commands.saveAll())
+      Vim.defineEx("quit", "q", () => commands.close())
+      Vim.defineEx("edit", "e", (cm, params) => {
+        const path = (params.argString ?? "").trim().replace(/^\.\//, "")
+        if (!path) cm.openNotification("E32: No file name")
+        else if (!commands.open(path)) cm.openNotification(`E484: Can't open file ${path}`)
+      })
+      // monaco-vim gives the editor the focus back before it runs a :
+      // command; when the command then shows another file (:e, :q), Monaco's
+      // word highlighting, started by the focus, is cancelled with an uncaught
+      // "Canceled" error. The focus comes back after the command instead,
+      // unless it moved on (to the unsaved-changes dialog of :q).
+      StatusBar = class extends MV.StatusBar {
+        constructor(node, editor, sanitizer) {
+          super(node, null, sanitizer)
+          const close = this.closeInput
+          this.closeInput = () => {
+            close()
+            queueMicrotask(() => [null, document.body].includes(document.activeElement) && editor.focus())
+          }
+        }
+      }
+      lib = MV
+    })
+    return loading
+  }
+
+  function show() {
+    for (const [ed, s] of sessions) s.node.hidden = ed !== focused
+    status.hidden = !sessions.size
+  }
+
+  function start(ed) {
+    if (sessions.has(ed)) return
+    const node = document.createElement("span")
+    node.className = "vim-status"
+    status.append(node)
+    sessions.set(ed, { vim: lib.initVimMode(ed, node, StatusBar), node })
+  }
+
+  function stop(ed) {
+    const s = sessions.get(ed)
+    if (!s) return
+    sessions.delete(ed)
+    s.vim.dispose()
+    s.node.remove()
+  }
+
+  return {
+    set(on) {
+      enabled = on
+      if (!on) {
+        for (const ed of [...sessions.keys()]) stop(ed)
+        return show()
+      }
+      load().then(
+        () => {
+          if (!enabled) return
+          for (const ed of editors.keys()) start(ed)
+          show()
+        },
+        (err) => {
+          loading = null
+          console.error("Vim mode could not be loaded:", err)
+        }
+      )
+    },
+    attach(ed) {
+      if (editors.has(ed)) return
+      // Registered before Vim's own key listener, so it runs first.
+      const keys = ed.onKeyDown((e) => sessions.has(ed) && pageKey(e.browserEvent) && e.browserEvent.preventDefault())
+      const focus = ed.onDidFocusEditorWidget(() => ((focused = ed), show()))
+      editors.set(ed, [keys, focus])
+      focused ??= ed
+      if (enabled && lib) (start(ed), show())
+    },
+    detach(ed) {
+      for (const d of editors.get(ed) ?? []) d.dispose()
+      editors.delete(ed)
+      stop(ed)
+      if (focused === ed) focused = editors.keys().next().value ?? null
+      show()
+    },
+  }
 }
