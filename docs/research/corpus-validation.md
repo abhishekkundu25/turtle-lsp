@@ -64,3 +64,45 @@ Server: every file opened, answered, went idle and exited cleanly. Findings:
   unresolved imports, once import resolution has run (about a second after
   start-up; the first validation before that still shows errors).
 - Finding 4 (N-Triples memory) is open.
+
+## N-Quads and SPARQL (2026-10-19, branch `nquads-sparql`, macOS arm64)
+
+New sources: a 16 MB slice of a Web Data Commons RDFa N-Quads dump
+(`wdc-rdfa.nq`, 57,000 quads) and the SIB `sparql-examples` repository at
+commit `45e5b53` (1,327 `.ttl` files). The harness now also checks:
+
+- N-Quads against oxttl's N-Quads parser, line by line (both must reject the
+  same lines and agree on every other quad); a file with invalid lines is
+  also checked without them (`NAME.valid.nq`) so the formatter sees the real
+  data; every Turtle file under 5 MB gets an oxttl-serialized
+  `NAME.gen.nq` (one named graph).
+- Every `sh:select`, `sh:ask`, `sh:construct`, `sh:describe`,
+  `spex:describe` and `sh:update` literal of the SIB examples as a SPARQL
+  case, with the repository's `sh:prefixes` declarations as external
+  prefixes: our verdict against spargebra's, no lexer error token in a valid
+  query, and the formatter (same algebra with generated names renumbered,
+  comments kept, idempotent; invalid queries refused).
+
+Results (99 RDF cases, 2.56 million triples; 1,317 SPARQL cases):
+
+| Check | Result |
+|---|---|
+| Old 68 RDF cases | Unchanged |
+| `.gen.nq` (29 cases, 280,703 quads) | Same quads, formatter safe |
+| `wdc-rdfa.nq` | Parsed in 31 ms (oxttl: 39 ms). Both reject the same 2 lines; oxttl also rejects 26 lines with `[` in an IRI that we accept (finding 7). `wdc-rdfa.valid.nq`: same, formatter safe |
+| SIB queries | Same verdict as spargebra on 1,317 / 1,317; 0 error tokens; formatter safe on all 1,317; 0 panics, 0 timeouts |
+| SPARQL time | Parse 134 ms, format 533 ms for all 1,317 (max 0.4 / 1.2 ms per query) |
+| Server, `wdc-rdfa.nq` | Diagnostics 77 ms, semantic tokens 37 ms, outline 98 ms, 410 MB, clean exit; no CPU once settled |
+| Server, longest SIB query (3.4 KB) | Diagnostics 1 ms, formatted, 11 MB, clean exit |
+
+Findings:
+
+6. *Fixed on the branch.* Local names with two or more dots (`ec:1.1.1.353`,
+   `ec:3.-.-.-`, used by five UniProt and Rhea queries) are valid by the
+   SPARQL grammar but rejected by spargebra 0.4. The server escapes their
+   dots in the text it gives spargebra (`ec:1\.1\.1\.353`, the same IRI), for
+   `.rq` documents, the formatter's check and SHACL-SPARQL queries.
+7. *Open.* The RDF parser accepts `[` and `]` inside an IRI
+   (`<http://a/s?f[1]=x>`), which the Turtle / N-Triples grammar allows as a
+   character but RFC 3987 does not outside an IP literal; oxttl rejects
+   them. Pre-existing, in all four RDF syntaxes.

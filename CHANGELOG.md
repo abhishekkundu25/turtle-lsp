@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **N-Quads** (`.nq`, language id `nquads`): syntax errors with recovery per
+  line, highlighting, hover, label hints, navigation, an outline grouped by
+  graph, and formatting (one quad per line). Its facts join the workspace like
+  a TriG file's. W3C N-Quads suites (RDF 1.1 and 1.2): 155/155.
+- **SPARQL** (`.rq`, `.sparql`, `.ru`, language id `sparql`; queries and
+  updates, SPARQL 1.1 and 1.2), built on the same knowledge of the workspace
+  and the vocabularies as Turtle:
+  - diagnostics as you type: syntax errors at the token where the query stops
+    making sense, undeclared, unused, duplicate and redefined prefixes,
+    unknown or deprecated vocabulary terms, own terms nothing describes, and
+    projected variables the `WHERE` clause never binds;
+  - completion of keywords by context, variables, prefixes (adding the
+    `PREFIX` line), terms ranked by position and by the ontology, and
+    built-in functions;
+  - hover, label hints, go to definition (terms, prefixes, variables),
+    references and highlights (variables scoped by subquery), semantic
+    highlighting, folding and an outline;
+  - rename of variables, prefixes, and terms across Turtle, N-Quads and SPARQL
+    files in both directions;
+  - formatting that never changes what the query means (the output must parse
+    to the same algebra), and refuses queries with errors;
+  - quick fixes and refactorings: add a missing `PREFIX`, add all, remove an
+    unused one, fix a misspelled term, organise prefixes, shorten or expand
+    IRIs.
+  W3C SPARQL 1.1 and 1.2 syntax suites: 425/426. Prefixes from `prefixes.ttl`
+  and `turtle.prefixes` count as declared; a query never makes a term look
+  described. The server never runs a query.
+- The VS Code extension registers N-Quads and SPARQL with their own grammars;
+  the README shows the Neovim setup for `nquads` and `sparql` buffers.
+
+### Fixes
+
+- SHACL-SPARQL queries with a local name of two dots or more
+  (`ec:1.1.1.353`) are no longer reported as syntax errors.
+- A SHACL-SPARQL query nested deep enough to overflow the parser's recursion
+  is reported instead of crashing validation.
+- Two crashes in locating a SHACL-SPARQL syntax error next to a multi-byte
+  character are fixed.
+
+### Testing
+
+- `npm run corpus` also checks N-Quads against oxttl (a Web Data Commons
+  dump) and 1,317 real SPARQL queries (SIB sparql-examples) against
+  spargebra and the formatter.
+
 ## 0.4.2 — 2026-10-19
 
 ### Fixes

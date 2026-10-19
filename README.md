@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/logo.png" alt="turtle-lsp" width="640"></p>
 
-<p align="center"><a href="https://github.com/abhishekkundu25/turtle-lsp/actions/workflows/ci.yml"><img src="https://github.com/abhishekkundu25/turtle-lsp/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2BD98F" alt="MIT license"></a> <a href="#tested-against-the-real-world"><img src="https://img.shields.io/badge/W3C_Turtle%2C_TriG%2C_N--Triples-982%2F982-2BD98F" alt="W3C Turtle, TriG and N-Triples suites: 982/982"></a> <a href="#tested-against-the-real-world"><img src="https://img.shields.io/badge/W3C_SHACL_Core-98%2F98-2BD98F" alt="W3C SHACL Core suite: 98/98"></a> <a href="#tested-against-the-real-world"><img src="https://img.shields.io/badge/W3C_SHACL--SPARQL-23%2F23-2BD98F" alt="W3C SHACL-SPARQL suite: 23/23"></a></p>
+<p align="center"><a href="https://github.com/abhishekkundu25/turtle-lsp/actions/workflows/ci.yml"><img src="https://github.com/abhishekkundu25/turtle-lsp/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2BD98F" alt="MIT license"></a> <a href="#tested-against-the-real-world"><img src="https://img.shields.io/badge/W3C_Turtle%2C_TriG%2C_N--Triples%2C_N--Quads-1137%2F1137-2BD98F" alt="W3C Turtle, TriG, N-Triples and N-Quads suites: 1137/1137"></a> <a href="#tested-against-the-real-world"><img src="https://img.shields.io/badge/W3C_SPARQL_syntax-425%2F426-2BD98F" alt="W3C SPARQL 1.1 and 1.2 syntax suites: 425/426"></a> <a href="#tested-against-the-real-world"><img src="https://img.shields.io/badge/W3C_SHACL_Core-98%2F98-2BD98F" alt="W3C SHACL Core suite: 98/98"></a> <a href="#tested-against-the-real-world"><img src="https://img.shields.io/badge/W3C_SHACL--SPARQL-23%2F23-2BD98F" alt="W3C SHACL-SPARQL suite: 23/23"></a></p>
 
 # turtle-lsp
 
@@ -30,7 +30,7 @@ the full W3C test suites and real public ontologies; see
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. See [SPARQL](#sparql).
-- **Conformance**: W3C Turtle, TriG and N-Triples test suites, RDF 1.1 and 1.2: 982/982 pass (`tests/w3c_conformance.rs`).
+- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
 
 ## Tested against the real world
@@ -41,14 +41,21 @@ public RDF files anyone can download (`npm run corpus`, results in
 
 | Check | Result |
 |---|---|
-| W3C Turtle, TriG and N-Triples suites | 982 / 982 |
+| W3C Turtle, TriG, N-Triples and N-Quads suites | 1137 / 1137 |
+| W3C SPARQL 1.1 and 1.2 syntax suites (query, update, federation) | 425 / 426 ¹ |
 | W3C SHACL Core suite | 98 / 98 |
 | W3C SHACL-SPARQL suite | 23 / 23 |
-| Parser vs. [Oxigraph](https://github.com/oxigraph/oxigraph) on public files (schema.org, Wikidata, DBpedia, QUDT, Brick, Gene Ontology, W3C vocabularies) | Same triples in all 68 cases (2.17 million triples) |
+| Parser vs. [Oxigraph](https://github.com/oxigraph/oxigraph) on public files (schema.org, Wikidata, DBpedia, QUDT, Brick, Gene Ontology, W3C vocabularies, a Web Data Commons N-Quads dump) | Same quads in 98 of 99 cases (2.56 million triples) ² |
 | Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
+| SPARQL on 1,317 real queries ([SIB sparql-examples](https://github.com/sib-swiss/sparql-examples): UniProt, Rhea, Bgee, neXtProt, ...) | Same verdict as [spargebra](https://crates.io/crates/spargebra) on all; the formatter kept every query's algebra and comments, and formatting twice changes nothing |
 | Gene Ontology (118 MB, 1.28 million triples) | Parsed in 0.4 s, formatted in 0.8 s |
 | Fuzz testing | 20,000 randomly damaged files, every editor feature run on each, without a crash |
 | Resource checks | No CPU use while idle, no server left running after the editor quits |
+
+¹ The one left is a SPARQL 1.2 proposal (a projected variable reused in a
+later `SELECT` expression) that the SPARQL parser library rejects.
+² The other is the Web Data Commons slice: 26 of its 57,000 lines have a `[`
+inside an IRI, which Oxigraph rejects and turtle-lsp accepts.
 
 ## Performance
 

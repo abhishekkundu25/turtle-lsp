@@ -1,6 +1,6 @@
 # N-Quads and SPARQL documents
 
-Status: in progress · 2026-10-19 · Branch: `nquads-sparql`
+Status: done · 2026-10-19 · Branch: `nquads-sparql`
 
 ## Problem Statement
 
@@ -539,3 +539,40 @@ D, E and G run alongside each other once their blockers land.
   Neovim setup maps `.ru` to SPARQL (Neovim reads it as Ruby) except
   `config.ru`, and turns modelines off for SPARQL files too (`PREFIX ex:`
   looks like a modeline, as `@prefix ex:` does).
+- **Wiring (C)**: the Turtle diagnostics' undeclared-prefix note, vocabulary
+  check and undescribed-term lint became shared helpers that SPARQL
+  documents call with their own references. The feature seam
+  (`sparql::features`) was split between two slices, E1 (completion, hover,
+  inlay hints, semantic tokens, folding, outline) and E2 (definition,
+  references, highlights, rename, code actions), with the shared add-`PREFIX`
+  edit (`sparql::features::edits`) written before both. Two test expectations
+  were corrected: a transposed typo (`rdfs:lable`) gets no suggestion in
+  Turtle either, so the SPARQL tests use `rdfs:labl`; and the Turtle probe in
+  "a query never makes a term described" had pushed `ex:` below the
+  own-namespace threshold.
+- **Formatter (D)**: the harness's generated-variable renumbering accepted
+  only 32 hex digits, but spargebra writes them without leading zeros (about
+  one run in 16 failed); fixed in the harness. The formatter also refuses a
+  document with a lexer error token (`GROUPBY` passes spargebra), and runs
+  the algebra comparison on a thread with a stack sized to the document.
+  Words spargebra accepts but SPARQL has no token for are now syntax errors
+  in documents.
+- **Features (E1, E2)**: the RDF completion, ranking, semantic token, inlay,
+  navigation, refactor and code-action logic became shared helpers; RDF
+  behaviour is unchanged. One test sorted line numbers as strings and was
+  corrected.
+- **Corpus (G)**: the harness compares N-Triples and N-Quads line by line
+  (both parsers must reject the same lines) and checks a file with invalid
+  lines again without them; `spex:describe` is read as well. It found that
+  spargebra rejects local names with two dots or more (`ec:1.1.1.353`, in
+  five real queries): the server now escapes those dots in the text it gives
+  spargebra. It also found the RDF parser accepting `[` in IRIs, which oxttl
+  rejects: pre-existing and left open (docs/research/corpus-validation.md,
+  finding 7).
+- **Verification** (2026-10-19): `cargo test` (all targets, chaos at 15,000
+  iterations), clippy and fmt clean; Node suite 490/490 in two runs of 9 s
+  and 24 s; VS Code 23/23; Neovim 23/23; benchmark unchanged against 0.4.2
+  (keystroke → diagnostics 4.4 ms; resident memory within run-to-run noise
+  over four runs each); corpus as above; no CPU once settled with the 16 MB
+  N-Quads file and a query open; no server left running, no temp files, the
+  real cache never created.
