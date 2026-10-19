@@ -1056,7 +1056,7 @@ impl Server {
         let opts = DidChangeWatchedFilesRegistrationOptions {
             watchers: vec![FileSystemWatcher {
                 glob_pattern: GlobPattern::String(
-                    "**/{*.ttl,*.turtle,*.trig,*.nt,*.rdf,*.owl,catalog-v001.xml}".into(),
+                    "**/{*.ttl,*.turtle,*.trig,*.nt,*.nq,*.rdf,*.owl,catalog-v001.xml}".into(),
                 ),
                 kind: None,
             }],

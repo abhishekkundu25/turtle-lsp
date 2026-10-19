@@ -21,7 +21,7 @@ pub fn code_actions(
     params: &CodeActionParams,
     lazy: bool,
 ) -> Vec<CodeActionOrCommand> {
-    // Every refactoring here reads or writes prefixes, which N-Triples lacks.
+    // Every refactoring here reads or writes prefixes, which N-Triples and N-Quads lack.
     if !a.parsed.syntax.has_prefixes() {
         return Vec::new();
     }

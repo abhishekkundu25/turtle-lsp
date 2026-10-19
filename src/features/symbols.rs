@@ -3,8 +3,8 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::features::navigation::uri;
 use crate::knowledge::{DocId, Knowledge, Source};
-use crate::syntax::lexer::Kind;
-use crate::syntax::{Iri, PrefixMap, Span};
+use crate::syntax::lexer::{Kind, tokenize};
+use crate::syntax::{GraphName, Iri, PrefixMap, Span, Statement};
 use lsp_types::*;
 use rustc_hash::FxHashMap;
 
@@ -64,9 +64,8 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
         });
     }
     let prefixes = a.prefix_map();
-    let subject = |st: &crate::syntax::Statement| {
-        let (iri, span) = st.subject.as_ref()?;
-        let detail = a.label(iri).map(str::to_string).or_else(|| {
+    let detail = |iri: &Iri| {
+        a.label(iri).map(str::to_string).or_else(|| {
             a.types.get(iri).map(|ts| {
                 ts.iter()
                     .map(|t| {
@@ -76,10 +75,13 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
                     .collect::<Vec<_>>()
                     .join(", ")
             })
-        });
+        })
+    };
+    let subject = |st: &Statement| {
+        let (iri, span) = st.subject.as_ref()?;
         Some(DocumentSymbol {
             name: written(text, *span).to_string(),
-            detail,
+            detail: detail(iri),
             kind: kind_for(a, iri),
             tags: None,
             deprecated: None,
@@ -88,8 +90,12 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
             children: None,
         })
     };
-    // TriG graph blocks are containers for the subjects inside them.
     let statements = &a.parsed.statements;
+    if statements.iter().any(|st| st.graph.is_some()) {
+        out.extend(quad_symbols(a, text, enc, &subject, &detail));
+        return out;
+    }
+    // TriG graph blocks are containers for the subjects inside them.
     let mut next = 0;
     for g in &a.parsed.graphs {
         let (from, to) = (g.statements.start as usize, g.statements.end as usize);
@@ -123,6 +129,123 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
             .filter_map(subject),
     );
     out
+}
+
+/// N-Quads: one container per graph, where the graph first appears, holding
+/// one entry per distinct subject of its quads (wherever they are); the
+/// default graph's statements stay at the top level.
+#[allow(deprecated)]
+fn quad_symbols(
+    a: &Analysis,
+    text: &str,
+    enc: Encoding,
+    subject: &dyn Fn(&Statement) -> Option<DocumentSymbol>,
+    detail: &dyn Fn(&Iri) -> Option<String>,
+) -> Vec<DocumentSymbol> {
+    struct Entry<'s> {
+        st: &'s Statement,
+        name: Span,
+        range: Span,
+    }
+    enum Top<'s> {
+        Statement(&'s Statement),
+        Graph {
+            label: Span,
+            range: Span,
+            subjects: Vec<Entry<'s>>,
+            /// Subject as written -> index in `subjects`.
+            index: FxHashMap<&'s str, usize>,
+        },
+    }
+    let union = |x: Span, y: Span| Span::new(x.start.min(y.start), x.end.max(y.end));
+    let mut top = Vec::new();
+    let mut graphs: FxHashMap<GraphName, usize> = FxHashMap::default();
+    for st in &a.parsed.statements {
+        let Some((g, label)) = st.graph else {
+            top.push(Top::Statement(st));
+            continue;
+        };
+        // The subject as written: an IRI, or a blank node label.
+        let name = match st.subject {
+            Some((_, span)) => span,
+            None => {
+                let first = tokenize(written(text, st.span))
+                    .into_iter()
+                    .find(|t| t.kind != Kind::Comment);
+                let Some(t) = first.filter(|t| t.kind == Kind::BNode) else {
+                    continue;
+                };
+                Span::new(st.span.start + t.start, st.span.start + t.end)
+            }
+        };
+        let i = *graphs.entry(g).or_insert_with(|| {
+            top.push(Top::Graph {
+                label,
+                range: st.span,
+                subjects: Vec::new(),
+                index: FxHashMap::default(),
+            });
+            top.len() - 1
+        });
+        let Top::Graph {
+            range,
+            subjects,
+            index,
+            ..
+        } = &mut top[i]
+        else {
+            unreachable!()
+        };
+        *range = union(*range, st.span);
+        match index.get(written(text, name)) {
+            Some(&k) => subjects[k].range = union(subjects[k].range, st.span),
+            None => {
+                index.insert(written(text, name), subjects.len());
+                subjects.push(Entry {
+                    st,
+                    name,
+                    range: st.span,
+                });
+            }
+        }
+    }
+    top.into_iter()
+        .filter_map(|t| match t {
+            Top::Statement(st) => subject(st),
+            Top::Graph {
+                label,
+                range,
+                subjects,
+                ..
+            } => Some(DocumentSymbol {
+                name: written(text, label).to_string(),
+                detail: Some("graph".into()),
+                kind: SymbolKind::NAMESPACE,
+                tags: None,
+                deprecated: None,
+                range: a.range(enc, range),
+                selection_range: a.range(enc, label),
+                children: Some(
+                    subjects
+                        .into_iter()
+                        .map(|e| {
+                            let iri = e.st.subject.as_ref().map(|(iri, _)| iri);
+                            DocumentSymbol {
+                                name: written(text, e.name).to_string(),
+                                detail: iri.and_then(detail),
+                                kind: iri.map_or(SymbolKind::OBJECT, |i| kind_for(a, i)),
+                                tags: None,
+                                deprecated: None,
+                                range: a.range(enc, e.range),
+                                selection_range: a.range(enc, e.name),
+                                children: None,
+                            }
+                        })
+                        .collect(),
+                ),
+            }),
+        })
+        .collect()
 }
 
 #[allow(deprecated)]

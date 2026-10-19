@@ -33,10 +33,10 @@ fn rdf_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The `prefixes.ttl` that applies to a fragment, if any (none for N-Triples,
-/// which has no directives).
+/// The `prefixes.ttl` that applies to a fragment, if any (none for N-Triples
+/// and N-Quads, which have no directives).
 fn header_for(path: &Path) -> String {
-    if syntax_of(path) == Some(Syntax::NTriples) {
+    if syntax_of(path).is_some_and(Syntax::is_line_based) {
         return String::new();
     }
     let root = fixtures();
@@ -77,6 +77,10 @@ fn oxttl(src: &str, syntax: Syntax) -> Result<Vec<String>, String> {
             })
             .collect::<Result<_, _>>()?,
         Syntax::TriG => oxttl::TriGParser::new()
+            .for_slice(src)
+            .map(|q| q.map_err(e))
+            .collect::<Result<_, _>>()?,
+        Syntax::NQuads => oxttl::NQuadsParser::new()
             .for_slice(src)
             .map(|q| q.map_err(e))
             .collect::<Result<_, _>>()?,
@@ -342,8 +346,8 @@ fn comments_between_every_token_survive() {
     rdf_files(&fixtures(), &mut files);
     for path in files {
         let syntax = syntax_of(&path).unwrap();
-        // N-Triples allows no comment inside a triple.
-        if syntax == Syntax::NTriples {
+        // N-Triples and N-Quads allow no comment inside a statement.
+        if syntax.is_line_based() {
             continue;
         }
         let src = fs::read_to_string(&path).unwrap();

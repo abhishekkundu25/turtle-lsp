@@ -3,10 +3,11 @@
 //! The server hands a [`Job`] (the analyses of every workspace and external
 //! source, shared, so the snapshot is cheap) to a [`Worker`] on save and once
 //! after the initial index. The worker validates the union of the Turtle
-//! documents' triples, and each TriG / N-Triples dataset together with them,
-//! as data and shapes graph and sends back diagnostics per document. Each job
-//! carries a generation; a newer job makes the worker abandon the current
-//! one, and the server drops results whose generation is not the latest.
+//! documents' triples, and each TriG / N-Triples / N-Quads dataset together
+//! with them, as data and shapes graph and sends back diagnostics per
+//! document. Each job carries a generation; a newer job makes the worker
+//! abandon the current one, and the server drops results whose generation is
+//! not the latest.
 //!
 //! A result is shown on the triple (focus node, first path predicate, value)
 //! when the workspace has it, else on the focus node's first description,
@@ -217,11 +218,11 @@ pub fn has_shapes(a: &Analysis) -> bool {
 /// Diagnostics for every workspace document, or `None` when cancelled.
 ///
 /// Turtle documents are fragments of one workspace graph, so they are
-/// validated together. A TriG or N-Triples document is a dataset of its own
-/// (generated runs, dumps, snapshots that reuse the same IRIs): it is validated
-/// with the Turtle documents (ontology, shapes, shared data) but never merged
-/// with another dataset, which would turn two versions of a node into one
-/// node with two values.
+/// validated together. A TriG, N-Triples or N-Quads document is a dataset of
+/// its own (generated runs, dumps, snapshots that reuse the same IRIs): it is
+/// validated with the Turtle documents (ontology, shapes, shared data) but
+/// never merged with another dataset, which would turn two versions of a node
+/// into one node with two values.
 pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     let mut docs: Vec<&(Source, Arc<Analysis>)> = job.docs.iter().collect();
     docs.sort_by(|a, b| (a.0, &a.1.uri).cmp(&(b.0, &b.1.uri)));

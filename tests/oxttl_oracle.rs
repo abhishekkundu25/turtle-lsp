@@ -72,6 +72,10 @@ fn oxttl_quads(src: &str, syntax: Syntax) -> Result<Vec<oxrdf::Quad>, String> {
             .for_slice(src)
             .map(|q| q.map_err(e))
             .collect(),
+        Syntax::NQuads => oxttl::NQuadsParser::new()
+            .for_slice(src)
+            .map(|q| q.map_err(e))
+            .collect(),
         Syntax::NTriples => oxttl::NTriplesParser::new()
             .for_slice(src)
             .map(|t| {

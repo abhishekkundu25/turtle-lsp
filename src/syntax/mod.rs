@@ -1,4 +1,4 @@
-//! Turtle 1.2, TriG 1.2 and N-Triples 1.2 syntax: a lexer and a resilient
+//! Turtle 1.2, TriG 1.2, N-Triples 1.2 and N-Quads 1.2 syntax: a lexer and a resilient
 //! recursive-descent parser that records the span of every term, so every
 //! editor feature reads one parse.
 
@@ -14,53 +14,65 @@ pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 
-/// The language a document is written in. One parser reads all three: TriG
-/// adds graph blocks to Turtle, and N-Triples is read as Turtle with every
-/// construct N-Triples forbids reported as an error.
+/// The language a document is written in. One parser reads all four: TriG
+/// adds graph blocks to Turtle, N-Triples is read as Turtle with every
+/// construct N-Triples forbids reported as an error, and N-Quads is N-Triples
+/// with an optional graph label before each line's `.`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Syntax {
     #[default]
     Turtle,
     TriG,
     NTriples,
+    NQuads,
 }
 
 impl Syntax {
-    /// From an LSP language id (`turtle`, `trig`, `ntriples` / `n-triples`).
+    /// From an LSP language id (`turtle`, `trig`, `ntriples` / `n-triples`,
+    /// `nquads` / `n-quads`).
     pub fn from_language_id(id: &str) -> Option<Syntax> {
         match id.to_ascii_lowercase().as_str() {
             "turtle" => Some(Syntax::Turtle),
             "trig" => Some(Syntax::TriG),
             "ntriples" | "n-triples" => Some(Syntax::NTriples),
+            "nquads" | "n-quads" => Some(Syntax::NQuads),
             _ => None,
         }
     }
 
-    /// From the extension of a path or URI: `.ttl` / `.turtle`, `.trig`, `.nt`.
+    /// From the extension of a path or URI: `.ttl` / `.turtle`, `.trig`, `.nt`,
+    /// `.nq`.
     pub fn from_extension(path: &str) -> Option<Syntax> {
         let name = path.rsplit(['/', '\\']).next()?;
         match name.rsplit_once('.')?.1 {
             "ttl" | "turtle" => Some(Syntax::Turtle),
             "trig" => Some(Syntax::TriG),
             "nt" => Some(Syntax::NTriples),
+            "nq" => Some(Syntax::NQuads),
             _ => None,
         }
     }
 
-    /// A `trig` or `ntriples` language id wins; otherwise (no id, an unknown
+    /// A `trig`, `ntriples` or `nquads` language id wins; otherwise (no id, an unknown
     /// one, or the generic `turtle`) the extension decides; else Turtle.
     pub fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
         match language_id.and_then(Syntax::from_language_id) {
             // `turtle` is what editors send when they lump RDF files together:
-            // a `.trig` or `.nt` name is the better witness then.
+            // a `.trig`, `.nt` or `.nq` name is the better witness then.
             Some(Syntax::Turtle) | None => Syntax::from_extension(uri).unwrap_or_default(),
             Some(specific) => specific,
         }
     }
 
-    /// Whether the document can use prefixes (N-Triples cannot).
+    /// N-Triples and N-Quads: one statement per line, every term written in
+    /// full, no directives, no prefixes.
+    pub fn is_line_based(self) -> bool {
+        matches!(self, Syntax::NTriples | Syntax::NQuads)
+    }
+
+    /// Whether the document can use prefixes (the line-based syntaxes cannot).
     pub fn has_prefixes(self) -> bool {
-        self != Syntax::NTriples
+        !self.is_line_based()
     }
 }
 
@@ -89,7 +101,8 @@ pub enum Role {
     Datatype,
     /// Inside a triple term or reified triple.
     Quoted,
-    /// The name of a TriG graph block (`ex:g { ... }`, `GRAPH ex:g { ... }`).
+    /// The name of a TriG graph block (`ex:g { ... }`, `GRAPH ex:g { ... }`)
+    /// or the graph label of an N-Quads line.
     Graph,
 }
 
@@ -171,12 +184,12 @@ pub struct Triple {
     pub o_span: Span,
     /// Index into [`Parsed::statements`]; the subject is that statement's.
     pub statement: u32,
-    /// The TriG graph the triple is in; `None` is the default graph (and
-    /// always the case in Turtle and N-Triples).
+    /// The TriG or N-Quads graph the triple is in; `None` is the default
+    /// graph (and always the case in Turtle and N-Triples).
     pub graph: Option<GraphName>,
 }
 
-/// The name of a TriG graph: an IRI or a blank node. Kept apart from [`Node`]
+/// The name of a TriG or N-Quads graph: an IRI or a blank node. Kept apart from [`Node`]
 /// because it is `Copy` and 8 bytes, and every triple carries one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GraphName {
@@ -211,6 +224,10 @@ pub struct Statement {
     pub span: Span,
     /// The top-level subject, if it is an IRI.
     pub subject: Option<(Iri, Span)>,
+    /// The graph label of an N-Quads line, and where it is written; `None`
+    /// in the default graph and in the other syntaxes (TriG graphs are
+    /// [`Parsed::graphs`]).
+    pub graph: Option<(GraphName, Span)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,7 +252,7 @@ pub struct Parsed {
     /// is the last `@base` directive.
     pub document_base: Option<String>,
     pub statements: Vec<Statement>,
-    /// TriG graph blocks in text order (empty for Turtle and N-Triples).
+    /// TriG graph blocks in text order (empty in the other syntaxes).
     pub graphs: Vec<GraphBlock>,
     pub refs: Vec<Ref>,
     pub prefix_uses: Vec<PrefixUse>,

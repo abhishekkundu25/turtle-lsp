@@ -1,4 +1,5 @@
-//! Resilient recursive-descent parser for Turtle 1.2, TriG 1.2 and N-Triples 1.2.
+//! Resilient recursive-descent parser for Turtle 1.2, TriG 1.2, N-Triples 1.2
+//! and N-Quads 1.2.
 //!
 //! On a syntax error the current statement is abandoned and parsing resumes at
 //! the next `.`, or at the next line that starts at column 0 with something that
@@ -13,6 +14,11 @@
 //! have (directives, prefixed names, `a`, `;` and `,`, `[ ]`, collections,
 //! unquoted literals, relative IRIs, reified triples and annotations, more or
 //! less than one triple per line) is reported as an error.
+//!
+//! N-Quads is parsed as N-Triples, plus an optional graph label (an IRI or a
+//! blank node) before each line's `.`, which puts the line's triple in that
+//! graph. A literal graph label or a fifth term is an error; prefixed names
+//! and relative IRIs are reported as in N-Triples.
 
 use super::lexer::{Kind, Token, tokenize};
 use super::*;
@@ -124,7 +130,9 @@ pub fn parse_with_base(
         subject: None,
         statement: 0,
         trig: syntax == Syntax::TriG,
+        quads: syntax == Syntax::NQuads,
         graph: None,
+        label: None,
         in_graph: false,
         graph_indent: None,
         iri_cache: FxHashMap::default(),
@@ -133,7 +141,7 @@ pub fn parse_with_base(
         v: vocab(),
     };
     p.document();
-    if syntax == Syntax::NTriples {
+    if syntax.is_line_based() {
         p.ntriples_restrictions();
     }
     p.out
@@ -157,8 +165,12 @@ struct P<'a> {
     /// Index of the statement being parsed.
     statement: u32,
     trig: bool,
+    /// N-Quads: a statement may end with a graph label.
+    quads: bool,
     /// Name of the graph block being parsed (`None`: the default graph).
     graph: Option<GraphName>,
+    /// The graph label of the N-Quads line being parsed, and its span.
+    label: Option<(GraphName, Span)>,
     /// Inside `{ ... }`: a `}` ends the statement and stops recovery.
     in_graph: bool,
     /// Indentation of the first statement in the block that starts a line.
@@ -188,6 +200,23 @@ fn is_starter(k: Kind) -> bool {
             | Kind::SparqlPrefix
             | Kind::SparqlBase
             | Kind::SparqlVersion
+    )
+}
+
+/// A token that starts a term (a fifth one, on an N-Quads line).
+fn is_term(k: Kind) -> bool {
+    matches!(
+        k,
+        Kind::Iri
+            | Kind::PName
+            | Kind::BNode
+            | Kind::String
+            | Kind::Number
+            | Kind::Boolean
+            | Kind::LBracket
+            | Kind::LParen
+            | Kind::LTriple
+            | Kind::LTripleTerm
     )
 }
 
@@ -573,10 +602,11 @@ impl<'a> P<'a> {
         }
     }
 
-    // ---- N-Triples ----
+    // ---- N-Triples and N-Quads ----
 
+    /// What N-Triples forbids (N-Quads too: the messages name the syntax).
     fn ntriples_restrictions(&mut self) {
-        let mut errors = Vec::new();
+        let mut errors: Vec<(Span, &'static str)> = Vec::new();
         for t in &self.toks {
             let msg = match t.kind {
                 Kind::String => {
@@ -632,7 +662,58 @@ impl<'a> P<'a> {
             prev_end_line = Some(l1);
         }
         for (span, m) in errors {
+            let m = if self.quads {
+                Cow::Owned(
+                    m.replace("one triple per line", "one quad per line")
+                        .replace("N-Triples triple", "N-Quads quad")
+                        .replace("N-Triples", "N-Quads"),
+                )
+            } else {
+                Cow::Borrowed(m)
+            };
             self.error(span, m);
+        }
+    }
+
+    /// N-Quads: the optional graph label before the `.`, which puts the
+    /// triples of the statement (from index `from` on) in that graph.
+    fn quad_label(&mut self, from: usize) -> R<()> {
+        let Some(t) = self.peek() else {
+            return Ok(());
+        };
+        let span = Span::new(t.start, t.end);
+        let name = match t.kind {
+            // A prefixed name or a relative IRI is reported with the other
+            // N-Triples restrictions.
+            Kind::Iri | Kind::PName => GraphName::Iri(self.iri(Role::Graph)?),
+            Kind::BNode => {
+                let Node::Blank(b) = self.labelled_bnode() else {
+                    unreachable!()
+                };
+                GraphName::Blank(b)
+            }
+            Kind::String | Kind::Number | Kind::Boolean => {
+                self.error(
+                    span,
+                    "An N-Quads graph label is an IRI or a blank node, not a literal",
+                );
+                return Err(());
+            }
+            _ => return Ok(()),
+        };
+        for t in &mut self.out.triples[from..] {
+            t.graph = Some(name);
+        }
+        self.label = Some((name, span));
+        match self.peek() {
+            Some(t) if is_term(t.kind) && !(self.at_line_start(t) && self.is_starter(t.kind)) => {
+                self.error(
+                    Span::new(t.start, t.end),
+                    "An N-Quads line has at most four terms: subject, predicate, object and graph",
+                );
+                Err(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -746,6 +827,7 @@ impl<'a> P<'a> {
     fn statement(&mut self) -> R<()> {
         let start = self.peek().map_or(0, |t| t.start);
         self.subject = None;
+        self.label = None;
         self.statement = self.out.statements.len() as u32;
         let r = self.triples();
         let subject = self.subject.take();
@@ -753,11 +835,13 @@ impl<'a> P<'a> {
         self.out.statements.push(Statement {
             span: Span::new(start, end),
             subject,
+            graph: self.label.take(),
         });
         r
     }
 
     fn triples(&mut self) -> R<()> {
+        let from = self.out.triples.len();
         match self.peek_kind() {
             Some(Kind::LBracket)
                 if self.toks.get(self.pos + 1).map(|t| t.kind) != Some(Kind::RBracket) =>
@@ -777,6 +861,9 @@ impl<'a> P<'a> {
                 let s = self.subject()?;
                 self.predicate_object_list(&s)?;
             }
+        }
+        if self.quads {
+            self.quad_label(from)?;
         }
         self.end_statement(false)
     }
@@ -1427,6 +1514,9 @@ mod tests {
         parse(src, &PrefixMap::default(), Syntax::NTriples)
     }
 
+    fn nq(src: &str) -> Parsed {
+        parse(src, &PrefixMap::default(), Syntax::NQuads)
+    }
     fn messages(r: &Parsed) -> Vec<&str> {
         r.errors.iter().map(|e| e.message.as_str()).collect()
     }
@@ -1700,6 +1790,61 @@ mod tests {
     }
 
     #[test]
+    fn nquads_puts_each_line_in_its_graph() {
+        let r = nq(concat!(
+            "<http://e/a> <http://e/p> <http://e/o> <http://e/g> .\n",
+            "<http://e/a> <http://e/p> \"x\" .\n",
+            "_:s <http://e/p> <<( <http://e/s> <http://e/p> _:o )>> _:g . # c\n",
+        ));
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let g = |i: usize| r.triples[i].graph;
+        assert_eq!(g(0), Some(GraphName::Iri(Iri::intern("http://e/g"))));
+        assert_eq!(g(1), None);
+        assert!(matches!(g(2), Some(GraphName::Blank(_))));
+        assert_eq!(
+            r.statements[0].graph.map(|(_, s)| s),
+            Some(Span::new(39, 51))
+        );
+        assert!(r.graphs.is_empty());
+    }
+
+    #[test]
+    fn nquads_reports_bad_graph_labels_per_line() {
+        let r = nq(concat!(
+            "<http://e/a> <http://e/p> <http://e/o> \"g\" .\n",
+            "<http://e/a> <http://e/p> <http://e/o> <http://e/g> <http://e/h> .\n",
+            "<http://e/a> <http://e/p> <http://e/o> ex:g .\n",
+            "<http://e/a> <http://e/p> <http://e/o> <g> .\n",
+            "<http://e/b> <http://e/p> <http://e/o> <http://e/g> .\n",
+        ));
+        let msgs = messages(&r);
+        assert!(msgs[0].contains("not a literal"), "{msgs:?}");
+        assert!(
+            msgs.iter().any(|m| m.contains("at most four terms")),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.starts_with("N-Quads needs full IRIs")),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.starts_with("N-Quads needs absolute IRIs")),
+            "{msgs:?}"
+        );
+        assert!(msgs.iter().all(|m| !m.contains("N-Triples")), "{msgs:?}");
+        let last = r.triples.last().unwrap();
+        assert_eq!(last.s, Node::Iri(Iri::intern("http://e/b")));
+        // A quad is an error in N-Triples.
+        assert!(
+            !nt("<http://e/a> <http://e/p> <http://e/o> <http://e/g> .\n")
+                .errors
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn ntriples_reports_turtle_only_constructs() {
         let cases = [
             ("@prefix ex: <http://e/> .\n", "directives"),
@@ -1776,6 +1921,13 @@ mod tests {
             Syntax::TriG
         );
         assert_eq!(Syntax::detect(None, "file:///x/a.nt"), Syntax::NTriples);
+        assert_eq!(Syntax::detect(None, "file:///x/a.nq"), Syntax::NQuads);
+        assert_eq!(Syntax::detect(Some("n-quads"), "file:///a"), Syntax::NQuads);
+        assert_eq!(
+            Syntax::detect(Some("turtle"), "file:///a.nq"),
+            Syntax::NQuads
+        );
+        assert!(Syntax::NQuads.is_line_based() && !Syntax::NQuads.has_prefixes());
         assert_eq!(
             Syntax::detect(None, "file:///x.trig/a.turtle"),
             Syntax::Turtle

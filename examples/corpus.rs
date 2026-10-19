@@ -417,6 +417,10 @@ fn oxttl_quads(src: &str, syntax: Syntax, base: &str) -> Result<Vec<oxrdf::Quad>
             .for_slice(src)
             .map(|t| t.map(|t| t.in_graph(dg.clone())).map_err(e))
             .collect(),
+        Syntax::NQuads => oxttl::NQuadsParser::new()
+            .for_slice(src)
+            .map(|q| q.map_err(e))
+            .collect(),
     }
 }
 

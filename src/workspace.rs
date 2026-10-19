@@ -3,7 +3,7 @@
 //! Project prefixes: the nearest `prefixes.ttl` in the file's directory or an
 //! ancestor (up to the workspace root) supplies prefixes to every Turtle and
 //! TriG file below it, plus any `prefixes` given in the client's
-//! initializationOptions. N-Triples files have no prefixes.
+//! initializationOptions. N-Triples and N-Quads files have no prefixes.
 
 use crate::analysis::{Analysis, Encoding, offset_in};
 use crate::knowledge::{DocFacts, Knowledge, Source};
@@ -97,7 +97,7 @@ fn canonical(path: &Path) -> PathBuf {
     }
 }
 
-/// A file this server reads: `.ttl`, `.turtle`, `.trig` or `.nt`.
+/// A file this server reads: `.ttl`, `.turtle`, `.trig`, `.nt` or `.nq`.
 pub fn is_turtle(path: &Path) -> bool {
     Syntax::from_extension(&path.to_string_lossy()).is_some()
 }

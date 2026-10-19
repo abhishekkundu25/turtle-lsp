@@ -19,8 +19,9 @@
 //! - TriG: a graph block's opener (`GRAPH g {`, `g {` or `{`) on its own line,
 //!   its statements one level in under the same rules (the optional last `.`
 //!   kept or left out as written), and `}` on its own line;
-//! - N-Triples: one triple per line with single spaces, blank lines kept as
-//!   written (a run collapses to one) instead of one between statements.
+//! - N-Triples and N-Quads: one triple (or quad, its graph label last) per
+//!   line with single spaces, blank lines kept as written (a run collapses to
+//!   one) instead of one between statements.
 
 use crate::analysis::{Analysis, Encoding};
 use crate::syntax::lexer::{Kind, Token, tokenize};
@@ -89,6 +90,7 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
         t: &doc.toks,
         pos: 0,
         trig: parsed.syntax == Syntax::TriG,
+        quads: parsed.syntax == Syntax::NQuads,
     }
     .document()?;
     let out = Printer::new(&doc, opts, parsed.syntax).document(&items);
@@ -295,6 +297,8 @@ enum Item {
     Triples {
         subject: Term,
         pol: Vec<Po>,
+        /// The graph label of an N-Quads line.
+        graph: Option<Ix>,
         /// Only the last statement of a TriG graph block may leave it out.
         dot: Option<Ix>,
     },
@@ -369,6 +373,8 @@ struct Cst<'a> {
     t: &'a [Token],
     pos: usize,
     trig: bool,
+    /// N-Quads: a statement may end with a graph label.
+    quads: bool,
 }
 
 impl Cst<'_> {
@@ -504,12 +510,22 @@ impl Cst<'_> {
                 (s, self.pol()?)
             }
         };
+        let graph = if self.quads {
+            self.eat(Kind::Iri).or_else(|| self.eat(Kind::BNode))
+        } else {
+            None
+        };
         let dot = match self.eat(Kind::Dot) {
             Some(d) => Some(d),
             None if in_graph && self.kind(0) == Some(Kind::RBrace) => None,
             None => return None,
         };
-        Some(Item::Triples { subject, pol, dot })
+        Some(Item::Triples {
+            subject,
+            pol,
+            graph,
+            dot,
+        })
     }
 
     fn is_verb(&self) -> bool {
@@ -721,8 +737,8 @@ struct Printer<'a> {
     must_break: bool,
     /// The first token of the current item, whose comments are already out.
     skip_lead: Option<Ix>,
-    /// N-Triples: no blank line forced between statements.
-    ntriples: bool,
+    /// N-Triples and N-Quads: no blank line forced between statements.
+    line_based: bool,
 }
 
 impl<'a> Printer<'a> {
@@ -750,7 +766,7 @@ impl<'a> Printer<'a> {
             pending: Vec::new(),
             must_break: false,
             skip_lead: None,
-            ntriples: syntax == Syntax::NTriples,
+            line_based: syntax.is_line_based(),
         }
     }
 
@@ -1093,7 +1109,7 @@ impl<'a> Printer<'a> {
                 } else {
                     self.d.blank_before[first as usize]
                 };
-                self.top_line(0, (!both_directives && !self.ntriples) || author_blank);
+                self.top_line(0, (!both_directives && !self.line_based) || author_blank);
             }
             self.item_leading(first, 0);
             self.skip_lead = Some(first);
@@ -1166,13 +1182,23 @@ impl<'a> Printer<'a> {
 
     /// A statement whose subject starts at `level` on the current line.
     fn statement(&mut self, it: &Item, level: usize) {
-        let Item::Triples { subject, pol, dot } = it else {
+        let Item::Triples {
+            subject,
+            pol,
+            graph,
+            dot,
+        } = it
+        else {
             return;
         };
         self.term(subject, level, false);
         if !pol.is_empty() {
             self.space(level + 1);
             self.pol_from(pol, level + 1, false, true);
+        }
+        if let Some(g) = graph {
+            self.space(level + 1);
+            self.tok(*g, level + 1);
         }
         if let Some(d) = dot {
             self.punct(*d, level);

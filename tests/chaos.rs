@@ -122,13 +122,11 @@ fn corpus() -> Vec<(String, Syntax)> {
         "<http://e/a> <http://e/b> <http://e/c> .".into(),
         Syntax::NTriples,
     ));
-    if let Some(nquads) = Syntax::from_language_id("nquads") {
-        out.push((
-            "<http://e/a> <http://e/b> <http://e/c> <http://e/g> .\n_:s <http://e/b> \"x\" _:g ."
-                .into(),
-            nquads,
-        ));
-    }
+    out.push((
+        "<http://e/a> <http://e/b> <http://e/c> <http://e/g> .\n_:s <http://e/b> \"x\" _:g ."
+            .into(),
+        Syntax::NQuads,
+    ));
     for dir in [
         "workspace",
         "project",
@@ -214,6 +212,7 @@ fn doc_uri(syntax: Syntax) -> &'static str {
         Syntax::Turtle => "file:///chaos/doc.ttl",
         Syntax::TriG => "file:///chaos/doc.trig",
         Syntax::NTriples => "file:///chaos/doc.nt",
+        Syntax::NQuads => "file:///chaos/doc.nq",
     }
 }
 

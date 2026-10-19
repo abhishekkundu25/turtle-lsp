@@ -34,8 +34,7 @@ enum Kind {
 struct Test {
     iri: String,
     kind: Kind,
-    /// None for a syntax the parser does not know (yet).
-    syntax: Option<Syntax>,
+    syntax: Syntax,
     action: String,
     result: Option<String>,
 }
@@ -119,13 +118,13 @@ fn read_manifest(path: &Path) -> Vec<Test> {
         };
         let ty = ty.strip_prefix(RDFT).expect("an rdft: test type");
         let (syntax, rest) = if let Some(r) = ty.strip_prefix("TestTurtle") {
-            (Some(Syntax::Turtle), r)
+            (Syntax::Turtle, r)
         } else if let Some(r) = ty.strip_prefix("TestTrig") {
-            (Some(Syntax::TriG), r)
+            (Syntax::TriG, r)
         } else if let Some(r) = ty.strip_prefix("TestNTriples") {
-            (Some(Syntax::NTriples), r)
+            (Syntax::NTriples, r)
         } else if let Some(r) = ty.strip_prefix("TestNQuads") {
-            (Syntax::from_language_id("nquads"), r)
+            (Syntax::NQuads, r)
         } else {
             panic!("unknown test type {ty}")
         };
@@ -268,8 +267,7 @@ fn first_lines(d: &Dataset) -> String {
 fn run(t: &Test) -> Result<(), String> {
     let path = local(&t.action);
     let src = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let syntax = t.syntax.ok_or("the parser has no syntax for this suite")?;
-    let parsed = parse_with_base(&src, &PrefixMap::default(), syntax, Some(&t.action));
+    let parsed = parse_with_base(&src, &PrefixMap::default(), t.syntax, Some(&t.action));
     // An undeclared prefix is not a parse error (a workspace `prefixes.ttl`
     // may declare it), but diagnostics report it as an error.
     let undeclared = parsed
