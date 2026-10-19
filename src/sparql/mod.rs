@@ -68,6 +68,7 @@
 
 pub mod diagnostics;
 pub mod features;
+mod format;
 pub mod lexer;
 pub mod structure;
 pub mod validate;
@@ -205,12 +206,12 @@ impl Document {
 /// The formatted text, or why it was not formatted (syntax errors, or a
 /// safety check that failed).
 pub fn format(
-    _text: &str,
-    _prefixes: &PrefixMap,
-    _base: Option<&str>,
-    _opts: &Options,
+    text: &str,
+    prefixes: &PrefixMap,
+    base: Option<&str>,
+    opts: &Options,
 ) -> Result<String, String> {
-    Err("the SPARQL formatter is not written yet".into())
+    format::format(text, prefixes, base, opts)
 }
 
 #[cfg(test)]
