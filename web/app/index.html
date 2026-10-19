@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RDF Toolbox</title>
+<meta name="description" content="Format, validate, SHACL-check and tidy SPARQL in your browser. turtle-lsp runs in this tab; nothing is uploaded.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%231d2330%22/%3E%3Ctext x=%2216%22 y=%2221%22 font-family=%22monospace%22 font-size=%2212%22 font-weight=%22700%22 fill=%22white%22 text-anchor=%22middle%22%3Ettl%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body data-ready="false" data-busy="true">
+<header class="hd">
+  <div class="brand"><span class="logo" aria-hidden="true">ttl</span><b>RDF Toolbox</b><span class="sub">built on turtle-lsp</span></div>
+  <div class="priv">Runs in this tab. Nothing is uploaded.</div>
+</header>
+<nav class="tabs" id="tabs" role="tablist" aria-label="Tools"></nav>
+<p class="note" id="note" hidden>The SHACL tab appears when the input has shapes.</p>
+<main class="main">
+  <section class="pane input" aria-label="Input">
+    <div class="pane-hd"><h2>Input</h2><span class="stat" id="input-stat"></span></div>
+    <div class="files" id="files"></div>
+    <div class="intools">
+      <select class="isel" id="sample" aria-label="Sample input"></select>
+      <button class="ibtn" id="paste">Paste</button>
+      <button class="ibtn" id="open">Open files</button>
+      <button class="ibtn" id="download">Download</button>
+      <input type="file" id="picker" class="hidden-input" multiple accept=".ttl,.turtle,.trig,.nt,.nq,.rq,.sparql,.ru" tabindex="-1">
+      <span class="ihint">or drop files here</span>
+    </div>
+    <div id="paste-box" class="paste" hidden>
+      <textarea id="paste-text" class="ita" aria-label="Pasted text" spellcheck="false" placeholder="Turtle, TriG, N-Triples, N-Quads or a SPARQL query"></textarea>
+      <div class="intools"><button class="ibtn pri" id="paste-add">Add to input</button><button class="ibtn" id="paste-cancel">Cancel</button></div>
+    </div>
+    <div class="editor" id="editor-wrap">
+      <pre class="hl" id="hl" aria-hidden="true"></pre>
+      <textarea id="editor" aria-label="File text" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+    </div>
+  </section>
+  <section class="pane tool" aria-label="Tool">
+    <div class="pane-hd"><h2 id="tool-title"></h2><span class="stat mono" id="tool-stat"></span><p id="tool-job"></p></div>
+    <div class="tool-body" id="tool"></div>
+  </section>
+</main>
+<footer class="ft"><span id="version">turtle-lsp</span> · <span id="timing"></span> · W3C suites: RDF syntaxes 1137/1137, SPARQL syntax 425/426. Imports (owl:imports) are not followed here.</footer>
+<div class="crash" id="crash" role="alert" hidden></div>
+</body>
+</html>

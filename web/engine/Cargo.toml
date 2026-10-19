@@ -1,0 +1,22 @@
+[package]
+name = "turtle-lsp-web"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "turtle-lsp built for the browser: the RDF Toolbox's engine"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+getrandom = "0.3"
+lsp-types = "0.97.0"
+serde_json = "1.0.154"
+turtle-lsp = { path = "../.." }
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true

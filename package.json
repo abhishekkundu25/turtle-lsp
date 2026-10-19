@@ -8,10 +8,14 @@
     "vocab": "node tools/build-vocab.mjs",
     "test:vscode": "cargo build --release --locked && cd editors/vscode && npm install --silent && npm test",
     "corpus": "tools/corpus/fetch.sh && cargo build --release --locked && cargo run --release --locked --example corpus && node tools/corpus/lsp-cost.mjs",
-    "web:prototype": "python3 -m http.server 4173 --directory web/prototype"
+    "web:prototype": "python3 -m http.server 4173 --directory web/prototype",
+    "web:build": "node web/build.mjs",
+    "web:serve": "python3 -m http.server 4174 --bind 127.0.0.1 --directory web/app",
+    "web:test": "node web/build.mjs && node --test --test-timeout=60000 \"web/test/*.test.mjs\""
   },
   "devDependencies": {
     "@zazuko/rdf-vocabularies": "^2023.1.19",
+    "playwright-core": "1.64.0",
     "vscode-jsonrpc": "9.0.3"
   }
 }

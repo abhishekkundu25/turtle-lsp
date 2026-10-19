@@ -11,3 +11,6 @@ pub mod sparql;
 pub mod syntax;
 pub mod vocab;
 pub mod workspace;
+
+/// The version of this build, as the server reports it.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

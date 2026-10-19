@@ -47,6 +47,7 @@ pub const CATALOG_FILE: &str = "catalog-v001.xml";
 pub const MAX_DEPTH: u32 = 5;
 pub const MAX_FETCH_BYTES: u64 = 20 * 1024 * 1024;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(not(target_arch = "wasm32"))]
 const ACCEPT: &str = "text/turtle, application/n-triples;q=0.9, application/rdf+xml;q=0.8";
 /// RDF/XML with a longer start tag is refused: quick-xml's cost per start tag
 /// grows faster than its size (RUSTSEC-2026-0194, RUSTSEC-2026-0195).
@@ -586,7 +587,7 @@ fn load(
     if let Some(path) = url::Url::parse(&url)
         .ok()
         .filter(|u| u.scheme() == "file")
-        .and_then(|u| u.to_file_path().ok())
+        .and_then(|u| crate::workspace::file_path_of(&u))
     {
         inside_workspace(&path, &req.roots)
             .map_err(|e| format!("Import <{iri}> names {}: {e}", path.display()))?;
@@ -923,6 +924,13 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// GET `url`: (body, content type, final URL after redirects).
+#[cfg(target_arch = "wasm32")]
+fn fetch(_url: &str) -> Result<(Vec<u8>, Option<String>, String), String> {
+    Err("imports are not fetched in the browser build".into())
+}
+
+/// GET `url`: (body, content type, final URL after redirects).
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch(url: &str) -> Result<(Vec<u8>, Option<String>, String), String> {
     use ureq::ResponseExt;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -1079,7 +1087,7 @@ impl Catalog {
 /// resolved against `dir`. Comments are skipped; anything else is ignored.
 pub fn parse_catalog(text: &str, dir: &Path) -> Vec<(String, Target)> {
     let mut out = Vec::new();
-    let base = url::Url::from_directory_path(dir).ok();
+    let base = crate::workspace::file_url_of(dir, true);
     let mut rest = text;
     while let Some(i) = rest.find('<') {
         rest = &rest[i + 1..];
@@ -1102,13 +1110,13 @@ pub fn parse_catalog(text: &str, dir: &Path) -> Vec<(String, Target)> {
             continue;
         };
         let target = match url::Url::parse(&uri) {
-            Ok(u) if u.scheme() == "file" => u.to_file_path().ok().map(Target::File),
+            Ok(u) if u.scheme() == "file" => crate::workspace::file_path_of(&u).map(Target::File),
             // A one-letter scheme is a Windows drive.
             Ok(u) if u.scheme().len() > 1 => Some(Target::Url(uri)),
             _ => base
                 .as_ref()
                 .and_then(|b| b.join(&uri).ok())
-                .and_then(|u| u.to_file_path().ok())
+                .and_then(|u| crate::workspace::file_path_of(&u))
                 .or_else(|| Some(dir.join(&uri)))
                 .map(Target::File),
         };

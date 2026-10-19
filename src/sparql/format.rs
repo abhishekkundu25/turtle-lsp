@@ -101,6 +101,7 @@ pub(super) fn format(
         .len()
         .saturating_mul(256)
         .clamp(8 << 20, 1 << 30);
+    #[cfg(not(target_arch = "wasm32"))]
     let same = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("sparql-format-check".into())
@@ -112,6 +113,15 @@ pub(super) fn format(
             .join()
             .map_err(|_| "cannot check the formatted text: spargebra panicked".to_string())?
     })?;
+    // The browser has no threads: the check runs on the module's own stack,
+    // sized at link time (web/engine) for the smallest stack above.
+    #[cfg(target_arch = "wasm32")]
+    let same = {
+        if stack > 8 << 20 {
+            return Err("the query is too long to check in the browser".into());
+        }
+        algebra(&doc, prefixes, base)? == algebra(&again, prefixes, base)?
+    };
     if !same {
         return Err("formatter bug: the formatted text means something else".into());
     }

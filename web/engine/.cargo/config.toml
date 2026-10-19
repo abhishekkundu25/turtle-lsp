@@ -1,0 +1,11 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    # Randomness comes from the page (src/lib.rs, random_fill).
+    "--cfg", 'getrandom_backend="custom"',
+    # The SPARQL formatter's check and SHACL recurse; there are no threads
+    # with stacks of their own to give them, so the one stack is large.
+    "-C", "link-arg=-zstack-size=33554432",
+]

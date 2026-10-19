@@ -7,3 +7,6 @@ test/fixtures/real/
 test/corpus/
 # VS Code downloaded by the extension tests.
 .vscode-test/
+
+# Built by npm run web:build.
+web/app/engine.wasm

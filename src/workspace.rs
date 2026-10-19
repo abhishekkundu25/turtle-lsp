@@ -105,8 +105,35 @@ pub struct Workspace {
     import_cache: Option<PathBuf>,
 }
 
+/// The file a `file:` URL names. None in the browser build, which has no files.
+pub fn file_path_of(u: &url::Url) -> Option<PathBuf> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return u.to_file_path().ok();
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = u;
+        None
+    }
+}
+
+/// The `file:` URL of `path` (of the directory `path` when `dir`). None in
+/// the browser build.
+pub fn file_url_of(path: &Path, dir: bool) -> Option<url::Url> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return if dir {
+        url::Url::from_directory_path(path).ok()
+    } else {
+        url::Url::from_file_path(path).ok()
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (path, dir);
+        None
+    }
+}
+
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    let path = url::Url::parse(uri).ok()?.to_file_path().ok()?;
+    let path = file_path_of(&url::Url::parse(uri).ok()?)?;
     Some(normalize_drive(path))
 }
 
@@ -134,7 +161,7 @@ pub fn normalize_uri(uri: &str) -> String {
 }
 
 pub fn path_to_uri(path: &Path) -> Option<String> {
-    url::Url::from_file_path(path).ok().map(|u| u.to_string())
+    file_url_of(path, false).map(|u| u.to_string())
 }
 
 /// `path` with symlinks resolved, as far as it exists (`/var` vs `/private/var`).
