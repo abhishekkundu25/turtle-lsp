@@ -5,8 +5,9 @@
 //! Every file is opened in a fresh [`Workspace`], so knowledge crosses files
 //! as it does in an editor. Files marked context inform the others but are
 //! not fixed and not returned by [`fix_all`]. SHACL runs synchronously.
-//! Imports are never loaded: an import the files do not declare themselves
-//! is reported as unresolved, as in an editor that has not fetched it.
+//! In the browser imports are never loaded: an import the files do not
+//! declare themselves is reported as unresolved. On disk ([`Disk`]) they are
+//! loaded as the editor loads them.
 //!
 //! A file has a `name`, which keys the results and the edits of fixes, and a
 //! `uri`, at which it is opened. [`BatchFile::named`] places a name below
@@ -28,7 +29,8 @@ use lsp_types::{
     DiagnosticSeverity, Position, Range, TextDocumentIdentifier, TextEdit, Uri,
 };
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Rounds of [`fix_all`] before giving up on fixes that keep producing fixes.
 const MAX_FIX_ROUNDS: usize = 20;
@@ -113,6 +115,16 @@ impl Default for Options {
     }
 }
 
+/// A workspace on disk (the command line), where the browser has none.
+#[derive(Clone, Debug, Default)]
+pub struct Disk {
+    /// The workspace roots: a file's `prefixes.ttl` is looked for up to its
+    /// root, and import catalogs under them.
+    pub roots: Vec<PathBuf>,
+    /// Fetch imports that are not in the import cache.
+    pub network: bool,
+}
+
 /// What [`analyse`] found.
 #[derive(Clone, Debug)]
 pub struct Report {
@@ -181,12 +193,50 @@ pub struct FixOutcome {
 /// Analyse `files` as one workspace: per file its diagnostics with their
 /// fixes, and the formatter's verdict.
 pub fn analyse(files: &[BatchFile], settings: &Settings, opts: &Options) -> Report {
+    analyse_in(files, settings, opts, None)
+}
+
+/// [`analyse`] for files on disk: project prefixes come from `prefixes.ttl`
+/// up to the roots, and `owl:imports` are loaded as the editor loads them.
+/// A context file gets only its SHACL results, without fixes, and no
+/// formatter verdict.
+pub fn analyse_on_disk(
+    files: &[BatchFile],
+    settings: &Settings,
+    opts: &Options,
+    disk: &Disk,
+) -> Report {
+    analyse_in(files, settings, opts, Some(disk))
+}
+
+fn analyse_in(
+    files: &[BatchFile],
+    settings: &Settings,
+    opts: &Options,
+    disk: Option<&Disk>,
+) -> Report {
     let enc = opts.columns.encoding();
-    let mut input = Input::new(files, settings, enc);
+    let mut input = Input::new(files, settings, enc, disk, None);
     let (has_shapes, mut shacl) = input.shacl(opts.shacl);
     let mut out = Vec::with_capacity(files.len());
     for f in files {
         let uri = &f.uri;
+        if disk.is_some() && f.context {
+            let problems = shacl.remove(uri).unwrap_or_default();
+            out.push(FileReport {
+                name: f.name.clone(),
+                kind: input.kind(uri),
+                problems: problems
+                    .into_iter()
+                    .map(|diagnostic| Problem {
+                        diagnostic,
+                        fixes: Vec::new(),
+                    })
+                    .collect(),
+                format: None,
+            });
+            continue;
+        }
         let mut diags = input.diagnostics(uri);
         diags.extend(shacl.remove(uri).unwrap_or_default());
         let problems = diags
@@ -226,12 +276,34 @@ pub fn analyse(files: &[BatchFile], settings: &Settings, opts: &Options) -> Repo
 /// own problems are skipped, a fix that would edit one is not applied, and
 /// they are left out of the outcome.
 pub fn fix_all(files: &[BatchFile], settings: &Settings, include_unsafe: bool) -> FixOutcome {
+    fix_all_in(files, settings, include_unsafe, None)
+}
+
+/// [`fix_all`] for files on disk, as [`analyse_on_disk`] sees them. Imports
+/// are loaded once, before the first round.
+pub fn fix_all_on_disk(
+    files: &[BatchFile],
+    settings: &Settings,
+    include_unsafe: bool,
+    disk: &Disk,
+) -> FixOutcome {
+    fix_all_in(files, settings, include_unsafe, Some(disk))
+}
+
+fn fix_all_in(
+    files: &[BatchFile],
+    settings: &Settings,
+    include_unsafe: bool,
+    disk: Option<&Disk>,
+) -> FixOutcome {
     // Any encoding works here; edits are mapped back to byte offsets.
     let enc = Encoding::Utf16;
     let mut files = files.to_vec();
     let mut applied = 0;
+    let mut loaded = None;
     for _ in 0..MAX_FIX_ROUNDS {
-        let mut input = Input::new(&files, settings, enc);
+        let mut input = Input::new(&files, settings, enc, disk, loaded.take());
+        loaded = input.imports.clone();
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
         for f in files.iter().filter(|f| !f.context) {
@@ -290,15 +362,37 @@ struct Input<'a> {
     /// [`Input::unresolved`], computed once: the texts never change under
     /// an `Input` (each round of "fix all" makes a new one).
     unresolved: Option<Unresolved>,
+    /// On disk: the imports, loaded into the knowledge index.
+    imports: Option<Arc<imports::Resolved>>,
 }
 
 impl<'a> Input<'a> {
-    fn new(files: &[BatchFile], settings: &'a Settings, enc: Encoding) -> Input<'a> {
-        let mut ws = Workspace::new(Vec::new(), settings.prefixes.clone());
+    /// On disk, `loaded` are the imports resolved for an earlier input of the
+    /// same workspace; None resolves them afresh.
+    fn new(
+        files: &[BatchFile],
+        settings: &'a Settings,
+        enc: Encoding,
+        disk: Option<&Disk>,
+        loaded: Option<Arc<imports::Resolved>>,
+    ) -> Input<'a> {
+        let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
+        let mut ws = Workspace::new(roots, settings.prefixes.clone());
         for f in files {
             ws.open_doc(f.uri.clone(), f.text.clone(), 1);
         }
+        let imports = disk.map(|d| {
+            let r = loaded.unwrap_or_else(|| {
+                Arc::new(imports::resolve_now(ws.knowledge(), &d.roots, d.network))
+            });
+            let k = ws.knowledge_mut();
+            for (key, a) in &r.loaded {
+                k.add_external(key, a.clone());
+            }
+            r
+        });
         Input {
+            imports,
             ws,
             names: files
                 .iter()
@@ -315,11 +409,22 @@ impl<'a> Input<'a> {
         self.names.iter().position(|(_, u)| u == uri)
     }
 
-    /// The imports the input does not declare itself, none of which is
-    /// loaded here.
+    /// The imports that are not loaded: on disk, those [`imports::resolve_now`]
+    /// could not load; else every one the input does not declare itself.
     fn unresolved(&mut self) -> &Unresolved {
         let ws = &mut self.ws;
+        let loaded = &self.imports;
         self.unresolved.get_or_insert_with(|| {
+            if let Some(r) = loaded {
+                return Unresolved {
+                    iris: r.unresolved(),
+                    status: r
+                        .status
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                };
+            }
             let iris = imports::unresolved_without_loading(ws.knowledge());
             let status = iris
                 .iter()
@@ -374,8 +479,7 @@ impl<'a> Input<'a> {
             docs,
             max_triples: self.settings.shacl_max_triples,
             enc: self.enc,
-            // Nothing is loaded here, so every import the input does not
-            // declare itself is missing, and results it could change soften.
+            // Results a missing import could change soften.
             unresolved: self.unresolved().iris.clone(),
         };
         (

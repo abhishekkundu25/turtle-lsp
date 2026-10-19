@@ -334,16 +334,53 @@ impl Workspace {
     }
 
     /// The knowledge index, after analyzing open documents edited since the
-    /// last call.
+    /// last call. Several are analyzed in parallel.
     pub fn knowledge(&mut self) -> &Knowledge {
-        let stale: Vec<String> = self
+        let stale: Vec<(String, Syntax)> = self
             .open
             .iter()
-            .filter(|(_, d)| d.analysis.is_none() && d.kind != DocKind::Sparql)
-            .map(|(u, _)| u.clone())
+            .filter_map(|(u, d)| match d.kind {
+                DocKind::Rdf(s) if d.analysis.is_none() => Some((u.clone(), s)),
+                _ => None,
+            })
             .collect();
-        for uri in stale {
-            self.analysis(&uri);
+        if stale.len() < 2 {
+            for (uri, _) in stale {
+                self.analysis(&uri);
+            }
+            return &self.knowledge;
+        }
+        let jobs: Vec<(String, Syntax, Arc<PrefixMap>)> = stale
+            .into_iter()
+            .map(|(uri, s)| {
+                let ext = self.external_prefixes_as(&uri, s);
+                (uri, s, ext)
+            })
+            .collect();
+        let open = &self.open;
+        let done: Vec<(String, Arc<Analysis>, Option<DocFacts>)> = jobs
+            .into_par_iter()
+            .filter_map(|(uri, syntax, ext)| {
+                let doc = open.get(&uri)?;
+                let a = Arc::new(Analysis::with_syntax(
+                    uri.clone(),
+                    &doc.text,
+                    ext,
+                    true,
+                    syntax,
+                ));
+                let facts = (!doc.cached_import).then(|| DocFacts::new(&a));
+                Some((uri, a, facts))
+            })
+            .collect();
+        for (uri, a, facts) in done {
+            if let Some(f) = facts {
+                self.knowledge
+                    .set_prepared(&uri, Source::Open, a.clone(), f);
+            }
+            if let Some(doc) = self.open.get_mut(&uri) {
+                doc.analysis = Some(a);
+            }
         }
         &self.knowledge
     }
