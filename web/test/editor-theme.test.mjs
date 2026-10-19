@@ -1,8 +1,9 @@
 // The editor's colour theme (web/app/theme.js) in the installed Google
-// Chrome, driven by Playwright: Light and Dark in Settings force the page's
-// colours and the editors' theme whatever the system says, Auto follows the
-// system and its changes, the choice is there from the first paint after a
-// reload, and Reset All returns to Auto. Run `npm run web:build` first.
+// Chrome, driven by Playwright: Dark (the default) and Light in Settings
+// force the page's colours and the editors' theme whatever the system says,
+// Auto follows the system and its changes, the choice is there from the first
+// paint after a reload, and Reset All returns to Dark. Run `npm run web:build`
+// first.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -91,8 +92,10 @@ test("Light under a dark system makes the page and the editor light; Dark under 
   for (const [system, forced] of [["dark", "light"], ["light", "dark"]]) {
     const { page, errors, foreign, close } = await open(system)
     try {
-      await looks(page, system)
+      await looks(page, "dark")
       await openSettings(page)
+      await themeControl(page).selectOption("auto")
+      await looks(page, system)
       await themeControl(page).selectOption(forced)
       await looks(page, forced)
       assert.equal(await stored(page), forced)
@@ -112,19 +115,28 @@ test("Light under a dark system makes the page and the editor light; Dark under 
 test("Auto follows the system and its changes while open", async () => {
   const { page, errors, foreign, close } = await open("light")
   try {
+    // A first visit is dark from the first paint, whatever the system says.
+    assert.equal((await page.evaluate(() => window.__firstPaint)).bg, DARK_BG)
+    await looks(page, "dark")
+    assert.equal(await stored(page), "dark")
+    await openSettings(page)
+    await themeControl(page).selectOption("auto")
     await looks(page, "light")
-    assert.equal(await stored(page), null)
+    assert.equal(await stored(page), "auto")
     await page.emulateMedia({ colorScheme: "dark" })
     await looks(page, "dark")
     await page.emulateMedia({ colorScheme: "light" })
     await looks(page, "light")
     // Back to Auto from a forced theme picks the system up again.
-    await openSettings(page)
     await themeControl(page).selectOption("dark")
     await looks(page, "dark")
     await themeControl(page).selectOption("auto")
     await looks(page, "light")
-    assert.equal(await stored(page), null)
+    assert.equal(await stored(page), "auto")
+    // Auto is there from the first paint after a reload.
+    await page.waitForTimeout(500)
+    await page.reload()
+    assert.equal((await page.evaluate(() => window.__firstPaint)).bg, LIGHT_BG)
     assert.deepEqual(errors, [])
     assert.deepEqual(foreign, [])
   } finally {
@@ -132,12 +144,12 @@ test("Auto follows the system and its changes while open", async () => {
   }
 })
 
-test("the choice survives a reload and is there at the first paint; Reset All returns to Auto", async () => {
+test("the choice survives a reload and is there at the first paint; Reset All returns to Dark", async () => {
   const { page, errors, foreign, close } = await open("dark")
   try {
     const first = await page.evaluate(() => window.__firstPaint)
     assert.equal(first.ready, "false")
-    assert.equal(first.bg, DARK_BG, "Auto under a dark system paints dark")
+    assert.equal(first.bg, DARK_BG, "the default paints dark")
     await openSettings(page)
     await themeControl(page).selectOption("light")
     await looks(page, "light")
@@ -151,9 +163,9 @@ test("the choice survives a reload and is there at the first paint; Reset All re
     assert.equal(await themeControl(page).inputValue(), "light")
 
     await settingsPage(page).getByRole("button", { name: "Reset All" }).click()
-    assert.equal(await themeControl(page).inputValue(), "auto")
+    assert.equal(await themeControl(page).inputValue(), "dark")
     await looks(page, "dark")
-    assert.equal(await stored(page), null)
+    assert.equal(await stored(page), "dark")
     await page.waitForTimeout(500)
     await page.reload()
     assert.equal((await page.evaluate(() => window.__firstPaint)).bg, DARK_BG)

@@ -33,8 +33,8 @@ const SETTINGS = [
   { key: "editor.fontSize", group: "Editor", cat: "Editor", title: "Font Size", type: "number", def: 13, min: 6, max: 100, desc: "The font size in pixels." },
   { key: "editor.vimMode", group: "Editor", cat: "Editor", title: "Vim Mode", type: "bool", def: false, desc: "Edit with Vim keys. The mode and the : command line show in the status bar; :w saves, :wa saves all, :q closes the tab, :e opens a file." },
   {
-    key: "workbench.colorTheme", group: "Workbench", cat: "Appearance", title: "Color Theme", type: "enum", def: "auto",
-    options: [["auto", "Follow the system's light or dark setting"], ["light", "Light"], ["dark", "Dark"]],
+    key: "workbench.colorTheme", group: "Workbench", cat: "Appearance", title: "Color Theme", type: "enum", def: "dark",
+    options: [["dark", "Dark"], ["light", "Light"], ["auto", "Follow the system's light or dark setting"]],
     desc: "The colours of the page and the editors.",
   },
 ]

@@ -20,8 +20,8 @@ workspace like every other setting:
   and the `:` command line show in the status bar, and `:w`, `:wa`, `:q`
   and `:e <file>` save, save all, close the tab and open a file. Turning it
   off gives plain editing back at once.
-- **Workbench: Color Theme**: Auto (follow the system, the default), Light
-  or Dark. It applies to the whole page (explorer, tabs, panels, status
+- **Workbench: Color Theme**: Dark (the default), Light, or Auto (follow
+  the system). It applies to the whole page (explorer, tabs, panels, status
   bar, dialogs, Settings, Search, diff) and to the editors, at once.
 
 ## User Stories
@@ -46,8 +46,9 @@ workspace like every other setting:
 18. As a Vim user, I want the page's own shortcuts (Ctrl+P, Ctrl+S, F1, Ctrl+Shift+F, Ctrl+\) to keep working, so that the workbench stays usable.
 19. As a user, I want turning Vim mode off to restore plain typing and remove the mode from the status bar, so that switching is safe.
 20. As a user who never turns it on, I want the Vim code not loaded at all, so that the page stays as fast.
-21. As a user, I want a Color Theme setting with Auto, Light and Dark, so that I choose the editor's colours.
-22. As a user, I want Auto to follow my system and change when the system does, so that the default stays as today.
+21. As a user, I want a Color Theme setting with Dark, Light and Auto, so that I choose the editor's colours.
+22. As a user, I want the editor dark by default, whatever my system says, so that it looks like a code editor from the first visit.
+22a. As a user, I want Auto to follow my system and change when the system does, so that I can match it.
 23. As a user, I want Light or Dark to apply to the whole page and to every editor, the diff view included, so that nothing is left in the other colours.
 24. As a user, I want the theme applied before the page shows on a reload, so that it does not flash in the other colours.
 25. As a user, I want the theme kept across visits, so that I set it once.
@@ -57,7 +58,7 @@ workspace like every other setting:
 
 - **Settings.** Two entries in the Settings list: `editor.vimMode` (bool,
   default false, group Editor) and `workbench.colorTheme` (enum
-  auto/light/dark, default auto, a new group Workbench). The Settings
+  dark/light/auto, default dark, a new group Workbench). The Settings
   module takes per-key effects: a function per key, called with the value
   when the page starts and on every change. The editor registers one for
   each new key.
@@ -112,3 +113,12 @@ workspace like every other setting:
 
 Both features are page-only; the turtle-lsp binary and the VS Code
 extension do not change.
+
+## Departures from the plan
+
+- Dark is the default theme (the user's choice, after the theme slice
+  landed): a first visit paints dark whatever the system says, Auto is an
+  option, and Reset All returns to Dark. The choice is always kept in
+  localStorage (nothing kept means dark), so Auto paints right on a reload.
+- The colour tokens are written once with `light-dark()` and only
+  `color-scheme` switches (Chrome 123, Safari 17.5, Firefox 120 or later).
