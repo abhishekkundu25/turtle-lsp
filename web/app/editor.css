@@ -67,6 +67,11 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line); b
 .tree-input { width: 100%; height: 20px; font: inherit; color: var(--fg); background: var(--input); border: 1px solid var(--focus); outline: none; padding: 0 4px; }
 
 .center { grid-area: center; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.groups { flex: 1; display: flex; min-height: 0; }
+.group { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.group + .group { border-left: 1px solid var(--line); }
+.group.focused .tab[aria-selected="true"] { box-shadow: inset 0 1px var(--focus); }
+.group:not(.focused) .tab[aria-selected="true"] { box-shadow: none; }
 .tabs { display: flex; background: var(--side); overflow-x: auto; flex: none; scrollbar-width: thin; }
 .tab { display: flex; align-items: center; gap: 6px; height: 35px; padding: 0 6px 0 12px; background: var(--tab); border-right: 1px solid var(--line); white-space: nowrap; color: var(--muted); cursor: pointer; }
 .tab[aria-selected="true"] { background: var(--tab-on); color: var(--fg); box-shadow: inset 0 1px var(--focus); }
@@ -78,7 +83,7 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line); b
 .tab .e { color: var(--err); }
 .crumbs { height: 22px; padding: 0 16px; display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; flex: none; background: var(--bg); }
 .editor-host { flex: 1; min-height: 0; }
-.welcome { position: absolute; inset: 57px 0 0 0; display: grid; place-content: center; text-align: center; color: var(--muted); background: var(--bg); }
+.welcome { position: absolute; inset: 57px 0 0 0; z-index: 2; display: grid; place-content: center; text-align: center; color: var(--muted); background: var(--bg); }
 
 .panel { grid-area: panel; border-top: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 .panel-hd { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px 0 12px; flex: none; }
@@ -120,6 +125,12 @@ button.st:hover { background: rgba(255, 255, 255, .12); }
 .menu .k { color: var(--muted); }
 .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
+.dialog { position: fixed; top: 18vh; left: 50%; transform: translateX(-50%); width: min(460px, calc(100vw - 32px)); background: var(--menu); color: var(--fg); box-shadow: 0 6px 30px var(--shadow); border-radius: 8px; padding: 18px 20px 14px; z-index: 80; }
+.dialog .dq { margin: 0 0 6px; font-weight: 600; }
+.dialog .dd { margin: 0 0 16px; color: var(--muted); }
+.dialog .db { display: flex; gap: 8px; justify-content: flex-end; }
+.dialog button { padding: 4px 14px; border-radius: 4px; border: 1px solid var(--line); }
+.dialog button.pri { background: var(--focus); color: #fff; border-color: var(--focus); }
 .toast { position: fixed; right: 16px; bottom: 34px; max-width: 420px; background: var(--menu); color: var(--fg); box-shadow: 0 2px 12px var(--shadow); border-radius: 6px; padding: 10px 14px; z-index: 70; display: flex; gap: 12px; align-items: center; }
 .toast button { color: var(--focus); font-weight: 600; }
 

@@ -47,13 +47,7 @@
   </aside>
 
   <main class="center">
-    <div class="tabs" id="tabs" role="tablist" aria-label="Open files"></div>
-    <div class="crumbs" id="crumbs"></div>
-    <div class="editor-host" id="editor"></div>
-    <div class="welcome" id="welcome" hidden>
-      <p><b>No file open.</b> Pick one in the explorer.</p>
-      <p><kbd>Ctrl</kbd>+<kbd>P</kbd> Go to file · <kbd>F1</kbd> Commands · <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd> Format · <kbd>F2</kbd> Rename · <kbd>Ctrl</kbd>+<kbd>.</kbd> Quick fix</p>
-    </div>
+    <div class="groups" id="groups"></div>
   </main>
 
   <section class="panel" aria-label="Panel">
@@ -90,5 +84,6 @@
 </div>
 <div class="menu" id="menu" role="menu" hidden></div>
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="dialog" id="dialog" role="dialog" aria-modal="true" aria-label="Unsaved changes" hidden></div>
 </body>
 </html>

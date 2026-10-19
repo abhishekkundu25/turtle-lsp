@@ -26,13 +26,18 @@ const uriOf = (path) => ROOT + path.split("/").map(encodeURIComponent).join("/")
 // ---- state --------------------------------------------------------------------------
 
 const W = {
-  files: new Map(), // path -> { model, handle?, disk? }
+  // path -> { model, disk }. `disk` is the file's text on disk for a file in
+  // a folder opened in place (null: not on disk yet); undefined otherwise.
+  files: new Map(),
   folders: new Set(), // folders kept even when empty
   expanded: new Set(),
   selected: null, // the tree's selection (a file or folder path)
-  tabs: [],
-  active: null,
-  views: new Map(), // path -> Monaco view state
+  // Folders opened in place: top folder path -> directory handle.
+  roots: new Map(),
+  // Editor groups (the split editor), each { tabs, active, views, editor, el };
+  // `g` is the focused one, which W.tabs and W.active stand for.
+  groups: [],
+  g: 0,
   diags: new Map(), // uri -> LSP diagnostics
   filter: "all",
   labels: false,
@@ -40,8 +45,22 @@ const W = {
   editing: null, // { mode: "newFile" | "newFolder" | "rename", dir, path }
   folded: new Set(), // files whose problems are folded in the Problems panel
 }
+for (const key of ["tabs", "active"]) {
+  Object.defineProperty(W, key, { get: () => W.groups[W.g][key], set: (v) => (W.groups[W.g][key] = v) })
+}
 let monaco, editor, client, hooks, search
 const pathByUri = new Map()
+
+// The folder opened in place that `path` is in, if any.
+function rootOf(path) {
+  for (const [root, handle] of W.roots) if (under(path, root)) return { root, handle }
+  return null
+}
+// Whether `path` has changes not on disk (only files opened in place can).
+function dirty(path) {
+  const f = W.files.get(path)
+  return Boolean(f && f.disk !== undefined && f.model.getValue() !== f.disk)
+}
 
 // ---- the workspace ---------------------------------------------------------------------
 
@@ -51,19 +70,21 @@ function folderList() {
   return all
 }
 
-function addFile(path, text, { handle } = {}) {
+// `disk`: the text on disk, for a file in a folder opened in place.
+function addFile(path, text, { disk } = {}) {
   const existing = W.files.get(path)
   if (existing) {
     // Importing a file again replaces its text (undoable).
     existing.model.pushEditOperations([], [{ range: existing.model.getFullModelRange(), text }], () => null)
-    if (handle) Object.assign(existing, { handle, disk: text })
+    if (disk !== undefined) existing.disk = disk
     return
   }
   const uri = monaco.Uri.parse(uriOf(path))
   const model = monaco.editor.createModel(text, languageOf(path), uri)
   const key = model.uri.toString()
   pathByUri.set(key, path)
-  W.files.set(path, { model, handle, disk: handle ? text : undefined })
+  // A file created inside a folder opened in place is not on disk yet.
+  W.files.set(path, { model, disk: disk !== undefined ? disk : rootOf(path) ? null : undefined })
   // Each change goes as its range and text (Monaco orders them from the end
   // of the document, so they apply in sequence).
   model.onDidChangeContent((e) => {
@@ -89,26 +110,32 @@ function removeFile(path) {
   pathByUri.delete(key)
   f.model.dispose()
   W.files.delete(path)
-  W.views.delete(path)
-  closeTab(path, { quiet: true })
+  for (let i = W.groups.length - 1; i >= 0; i--) {
+    W.groups[i].views.delete(path)
+    closeTab(path, { group: i, quiet: true, force: true })
+  }
 }
 
 // Move every file (and kept folder) at or under `from` to `to`.
+// A file moved within a folder opened in place is new on disk at its new
+// path (saving writes it there; the old file stays).
 function movePath(from, to) {
-  let reopen = null
+  const reopen = []
   for (const [p, f] of [...W.files]) {
     if (!under(p, from)) continue
     const dest = to + p.slice(from.length)
     const text = f.model.getValue()
-    const wasTab = W.tabs.indexOf(p)
-    const wasActive = W.active === p
+    const was = W.groups.map((g) => ({ tab: g.tabs.indexOf(p), active: g.active === p }))
     removeFile(p)
-    addFile(dest, text, { handle: f.handle })
-    if (f.handle) W.files.get(dest).disk = f.disk
-    if (wasTab >= 0) W.tabs.splice(Math.min(wasTab, W.tabs.length), 0, dest)
-    if (wasActive) reopen = dest
+    addFile(dest, text)
+    W.groups.forEach((g, i) => {
+      if (was[i]?.tab >= 0) g.tabs.splice(Math.min(was[i].tab, g.tabs.length), 0, dest)
+      if (was[i]?.active) reopen.push([i, dest])
+    })
   }
-  if (reopen) openTab(reopen, { focus: false })
+  const focused = W.g
+  for (const [i, dest] of reopen) if (W.groups[i]) (focusGroup(i), openTab(dest, { focus: false }))
+  if (W.groups[focused]) focusGroup(focused)
   for (const d of [...W.folders]) if (under(d, from)) (W.folders.delete(d), W.folders.add(to + d.slice(from.length)))
   for (const d of [...W.expanded]) if (under(d, from)) (W.expanded.delete(d), W.expanded.add(to + d.slice(from.length)))
   if (W.selected && under(W.selected, from)) W.selected = to + W.selected.slice(from.length)
@@ -148,11 +175,12 @@ function persist() {
   clearTimeout(saveTimer)
   saveTimer = setTimeout(async () => {
     const ok = await store.save({
-      files: [...W.files].map(([path, f]) => ({ path, text: f.model.getValue() })),
+      files: [...W.files].map(([path, f]) => ({ path, text: f.model.getValue(), disk: f.disk })),
       folders: [...W.folders],
       expanded: [...W.expanded],
-      tabs: W.tabs,
-      active: W.active,
+      roots: [...W.roots].map(([path, handle]) => ({ path, handle })),
+      groups: W.groups.map((g) => ({ tabs: g.tabs, active: g.active })),
+      focused: W.g,
       labels: W.labels,
     })
     $("status-storage").textContent = ok ? "Kept in this browser" : "Not kept: this browser refuses storage"
@@ -233,16 +261,18 @@ function renderTree() {
 }
 
 function renderTabs() {
-  $("tabs").innerHTML = W.tabs
-    .map((p) => {
-      const f = W.files.get(p)
-      const dirty = f?.handle && f.model.getValue() !== f.disk
-      const c = counts(p)
-      return `<div class="tab${dirty ? " dirty" : ""}" role="tab" aria-label="${esc(nameOf(p))}" aria-selected="${W.active === p}" data-path="${esc(p)}" title="${esc(p)}"><span class="${c.e ? "e" : ""}">${esc(nameOf(p))}</span><span class="x" data-close="${esc(p)}" aria-hidden="true"><span class="codicon codicon-close"></span></span></div>`
-    })
-    .join("")
-  $("welcome").hidden = Boolean(W.active)
-  $("crumbs").innerHTML = W.active ? W.active.split("/").map(esc).join(` <span class="codicon codicon-chevron-right"></span> `) : ""
+  W.groups.forEach((g, i) => {
+    const q = (sel) => g.el.querySelector(sel)
+    q(".tabs").innerHTML = g.tabs
+      .map((p) => {
+        const c = counts(p)
+        return `<div class="tab${dirty(p) ? " dirty" : ""}" role="tab" aria-label="${esc(nameOf(p))}" aria-selected="${g.active === p}" data-path="${esc(p)}" title="${esc(p)}"><span class="${c.e ? "e" : ""}">${esc(nameOf(p))}</span><span class="x" data-close="${esc(p)}" aria-hidden="true"><span class="codicon codicon-close"></span></span></div>`
+      })
+      .join("")
+    q(".welcome").hidden = Boolean(g.active)
+    q(".crumbs").innerHTML = g.active ? g.active.split("/").map(esc).join(` <span class="codicon codicon-chevron-right"></span> `) : ""
+    g.el.classList.toggle("focused", i === W.g && W.groups.length > 1)
+  })
 }
 
 function renderProblems() {
@@ -291,33 +321,117 @@ function renderStatus() {
 
 // ---- tabs and the editor ----------------------------------------------------------------------
 
+// Open `path` in the focused group.
 function openTab(path, { focus = true } = {}) {
   const f = W.files.get(path)
   if (!f) return
-  if (W.active && W.files.has(W.active)) W.views.set(W.active, editor.saveViewState())
-  if (!W.tabs.includes(path)) W.tabs.push(path)
-  W.active = path
+  const g = W.groups[W.g]
+  if (g.active && W.files.has(g.active)) g.views.set(g.active, editor.saveViewState())
+  if (!g.tabs.includes(path)) g.tabs.push(path)
+  g.active = path
   W.selected = path
   for (let d = dirOf(path); d; d = dirOf(d)) W.expanded.add(d)
   editor.setModel(f.model)
-  const view = W.views.get(path)
+  const view = g.views.get(path)
   if (view) editor.restoreViewState(view)
   if (focus) editor.focus()
   changed({ tree: true, tabs: true, status: true })
   if (!$("view-outline").hidden) renderOutline()
 }
 
-function closeTab(path, { quiet = false } = {}) {
-  const i = W.tabs.indexOf(path)
+// Close `path` in group `group` (the focused one by default). A file with
+// unsaved changes shown in no other group asks first, unless `force`.
+async function closeTab(path, { group = W.g, quiet = false, force = false } = {}) {
+  const g = W.groups[group]
+  const i = g?.tabs.indexOf(path) ?? -1
   if (i < 0) return
-  W.tabs.splice(i, 1)
-  if (W.active === path) {
-    W.active = null
-    const next = W.tabs[Math.min(i, W.tabs.length - 1)]
+  const elsewhere = W.groups.some((o, k) => k !== group && o.tabs.includes(path))
+  if (!force && dirty(path) && !elsewhere) {
+    const answer = await ask(`Do you want to save the changes you made to ${nameOf(path)}?`, "Your changes will be lost if you don't save them.", ["Save", "Don't Save", "Cancel"])
+    if (answer === "Cancel" || answer == null) return
+    if (answer === "Save" && !(await save(path))) return
+    if (answer === "Don't Save") await discard(path)
+  }
+  if (!g.tabs.includes(path)) return
+  g.tabs.splice(g.tabs.indexOf(path), 1)
+  g.views.delete(path)
+  if (!g.tabs.length && W.groups.length > 1) {
+    closeGroup(group)
+  } else if (g.active === path) {
+    g.active = null
+    const next = g.tabs[Math.min(i, g.tabs.length - 1)]
+    const focused = W.g
+    focusGroup(group)
     if (next) openTab(next, { focus: !quiet })
     else editor.setModel(null)
+    if (W.groups[focused]) focusGroup(focused)
   }
   changed({ tabs: true, status: true })
+}
+
+// ---- editor groups (the split editor) ----------------------------------------------------
+
+function editorOptions() {
+  return {
+    model: null,
+    automaticLayout: true,
+    theme: matchMedia("(prefers-color-scheme: dark)").matches ? "rdf-dark" : "rdf-light",
+    fontSize: 13,
+    "semanticHighlighting.enabled": true,
+    inlayHints: { enabled: "on" },
+    renameOnType: false,
+    fixedOverflowWidgets: true,
+  }
+}
+
+// A new editor group at the end, with its tabs bar, breadcrumbs and editor.
+function addGroup() {
+  const el = document.createElement("section")
+  el.className = "group"
+  el.innerHTML = `<div class="tabs" role="tablist" aria-label="Open files"></div><div class="crumbs"></div><div class="editor-host"></div><div class="welcome" hidden><p><b>No file open.</b> Pick one in the explorer.</p><p><kbd>Ctrl</kbd>+<kbd>P</kbd> Go to file · <kbd>F1</kbd> Commands · <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd> Format · <kbd>F2</kbd> Rename · <kbd>Ctrl</kbd>+<kbd>.</kbd> Quick fix</p></div>`
+  $("groups").append(el)
+  const ed = monaco.editor.create(el.querySelector(".editor-host"), editorOptions())
+  const g = { tabs: [], active: null, views: new Map(), editor: ed, el }
+  W.groups.push(g)
+  ed.onDidFocusEditorText(() => focusGroup(W.groups.indexOf(g)))
+  ed.onDidChangeCursorPosition(() => changed({ status: true }))
+  for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], run: () => c.run() })
+  el.addEventListener("mousedown", () => focusGroup(W.groups.indexOf(g)))
+  el.querySelector(".tabs").addEventListener("click", (e) => {
+    const close = e.target.closest("[data-close]")
+    if (close) return closeTab(close.dataset.close, { group: W.groups.indexOf(g) })
+    const tab = e.target.closest("[role=tab]")
+    if (tab) (focusGroup(W.groups.indexOf(g)), openTab(tab.dataset.path))
+  })
+  el.querySelector(".tabs").addEventListener("auxclick", (e) => {
+    const tab = e.target.closest("[role=tab]")
+    if (tab && e.button === 1) closeTab(tab.dataset.path, { group: W.groups.indexOf(g) })
+  })
+  return g
+}
+
+function focusGroup(i) {
+  if (!W.groups[i]) return
+  W.g = i
+  editor = W.groups[i].editor
+  for (const [k, g] of W.groups.entries()) g.el.classList.toggle("focused", k === i && W.groups.length > 1)
+}
+
+// Split: a second group showing the focused file (two groups at most).
+function split() {
+  const path = W.active
+  if (W.groups.length === 1) addGroup()
+  focusGroup(W.groups.length - 1)
+  if (path) openTab(path)
+  changed({ tabs: true })
+}
+
+function closeGroup(i) {
+  const [g] = W.groups.splice(i, 1)
+  g.editor.dispose()
+  g.el.remove()
+  focusGroup(Math.min(i, W.groups.length - 1))
+  editor.focus()
 }
 
 function reveal(path, range) {
@@ -351,7 +465,7 @@ async function renderOutline() {
 async function importEntries(entries, dir = "") {
   let added = 0, replaced = 0, skipped = 0
   let first = null
-  for (const { file, path } of entries) {
+  for (const { file, path, onDisk } of entries) {
     if (!KNOWN.test(file.name) || file.size > MAX_FILE_BYTES || W.files.size >= MAX_FILES) {
       skipped++
       continue
@@ -359,7 +473,8 @@ async function importEntries(entries, dir = "") {
     const dest = join(dir, path)
     if (W.files.has(dest)) replaced++
     else added++
-    addFile(dest, await file.text(), { handle: file.handle })
+    const text = await file.text()
+    addFile(dest, text, { disk: onDisk ? text : undefined })
     first ??= dest
     for (let d = dirOf(dest); d; d = dirOf(d)) W.expanded.add(d)
   }
@@ -393,6 +508,7 @@ async function dropped(items) {
 }
 
 // A folder on the disk, opened for editing in place: Ctrl+S writes back.
+// A folder on the disk, opened for editing in place: Ctrl+S writes back.
 async function openInPlace() {
   let dir
   try {
@@ -406,32 +522,101 @@ async function openInPlace() {
       if (h.kind === "directory") {
         if (!name.startsWith(".") && name !== "node_modules") await walk(h, join(prefix, name))
       } else if (KNOWN.test(name)) {
-        const file = await h.getFile()
-        file.handle = h
-        entries.push({ file, path: join(prefix, name) })
+        entries.push({ file: await h.getFile(), path: join(prefix, name), onDisk: true })
       }
     }
   }
   await walk(dir, dir.name)
+  W.roots.set(dir.name, dir)
   await importEntries(entries)
   $("status-storage").textContent = `${dir.name}: Ctrl+S saves to disk`
 }
 
-async function save(path = W.active) {
+// The handle of `path` inside its folder opened in place, made if missing.
+async function fileHandle(path, { create = false } = {}) {
+  const r = rootOf(path)
+  if (!r) return null
+  const mode = { mode: "readwrite" }
+  // After a reload the browser asks again, once, on this user action.
+  if ((await r.handle.queryPermission?.(mode)) !== "granted" && (await r.handle.requestPermission?.(mode)) !== "granted") {
+    throw new Error("the browser did not allow writing to the folder")
+  }
+  const parts = path.slice(r.root.length + 1).split("/")
+  let dir = r.handle
+  for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d, { create })
+  return dir.getFileHandle(parts.at(-1), { create })
+}
+
+// Save `path` to disk; whether it was. Files not opened in place are kept in
+// the browser as they are typed.
+async function save(path = W.active, { quiet = false } = {}) {
   const f = W.files.get(path)
-  if (!f) return
-  if (!f.handle) return toast("Kept in this browser: files are saved here as you type. Download or export them to keep a copy.")
+  if (!f) return false
+  if (!rootOf(path)) {
+    if (!quiet) toast("Kept in this browser: files are saved here as you type. Download or export them to keep a copy.")
+    return true
+  }
   try {
-    const w = await f.handle.createWritable()
     const text = f.model.getValue()
+    const w = await (await fileHandle(path, { create: true })).createWritable()
     await w.write(text)
     await w.close()
     f.disk = text
     changed({ tabs: true })
-    toast(`Saved ${path} to disk`)
+    if (!quiet) toast(`Saved ${path} to disk`)
+    return true
   } catch (e) {
     toast(`Could not save ${path}: ${e.message}`)
+    return false
   }
+}
+
+async function saveAll() {
+  const paths = [...W.files.keys()].filter(dirty)
+  let n = 0
+  for (const p of paths) if (await save(p, { quiet: true })) n++
+  toast(paths.length ? `Saved ${n} of ${paths.length} file${paths.length === 1 ? "" : "s"} to disk` : "No unsaved changes")
+}
+
+// Put the disk text back into `path` (undoable).
+async function revert(path = W.active) {
+  const f = W.files.get(path)
+  if (!f || f.disk === undefined) return toast("Only files of a folder opened in place can be reverted.")
+  try {
+    const text = f.disk === null ? "" : await (await (await fileHandle(path)).getFile()).text()
+    f.disk = f.disk === null ? null : text
+    f.model.pushEditOperations([], [{ range: f.model.getFullModelRange(), text }], () => null)
+    changed({ tabs: true })
+  } catch (e) {
+    toast(`Could not read ${path}: ${e.message}`)
+  }
+}
+
+// Don't Save: drop the unsaved changes (a file never saved goes away).
+async function discard(path) {
+  const f = W.files.get(path)
+  if (f?.disk === null) return removeFile(path)
+  if (f) f.model.pushEditOperations([], [{ range: f.model.getFullModelRange(), text: f.disk }], () => null)
+}
+
+// A question in the page; resolves to the button chosen, null on Escape.
+function ask(message, detail, buttons) {
+  return new Promise((resolve) => {
+    const box = $("dialog")
+    box.innerHTML = `<p class="dq">${esc(message)}</p><p class="dd">${esc(detail)}</p><div class="db">${buttons.map((b, i) => `<button class="${i === 0 ? "pri" : ""}" data-b="${esc(b)}">${esc(b)}</button>`).join("")}</div>`
+    box.hidden = false
+    const done = (answer) => {
+      box.hidden = true
+      box.onclick = box.onkeydown = null
+      resolve(answer)
+    }
+    box.onclick = (e) => {
+      const b = e.target.closest("[data-b]")
+      if (b) done(b.dataset.b)
+    }
+    box.onkeydown = (e) => e.key === "Escape" && done(null)
+    box.querySelector("button").focus()
+  })
 }
 
 function copy(text) {
@@ -629,6 +814,9 @@ const COMMANDS = [
   { id: "file.goto", label: "Go to File…", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, run: () => quickOpen() },
   { id: "file.gotoSymbol", label: "Go to Symbol in Workspace…", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyT, run: () => quickOpen("#") },
   { id: "file.save", label: "File: Save", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, run: () => save() },
+  { id: "file.saveAll", label: "File: Save All", key: () => monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyCode.KeyS), run: saveAll },
+  { id: "file.revert", label: "File: Revert File", run: () => revert() },
+  { id: "view.split", label: "View: Split Editor", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Backslash, run: split },
   { id: "file.new", label: "File: New File", run: () => startNew("newFile") },
   { id: "file.newFolder", label: "File: New Folder", run: () => startNew("newFolder") },
   { id: "file.importFiles", label: "File: Import Files…", run: () => $("files-input").click() },
@@ -714,7 +902,8 @@ function wire() {
   })
   tree.addEventListener("keydown", (e) => {
     if (e.target.classList.contains("tree-input")) {
-      if (e.key === "Enter") finishEdit(e.target.value)
+      // The Enter must not reach the new file's editor, which takes focus.
+      if (e.key === "Enter") (e.preventDefault(), finishEdit(e.target.value))
       if (e.key === "Escape") (W.editing = null), renderTree()
       return
     }
@@ -784,17 +973,6 @@ function wire() {
     e.target.value = ""
   })
 
-  $("tabs").addEventListener("click", (e) => {
-    const close = e.target.closest("[data-close]")
-    if (close) return closeTab(close.dataset.close)
-    const tab = e.target.closest("[role=tab]")
-    if (tab) openTab(tab.dataset.path)
-  })
-  $("tabs").addEventListener("auxclick", (e) => {
-    const tab = e.target.closest("[role=tab]")
-    if (tab && e.button === 1) closeTab(tab.dataset.path)
-  })
-
   $("problems").addEventListener("click", (e) => {
     const row = e.target.closest(".problem")
     if (row) {
@@ -838,6 +1016,9 @@ function wire() {
     // Chrome keeps Ctrl+T for itself; where it reaches the page, it finds symbols.
     else if (mod && e.key.toLowerCase() === "t" && !e.shiftKey) (e.preventDefault(), quickOpen("#"))
     else if (mod && e.key.toLowerCase() === "s") (e.preventDefault(), save())
+    // Splitting twice only refocuses the second group, so Monaco's binding
+    // and this one may both run.
+    else if (mod && e.key === "\\") (e.preventDefault(), split())
     else if (mod && e.shiftKey && e.key.toLowerCase() === "f") (e.preventDefault(), showView("search"))
     else if (e.key === "F1" || (mod && e.shiftKey && e.key.toLowerCase() === "p")) {
       e.preventDefault()
@@ -885,18 +1066,7 @@ async function main() {
   registerSyntax(monaco)
   defineThemes()
   const dark = matchMedia("(prefers-color-scheme: dark)")
-  editor = monaco.editor.create($("editor"), {
-    model: null,
-    automaticLayout: true,
-    theme: dark.matches ? "rdf-dark" : "rdf-light",
-    fontSize: 13,
-    "semanticHighlighting.enabled": true,
-    inlayHints: { enabled: "on" },
-    renameOnType: false,
-    fixedOverflowWidgets: true,
-  })
   dark.addEventListener("change", () => monaco.editor.setTheme(dark.matches ? "rdf-dark" : "rdf-light"))
-  editor.onDidChangeCursorPosition(() => changed({ status: true }))
 
   client = new LspClient(new URL("lsp-worker.js", import.meta.url))
   let idle = []
@@ -932,9 +1102,11 @@ async function main() {
 
   // Cross-file navigation (definition, references) opens the file in a tab.
   monaco.editor.registerEditorOpener({
-    openCodeEditor(_source, resource, selection) {
+    openCodeEditor(source, resource, selection) {
       const path = pathByUri.get(resource.toString())
       if (!path) return false
+      const i = W.groups.findIndex((g) => g.editor === source)
+      if (i >= 0) focusGroup(i)
       openTab(path)
       if (selection) {
         const r = monaco.Range.isIRange(selection) ? selection : new monaco.Range(selection.lineNumber, selection.column, selection.lineNumber, selection.column)
@@ -944,20 +1116,31 @@ async function main() {
       return true
     },
   })
-  for (const c of COMMANDS) {
-    editor.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], run: () => c.run() })
-  }
+  addGroup()
+  focusGroup(0)
   monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyP, command: "editor.action.quickCommand" })
 
   wire()
+  // Leaving with changes not saved to disk asks first, as closing VS Code does.
+  addEventListener("beforeunload", (e) => {
+    if ([...W.files.keys()].some(dirty)) e.preventDefault()
+  })
   const kept = await store.load()
   if (kept?.files) {
     for (const d of kept.folders ?? []) W.folders.add(d)
-    for (const f of kept.files) addFile(f.path, f.text)
+    for (const r of kept.roots ?? []) W.roots.set(r.path, r.handle)
+    for (const f of kept.files) addFile(f.path, f.text, { disk: f.disk })
     W.expanded = new Set(kept.expanded ?? [])
-    W.tabs = (kept.tabs ?? []).filter((p) => W.files.has(p))
-    const active = kept.active && W.files.has(kept.active) ? kept.active : W.tabs[0]
-    if (active) openTab(active, { focus: false })
+    const groups = kept.groups ?? [{ tabs: kept.tabs ?? [], active: kept.active }]
+    groups.slice(0, 2).forEach((saved, i) => {
+      if (i > 0) addGroup()
+      focusGroup(i)
+      W.tabs = (saved.tabs ?? []).filter((p) => W.files.has(p))
+      const active = saved.active && W.files.has(saved.active) ? saved.active : W.tabs[0]
+      if (active) openTab(active, { focus: false })
+      if (i > 0 && !W.tabs.length) closeGroup(i)
+    })
+    focusGroup(Math.min(kept.focused ?? 0, W.groups.length - 1))
     if (kept.labels) toggleLabels()
   } else {
     resetWorkspace(WORKSPACE)

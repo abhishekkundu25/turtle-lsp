@@ -363,3 +363,183 @@ test("a file's problems fold in the Problems panel", async () => {
     await close()
   }
 })
+
+// --- batch 2: saving files opened in place, split editor ---------------------------
+
+// A context whose folder picker answers with a folder of the browser's
+// private file system (OPFS), which behaves like a disk folder, seeded with
+// `files` ({ "a.ttl": text, "sub/b.ttl": text }).
+async function inPlaceContext(files) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  await context.addInitScript(() => {
+    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
+  })
+  const seed = await context.newPage()
+  await seed.goto(origin + "/editor.html")
+  await seed.evaluate(async (files) => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
+    for (const [p, text] of Object.entries(files)) {
+      const parts = p.split("/")
+      let dir = root
+      for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d, { create: true })
+      const w = await (await dir.getFileHandle(parts.at(-1), { create: true })).createWritable()
+      await w.write(text)
+      await w.close()
+    }
+  }, files)
+  await seed.close()
+  return context
+}
+const disk = (page, p) =>
+  page.evaluate(async (p) => {
+    let dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("proj")
+    const parts = p.split("/")
+    for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d)
+    return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text()
+  }, p)
+// Run an editor command (an action id) in the first editor.
+const run = (page, id) =>
+  page.evaluate((id) => {
+    const ed = window.monaco.editor.getEditors()[0]
+    ed.focus()
+    ed.trigger("test", id, {})
+  }, id)
+const A = "@prefix ex: <https://e.org/> .\n\nex:a ex:b ex:c .\n"
+const B = "@prefix ex: <https://e.org/> .\n\nex:d ex:e ex:f .\n"
+
+test("a folder opened in place: unsaved marks, Ctrl+S saves to disk, Revert reads it back", async () => {
+  const context = await inPlaceContext({ "a.ttl": A, "sub/b.ttl": B })
+  try {
+    const { page } = await open({ context })
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await item(page, "proj/sub/b.ttl").waitFor()
+    await openFile(page, "proj/a.ttl")
+    const tab = page.locator('.tab[data-path="proj/a.ttl"]')
+    assert.equal(await tab.getAttribute("class"), "tab")
+    await at(page, "ex:a", 0)
+    await page.keyboard.type("# edited\n")
+    await page.waitForFunction(() => document.querySelector('.tab[data-path="proj/a.ttl"]')?.classList.contains("dirty"))
+    await page.keyboard.press("ControlOrMeta+s")
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    assert.equal(await disk(page, "a.ttl"), "@prefix ex: <https://e.org/> .\n\n# edited\nex:a ex:b ex:c .\n")
+    await page.keyboard.type("more ")
+    await page.waitForFunction(() => document.querySelector('.tab[data-path="proj/a.ttl"]')?.classList.contains("dirty"))
+    await run(page, "file.revert")
+    await page.waitForFunction(() => !window.monaco.editor.getModel(window.monaco.Uri.parse("file:///work/proj/a.ttl")).getValue().includes("more"))
+    assert.equal(await text(page, "proj/a.ttl"), await disk(page, "a.ttl"))
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+  } finally {
+    await context.close()
+  }
+})
+
+test("Save All writes every unsaved file, and a new file in the folder is created on disk", async () => {
+  const context = await inPlaceContext({ "a.ttl": A, "sub/b.ttl": B })
+  try {
+    const { page } = await open({ context })
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await item(page, "proj/sub/b.ttl").waitFor()
+    for (const [p, anchor] of [["proj/a.ttl", "ex:a"], ["proj/sub/b.ttl", "ex:d"]]) {
+      await openFile(page, p)
+      await at(page, anchor, 0)
+      await page.keyboard.type("# x\n")
+    }
+    await item(page, "proj/sub").click()
+    await page.getByRole("button", { name: "New File" }).click()
+    await page.locator(".tree-input").fill("c.ttl")
+    await page.locator(".tree-input").press("Enter")
+    await page.getByRole("tab", { name: "c.ttl" }).waitFor()
+    await page.keyboard.type("@prefix ex: <https://e.org/> .\n")
+    await run(page, "file.saveAll")
+    await page.waitForFunction(() => !document.querySelector(".tab.dirty"))
+    assert.match(await disk(page, "a.ttl"), /^# x\n/m)
+    assert.match(await disk(page, "sub/b.ttl"), /^# x\n/m)
+    assert.equal(await disk(page, "sub/c.ttl"), "@prefix ex: <https://e.org/> .\n")
+  } finally {
+    await context.close()
+  }
+})
+
+test("closing an unsaved tab asks: Cancel keeps it, Don't Save drops the edit, Save writes it", async () => {
+  const context = await inPlaceContext({ "a.ttl": A })
+  try {
+    const { page } = await open({ context })
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await openFile(page, "proj/a.ttl")
+    const edit = async () => {
+      await at(page, "ex:a", 0)
+      await page.keyboard.type("# e\n")
+      await page.waitForFunction(() => document.querySelector('.tab[data-path="proj/a.ttl"]')?.classList.contains("dirty"))
+    }
+    const close = () => page.locator('.tab[data-path="proj/a.ttl"] [data-close]').click()
+    const dialog = page.getByRole("dialog")
+    await edit()
+    await close()
+    await dialog.getByText(/Do you want to save the changes you made to a\.ttl\?/).waitFor()
+    await dialog.getByRole("button", { name: "Cancel" }).click()
+    assert.equal(await page.locator('.tab[data-path="proj/a.ttl"]').count(), 1)
+    await close()
+    await dialog.getByRole("button", { name: "Don't Save" }).click()
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="proj/a.ttl"]'))
+    assert.equal(await text(page, "proj/a.ttl"), A)
+    assert.equal(await disk(page, "a.ttl"), A)
+    await openFile(page, "proj/a.ttl")
+    await edit()
+    await close()
+    await dialog.getByRole("button", { name: "Save", exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="proj/a.ttl"]'))
+    assert.equal(await disk(page, "a.ttl"), "@prefix ex: <https://e.org/> .\n\n# e\nex:a ex:b ex:c .\n")
+  } finally {
+    await context.close()
+  }
+})
+
+test("a folder opened in place stays linked after a reload", async () => {
+  const context = await inPlaceContext({ "a.ttl": A })
+  try {
+    const first = await open({ context })
+    await first.page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await item(first.page, "proj/a.ttl").waitFor()
+    await first.page.waitForTimeout(600)
+    await first.page.close()
+    const { page } = await open({ context })
+    await openFile(page, "proj/a.ttl")
+    await at(page, "ex:a", 0)
+    await page.keyboard.type("# after reload\n")
+    await page.keyboard.press("ControlOrMeta+s")
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    assert.match(await disk(page, "a.ttl"), /# after reload/)
+  } finally {
+    await context.close()
+  }
+})
+
+test("the editor splits into two groups that share each file", async () => {
+  const { page, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].focus())
+    await page.keyboard.press("ControlOrMeta+Backslash")
+    await page.locator(".group").nth(1).waitFor()
+    assert.equal(await page.locator(".group").count(), 2)
+    assert.equal(await page.locator('.group .tab[data-path="data/people.ttl"]').count(), 2)
+    // Typing in one group shows in the other: one model per file.
+    await page.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[1]
+      ed.focus()
+      ed.setPosition({ lineNumber: 1, column: 1 })
+    })
+    await page.keyboard.type("# both\n")
+    const editors = await page.evaluate(() => window.monaco.editor.getEditors().map((e) => e.getModel()?.getValue().startsWith("# both")))
+    assert.deepEqual(editors, [true, true])
+    // Opening a file goes to the focused group; the other keeps its file.
+    await item(page, "ontology/core.ttl").click()
+    await page.locator(".group").nth(1).locator('.tab[aria-selected="true"][data-path="ontology/core.ttl"]').waitFor()
+    assert.equal(await page.locator('.group').nth(0).locator('.tab[aria-selected="true"]').getAttribute("data-path"), "data/people.ttl")
+    // Closing a group's last tabs closes the group.
+    for (const p of ["ontology/core.ttl", "data/people.ttl"]) await page.locator(".group").nth(1).locator(`.tab[data-path="${p}"] [data-close]`).click()
+    await page.waitForFunction(() => document.querySelectorAll(".group").length === 1)
+  } finally {
+    await close()
+  }
+})
