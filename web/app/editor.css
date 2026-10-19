@@ -138,7 +138,7 @@ a.st { text-decoration: none; }
 .intro p { margin: 0 0 12px; line-height: 1.5; }
 .intro-btns { display: flex; gap: 8px; margin-top: 18px; }
 .intro-btns button { padding: 6px 16px; border-radius: 4px; border: 1px solid var(--line); }
-.intro-foot { margin: 18px 0 0; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.intro .intro-foot { margin: 22px 0 0; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .intro-foot a { color: inherit; }
 .intro-foot a:hover { color: var(--fg); }
 .intro-btns button.pri { background: var(--focus); color: #fff; border-color: var(--focus); }
