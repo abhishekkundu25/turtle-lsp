@@ -239,11 +239,6 @@ const disk = (page, p) =>
     for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d)
     return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text()
   }, p)
-// Monaco 0.52's word highlighting starts 50 ms after the editor gets the
-// focus or the cursor moves, and a file shown in the editor within that time
-// cancels it with an uncaught "Canceled" error (Vim mode or not). A person
-// is slower than that; the test waits.
-const pause = (page) => page.waitForTimeout(100)
 const A = "@prefix ex: <https://e.org/> .\n\nex:a ex:b ex:c .\n"
 const B = "@prefix ex: <https://e.org/> .\n\nex:d ex:e ex:f .\n"
 
@@ -270,7 +265,6 @@ test(":w saves to disk, :e opens a workspace file, :q closes the tab", async () 
     assert.equal(await disk(page, "a.ttl"), "@prefix ex: <https://e.org/> .\n\n# edited\nex:a ex:b ex:c .\n")
     await modeIs(page, "NORMAL")
 
-    await pause(page)
     await page.keyboard.type(":e proj/sub/b.ttl")
     await page.keyboard.press("Enter")
     await page.locator('.tab[aria-selected="true"][data-path="proj/sub/b.ttl"]').waitFor()
@@ -279,7 +273,6 @@ test(":w saves to disk, :e opens a workspace file, :q closes the tab", async () 
     await page.keyboard.type(":e nowhere.ttl")
     await page.keyboard.press("Enter")
     await mode(page).locator(".vim-notification", { hasText: "nowhere.ttl" }).waitFor()
-    await pause(page)
     await page.keyboard.type(":q")
     await page.keyboard.press("Enter")
     await page.locator('.tab[data-path="proj/sub/b.ttl"]').waitFor({ state: "detached" })

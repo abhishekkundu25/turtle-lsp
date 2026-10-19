@@ -1184,6 +1184,9 @@ async function main() {
 
   wire()
   // Leaving with changes not saved to disk asks first, as closing VS Code does.
+  // Monaco cancels work it no longer needs (word highlighting when the file
+  // shown changes) by rejecting with "Canceled", which it treats as expected.
+  addEventListener("unhandledrejection", (e) => e.reason?.name === "Canceled" && e.preventDefault())
   addEventListener("beforeunload", (e) => {
     if ([...W.files.keys()].some(dirty)) e.preventDefault()
   })

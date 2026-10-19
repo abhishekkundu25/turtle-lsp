@@ -29,7 +29,6 @@ export function createVim({ monaco, status, commands }) {
   let enabled = false
   let focused = null
   let lib = null
-  let StatusBar = null
   let loading = null
 
   function load() {
@@ -46,21 +45,6 @@ export function createVim({ monaco, status, commands }) {
         if (!path) cm.openNotification("E32: No file name")
         else if (!commands.open(path)) cm.openNotification(`E484: Can't open file ${path}`)
       })
-      // monaco-vim gives the editor the focus back before it runs a :
-      // command; when the command then shows another file (:e, :q), Monaco's
-      // word highlighting, started by the focus, is cancelled with an uncaught
-      // "Canceled" error. The focus comes back after the command instead,
-      // unless it moved on (to the unsaved-changes dialog of :q).
-      StatusBar = class extends MV.StatusBar {
-        constructor(node, editor, sanitizer) {
-          super(node, null, sanitizer)
-          const close = this.closeInput
-          this.closeInput = () => {
-            close()
-            queueMicrotask(() => [null, document.body].includes(document.activeElement) && editor.focus())
-          }
-        }
-      }
       lib = MV
     })
     return loading
@@ -76,7 +60,7 @@ export function createVim({ monaco, status, commands }) {
     const node = document.createElement("span")
     node.className = "vim-status"
     status.append(node)
-    sessions.set(ed, { vim: lib.initVimMode(ed, node, StatusBar), node })
+    sessions.set(ed, { vim: lib.initVimMode(ed, node), node })
   }
 
   function stop(ed) {
