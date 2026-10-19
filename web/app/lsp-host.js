@@ -19,6 +19,8 @@ function splice(text, range, insert) {
   return text.slice(0, at(range.start)) + insert + text.slice(at(range.end))
 }
 
+const didOpen = ([uri, d]) => ({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, ...d } } })
+
 export class EmbeddedServer {
   // `engine`: from createEngine. `on`: optional handlers, `diagnostics(uri,
   // list)`, `request(method, params)` (a server request; return its result),
@@ -100,25 +102,68 @@ export class EmbeddedServer {
       out = this.engine.call(op, payload)
     } catch (e) {
       if (!e.crashed) throw e
-      this.restart()
-      for (const p of this.pending.values()) p.reject(e)
+      let error = e
+      try {
+        const dropped = this.restart()
+        if (dropped.length) {
+          const which = dropped.join(", ")
+          error = Object.assign(new Error(`${e.message}; reopening ${which} crashed it again, so the language server has left it out`), { crashed: true, dropped })
+        }
+      } catch (again) {
+        error = Object.assign(new Error(`${e.message}; the language server could not be started again (${again.message})`), { crashed: true })
+      }
+      for (const p of this.pending.values()) p.reject(error)
       this.pending.clear()
-      this.on.crash?.(e)
+      this.on.crash?.(error)
       return
     }
     this.schedule(out.due)
     for (const m of out.messages) this.received(m)
   }
 
-  // A fresh server with the open documents, after a crash.
+  // A fresh server with the open documents, after a crash. If the replay
+  // crashes too, the documents are opened one at a time and each one that
+  // crashes the server is closed. Returns the URIs of those.
   restart() {
+    const docs = [...this.open]
+    try {
+      this.boot(docs)
+      return []
+    } catch (e) {
+      if (!e.crashed) throw e
+    }
+    const kept = []
+    const dropped = []
+    this.boot(kept)
+    for (const doc of docs) {
+      try {
+        this.deliver([didOpen(doc)])
+        kept.push(doc)
+      } catch (e) {
+        if (!e.crashed) throw e
+        dropped.push(doc[0])
+        this.boot(kept)
+      }
+    }
+    for (const uri of dropped) {
+      this.open.delete(uri)
+      this.published.delete(uri)
+      this.on.diagnostics?.(uri, [])
+    }
+    return dropped
+  }
+
+  // Starts a server with the settings and `docs` ([uri, doc] pairs) open.
+  boot(docs) {
     this.engine.call("lsp_start", { params: this.initParams })
     const replay = [{ jsonrpc: "2.0", method: "initialized", params: {} }]
     if (this.config) replay.push({ jsonrpc: "2.0", method: "workspace/didChangeConfiguration", params: this.config })
-    for (const [uri, d] of this.open) {
-      replay.push({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, ...d } } })
-    }
-    const out = this.engine.call("lsp", { messages: replay })
+    this.deliver([...replay, ...docs.map(didOpen)])
+  }
+
+  // Sends `messages` straight to the engine; a crash is the caller's.
+  deliver(messages) {
+    const out = this.engine.call("lsp", { messages })
     this.schedule(out.due)
     for (const m of out.messages) this.received(m)
   }

@@ -59,3 +59,47 @@ test("ranged edits are kept, and a crash restarts the server with the documents 
   assert.deepEqual(host.config, { settings: { turtle: { inlayHints: { labels: "all" } } } })
   assert.equal(engine.calls.filter((c) => c.op === "lsp" && c.payload.messages.some((m) => m.method === "workspace/didChangeConfiguration")).length, 2)
 })
+
+test("a document that crashes the replay too is left out, and the server keeps working for the others", async () => {
+  const real = await createEngine(wasm)
+  let crashNext = false
+  // Once armed, opening a document that holds POISON crashes the engine.
+  let armed = false
+  const poisoned = (messages) =>
+    messages.some((m) => m.method === "textDocument/didOpen" && m.params.textDocument.text.includes("POISON"))
+  const engine = {
+    call(op, payload) {
+      if (op === "lsp" && (crashNext || (armed && poisoned(payload.messages)))) {
+        crashNext = false
+        throw Object.assign(new Error("unreachable"), { crashed: true })
+      }
+      return real.call(op, payload)
+    },
+  }
+  const crashes = []
+  const host = new EmbeddedServer(engine, { crash: (e) => crashes.push(e.message) })
+  await host.initialize({ processId: null, rootUri: null, capabilities: {} })
+  const [a, b, c] = ["a", "b", "c"].map((n) => `file:///work/${n}.ttl`)
+  host.notify("textDocument/didOpen", { textDocument: { uri: a, languageId: "turtle", version: 1, text: TEXT } })
+  host.notify("textDocument/didOpen", { textDocument: { uri: b, languageId: "turtle", version: 1, text: "# POISON\n" + TEXT } })
+  host.notify("textDocument/didOpen", { textDocument: { uri: c, languageId: "turtle", version: 1, text: "ex:x ex:y .\n" } })
+  await host.settle()
+  // Where and what, not the data (it counts the files using a namespace).
+  const seen = (uri) => host.diagnostics(uri).map((d) => [d.range.start.line, d.message])
+  const before = { a: seen(a), c: seen(c) }
+  assert.ok(before.c.length > 0)
+
+  armed = true
+  crashNext = true
+  await assert.rejects(host.request("textDocument/hover", { textDocument: { uri: a }, position: { line: 0, character: 1 } }), /unreachable/)
+  assert.equal(crashes.length, 1)
+  assert.match(crashes[0], /b\.ttl/)
+  assert.deepEqual([...host.open.keys()], [a, c])
+  await host.settle()
+  assert.deepEqual(seen(a), before.a)
+  assert.deepEqual(seen(c), before.c)
+  assert.deepEqual(host.diagnostics(b), [])
+  const fmt = await host.request("textDocument/formatting", { textDocument: { uri: c }, options: { tabSize: 4, insertSpaces: true } })
+  assert.ok(Array.isArray(fmt))
+  assert.equal(crashes.length, 1)
+})
