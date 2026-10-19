@@ -110,7 +110,7 @@ test("a subquery's own variable is a different variable from the outer one", asy
   await q.withScratch(scoped, async ({ uri, text }) => {
     // ?n inside the subquery is not projected: it is not the outer ?n.
     const outer = await req("textDocument/documentHighlight", uri, positionOf(text, "?p ex:name ?n", 12))
-    assert.deepEqual(outer.map((h) => h.range.start.line).sort(), [1, 2, 10], texts(text, outer.map((h) => h.range)).join(" | "))
+    assert.deepEqual(outer.map((h) => h.range.start.line).sort((a, b) => a - b), [1, 2, 10], texts(text, outer.map((h) => h.range)).join(" | "))
     const inner = await req("textDocument/documentHighlight", uri, positionOf(text, "?o ex:name ?n", 12))
     assert.deepEqual(inner.map((h) => h.range.start.line), [6])
   })
