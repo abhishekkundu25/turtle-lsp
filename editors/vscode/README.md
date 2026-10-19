@@ -9,6 +9,8 @@ by [turtle-lsp](https://github.com/abhishekkundu25/turtle-lsp), a language
 server written in Rust: a keystroke in a 30,000-line file gets fresh
 diagnostics in about 9 ms.
 
+Try it first in your browser, with nothing to install: [RDF Editor](https://abhishekkundu25.github.io/turtle-lsp/).
+
 Passes the W3C test suites: Turtle, TriG, N-Triples and N-Quads 1137/1137,
 SPARQL 1.1 and 1.2 syntax 425/426, SHACL Core 98/98, SHACL-SPARQL 23/23.
 

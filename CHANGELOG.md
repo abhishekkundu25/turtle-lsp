@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1 — 2026-10-20
+
+### Features
+
+- Hover's "Described in core.ttl:18" is a link that opens the file at that
+  line.
+- **Try it in the browser**: the [RDF Editor](https://abhishekkundu25.github.io/turtle-lsp/) runs this server,
+  compiled to WebAssembly, in a browser tab: a VS Code-like editor with the
+  explorer, Problems, SHACL as you type, rename across files, quick fixes,
+  Vim mode and a dark or light theme. Nothing is uploaded. A toolbox page
+  formats, validates and checks files without the editor. The server's
+  behaviour is unchanged.
+
 ## 0.5.0 — 2026-10-19
 
 ### Features

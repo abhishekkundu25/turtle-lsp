@@ -10,6 +10,9 @@ reads TriG, N-Triples and N-Quads, and SPARQL queries and updates.
 A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
 the whole file formats in about 5 ms. The server starts in a few milliseconds.
 
+**[Try it in your browser](https://abhishekkundu25.github.io/turtle-lsp/)**: the same server, compiled to
+WebAssembly, in an editor that runs entirely in the tab. Nothing is uploaded.
+
 It is the only Turtle language server we know of that checks itself against
 the full W3C test suites and real public ontologies; see
 [Tested against the real world](#tested-against-the-real-world).
