@@ -1,6 +1,6 @@
 # RDF Editor: VS Code parity (iterations 3–5)
 
-Status: batch 1 done; batches 2 and 3 to do. On branch `web-showcase` (not merged to main).
+Status: batches 1 and 2 done; batch 3 to do. On branch `web-showcase` (not merged to main).
 Builds on `docs/specs/web-editor.md`.
 
 ## Problem Statement
@@ -176,5 +176,40 @@ Verification on the merged branch:
 - Native: `cargo test` 195 passed, clippy clean on both crates, fmt clean,
   Node end-to-end 490/490 (Neovim included); benchmark in line with the
   previous runs (didOpen 18.8 ms, keystroke 4.3 ms, documentSymbol 11.2 ms).
+- Resource hygiene: no worktrees, slice branches, processes or temp
+  directories left.
+
+## Batch 2 record (2026-10-19)
+
+Slices: `settings` (agent; Settings module, its styles and tests, wiring)
+and the editor.js lock work done by the orchestrator (save behaviour for
+folders opened in place, split editor). The settings slice conflicted in
+editor.js (state, persistence, start-up) and was resolved by keeping both.
+
+Departures from the plan:
+- A file's on-disk state comes from the folder opened in place (its handle
+  is kept with the workspace), not from a handle per file; saving finds or
+  creates the file's handle. A file moved or renamed within such a folder
+  is new at its new path when saved; the old file stays on disk, and
+  deleting a file removes it from the workspace only.
+- The status-bar Labels button names the mode (Opaque / All / Off) and
+  switches between All and the other chosen mode; the Settings select and
+  the button stay in sync.
+- After an engine crash the host replays the last settings with the
+  documents (found in review), and Ctrl+S sends `didSave` for every file,
+  so SHACL validates on save when "Validate While Typing" is off.
+- Ctrl+\ is also handled by the page (headless Chrome does not deliver it
+  to Monaco's binding); splitting twice only refocuses the second group.
+- Enter after naming a new file no longer types a newline into it (found
+  by the Save All test).
+- The Search and Settings tests focus a group's editor (the single
+  `#editor` container became groups).
+
+Verification on the merged branch:
+- Web: engine 24, toolbox 11, LSP parity 13, host 1, editor 20, search 6,
+  settings 7: 82/82. One split-test failure seen once while another slice
+  ran Chrome in parallel; 7 later runs green.
+- Native: no Rust or engine change in this batch (diff against the batch 1
+  record is empty), so the batch 1 native results stand.
 - Resource hygiene: no worktrees, slice branches, processes or temp
   directories left.
