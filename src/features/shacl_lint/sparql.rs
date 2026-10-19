@@ -247,7 +247,8 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
             push(out, lit.span, SYNTAX, why);
             continue;
         }
-        let query = match parser.clone().parse_query(value) {
+        let fixed = validate::text_for_spargebra(value, &crate::sparql::lexer::tokenize(value));
+        let query = match parser.clone().parse_query(&fixed) {
             Ok(q) => q,
             Err(_) => {
                 syntax_error(&lit, parser, out);

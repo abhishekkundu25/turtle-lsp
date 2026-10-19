@@ -19,6 +19,7 @@
 use super::{Token, TokenKind};
 use crate::syntax::Span;
 use spargebra::SparqlParser;
+use std::borrow::Cow;
 
 /// Room after the text for the parser's keyword lookahead; longer than any
 /// SPARQL keyword.
@@ -76,6 +77,58 @@ fn parse_error(parser: SparqlParser, text: &str, update: bool) -> Option<String>
     }
 }
 
+/// The text of token `t` as `spargebra` is given it: the dots of a prefixed
+/// name's local part escaped (`ec:1.1.1.353` becomes `ec:1\.1\.1\.353`, the
+/// same IRI). `spargebra` 0.4 rejects a local name with two dots or more,
+/// which the grammar allows (real queries use EC numbers so).
+pub fn token_for_spargebra<'a>(text: &'a str, t: &Token) -> Cow<'a, str> {
+    let written = &text[t.span.start as usize..t.span.end as usize];
+    if t.kind != TokenKind::PName {
+        return Cow::Borrowed(written);
+    }
+    let Some(colon) = written.find(':') else {
+        return Cow::Borrowed(written);
+    };
+    let local = &written[colon + 1..];
+    let mut out = String::new();
+    let mut escaped = false;
+    for (i, c) in local.char_indices() {
+        if c == '.' && !escaped {
+            if out.is_empty() {
+                out.push_str(&written[..colon + 1 + i]);
+            }
+            out.push_str("\\.");
+        } else if !out.is_empty() {
+            out.push(c);
+        }
+        escaped = c == '\\' && !escaped;
+    }
+    if out.is_empty() {
+        Cow::Borrowed(written)
+    } else {
+        Cow::Owned(out)
+    }
+}
+
+/// `text` (tokenized as `tokens`) as `spargebra` is given it: every token
+/// through [`token_for_spargebra`]; borrowed when no token changes.
+pub fn text_for_spargebra<'a>(text: &'a str, tokens: &[Token]) -> Cow<'a, str> {
+    let mut out = String::new();
+    let mut copied = 0;
+    for t in tokens {
+        if let Cow::Owned(fixed) = token_for_spargebra(text, t) {
+            out.push_str(&text[copied..t.span.start as usize]);
+            out.push_str(&fixed);
+            copied = t.span.end as usize;
+        }
+    }
+    if copied == 0 {
+        return Cow::Borrowed(text);
+    }
+    out.push_str(&text[copied..]);
+    Cow::Owned(out)
+}
+
 /// Parses `text` (tokenized as `tokens`) with `parser` as a query or an
 /// update; `None` when it parses, else the error located on the token where
 /// the text stops making sense.
@@ -85,19 +138,20 @@ pub fn check_tokens(
     parser: SparqlParser,
     update: bool,
 ) -> Option<SyntaxError> {
-    parse_error(parser.clone(), text, update)?;
+    let fixed = text_for_spargebra(text, tokens);
+    parse_error(parser.clone(), &fixed, update)?;
     // The tokens, each followed by room: (start in the copy, start in text).
     let mut spaced = String::with_capacity(text.len() + tokens.len() * (PAD.len() + 1));
     let mut map: Vec<(u32, u32)> = Vec::with_capacity(tokens.len());
     for t in tokens.iter().filter(|t| t.kind != TokenKind::Comment) {
         map.push((spaced.len() as u32, t.span.start));
-        spaced.push_str(&text[t.span.start as usize..t.span.end as usize]);
+        spaced.push_str(&token_for_spargebra(text, t));
         spaced.push_str(PAD);
     }
     let e = locate(&spaced, parser.clone(), update);
     if e.message.is_empty() {
         // The copy parses (a token the lexer reads differently): fall back.
-        return Some(locate(text, parser, update));
+        return Some(locate(&fixed, parser, update));
     }
     // Offsets in the copy are inside a token (spans never start in room).
     let back = |q: u32| {

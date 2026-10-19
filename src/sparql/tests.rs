@@ -856,3 +856,31 @@ fn too_complex_names_deep_nesting() {
     assert!(crate::sparql::too_complex(&deep).is_some());
     assert!(crate::sparql::too_complex("SELECT * { { ?s ?p ?o } }").is_none());
 }
+
+#[test]
+fn local_names_with_several_dots_are_valid() {
+    // spargebra 0.4 rejects them; the grammar allows them (EC numbers).
+    for text in [
+        "PREFIX ec: <http://e/> SELECT * { ?s ?p ec:1.1.1.353 }",
+        "PREFIX ec: <http://e/> SELECT * { ?s ?p ec:3.-.-.- }",
+        "PREFIX ec: <http://e/> SELECT * { ?s ?p ec:a\\.b.c }",
+    ] {
+        let d = Document::parse(text, &PrefixMap::default(), None);
+        assert!(d.diagnostics().is_empty(), "{text}: {:?}", d.diagnostics());
+        let out = crate::sparql::format(text, &PrefixMap::default(), None, &Default::default())
+            .unwrap_or_else(|e| panic!("{text}: {e}"));
+        assert!(out.contains("ec:"), "{out}");
+    }
+    let refs = Document::parse(
+        "PREFIX ec: <http://e/> SELECT * { ?s ?p ec:1.1.1.353 }",
+        &PrefixMap::default(),
+        None,
+    );
+    let iris: Vec<_> = refs
+        .structure()
+        .refs
+        .iter()
+        .filter_map(|r| r.iri.clone())
+        .collect();
+    assert!(iris.contains(&"http://e/1.1.1.353".to_string()), "{iris:?}");
+}

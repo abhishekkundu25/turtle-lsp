@@ -261,6 +261,8 @@ pub fn prepare(
     if let Some(why) = crate::sparql::too_complex(&text) {
         return Err(why);
     }
+    let text =
+        crate::sparql::validate::text_for_spargebra(&text, &crate::sparql::lexer::tokenize(&text));
     let mut query = parser.parse_query(&text).map_err(|e| e.to_string())?;
     let vars: Vec<Variable> = pre
         .names

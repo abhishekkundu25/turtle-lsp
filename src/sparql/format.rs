@@ -193,6 +193,8 @@ fn algebra(doc: &Document, prefixes: &PrefixMap, base: Option<&str>) -> Result<S
             }
         }
     }
+    // Blanking kept every byte position, so the tokens still fit the text.
+    let text = super::validate::text_for_spargebra(&text, doc.tokens());
     let printed = if st.is_update {
         parser.parse_update(&text).map(|u| u.to_string())
     } else {
