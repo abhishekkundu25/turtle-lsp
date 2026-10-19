@@ -459,9 +459,11 @@ function applyFix(name, di, fi) {
   setTexts(texts)
 }
 
+// Fix the SPARQL or the RDF files, with the others as context: the fixes
+// are the ones analysis showed, which knew every file.
 async function fixAll(which) {
-  const names = (which === "sparql" ? sparqlFiles() : rdfFiles()).map((f) => f.name)
-  const files = S.files.filter((f) => names.includes(f.name))
+  const names = new Set((which === "sparql" ? sparqlFiles() : rdfFiles()).map((f) => f.name))
+  const files = S.files.map((f) => ({ name: f.name, text: f.text, context: !names.has(f.name) }))
   setBusy(true)
   try {
     const { ok } = await ask("fix_all", files)

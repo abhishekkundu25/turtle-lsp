@@ -39,6 +39,7 @@ pub fn handle(request: &str) -> String {
                 (Some(name), Some(text)) => Ok(File {
                     name: name.to_string(),
                     text: text.to_string(),
+                    context: f["context"].as_bool().unwrap_or(false),
                 }),
                 _ => Err("each file needs a name and a text".to_string()),
             })
@@ -103,6 +104,16 @@ pub fn error(message: &str) -> String {
 struct File {
     name: String,
     text: String,
+    /// Context only (`"context": true`): what the file says counts, but
+    /// "fix all" neither fixes it nor returns it.
+    context: bool,
+}
+
+/// The imports the input does not declare itself: in the order
+/// [`imports::unresolved_without_loading`] gives them, and each with its status.
+struct Unresolved {
+    iris: Vec<String>,
+    status: HashMap<String, imports::Status>,
 }
 
 /// The input as an editor workspace.
@@ -111,6 +122,9 @@ struct Input {
     /// (name, URI) per file, in input order.
     uris: Vec<(String, String)>,
     settings: Settings,
+    /// [`Input::unresolved`], computed once: the texts never change under
+    /// an `Input` (each round of "fix all" makes a new one).
+    unresolved: Option<Unresolved>,
 }
 
 impl Input {
@@ -118,7 +132,7 @@ impl Input {
         let mut ws = Workspace::new(Vec::new(), PrefixMap::default());
         let uris: Vec<(String, String)> = files
             .iter()
-            .map(|f| (f.name.clone(), format!("file:///work/{}", encode(&f.name))))
+            .map(|f| (f.name.clone(), uri_of(&f.name)))
             .collect();
         for (f, (_, uri)) in files.iter().zip(&uris) {
             ws.open_doc(uri.clone(), f.text.clone(), 1);
@@ -127,6 +141,7 @@ impl Input {
             ws,
             uris,
             settings: Settings::default(),
+            unresolved: None,
         }
     }
 
@@ -138,15 +153,20 @@ impl Input {
     }
 
     /// The imports the input does not declare itself, none of which is
-    /// loaded here, each with its note.
-    fn unresolved(&mut self) -> HashMap<String, imports::Status> {
-        imports::unresolved_without_loading(self.ws.knowledge())
-            .into_iter()
-            .map(|iri| {
-                let note = imports::unloaded_note(&iri);
-                (iri, imports::Status::Unresolved(note))
-            })
-            .collect()
+    /// loaded here.
+    fn unresolved(&mut self) -> &Unresolved {
+        let ws = &mut self.ws;
+        self.unresolved.get_or_insert_with(|| {
+            let iris = imports::unresolved_without_loading(ws.knowledge());
+            let status = iris
+                .iter()
+                .map(|iri| {
+                    let note = imports::unloaded_note(iri);
+                    (iri.clone(), imports::Status::Unresolved(note))
+                })
+                .collect();
+            Unresolved { iris, status }
+        })
     }
 
     /// Diagnostics of `uri` as the server computes them once indexed,
@@ -163,7 +183,7 @@ impl Input {
             return Vec::new();
         };
         let mut d = diagnostics::diagnostics_with(&a, self.ws.knowledge(), ENC, &opts);
-        let unresolved = self.unresolved();
+        let unresolved = &self.unresolved().status;
         d.extend(imports::diagnostics_with(&a, ENC, |iri| {
             unresolved.get(iri)
         }));
@@ -191,7 +211,7 @@ impl Input {
             enc: ENC,
             // Nothing is loaded here, so every import the input does not
             // declare itself is missing, and results it could change soften.
-            unresolved: imports::unresolved_without_loading(self.ws.knowledge()),
+            unresolved: self.unresolved().iris.clone(),
         };
         (
             true,
@@ -371,6 +391,11 @@ fn analyse(files: &[File]) -> Value {
 /// Apply every preferred fix, round after round, until none is left. A fix
 /// that touches text another fix of the round touches (or inserts at the
 /// same place) waits for the next round, analysed afresh.
+///
+/// Files marked context are part of the workspace but are not fixed: their
+/// own problems are skipped, a fix that would edit one is not applied, and
+/// they are left out of the answer. Without such files every file is fixed
+/// and returned.
 fn fix_all(mut files: Vec<File>) -> Value {
     let mut applied = 0;
     for _ in 0..MAX_FIX_ROUNDS {
@@ -378,7 +403,10 @@ fn fix_all(mut files: Vec<File>) -> Value {
         let uris = input.uris.clone();
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
-        for (_, uri) in &uris {
+        for (f, (_, uri)) in files.iter().zip(&uris) {
+            if f.context {
+                continue;
+            }
             for d in input.diagnostics(uri) {
                 let Some(fix) = input
                     .fixes(uri, &d)
@@ -390,6 +418,9 @@ fn fix_all(mut files: Vec<File>) -> Value {
                 let Some(edits) = edits_of(&fix, &files) else {
                     continue;
                 };
+                if edits.iter().any(|(i, ..)| files[*i].context) {
+                    continue;
+                }
                 let clash = edits.iter().any(|(i, s, e, _)| {
                     taken
                         .iter()
@@ -412,6 +443,7 @@ fn fix_all(mut files: Vec<File>) -> Value {
     }
     let files: Vec<Value> = files
         .iter()
+        .filter(|f| !f.context)
         .map(|f| json!({ "name": f.name, "text": f.text }))
         .collect();
     json!({ "files": files, "applied": applied })
@@ -449,14 +481,21 @@ fn byte_offset(text: &str, pos: Position) -> Option<usize> {
     Some(start + line.len())
 }
 
-/// `name` as a URI path segment.
-fn encode(name: &str) -> String {
-    let mut out = String::new();
-    for b in name.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
+/// The URI a file is opened at: its name as a path below `file:///work/`,
+/// each '/'-separated segment escaped as JavaScript's `encodeURIComponent`
+/// escapes it, so the editor (web/app/editor.js) opens a file at the same URI.
+fn uri_of(name: &str) -> String {
+    let mut out = String::from("file:///work/");
+    for (i, segment) in name.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        for b in segment.bytes() {
+            if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
         }
     }
     out

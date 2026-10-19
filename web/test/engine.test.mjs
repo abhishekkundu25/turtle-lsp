@@ -277,6 +277,39 @@ test("fix all on input with nothing to fix changes nothing", () => {
   assert.deepEqual(res.files, files)
 })
 
+test("files in folders are opened at their paths, so a folder's prefixes file declares its prefixes", () => {
+  const files = [
+    { name: "vocab/prefixes.ttl", text: "@prefix ex: <https://e.org/> .\n" },
+    { name: "vocab/a.ttl", text: "ex:a rdfs:label ex:c .\n" },
+  ]
+  const a = fileOf(engine.call("analyse", { files }), "vocab/a.ttl")
+  assert.deepEqual(
+    withCode(a, "undeclared-prefix").map((d) => covered(files[1].text, d.range)),
+    ["rdfs:label"],
+  )
+  // The fix for rdfs: comes back under the file's name; ex: needs none.
+  const fixed = fileOf(engine.call("fix_all", { files }), "vocab/a.ttl").text
+  assert.match(fixed, /^@prefix rdfs: /m)
+  assert.doesNotMatch(fixed, /@prefix ex:/)
+})
+
+test("fix all applies only the fixes of the files not marked context, using what the context files say", () => {
+  const onto = {
+    name: "onto.ttl",
+    text: "@prefix ex: <https://e.org/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n\nex:Person a owl:Class .\nex:Organisation a owl:Class .\nex:name a owl:DatatypeProperty .\n",
+    context: true,
+  }
+  const query = { name: "q.rq", text: "PREFIX ex: <https://e.org/>\nSELECT ?p WHERE { ?p a ex:Persn }\n" }
+  const res = engine.call("fix_all", { files: [onto, query] })
+  assert.equal(res.applied, 1)
+  // Context files are not returned: their unused skos prefix stays theirs.
+  assert.deepEqual(
+    res.files.map((f) => f.name),
+    ["q.rq"],
+  )
+  assert.match(fileOf(res, "q.rq").text, /\?p a ex:Person \}/)
+})
+
 // --- robustness ---------------------------------------------------------------------
 
 test("deeply nested input is refused, not a crash", () => {

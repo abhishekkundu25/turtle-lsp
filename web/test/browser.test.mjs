@@ -103,6 +103,24 @@ test("apply all fixes every fixable problem in every file", async () => {
   }
 })
 
+test("apply all fixes on the SPARQL side uses the RDF files' terms", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await chooseFile(page, "people.rq")
+    await editor(page).fill((await editor(page).inputValue()).replace("a ex:Person", "a ex:Persn"))
+    await settled(page)
+    await tab(page, "SPARQL").click()
+    await page.getByText("Did you mean 'ex:Person'?").waitFor()
+    await page.getByRole("button", { name: /^Apply all \d+ fixes$/ }).click()
+    await settled(page)
+    assert.match(await editor(page).inputValue(), /\?p a ex:Person ;/)
+    assert.match(await editor(page).inputValue(), /^PREFIX foaf: /m)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("clicking a problem shows its file and line in the input", async () => {
   const { page, close } = await open()
   try {

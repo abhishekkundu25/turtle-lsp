@@ -1,7 +1,9 @@
 //! turtle-lsp in the browser: the engine of the RDF Toolbox (web/app).
 //!
 //! The page sends a JSON request, `{"op": ..., "files": [{"name", "text"}]}`,
-//! and reads back `{"ok": ...}` or `{"error": "..."}`. The interface is four
+//! and reads back `{"ok": ...}` or `{"error": "..."}`. For `fix_all` a file
+//! may also say `"context": true`: it informs the fixes but is not fixed or
+//! returned. The interface is four
 //! plain functions over the module's memory (no generated glue):
 //! `tl_alloc(len)` reserves room for the request, `tl_call(ptr, len)` runs it
 //! (taking ownership of that room) and returns the answer's length, and
