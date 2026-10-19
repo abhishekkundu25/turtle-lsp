@@ -101,6 +101,9 @@ pub struct Workspace {
     knowledge: Knowledge,
     /// Directory -> prefixes from the nearest prefixes.ttl (None = no file found).
     prefix_cache: FxHashMap<PathBuf, Arc<PrefixMap>>,
+    /// The same for documents without a file path (the browser build): URI
+    /// directory -> prefixes from the nearest open prefixes.ttl.
+    uri_prefix_cache: FxHashMap<String, Arc<PrefixMap>>,
     /// Where fetched imports are cached (canonical), if there is a cache.
     import_cache: Option<PathBuf>,
 }
@@ -453,7 +456,7 @@ impl Workspace {
             return Arc::new(PrefixMap::default());
         }
         let Some(path) = uri_to_path(uri) else {
-            return Arc::new(self.settings_prefixes.clone());
+            return self.open_prefixes_by_uri(uri);
         };
         if path.file_name().is_some_and(|n| n == PREFIX_FILE) {
             return Arc::new(self.settings_prefixes.clone());
@@ -482,6 +485,44 @@ impl Workspace {
         map
     }
 
+    /// Prefixes for a document without a file path (the browser build): the
+    /// nearest open prefixes.ttl in the URI's directory or an ancestor, over
+    /// the settings prefixes. The native build always has the file path.
+    fn open_prefixes_by_uri(&mut self, uri: &str) -> Arc<PrefixMap> {
+        let url = url::Url::parse(uri)
+            .ok()
+            .filter(|u| cfg!(target_arch = "wasm32") && u.scheme() == "file");
+        let Some(dir) = url.as_ref().and_then(|u| u.join("./").ok()) else {
+            return Arc::new(self.settings_prefixes.clone());
+        };
+        if file_uri_name(uri).is_some_and(|n| n == PREFIX_FILE) {
+            return Arc::new(self.settings_prefixes.clone());
+        }
+        let key = dir.to_string();
+        if let Some(m) = self.uri_prefix_cache.get(&key) {
+            return m.clone();
+        }
+        let mut map = self.settings_prefixes.clone();
+        let mut cur = dir;
+        loop {
+            let file = cur.join(PREFIX_FILE).map(|u| u.to_string());
+            if let Some(d) = file.ok().and_then(|f| self.open.get(&f)) {
+                let parsed = crate::syntax::parse(&d.text, &PrefixMap::default(), Syntax::Turtle);
+                for p in parsed.prefixes {
+                    map.insert(p.name, p.iri.to_string());
+                }
+                break;
+            }
+            match cur.join("../") {
+                Ok(up) if up != cur => cur = up,
+                _ => break,
+            }
+        }
+        let map = Arc::new(map);
+        self.uri_prefix_cache.insert(key, map.clone());
+        map
+    }
+
     /// The prefixes.ttl that supplies prefixes to files in `dir`, if any.
     pub fn find_prefix_file(&self, dir: &Path) -> Option<PathBuf> {
         find_prefix_file(&self.roots, dir)
@@ -490,6 +531,7 @@ impl Workspace {
     /// An open prefixes.ttl is being edited: open documents re-resolve.
     pub fn invalidate_open_prefixes(&mut self) {
         self.prefix_cache.clear();
+        self.uri_prefix_cache.clear();
         for d in self.open.values_mut() {
             d.analysis = None;
             d.query = None;

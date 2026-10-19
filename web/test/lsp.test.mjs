@@ -163,6 +163,72 @@ test("type hierarchy", async () => {
   if (items?.length) await same("typeHierarchy/supertypes", { item: items[0] })
 })
 
+// --- prefixes.ttl ------------------------------------------------------------------------
+
+test("prefixes.ttl supplies prefixes as natively, and editing it re-diagnoses", async () => {
+  const project = {
+    "prefixes.ttl": "@prefix ex: <https://example.org/def/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n",
+    // The nearest prefixes.ttl alone applies (as natively): sub/ repeats ex:.
+    "sub/prefixes.ttl": "@prefix ex: <https://example.org/def/> .\n@prefix sx: <https://example.org/sub/> .\n",
+    "a.ttl": 'ex:a rdfs:label "A" .\n',
+    "sub/b.ttl": "ex:b ex:p sx:c .\n",
+  }
+  const pdir = tempDir("turtle-web-prefixes-")
+  for (const [name, text] of Object.entries(project)) {
+    fs.mkdirSync(path.dirname(path.join(pdir, name)), { recursive: true })
+    fs.writeFileSync(path.join(pdir, name), text)
+  }
+  const root = uriOf(pdir)
+  const n = await startServer({ cwd: pdir })
+  const w = new EmbeddedServer(await createEngine(fs.readFileSync(path.join(here, "..", "app", "engine.wasm"))))
+  try {
+    await w.initialize({ processId: null, rootUri: null, capabilities: {} })
+    for (const [name, text] of Object.entries(project)) {
+      n.open(`${root}/${name}`, text)
+      w.notify("textDocument/didOpen", { textDocument: { uri: `${WORK}/${name}`, languageId: "turtle", version: 1, text } })
+    }
+    await w.settle()
+    // Native diagnostics for `name` once `ok` holds (they may be republished).
+    const nativeUntil = async (name, ok) => {
+      const end = Date.now() + 10_000
+      let d = await n.diagnosticsFor(`${root}/${name}`)
+      while (!ok(d) && Date.now() < end) {
+        await new Promise((r) => setTimeout(r, 50))
+        d = await n.diagnosticsFor(`${root}/${name}`)
+      }
+      return JSON.parse(JSON.stringify(d).replaceAll(root, WORK))
+    }
+    const undeclared = (d) => d.filter((x) => x.code === "undeclared-prefix")
+    for (const name of Object.keys(project)) {
+      const got = w.diagnostics(`${WORK}/${name}`)
+      assert.deepEqual(got, await nativeUntil(name, (d) => undeclared(d).length === 0), name)
+      assert.deepEqual(undeclared(got), [], name)
+    }
+
+    // Remove ex: from the root prefixes.ttl: a.ttl now uses an undeclared
+    // prefix; sub/b.ttl, under sub/prefixes.ttl, does not.
+    const edited = "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+    n.change(`${root}/prefixes.ttl`, edited)
+    w.notify("textDocument/didChange", { textDocument: { uri: `${WORK}/prefixes.ttl`, version: 2 }, contentChanges: [{ text: edited }] })
+    await w.settle()
+    const a = w.diagnostics(`${WORK}/a.ttl`)
+    assert.ok(undeclared(a).some((d) => d.message.includes("'ex:'")), JSON.stringify(a))
+    assert.deepEqual(a, await nativeUntil("a.ttl", (d) => undeclared(d).length > 0))
+    assert.deepEqual(undeclared(w.diagnostics(`${WORK}/sub/b.ttl`)), [])
+    assert.deepEqual(w.diagnostics(`${WORK}/sub/b.ttl`), await nativeUntil("sub/b.ttl", () => true))
+
+    // In the browser a closed prefixes.ttl is gone: sub/b.ttl falls back to
+    // the root one, which no longer declares ex:, and sx: was only in sub/.
+    w.notify("textDocument/didClose", { textDocument: { uri: `${WORK}/sub/prefixes.ttl` } })
+    await w.settle()
+    const b = undeclared(w.diagnostics(`${WORK}/sub/b.ttl`)).map((d) => d.message.match(/'(\w*):'/)?.[1])
+    assert.deepEqual([...new Set(b)].sort(), ["ex", "sx"])
+  } finally {
+    await n.stop()
+    fs.rmSync(pdir, { recursive: true, force: true })
+  }
+})
+
 // --- the embedded driver --------------------------------------------------------------------
 
 test("an unknown request is the native server's error, and the server keeps answering", async () => {
