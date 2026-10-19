@@ -82,6 +82,13 @@ pub use structure::{
 use crate::features::format::Options;
 use crate::syntax::{PrefixMap, Span};
 
+/// Why `text` must not be given to `spargebra`, if it must not: nesting or
+/// `OPTIONAL` / `MINUS` clauses deep enough to overflow its recursion. For
+/// callers outside documents (SHACL-SPARQL queries).
+pub fn too_complex(text: &str) -> Option<String> {
+    diagnostics::too_complex(text, &lexer::tokenize(text)).map(|(_, message)| message)
+}
+
 /// How serious a diagnostic is. The codes and levels match the Turtle ones
 /// where the meaning is the same.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

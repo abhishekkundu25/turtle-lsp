@@ -149,6 +149,17 @@ pub(super) fn diagnostics(
             }
         }
     }
+    // `spargebra` reads some words no SPARQL token matches (`GROUPBY`,
+    // `CONSTRUCTWHERE`): the lexer's error token is the error then.
+    if structural.is_empty()
+        && !out.iter().any(|d| d.code == "syntax")
+        && let Some(t) = tokens.iter().find(|t| t.kind == TokenKind::Error)
+    {
+        out.push(syntax(
+            t.span,
+            format!("SPARQL syntax error: unexpected '{}'", t.text(text)),
+        ));
+    }
     out.extend(structural);
 
     prefix_lints(st, &mut out);
@@ -168,7 +179,7 @@ const MAX_OPTIONALS: u32 = 4096;
 /// Why `spargebra` is not given the text, and where: the bracket that opens
 /// nesting level [`MAX_NESTING`] + 1, or the `OPTIONAL` / `MINUS` past
 /// [`MAX_OPTIONALS`].
-fn too_complex(text: &str, tokens: &[Token]) -> Option<(Span, String)> {
+pub(crate) fn too_complex(text: &str, tokens: &[Token]) -> Option<(Span, String)> {
     let mut depth = 0u32;
     let mut optionals = 0u32;
     for t in tokens {

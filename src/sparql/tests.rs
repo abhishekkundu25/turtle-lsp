@@ -832,3 +832,27 @@ fn valid_documents_have_no_problems() {
         assert!(d.tokens().iter().all(|t| t.kind != TokenKind::Error));
     }
 }
+
+#[test]
+fn a_glued_keyword_spargebra_accepts_is_still_an_error() {
+    for text in [
+        "SELECT ?x WHERE { ?x ?p ?o } GROUPBY ?x",
+        "CONSTRUCTWHERE { ?s ?p ?o }",
+    ] {
+        let d = Document::parse(text, &PrefixMap::default(), None);
+        assert!(
+            d.diagnostics()
+                .iter()
+                .any(|x| x.code == "syntax" && x.level == Level::Error),
+            "{text}: {:?}",
+            d.diagnostics()
+        );
+    }
+}
+
+#[test]
+fn too_complex_names_deep_nesting() {
+    let deep = format!("SELECT * {}{}", "{ ".repeat(300), "}".repeat(300));
+    assert!(crate::sparql::too_complex(&deep).is_some());
+    assert!(crate::sparql::too_complex("SELECT * { { ?s ?p ?o } }").is_none());
+}

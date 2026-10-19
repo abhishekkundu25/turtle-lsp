@@ -258,6 +258,9 @@ pub fn prepare(
             .with_prefix(name, ns)
             .map_err(|e| format!("namespace <{ns}> of prefix {name}: {e}"))?;
     }
+    if let Some(why) = crate::sparql::too_complex(&text) {
+        return Err(why);
+    }
     let mut query = parser.parse_query(&text).map_err(|e| e.to_string())?;
     let vars: Vec<Variable> = pre
         .names

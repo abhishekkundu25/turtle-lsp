@@ -243,6 +243,10 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
             }
         }
         let lit = Lit::new(&a.text, t.o_span, value);
+        if let Some(why) = crate::sparql::too_complex(value) {
+            push(out, lit.span, SYNTAX, why);
+            continue;
+        }
         let query = match parser.clone().parse_query(value) {
             Ok(q) => q,
             Err(_) => {
