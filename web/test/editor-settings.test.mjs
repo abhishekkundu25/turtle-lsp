@@ -70,7 +70,7 @@ test("Ctrl+, opens Settings, the search box filters, Escape closes", async () =>
     const search = page.getByRole("searchbox", { name: "Search settings" })
     assert.equal(await search.evaluate((el) => el === document.activeElement), true, "Ctrl+, focuses the search box")
     const all = await settingsPage(page).locator(".stg-item:visible").count()
-    assert.equal(all, 13)
+    assert.equal(all, 15)
     await search.fill("shacl")
     const titles = await settingsPage(page).locator(".stg-item:visible .stg-title b").allTextContents()
     assert.deepEqual(titles, ["Enabled", "Validate While Typing", "Max Triples"])

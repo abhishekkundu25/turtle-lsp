@@ -6,6 +6,7 @@
 <title>RDF Editor</title>
 <meta name="description" content="Edit Turtle, TriG, N-Triples, N-Quads and SPARQL with turtle-lsp running in this tab. Nothing is uploaded.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%231d2330%22/%3E%3Ctext x=%2216%22 y=%2221%22 font-family=%22monospace%22 font-size=%2212%22 font-weight=%22700%22 fill=%22white%22 text-anchor=%22middle%22%3Ettl%3C/text%3E%3C/svg%3E">
+<script>try { const t = localStorage.getItem("rdf-editor-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t } catch {}</script>
 <link rel="stylesheet" href="editor.css">
 <link rel="stylesheet" href="search.css">
 <link rel="stylesheet" href="settings.css">
@@ -76,6 +77,7 @@
     <button class="st" id="status-problems" title="Problems"><span class="codicon codicon-error"></span><span id="status-errors">0</span><span class="codicon codicon-warning"></span><span id="status-warnings">0</span></button>
     <span class="st" id="status-shacl-wrap" title="SHACL violations"><span class="codicon codicon-shield"></span><span id="status-shacl">0</span> SHACL</span>
     <span class="st" id="status-busy" hidden><span class="codicon codicon-loading codicon-modifier-spin"></span> Analysing</span>
+    <span class="st" id="status-vim" hidden></span>
     <span class="sp"></span>
     <button class="st" id="status-labels" title="Show rdfs:label next to every term (Alt+L)">Labels: Off</button>
     <span class="st" id="status-pos"></span>

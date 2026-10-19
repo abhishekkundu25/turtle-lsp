@@ -31,6 +31,12 @@ const SETTINGS = [
   },
   { key: "editor.minimap.enabled", group: "Editor", cat: "Minimap", title: "Enabled", type: "bool", def: true, desc: "Show the minimap." },
   { key: "editor.fontSize", group: "Editor", cat: "Editor", title: "Font Size", type: "number", def: 13, min: 6, max: 100, desc: "The font size in pixels." },
+  { key: "editor.vimMode", group: "Editor", cat: "Editor", title: "Vim Mode", type: "bool", def: false, desc: "Edit with Vim keys. The mode and the : command line show in the status bar; :w saves, :wa saves all, :q closes the tab, :e opens a file." },
+  {
+    key: "workbench.colorTheme", group: "Workbench", cat: "Appearance", title: "Color Theme", type: "enum", def: "auto",
+    options: [["auto", "Follow the system's light or dark setting"], ["light", "Light"], ["dark", "Dark"]],
+    desc: "The colours of the page and the editors.",
+  },
 ]
 const BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]))
 const label = (s) => (s.cat ? `${s.cat}: ${s.title}` : s.title)
@@ -51,10 +57,11 @@ function valid(s, v) {
  * @param {HTMLElement} [o.opener] a button that opens the page
  * @param {object} [o.saved] the object `values()` returned in an earlier visit
  * @param {() => void} o.onChange called after every change (to keep the values and redraw the status bar)
+ * @param {Record<string, (value: any) => void>} [o.effects] per key, called with its value at once and after every change
  * @returns {{ open(): void, close(): void, isOpen(): boolean, values(): object, get(key: string): any,
  *   set(key: string, value: any): void, toggleLabels(): void, labelsText(): string, applyTo(editor: object): void }}
  */
-export function createSettings({ monaco, client, mount, opener, saved = {}, onChange }) {
+export function createSettings({ monaco, client, mount, opener, saved = {}, onChange, effects = {} }) {
   const vals = {}
   for (const [k, v] of Object.entries(saved ?? {})) if (BY_KEY.has(k) && valid(BY_KEY.get(k), v) && !same(v, BY_KEY.get(k).def)) vals[k] = v
   const get = (key) => (key in vals ? vals[key] : BY_KEY.get(key).def)
@@ -92,9 +99,13 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
     for (const ed of monaco.editor.getEditors()) applyTo(ed)
     for (const m of monaco.editor.getModels()) applyModel(m)
   }
+  const applyEffects = () => {
+    for (const [k, fn] of Object.entries(effects)) fn(get(k))
+  }
   monaco.editor.onDidCreateModel(applyModel)
   applyEditors()
   sendTurtle()
+  applyEffects()
 
   function set(key, value) {
     const s = BY_KEY.get(key)
@@ -103,6 +114,7 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
     else vals[key] = value
     if (key === LABELS && value !== "all") otherLabels = value
     if (key.startsWith("turtle.")) sendTurtle()
+    else if (effects[key]) effects[key](value)
     else applyEditors()
     if (!page.hidden) markModified()
     onChange()
@@ -151,7 +163,7 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
 
   function render() {
     let html = ""
-    for (const group of ["turtle-lsp", "Editor"]) {
+    for (const group of ["turtle-lsp", "Editor", "Workbench"]) {
       html += `<h2 class="stg-group" data-group="${esc(group)}">${esc(group)}</h2>`
       for (const s of SETTINGS.filter((x) => x.group === group)) {
         html += `<div class="stg-item" data-key="${esc(s.key)}" data-group="${esc(group)}">
@@ -214,6 +226,7 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
       prefixRows = []
       sendTurtle()
       applyEditors()
+      applyEffects()
       onChange()
       render()
     } else if (act === "reset") {

@@ -7,6 +7,8 @@ import { zip } from "./zip.js"
 import * as store from "./store.js"
 import { createSearch } from "./search.js"
 import { createSettings } from "./settings.js"
+import { createTheme } from "./theme.js"
+import { createVim } from "./vim.js"
 import { createHierarchy } from "./hierarchy.js"
 import { createDiff } from "./diff.js"
 
@@ -51,7 +53,7 @@ for (const key of ["tabs", "active"]) {
   Object.defineProperty(W, key, { get: () => W.groups[W.g][key], set: (v) => (W.groups[W.g][key] = v) })
 }
 let monaco, editor, client, hooks, search, settings, hierarchy
-let diff
+let diff, theme, vim
 const pathByUri = new Map()
 
 // The folder opened in place that `path` is in, if any.
@@ -378,7 +380,7 @@ function editorOptions() {
   return {
     model: null,
     automaticLayout: true,
-    theme: matchMedia("(prefers-color-scheme: dark)").matches ? "rdf-dark" : "rdf-light",
+    theme: theme.monacoTheme(),
     fontSize: 13,
     "semanticHighlighting.enabled": true,
     inlayHints: { enabled: "on" },
@@ -400,6 +402,7 @@ function addGroup() {
   ed.onDidChangeCursorPosition(() => changed({ status: true }))
   for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], contextMenuGroupId: c.menu, run: () => c.run() })
   settings?.applyTo(ed)
+  vim.attach(ed)
   el.addEventListener("mousedown", () => focusGroup(W.groups.indexOf(g)))
   el.querySelector(".tabs").addEventListener("click", (e) => {
     const close = e.target.closest("[data-close]")
@@ -432,6 +435,7 @@ function split() {
 
 function closeGroup(i) {
   const [g] = W.groups.splice(i, 1)
+  vim.detach(g.editor)
   g.editor.dispose()
   g.el.remove()
   focusGroup(Math.min(i, W.groups.length - 1))
@@ -1114,8 +1118,7 @@ async function main() {
   })
   registerSyntax(monaco)
   defineThemes()
-  const dark = matchMedia("(prefers-color-scheme: dark)")
-  dark.addEventListener("change", () => monaco.editor.setTheme(dark.matches ? "rdf-dark" : "rdf-light"))
+  theme = createTheme({ monaco })
 
   client = new LspClient(new URL("lsp-worker.js", import.meta.url))
   let idle = []
@@ -1150,7 +1153,12 @@ async function main() {
   $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
   // Settings go to the server before the first file opens.
   const kept = await store.load()
-  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true }) })
+  vim = createVim({
+    monaco,
+    status: $("status-vim"),
+    commands: { save: () => save(), saveAll: () => saveAll(), close: () => W.active && closeTab(W.active), open: (path) => W.files.has(path) && (openTab(path), true) },
+  })
+  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true }), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
   diff = createDiff({ monaco, client, mount: document.querySelector(".center"), toast, options: editorOptions, setup: (ed) => settings.applyTo(ed), onClose: () => editor?.focus() })
 
   // Cross-file navigation (definition, references) opens the file in a tab.
