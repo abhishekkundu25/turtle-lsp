@@ -1,6 +1,6 @@
 # RDF Editor: Vim mode and colour theme
 
-Status: in progress, on branch `web-showcase` (not merged to main).
+Status: done, on branch `web-showcase` (not merged to main).
 
 ## Problem Statement
 
@@ -122,3 +122,26 @@ extension do not change.
   localStorage (nothing kept means dark), so Auto paints right on a reload.
 - The colour tokens are written once with `light-dark()` and only
   `color-scheme` switches (Chrome 123, Safari 17.5, Firefox 120 or later).
+- Vim keeps the page's shortcuts by marking them handled before monaco-vim
+  sees them (monaco-vim skips handled keys); the page's own listener still
+  runs. Mode text is monaco-vim's (`--NORMAL--`).
+- Monaco's own cancellations ("Canceled", when the file shown changes while
+  word highlighting is pending) are ignored page-wide, as Monaco intends;
+  they were uncaught errors with or without Vim.
+- Escape gives the focus back from the unsaved-changes dialog (to the
+  editor), the explorer's menu and name box (to the explorer) and Settings
+  (to the editor it was opened from); before, the focus was left on a
+  hidden element. Found while checking a report that turned out to be
+  Vimium's Escape handling.
+
+## Verification (2026-10-19)
+
+- Chrome: every web suite, 101/101 (engine and LSP parity 49, toolbox and
+  editor 31, search, settings, theme and Vim 21); the Vim and theme suites
+  also 3–4 runs in a row each, no flakes.
+- WebKit: toolbox and editor 32 passed, 4 skipped (no showDirectoryPicker).
+- Firefox: not run (Playwright's Firefox does not start on this macOS).
+- No server change; the native suites are unaffected.
+- Resource hygiene: slice worktrees and branches removed, no browsers or
+  servers left from the work.
+
