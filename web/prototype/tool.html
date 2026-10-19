@@ -1,0 +1,219 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. "RDF toolbox in the browser": three radically
+  different layouts for a tool people use (format, validate, SHACL, SPARQL,
+  convert), switchable via ?variant=A|B|C, the bottom bar, or ← / →.
+
+  The results are REAL turtle-lsp output for the sample inputs, captured from
+  the release binary and embedded below (no WebAssembly yet). Editing the
+  input does not re-run anything; the "results are for the sample" note says
+  so. The question this answers is "what should the tool look like?".
+
+  Run: npm run web:prototype, then open /tool.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDF toolbox (prototype)</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .mono, textarea, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  button, select { font: inherit; cursor: pointer; }
+  textarea { resize: none; border: 0; outline: 0; font-size: 13px; line-height: 20px; tab-size: 4; }
+  pre { margin: 0; font-size: 13px; line-height: 20px; white-space: pre; overflow: auto; }
+  .stale { font-size: 12px; color: #b45309; }
+  #switcher { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 4px; background: #ff3d7f; color: #fff; border-radius: 999px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.35); font: 600 13px system-ui; }
+  #switcher button { background: rgba(255,255,255,.18); color: #fff; border: 0; width: 30px; height: 30px; border-radius: 50%; }
+  #switcher span { padding: 0 12px; white-space: nowrap; }
+  .sev1 { color: #dc2626; } .sev2 { color: #d97706; } .sev4 { color: #64748b; }
+
+  /* ===== A: classic two-pane tool ===== */
+  .A { min-height: 100vh; background: #f6f7f9; color: #1f2937; display: flex; flex-direction: column; }
+  .A header { display: flex; align-items: center; gap: 18px; padding: 14px 24px; background: #fff; border-bottom: 1px solid #e5e7eb; flex-wrap: wrap; }
+  .A header b { font-size: 17px; }
+  .A header .priv { font-size: 12px; background: #ecfdf5; color: #047857; padding: 4px 10px; border-radius: 999px; }
+  .A nav { display: flex; gap: 4px; padding: 10px 24px 0; background: #fff; border-bottom: 1px solid #e5e7eb; overflow-x: auto; }
+  .A nav button { border: 0; background: none; padding: 10px 14px; border-bottom: 2px solid transparent; color: #6b7280; font-weight: 600; white-space: nowrap; }
+  .A nav button.on { color: #111827; border-color: #4f46e5; }
+  .A .opts { display: flex; gap: 12px; align-items: center; padding: 12px 24px; flex-wrap: wrap; }
+  .A .opts select { padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; }
+  .A .opts .run { background: #4f46e5; color: #fff; border: 0; padding: 7px 16px; border-radius: 6px; font-weight: 600; }
+  .A .panes { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 24px 16px; min-height: 0; }
+  .A .pane { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; display: flex; flex-direction: column; min-height: 420px; min-width: 0; }
+  .A .pane .hd { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #f0f0f0; font-size: 12px; color: #6b7280; }
+  .A .pane .hd .sp { flex: 1; }
+  .A .pane .hd button { border: 1px solid #e5e7eb; background: #fff; border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+  .A .pane textarea, .A .pane pre { flex: 1; padding: 12px; }
+  .A .problems { margin: 0 24px 80px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; }
+  .A .problems .row { display: grid; grid-template-columns: 70px 120px 1fr; gap: 10px; padding: 7px 12px; border-top: 1px solid #f3f4f6; font-size: 13px; }
+  .A .problems .row:first-child { border-top: 0; }
+  .A .ok { padding: 10px 12px; color: #047857; }
+
+  /* ===== B: drop zone and report ===== */
+  .B { min-height: 100vh; background: #0d1117; color: #e6edf3; padding: 36px 6vw 100px; }
+  .B h1 { font-size: 34px; margin: 0; letter-spacing: -.02em; }
+  .B .sub { color: #8b949e; margin: 6px 0 24px; }
+  .B .drop { border: 2px dashed #30363d; border-radius: 16px; padding: 28px; text-align: center; color: #8b949e; background: #0f141b; }
+  .B .drop b { color: #e6edf3; display: block; font-size: 18px; margin-bottom: 4px; }
+  .B .drop .types { margin-top: 10px; font-size: 12px; }
+  .B .files { margin-top: 22px; display: grid; gap: 12px; }
+  .B .file { background: #161b22; border: 1px solid #30363d; border-radius: 12px; overflow: hidden; }
+  .B .file .hd { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
+  .B .file .hd .name { font-weight: 600; }
+  .B .file .hd .kind { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #21262d; color: #8b949e; }
+  .B .file .hd .sp { flex: 1; }
+  .B .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; }
+  .B .pill.err { background: #3d1418; color: #ff7b72; } .B .pill.warn { background: #3a2a07; color: #e3b341; } .B .pill.ok { background: #0f2e1b; color: #3fb950; }
+  .B .file .body { border-top: 1px solid #21262d; padding: 12px 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .B .file .body pre { background: #0d1117; border-radius: 8px; padding: 10px; max-height: 260px; color: #c9d1d9; }
+  .B .file .body h6 { margin: 0 0 6px; color: #8b949e; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .B table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .B td, .B th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; vertical-align: top; }
+  .B th { color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .B .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .B .actions button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+  .B .actions button.primary { background: #238636; border-color: #2ea043; }
+  .B .summary { display: flex; gap: 26px; margin: 22px 0 6px; }
+  .B .summary div b { display: block; font-size: 26px; }
+  .B .summary small { color: #8b949e; }
+
+  /* ===== C: one editor + command palette ===== */
+  .C { height: 100vh; display: grid; grid-template-rows: 48px 1fr; grid-template-columns: 1fr 380px; background: #fdfdfc; color: #222; }
+  .C .bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid #eee; }
+  .C .bar .doc { font-weight: 600; }
+  .C .bar .lang { font-size: 12px; background: #f1f1ef; padding: 3px 8px; border-radius: 6px; }
+  .C .bar .sp { flex: 1; }
+  .C .bar .k { border: 1px solid #ddd; background: #fff; border-radius: 8px; padding: 5px 10px; color: #555; font-size: 13px; }
+  .C .bar .k kbd { font: 11px ui-monospace, monospace; background: #f1f1ef; border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
+  .C .bar .act { border: 0; background: #111; color: #fff; border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+  .C .edit { position: relative; display: flex; min-width: 0; }
+  .C .edit .gut { width: 46px; padding: 14px 10px 14px 0; text-align: right; color: #bbb; font: 13px/20px ui-monospace, monospace; user-select: none; }
+  .C .edit .gut .m1 { color: #dc2626; font-weight: 700; } .C .edit .gut .m2 { color: #d97706; font-weight: 700; }
+  .C .edit textarea, .C .edit pre { flex: 1; padding: 14px 14px 14px 0; background: transparent; }
+  .C .drawer { border-left: 1px solid #eee; background: #fafaf8; overflow: auto; padding: 16px; }
+  .C .drawer h5 { margin: 0 0 8px; font-size: 11px; color: #888; letter-spacing: .1em; text-transform: uppercase; }
+  .C .drawer .item { padding: 9px 10px; border-radius: 8px; margin-bottom: 6px; background: #fff; border: 1px solid #eee; font-size: 13px; }
+  .C .drawer .item small { color: #888; display: block; }
+  .C .drawer .tip { color: #666; font-size: 13px; margin-top: 18px; }
+  .C .palette-bg { position: fixed; inset: 0; background: rgba(0,0,0,.25); z-index: 40; display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
+  .C .palette { width: min(560px, 92vw); background: #fff; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.25); overflow: hidden; }
+  .C .palette input { width: 100%; border: 0; border-bottom: 1px solid #eee; padding: 14px 16px; font-size: 15px; outline: 0; }
+  .C .palette div { padding: 9px 16px; display: flex; justify-content: space-between; cursor: pointer; }
+  .C .palette div:hover, .C .palette div.sel { background: #f3f3f1; }
+  .C .palette small { color: #999; }
+
+  @media (max-width: 860px) {
+    .A .panes { grid-template-columns: 1fr; }
+    .B .file .body { grid-template-columns: 1fr; }
+    .C { grid-template-columns: 1fr; grid-template-rows: 48px 1fr auto; } .C .drawer { border-left: 0; border-top: 1px solid #eee; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="switcher"><button id="prev">‹</button><span id="vlabel"></span><button id="next">›</button></div>
+<script>
+// Real turtle-lsp output for the sample inputs (see the header comment).
+const REAL = {"messy.ttl": {"text": "# Messy input for the formatter golden test.\n@prefix ex: <https://example.com/ns#> .\n@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n\n@prefix sh: <http://www.w3.org/ns/shacl#> .\nex:Pump a rdfs:Class;rdfs:label \"Pump\"@en , \"Pumpe\"@de;   rdfs:comment \"\"\"A machine\nthat moves fluid.\"\"\"@en .\n\n\n\n# Shapes\nex:PumpShape a sh:NodeShape ; sh:targetClass ex:Pump ; # the class\n  sh:property [ sh:path ex:flowRate ; sh:datatype xsd:decimal ; sh:minCount 1 ; sh:maxCount 1 ; sh:name \"flow rate\" ] ;\n  sh:property [ sh:path [ sh:inversePath ex:partOf ] ; sh:minCount 1 ] ;\n  sh:or ( [ sh:class ex:A ] [ sh:class ex:B ] ) .\nex:p1 ex:list ( 1 2 3 ) ; ex:tags \"alpha\" , \"beta\" , \"gamma\" , \"delta\" , \"epsilon\" , \"zeta\" , \"eta\" , \"theta\" , \"iota\" , \"kappa\" , \"lambda\" .\n\nex:p1 ex:weight \"12.5\"^^xsd:decimal ;;\n    # an own-line comment\n    ex:owner ex:alice ;\n.\n[ ex:anon true ] .\n<< ex:p1 ex:owner ex:alice ~ ex:claim1 >> ex:since 2020 .\nex:p1 ex:says <<( ex:alice ex:knows ex:bob )>> .\nex:p1 ex:owner ex:bob ~ ex:claim2 {| ex:source ex:registry ; ex:confidence 0.9 |} .\n@prefix late: <https://example.com/late#> .\nlate:x a ex:Pump .\n# end of file\n", "lang": "turtle", "diags": [{"line": 27, "col": 0, "endLine": 27, "endCol": 6, "sev": 1, "code": "shacl-violation", "msg": "ex:flowRate of late:x: expected at least 1 value(s)"}, {"line": 27, "col": 0, "endLine": 27, "endCol": 6, "sev": 1, "code": "shacl-violation", "msg": "^ex:partOf of late:x: expected at least 1 value(s)"}, {"line": 27, "col": 0, "endLine": 27, "endCol": 6, "sev": 1, "code": "shacl-violation", "msg": "late:x (late:x) does not conform to any shape of sh:or"}], "formatted": "# Messy input for the formatter golden test.\n@prefix ex:   <https://example.com/ns#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\nPREFIX xsd:   <http://www.w3.org/2001/XMLSchema#>\n\n@prefix sh:   <http://www.w3.org/ns/shacl#> .\n@prefix late: <https://example.com/late#> .\n\nex:Pump a rdfs:Class ;\n    rdfs:label \"Pump\"@en , \"Pumpe\"@de ;\n    rdfs:comment \"\"\"A machine\nthat moves fluid.\"\"\"@en .\n\n# Shapes\nex:PumpShape a sh:NodeShape ;\n    sh:targetClass ex:Pump ; # the class\n    sh:property [\n        sh:path ex:flowRate ;\n        sh:datatype xsd:decimal ;\n        sh:minCount 1 ;\n        sh:maxCount 1 ;\n        sh:name \"flow rate\"\n    ] ;\n    sh:property [\n        sh:path [ sh:inversePath ex:partOf ] ;\n        sh:minCount 1\n    ] ;\n    sh:or (\n        [ sh:class ex:A ]\n        [ sh:class ex:B ]\n    ) .\n\nex:p1 ex:list ( 1 2 3 ) ;\n    ex:tags \"alpha\" ,\n        \"beta\" ,\n        \"gamma\" ,\n        \"delta\" ,\n        \"epsilon\" ,\n        \"zeta\" ,\n        \"eta\" ,\n        \"theta\" ,\n        \"iota\" ,\n        \"kappa\" ,\n        \"lambda\" .\n\nex:p1 ex:weight \"12.5\"^^xsd:decimal ;\n    # an own-line comment\n    ex:owner ex:alice .\n\n[ ex:anon true ] .\n\n<< ex:p1 ex:owner ex:alice ~ ex:claim1 >> ex:since 2020 .\n\nex:p1 ex:says <<( ex:alice ex:knows ex:bob )>> .\n\nex:p1 ex:owner ex:bob ~ ex:claim2 {| ex:source ex:registry ; ex:confidence 0.9 |} .\n\nlate:x a ex:Pump .\n# end of file\n"}, "broken.ttl": {"text": "@prefix ex: <https://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\nex:alice a foaf:Person ;\n    rdfs:lable \"Alice\"@en ;\n    ex:age \"42\"^^xsd:integer ;\n    ex:knows ex:bob .\n\nex:bob rdfs:label \"Bob\"@not-a-tag .\nex:carol ex:knows <http://exa mple.org/x> .\n", "lang": "turtle", "diags": [{"line": 9, "col": 18, "endLine": 9, "endCol": 29, "sev": 1, "code": "syntax", "msg": "Unterminated IRI: missing '>'"}, {"line": 9, "col": 30, "endLine": 9, "endCol": 38, "sev": 1, "code": "syntax", "msg": "Unexpected word (did you forget a prefix, e.g. `ex:`?)"}, {"line": 9, "col": 38, "endLine": 9, "endCol": 39, "sev": 1, "code": "syntax", "msg": "Unexpected character"}, {"line": 9, "col": 39, "endLine": 9, "endCol": 40, "sev": 1, "code": "syntax", "msg": "Unexpected word (did you forget a prefix, e.g. `ex:`?)"}, {"line": 9, "col": 40, "endLine": 9, "endCol": 41, "sev": 1, "code": "syntax", "msg": "Unexpected character"}, {"line": 3, "col": 11, "endLine": 3, "endCol": 22, "sev": 1, "code": "undeclared-prefix", "msg": "Undeclared prefix 'foaf:' (add @prefix foaf: <http://xmlns.com/foaf/0.1/>)"}, {"line": 5, "col": 17, "endLine": 5, "endCol": 28, "sev": 1, "code": "undeclared-prefix", "msg": "Undeclared prefix 'xsd:' (add @prefix xsd: <http://www.w3.org/2001/XMLSchema#>)"}, {"line": 4, "col": 4, "endLine": 4, "endCol": 14, "sev": 2, "code": "unknown-term", "msg": "'lable' is not defined in the rdfs vocabulary <http://www.w3.org/2000/01/rdf-schema#>"}], "formatted": null}, "messy.rq": {"text": "# Messy input for the SPARQL formatter golden test.\nprefix ex: <https://query.example.org/def/>\nPREFIX   rdfs:<http://www.w3.org/2000/01/rdf-schema#>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\nselect distinct ?person ?name (count(?org) as ?orgs)\nwhere{?person a ex:Person;ex:name ?name,?alias.\noptional{?person ex:worksFor ?org.?org rdfs:label ?label}   # where they work\n  filter(strlen(?name)>0&&!isBlank(?person))\nbind(concat(?name,\" (\",str(?person),\")\") as ?display)\n\n\n  {?person ex:age ?age} union {?person ex:born ?born}\n  minus{?person ex:retired true}\n  values ?kind {ex:A ex:B}\n  graph ?g{?person ex:seen ?when}\n  {select ?person(max(?when) as ?last) where{?person ex:seen ?when} group by ?person}\n  ?person ex:knows/ex:name|^ex:alias ?other .\n  ?person ex:score ?score FILTER(?score >= 1.5e0)\n  ?person ex:name \"Al\"@en, \"\"\"long\nstring\"\"\"^^xsd:string .\n  ?person ex:tags () .\n  ?person ex:nested [ex:p [ex:q ?deep]] .\n}\ngroup by ?person ?name having(count(?org)>1)\norder by desc(?name) ?person\nlimit 10 offset 5\n", "lang": "sparql", "diags": [], "formatted": "# Messy input for the SPARQL formatter golden test.\nPREFIX ex:   <https://query.example.org/def/>\nPREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nPREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>\n\nSELECT DISTINCT ?person ?name (COUNT(?org) AS ?orgs)\nWHERE {\n    ?person a ex:Person ;\n        ex:name ?name , ?alias .\n    OPTIONAL {\n        ?person ex:worksFor ?org .\n        ?org rdfs:label ?label\n    } # where they work\n    FILTER (STRLEN(?name) > 0 && !isBLANK(?person))\n    BIND (CONCAT(?name, \" (\", STR(?person), \")\") AS ?display)\n\n    {\n        ?person ex:age ?age\n    } UNION {\n        ?person ex:born ?born\n    }\n    MINUS {\n        ?person ex:retired true\n    }\n    VALUES ?kind { ex:A ex:B }\n    GRAPH ?g {\n        ?person ex:seen ?when\n    }\n    {\n        SELECT ?person (MAX(?when) AS ?last)\n        WHERE {\n            ?person ex:seen ?when\n        }\n        GROUP BY ?person\n    }\n    ?person ex:knows/ex:name|^ex:alias ?other .\n    ?person ex:score ?score\n    FILTER (?score >= 1.5e0)\n    ?person ex:name \"Al\"@en , \"\"\"long\nstring\"\"\"^^xsd:string .\n    ?person ex:tags () .\n    ?person ex:nested [\n        ex:p [ ex:q ?deep ]\n    ] .\n}\nGROUP BY ?person ?name\nHAVING (COUNT(?org) > 1)\nORDER BY DESC(?name) ?person\nLIMIT 10\nOFFSET 5\n"}, "query.rq": {"text": "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nSELECT ?person ?name ?nick WHERE {\n  ?person a foaf:Person ;\n    rdfs:lable ?name .\n}\n", "lang": "sparql", "diags": [{"line": 1, "col": 21, "endLine": 1, "endCol": 26, "sev": 2, "code": "unbound-projection", "msg": "Variable ?nick is projected but never bound in the WHERE clause"}, {"line": 2, "col": 12, "endLine": 2, "endCol": 23, "sev": 1, "code": "undeclared-prefix", "msg": "Undeclared prefix 'foaf:' (add PREFIX foaf: <http://xmlns.com/foaf/0.1/>)"}, {"line": 3, "col": 4, "endLine": 3, "endCol": 14, "sev": 2, "code": "unknown-term", "msg": "'lable' is not defined in the rdfs vocabulary <http://www.w3.org/2000/01/rdf-schema#>"}], "formatted": null}, "data.ttl": {"text": "@prefix ex: <https://example.org/> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\nex:alice a ex:Person ; ex:name \"Alice\" ; ex:age 42 .\nex:bob a ex:Person ; ex:age \"forty\" .\nex:carol a ex:Person ; ex:name \"Carol\" , \"Caz\" ; ex:age -3 .\n", "lang": "turtle", "diags": [{"line": 1, "col": 0, "endLine": 1, "endCol": 50, "sev": 4, "code": "unused-prefix", "msg": "Prefix 'xsd:' is never used"}, {"line": 4, "col": 0, "endLine": 4, "endCol": 6, "sev": 1, "code": "shacl-violation", "msg": "ex:name of ex:bob: expected at least 1 value(s)"}, {"line": 4, "col": 28, "endLine": 4, "endCol": 35, "sev": 1, "code": "shacl-violation", "msg": "\"forty\" (ex:age of ex:bob) is not a valid xsd:integer literal"}, {"line": 4, "col": 28, "endLine": 4, "endCol": 35, "sev": 1, "code": "shacl-violation", "msg": "\"forty\" (ex:age of ex:bob) is less than 0"}, {"line": 5, "col": 23, "endLine": 5, "endCol": 30, "sev": 1, "code": "shacl-violation", "msg": "ex:name of ex:carol: expected at most 1 value(s)"}, {"line": 5, "col": 56, "endLine": 5, "endCol": 58, "sev": 1, "code": "shacl-violation", "msg": "-3 (ex:age of ex:carol) is less than 0"}], "formatted": "@prefix ex:  <https://example.org/> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\nex:alice a ex:Person ;\n    ex:name \"Alice\" ;\n    ex:age 42 .\n\nex:bob a ex:Person ;\n    ex:age \"forty\" .\n\nex:carol a ex:Person ;\n    ex:name \"Carol\" , \"Caz\" ;\n    ex:age -3 .\n"}, "shapes.ttl": {"text": "@prefix ex: <https://example.org/> .\n@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\nex:PersonShape a sh:NodeShape ;\n    sh:targetClass ex:Person ;\n    sh:property [ sh:path ex:name ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;\n    sh:property [ sh:path ex:age ; sh:datatype xsd:integer ; sh:minInclusive 0 ] .\n", "lang": "turtle", "diags": [], "formatted": "@prefix ex:  <https://example.org/> .\n@prefix sh:  <http://www.w3.org/ns/shacl#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\nex:PersonShape a sh:NodeShape ;\n    sh:targetClass ex:Person ;\n    sh:property [ sh:path ex:name ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;\n    sh:property [ sh:path ex:age ; sh:datatype xsd:integer ; sh:minInclusive 0 ] .\n"}};
+
+// N-Triples of data.ttl, as a converter would write it (written by hand for the prototype).
+const NT = `<https://example.org/alice> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://example.org/Person> .
+<https://example.org/alice> <https://example.org/name> "Alice" .
+<https://example.org/alice> <https://example.org/age> "42"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<https://example.org/bob> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://example.org/Person> .
+<https://example.org/bob> <https://example.org/age> "forty" .
+<https://example.org/carol> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://example.org/Person> .
+<https://example.org/carol> <https://example.org/name> "Carol" .
+<https://example.org/carol> <https://example.org/name> "Caz" .
+<https://example.org/carol> <https://example.org/age> "-3"^^<http://www.w3.org/2001/XMLSchema#integer> .`;
+
+const TOOLS = {
+  format:   { label: "Format",         input: "messy.ttl",  out: () => REAL["messy.ttl"].formatted, diags: [] , note: "Same graph, every comment kept, formatting twice changes nothing." },
+  validate: { label: "Validate",       input: "broken.ttl", out: null, diags: () => REAL["broken.ttl"].diags, note: "Syntax with recovery, prefixes, vocabulary terms, IRIs and language tags." },
+  shacl:    { label: "SHACL",          input: "data.ttl",   out: null, diags: () => REAL["data.ttl"].diags.filter(d => d.code === "shacl-violation"), shapes: "shapes.ttl", note: "SHACL Core and SHACL-SPARQL, W3C suites 98/98 and 23/23." },
+  sparql:   { label: "SPARQL",         input: "query.rq",   out: null, diags: () => REAL["query.rq"].diags, note: "Syntax, prefixes, vocabulary terms and unbound variables; formatting keeps the algebra." },
+  sparqlfmt:{ label: "SPARQL format",  input: "messy.rq",   out: () => REAL["messy.rq"].formatted, diags: [], note: "Formatted only if it parses to the same algebra." },
+  convert:  { label: "Convert",        input: "data.ttl",   out: () => NT, diags: [], note: "Turtle ⇄ TriG ⇄ N-Triples ⇄ N-Quads." },
+};
+const ORDER = ["format", "validate", "shacl", "sparql", "sparqlfmt", "convert"];
+const S = { tool: "format", edited: false, open: "data.ttl", palette: false, ran: true, ms: 0.8 };
+const esc = s => (s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const diagsOf = t => typeof TOOLS[t].diags === "function" ? TOOLS[t].diags() : TOOLS[t].diags;
+const sevName = s => ({ 1: "error", 2: "warning", 3: "info", 4: "hint" }[s]);
+const v = () => { const x = new URLSearchParams(location.search).get("variant"); return ["A", "B", "C"].includes(x) ? x : "A"; };
+const NAMES = { A: "Two-pane tool", B: "Drop & report", C: "Editor + palette" };
+function run() { S.ms = +(0.3 + Math.random() * 1.2).toFixed(2); S.ran = true; S.edited = false; render(); }
+
+// ===== A =====
+function VariantA() {
+  const t = TOOLS[S.tool], ds = diagsOf(S.tool), out = t.out && t.out();
+  return `<div class="A"><header><b>RDF toolbox</b><span class="priv">🔒 runs in this tab — your files never leave it</span><span style="flex:1"></span><a href="#">Powered by turtle-lsp</a></header>
+  <nav>${ORDER.map(k => `<button class="${k === S.tool ? "on" : ""}" data-tool="${k}">${TOOLS[k].label}</button>`).join("")}</nav>
+  <div class="opts">${S.tool === "convert" ? `From <select><option>Turtle</option></select> to <select><option>N-Triples</option><option>N-Quads</option><option>TriG</option></select>` : S.tool === "shacl" ? `Shapes: <select><option>${t.shapes}</option><option>Paste shapes…</option></select>` : `Indent <select><option>4 spaces</option><option>2 spaces</option><option>Tab</option></select> Line width <select><option>100</option><option>80</option></select>`}
+    <button class="run" data-run>${t.label}</button><span style="color:#6b7280;font-size:12px">${t.note}</span> ${S.edited ? `<span class="stale">results are for the sample until WebAssembly is wired</span>` : ""}</div>
+  <div class="panes"><div class="pane"><div class="hd">Input · ${t.input}<span class="sp"></span><button>Open file…</button><button>Paste</button></div><textarea spellcheck="false" data-input>${esc(REAL[t.input].text)}</textarea></div>
+    <div class="pane"><div class="hd">${out ? "Output" : "Result"} · ${S.ms} ms<span class="sp"></span>${out ? `<button>Copy</button><button>Download</button>` : `<button>Download report</button>`}</div>${out ? `<pre>${esc(out)}</pre>` : `<pre style="padding:12px;color:#6b7280">${ds.length ? `${ds.filter(d => d.sev === 1).length} errors, ${ds.filter(d => d.sev === 2).length} warnings — see below` : "No problems"}</pre>`}</div></div>
+  <div class="problems">${ds.length ? ds.map(d => `<div class="row"><span class="mono">${d.line + 1}:${d.col + 1}</span><span class="sev${d.sev}">${sevName(d.sev)} · ${esc(d.code)}</span><span>${esc(d.msg)}</span></div>`).join("") : `<div class="ok">✓ No problems</div>`}</div></div>`;
+}
+
+// ===== B =====
+function VariantB() {
+  const files = ["broken.ttl", "data.ttl", "shapes.ttl", "query.rq", "messy.ttl", "messy.rq"];
+  const kind = f => f.endsWith(".rq") ? "SPARQL" : f === "shapes.ttl" ? "Shapes" : "Turtle";
+  const ds = f => (REAL[f].diags || []).filter(d => d.sev <= 2);
+  const total = files.reduce((n, f) => n + ds(f).length, 0);
+  const pill = f => { const e = ds(f).filter(d => d.sev === 1).length, w = ds(f).filter(d => d.sev === 2).length; return e ? `<span class="pill err">${e} errors</span>` : w ? `<span class="pill warn">${w} warnings</span>` : `<span class="pill ok">valid</span>`; };
+  return `<div class="B"><h1>Check your RDF.</h1><div class="sub">Drop Turtle, TriG, N-Triples, N-Quads, SHACL shapes or SPARQL. Everything runs in this tab with WebAssembly; nothing is uploaded.</div>
+  <div class="drop"><b>Drop files or a folder here</b>or <u>choose files</u> · or paste text<div class="types">.ttl .trig .nt .nq .rq .sparql .ru · shapes are applied to the data automatically</div></div>
+  <div class="summary"><div><b>${files.length}</b><small>files checked</small></div><div><b>${total}</b><small>problems</small></div><div><b>${REAL["data.ttl"].diags.filter(d => d.code === "shacl-violation").length}</b><small>SHACL violations</small></div><div><b>${S.ms} ms</b><small>total</small></div></div>
+  <div class="files">${files.map(f => { const open = S.open === f; const d = ds(f); const fmt = REAL[f].formatted; return `<div class="file"><div class="hd" data-open="${f}"><span>${open ? "▾" : "▸"}</span><span class="name mono">${f}</span><span class="kind">${kind(f)}</span><span class="sp"></span>${pill(f)}</div>${open ? `<div class="body"><div><h6>${d.length ? "Problems" : "Problems"}</h6>${d.length ? `<table><tr><th>Line</th><th>Problem</th></tr>${d.map(x => `<tr><td class="mono">${x.line + 1}</td><td><span class="sev${x.sev}">${esc(x.code)}</span><br>${esc(x.msg)}</td></tr>`).join("")}</table>` : `<div style="color:#3fb950">✓ No problems</div>`}
+    <div class="actions">${fmt ? `<button class="primary">Download formatted</button>` : ""}<button>Download report (JSON)</button>${f.endsWith(".ttl") ? `<button>Convert to N-Triples</button>` : ""}</div></div><div><h6>${fmt ? "Formatted" : "Source"}</h6><pre>${esc(fmt || REAL[f].text)}</pre></div></div>` : ""}</div>`; }).join("")}</div></div>`;
+}
+
+// ===== C =====
+const CMDS = [["Format document", "⇧⌥F", "format"], ["Validate", "", "validate"], ["Validate against shapes…", "", "shacl"], ["Check SPARQL query", "", "sparql"], ["Format SPARQL", "", "sparqlfmt"], ["Convert to N-Triples", "", "convert"], ["Convert to N-Quads", "", "convert"], ["Expand all prefixed names", "", "format"], ["Shorten all IRIs", "", "format"], ["Organise prefixes", "", "format"]];
+function VariantC() {
+  const t = TOOLS[S.tool], ds = diagsOf(S.tool), out = t.out && t.out();
+  const text = out || REAL[t.input].text;
+  const lines = text.split("\n");
+  const mark = i => { const d = ds.find(x => x.line === i); return d ? `<span class="m${d.sev}">●</span>` : i + 1; };
+  return `<div class="C"><div class="bar"><span class="doc mono">${t.input}</span><span class="lang">${t.input.endsWith(".rq") ? "SPARQL" : "Turtle"}</span><span class="sp"></span>
+    <button class="k" data-palette>Commands<kbd>⌘K</kbd></button><button class="act" data-tool="format">Format</button><button class="act" data-tool="validate" style="background:#4f46e5">Validate</button></div>
+  <div class="edit"><div class="gut">${lines.map((_, i) => `<div>${mark(i)}</div>`).join("")}</div>${out ? `<pre>${esc(out)}</pre>` : `<textarea spellcheck="false" data-input>${esc(text)}</textarea>`}</div>
+  <aside class="drawer"><h5>${t.label} · ${S.ms} ms</h5>${ds.length ? ds.map(d => `<div class="item"><span class="sev${d.sev}">${sevName(d.sev)}</span> ${esc(d.msg)}<small>line ${d.line + 1} · ${esc(d.code)}</small></div>`).join("") : `<div class="item">✓ ${out ? "Done — the editor shows the result" : "No problems"}<small>${t.note}</small></div>`}
+    <div class="tip">Press <b>⌘K</b> for every action: format, validate, SHACL, SPARQL, convert, organise prefixes. 🔒 Nothing leaves this tab.</div></aside>
+  ${S.palette ? `<div class="palette-bg" data-close><div class="palette"><input placeholder="Type a command…" autofocus>${CMDS.map(([l, k, tool], i) => `<div class="${i === 0 ? "sel" : ""}" data-tool="${tool}">${l}<small>${k}</small></div>`).join("")}</div></div>` : ""}</div>`;
+}
+
+const V = { A: VariantA, B: VariantB, C: VariantC };
+function render() {
+  const x = v();
+  document.getElementById("app").innerHTML = V[x]();
+  document.getElementById("vlabel").textContent = `${x} (${NAMES[x]})`;
+  console.log("[prototype state]", { variant: x, ...S });
+}
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-tool],[data-run],[data-open],[data-palette],[data-close]");
+  if (!t) return;
+  if (t.dataset.tool) { S.tool = t.dataset.tool; S.palette = false; return run(); }
+  if (t.dataset.run !== undefined) return run();
+  if (t.dataset.open) { S.open = S.open === t.dataset.open ? null : t.dataset.open; return render(); }
+  if (t.dataset.palette !== undefined) { S.palette = true; return render(); }
+  if (t.dataset.close !== undefined && e.target === t) { S.palette = false; return render(); }
+});
+document.addEventListener("input", e => { if (e.target.matches("[data-input]") && !S.edited) { S.edited = true; const box = document.querySelector(".stale"); if (!box && v() === "A") { const o = document.querySelector(".A .opts"); o && o.insertAdjacentHTML("beforeend", `<span class="stale">results are for the sample until WebAssembly is wired</span>`); } } });
+function cycle(d) { const k = ["A", "B", "C"], i = k.indexOf(v()); const p = new URLSearchParams(location.search); p.set("variant", k[(i + d + 3) % 3]); history.replaceState(null, "", "?" + p); S.palette = false; render(); }
+document.getElementById("prev").onclick = () => cycle(-1);
+document.getElementById("next").onclick = () => cycle(1);
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); S.palette = !S.palette; return render(); }
+  if (e.key === "Escape" && S.palette) { S.palette = false; return render(); }
+  if (e.target.closest("input,textarea,[contenteditable]")) return;
+  if (e.key === "ArrowLeft") cycle(-1); if (e.key === "ArrowRight") cycle(1);
+});
+render();
+</script>
+</body>
+</html>
