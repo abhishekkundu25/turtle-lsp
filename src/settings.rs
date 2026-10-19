@@ -1,12 +1,36 @@
 //! Client settings: the `turtle` section of the editor's configuration.
 //!
-//! Read from `initializationOptions` and from `workspace/didChangeConfiguration`.
-//! Both nested (`{"inlayHints": {"labels": "all"}}`) and dotted
+//! Read from `initializationOptions` and from `workspace/didChangeConfiguration`,
+//! on top of an optional `turtle-lsp.json` at the workspace root (see
+//! [`read_settings_file`]). Both nested (`{"inlayHints": {"labels": "all"}}`) and dotted
 //! (`{"inlayHints.labels": "all"}`) keys are accepted. Unknown keys and values
 //! of the wrong type are ignored, so a bad setting never stops the server.
 
 use crate::syntax::PrefixMap;
 use serde_json::Value;
+use std::path::Path;
+
+/// The workspace settings file, read from the workspace root.
+pub const SETTINGS_FILE: &str = "turtle-lsp.json";
+
+/// The settings in `<root>/turtle-lsp.json`: a JSON object with the keys of the
+/// editor's `turtle` section, nested or dotted, optionally wrapped in a
+/// top-level `"turtle"` object. `Ok(None)` when there is no such file; `Err`
+/// with a message for the user when it cannot be read, is not JSON, or is not
+/// an object.
+pub fn read_settings_file(root: &Path) -> Result<Option<Value>, String> {
+    let path = root.join(SETTINGS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(v @ Value::Object(_)) => Ok(Some(v)),
+        Ok(_) => Err(format!("{}: expected a JSON object", path.display())),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
 
 /// Which terms get a label inlay hint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,8 +74,8 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Defaults, overridden by each layer in turn (initializationOptions, then
-    /// the configuration section).
+    /// Defaults, overridden by each layer in turn (the settings file, then
+    /// initializationOptions, then the configuration section).
     pub fn from_layers<'a>(layers: impl IntoIterator<Item = &'a Value>) -> Settings {
         let mut s = Settings::default();
         for layer in layers {
@@ -203,5 +227,63 @@ mod tests {
         assert!(s.shacl_enabled);
         assert_eq!(s.shacl_max_triples, 2_000_000);
         assert_eq!(Settings::from_layers([&Value::Null]), Settings::default());
+    }
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("turtle-lsp-settings-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn settings_file_absent_valid_and_wrapped() {
+        let dir = temp_root("ok");
+        assert_eq!(read_settings_file(&dir), Ok(None));
+
+        std::fs::write(
+            dir.join(SETTINGS_FILE),
+            r#"{"lint.undescribedTerms": false, "prefixes": {"ex": "http://example.org/"}}"#,
+        )
+        .unwrap();
+        let v = read_settings_file(&dir).unwrap().unwrap();
+        let s = Settings::from_layers([&v]);
+        assert!(!s.lint_undescribed_terms);
+        assert_eq!(s.prefixes["ex"], "http://example.org/");
+
+        std::fs::write(
+            dir.join(SETTINGS_FILE),
+            r#"{"turtle": {"format": {"lineWidth": 80}}}"#,
+        )
+        .unwrap();
+        let v = read_settings_file(&dir).unwrap().unwrap();
+        assert_eq!(Settings::from_layers([&v]).format_line_width, 80);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn settings_file_invalid() {
+        let dir = temp_root("bad");
+        std::fs::write(dir.join(SETTINGS_FILE), "{ not json").unwrap();
+        let e = read_settings_file(&dir).unwrap_err();
+        assert!(e.contains(SETTINGS_FILE), "{e}");
+        std::fs::write(dir.join(SETTINGS_FILE), "[1, 2]").unwrap();
+        let e = read_settings_file(&dir).unwrap_err();
+        assert!(e.contains("expected a JSON object"), "{e}");
+        // A directory by that name cannot be read.
+        std::fs::remove_file(dir.join(SETTINGS_FILE)).unwrap();
+        std::fs::create_dir(dir.join(SETTINGS_FILE)).unwrap();
+        assert!(read_settings_file(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn settings_file_is_the_lowest_layer() {
+        let file = json!({"lint": {"undescribedTerms": false}, "format": {"lineWidth": 80}});
+        let init = json!({"lint": {"undescribedTerms": true}});
+        let s = Settings::from_layers([&file, &init]);
+        assert!(s.lint_undescribed_terms);
+        assert_eq!(s.format_line_width, 80);
     }
 }
