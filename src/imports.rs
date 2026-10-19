@@ -148,6 +148,23 @@ fn doc_onto(a: &Analysis) -> DocOnto {
     d
 }
 
+/// The workspace's imports that stay unresolved when nothing can be loaded
+/// (the browser build): every `owl:imports` no workspace document declares
+/// as its ontology or version IRI, sorted. What [`Imports::unresolved`]
+/// reports when every load fails.
+pub fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
+    let (mut imports, mut local) = (BTreeSet::new(), FxHashSet::default());
+    for (_, _, a) in k.docs().filter(|(_, src, _)| *src != Source::External) {
+        let d = doc_onto(a);
+        imports.extend(d.imports.iter().map(|i| i.to_string()));
+        local.extend(d.ontologies.iter().map(|i| norm(i).to_string()));
+    }
+    imports
+        .into_iter()
+        .filter(|i| !local.contains(norm(i)))
+        .collect()
+}
+
 /// `owl:imports` state of the server: what was asked, what came back.
 pub struct Imports {
     jobs: Option<Sender<Job>>,

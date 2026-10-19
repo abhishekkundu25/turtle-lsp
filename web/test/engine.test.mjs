@@ -133,6 +133,65 @@ test("without shapes there is no SHACL validation", () => {
   for (const f of res.files) assert.deepEqual(withCode(f, "shacl-violation"), [], f.name)
 })
 
+test("SHACL constraints written in SPARQL are evaluated, as the language server evaluates them", async () => {
+  const files = [
+    {
+      name: "shapes.ttl",
+      text: `@prefix ex: <https://e.org/> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+
+ex:PersonShape a sh:NodeShape ;
+    sh:targetClass ex:Person ;
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "A person's name must not be empty" ;
+        sh:select """SELECT $this WHERE { $this <https://e.org/name> "" . FILTER (NOW() > "2000-01-01T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime>) }"""
+    ] .
+`,
+    },
+    { name: "data.ttl", text: `@prefix ex: <https://e.org/> .\n\nex:ann a ex:Person ; ex:name "" .\nex:bo a ex:Person ; ex:name "Bo" .\n` },
+  ]
+  const res = engine.call("analyse", { files })
+  const found = withCode(fileOf(res, "data.ttl"), "shacl-violation")
+  assert.equal(found.length, 1, JSON.stringify(found))
+  assert.match(found[0].message, /A person's name must not be empty/)
+  assert.equal(found[0].range.start.line, 2)
+  const want = await serverDiagnostics(files)
+  for (const f of res.files) assert.deepEqual(f.diagnostics.map(key).sort(), want[f.name].map(key).sort(), f.name)
+})
+
+test("while an import is not loaded, SHACL errors it could change are warnings, as in the language server", async () => {
+  const files = [
+    {
+      name: "shapes.ttl",
+      text: `@prefix ex: <https://e.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+
+<https://e.org/shapes> a owl:Ontology ;
+    owl:imports <https://e.org/core> , <https://unknown.example.org/vocab> .
+
+ex:PersonShape a sh:NodeShape ;
+    sh:targetClass ex:Person ;
+    sh:property [ sh:path ex:worksFor ; sh:class ex:Organisation ] .
+`,
+    },
+    // Declares one of the two imports, which therefore counts as present.
+    { name: "core.ttl", text: `@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\n<https://e.org/core> a owl:Ontology .\n` },
+    { name: "data.ttl", text: `@prefix ex: <https://e.org/> .\n\nex:ann a ex:Person ; ex:worksFor ex:bo .\n` },
+  ]
+  const res = engine.call("analyse", { files })
+  const [v] = withCode(fileOf(res, "data.ttl"), "shacl-violation")
+  assert.ok(v, JSON.stringify(fileOf(res, "data.ttl").diagnostics))
+  assert.equal(v.severity, 2)
+  assert.match(v.message, /\(may change once these imports resolve: https:\/\/unknown\.example\.org\/vocab\)$/)
+  const [note] = withCode(fileOf(res, "shapes.ttl"), "unresolved-import")
+  assert.equal(note.message, "Import <https://unknown.example.org/vocab> is not loaded: the toolbox does not follow imports. Add the imported ontology's file to the input to use it.")
+  assert.equal(covered(files[0].text, note.range), "<https://unknown.example.org/vocab>")
+  const want = await serverDiagnostics(files)
+  for (const f of res.files) assert.deepEqual(f.diagnostics.map(key).sort(), want[f.name].map(key).sort(), f.name)
+})
+
 // --- format -----------------------------------------------------------------------
 
 test("formatting keeps the graph, and formatted text stays as it is", () => {
@@ -265,7 +324,11 @@ async function serverDiagnostics(files) {
   }
 }
 
-const key = (d) => `${d.range.start.line}:${d.range.start.character}-${d.range.end.line}:${d.range.end.character} ${d.severity} ${d.code} ${d.message}`
+// The note on an import that is not loaded says what to do in each place
+// (a quick fix and a catalog in an editor, adding the file in the toolbox):
+// the same note, in the same place, with its own words.
+const key = (d) =>
+  `${d.range.start.line}:${d.range.start.character}-${d.range.end.line}:${d.range.end.character} ${d.severity} ${d.code} ${d.code === "unresolved-import" ? "" : d.message}`
 
 for (const [name, set] of Object.entries(SETS)) {
   test(`the engine reports what the language server reports: ${name}`, async () => {

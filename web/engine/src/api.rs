@@ -8,9 +8,11 @@ use lsp_types::{
     DiagnosticSeverity, NumberOrString, Position, TextDocumentIdentifier, TextEdit, Uri,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use turtle_lsp::analysis::Encoding;
 use turtle_lsp::features::shacl_validate;
 use turtle_lsp::features::{diagnostics, format};
+use turtle_lsp::imports;
 use turtle_lsp::knowledge::Source;
 use turtle_lsp::settings::Settings;
 use turtle_lsp::sparql::features as sparql_features;
@@ -93,6 +95,20 @@ impl Input {
             .map(|(n, _)| n.as_str())
     }
 
+    /// The imports the input does not declare itself, none of which is
+    /// loaded here, each with its note.
+    fn unresolved(&mut self) -> HashMap<String, imports::Status> {
+        imports::unresolved_without_loading(self.ws.knowledge())
+            .into_iter()
+            .map(|iri| {
+                let note = format!(
+                    "Import <{iri}> is not loaded: the toolbox does not follow imports. Add the imported ontology's file to the input to use it."
+                );
+                (iri, imports::Status::Unresolved(note))
+            })
+            .collect()
+    }
+
     /// Diagnostics of `uri` as the server computes them once indexed,
     /// without SHACL (see [`Input::shacl`]).
     fn diagnostics(&mut self, uri: &str) -> Vec<Diagnostic> {
@@ -106,7 +122,12 @@ impl Input {
         let Some(a) = self.ws.analysis(uri) else {
             return Vec::new();
         };
-        diagnostics::diagnostics_with(&a, self.ws.knowledge(), ENC, &opts)
+        let mut d = diagnostics::diagnostics_with(&a, self.ws.knowledge(), ENC, &opts);
+        let unresolved = self.unresolved();
+        d.extend(imports::diagnostics_with(&a, ENC, |iri| {
+            unresolved.get(iri)
+        }));
+        d
     }
 
     /// Whether some file declares shapes, and if so the SHACL results by URI.
@@ -128,9 +149,9 @@ impl Input {
             docs,
             max_triples: self.settings.shacl_max_triples,
             enc: ENC,
-            // Imports are not followed here; the server softens results
-            // only for imports it knows are missing, which needs the network.
-            unresolved: Vec::new(),
+            // Nothing is loaded here, so every import the input does not
+            // declare itself is missing, and results it could change soften.
+            unresolved: imports::unresolved_without_loading(self.ws.knowledge()),
         };
         (
             true,
@@ -215,7 +236,11 @@ impl Input {
                     .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
                     .count()
                     .max(1);
-                let (s, it) = if errors == 1 { ("", "it") } else { ("s", "them") };
+                let (s, it) = if errors == 1 {
+                    ("", "it")
+                } else {
+                    ("s", "them")
+                };
                 let reason = format!("the query has {errors} error{s}; fix {it} first");
                 return json!({ "status": "refused", "guarantee": guarantee, "reason": reason });
             }
@@ -238,7 +263,11 @@ impl Input {
             .filter(|e| e.severity == Severity::Error)
             .count();
         if errors > 0 {
-            let (s, it) = if errors == 1 { ("", "it") } else { ("s", "them") };
+            let (s, it) = if errors == 1 {
+                ("", "it")
+            } else {
+                ("s", "them")
+            };
             let reason = format!("the file has {errors} syntax error{s}; fix {it} first");
             return json!({ "status": "refused", "guarantee": guarantee, "reason": reason });
         }

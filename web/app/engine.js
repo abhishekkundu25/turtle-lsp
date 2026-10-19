@@ -14,8 +14,14 @@ export class EngineCrash extends Error {
 export async function createEngine(bytes) {
   const module = await WebAssembly.compile(bytes)
   let instance
+  // The message of the panic that stopped the engine, if any.
+  let panic = null
   const imports = {
     env: {
+      now_ms: () => Date.now(),
+      report_panic(ptr, len) {
+        panic = new TextDecoder().decode(new Uint8Array(instance.exports.memory.buffer, ptr, len).slice())
+      },
       random_fill(ptr, len) {
         // getRandomValues fills at most 65,536 bytes per call.
         for (let at = 0; at < len; at += 65536) {
@@ -45,7 +51,9 @@ export async function createEngine(bytes) {
         answer = decoder.decode(new Uint8Array(ex.memory.buffer, ex.tl_result(), len))
       } catch (e) {
         start()
-        throw new EngineCrash(e)
+        const why = panic ?? e
+        panic = null
+        throw new EngineCrash(why)
       }
       const out = JSON.parse(answer)
       if ("error" in out) throw new Error(out.error)

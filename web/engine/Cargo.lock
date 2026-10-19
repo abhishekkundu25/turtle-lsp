@@ -969,6 +969,7 @@ version = "0.0.0"
 dependencies = [
  "getrandom 0.3.4",
  "lsp-types",
+ "oxsdatatypes",
  "serde_json",
  "turtle-lsp",
 ]

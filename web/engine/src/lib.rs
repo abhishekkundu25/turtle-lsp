@@ -8,8 +8,11 @@
 //! `tl_result()` points at the answer, valid until the next call.
 //! `tl_free(ptr, len)` gives back room reserved but not passed to `tl_call`.
 //!
-//! The page supplies one import, `env.random_fill(ptr, len)`, which fills
-//! memory with random bytes (crypto.getRandomValues).
+//! The page supplies three imports: `env.random_fill(ptr, len)`, which fills
+//! memory with random bytes (crypto.getRandomValues), `env.now_ms()`, the
+//! time in milliseconds since 1970 (Date.now()), as the module has no clock
+//! of its own, and `env.report_panic(ptr, len)`, which receives a panic's
+//! message (UTF-8) just before the module aborts.
 
 mod api;
 
@@ -38,6 +41,11 @@ pub unsafe extern "C" fn tl_free(ptr: *mut u8, len: usize) {
 /// `ptr` and `len` come from one `tl_alloc`, filled with `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tl_call(ptr: *mut u8, len: usize) -> usize {
+    #[cfg(target_arch = "wasm32")]
+    std::panic::set_hook(Box::new(|info| {
+        let message = info.to_string();
+        unsafe { report_panic(message.as_ptr(), message.len()) };
+    }));
     let request = unsafe { Vec::from_raw_parts(ptr, len, len) };
     let answer = match std::str::from_utf8(&request) {
         Ok(text) => api::handle(text),
@@ -62,6 +70,17 @@ pub extern "C" fn tl_result() -> *const u8 {
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn random_fill(ptr: *mut u8, len: usize);
+    fn report_panic(ptr: *const u8, len: usize);
+    fn now_ms() -> f64;
+}
+
+/// The current time for SPARQL's `NOW()`, from the page.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+fn custom_ox_now() -> oxsdatatypes::Duration {
+    let seconds = oxsdatatypes::Double::from(unsafe { now_ms() } / 1000.0);
+    oxsdatatypes::DayTimeDuration::new(oxsdatatypes::Decimal::try_from(seconds).unwrap_or_default())
+        .into()
 }
 
 #[cfg(target_arch = "wasm32")]
