@@ -207,12 +207,13 @@ test("BASE and relative IRIs are accepted", async () => {
 // --- vocabulary and workspace terms ------------------------------------------------
 
 test("an unknown term of a well-known vocabulary is a warning with a 'did you mean'", async () => {
-  const text = `${RDFS}SELECT * WHERE { ?s rdfs:lable ?l }\n`
+  // One edit away, as in Turtle (a transposition is two: no suggestion).
+  const text = `${RDFS}SELECT * WHERE { ?s rdfs:labl ?l }\n`
   const diags = await diagsOf(text)
   const u = ofCode(diags, "unknown-term")
   assert.equal(u.length, 1, fmt(diags))
   assert.equal(u[0].severity, 2)
-  assert.deepEqual(u[0].range.start, positionOf(text, "rdfs:lable", 0))
+  assert.deepEqual(u[0].range.start, positionOf(text, "rdfs:labl", 0))
   assert.match(u[0].message, /Did you mean 'label'/)
 })
 
@@ -243,9 +244,10 @@ test("an own term that the workspace describes nowhere is reported with a sugges
 test("a query never makes a term described", async () => {
   const update = `${EX}INSERT DATA { ex:ghost a ex:Person ; ex:name "Ghost" }\n`
   await q.withScratch(update, async () => {
-    const diags = await q.withScratch(`@prefix ex: <https://query.example.org/def/> .\nex:a ex:knows ex:ghost .\n`, (d) => d.diags, "ttl")
+    // ex:name keeps ex: an own namespace (most of its terms described).
+    const diags = await q.withScratch(`@prefix ex: <https://query.example.org/def/> .\nex:a ex:name ex:ghost .\n`, (d) => d.diags, "ttl")
     assert.ok(
-      ofCode(diags, "undescribed-term").some((d) => d.range.start.character === 14),
+      ofCode(diags, "undescribed-term").some((d) => d.range.start.character === 13),
       fmt(diags)
     )
   }, "ru")

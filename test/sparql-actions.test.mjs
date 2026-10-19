@@ -96,9 +96,9 @@ test("an unused PREFIX has a fix that removes its line", async () => {
 // --- terms -------------------------------------------------------------------------
 
 test("a misspelled vocabulary term has a fix to the suggestion", async () => {
-  const text = `PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nSELECT * WHERE { ?s rdfs:lable ?l }\n`
-  const { text: after } = await run(text, "rdfs:lable", "Change to 'rdfs:label'")
-  assert.equal(after, text.replace("rdfs:lable", "rdfs:label"))
+  const text = `PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nSELECT * WHERE { ?s rdfs:labl ?l }\n`
+  const { text: after } = await run(text, "rdfs:labl", "Change to 'rdfs:label'")
+  assert.equal(after, text.replace("rdfs:labl", "rdfs:label"))
 })
 
 test("a misspelled own term has a fix to the described term", async () => {
