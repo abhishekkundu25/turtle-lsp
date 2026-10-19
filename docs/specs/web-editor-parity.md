@@ -1,6 +1,6 @@
 # RDF Editor: VS Code parity (iterations 3–5)
 
-Status: batches 1 and 2 done; batch 3 to do. On branch `web-showcase` (not merged to main).
+Status: batches 1, 2 and 3 done. On branch `web-showcase` (not merged to main).
 Builds on `docs/specs/web-editor.md`.
 
 ## Problem Statement
@@ -212,4 +212,42 @@ Verification on the merged branch:
 - Native: no Rust or engine change in this batch (diff against the batch 1
   record is empty), so the batch 1 native results stand.
 - Resource hygiene: no worktrees, slice branches, processes or temp
+  directories left.
+
+## Batch 3 record (2026-10-19)
+
+Slices: `diff` (agent; diff view module, styles, tests), `hierarchy`
+(agent; Type Hierarchy view module, styles, tests) and the orchestrator's
+part (fetch import, folder drop test, WebKit and Firefox runs). Both slices
+conflicted only on adjacent new lines (imports, a stylesheet link).
+
+Departures from the plan:
+- Crash recovery was already covered in batch 1 (host test).
+- A fetched import gets a first line declaring its ontology IRI, which is
+  what makes the import present in the browser; RDF/XML and other formats
+  are refused with the reason, as are fetches the site does not allow.
+- Folder drop is tested with a stand-in for the browser's FileSystemEntry
+  objects (Playwright cannot drag a real folder); this exercises the page's
+  walk, not the browser's.
+- Preview Formatting's Apply refuses when the file changed after the
+  preview (found in review), so it never writes formatting over newer
+  edits. Compare with Saved does not refresh its disk side after a save;
+  the diff view and Settings both cover the editor area and can stack.
+- The diff editor has inlay hints, semantic and occurrence highlighting
+  off (Monaco reports cancelled requests of a closed diff editor as page
+  errors).
+- Firefox: Playwright's Firefox build does not start inside the sandboxed
+  shell used for this work (exits with code 1); running it outside the
+  sandbox was not permitted, so the Firefox run is left to
+  `npm run web:test:browsers` on a normal shell. WebKit runs here.
+- Saving to a folder in place needs showDirectoryPicker (Chromium only);
+  those tests skip in other browsers, where the page hides the button.
+
+Verification on the merged branch:
+- Chrome: engine 24, toolbox 11, LSP parity 13, host 1, editor 23, search
+  6, settings 7, hierarchy 4, diff 2: 91/91.
+- WebKit: toolbox 11/11, editor 19 passed and 4 skipped (folder in place).
+- Native: no Rust or engine change in batches 2 and 3; batch 1's native
+  results stand (cargo test, clippy, Node end-to-end 490/490, benchmark).
+- Resource hygiene: no worktrees, slice branches, test processes or temp
   directories left.
