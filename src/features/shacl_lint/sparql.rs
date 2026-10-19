@@ -12,6 +12,7 @@
 use super::Finding;
 use crate::analysis::Analysis;
 use crate::knowledge::Knowledge;
+use crate::sparql::validate::{self, ErrorAt, ErrorKind};
 use crate::syntax::{Iri, Node, RDF_TYPE, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spargebra::algebra::{AggregateExpression, Expression, GraphPattern, OrderExpression};
@@ -356,99 +357,35 @@ fn push(out: &mut Vec<Finding>, span: Span, code: &'static str, message: String)
     });
 }
 
-/// Room after the query for the parser's keyword lookahead (see
-/// [`syntax_error`]); longer than any SPARQL keyword.
-const PAD: &str = "                ";
-
-/// Reports a query that does not parse. The parser says `error at
-/// LINE:COLUMN: expected WHAT` (column in characters) at the furthest
-/// position any rule failed. Keywords are matched by reading as many
-/// characters as the keyword has and then comparing, so a failed keyword
-/// reports its start plus its length; that length is taken back off. The
-/// query is parsed again with trailing room so that a keyword read near the
-/// end does not stop at the end of the text instead.
+/// Reports a query that does not parse, where
+/// [`validate::locate`](crate::sparql::validate::locate) puts the error.
 fn syntax_error(lit: &Lit, parser: SparqlParser, out: &mut Vec<Finding>) {
-    let v = lit.value;
-    let padded = format!("{v}{PAD}");
-    let msg = match parser.parse_query(&padded) {
-        Err(e) => e.to_string(),
-        Ok(_) => String::new(),
-    };
-    let parsed = msg.strip_prefix("error at ").and_then(|rest| {
-        let (pos, expected) = rest.split_once(": expected ")?;
-        let (line, col) = pos.split_once(':')?;
-        Some((
-            line.parse::<usize>().ok()?,
-            col.parse::<usize>().ok()?,
-            expected,
-        ))
-    });
-    let Some((line, col, expected)) = parsed else {
-        push(out, lit.span, SYNTAX, "SPARQL syntax error".into());
-        return;
-    };
-    let line_start = padded
-        .split_inclusive('\n')
-        .take(line - 1)
-        .map(str::len)
-        .sum::<usize>();
-    let mut off = padded[line_start..]
-        .char_indices()
-        .nth(col - 1)
-        .map_or(padded.len(), |(i, _)| line_start + i);
-    let items: Vec<&str> = expected
-        .strip_prefix("one of ")
-        .unwrap_or(expected)
-        .split(", ")
-        .collect();
-    let keyword = items
-        .iter()
-        .filter(|i| !i.is_empty() && i.bytes().all(|c| c.is_ascii_alphabetic()))
-        .map(|i| i.len())
-        .max();
-    if let Some(n) = keyword {
-        off = off.saturating_sub(n);
-    }
-    let pname = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '%');
-    if items.contains(&"Prefix not found") && off <= v.len() {
-        // Reported at the end of the prefixed name.
-        let start = v[..off].rfind(|c: char| !pname(c)).map_or(0, |i| i + 1);
-        if let Some(colon) = v[start..off].find(':') {
-            let name = &v[start..start + colon];
-            push(
-                out,
-                lit.span(start, off),
-                PREFIX,
-                format!(
-                    "Prefix {name}: is not declared for this query; declare it with sh:prefixes and sh:declare"
-                ),
-            );
+    let e = validate::locate(lit.value, parser, false);
+    let span = match e.at {
+        ErrorAt::Unknown => {
+            push(out, lit.span, SYNTAX, "SPARQL syntax error".into());
             return;
         }
-    }
-    let rest = v.get(off..).unwrap_or("");
-    let span = match rest.char_indices().find(|(_, c)| !c.is_whitespace()) {
-        // Only room left: the query ends too early; mark the closing quotes.
-        None => lit
-            .offset(v.len())
+        // The query ends too early; mark the closing quotes.
+        ErrorAt::End => lit
+            .offset(lit.value.len())
             .map_or(lit.span, |s| Span::new(s, s + lit.quote)),
-        Some((i, c)) => {
-            let from = off + i;
-            let len = if pname(c) {
-                v[from..]
-                    .find(|c: char| !pname(c))
-                    .unwrap_or(v.len() - from)
-            } else {
-                c.len_utf8()
-            };
-            lit.span(from, from + len)
-        }
+        ErrorAt::Token(s) => lit.span(s.start as usize, s.end as usize),
     };
-    let what = if keyword.is_some() || items.iter().all(|i| *i == "[_]") {
-        String::new()
-    } else {
-        format!(": expected {expected}")
-    };
+    if let ErrorKind::UndeclaredPrefix { name } = &e.kind {
+        push(
+            out,
+            span,
+            PREFIX,
+            format!(
+                "Prefix {name}: is not declared for this query; declare it with sh:prefixes and sh:declare"
+            ),
+        );
+        return;
+    }
+    let what = e
+        .shown_expected()
+        .map_or(String::new(), |x| format!(": expected {x}"));
     push(out, span, SYNTAX, format!("SPARQL syntax error{what}"));
 }
 
