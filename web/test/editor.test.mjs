@@ -259,3 +259,107 @@ test("the labels toggle shows label hints in the editor", async () => {
     await close()
   }
 })
+
+// --- batch 1: parity -----------------------------------------------------------
+
+test("Go to File finds symbols across the workspace with '#' and in the file with '@'", async () => {
+  const { page, close } = await open()
+  try {
+    await page.keyboard.press("ControlOrMeta+p")
+    await page.locator("#quick-input").fill("#worksFor")
+    await page.locator(".quick-item", { hasText: "ex:worksFor" }).first().waitFor()
+    await page.keyboard.press("Enter")
+    await page.getByRole("tab", { name: "core.ttl" }).waitFor()
+    const line = await page.evaluate(() => window.monaco.editor.getEditors()[0].getPosition().lineNumber)
+    assert.equal(line, (await text(page, "ontology/core.ttl")).split("\n").findIndex((l) => l.startsWith("ex:worksFor")) + 1)
+    await page.keyboard.press("ControlOrMeta+p")
+    await page.locator("#quick-input").fill("@Organisation")
+    await page.locator(".quick-item", { hasText: "ex:Organisation" }).first().waitFor()
+    await page.keyboard.press("Enter")
+    // Picking runs after the symbols arrive: wait for the cursor to land.
+    const want = (await text(page, "ontology/core.ttl")).split("\n").findIndex((l) => l.startsWith("ex:Organisation")) + 1
+    await page.waitForFunction((want) => window.monaco.editor.getEditors()[0].getPosition().lineNumber === want, want, { timeout: 5000 })
+  } finally {
+    await close()
+  }
+})
+
+test("edits travel as ranges and the server keeps the same text", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  // Record what the page sends the language server worker.
+  await context.addInitScript(() => {
+    window.__sent = []
+    const post = Worker.prototype.postMessage
+    Worker.prototype.postMessage = function (m, ...rest) {
+      if (m?.method === "textDocument/didChange") window.__sent.push(m.params)
+      return post.call(this, m, ...rest)
+    }
+  })
+  const { page, close } = await open({ context })
+  try {
+    await openFile(page, "data/people.ttl")
+    await at(page, "id:bob", 0)
+    await page.keyboard.type("id:x ex:name . ")
+    await settled(page)
+    const sent = await page.evaluate(() => window.__sent)
+    assert.ok(sent.length > 0 && sent.every((p) => p.contentChanges.every((c) => c.range)), JSON.stringify(sent[0]))
+    // The server's text is the editor's: the new error sits where it was typed.
+    const uri = "file:///work/data/people.ttl"
+    const line = (await text(page, "data/people.ttl")).split("\n").findIndex((l) => l.startsWith("id:x")) + 1
+    const errors = await page.evaluate((uri) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(uri) }).filter((m) => m.severity === 8).map((m) => m.startLineNumber), uri)
+    assert.ok(errors.includes(line), `errors on ${errors}, typed on ${line}`)
+  } finally {
+    await close()
+  }
+})
+
+test("dragging a file onto a folder moves it, with its tab and text", async () => {
+  const { page, close } = await open()
+  try {
+    await openFile(page, "data/hr.nq")
+    const before = await text(page, "data/hr.nq")
+    await item(page, "data/hr.nq").dragTo(item(page, "queries"))
+    await item(page, "queries/hr.nq").waitFor()
+    assert.equal(await item(page, "data/hr.nq").count(), 0)
+    assert.equal(await text(page, "queries/hr.nq"), before)
+    await page.getByRole("tab", { name: "hr.nq" }).waitFor()
+    // A folder moves with everything in it.
+    await item(page, "shapes").dragTo(item(page, "ontology"))
+    await item(page, "ontology/shapes/person.ttl").waitFor()
+    await settled(page)
+    assert.ok(Number(await page.locator("#status-shacl").textContent()) >= 2)
+  } finally {
+    await close()
+  }
+})
+
+test("Copy Path and Copy Relative Path", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] })
+  try {
+    const { page } = await open({ context })
+    await item(page, "data/people.ttl").click({ button: "right" })
+    await page.getByRole("menuitem", { name: "Copy Relative Path" }).click()
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "data/people.ttl")
+    await item(page, "data/people.ttl").click({ button: "right" })
+    await page.getByRole("menuitem", { name: "Copy Path", exact: true }).click()
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "file:///work/data/people.ttl")
+  } finally {
+    await context.close()
+  }
+})
+
+test("a file's problems fold in the Problems panel", async () => {
+  const { page, close } = await open()
+  try {
+    const header = page.locator(".problem-file", { hasText: "data/people.ttl" })
+    const rows = page.locator('.problem[data-file="data/people.ttl"]')
+    assert.ok((await rows.count()) > 0)
+    await header.click()
+    assert.equal(await rows.count(), 0)
+    assert.equal(await header.getAttribute("aria-expanded"), "false")
+    await header.click()
+    assert.ok((await rows.count()) > 0)
+  } finally {
+    await close()
+  }
+})

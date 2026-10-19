@@ -37,6 +37,7 @@ const W = {
   labels: false,
   panel: true,
   editing: null, // { mode: "newFile" | "newFolder" | "rename", dir, path }
+  folded: new Set(), // files whose problems are folded in the Problems panel
 }
 let monaco, editor, client, hooks
 const pathByUri = new Map()
@@ -62,8 +63,17 @@ function addFile(path, text, { handle } = {}) {
   const key = model.uri.toString()
   pathByUri.set(key, path)
   W.files.set(path, { model, handle, disk: handle ? text : undefined })
-  model.onDidChangeContent(() => {
-    client.notify("textDocument/didChange", { textDocument: { uri: key, version: model.getVersionId() }, contentChanges: [{ text: model.getValue() }] })
+  // Each change goes as its range and text (Monaco orders them from the end
+  // of the document, so they apply in sequence).
+  model.onDidChangeContent((e) => {
+    const contentChanges = e.changes.map((c) => ({
+      range: {
+        start: { line: c.range.startLineNumber - 1, character: c.range.startColumn - 1 },
+        end: { line: c.range.endLineNumber - 1, character: c.range.endColumn - 1 },
+      },
+      text: c.text,
+    }))
+    client.notify("textDocument/didChange", { textDocument: { uri: key, version: model.getVersionId() }, contentChanges })
     changed({ tabs: true })
   })
   client.notify("textDocument/didOpen", { textDocument: { uri: key, languageId: languageOf(path), version: model.getVersionId(), text } })
@@ -84,6 +94,7 @@ function removeFile(path) {
 
 // Move every file (and kept folder) at or under `from` to `to`.
 function movePath(from, to) {
+  let reopen = null
   for (const [p, f] of [...W.files]) {
     if (!under(p, from)) continue
     const dest = to + p.slice(from.length)
@@ -94,11 +105,25 @@ function movePath(from, to) {
     addFile(dest, text, { handle: f.handle })
     if (f.handle) W.files.get(dest).disk = f.disk
     if (wasTab >= 0) W.tabs.splice(Math.min(wasTab, W.tabs.length), 0, dest)
-    if (wasActive) W.active = dest
+    if (wasActive) reopen = dest
   }
+  if (reopen) openTab(reopen, { focus: false })
   for (const d of [...W.folders]) if (under(d, from)) (W.folders.delete(d), W.folders.add(to + d.slice(from.length)))
   for (const d of [...W.expanded]) if (under(d, from)) (W.expanded.delete(d), W.expanded.add(to + d.slice(from.length)))
   if (W.selected && under(W.selected, from)) W.selected = to + W.selected.slice(from.length)
+}
+
+// Drag and drop within the explorer: `path` into folder `dir`.
+function moveInto(path, dir) {
+  const dest = join(dir, nameOf(path))
+  if (dest === path || under(dir, path)) return
+  if (W.files.has(dest) || folderList().has(dest)) return toast(`${dest} already exists.`)
+  const folder = !W.files.has(path)
+  if (folder) W.folders.add(dest)
+  movePath(path, dest)
+  if (folder) W.folders.delete(path)
+  if (dir) W.expanded.add(dir)
+  changed({ tree: true, tabs: true })
 }
 
 function deletePath(path) {
@@ -180,7 +205,7 @@ function renderTree() {
         const open = W.expanded.has(d)
         let errs = 0
         for (const p of W.files.keys()) if (under(p, d)) errs += counts(p).e
-        html += `<div class="row${W.selected === d ? " sel" : ""}${errs ? " has-e" : ""}" role="treeitem" data-path="${esc(d)}" aria-level="${depth + 1}" aria-expanded="${open}" aria-selected="${W.selected === d}" style="padding-left:${8 + depth * 12}px"><span class="tw codicon codicon-chevron-${open ? "down" : "right"}"></span><span class="nm">${esc(nameOf(d))}</span>${errs ? `<span class="dec e">●</span>` : ""}</div>`
+        html += `<div class="row${W.selected === d ? " sel" : ""}${errs ? " has-e" : ""}" role="treeitem" draggable="true" data-path="${esc(d)}" aria-level="${depth + 1}" aria-expanded="${open}" aria-selected="${W.selected === d}" style="padding-left:${8 + depth * 12}px"><span class="tw codicon codicon-chevron-${open ? "down" : "right"}"></span><span class="nm">${esc(nameOf(d))}</span>${errs ? `<span class="dec e">●</span>` : ""}</div>`
       }
       if (W.expanded.has(d)) walk(d, depth + 1)
     }
@@ -192,7 +217,7 @@ function renderTree() {
       const c = counts(p)
       const cls = c.e ? " has-e" : c.w ? " has-w" : ""
       const dec = c.e ? `<span class="dec e">${c.e}</span>` : c.w ? `<span class="dec w">${c.w}</span>` : ""
-      html += `<div class="row${W.selected === p ? " sel" : ""}${cls}" role="treeitem" data-path="${esc(p)}" aria-level="${depth + 1}" aria-selected="${W.selected === p}" style="padding-left:${8 + depth * 12}px"><span class="tw"></span><span class="fi">${ICON[languageOf(p)]}</span><span class="nm">${esc(nameOf(p))}</span>${dec}</div>`
+      html += `<div class="row${W.selected === p ? " sel" : ""}${cls}" role="treeitem" draggable="true" data-path="${esc(p)}" aria-level="${depth + 1}" aria-selected="${W.selected === p}" style="padding-left:${8 + depth * 12}px"><span class="tw"></span><span class="fi">${ICON[languageOf(p)]}</span><span class="nm">${esc(nameOf(p))}</span>${dec}</div>`
     }
   }
   walk("", 0)
@@ -233,7 +258,9 @@ function renderProblems() {
     const list = (W.diags.get(W.files.get(p).model.uri.toString()) ?? []).filter(keep)
     total += (W.diags.get(W.files.get(p).model.uri.toString()) ?? []).length
     if (!list.length) continue
-    html += `<div class="problem-file" data-open="${esc(p)}"><span class="codicon codicon-chevron-down"></span>${esc(nameOf(p))} <span class="path">${esc(p)}</span><span class="badge">${list.length}</span></div>`
+    const open = !W.folded.has(p)
+    html += `<div class="problem-file" data-fold="${esc(p)}" aria-expanded="${open}"><span class="codicon codicon-chevron-${open ? "down" : "right"}"></span>${esc(nameOf(p))} <span class="path">${esc(p)}</span><span class="badge">${list.length}</span></div>`
+    if (!open) continue
     list.forEach((d, i) => {
       html += `<div class="problem" data-file="${esc(p)}" data-i="${i}"><span class="codicon codicon-${icon[d.severity ?? 1]}"></span><span class="msg">${esc(d.message)}</span><span class="src">${esc(d.code ?? "")} [Ln ${d.range.start.line + 1}, Col ${d.range.start.character + 1}]</span></div>`
     })
@@ -406,6 +433,13 @@ async function save(path = W.active) {
   }
 }
 
+function copy(text) {
+  navigator.clipboard?.writeText(text).then(
+    () => toast(`Copied ${text}`),
+    () => toast(`Copying is not allowed here: ${text}`)
+  )
+}
+
 function download(name, blob) {
   const url = URL.createObjectURL(blob)
   const a = Object.assign(document.createElement("a"), { href: url, download: name })
@@ -493,40 +527,86 @@ function finishEdit(value) {
   changed({ tree: true, tabs: true })
 }
 
-function quickOpen() {
+// Go to File (Ctrl+P), as VS Code's Quick Open: a name finds files, "#name"
+// finds symbols across the workspace, "@name" symbols in the current file.
+function quickOpen(prefix = "") {
   const box = $("quick")
   const input = $("quick-input")
   box.hidden = false
-  input.value = ""
+  input.value = prefix
   let on = 0
-  const list = () => {
-    const q = input.value.toLowerCase()
-    return [...W.files.keys()].filter((p) => p.toLowerCase().includes(q)).sort((a, b) => nameOf(a).localeCompare(nameOf(b))).slice(0, 50)
+  let items = []
+  let seq = 0
+  const symbolItem = (s, path) => {
+    const r = s.location?.range ?? s.selectionRange ?? s.range
+    return { label: s.name, hint: s.containerName || path, path, range: r }
+  }
+  const flatten = (list, out = []) => {
+    for (const s of list ?? []) out.push(s), flatten(s.children, out)
+    return out
+  }
+  const compute = async () => {
+    const q = input.value
+    if (q.startsWith("#")) {
+      const found = (await client.request("workspace/symbol", { query: q.slice(1) }).catch(() => [])) ?? []
+      return found.flatMap((s) => {
+        const path = pathByUri.get(s.location?.uri)
+        return path ? [symbolItem(s, path)] : []
+      })
+    }
+    if (q.startsWith("@")) {
+      if (!W.active) return []
+      const uri = W.files.get(W.active).model.uri.toString()
+      const list = flatten(await client.request("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => []))
+      const want = q.slice(1).toLowerCase()
+      return list.filter((s) => s.name.toLowerCase().includes(want)).map((s) => symbolItem(s, W.active))
+    }
+    const want = q.toLowerCase()
+    return [...W.files.keys()]
+      .filter((p) => p.toLowerCase().includes(want))
+      .sort((a, b) => nameOf(a).localeCompare(nameOf(b)))
+      .map((p) => ({ label: nameOf(p), hint: dirOf(p), path: p }))
   }
   const draw = () => {
-    const items = list()
     on = Math.min(on, Math.max(0, items.length - 1))
-    $("quick-list").innerHTML = items.map((p, i) => `<div class="quick-item${i === on ? " on" : ""}" role="option" data-path="${esc(p)}"><span>${esc(nameOf(p))}</span><span class="dir">${esc(dirOf(p))}</span></div>`).join("")
+    $("quick-list").innerHTML = items
+      .slice(0, 100)
+      .map((it, i) => `<div class="quick-item${i === on ? " on" : ""}" role="option" data-i="${i}"><span>${esc(it.label)}</span><span class="dir">${esc(it.hint)}</span></div>`)
+      .join("")
+  }
+  const refresh = async () => {
+    const mine = ++seq
+    const found = await compute()
+    if (mine !== seq) return
+    items = found
+    draw()
   }
   const close = () => {
     box.hidden = true
-    input.oninput = input.onkeydown = null
+    input.oninput = input.onkeydown = input.onblur = null
     $("quick-list").onclick = null
   }
-  input.oninput = () => ((on = 0), draw())
-  input.onkeydown = (e) => {
-    const items = list()
+  const pick = (it) => {
+    close()
+    if (it.range) reveal(it.path, it.range)
+    else openTab(it.path)
+  }
+  input.oninput = () => ((on = 0), refresh())
+  input.onkeydown = async (e) => {
     if (e.key === "ArrowDown") (on = Math.min(on + 1, items.length - 1)), draw(), e.preventDefault()
     else if (e.key === "ArrowUp") (on = Math.max(on - 1, 0)), draw(), e.preventDefault()
-    else if (e.key === "Enter") items[on] && (close(), openTab(items[on]))
-    else if (e.key === "Escape") close(), editor.focus()
+    else if (e.key === "Enter") {
+      e.preventDefault()
+      await refresh()
+      if (items[on]) pick(items[on])
+    } else if (e.key === "Escape") close(), editor.focus()
   }
   $("quick-list").onclick = (e) => {
-    const it = e.target.closest("[data-path]")
-    if (it) close(), openTab(it.dataset.path)
+    const it = e.target.closest("[data-i]")
+    if (it) pick(items[+it.dataset.i])
   }
   input.onblur = () => setTimeout(close, 150)
-  draw()
+  refresh()
   input.focus()
 }
 
@@ -545,7 +625,8 @@ const COMMANDS = [
   { id: "rdf.fixAll", label: "RDF: Fix All Problems", run: fixAll },
   { id: "rdf.formatAll", label: "RDF: Format All Files", run: formatAll },
   { id: "rdf.labels", label: "View: Toggle Labels", key: () => monaco.KeyMod.Alt | monaco.KeyCode.KeyL, run: toggleLabels },
-  { id: "file.goto", label: "Go to File…", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, run: quickOpen },
+  { id: "file.goto", label: "Go to File…", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, run: () => quickOpen() },
+  { id: "file.gotoSymbol", label: "Go to Symbol in Workspace…", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyT, run: () => quickOpen("#") },
   { id: "file.save", label: "File: Save", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, run: () => save() },
   { id: "file.new", label: "File: New File", run: () => startNew("newFile") },
   { id: "file.newFolder", label: "File: New Folder", run: () => startNew("newFolder") },
@@ -619,7 +700,13 @@ function wire() {
     if (p) {
       items.push("-")
       if (isFile) items.push({ label: "Download", run: () => downloadFile(p) })
-      items.push({ label: "Rename", key: "F2", run: () => startRename(p) }, { label: "Delete", key: "Delete", run: () => deletePath(p) })
+      items.push(
+        { label: "Copy Path", run: () => copy(uriOf(p)) },
+        { label: "Copy Relative Path", run: () => copy(p) },
+        "-",
+        { label: "Rename", key: "F2", run: () => startRename(p) },
+        { label: "Delete", key: "Delete", run: () => deletePath(p) }
+      )
     }
     menu(e.clientX, e.clientY, items)
   })
@@ -642,7 +729,15 @@ function wire() {
   tree.addEventListener("focusout", (e) => {
     if (e.target.classList?.contains("tree-input")) setTimeout(() => W.editing && finishEdit(e.target.value), 0)
   })
-  // Files and folders dropped from the desktop land in the folder under the pointer.
+  // A row dragged within the tree moves; files and folders dropped from the
+  // desktop are imported. Either lands in the folder under the pointer.
+  const MOVE = "application/x-rdf-editor-path"
+  tree.addEventListener("dragstart", (e) => {
+    const row = e.target.closest("[role=treeitem]")
+    if (!row) return
+    e.dataTransfer.setData(MOVE, row.dataset.path)
+    e.dataTransfer.effectAllowed = "move"
+  })
   tree.addEventListener("dragover", (e) => {
     e.preventDefault()
     tree.classList.add("drop")
@@ -654,6 +749,8 @@ function wire() {
     const row = e.target.closest("[role=treeitem]")
     const p = row?.dataset.path ?? ""
     const dir = W.files.has(p) ? dirOf(p) : p
+    const moving = e.dataTransfer?.getData(MOVE)
+    if (moving) return moveInto(moving, dir)
     const items = e.dataTransfer?.items
     if (items?.length && items[0].webkitGetAsEntry) importEntries(await dropped(items), dir)
     else if (e.dataTransfer?.files?.length) importEntries(picked(e.dataTransfer.files), dir)
@@ -705,8 +802,11 @@ function wire() {
       if (d) reveal(p, d.range)
       return
     }
-    const file = e.target.closest("[data-open]")
-    if (file) openTab(file.dataset.open)
+    const file = e.target.closest("[data-fold]")
+    if (!file) return
+    const p = file.dataset.fold
+    W.folded.has(p) ? W.folded.delete(p) : W.folded.add(p)
+    renderProblems()
   })
   document.querySelector(".pfilter").addEventListener("click", (e) => {
     const b = e.target.closest("[data-filter]")
@@ -731,6 +831,8 @@ function wire() {
   document.addEventListener("keydown", (e) => {
     const mod = e.ctrlKey || e.metaKey
     if (mod && e.key.toLowerCase() === "p" && !e.shiftKey) (e.preventDefault(), quickOpen())
+    // Chrome keeps Ctrl+T for itself; where it reaches the page, it finds symbols.
+    else if (mod && e.key.toLowerCase() === "t" && !e.shiftKey) (e.preventDefault(), quickOpen("#"))
     else if (mod && e.key.toLowerCase() === "s") (e.preventDefault(), save())
     else if (e.key === "F1" || (mod && e.shiftKey && e.key.toLowerCase() === "p")) {
       e.preventDefault()

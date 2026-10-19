@@ -4,6 +4,21 @@
 // diagnostics, the server's timers, and the open documents, which it
 // replays into a fresh server if the engine crashes.
 
+// `text` with `range` (LSP: line and UTF-16 character, as JS strings count)
+// replaced by `insert`.
+function splice(text, range, insert) {
+  const at = ({ line, character }) => {
+    let i = 0
+    for (let l = 0; l < line; l++) {
+      const n = text.indexOf("\n", i)
+      if (n === -1) return text.length
+      i = n + 1
+    }
+    return Math.min(text.length, i + character)
+  }
+  return text.slice(0, at(range.start)) + insert + text.slice(at(range.end))
+}
+
 export class EmbeddedServer {
   // `engine`: from createEngine. `on`: optional handlers, `diagnostics(uri,
   // list)`, `request(method, params)` (a server request; return its result),
@@ -63,9 +78,8 @@ export class EmbeddedServer {
       this.open.set(d.uri, { languageId: d.languageId, version: d.version, text: d.text })
     } else if (method === "textDocument/didChange") {
       const doc = this.open.get(uri)
-      const full = params.contentChanges.findLast((c) => !c.range)
-      if (doc && full && params.contentChanges.every((c) => !c.range)) {
-        doc.text = full.text
+      if (doc) {
+        for (const c of params.contentChanges) doc.text = c.range ? splice(doc.text, c.range, c.text) : c.text
         doc.version = params.textDocument.version
       }
     } else if (method === "textDocument/didClose") {
