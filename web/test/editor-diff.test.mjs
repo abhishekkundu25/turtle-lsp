@@ -41,7 +41,7 @@ async function open({ context } = {}) {
   const errors = []
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()))
   page.on("pageerror", (e) => errors.push(String(e)))
-  await page.goto(origin + "/editor.html")
+  await page.goto(origin + "/index.html")
   await page.locator("body[data-ready='true']").waitFor({ timeout: 20_000 })
   return { page, errors, close: () => ctx.close() }
 }
@@ -53,7 +53,7 @@ async function inPlaceContext(files) {
     window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
   })
   const seed = await context.newPage()
-  await seed.goto(origin + "/editor.html")
+  await seed.goto(origin + "/index.html")
   await seed.evaluate(async (files) => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
     for (const [p, text] of Object.entries(files)) {

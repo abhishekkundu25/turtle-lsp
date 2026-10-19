@@ -50,7 +50,7 @@ async function open({ context } = {}) {
     if (u.includes("monaco-vim")) seen.vimLoads++
     if (!u.startsWith(origin) && !u.startsWith("data:") && !u.startsWith("blob:")) foreign.push(u)
   })
-  await page.goto(origin + "/editor.html")
+  await page.goto(origin + "/index.html")
   await page.locator("body[data-ready='true']").waitFor({ timeout: 20_000 })
   return { page, errors, foreign, seen, close: () => ctx.close() }
 }
@@ -219,7 +219,7 @@ async function inPlaceContext(files) {
     window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
   })
   const seed = await context.newPage()
-  await seed.goto(origin + "/editor.html")
+  await seed.goto(origin + "/index.html")
   await seed.evaluate(async (files) => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
     for (const [p, text] of Object.entries(files)) {

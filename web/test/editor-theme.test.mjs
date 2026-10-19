@@ -56,7 +56,7 @@ async function open(system) {
     const u = r.url()
     if (!u.startsWith(origin) && !u.startsWith("data:") && !u.startsWith("blob:")) foreign.push(u)
   })
-  await page.goto(origin + "/editor.html")
+  await page.goto(origin + "/index.html")
   await ready(page)
   return { page, errors, foreign, close: () => ctx.close() }
 }

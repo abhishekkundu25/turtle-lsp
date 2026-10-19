@@ -2,49 +2,113 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>RDF Toolbox</title>
-<meta name="description" content="Format, validate, SHACL-check and tidy SPARQL in your browser. turtle-lsp runs in this tab; nothing is uploaded.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDF Editor</title>
+<meta name="description" content="Edit Turtle, TriG, N-Triples, N-Quads and SPARQL with turtle-lsp running in this tab. Nothing is uploaded.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%231d2330%22/%3E%3Ctext x=%2216%22 y=%2221%22 font-family=%22monospace%22 font-size=%2212%22 font-weight=%22700%22 fill=%22white%22 text-anchor=%22middle%22%3Ettl%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css">
-<script type="module" src="app.js"></script>
+<script>
+  // On a phone the toolbox is the better page; ?editor opens the editor anyway.
+  if (matchMedia("(max-width: 760px)").matches && !new URLSearchParams(location.search).has("editor")) location.replace("toolbox.html")
+</script>
+<script>try { const t = localStorage.getItem("rdf-editor-theme"); if (t !== "auto") document.documentElement.dataset.theme = t === "light" ? "light" : "dark" } catch { document.documentElement.dataset.theme = "dark" }</script>
+<link rel="stylesheet" href="editor.css">
+<link rel="stylesheet" href="search.css">
+<link rel="stylesheet" href="settings.css">
+<link rel="stylesheet" href="hierarchy.css">
+<link rel="stylesheet" href="diff.css">
+<link rel="stylesheet" href="vim.css">
+<script src="vendor/monaco/vs/loader.js"></script>
+<script type="module" src="editor.js"></script>
 </head>
 <body data-ready="false" data-busy="true">
-<header class="hd">
-  <div class="brand"><span class="logo" aria-hidden="true">ttl</span><b>RDF Toolbox</b><span class="sub">built on turtle-lsp</span></div>
-  <div class="hd-end"><span class="priv">Runs in this tab. Nothing is uploaded.</span><a class="ed-link" href="editor.html">Open the editor</a></div>
-</header>
-<nav class="tabs" id="tabs" role="tablist" aria-label="Tools"></nav>
-<p class="note" id="note" hidden>The SHACL tab appears when the input has shapes.</p>
-<main class="main">
-  <section class="pane input" aria-label="Input">
-    <div class="pane-hd"><h2>Input</h2><span class="stat" id="input-stat"></span></div>
-    <div class="files" id="files"></div>
-    <div class="intools">
-      <select class="isel" id="sample" aria-label="Sample input"></select>
-      <button class="ibtn" id="paste">Paste</button>
-      <button class="ibtn" id="open">Open files</button>
-      <button class="ibtn" id="open-folder">Open folder</button>
-      <button class="ibtn" id="download">Download</button>
-      <input type="file" id="picker" class="hidden-input" multiple accept=".ttl,.turtle,.trig,.nt,.nq,.rq,.sparql,.ru" tabindex="-1">
-      <input type="file" id="folder-picker" class="hidden-input" webkitdirectory multiple tabindex="-1">
-      <span class="ihint">or drop files or a folder here</span>
+<div class="wb">
+  <nav class="activity" aria-label="Views">
+    <button class="act on" id="act-explorer" title="Explorer (Ctrl+Shift+E)" aria-label="Explorer"><span class="codicon codicon-files"></span></button>
+    <button class="act" id="act-search" title="Search (Ctrl+Shift+F)" aria-label="Search"><span class="codicon codicon-search"></span></button>
+    <button class="act" id="act-outline" title="Outline" aria-label="Outline"><span class="codicon codicon-symbol-class"></span></button>
+    <button class="act" id="act-hierarchy" title="Type Hierarchy (Shift+Alt+H)" aria-label="Type Hierarchy"><span class="codicon codicon-type-hierarchy"></span></button>
+    <span class="act-sp"></span>
+    <a class="act" href="toolbox.html" title="Toolbox: format, validate and check files without the editor" aria-label="Toolbox"><span class="codicon codicon-tools"></span></a>
+    <button class="act" id="act-settings" title="Settings (Ctrl+,)" aria-label="Settings"><span class="codicon codicon-settings-gear"></span></button>
+  </nav>
+
+  <aside class="side" aria-label="Side bar">
+    <section class="view" id="view-explorer">
+      <div class="view-hd">
+        <span class="view-title">Explorer</span>
+        <span class="sp"></span>
+        <button class="ic" aria-label="New File" title="New File"><span class="codicon codicon-new-file"></span></button>
+        <button class="ic" aria-label="New Folder" title="New Folder"><span class="codicon codicon-new-folder"></span></button>
+        <button class="ic" aria-label="Import Files" title="Import Files…"><span class="codicon codicon-cloud-upload"></span></button>
+        <button class="ic" aria-label="Import Folder" title="Import Folder…"><span class="codicon codicon-folder-library"></span></button>
+        <button class="ic" aria-label="Open Folder in Place" title="Open Folder… (edit the files on your disk, Ctrl+S saves)" id="open-in-place" hidden><span class="codicon codicon-folder-opened"></span></button>
+        <button class="ic" aria-label="Download File" title="Download File"><span class="codicon codicon-desktop-download"></span></button>
+        <button class="ic" aria-label="Export Workspace as Zip" title="Export Workspace as Zip"><span class="codicon codicon-file-zip"></span></button>
+        <button class="ic" aria-label="Collapse Folders" title="Collapse Folders"><span class="codicon codicon-collapse-all"></span></button>
+      </div>
+      <div class="tree" id="tree" role="tree" aria-label="Explorer" tabindex="0"></div>
+      <input type="file" id="files-input" class="hidden-input" multiple tabindex="-1">
+      <input type="file" id="folder-input" class="hidden-input" webkitdirectory multiple tabindex="-1">
+    </section>
+    <section class="view" id="view-search" hidden></section>
+    <section class="view" id="view-hierarchy" hidden></section>
+    <section class="view" id="view-outline" hidden>
+      <div class="view-hd"><span class="view-title">Outline</span></div>
+      <div class="outline" id="outline"></div>
+    </section>
+  </aside>
+
+  <main class="center">
+    <div class="groups" id="groups"></div>
+  </main>
+
+  <section class="panel" aria-label="Panel">
+    <div class="panel-hd" role="tablist" aria-label="Panel">
+      <button class="ptab on" role="tab" aria-selected="true" id="tab-problems">Problems <span class="badge" id="problems-count">0</span></button>
+      <span class="sp"></span>
+      <div class="pfilter" role="group" aria-label="Show">
+        <button class="pf on" data-filter="all">All</button>
+        <button class="pf" data-filter="errors">Errors</button>
+        <button class="pf" data-filter="warnings">Warnings</button>
+        <button class="pf" data-filter="shacl">SHACL</button>
+      </div>
+      <button class="ic" aria-label="Fix All Problems" title="Fix All Problems (every preferred quick fix)"><span class="codicon codicon-lightbulb-autofix"></span></button>
+      <button class="ic" aria-label="Toggle Panel" title="Toggle Panel (Ctrl+J)" id="panel-toggle"><span class="codicon codicon-chevron-down"></span></button>
     </div>
-    <div id="paste-box" class="paste" hidden>
-      <textarea id="paste-text" class="ita" aria-label="Pasted text" spellcheck="false" placeholder="Turtle, TriG, N-Triples, N-Quads or a SPARQL query"></textarea>
-      <div class="intools"><button class="ibtn pri" id="paste-add">Add to input</button><button class="ibtn" id="paste-cancel">Cancel</button></div>
-    </div>
-    <div class="editor" id="editor-wrap">
-      <pre class="hl" id="hl" aria-hidden="true"></pre>
-      <textarea id="editor" aria-label="File text" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
-    </div>
+    <div class="problems" id="problems" role="tabpanel" aria-labelledby="tab-problems"></div>
   </section>
-  <section class="pane tool" aria-label="Tool">
-    <div class="pane-hd"><h2 id="tool-title"></h2><span class="stat mono" id="tool-stat"></span><p id="tool-job"></p></div>
-    <div class="tool-body" id="tool"></div>
-  </section>
-</main>
-<footer class="ft"><span id="version">turtle-lsp</span> · <span id="timing"></span> · W3C suites: RDF syntaxes 1137/1137, SPARQL syntax 425/426. Imports (owl:imports) are not followed here.</footer>
-<div class="crash" id="crash" role="alert" hidden></div>
+
+  <footer class="status" aria-label="Status bar">
+    <button class="st" id="status-problems" title="Problems"><span class="codicon codicon-error"></span><span id="status-errors">0</span><span class="codicon codicon-warning"></span><span id="status-warnings">0</span></button>
+    <span class="st" id="status-shacl-wrap" title="SHACL violations"><span class="codicon codicon-shield"></span><span id="status-shacl">0</span> SHACL</span>
+    <span class="st" id="status-busy" hidden><span class="codicon codicon-loading codicon-modifier-spin"></span> Analysing</span>
+    <span class="st" id="status-vim" hidden></span>
+    <span class="sp"></span>
+    <button class="st" id="status-labels" title="Show rdfs:label next to every term (Alt+L)">Labels: Off</button>
+    <span class="st" id="status-pos"></span>
+    <span class="st" id="status-lang"></span>
+    <button class="st" id="status-storage" title="Where your files are kept: everything stays in this browser">Kept in this browser</button>
+    <a class="st" id="status-version" href="https://github.com/abhishekkundu25/turtle-lsp/releases" target="_blank" rel="noopener" title="turtle-lsp releases on GitHub">turtle-lsp</a>
+  </footer>
+</div>
+<div class="quick" id="quick" hidden>
+  <input id="quick-input" aria-label="Go to file" placeholder="Go to file by name" autocomplete="off" spellcheck="false">
+  <div class="quick-list" id="quick-list" role="listbox"></div>
+</div>
+<div class="menu" id="menu" role="menu" hidden></div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="dialog" id="dialog" role="dialog" aria-modal="true" aria-label="Unsaved changes" hidden></div>
+<div class="intro" id="intro" role="dialog" aria-modal="true" aria-labelledby="intro-title" hidden>
+  <div class="intro-card">
+    <span class="codicon codicon-lock intro-icon" aria-hidden="true"></span>
+    <h1 id="intro-title">Private by design</h1>
+    <p>Everything happens in this tab: parsing, validation, SHACL, formatting. No server ever sees your data.</p>
+    <div class="intro-btns">
+      <button class="pri" data-act="start">Start editing</button>
+      <button data-act="open">Open my files…</button>
+    </div>
+    <p class="intro-foot">Powered by <a href="https://github.com/abhishekkundu25/turtle-lsp" target="_blank" rel="noopener"><b>turtle-lsp</b></a>, open source · <a href="https://github.com/abhishekkundu25/turtle-lsp" target="_blank" rel="noopener">GitHub</a> · <a href="https://marketplace.visualstudio.com/items?itemName=abhishekkundu25.turtle-language-server" target="_blank" rel="noopener">Get it for VS Code</a></p>
+  </div>
+</div>
 </body>
 </html>

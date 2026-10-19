@@ -46,7 +46,7 @@ async function open({ width = 1280, height = 900 } = {}) {
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()))
   page.on("pageerror", (e) => errors.push(String(e)))
   page.on("request", (r) => !r.url().startsWith(origin) && !r.url().startsWith("data:") && foreign.push(r.url()))
-  await page.goto(origin + "/")
+  await page.goto(origin + "/toolbox.html")
   await page.locator("body[data-ready='true']").waitFor({ timeout: 15_000 })
   return { page, errors, foreign, close: () => ctx.close() }
 }
@@ -253,4 +253,29 @@ test("on a phone the panes stack and nothing scrolls sideways", async () => {
   } finally {
     await close()
   }
+})
+
+test("the front page is the editor; on a phone it is the toolbox, unless ?editor; editor.html leads to the front page", async () => {
+  const at = async ({ width, height }, url) => {
+    const ctx = await browser.newContext({ viewport: { width, height } })
+    const page = await ctx.newPage()
+    await page.goto(origin + url)
+    await page.waitForLoadState("domcontentloaded")
+    await page.waitForFunction(() => document.title !== "")
+    const where = { path: new URL(page.url()).pathname, title: await page.title() }
+    await ctx.close()
+    return where
+  }
+  const desktop = { width: 1280, height: 900 }
+  const phone = { width: 390, height: 800 }
+  assert.deepEqual(await at(desktop, "/"), { path: "/", title: "RDF Editor" })
+  assert.equal((await at(phone, "/")).path, "/toolbox.html")
+  assert.deepEqual(await at(phone, "/?editor"), { path: "/", title: "RDF Editor" })
+  assert.deepEqual(await at(desktop, "/editor.html"), { path: "/", title: "RDF Editor" })
+  // The toolbox links to the editor so that a phone gets there too.
+  const ctx = await browser.newContext({ viewport: phone })
+  const page = await ctx.newPage()
+  await page.goto(origin + "/toolbox.html")
+  assert.equal(await page.getByRole("link", { name: "Open the editor" }).getAttribute("href"), "./?editor")
+  await ctx.close()
 })

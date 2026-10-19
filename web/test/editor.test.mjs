@@ -51,7 +51,7 @@ async function open({ context, intro = false } = {}) {
     const u = r.url()
     if (!u.startsWith(origin) && !u.startsWith("data:") && !u.startsWith("blob:")) foreign.push(u)
   })
-  await page.goto(origin + "/editor.html")
+  await page.goto(origin + "/index.html")
   await page.locator("body[data-ready='true']").waitFor({ timeout: 20_000 })
   return { page, ctx, errors, foreign, close: () => ctx.close() }
 }
@@ -406,7 +406,7 @@ async function inPlaceContext(files, name = "proj") {
     window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true })
   }, name)
   const seed = await context.newPage()
-  await seed.goto(origin + "/editor.html")
+  await seed.goto(origin + "/index.html")
   await seed.evaluate(async ([files, name]) => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true })
     for (const [p, text] of Object.entries(files)) {
