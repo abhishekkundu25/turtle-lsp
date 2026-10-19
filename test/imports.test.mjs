@@ -126,7 +126,7 @@ test("an import mapped by a local catalog makes its terms (and its imports') kno
     s.open(uri, text)
     const widget = await hoverUntil(s, uri, positionOf(text, "ext:Widget", 5), "Widget thing")
     assert.match(widget, /Something with a size/)
-    assert.match(widget, /Described in ext\.ttl/)
+    assert.match(widget, /Described in \[ext\.ttl:\d+\]\(file:[^)]*ext\.ttl#L\d+\)/)
     // ext2 is imported by ext (which ext2 imports back).
     await hoverUntil(s, uri, positionOf(text, "ext2:size", 6), "size in millimetres")
     // RDF/XML.

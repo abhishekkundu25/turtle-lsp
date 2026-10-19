@@ -123,6 +123,21 @@ test("hover and completion come from the language server", async () => {
   }
 })
 
+test("the file named in a hover opens at its line when clicked", async () => {
+  const { page, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    await at(page, "ex:worksFor", 4, "editor.action.showHover")
+    await page.locator(".monaco-hover a", { hasText: /^core\.ttl:\d+$/ }).click()
+    await page.getByRole("tab", { name: "core.ttl" }).waitFor()
+    const line = await page.evaluate(() => window.monaco.editor.getEditors()[0].getPosition().lineNumber)
+    const want = (await text(page, "ontology/core.ttl")).split("\n").findIndex((l) => l.startsWith("ex:worksFor")) + 1
+    assert.equal(line, want)
+  } finally {
+    await close()
+  }
+})
+
 test("a quick fix applies its edit", async () => {
   const { page, close } = await open()
   try {

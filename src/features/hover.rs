@@ -110,15 +110,21 @@ pub fn describe_iri(iri: &str, label: &str, k: &Knowledge, prefixes: &PrefixMap)
         .iter()
         .map(|d| {
             let a = d.analysis;
-            // A cached import is named by the URL it came from.
-            let file = a.origin.clone().unwrap_or_else(|| {
-                uri_to_path(&a.uri)
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-                    .or_else(|| crate::workspace::file_uri_name(&a.uri))
-                    .unwrap_or_else(|| a.uri.clone())
-            });
             let line = a.position(Encoding::Utf8, d.spans[0].start).line + 1;
-            format!("{file}:{line}")
+            // A cached import is named by the URL it came from.
+            if let Some(origin) = &a.origin {
+                return format!("{origin}:{line}");
+            }
+            let file = uri_to_path(&a.uri)
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .or_else(|| crate::workspace::file_uri_name(&a.uri))
+                .unwrap_or_else(|| a.uri.clone());
+            // A workspace file links to the line, as editors open `#L<line>`.
+            if a.uri.starts_with("file:") {
+                format!("[{file}:{line}]({}#L{line})", a.uri)
+            } else {
+                format!("{file}:{line}")
+            }
         })
         .collect();
     text_label = text_label.or_else(|| k.label(iri).map(str::to_string));
@@ -189,5 +195,23 @@ mod tests {
         let md = describe_iri("http://ex.com/x#T", "T", &k, &PrefixMap::default()).unwrap();
         assert!(md.contains("_Described in http://ex.com/x:2_"), "{md}");
         assert!(!md.contains("0123456789abcdef"), "{md}");
+    }
+
+    #[test]
+    fn hover_links_a_workspace_description_to_its_line() {
+        let text = "\n<http://ex.com/x#T> a <http://www.w3.org/2002/07/owl#Class> .\n";
+        let a = Analysis::new(
+            "file:///work/my%20onto.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            false,
+        );
+        let mut k = Knowledge::default();
+        k.add_external("file:///work/my%20onto.ttl", Arc::new(a));
+        let md = describe_iri("http://ex.com/x#T", "T", &k, &PrefixMap::default()).unwrap();
+        assert!(
+            md.contains("_Described in [my onto.ttl:2](file:///work/my%20onto.ttl#L2)_"),
+            "{md}"
+        );
     }
 }
