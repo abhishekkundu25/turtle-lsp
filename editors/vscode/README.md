@@ -11,6 +11,8 @@ diagnostics in about 9 ms.
 
 Try it first in your browser, with nothing to install: [RDF Editor](https://abhishekkundu25.github.io/turtle-lsp/).
 
+<p align="center"><img src="https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/demo.gif" alt="Editing RDF in the browser: SHACL errors as you type, completion from the shapes, rename across files" width="900"></p>
+
 Passes the W3C test suites: Turtle, TriG, N-Triples and N-Quads 1137/1137,
 SPARQL 1.1 and 1.2 syntax 425/426, SHACL Core 98/98, SHACL-SPARQL 23/23.
 

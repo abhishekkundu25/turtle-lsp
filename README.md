@@ -13,6 +13,8 @@ the whole file formats in about 5 ms. The server starts in a few milliseconds.
 **[Try it in your browser](https://abhishekkundu25.github.io/turtle-lsp/)**: the same server, compiled to
 WebAssembly, in an editor that runs entirely in the tab. Nothing is uploaded.
 
+<p align="center"><img src="assets/demo.gif" alt="Editing RDF in the browser: SHACL errors as you type, completion from the shapes, rename across files" width="900"></p>
+
 It is the only Turtle language server we know of that checks itself against
 the full W3C test suites and real public ontologies; see
 [Tested against the real world](#tested-against-the-real-world).
