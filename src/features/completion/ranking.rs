@@ -123,12 +123,34 @@ struct Level {
     path: Vec<Iri>,
 }
 
+/// What the ranking needs to know of a subject around the cursor (the
+/// subject itself first, then those enclosing it): its types, and the
+/// predicates leading from it to the cursor's subject.
+pub struct Subject {
+    pub types: Vec<Iri>,
+    pub path: Vec<Iri>,
+}
+
+fn subjects(a: &Analysis, k: &Knowledge, levels: &[Level]) -> Vec<Subject> {
+    levels
+        .iter()
+        .map(|level| Subject {
+            types: types(a, k, level),
+            path: level.path.clone(),
+        })
+        .collect()
+}
+
 /// Ranking for the predicate written at `offset`.
 pub fn predicates(a: &Analysis, k: &Knowledge, offset: u32, prefixes: &PrefixMap) -> Ranking {
+    predicates_for(k, &subjects(a, k, &levels(a, offset)), prefixes)
+}
+
+/// Ranking for a predicate of `subjects[0]` (the others enclose it).
+pub fn predicates_for(k: &Knowledge, subjects: &[Subject], prefixes: &PrefixMap) -> Ranking {
     let mut r = Ranking::default();
-    let levels = levels(a, offset);
-    for (depth, level) in levels.iter().enumerate() {
-        let classes = superclasses(k, &types(a, k, level));
+    for (depth, level) in subjects.iter().enumerate() {
+        let classes = superclasses(k, &level.types);
         for &c in &classes {
             for (doc, shape) in k.shapes_targeting(&c) {
                 for pc in &shape.properties {
@@ -171,17 +193,37 @@ pub fn objects(
     prefixes: &PrefixMap,
     keep: &dyn Fn(Iri) -> bool,
 ) -> Ranking {
-    let mut r = Ranking::default();
     let Some((pred, pred_start)) = predicate_of_object(a, offset) else {
-        return r;
+        return Ranking::default();
     };
+    if pred == preds().rdf_type {
+        return Ranking::default();
+    }
+    let levels = levels(a, pred_start);
+    let subject = levels.first().and_then(|l| match l.node {
+        Some(Node::Iri(i)) => Some(i),
+        _ => None,
+    });
+    objects_for(k, pred, &subjects(a, k, &levels), subject, prefixes, keep)
+}
+
+/// Ranking for an object of `pred` whose subject is `subjects[0]` (the
+/// others enclose it); `subject` is that subject's IRI, never offered.
+pub fn objects_for(
+    k: &Knowledge,
+    pred: Iri,
+    subjects: &[Subject],
+    subject: Option<Iri>,
+    prefixes: &PrefixMap,
+    keep: &dyn Fn(Iri) -> bool,
+) -> Ranking {
+    let mut r = Ranking::default();
     if pred == preds().rdf_type {
         return r;
     }
-    let levels = levels(a, pred_start);
     let mut classes: Vec<(Iri, u8)> = Vec::new();
-    for level in &levels {
-        let types = superclasses(k, &types(a, k, level));
+    for level in subjects {
+        let types = superclasses(k, &level.types);
         for &c in &types {
             for (doc, shape) in k.shapes_targeting(&c) {
                 for pc in &shape.properties {
@@ -220,10 +262,6 @@ pub fn objects(
         classes.extend(k.ranges(&p).into_iter().map(|c| (c, SHAPE)));
     }
 
-    let subject = levels.first().and_then(|l| match l.node {
-        Some(Node::Iri(i)) => Some(i),
-        _ => None,
-    });
     let mut seen: FxHashSet<Iri> = FxHashSet::default();
     let mut found = 0usize;
     let mut scanned = 0usize;

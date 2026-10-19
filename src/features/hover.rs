@@ -158,7 +158,7 @@ pub fn describe_iri(iri: &str, label: &str, k: &Knowledge, prefixes: &PrefixMap)
     Some(out)
 }
 
-fn md(value: String, range: Range) -> Hover {
+pub(crate) fn md(value: String, range: Range) -> Hover {
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,

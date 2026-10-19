@@ -73,19 +73,19 @@ pub fn range(a: &Analysis, k: &Knowledge, enc: Encoding, range: Range) -> Semant
 
 /// One token as a byte span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Raw {
-    start: u32,
-    end: u32,
-    ty: u32,
-    mods: u32,
+pub(crate) struct Raw {
+    pub start: u32,
+    pub end: u32,
+    pub ty: u32,
+    pub mods: u32,
 }
 
 /// What an IRI denotes regardless of where it is written: a token type when
 /// one is known, and its modifiers.
 #[derive(Clone, Copy)]
-struct Class {
-    ty: Option<u32>,
-    mods: u32,
+pub(crate) struct Class {
+    pub ty: Option<u32>,
+    pub mods: u32,
 }
 
 /// Sorted, non-overlapping tokens overlapping `from..to` (a token that only
@@ -172,10 +172,16 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
         push(local_start, end, ty, c.mods | decl);
     }
 
+    sort_and_dedupe(&mut out);
+    out
+}
+
+/// Sorts tokens by start and drops any that overlaps the one before it
+/// (overlaps only come from damaged text; the first token is kept).
+pub(crate) fn sort_and_dedupe(out: &mut Vec<Raw>) {
     if !out.is_sorted_by_key(|t| t.start) {
         out.sort_by_key(|t| t.start);
     }
-    // Overlaps only come from damaged text; keep the first token.
     let mut end = 0;
     out.retain(|t| {
         let keep = t.start >= end;
@@ -184,7 +190,6 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
         }
         keep
     });
-    out
 }
 
 /// Schema links that say what their subject / object is, e.g. both ends of
@@ -303,7 +308,8 @@ fn is_datatype(iri: &str) -> bool {
     ) || iri.strip_prefix(RDFS) == Some("Literal")
 }
 
-fn classify(k: &Knowledge, iri: &str) -> Class {
+/// What `iri` denotes, from the workspace and the vocabularies.
+pub(crate) fn classify(k: &Knowledge, iri: &str) -> Class {
     let term = VOCABS.lookup(iri);
     let vocab_term = term.and_then(|(v, local)| v.term(local));
     let mut mods = 0;
@@ -345,7 +351,16 @@ fn width(enc: Encoding, s: &str) -> u32 {
 /// Relative LSP encoding. Tokens never span lines (IRIs and prefixed names
 /// cannot contain line breaks).
 fn encode(a: &Analysis, enc: Encoding, raw: &[Raw]) -> SemanticTokens {
-    let text = &*a.text;
+    encode_with(&a.text, enc, raw, |o| a.position(enc, o))
+}
+
+/// [`encode`] for any document: `position` maps a byte offset of `text`.
+pub(crate) fn encode_with(
+    text: &str,
+    enc: Encoding,
+    raw: &[Raw],
+    position: impl Fn(u32) -> lsp_types::Position,
+) -> SemanticTokens {
     let mut data = Vec::with_capacity(raw.len());
     let (mut line, mut col) = (0, 0);
     for t in raw {
@@ -353,7 +368,7 @@ fn encode(a: &Analysis, enc: Encoding, raw: &[Raw]) -> SemanticTokens {
         if s.contains(['\n', '\r']) {
             continue;
         }
-        let p = a.position(enc, t.start);
+        let p = position(t.start);
         let delta_start = if p.line == line {
             p.character - col
         } else {

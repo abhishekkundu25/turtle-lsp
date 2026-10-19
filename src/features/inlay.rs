@@ -6,7 +6,7 @@ use crate::knowledge::Knowledge;
 use crate::settings::InlayLabels;
 use crate::syntax::Form;
 use crate::vocab::VOCABS;
-use lsp_types::{InlayHint, InlayHintLabel, InlayHintTooltip, Range};
+use lsp_types::{InlayHint, InlayHintLabel, InlayHintTooltip, Position, Range};
 
 /// Hints longer than this are cut, with an ellipsis.
 const MAX_CHARS: usize = 60;
@@ -34,28 +34,41 @@ pub fn inlay_hints(
             }
             Form::Iri => local_of(&r.iri),
         };
-        let Some(label) = label_of(k, &r.iri) else {
-            continue;
-        };
-        if mode == InlayLabels::Opaque && !is_opaque(local, label) {
-            continue;
-        }
-        let text = display(label);
-        if text.is_empty() {
-            continue;
-        }
-        out.push(InlayHint {
-            position: a.position(enc, r.span.end),
-            label: InlayHintLabel::String(text),
-            kind: None,
-            text_edits: None,
-            tooltip: Some(InlayHintTooltip::String(format!("<{}>", r.iri))),
-            padding_left: Some(true),
-            padding_right: None,
-            data: None,
-        });
+        out.extend(label_hint(k, &r.iri, local, mode, || {
+            a.position(enc, r.span.end)
+        }));
     }
     out
+}
+
+/// The label hint for `iri`, written with local name `local` (the part of
+/// the name that may say what the label says), at `position()`; `None`
+/// when it has no label or (in `opaque` mode) the name says it already.
+pub(crate) fn label_hint(
+    k: &Knowledge,
+    iri: &str,
+    local: &str,
+    mode: InlayLabels,
+    position: impl FnOnce() -> Position,
+) -> Option<InlayHint> {
+    let label = label_of(k, iri)?;
+    if mode == InlayLabels::Off || (mode == InlayLabels::Opaque && !is_opaque(local, label)) {
+        return None;
+    }
+    let text = display(label);
+    if text.is_empty() {
+        return None;
+    }
+    Some(InlayHint {
+        position: position(),
+        label: InlayHintLabel::String(text),
+        kind: None,
+        text_edits: None,
+        tooltip: Some(InlayHintTooltip::String(format!("<{iri}>"))),
+        padding_left: Some(true),
+        padding_right: None,
+        data: None,
+    })
 }
 
 /// The workspace label, else the vocabulary's.
@@ -70,7 +83,7 @@ fn label_of<'a>(k: &'a Knowledge, iri: &str) -> Option<&'a str> {
 
 /// The last segment of a full IRI (after `#`, `/` or `:`, ignoring a
 /// trailing `/`).
-fn local_of(iri: &str) -> &str {
+pub(crate) fn local_of(iri: &str) -> &str {
     let s = iri.strip_suffix('/').unwrap_or(iri);
     s.rfind(['#', '/', ':']).map_or(s, |i| &s[i + 1..])
 }
@@ -142,7 +155,6 @@ mod tests {
     use super::*;
     use crate::knowledge::Source;
     use crate::syntax::PrefixMap;
-    use lsp_types::Position;
     use std::sync::Arc;
 
     #[test]

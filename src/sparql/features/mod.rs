@@ -23,9 +23,12 @@
 //! SPARQL documents add nothing to workspace symbols.
 
 mod actions;
+mod completion;
 pub mod diagnostics;
+mod display;
 pub mod edits;
 mod navigation;
+mod outline;
 mod rename;
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
@@ -40,22 +43,22 @@ use std::sync::Arc;
 /// (they then go to [`resolve_completion`]); other items carrying
 /// `data.iri` are resolved by the Turtle resolver (term documentation).
 pub fn completion(
-    _q: &SparqlAnalysis,
-    _k: &Knowledge,
-    _enc: Encoding,
-    _params: &CompletionParams,
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    params: &CompletionParams,
 ) -> Option<CompletionResponse> {
-    None
+    completion::completion(q, k, enc, params)
 }
 
 /// `completionItem/resolve` for items with `data.sparql = true`.
-pub fn resolve_completion(item: CompletionItem, _k: &Knowledge) -> CompletionItem {
-    item
+pub fn resolve_completion(item: CompletionItem, k: &Knowledge) -> CompletionItem {
+    completion::resolve_completion(item, k)
 }
 
 /// `textDocument/hover`.
-pub fn hover(_q: &SparqlAnalysis, _k: &Knowledge, _enc: Encoding, _pos: Position) -> Option<Hover> {
-    None
+pub fn hover(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding, pos: Position) -> Option<Hover> {
+    display::hover(q, k, enc, pos)
 }
 
 /// `textDocument/definition`. `prefix_file` is the `prefixes.ttl` supplying
@@ -114,41 +117,41 @@ pub fn rename(
 }
 
 /// `textDocument/documentSymbol`.
-pub fn document_symbols(_q: &SparqlAnalysis, _enc: Encoding) -> Vec<DocumentSymbol> {
-    Vec::new()
+pub fn document_symbols(q: &SparqlAnalysis, enc: Encoding) -> Vec<DocumentSymbol> {
+    outline::document_symbols(q, enc)
 }
 
 /// `textDocument/foldingRange` (lines only: no encoding needed).
-pub fn folding_ranges(_q: &SparqlAnalysis) -> Vec<FoldingRange> {
-    Vec::new()
+pub fn folding_ranges(q: &SparqlAnalysis) -> Vec<FoldingRange> {
+    outline::folding_ranges(q)
 }
 
 /// `textDocument/semanticTokens/full`, with the server's legend
 /// (`features::semantic::legend`: `variable` and `function` follow the RDF
 /// token types).
-pub fn semantic_tokens_full(_q: &SparqlAnalysis, _k: &Knowledge, _enc: Encoding) -> SemanticTokens {
-    SemanticTokens::default()
+pub fn semantic_tokens_full(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> SemanticTokens {
+    display::semantic_tokens_full(q, k, enc)
 }
 
 /// `textDocument/semanticTokens/range`: the tokens overlapping `range`.
 pub fn semantic_tokens_range(
-    _q: &SparqlAnalysis,
-    _k: &Knowledge,
-    _enc: Encoding,
-    _range: Range,
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    range: Range,
 ) -> SemanticTokens {
-    SemanticTokens::default()
+    display::semantic_tokens_range(q, k, enc, range)
 }
 
 /// `textDocument/inlayHint` in `range`; `mode` is `turtle.inlayHints.labels`.
 pub fn inlay_hints(
-    _q: &SparqlAnalysis,
-    _k: &Knowledge,
-    _enc: Encoding,
-    _range: Range,
-    _mode: InlayLabels,
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    range: Range,
+    mode: InlayLabels,
 ) -> Vec<InlayHint> {
-    Vec::new()
+    display::inlay_hints(q, k, enc, range, mode)
 }
 
 /// `textDocument/codeAction`. The diagnostics in `params.context` are the

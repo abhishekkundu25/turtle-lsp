@@ -11,8 +11,12 @@
 //! ontology and the SHACL shapes expect at the cursor on top (and offers it even
 //! when nothing is typed yet). Results are capped; `isIncomplete` makes the
 //! client ask again as the user types.
+//!
+//! The candidate sources, the ranking and the item building are shared with
+//! SPARQL completion (`sparql::features::completion`), which finds the slot
+//! and the subject from the query's structure instead.
 
-mod ranking;
+pub(crate) mod ranking;
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::prefix_insertion;
@@ -30,8 +34,9 @@ const COMMON: &[&str] = &[
     "rdf", "rdfs", "owl", "xsd", "skos", "sh", "dcterms", "foaf", "schema", "prov",
 ];
 
+/// What kind of term belongs at the cursor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Slot {
+pub(crate) enum Slot {
     Subject,
     Predicate,
     Object,
@@ -39,16 +44,36 @@ enum Slot {
     Datatype,
 }
 
-struct Candidate {
+pub(crate) struct Candidate {
     /// Ranking tier (see [`ranking`]); sorts before everything else.
-    tier: u8,
-    label: String,
-    kind: CompletionItemKind,
-    detail: String,
-    iri: Option<String>,
-    rank: u8,
-    import: Option<(String, String)>,
+    pub tier: u8,
+    pub label: String,
+    pub kind: CompletionItemKind,
+    pub detail: String,
+    pub iri: Option<String>,
+    pub rank: u8,
+    /// A prefix to declare on accept: (name, namespace).
+    pub import: Option<(String, String)>,
 }
+
+impl Candidate {
+    /// A candidate that is no term (a keyword, a variable, a function).
+    pub fn plain(label: String, kind: CompletionItemKind, detail: String, rank: u8) -> Candidate {
+        Candidate {
+            tier: ranking::NONE,
+            label,
+            kind,
+            detail,
+            iri: None,
+            rank,
+            import: None,
+        }
+    }
+}
+
+/// How the document's syntax declares a prefix, as named in item details:
+/// `@prefix` (Turtle, TriG) or `PREFIX` (SPARQL).
+pub(crate) type Directive = &'static str;
 
 pub fn complete(
     a: &Analysis,
@@ -85,97 +110,13 @@ pub fn complete(
     let mut incomplete = false;
 
     if let Some(colon) = typed.find(':') {
-        let (pfx, local) = (&typed[..colon], &typed[colon + 1..]);
-        let (ns, import) = match prefixes.get(pfx) {
-            Some(ns) => (ns.clone(), None),
-            None => match VOCABS.by_prefix(pfx) {
-                Some(v) => (
-                    v.namespace.to_string(),
-                    Some((pfx.to_string(), v.namespace.to_string())),
-                ),
-                None => return CompletionResponse::Array(vec![]),
-            },
-        };
-        let mut seen: FxHashSet<String> = FxHashSet::default();
-        if let Some(v) = VOCABS.by_namespace(&ns) {
-            for t in v.terms() {
-                if !fuzzy(local, &t.local) {
-                    continue;
-                }
-                seen.insert(t.local.clone());
-                cands.push(Candidate {
-                    tier: ranking::NONE,
-                    label: format!("{pfx}:{}", t.local),
-                    kind: match t.kind {
-                        TermKind::Class => CompletionItemKind::CLASS,
-                        TermKind::Property => CompletionItemKind::PROPERTY,
-                        TermKind::Individual => CompletionItemKind::ENUM_MEMBER,
-                    },
-                    detail: if t.label.is_empty() {
-                        format!("{}{}", ns, t.local)
-                    } else {
-                        t.label.clone()
-                    },
-                    iri: Some(format!("{ns}{}", t.local)),
-                    rank: rank(slot, t.kind) + if t.deprecated { 5 } else { 0 },
-                    import: import.clone(),
-                });
-            }
-        }
-        // Terms the workspace defines or uses in this namespace.
-        for iri in k.terms_in(&ns) {
-            let Some(l) = iri.strip_prefix(ns.as_str()) else {
-                continue;
-            };
-            if l.is_empty() || seen.contains(l) || !is_local_name(l) || !fuzzy(local, l) {
-                continue;
-            }
-            let kind = guess_kind(k, &iri);
-            let label = k.label(&iri);
-            cands.push(Candidate {
-                tier: ranking::NONE,
-                label: format!("{pfx}:{l}"),
-                kind: match kind {
-                    TermKind::Class => CompletionItemKind::CLASS,
-                    TermKind::Property => CompletionItemKind::PROPERTY,
-                    TermKind::Individual => CompletionItemKind::REFERENCE,
-                },
-                detail: label.unwrap_or(&iri).to_string(),
-                iri: Some(iri.to_string()),
-                rank: rank(slot, kind),
-                import: import.clone(),
-            });
+        match prefixed_terms(k, &typed[..colon], &typed[colon + 1..], slot, &prefixes) {
+            Some(c) => cands = c,
+            None => return CompletionResponse::Array(vec![]),
         }
     } else {
         incomplete = true;
-        let mut pfx_seen: FxHashSet<String> = FxHashSet::default();
-        for (p, ns) in &prefixes {
-            if fuzzy(typed, p) {
-                pfx_seen.insert(p.clone());
-                cands.push(Candidate {
-                    tier: ranking::NONE,
-                    label: format!("{p}:"),
-                    kind: CompletionItemKind::MODULE,
-                    detail: ns.clone(),
-                    iri: None,
-                    rank: 2,
-                    import: None,
-                });
-            }
-        }
-        for v in &VOCABS.all {
-            if !pfx_seen.contains(v.prefix) && !typed.is_empty() && v.prefix.starts_with(typed) {
-                cands.push(Candidate {
-                    tier: ranking::NONE,
-                    label: format!("{}:", v.prefix),
-                    kind: CompletionItemKind::MODULE,
-                    detail: format!("{} (adds @prefix)", v.namespace),
-                    iri: None,
-                    rank: 4,
-                    import: Some((v.prefix.to_string(), v.namespace.to_string())),
-                });
-            }
-        }
+        prefix_candidates(&mut cands, typed, &prefixes, "@prefix", false);
         let keywords: &[(&str, &str)] = match slot {
             Slot::Subject => &[
                 ("@prefix", "@prefix ex: <http://example.org/> ."),
@@ -188,87 +129,243 @@ pub fn complete(
         };
         for (k, d) in keywords {
             if typed.is_empty() || k.starts_with(typed) {
+                cands.push(Candidate::plain(
+                    k.to_string(),
+                    CompletionItemKind::KEYWORD,
+                    d.to_string(),
+                    1,
+                ));
+            }
+        }
+        described_candidates(&mut cands, typed, slot, k, &prefixes);
+        if !typed.starts_with('@') {
+            local_name_candidates(&mut cands, typed, slot, &prefixes);
+        }
+    }
+
+    incomplete |= finish(&mut cands, ranked, slot, typed, k, &prefixes);
+    let items = items(cands, replace, &prefixes, "@prefix", |p, ns| {
+        prefix_insertion(a, text, enc, p, ns)
+    });
+    CompletionResponse::List(CompletionList {
+        is_incomplete: incomplete,
+        items,
+    })
+}
+
+fn term_item_kind(kind: TermKind) -> CompletionItemKind {
+    match kind {
+        TermKind::Class => CompletionItemKind::CLASS,
+        TermKind::Property => CompletionItemKind::PROPERTY,
+        TermKind::Individual => CompletionItemKind::ENUM_MEMBER,
+    }
+}
+
+/// The terms of the namespace `pfx` stands for whose local name matches
+/// `local`: the bundled vocabulary's, then those the workspace defines or
+/// uses. `None` when `pfx` is neither declared nor a well-known prefix (a
+/// well-known one is added on accept).
+pub(crate) fn prefixed_terms(
+    k: &Knowledge,
+    pfx: &str,
+    local: &str,
+    slot: Slot,
+    prefixes: &PrefixMap,
+) -> Option<Vec<Candidate>> {
+    let (ns, import) = match prefixes.get(pfx) {
+        Some(ns) => (ns.clone(), None),
+        None => {
+            let v = VOCABS.by_prefix(pfx)?;
+            (
+                v.namespace.to_string(),
+                Some((pfx.to_string(), v.namespace.to_string())),
+            )
+        }
+    };
+    let mut cands = Vec::new();
+    let mut seen: FxHashSet<String> = FxHashSet::default();
+    if let Some(v) = VOCABS.by_namespace(&ns) {
+        for t in v.terms() {
+            if !fuzzy(local, &t.local) {
+                continue;
+            }
+            seen.insert(t.local.clone());
+            cands.push(Candidate {
+                tier: ranking::NONE,
+                label: format!("{pfx}:{}", t.local),
+                kind: term_item_kind(t.kind),
+                detail: if t.label.is_empty() {
+                    format!("{}{}", ns, t.local)
+                } else {
+                    t.label.clone()
+                },
+                iri: Some(format!("{ns}{}", t.local)),
+                rank: rank(slot, t.kind) + if t.deprecated { 5 } else { 0 },
+                import: import.clone(),
+            });
+        }
+    }
+    // Terms the workspace defines or uses in this namespace.
+    for iri in k.terms_in(&ns) {
+        let Some(l) = iri.strip_prefix(ns.as_str()) else {
+            continue;
+        };
+        if l.is_empty() || seen.contains(l) || !is_local_name(l) || !fuzzy(local, l) {
+            continue;
+        }
+        let kind = guess_kind(k, &iri);
+        let label = k.label(&iri);
+        cands.push(Candidate {
+            tier: ranking::NONE,
+            label: format!("{pfx}:{l}"),
+            kind: match kind {
+                TermKind::Class => CompletionItemKind::CLASS,
+                TermKind::Property => CompletionItemKind::PROPERTY,
+                TermKind::Individual => CompletionItemKind::REFERENCE,
+            },
+            detail: label.unwrap_or(&iri).to_string(),
+            iri: Some(iri.to_string()),
+            rank: rank(slot, kind),
+            import: import.clone(),
+        });
+    }
+    Some(cands)
+}
+
+/// Prefixes matching `typed`: those in scope, then the well-known ones not
+/// declared yet (added on accept; with nothing typed only when
+/// `well_known_when_empty`).
+pub(crate) fn prefix_candidates(
+    cands: &mut Vec<Candidate>,
+    typed: &str,
+    prefixes: &PrefixMap,
+    directive: Directive,
+    well_known_when_empty: bool,
+) {
+    let mut pfx_seen: FxHashSet<String> = FxHashSet::default();
+    for (p, ns) in prefixes {
+        if fuzzy(typed, p) {
+            pfx_seen.insert(p.clone());
+            cands.push(Candidate::plain(
+                format!("{p}:"),
+                CompletionItemKind::MODULE,
+                ns.clone(),
+                2,
+            ));
+        }
+    }
+    for v in &VOCABS.all {
+        if !pfx_seen.contains(v.prefix)
+            && (!typed.is_empty() || well_known_when_empty)
+            && v.prefix.starts_with(typed)
+        {
+            cands.push(Candidate {
+                import: Some((v.prefix.to_string(), v.namespace.to_string())),
+                ..Candidate::plain(
+                    format!("{}:", v.prefix),
+                    CompletionItemKind::MODULE,
+                    format!("{} (adds {directive})", v.namespace),
+                    4,
+                )
+            });
+        }
+    }
+}
+
+/// Resources described in the workspace whose local name matches `typed`,
+/// written with the document's prefixes (subject, object and class slots,
+/// once something is typed).
+pub(crate) fn described_candidates(
+    cands: &mut Vec<Candidate>,
+    typed: &str,
+    slot: Slot,
+    k: &Knowledge,
+    prefixes: &PrefixMap,
+) {
+    if typed.is_empty() || !matches!(slot, Slot::Subject | Slot::Object | Slot::Class) {
+        return;
+    }
+    let mut seen = FxHashSet::default();
+    for iri in k.described_terms() {
+        if let Some(short) = shorten(&iri, prefixes) {
+            let local = short.split_once(':').map_or("", |x| x.1);
+            if fuzzy(typed, local) && seen.insert(short.clone()) {
                 cands.push(Candidate {
                     tier: ranking::NONE,
-                    label: k.to_string(),
-                    kind: CompletionItemKind::KEYWORD,
-                    detail: d.to_string(),
-                    iri: None,
-                    rank: 1,
+                    label: short,
+                    kind: CompletionItemKind::REFERENCE,
+                    detail: k.label(&iri).unwrap_or(&iri).to_string(),
+                    iri: Some(iri.to_string()),
+                    rank: 3,
                     import: None,
                 });
             }
         }
-        // Resources described in the workspace, written with this file's prefixes.
-        if !typed.is_empty() && matches!(slot, Slot::Subject | Slot::Object | Slot::Class) {
-            let mut seen = FxHashSet::default();
-            for iri in k.described_terms() {
-                if let Some(short) = shorten(&iri, &prefixes) {
-                    let local = short.split_once(':').map_or("", |x| x.1);
-                    if fuzzy(typed, local) && seen.insert(short.clone()) {
-                        cands.push(Candidate {
-                            tier: ranking::NONE,
-                            label: short,
-                            kind: CompletionItemKind::REFERENCE,
-                            detail: k.label(&iri).unwrap_or(&iri).to_string(),
-                            iri: Some(iri.to_string()),
-                            rank: 3,
-                            import: None,
-                        });
-                    }
-                }
-            }
+    }
+}
+
+/// Vocabulary terms by local name ("Pers" -> foaf:Person), from namespaces in
+/// scope plus the common vocabularies (those add their prefix on accept);
+/// from two characters typed.
+pub(crate) fn local_name_candidates(
+    cands: &mut Vec<Candidate>,
+    typed: &str,
+    slot: Slot,
+    prefixes: &PrefixMap,
+) {
+    if typed.chars().count() < 2 {
+        return;
+    }
+    let lower = typed.to_lowercase();
+    let mut seen_ns = FxHashSet::default();
+    let in_scope = prefixes
+        .iter()
+        .filter_map(|(p, ns)| VOCABS.by_namespace(ns).map(|v| (p.clone(), v, None)));
+    let common = COMMON.iter().filter_map(|p| VOCABS.by_prefix(p)).map(|v| {
+        (
+            v.prefix.to_string(),
+            v,
+            Some((v.prefix.to_string(), v.namespace.to_string())),
+        )
+    });
+    for (pfx, v, import) in in_scope.chain(common) {
+        // A common vocabulary already bound under another name is covered by in_scope.
+        if !seen_ns.insert(v.namespace) || (import.is_some() && prefixes.contains_key(&pfx)) {
+            continue;
         }
-        // Vocabulary terms by local name ("Pers" -> foaf:Person), from namespaces in
-        // scope plus the common vocabularies (those add their @prefix on accept).
-        if typed.chars().count() >= 2 && !typed.starts_with('@') {
-            let lower = typed.to_lowercase();
-            let mut seen_ns = FxHashSet::default();
-            let in_scope = prefixes
-                .iter()
-                .filter_map(|(p, ns)| VOCABS.by_namespace(ns).map(|v| (p.clone(), v, None)));
-            let common = COMMON.iter().filter_map(|p| VOCABS.by_prefix(p)).map(|v| {
-                (
-                    v.prefix.to_string(),
-                    v,
-                    Some((v.prefix.to_string(), v.namespace.to_string())),
-                )
+        for t in v
+            .terms()
+            .iter()
+            .filter(|t| t.local.to_lowercase().starts_with(&lower))
+        {
+            cands.push(Candidate {
+                tier: ranking::NONE,
+                label: format!("{pfx}:{}", t.local),
+                kind: term_item_kind(t.kind),
+                detail: if t.label.is_empty() {
+                    format!("{}{}", v.namespace, t.local)
+                } else {
+                    t.label.clone()
+                },
+                iri: Some(format!("{}{}", v.namespace, t.local)),
+                rank: rank(slot, t.kind) + 2 + u8::from(t.deprecated) * 5,
+                import: import.clone(),
             });
-            for (pfx, v, import) in in_scope.chain(common) {
-                // A common vocabulary already bound under another name is covered by in_scope.
-                if !seen_ns.insert(v.namespace) || (import.is_some() && prefixes.contains_key(&pfx))
-                {
-                    continue;
-                }
-                for t in v
-                    .terms()
-                    .iter()
-                    .filter(|t| t.local.to_lowercase().starts_with(&lower))
-                {
-                    cands.push(Candidate {
-                        tier: ranking::NONE,
-                        label: format!("{pfx}:{}", t.local),
-                        kind: match t.kind {
-                            TermKind::Class => CompletionItemKind::CLASS,
-                            TermKind::Property => CompletionItemKind::PROPERTY,
-                            TermKind::Individual => CompletionItemKind::ENUM_MEMBER,
-                        },
-                        detail: if t.label.is_empty() {
-                            format!("{}{}", v.namespace, t.local)
-                        } else {
-                            t.label.clone()
-                        },
-                        iri: Some(format!("{}{}", v.namespace, t.local)),
-                        rank: rank(slot, t.kind) + 2 + u8::from(t.deprecated) * 5,
-                        import: import.clone(),
-                    });
-                }
-            }
         }
     }
+}
 
-    incomplete |= apply_ranking(&mut cands, ranked, slot, typed, k, &prefixes);
-
+/// Applies the ranking, sorts and caps the candidates. Returns whether some
+/// were left out (by the cap or by the ranking).
+pub(crate) fn finish(
+    cands: &mut Vec<Candidate>,
+    ranked: ranking::Ranking,
+    slot: Slot,
+    typed: &str,
+    k: &Knowledge,
+    prefixes: &PrefixMap,
+) -> bool {
+    let mut incomplete = apply_ranking(cands, ranked, slot, typed, k, prefixes);
     let lower = typed.rsplit(':').next().unwrap_or("").to_lowercase();
     cands.sort_by(|x, y| {
         let px = !local_of(&x.label).to_lowercase().starts_with(&lower);
@@ -285,8 +382,20 @@ pub fn complete(
         cands.truncate(LIMIT);
         incomplete = true;
     }
+    incomplete
+}
 
-    let items = cands
+/// The completion items, in the candidates' order, replacing `replace`. A
+/// candidate whose prefix is not declared gets `import_edit(name, namespace)`
+/// as an additional edit. Items for terms carry `data.iri` for [`resolve`].
+pub(crate) fn items(
+    cands: Vec<Candidate>,
+    replace: Range,
+    prefixes: &PrefixMap,
+    directive: Directive,
+    import_edit: impl Fn(&str, &str) -> TextEdit,
+) -> Vec<CompletionItem> {
+    cands
         .into_iter()
         .enumerate()
         .map(|(i, c)| {
@@ -294,7 +403,7 @@ pub fn complete(
                 .import
                 .as_ref()
                 .filter(|(p, _)| !prefixes.contains_key(p))
-                .map(|(p, ns)| vec![prefix_insertion(a, text, enc, p, ns)]);
+                .map(|(p, ns)| vec![import_edit(p, ns)]);
             CompletionItem {
                 filter_text: Some(c.label.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
@@ -305,7 +414,7 @@ pub fn complete(
                 kind: Some(c.kind),
                 label_details: additional.as_ref().map(|_| CompletionItemLabelDetails {
                     detail: None,
-                    description: Some("+@prefix".into()),
+                    description: Some(format!("+{directive}")),
                 }),
                 detail: Some(c.detail),
                 sort_text: Some(format!("{i:04}")),
@@ -314,11 +423,7 @@ pub fn complete(
                 ..Default::default()
             }
         })
-        .collect();
-    CompletionResponse::List(CompletionList {
-        is_incomplete: incomplete,
-        items,
-    })
+        .collect()
 }
 
 /// Fill in documentation lazily so the list itself stays small.
@@ -443,7 +548,7 @@ fn written(iri: &str, prefixes: &PrefixMap) -> (String, Option<(String, String)>
 }
 
 /// Whether `iri` could match what was typed, without building its label.
-fn may_match(iri: &str, typed: &str, prefixes: &PrefixMap) -> bool {
+pub(crate) fn may_match(iri: &str, typed: &str, prefixes: &PrefixMap) -> bool {
     match typed.split_once(':') {
         Some((p, local)) => prefixes
             .get(p)
@@ -552,12 +657,12 @@ fn word_end(text: &str, offset: usize) -> usize {
     e
 }
 
-fn is_local_name(l: &str) -> bool {
+pub(crate) fn is_local_name(l: &str) -> bool {
     l.chars().all(|c| is_pn_chars(c) || c == '.') && !l.ends_with('.')
 }
 
 /// Case-insensitive subsequence match; empty query matches everything.
-fn fuzzy(query: &str, cand: &str) -> bool {
+pub(crate) fn fuzzy(query: &str, cand: &str) -> bool {
     let mut it = cand.chars().flat_map(char::to_lowercase);
     query
         .chars()
