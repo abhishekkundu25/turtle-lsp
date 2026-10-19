@@ -617,9 +617,12 @@ function ask(message, detail, buttons) {
     const box = $("dialog")
     box.innerHTML = `<p class="dq">${esc(message)}</p><p class="dd">${esc(detail)}</p><div class="db">${buttons.map((b, i) => `<button class="${i === 0 ? "pri" : ""}" data-b="${esc(b)}">${esc(b)}</button>`).join("")}</div>`
     box.hidden = false
+    const before = document.activeElement
     const done = (answer) => {
       box.hidden = true
       box.onclick = box.onkeydown = null
+      // The focus goes back to the file shown (as VS Code's dialogs do), else where it was.
+      ;(W.active ? editor : before)?.focus()
       resolve(answer)
     }
     box.onclick = (e) => {
@@ -878,8 +881,10 @@ function togglePanel(open = !W.panel) {
 
 // ---- menus and toasts ------------------------------------------------------------------------------------
 
+let menuFrom = null // what had the focus before the menu took it
 function menu(x, y, items) {
   const m = $("menu")
+  if (m.hidden) menuFrom = document.activeElement
   m.innerHTML = items.map((it, i) => (it === "-" ? "<hr>" : `<button role="menuitem" data-i="${i}">${esc(it.label)}${it.key ? `<span class="k">${esc(it.key)}</span>` : ""}</button>`)).join("")
   m.hidden = false
   m.style.left = `${Math.min(x, innerWidth - m.offsetWidth - 8)}px`
@@ -891,6 +896,13 @@ function menu(x, y, items) {
     items[b.dataset.i].run()
   }
   m.querySelector("button")?.focus()
+}
+// Escape: the menu closes and the focus goes back.
+function closeMenu() {
+  const m = $("menu")
+  if (m.hidden) return
+  m.hidden = true
+  if (m.contains(document.activeElement) || document.activeElement === document.body) menuFrom?.focus()
 }
 let toastTimer
 function toast(message, action, run) {
@@ -945,7 +957,7 @@ function wire() {
     if (e.target.classList.contains("tree-input")) {
       // The Enter must not reach the new file's editor, which takes focus.
       if (e.key === "Enter") (e.preventDefault(), finishEdit(e.target.value))
-      if (e.key === "Escape") (W.editing = null), renderTree()
+      if (e.key === "Escape") (W.editing = null), renderTree(), tree.focus()
       return
     }
     const rows = [...tree.querySelectorAll("[role=treeitem]")]
@@ -1073,7 +1085,7 @@ function wire() {
     else if (e.key === "F1" || (mod && e.shiftKey && e.key.toLowerCase() === "p")) {
       e.preventDefault()
       if (W.active) (editor.focus(), editor.trigger("keyboard", "editor.action.quickCommand", {}))
-    } else if (e.key === "Escape") $("menu").hidden = true
+    } else if (e.key === "Escape") closeMenu()
   })
 }
 
@@ -1158,7 +1170,7 @@ async function main() {
     status: $("status-vim"),
     commands: { save: () => save(), saveAll: () => saveAll(), close: () => W.active && closeTab(W.active), open: (path) => W.files.has(path) && (openTab(path), true) },
   })
-  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true }), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
+  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true }), onClose: () => editor?.focus(), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
   diff = createDiff({ monaco, client, mount: document.querySelector(".center"), toast, options: editorOptions, setup: (ed) => settings.applyTo(ed), onClose: () => editor?.focus() })
 
   // Cross-file navigation (definition, references) opens the file in a tab.

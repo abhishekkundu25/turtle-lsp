@@ -505,6 +505,12 @@ test("closing an unsaved tab asks: Cancel keeps it, Don't Save drops the edit, S
     await edit()
     await close()
     await dialog.getByText(/Do you want to save the changes you made to a\.ttl\?/).waitFor()
+    // Escape cancels, and the focus goes back to the editor.
+    await page.keyboard.press("Escape")
+    await dialog.waitFor({ state: "hidden" })
+    assert.equal(await page.locator('.tab[data-path="proj/a.ttl"]').count(), 1)
+    assert.equal(await focusIs(page), "editor 0")
+    await close()
     await dialog.getByRole("button", { name: "Cancel" }).click()
     assert.equal(await page.locator('.tab[data-path="proj/a.ttl"]').count(), 1)
     await close()
@@ -540,6 +546,43 @@ test("a folder opened in place stays linked after a reload", inPlace, async () =
     assert.match(await disk(page, "a.ttl"), /# after reload/)
   } finally {
     await context.close()
+  }
+})
+
+// Where the keyboard focus is: "editor <group>", "tree", or the element.
+const focusIs = (page) =>
+  page.evaluate(() => {
+    const a = document.activeElement
+    if (a?.closest(".monaco-editor")) return `editor ${[...document.querySelectorAll(".group")].indexOf(a.closest(".group"))}`
+    return a?.id === "tree" ? "tree" : `${a?.tagName}#${a?.id}`
+  })
+
+test("Escape gives the focus back: the menu, a name being edited, Settings", async () => {
+  const { page, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    // The explorer's menu and a name being edited go back to the explorer.
+    await item(page, "data/people.ttl").click({ button: "right" })
+    await page.locator("#menu:not([hidden])").waitFor()
+    await page.keyboard.press("Escape")
+    await page.locator("#menu").waitFor({ state: "hidden" })
+    assert.equal(await focusIs(page), "tree")
+    await page.keyboard.press("F2")
+    await page.locator(".tree-input").waitFor()
+    await page.keyboard.press("Escape")
+    await page.locator(".tree-input").waitFor({ state: "detached" })
+    assert.equal(await focusIs(page), "tree")
+    // Settings goes back to the editor it was opened from, in a split too.
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].focus())
+    await page.keyboard.press("ControlOrMeta+Backslash")
+    await page.locator(".group").nth(1).waitFor()
+    await page.evaluate(() => window.monaco.editor.getEditors()[1].focus())
+    await page.keyboard.press("ControlOrMeta+Comma")
+    await page.getByRole("searchbox", { name: "Search settings" }).waitFor()
+    await page.keyboard.press("Escape")
+    assert.equal(await focusIs(page), "editor 1")
+  } finally {
+    await close()
   }
 })
 

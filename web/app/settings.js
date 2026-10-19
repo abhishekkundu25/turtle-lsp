@@ -57,11 +57,12 @@ function valid(s, v) {
  * @param {HTMLElement} [o.opener] a button that opens the page
  * @param {object} [o.saved] the object `values()` returned in an earlier visit
  * @param {() => void} o.onChange called after every change (to keep the values and redraw the status bar)
+ * @param {() => void} [o.onClose] called when the page closes (to give the focus back)
  * @param {Record<string, (value: any) => void>} [o.effects] per key, called with its value at once and after every change
  * @returns {{ open(): void, close(): void, isOpen(): boolean, values(): object, get(key: string): any,
  *   set(key: string, value: any): void, toggleLabels(): void, labelsText(): string, applyTo(editor: object): void }}
  */
-export function createSettings({ monaco, client, mount, opener, saved = {}, onChange, effects = {} }) {
+export function createSettings({ monaco, client, mount, opener, saved = {}, onChange, onClose, effects = {} }) {
   const vals = {}
   for (const [k, v] of Object.entries(saved ?? {})) if (BY_KEY.has(k) && valid(BY_KEY.get(k), v) && !same(v, BY_KEY.get(k).def)) vals[k] = v
   const get = (key) => (key in vals ? vals[key] : BY_KEY.get(key).def)
@@ -270,7 +271,7 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
     if (page.hidden) return
     page.hidden = true
     opener?.classList.remove("on")
-    monaco.editor.getEditors()[0]?.focus()
+    onClose ? onClose() : monaco.editor.getEditors()[0]?.focus()
   }
 
   return {
