@@ -1,8 +1,8 @@
 // The colour theme (Settings: Workbench > Appearance: Color Theme): auto
 // follows the system, light and dark force it. It sets the page's
-// `data-theme` attribute, which the CSS tokens follow, and Monaco's theme.
-// The choice is mirrored in localStorage under KEY, which editor.html reads
-// before the first paint.
+// `data-theme` attribute to the resolved "light" or "dark" (also for auto),
+// which the CSS tokens follow, and Monaco's theme. A forced choice is kept
+// in localStorage under KEY, which editor.html reads before the first paint.
 
 export const KEY = "rdf-editor-theme"
 
@@ -12,9 +12,28 @@ export const KEY = "rdf-editor-theme"
  * @returns {{ set(value: "auto" | "light" | "dark"): void, monacoTheme(): string }}
  */
 export function createTheme({ monaco }) {
-  // Placeholder until the theme slice lands: auto only, as before.
-  const dark = matchMedia("(prefers-color-scheme: dark)")
-  const monacoTheme = () => (dark.matches ? "rdf-dark" : "rdf-light")
-  dark.addEventListener("change", () => monaco.editor.setTheme(monacoTheme()))
-  return { set() {}, monacoTheme }
+  const system = matchMedia("(prefers-color-scheme: dark)")
+  const root = document.documentElement
+  // Until set() is called, what editor.html applied from storage, else the system.
+  let choice = root.dataset.theme === "light" || root.dataset.theme === "dark" ? root.dataset.theme : "auto"
+  const resolved = () => (choice === "auto" ? (system.matches ? "dark" : "light") : choice)
+  const monacoTheme = () => (resolved() === "dark" ? "rdf-dark" : "rdf-light")
+
+  function apply() {
+    root.dataset.theme = resolved()
+    monaco.editor.setTheme(monacoTheme())
+  }
+  system.addEventListener("change", () => choice === "auto" && apply())
+
+  return {
+    set(value) {
+      choice = value === "light" || value === "dark" ? value : "auto"
+      apply()
+      try {
+        if (choice === "auto") localStorage.removeItem(KEY)
+        else localStorage.setItem(KEY, choice)
+      } catch {}
+    },
+    monacoTheme,
+  }
 }

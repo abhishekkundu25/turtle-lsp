@@ -1,23 +1,21 @@
 /* RDF Editor: the workbench of layout A in web/prototype/editor-mode.html,
    VS Code's own arrangement (activity bar, side bar, editor, panel, status
-   bar) in VS Code's light and dark colours. */
+   bar) in VS Code's light and dark colours. Each colour token is
+   light-dark(light, dark), so it follows `color-scheme`: dark under the
+   system preference unless data-theme says light (theme.js and editor.html
+   set it), and always when data-theme says dark. */
 :root {
-  --bg: #ffffff; --side: #f3f3f3; --activity: #2c2c2c; --act-fg: #858585; --act-on: #ffffff;
-  --line: #e5e5e5; --fg: #3b3b3b; --muted: #6f6f6f; --hover: #e8e8e8; --select: #e4e6f1; --focus: #0060c0;
-  --tab: #ececec; --tab-on: #ffffff; --status: #007acc; --status-fg: #ffffff; --input: #ffffff;
-  --err: #e51400; --warn: #bf8803; --info: #1a85ff; --badge: #c4c4c4; --badge-fg: #333333; --menu: #ffffff; --shadow: rgba(0, 0, 0, .16);
+  --bg: light-dark(#ffffff, #1e1e1e); --side: light-dark(#f3f3f3, #252526); --activity: light-dark(#2c2c2c, #333333); --act-fg: #858585; --act-on: #ffffff;
+  --line: light-dark(#e5e5e5, #3c3c3c); --fg: light-dark(#3b3b3b, #cccccc); --muted: light-dark(#6f6f6f, #9d9d9d); --hover: light-dark(#e8e8e8, #2a2d2e); --select: light-dark(#e4e6f1, #37373d); --focus: light-dark(#0060c0, #0e639c);
+  --tab: light-dark(#ececec, #2d2d2d); --tab-on: light-dark(#ffffff, #1e1e1e); --status: #007acc; --status-fg: #ffffff; --input: light-dark(#ffffff, #3c3c3c);
+  --err: light-dark(#e51400, #f14c4c); --warn: light-dark(#bf8803, #cca700); --info: light-dark(#1a85ff, #3794ff); --badge: light-dark(#c4c4c4, #4d4d4d); --badge-fg: light-dark(#333333, #ffffff); --menu: light-dark(#ffffff, #252526); --shadow: light-dark(rgba(0, 0, 0, .16), rgba(0, 0, 0, .5));
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e1e1e; --side: #252526; --activity: #333333; --act-fg: #858585; --act-on: #ffffff;
-    --line: #3c3c3c; --fg: #cccccc; --muted: #9d9d9d; --hover: #2a2d2e; --select: #37373d; --focus: #0e639c;
-    --tab: #2d2d2d; --tab-on: #1e1e1e; --status: #007acc; --status-fg: #ffffff; --input: #3c3c3c;
-    --err: #f14c4c; --warn: #cca700; --info: #3794ff; --badge: #4d4d4d; --badge-fg: #ffffff; --menu: #252526; --shadow: rgba(0, 0, 0, .5);
-    color-scheme: dark;
-  }
+  :root:not([data-theme="light"]) { color-scheme: dark; }
 }
+:root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
