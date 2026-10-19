@@ -1,0 +1,31 @@
+/* The Search view (search.js). Colours come from editor.css's tokens. */
+.sx-form { display: flex; align-items: flex-start; padding: 0 12px 6px 4px; gap: 2px; }
+.sx-twist { width: 16px; height: 26px; display: grid; place-items: center; color: var(--fg); border-radius: 3px; flex: none; }
+.sx-twist:hover { background: var(--hover); }
+.sx-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sx-box { display: flex; align-items: center; height: 26px; background: var(--input); border: 1px solid var(--line); border-radius: 2px; padding-right: 2px; flex: 1; min-width: 0; }
+.sx-box:focus-within { border-color: var(--focus); }
+.sx-box.bad { border-color: var(--err); }
+.sx-box input { flex: 1; min-width: 0; height: 100%; font: inherit; color: var(--fg); background: none; border: 0; outline: none; padding: 0 6px; }
+.sx-opt { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 3px; color: var(--muted); border: 1px solid transparent; flex: none; }
+.sx-opt:hover { background: var(--hover); }
+.sx-opt.on { color: var(--fg); background: var(--select); border-color: var(--focus); }
+.sx-error { font-size: 12px; color: var(--fg); background: var(--bg); border: 1px solid var(--err); padding: 3px 6px; border-radius: 2px; overflow-wrap: anywhere; }
+.sx-replace { display: flex; align-items: center; gap: 2px; }
+.sx-replace .ic:disabled { opacity: .4; cursor: default; background: none; }
+.sx-summary { font-size: 12px; color: var(--muted); padding: 0 12px 6px 22px; min-height: 6px; }
+.sx-summary:empty { padding-bottom: 0; }
+.sx-results { flex: 1; overflow: auto; padding-bottom: 12px; }
+.sx-file, .sx-match { display: flex; align-items: center; height: 22px; padding-right: 8px; cursor: pointer; white-space: nowrap; user-select: none; }
+.sx-file { padding-left: 4px; gap: 4px; }
+.sx-file:hover, .sx-match:hover { background: var(--hover); }
+.sx-name { flex: none; }
+.sx-dir { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sx-count { flex: none; font-size: 11px; line-height: 16px; min-width: 18px; padding: 0 5px; border-radius: 9px; text-align: center; background: var(--badge); color: var(--badge-fg); }
+.sx-match { padding-left: 38px; }
+.sx-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sx-line mark { background: rgba(234, 92, 0, .33); color: inherit; border-radius: 2px; }
+.sx-line del { background: rgba(255, 0, 0, .2); color: inherit; }
+.sx-line ins { background: rgba(156, 204, 44, .3); color: inherit; text-decoration: none; }
+.sx-file .sx-one, .sx-match .sx-one { width: 20px; height: 20px; display: none; flex: none; }
+.sx-file:hover .sx-one, .sx-match:hover .sx-one { display: grid; }
