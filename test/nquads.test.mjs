@@ -17,14 +17,16 @@ const where = (locs) => locs.map((l) => `${path.basename(l.uri)}:${l.range.start
 let s
 before(async () => {
   s = await startServer({ cwd: dir })
+  // Requests wait for the workspace index; diagnostics after this include
+  // the workspace lints.
+  await s.request("workspace/symbol", { query: "" })
 })
 after(async () => {
   await s.stop()
 })
 
-let version = 1
 async function openAs(uri, text, languageId) {
-  s.conn.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId, version: version++, text } })
+  s.open(uri, text, languageId)
   return { uri, text, diags: await s.diagnosticsFor(uri) }
 }
 const close = (uri) => s.close(uri)
@@ -235,7 +237,7 @@ test("editing a .nq file updates its diagnostics", async () => {
   await openAs(uri, "<http://e.org/s> <http://e.org/p> <http://e.org/o> <http://e.org/g> .\n", "nquads")
   try {
     s.conn.sendNotification("textDocument/didChange", {
-      textDocument: { uri, version: version++ },
+      textDocument: { uri, version: 2 },
       contentChanges: [{ text: "<http://e.org/s> <http://e.org/p> <http://e.org/o> <http://e.org/g> <http://e.org/h> .\n" }],
     })
     let diags = []

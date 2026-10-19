@@ -170,11 +170,13 @@ export async function startServer({
       }
       return rawResponses.get(id)
     },
-    open(uri, text) {
+    // Forgets the diagnostics last published for `uri`, so diagnosticsFor
+    // waits for the ones about this text.
+    open(uri, text, languageId = "turtle") {
       versions.set(uri, 1)
       diagnostics.delete(uri)
       conn.sendNotification("textDocument/didOpen", {
-        textDocument: { uri, languageId: "turtle", version: 1, text },
+        textDocument: { uri, languageId, version: 1, text },
       })
     },
     change(uri, text) {

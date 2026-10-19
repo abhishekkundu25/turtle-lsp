@@ -49,6 +49,9 @@ export function slice(text, range) {
 
 export async function queryServer(options = {}) {
   const s = await startServer({ cwd: dir, ...options })
+  // Requests wait for the workspace index; diagnostics after this include
+  // the workspace lints.
+  await s.request("workspace/symbol", { query: "" })
   let n = 0
   const api = {
     s,
@@ -56,7 +59,7 @@ export async function queryServer(options = {}) {
     // the file's content) and waits for its diagnostics.
     async open(name, text = read(name), languageId = languageOf(name)) {
       const uri = uriOf(path.join(dir, name))
-      s.conn.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } })
+      s.open(uri, text, languageId)
       return { uri, text, diags: await s.diagnosticsFor(uri) }
     },
     // Opens a fresh scratch document with this text.

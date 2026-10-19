@@ -24,7 +24,7 @@ after(async () => {
 let n = 0
 async function format(text, options = spaces, ext = "rq", server = s) {
   const uri = uriOf(path.join(dir, `__sparql${n++}.${ext}`))
-  server.conn.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId: "sparql", version: 1, text } })
+  server.open(uri, text, "sparql")
   await server.diagnosticsFor(uri)
   try {
     return await server.request("textDocument/formatting", { textDocument: { uri }, options })
