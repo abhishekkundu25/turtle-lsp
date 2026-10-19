@@ -12,7 +12,12 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 
 http
   .createServer((req, res) => {
-    let rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
+    let rel
+    try {
+      rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
+    } catch {
+      return res.writeHead(400).end()
+    }
     if (rel.endsWith("/")) rel += "index.html"
     const file = path.join(app, path.normalize(rel))
     if (!file.startsWith(app) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end()

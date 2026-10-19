@@ -245,7 +245,7 @@ impl Server {
             capabilities: capabilities(enc, pull),
             server_info: Some(ServerInfo {
                 name: "turtle-lsp".into(),
-                version: Some(env!("CARGO_PKG_VERSION").into()),
+                version: Some(crate::VERSION.into()),
             }),
         };
         let mut result = serde_json::to_value(result)?;
@@ -1710,7 +1710,6 @@ enum Open {
     Sparql(String, Arc<SparqlAnalysis>),
 }
 
-/// The IRI of the term at `pos` in an RDF document, if the cursor is on one.
 /// A server driven by its host instead of its own loop, for a host with no
 /// threads and no stdio (the browser build, web/engine). The host hands over
 /// messages and the server takes one step over them, returning what it sent;
@@ -1792,6 +1791,7 @@ impl Embedded {
     }
 }
 
+/// The IRI of the term at `pos` in an RDF document, if the cursor is on one.
 fn rdf_term_at(a: &Analysis, enc: Encoding, pos: Position) -> Option<String> {
     let offset = a.offset(enc, pos)?;
     match navigation::target_at(a, offset)? {
