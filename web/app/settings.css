@@ -1,0 +1,46 @@
+/* The Settings page (settings.js): covers the editor area. Colours come from editor.css's tokens. */
+.stg { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); min-height: 0; }
+.stg[hidden] { display: none; }
+.stg-hd { display: flex; align-items: center; gap: 8px; padding: 12px 24px 8px; }
+.stg-search { flex: 1; max-width: 900px; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; background: var(--input); border: 1px solid var(--line); border-radius: 2px; }
+.stg-search:focus-within { border-color: var(--focus); }
+.stg-search .codicon { color: var(--muted); }
+.stg-search input { flex: 1; min-width: 0; height: 100%; font: inherit; font-size: 14px; color: var(--fg); background: none; border: 0; outline: none; }
+.stg-btn { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 2px; background: var(--side); white-space: nowrap; }
+.stg-btn:hover { background: var(--hover); }
+.stg-x { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 4px; flex: none; }
+.stg-x:hover { background: var(--hover); }
+.stg-count { padding: 0 24px; font-size: 12px; color: var(--muted); min-height: 4px; }
+.stg-body { flex: 1; min-height: 0; overflow: auto; padding: 0 24px 32px; }
+.stg-body > * { max-width: 900px; }
+.stg-group { font-size: 20px; font-weight: 600; margin: 18px 0 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.stg-group[hidden], .stg-item[hidden] { display: none; }
+.stg-item { position: relative; padding: 10px 12px 12px 28px; border-left: 2px solid transparent; }
+.stg-item:hover { background: var(--hover); }
+.stg-item.modified { border-left-color: var(--focus); }
+.stg-title { display: flex; align-items: center; font-size: 13px; margin-bottom: 4px; }
+.stg-cat { white-space: pre; }
+.stg-key { margin-left: 10px; font-size: 11px; color: var(--muted); font-family: var(--mono); opacity: 0; }
+.stg-item:hover .stg-key { opacity: 1; }
+.stg-reset { position: absolute; left: 4px; top: 9px; width: 20px; height: 20px; display: none; place-items: center; border-radius: 3px; color: var(--muted); }
+.stg-reset:hover { color: var(--fg); background: var(--hover); }
+.stg-item.modified .stg-reset { display: grid; }
+.stg-desc, .stg-check span, .stg-opt-desc { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.stg-desc { margin-bottom: 6px; }
+.stg-opt-desc { margin-top: 4px; }
+.stg-check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.stg-check input { margin: 2px 0 0; accent-color: var(--focus); }
+.stg-item input.stg-num, .stg-item select, .stg-prow input { height: 26px; font: inherit; font-size: 13px; color: var(--fg); background: var(--input); border: 1px solid var(--line); border-radius: 2px; padding: 0 6px; outline: none; }
+.stg-item input.stg-num { width: 160px; }
+.stg-item select { min-width: 160px; }
+.stg-item input:focus, .stg-item select:focus { border-color: var(--focus); }
+.stg-item input.bad { border-color: var(--err); }
+.stg-prefixes { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; max-width: 640px; }
+.stg-prow { display: grid; grid-template-columns: 140px 1fr 26px; gap: 6px; align-items: center; }
+.stg-phd { font-size: 12px; color: var(--muted); }
+.stg-prow input { min-width: 0; font-family: var(--mono); font-size: 12.5px; }
+.stg-none { color: var(--muted); padding: 12px 0; }
+@media (max-width: 700px) {
+  .stg-hd, .stg-count, .stg-body { padding-left: 16px; padding-right: 16px; }
+  .stg-prow { grid-template-columns: 90px 1fr 26px; }
+}

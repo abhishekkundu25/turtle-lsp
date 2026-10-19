@@ -82,6 +82,8 @@ export class EmbeddedServer {
         for (const c of params.contentChanges) doc.text = c.range ? splice(doc.text, c.range, c.text) : c.text
         doc.version = params.textDocument.version
       }
+    } else if (method === "workspace/didChangeConfiguration") {
+      this.config = params
     } else if (method === "textDocument/didClose") {
       this.open.delete(uri)
       this.published.delete(uri)
@@ -112,6 +114,7 @@ export class EmbeddedServer {
   restart() {
     this.engine.call("lsp_start", { params: this.initParams })
     const replay = [{ jsonrpc: "2.0", method: "initialized", params: {} }]
+    if (this.config) replay.push({ jsonrpc: "2.0", method: "workspace/didChangeConfiguration", params: this.config })
     for (const [uri, d] of this.open) {
       replay.push({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, ...d } } })
     }

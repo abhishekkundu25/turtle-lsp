@@ -6,6 +6,7 @@ import { LspClient, connect, markers, registerSyntax, languageOf } from "./edito
 import { zip } from "./zip.js"
 import * as store from "./store.js"
 import { createSearch } from "./search.js"
+import { createSettings } from "./settings.js"
 
 const ROOT = "file:///work/"
 // The files a folder contributes, by extension; anything else is skipped.
@@ -40,7 +41,6 @@ const W = {
   g: 0,
   diags: new Map(), // uri -> LSP diagnostics
   filter: "all",
-  labels: false,
   panel: true,
   editing: null, // { mode: "newFile" | "newFolder" | "rename", dir, path }
   folded: new Set(), // files whose problems are folded in the Problems panel
@@ -48,7 +48,7 @@ const W = {
 for (const key of ["tabs", "active"]) {
   Object.defineProperty(W, key, { get: () => W.groups[W.g][key], set: (v) => (W.groups[W.g][key] = v) })
 }
-let monaco, editor, client, hooks, search
+let monaco, editor, client, hooks, search, settings
 const pathByUri = new Map()
 
 // The folder opened in place that `path` is in, if any.
@@ -181,7 +181,7 @@ function persist() {
       roots: [...W.roots].map(([path, handle]) => ({ path, handle })),
       groups: W.groups.map((g) => ({ tabs: g.tabs, active: g.active })),
       focused: W.g,
-      labels: W.labels,
+      settings: settings.values(),
     })
     $("status-storage").textContent = ok ? "Kept in this browser" : "Not kept: this browser refuses storage"
   }, SAVE_DELAY_MS)
@@ -313,7 +313,7 @@ function renderStatus() {
   $("status-errors").textContent = e
   $("status-warnings").textContent = w
   $("status-shacl").textContent = s
-  $("status-labels").textContent = `Labels: ${W.labels ? "On" : "Off"}`
+  $("status-labels").textContent = settings.labelsText()
   $("status-lang").textContent = W.active ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL" }[languageOf(W.active)] : ""
   const pos = W.active && editor.getPosition()
   $("status-pos").textContent = pos ? `Ln ${pos.lineNumber}, Col ${pos.column}` : ""
@@ -396,6 +396,7 @@ function addGroup() {
   ed.onDidFocusEditorText(() => focusGroup(W.groups.indexOf(g)))
   ed.onDidChangeCursorPosition(() => changed({ status: true }))
   for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], run: () => c.run() })
+  settings?.applyTo(ed)
   el.addEventListener("mousedown", () => focusGroup(W.groups.indexOf(g)))
   el.querySelector(".tabs").addEventListener("click", (e) => {
     const close = e.target.closest("[data-close]")
@@ -552,7 +553,10 @@ async function fileHandle(path, { create = false } = {}) {
 async function save(path = W.active, { quiet = false } = {}) {
   const f = W.files.get(path)
   if (!f) return false
+  // A save is a save for the server too (SHACL validates on save).
+  const saved = () => client.notify("textDocument/didSave", { textDocument: { uri: f.model.uri.toString() } })
   if (!rootOf(path)) {
+    saved()
     if (!quiet) toast("Kept in this browser: files are saved here as you type. Download or export them to keep a copy.")
     return true
   }
@@ -562,6 +566,7 @@ async function save(path = W.active, { quiet = false } = {}) {
     await w.write(text)
     await w.close()
     f.disk = text
+    saved()
     changed({ tabs: true })
     if (!quiet) toast(`Saved ${path} to disk`)
     return true
@@ -672,9 +677,7 @@ async function formatAll() {
 }
 
 function toggleLabels() {
-  W.labels = !W.labels
-  client.notify("workspace/didChangeConfiguration", { settings: { turtle: { inlayHints: { labels: W.labels ? "all" : "opaque" } } } })
-  changed({ status: true })
+  settings.toggleLabels()
 }
 
 // The folder new files go to: the selected folder, or the selected file's.
@@ -824,6 +827,7 @@ const COMMANDS = [
   { id: "file.download", label: "File: Download File", run: () => downloadFile() },
   { id: "file.exportZip", label: "File: Export Workspace as Zip", run: exportZip },
   { id: "view.search", label: "View: Search", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, run: () => showView("search") },
+  { id: "settings.open", label: "Preferences: Open Settings", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Comma, run: () => settings.open() },
   { id: "view.panel", label: "View: Toggle Panel", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyJ, run: () => togglePanel() },
   { id: "workspace.sample", label: "Workspace: Reset to the Sample", run: () => resetWorkspace(WORKSPACE) },
   { id: "workspace.clear", label: "Workspace: Remove All Files", run: () => resetWorkspace([]) },
@@ -1099,6 +1103,9 @@ async function main() {
   })
   hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
   $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
+  // Settings go to the server before the first file opens.
+  const kept = await store.load()
+  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true }) })
 
   // Cross-file navigation (definition, references) opens the file in a tab.
   monaco.editor.registerEditorOpener({
@@ -1125,7 +1132,6 @@ async function main() {
   addEventListener("beforeunload", (e) => {
     if ([...W.files.keys()].some(dirty)) e.preventDefault()
   })
-  const kept = await store.load()
   if (kept?.files) {
     for (const d of kept.folders ?? []) W.folders.add(d)
     for (const r of kept.roots ?? []) W.roots.set(r.path, r.handle)
@@ -1141,7 +1147,6 @@ async function main() {
       if (i > 0 && !W.tabs.length) closeGroup(i)
     })
     focusGroup(Math.min(kept.focused ?? 0, W.groups.length - 1))
-    if (kept.labels) toggleLabels()
   } else {
     resetWorkspace(WORKSPACE)
   }

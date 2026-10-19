@@ -17,7 +17,9 @@ test("ranged edits are kept, and a crash restarts the server with the documents 
   const real = await createEngine(wasm)
   let crashNext = false
   const engine = {
+    calls: [],
     call(op, payload) {
+      this.calls.push({ op, payload })
       if (crashNext && op === "lsp") {
         crashNext = false
         throw Object.assign(new Error("unreachable"), { crashed: true })
@@ -28,6 +30,7 @@ test("ranged edits are kept, and a crash restarts the server with the documents 
   const crashes = []
   const host = new EmbeddedServer(engine, { crash: (e) => crashes.push(e.message) })
   await host.initialize({ processId: null, rootUri: null, capabilities: {} })
+  host.notify("workspace/didChangeConfiguration", { settings: { turtle: { inlayHints: { labels: "all" } } } })
   host.notify("textDocument/didOpen", { textDocument: { uri: URI, languageId: "turtle", version: 1, text: TEXT } })
   // Insert a broken statement at line 3, then fix a word on line 2 by range.
   host.notify("textDocument/didChange", {
@@ -52,4 +55,7 @@ test("ranged edits are kept, and a crash restarts the server with the documents 
   assert.ok(before.some(([line]) => line === 3), JSON.stringify(before))
   const fmt = await host.request("textDocument/formatting", { textDocument: { uri: URI }, options: { tabSize: 4, insertSpaces: true } })
   assert.ok(Array.isArray(fmt))
+  // The settings came back too.
+  assert.deepEqual(host.config, { settings: { turtle: { inlayHints: { labels: "all" } } } })
+  assert.equal(engine.calls.filter((c) => c.op === "lsp" && c.payload.messages.some((m) => m.method === "workspace/didChangeConfiguration")).length, 2)
 })
