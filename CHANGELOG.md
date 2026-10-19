@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.2 — 2026-10-20
+
+### Features
+
+- **Neovim with lazy.nvim in one step**: this repository is a Neovim plugin.
+  `{ "abhishekkundu25/turtle-lsp", version = "*", config = function()
+  vim.lsp.enable("turtle_lsp") end }` installs the server (downloaded for
+  your machine from the release and checked against its checksums, or built
+  with cargo where there is no download), its config for Turtle, TriG,
+  N-Triples, N-Quads and SPARQL, the `.ttl` and `.nq` file types, and the
+  modeline fix. No Rust needed.
+- Each release has the server on its own for other editors:
+  `turtle-lsp-<platform>.tar.gz` (`.zip` on Windows) for macOS, Linux and
+  Windows, with checksums and build attestations.
+
 ## 0.5.1 — 2026-10-20
 
 ### Features
