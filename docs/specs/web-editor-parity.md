@@ -1,6 +1,6 @@
 # RDF Editor: VS Code parity (iterations 3–5)
 
-Status: batch 1 in progress, on branch `web-showcase` (not merged to main).
+Status: batch 1 done; batches 2 and 3 to do. On branch `web-showcase` (not merged to main).
 Builds on `docs/specs/web-editor.md`.
 
 ## Problem Statement
@@ -147,3 +147,34 @@ Throughout
   most slices need, so its slices land one at a time.
 - Each batch ends with one commit per slice on `web-showcase` and a
   verification record in this file.
+
+## Batch 1 record (2026-10-19)
+
+Slices: `prefixes-uri` (agent; workspace and LSP parity tests), `search`
+(agent; Search view module, its styles and tests, small wiring), and the
+editor.js lock work done by the orchestrator (ranged sync, symbol search,
+drag to move, Copy Path, Problems folding, crash replay test). All three
+landed without conflicts.
+
+Departures from the plan:
+- Ctrl+T cannot open symbol search in Chrome (the browser keeps it). As in
+  VS Code's Quick Open, Go to File takes `#` (workspace symbols) and `@`
+  (file symbols); Ctrl+T is bound for browsers that pass it through, and
+  Ctrl+Shift+O is Monaco's outline.
+- Natively only the nearest `prefixes.ttl` applies (a parent folder's is not
+  added to a subfolder's); the browser does the same.
+- Closing a `prefixes.ttl` in the browser drops its prefixes (there is no
+  disk copy to fall back to), as deleting it would natively.
+- Copy Path copies the document URI (`file:///work/...`); Copy Relative
+  Path the workspace path.
+- Crash recovery is tested in Node with the real engine wrapped to crash on
+  demand (planned for batch 3; it fell out of the ranged-sync work).
+
+Verification on the merged branch:
+- Web: engine 24, toolbox 11, LSP parity 13, host 1, editor 15, search 6:
+  70/70.
+- Native: `cargo test` 195 passed, clippy clean on both crates, fmt clean,
+  Node end-to-end 490/490 (Neovim included); benchmark in line with the
+  previous runs (didOpen 18.8 ms, keystroke 4.3 ms, documentSymbol 11.2 ms).
+- Resource hygiene: no worktrees, slice branches, processes or temp
+  directories left.
