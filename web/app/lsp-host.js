@@ -27,6 +27,7 @@ export class EmbeddedServer {
   // `notification(method, params)`, `crash(error)` and `timers(pending)`
   // (whether a server timer is pending, after each change).
   constructor(engine, on = {}) {
+    this.crashes = [] // when the engine crashed, the last minute
     this.engine = engine
     this.on = on
     this.nextId = 0
@@ -102,15 +103,27 @@ export class EmbeddedServer {
       out = this.engine.call(op, payload)
     } catch (e) {
       if (!e.crashed) throw e
-      let error = e
+      // `state`: "restarted" (with every document), "dropped" (without the
+      // documents in `dropped`, which crash it), or "off" (no documents).
+      let error = Object.assign(new Error(e.message), { crashed: true, state: "restarted", dropped: [] })
+      // Crashes close together mean restarting does not help (a timer that
+      // crashes on every run, whatever is open): the third within a minute
+      // leaves the server running with no documents until the page reloads.
+      const now = Date.now()
+      this.crashes = [...this.crashes.filter((t) => now - t < 60_000), now]
       try {
-        const dropped = this.restart()
-        if (dropped.length) {
-          const which = dropped.join(", ")
-          error = Object.assign(new Error(`${e.message}; reopening ${which} crashed it again, so the language server has left it out`), { crashed: true, dropped })
+        if (this.crashes.length >= 3) {
+          const dropped = [...this.open.keys()]
+          this.open.clear()
+          for (const uri of dropped) this.forget(uri)
+          this.boot([])
+          error = Object.assign(error, { state: "off", dropped })
+        } else {
+          const dropped = this.restart()
+          if (dropped.length) error = Object.assign(error, { state: "dropped", dropped })
         }
       } catch (again) {
-        error = Object.assign(new Error(`${e.message}; the language server could not be started again (${again.message})`), { crashed: true })
+        error = Object.assign(new Error(`${e.message}; the language server could not be started again (${again.message})`), { crashed: true, state: "off", dropped: [...this.open.keys()] })
       }
       for (const p of this.pending.values()) p.reject(error)
       this.pending.clear()
@@ -145,12 +158,14 @@ export class EmbeddedServer {
         this.boot(kept)
       }
     }
-    for (const uri of dropped) {
-      this.open.delete(uri)
-      this.published.delete(uri)
-      this.on.diagnostics?.(uri, [])
-    }
+    for (const uri of dropped) (this.open.delete(uri), this.forget(uri))
     return dropped
+  }
+
+  // A document the server no longer has: its problems are cleared.
+  forget(uri) {
+    this.published.delete(uri)
+    this.on.diagnostics?.(uri, [])
   }
 
   // Starts a server with the settings and `docs` ([uri, doc] pairs) open.

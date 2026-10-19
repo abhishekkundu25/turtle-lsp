@@ -72,7 +72,7 @@ export class LspClient {
       this.handlers.busy(this.busy)
     } else if (m.type === "diagnostics") this.handlers.diagnostics(m.uri, m.list)
     else if (m.type === "serverRequest") this.handlers.serverRequest(m.method, m.params)
-    else if (m.type === "crash") this.handlers.crash(m.message)
+    else if (m.type === "crash") this.handlers.crash(m.message, m)
   }
 
 }

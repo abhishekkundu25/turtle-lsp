@@ -160,6 +160,8 @@ function movePath(from, to) {
   for (const [g, dest] of reopen) (focusGroup(W.groups.indexOf(g)), openTab(dest, { focus: false }))
   focusGroup(focused)
   for (const d of [...W.folders]) if (under(d, from)) (W.folders.delete(d), W.folders.add(to + d.slice(from.length)))
+  // A folder opened in place keeps its disk folder under its new name.
+  for (const [r, handle] of [...W.roots]) if (under(r, from)) (W.roots.delete(r), W.roots.set(to + r.slice(from.length), handle))
   for (const d of [...W.expanded]) if (under(d, from)) (W.expanded.delete(d), W.expanded.add(to + d.slice(from.length)))
   if (W.selected && under(W.selected, from)) W.selected = to + W.selected.slice(from.length)
 }
@@ -180,12 +182,15 @@ function moveInto(path, dir) {
 function deletePath(path) {
   const removed = [...W.files].filter(([p]) => under(p, path)).map(([p, f]) => ({ path: p, text: f.model.getValue() }))
   const folders = [...W.folders].filter((d) => under(d, path))
+  const roots = [...W.roots].filter(([r]) => under(r, path))
   for (const { path: p } of removed) removeFile(p)
   for (const d of folders) W.folders.delete(d)
+  for (const [r] of roots) W.roots.delete(r)
   if (W.selected && under(W.selected, path)) W.selected = null
   changed({ tree: true, tabs: true })
   toast(`Deleted ${nameOf(path)}`, "Undo", () => {
     for (const d of folders) W.folders.add(d)
+    for (const [r, handle] of roots) W.roots.set(r, handle)
     for (const f of removed) addFile(f.path, f.text)
     changed({ tree: true })
   })
@@ -1199,7 +1204,12 @@ async function main() {
     changed({ tree: true, tabs: true, problems: true, status: true })
   })
   client.on("serverRequest", (method) => hooks?.refresh(method))
-  client.on("crash", (message) => toast(`The engine crashed and restarted with your files: ${message}`))
+  client.on("crash", (message, { state, dropped = [] } = {}) => {
+    const names = dropped.map((u) => pathByUri.get(u) ?? u).join(", ")
+    if (state === "off") toast(`The engine keeps crashing, so language features are off. Reload the page to try again. (${message})`)
+    else if (state === "dropped") toast(`The engine crashed and restarted without ${names}, which crashes it. Reload the page to try again. (${message})`)
+    else toast(`The engine crashed and restarted with your files. (${message})`)
+  })
 
   const init = await client.initialize({
     processId: null,

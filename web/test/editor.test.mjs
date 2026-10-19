@@ -500,6 +500,34 @@ test("Save All writes every unsaved file, and a new file in the folder is create
   }
 })
 
+test("a folder opened in place keeps saving to its disk folder after a rename; deleting it unlinks it", inPlace, async () => {
+  const context = await inPlaceContext({ "a.ttl": A })
+  try {
+    const { page } = await open({ context })
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await item(page, "proj/a.ttl").waitFor()
+    await item(page, "proj").click()
+    await page.keyboard.press("F2")
+    const name = page.locator(".tree-input")
+    await name.fill("renamed")
+    await name.press("Enter")
+    await openFile(page, "renamed/a.ttl")
+    await at(page, "ex:a", 0)
+    await page.keyboard.type("# moved\n")
+    await page.keyboard.press("ControlOrMeta+s")
+    await page.locator("#toast", { hasText: "Saved renamed/a.ttl to disk" }).waitFor()
+    assert.match(await disk(page, "a.ttl"), /# moved\nex:a/)
+    // Deleted, the folder is unlinked: opening it again takes its own name back.
+    await item(page, "renamed").click({ button: "right" })
+    await page.getByRole("menuitem", { name: "Delete" }).click()
+    await item(page, "renamed").waitFor({ state: "detached" })
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await item(page, "proj/a.ttl").waitFor()
+  } finally {
+    await context.close()
+  }
+})
+
 test("closing an unsaved tab asks: Cancel keeps it, Don't Save drops the edit, Save writes it", inPlace, async () => {
   const context = await inPlaceContext({ "a.ttl": A })
   try {

@@ -77,7 +77,7 @@ test("a document that crashes the replay too is left out, and the server keeps w
     },
   }
   const crashes = []
-  const host = new EmbeddedServer(engine, { crash: (e) => crashes.push(e.message) })
+  const host = new EmbeddedServer(engine, { crash: (e) => crashes.push(e) })
   await host.initialize({ processId: null, rootUri: null, capabilities: {} })
   const [a, b, c] = ["a", "b", "c"].map((n) => `file:///work/${n}.ttl`)
   host.notify("textDocument/didOpen", { textDocument: { uri: a, languageId: "turtle", version: 1, text: TEXT } })
@@ -93,7 +93,8 @@ test("a document that crashes the replay too is left out, and the server keeps w
   crashNext = true
   await assert.rejects(host.request("textDocument/hover", { textDocument: { uri: a }, position: { line: 0, character: 1 } }), /unreachable/)
   assert.equal(crashes.length, 1)
-  assert.match(crashes[0], /b\.ttl/)
+  assert.equal(crashes[0].state, "dropped")
+  assert.deepEqual(crashes[0].dropped, [b])
   assert.deepEqual([...host.open.keys()], [a, c])
   await host.settle()
   assert.deepEqual(seen(a), before.a)
@@ -102,4 +103,36 @@ test("a document that crashes the replay too is left out, and the server keeps w
   const fmt = await host.request("textDocument/formatting", { textDocument: { uri: c }, options: { tabSize: 4, insertSpaces: true } })
   assert.ok(Array.isArray(fmt))
   assert.equal(crashes.length, 1)
+})
+
+test("crashes that a restart does not stop (a timer) turn the server off instead of looping", async () => {
+  const real = await createEngine(wasm)
+  // Once armed, every timer step crashes, whatever is open, as a SHACL run
+  // that panics after each pause in typing would.
+  let armed = false
+  let ticks = 0
+  const engine = {
+    call(op, payload) {
+      if (op === "lsp_tick") ticks++
+      if (armed && op === "lsp_tick") throw Object.assign(new Error("panic in a timer"), { crashed: true })
+      return real.call(op, payload)
+    },
+  }
+  const crashes = []
+  const host = new EmbeddedServer(engine, { crash: (e) => crashes.push(e) })
+  await host.initialize({ processId: null, rootUri: null, capabilities: {} })
+  host.notify("textDocument/didOpen", { textDocument: { uri: URI, languageId: "turtle", version: 1, text: TEXT } })
+  await host.settle()
+  armed = true
+  for (let i = 0; i < 5; i++) host.run("lsp_tick", {})
+  assert.deepEqual(crashes.map((e) => e.state), ["restarted", "restarted", "off", "off", "off"].slice(0, crashes.length))
+  assert.equal(crashes[2].state, "off")
+  assert.deepEqual(crashes[2].dropped, [URI])
+  // Off: nothing is open, so no timer is due and nothing crashes on its own.
+  assert.equal(host.open.size, 0)
+  const before = ticks
+  await new Promise((r) => setTimeout(r, 1500))
+  assert.equal(ticks, before, "no timer runs while the server is off")
+  // It still answers.
+  assert.ok(await host.request("textDocument/hover", { textDocument: { uri: URI }, position: { line: 2, character: 1 } }).then(() => true, () => true))
 })

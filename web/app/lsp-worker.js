@@ -22,7 +22,7 @@ const ready = fetch(new URL("engine.wasm", import.meta.url))
     server: new EmbeddedServer(engine, {
       diagnostics: (uri, list) => post({ type: "diagnostics", uri, list }),
       request: (method, params) => post({ type: "serverRequest", method, params }),
-      crash: (e) => post({ type: "crash", message: e.message }),
+      crash: (e) => post({ type: "crash", message: e.message, state: e.state, dropped: e.dropped }),
       timers: (pending) => {
         timersPending = pending
         if (!pending) post({ type: "idle", busy: false, ack: false })
