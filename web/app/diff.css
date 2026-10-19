@@ -1,0 +1,13 @@
+/* The diff view (diff.js): covers the editor area. Colours come from editor.css's tokens. */
+.dif { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); min-height: 0; }
+.dif[hidden] { display: none; }
+.dif-hd { display: flex; align-items: center; gap: 8px; height: 35px; padding: 0 8px 0 12px; background: var(--side); border-bottom: 1px solid var(--line); flex: none; }
+.dif-hd > .codicon { color: var(--muted); }
+.dif-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.dif-arrow { color: var(--muted); padding: 0 4px; }
+.dif-btn { height: 24px; padding: 0 12px; border-radius: 2px; background: var(--focus); color: #ffffff; white-space: nowrap; }
+.dif-btn:hover { filter: brightness(1.1); }
+.dif-x { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 4px; flex: none; }
+.dif-x:hover { background: var(--hover); }
+.dif-host { flex: 1; min-height: 0; position: relative; }
+.dif-editor { position: absolute; inset: 0; }

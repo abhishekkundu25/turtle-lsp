@@ -8,6 +8,7 @@ import * as store from "./store.js"
 import { createSearch } from "./search.js"
 import { createSettings } from "./settings.js"
 import { createHierarchy } from "./hierarchy.js"
+import { createDiff } from "./diff.js"
 
 const ROOT = "file:///work/"
 // The files a folder contributes, by extension; anything else is skipped.
@@ -50,6 +51,7 @@ for (const key of ["tabs", "active"]) {
   Object.defineProperty(W, key, { get: () => W.groups[W.g][key], set: (v) => (W.groups[W.g][key] = v) })
 }
 let monaco, editor, client, hooks, search, settings, hierarchy
+let diff
 const pathByUri = new Map()
 
 // The folder opened in place that `path` is in, if any.
@@ -847,6 +849,8 @@ const COMMANDS = [
   { id: "file.save", label: "File: Save", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, run: () => save() },
   { id: "file.saveAll", label: "File: Save All", key: () => monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyCode.KeyS), run: saveAll },
   { id: "file.revert", label: "File: Revert File", run: () => revert() },
+  { id: "file.compareSaved", label: "File: Compare with Saved", run: () => W.active && diff.compareWithSaved(W.active, W.files.get(W.active)) },
+  { id: "rdf.previewFormat", label: "RDF: Preview Formatting", run: () => W.active && diff.previewFormatting(W.active, W.files.get(W.active)) },
   { id: "view.split", label: "View: Split Editor", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Backslash, run: split },
   { id: "file.new", label: "File: New File", run: () => startNew("newFile") },
   { id: "file.newFolder", label: "File: New Folder", run: () => startNew("newFolder") },
@@ -1147,6 +1151,7 @@ async function main() {
   // Settings go to the server before the first file opens.
   const kept = await store.load()
   settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true }) })
+  diff = createDiff({ monaco, client, mount: document.querySelector(".center"), toast, options: editorOptions, setup: (ed) => settings.applyTo(ed), onClose: () => editor?.focus() })
 
   // Cross-file navigation (definition, references) opens the file in a tab.
   monaco.editor.registerEditorOpener({
