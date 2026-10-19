@@ -504,3 +504,38 @@ server and workspace wiring is the lock: one slice owns those files.
 | G. Corpus | `examples/corpus.rs`, `tools/corpus/*` | A, B, D | `npm run corpus` has no findings on the new cases |
 
 D, E and G run alongside each other once their blockers land.
+
+## Departures from the plan
+
+- **Tests (T)**: the test client's `open` takes a language id and forgets the
+  previous diagnostics of the document; the N-Quads and SPARQL helpers open
+  documents through it and wait for the workspace index first. Opening with a
+  raw `didOpen` let a test read the empty list published when an earlier test
+  closed the same file (found by slice A). One SPARQL test projected a
+  variable nothing bound (found by slice B) and was corrected.
+- **N-Quads (A)**: `Syntax::is_line_based()` (N-Triples and N-Quads) replaces
+  the checks against N-Triples; statements carry their N-Quads graph label
+  (`Statement.graph`). Outside the slice's files: the file-watcher glob gained
+  `*.nq`, and `tests/format.rs`, `tests/oxttl_oracle.rs` and
+  `examples/corpus.rs` gained the N-Quads arms the compiler asked for
+  (`tests/format.rs` also treats N-Quads like N-Triples where it meant "line
+  based").
+- **SPARQL core (B)**:
+  - `spargebra` accepts a prologue only at the start of an update, but the
+    grammar allows one before every operation. Later declarations are blanked
+    for the `spargebra` run (positions kept) and their prefixes passed to it.
+  - `spargebra` recurses: past 256 nesting levels or 4096 `OPTIONAL`/`MINUS`
+    clauses a document gets a `syntax` error and is not given to `spargebra`,
+    so a pathological query cannot overflow the stack. The formatter applies
+    the same guard; the SHACL-SPARQL lint gets it once the formatter lands.
+  - Documents locate syntax errors by parsing a copy with room after every
+    token (`validate::check_tokens`), which fixes errors reported a token too
+    early by the old algorithm; the SHACL-SPARQL lint keeps the old one
+    (`validate::locate`), moved out of the lint, with two char-boundary
+    panics fixed (one found by the chaos test).
+- **Editors (F)**: SPARQL has its own language configuration (Turtle's
+  auto-closes `<`, which gets in the way of `?x < 3`); undescribed terms are
+  styled as deprecated in N-Triples, N-Quads and SPARQL as in Turtle; the
+  Neovim setup maps `.ru` to SPARQL (Neovim reads it as Ruby) except
+  `config.ru`, and turns modelines off for SPARQL files too (`PREFIX ex:`
+  looks like a modeline, as `@prefix ex:` does).
