@@ -1052,10 +1052,16 @@ fn algebra(
             .with_prefix(p.as_str(), ns.as_str())
             .map_err(|e| format!("prefix {p}: {e}"))?;
     }
+    // As the server gives it: local names with several dots escaped, which
+    // spargebra 0.4 rejects although the grammar allows them.
+    let text = turtle_lsp::sparql::validate::text_for_spargebra(
+        text,
+        &turtle_lsp::sparql::lexer::tokenize(text),
+    );
     let s = if update {
-        parser.parse_update(text).map(|u| u.to_string())
+        parser.parse_update(&text).map(|u| u.to_string())
     } else {
-        parser.parse_query(text).map(|q| q.to_string())
+        parser.parse_query(&text).map(|q| q.to_string())
     };
     s.map(|s| canonical_algebra(&s)).map_err(|e| e.to_string())
 }
