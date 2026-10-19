@@ -842,7 +842,7 @@ function resetWorkspace(files) {
   W.expanded = new Set(files.map((f) => dirOf(f.path)).filter(Boolean))
   W.selected = null
   for (const f of files) addFile(f.path, f.text)
-  const first = files.find((f) => f.path.startsWith("data/")) ?? files[0]
+  const first = files.find((f) => f.path === "start-here.ttl") ?? files[0]
   if (first) openTab(first.path)
   changed({ tree: true, tabs: true, problems: true, status: true })
 }

@@ -115,14 +115,57 @@ id:alice rdfs:label "Alice Smith"@en , "Alice Schmidt"@de .
 id:acme rdfs:label "ACME Corporation"@en .
 `
 
-// The editor's starting workspace: the same files, in folders.
+// The editor's starting workspace: the same files, in folders, each saying
+// what to try in it, with a start file first. Only core.ttl and people.ttl
+// keep deliberate problems.
+const head = (lines) => lines.map((l) => `# ${l}`.trimEnd()).join("\n") + "\n\n"
+const START = `${head([
+  "Welcome to the RDF Editor. This is a small project: an ontology, SHACL",
+  "shapes, data and SPARQL queries, checked as you type. Try these:",
+  "",
+  "1. Hover ex:Person below: its label, and the file that defines it.",
+  "2. Ctrl+click (Cmd+click on a Mac) ex:Person to jump to its definition.",
+  "3. Put the cursor on ex:worksFor and press F2 to rename it in every file.",
+  "4. The problems in ontology/core.ttl and data/people.ttl are deliberate:",
+  "   hover a squiggle, then press Ctrl+. (Cmd+.) for the fix.",
+  "",
+  "",
+  "ex: and id: need no @prefix here: prefixes.ttl declares them for the",
+  "whole workspace, as it does in VS Code.",
+  "",
+  "Your own files: import or drop them on the explorer, or open a folder.",
+])}id:you a ex:Person ;
+    ex:name "You" ;
+    ex:worksFor id:acme .
+`
+const CORE = head(["The ontology. One deliberate mistake: a misspelt rdfs: term. Hover it, then Ctrl+. to fix it."]) + ONTOLOGY.replace("@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n", "")
+const PEOPLE = head([
+  "Data, checked against shapes/person.ttl. Deliberate mistakes: rdfs: is used",
+  "without its prefix (Ctrl+. adds it), and Bob breaks two SHACL rules.",
+]) + DATA
+const PEOPLE_RQ = head(["A query. Completion (Ctrl+Space) knows the ontology's terms."]) +
+  QUERY.replace("PREFIX id: <https://toolbox.example.org/id/>\n", "").replace("?name ?org", "?name").replace("\n  ?p foaf:knows ?friend }", " }")
+const MOVE = `${head(["A SPARQL update: whoever works for a person works for ACME instead."])}PREFIX ex: <https://toolbox.example.org/def/>
+PREFIX id: <https://toolbox.example.org/id/>
+
+DELETE { ?p ex:worksFor id:alice }
+INSERT { ?p ex:worksFor id:acme }
+WHERE { ?p ex:worksFor id:alice }
+`
+
+const PREFIXES = `${head(["Prefixes for every file in this folder and below: no @prefix needed for them."])}@prefix ex: <https://toolbox.example.org/def/> .
+@prefix id: <https://toolbox.example.org/id/> .
+`
+
 export const WORKSPACE = [
-  { path: "ontology/core.ttl", text: ONTOLOGY },
-  { path: "ontology/labels.ttl", text: LABELS },
-  { path: "shapes/person.ttl", text: SHAPES },
-  { path: "data/people.ttl", text: DATA },
-  { path: "data/graphs.trig", text: GRAPHS },
-  { path: "data/hr.nq", text: QUADS },
-  { path: "queries/people.rq", text: QUERY },
-  { path: "queries/add-carol.ru", text: UPDATE },
+  { path: "start-here.ttl", text: START },
+  { path: "prefixes.ttl", text: PREFIXES },
+  { path: "ontology/core.ttl", text: CORE },
+  { path: "ontology/labels.ttl", text: head(["Labels, shown next to terms with the Labels button (Alt+L)."]) + LABELS.replace("@prefix ex: <https://toolbox.example.org/def/> .\n", "") },
+  { path: "shapes/person.ttl", text: head(["SHACL shapes: data/people.ttl is validated against them as you type."]) + SHAPES },
+  { path: "data/people.ttl", text: PEOPLE },
+  { path: "data/graphs.trig", text: head(["A dataset in TriG: one graph per year."]) + GRAPHS },
+  { path: "data/hr.nq", text: head(["The same kind of data as N-Quads."]) + QUADS },
+  { path: "queries/people.rq", text: PEOPLE_RQ },
+  { path: "queries/move-to-acme.ru", text: MOVE },
 ]

@@ -86,7 +86,7 @@ test("the editor opens on the sample workspace, with its folders, analysed, load
       await item(page, p).waitFor()
     }
     assert.equal(await item(page, "data").getAttribute("aria-expanded"), "true")
-    await page.getByRole("tab", { name: "people.ttl" }).waitFor()
+    await page.getByRole("tab", { name: "start-here.ttl" }).waitFor()
     assert.ok(Number(await page.locator("#status-errors").textContent()) > 0)
     await page.locator("#status-version", { hasText: /turtle-lsp \d+\.\d+\.\d+/ }).waitFor()
     assert.deepEqual(errors, [])
