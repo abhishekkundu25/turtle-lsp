@@ -23,6 +23,7 @@
 //! SPARQL documents add nothing to workspace symbols.
 
 pub mod diagnostics;
+pub mod edits;
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::format::Options;
