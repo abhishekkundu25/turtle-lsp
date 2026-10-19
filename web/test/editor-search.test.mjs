@@ -51,7 +51,7 @@ const groups = (page) =>
 
 // Open the Search view with Ctrl+Shift+F from inside the editor and search.
 async function find(page, query) {
-  await page.locator("#editor .monaco-editor textarea").first().focus()
+  await page.locator(".group .monaco-editor textarea").first().focus()
   await page.keyboard.press("ControlOrMeta+Shift+F")
   const input = page.getByRole("textbox", { name: "Search", exact: true })
   await assert.doesNotReject(input.waitFor())
@@ -152,7 +152,7 @@ test("Replace All changes every file, says how many, and Ctrl+Z undoes it per fi
     await page.locator("#act-explorer").click()
     await page.locator('#tree [data-path="data/people.ttl"]').click()
     await page.getByRole("tab", { name: "people.ttl" }).waitFor()
-    await page.locator("#editor .monaco-editor textarea").first().focus()
+    await page.locator(".group .monaco-editor textarea").first().focus()
     await page.keyboard.press("ControlOrMeta+Z")
     assert.equal(await text(page, "data/people.ttl"), before["data/people.ttl"])
     assert.equal(await text(page, "ontology/core.ttl"), before["ontology/core.ttl"].replaceAll("Person", "Human"))

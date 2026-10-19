@@ -49,7 +49,7 @@ const control = (page, name) => settingsPage(page).getByLabel(name, { exact: tru
 
 // Open Settings with Ctrl+, from inside the editor.
 async function openSettings(page) {
-  await page.locator("#editor .monaco-editor textarea").first().focus()
+  await page.locator(".group .monaco-editor textarea").first().focus()
   await page.keyboard.press("ControlOrMeta+Comma")
   await settingsPage(page).waitFor()
 }
@@ -88,7 +88,7 @@ test("Ctrl+, opens Settings, the search box filters, Escape closes", async () =>
     await settingsPage(page).waitFor()
     await page.getByRole("button", { name: "Close Settings" }).click()
     await settingsPage(page).waitFor({ state: "hidden" })
-    await page.locator("#editor .monaco-editor textarea").first().focus()
+    await page.locator(".group .monaco-editor textarea").first().focus()
     await page.keyboard.press("F1")
     await page.keyboard.type("Preferences: Open Settings")
     await page.keyboard.press("Enter")
