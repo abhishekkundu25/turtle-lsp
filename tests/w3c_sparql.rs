@@ -174,21 +174,24 @@ fn read_manifest(path: &Path) -> Vec<Test> {
 
 /// The algebra as text with generated names renumbered in order of first
 /// appearance: blank node labels (`[]` and `_:x` get fresh labels on every
-/// parse) and the 32-hex-digit variables spargebra makes up for aggregates.
+/// parse) and the hex-named variables spargebra makes up for aggregates.
 fn canonical(algebra: &str) -> String {
     let mut ids: BTreeMap<String, usize> = BTreeMap::new();
     let mut out = String::with_capacity(algebra.len());
     let mut rest = algebra;
     loop {
         let blank = rest.find("_:");
-        let var = rest.match_indices('?').map(|(i, _)| i).find(|&i| {
-            let name = &rest[i + 1..];
-            name.len() >= 32
-                && name.as_bytes()[..32].iter().all(|b| b.is_ascii_hexdigit())
-                && !name[32..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
-        });
+        // spargebra writes a random u128 in hex, without leading zeros.
+        let hex_len = |name: &str| {
+            let n = name.bytes().take_while(u8::is_ascii_hexdigit).count();
+            let ends = !name[n..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
+            ((20..=32).contains(&n) && ends).then_some(n)
+        };
+        let var = rest
+            .match_indices('?')
+            .find_map(|(i, _)| hex_len(&rest[i + 1..]).map(|n| (i, n)));
         let (i, sigil, len) = match (blank, var) {
-            (Some(b), Some(v)) if v < b => (v, "?", 32),
+            (Some(b), Some((v, n))) if v < b => (v, "?", n),
             (Some(b), _) => {
                 let tail = &rest[b + 2..];
                 let len = tail
@@ -196,7 +199,7 @@ fn canonical(algebra: &str) -> String {
                     .unwrap_or(tail.len());
                 (b, "_:", len)
             }
-            (None, Some(v)) => (v, "?", 32),
+            (None, Some((v, n))) => (v, "?", n),
             (None, None) => break,
         };
         out.push_str(&rest[..i]);
