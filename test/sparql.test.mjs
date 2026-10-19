@@ -263,8 +263,8 @@ test("a projected variable that the WHERE clause never binds is a warning", asyn
   assert.match(u[0].message, /\?missing/)
 })
 
-test("variables bound by BIND, VALUES, OPTIONAL, subqueries and expressions are not unbound", async () => {
-  const text = `${EX}SELECT ?a ?b ?c ?d ?e ?f ?g WHERE {
+test("variables bound by BIND, VALUES, OPTIONAL, subqueries and GRAPH are not unbound", async () => {
+  const text = `${EX}SELECT ?a ?b ?c ?d ?f ?g WHERE {
   ?p ex:name ?n .
   BIND(STRLEN(?n) AS ?a)
   VALUES ?b { 1 2 }
