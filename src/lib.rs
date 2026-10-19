@@ -1,6 +1,7 @@
 //! Turtle (RDF 1.2) language server.
 
 pub mod analysis;
+pub mod clock;
 pub mod features;
 pub mod imports;
 pub mod knowledge;

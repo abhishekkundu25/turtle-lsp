@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 getrandom = "0.3"
+lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 # SPARQL evaluation asks for the time (NOW()); the page supplies it (src/lib.rs).
 oxsdatatypes = { version = "0.2", features = ["custom-now"] }

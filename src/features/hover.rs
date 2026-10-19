@@ -114,6 +114,7 @@ pub fn describe_iri(iri: &str, label: &str, k: &Knowledge, prefixes: &PrefixMap)
             let file = a.origin.clone().unwrap_or_else(|| {
                 uri_to_path(&a.uri)
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .or_else(|| crate::workspace::file_uri_name(&a.uri))
                     .unwrap_or_else(|| a.uri.clone())
             });
             let line = a.position(Encoding::Utf8, d.spans[0].start).line + 1;

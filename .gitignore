@@ -10,3 +10,4 @@ test/corpus/
 
 # Built by npm run web:build.
 web/app/engine.wasm
+web/app/vendor/

@@ -106,3 +106,23 @@ export const SETS = {
     ],
   },
 }
+
+const LABELS = `@prefix ex: <https://toolbox.example.org/def/> .
+@prefix id: <https://toolbox.example.org/id/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+id:alice rdfs:label "Alice Smith"@en , "Alice Schmidt"@de .
+id:acme rdfs:label "ACME Corporation"@en .
+`
+
+// The editor's starting workspace: the same files, in folders.
+export const WORKSPACE = [
+  { path: "ontology/core.ttl", text: ONTOLOGY },
+  { path: "ontology/labels.ttl", text: LABELS },
+  { path: "shapes/person.ttl", text: SHAPES },
+  { path: "data/people.ttl", text: DATA },
+  { path: "data/graphs.trig", text: GRAPHS },
+  { path: "data/hr.nq", text: QUADS },
+  { path: "queries/people.rq", text: QUERY },
+  { path: "queries/add-carol.ru", text: UPDATE },
+]

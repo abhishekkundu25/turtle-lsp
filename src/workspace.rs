@@ -132,6 +132,33 @@ pub fn file_url_of(path: &Path, dir: bool) -> Option<url::Url> {
     }
 }
 
+/// The file name a `file:` URI ends in, decoded, without reading any file
+/// system (the browser build has none).
+pub fn file_uri_name(uri: &str) -> Option<String> {
+    let u = url::Url::parse(uri).ok().filter(|u| u.scheme() == "file")?;
+    let last = u.path_segments()?.next_back().filter(|s| !s.is_empty())?;
+    let bytes = last.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let path = file_path_of(&url::Url::parse(uri).ok()?)?;
     Some(normalize_drive(path))
@@ -600,6 +627,20 @@ pub fn find_prefix_file(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn file_uri_name_is_the_decoded_last_segment() {
+        assert_eq!(
+            file_uri_name("file:///work/shapes/my%20file.ttl").as_deref(),
+            Some("my file.ttl")
+        );
+        assert_eq!(
+            file_uri_name("file:///work/a.ttl").as_deref(),
+            Some("a.ttl")
+        );
+        assert_eq!(file_uri_name("https://e.org/a.ttl"), None);
+        assert_eq!(file_uri_name("file:///work/"), None);
+    }
+
     use super::*;
 
     #[test]

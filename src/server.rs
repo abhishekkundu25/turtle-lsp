@@ -19,6 +19,7 @@
 //! SPARQL documents to `sparql::features`; neither runs on the other.
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
+use crate::clock::Instant;
 use crate::features::hierarchy;
 use crate::features::{
     completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, shacl_validate,
@@ -29,7 +30,7 @@ use crate::sparql::features as sparql_features;
 use crate::workspace::{
     DocKind, PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
 };
-use crossbeam_channel::{Receiver, never, select, unbounded};
+use crossbeam_channel::{Receiver, never, unbounded};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
@@ -100,7 +101,7 @@ pub struct Server {
     /// The knowledge index's described generation last acted on.
     described_seen: u64,
     /// When to act on a described-set change (see `check_described`).
-    described_due: Option<std::time::Instant>,
+    described_due: Option<Instant>,
     /// `workspace/{inlayHint,semanticTokens}/refresh`, those the client supports.
     display_refresh: Vec<&'static str>,
     /// Knowledge changed since the last display refresh.
@@ -114,9 +115,9 @@ pub struct Server {
     /// The latest validation results per document.
     shacl_diagnostics: shacl_validate::ByUri,
     /// When to validate after typing stops (`shacl.onType`); each edit pushes it back.
-    shacl_typing_due: Option<std::time::Instant>,
+    shacl_typing_due: Option<Instant>,
     /// When the running validation starts showing progress.
-    shacl_progress_due: Option<std::time::Instant>,
+    shacl_progress_due: Option<Instant>,
     /// The client declared `window.workDoneProgress`.
     work_done_progress: bool,
     /// Tokens of the progress shown, per kind of work.
@@ -127,6 +128,9 @@ pub struct Server {
     progress_pending: FxHashMap<RequestId, PendingProgress>,
     /// Tokens whose `begin` went out and whose `end` has not.
     progress_live: FxHashSet<String>,
+    /// Embedded in a host without threads (see [`Embedded`]): SHACL and
+    /// imports run inline, and the host drives the timers.
+    inline: bool,
 }
 
 /// A progress waiting for the client to accept its token.
@@ -137,8 +141,169 @@ struct PendingProgress {
     ended: Option<String>,
 }
 
+impl Server {
+    /// A server for the client's `initialize` params (`raw`), not started,
+    /// with the initialize result to answer and the workspace roots. It reads
+    /// no messages and indexes nothing: the caller wires both.
+    #[allow(clippy::type_complexity)]
+    fn configure(
+        conn: Connection,
+        raw: Value,
+        inline: bool,
+    ) -> Result<(Server, Value, Vec<PathBuf>), Box<dyn std::error::Error + Send + Sync>> {
+        let params: InitializeParams = serde_json::from_value(raw.clone())?;
+        let utf8 = params
+            .capabilities
+            .general
+            .as_ref()
+            .and_then(|g| g.position_encodings.as_ref())
+            .is_some_and(|e| e.contains(&PositionEncodingKind::UTF8));
+        let enc = if utf8 {
+            Encoding::Utf8
+        } else {
+            Encoding::Utf16
+        };
+        let watch_dynamic = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.did_change_watched_files.as_ref())
+            .and_then(|d| d.dynamic_registration)
+            .unwrap_or(false);
+        // The spec names this `workspace.diagnostics`; lsp-types reads `diagnostic`.
+        let refresh_support = ["diagnostics", "diagnostic"].iter().any(|k| {
+            raw.pointer(&format!("/capabilities/workspace/{k}/refreshSupport"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        });
+        // Pull only when the client can also be told to pull again: a change in one
+        // file (prefixes.ttl, SHACL shapes) must reach every open document, and
+        // without refresh a pull client keeps stale diagnostics. Push covers that.
+        let pull = refresh_support
+            && params
+                .capabilities
+                .text_document
+                .as_ref()
+                .is_some_and(|t| t.diagnostic.is_some());
+        let display_refresh = [
+            (
+                "inlayHint",
+                lsp_types::request::InlayHintRefreshRequest::METHOD,
+            ),
+            (
+                "semanticTokens",
+                lsp_types::request::SemanticTokensRefresh::METHOD,
+            ),
+        ]
+        .into_iter()
+        .filter(|(k, _)| {
+            raw.pointer(&format!("/capabilities/workspace/{k}/refreshSupport"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|(_, m)| m)
+        .collect();
+        let work_done_progress = raw
+            .pointer("/capabilities/window/workDoneProgress")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let config_pull = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.configuration)
+            .unwrap_or(false);
+        let init_options = params.initialization_options.clone().unwrap_or_default();
+        let settings = Settings::from_layers([&init_options]);
+
+        let resolve_edits = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|t| t.code_action.as_ref())
+            .and_then(|c| c.resolve_support.as_ref())
+            .is_some_and(|r| r.properties.iter().any(|p| p == "edit"));
+
+        let mut roots: Vec<PathBuf> = params
+            .workspace_folders
+            .iter()
+            .flatten()
+            .filter_map(|f| uri_to_path(f.uri.as_str()))
+            .collect();
+        #[allow(deprecated)]
+        if roots.is_empty()
+            && let Some(r) = params
+                .root_uri
+                .as_ref()
+                .and_then(|u| uri_to_path(u.as_str()))
+        {
+            roots.push(r);
+        }
+        let ws = Workspace::new(roots.clone(), settings.prefixes.clone());
+
+        let result = InitializeResult {
+            capabilities: capabilities(enc, pull),
+            server_info: Some(ServerInfo {
+                name: "turtle-lsp".into(),
+                version: Some(env!("CARGO_PKG_VERSION").into()),
+            }),
+        };
+        let mut result = serde_json::to_value(result)?;
+        // lsp-types 0.97 has no field for it.
+        result["capabilities"]["typeHierarchyProvider"] = Value::Bool(true);
+
+        let server = Server {
+            conn,
+            inbox: never(),
+            ws,
+            enc,
+            dirty: FxHashSet::default(),
+            spelling: FxHashMap::default(),
+            index_rx: never(),
+            indexed: false,
+            watch_dynamic,
+            resolve_edits,
+            next_id: 0,
+            init_options,
+            config: Value::Null,
+            settings,
+            config_pull,
+            config_request: None,
+            pull,
+            refresh_support,
+            generation: 0,
+            reported: false,
+            refresh_needed: false,
+            described_seen: 0,
+            described_due: None,
+            display_refresh,
+            display_stale: false,
+            imports: if inline {
+                crate::imports::Imports::new_inline()
+            } else {
+                crate::imports::Imports::new()
+            },
+            shacl: None,
+            shacl_rx: never(),
+            shacl_generation: 0,
+            shacl_diagnostics: Default::default(),
+            shacl_typing_due: None,
+            shacl_progress_due: None,
+            work_done_progress,
+            index_progress: None,
+            imports_progress: None,
+            shacl_progress: None,
+            progress_pending: FxHashMap::default(),
+            progress_live: FxHashSet::default(),
+            inline,
+        };
+        Ok((server, result, roots))
+    }
+}
+
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
 /// process should exit with code 1 otherwise, as the LSP spec asks.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     // Workspace files are parsed on rayon threads; give them room beyond the
     // 2 MB default (parser nesting is bounded, this is defence in depth).
@@ -147,120 +312,22 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         .build_global();
     let (conn, io) = Connection::stdio();
     let (id, raw) = conn.initialize_start()?;
-    let params: InitializeParams = serde_json::from_value(raw.clone())?;
 
-    let utf8 = params
-        .capabilities
-        .general
-        .as_ref()
-        .and_then(|g| g.position_encodings.as_ref())
-        .is_some_and(|e| e.contains(&PositionEncodingKind::UTF8));
-    let enc = if utf8 {
-        Encoding::Utf8
-    } else {
-        Encoding::Utf16
-    };
-    let watch_dynamic = params
-        .capabilities
-        .workspace
-        .as_ref()
-        .and_then(|w| w.did_change_watched_files.as_ref())
-        .and_then(|d| d.dynamic_registration)
-        .unwrap_or(false);
-    // The spec names this `workspace.diagnostics`; lsp-types reads `diagnostic`.
-    let refresh_support = ["diagnostics", "diagnostic"].iter().any(|k| {
-        raw.pointer(&format!("/capabilities/workspace/{k}/refreshSupport"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    });
-    // Pull only when the client can also be told to pull again: a change in one
-    // file (prefixes.ttl, SHACL shapes) must reach every open document, and
-    // without refresh a pull client keeps stale diagnostics. Push covers that.
-    let pull = refresh_support
-        && params
-            .capabilities
-            .text_document
-            .as_ref()
-            .is_some_and(|t| t.diagnostic.is_some());
-    let display_refresh = [
-        (
-            "inlayHint",
-            lsp_types::request::InlayHintRefreshRequest::METHOD,
-        ),
-        (
-            "semanticTokens",
-            lsp_types::request::SemanticTokensRefresh::METHOD,
-        ),
-    ]
-    .into_iter()
-    .filter(|(k, _)| {
-        raw.pointer(&format!("/capabilities/workspace/{k}/refreshSupport"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    })
-    .map(|(_, m)| m)
-    .collect();
-    let work_done_progress = raw
-        .pointer("/capabilities/window/workDoneProgress")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let config_pull = params
-        .capabilities
-        .workspace
-        .as_ref()
-        .and_then(|w| w.configuration)
-        .unwrap_or(false);
-    let init_options = params.initialization_options.clone().unwrap_or_default();
-    let settings = Settings::from_layers([&init_options]);
-
-    let resolve_edits = params
-        .capabilities
-        .text_document
-        .as_ref()
-        .and_then(|t| t.code_action.as_ref())
-        .and_then(|c| c.resolve_support.as_ref())
-        .is_some_and(|r| r.properties.iter().any(|p| p == "edit"));
-
-    let mut roots: Vec<PathBuf> = params
-        .workspace_folders
-        .iter()
-        .flatten()
-        .filter_map(|f| uri_to_path(f.uri.as_str()))
-        .collect();
-    #[allow(deprecated)]
-    if roots.is_empty()
-        && let Some(r) = params
-            .root_uri
-            .as_ref()
-            .and_then(|u| uri_to_path(u.as_str()))
-    {
-        roots.push(r);
-    }
-    let ws = Workspace::new(roots.clone(), settings.prefixes.clone());
-
-    let result = InitializeResult {
-        capabilities: capabilities(enc, pull),
-        server_info: Some(ServerInfo {
-            name: "turtle-lsp".into(),
-            version: Some(env!("CARGO_PKG_VERSION").into()),
-        }),
-    };
-    let mut result = serde_json::to_value(result)?;
-    // lsp-types 0.97 has no field for it.
-    result["capabilities"]["typeHierarchyProvider"] = Value::Bool(true);
-    conn.initialize_finish(id, result)?;
+    let (mut server, result, roots) = Server::configure(conn, raw, false)?;
+    server.conn.initialize_finish(id, result)?;
 
     // Index the workspace in the background.
     let (tx, index_rx) = unbounded();
-    let prefixes = ws.settings_prefixes.clone();
+    let prefixes = server.ws.settings_prefixes.clone();
     std::thread::spawn(move || {
         let mut tmp = Workspace::new(roots.clone(), prefixes);
         let files = Workspace::scan_roots(&roots);
         let _ = tx.send(tmp.parse_paths(files));
     });
+    server.index_rx = index_rx;
 
     let (inbox_tx, inbox) = unbounded();
-    let incoming = conn.receiver.clone();
+    let incoming = server.conn.receiver.clone();
     std::thread::spawn(move || {
         for msg in incoming {
             if inbox_tx.send(msg).is_err() {
@@ -268,47 +335,8 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     });
+    server.inbox = inbox;
 
-    let mut server = Server {
-        conn,
-        inbox,
-        ws,
-        enc,
-        dirty: FxHashSet::default(),
-        spelling: FxHashMap::default(),
-        index_rx,
-        indexed: false,
-        watch_dynamic,
-        resolve_edits,
-        next_id: 0,
-        init_options,
-        config: Value::Null,
-        settings,
-        config_pull,
-        config_request: None,
-        pull,
-        refresh_support,
-        generation: 0,
-        reported: false,
-        refresh_needed: false,
-        described_seen: 0,
-        described_due: None,
-        display_refresh,
-        display_stale: false,
-        imports: crate::imports::Imports::new(),
-        shacl: None,
-        shacl_rx: never(),
-        shacl_generation: 0,
-        shacl_diagnostics: Default::default(),
-        shacl_typing_due: None,
-        shacl_progress_due: None,
-        work_done_progress,
-        index_progress: None,
-        imports_progress: None,
-        shacl_progress: None,
-        progress_pending: FxHashMap::default(),
-        progress_live: FxHashSet::default(),
-    };
     let clean = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
     // server still holds one would keep the process alive forever after the
@@ -429,13 +457,11 @@ fn cancel_id(msg: &Message) -> Option<RequestId> {
 impl Server {
     /// Returns true after `shutdown` + `exit`, false when the client went away
     /// or sent `exit` without `shutdown`.
+    #[cfg(not(target_arch = "wasm32"))]
     fn main_loop(&mut self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        self.register_watchers();
-        if !self.indexed {
-            self.index_progress = self.progress_begin("Indexing workspace");
-        }
+        self.start();
         loop {
-            let first = select! {
+            let first = crossbeam_channel::select! {
                 recv(self.inbox) -> m => match m { Ok(m) => Some(m), Err(_) => return Ok(false) },
                 recv(self.index_rx) -> files => {
                     self.merge_index(files.ok());
@@ -476,46 +502,99 @@ impl Server {
                     None
                 }
             };
-            // Take everything queued, so cancellations are known before any
-            // answer is computed and a burst of edits costs one analysis.
-            let mut batch: Vec<Message> = first.into_iter().collect();
-            batch.extend(self.inbox.try_iter());
-            let mut cancelled: FxHashSet<RequestId> = batch.iter().filter_map(cancel_id).collect();
-            let mut rest: std::collections::VecDeque<Message> = batch.into();
-            while let Some(msg) = rest.pop_front() {
-                // A cancel can arrive while earlier messages of the batch are
-                // handled: look again just before computing an answer.
-                if matches!(msg, Message::Request(_)) {
-                    for m in self.inbox.try_iter() {
-                        cancelled.extend(cancel_id(&m));
-                        rest.push_back(m);
-                    }
-                }
-                match msg {
-                    Message::Request(req) if req.method == lsp_types::request::Shutdown::METHOD => {
-                        return self.shutdown(req, rest.into_iter());
-                    }
-                    Message::Notification(n)
-                        if n.method == lsp_types::notification::Exit::METHOD =>
-                    {
-                        return Ok(false);
-                    }
-                    Message::Request(req) if cancelled.contains(&req.id) => {
-                        let resp = Response::new_err(
-                            req.id,
-                            ErrorCode::RequestCanceled as i32,
-                            "request cancelled".into(),
-                        );
-                        self.conn.sender.send(Message::Response(resp))?;
-                    }
-                    msg => self.handle(msg)?,
+            if let Some(clean) = self.step(first)? {
+                return Ok(clean);
+            }
+        }
+    }
+
+    /// Before the first message: register file watchers, show indexing.
+    fn start(&mut self) {
+        self.register_watchers();
+        if !self.indexed {
+            self.index_progress = self.progress_begin("Indexing workspace");
+        }
+    }
+
+    /// Handle `first` and every message queued behind it, then publish
+    /// diagnostics, resolve imports and ask for refreshes. Some(clean) when
+    /// the session ended (see [`run`]).
+    fn step(
+        &mut self,
+        first: Option<Message>,
+    ) -> Result<Option<bool>, Box<dyn std::error::Error + Send + Sync>> {
+        // Take everything queued, so cancellations are known before any
+        // answer is computed and a burst of edits costs one analysis.
+        let mut batch: Vec<Message> = first.into_iter().collect();
+        batch.extend(self.inbox.try_iter());
+        let mut cancelled: FxHashSet<RequestId> = batch.iter().filter_map(cancel_id).collect();
+        let mut rest: std::collections::VecDeque<Message> = batch.into();
+        while let Some(msg) = rest.pop_front() {
+            // A cancel can arrive while earlier messages of the batch are
+            // handled: look again just before computing an answer.
+            if matches!(msg, Message::Request(_)) {
+                for m in self.inbox.try_iter() {
+                    cancelled.extend(cancel_id(&m));
+                    rest.push_back(m);
                 }
             }
-            self.check_described();
-            self.publish_dirty();
-            self.sync_imports();
-            self.track_imports_progress();
-            self.refresh_if_needed();
+            match msg {
+                Message::Request(req) if req.method == lsp_types::request::Shutdown::METHOD => {
+                    if self.inline {
+                        // The host ends the session; nothing waits for `exit`.
+                        self.conn.sender.send(Response::new_ok(req.id, ()).into())?;
+                        return Ok(Some(true));
+                    }
+                    return self.shutdown(req, rest.into_iter()).map(Some);
+                }
+                Message::Notification(n) if n.method == lsp_types::notification::Exit::METHOD => {
+                    return Ok(Some(false));
+                }
+                Message::Request(req) if cancelled.contains(&req.id) => {
+                    let resp = Response::new_err(
+                        req.id,
+                        ErrorCode::RequestCanceled as i32,
+                        "request cancelled".into(),
+                    );
+                    self.conn.sender.send(Message::Response(resp))?;
+                }
+                msg => self.handle(msg)?,
+            }
+        }
+        self.check_described();
+        self.publish_dirty();
+        self.sync_imports();
+        self.track_imports_progress();
+        self.refresh_if_needed();
+        Ok(None)
+    }
+
+    /// The earliest timer pending, if any.
+    fn next_due(&self) -> Option<Instant> {
+        [
+            self.described_due,
+            self.shacl_typing_due,
+            self.shacl_progress_due,
+        ]
+        .into_iter()
+        .flatten()
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    }
+
+    /// Run the timers due by now, as the main loop does when they fire.
+    fn fire_due(&mut self) {
+        let now = Instant::now();
+        let due = |t: Option<Instant>| t.is_some_and(|t| t <= now);
+        if due(self.described_due) {
+            self.described_settled();
+        }
+        if due(self.shacl_typing_due) {
+            self.shacl_typing_due = None;
+            self.validate_shacl();
+        }
+        if due(self.shacl_progress_due) {
+            self.shacl_progress_due = None;
+            self.shacl_progress = self.progress_begin("Validating SHACL shapes");
         }
     }
 
@@ -530,7 +609,7 @@ impl Server {
         // Analyzes the documents edited in this batch (diagnostics would anyway).
         let g = self.ws.knowledge().described_generation();
         if g != self.described_seen {
-            self.described_due = Some(std::time::Instant::now() + DESCRIBED_DEBOUNCE);
+            self.described_due = Some(Instant::now() + DESCRIBED_DEBOUNCE);
         }
     }
 
@@ -630,6 +709,7 @@ impl Server {
                     self.ws
                         .open_doc_as(uri.clone(), doc.text, doc.version, kind);
                     self.after_edit(&uri);
+                    self.workspace_changed_inline();
                 }
             }
             DidChangeTextDocument::METHOD => {
@@ -640,8 +720,7 @@ impl Server {
                     self.after_edit(&uri);
                     // SHACL results stay until typing pauses (or the next save).
                     if self.settings.shacl_on_type {
-                        self.shacl_typing_due =
-                            Some(std::time::Instant::now() + SHACL_TYPING_DEBOUNCE);
+                        self.shacl_typing_due = Some(Instant::now() + SHACL_TYPING_DEBOUNCE);
                     }
                 }
             }
@@ -665,6 +744,7 @@ impl Server {
                         self.send_diagnostics(&uri, vec![], None);
                     }
                     self.spelling.remove(&uri);
+                    self.workspace_changed_inline();
                 }
             }
             DidChangeConfiguration::METHOD => {
@@ -712,6 +792,15 @@ impl Server {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Embedded, the open documents are the whole workspace (there is no
+    /// disk to index): opening or closing one changes the data SHACL
+    /// validates, so validate once the host pauses, as after typing.
+    fn workspace_changed_inline(&mut self) {
+        if self.inline {
+            self.shacl_typing_due = Some(Instant::now() + SHACL_TYPING_DEBOUNCE);
         }
     }
 
@@ -1531,6 +1620,21 @@ impl Server {
             }
             return;
         }
+        if self.inline {
+            let job = shacl_validate::Job {
+                generation: self.shacl_generation,
+                docs,
+                max_triples: self.settings.shacl_max_triples,
+                enc: self.enc,
+                unresolved: self.imports.unresolved(),
+            };
+            let diagnostics = shacl_validate::run(&job, &|| false).unwrap_or_default();
+            self.shacl_outcome(shacl_validate::Outcome {
+                generation: job.generation,
+                diagnostics,
+            });
+            return;
+        }
         if self.shacl.is_none() {
             let (worker, rx) = shacl_validate::Worker::start();
             self.shacl = Some(worker);
@@ -1541,7 +1645,7 @@ impl Server {
             && self.shacl_progress.is_none()
             && self.shacl_progress_due.is_none()
         {
-            self.shacl_progress_due = Some(std::time::Instant::now() + SHACL_PROGRESS_DELAY);
+            self.shacl_progress_due = Some(Instant::now() + SHACL_PROGRESS_DELAY);
         }
         if let Some(w) = &self.shacl {
             w.submit(shacl_validate::Job {
@@ -1607,6 +1711,87 @@ enum Open {
 }
 
 /// The IRI of the term at `pos` in an RDF document, if the cursor is on one.
+/// A server driven by its host instead of its own loop, for a host with no
+/// threads and no stdio (the browser build, web/engine). The host hands over
+/// messages and the server takes one step over them, returning what it sent;
+/// the host calls [`Embedded::tick`] when [`Embedded::due_in_ms`] says a timer
+/// is due. The workspace has no folders: it is the documents the host opens,
+/// indexed from the start. SHACL validation and imports run inline, and no
+/// import is loaded.
+pub struct Embedded {
+    server: Server,
+    inbox: crossbeam_channel::Sender<Message>,
+    outbox: Receiver<Message>,
+    ended: bool,
+}
+
+impl Embedded {
+    /// A server for `initialize` params `params`, with what it sent: the
+    /// initialize response first (to request id 0).
+    pub fn start(params: Value) -> Result<(Embedded, Vec<Message>), String> {
+        let (here, host) = Connection::memory();
+        let (mut server, result, _roots) =
+            Server::configure(here, params, true).map_err(|e| e.to_string())?;
+        let (inbox, inbox_rx) = unbounded();
+        server.inbox = inbox_rx;
+        let init = Response::new_ok(RequestId::from(0), result);
+        server
+            .conn
+            .sender
+            .send(init.into())
+            .map_err(|e| e.to_string())?;
+        server.start();
+        server.merge_index(Some(Vec::new()));
+        let mut embedded = Embedded {
+            server,
+            inbox,
+            outbox: host.receiver,
+            ended: false,
+        };
+        let sent = embedded.sent();
+        Ok((embedded, sent))
+    }
+
+    /// Hand over `messages` and take one step; what the server sent.
+    pub fn handle(&mut self, messages: Vec<Message>) -> Vec<Message> {
+        if self.ended {
+            return Vec::new();
+        }
+        for m in messages {
+            let _ = self.inbox.send(m);
+        }
+        let first = self.server.inbox.try_recv().ok();
+        self.step(first)
+    }
+
+    /// Run the timers that are due, then a step; what the server sent.
+    pub fn tick(&mut self) -> Vec<Message> {
+        if self.ended {
+            return Vec::new();
+        }
+        self.server.fire_due();
+        self.step(None)
+    }
+
+    /// Milliseconds until the next timer, if one is pending.
+    pub fn due_in_ms(&self) -> Option<f64> {
+        let due = self.server.next_due()?;
+        Some(due.saturating_duration_since(Instant::now()).as_secs_f64() * 1000.0)
+    }
+
+    fn step(&mut self, first: Option<Message>) -> Vec<Message> {
+        match self.server.step(first) {
+            Ok(Some(_)) | Err(_) => self.ended = true,
+            Ok(None) => {}
+        }
+        self.sent()
+    }
+
+    fn sent(&mut self) -> Vec<Message> {
+        self.outbox.try_iter().collect()
+    }
+}
+
 fn rdf_term_at(a: &Analysis, enc: Encoding, pos: Position) -> Option<String> {
     let offset = a.offset(enc, pos)?;
     match navigation::target_at(a, offset)? {

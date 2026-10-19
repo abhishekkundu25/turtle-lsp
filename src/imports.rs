@@ -148,6 +148,13 @@ fn doc_onto(a: &Analysis) -> DocOnto {
     d
 }
 
+/// Why an import is not loaded where nothing can be (the browser build).
+pub fn unloaded_note(iri: &str) -> String {
+    format!(
+        "Import <{iri}> is not loaded: imports are not followed in the browser. Add the imported ontology's file to the workspace to use it."
+    )
+}
+
 /// The workspace's imports that stay unresolved when nothing can be loaded
 /// (the browser build): every `owl:imports` no workspace document declares
 /// as its ontology or version IRI, sorted. What [`Imports::unresolved`]
@@ -167,6 +174,8 @@ pub fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
 
 /// `owl:imports` state of the server: what was asked, what came back.
 pub struct Imports {
+    /// Resolve without loading or threads (see [`Imports::new_inline`]).
+    inline: bool,
     jobs: Option<Sender<Job>>,
     results_tx: Sender<Done>,
     results: Receiver<Done>,
@@ -198,6 +207,7 @@ impl Imports {
     pub fn new() -> Imports {
         let (results_tx, results) = unbounded();
         Imports {
+            inline: false,
             jobs: None,
             results_tx,
             results,
@@ -211,6 +221,17 @@ impl Imports {
             cache: cache_dir().map(|d| d.join("imports")),
             fetch: BTreeSet::new(),
             refetch: None,
+        }
+    }
+
+    /// Imports resolved at once and without loading anything (the browser
+    /// build): one the workspace declares is present, any other unresolved,
+    /// with [`unloaded_note`].
+    pub fn new_inline() -> Imports {
+        Imports {
+            inline: true,
+            cache: None,
+            ..Imports::new()
         }
     }
 
@@ -294,6 +315,26 @@ impl Imports {
             return Some(Done {
                 generation: self.generation,
                 status: vec![],
+                loaded: vec![],
+            });
+        }
+        if self.inline {
+            let local: FxHashSet<&str> = req.local.iter().map(String::as_str).collect();
+            let status = req
+                .imports
+                .iter()
+                .map(|i| {
+                    let st = if local.contains(norm(i)) {
+                        Status::Local
+                    } else {
+                        Status::Unresolved(unloaded_note(i))
+                    };
+                    (i.clone(), st)
+                })
+                .collect();
+            return Some(Done {
+                generation: self.generation,
+                status,
                 loaded: vec![],
             });
         }

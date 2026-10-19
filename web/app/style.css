@@ -41,6 +41,8 @@ button { cursor: pointer; }
 .brand b { font-size: 16px; }
 .sub { color: var(--muted); font-size: 13px; }
 .priv { color: var(--ok-tx); font-size: 12.5px; }
+.hd-end { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ed-link { color: var(--on-acc); background: var(--acc); border-radius: 7px; padding: 5px 10px; font-size: 12.5px; text-decoration: none; }
 .priv::before { content: "\25CF  "; }
 
 .tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 24px; }

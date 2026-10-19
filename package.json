@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@zazuko/rdf-vocabularies": "^2023.1.19",
+    "monaco-editor": "0.52.2",
     "playwright-core": "1.64.0",
     "vscode-jsonrpc": "9.0.3"
   }

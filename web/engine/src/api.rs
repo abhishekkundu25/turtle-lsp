@@ -3,17 +3,20 @@
 //! does in an editor. Each call builds the workspace anew; the input is a
 //! handful of files and analysis is fast.
 
+use lsp_server::Message;
 use lsp_types::{
     CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams, Diagnostic,
     DiagnosticSeverity, NumberOrString, Position, TextDocumentIdentifier, TextEdit, Uri,
 };
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use turtle_lsp::analysis::Encoding;
 use turtle_lsp::features::shacl_validate;
 use turtle_lsp::features::{diagnostics, format};
 use turtle_lsp::imports;
 use turtle_lsp::knowledge::Source;
+use turtle_lsp::server::Embedded;
 use turtle_lsp::settings::Settings;
 use turtle_lsp::sparql::features as sparql_features;
 use turtle_lsp::syntax::{PrefixMap, Severity, Syntax};
@@ -45,12 +48,51 @@ pub fn handle(request: &str) -> String {
         "version" => Ok(json!({ "version": turtle_lsp::VERSION })),
         "analyse" => files().map(|f| analyse(&f)),
         "fix_all" => files().map(fix_all),
+        "lsp_start" => lsp_start(req["params"].clone()),
+        "lsp" => lsp(&req["messages"]),
+        "lsp_tick" => lsp_tick(),
         op => Err(format!("unknown operation '{op}'")),
     };
     match answer {
         Ok(v) => json!({ "ok": v }).to_string(),
         Err(e) => error(&e),
     }
+}
+
+thread_local! {
+    /// The editor's language server (see turtle_lsp::server::Embedded).
+    static SERVER: RefCell<Option<Embedded>> = const { RefCell::new(None) };
+}
+
+/// A new language server for `initialize` params; its initialize response.
+fn lsp_start(params: Value) -> Result<Value, String> {
+    let (server, sent) = Embedded::start(params)?;
+    let due = server.due_in_ms();
+    SERVER.with(|s| *s.borrow_mut() = Some(server));
+    Ok(json!({ "messages": sent, "due": due }))
+}
+
+/// Hand LSP messages to the language server; what it sent, and when its
+/// next timer is due (milliseconds, or null).
+fn lsp(messages: &Value) -> Result<Value, String> {
+    let messages: Vec<Message> =
+        serde_json::from_value(messages.clone()).map_err(|e| format!("bad LSP messages: {e}"))?;
+    with_server(|s| s.handle(messages))
+}
+
+fn lsp_tick() -> Result<Value, String> {
+    with_server(Embedded::tick)
+}
+
+fn with_server(f: impl FnOnce(&mut Embedded) -> Vec<Message>) -> Result<Value, String> {
+    SERVER.with(|s| {
+        let mut s = s.borrow_mut();
+        let server = s
+            .as_mut()
+            .ok_or("the language server is not started (lsp_start)")?;
+        let sent = f(server);
+        Ok(json!({ "messages": sent, "due": server.due_in_ms() }))
+    })
 }
 
 pub fn error(message: &str) -> String {
@@ -101,9 +143,7 @@ impl Input {
         imports::unresolved_without_loading(self.ws.knowledge())
             .into_iter()
             .map(|iri| {
-                let note = format!(
-                    "Import <{iri}> is not loaded: the toolbox does not follow imports. Add the imported ontology's file to the input to use it."
-                );
+                let note = imports::unloaded_note(&iri);
                 (iri, imports::Status::Unresolved(note))
             })
             .collect()

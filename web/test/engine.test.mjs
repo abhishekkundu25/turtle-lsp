@@ -186,7 +186,7 @@ ex:PersonShape a sh:NodeShape ;
   assert.equal(v.severity, 2)
   assert.match(v.message, /\(may change once these imports resolve: https:\/\/unknown\.example\.org\/vocab\)$/)
   const [note] = withCode(fileOf(res, "shapes.ttl"), "unresolved-import")
-  assert.equal(note.message, "Import <https://unknown.example.org/vocab> is not loaded: the toolbox does not follow imports. Add the imported ontology's file to the input to use it.")
+  assert.equal(note.message, "Import <https://unknown.example.org/vocab> is not loaded: imports are not followed in the browser. Add the imported ontology's file to the workspace to use it.")
   assert.equal(covered(files[0].text, note.range), "<https://unknown.example.org/vocab>")
   const want = await serverDiagnostics(files)
   for (const f of res.files) assert.deepEqual(f.diagnostics.map(key).sort(), want[f.name].map(key).sort(), f.name)
