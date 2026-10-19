@@ -1,6 +1,9 @@
 //! Everything the editor features need from one document, computed once per
-//! version: the parse, line positions, and per-IRI indexes.
+//! version: the parse, line positions, and per-IRI indexes. An RDF document
+//! gets an [`Analysis`]; a SPARQL document a [`SparqlAnalysis`], with the
+//! same position helpers.
 
+use crate::sparql;
 use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Span, Syntax};
 use line_index::{LineIndex, TextSize, WideEncoding};
 use lsp_types::{Position, Range};
@@ -225,21 +228,7 @@ impl Analysis {
     }
 
     pub fn position(&self, enc: Encoding, offset: u32) -> Position {
-        let lc = self
-            .lines
-            .line_col(TextSize::from(offset.min(u32::from(self.lines.len()))));
-        match enc {
-            Encoding::Utf8 => Position::new(lc.line, lc.col),
-            Encoding::Utf16 => {
-                let w = self.lines.to_wide(WideEncoding::Utf16, lc).unwrap_or(
-                    line_index::WideLineCol {
-                        line: lc.line,
-                        col: lc.col,
-                    },
-                );
-                Position::new(w.line, w.col)
-            }
-        }
+        position_in(&self.lines, enc, offset)
     }
 
     pub fn range(&self, enc: Encoding, span: Span) -> Range {
@@ -248,6 +237,84 @@ impl Analysis {
 
     pub fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
         offset_in(&self.lines, &self.text, enc, pos)
+    }
+}
+
+/// The LSP position of byte `offset` (clamped to the end of the text).
+pub fn position_in(lines: &LineIndex, enc: Encoding, offset: u32) -> Position {
+    let lc = lines.line_col(TextSize::from(offset.min(u32::from(lines.len()))));
+    match enc {
+        Encoding::Utf8 => Position::new(lc.line, lc.col),
+        Encoding::Utf16 => {
+            let w = lines
+                .to_wide(WideEncoding::Utf16, lc)
+                .unwrap_or(line_index::WideLineCol {
+                    line: lc.line,
+                    col: lc.col,
+                });
+            Position::new(w.line, w.col)
+        }
+    }
+}
+
+/// A SPARQL document (query or update), parsed once per version, with the
+/// line positions the features map spans with. It never feeds the knowledge
+/// index.
+pub struct SparqlAnalysis {
+    pub uri: String,
+    /// Parsed with [`SparqlAnalysis::external`] and the document's URI as
+    /// base (a `BASE` in the query wins).
+    pub doc: sparql::Document,
+    pub lines: LineIndex,
+    /// Prefixes supplied from outside the document (prefixes.ttl / settings).
+    pub external: Arc<PrefixMap>,
+}
+
+impl SparqlAnalysis {
+    pub fn new(uri: String, text: &str, external: Arc<PrefixMap>) -> SparqlAnalysis {
+        let doc = sparql::Document::parse(text, &external, Some(&uri));
+        SparqlAnalysis {
+            uri,
+            doc,
+            lines: LineIndex::new(text),
+            external,
+        }
+    }
+
+    /// The text it was parsed from.
+    pub fn text(&self) -> &str {
+        self.doc.text()
+    }
+
+    /// The base IRI the document is resolved against: its URI (a `BASE` in
+    /// the query overrides it for the query's own IRIs).
+    pub fn base(&self) -> &str {
+        &self.uri
+    }
+
+    /// All prefixes in scope at the end of the document: external, then the
+    /// `PREFIX` lines (a later line for the same name wins).
+    pub fn prefix_map(&self) -> PrefixMap {
+        let mut m = (*self.external).clone();
+        for p in &self.doc.structure().prefixes {
+            m.insert(
+                p.name.clone(),
+                p.resolved.clone().unwrap_or_else(|| p.iri.clone()),
+            );
+        }
+        m
+    }
+
+    pub fn position(&self, enc: Encoding, offset: u32) -> Position {
+        position_in(&self.lines, enc, offset)
+    }
+
+    pub fn range(&self, enc: Encoding, span: Span) -> Range {
+        Range::new(self.position(enc, span.start), self.position(enc, span.end))
+    }
+
+    pub fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
+        offset_in(&self.lines, self.text(), enc, pos)
     }
 }
 

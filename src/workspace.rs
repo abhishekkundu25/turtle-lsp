@@ -4,8 +4,16 @@
 //! ancestor (up to the workspace root) supplies prefixes to every Turtle and
 //! TriG file below it, plus any `prefixes` given in the client's
 //! initializationOptions. N-Triples and N-Quads files have no prefixes.
+//! SPARQL documents get the same prefixes as Turtle files.
+//!
+//! Document kinds ([`DocKind`]): an open document is RDF (with a [`Syntax`])
+//! or SPARQL. RDF documents feed the knowledge index; SPARQL documents never
+//! do, are never validated against SHACL shapes, and closing one leaves the
+//! index as it was. SPARQL files on disk are not read at startup: features
+//! that look across the workspace's queries (references and rename of a
+//! term) ask for them with [`Workspace::sparql_documents`].
 
-use crate::analysis::{Analysis, Encoding, offset_in};
+use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
 use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::syntax::{PrefixMap, Syntax};
 use line_index::LineIndex;
@@ -30,11 +38,54 @@ pub const MAX_FILES: usize = 20_000;
 /// Files larger than this are not indexed (an open file is still analyzed).
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
+/// What an open document is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocKind {
+    /// Turtle, TriG, N-Triples or N-Quads.
+    Rdf(Syntax),
+    /// A SPARQL query or update.
+    Sparql,
+}
+
+impl From<Syntax> for DocKind {
+    fn from(s: Syntax) -> DocKind {
+        DocKind::Rdf(s)
+    }
+}
+
+/// Whether a path or URI names a SPARQL file: `.rq`, `.sparql` or `.ru`.
+pub fn is_sparql_name(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| matches!(ext, "rq" | "sparql" | "ru"))
+}
+
+impl DocKind {
+    /// SPARQL when the client says `sparql`, or when it sends no language id,
+    /// one this server does not know, or the generic `turtle`, and the name
+    /// ends in `.rq`, `.sparql` or `.ru`. Otherwise RDF, as
+    /// [`Syntax::detect`] decides.
+    pub fn detect(language_id: Option<&str>, uri: &str) -> DocKind {
+        if language_id.is_some_and(|id| id.eq_ignore_ascii_case("sparql")) {
+            return DocKind::Sparql;
+        }
+        let generic = language_id
+            .and_then(Syntax::from_language_id)
+            .is_none_or(|s| s == Syntax::Turtle);
+        if generic && is_sparql_name(uri) {
+            return DocKind::Sparql;
+        }
+        DocKind::Rdf(Syntax::detect(language_id, uri))
+    }
+}
+
 pub struct Doc {
     pub text: String,
     pub version: i32,
-    pub syntax: Syntax,
+    pub kind: DocKind,
     analysis: Option<Arc<Analysis>>,
+    /// For a SPARQL document: its parse, until the next edit.
+    query: Option<Arc<SparqlAnalysis>>,
     /// A cached copy of an import: the import already contributes its facts.
     cached_import: bool,
 }
@@ -120,17 +171,26 @@ impl Workspace {
 
     // ---- documents ----
 
-    /// The syntax comes from the URI's extension.
+    /// The kind comes from the URI's extension.
     pub fn open_doc(&mut self, uri: String, text: String, version: i32) {
-        let syntax = Syntax::detect(None, &uri);
-        self.open_doc_as(uri, text, version, syntax);
+        let kind = DocKind::detect(None, &uri);
+        self.open_doc_as(uri, text, version, kind);
     }
 
-    pub fn open_doc_as(&mut self, uri: String, text: String, version: i32, syntax: Syntax) {
-        let cached_import = self.import_cache.as_ref().is_some_and(|cache| {
-            uri_to_path(&uri).is_some_and(|p| canonical(&p).starts_with(cache))
-        });
-        if !cached_import {
+    pub fn open_doc_as(
+        &mut self,
+        uri: String,
+        text: String,
+        version: i32,
+        kind: impl Into<DocKind>,
+    ) {
+        let kind = kind.into();
+        let cached_import = kind != DocKind::Sparql
+            && self.import_cache.as_ref().is_some_and(|cache| {
+                uri_to_path(&uri).is_some_and(|p| canonical(&p).starts_with(cache))
+            });
+        // A SPARQL document never replaces an indexed RDF copy.
+        if !cached_import && kind != DocKind::Sparql {
             // The open text supersedes the indexed copy (re-read on close), and
             // a second full analysis of a large file costs hundreds of MB. The
             // index keeps its contribution until the open document is analyzed.
@@ -141,8 +201,9 @@ impl Workspace {
             Doc {
                 text,
                 version,
-                syntax,
+                kind,
                 analysis: None,
+                query: None,
                 cached_import,
             },
         );
@@ -177,11 +238,17 @@ impl Workspace {
         }
         doc.version = version;
         doc.analysis = None;
+        doc.query = None;
     }
 
     /// Closing a file keeps it indexed from disk.
+    /// Closing a SPARQL document leaves the index untouched.
     pub fn close_doc(&mut self, uri: &str) {
-        if self.open.remove(uri).is_some_and(|d| d.cached_import) {
+        if self
+            .open
+            .remove(uri)
+            .is_some_and(|d| d.cached_import || d.kind == DocKind::Sparql)
+        {
             return;
         }
         // Only RDF files belong in the index (a .txt opened as Turtle does not).
@@ -195,7 +262,7 @@ impl Workspace {
     /// open document's (once analyzed), else the disk copy's.
     fn sync(&mut self, uri: &str) {
         match self.open.get(uri) {
-            Some(d) if d.cached_import => {}
+            Some(d) if d.cached_import || d.kind == DocKind::Sparql => {}
             Some(d) => {
                 if let Some(a) = &d.analysis {
                     self.knowledge.set(uri, Source::Open, a.clone());
@@ -215,7 +282,7 @@ impl Workspace {
         let stale: Vec<String> = self
             .open
             .iter()
-            .filter(|(_, d)| d.analysis.is_none())
+            .filter(|(_, d)| d.analysis.is_none() && d.kind != DocKind::Sparql)
             .map(|(u, _)| u.clone())
             .collect();
         for uri in stale {
@@ -230,10 +297,16 @@ impl Workspace {
         &mut self.knowledge
     }
 
+    /// The RDF analysis of `uri`: the open document's, else the indexed
+    /// copy's. `None` for a SPARQL document (see [`Workspace::sparql`]).
     pub fn analysis(&mut self, uri: &str) -> Option<Arc<Analysis>> {
         let syntax = match self.open.get(uri) {
             Some(d) if d.analysis.is_some() => return d.analysis.clone(),
-            Some(d) => d.syntax,
+            Some(Doc {
+                kind: DocKind::Rdf(syntax),
+                ..
+            }) => *syntax,
+            Some(_) => return None,
             None => return self.disk.get(uri).cloned(),
         };
         let external = self.external_prefixes_as(uri, syntax);
@@ -250,6 +323,65 @@ impl Workspace {
             self.knowledge.set(uri, Source::Open, a.clone());
         }
         Some(a)
+    }
+
+    /// Whether `uri` is an open SPARQL document.
+    pub fn is_sparql(&self, uri: &str) -> bool {
+        self.open
+            .get(uri)
+            .is_some_and(|d| d.kind == DocKind::Sparql)
+    }
+
+    /// The parse of the open SPARQL document `uri` (one parse per version),
+    /// or `None` when `uri` is no open SPARQL document.
+    pub fn sparql(&mut self, uri: &str) -> Option<Arc<SparqlAnalysis>> {
+        match self.open.get(uri) {
+            Some(d) if d.kind != DocKind::Sparql => return None,
+            Some(d) if d.query.is_some() => return d.query.clone(),
+            Some(_) => {}
+            None => return None,
+        }
+        let external = self.external_prefixes_as(uri, Syntax::Turtle);
+        let doc = self.open.get_mut(uri)?;
+        let q = Arc::new(SparqlAnalysis::new(uri.to_string(), &doc.text, external));
+        doc.query = Some(q.clone());
+        Some(q)
+    }
+
+    /// Every SPARQL document of the workspace, read on demand (never at
+    /// startup, never per keystroke): the open SPARQL documents from memory,
+    /// then the `.rq`, `.sparql` and `.ru` files under the roots that are not
+    /// open, read from disk and parsed in parallel with their folder's
+    /// prefixes (the indexing limits apply: the skipped directories,
+    /// [`MAX_FILES`] files, [`MAX_FILE_BYTES`] per file). A file open as
+    /// another kind is left out. Nothing is cached: each call reads the
+    /// files again, so the answer reflects the disk as it is now.
+    pub fn sparql_documents(&mut self) -> Vec<Arc<SparqlAnalysis>> {
+        let open: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_, d)| d.kind == DocKind::Sparql)
+            .map(|(u, _)| u.clone())
+            .collect();
+        let mut out: Vec<Arc<SparqlAnalysis>> =
+            open.iter().filter_map(|u| self.sparql(u)).collect();
+        let jobs: Vec<(String, PathBuf, Arc<PrefixMap>)> =
+            scan_roots_matching(&self.roots, is_sparql_path)
+                .into_iter()
+                .filter_map(|p| {
+                    let uri = path_to_uri(&p)?;
+                    if self.open.contains_key(&uri) {
+                        return None;
+                    }
+                    let ext = self.external_prefixes_as(&uri, Syntax::Turtle);
+                    Some((uri, p, ext))
+                })
+                .collect();
+        out.par_extend(jobs.into_par_iter().filter_map(|(uri, path, ext)| {
+            let text = std::fs::read_to_string(&path).ok()?;
+            Some(Arc::new(SparqlAnalysis::new(uri, &text, ext)))
+        }));
+        out
     }
 
     pub fn text(&self, uri: &str) -> Option<&str> {
@@ -306,6 +438,7 @@ impl Workspace {
         self.prefix_cache.clear();
         for d in self.open.values_mut() {
             d.analysis = None;
+            d.query = None;
         }
     }
 
@@ -318,33 +451,9 @@ impl Workspace {
 
     // ---- disk index ----
 
+    /// The RDF files under `roots` (see [`scan_roots_matching`]).
     pub fn scan_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
-        let mut out = Vec::new();
-        let mut stack: Vec<PathBuf> = roots.to_vec();
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for e in entries.flatten() {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                let Ok(ft) = e.file_type() else { continue };
-                if ft.is_dir() {
-                    if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_ref()) {
-                        stack.push(e.path());
-                    }
-                } else if ft.is_file()
-                    && is_turtle(&e.path())
-                    && e.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
-                {
-                    out.push(e.path());
-                    if out.len() >= MAX_FILES {
-                        return out;
-                    }
-                }
-            }
-        }
-        out
+        scan_roots_matching(roots, is_turtle)
     }
 
     /// Parse files in parallel and add them to the disk index.
@@ -402,6 +511,43 @@ impl Workspace {
             self.sync(&uri);
         }
     }
+}
+
+/// A SPARQL file: `.rq`, `.sparql` or `.ru`.
+pub fn is_sparql_path(path: &Path) -> bool {
+    is_sparql_name(&path.to_string_lossy())
+}
+
+/// The files under `roots` that `wanted` accepts, skipping hidden and
+/// [`SKIP_DIRS`] directories and files over [`MAX_FILE_BYTES`], at most
+/// [`MAX_FILES`] of them.
+pub fn scan_roots_matching(roots: &[PathBuf], wanted: fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack: Vec<PathBuf> = roots.to_vec();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_ref()) {
+                    stack.push(e.path());
+                }
+            } else if ft.is_file()
+                && wanted(&e.path())
+                && e.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
+            {
+                out.push(e.path());
+                if out.len() >= MAX_FILES {
+                    return out;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The prefixes.ttl that supplies prefixes to files in `dir` (searching up to
@@ -467,6 +613,57 @@ mod tests {
         assert!(!ws.disk.contains_key(&cached));
         assert_eq!(ws.knowledge().docs().count(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sparql_documents_are_recognised_and_never_feed_the_index() {
+        assert_eq!(
+            DocKind::detect(Some("sparql"), "file:///a.txt"),
+            DocKind::Sparql
+        );
+        for id in [None, Some("turtle"), Some("plaintext")] {
+            for name in ["a.rq", "a.sparql", "a.ru"] {
+                let uri = format!("file:///x/{name}");
+                assert_eq!(DocKind::detect(id, &uri), DocKind::Sparql, "{id:?} {name}");
+            }
+        }
+        assert_eq!(
+            DocKind::detect(Some("trig"), "file:///a.rq"),
+            DocKind::Rdf(Syntax::TriG)
+        );
+        assert_eq!(
+            DocKind::detect(None, "file:///a.nq"),
+            DocKind::Rdf(Syntax::NQuads)
+        );
+
+        let mut ws = Workspace::default();
+        let ttl = "file:///w/a.ttl".to_string();
+        let rq = "file:///w/q.rq".to_string();
+        ws.open_doc(
+            ttl.clone(),
+            "@prefix ex: <http://e.org/> .\nex:A a ex:B .\n".into(),
+            1,
+        );
+        ws.open_doc(
+            rq.clone(),
+            "PREFIX ex: <http://e.org/>\nINSERT DATA { ex:G a ex:B }\n".into(),
+            1,
+        );
+        assert!(ws.is_sparql(&rq) && !ws.is_sparql(&ttl));
+        assert!(ws.analysis(&rq).is_none());
+        let q = ws.sparql(&rq).unwrap();
+        assert!(q.doc.is_update());
+        assert!(
+            Arc::ptr_eq(&q, &ws.sparql(&rq).unwrap()),
+            "one parse per version"
+        );
+        assert!(ws.sparql(&ttl).is_none());
+        assert_eq!(ws.knowledge().docs().count(), 1);
+        assert!(!ws.knowledge().is_described("http://e.org/G"));
+        assert_eq!(ws.sparql_documents().len(), 1);
+        ws.close_doc(&rq);
+        assert_eq!(ws.knowledge().docs().count(), 1);
+        assert!(ws.sparql_documents().is_empty());
     }
 
     #[cfg(windows)]

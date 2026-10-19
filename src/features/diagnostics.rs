@@ -55,6 +55,103 @@ pub fn prefix_candidates(name: &str, k: &Knowledge) -> Vec<PrefixCandidate> {
     out
 }
 
+/// Completes an `undeclared-prefix` diagnostic for prefix `name`: names the
+/// best namespace in the message as a declaration in the document's syntax
+/// (`keyword` is `@prefix` or `PREFIX`), and keeps every candidate in its
+/// `data` (`prefix`, `namespace`, `candidates`) for the quick fixes; or
+/// says where to declare it when nothing is known.
+pub fn add_prefix_note(d: &mut Diagnostic, name: &str, cands: &[PrefixCandidate], keyword: &str) {
+    let Some(first) = cands.first() else {
+        d.message
+            .push_str(". Declare it, or add it to a prefixes.ttl in the project");
+        return;
+    };
+    d.message
+        .push_str(&format!(" (add {keyword} {name}: <{}>)", first.namespace));
+    d.data = Some(json!({
+        "prefix": name,
+        "namespace": first.namespace,
+        "candidates": cands
+            .iter()
+            .map(|c| json!({ "namespace": c.namespace, "files": c.files }))
+            .collect::<Vec<_>>(),
+    }));
+}
+
+/// One written occurrence of an IRI (never `a`), for the knowledge lints
+/// RDF and SPARQL documents share. `K` is how the document holds IRIs: an
+/// interned [`crate::syntax::Iri`], or a `&str`.
+pub struct TermUse<'a, K> {
+    pub span: crate::syntax::Span,
+    pub iri: K,
+    /// The prefix as written, for a prefixed name (`foaf` in `foaf:name`).
+    pub prefix: Option<&'a str>,
+}
+
+/// `unknown-term` (warning, with a "did you mean" and `data.replace` in the
+/// document's own spelling) and `deprecated-term` (hint, deprecated tag) for
+/// terms of the well-known vocabularies, matched by namespace IRI. `mk`
+/// builds a diagnostic at a span.
+pub fn vocabulary_terms<'a, K>(
+    uses: impl Iterator<Item = TermUse<'a, K>>,
+    k: &Knowledge,
+    mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
+    out: &mut Vec<Diagnostic>,
+) where
+    K: std::ops::Deref<Target = str> + crate::syntax::IriKey,
+{
+    // Suggestions are memoised: a file can use one unknown term thousands of times.
+    let mut suggestions: FxHashMap<(&str, String), Option<&str>> = FxHashMap::default();
+    for u in uses {
+        let Some((v, local)) = VOCABS.lookup(&u.iri) else {
+            continue;
+        };
+        if local.is_empty() {
+            continue;
+        }
+        match v.term(local) {
+            Some(t) if t.deprecated => {
+                let mut d = mk(
+                    u.span,
+                    DiagnosticSeverity::HINT,
+                    "deprecated-term",
+                    format!("'{}:{local}' is deprecated", v.prefix),
+                );
+                d.tags = Some(vec![DiagnosticTag::DEPRECATED]);
+                out.push(d);
+            }
+            Some(_) => {}
+            // Described by the workspace or a resolved import: newer than the snapshot.
+            None if k.is_described(&u.iri) => {}
+            None => {
+                let mut msg = format!(
+                    "'{local}' is not defined in the {} vocabulary <{}>",
+                    v.prefix, v.namespace
+                );
+                let mut d = mk(
+                    u.span,
+                    DiagnosticSeverity::WARNING,
+                    "unknown-term",
+                    String::new(),
+                );
+                let suggestion = *suggestions
+                    .entry((v.namespace, local.to_string()))
+                    .or_insert_with(|| v.suggest(local).map(|t| t.local.as_str()));
+                if let Some(s) = suggestion {
+                    msg.push_str(&format!(". Did you mean '{s}'?"));
+                    let replacement = match u.prefix {
+                        Some(p) => format!("{p}:{s}"),
+                        None => format!("<{}{s}>", v.namespace),
+                    };
+                    d.data = Some(json!({ "replace": replacement }));
+                }
+                d.message = msg;
+                out.push(d);
+            }
+        }
+    }
+}
+
 fn candidate_title(prefix: &str, c: &Value) -> Option<(String, String)> {
     let ns = c["namespace"].as_str()?;
     let files = c["files"].as_u64().unwrap_or(0);
@@ -143,21 +240,7 @@ pub fn diagnostics_with(
         let cands = candidates
             .entry(u.name.as_str())
             .or_insert_with(|| prefix_candidates(&u.name, k));
-        if let Some(first) = cands.first() {
-            d.message
-                .push_str(&format!(" (add @prefix {shown} <{}>)", first.namespace));
-            d.data = Some(json!({
-                "prefix": u.name,
-                "namespace": first.namespace,
-                "candidates": cands
-                    .iter()
-                    .map(|c| json!({ "namespace": c.namespace, "files": c.files }))
-                    .collect::<Vec<_>>(),
-            }));
-        } else {
-            d.message
-                .push_str(". Declare it, or add it to a prefixes.ttl in the project");
-        }
+        add_prefix_note(&mut d, &u.name, cands, "@prefix");
         out.push(d);
     }
 
@@ -210,68 +293,22 @@ pub fn diagnostics_with(
     }
 
     // Terms of well-known vocabularies (matched by namespace IRI, not prefix name).
-    // Suggestions are memoised: a file can use one unknown term thousands of times.
-    let mut suggestions: FxHashMap<(&str, &str), Option<&str>> = FxHashMap::default();
-    for r in &a.parsed.refs {
-        if matches!(r.form, Form::A) {
-            continue;
-        }
-        let Some((v, local)) = VOCABS.lookup(&r.iri) else {
-            continue;
-        };
-        if local.is_empty() {
-            continue;
-        }
-        match v.term(local) {
-            Some(t) if t.deprecated => {
-                let mut d = mk(
-                    r.span,
-                    DiagnosticSeverity::HINT,
-                    "deprecated-term",
-                    format!("'{}:{local}' is deprecated", v.prefix),
-                );
-                d.tags = Some(vec![DiagnosticTag::DEPRECATED]);
-                out.push(d);
-            }
-            Some(_) => {}
-            // Described by the workspace or a resolved import: newer than the snapshot.
-            None if k.is_described(&r.iri) => {}
-            None => {
-                let mut msg = format!(
-                    "'{local}' is not defined in the {} vocabulary <{}>",
-                    v.prefix, v.namespace
-                );
-                let mut d = mk(
-                    r.span,
-                    DiagnosticSeverity::WARNING,
-                    "unknown-term",
-                    String::new(),
-                );
-                let suggestion = *suggestions
-                    .entry((v.namespace, local))
-                    .or_insert_with(|| v.suggest(local).map(|t| t.local.as_str()));
-                if let Some(s) = suggestion {
-                    msg.push_str(&format!(". Did you mean '{s}'?"));
-                    let replacement = match r.form {
-                        Form::PName { .. } => {
-                            let text_prefix = a
-                                .parsed
-                                .prefix_uses
-                                .iter()
-                                .find(|u| u.span == r.span)
-                                .map(|u| u.name.to_string())
-                                .unwrap_or_default();
-                            format!("{text_prefix}:{s}")
-                        }
-                        _ => format!("<{}{s}>", v.namespace),
-                    };
-                    d.data = Some(json!({ "replace": replacement }));
-                }
-                d.message = msg;
-                out.push(d);
-            }
-        }
-    }
+    let uses = a.parsed.refs.iter().filter_map(|r| match r.form {
+        Form::A => None,
+        Form::PName { prefix_len } => Some(TermUse {
+            span: r.span,
+            iri: r.iri,
+            prefix: a
+                .text
+                .get(r.span.start as usize..(r.span.start + prefix_len) as usize),
+        }),
+        Form::Iri => Some(TermUse {
+            span: r.span,
+            iri: r.iri,
+            prefix: None,
+        }),
+    });
+    vocabulary_terms(uses, k, &mk, &mut out);
 
     for f in crate::features::shacl_lint::lint(a, k) {
         let sev = if f.error {

@@ -67,6 +67,7 @@
 //! project's bindings and the vocabularies, as for Turtle.
 
 pub mod diagnostics;
+pub mod features;
 pub mod lexer;
 pub mod structure;
 pub mod validate;

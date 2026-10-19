@@ -8,9 +8,9 @@
 //! diagnostic is a warning with a replace fix; otherwise information.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::features::diagnostics::SOURCE;
+use crate::features::diagnostics::{SOURCE, TermUse};
 use crate::knowledge::{Knowledge, namespace_of};
-use crate::syntax::{Form, Iri, Role};
+use crate::syntax::{Form, Iri, IriKey, Role, Span};
 use crate::vocab::levenshtein;
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -87,34 +87,82 @@ fn ontology_objects(a: &Analysis) -> FxHashSet<u32> {
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
 
 pub fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic> {
-    let mut out = Vec::new();
     let mut ontologies: Option<FxHashSet<u32>> = None;
-    // Per IRI: None = fine, Some(suggestion) = flagged.
-    let mut verdicts: FxHashMap<Iri, Option<Option<Iri>>> = FxHashMap::default();
     let mut prefixes = None;
-    for r in &a.parsed.refs {
-        if r.role == Role::Subject || matches!(r.form, Form::A) {
-            continue;
-        }
-        let verdict = *verdicts.entry(r.iri).or_insert_with(|| {
-            let ns = namespace_of(&r.iri);
+    let uses = a
+        .parsed
+        .refs
+        .iter()
+        .filter(|r| r.role != Role::Subject)
+        .filter_map(|r| match r.form {
+            Form::A => None,
+            Form::PName { prefix_len } => Some(TermUse {
+                span: r.span,
+                iri: r.iri,
+                prefix: a
+                    .text
+                    .get(r.span.start as usize..(r.span.start + prefix_len) as usize),
+            }),
+            Form::Iri => Some(TermUse {
+                span: r.span,
+                iri: r.iri,
+                prefix: None,
+            }),
+        });
+    undescribed(
+        uses,
+        &a.text,
+        k,
+        |span| {
+            ontologies
+                .get_or_insert_with(|| ontology_objects(a))
+                .contains(&span.start)
+        },
+        |p| {
+            prefixes
+                .get_or_insert_with(|| a.prefix_map())
+                .get(p)
+                .cloned()
+        },
+        |span| a.range(enc, span),
+    )
+}
+
+/// The `undescribed-term` diagnostics for `uses` (the document decides which
+/// of its IRIs count: RDF documents leave out subjects, which describe).
+/// `skip` leaves out a flagged use by its span, `namespace` resolves a
+/// written prefix name, `range` maps a span. Shared by RDF and SPARQL
+/// documents.
+pub fn undescribed<'a, K>(
+    uses: impl Iterator<Item = TermUse<'a, K>>,
+    text: &str,
+    k: &Knowledge,
+    mut skip: impl FnMut(Span) -> bool,
+    mut namespace: impl FnMut(&str) -> Option<String>,
+    range: impl Fn(Span) -> Range,
+) -> Vec<Diagnostic>
+where
+    K: std::ops::Deref<Target = str> + IriKey + Copy + Eq + std::hash::Hash,
+{
+    let mut out = Vec::new();
+    // Per IRI: None = fine, Some(suggestion) = flagged.
+    let mut verdicts: FxHashMap<K, Option<Option<Iri>>> = FxHashMap::default();
+    for u in uses {
+        let verdict = *verdicts.entry(u.iri).or_insert_with(|| {
+            let ns = namespace_of(&u.iri);
             let flagged =
-                ns.len() < r.iri.len() && !k.is_described(&r.iri) && k.is_own_namespace(ns);
-            flagged.then(|| suggest(k, ns, &r.iri[ns.len()..]))
+                ns.len() < u.iri.len() && !k.is_described(&u.iri) && k.is_own_namespace(ns);
+            flagged.then(|| suggest(k, ns, &u.iri[ns.len()..]))
         });
         let Some(suggestion) = verdict else { continue };
-        if ontologies
-            .get_or_insert_with(|| ontology_objects(a))
-            .contains(&r.span.start)
-        {
+        if skip(u.span) {
             continue;
         }
-        let written = a
-            .text
-            .get(r.span.start as usize..r.span.end as usize)
+        let written = text
+            .get(u.span.start as usize..u.span.end as usize)
             .unwrap_or_default();
         let mut d = Diagnostic {
-            range: a.range(enc, r.span),
+            range: range(u.span),
             severity: Some(DiagnosticSeverity::INFORMATION),
             code: Some(NumberOrString::String(CODE.to_string())),
             source: Some(SOURCE.to_string()),
@@ -122,18 +170,12 @@ pub fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diag
             ..Default::default()
         };
         if let Some(s) = suggestion {
-            let pname = match r.form {
-                Form::PName { prefix_len } => {
-                    let prefix = written.get(..prefix_len as usize).unwrap_or_default();
-                    prefixes
-                        .get_or_insert_with(|| a.prefix_map())
-                        .get(prefix)
-                        .and_then(|ns| s.strip_prefix(ns.as_str()))
-                        .filter(|l| plain_local(l))
-                        .map(|l| format!("{prefix}:{l}"))
-                }
-                _ => None,
-            };
+            let pname = u.prefix.and_then(|prefix| {
+                namespace(prefix)
+                    .and_then(|ns| s.strip_prefix(ns.as_str()).map(str::to_string))
+                    .filter(|l| plain_local(l))
+                    .map(|l| format!("{prefix}:{l}"))
+            });
             let replacement = pname.unwrap_or_else(|| format!("<{s}>"));
             d.severity = Some(DiagnosticSeverity::WARNING);
             d.message

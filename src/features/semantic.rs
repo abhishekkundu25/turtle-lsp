@@ -21,18 +21,22 @@ use lsp_types::{
 use rustc_hash::FxHashSet;
 
 // Token types, as indexes into the legend.
-const NAMESPACE: u32 = 0;
-const CLASS: u32 = 1;
-const PROPERTY: u32 = 2;
-const INDIVIDUAL: u32 = 3;
-const DATATYPE: u32 = 4;
-const KEYWORD: u32 = 5;
+pub const NAMESPACE: u32 = 0;
+pub const CLASS: u32 = 1;
+pub const PROPERTY: u32 = 2;
+pub const INDIVIDUAL: u32 = 3;
+pub const DATATYPE: u32 = 4;
+pub const KEYWORD: u32 = 5;
+/// SPARQL variables and built-in functions, after the RDF types so that
+/// their indexes stay put.
+pub const VARIABLE: u32 = 6;
+pub const FUNCTION: u32 = 7;
 
 // Token modifiers, as bits.
-const DECLARATION: u32 = 1 << 0;
-const DEPRECATED: u32 = 1 << 1;
-const DEFAULT_LIBRARY: u32 = 1 << 2;
-const UNDESCRIBED: u32 = 1 << 3;
+pub const DECLARATION: u32 = 1 << 0;
+pub const DEPRECATED: u32 = 1 << 1;
+pub const DEFAULT_LIBRARY: u32 = 1 << 2;
+pub const UNDESCRIBED: u32 = 1 << 3;
 
 pub fn legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
@@ -43,6 +47,8 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::ENUM_MEMBER,
             SemanticTokenType::TYPE,
             SemanticTokenType::KEYWORD,
+            SemanticTokenType::VARIABLE,
+            SemanticTokenType::FUNCTION,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
