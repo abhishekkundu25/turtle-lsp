@@ -7,6 +7,7 @@ import { zip } from "./zip.js"
 import * as store from "./store.js"
 import { createSearch } from "./search.js"
 import { createSettings } from "./settings.js"
+import { createHierarchy } from "./hierarchy.js"
 
 const ROOT = "file:///work/"
 // The files a folder contributes, by extension; anything else is skipped.
@@ -48,7 +49,7 @@ const W = {
 for (const key of ["tabs", "active"]) {
   Object.defineProperty(W, key, { get: () => W.groups[W.g][key], set: (v) => (W.groups[W.g][key] = v) })
 }
-let monaco, editor, client, hooks, search, settings
+let monaco, editor, client, hooks, search, settings, hierarchy
 const pathByUri = new Map()
 
 // The folder opened in place that `path` is in, if any.
@@ -395,7 +396,7 @@ function addGroup() {
   W.groups.push(g)
   ed.onDidFocusEditorText(() => focusGroup(W.groups.indexOf(g)))
   ed.onDidChangeCursorPosition(() => changed({ status: true }))
-  for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], run: () => c.run() })
+  for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], contextMenuGroupId: c.menu, run: () => c.run() })
   settings?.applyTo(ed)
   el.addEventListener("mousedown", () => focusGroup(W.groups.indexOf(g)))
   el.querySelector(".tabs").addEventListener("click", (e) => {
@@ -854,6 +855,7 @@ const COMMANDS = [
   { id: "file.download", label: "File: Download File", run: () => downloadFile() },
   { id: "file.exportZip", label: "File: Export Workspace as Zip", run: exportZip },
   { id: "view.search", label: "View: Search", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, run: () => showView("search") },
+  { id: "view.typeHierarchy", label: "Show Type Hierarchy", key: () => monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyH, menu: "navigation", run: () => (showView("hierarchy"), hierarchy.show()) },
   { id: "settings.open", label: "Preferences: Open Settings", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Comma, run: () => settings.open() },
   { id: "view.panel", label: "View: Toggle Panel", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyJ, run: () => togglePanel() },
   { id: "workspace.sample", label: "Workspace: Reset to the Sample", run: () => resetWorkspace(WORKSPACE) },
@@ -1035,6 +1037,15 @@ function wire() {
   $("act-outline").addEventListener("click", () => showView("outline"))
   $("act-search").addEventListener("click", () => showView("search"))
   search = createSearch({ monaco, container: $("view-search"), files: () => [...W.files].map(([path, f]) => ({ path, model: f.model })), reveal, toast })
+  $("act-hierarchy").addEventListener("click", () => showView("hierarchy"))
+  hierarchy = createHierarchy({
+    container: $("view-hierarchy"),
+    request: (method, params) => client.request(method, params),
+    at: () => (W.active && editor.getModel() ? { uri: editor.getModel().uri.toString(), position: { line: editor.getPosition().lineNumber - 1, character: editor.getPosition().column - 1 } } : null),
+    pathOf: (uri) => pathByUri.get(uri),
+    reveal,
+    toast,
+  })
   $("outline").addEventListener("click", (e) => {
     const row = e.target.closest("[data-line]")
     if (row && W.active) reveal(W.active, { start: { line: +row.dataset.line, character: +row.dataset.ch }, end: { line: +row.dataset.line, character: +row.dataset.ch } })
@@ -1062,11 +1073,14 @@ function showView(which) {
   $("view-explorer").hidden = which !== "explorer"
   $("view-outline").hidden = which !== "outline"
   $("view-search").hidden = which !== "search"
+  $("view-hierarchy").hidden = which !== "hierarchy"
   $("act-explorer").classList.toggle("on", which === "explorer")
   $("act-outline").classList.toggle("on", which === "outline")
   $("act-search").classList.toggle("on", which === "search")
+  $("act-hierarchy").classList.toggle("on", which === "hierarchy")
   if (which === "outline") renderOutline()
   if (which === "search") search.focus()
+  if (which === "hierarchy") hierarchy.refresh()
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------
