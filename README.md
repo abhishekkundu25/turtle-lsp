@@ -182,41 +182,78 @@ query or contacts an endpoint.
 
 ## Install
 
-```sh
-cargo build --release   # binary: target/release/turtle-lsp
-```
+- **VS Code:** install "Turtle RDF & SPARQL Language Server" from the
+  [Marketplace](https://marketplace.visualstudio.com/items?itemName=abhishekkundu25.turtle-language-server).
+- **Neovim:** see [Neovim](#neovim-011) below (lazy.nvim installs the server for you).
+- **Any other editor:** download the server for your machine from the
+  [latest release](https://github.com/abhishekkundu25/turtle-lsp/releases/latest)
+  (`turtle-lsp-<platform>.tar.gz`, or `.zip` on Windows; checksums in
+  `SHA256SUMS`), put `turtle-lsp` on your `PATH`, and point your editor's LSP
+  client at it (it speaks LSP over stdio).
+- **From source:** `cargo build --release` (binary: `target/release/turtle-lsp`).
 
 ## Neovim (0.11+)
 
+With [lazy.nvim](https://github.com/folke/lazy.nvim), this repository is the
+plugin:
+
+```lua
+{
+  "abhishekkundu25/turtle-lsp",
+  version = "*", -- the latest release; :Lazy update moves to new ones
+  config = function()
+    vim.lsp.enable("turtle_lsp")
+  end,
+}
+```
+
+That is all. When lazy.nvim installs or updates the plugin it runs
+`build.lua`, which downloads the server for your machine from that release
+(macOS, Linux and Windows; checked against the release's `SHA256SUMS`) into
+the plugin's `bin/`. No Rust needed; on a machine with no download it builds
+the server with `cargo` instead. The plugin also brings:
+
+- the server's config, `lsp/turtle_lsp.lua`, for Turtle, TriG, N-Triples,
+  N-Quads and SPARQL buffers, with `prefixes.ttl` or `.git` marking the
+  project root;
+- the file types Neovim does not detect itself: `.ttl` as `turtle` and `.nq`
+  as `nquads` (`.trig`, `.nt`, `.rq` and `.sparql` it already knows; `.ru`
+  stays Ruby);
+- no modelines in Turtle, TriG and SPARQL files: `@prefix ex: <...>` looks
+  like one (" ex:") and would raise E518 on open.
+
+To change a setting, extend the config: for example
+`vim.lsp.config("turtle_lsp", { settings = { turtle = { format = { lineWidth = 80 } } } })`
+before `vim.lsp.enable`.
+
+Without a plugin manager, put the server on your `PATH` (see
+[Install](#install)) and configure it yourself:
+
 ```lua
 vim.filetype.add({
-  extension = { ttl = "turtle", nq = "nquads", ru = "sparql" },
-  filename = { ["config.ru"] = "ruby" }, -- Rack's config.ru stays Ruby
+  extension = { ttl = "turtle", nq = "nquads" },
 })
 
-vim.lsp.config("turtle", {
-  cmd = { "/path/to/turtle-lsp/target/release/turtle-lsp" },
+vim.lsp.config("turtle_lsp", {
+  cmd = { "turtle-lsp" },
   filetypes = { "turtle", "trig", "ntriples", "nquads", "sparql" },
   root_markers = { "prefixes.ttl", ".git" },
 })
-vim.lsp.enable("turtle")
+vim.lsp.enable("turtle_lsp")
 
 -- "@prefix ex: <...>" and "PREFIX ex: <...>" look like a Vim modeline
 -- (" ex:"), which raises E518 on open. Turn modelines off for Turtle, TriG
 -- and SPARQL files.
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql", "*.ru" },
+  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql" },
   callback = function() vim.opt_local.modeline = false end,
 })
 ```
 
-Neovim already gives `.trig` files the filetype `trig`, `.nt` files the
-filetype `ntriples`, and `.rq` and `.sparql` files the filetype `sparql`. It
-has no filetype for `.nq` and treats `.ru` as Ruby, hence the
-`vim.filetype.add` lines. Keep each filetype in `filetypes`, or the server
-does not attach to those files. Remove one to turn the server off for it.
-
-With lazy.nvim, set `build = "cargo build --release"` on the plugin spec.
+To build the server from source with lazy.nvim instead of downloading it,
+add `build = "cargo build --release"` to the spec and set
+`cmd = { vim.fn.stdpath("data") .. "/lazy/turtle-lsp/target/release/turtle-lsp" }`
+with `vim.lsp.config("turtle_lsp", ...)`.
 
 ## VS Code
 

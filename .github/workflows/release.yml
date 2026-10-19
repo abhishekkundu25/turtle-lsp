@@ -1,8 +1,10 @@
 name: Release
 
 # Push a tag like v0.1.0 to build every platform, create a GitHub Release with
-# the .vsix files, checksums and build attestations, and publish to the VS Code
-# Marketplace. Needs the secret VSCE_PAT (Azure DevOps token, Marketplace: Manage).
+# the .vsix files, the server on its own for other editors (.tar.gz, .zip on
+# Windows; Neovim's build.lua downloads it), checksums and build attestations,
+# and publish to the VS Code Marketplace. Needs the secret VSCE_PAT (Azure
+# DevOps token, Marketplace: Manage).
 on:
   push:
     tags: ["v*"]
@@ -56,6 +58,27 @@ jobs:
           name: vsix-${{ matrix.vsce }}
           path: editors/vscode/*.vsix
           if-no-files-found: error
+      # The server on its own, built above (alpine-x64 is the same musl binary as linux-x64).
+      - name: Server archive
+        if: matrix.vsce != 'alpine-x64'
+        shell: bash
+        env:
+          VSCE_TARGET: ${{ matrix.vsce }}
+          CARGO_TARGET: ${{ matrix.cargo }}
+        run: |
+          mkdir -p bin
+          cd "target/$CARGO_TARGET/release"
+          if [ "$VSCE_TARGET" = win32-x64 ]; then
+            7z a "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.zip" turtle-lsp.exe
+          else
+            tar -czf "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.tar.gz" turtle-lsp
+          fi
+      - if: matrix.vsce != 'alpine-x64'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.vsce }}
+          path: bin/*
+          if-no-files-found: error
 
   release:
     needs: build
@@ -75,14 +98,22 @@ jobs:
           pattern: vsix-*
           merge-multiple: true
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
       - name: Checksums
         working-directory: dist
-        run: sha256sum *.vsix > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum *.vsix *.tar.gz *.zip > SHA256SUMS && cat SHA256SUMS
       # Signed statement that these files were built by this workflow from this commit.
-      # Verify with: gh attestation verify <file>.vsix --repo abhishekkundu25/turtle-lsp
+      # Verify with: gh attestation verify <file> --repo abhishekkundu25/turtle-lsp
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/*.vsix
+          subject-path: |
+            dist/*.vsix
+            dist/*.tar.gz
+            dist/*.zip
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -96,6 +127,8 @@ jobs:
         with:
           files: |
             dist/*.vsix
+            dist/*.tar.gz
+            dist/*.zip
             dist/SHA256SUMS
           body_path: dist/NOTES.md
           generate_release_notes: true
