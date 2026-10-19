@@ -11,7 +11,8 @@
     "web:prototype": "python3 -m http.server 4173 --directory web/prototype",
     "web:build": "node web/build.mjs",
     "web:serve": "python3 -m http.server 4174 --bind 127.0.0.1 --directory web/app",
-    "web:test": "node web/build.mjs && node --test --test-timeout=60000 \"web/test/*.test.mjs\""
+    "web:test": "node web/build.mjs && node --test --test-timeout=60000 \"web/test/*.test.mjs\"",
+    "web:test:browsers": "for b in webkit firefox; do BROWSER=$b node --test --test-timeout=60000 web/test/browser.test.mjs web/test/editor.test.mjs || exit 1; done"
   },
   "devDependencies": {
     "@zazuko/rdf-vocabularies": "^2023.1.19",

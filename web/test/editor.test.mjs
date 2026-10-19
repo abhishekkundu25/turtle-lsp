@@ -8,7 +8,12 @@ import http from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { chromium } from "playwright-core"
+import { chromium, webkit, firefox } from "playwright-core"
+
+// BROWSER=webkit or BROWSER=firefox runs these in Playwright's builds of
+// those browsers; the default is the installed Google Chrome.
+const BROWSER = process.env.BROWSER ?? "chrome"
+const launch = () => (BROWSER === "chrome" ? chromium.launch({ channel: "chrome", headless: true }) : { webkit, firefox }[BROWSER].launch({ headless: true }))
 
 const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf" }
@@ -24,7 +29,7 @@ before(async () => {
   })
   await new Promise((r) => server.listen(0, "127.0.0.1", r))
   origin = `http://127.0.0.1:${server.address().port}`
-  browser = await chromium.launch({ channel: "chrome", headless: true })
+  browser = await launch()
 })
 after(async () => {
   await browser?.close()
@@ -334,15 +339,20 @@ test("dragging a file onto a folder moves it, with its tab and text", async () =
 })
 
 test("Copy Path and Copy Relative Path", async () => {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] })
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  // What the page copies, recorded the same way in every browser.
+  await context.addInitScript(() => {
+    window.__copied = []
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t) => void window.__copied.push(t) } })
+  })
   try {
     const { page } = await open({ context })
     await item(page, "data/people.ttl").click({ button: "right" })
     await page.getByRole("menuitem", { name: "Copy Relative Path" }).click()
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "data/people.ttl")
     await item(page, "data/people.ttl").click({ button: "right" })
     await page.getByRole("menuitem", { name: "Copy Path", exact: true }).click()
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "file:///work/data/people.ttl")
+    await page.waitForFunction(() => window.__copied.length === 2)
+    assert.deepEqual(await page.evaluate(() => window.__copied), ["data/people.ttl", "file:///work/data/people.ttl"])
   } finally {
     await context.close()
   }
@@ -365,6 +375,10 @@ test("a file's problems fold in the Problems panel", async () => {
 })
 
 // --- batch 2: saving files opened in place, split editor ---------------------------
+
+// Opening a folder in place needs showDirectoryPicker, which only Chromium
+// browsers have; the page hides the button elsewhere.
+const inPlace = { skip: BROWSER !== "chrome" && "no showDirectoryPicker in this browser" }
 
 // A context whose folder picker answers with a folder of the browser's
 // private file system (OPFS), which behaves like a disk folder, seeded with
@@ -407,7 +421,7 @@ const run = (page, id) =>
 const A = "@prefix ex: <https://e.org/> .\n\nex:a ex:b ex:c .\n"
 const B = "@prefix ex: <https://e.org/> .\n\nex:d ex:e ex:f .\n"
 
-test("a folder opened in place: unsaved marks, Ctrl+S saves to disk, Revert reads it back", async () => {
+test("a folder opened in place: unsaved marks, Ctrl+S saves to disk, Revert reads it back", inPlace, async () => {
   const context = await inPlaceContext({ "a.ttl": A, "sub/b.ttl": B })
   try {
     const { page } = await open({ context })
@@ -433,7 +447,7 @@ test("a folder opened in place: unsaved marks, Ctrl+S saves to disk, Revert read
   }
 })
 
-test("Save All writes every unsaved file, and a new file in the folder is created on disk", async () => {
+test("Save All writes every unsaved file, and a new file in the folder is created on disk", inPlace, async () => {
   const context = await inPlaceContext({ "a.ttl": A, "sub/b.ttl": B })
   try {
     const { page } = await open({ context })
@@ -460,7 +474,7 @@ test("Save All writes every unsaved file, and a new file in the folder is create
   }
 })
 
-test("closing an unsaved tab asks: Cancel keeps it, Don't Save drops the edit, Save writes it", async () => {
+test("closing an unsaved tab asks: Cancel keeps it, Don't Save drops the edit, Save writes it", inPlace, async () => {
   const context = await inPlaceContext({ "a.ttl": A })
   try {
     const { page } = await open({ context })
@@ -494,7 +508,7 @@ test("closing an unsaved tab asks: Cancel keeps it, Don't Save drops the edit, S
   }
 })
 
-test("a folder opened in place stays linked after a reload", async () => {
+test("a folder opened in place stays linked after a reload", inPlace, async () => {
   const context = await inPlaceContext({ "a.ttl": A })
   try {
     const first = await open({ context })
@@ -539,6 +553,95 @@ test("the editor splits into two groups that share each file", async () => {
     // Closing a group's last tabs closes the group.
     for (const p of ["ontology/core.ttl", "data/people.ttl"]) await page.locator(".group").nth(1).locator(`.tab[data-path="${p}"] [data-close]`).click()
     await page.waitForFunction(() => document.querySelectorAll(".group").length === 1)
+  } finally {
+    await close()
+  }
+})
+
+// --- batch 3: fetching imports, dropping folders --------------------------------------
+
+const IMPORTING = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+<https://e.org/me> a owl:Ontology ;
+    owl:imports <https://onto.example.org/core> .
+`
+async function withImport(page, respond) {
+  await page.route("https://onto.example.org/**", respond)
+  await page.evaluate((text) => window.monaco.editor.getModel(window.monaco.Uri.parse("file:///work/ontology/labels.ttl")).setValue(text), IMPORTING)
+  await openFile(page, "ontology/labels.ttl")
+  await page.getByRole("tab", { name: /^Problems/ }).click()
+  await page.locator(".problem", { hasText: "is not loaded" }).waitFor()
+  await at(page, "<https://onto.example.org/core>", 3, "editor.action.quickFix")
+  await page.locator(".action-widget", { hasText: "Fetch https://onto.example.org/core" }).waitFor()
+  await page.keyboard.press("Enter")
+}
+
+test("the fetch quick fix loads an unresolved import into the workspace", async () => {
+  const { page, close } = await open()
+  try {
+    await withImport(page, (route) =>
+      route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/turtle; charset=utf-8", "access-control-allow-origin": "*" },
+        body: "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix c: <https://onto.example.org/core#> .\n\nc:Thing a owl:Class .\n",
+      })
+    )
+    await item(page, "imports/onto.example.org/core.ttl").waitFor()
+    assert.match(await text(page, "imports/onto.example.org/core.ttl"), /c:Thing a owl:Class/)
+    await settled(page)
+    await page.waitForFunction(() => ![...document.querySelectorAll(".problem")].some((p) => p.textContent.includes("is not loaded")))
+  } finally {
+    await close()
+  }
+})
+
+test("a fetch that fails or returns another format says why and adds nothing", async () => {
+  for (const [respond, why] of [
+    [(route) => route.fulfill({ status: 404, headers: { "access-control-allow-origin": "*" }, body: "" }), /HTTP 404/],
+    [(route) => route.fulfill({ status: 200, headers: { "content-type": "application/rdf+xml", "access-control-allow-origin": "*" }, body: "<rdf:RDF/>" }), /application\/rdf\+xml/],
+    [(route) => route.abort(), /does not allow|offline/],
+  ]) {
+    const { page, close } = await open()
+    try {
+      await withImport(page, respond)
+      await page.locator("#toast", { hasText: why }).waitFor()
+      assert.equal(await page.locator('[role=treeitem][data-path^="imports"]').count(), 0)
+    } finally {
+      await close()
+    }
+  }
+})
+
+test("a folder dropped from the desktop lands in the folder under the pointer, structure kept", async () => {
+  const { page, errors, close } = await open()
+  try {
+    // A folder as the browser hands it over (FileSystemEntry API).
+    await page.evaluate(() => {
+      const file = (name, text, fullPath) => ({ isFile: true, isDirectory: false, name, fullPath, file: (ok) => ok(new File([text], name)) })
+      const dir = (name, fullPath, children) => ({
+        isFile: false,
+        isDirectory: true,
+        name,
+        fullPath,
+        createReader: () => {
+          let done = false
+          return { readEntries: (ok) => (ok(done ? [] : children), (done = true)) }
+        },
+      })
+      const model = dir("model", "/model", [
+        file("a.ttl", "@prefix ex: <https://e.org/> .\nex:a ex:b ex:c .\n", "/model/a.ttl"),
+        file("readme.md", "# no\n", "/model/readme.md"),
+        dir("shapes", "/model/shapes", [file("b.ttl", "@prefix ex: <https://e.org/> .\nex:d ex:e ex:f .\n", "/model/shapes/b.ttl")]),
+      ])
+      const drop = new Event("drop", { bubbles: true, cancelable: true })
+      Object.defineProperty(drop, "dataTransfer", { value: { getData: () => "", items: [{ webkitGetAsEntry: () => model }], files: [] } })
+      document.querySelector('[role=treeitem][data-path="data"]').dispatchEvent(drop)
+    })
+    await item(page, "data/model/shapes/b.ttl").waitFor()
+    await item(page, "data/model/a.ttl").waitFor()
+    assert.equal(await item(page, "data/model/readme.md").count(), 0)
+    await page.locator("#toast", { hasText: "1 skipped" }).waitFor()
+    assert.deepEqual(errors, [])
   } finally {
     await close()
   }

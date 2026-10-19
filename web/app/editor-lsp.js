@@ -218,13 +218,16 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
             (d.range.start.line === wanted.end.line && d.range.start.character > wanted.end.character))
         const diagnostics = diagnosticsOf(model.uri.toString()).filter(touches)
         const r = await client.request("textDocument/codeAction", { ...doc(model), range: wanted, context: { diagnostics } })
+        // Actions with an edit apply it; those with only a command (fetch an
+        // import) run it in the page (registered with monaco.editor.registerCommand).
         const actions = (r ?? [])
-          .filter((a) => a.edit)
+          .filter((a) => a.edit || a.command)
           .map((a) => ({
             title: a.title,
             kind: a.kind,
             isPreferred: a.isPreferred,
-            edit: edits(monaco, a.edit),
+            edit: a.edit ? edits(monaco, a.edit) : undefined,
+            command: a.command ? { id: a.command.command, title: a.command.title, arguments: a.command.arguments } : undefined,
             diagnostics: (a.diagnostics ?? []).map((d) => ({ ...toRange(monaco, d.range), message: d.message, severity: 8 })),
           }))
         return { actions, dispose() {} }

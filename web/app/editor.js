@@ -624,6 +624,33 @@ function ask(message, detail, buttons) {
   })
 }
 
+// The fetch quick fix on an unresolved import ("turtle.fetchImport"): the
+// page fetches the ontology and adds it under imports/<host>/, with a line
+// declaring its IRI, which is what makes the import present here.
+const FETCHED = { "text/turtle": "ttl", "application/x-turtle": "ttl", "application/n-triples": "nt", "application/trig": "trig", "application/n-quads": "nq" }
+async function fetchImport(iri) {
+  let r
+  try {
+    r = await fetch(iri, { headers: { Accept: "text/turtle, application/n-triples;q=0.9, application/trig;q=0.8, application/n-quads;q=0.7" } })
+  } catch {
+    return toast(`Could not fetch ${iri}: the site does not allow pages to read it, or it is offline. Download the file and import it instead.`)
+  }
+  if (!r.ok) return toast(`Could not fetch ${iri}: HTTP ${r.status}`)
+  const type = (r.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase()
+  const ext = FETCHED[type] ?? (type === "" || type === "text/plain" ? iri.match(/\.(ttl|nt|trig|nq)$/i)?.[1]?.toLowerCase() : undefined)
+  if (!ext) return toast(`${iri} came back as ${type || "an unknown type"}: only Turtle, N-Triples, TriG and N-Quads can be loaded here.`)
+  const text = await r.text()
+  const u = new URL(iri)
+  const stem = (u.pathname.split("/").filter(Boolean).pop() ?? "").replace(/\.[^.]*$/, "") || "ontology"
+  let path = `imports/${u.host}/${stem}.${ext}`
+  for (let k = 2; W.files.has(path); k++) path = `imports/${u.host}/${stem}-${k}.${ext}`
+  const head = `# Fetched from <${iri}> on ${new Date().toISOString().slice(0, 10)}.\n<${iri}> a <http://www.w3.org/2002/07/owl#Ontology> .\n\n`
+  addFile(path, head + text)
+  for (let d = dirOf(path); d; d = dirOf(d)) W.expanded.add(d)
+  changed({ tree: true })
+  toast(`Fetched ${iri} into ${path}`)
+}
+
 function copy(text) {
   navigator.clipboard?.writeText(text).then(
     () => toast(`Copied ${text}`),
@@ -1123,6 +1150,7 @@ async function main() {
       return true
     },
   })
+  monaco.editor.registerCommand("turtle.fetchImport", (_accessor, iri) => fetchImport(iri))
   addGroup()
   focusGroup(0)
   monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyP, command: "editor.action.quickCommand" })

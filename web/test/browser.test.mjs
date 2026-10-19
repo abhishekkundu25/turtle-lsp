@@ -8,7 +8,12 @@ import os from "node:os"
 import http from "node:http"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { chromium } from "playwright-core"
+import { chromium, webkit, firefox } from "playwright-core"
+
+// BROWSER=webkit or BROWSER=firefox runs these in Playwright's builds of
+// those browsers; the default is the installed Google Chrome.
+const BROWSER = process.env.BROWSER ?? "chrome"
+const launch = () => (BROWSER === "chrome" ? chromium.launch({ channel: "chrome", headless: true }) : { webkit, firefox }[BROWSER].launch({ headless: true }))
 
 const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm" }
@@ -24,7 +29,7 @@ before(async () => {
   })
   await new Promise((r) => server.listen(0, "127.0.0.1", r))
   origin = `http://127.0.0.1:${server.address().port}`
-  browser = await chromium.launch({ channel: "chrome", headless: true })
+  browser = await launch()
 })
 after(async () => {
   await browser?.close()
