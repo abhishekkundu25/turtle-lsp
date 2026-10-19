@@ -9,8 +9,8 @@ by [turtle-lsp](https://github.com/abhishekkundu25/turtle-lsp), a language
 server written in Rust: a keystroke in a 30,000-line file gets fresh
 diagnostics in about 9 ms.
 
-Passes the W3C test suites: Turtle, TriG and N-Triples 982/982, SHACL Core
-98/98, SHACL-SPARQL 23/23.
+Passes the W3C test suites: Turtle, TriG, N-Triples and N-Quads 1137/1137,
+SPARQL 1.1 and 1.2 syntax 425/426, SHACL Core 98/98, SHACL-SPARQL 23/23.
 
 ## Features
 
@@ -38,7 +38,7 @@ workspace and the vocabularies:
 - Go to definition, references and document highlight for terms, prefixes and variables.
 - Rename of variables, prefixes and terms. Renaming a term in a Turtle file also renames it in your queries, and the other way round.
 - Formatting that keeps comments and never changes what the query means.
-- Quick fixes: add a missing `PREFIX`, remove an unused one, fix a misspelled term; organise prefixes, shorten or expand an IRI.
+- Quick fixes: add a missing `PREFIX` (or all of them), remove an unused one, fix a misspelled term; organise prefixes, shorten or expand an IRI.
 - Semantic highlighting, folding and an outline of the query or update operations.
 
 Queries are never run and no endpoint is contacted.

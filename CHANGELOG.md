@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-19
 
 ### Features
 
@@ -31,7 +31,8 @@
   W3C SPARQL 1.1 and 1.2 syntax suites: 425/426. Prefixes from `prefixes.ttl`
   and `turtle.prefixes` count as declared; a query never makes a term look
   described. The server never runs a query.
-- The VS Code extension registers N-Quads and SPARQL with their own grammars;
+- The VS Code extension registers N-Quads and SPARQL with their own grammars,
+  and is listed as **Turtle RDF & SPARQL Language Server (TTL, OWL, SHACL)**;
   the README shows the Neovim setup for `nquads` and `sparql` buffers.
 
 ### Fixes
