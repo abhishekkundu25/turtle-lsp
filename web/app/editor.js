@@ -31,19 +31,23 @@ const uriOf = (path) => ROOT + path.split("/").map(encodeURIComponent).join("/")
 // ---- state --------------------------------------------------------------------------
 
 const W = {
-  // path -> { model, disk }. `disk` is the file's text on disk for a file in
-  // a folder opened in place (null: not on disk yet); undefined otherwise.
+  // path -> { model, disk, saved }. `disk` is the file's text on disk for a
+  // file in a folder opened in place (null: not on disk yet); undefined
+  // otherwise. `saved`: the model's alternative version id when its text was
+  // the disk text (NaN: none known).
   files: new Map(),
   folders: new Set(), // folders kept even when empty
   expanded: new Set(),
   selected: null, // the tree's selection (a file or folder path)
-  // Folders opened in place: top folder path -> directory handle.
+  // Folders opened in place: top folder path -> directory handle. The path
+  // is the folder's name, made unique ("data (2)") when the workspace has it.
   roots: new Map(),
   // Editor groups (the split editor), each { tabs, active, views, editor, el };
   // `g` is the focused one, which W.tabs and W.active stand for.
   groups: [],
   g: 0,
   diags: new Map(), // uri -> LSP diagnostics
+  tally: new Map(), // uri -> { e, w }: its errors and warnings
   filter: "all",
   panel: true,
   editing: null, // { mode: "newFile" | "newFolder" | "rename", dir, path }
@@ -62,9 +66,17 @@ function rootOf(path) {
   return null
 }
 // Whether `path` has changes not on disk (only files opened in place can).
+// Undoing back to the saved text makes the file clean again.
 function dirty(path) {
   const f = W.files.get(path)
-  return Boolean(f && f.disk !== undefined && f.model.getValue() !== f.disk)
+  return Boolean(f && f.disk !== undefined && (f.disk === null || f.model.getAlternativeVersionId() !== f.saved))
+}
+// `f`'s text on disk is now `disk`; `version`: the alternative version id the
+// model had with that text, if known.
+function setDisk(f, disk, version) {
+  f.disk = disk
+  if (version === undefined) version = disk !== null && f.model.getValue() === disk ? f.model.getAlternativeVersionId() : NaN
+  f.saved = version
 }
 
 // ---- the workspace ---------------------------------------------------------------------
@@ -81,7 +93,7 @@ function addFile(path, text, { disk } = {}) {
   if (existing) {
     // Importing a file again replaces its text (undoable).
     existing.model.pushEditOperations([], [{ range: existing.model.getFullModelRange(), text }], () => null)
-    if (disk !== undefined) existing.disk = disk
+    if (disk !== undefined) setDisk(existing, disk)
     return
   }
   const uri = monaco.Uri.parse(uriOf(path))
@@ -89,7 +101,9 @@ function addFile(path, text, { disk } = {}) {
   const key = model.uri.toString()
   pathByUri.set(key, path)
   // A file created inside a folder opened in place is not on disk yet.
-  W.files.set(path, { model, disk: disk !== undefined ? disk : rootOf(path) ? null : undefined })
+  const f = { model }
+  setDisk(f, disk !== undefined ? disk : rootOf(path) ? null : undefined)
+  W.files.set(path, f)
   // Each change goes as its range and text (Monaco orders them from the end
   // of the document, so they apply in sequence).
   model.onDidChangeContent((e) => {
@@ -106,41 +120,45 @@ function addFile(path, text, { disk } = {}) {
   client.notify("textDocument/didOpen", { textDocument: { uri: key, languageId: languageOf(path), version: model.getVersionId(), text } })
 }
 
-function removeFile(path) {
+// `keepGroups`: a group left without tabs stays (a move puts the tab back).
+function removeFile(path, { keepGroups = false } = {}) {
   const f = W.files.get(path)
   if (!f) return
   const key = f.model.uri.toString()
   client.notify("textDocument/didClose", { textDocument: { uri: key } })
   W.diags.delete(key)
+  W.tally.delete(key)
   pathByUri.delete(key)
   f.model.dispose()
   W.files.delete(path)
   for (let i = W.groups.length - 1; i >= 0; i--) {
     W.groups[i].views.delete(path)
-    closeTab(path, { group: i, quiet: true, force: true })
+    closeTab(path, { group: i, quiet: true, force: true, keepGroup: keepGroups })
   }
 }
 
 // Move every file (and kept folder) at or under `from` to `to`.
 // A file moved within a folder opened in place is new on disk at its new
-// path (saving writes it there; the old file stays).
+// path (saving writes it there; the old file stays). Each editor group keeps
+// its tabs, in place, and its active file, even a group showing only moved
+// files.
 function movePath(from, to) {
-  const reopen = []
+  const reopen = new Map() // group -> its active file's new path
   for (const [p, f] of [...W.files]) {
     if (!under(p, from)) continue
     const dest = to + p.slice(from.length)
     const text = f.model.getValue()
-    const was = W.groups.map((g) => ({ tab: g.tabs.indexOf(p), active: g.active === p }))
-    removeFile(p)
+    const was = W.groups.map((g) => ({ g, tab: g.tabs.indexOf(p), active: g.active === p }))
+    removeFile(p, { keepGroups: true })
     addFile(dest, text)
-    W.groups.forEach((g, i) => {
-      if (was[i]?.tab >= 0) g.tabs.splice(Math.min(was[i].tab, g.tabs.length), 0, dest)
-      if (was[i]?.active) reopen.push([i, dest])
-    })
+    for (const { g, tab, active } of was) {
+      if (tab >= 0) g.tabs.splice(Math.min(tab, g.tabs.length), 0, dest)
+      if (active) reopen.set(g, dest)
+    }
   }
   const focused = W.g
-  for (const [i, dest] of reopen) if (W.groups[i]) (focusGroup(i), openTab(dest, { focus: false }))
-  if (W.groups[focused]) focusGroup(focused)
+  for (const [g, dest] of reopen) (focusGroup(W.groups.indexOf(g)), openTab(dest, { focus: false }))
+  focusGroup(focused)
   for (const d of [...W.folders]) if (under(d, from)) (W.folders.delete(d), W.folders.add(to + d.slice(from.length)))
   for (const d of [...W.expanded]) if (under(d, from)) (W.expanded.delete(d), W.expanded.add(to + d.slice(from.length)))
   if (W.selected && under(W.selected, from)) W.selected = to + W.selected.slice(from.length)
@@ -212,10 +230,10 @@ function changed(what = {}) {
   persist()
 }
 
+const NONE = { e: 0, w: 0 }
 function counts(path) {
   const f = W.files.get(path)
-  const list = f ? W.diags.get(f.model.uri.toString()) ?? [] : []
-  return { e: list.filter((d) => d.severity === 1).length, w: list.filter((d) => d.severity === 2).length }
+  return (f && W.tally.get(f.model.uri.toString())) ?? NONE
 }
 
 function renderTree() {
@@ -227,6 +245,12 @@ function renderTree() {
   }
   const input = (depth, value) =>
     `<div class="row" style="padding-left:${8 + depth * 12}px"><span class="tw"></span><input class="tree-input" value="${esc(value)}" spellcheck="false" aria-label="Name"></div>`
+  // Each folder's errors, the files under it summed once.
+  const folderErrs = new Map()
+  for (const p of W.files.keys()) {
+    const { e } = counts(p)
+    if (e) for (let d = dirOf(p); d; d = dirOf(d)) folderErrs.set(d, (folderErrs.get(d) ?? 0) + e)
+  }
   let html = ""
   const walk = (dir, depth) => {
     const { subs, files } = children(dir)
@@ -237,8 +261,7 @@ function renderTree() {
         html += input(depth, nameOf(d))
       } else {
         const open = W.expanded.has(d)
-        let errs = 0
-        for (const p of W.files.keys()) if (under(p, d)) errs += counts(p).e
+        const errs = folderErrs.get(d) ?? 0
         html += `<div class="row${W.selected === d ? " sel" : ""}${errs ? " has-e" : ""}" role="treeitem" draggable="true" data-path="${esc(d)}" aria-level="${depth + 1}" aria-expanded="${open}" aria-selected="${W.selected === d}" style="padding-left:${8 + depth * 12}px"><span class="tw codicon codicon-chevron-${open ? "down" : "right"}"></span><span class="nm">${esc(nameOf(d))}</span>${errs ? `<span class="dec e">●</span>` : ""}</div>`
       }
       if (W.expanded.has(d)) walk(d, depth + 1)
@@ -346,7 +369,7 @@ function openTab(path, { focus = true } = {}) {
 
 // Close `path` in group `group` (the focused one by default). A file with
 // unsaved changes shown in no other group asks first, unless `force`.
-async function closeTab(path, { group = W.g, quiet = false, force = false } = {}) {
+async function closeTab(path, { group = W.g, quiet = false, force = false, keepGroup = false } = {}) {
   const g = W.groups[group]
   const i = g?.tabs.indexOf(path) ?? -1
   if (i < 0) return
@@ -360,7 +383,7 @@ async function closeTab(path, { group = W.g, quiet = false, force = false } = {}
   if (!g.tabs.includes(path)) return
   g.tabs.splice(g.tabs.indexOf(path), 1)
   g.views.delete(path)
-  if (!g.tabs.length && W.groups.length > 1) {
+  if (!g.tabs.length && W.groups.length > 1 && !keepGroup) {
     closeGroup(group)
   } else if (g.active === path) {
     g.active = null
@@ -516,7 +539,6 @@ async function dropped(items) {
 }
 
 // A folder on the disk, opened for editing in place: Ctrl+S writes back.
-// A folder on the disk, opened for editing in place: Ctrl+S writes back.
 async function openInPlace() {
   let dir
   try {
@@ -534,10 +556,20 @@ async function openInPlace() {
       }
     }
   }
-  await walk(dir, dir.name)
-  W.roots.set(dir.name, dir)
+  // The same folder again updates its files; another one never takes in the
+  // files already in the workspace: a name in use gets a number, as in VS Code.
+  let root = null
+  for (const [path, handle] of W.roots) if (await handle.isSameEntry?.(dir)) root = path
+  if (!root) {
+    const folders = folderList()
+    const taken = (name) => W.roots.has(name) || folders.has(name) || W.files.has(name)
+    root = dir.name
+    for (let k = 2; taken(root); k++) root = `${dir.name} (${k})`
+  }
+  await walk(dir, root)
+  W.roots.set(root, dir)
   await importEntries(entries)
-  $("status-storage").textContent = `${dir.name}: Ctrl+S saves to disk`
+  $("status-storage").textContent = `${root}: Ctrl+S saves to disk`
 }
 
 // The handle of `path` inside its folder opened in place, made if missing.
@@ -569,10 +601,11 @@ async function save(path = W.active, { quiet = false } = {}) {
   }
   try {
     const text = f.model.getValue()
+    const version = f.model.getAlternativeVersionId()
     const w = await (await fileHandle(path, { create: true })).createWritable()
     await w.write(text)
     await w.close()
-    f.disk = text
+    setDisk(f, text, version)
     saved()
     changed({ tabs: true })
     if (!quiet) toast(`Saved ${path} to disk`)
@@ -596,8 +629,8 @@ async function revert(path = W.active) {
   if (!f || f.disk === undefined) return toast("Only files of a folder opened in place can be reverted.")
   try {
     const text = f.disk === null ? "" : await (await (await fileHandle(path)).getFile()).text()
-    f.disk = f.disk === null ? null : text
     f.model.pushEditOperations([], [{ range: f.model.getFullModelRange(), text }], () => null)
+    setDisk(f, f.disk === null ? null : text)
     changed({ tabs: true })
   } catch (e) {
     toast(`Could not read ${path}: ${e.message}`)
@@ -608,7 +641,7 @@ async function revert(path = W.active) {
 async function discard(path) {
   const f = W.files.get(path)
   if (f?.disk === null) return removeFile(path)
-  if (f) f.model.pushEditOperations([], [{ range: f.model.getFullModelRange(), text: f.disk }], () => null)
+  if (f) (f.model.pushEditOperations([], [{ range: f.model.getFullModelRange(), text: f.disk }], () => null), setDisk(f, f.disk))
 }
 
 // A question in the page; resolves to the button chosen, null on Escape.
@@ -836,9 +869,12 @@ function quickOpen(prefix = "") {
   input.focus()
 }
 
+// Folders opened in place are let go too: none of the new files is on disk.
 function resetWorkspace(files) {
   for (const p of [...W.files.keys()]) removeFile(p)
   W.folders.clear()
+  W.roots.clear()
+  W.folded.clear()
   W.expanded = new Set(files.map((f) => dirOf(f.path)).filter(Boolean))
   W.selected = null
   for (const f of files) addFile(f.path, f.text)
@@ -1156,6 +1192,7 @@ async function main() {
   })
   client.on("diagnostics", (uri, list) => {
     W.diags.set(uri, list)
+    W.tally.set(uri, { e: list.filter((d) => d.severity === 1).length, w: list.filter((d) => d.severity === 2).length })
     const path = pathByUri.get(uri)
     const model = path && W.files.get(path)?.model
     if (model) monaco.editor.setModelMarkers(model, "turtle-lsp", markers(monaco, list))

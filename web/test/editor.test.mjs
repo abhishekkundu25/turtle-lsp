@@ -399,16 +399,16 @@ const inPlace = { skip: BROWSER !== "chrome" && "no showDirectoryPicker in this 
 
 // A context whose folder picker answers with a folder of the browser's
 // private file system (OPFS), which behaves like a disk folder, seeded with
-// `files` ({ "a.ttl": text, "sub/b.ttl": text }).
-async function inPlaceContext(files) {
+// `files` ({ "a.ttl": text, "sub/b.ttl": text }), named `name`.
+async function inPlaceContext(files, name = "proj") {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  await context.addInitScript(() => {
-    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
-  })
+  await context.addInitScript((name) => {
+    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true })
+  }, name)
   const seed = await context.newPage()
   await seed.goto(origin + "/editor.html")
-  await seed.evaluate(async (files) => {
-    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("proj", { create: true })
+  await seed.evaluate(async ([files, name]) => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true })
     for (const [p, text] of Object.entries(files)) {
       const parts = p.split("/")
       let dir = root
@@ -417,17 +417,26 @@ async function inPlaceContext(files) {
       await w.write(text)
       await w.close()
     }
-  }, files)
+  }, [files, name])
   await seed.close()
   return context
 }
-const disk = (page, p) =>
-  page.evaluate(async (p) => {
-    let dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("proj")
-    const parts = p.split("/")
-    for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d)
-    return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text()
-  }, p)
+// The text of `p` in the disk folder `name`; null when it is not there.
+const disk = (page, p, name = "proj") =>
+  page.evaluate(
+    async ([p, name]) => {
+      try {
+        let dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(name)
+        const parts = p.split("/")
+        for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d)
+        return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text()
+      } catch (e) {
+        if (e.name === "NotFoundError") return null
+        throw e
+      }
+    },
+    [p, name]
+  )
 // Run an editor command (an action id) in the first editor.
 const run = (page, id) =>
   page.evaluate((id) => {
@@ -548,6 +557,124 @@ test("a folder opened in place stays linked after a reload", inPlace, async () =
     assert.match(await disk(page, "a.ttl"), /# after reload/)
   } finally {
     await context.close()
+  }
+})
+
+test("undoing back to the text on disk makes a file clean again", inPlace, async () => {
+  const context = await inPlaceContext({ "a.ttl": A })
+  try {
+    const { page } = await open({ context })
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await openFile(page, "proj/a.ttl")
+    const isDirty = () => page.evaluate(() => document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    await at(page, "ex:a", 0)
+    await page.keyboard.type("x")
+    await page.waitForFunction(() => document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    await page.keyboard.press("ControlOrMeta+z")
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    assert.equal(await text(page, "proj/a.ttl"), A)
+    // Redo, save, undo: the text on disk is now the redone one.
+    await page.keyboard.press("ControlOrMeta+Shift+z")
+    await page.waitForFunction(() => document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    await page.keyboard.press("ControlOrMeta+s")
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    await page.keyboard.press("ControlOrMeta+z")
+    await page.waitForFunction(() => document.querySelector('.tab[data-path="proj/a.ttl"]').classList.contains("dirty"))
+    assert.equal(await isDirty(), true)
+  } finally {
+    await context.close()
+  }
+})
+
+test("a disk folder named like a folder of the browser gets its own name; the browser's files stay in the browser", inPlace, async () => {
+  const context = await inPlaceContext({ "x.ttl": A }, "data")
+  try {
+    const { page } = await open({ context })
+    await item(page, "data/graphs.trig").waitFor()
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await item(page, "data (2)/x.ttl").waitFor()
+    await openFile(page, "data/graphs.trig")
+    await at(page, "@prefix", 0)
+    await page.keyboard.type("# mine\n")
+    await page.keyboard.press("ControlOrMeta+s")
+    await page.waitForTimeout(300)
+    assert.equal(await page.locator('.tab[data-path="data/graphs.trig"]').getAttribute("class"), "tab")
+    assert.equal(await disk(page, "graphs.trig", "data"), null)
+    // The disk folder's own files still save to it.
+    await openFile(page, "data (2)/x.ttl")
+    await at(page, "ex:a", 0)
+    await page.keyboard.type("# disk\n")
+    await page.locator(".tab.dirty").waitFor()
+    await page.keyboard.press("ControlOrMeta+s")
+    await page.waitForFunction(() => !document.querySelector(".tab.dirty"))
+    assert.match(await disk(page, "x.ttl", "data"), /# disk\nex:a/)
+  } finally {
+    await context.close()
+  }
+})
+
+test("resetting the workspace unlinks folders opened in place, also after a reload", inPlace, async () => {
+  const context = await inPlaceContext({ "x.ttl": A }, "data")
+  try {
+    const first = await open({ context })
+    let page = first.page
+    await run(page, "workspace.clear")
+    await page.waitForFunction(() => !document.querySelector("[role=treeitem]"))
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await item(page, "data/x.ttl").waitFor()
+    await run(page, "workspace.sample")
+    await item(page, "data/graphs.trig").waitFor()
+    const edit = async () => {
+      await openFile(page, "data/graphs.trig")
+      await at(page, "@prefix", 0)
+      await page.keyboard.type("# mine\n")
+      await page.keyboard.press("ControlOrMeta+s")
+      await page.waitForTimeout(300)
+      assert.equal(await page.locator('.tab[data-path="data/graphs.trig"]').getAttribute("class"), "tab")
+      assert.equal(await disk(page, "graphs.trig", "data"), null)
+    }
+    await edit()
+    await page.waitForTimeout(600)
+    await page.close()
+    page = (await open({ context })).page
+    await edit()
+  } finally {
+    await context.close()
+  }
+})
+
+test("renaming a file shown in both groups keeps each group's tabs and active file", async () => {
+  const { page, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    await page.locator('.tab[data-path="start-here.ttl"] [data-close]').dispatchEvent("click")
+    await page.waitForFunction(() => !document.querySelector('.tab[data-path="start-here.ttl"]'))
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].focus())
+    await page.keyboard.press("ControlOrMeta+Backslash")
+    await page.locator(".group").nth(1).waitFor()
+    await item(page, "ontology/core.ttl").click()
+    await page.locator(".group").nth(1).locator('.tab[aria-selected="true"][data-path="ontology/core.ttl"]').waitFor()
+    await item(page, "data/people.ttl").click({ button: "right" })
+    await page.getByRole("menuitem", { name: "Rename" }).click()
+    await page.locator(".tree-input").fill("persons.ttl")
+    await page.locator(".tree-input").press("Enter")
+    await item(page, "data/persons.ttl").waitFor()
+    const groups = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll(".group")].map((g) => ({
+          tabs: [...g.querySelectorAll(".tab")].map((t) => t.dataset.path),
+          active: g.querySelector('.tab[aria-selected="true"]')?.dataset.path,
+        }))
+      )
+    await page.waitForFunction(() => document.querySelectorAll('.tab[data-path="data/persons.ttl"]').length === 2)
+    assert.deepEqual(await groups(), [
+      { tabs: ["data/persons.ttl"], active: "data/persons.ttl" },
+      { tabs: ["data/persons.ttl", "ontology/core.ttl"], active: "ontology/core.ttl" },
+    ])
+    const models = await page.evaluate(() => window.monaco.editor.getEditors().map((e) => e.getModel()?.uri.path))
+    assert.deepEqual(models, ["/work/data/persons.ttl", "/work/ontology/core.ttl"])
+  } finally {
+    await close()
   }
 })
 
