@@ -1,0 +1,890 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turtle RDF Toolbox</title>
+</head>
+<body>
+<!--
+  PROTOTYPE, throwaway. Question: "what should a browser-only RDF toolbox built on
+  turtle-lsp look like when it is organised around five equal tools (Format,
+  Validate, SHACL, SPARQL, Convert) sharing one input, not around validation?"
+  Three structurally different variants, switchable with #A / #B / #C, the pink
+  bar at the bottom, or the left/right arrow keys:
+    A  Tool tabs    - five equal tabs over a split screen: input left, tool right
+    B  Tool home    - a home grid of five live tool tiles that opens a full-page workspace
+    C  Command editor - one editor; a tool rail and a command bar change what it shows
+  Diagnostics and formatter output are REAL turtle-lsp output for the samples.
+  Fix edits, conversion, expand/shorten/organise and graphs.trig are written by
+  the prototype and labelled MOCKED on screen.
+-->
+<style>
+*{box-sizing:border-box}
+.tbx{font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;padding-bottom:calc(92px + env(safe-area-inset-bottom,0px));overflow-x:hidden}
+.tbx button,.tbx select,.tbx input,.tbx textarea{font:inherit;color:inherit}
+.tbx button{cursor:pointer}
+.mono,.src,.tbx pre,.tbx code,.tbx textarea{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.mock{display:inline-block;font:700 9.5px/1 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;padding:3px 5px;border-radius:4px;background:#fde68a;color:#713f12;vertical-align:middle;white-space:nowrap}
+.real{display:inline-block;font:700 9.5px/1 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;padding:3px 5px;border-radius:4px;background:#bbf7d0;color:#14532d;vertical-align:middle;white-space:nowrap}
+.hidden-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+
+/* source view shared mechanics; colours come from each variant's custom properties */
+.src{font-size:12.5px;line-height:19px;padding:6px 0}
+.ln{display:flex;min-width:0}
+.ln .no{flex:0 0 38px;text-align:right;padding-right:10px;color:var(--ln);user-select:none}
+.ln .tx{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;padding-right:8px}
+.ln.add{background:var(--addbg)} .ln.del{background:var(--delbg)}
+.ln.add .no,.ln.del .no{color:var(--tx)}
+.ln.gap .tx{color:var(--ln);font-style:italic}
+.ln.hl{background:var(--hlbg)}
+.t1{color:var(--com);font-style:italic}.t2{color:var(--str)}.t3{color:var(--iri)}.t4{color:var(--lang)}.t5{color:var(--var)}.t6{color:var(--pn)}.t7{color:var(--num)}.t8{color:var(--kw);font-weight:600}
+.mk{border-bottom:2px solid;cursor:pointer}
+.mk.s1{border-color:#e5484d;background:rgba(229,72,77,.13)}
+.mk.s2{border-color:#e29a12;background:rgba(226,154,18,.14)}
+.mk.s4{border-color:var(--ln);border-bottom-style:dotted}
+.mk.hot{background:var(--consbg);border-bottom-color:var(--acc);border-bottom-width:3px}
+.mk.cons{border-color:var(--acc);background:var(--consbg)}
+
+/* ---------- prototype switcher (not part of the design) ---------- */
+#pbar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:1000;display:flex;align-items:center;gap:4px;background:#ff2d78;color:#fff;border-radius:999px;padding:4px;box-shadow:0 8px 28px rgba(0,0,0,.35);font:600 13px system-ui,sans-serif;white-space:nowrap;max-width:calc(100vw - 32px)}
+#pbar button{background:rgba(255,255,255,.2);color:#fff;border:0;border-radius:999px;min-width:34px;height:34px;padding:0 10px;font:600 13px system-ui,sans-serif;cursor:pointer}
+#pbar .lbl{padding:0 6px;overflow:hidden;text-overflow:ellipsis}
+#pstate{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(60px + env(safe-area-inset-bottom,0px));z-index:1000;width:min(540px,calc(100vw - 32px));max-height:45vh;overflow:auto;background:#111;color:#a7f3d0;font:11px/1.45 ui-monospace,Menlo,monospace;padding:10px 12px;border-radius:10px;margin:0;white-space:pre-wrap;box-shadow:0 8px 28px rgba(0,0,0,.4)}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(64px + env(safe-area-inset-bottom,0px));z-index:1001;background:#111;color:#fff;padding:7px 14px;border-radius:8px;font:13px system-ui,sans-serif;max-width:calc(100vw - 32px)}
+
+/* ============================ A: Tool tabs (light) ============================ */
+.vA{--tx:#1d2330;--ln:#9aa3b2;--com:#6b7686;--str:#0a7a3e;--iri:#1f56c2;--lang:#a14b00;--var:#8a2bb3;--pn:#0b5d8f;--num:#b3261e;--kw:#c0136b;--acc:#2557d6;--addbg:#e3f6e8;--delbg:#fde8e8;--hlbg:#fff6cc;--consbg:rgba(37,87,214,.12);background:#f4f5f8;color:#1d2330}
+.a-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 24px;background:#ffffff;border-bottom:1px solid #dde1e8}
+.a-brand{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.a-logo{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:7px;background:#1d2330;color:#ffffff;font:700 12px ui-monospace,Menlo,monospace}
+.a-brand b{font-size:16px}
+.a-sub{color:#5d6675;font-size:13px}
+.a-priv{color:#1a7f37;font-size:12.5px}
+.a-tabs{display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));gap:0;background:#ffffff;border-bottom:1px solid #dde1e8;padding:0 24px}
+.a-tab{border:0;background:transparent;color:#4a5363;padding:12px 8px 11px;border-bottom:3px solid transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;min-width:0}
+.a-tab .g{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:6px;background:#eef1f6;color:#4a5363;font-size:13px}
+.a-tab .c{font-size:11px;padding:1px 7px;border-radius:9px;background:#eef1f6;color:#4a5363}
+.a-tab .c.bad{background:#fde8e8;color:#b42318}
+.a-tab .c.ok{background:#e3f6e8;color:#1a7f37}
+.a-tab.on{color:#1d2330;border-bottom-color:#2557d6}
+.a-tab.on .g{background:#2557d6;color:#ffffff}
+.a-note{font-size:12px;color:#7a8394;padding:6px 24px 0}
+.a-main{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:16px;padding:16px 24px;align-items:start}
+.a-pane{background:#ffffff;border:1px solid #dde1e8;border-radius:10px;min-width:0;overflow:hidden}
+.a-pane-hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid #e6e9ef;background:#fafbfc}
+.a-pane-hd h2{margin:0;font-size:14px}
+.a-pane-hd p{margin:0;color:#5d6675;font-size:12.5px;flex-basis:100%}
+.a-scroll{max-height:62vh;overflow:auto}
+.a-ft{padding:4px 24px 0;color:#7a8394;font-size:12px}
+
+/* shared input pane (A uses it; B/C restyle) */
+.files{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px 0}
+.fchip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--chipb);background:var(--chipbg);color:var(--tx);border-radius:7px;padding:4px 6px 4px 9px;font:12.5px ui-monospace,Menlo,monospace}
+.fchip.on{border-color:var(--acc);box-shadow:inset 0 -2px var(--acc)}
+.fchip .n{font:600 10.5px system-ui,sans-serif;padding:1px 6px;border-radius:9px;background:var(--badbg);color:var(--badtx)}
+.fchip .n.ok{background:var(--okbg);color:var(--oktx)}
+.fchip .n.na{background:var(--nabg);color:var(--natx)}
+.fchip .x{border:0;background:transparent;color:var(--ln);padding:0 2px;font-size:14px;line-height:1}
+.fchip .nm{border:0;background:transparent;padding:0;font:inherit;color:inherit}
+.intools{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 12px}
+.ibtn{border:1px solid var(--chipb);background:var(--chipbg);color:var(--tx);border-radius:7px;padding:5px 10px;font-size:12.5px}
+.ibtn.pri{background:var(--acc);border-color:var(--acc);color:var(--onacc)}
+.ibtn:disabled{opacity:.5;cursor:default}
+.isel{border:1px solid var(--chipb);background:var(--chipbg);color:var(--tx);border-radius:7px;padding:5px 8px;font-size:12.5px;max-width:100%}
+.ihint{font-size:12px;color:var(--ln)}
+.ita{display:block;width:calc(100% - 24px);margin:0 12px 12px;min-height:260px;border:1px solid var(--chipb);background:var(--chipbg);color:var(--tx);border-radius:8px;padding:10px;font-size:12.5px;line-height:19px}
+.banner{margin:8px 12px;padding:8px 10px;border-radius:8px;background:var(--warnbg);color:var(--warntx);font-size:12.5px}
+.vA{--chipb:#d4d9e2;--chipbg:#ffffff;--badbg:#fde8e8;--badtx:#b42318;--okbg:#e3f6e8;--oktx:#1a7f37;--nabg:#eef1f6;--natx:#5d6675;--onacc:#ffffff;--warnbg:#fff4d6;--warntx:#6b4500}
+
+/* shared tool fragments */
+.tsec{padding:12px}
+.thd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.thd .sp{flex:1}
+.guar{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:12.5px;padding:4px 9px;border-radius:999px;background:var(--okbg);color:var(--oktx)}
+.stat{font-size:12.5px;color:var(--ln)}
+.stat b.p{color:#1a7f37}.stat b.m{color:#c0362c}
+.seg{display:inline-flex;border:1px solid var(--chipb);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:var(--chipbg);color:var(--tx);padding:4px 10px;font-size:12.5px}
+.seg button.on{background:var(--acc);color:var(--onacc)}
+.seg button:disabled{opacity:.45;cursor:default}
+.langs{display:flex;flex-wrap:wrap;gap:4px}
+.lang{font-size:11.5px;padding:2px 8px;border-radius:999px;border:1px solid var(--chipb);color:var(--ln)}
+.lang.on{border-color:var(--acc);color:var(--acc);font-weight:600}
+.box{border:1px solid var(--chipb);border-radius:8px;overflow:hidden;background:var(--chipbg)}
+.why{font-size:12.5px;color:var(--ln);margin:8px 0 0}
+.empty{padding:16px;color:var(--ln);font-size:13px}
+.pi{border:1px solid var(--chipb);border-left:4px solid #e5484d;border-radius:8px;padding:9px 10px;margin-bottom:8px;background:var(--chipbg)}
+.pi.s2{border-left-color:#e29a12}.pi.s4{border-left-color:var(--ln)}
+.pi.hot{box-shadow:0 0 0 2px var(--acc)}
+.pi-h{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:12px}
+.sev{font:700 10.5px system-ui,sans-serif;text-transform:uppercase;letter-spacing:.05em}
+.sev.s1{color:#c0362c}.sev.s2{color:#a86a00}.sev.s4{color:var(--ln)}
+.pos{font-family:ui-monospace,Menlo,monospace;color:var(--ln)}
+.code{font-family:ui-monospace,Menlo,monospace;color:var(--ln);font-size:11.5px}
+.pi-m{margin:3px 0 0;font-size:13px;overflow-wrap:anywhere;cursor:pointer}
+.pi details{font-size:12px;color:var(--ln);margin-top:4px}
+.pi details div{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;padding-left:12px}
+.fx{margin-top:8px;border:1px solid var(--chipb);border-radius:7px;overflow:hidden}
+.fx-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;font-size:12.5px;font-weight:600}
+.fx-h .sp{flex:1}
+.fbtn{border:0;background:#1f883d;color:#ffffff;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600}
+.fx .src{padding:2px 0;font-size:12px;line-height:18px}
+.nofix{font-size:12px;color:var(--ln);margin-top:6px}
+.grp{font:700 11px system-ui,sans-serif;text-transform:uppercase;letter-spacing:.06em;color:var(--ln);margin:14px 0 6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grp:first-child{margin-top:0}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;border:1px dashed var(--chipb);border-radius:8px;margin-bottom:8px;font-size:13px}
+.row .sp{flex:1}
+.lnk{border:0;background:transparent;color:var(--acc);padding:0;font-weight:600;text-decoration:underline;text-underline-offset:2px}
+.okline{color:var(--oktx);font-size:13px;padding:4px 0}
+.gridwrap{overflow-x:auto;border:1px solid var(--chipb);border-radius:8px;background:var(--chipbg)}
+table.shg{border-collapse:collapse;width:100%;font-size:12.5px}
+.shg th,.shg td{border-bottom:1px solid var(--chipb);border-right:1px solid var(--chipb);padding:6px 8px;text-align:center;vertical-align:middle}
+.shg th{font-weight:600;font-size:11.5px;color:var(--ln)}
+.shg th .pth{display:block;font-family:ui-monospace,Menlo,monospace;color:var(--tx);font-size:11.5px}
+.shg td.fn,.shg th.fn{text-align:left;font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+.shg td.c{cursor:pointer;min-width:58px}
+.shg td.pass{color:var(--oktx)}
+.shg td.fail{background:var(--badbg);color:var(--badtx);font-weight:600}
+.shg td.sel{box-shadow:inset 0 0 0 2px var(--acc)}
+.shg td small{display:block;font-weight:400;font-family:ui-monospace,Menlo,monospace;font-size:11px;overflow-wrap:anywhere}
+.det{margin-top:12px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.det .msg{grid-column:1/-1;font-size:13px}
+.det h4{margin:0;padding:6px 10px;font-size:12px;border-bottom:1px solid var(--chipb);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.cvopts{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.cvlab{font-size:12px;color:var(--ln);min-width:44px}
+.warnl{font-size:12.5px;padding:7px 10px;border-radius:8px;background:var(--warnbg);color:var(--warntx);margin:8px 0}
+.vA .pi,.vA .box,.vA .gridwrap{background:#ffffff}
+
+/* ============================ B: Tool home (warm light) ============================ */
+.vB{--tx:#2b2620;--ln:#9a8f7c;--com:#8a7f6d;--str:#2f7d32;--iri:#2b5aa8;--lang:#a35200;--var:#8b3fa8;--pn:#1d6a7a;--num:#b23a1f;--kw:#b4441c;--acc:#b4441c;--addbg:#e6f2df;--delbg:#f9e3dc;--hlbg:#fbefc5;--consbg:rgba(180,68,28,.12);--chipb:#e3dccb;--chipbg:#fffdf8;--badbg:#f9e3dc;--badtx:#a3321b;--okbg:#e6f2df;--oktx:#2f6b2a;--nabg:#efe9dc;--natx:#6d6455;--onacc:#ffffff;--warnbg:#fbefc5;--warntx:#664a00;background:#f7f3ea;color:#2b2620}
+.b-wrap{max-width:1240px;margin:0 auto;padding:28px 24px 0}
+.b-hd h1{font:700 30px/1.15 Georgia,"Iowan Old Style",serif;margin:0 0 6px;letter-spacing:-.01em}
+.b-hd p{margin:0;color:#6d6455;font-size:15px;max-width:720px}
+.b-priv{display:inline-flex;gap:6px;align-items:center;margin-top:10px;font-size:13px;color:#2f6b2a;background:#e6f2df;border-radius:999px;padding:4px 10px}
+.b-drop{margin-top:22px;border:2px dashed #d6ccb6;border-radius:14px;background:#fffdf8;padding:14px}
+.b-drop-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.b-drop-top b{font-size:15px}
+.b-drop-top .sp{flex:1}
+.b-ftab{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+.b-ftab td{padding:6px 8px;border-top:1px solid #efe9dc}
+.b-ftab td.nm{font-family:ui-monospace,Menlo,monospace}
+.b-ftab td.st{text-align:right}
+.b-tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-top:22px}
+.b-tile{text-align:left;border:1px solid #e3dccb;background:#fffdf8;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:8px;color:#2b2620;min-width:0;box-shadow:0 1px 0 #e3dccb}
+.b-tile:hover{border-color:#b4441c}
+.b-tile .tg{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:#f3e3d6;color:#b4441c;font-size:17px;font-weight:700}
+.b-tile h3{margin:0;font:700 19px Georgia,serif}
+.b-tile .job{margin:0;font-size:13px;color:#6d6455;min-height:56px}
+.b-live{border-top:1px solid #efe9dc;padding-top:8px}
+.b-live b{display:block;font:700 26px Georgia,serif}
+.b-live span{font-size:12.5px;color:#6d6455}
+.b-go{margin-top:auto;font-weight:600;color:#b4441c;font-size:13px}
+.b-tile.ghost{border-style:dashed;background:transparent;box-shadow:none}
+.b-ft{margin-top:22px;font-size:12px;color:#9a8f7c}
+.b-ws-top{position:sticky;top:0;z-index:5;background:#f7f3ea;border-bottom:1px solid #e3dccb}
+.b-ws-bar{max-width:1240px;margin:0 auto;padding:10px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.b-back{border:1px solid #e3dccb;background:#fffdf8;border-radius:999px;padding:5px 12px;font-weight:600}
+.b-seg{display:flex;gap:4px;flex-wrap:wrap}
+.b-seg button{border:1px solid transparent;background:transparent;border-radius:999px;padding:5px 12px;font-weight:600;color:#6d6455}
+.b-seg button.on{background:#2b2620;color:#fffdf8}
+.b-seg button .c{font-size:11px;margin-left:5px;opacity:.8}
+.b-inbar{max-width:1240px;margin:0 auto;padding:0 24px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:#6d6455}
+.b-inbar .files{padding:0}
+.b-tool{max-width:1240px;margin:0 auto;padding:18px 24px 0}
+.b-tool>h2{font:700 26px Georgia,serif;margin:0}
+.b-tool>p.job{margin:2px 0 14px;color:#6d6455}
+.b-inbox{max-width:1240px;margin:0 auto 10px;padding:0 24px}
+.b-inbox .box{background:#fffdf8}
+.b-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+.b-flist{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.b-frow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid #e3dccb;background:#fffdf8;border-radius:10px;padding:8px 12px;text-align:left;color:#2b2620}
+.b-frow.on{border-color:#b4441c;box-shadow:inset 3px 0 #b4441c}
+.b-frow .nm{font-family:ui-monospace,Menlo,monospace;font-weight:600}
+.b-frow .sp{flex:1}
+.b-cat{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
+.b-cat .pi{margin:0}
+.b-sum{display:flex;gap:18px;flex-wrap:wrap;align-items:center;background:#fffdf8;border:1px solid #e3dccb;border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.b-sum .k{font:700 24px Georgia,serif}
+.b-sum .l{font-size:12px;color:#6d6455}
+.b-sum .sp{flex:1}
+.b-big{display:flex;gap:8px;flex-wrap:wrap}
+.b-big button{border:1px solid #e3dccb;background:#fffdf8;border-radius:10px;padding:10px 14px;text-align:left;min-width:120px;color:#2b2620}
+.b-big button b{display:block;font-size:14px}
+.b-big button span{font-size:11.5px;color:#6d6455}
+.b-big button.on{border-color:#b4441c;background:#f3e3d6}
+.b-big button:disabled{opacity:.45;cursor:default}
+.b-arrow{font:700 22px Georgia,serif;color:#b4441c;padding:0 4px}
+
+/* ============================ C: Command editor (dark) ============================ */
+.vC{--tx:#d6dde6;--ln:#5f6b7a;--com:#6f7d8f;--str:#9ccc7e;--iri:#7cc4ff;--lang:#e5b567;--var:#d59cf2;--pn:#66d9c9;--num:#f78c6c;--kw:#ff7ab2;--acc:#7cc4ff;--addbg:rgba(64,180,90,.17);--delbg:rgba(229,72,77,.17);--hlbg:rgba(255,214,102,.12);--consbg:rgba(124,196,255,.16);--chipb:#2a313b;--chipbg:#161b22;--badbg:rgba(229,72,77,.18);--badtx:#ff9a9e;--okbg:rgba(64,180,90,.18);--oktx:#8fe0a0;--nabg:#222933;--natx:#9aa6b4;--onacc:#0b1520;--warnbg:rgba(226,154,18,.16);--warntx:#f3c46b;background:#0f1216;color:#d6dde6}
+.c-top{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #222933;background:#0b0e12}
+.c-logo{font:700 12px ui-monospace,Menlo,monospace;color:#0b0e12;background:#7cc4ff;border-radius:6px;padding:5px 7px}
+.c-cmd{position:relative;flex:1;min-width:0;max-width:760px;margin:0 auto}
+.c-cmd input{width:100%;background:#161b22;border:1px solid #2f3742;border-radius:8px;padding:8px 12px 8px 30px;color:#d6dde6;font-size:13.5px;outline:none}
+.c-cmd input:focus{border-color:#7cc4ff}
+.c-cmd .pr{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#7cc4ff;font-weight:700}
+.c-sugg{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:20;background:#161b22;border:1px solid #2f3742;border-radius:8px;overflow:hidden;box-shadow:0 12px 30px rgba(0,0,0,.5)}
+.c-sugg button{display:flex;width:100%;gap:10px;align-items:baseline;text-align:left;border:0;background:transparent;color:#d6dde6;padding:7px 12px;font-size:13px}
+.c-sugg button.sel{background:#1f2a37}
+.c-sugg button small{color:#7d8896;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.c-priv{font-size:12px;color:#8fe0a0;white-space:nowrap}
+.c-body{display:grid;grid-template-columns:76px minmax(0,1fr);min-height:calc(100vh - 200px);align-content:start}
+.c-rail{display:flex;flex-direction:column;gap:4px;padding:10px 8px;border-right:1px solid #222933;background:#0b0e12}
+.c-rail button{border:0;background:transparent;color:#8794a3;border-radius:8px;padding:8px 2px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:600;position:relative}
+.c-rail button .g{font-size:17px;line-height:1}
+.c-rail button.on{background:#1b2430;color:#7cc4ff}
+.c-rail button .c{position:absolute;top:3px;right:6px;font-size:9.5px;background:#e5484d;color:#ffffff;border-radius:8px;padding:0 4px}
+.c-rail .note{font-size:9.5px;color:#5f6b7a;text-align:center;padding:4px 2px}
+.c-ed{min-width:0;display:flex;flex-direction:column}
+.c-tabs{display:flex;gap:0;overflow-x:auto;background:#0b0e12;border-bottom:1px solid #222933}
+.c-tabs button{border:0;border-right:1px solid #222933;background:transparent;color:#8794a3;padding:8px 12px;font:12.5px ui-monospace,Menlo,monospace;white-space:nowrap}
+.c-tabs button.on{background:#0f1216;color:#d6dde6;box-shadow:inset 0 2px #7cc4ff}
+.c-tabs button .n{font-size:10px;color:#ff9a9e;margin-left:5px}
+.c-tabs .add{color:#7cc4ff}
+.c-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;border-bottom:1px solid #222933;background:#121820;font-size:12.5px}
+.c-strip .sp{flex:1}
+.c-strip .tn{font-weight:700;color:#7cc4ff;text-transform:uppercase;letter-spacing:.06em;font-size:11px}
+.c-code{flex:1;overflow:auto;max-height:58vh}
+.c-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.c-split>div{min-width:0;border-right:1px solid #222933}
+.c-split h5{margin:0;padding:6px 12px;font:12px ui-monospace,Menlo,monospace;color:#8794a3;border-bottom:1px solid #222933}
+.c-panel{border-top:1px solid #2a313b;background:#0b0e12;padding:10px 12px;max-height:40vh;overflow:auto}
+.c-panel .grp{margin-top:6px}
+.lens{margin:2px 12px 6px 48px;padding:5px 8px;border-left:2px solid #e5484d;background:rgba(229,72,77,.08);font:12px system-ui,sans-serif;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-radius:0 6px 6px 0}
+.lens.s2{border-color:#e29a12;background:rgba(226,154,18,.08)}
+.lens.s4{border-color:#5f6b7a;background:rgba(95,107,122,.1)}
+.lens .m{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+.lens button{border:1px solid #2f7d4a;background:#183424;color:#8fe0a0;border-radius:5px;padding:2px 8px;font-size:11.5px}
+.c-plist .pi{background:#121820;padding:6px 9px;margin-bottom:5px}
+.c-status{display:flex;gap:14px;flex-wrap:wrap;padding:6px 16px;background:#0b0e12;border-top:1px solid #222933;font:11.5px ui-monospace,Menlo,monospace;color:#7d8896}
+.c-status .ok{color:#8fe0a0}
+.vC .ibtn:not(.pri),.vC .isel{background:#161b22}
+.vC .fbtn{background:#2f7d4a}
+.vC .ita{background:#0f1216;min-height:50vh;border:0;margin:0;width:100%;border-radius:0}
+
+@media (max-width:760px){
+  .a-hd{padding:10px 16px}
+  .a-tabs{padding:0 8px}
+  .a-tab{flex-direction:column;gap:2px;padding:9px 2px 8px;font-size:11.5px}
+  .a-tab .c{font-size:9.5px;padding:0 5px}
+  .a-note{padding:6px 16px 0}
+  .a-main{grid-template-columns:minmax(0,1fr);padding:12px 16px}
+  .a-scroll{max-height:none}
+  .a-in .a-scroll{max-height:40vh}
+  .a-ft{padding:0 16px}
+  .det{grid-template-columns:minmax(0,1fr)}
+  .b-wrap{padding:18px 16px 0}
+  .b-hd h1{font-size:25px}
+  .b-tiles{grid-template-columns:minmax(0,1fr);gap:10px}
+  .b-tile .job{min-height:0}
+  .b-ws-bar,.b-inbar,.b-tool,.b-inbox{padding-left:16px;padding-right:16px}
+  .b-seg button{padding:5px 9px;font-size:12.5px}
+  .b-cols{grid-template-columns:minmax(0,1fr)}
+  .b-cat{grid-template-columns:minmax(0,1fr)}
+  .b-ftab td.ln2{display:none}
+  .c-top{flex-wrap:wrap;padding:10px 16px}
+  .c-cmd{order:3;flex-basis:100%}
+  .c-body{grid-template-columns:minmax(0,1fr);min-height:0}
+  .c-rail button.on{align-self:start}
+  .c-rail{flex-direction:row;border-right:0;border-bottom:1px solid #222933;padding:6px 8px}
+  .c-rail button{flex:1}
+  .c-rail .note{display:none}
+  .c-split{grid-template-columns:minmax(0,1fr)}
+  .c-code{max-height:none}
+  .lens{margin-left:16px}
+  .ln .no{flex-basis:30px;padding-right:7px}
+}
+</style>
+
+<div id="app"></div>
+<input type="file" id="fpick" class="hidden-input" multiple accept=".ttl,.trig,.nt,.nq,.rq,.sparql,.ru,text/turtle">
+<input type="file" id="dpick" class="hidden-input" webkitdirectory multiple>
+
+<script>
+"use strict";
+const REAL = {"messy.ttl":{"text":"# Messy input for the formatter golden test.\n@prefix ex: \u003chttps://example.com/ns#> .\n@prefix rdfs:    \u003chttp://www.w3.org/2000/01/rdf-schema#> .\nPREFIX xsd: \u003chttp://www.w3.org/2001/XMLSchema#>\n\n@prefix sh: \u003chttp://www.w3.org/ns/shacl#> .\nex:Pump a rdfs:Class;rdfs:label \"Pump\"@en , \"Pumpe\"@de;   rdfs:comment \"\"\"A machine\nthat moves fluid.\"\"\"@en .\n\n\n\n# Shapes\nex:PumpShape a sh:NodeShape ; sh:targetClass ex:Pump ; # the class\n  sh:property [ sh:path ex:flowRate ; sh:datatype xsd:decimal ; sh:minCount 1 ; sh:maxCount 1 ; sh:name \"flow rate\" ] ;\n  sh:property [ sh:path [ sh:inversePath ex:partOf ] ; sh:minCount 1 ] ;\n  sh:or ( [ sh:class ex:A ] [ sh:class ex:B ] ) .\nex:p1 ex:list ( 1 2 3 ) ; ex:tags \"alpha\" , \"beta\" , \"gamma\" , \"delta\" , \"epsilon\" , \"zeta\" , \"eta\" , \"theta\" , \"iota\" , \"kappa\" , \"lambda\" .\n\nex:p1 ex:weight \"12.5\"^^xsd:decimal ;;\n    # an own-line comment\n    ex:owner ex:alice ;\n.\n[ ex:anon true ] .\n\u003c\u003c ex:p1 ex:owner ex:alice ~ ex:claim1 >> ex:since 2020 .\nex:p1 ex:says \u003c\u003c( ex:alice ex:knows ex:bob )>> .\nex:p1 ex:owner ex:bob ~ ex:claim2 {| ex:source ex:registry ; ex:confidence 0.9 |} .\n@prefix late: \u003chttps://example.com/late#> .\nlate:x a ex:Pump .\n# end of file\n","lang":"turtle","diags":[{"line":27,"col":0,"endLine":27,"endCol":6,"sev":1,"code":"shacl-violation","msg":"ex:flowRate of late:x: expected at least 1 value(s)"},{"line":27,"col":0,"endLine":27,"endCol":6,"sev":1,"code":"shacl-violation","msg":"^ex:partOf of late:x: expected at least 1 value(s)"},{"line":27,"col":0,"endLine":27,"endCol":6,"sev":1,"code":"shacl-violation","msg":"late:x (late:x) does not conform to any shape of sh:or"}],"formatted":"# Messy input for the formatter golden test.\n@prefix ex:   \u003chttps://example.com/ns#> .\n@prefix rdfs: \u003chttp://www.w3.org/2000/01/rdf-schema#> .\nPREFIX xsd:   \u003chttp://www.w3.org/2001/XMLSchema#>\n\n@prefix sh:   \u003chttp://www.w3.org/ns/shacl#> .\n@prefix late: \u003chttps://example.com/late#> .\n\nex:Pump a rdfs:Class ;\n    rdfs:label \"Pump\"@en , \"Pumpe\"@de ;\n    rdfs:comment \"\"\"A machine\nthat moves fluid.\"\"\"@en .\n\n# Shapes\nex:PumpShape a sh:NodeShape ;\n    sh:targetClass ex:Pump ; # the class\n    sh:property [\n        sh:path ex:flowRate ;\n        sh:datatype xsd:decimal ;\n        sh:minCount 1 ;\n        sh:maxCount 1 ;\n        sh:name \"flow rate\"\n    ] ;\n    sh:property [\n        sh:path [ sh:inversePath ex:partOf ] ;\n        sh:minCount 1\n    ] ;\n    sh:or (\n        [ sh:class ex:A ]\n        [ sh:class ex:B ]\n    ) .\n\nex:p1 ex:list ( 1 2 3 ) ;\n    ex:tags \"alpha\" ,\n        \"beta\" ,\n        \"gamma\" ,\n        \"delta\" ,\n        \"epsilon\" ,\n        \"zeta\" ,\n        \"eta\" ,\n        \"theta\" ,\n        \"iota\" ,\n        \"kappa\" ,\n        \"lambda\" .\n\nex:p1 ex:weight \"12.5\"^^xsd:decimal ;\n    # an own-line comment\n    ex:owner ex:alice .\n\n[ ex:anon true ] .\n\n\u003c\u003c ex:p1 ex:owner ex:alice ~ ex:claim1 >> ex:since 2020 .\n\nex:p1 ex:says \u003c\u003c( ex:alice ex:knows ex:bob )>> .\n\nex:p1 ex:owner ex:bob ~ ex:claim2 {| ex:source ex:registry ; ex:confidence 0.9 |} .\n\nlate:x a ex:Pump .\n# end of file\n"},"broken.ttl":{"text":"@prefix ex: \u003chttps://example.org/> .\n@prefix rdfs: \u003chttp://www.w3.org/2000/01/rdf-schema#> .\n\nex:alice a foaf:Person ;\n    rdfs:lable \"Alice\"@en ;\n    ex:age \"42\"^^xsd:integer ;\n    ex:knows ex:bob .\n\nex:bob rdfs:label \"Bob\"@not-a-tag .\nex:carol ex:knows \u003chttp://exa mple.org/x> .\n","lang":"turtle","diags":[{"line":9,"col":18,"endLine":9,"endCol":29,"sev":1,"code":"syntax","msg":"Unterminated IRI: missing '>'"},{"line":9,"col":30,"endLine":9,"endCol":38,"sev":1,"code":"syntax","msg":"Unexpected word (did you forget a prefix, e.g. `ex:`?)"},{"line":9,"col":38,"endLine":9,"endCol":39,"sev":1,"code":"syntax","msg":"Unexpected character"},{"line":9,"col":39,"endLine":9,"endCol":40,"sev":1,"code":"syntax","msg":"Unexpected word (did you forget a prefix, e.g. `ex:`?)"},{"line":9,"col":40,"endLine":9,"endCol":41,"sev":1,"code":"syntax","msg":"Unexpected character"},{"line":3,"col":11,"endLine":3,"endCol":22,"sev":1,"code":"undeclared-prefix","msg":"Undeclared prefix 'foaf:' (add @prefix foaf: \u003chttp://xmlns.com/foaf/0.1/>)"},{"line":5,"col":17,"endLine":5,"endCol":28,"sev":1,"code":"undeclared-prefix","msg":"Undeclared prefix 'xsd:' (add @prefix xsd: \u003chttp://www.w3.org/2001/XMLSchema#>)"},{"line":4,"col":4,"endLine":4,"endCol":14,"sev":2,"code":"unknown-term","msg":"'lable' is not defined in the rdfs vocabulary \u003chttp://www.w3.org/2000/01/rdf-schema#>"}],"formatted":null},"messy.rq":{"text":"# Messy input for the SPARQL formatter golden test.\nprefix ex: \u003chttps://query.example.org/def/>\nPREFIX   rdfs:\u003chttp://www.w3.org/2000/01/rdf-schema#>\nPREFIX xsd: \u003chttp://www.w3.org/2001/XMLSchema#>\nselect distinct ?person ?name (count(?org) as ?orgs)\nwhere{?person a ex:Person;ex:name ?name,?alias.\noptional{?person ex:worksFor ?org.?org rdfs:label ?label}   # where they work\n  filter(strlen(?name)>0&&!isBlank(?person))\nbind(concat(?name,\" (\",str(?person),\")\") as ?display)\n\n\n  {?person ex:age ?age} union {?person ex:born ?born}\n  minus{?person ex:retired true}\n  values ?kind {ex:A ex:B}\n  graph ?g{?person ex:seen ?when}\n  {select ?person(max(?when) as ?last) where{?person ex:seen ?when} group by ?person}\n  ?person ex:knows/ex:name|^ex:alias ?other .\n  ?person ex:score ?score FILTER(?score >= 1.5e0)\n  ?person ex:name \"Al\"@en, \"\"\"long\nstring\"\"\"^^xsd:string .\n  ?person ex:tags () .\n  ?person ex:nested [ex:p [ex:q ?deep]] .\n}\ngroup by ?person ?name having(count(?org)>1)\norder by desc(?name) ?person\nlimit 10 offset 5\n","lang":"sparql","diags":[],"formatted":"# Messy input for the SPARQL formatter golden test.\nPREFIX ex:   \u003chttps://query.example.org/def/>\nPREFIX rdfs: \u003chttp://www.w3.org/2000/01/rdf-schema#>\nPREFIX xsd:  \u003chttp://www.w3.org/2001/XMLSchema#>\n\nSELECT DISTINCT ?person ?name (COUNT(?org) AS ?orgs)\nWHERE {\n    ?person a ex:Person ;\n        ex:name ?name , ?alias .\n    OPTIONAL {\n        ?person ex:worksFor ?org .\n        ?org rdfs:label ?label\n    } # where they work\n    FILTER (STRLEN(?name) > 0 && !isBLANK(?person))\n    BIND (CONCAT(?name, \" (\", STR(?person), \")\") AS ?display)\n\n    {\n        ?person ex:age ?age\n    } UNION {\n        ?person ex:born ?born\n    }\n    MINUS {\n        ?person ex:retired true\n    }\n    VALUES ?kind { ex:A ex:B }\n    GRAPH ?g {\n        ?person ex:seen ?when\n    }\n    {\n        SELECT ?person (MAX(?when) AS ?last)\n        WHERE {\n            ?person ex:seen ?when\n        }\n        GROUP BY ?person\n    }\n    ?person ex:knows/ex:name|^ex:alias ?other .\n    ?person ex:score ?score\n    FILTER (?score >= 1.5e0)\n    ?person ex:name \"Al\"@en , \"\"\"long\nstring\"\"\"^^xsd:string .\n    ?person ex:tags () .\n    ?person ex:nested [\n        ex:p [ ex:q ?deep ]\n    ] .\n}\nGROUP BY ?person ?name\nHAVING (COUNT(?org) > 1)\nORDER BY DESC(?name) ?person\nLIMIT 10\nOFFSET 5\n"},"query.rq":{"text":"PREFIX rdfs: \u003chttp://www.w3.org/2000/01/rdf-schema#>\nSELECT ?person ?name ?nick WHERE {\n  ?person a foaf:Person ;\n    rdfs:lable ?name .\n}\n","lang":"sparql","diags":[{"line":1,"col":21,"endLine":1,"endCol":26,"sev":2,"code":"unbound-projection","msg":"Variable ?nick is projected but never bound in the WHERE clause"},{"line":2,"col":12,"endLine":2,"endCol":23,"sev":1,"code":"undeclared-prefix","msg":"Undeclared prefix 'foaf:' (add PREFIX foaf: \u003chttp://xmlns.com/foaf/0.1/>)"},{"line":3,"col":4,"endLine":3,"endCol":14,"sev":2,"code":"unknown-term","msg":"'lable' is not defined in the rdfs vocabulary \u003chttp://www.w3.org/2000/01/rdf-schema#>"}],"formatted":null},"data.ttl":{"text":"@prefix ex: \u003chttps://example.org/> .\n@prefix xsd: \u003chttp://www.w3.org/2001/XMLSchema#> .\n\nex:alice a ex:Person ; ex:name \"Alice\" ; ex:age 42 .\nex:bob a ex:Person ; ex:age \"forty\" .\nex:carol a ex:Person ; ex:name \"Carol\" , \"Caz\" ; ex:age -3 .\n","lang":"turtle","diags":[{"line":1,"col":0,"endLine":1,"endCol":50,"sev":4,"code":"unused-prefix","msg":"Prefix 'xsd:' is never used"},{"line":4,"col":0,"endLine":4,"endCol":6,"sev":1,"code":"shacl-violation","msg":"ex:name of ex:bob: expected at least 1 value(s)"},{"line":4,"col":28,"endLine":4,"endCol":35,"sev":1,"code":"shacl-violation","msg":"\"forty\" (ex:age of ex:bob) is not a valid xsd:integer literal"},{"line":4,"col":28,"endLine":4,"endCol":35,"sev":1,"code":"shacl-violation","msg":"\"forty\" (ex:age of ex:bob) is less than 0"},{"line":5,"col":23,"endLine":5,"endCol":30,"sev":1,"code":"shacl-violation","msg":"ex:name of ex:carol: expected at most 1 value(s)"},{"line":5,"col":56,"endLine":5,"endCol":58,"sev":1,"code":"shacl-violation","msg":"-3 (ex:age of ex:carol) is less than 0"}],"formatted":"@prefix ex:  \u003chttps://example.org/> .\n@prefix xsd: \u003chttp://www.w3.org/2001/XMLSchema#> .\n\nex:alice a ex:Person ;\n    ex:name \"Alice\" ;\n    ex:age 42 .\n\nex:bob a ex:Person ;\n    ex:age \"forty\" .\n\nex:carol a ex:Person ;\n    ex:name \"Carol\" , \"Caz\" ;\n    ex:age -3 .\n"},"shapes.ttl":{"text":"@prefix ex: \u003chttps://example.org/> .\n@prefix sh: \u003chttp://www.w3.org/ns/shacl#> .\n@prefix xsd: \u003chttp://www.w3.org/2001/XMLSchema#> .\n\nex:PersonShape a sh:NodeShape ;\n    sh:targetClass ex:Person ;\n    sh:property [ sh:path ex:name ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;\n    sh:property [ sh:path ex:age ; sh:datatype xsd:integer ; sh:minInclusive 0 ] .\n","lang":"turtle","diags":[],"formatted":"@prefix ex:  \u003chttps://example.org/> .\n@prefix sh:  \u003chttp://www.w3.org/ns/shacl#> .\n@prefix xsd: \u003chttp://www.w3.org/2001/XMLSchema#> .\n\nex:PersonShape a sh:NodeShape ;\n    sh:targetClass ex:Person ;\n    sh:property [ sh:path ex:name ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;\n    sh:property [ sh:path ex:age ; sh:datatype xsd:integer ; sh:minInclusive 0 ] .\n"}};
+
+/* ---------- sample written by the prototype (not turtle-lsp output) ---------- */
+const MOCK_FILES = {
+  "graphs.trig": {
+    text: "PREFIX ex: <https://example.org/>\nPREFIX dct:   <http://purl.org/dc/terms/>\n# two named graphs\nex:people {ex:alice ex:knows ex:bob . ex:bob ex:knows ex:carol}\nGRAPH ex:provenance { ex:people dct:created \"2026-10-19\" ; dct:creator ex:alice }\n",
+    diags: [],
+    formatted: "PREFIX ex:  <https://example.org/>\nPREFIX dct: <http://purl.org/dc/terms/>\n\n# two named graphs\nex:people {\n    ex:alice ex:knows ex:bob .\n    ex:bob ex:knows ex:carol .\n}\n\nGRAPH ex:provenance {\n    ex:people dct:created \"2026-10-19\" ;\n        dct:creator ex:alice .\n}\n"
+  }
+};
+const ORDER = ["broken.ttl","data.ttl","shapes.ttl","messy.ttl","graphs.trig","query.rq","messy.rq"];
+const SETS = {
+  all:{label:"All samples (7 files)", files:ORDER},
+  shacl:{label:"Data + shapes", files:["data.ttl","shapes.ttl"]},
+  rdf:{label:"Turtle with errors, no shapes", files:["broken.ttl","graphs.trig"]},
+  sparql:{label:"Queries only", files:["query.rq","messy.rq"]},
+};
+const TOOLS = [
+  {id:"format",  g:"≡", name:"Format",   job:"Tidy Turtle, TriG, N-Triples, N-Quads and SPARQL. The graph (or query algebra) stays the same."},
+  {id:"validate",g:"✓", name:"Validate", job:"Every syntax, prefix and vocabulary problem in one pass, each with a fix next to it."},
+  {id:"shacl",   g:"◇", name:"SHACL",    job:"Data against shapes: each violation tied to the value in the data and the constraint in the shapes."},
+  {id:"sparql",  g:"?",      name:"SPARQL",   job:"Lint and format queries: errors, undeclared prefixes, unknown terms, unbound variables."},
+  {id:"convert", g:"⇄", name:"Convert",  job:"Turtle ⇄ TriG ⇄ N-Triples ⇄ N-Quads, and expand, shorten or organise prefixes."},
+];
+const LANGNAME = {turtle:"Turtle",trig:"TriG",ntriples:"N-Triples",nquads:"N-Quads",sparql:"SPARQL"};
+const RDFNS="http://www.w3.org/1999/02/22-rdf-syntax-ns#", XSD="http://www.w3.org/2001/XMLSchema#";
+const WK = {rdf:RDFNS, rdfs:"http://www.w3.org/2000/01/rdf-schema#", xsd:XSD, owl:"http://www.w3.org/2002/07/owl#", sh:"http://www.w3.org/ns/shacl#", foaf:"http://xmlns.com/foaf/0.1/", dct:"http://purl.org/dc/terms/", skos:"http://www.w3.org/2004/02/skos/core#", schema:"https://schema.org/"};
+
+/* quick-fix edits: MOCKED (turtle-lsp computes these; the prototype hard-codes them) */
+const FIXES = {
+  "broken.ttl#0":[{t:"Remove the space inside the IRI", k:"replace", old:"<http://exa mple.org/x>", neu:"<http://example.org/x>"}],
+  "broken.ttl#5":[{t:"Declare foaf:", k:"prefix", decl:"@prefix foaf: <http://xmlns.com/foaf/0.1/> ."}],
+  "broken.ttl#6":[{t:"Declare xsd:", k:"prefix", decl:"@prefix xsd: <http://www.w3.org/2001/XMLSchema#> ."}],
+  "broken.ttl#7":[{t:"Change to rdfs:label", k:"replace", old:"rdfs:lable", neu:"rdfs:label"}],
+  "data.ttl#0":[{t:"Remove the unused declaration", k:"delline"}],
+  "query.rq#1":[{t:"Add PREFIX foaf:", k:"prefix", decl:"PREFIX foaf: <http://xmlns.com/foaf/0.1/>"}],
+  "query.rq#2":[{t:"Change to rdfs:label", k:"replace", old:"rdfs:lable", neu:"rdfs:label"}],
+  "query.rq#0":[{t:"Remove ?nick from SELECT", k:"replace", old:" ?nick", neu:"", at:-1},
+                {t:"Bind it: OPTIONAL { ?person foaf:nick ?nick }", k:"beforeClose", ins:"  OPTIONAL { ?person foaf:nick ?nick }\n"}],
+};
+
+/* ------------------------------- state ------------------------------- */
+const S = {v:"A", tool:"validate", file:"broken.ttl", set:"all", files:{}, order:[], applied:[], conv:"ntriples",
+  cell:null, shGroup:0, fmtView:"diff", home:true, edit:false, paste:false, pasteN:1, cmd:"", cmdSel:0,
+  inputOpen:false, hot:null, sqView:"lint", cvShowSrc:false, stateOpen:false};
+
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function off(t,line,col){const L=t.split("\n");let o=0;for(let i=0;i<line&&i<L.length;i++)o+=L[i].length+1;return o+col}
+function lc(t,o){const pre=t.slice(0,o);const line=(pre.match(/\n/g)||[]).length;return {line,col:o-(pre.lastIndexOf("\n")+1)}}
+function langOf(name,text){
+  if(/\.ttl$/i.test(name))return "turtle"; if(/\.trig$/i.test(name))return "trig"; if(/\.nt$/i.test(name))return "ntriples";
+  if(/\.nq$/i.test(name))return "nquads"; if(/\.(rq|sparql|ru)$/i.test(name))return "sparql";
+  if(/^\s*(PREFIX[^\n]*\n\s*)*(SELECT|ASK|CONSTRUCT|DESCRIBE|INSERT|DELETE)\b/im.test(text||""))return "sparql";
+  if(/\{/.test(text||""))return "trig"; return "turtle";
+}
+function mkFile(name,src,mock,engine){
+  const f={name,lang:langOf(name,src.text),text:src.text,orig:src.text,formatted:src.formatted==null?null:src.formatted,
+    mock:!!mock,engine:engine!==false,edited:false,diags:[]};
+  (src.diags||[]).forEach((d,i)=>f.diags.push({id:name+"#"+i,i,s:off(src.text,d.line,d.col),e:off(src.text,d.endLine,d.endCol),
+    sev:d.sev,code:d.code,msg:d.msg,resolved:false,follow:null}));
+  return f;
+}
+function addFile(f){let n=f.name,k=2;while(S.files[n]){n=f.name.replace(/(\.\w+)?$/,"-"+(k++)+"$1")}f.name=n;S.files[n]=f;S.order.push(n);return n}
+function loadSet(k){
+  S.set=k;S.files={};S.order=[];S.applied=[];S.cell=null;S.shGroup=0;S.edit=false;S.hot=null;
+  for(const n of SETS[k].files){const src=REAL[n]||MOCK_FILES[n];addFile(mkFile(n,src,!REAL[n]))}
+  computeFollow();S.file=S.order[0];
+  if(!toolOk(S.tool))S.tool="validate";
+}
+function cur(){return S.files[S.file]||S.files[S.order[0]]}
+function files(){return S.order.map(n=>S.files[n])}
+function hasShapes(){return files().some(f=>/\bsh:(NodeShape|PropertyShape)\b|shacl#NodeShape/.test(f.text))}
+function toolOk(t){return t!=="shacl"||hasShapes()}
+function live(f){return f.diags.filter(d=>!d.resolved&&!f.edited)}
+function isRdf(f){return f.lang!=="sparql"}
+function sevName(s){return s===1?"Error":s===2?"Warning":"Hint"}
+function cat(d){return d.code==="syntax"?"Syntax":/prefix/.test(d.code)?"Prefixes":d.code==="unknown-term"?"Vocabulary":d.code==="unbound-projection"?"Variables":d.code==="shacl-violation"?"SHACL":"Other"}
+function counts(){
+  const c={val:0,sh:0,sq:0,fmt:0,valFiles:0,shFiles:0,fixes:0};
+  for(const f of files()){let v=0,s=0;
+    for(const d of live(f)){if(d.code==="shacl-violation")s++;else if(f.lang==="sparql")c.sq++;else v++;
+      if(FIXES[d.id]&&!d.follow&&isRdf(f))c.fixes++}
+    c.val+=v;c.sh+=s;if(v)c.valFiles++;if(s)c.shFiles++;
+    if(f.formatted&&f.formatted!==f.orig)c.fmt++;}
+  return c;
+}
+
+/* ---------------------------- highlighting ---------------------------- */
+const HL=/(#[^\n]*)|("""[\s\S]*?(?:"""|$)|'''[\s\S]*?(?:'''|$)|"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?)|(<[^<>\s"]*>)|(@[A-Za-z]+(?:-[A-Za-z0-9]+)*)|([?$][A-Za-z_]\w*)|((?:[A-Za-z][\w-]*)?:(?:[\w-](?:[\w.-]*[\w-])?)?)|([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([A-Za-z_]\w*)/g;
+const KW=new Set("a true false prefix base graph select distinct reduced where optional filter bind as union minus values group by having order desc asc limit offset count max min sum avg sample str strlen concat isblank isiri lang datatype construct ask describe insert delete data with using named from service not exists in regex".split(" "));
+function classes(t){
+  const c=new Uint8Array(t.length);HL.lastIndex=0;let m;
+  while((m=HL.exec(t))){if(!m[0].length){HL.lastIndex++;continue}
+    let k=0;for(let g=1;g<=8;g++)if(m[g]!==undefined){k=g;break}
+    if(k===4&&/^@(prefix|base)$/i.test(m[0]))k=8;
+    if(k===8&&!KW.has(m[0].toLowerCase()))k=0;
+    if(k)c.fill(k,m.index,m.index+m[0].length);}
+  return c;
+}
+function usedPrefixes(t){const u=new Set();HL.lastIndex=0;let m;while((m=HL.exec(t))){if(!m[0].length){HL.lastIndex++;continue}if(m[6]!==undefined)u.add(m[6].slice(0,m[6].indexOf(":")))}return u}
+
+/* source view: o.marks [{s,e,sev,id,cls}], o.after(i), o.from/o.to line range, o.hl set of lines */
+function srcHTML(text,o={}){
+  const c=classes(text),mk=new Int16Array(text.length).fill(-1),marks=o.marks||[];
+  marks.forEach((m,mi)=>{for(let i=m.s;i<Math.min(m.e,text.length);i++){const p=mk[i];if(p<0||(marks[p].sev||9)>(m.sev||9))mk[i]=mi}});
+  const lines=text.split("\n");if(lines.length>1&&lines[lines.length-1]==="")lines.pop();
+  let html="",pos=0;const from=o.from||0,to=o.to==null?lines.length-1:o.to;
+  for(let li=0;li<lines.length;li++){const L=lines[li];
+    if(li>=from&&li<=to){let runs="",i=0;
+      while(i<L.length){const a=pos+i,ck=c[a],mm=mk[a];let j=i+1;while(j<L.length&&c[pos+j]===ck&&mk[pos+j]===mm)j++;
+        const txt=esc(L.slice(i,j));const m=mm>=0?marks[mm]:null;
+        const cls=(ck?"t"+ck:"")+(m?" mk "+(m.cls||"s"+m.sev)+(o.hot&&m.id===o.hot?" hot":""):"");
+        runs+=cls?`<span class="${cls}"${m&&m.id?` data-act="hot" data-arg="${esc(m.id)}"`:""}>${txt}</span>`:txt;i=j;}
+      html+=`<div class="ln${o.hl&&o.hl.has(li)?" hl":""}" data-l="${li}"><span class="no">${li+1}</span><span class="tx">${runs||" "}</span></div>`;
+      if(o.after)html+=o.after(li);}
+    pos+=L.length+1;}
+  return `<div class="src">${html}</div>`;
+}
+function hlLine(text){return srcHTML(text).replace(/^<div class="src">|<\/div>$/g,"")}
+function marksFor(f,kind){return live(f).filter(d=>kind==="all"||(kind==="shacl")===(d.code==="shacl-violation")).map(d=>({s:d.s,e:Math.max(d.e,d.s+1),sev:d.sev,id:d.id}))}
+
+/* -------------------------------- diff -------------------------------- */
+function lineDiff(a,b){const sp=x=>x===""?[]:x.replace(/\n$/,"").split("\n");const A=sp(a),B=sp(b),n=A.length,m=B.length;
+  const dp=[];for(let i=0;i<=n;i++)dp.push(new Int32Array(m+1));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)dp[i][j]=A[i]===B[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const out=[];let i=0,j=0;
+  while(i<n&&j<m){if(A[i]===B[j]){out.push({t:"=",a:i,b:j,x:A[i]});i++;j++}else if(dp[i+1][j]>=dp[i][j+1]){out.push({t:"-",a:i,x:A[i]});i++}else{out.push({t:"+",b:j,x:B[j]});j++}}
+  while(i<n)out.push({t:"-",a:i,x:A[i++]});while(j<m)out.push({t:"+",b:j,x:B[j++]});return out}
+function diffStats(a,b){const d=lineDiff(a,b);return {add:d.filter(x=>x.t==="+").length,del:d.filter(x=>x.t==="-").length}}
+function diffHTML(a,b,ctx=3,base=0){const d=lineDiff(a,b);let h="";const keep=d.map(()=>false);
+  d.forEach((x,i)=>{if(x.t!=="=")for(let k=Math.max(0,i-ctx);k<=Math.min(d.length-1,i+ctx);k++)keep[k]=true});
+  let gap=0;const flush=()=>{if(gap){h+=`<div class="ln gap"><span class="no">⋯</span><span class="tx">${gap} unchanged line${gap>1?"s":""}</span></div>`;gap=0}};
+  d.forEach((x,i)=>{if(!keep[i]){gap++;return}flush();
+    const inner=hlLine(x.x).replace(/^<div class="ln" data-l="0"><span class="no">1<\/span>/,"").replace(/<\/div>$/,"");
+    h+=`<div class="ln${x.t==="+"?" add":x.t==="-"?" del":""}"><span class="no">${x.t==="+"?"+":x.t==="-"?"−":(x.b+1+base)}</span>${inner}</div>`});
+  flush();return `<div class="src">${h}</div>`}
+
+/* ------------------------------ quick fixes ------------------------------ */
+function computeFollow(){for(const f of files())for(const d of f.diags){const fx=FIXES[d.id];if(!fx||fx[0].k!=="replace")continue;
+  const ed=editFor(f,d,fx[0]);if(!ed)continue;for(const x of f.diags)if(x!==d&&x.s>=ed.s&&x.e<=ed.e)x.follow=d.id}}
+function editFor(f,d,fx){const t=f.text;
+  if(fx.k==="replace"){let s=d.s+(fx.at||0);if(t.substr(s,fx.old.length)!==fx.old){s=t.indexOf(fx.old);if(s<0)return null}return {s,e:s+fx.old.length,txt:fx.neu}}
+  if(fx.k==="prefix"){const re=/^[ \t]*(@prefix|PREFIX)\b[^\n]*$/gmi;let last=null,m;while((m=re.exec(t)))last=m;
+    const at=last?last.index+last[0].length:0;return {s:at,e:at,txt:last?"\n"+fx.decl:fx.decl+"\n"}}
+  if(fx.k==="delline"){const ls=t.lastIndexOf("\n",d.s-1)+1;let le=t.indexOf("\n",d.s);le=le<0?t.length:le+1;return {s:ls,e:le,txt:""}}
+  if(fx.k==="beforeClose"){const c=t.lastIndexOf("}");const ls=t.lastIndexOf("\n",c-1)+1;return {s:ls,e:ls,txt:fx.ins}}
+  return null}
+function fixPreview(f,d,fx){const ed=editFor(f,d,fx);if(!ed)return "";const t=f.text,nt=t.slice(0,ed.s)+ed.txt+t.slice(ed.e);
+  const nl=x=>(x.match(/\n/g)||[]).length;const l0=lc(t,ed.s).line,l1=lc(t,Math.max(ed.s,ed.e-1)).line,n1=l1+nl(ed.txt)-nl(t.slice(ed.s,ed.e));
+  const A=t.split("\n").slice(l0,l1+1).join("\n"),B=nt.split("\n").slice(l0,n1+1).join("\n");
+  return diffHTML(A,B,1,l0)}
+function applyFix(id,k){const f=S.files[id.split("#")[0]];const d=f&&f.diags.find(x=>x.id===id);if(!d||d.resolved)return;
+  const fx=FIXES[id][k||0],ed=editFor(f,d,fx);if(!ed){toast("Fix no longer applies");return}
+  const delta=ed.txt.length-(ed.e-ed.s);f.text=f.text.slice(0,ed.s)+ed.txt+f.text.slice(ed.e);
+  for(const x of f.diags){if(x.resolved)continue;
+    if(x===d||(ed.e>ed.s&&x.s<ed.e&&x.e>ed.s)){x.resolved=true;x.by=fx.t;continue}
+    if(x.s>=ed.e){x.s+=delta;x.e+=delta}}
+  S.applied.push(f.name+": "+fx.t);S.hot=null;toast("Applied (MOCKED edit): "+fx.t)}
+function applyAll(filter){let n=0;for(let guard=0;guard<40;guard++){let did=false;
+  for(const f of files()){if(!filter(f))continue;for(const d of live(f)){if(FIXES[d.id]&&!d.follow){applyFix(d.id,0);n++;did=true;break}}}
+  if(!did)break}toast(n?`Applied ${n} fixes (MOCKED edits)`:"Nothing to fix")}
+
+/* ------------------- prototype converter (MOCKED, not turtle-lsp) ------------------- */
+function lex(src){const T=[];const re=/(\s+|#[^\n]*)|<([^<>"{}|^`\\\s]*)>|_:([\w-]+(?:\.[\w-]+)*)|"""([\s\S]*?)"""|'''([\s\S]*?)'''|"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|@([a-zA-Z]+(?:-[a-zA-Z0-9]+)*)|(\^\^)|([+-]?(?:(?:\d+\.\d*|\.\d+|\d+)[eE][+-]?\d+|\d*\.\d+|\d+))|((?:[A-Za-z][\w-]*)?):((?:[\w-](?:[\w.-]*[\w-])?)?)|(<<|>>|\{\||\|\}|[.;,\[\](){}~])|([A-Za-z]+)/y;
+  let i=0;const lineAt=p=>src.slice(0,p).split("\n").length;
+  while(i<src.length){re.lastIndex=i;const m=re.exec(src);if(!m)throw new Error("can't read the text at line "+lineAt(i));
+    const p=i;i=re.lastIndex;if(m[1]!==undefined)continue;const L=lineAt(p);
+    if(m[2]!==undefined)T.push({t:"iri",v:m[2],L});else if(m[3]!==undefined)T.push({t:"bnode",v:m[3],L});
+    else if(m[4]!==undefined||m[5]!==undefined)T.push({t:"str",v:m[4]!==undefined?m[4]:m[5],L});
+    else if(m[6]!==undefined||m[7]!==undefined)T.push({t:"str",v:unesc(m[6]!==undefined?m[6]:m[7]),L});
+    else if(m[8]!==undefined)T.push({t:"at",v:m[8],L});else if(m[9])T.push({t:"p",v:"^^",L});
+    else if(m[10]!==undefined)T.push({t:"num",v:m[10],L});else if(m[11]!==undefined)T.push({t:"pname",pfx:m[11],local:m[12],L});
+    else if(m[13]!==undefined){if(/<<|>>|\{\||\|\}|~/.test(m[13]))throw new Error("RDF 1.2 triple terms at line "+L+": the prototype converter doesn't read them (turtle-lsp does)");T.push({t:"p",v:m[13],L})}
+    else T.push({t:"word",v:m[14],L});}
+  return T}
+function unesc(s){return s.replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g,(_,x)=>x[0]==="u"||x[0]==="U"?String.fromCodePoint(parseInt(x.slice(1),16)):({n:"\n",t:"\t",r:"\r"}[x]||x))}
+function parseRDF(src){const T=lex(src);let p=0,bn=0,graph=null;const pre={},quads=[],order=[];
+  const pk=()=>T[p],nx=()=>T[p++];const err=m=>{throw new Error(m+(T[p]?" at line "+T[p].L:" at the end"))};
+  const exp=v=>{const t=nx();if(!t||t.v!==v)err(`expected "${v}"`)};
+  const iri=t=>{if(!t)err("expected an IRI");if(t.t==="iri")return {t:"iri",v:t.v};
+    if(t.t==="pname"){if(!(t.pfx in pre))err(`undeclared prefix "${t.pfx}:"`);return {t:"iri",v:pre[t.pfx]+t.local}}err("expected an IRI")};
+  function term(){const t=nx();if(!t)err("unexpected end");
+    if(t.t==="iri"||t.t==="pname")return iri(t);if(t.t==="bnode")return {t:"bnode",v:t.v};
+    if(t.t==="str"){const l={t:"lit",v:t.v};if(pk()&&pk().t==="at")l.lang=nx().v;else if(pk()&&pk().v==="^^"){nx();l.dt=iri(nx()).v}return l}
+    if(t.t==="num")return {t:"lit",v:t.v,dt:XSD+(/[eE]/.test(t.v)?"double":t.v.includes(".")?"decimal":"integer")};
+    if(t.t==="word"&&/^(true|false)$/.test(t.v))return {t:"lit",v:t.v,dt:XSD+"boolean"};
+    if(t.v==="["){const b={t:"bnode",v:"b"+(bn++)};if(pk()&&pk().v!=="]")pol(b);exp("]");return b}
+    if(t.v==="("){const items=[];while(pk()&&pk().v!==")")items.push(term());exp(")");if(!items.length)return {t:"iri",v:RDFNS+"nil"};
+      const heads=items.map(()=>({t:"bnode",v:"b"+(bn++)}));items.forEach((it,i)=>{quads.push({s:heads[i],p:{t:"iri",v:RDFNS+"first"},o:it,g:graph});
+        quads.push({s:heads[i],p:{t:"iri",v:RDFNS+"rest"},o:i+1<items.length?heads[i+1]:{t:"iri",v:RDFNS+"nil"},g:graph})});return heads[0]}
+    p--;err(`unexpected "${t.v||t.t}"`)}
+  function pol(s){for(;;){const pt=nx();const pr=pt&&pt.t==="word"&&pt.v==="a"?{t:"iri",v:RDFNS+"type"}:iri(pt);
+    for(;;){quads.push({s,p:pr,o:term(),g:graph});if(pk()&&pk().v===","){nx();continue}break}
+    while(pk()&&pk().v===";")nx();if(!pk()||[".","]","}"].includes(pk().v))return}}
+  function block(g){exp("{");graph=g;while(pk()&&pk().v!=="}"){const s=term();if(pk()&&pk().v!=="."&&pk().v!=="}")pol(s);if(pk()&&pk().v===".")nx()}exp("}");graph=null}
+  while(p<T.length){const t=pk();
+    if((t.t==="word"&&/^(prefix|base)$/i.test(t.v))||(t.t==="at"&&/^(prefix|base)$/.test(t.v))){nx();const isP=/prefix/i.test(t.v);
+      if(isP){const n=nx();if(!n||n.t!=="pname"||n.local)err("expected a prefix name");const i=nx();if(!i||i.t!=="iri")err("expected an IRI");pre[n.pfx]=i.v;order.push(n.pfx)}else nx();
+      if(t.t==="at")exp(".");continue}
+    if(t.t==="word"&&/^graph$/i.test(t.v)){nx();block(term());continue}
+    if(t.v==="{"){block(null);continue}
+    const s=term();if(pk()&&pk().v==="{"){block(s);continue}if(pk()&&pk().v!==".")pol(s);exp(".")}
+  return {quads,pre,order}}
+function ntTerm(x){if(x.t==="iri")return "<"+x.v+">";if(x.t==="bnode")return "_:"+x.v;
+  let s='"'+x.v.replace(/\\/g,"\\\\").replace(/"/g,'\\"').replace(/\n/g,"\\n").replace(/\r/g,"\\r")+'"';
+  if(x.lang)s+="@"+x.lang;else if(x.dt&&x.dt!==XSD+"string")s+="^^<"+x.dt+">";return s}
+function toNT(R,quads){return R.quads.map(q=>`${ntTerm(q.s)} ${ntTerm(q.p)} ${ntTerm(q.o)}${quads&&q.g?" "+ntTerm(q.g):""} .`).join("\n")+"\n"}
+function toTTL(R,pmap,trig,kw){const P=pmap?Object.entries(pmap):[];const used=new Set();
+  const sh=v=>{if(pmap){let best=null;for(const [k,ns] of P)if(v.startsWith(ns)&&/^([A-Za-z_][\w-]*)?$/.test(v.slice(ns.length))&&(!best||ns.length>best[1].length))best=[k,ns];
+    if(best){used.add(best[0]);return best[0]+":"+v.slice(best[1].length)}}return "<"+v+">"};
+  const objN=new Map();R.quads.forEach(q=>{if(q.o.t==="bnode")objN.set(q.o.v,(objN.get(q.o.v)||0)+1)});
+  const lit=x=>{const d=x.dt;if(d===XSD+"integer"&&/^[+-]?\d+$/.test(x.v))return x.v;if(d===XSD+"decimal"&&/^[+-]?\d*\.\d+$/.test(x.v))return x.v;
+    if(d===XSD+"boolean")return x.v;let s=/\n/.test(x.v)?'"""'+x.v.replace(/"""/g,'\\"""')+'"""':'"'+x.v.replace(/\\/g,"\\\\").replace(/"/g,'\\"')+'"';
+    if(x.lang)return s+"@"+x.lang;if(d&&d!==XSD+"string")return s+"^^"+sh(d);return s};
+  const keyG=q=>q.g?ntTerm(q.g):"";
+  function render(gq,ind){const subj=[],by=new Map();gq.forEach(q=>{const k=ntTerm(q.s);if(!by.has(k)){by.set(k,[]);subj.push(q.s)}by.get(k).push(q)});
+    const inl=b=>b.t==="bnode"&&objN.get(b.v)===1&&by.has("_:"+b.v);
+    const term=(x,ii)=>x.t==="iri"?sh(x.v):x.t==="bnode"?(inl(x)?props(x,ii,true):"_:"+x.v):lit(x);
+    function props(s,ii,brk){const qs=by.get(ntTerm(s))||[];const ps=[],pm=new Map();qs.forEach(q=>{const k=q.p.v;if(!pm.has(k)){pm.set(k,[]);ps.push(q.p)}pm.get(k).push(q.o)});
+      const parts=ps.map(p=>(p.v===RDFNS+"type"?"a":sh(p.v))+" "+pm.get(p.v).map(o=>term(o,ii+"    ")).join(" , "));
+      if(brk){const one="[ "+parts.join(" ; ")+" ]";return one.length<72&&!one.includes("\n")?one:"[\n"+ii+"    "+parts.join(" ;\n"+ii+"    ")+"\n"+ii+"]"}
+      return parts.join(" ;\n"+ii+"    ")}
+    return subj.filter(s=>!inl(s)).map(s=>{const head=s.t==="bnode"&&!objN.get(s.v)?"[]":term(s,ind);return ind+head+" "+props(s,ind,false)+" ."}).join("\n\n")}
+  const groups=new Map();R.quads.forEach(q=>{const k=keyG(q);if(!groups.has(k))groups.set(k,{g:q.g,qs:[]});groups.get(k).qs.push(q)});
+  const blocks=[];for(const [k,G] of groups){if(!k){blocks.push(render(G.qs,""))}else if(trig){blocks.push(sh(G.g.v)+" {\n"+render(G.qs,"    ")+"\n}")}}
+  const names=[...used].sort();const w=Math.max(0,...names.map(n=>n.length));
+  const head=names.map(n=>kw?`PREFIX ${(n+":").padEnd(w+1)} <${pmap[n]}>`:`@prefix ${(n+":").padEnd(w+1)} <${pmap[n]}> .`).join("\n");
+  return (head?head+"\n\n":"")+blocks.join("\n\n")+"\n"}
+function organise(f){const isQ=f.lang==="sparql";const re=/^\s*(?:@prefix\s+([\w-]*):\s*<([^>]*)>\s*\.|PREFIX\s+([\w-]*):\s*<([^>]*)>)\s*$/i;
+  const decl=[],body=[],moved=[];let at=0,kw=0,seen=false;
+  f.text.replace(/\n$/,"").split("\n").forEach(l=>{const m=l.match(re);if(m){const n=m[1]!==undefined?m[1]:m[3],iri=m[2]!==undefined?m[2]:m[4];
+    /^\s*@/.test(l)?at++:kw++;if(seen)moved.push(n+":");if(!decl.find(d=>d.n===n))decl.push({n,iri})}else{body.push(l);if(l.trim()&&!l.trim().startsWith("#"))seen=true}});
+  const used=usedPrefixes(body.join("\n"));const removed=decl.filter(d=>!used.has(d.n)).map(d=>d.n+":");
+  const added=[...used].filter(n=>!decl.find(d=>d.n===n)&&WK[n]).map(n=>{decl.push({n,iri:WK[n]});return n+":"});
+  const keep=decl.filter(d=>used.has(d.n)).sort((a,b)=>a.n.localeCompare(b.n));const style=isQ||kw>at?"PREFIX":"@prefix";
+  const w=Math.max(0,...keep.map(d=>d.n.length));const lines=keep.map(d=>style==="PREFIX"?`PREFIX ${(d.n+":").padEnd(w+1)} <${d.iri}>`:`@prefix ${(d.n+":").padEnd(w+1)} <${d.iri}> .`);
+  let i=0;while(i<body.length&&body[i].trim().startsWith("#"))i++;const top=body.slice(0,i),rest=body.slice(i);while(rest.length&&!rest[0].trim())rest.shift();
+  const out=[...top,...lines,"",...rest].join("\n")+"\n";const unified=Math.min(at,kw);
+  const notes=[];if(moved.length)notes.push("moved "+moved.join(", ")+" to the top");if(removed.length)notes.push("removed unused "+removed.join(", "));
+  if(added.length)notes.push("declared "+added.join(", ")+" (well-known namespace)");if(unified&&!isQ)notes.push(`unified ${unified} declaration${unified>1?"s":""} to ${style}`);notes.push("sorted and aligned");
+  return {text:out,notes}}
+const CONV=[["turtle","Turtle"],["trig","TriG"],["ntriples","N-Triples"],["nquads","N-Quads"]];
+const OPS=[["expand","Expand prefixed names"],["shorten","Shorten IRIs"],["organise","Organise prefixes"]];
+const EXT={turtle:".ttl",trig:".trig",ntriples:".nt",nquads:".nq"};
+function convert(f,op){
+  if(op==="organise"){const r=organise(f);return {out:r.text,lang:f.lang,notes:r.notes}}
+  if(f.lang==="sparql")return {err:"Queries are not RDF data: only Organise prefixes applies to a .rq file."};
+  let R;try{R=parseRDF(f.text)}catch(e){return {err:"Can't convert "+f.name+": "+e.message+"."}}
+  const named=R.quads.filter(q=>q.g).length,graphs=new Set(R.quads.filter(q=>q.g).map(q=>q.g.v)).size;const notes=[];
+  const P=Object.assign({},WK,R.pre);const kw=/^\s*PREFIX/m.test(f.text);
+  if(op==="ntriples"||op==="turtle"){if(named)notes.push(`${named} triple${named>1?"s":""} in ${graphs} named graph${graphs>1?"s":""} ${op==="turtle"?"can't be written in Turtle and were left out":"lost their graph name (N-Triples has no graphs)"}. Use TriG or N-Quads to keep them.`)}
+  if(op==="ntriples")return {out:op==="ntriples"&&named?toNT({quads:R.quads}):toNT(R),lang:"ntriples",notes,n:R.quads.length};
+  if(op==="nquads")return {out:toNT(R,true),lang:"nquads",notes,n:R.quads.length};
+  if(op==="turtle")return {out:toTTL({quads:R.quads.filter(q=>!q.g)},P,false,false),lang:"turtle",notes,n:R.quads.length-named};
+  if(op==="trig"){if(!named)notes.push("No named graphs: a Turtle file is already valid TriG, so the text barely changes.");return {out:toTTL(R,P,true,true),lang:"trig",notes,n:R.quads.length}}
+  if(op==="expand"){const n=[...f.text.matchAll(/(?:^|[\s;,(\[{])(?:[A-Za-z][\w-]*)?:[\w-]+/g)].length;notes.push(`${n} prefixed names written out as full IRIs; prefix declarations dropped.`);
+    return {out:toTTL(R,null,!!named,false),lang:f.lang==="trig"||named?"trig":"turtle",notes,n:R.quads.length}}
+  if(op==="shorten"){const full=[...f.text.replace(/^\s*(@prefix|PREFIX)[^\n]*$/gmi,"").matchAll(/<[^<>\s]*>/g)].length;
+    notes.push(full?`${full} full IRIs shortened with declared and well-known prefixes.`:"No full IRIs to shorten here. Try it on N-Triples: convert, then “Add to input”, then Shorten.");
+    return {out:toTTL(R,P,!!named,false),lang:named?"trig":"turtle",notes,n:R.quads.length}}
+  return {err:"Pick a target format."}
+}
+
+/* ------------------------------ SHACL model ------------------------------ */
+function shGroups(){const G=[];const F=S.files;
+  const shapesFile=files().find(f=>/ex:PersonShape/.test(f.text));const dataFile=files().find(f=>/a ex:Person\b/.test(f.text));
+  if(shapesFile)G.push({name:"ex:PersonShape",target:"ex:Person",shapes:shapesFile.name,data:dataFile?dataFile.name:null,
+    cons:[{path:"ex:name",kw:"sh:minCount",label:"minCount 1"},{path:"ex:name",kw:"sh:maxCount",label:"maxCount 1"},{path:"ex:name",kw:"sh:datatype",label:"datatype xsd:string"},
+          {path:"ex:age",kw:"sh:datatype",label:"datatype xsd:integer"},{path:"ex:age",kw:"sh:minInclusive",label:"minInclusive 0"}]});
+  const m=files().find(f=>/ex:PumpShape/.test(f.text));
+  if(m)G.push({name:"ex:PumpShape",target:"ex:Pump",shapes:m.name,data:m.name,
+    cons:[{path:"ex:flowRate",kw:"sh:minCount",label:"minCount 1"},{path:"ex:flowRate",kw:"sh:maxCount",label:"maxCount 1"},{path:"ex:flowRate",kw:"sh:datatype",label:"datatype xsd:decimal"},
+          {path:"^ex:partOf",kw:"sh:minCount",label:"minCount 1"},{path:null,kw:"sh:or",label:"or ( class ex:A | class ex:B )"}]});
+  G.forEach(g=>{const d=g.data&&F[g.data];g.focus=[];if(d){const re=new RegExp("^(\\S+)\\s+a\\s+"+g.target.replace(":","\\:")+"\\b","gm");let mm;while((mm=re.exec(d.text)))if(!g.focus.includes(mm[1]))g.focus.push(mm[1])}
+    g.cells={};if(d)for(const x of live(d).filter(x=>x.code==="shacl-violation")){const c=cellOf(x,g);if(c){(g.cells[c]=g.cells[c]||[]).push(x)}}
+    g.viol=Object.values(g.cells).reduce((a,b)=>a+b.length,0)});
+  return G}
+function cellOf(d,g){const m=d.msg;const focus=((m.match(/^([\w-]*:[\w-]+) \(/)||m.match(/ of ([\w-]*:[\w-]+)/)||[])[1]);
+  const path=(m.match(/^(\^?[\w-]*:[\w-]+) of /)||m.match(/\((\^?[\w-]*:[\w-]+) of /)||[])[1]||null;
+  const kw=/at least/.test(m)?"sh:minCount":/at most/.test(m)?"sh:maxCount":/not a valid/.test(m)?"sh:datatype":/less than/.test(m)?"sh:minInclusive":/sh:or/.test(m)?"sh:or":null;
+  const ci=g.cons.findIndex(c=>c.kw===kw&&(kw==="sh:or"||c.path===path));if(ci<0||!g.focus.includes(focus))return null;return focus+"|"+ci}
+function consRange(g,ci){const f=S.files[g.shapes];const c=g.cons[ci];const t=f.text;let i=0;
+  if(c.path){const key=c.path.startsWith("^")?"sh:inversePath "+c.path.slice(1):"sh:path "+c.path;i=t.indexOf(key);if(i<0)return null}
+  const s=t.indexOf(c.kw,i);if(s<0)return null;let e;if(c.kw==="sh:or")e=t.indexOf(")",s)+1;else{e=s;while(e<t.length&&!/[;\]\n]/.test(t[e]))e++;while(t[e-1]===" ")e--}
+  return {s,e}}
+function cellVal(g,x){const f=S.files[g.data];const v=f.text.slice(x.s,x.e);return /at least/.test(x.msg)?"none":/at most/.test(x.msg)?"too many":/sh:or/.test(x.msg)?"no match":v}
+
+/* --------------------------- shared tool bodies --------------------------- */
+const MK=t=>`<span class="mock">${t||"MOCKED"}</span>`, RL=t=>`<span class="real">${t||"turtle-lsp output"}</span>`;
+function lineRange(f,d,pad){const a=lc(f.text,d.s).line;return {from:Math.max(0,a-pad),to:a+pad}}
+function itemHTML(f,d,o={}){const p=lc(f.text,d.s);const followers=f.diags.filter(x=>x.follow===d.id&&!x.resolved);
+  const fx=FIXES[d.id]||[];let h=`<div class="pi s${d.sev}${S.hot===d.id?" hot":""}"><div class="pi-h"><span class="sev s${d.sev}">${sevName(d.sev)}</span>${o.file?`<span class="code">${esc(f.name)}</span>`:""}<span class="pos">${p.line+1}:${p.col+1}</span><span class="code">${esc(d.code)}</span></div>
+  <div class="pi-m" data-act="focusd" data-arg="${esc(d.id)}">${esc(d.msg)}</div>`;
+  if(o.excerpt){const r=lineRange(f,d,0);h+=`<div class="box" style="margin-top:6px">${srcHTML(f.text,{marks:marksFor(f,"all"),from:r.from,to:r.to,hot:d.id})}</div>`}
+  if(followers.length)h+=`<details><summary>+${followers.length} follow-on error${followers.length>1?"s":""} on the same IRI, fixed with it</summary>${followers.map(x=>`<div>${lc(f.text,x.s).col+1}: ${esc(x.msg)}</div>`).join("")}</details>`;
+  if(o.nofixes){}else if(fx.length)fx.forEach((x,k)=>{h+=`<div class="fx"><div class="fx-h">${esc(x.t)}<span class="sp"></span>${MK("MOCKED edit")}<button class="fbtn" data-act="fix" data-arg="${esc(d.id)}|${k}">Apply</button></div>${o.nopreview?"":fixPreview(f,d,x)}</div>`});
+  else if(d.code!=="shacl-violation")h+=`<div class="nofix">No automatic fix for this one.</div>`;
+  return h+`</div>`}
+function notChecked(f){return `<div class="row"><b class="mono">${esc(f.name)}</b><span class="sp"></span><span class="stat">${f.edited?"edited":"added"}: not checked. The prototype embeds turtle-lsp output for the samples only; the WebAssembly build checks every keystroke here.</span></div>`}
+
+function fmtTarget(){const f=cur();return f}
+function fmtBody(v,f){f=f||cur();const L=LANGNAME[f.lang];
+  const langs=`<div class="langs">${["turtle","trig","ntriples","nquads","sparql"].map(l=>`<span class="lang${l===f.lang?" on":""}">${LANGNAME[l]}</span>`).join("")}</div>`;
+  if(!f.engine)return `<div class="tsec">${langs}${notChecked(f)}</div>`;
+  if(f.formatted==null){const errs=live(f).filter(d=>d.sev===1&&d.code!=="shacl-violation").length;
+    return `<div class="tsec">${langs}<div class="empty"><b>${esc(f.name)}</b> isn't formatted: it has ${errs} error${errs>1?"s":""} (syntax or prefixes). turtle-lsp formats only input it can parse completely, so the graph is never guessed. ${RL("REAL: formatter returned nothing")}<br><br><button class="lnk" data-act="tool" data-arg="${f.lang==="sparql"?"sparql":"validate"}">Fix ${errs} error${errs>1?"s":""} in ${f.lang==="sparql"?"SPARQL":"Validate"} →</button></div></div>`}
+  const st=diffStats(f.orig,f.formatted),same=f.formatted===f.orig;const kind=f.lang==="sparql"?"Same SPARQL algebra":f.lang==="trig"||f.lang==="nquads"?"Same dataset":"Same graph";
+  const changed=f.text!==f.orig;
+  let h=`<div class="tsec"><div class="thd">${langs}</div><div class="thd"><span class="guar">✓ ${kind}</span><span class="stat">${same?"Already tidy":`<b class="p">+${st.add}</b> <b class="m">−${st.del}</b> lines`}</span>${f.mock?MK("MOCKED sample"):RL()}<span class="sp"></span>
+    <span class="seg"><button class="${S.fmtView==="diff"?"on":""}" data-act="fmtv" data-arg="diff">Diff</button><button class="${S.fmtView==="out"?"on":""}" data-act="fmtv" data-arg="out">Result</button></span>
+    <button class="ibtn" data-act="copy" data-arg="fmt">Copy</button><button class="ibtn" disabled title="Downloads are blocked in this preview">Download ${MK()}</button></div>
+    <p class="why">${f.lang==="sparql"?"The formatter only changes layout and keyword case: the parsed query, its algebra, is the same before and after.":"The formatter only changes layout: the triples it parses before and after are the same set, and comments stay where they were."}</p>`;
+  if(changed)h+=`<div class="warnl">Input changed since the captured run (fixes or edits). This is the formatter's output for the original sample: the prototype can't re-run turtle-lsp.</div>`;
+  h+=`<div class="box" style="margin-top:8px">${S.fmtView==="out"?srcHTML(f.formatted):diffHTML(f.orig,f.formatted,v==="A"?2:3)}</div></div>`;return h}
+
+function valBody(v){const c=counts();let h=`<div class="tsec"><div class="thd"><b>${c.val} problem${c.val!==1?"s":""}</b><span class="stat">in ${c.valFiles} file${c.valFiles!==1?"s":""}, found in one pass</span>${RL()}<span class="sp"></span>${c.fixes?`<button class="ibtn pri" data-act="fixall" data-arg="rdf">Apply all ${c.fixes} fixes</button>${MK("MOCKED edits")}`:""}</div>`;
+  for(const f of files().filter(isRdf)){
+    if(!f.engine||f.edited){h+=notChecked(f);continue}
+    const ds=live(f).filter(d=>d.code!=="shacl-violation"&&!d.follow);const sh=live(f).filter(d=>d.code==="shacl-violation").length;
+    h+=`<div class="grp"><span class="mono" style="text-transform:none;letter-spacing:0">${esc(f.name)}</span>${f.mock?MK("MOCKED sample"):""}</div>`;
+    if(!ds.length)h+=`<div class="okline">✓ Syntax, prefixes and vocabulary terms are fine${f.diags.some(d=>d.resolved)?" after the fixes":""}.</div>`;
+    ds.forEach(d=>h+=itemHTML(f,d,{excerpt:v!=="A"}));
+    if(sh)h+=`<div class="row">SHACL found ${sh} violation${sh>1?"s":""} in this file<span class="sp"></span><button class="lnk" data-act="tool" data-arg="shacl">Open SHACL →</button></div>`}
+  const q=files().filter(f=>f.lang==="sparql");if(q.length)h+=`<div class="grp">Queries</div><div class="row">${c.sq} finding${c.sq!==1?"s":""} in ${q.length} quer${q.length>1?"ies":"y"}<span class="sp"></span><button class="lnk" data-act="tool" data-arg="sparql">Open SPARQL →</button></div>`;
+  if(!files().some(isRdf))h+=`<div class="empty">No RDF data in the input. Load a sample set or drop .ttl / .trig / .nt / .nq files.</div>`;
+  return h+`</div>`}
+
+function shBody(v){const G=shGroups();if(!G.length)return `<div class="empty">No shapes in the input.</div>`;const g=G[Math.min(S.shGroup,G.length-1)];
+  let h=`<div class="tsec"><div class="thd">${G.length>1?`<span class="seg">${G.map((x,i)=>`<button class="${x===g?"on":""}" data-act="shg" data-arg="${i}">${esc(x.name)}</button>`).join("")}</span>`:`<b class="mono">${esc(g.name)}</b>`}
+   <span class="stat">${g.data?`data <b class="mono">${esc(g.data)}</b> × shapes <b class="mono">${esc(g.shapes)}</b>`:"no data file with "+esc(g.target)+" instances"}</span><span class="sp"></span>${RL()}</div>`;
+  if(!g.data||!g.focus.length)return h+`<div class="empty">No focus nodes: nothing in the input is a ${esc(g.target)}.</div></div>`;
+  h+=`<div class="stat" style="margin-bottom:8px">${g.focus.length} focus node${g.focus.length>1?"s":""} × ${g.cons.length} constraints · <b class="m">${g.viol} violation${g.viol!==1?"s":""}</b> · click a cell</div>`;
+  h+=`<div class="gridwrap"><table class="shg"><tr><th class="fn">focus node</th>${g.cons.map(c=>`<th><span class="pth">${esc(c.path||"node")}</span>${esc(c.label)}</th>`).join("")}</tr>`;
+  for(const fn of g.focus){h+=`<tr><td class="fn">${esc(fn)}</td>`;g.cons.forEach((c,ci)=>{const k=fn+"|"+ci,xs=g.cells[k];const sel=S.cell===g.name+"|"+k;
+    h+=xs?`<td class="c fail${sel?" sel":""}" data-act="cell" data-arg="${esc(g.name+"|"+k)}">✕<small>${esc(cellVal(g,xs[0]))}</small></td>`:`<td class="c pass${sel?" sel":""}" data-act="cell" data-arg="${esc(g.name+"|"+k)}">✓</td>`});h+=`</tr>`}
+  h+=`</table></div>`;
+  if(v!=="C")h+=cellDetail(g);
+  return h+`<p class="why">turtle-lsp runs SHACL Core and SHACL-SPARQL; violations come back as diagnostics with ranges, so each one points at text.</p></div>`}
+function selCell(g){if(!S.cell||!S.cell.startsWith(g.name+"|"))return null;const [,fn,ci]=S.cell.split("|");return {fn,ci:+ci,xs:g.cells[fn+"|"+ci]||[]}}
+function cellDetail(g){const c=selCell(g);if(!c)return `<div class="why">Select a cell to see the value in the data and the constraint in the shapes side by side.</div>`;
+  const df=S.files[g.data],sf=S.files[g.shapes],cr=consRange(g,c.ci);
+  const fl=c.xs.length?lc(df.text,c.xs[0].s).line:(df.text.split("\n").findIndex(l=>l.startsWith(c.fn+" ")));
+  const sl=cr?lc(sf.text,cr.s).line:0;
+  return `<div class="det"><div class="msg">${c.xs.length?c.xs.map(x=>`<div><span class="sev s1">Violation</span> ${esc(x.msg)}</div>`).join(""):`<span class="okline">✓ ${esc(c.fn)} satisfies ${esc(g.cons[c.ci].path||"")} ${esc(g.cons[c.ci].label)}</span>`}</div>
+   <div class="box"><h4>Value in ${esc(g.data)}</h4>${srcHTML(df.text,{marks:c.xs.map(x=>({s:x.s,e:x.e,sev:1,id:x.id})),from:Math.max(0,fl),to:Math.max(0,fl)})}</div>
+   <div class="box"><h4>Constraint in ${esc(g.shapes)} ${MK("MOCKED link")}</h4>${srcHTML(sf.text,{marks:cr?[{s:cr.s,e:cr.e,cls:"cons"}]:[],from:sl,to:sl})}</div></div>`}
+
+function sqFile(){let f=cur();if(f&&f.lang==="sparql")return f;return files().find(x=>x.lang==="sparql")}
+function sqBody(v,opt={}){const f=sqFile();if(!f)return `<div class="empty">No queries in the input. Paste a query or load the “Queries only” sample.</div>`;
+  const ds=live(f).filter(d=>!d.follow);const nf=ds.filter(d=>FIXES[d.id]).length;
+  let h=`<div class="tsec"><div class="thd">${files().filter(x=>x.lang==="sparql").map(x=>`<button class="fchip${x===f?" on":""}" data-act="file" data-arg="${esc(x.name)}"><span class="nm">${esc(x.name)}</span></button>`).join("")}</div>`;
+  if(!opt.noLint){h+=`<div class="grp">Lint ${RL()}<span class="sp" style="flex:1"></span>${nf?`<button class="ibtn pri" data-act="fixall" data-arg="${esc(f.name)}">Apply ${nf} fix${nf>1?"es":""}</button>`:""}</div>`;
+    if(!f.engine||f.edited)h+=notChecked(f);else if(!ds.length)h+=`<div class="okline">✓ Parses; every prefix declared, every term known, every projected variable bound.</div>`;
+    else ds.forEach(d=>h+=itemHTML(f,d,{excerpt:v==="B"}))}
+  if(!opt.noFormat){h+=`<div class="grp">Format</div>`;h+=fmtBody(v,f).replace(/^<div class="tsec">/,"<div>")}
+  return h+`</div>`}
+
+function cvSource(){const f=cur();return f}
+function cvBody(v){const f=cvSource();if(!f)return `<div class="empty">No input.</div>`;const isQ=f.lang==="sparql";
+  const r=convert(f,S.conv);
+  let h=`<div class="tsec"><div class="cvopts"><span class="cvlab">From</span><select class="isel" data-act="cvsrc">${S.order.map(n=>`<option${n===f.name?" selected":""}>${esc(n)}</option>`).join("")}</select><span class="lang on">${LANGNAME[f.lang]}</span></div>
+   <div class="cvopts"><span class="cvlab">To</span><span class="seg">${CONV.map(([k,n])=>`<button class="${S.conv===k?"on":""}" data-act="conv" data-arg="${k}"${isQ?" disabled":""}>${n}</button>`).join("")}</span></div>
+   <div class="cvopts"><span class="cvlab">Tidy</span><span class="seg">${OPS.map(([k,n])=>`<button class="${S.conv===k?"on":""}" data-act="conv" data-arg="${k}"${isQ&&k!=="organise"?" disabled":""}>${n}</button>`).join("")}</span></div>`;
+  h+=`<div class="warnl">${MK()} Conversion isn't in turtle-lsp yet (planned). This output comes from the prototype's own small converter, which drops comments.</div>`;
+  if(r.err)return h+`<div class="empty">${esc(r.err)}${/undeclared|IRI|read/.test(r.err)?`<br><br><button class="lnk" data-act="tool" data-arg="validate">See the problems in Validate →</button>`:""}</div></div>`;
+  (r.notes||[]).forEach(n=>h+=`<div class="stat" style="margin:4px 0">• ${esc(n)}</div>`);
+  const nm=f.name.replace(/\.\w+$/,"")+(EXT[r.lang]||".rq");
+  h+=`<div class="thd" style="margin-top:8px"><b class="mono">${esc(nm)}</b>${r.n!=null?`<span class="stat">${r.n} triple${r.n!==1?"s":""}</span>`:""}<span class="sp"></span><button class="ibtn" data-act="copy" data-arg="conv">Copy</button><button class="ibtn" data-act="addout" data-arg="${esc(nm)}">Add to input</button><button class="ibtn" disabled>Download ${MK()}</button></div>`;
+  return h+`<div class="box">${srcHTML(r.out)}</div></div>`}
+
+/* --------------------------- shared input area --------------------------- */
+function fileBadge(f){if(!f.engine||f.edited)return `<span class="n na">${f.edited?"edited":"new"}</span>`;const n=live(f).length;const e=live(f).filter(d=>d.sev<4).length;
+  return n?`<span class="n${e?"":" na"}">${n}</span>`:`<span class="n ok">ok</span>`}
+function inputTools(){return `<div class="intools"><select class="isel" data-act="set" title="Sample set">${Object.entries(SETS).map(([k,s])=>`<option value="${k}"${k===S.set?" selected":""}>${esc(s.label)}</option>`).join("")}</select>
+  <button class="ibtn" data-act="paste">+ Paste</button><button class="ibtn" data-act="pick">Open files</button><button class="ibtn" data-act="pickdir">Open folder</button>
+  <button class="ibtn${S.edit?" pri":""}" data-act="edit">${S.edit?"Done editing":"Edit"}</button><span class="ihint">or drop files / a folder anywhere</span></div>`}
+function fileChips(){return `<div class="files">${files().map(f=>`<span class="fchip${f.name===S.file?" on":""}"><button class="nm" data-act="file" data-arg="${esc(f.name)}">${esc(f.name)}</button>${fileBadge(f)}<button class="x" data-act="rm" data-arg="${esc(f.name)}" title="Remove">×</button></span>`).join("")}</div>`}
+function editorArea(kind){const f=cur();if(!f)return `<div class="empty">No input. Paste text, open files or load a sample set.</div>`;
+  if(S.paste)return `<div class="banner">Paste Turtle, TriG, N-Triples, N-Quads or a SPARQL query. It becomes a new file in the input.</div><textarea class="ita" id="pasteta" placeholder="@prefix ex: <https://example.org/> .\nex:a ex:b ex:c ."></textarea><div class="intools"><button class="ibtn pri" data-act="pasteadd">Add to input</button><button class="ibtn" data-act="paste">Cancel</button></div>`;
+  if(S.edit)return `<div class="banner">Editing ${esc(f.name)}. The captured turtle-lsp results stop applying to this file once it changes.</div><textarea class="ita" id="editta" spellcheck="false">${esc(f.text)}</textarea>`;
+  const mk=kind==="none"?[]:marksFor(f,kind);
+  return (f.edited?`<div class="banner">${esc(f.name)} was edited; results hidden. <button class="lnk" data-act="revert">Revert</button></div>`:"")+srcHTML(f.text,{marks:mk,hot:S.hot})}
+function srcKind(){return S.tool==="shacl"?"shacl":S.tool==="validate"?"val":S.tool==="sparql"?"all":"none"}
+function marksKind(){const k=srcKind();return k==="val"?"nonshacl":k}
+
+/* ================================ Variant A ================================ */
+function VA(){const c=counts();const T=TOOLS.filter(t=>toolOk(t.id));
+  const badge=id=>id==="format"?`<span class="c">${c.fmt}</span>`:id==="validate"?`<span class="c ${c.val?"bad":"ok"}">${c.val||"✓"}</span>`:id==="shacl"?`<span class="c ${c.sh?"bad":"ok"}">${c.sh||"✓"}</span>`:id==="sparql"?`<span class="c ${c.sq?"bad":"ok"}">${c.sq||"✓"}</span>`:`<span class="c">4</span>`;
+  const t=TOOLS.find(x=>x.id===S.tool);const f=cur();
+  const body={format:()=>fmtBody("A"),validate:()=>valBody("A"),shacl:()=>shBody("A"),sparql:()=>sqBody("A"),convert:()=>cvBody("A")}[S.tool]();
+  return `<div class="tbx vA"><header class="a-hd"><div class="a-brand"><span class="a-logo">ttl</span><b>RDF Toolbox</b><span class="a-sub">built on turtle-lsp</span></div><div class="a-priv">\u25CF Runs in this tab. Nothing is uploaded.</div></header>
+  <nav class="a-tabs" style="--n:${T.length}">${T.map(x=>`<button class="a-tab${S.tool===x.id?" on":""}" data-act="tool" data-arg="${x.id}"><span class="g">${x.g}</span><span>${x.name}</span>${badge(x.id)}</button>`).join("")}</nav>
+  ${hasShapes()?"":`<div class="a-note">The SHACL tab appears when the input contains shapes.</div>`}
+  <main class="a-main"><section class="a-pane a-in"><div class="a-pane-hd"><h2>Input</h2><span class="stat">${S.order.length} file${S.order.length!==1?"s":""}, shared by every tool</span></div>${fileChips()}${inputTools()}<div class="a-scroll" id="srcscroll">${editorArea(S.tool==="validate"?"nonshacl":S.tool==="shacl"?"shacl":S.tool==="sparql"?"all":"none")}</div></section>
+  <section class="a-pane a-out"><div class="a-pane-hd"><h2>${t.g} ${t.name}</h2><span class="stat mono">${S.tool==="validate"?"all files":S.tool==="shacl"?"data × shapes":S.tool==="sparql"?(sqFile()?esc(sqFile().name):""):(f?esc(f.name):"")}</span><p>${t.job}</p></div><div class="a-scroll">${body}</div></section></main>
+  <footer class="a-ft">${conf()}</footer></div>`}
+function conf(){return `W3C test suites: RDF syntaxes 1137/1137 · SPARQL syntax 425/426 · SHACL Core 98/98 · SHACL-SPARQL 23/23`}
+
+/* ================================ Variant B ================================ */
+function VB(){return S.home?VBhome():VBws()}
+function tileLive(id){const c=counts();const F=files();
+  if(id==="format"){const ok=F.filter(f=>f.formatted!=null).length,bl=F.filter(f=>f.engine&&f.formatted==null).length;return [c.fmt+" of "+F.length,`files would change${bl?` · ${bl} blocked by errors`:""} · graph kept`]}
+  if(id==="validate")return [String(c.val),`problem${c.val!==1?"s":""} in ${c.valFiles} file${c.valFiles!==1?"s":""} · ${c.fixes} one-click fix${c.fixes!==1?"es":""}`];
+  if(id==="shacl"){const G=shGroups();const fn=G.reduce((a,g)=>a+g.focus.length,0);return [String(c.sh),`violation${c.sh!==1?"s":""} · ${G.length} shape${G.length!==1?"s":""} · ${fn} focus nodes`]}
+  if(id==="sparql"){const q=F.filter(f=>f.lang==="sparql").length;return [String(c.sq),q?`finding${c.sq!==1?"s":""} in ${q} quer${q>1?"ies":"y"} · formatter ready`:"no queries loaded"]}
+  const d=F.filter(f=>isRdf(f)&&!convert(f,"ntriples").err).length;return [String(d),`file${d!==1?"s":""} ready for Turtle, TriG, N-Triples, N-Quads`]}
+function VBhome(){const tiles=TOOLS.map(t=>{if(!toolOk(t.id))return `<div class="b-tile ghost"><div class="tg">${t.g}</div><h3>${t.name}</h3><p class="job">Appears when the input has shapes (sh:NodeShape).</p><div class="b-go"><button class="lnk" data-act="set" data-arg="shacl">Load data + shapes</button></div></div>`;
+    const [b,l]=tileLive(t.id);return `<button class="b-tile" data-act="open" data-arg="${t.id}"><div class="tg">${t.g}</div><h3>${t.name}</h3><p class="job">${t.job}</p><div class="b-live"><b>${esc(b)}</b><span>${esc(l)}</span></div><div class="b-go">Open ${t.name} →</div></button>`}).join("");
+  const rows=files().map(f=>{const st=!f.engine||f.edited?`<span class="stat">not checked</span>`:live(f).length?`<span class="stat"><b class="m">${live(f).length}</b> finding${live(f).length>1?"s":""}</span>`:`<span class="stat" style="color:#2f6b2a">clean</span>`;
+    return `<tr><td class="nm">${esc(f.name)}${f.mock?" "+MK("MOCKED sample"):""}</td><td>${LANGNAME[f.lang]}</td><td class="ln2 stat">${f.text.split("\n").length-1} lines</td><td class="st">${st}</td><td class="st"><button class="lnk" data-act="rm" data-arg="${esc(f.name)}">remove</button></td></tr>`}).join("");
+  return `<div class="tbx vB"><div class="b-wrap"><header class="b-hd"><h1>RDF Toolbox</h1><p>Five tools on one input: format, validate, check shapes, lint queries, convert. Pick a tool; your files stay loaded as you switch.</p><div class="b-priv">● Runs in this tab · nothing is uploaded</div></header>
+  <section class="b-drop"><div class="b-drop-top"><b>Input</b><span class="stat">${S.order.length} file${S.order.length!==1?"s":""} · drop files or a folder here</span><span class="sp"></span></div>${inputTools()}
+  ${S.paste||S.edit?editorArea("none"):`<table class="b-ftab">${rows}</table>`}</section>
+  <section class="b-tiles">${tiles}</section><footer class="b-ft">${conf()}</footer></div></div>`}
+function VBws(){const c=counts();const t=TOOLS.find(x=>x.id===S.tool);const cnt={validate:c.val,shacl:c.sh,sparql:c.sq,format:c.fmt};
+  const seg=TOOLS.filter(x=>toolOk(x.id)).map(x=>`<button class="${x.id===S.tool?"on":""}" data-act="tool" data-arg="${x.id}">${x.g} ${x.name}${cnt[x.id]?`<span class="c">${cnt[x.id]}</span>`:""}</button>`).join("");
+  let body;
+  if(S.tool==="format")body=VBformat();else if(S.tool==="validate")body=VBvalidate();else if(S.tool==="shacl")body=shBody("B");
+  else if(S.tool==="sparql")body=VBsparql();else body=VBconvert();
+  return `<div class="tbx vB"><div class="b-ws-top"><div class="b-ws-bar"><button class="b-back" data-act="home">← All tools</button><nav class="b-seg">${seg}</nav></div>
+   <div class="b-inbar"><span>Input:</span>${fileChips()}<button class="lnk" data-act="inopen">${S.inputOpen?"Hide input":"Show / edit input"}</button></div></div>
+   ${S.inputOpen?`<div class="b-inbox"><div class="box">${inputTools()}${editorArea(marksKind())}</div></div>`:""}
+   <main class="b-tool"><h2>${t.name}</h2><p class="job">${t.job}</p>${body}<p class="b-ft">● Runs in this tab, nothing uploaded · ${conf()}</p></main></div>`}
+function VBformat(){const F=files();const f=cur();
+  const list=F.map(x=>{const st=!x.engine?"not checked":x.formatted==null?"blocked: has errors":x.formatted===x.orig?"already tidy":(()=>{const s=diffStats(x.orig,x.formatted);return `+${s.add} −${s.del} lines`})();
+    return `<button class="b-frow${x===f?" on":""}" data-act="file" data-arg="${esc(x.name)}"><span class="nm">${esc(x.name)}</span><span class="lang">${LANGNAME[x.lang]}</span><span class="sp"></span><span class="stat">${st}</span></button>`}).join("");
+  return `<div class="b-cols"><div><div class="grp">Every file in the input</div><div class="b-flist">${list}</div></div><div>${fmtBody("B")}</div></div>`}
+function VBvalidate(){const c=counts();const all=[];for(const f of files().filter(isRdf))if(f.engine&&!f.edited)for(const d of live(f))if(d.code!=="shacl-violation"&&!d.follow)all.push([f,d]);
+  let h=`<div class="b-sum"><div><div class="k">${c.val}</div><div class="l">problems, one pass</div></div><div><div class="k">${c.fixes}</div><div class="l">with a one-click fix</div></div><div><div class="k">${c.valFiles}</div><div class="l">files affected</div></div><span class="sp"></span>${c.fixes?`<button class="ibtn pri" data-act="fixall" data-arg="rdf">Apply all ${c.fixes} fixes</button>${MK("MOCKED edits")}`:""}${RL()}</div>`;
+  const cats=["Syntax","Prefixes","Vocabulary","Other"];
+  for(const k of cats){const xs=all.filter(([f,d])=>cat(d)===k);if(!xs.length)continue;
+    h+=`<div class="grp">${k} · ${xs.length}</div><div class="b-cat">${xs.map(([f,d])=>itemHTML(f,d,{excerpt:true,file:true})).join("")}</div>`}
+  if(!all.length)h+=`<div class="okline">✓ No syntax, prefix or vocabulary problems in the input${S.applied.length?" after the fixes":""}.</div>`;
+  const nc=files().filter(f=>isRdf(f)&&(!f.engine||f.edited));nc.forEach(f=>h+=notChecked(f));
+  if(c.sh)h+=`<div class="row" style="margin-top:12px">SHACL found ${c.sh} violations<span class="sp"></span><button class="lnk" data-act="tool" data-arg="shacl">Open SHACL →</button></div>`;
+  if(c.sq)h+=`<div class="row">SPARQL lint found ${c.sq} findings<span class="sp"></span><button class="lnk" data-act="tool" data-arg="sparql">Open SPARQL →</button></div>`;
+  return h}
+function VBsparql(){const f=sqFile();if(!f)return sqBody("B");
+  return `<div class="b-cols"><div><div class="grp">${esc(f.name)}</div><div class="box">${srcHTML(f.text,{marks:f.edited?[]:marksFor(f,"all"),hot:S.hot})}</div></div><div>${sqBody("B",{noFormat:true}).replace(/<div class="tsec">/,'<div>')}</div></div><div style="margin-top:14px">${sqBody("B",{noLint:true}).replace(/<div class="tsec">/,'<div>')}</div>`}
+function VBconvert(){const f=cur();const isQ=f&&f.lang==="sparql";
+  const big=CONV.map(([k,n])=>`<button class="${S.conv===k?"on":""}" data-act="conv" data-arg="${k}"${isQ?" disabled":""}><b>${n}</b><span>${{turtle:"compact, prefixes",trig:"Turtle + named graphs",ntriples:"one triple per line",nquads:"one quad per line"}[k]}</span></button>`).join("");
+  const ops=OPS.map(([k,n])=>`<button class="${S.conv===k?"on":""}" data-act="conv" data-arg="${k}"${isQ&&k!=="organise"?" disabled":""}><b>${n}</b><span>${{expand:"prefixed names → full IRIs",shorten:"full IRIs → prefixed names",organise:"sort, align, drop unused"}[k]}</span></button>`).join("");
+  const body=cvBody("B").replace(/<div class="cvopts">[\s\S]*?<\/div>\s*<div class="cvopts">[\s\S]*?<\/div>\s*<div class="cvopts">[\s\S]*?<\/div>/,"");
+  return `<div class="grp">1 · Source</div><div class="b-flist">${files().map(x=>`<button class="b-frow${x===f?" on":""}" data-act="file" data-arg="${esc(x.name)}"><span class="nm">${esc(x.name)}</span><span class="lang">${LANGNAME[x.lang]}</span></button>`).join("")}</div>
+   <div class="grp">2 · Convert to</div><div class="b-big">${big}</div><div class="grp">or tidy in place</div><div class="b-big">${ops}</div><div class="grp">3 · Result</div>${body}`}
+
+/* ================================ Variant C ================================ */
+function VC(){const c=counts();const t=TOOLS.find(x=>x.id===S.tool);const cnt={validate:c.val,shacl:c.sh,sparql:c.sq};
+  const rail=TOOLS.filter(x=>toolOk(x.id)).map(x=>`<button class="${x.id===S.tool?"on":""}" data-act="tool" data-arg="${x.id}" title="${esc(x.job)}"><span class="g">${x.g}</span>${x.name}${cnt[x.id]?`<span class="c">${cnt[x.id]}</span>`:""}</button>`).join("")+(hasShapes()?"":`<div class="note">SHACL appears with shapes</div>`);
+  const f=cur();
+  return `<div class="tbx vC"><div class="c-top"><span class="c-logo">ttl</span><div class="c-cmd"><span class="pr">›</span><input id="cmd" autocomplete="off" spellcheck="false" placeholder="Type a command: format, validate, convert to N-Triples, expand…   ( / )" value="${esc(S.cmd)}"><div class="c-sugg" id="sugg" hidden></div></div><span class="c-priv">● local only</span></div>
+   <div class="c-body"><nav class="c-rail">${rail}</nav><section class="c-ed">${VCeditor()}</section></div>
+   <div class="c-status"><span class="ok">● runs in this tab, nothing uploaded</span><span>${f?esc(f.name)+" · "+LANGNAME[f.lang]:""}</span><span>${c.val} problems · ${c.sh} SHACL · ${c.sq} SPARQL</span><span>W3C: RDF 1137/1137 · SPARQL 425/426 · SHACL 98/98 · SHACL-SPARQL 23/23</span></div></div>`}
+function VCtabs(filter){const F=files().filter(filter||(()=>true));return `<div class="c-tabs">${F.map(f=>`<button class="${f.name===S.file?"on":""}" data-act="file" data-arg="${esc(f.name)}">${esc(f.name)}${live(f).length?`<span class="n">${live(f).length}</span>`:""}</button>`).join("")}<button class="add" data-act="paste">+ paste</button><button class="add" data-act="pick">open…</button></div>`}
+function lensFor(f,kindFilter){const ds=live(f).filter(kindFilter).filter(d=>!d.follow);return li=>{const xs=ds.filter(d=>lc(f.text,d.s).line===li);
+  return xs.map(d=>{const fx=FIXES[d.id]||[];const fol=f.diags.filter(x=>x.follow===d.id&&!x.resolved).length;
+    return `<div class="lens s${d.sev}"><span class="m"><b>${sevName(d.sev)}</b> ${esc(d.msg)}${fol?` <span class="code">(+${fol} follow-on)</span>`:""}</span>${fx.map((x,k)=>`<button data-act="fix" data-arg="${esc(d.id)}|${k}">${esc(x.t)}</button>`).join("")}${fx.length?MK("MOCKED edit"):""}</div>`}).join("")}}
+function VCeditor(){const f=cur();
+  if(S.paste||S.edit)return VCtabs()+`<div class="c-strip"><span class="tn">${S.paste?"paste":"edit"}</span><span class="sp"></span><button class="ibtn" data-act="${S.paste?"paste":"edit"}">${S.paste?"Cancel":"Done"}</button>${S.paste?`<button class="ibtn pri" data-act="pasteadd">Add</button>`:""}</div>`+(S.paste?`<textarea class="ita" id="pasteta" placeholder="Paste Turtle, TriG, N-Triples, N-Quads or SPARQL"></textarea>`:`<textarea class="ita" id="editta" spellcheck="false">${esc(f.text)}</textarea>`);
+  if(!f)return VCtabs()+`<div class="empty">No input. Type “load” in the command bar, paste, or drop files.</div>`;
+  const tool=S.tool;
+  if(tool==="validate"){const c=counts();const lens=lensFor(f,d=>d.code!=="shacl-violation");
+    const all=[];files().filter(isRdf).forEach(x=>live(x).filter(d=>d.code!=="shacl-violation"&&!d.follow).forEach(d=>all.push([x,d])));
+    return VCtabs()+`<div class="c-strip"><span class="tn">Validate</span><span>${c.val} problems in ${c.valFiles} files, one pass</span>${RL()}<span class="sp"></span>${c.fixes?`<button class="ibtn pri" data-act="fixall" data-arg="rdf">Fix all ${c.fixes}</button>`:""}<button class="ibtn" data-act="edit">Edit</button></div>
+     <div class="c-code" id="srcscroll">${f.edited?`<div class="banner">Edited: results hidden. <button class="lnk" data-act="revert">Revert</button></div>`:""}${!f.engine?notChecked(f):""}${srcHTML(f.text,{marks:f.lang==="sparql"?marksFor(f,"all"):marksFor(f,"nonshacl"),hot:S.hot,after:f.lang==="sparql"?null:lens})}</div>
+     <div class="c-panel c-plist"><div class="grp">Problems · all files</div>${all.length?all.map(([x,d])=>`<div class="pi s${d.sev}${S.hot===d.id?" hot":""}"><div class="pi-h"><span class="sev s${d.sev}">${sevName(d.sev)}</span><span class="code">${esc(x.name)}</span><span class="pos">${lc(x.text,d.s).line+1}:${lc(x.text,d.s).col+1}</span></div><div class="pi-m" data-act="focusd" data-arg="${esc(d.id)}">${esc(d.msg)}</div></div>`).join(""):`<div class="okline">✓ No syntax, prefix or vocabulary problems.</div>`}
+     ${c.sh?`<div class="row">${c.sh} SHACL violations<span class="sp"></span><button class="lnk" data-act="tool" data-arg="shacl">SHACL →</button></div>`:""}${c.sq?`<div class="row">${c.sq} SPARQL findings<span class="sp"></span><button class="lnk" data-act="tool" data-arg="sparql">SPARQL →</button></div>`:""}</div>`}
+  if(tool==="format"){const b=fmtBody("C");return VCtabs()+`<div class="c-strip"><span class="tn">Format preview</span><span class="stat">${esc(f.name)}</span><span class="sp"></span><button class="ibtn" data-act="fmtall">Next file →</button></div><div class="c-code">${b}</div>`}
+  if(tool==="shacl"){const G=shGroups();const g=G[Math.min(S.shGroup,G.length-1)];const sel=g&&selCell(g);const df=g&&g.data&&S.files[g.data],sf=g&&S.files[g.shapes];
+    const cr=sel?consRange(g,sel.ci):null;const dm=df?marksFor(df,"shacl").map(m=>sel&&sel.xs.some(x=>x.id===m.id)?Object.assign(m,{cls:"s1 hot"}):m):[];
+    const two=df&&sf&&df!==sf;if(!two&&cr)dm.push({s:cr.s,e:cr.e,cls:"cons"});
+    return `<div class="c-strip"><span class="tn">SHACL</span><span>${g?esc(g.name):""}</span>${RL()}<span class="sp"></span>${sel?`<span class="stat">${sel.xs.length?esc(sel.xs[0].msg):"✓ passes"}</span>`:`<span class="stat">pick a cell below; both files light up</span>`}</div>
+     <div class="c-code"><div class="${two?"c-split":""}">${df?`<div><h5>${esc(df.name)} · data</h5>${srcHTML(df.text,{marks:dm})}</div>`:""}${two?`<div><h5>${esc(sf.name)} · shapes ${cr?MK("MOCKED link"):""}</h5>${srcHTML(sf.text,{marks:cr?[{s:cr.s,e:cr.e,cls:"cons"}]:[]})}</div>`:""}</div></div>
+     <div class="c-panel">${shBody("C")}${g&&!two&&sel?cellDetail(g):""}</div>`}
+  if(tool==="sparql"){const q=sqFile();if(!q)return VCtabs()+`<div class="c-strip"><span class="tn">SPARQL</span></div><div class="c-code">${sqBody("C")}</div>`;
+    const lens=lensFor(q,()=>true);
+    return VCtabs(x=>x.lang==="sparql")+`<div class="c-strip"><span class="tn">SPARQL</span><span class="seg"><button class="${S.sqView==="lint"?"on":""}" data-act="sqv" data-arg="lint">Lint</button><button class="${S.sqView==="format"?"on":""}" data-act="sqv" data-arg="format">Format</button></span><span class="sp"></span>${S.sqView==="lint"&&live(q).some(d=>FIXES[d.id])?`<button class="ibtn pri" data-act="fixall" data-arg="${esc(q.name)}">Fix all</button>`:""}</div>
+     <div class="c-code">${S.sqView==="lint"?(!q.engine||q.edited?notChecked(q):"")+srcHTML(q.text,{marks:marksFor(q,"all"),hot:S.hot,after:lens})+(live(q).length?"":`<div class="okline" style="padding:8px 16px">✓ No lint findings.</div>`):fmtBody("C",q)}</div>`}
+  /* convert */
+  const r=convert(f,S.conv);
+  return VCtabs()+`<div class="c-strip"><span class="tn">Convert</span><span class="seg">${CONV.map(([k,n])=>`<button class="${S.conv===k?"on":""}" data-act="conv" data-arg="${k}"${f.lang==="sparql"?" disabled":""}>${n}</button>`).join("")}</span><span class="seg">${OPS.map(([k,n])=>`<button class="${S.conv===k?"on":""}" data-act="conv" data-arg="${k}"${f.lang==="sparql"&&k!=="organise"?" disabled":""}>${n.split(" ")[0]}</button>`).join("")}</span><span class="sp"></span>${MK()}<span class="seg"><button class="${S.cvShowSrc?"":"on"}" data-act="cvsrcv" data-arg="0">Output</button><button class="${S.cvShowSrc?"on":""}" data-act="cvsrcv" data-arg="1">Source</button></span></div>
+   <div class="c-code">${S.cvShowSrc?srcHTML(f.text):r.err?`<div class="empty">${esc(r.err)}</div>`:`${(r.notes||[]).map(n=>`<div class="stat" style="padding:4px 14px">• ${esc(n)}</div>`).join("")}<div class="stat" style="padding:4px 14px">Prototype converter, not turtle-lsp (conversion is planned) · <button class="lnk" data-act="copy" data-arg="conv">Copy</button> · <button class="lnk" data-act="addout" data-arg="${esc(f.name.replace(/\.\w+$/,"")+(EXT[r.lang]||".rq"))}">Add to input</button></div>${srcHTML(r.out)}`}</div>`}
+
+/* command bar (C) */
+function commands(){const L=[];TOOLS.forEach(t=>{if(toolOk(t.id))L.push({l:t.name,d:t.job,run:()=>setTool(t.id)})});
+  CONV.forEach(([k,n])=>L.push({l:"Convert to "+n,d:"current file → "+n,run:()=>{setTool("convert");S.conv=k}}));
+  OPS.forEach(([k,n])=>L.push({l:n,d:"Convert tool",run:()=>{setTool("convert");S.conv=k}}));
+  L.push({l:"Apply all fixes",d:"every one-click fix in the input (MOCKED edits)",run:()=>{setTool("validate");applyAll(isRdf)}});
+  L.push({l:"Copy formatted text",d:"Format tool",run:()=>{setTool("format");copy("fmt")}});
+  S.order.forEach(n=>L.push({l:"Open "+n,d:"switch file",run:()=>{S.file=n}}));
+  Object.entries(SETS).forEach(([k,s])=>L.push({l:"Load sample: "+s.label,d:"replaces the input",run:()=>loadSet(k)}));
+  L.push({l:"Paste text",d:"new file",run:()=>{S.paste=true}});return L}
+function cmdMatches(q){const L=commands();if(!q.trim())return L.slice(0,8);const w=q.toLowerCase().split(/\s+/).filter(Boolean);
+  return L.filter(c=>w.every(x=>(c.l+" "+c.d).toLowerCase().includes(x))).slice(0,8)}
+function drawSugg(){const box=document.getElementById("sugg"),inp=document.getElementById("cmd");if(!box||!inp)return;
+  if(document.activeElement!==inp){box.hidden=true;return}const M=cmdMatches(S.cmd);S.cmdSel=Math.min(S.cmdSel,Math.max(0,M.length-1));
+  box.hidden=false;box.innerHTML=M.length?M.map((c,i)=>`<button class="${i===S.cmdSel?"sel":""}" data-cmd="${i}"><span>${esc(c.l)}</span><small>${esc(c.d)}</small></button>`).join(""):`<button><small>No command matches</small></button>`}
+function runCmd(i){const M=cmdMatches(S.cmd);const c=M[i];if(!c)return;S.cmd="";S.cmdSel=0;c.run();render()}
+
+/* ------------------------------- actions ------------------------------- */
+function setTool(t){if(!toolOk(t))return;S.tool=t;S.hot=null;S.paste=false;S.edit=false;const f=cur();
+  if(t==="sparql"&&f&&f.lang!=="sparql"){const q=files().find(x=>x.lang==="sparql");if(q)S.file=q.name}
+  if((t==="validate"||t==="convert")&&f&&f.lang==="sparql"&&t==="validate"){const r=files().find(isRdf);if(r)S.file=r.name}
+  if(t==="shacl"){const G=shGroups();const g=G[Math.min(S.shGroup,G.length-1)];if(g&&g.data)S.file=g.data}
+  if(t==="convert"&&f&&f.lang==="sparql"){const r=files().find(isRdf);if(r)S.file=r.name}}
+let lastOut={fmt:"",conv:""};
+function copy(kind){let txt="";const f=cur();
+  if(kind==="fmt"){const g=S.tool==="sparql"?sqFile():f;txt=g&&g.formatted||""}else{const r=f&&convert(f,S.conv);txt=r&&r.out||""}
+  if(!txt){toast("Nothing to copy");return}
+  try{navigator.clipboard.writeText(txt).then(()=>toast("Copied "+txt.split("\n").length+" lines"),()=>toast("Clipboard blocked here: select the text instead"))}catch(e){toast("Clipboard blocked here: select the text instead")}}
+let toastT=null;function toast(m){S.toast=m;const el=document.getElementById("toast");if(el){el.textContent=m;el.hidden=false}clearTimeout(toastT);toastT=setTimeout(()=>{const e=document.getElementById("toast");if(e)e.hidden=true},2200)}
+function addTexts(list){let last=null;for(const {name,text} of list){last=addFile(mkFile(name,{text,diags:null,formatted:null},false,false))}if(last){S.file=last;S.paste=false;toast(list.length+" file"+(list.length>1?"s":"")+" added (read in this tab)")}render()}
+async function readEntry(en,out){if(en.isFile){await new Promise(r=>en.file(f=>{out.push(f);r()},()=>r()))}else if(en.isDirectory){const rd=en.createReader();let b;do{b=await new Promise(r=>rd.readEntries(r,()=>r([])));for(const e of b)await readEntry(e,out)}while(b.length)}}
+async function takeFiles(fs){const ok=[...fs].filter(f=>/\.(ttl|trig|nt|nq|rq|sparql|ru)$/i.test(f.name));if(!ok.length){toast("No .ttl/.trig/.nt/.nq/.rq files found");return}
+  const list=await Promise.all(ok.map(f=>f.text().then(text=>({name:f.name,text}))));addTexts(list)}
+
+function act(a,arg,el){
+  switch(a){
+    case "tool":setTool(arg);if(S.v==="B")S.home=false;break;
+    case "open":setTool(arg);S.home=false;window.scrollTo(0,0);break;
+    case "home":S.home=true;window.scrollTo(0,0);break;
+    case "file":S.file=arg;S.cell=null;S.hot=null;S.edit=false;S.paste=false;break;
+    case "rm":{delete S.files[arg];S.order=S.order.filter(n=>n!==arg);if(S.file===arg)S.file=S.order[0];if(!toolOk(S.tool))S.tool="validate";break}
+    case "set":if(arg)loadSet(arg);else return;break;
+    case "paste":S.paste=!S.paste;S.edit=false;if(S.v==="B"&&!S.home)S.inputOpen=true;break;
+    case "pasteadd":{const ta=document.getElementById("pasteta");const t=ta&&ta.value.trim();if(!t){toast("Paste something first");return}
+      const lang=langOf("",t);addTexts([{name:"pasted-"+(S.pasteN++)+(lang==="sparql"?".rq":lang==="trig"?".trig":".ttl"),text:t+"\n"}]);return}
+    case "pick":document.getElementById("fpick").click();return;
+    case "pickdir":document.getElementById("dpick").click();return;
+    case "edit":S.edit=!S.edit;S.paste=false;if(S.v==="B"&&!S.home)S.inputOpen=true;break;
+    case "revert":{const f=cur();f.text=f.orig;f.edited=false;f.diags.forEach(d=>{d.resolved=false});const src=REAL[f.name]||MOCK_FILES[f.name];if(src){Object.assign(f,mkFile(f.name,src,f.mock,f.engine));computeFollow()}break}
+    case "fix":{const [id,k]=arg.split("|");applyFix(id,+k);break}
+    case "fixall":applyAll(arg==="rdf"?isRdf:f=>f.name===arg);break;
+    case "focusd":case "hot":{const fn=arg.split("#")[0];S.file=fn;S.hot=arg;break}
+    case "cell":S.cell=arg;break;
+    case "shg":S.shGroup=+arg;S.cell=null;{const g=shGroups()[+arg];if(g&&g.data)S.file=g.data}break;
+    case "fmtv":S.fmtView=arg;break;
+    case "fmtall":{const F=files().filter(f=>f.formatted!=null);if(!F.length)return;const i=F.indexOf(cur());S.file=F[(i+1)%F.length].name;break}
+    case "sqv":S.sqView=arg;break;
+    case "conv":S.conv=arg;break;
+    case "cvsrcv":S.cvShowSrc=arg==="1";break;
+    case "copy":copy(arg);return;
+    case "addout":{const f=cur();const r=convert(f,S.conv);if(r.out){addTexts([{name:arg,text:r.out}]);toast("Added "+arg+" to the input")}return}
+    case "inopen":S.inputOpen=!S.inputOpen;break;
+    default:return}
+  render();
+  if(a==="focusd"||a==="hot"){const sc=document.getElementById("srcscroll");const m=sc&&sc.querySelector(".mk.hot");if(sc&&m&&sc.scrollHeight>sc.clientHeight)sc.scrollTop=m.offsetTop-sc.offsetTop-sc.clientHeight/2}}
+
+/* ------------------------------- switcher ------------------------------- */
+const VNAMES={A:"Tool tabs",B:"Tool home",C:"Command editor"};
+const BG={A:["#f4f5f8","#1d2330"],B:["#f7f3ea","#2b2620"],C:["#0f1216","#d6dde6"]};
+function readHash(){const h=(location.hash||"").replace("#","").toUpperCase();return ["A","B","C"].includes(h)?h:null}
+function setV(v){S.v=v;try{history.replaceState(null,"","#"+v)}catch(e){}render()}
+function stateText(){const c=counts();return JSON.stringify({variant:S.v+" ("+VNAMES[S.v]+")",tool:S.tool,file:S.file,sampleSet:S.set,files:S.order.map(n=>{const f=S.files[n];return n+" ["+LANGNAME[f.lang]+(f.engine?"":", no engine output")+(f.edited?", edited":"")+"] live diagnostics: "+live(f).length}),
+  shaclToolVisible:hasShapes(),counts:{validate:c.val,shacl:c.sh,sparql:c.sq,formatWouldChange:c.fmt,oneClickFixes:c.fixes},appliedFixes_MOCKED:S.applied,
+  convert:S.conv,selectedShaclCell:S.cell,highlightedDiagnostic:S.hot,B_home:S.v==="B"?S.home:undefined},null,2)}
+function render(){const app=document.getElementById("app");
+  app.innerHTML=(S.v==="A"?VA():S.v==="B"?VB():VC())+
+   `<div id="pbar"><button data-sw="-1" aria-label="previous variant">←</button><span class="lbl">${S.v} · ${VNAMES[S.v]}</span><button data-sw="1" aria-label="next variant">→</button><button data-sw="state">state</button></div>`+
+   (S.stateOpen?`<pre id="pstate">${esc(stateText())}</pre>`:"")+`<div id="toast" hidden></div>`;
+  document.body.style.background=BG[S.v][0];document.body.style.color=BG[S.v][1];document.body.style.margin="0";
+  const et=document.getElementById("editta");if(et)et.addEventListener("input",()=>{const f=cur();f.text=et.value;f.edited=f.text!==f.orig});
+  const ci=document.getElementById("cmd");if(ci){ci.addEventListener("input",()=>{S.cmd=ci.value;S.cmdSel=0;drawSugg()});ci.addEventListener("focus",drawSugg);ci.addEventListener("blur",()=>setTimeout(drawSugg,150));
+    ci.addEventListener("keydown",e=>{const M=cmdMatches(S.cmd);if(e.key==="ArrowDown"){S.cmdSel=Math.min(M.length-1,S.cmdSel+1);drawSugg();e.preventDefault()}else if(e.key==="ArrowUp"){S.cmdSel=Math.max(0,S.cmdSel-1);drawSugg();e.preventDefault()}else if(e.key==="Enter"){runCmd(S.cmdSel);e.preventDefault()}else if(e.key==="Escape"){ci.blur()}})}
+  if(S.paste){const p=document.getElementById("pasteta");if(p)p.focus()}}
+
+document.addEventListener("click",e=>{const sw=e.target.closest("[data-sw]");if(sw){const k=sw.getAttribute("data-sw");if(k==="state"){S.stateOpen=!S.stateOpen;render();return}
+    const V=["A","B","C"];setV(V[(V.indexOf(S.v)+(+k)+3)%3]);return}
+  const cm=e.target.closest("[data-cmd]");if(cm){runCmd(+cm.getAttribute("data-cmd"));return}
+  const el=e.target.closest("[data-act]");if(!el||el.tagName==="SELECT")return;act(el.getAttribute("data-act"),el.getAttribute("data-arg"),el)});
+document.addEventListener("change",e=>{const el=e.target;if(el.matches&&el.matches("select[data-act]")){const a=el.getAttribute("data-act");
+  if(a==="set")loadSet(el.value);else if(a==="cvsrc")S.file=el.value;render()}
+  if(el.id==="fpick"||el.id==="dpick"){takeFiles(el.files);el.value=""}});
+document.addEventListener("keydown",e=>{const t=e.target;const typing=t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.tagName==="SELECT"||t.isContentEditable);if(typing)return;
+  if(e.key==="ArrowLeft"||e.key==="ArrowRight"){const V=["A","B","C"];setV(V[(V.indexOf(S.v)+(e.key==="ArrowRight"?1:2))%3])}
+  else if(e.key==="/"&&S.v==="C"){const c=document.getElementById("cmd");if(c){c.focus();e.preventDefault()}}});
+document.addEventListener("dragover",e=>{e.preventDefault()});
+document.addEventListener("drop",async e=>{e.preventDefault();const items=e.dataTransfer&&e.dataTransfer.items;const out=[];
+  if(items&&items.length&&items[0].webkitGetAsEntry){const ens=[...items].map(i=>i.webkitGetAsEntry()).filter(Boolean);for(const en of ens)await readEntry(en,out)}else if(e.dataTransfer)out.push(...e.dataTransfer.files);takeFiles(out)});
+window.addEventListener("hashchange",()=>{const h=readHash();if(h&&h!==S.v){S.v=h;render()}});
+
+loadSet("all");S.v=readHash()||"A";render();
+</script>
+</body>
+</html>
