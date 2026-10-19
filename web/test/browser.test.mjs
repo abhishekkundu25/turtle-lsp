@@ -4,6 +4,7 @@
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import os from "node:os"
 import http from "node:http"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -190,6 +191,30 @@ test("pasted text and opened files join the input", async () => {
     await page.getByRole("button", { name: "extra.rq", exact: true }).waitFor()
   } finally {
     await close()
+  }
+})
+
+test("an opened folder adds its RDF and SPARQL files, subfolders included, and skips the rest", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-web-folder-"))
+  const { page, errors, close } = await open()
+  try {
+    fs.mkdirSync(path.join(dir, "shapes"))
+    fs.writeFileSync(path.join(dir, "people.ttl"), "@prefix ex: <https://e.org/> .\nex:a ex:b ex:c .\n")
+    fs.writeFileSync(path.join(dir, "shapes", "people.ttl"), "@prefix ex: <https://e.org/> .\nex:s ex:p ex:o .\n")
+    fs.writeFileSync(path.join(dir, "ask.rq"), "ASK { ?s ?p ?o }\n")
+    fs.writeFileSync(path.join(dir, "notes.md"), "# not RDF\n")
+    await page.getByRole("button", { name: "Open folder" }).click()
+    await page.locator("#folder-picker").setInputFiles(dir)
+    await settled(page)
+    for (const name of ["people.ttl", "shapes/people.ttl", "ask.rq"]) {
+      await page.getByRole("button", { name, exact: true }).waitFor()
+    }
+    assert.equal(await page.getByRole("button", { name: "notes.md", exact: true }).count(), 0)
+    await page.getByText("1 file skipped").waitFor()
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 

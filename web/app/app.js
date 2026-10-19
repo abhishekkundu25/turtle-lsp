@@ -10,6 +10,11 @@ const TOOLS = [
   { id: "sparql", name: "SPARQL", glyph: "?", job: "The query's problems and fixes, and the query formatted." },
 ]
 const DEBOUNCE_MS = 200
+// The files a folder contributes, by extension; anything else is skipped.
+const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru)$/i
+// Limits for a folder, so a large tree cannot stall the tab.
+const MAX_FOLDER_FILES = 500
+const MAX_FILE_BYTES = 10 * 1024 * 1024
 const SEVERITY = { 1: "Error", 2: "Warning", 3: "Info", 4: "Hint" }
 
 const $ = (id) => document.getElementById(id)
@@ -485,8 +490,40 @@ function download() {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-async function readFiles(list) {
-  addFiles(await Promise.all([...list].map(async (f) => ({ name: f.name, text: await f.text() }))))
+// Files chosen or dropped, each with its path in the folder it came from
+// (`path`, "" for a single file). From a folder only RDF and SPARQL files
+// are taken, named by their path below the folder.
+async function readFiles(entries) {
+  const take = []
+  let skipped = 0
+  for (const { file, path } of entries) {
+    const fromFolder = path.includes("/")
+    if ((fromFolder && !KNOWN.test(file.name)) || file.size > MAX_FILE_BYTES || take.length >= MAX_FOLDER_FILES) skipped++
+    else take.push({ file, name: fromFolder ? path.slice(path.indexOf("/") + 1) : file.name })
+  }
+  take.sort((a, b) => a.name.localeCompare(b.name))
+  addFiles(await Promise.all(take.map(async ({ file, name }) => ({ name, text: await file.text() }))))
+  if (skipped) notify(`${skipped} file${skipped === 1 ? "" : "s"} skipped: only Turtle, TriG, N-Triples, N-Quads and SPARQL files up to 10 MB are read, at most ${MAX_FOLDER_FILES}.`)
+}
+const picked = (list) => [...list].map((file) => ({ file, path: file.webkitRelativePath ?? "" }))
+// The files under dropped items, folders walked.
+async function dropped(items) {
+  const out = []
+  const walk = async (entry) => {
+    if (entry.isFile) {
+      const file = await new Promise((res, rej) => entry.file(res, rej))
+      out.push({ file, path: entry.fullPath.replace(/^\//, "") })
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader()
+      for (;;) {
+        const batch = await new Promise((res, rej) => reader.readEntries(res, rej))
+        if (!batch.length) break
+        for (const e of batch) await walk(e)
+      }
+    }
+  }
+  for (const entry of [...items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean)) await walk(entry)
+  return out
 }
 
 // ---- wiring ---------------------------------------------------------------------------
@@ -562,10 +599,13 @@ function wire() {
     addFiles([{ name: pastedName(text), text }])
   })
   $("open").addEventListener("click", () => $("picker").click())
-  $("picker").addEventListener("change", (e) => {
-    readFiles(e.target.files)
-    e.target.value = ""
-  })
+  $("open-folder").addEventListener("click", () => $("folder-picker").click())
+  for (const id of ["picker", "folder-picker"]) {
+    $(id).addEventListener("change", (e) => {
+      readFiles(picked(e.target.files))
+      e.target.value = ""
+    })
+  }
   $("download")?.addEventListener("click", download)
 
   const pane = document.querySelector(".pane.input")
@@ -577,7 +617,9 @@ function wire() {
   pane.addEventListener("drop", (e) => {
     e.preventDefault()
     pane.classList.remove("drop")
-    if (e.dataTransfer?.files?.length) readFiles(e.dataTransfer.files)
+    const items = e.dataTransfer?.items
+    if (items?.length && items[0].webkitGetAsEntry) dropped(items).then(readFiles)
+    else if (e.dataTransfer?.files?.length) readFiles(picked(e.dataTransfer.files))
   })
 }
 

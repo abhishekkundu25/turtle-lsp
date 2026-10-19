@@ -24,9 +24,11 @@
       <select class="isel" id="sample" aria-label="Sample input"></select>
       <button class="ibtn" id="paste">Paste</button>
       <button class="ibtn" id="open">Open files</button>
+      <button class="ibtn" id="open-folder">Open folder</button>
       <button class="ibtn" id="download">Download</button>
       <input type="file" id="picker" class="hidden-input" multiple accept=".ttl,.turtle,.trig,.nt,.nq,.rq,.sparql,.ru" tabindex="-1">
-      <span class="ihint">or drop files here</span>
+      <input type="file" id="folder-picker" class="hidden-input" webkitdirectory multiple tabindex="-1">
+      <span class="ihint">or drop files or a folder here</span>
     </div>
     <div id="paste-box" class="paste" hidden>
       <textarea id="paste-text" class="ita" aria-label="Pasted text" spellcheck="false" placeholder="Turtle, TriG, N-Triples, N-Quads or a SPARQL query"></textarea>
