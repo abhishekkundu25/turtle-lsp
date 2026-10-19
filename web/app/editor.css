@@ -108,7 +108,8 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line); b
 .status { grid-area: status; display: flex; align-items: center; background: var(--status); color: var(--status-fg); font-size: 12px; padding: 0 6px; }
 .st { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px; color: var(--status-fg); white-space: nowrap; }
 .st .codicon { font-size: 14px; }
-button.st:hover { background: rgba(255, 255, 255, .12); }
+button.st:hover, a.st:hover { background: rgba(255, 255, 255, .12); }
+a.st { text-decoration: none; }
 
 .quick { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); width: min(600px, calc(100vw - 32px)); background: var(--menu); box-shadow: 0 4px 20px var(--shadow); border-radius: 6px; padding: 6px; z-index: 50; }
 .quick input { width: 100%; height: 28px; font: inherit; color: var(--fg); background: var(--input); border: 1px solid var(--focus); outline: none; padding: 0 8px; border-radius: 3px; }
@@ -139,6 +140,9 @@ button.st:hover { background: rgba(255, 255, 255, .12); }
 .intro code { font: 12px var(--mono); }
 .intro-btns { display: flex; gap: 8px; margin-top: 18px; }
 .intro-btns button { padding: 6px 16px; border-radius: 4px; border: 1px solid var(--line); }
+.intro-foot { margin: 18px 0 0; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.intro-foot a { color: inherit; }
+.intro-foot a:hover { color: var(--fg); }
 .intro-btns button.pri { background: var(--focus); color: #fff; border-color: var(--focus); }
 .toast { position: fixed; right: 16px; bottom: 34px; max-width: 420px; background: var(--menu); color: var(--fg); box-shadow: 0 2px 12px var(--shadow); border-radius: 6px; padding: 10px 14px; z-index: 70; display: flex; gap: 12px; align-items: center; }
 .toast button { color: var(--focus); font-weight: 600; }

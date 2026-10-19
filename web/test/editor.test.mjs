@@ -594,6 +594,15 @@ test("a first visit shows the note on privacy once; the status bar shows it agai
     const note = page.getByRole("dialog", { name: "Private by design" })
     await note.waitFor()
     await note.getByText("No server ever sees your data").waitFor()
+    // The credit links open GitHub and the extension's page in a new tab.
+    const links = await note.locator(".intro-foot a").evaluateAll((as) => as.map((a) => [a.textContent, a.href, a.target, a.rel]))
+    const gh = "https://github.com/abhishekkundu25/turtle-lsp"
+    assert.deepEqual(links, [
+      ["turtle-lsp", gh, "_blank", "noopener"],
+      ["GitHub", gh, "_blank", "noopener"],
+      ["Get it for VS Code", "https://marketplace.visualstudio.com/items?itemName=abhishekkundu25.turtle-language-server", "_blank", "noopener"],
+    ])
+    assert.equal(await page.locator("#status-version").getAttribute("href"), `${gh}/releases`)
     assert.equal(await page.evaluate(() => document.activeElement.textContent), "Start editing")
     await note.getByRole("button", { name: "Start editing" }).click()
     await note.waitFor({ state: "hidden" })
