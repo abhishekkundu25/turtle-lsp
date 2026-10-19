@@ -152,10 +152,13 @@ pub fn vocabulary_terms<'a, K>(
     }
 }
 
-fn candidate_title(prefix: &str, c: &Value) -> Option<(String, String)> {
+/// The title of the quick fix that adds candidate `c` (an `undeclared-prefix`
+/// `data.candidates` entry) for `prefix`, with `keyword` `@prefix` or
+/// `PREFIX`, and its namespace.
+pub fn candidate_title(prefix: &str, c: &Value, keyword: &str) -> Option<(String, String)> {
     let ns = c["namespace"].as_str()?;
     let files = c["files"].as_u64().unwrap_or(0);
-    let mut title = format!("Add @prefix {prefix}: <{ns}>");
+    let mut title = format!("Add {keyword} {prefix}: <{ns}>");
     match files {
         0 => {}
         1 => title.push_str(" (used in 1 file)"),
@@ -368,7 +371,7 @@ pub fn code_actions(
                     _ => single.unwrap_or_default(),
                 };
                 for (i, c) in cands.iter().enumerate() {
-                    let Some((title, ns)) = candidate_title(p, c) else {
+                    let Some((title, ns)) = candidate_title(p, c, "@prefix") else {
                         continue;
                     };
                     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
@@ -398,24 +401,15 @@ pub fn code_actions(
                 }
             }
             "unused-prefix" | "duplicate-prefix" => {
-                let start = a.offset(enc, d.range.start).unwrap_or(0) as usize;
-                let end = a.offset(enc, d.range.end).unwrap_or(0) as usize;
-                // Delete the whole line(s) when the directive is alone on them.
-                let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
-                let line_end = text[end..].find('\n').map_or(text.len(), |i| end + i + 1);
-                let alone = text[line_start..start].trim().is_empty()
-                    && text[end..line_end].trim().is_empty();
-                let span = if alone {
-                    (line_start, line_end)
-                } else {
-                    (start, end)
-                };
+                let start = a.offset(enc, d.range.start).unwrap_or(0);
+                let end = a.offset(enc, d.range.end).unwrap_or(0);
+                let span = removal(text, crate::syntax::Span::new(start, end));
                 actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                     title: "Remove unused prefix".to_string(),
                     kind: Some(CodeActionKind::QUICKFIX),
                     diagnostics: Some(vec![d.clone()]),
                     edit: edit(vec![TextEdit {
-                        range: a.range(enc, crate::syntax::Span::new(span.0 as u32, span.1 as u32)),
+                        range: a.range(enc, span),
                         new_text: String::new(),
                     }]),
                     is_preferred: Some(true),
@@ -463,6 +457,20 @@ pub fn code_actions(
         }));
     }
     actions
+}
+
+/// What removing the directive at `span` deletes: its whole line(s) when it
+/// is alone on them, else just the directive.
+pub fn removal(text: &str, span: crate::syntax::Span) -> crate::syntax::Span {
+    let (start, end) = (span.start as usize, span.end as usize);
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[end..].find('\n').map_or(text.len(), |i| end + i + 1);
+    let alone = text[line_start..start].trim().is_empty() && text[end..line_end].trim().is_empty();
+    if alone {
+        crate::syntax::Span::new(line_start as u32, line_end as u32)
+    } else {
+        span
+    }
 }
 
 const OWL: &str = "http://www.w3.org/2002/07/owl#";

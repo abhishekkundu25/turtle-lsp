@@ -4,7 +4,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, Source};
-use crate::syntax::{Form, Iri, Span};
+use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span};
 use crate::workspace::{PREFIX_FILE, path_to_uri, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -51,7 +51,7 @@ pub fn uri(s: &str) -> Uri {
 }
 
 /// A document's path for a message, else its URI.
-fn shown(uri: &str) -> String {
+pub fn shown(uri: &str) -> String {
     uri_to_path(uri).map_or_else(|| uri.to_string(), |p| p.display().to_string())
 }
 
@@ -88,29 +88,33 @@ pub fn definition(
                 .into_iter()
                 .collect()
         }
-        Some((Target::Iri(iri), _)) => {
-            let mut out = Vec::new();
-            for d in k.descriptions(&iri) {
-                for span in d.spans {
-                    out.push(loc(d.analysis, enc, *span));
-                }
-            }
-            out.sort_by(|x, y| {
-                (
-                    x.uri.as_str() != a.uri.as_str(),
-                    x.uri.as_str(),
-                    x.range.start.line,
-                )
-                    .cmp(&(
-                        y.uri.as_str() != a.uri.as_str(),
-                        y.uri.as_str(),
-                        y.range.start.line,
-                    ))
-            });
-            out
-        }
+        Some((Target::Iri(iri), _)) => descriptions(k, enc, &iri, &a.uri),
         None => vec![],
     }
+}
+
+/// Where the workspace describes `iri`: the document `here` first, then by
+/// URI and line.
+pub fn descriptions<K: IriKey + ?Sized>(
+    k: &Knowledge,
+    enc: Encoding,
+    iri: &K,
+    here: &str,
+) -> Vec<Location> {
+    let mut out = Vec::new();
+    for d in k.descriptions(iri) {
+        for span in d.spans {
+            out.push(loc(d.analysis, enc, *span));
+        }
+    }
+    out.sort_by(|x, y| {
+        (x.uri.as_str() != here, x.uri.as_str(), x.range.start.line).cmp(&(
+            y.uri.as_str() != here,
+            y.uri.as_str(),
+            y.range.start.line,
+        ))
+    });
+    out
 }
 
 /// Where the resource's classes are described (`gy` in Neovim).
@@ -189,20 +193,31 @@ pub fn references(
                     }),
             );
         }
-        Some((Target::Iri(iri), _)) => {
-            for (_, _, other) in k
-                .docs_referencing(&iri)
-                .filter(|(_, src, _)| *src != Source::External)
-            {
-                let mut seen = FxHashSet::default();
-                for r in other.refs_of(&iri) {
-                    if (include_decl || !r.role.is_definition()) && seen.insert(r.span) {
-                        out.push(loc(other, enc, r.span));
-                    }
-                }
+        Some((Target::Iri(iri), _)) => out = term_references(k, enc, &iri, include_decl),
+        None => {}
+    }
+    out
+}
+
+/// Where the workspace's RDF documents (imports left out) use `iri`; its
+/// descriptions too with `include_decl`.
+pub fn term_references<K: IriKey + ?Sized>(
+    k: &Knowledge,
+    enc: Encoding,
+    iri: &K,
+    include_decl: bool,
+) -> Vec<Location> {
+    let mut out = Vec::new();
+    for (_, _, other) in k
+        .docs_referencing(iri)
+        .filter(|(_, src, _)| *src != Source::External)
+    {
+        let mut seen = FxHashSet::default();
+        for r in other.refs_of(iri) {
+            if (include_decl || !r.role.is_definition()) && seen.insert(r.span) {
+                out.push(loc(other, enc, r.span));
             }
         }
-        None => {}
     }
     out
 }
@@ -371,50 +386,67 @@ pub fn rename(
             }
         }
         Target::Iri(old) => {
-            let new_iri =
-                if let Some(i) = new_name.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
-                    i.to_string()
-                } else if let Some((p, l)) = new_name.split_once(':') {
-                    let ns = a
-                        .prefix_map()
-                        .get(p)
-                        .cloned()
-                        .ok_or(format!("prefix '{p}:' is not declared"))?;
-                    format!("{ns}{l}")
-                } else {
-                    let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
-                    format!("{}{new_name}", &old[..cut])
-                };
-            for (_, _, other) in k
-                .docs_referencing(&old)
-                .filter(|(_, src, _)| *src != Source::External)
-            {
-                let prefixes = other.prefix_map();
-                let mut seen = FxHashSet::default();
-                let mut edits = Vec::new();
-                for r in other.refs_of(&old) {
-                    if r.form == Form::A || !seen.insert(r.span) {
-                        continue;
-                    }
-                    let text = match crate::features::completion::shorten(&new_iri, &prefixes) {
-                        Some(s) if !matches!(r.form, Form::Iri) => s,
-                        _ => format!("<{new_iri}>"),
-                    };
-                    edits.push(TextEdit {
-                        range: other.range(enc, r.span),
-                        new_text: text,
-                    });
-                }
-                if !edits.is_empty() {
-                    changes.insert(uri(&other.uri), edits);
-                }
-            }
+            let new_iri = renamed_iri(&old, new_name, &a.prefix_map())?;
+            rename_term(k, enc, &old, &new_iri, &mut changes);
         }
     }
     Ok(WorkspaceEdit {
         changes: Some(changes),
         ..Default::default()
     })
+}
+
+/// The IRI term `old` is renamed to, from `new_name` as the user typed it:
+/// `<full IRI>`, `prefix:local` (with `prefixes`), or a local name that
+/// replaces `old`'s after its last `#`, `/` or `:`.
+pub fn renamed_iri(old: &str, new_name: &str, prefixes: &PrefixMap) -> Result<String, String> {
+    if let Some(i) = new_name.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
+        Ok(i.to_string())
+    } else if let Some((p, l)) = new_name.split_once(':') {
+        let ns = prefixes
+            .get(p)
+            .ok_or(format!("prefix '{p}:' is not declared"))?;
+        Ok(format!("{ns}{l}"))
+    } else {
+        let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
+        Ok(format!("{}{new_name}", &old[..cut]))
+    }
+}
+
+/// Adds to `changes` the edits that rename IRI `old` to `new_iri` in the
+/// workspace's RDF documents (imports left out): each use keeps its form, a
+/// prefixed name when a prefix of its document shortens the new IRI.
+pub fn rename_term(
+    k: &Knowledge,
+    enc: Encoding,
+    old: &str,
+    new_iri: &str,
+    changes: &mut HashMap<Uri, Vec<TextEdit>>,
+) {
+    for (_, _, other) in k
+        .docs_referencing(old)
+        .filter(|(_, src, _)| *src != Source::External)
+    {
+        let prefixes = other.prefix_map();
+        let mut seen = FxHashSet::default();
+        let mut edits = Vec::new();
+        for r in other.refs_of(old) {
+            if r.form == Form::A || !seen.insert(r.span) {
+                continue;
+            }
+            let text = match crate::features::completion::shorten(new_iri, &prefixes) {
+                Some(s) if !matches!(r.form, Form::Iri) => s,
+                _ => format!("<{new_iri}>"),
+            };
+            edits.push(TextEdit {
+                range: other.range(enc, r.span),
+                new_text: text,
+            });
+        }
+        if !edits.is_empty() {
+            changes.insert(uri(&other.uri), edits);
+        }
+    }
 }
 
 pub fn prefix_file_uri(path: &std::path::Path) -> Option<String> {

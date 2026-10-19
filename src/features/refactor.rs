@@ -159,7 +159,7 @@ pub fn wanted(only: Option<&[CodeActionKind]>, kind: &CodeActionKind) -> bool {
     })
 }
 
-fn workspace_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit {
+pub(crate) fn workspace_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit {
     let mut changes = std::collections::HashMap::new();
     changes.insert(uri.clone(), edits);
     WorkspaceEdit {
@@ -195,7 +195,7 @@ fn scope_at(a: &Analysis, offset: u32) -> PrefixMap {
 
 /// `prefix:local` for `iri` using the longest namespace in `scope` whose local
 /// part is a PN_LOCAL as is (no backslash escapes needed).
-fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
+pub(crate) fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
     scope
         .iter()
         .filter(|(name, ns)| {
@@ -245,7 +245,7 @@ fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
 
 /// A prefixed name replacing the IRI at `span`, with a space added where it
 /// would otherwise run into the neighbouring token (`a<x>`, `<x>ex:y`).
-fn spaced(text: &str, span: Span, pname: String) -> String {
+pub(crate) fn spaced(text: &str, span: Span, pname: String) -> String {
     let joins = |c: char| is_pn_chars(c) || matches!(c, ':' | '%' | '\\');
     let before = text[..span.start as usize].chars().next_back();
     let mut after = text[span.end as usize..].chars();
@@ -270,8 +270,15 @@ fn spaced(text: &str, span: Span, pname: String) -> String {
 /// valid absolute IRIs (the parser warns about others in `<...>`) without dot
 /// segments, which a `@base` would remove.
 fn expand(a: &Analysis, iri: &str) -> Option<String> {
+    expand_iri(iri, a.parsed.base.is_some())
+}
+
+/// `<iri>` for a prefixed name standing for `iri`; `None` for an invalid
+/// absolute IRI, or one with dot segments when `resolved` (a base would
+/// remove them).
+pub(crate) fn expand_iri(iri: &str, resolved: bool) -> Option<String> {
     if oxiri::Iri::parse(iri).is_err()
-        || (a.parsed.base.is_some() && iri.split(['/', '?', '#']).any(|s| s == "." || s == ".."))
+        || (resolved && iri.split(['/', '?', '#']).any(|s| s == "." || s == ".."))
     {
         return None;
     }
@@ -289,7 +296,7 @@ fn expand(a: &Analysis, iri: &str) -> Option<String> {
 }
 
 /// PN_PREFIX (the empty prefix included).
-fn is_pn_prefix(name: &str) -> bool {
+pub(crate) fn is_pn_prefix(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         None => true,
@@ -465,8 +472,15 @@ fn unique(base: &str, taken: &FxHashSet<String>) -> String {
 
 /// One directive of the leading block with the comment lines above it.
 struct Unit<'a> {
-    decl: &'a PrefixDecl,
+    name: &'a str,
     text: String,
+}
+
+/// A prefix declaration of a block to organise.
+pub(crate) struct Directive<'a> {
+    pub name: &'a str,
+    /// The whole declaration.
+    pub span: Span,
 }
 
 /// The edit that sorts the leading prefix block and drops duplicate and unused
@@ -494,7 +508,41 @@ fn organise(a: &Analysis, enc: Encoding) -> Option<TextEdit> {
     {
         return None;
     }
+    let block: Vec<Directive> = block
+        .iter()
+        .map(|d| Directive {
+            name: &d.name,
+            span: d.span,
+        })
+        .collect();
+    let used: FxHashSet<&str> = a.parsed.prefix_uses.iter().map(|u| &*u.name).collect();
+    let keep_unused = a.uri.ends_with(crate::workspace::PREFIX_FILE);
+    let (span, new_text) = organise_block(
+        text,
+        &block,
+        |name| keep_unused || used.contains(name),
+        false,
+    )?;
+    Some(TextEdit {
+        range: a.range(enc, span),
+        new_text,
+    })
+}
 
+/// The span to replace and its new text that sort a leading block of
+/// prefix declarations, drop the duplicates and those `keep` rejects, and
+/// carry along the comment lines above each one and the comment after it.
+/// The comment lines directly above the first one stay where they are with
+/// `header_stays`, else they move with it. `None` when the block holds
+/// something else or nothing would change.
+pub(crate) fn organise_block(
+    text: &str,
+    block: &[Directive],
+    keep: impl Fn(&str) -> bool,
+    header_stays: bool,
+) -> Option<(Span, String)> {
+    let (first, last) = (block.first()?, block.last()?);
+    let region_end = line_content_end(text, last.span.end as usize);
     let mut units: Vec<Unit> = Vec::new();
     let mut region_start = line_start(text, first.span.start as usize);
     let mut prev_end: Option<usize> = None;
@@ -527,7 +575,7 @@ fn organise(a: &Analysis, enc: Encoding) -> Option<TextEdit> {
                     return None;
                 }
                 // Comment lines directly above the first directive go with it.
-                while region_start > 0 {
+                while region_start > 0 && !header_stays {
                     let above = line_start(text, region_start - 1);
                     let line = text[above..region_start].trim();
                     if !line.starts_with('#') {
@@ -549,23 +597,21 @@ fn organise(a: &Analysis, enc: Encoding) -> Option<TextEdit> {
         }
         comments.push(text[start..stop].trim_end().to_string());
         units.push(Unit {
-            decl: d,
+            name: d.name,
             text: comments.join("\n"),
         });
         prev_end = Some(end);
     }
 
-    let used: FxHashSet<&str> = a.parsed.prefix_uses.iter().map(|u| &*u.name).collect();
-    let keep_unused = a.uri.ends_with(crate::workspace::PREFIX_FILE);
     let mut seen: FxHashSet<&str> = FxHashSet::default();
     let mut kept: Vec<(usize, &Unit)> = units
         .iter()
         .enumerate()
-        .filter(|(_, u)| seen.insert(&u.decl.name))
-        .filter(|(_, u)| keep_unused || used.contains(&*u.decl.name))
+        .filter(|(_, u)| seen.insert(u.name))
+        .filter(|(_, u)| keep(u.name))
         .collect();
     kept.sort_by(|(i, x), (j, y)| {
-        let (x, y): (&str, &str) = (&x.decl.name, &y.decl.name);
+        let (x, y): (&str, &str) = (x.name, y.name);
         x.to_lowercase()
             .cmp(&y.to_lowercase())
             .then(x.cmp(y))
@@ -584,10 +630,7 @@ fn organise(a: &Analysis, enc: Encoding) -> Option<TextEdit> {
         .map(|(_, u)| u.text.replace('\n', nl))
         .collect::<Vec<_>>()
         .join(nl);
-    Some(TextEdit {
-        range: a.range(enc, Span::new(region_start as u32, region_end as u32)),
-        new_text,
-    })
+    Some((Span::new(region_start as u32, region_end as u32), new_text))
 }
 
 /// The prefix directives before the first statement, if they form one run
@@ -640,7 +683,7 @@ fn line_start(text: &str, at: usize) -> usize {
 }
 
 /// End of the line's content (before `\r\n` or `\n`).
-fn line_content_end(text: &str, at: usize) -> usize {
+pub(crate) fn line_content_end(text: &str, at: usize) -> usize {
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     if end > at && text.as_bytes()[end - 1] == b'\r' {
         end - 1

@@ -22,8 +22,11 @@
 //! implementation) answer empty for SPARQL documents in the server, and
 //! SPARQL documents add nothing to workspace symbols.
 
+mod actions;
 pub mod diagnostics;
 pub mod edits;
+mod navigation;
+mod rename;
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::format::Options;
@@ -58,40 +61,40 @@ pub fn hover(_q: &SparqlAnalysis, _k: &Knowledge, _enc: Encoding, _pos: Position
 /// `textDocument/definition`. `prefix_file` is the `prefixes.ttl` supplying
 /// prefixes to the document's folder, if any, for a prefix that comes from it.
 pub fn definition(
-    _q: &SparqlAnalysis,
-    _k: &Knowledge,
-    _enc: Encoding,
-    _pos: Position,
-    _prefix_file: Option<Arc<Analysis>>,
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+    prefix_file: Option<Arc<Analysis>>,
 ) -> Vec<Location> {
-    Vec::new()
+    navigation::definition(q, k, enc, pos, prefix_file)
 }
 
 /// `textDocument/references`. `others` is empty unless the cursor is on a
 /// term (see the module documentation).
 pub fn references(
-    _q: &SparqlAnalysis,
-    _k: &Knowledge,
-    _enc: Encoding,
-    _pos: Position,
-    _include_declaration: bool,
-    _others: &[Arc<SparqlAnalysis>],
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+    include_declaration: bool,
+    others: &[Arc<SparqlAnalysis>],
 ) -> Vec<Location> {
-    Vec::new()
+    navigation::references(q, k, enc, pos, include_declaration, others)
 }
 
 /// `textDocument/documentHighlight`.
-pub fn highlights(_q: &SparqlAnalysis, _enc: Encoding, _pos: Position) -> Vec<DocumentHighlight> {
-    Vec::new()
+pub fn highlights(q: &SparqlAnalysis, enc: Encoding, pos: Position) -> Vec<DocumentHighlight> {
+    navigation::highlights(q, enc, pos)
 }
 
 /// `textDocument/prepareRename`.
 pub fn prepare_rename(
-    _q: &SparqlAnalysis,
-    _enc: Encoding,
-    _pos: Position,
+    q: &SparqlAnalysis,
+    enc: Encoding,
+    pos: Position,
 ) -> Option<PrepareRenameResponse> {
-    None
+    rename::prepare_rename(q, enc, pos)
 }
 
 /// `textDocument/rename`. An `Err` is refused with its message. `prefix_file`
@@ -99,15 +102,15 @@ pub fn prepare_rename(
 /// The RDF documents to rename a term in come from `k` (as for the Turtle
 /// rename in `features::navigation`).
 pub fn rename(
-    _q: &SparqlAnalysis,
-    _k: &Knowledge,
-    _enc: Encoding,
-    _pos: Position,
-    _new_name: &str,
-    _prefix_file: Option<Arc<Analysis>>,
-    _others: &[Arc<SparqlAnalysis>],
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+    new_name: &str,
+    prefix_file: Option<Arc<Analysis>>,
+    others: &[Arc<SparqlAnalysis>],
 ) -> Result<WorkspaceEdit, String> {
-    Err("nothing to rename here".into())
+    rename::rename(q, k, enc, pos, new_name, prefix_file, others)
 }
 
 /// `textDocument/documentSymbol`.
@@ -155,18 +158,18 @@ pub fn inlay_hints(
 /// `data.replace`). `resolve_edits`: the client resolves edits lazily
 /// (`codeAction/resolve`); a lazy action's `data.uri` must name the document.
 pub fn code_actions(
-    _q: &SparqlAnalysis,
-    _k: &Knowledge,
-    _enc: Encoding,
-    _params: &CodeActionParams,
-    _resolve_edits: bool,
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    params: &CodeActionParams,
+    resolve_edits: bool,
 ) -> Vec<CodeActionOrCommand> {
-    Vec::new()
+    actions::code_actions(q, k, enc, params, resolve_edits)
 }
 
 /// `codeAction/resolve` for an action whose `data.uri` is this document.
-pub fn resolve_code_action(_q: &SparqlAnalysis, _enc: Encoding, action: CodeAction) -> CodeAction {
-    action
+pub fn resolve_code_action(q: &SparqlAnalysis, enc: Encoding, action: CodeAction) -> CodeAction {
+    actions::resolve_code_action(q, enc, action)
 }
 
 /// `textDocument/formatting`: one edit replacing the whole text with
@@ -188,12 +191,12 @@ pub fn formatting(q: &SparqlAnalysis, enc: Encoding, opts: &Options) -> Vec<Text
 /// `Workspace::sparql_documents`). The server appends them to the RDF
 /// references.
 pub fn term_references(
-    _iri: &str,
-    _include_declaration: bool,
-    _docs: &[Arc<SparqlAnalysis>],
-    _enc: Encoding,
+    iri: &str,
+    include_declaration: bool,
+    docs: &[Arc<SparqlAnalysis>],
+    enc: Encoding,
 ) -> Vec<Location> {
-    Vec::new()
+    navigation::term_references(iri, include_declaration, docs, enc)
 }
 
 /// For an RDF document's `textDocument/rename` of term `old` (in `a`, to
@@ -201,12 +204,12 @@ pub fn term_references(
 /// SPARQL documents to `edit`, which already holds the RDF edits. An `Err`
 /// refuses the whole rename.
 pub fn rdf_term_rename(
-    _a: &Analysis,
-    _old: &str,
-    _new_name: &str,
-    _docs: &[Arc<SparqlAnalysis>],
-    _enc: Encoding,
-    _edit: &mut WorkspaceEdit,
+    a: &Analysis,
+    old: &str,
+    new_name: &str,
+    docs: &[Arc<SparqlAnalysis>],
+    enc: Encoding,
+    edit: &mut WorkspaceEdit,
 ) -> Result<(), String> {
-    Ok(())
+    rename::rdf_term_rename(a, old, new_name, docs, enc, edit)
 }
