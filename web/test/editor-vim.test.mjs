@@ -38,6 +38,8 @@ after(async () => {
 async function open({ context } = {}) {
   const ctx = context ?? (await browser.newContext({ viewport: { width: 1440, height: 900 } }))
   const page = await ctx.newPage()
+  // The first-visit note is tested on its own (editor.test.mjs).
+  await page.addInitScript(() => localStorage.setItem("rdf-editor-intro-seen", "1"))
   const errors = []
   const foreign = []
   const seen = { vimLoads: 0 }

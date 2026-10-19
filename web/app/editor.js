@@ -904,6 +904,14 @@ function closeMenu() {
   m.hidden = true
   if (m.contains(document.activeElement) || document.activeElement === document.body) menuFrom?.focus()
 }
+// The note on privacy, shown on the first visit and from the status bar's
+// "Kept in this browser". Closing it gives the editor the focus.
+const INTRO_SEEN = "rdf-editor-intro-seen"
+function intro(show = true) {
+  $("intro").hidden = !show
+  if (show) $("intro").querySelector("button").focus()
+  else editor?.focus()
+}
 let toastTimer
 function toast(message, action, run) {
   const t = $("toast")
@@ -1052,6 +1060,13 @@ function wire() {
   $("panel-toggle").addEventListener("click", () => togglePanel())
   $("status-problems").addEventListener("click", () => togglePanel())
   $("status-labels").addEventListener("click", toggleLabels)
+  $("status-storage").addEventListener("click", () => intro())
+  $("intro").addEventListener("click", (e) => {
+    const act = e.target.closest("[data-act]")?.dataset.act
+    if (act === "start" || e.target === $("intro")) intro(false)
+    else if (act === "open") (intro(false), ($("files-input").dataset.dir = ""), $("files-input").click())
+  })
+  $("intro").addEventListener("keydown", (e) => e.key === "Escape" && (e.stopPropagation(), intro(false)))
 
   $("act-explorer").addEventListener("click", () => showView("explorer"))
   $("act-outline").addEventListener("click", () => showView("outline"))
@@ -1221,6 +1236,9 @@ async function main() {
     resetWorkspace(WORKSPACE)
   }
   changed({ tree: true, tabs: true, problems: true, status: true })
+  try {
+    if (!localStorage.getItem(INTRO_SEEN)) (localStorage.setItem(INTRO_SEEN, "1"), intro())
+  } catch {}
   await new Promise((r) => (client.busy ? idle.push(r) : r()))
   document.body.dataset.ready = "true"
 }

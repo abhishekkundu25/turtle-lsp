@@ -46,6 +46,8 @@ async function open(system) {
     })
   })
   const page = await ctx.newPage()
+  // The first-visit note is tested on its own (editor.test.mjs).
+  await page.addInitScript(() => localStorage.setItem("rdf-editor-intro-seen", "1"))
   const errors = []
   const foreign = []
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()))

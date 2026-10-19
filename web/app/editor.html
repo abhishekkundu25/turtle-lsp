@@ -83,7 +83,7 @@
     <button class="st" id="status-labels" title="Show rdfs:label next to every term (Alt+L)">Labels: Off</button>
     <span class="st" id="status-pos"></span>
     <span class="st" id="status-lang"></span>
-    <span class="st" id="status-storage" title="Where your files are kept">Kept in this browser</span>
+    <button class="st" id="status-storage" title="Where your files are kept: everything stays in this browser">Kept in this browser</button>
     <span class="st" id="status-version">turtle-lsp</span>
   </footer>
 </div>
@@ -94,5 +94,17 @@
 <div class="menu" id="menu" role="menu" hidden></div>
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="dialog" id="dialog" role="dialog" aria-modal="true" aria-label="Unsaved changes" hidden></div>
+<div class="intro" id="intro" role="dialog" aria-modal="true" aria-labelledby="intro-title" hidden>
+  <div class="intro-card">
+    <span class="codicon codicon-lock intro-icon" aria-hidden="true"></span>
+    <h1 id="intro-title">Private by design</h1>
+    <p>Everything happens in this tab: parsing, validation, SHACL, formatting. No server ever sees your data. Close the tab, and only this browser remembers your work.</p>
+    <p class="intro-note">Fetching an <code>owl:imports</code> file goes online only when you click it.</p>
+    <div class="intro-btns">
+      <button class="pri" data-act="start">Start editing</button>
+      <button data-act="open">Open my files…</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

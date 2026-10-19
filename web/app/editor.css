@@ -129,6 +129,17 @@ button.st:hover { background: rgba(255, 255, 255, .12); }
 .dialog .db { display: flex; gap: 8px; justify-content: flex-end; }
 .dialog button { padding: 4px 14px; border-radius: 4px; border: 1px solid var(--line); }
 .dialog button.pri { background: var(--focus); color: #fff; border-color: var(--focus); }
+/* The first-visit note on privacy, over a dimmed workbench. */
+.intro { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: light-dark(rgba(0, 0, 0, .35), rgba(0, 0, 0, .6)); padding: 16px; }
+.intro-card { width: min(480px, 100%); background: var(--menu); color: var(--fg); box-shadow: 0 8px 40px var(--shadow); border-radius: 10px; padding: 24px 26px 20px; }
+.intro-icon { font-size: 28px; color: var(--focus); }
+.intro h1 { font-size: 18px; margin: 8px 0 10px; }
+.intro p { margin: 0 0 12px; line-height: 1.5; }
+.intro .intro-note { color: var(--muted); font-size: 12px; }
+.intro code { font: 12px var(--mono); }
+.intro-btns { display: flex; gap: 8px; margin-top: 18px; }
+.intro-btns button { padding: 6px 16px; border-radius: 4px; border: 1px solid var(--line); }
+.intro-btns button.pri { background: var(--focus); color: #fff; border-color: var(--focus); }
 .toast { position: fixed; right: 16px; bottom: 34px; max-width: 420px; background: var(--menu); color: var(--fg); box-shadow: 0 2px 12px var(--shadow); border-radius: 6px; padding: 10px 14px; z-index: 70; display: flex; gap: 12px; align-items: center; }
 .toast button { color: var(--focus); font-weight: 600; }
 

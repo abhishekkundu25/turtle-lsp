@@ -35,6 +35,8 @@ after(async () => {
 async function open() {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const page = await ctx.newPage()
+  // The first-visit note is tested on its own (editor.test.mjs).
+  await page.addInitScript(() => localStorage.setItem("rdf-editor-intro-seen", "1"))
   const errors = []
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()))
   page.on("pageerror", (e) => errors.push(String(e)))

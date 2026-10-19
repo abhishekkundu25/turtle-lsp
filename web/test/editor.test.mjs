@@ -38,9 +38,11 @@ after(async () => {
 
 // A fresh browser profile on the editor, ready: Monaco loaded, the server
 // started and the first diagnostics shown.
-async function open({ context } = {}) {
+async function open({ context, intro = false } = {}) {
   const ctx = context ?? (await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true }))
   const page = await ctx.newPage()
+  // The first-visit note is tested on its own (`intro: true`).
+  if (!intro) await page.addInitScript(() => localStorage.setItem("rdf-editor-intro-seen", "1"))
   const errors = []
   const foreign = []
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()))
@@ -581,6 +583,39 @@ test("Escape gives the focus back: the menu, a name being edited, Settings", asy
     await page.getByRole("searchbox", { name: "Search settings" }).waitFor()
     await page.keyboard.press("Escape")
     assert.equal(await focusIs(page), "editor 1")
+  } finally {
+    await close()
+  }
+})
+
+test("a first visit shows the note on privacy once; the status bar shows it again", async () => {
+  const { page, errors, foreign, close } = await open({ intro: true })
+  try {
+    const note = page.getByRole("dialog", { name: "Private by design" })
+    await note.waitFor()
+    await note.getByText("No server ever sees your data").waitFor()
+    assert.equal(await page.evaluate(() => document.activeElement.textContent), "Start editing")
+    await note.getByRole("button", { name: "Start editing" }).click()
+    await note.waitFor({ state: "hidden" })
+    assert.equal(await focusIs(page), "editor 0")
+    // Not again after a reload.
+    await page.reload()
+    await page.locator("body[data-ready='true']").waitFor({ timeout: 20_000 })
+    assert.equal(await note.isVisible(), false)
+    // "Kept in this browser" shows it; Escape closes it, back to the editor.
+    await page.locator("#status-storage").click()
+    await note.waitFor()
+    await page.keyboard.press("Escape")
+    await note.waitFor({ state: "hidden" })
+    assert.equal(await focusIs(page), "editor 0")
+    // "Open my files…" goes straight to the file picker.
+    await page.locator("#status-storage").click()
+    const chooser = page.waitForEvent("filechooser")
+    await note.getByRole("button", { name: "Open my files…" }).click()
+    await chooser
+    await note.waitFor({ state: "hidden" })
+    assert.deepEqual(errors, [])
+    assert.deepEqual(foreign, [])
   } finally {
     await close()
   }
