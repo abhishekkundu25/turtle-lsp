@@ -21,11 +21,12 @@ use spargebra::algebra::{
     AggregateExpression, Expression, Function, GraphPattern, OrderExpression,
 };
 use spargebra::term::{
-    BlankNode, Literal, NamedNode, NamedNodePattern, NamedOrBlankNode, Term, TermPattern, Triple,
-    TriplePattern, Variable,
+    BlankNode, GroundTerm, Literal, NamedNode, NamedNodePattern, NamedOrBlankNode, Term,
+    TermPattern, Triple, TriplePattern, Variable,
 };
 use spargebra::{Query, SparqlParser};
 use std::convert::Infallible;
+use std::sync::Arc;
 
 /// The IRI `$shapesGraph` is bound to.
 pub const SHAPES_GRAPH: &str = "urn:x-shacl:shapes-graph";
@@ -450,7 +451,9 @@ pub enum Answer {
 /// Runs queries with pre-bound variables. The pre-bound values are written
 /// into the query as constants so the optimizer can plan the query around
 /// them; queries whose values cannot be written as constants (RDF-star
-/// triples) run unoptimized with the values as initial bindings.
+/// triples) run unoptimized with the values as initial bindings. Planning
+/// costs more than running a typical check on one focus node, so
+/// [`Engine::run_batch`] plans a check once for many focus nodes.
 pub struct Engine {
     optimized: QueryEvaluator,
     plain: QueryEvaluator,
@@ -484,7 +487,7 @@ impl Engine {
         query: &Query,
         bindings: Vec<(Variable, Term)>,
     ) -> Result<Answer, String> {
-        let substituted = substitute(query, &bindings);
+        let substituted = substitute(query, &bindings, None);
         let prepared = match &substituted {
             Some(q) => self.optimized.prepare(q),
             None => {
@@ -504,13 +507,413 @@ impl Engine {
             QueryResults::Graph(_) => Err("not a SELECT or ASK query".into()),
         }
     }
+
+    /// Runs a [`batchable`] query once for many focus nodes: `$this` stays a
+    /// variable joined with the focus nodes (a `VALUES` block), the other
+    /// pre-bound variables in `bindings` are written in as constants. Each
+    /// focus node gets the solutions [`Engine::run`] would give it, without
+    /// `$this`. Focus nodes that cannot be passed this way (RDF-star triples)
+    /// are left out of the map; `None` when `bindings` cannot be substituted.
+    pub fn run_batch(
+        &self,
+        ix: &Index,
+        query: &Query,
+        bindings: &[(Variable, Term)],
+        focus: &[Id],
+    ) -> Option<Result<ByFocus, String>> {
+        let this = Variable::new_unchecked("this");
+        let mut out = ByFocus::default();
+        let mut rows = Vec::new();
+        for &f in focus {
+            let value = match ix.term(f) {
+                Term::NamedNode(n) => GroundTerm::NamedNode(n),
+                Term::Literal(l) => GroundTerm::Literal(l),
+                Term::BlankNode(b) => GroundTerm::NamedNode(Substitution::iri_for(&b.into())),
+                Term::Triple(_) => continue,
+            };
+            let back = match &value {
+                GroundTerm::NamedNode(n) => ix.internal(&n.clone().into()),
+                GroundTerm::Literal(l) => ix.internal(&l.clone().into()),
+                GroundTerm::Triple(_) => continue,
+            };
+            if back == STerm::Id(f) && out.insert(f, Vec::new()).is_none() {
+                rows.push(vec![Some(value)]);
+            }
+        }
+        if rows.is_empty() {
+            return Some(Ok(out));
+        }
+        let query = substitute(query, bindings, Some((&this, &rows)))?;
+        let solutions = match self.optimized.prepare(&query).execute(ix) {
+            Ok(QueryResults::Solutions(s)) => s,
+            Ok(_) => return Some(Err("not a SELECT query".into())),
+            Err(e) => return Some(Err(e.to_string())),
+        };
+        let mut vars: Option<Arc<[Variable]>> = None;
+        for sol in solutions {
+            let sol = match sol {
+                Ok(s) => s,
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            let Some(list) = sol
+                .get(&this)
+                .and_then(|t| ix.id(t))
+                .and_then(|f| out.get_mut(&f))
+            else {
+                return Some(Err("a solution without a focus node".into()));
+            };
+            let vars = vars.get_or_insert_with(|| {
+                sol.variables()
+                    .iter()
+                    .filter(|v| **v != this)
+                    .cloned()
+                    .collect()
+            });
+            let values: Vec<Option<Term>> = sol
+                .variables()
+                .iter()
+                .zip(sol.values())
+                .filter(|(v, _)| **v != this)
+                .map(|(_, t)| t.clone())
+                .collect();
+            list.push(QuerySolution::from((Arc::clone(vars), values)));
+        }
+        Some(Ok(out))
+    }
+}
+
+/// Solutions by focus node.
+pub type ByFocus = FxHashMap<Id, Vec<QuerySolution>>;
+
+type Rows = Vec<Vec<Option<GroundTerm>>>;
+
+/// Whether `query` can run once for many focus nodes ([`Engine::run_batch`])
+/// with the same solutions per focus node as with `$this` pre-bound: the
+/// focus nodes, as a `VALUES` block, can be joined in ([`push`]).
+pub fn batchable(query: &Query) -> bool {
+    match query {
+        Query::Select { pattern, .. } => {
+            push(&mut pattern.clone(), &Variable::new_unchecked("this"), None)
+        }
+        _ => false,
+    }
+}
+
+/// Joins `p` with `rows` (values of `v`) so that the result equals `p` with
+/// each value written in for `v`, joined with that value. The join goes
+/// around the largest part that is [`joinable`] as it is (evaluated once,
+/// then matched with the values), else deeper, below a FILTER, BIND or
+/// OPTIONAL that then sees `v` bound. `None` checks only; false (and `p`
+/// unchanged) when there is no such place.
+fn push(p: &mut GraphPattern, v: &Variable, rows: Option<&Rows>) -> bool {
+    use GraphPattern as G;
+    if joinable(p, v) {
+        if let Some(rows) = rows {
+            let body = std::mem::replace(p, G::Bgp { patterns: vec![] });
+            *p = G::Join {
+                left: Box::new(G::Values {
+                    variables: vec![v.clone()],
+                    bindings: rows.clone(),
+                }),
+                right: Box::new(body),
+            };
+        }
+        return true;
+    }
+    match p {
+        G::Filter { expr, inner } => expr_joinable(expr, v) && push(inner, v, rows),
+        G::Extend {
+            inner,
+            variable,
+            expression,
+        } => variable != v && expr_joinable(expression, v) && push(inner, v, rows),
+        G::LeftJoin {
+            left,
+            right,
+            expression,
+        } => {
+            joinable(right, v)
+                && expression.as_ref().is_none_or(|e| expr_joinable(e, v))
+                && push(left, v, rows)
+        }
+        G::Join { left, right } => {
+            if joinable(right, v) && push(left, v, None) {
+                push(left, v, rows)
+            } else {
+                joinable(left, v) && push(right, v, rows)
+            }
+        }
+        G::Union { left, right } => {
+            push(left, v, None) && push(right, v, None) && {
+                push(left, v, rows);
+                push(right, v, rows)
+            }
+        }
+        G::Graph { name, inner } => {
+            !matches!(name, NamedNodePattern::Variable(n) if n == v) && push(inner, v, rows)
+        }
+        G::OrderBy { inner, expression } => {
+            expression.iter().all(|o| match o {
+                OrderExpression::Asc(e) | OrderExpression::Desc(e) => expr_joinable(e, v),
+            }) && push(inner, v, rows)
+        }
+        G::Project { inner, variables } => variables.contains(v) && push(inner, v, rows),
+        G::Distinct { inner } | G::Reduced { inner } => push(inner, v, rows),
+        G::Group {
+            inner,
+            variables,
+            aggregates,
+        } => {
+            variables.contains(v)
+                && aggregates.iter().all(|(_, a)| match a {
+                    AggregateExpression::CountSolutions { .. } => true,
+                    AggregateExpression::FunctionCall { expr, .. } => expr_joinable(expr, v),
+                })
+                && push(inner, v, rows)
+        }
+        _ => false,
+    }
+}
+
+/// Every solution of `p` binds `v`.
+fn binds(p: &GraphPattern, v: &Variable) -> bool {
+    use GraphPattern as G;
+    match p {
+        G::Bgp { patterns } => patterns.iter().any(|tp| triple_mentions(tp, v)),
+        G::Path {
+            subject, object, ..
+        } => term_mentions(subject, v) || term_mentions(object, v),
+        G::Join { left, right } | G::Lateral { left, right } => binds(left, v) || binds(right, v),
+        G::Union { left, right } => binds(left, v) && binds(right, v),
+        G::LeftJoin { left, .. } | G::Minus { left, .. } => binds(left, v),
+        G::Graph { name, inner } => {
+            matches!(name, NamedNodePattern::Variable(n) if n == v) || binds(inner, v)
+        }
+        G::Project { inner, variables } => variables.contains(v) && binds(inner, v),
+        G::Group {
+            inner, variables, ..
+        } => variables.contains(v) && binds(inner, v),
+        G::Filter { inner, .. }
+        | G::Extend { inner, .. }
+        | G::OrderBy { inner, .. }
+        | G::Distinct { inner }
+        | G::Reduced { inner }
+        | G::Slice { inner, .. } => binds(inner, v),
+        G::Values { .. } | G::Service { .. } => false,
+    }
+}
+
+/// `p` joined with a binding of `v` gives the solutions of `p` with `v`
+/// written in, plus that binding.
+fn joinable(p: &GraphPattern, v: &Variable) -> bool {
+    use GraphPattern as G;
+    if !mentions(p, v) {
+        return true;
+    }
+    match p {
+        G::Bgp { .. } | G::Path { .. } => true,
+        G::Join { left, right } | G::Union { left, right } => {
+            joinable(left, v) && joinable(right, v)
+        }
+        G::LeftJoin {
+            left,
+            right,
+            expression,
+        } => {
+            binds(left, v)
+                && joinable(left, v)
+                && joinable(right, v)
+                && expression.as_ref().is_none_or(|e| expr_joinable(e, v))
+        }
+        G::Filter { expr, inner } => {
+            (binds(inner, v) || !expr_mentions(expr, v))
+                && expr_joinable(expr, v)
+                && joinable(inner, v)
+        }
+        G::Extend {
+            inner,
+            variable,
+            expression,
+        } => {
+            variable != v
+                && (binds(inner, v) || !expr_mentions(expression, v))
+                && expr_joinable(expression, v)
+                && joinable(inner, v)
+        }
+        G::OrderBy { inner, expression } => {
+            binds(inner, v)
+                && expression.iter().all(|o| match o {
+                    OrderExpression::Asc(e) | OrderExpression::Desc(e) => expr_joinable(e, v),
+                })
+                && joinable(inner, v)
+        }
+        G::Graph { name, inner } => {
+            !matches!(name, NamedNodePattern::Variable(n) if n == v) && joinable(inner, v)
+        }
+        G::Project { inner, variables } => variables.contains(v) && joinable(inner, v),
+        G::Distinct { inner } | G::Reduced { inner } => joinable(inner, v),
+        G::Group {
+            inner,
+            variables,
+            aggregates,
+        } => {
+            variables.contains(v)
+                && binds(inner, v)
+                && joinable(inner, v)
+                && aggregates.iter().all(|(_, a)| match a {
+                    AggregateExpression::CountSolutions { .. } => true,
+                    AggregateExpression::FunctionCall { expr, .. } => expr_joinable(expr, v),
+                })
+        }
+        G::Slice { .. }
+        | G::Minus { .. }
+        | G::Lateral { .. }
+        | G::Values { .. }
+        | G::Service { .. } => false,
+    }
+}
+
+/// `e`, evaluated on solutions that bind `v`, gives the same value with `v`
+/// written in: its EXISTS patterns are [`joinable`] (an implementation may
+/// join them with the solution rather than substitute it).
+fn expr_joinable(e: &Expression, v: &Variable) -> bool {
+    let mut ok = true;
+    walk_expr(e, &mut |x| {
+        if let Expression::Exists(p) = x {
+            ok &= joinable(p, v);
+        }
+    });
+    ok
+}
+
+fn term_mentions(t: &TermPattern, v: &Variable) -> bool {
+    match t {
+        TermPattern::Variable(x) => x == v,
+        TermPattern::Triple(tp) => triple_mentions(tp, v),
+        _ => false,
+    }
+}
+
+fn triple_mentions(tp: &TriplePattern, v: &Variable) -> bool {
+    term_mentions(&tp.subject, v)
+        || matches!(&tp.predicate, NamedNodePattern::Variable(x) if x == v)
+        || term_mentions(&tp.object, v)
+}
+
+/// `p` uses `v` anywhere, subqueries and expressions included.
+fn mentions(p: &GraphPattern, v: &Variable) -> bool {
+    use GraphPattern as G;
+    match p {
+        G::Bgp { .. } | G::Path { .. } => binds(p, v),
+        G::Join { left, right }
+        | G::Lateral { left, right }
+        | G::Union { left, right }
+        | G::Minus { left, right } => mentions(left, v) || mentions(right, v),
+        G::LeftJoin {
+            left,
+            right,
+            expression,
+        } => {
+            mentions(left, v)
+                || mentions(right, v)
+                || expression.as_ref().is_some_and(|e| expr_mentions(e, v))
+        }
+        G::Filter { expr, inner } => expr_mentions(expr, v) || mentions(inner, v),
+        G::Extend {
+            inner,
+            variable,
+            expression,
+        } => variable == v || expr_mentions(expression, v) || mentions(inner, v),
+        G::OrderBy { inner, expression } => {
+            mentions(inner, v)
+                || expression.iter().any(|o| match o {
+                    OrderExpression::Asc(e) | OrderExpression::Desc(e) => expr_mentions(e, v),
+                })
+        }
+        G::Graph { name, inner } => {
+            matches!(name, NamedNodePattern::Variable(n) if n == v) || mentions(inner, v)
+        }
+        G::Service { name, inner, .. } => {
+            matches!(name, NamedNodePattern::Variable(n) if n == v) || mentions(inner, v)
+        }
+        G::Project { inner, variables } => variables.contains(v) || mentions(inner, v),
+        G::Distinct { inner } | G::Reduced { inner } | G::Slice { inner, .. } => mentions(inner, v),
+        G::Group {
+            inner,
+            variables,
+            aggregates,
+        } => {
+            variables.contains(v)
+                || mentions(inner, v)
+                || aggregates.iter().any(|(x, a)| {
+                    x == v
+                        || match a {
+                            AggregateExpression::CountSolutions { .. } => false,
+                            AggregateExpression::FunctionCall { expr, .. } => {
+                                expr_mentions(expr, v)
+                            }
+                        }
+                })
+        }
+        G::Values { variables, .. } => variables.contains(v),
+    }
+}
+
+fn expr_mentions(e: &Expression, v: &Variable) -> bool {
+    let mut found = false;
+    walk_expr(e, &mut |x| match x {
+        Expression::Variable(x) | Expression::Bound(x) => found |= x == v,
+        Expression::Exists(p) => found |= mentions(p, v),
+        _ => {}
+    });
+    found
+}
+
+/// Calls `f` on `e` and each expression in it (not inside EXISTS patterns).
+fn walk_expr(e: &Expression, f: &mut dyn FnMut(&Expression)) {
+    use Expression as E;
+    f(e);
+    match e {
+        E::Or(a, b)
+        | E::And(a, b)
+        | E::Equal(a, b)
+        | E::SameTerm(a, b)
+        | E::Greater(a, b)
+        | E::GreaterOrEqual(a, b)
+        | E::Less(a, b)
+        | E::LessOrEqual(a, b)
+        | E::Add(a, b)
+        | E::Subtract(a, b)
+        | E::Multiply(a, b)
+        | E::Divide(a, b) => {
+            walk_expr(a, f);
+            walk_expr(b, f);
+        }
+        E::UnaryPlus(a) | E::UnaryMinus(a) | E::Not(a) => walk_expr(a, f),
+        E::In(a, list) => {
+            walk_expr(a, f);
+            list.iter().for_each(|x| walk_expr(x, f));
+        }
+        E::If(a, b, c) => {
+            walk_expr(a, f);
+            walk_expr(b, f);
+            walk_expr(c, f);
+        }
+        E::Coalesce(list) | E::FunctionCall(_, list) => list.iter().for_each(|x| walk_expr(x, f)),
+        _ => {}
+    }
 }
 
 /// `query` with every occurrence of a pre-bound variable replaced by its
 /// value. A projection drops the variable (the caller knows its value), a
 /// GROUP BY keeps it as a key bound to the value. `None` when a value or a
-/// construct cannot be substituted.
-fn substitute(query: &Query, bindings: &[(Variable, Term)]) -> Option<Query> {
+/// construct cannot be substituted. With `join`, the pattern is also
+/// joined with values of a variable that stays ([`push`]).
+fn substitute(
+    query: &Query,
+    bindings: &[(Variable, Term)],
+    join: Option<(&Variable, &Rows)>,
+) -> Option<Query> {
     if bindings.iter().any(|(_, t)| matches!(t, Term::Triple(_))) {
         return None;
     }
@@ -523,7 +926,14 @@ fn substitute(query: &Query, bindings: &[(Variable, Term)]) -> Option<Query> {
     if !sub.pattern(pattern) {
         return None;
     }
-    order_exists(pattern, &[]);
+    let mut outer = Vec::new();
+    if let Some((var, rows)) = join {
+        if !push(pattern, var, Some(rows)) {
+            return None;
+        }
+        outer.push(format!("?{}", var.as_str()));
+    }
+    order_exists(pattern, &outer);
     Some(query)
 }
 
@@ -689,6 +1099,12 @@ fn order_exists_expr(e: &mut Expression, bound: &[Name]) {
     }
 }
 
+fn is_type(p: &NamedNodePattern) -> bool {
+    matches!(p, NamedNodePattern::NamedNode(n) if n.as_str() == RDF_TYPE)
+}
+
+const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+
 /// Reorders `p` when it is made of triples and paths only.
 fn order_plain(p: &mut GraphPattern, bound: &[Name]) {
     fn flatten(p: &GraphPattern, out: &mut Vec<GraphPattern>) -> bool {
@@ -726,6 +1142,8 @@ fn order_plain(p: &mut GraphPattern, bound: &[Name]) {
                     (true, true, true) => 1,
                     (true, true, false) => 10,
                     (true, false, true) => 2,
+                    // Classes have many instances: another predicate first.
+                    (false, true, true) if is_type(&tp.predicate) => 20_000,
                     (false, true, true) => 10_000,
                     (true, false, false) => 100,
                     (false, false, true) => 100_000,
@@ -1026,6 +1444,34 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn batchable_queries() {
+        let ok = |q: &str| batchable(&prepare(q, &[], None, &PRE).unwrap());
+        assert!(ok("SELECT $this WHERE { $this <http://e/p> ?o }"));
+        assert!(ok(
+            "SELECT $this WHERE { FILTER NOT EXISTS { $this <http://e/p> ?o } }"
+        ));
+        assert!(ok(
+            "SELECT $this ?o WHERE { { $this <http://e/p> ?o } UNION { ?o <http://e/p> $this } }"
+        ));
+        assert!(ok(
+            "SELECT $this (COUNT(?o) AS ?n) WHERE { $this <http://e/p> ?o } GROUP BY $this HAVING (?n > 1)"
+        ));
+        // LIMIT counts all focus nodes together.
+        assert!(!ok("SELECT $this WHERE { $this <http://e/p> ?o } LIMIT 1"));
+        // The focus nodes are joined in on the left of the OPTIONAL.
+        assert!(ok(
+            "SELECT $this ?o WHERE { ?o <http://e/p> 1 OPTIONAL { $this <http://e/q> ?o } }"
+        ));
+        assert!(!ok(
+            "SELECT $this ?o WHERE { { SELECT $this ?o WHERE { $this <http://e/q> ?o } LIMIT 1 } }"
+        ));
+        // An aggregate over all focus nodes at once.
+        assert!(!ok(
+            "SELECT (COUNT(*) AS ?n) WHERE { $this <http://e/p> ?o } HAVING (COUNT(*) > 1)"
+        ));
     }
 
     #[test]

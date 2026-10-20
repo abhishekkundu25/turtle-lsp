@@ -30,6 +30,7 @@ use super::sparql::{self, Answer, Index, PreBound};
 use crate::syntax::{Iri, RDF, XSD};
 use regex::{Regex, RegexBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
+use spareval::QuerySolution;
 use spargebra::Query;
 use spargebra::term::{NamedNode, Term as RdfTerm, Variable};
 use std::cmp::Ordering;
@@ -317,6 +318,8 @@ struct Check {
     bindings: Vec<(Variable, Id)>,
     /// The node holding the query.
     source: Id,
+    /// May run once for many focus nodes ([`sparql::batchable`]).
+    batch: bool,
 }
 
 /// A SPARQL-based constraint component.
@@ -493,6 +496,11 @@ struct Shape {
 }
 
 const MAX_DEPTH: usize = 64;
+
+/// Shapes with fewer focus nodes run SPARQL checks one by one: a batched run
+/// may evaluate the query over the whole graph before matching the focus
+/// nodes, which pays off only for many.
+const MIN_BATCH: usize = 16;
 
 /// The property path rooted at `node`.
 pub fn parse_path(g: &Graph, node: Id) -> Path {
@@ -761,6 +769,7 @@ impl Compiler<'_, '_> {
         if let Some((query, _)) = prepare(g, c, false, path, &SPARQL_CONSTRAINT, &mut self.failures)
         {
             let check = Check {
+                batch: sparql::batchable(&query),
                 query,
                 ask: false,
                 constraint: Some(c),
@@ -838,6 +847,7 @@ impl Compiler<'_, '_> {
                 shape.messages.clone()
             };
             let check = Check {
+                batch: !is_ask && sparql::batchable(&query),
                 query,
                 ask: is_ask,
                 constraint: None,
@@ -910,6 +920,15 @@ struct Run<'r, 'g, 'a> {
     /// `cancelled` said so between two queries.
     stopped: bool,
     failures: Vec<Failure>,
+    /// The focus nodes of the shape being validated: a SPARQL check that
+    /// reaches one of them runs once for all of them, when there are at
+    /// least `min_batch`.
+    min_batch: usize,
+    batch: Vec<Id>,
+    in_batch: FxHashSet<Id>,
+    /// The solutions of such runs per focus node, by shape and check (`None`
+    /// when the check runs per focus node).
+    batched: FxHashMap<(Id, *const Check), Option<sparql::ByFocus>>,
 }
 
 fn kind_bits(t: Term) -> u8 {
@@ -1351,7 +1370,15 @@ impl Run<'_, '_, '_> {
                     .find(|b| b.0.as_str() == n)
                     .map(|b| b.1.clone())
             };
-            match self.ev.run(ix, &check.query, bindings.clone()) {
+            let answer = match value {
+                None => self.batched(ix, shape, check, focus, &base[1..]),
+                Some(_) => None,
+            };
+            let answer = match answer {
+                Some(solutions) => Ok(Answer::Solutions(solutions)),
+                None => self.ev.run(ix, &check.query, bindings.clone()),
+            };
+            match answer {
                 Err(e) => self.fail(check.source, e),
                 Ok(Answer::Boolean(true)) => {}
                 Ok(Answer::Boolean(false)) => {
@@ -1385,6 +1412,38 @@ impl Run<'_, '_, '_> {
                 }
             }
         }
+    }
+
+    fn set_batch(&mut self, mut focus: Vec<Id>) {
+        dedup(&mut focus);
+        self.in_batch = focus.iter().copied().collect();
+        self.batch = focus;
+        self.batched.clear();
+    }
+
+    /// The solutions of `check` for `focus` from one run for the whole
+    /// batch (with `constants` pre-bound), when `focus` is in it and the
+    /// check can run that way.
+    fn batched(
+        &mut self,
+        ix: &Index,
+        shape: &Shape,
+        check: &Check,
+        focus: Id,
+        constants: &[(Variable, RdfTerm)],
+    ) -> Option<Vec<QuerySolution>> {
+        if !check.batch || self.batch.len() < self.min_batch || !self.in_batch.contains(&focus) {
+            return None;
+        }
+        let key = (shape.node, check as *const Check);
+        let found = self.batched.entry(key).or_insert_with(|| {
+            match self.ev.run_batch(ix, &check.query, constants, &self.batch) {
+                Some(Ok(map)) => Some(map),
+                _ => None,
+            }
+        });
+        // Taken: a second check of the same focus node runs on its own.
+        found.as_mut()?.remove(&focus)
     }
 
     /// The focus nodes a SPARQL-based target (`sh:target` with `sh:select`)
@@ -1525,6 +1584,16 @@ pub fn validate_report(
     cancelled: &dyn Fn() -> bool,
     keep: &dyn Fn(Id) -> bool,
 ) -> Option<Report> {
+    report_with(g, cancelled, keep, MIN_BATCH)
+}
+
+/// [`validate_report`], batching SPARQL checks from `min_batch` focus nodes.
+fn report_with(
+    g: &Graph,
+    cancelled: &dyn Fn() -> bool,
+    keep: &dyn Fn(Id) -> bool,
+    min_batch: usize,
+) -> Option<Report> {
     let v = v();
     // Shapes with targets, in graph order; shape-typed nodes may be class targets.
     let mut roots: Vec<Id> = Vec::new();
@@ -1572,6 +1641,10 @@ pub fn validate_report(
         cancelled,
         stopped: false,
         failures: comp.failures,
+        min_batch,
+        batch: Vec::new(),
+        in_batch: FxHashSet::default(),
+        batched: FxHashMap::default(),
     };
     let mut out = Vec::new();
     for si in roots {
@@ -1579,7 +1652,9 @@ pub fn validate_report(
         if shape.skip {
             continue;
         }
-        for focus in run.focus_nodes(shape.node) {
+        let focus_nodes = run.focus_nodes(shape.node);
+        run.set_batch(focus_nodes.iter().copied().filter(|&f| keep(f)).collect());
+        for focus in focus_nodes {
             if cancelled() {
                 return None;
             }
@@ -1771,6 +1846,58 @@ mod tests {
         assert_eq!(report(body, &|| false).unwrap().0, 2);
     }
 
+    /// Queries cover the forms batching joins into (filters, OPTIONAL,
+    /// UNION, EXISTS, GROUP BY, subqueries, blank focus nodes) and ones
+    /// that run one by one (LIMIT).
+    #[test]
+    fn batched_sparql_matches_one_by_one() {
+        let mut data = String::new();
+        for i in 0..30 {
+            data.push_str(&format!(
+                "ex:n{i} a ex:C ; ex:p {} ; ex:q ex:n{} .\n[] a ex:C ; ex:p {} ; ex:q ex:n{i} .\n",
+                i % 4,
+                (i + 1) % 30,
+                i % 3
+            ));
+        }
+        for sel in [
+            "SELECT $this ?value WHERE { $this ex:p ?value . FILTER (?value > 1) }",
+            "SELECT $this WHERE { FILTER (isBlank($this)) }",
+            "SELECT $this WHERE { ?x ex:p 2 . FILTER (sameTerm(?x, $this)) }",
+            "SELECT $this WHERE { FILTER NOT EXISTS { $this ex:p 0 } }",
+            "SELECT $this (COUNT(*) AS ?n) WHERE { $this ex:p ?v } GROUP BY $this",
+            "SELECT $this ?n WHERE { { SELECT $this (COUNT(?v) AS ?n) WHERE { ?v ex:q $this } GROUP BY $this } }",
+            "SELECT $this ?value WHERE { ?value ex:p 1 OPTIONAL { $this ex:q ?value } }",
+            "SELECT $this ?value WHERE { $this ex:q ?value } LIMIT 1",
+            "SELECT $this ?value WHERE { { SELECT $this ?value WHERE { ?value ex:q $this } LIMIT 3 } }",
+            "SELECT $this ?value WHERE { { $this ex:p ?value } UNION { ?value ex:q $this } FILTER (?value != 3) }",
+            "SELECT DISTINCT $this ?value WHERE { $this ex:q/ex:p ?value . FILTER EXISTS { ?y ex:q $this } }",
+            "SELECT $this ?value WHERE { { ?value ex:p ?w FILTER (sameTerm(?value, $this)) } UNION { $this ex:p ?value } }",
+            "SELECT $this ?value WHERE { $this ex:p ?value OPTIONAL { ?z ex:q $this FILTER (?value > 1) } FILTER (!BOUND(?z)) }",
+            "SELECT $this WHERE { $currentShape sh:targetClass ?c . $this a ?c . FILTER NOT EXISTS { $this ex:q ?z . ?z ex:p 3 } }",
+        ] {
+            let p = parse(
+                &format!(
+                    "{HEAD}ex:S sh:targetClass ex:C ; sh:sparql [ sh:prefixes ex:P ; sh:message \"{{?value}}\" ; sh:select \"{sel}\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] , [ sh:prefix \"sh\" ; sh:namespace \"http://www.w3.org/ns/shacl#\" ] .\n{data}"
+                ),
+                &PrefixMap::default(),
+                Syntax::Turtle,
+            );
+            assert!(p.errors.is_empty(), "{:?}", p.errors);
+            let g = Graph::new(&[&p.triples]);
+            let run = |min_batch| {
+                let r = report_with(&g, &|| false, &|_| true, min_batch).unwrap();
+                let mut out: Vec<String> = r.results.iter().map(|x| format!("{x:?}")).collect();
+                out.extend(r.failures.iter().map(|x| format!("{x:?}")));
+                out.sort();
+                out
+            };
+            let one_by_one = run(usize::MAX);
+            assert!(!one_by_one.is_empty(), "{sel}");
+            assert_eq!(run(1), one_by_one, "{sel}");
+        }
+    }
+
     /// One SPARQL constraint on 10,000 focus nodes (run with --nocapture
     /// for the time).
     #[test]
@@ -1785,7 +1912,8 @@ mod tests {
         println!("10,000 focus nodes, one SPARQL constraint: {took:?}");
         assert_eq!((n, failures), (3333, 0));
         if !cfg!(debug_assertions) {
-            assert!(took.as_secs_f64() < 1.0, "{took:?}");
+            // About 30 ms when the query runs once for all focus nodes.
+            assert!(took.as_secs_f64() < 0.5, "{took:?}");
         }
     }
 }
