@@ -16,6 +16,12 @@
   rejects ill-formed `g*` dates, durations, binaries, `xsd:language` and
   `rdf:JSON` values.
 
+### Fixes
+
+- Fetching `owl:imports` and JSON-LD contexts over HTTPS uses `rustls-webpki`
+  0.103.16 and `webpki-roots` 1.0.10, which no longer trust the distrusted
+  emSign intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
 ## 0.6.1 — 2026-10-21
 
 ### Fixes
