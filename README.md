@@ -340,9 +340,9 @@ data/pumps.ttl:7:22: error[shacl-violation] obj:mill-0517 (sd:fillsPosition of o
 
 **Exit codes**
 
-| Code | `check` | `format --check`, `format --diff` |
+| Code | `check` | `format` (with or without `--check`, `--diff`) |
 |---|---|---|
-| 0 | no errors, and no more warnings than `--max-warnings` | nothing would change |
+| 0 | no errors, and no more warnings than `--max-warnings` | nothing would change (or every file was formatted) |
 | 1 | an error (syntax, `sh:Violation`, ...), or too many warnings | a file would change |
 | 2 | the tool failed: a bad flag, an unreadable path, an internal error | the same, or a file with syntax errors (it is left alone) |
 
@@ -357,7 +357,7 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 | `--format F` | `concise` (default), `json`, `github` (workflow annotations) or `sarif` (GitHub code scanning) |
 | `--output-file PATH` | write the report to a file instead of stdout |
 | `--fix` | apply the safe fixes (add a missing prefix, remove an unused one), then report what is left |
-| `--unsafe-fixes` | with `--fix`, also apply "did you mean" renames of terms, which can change meaning |
+| `--unsafe-fixes` | needs `--fix`; also apply "did you mean" renames of terms, which can change meaning |
 | `--max-warnings N` | exit 1 when there are more than N warnings |
 | `--exit-zero` | exit 0 when the run completes, whatever it found |
 | `--select CODE,...` | report only these diagnostic codes |
@@ -366,6 +366,8 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 | `--network` | fetch `owl:imports` that are not in the cache (off by default) |
 | `--max-diagnostics N` | print at most N problems per file; the summary still counts all |
 | `--statistics` | print a count per code instead of the problems |
+
+`format` takes `--root DIR`, `--check` and `--diff`.
 
 Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
 `unknown-term`, `undescribed-term`, `unresolved-import` and

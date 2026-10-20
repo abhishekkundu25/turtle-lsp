@@ -107,6 +107,22 @@ test("check: one file is checked with the workspace's prefixes and shapes as con
   assert.match(s.lines[0], /^data\/people\.ttl:4:1: error\[shacl-violation\]/)
 })
 
+test("check: a folder check skips hidden folders, as the editor's indexing does; a file named in one is checked", (t) => {
+  const ws = workspace(t, {
+    "prefixes.ttl": PREFIXES,
+    "shapes.ttl": SHAPES,
+    "data/people.ttl": CLEAN,
+    ".data/store.ttl": "ex:alice a ex:Person .\n",
+  })
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 0, r.out)
+  const named = run(ws, ["check", ".data/store.ttl"])
+  assert.equal(named.code, 1)
+  assert.equal(named.lines.length, 1, named.out)
+  assert.match(named.lines[0], /^\.data\/store\.ttl:1:1: error\[shacl-violation\] .*ex:alice/)
+  assert.deepEqual(run(ws, ["check", ".data"]).lines, named.lines)
+})
+
 test("check: --max-warnings and --exit-zero", (t) => {
   const ws = workspace(t, { "prefixes.ttl": PREFIXES, "a.ttl": "<http://x/a> rdfs:labl \"a\" .\n" })
   const plain = run(ws, ["check"])
