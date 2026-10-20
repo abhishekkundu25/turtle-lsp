@@ -80,6 +80,8 @@ function warmUp() {
   spawnSync(serverPath, ["--version"])
 }
 
+let lingering
+
 // `capabilities` and `initializationOptions` go into the initialize request;
 // `onRequest(method, params)` answers requests from the server (default null).
 export async function startServer({
@@ -214,14 +216,23 @@ export async function startServer({
       return diagnostics.get(uri)
     },
     async stop() {
+      // Each step is bounded: a write that never completes must fail the
+      // hook, not hold the test file open.
+      const late = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms).unref())
       try {
-        await Promise.race([conn.sendRequest("shutdown"), new Promise((r) => setTimeout(r, 500))])
-        await conn.sendNotification("exit").catch(() => {})
+        await Promise.race([conn.sendRequest("shutdown"), late(500)])
+        await Promise.race([conn.sendNotification("exit").catch(() => {}), late(500)])
       } catch {}
       // Every test session must end the process; a server that lingers after
       // shutdown/exit is a leak, not something to paper over with kill().
-      const gone = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 3000))])
+      const gone = await Promise.race([exited, late(3000, false)])
       conn.dispose()
+      // Reports what keeps this test file running a minute after its last
+      // server stopped; unref'd, so it fires only when something holds it.
+      clearTimeout(lingering)
+      lingering = setTimeout(() => {
+        console.error(`# still running 60 s after stopping turtle-lsp (pid ${proc.pid}, exit code ${proc.exitCode}): ${process.getActiveResourcesInfo().join(", ")}`)
+      }, 60_000).unref()
       if (!gone) {
         proc.kill()
         throw new Error("turtle-lsp did not exit within 3 s of shutdown/exit")

@@ -25,11 +25,12 @@ before(async () => {
   fs.writeFileSync(path.join(ws, "a.ttl"), "@prefix ex: <http://example.org/> .\nex:alice ex:knows ex:bob .\n")
   s = await startServer({ cwd: ws })
   await s.request("workspace/symbol", { query: "" })
-})
+}, { timeout: 30_000 })
+// Hooks get no time limit from --test-timeout; this one hung on Windows CI.
 after(async () => {
   await s.stop()
   fs.rmSync(ws, { recursive: true, force: true })
-})
+}, { timeout: 30_000 })
 
 for (const languageId of ["jsonld", "json", "turtle"]) {
   test(`a .jsonld file opened as '${languageId}' publishes empty diagnostics`, async () => {
