@@ -57,8 +57,12 @@
 //!   the remote URL in the message; warnings inside remote contexts are not
 //!   reported.
 //!
-//! Term definitions written in the document keep the span of their key,
-//! without the quotes ([`TermDefinition::span`]).
+//! Every term definition keeps where it is written: the document it is in
+//! ([`TermDefinition::source`], `None` for the document being checked) and,
+//! in that document's text, the span of its key and of its IRI, without
+//! the quotes ([`TermDefinition::span`], [`TermDefinition::iri_span`]). The
+//! processor also lists each definition written in the document being
+//! checked ([`Processor::take_written`]), applied or not.
 //!
 //! # Caching
 //!
@@ -477,8 +481,11 @@ pub struct ScopedContext {
     pub json: Arc<Json>,
     /// The base URL relative context references in it resolve against.
     pub base_url: Option<Arc<str>>,
-    /// The remote document it was read from, if any.
+    /// The remote document that names it, for error messages, if any.
     pub source: Option<Arc<str>>,
+    /// The document its JSON is written in, if not the one being checked:
+    /// `source`, or a context that document `@import`s.
+    pub doc: Option<Arc<str>>,
 }
 
 /// A term definition (§4.2).
@@ -502,14 +509,24 @@ pub struct TermDefinition {
     pub protected: bool,
     pub nest: Option<Arc<str>>,
     pub index: Option<Arc<str>>,
-    /// The key that defined the term, when it is written in the document
-    /// being checked (not in a remote context).
+    /// The document the definition is written in: `None` for the document
+    /// being checked, else the URL of the remote (or `@import`ed) context.
+    pub source: Option<Arc<str>>,
+    /// The key that defined the term, without the quotes, in the text of
+    /// the document `source` names.
     pub span: Option<Span>,
     /// Where the IRI mapping is written, when it is a string (`@id`,
-    /// `@reverse` or the whole definition) in the document being checked:
-    /// its content, without the quotes. `None` when the term's key spells
-    /// its IRI (a compact IRI, an IRI or a `@vocab` word).
+    /// `@reverse` or the whole definition), in the same text: its content,
+    /// without the quotes. `None` when the term's key spells its IRI (a
+    /// compact IRI, an IRI or a `@vocab` word).
     pub iri_span: Option<Span>,
+}
+
+impl TermDefinition {
+    /// Written in the document being checked.
+    pub fn is_local(&self) -> bool {
+        self.source.is_none()
+    }
 }
 
 impl TermDefinition {
@@ -994,6 +1011,9 @@ impl Default for Options {
 struct Site {
     span: Span,
     url: Arc<str>,
+    /// The document the JSON being read is in: `url`, or a context it
+    /// `@import`s.
+    doc: Arc<str>,
 }
 
 #[derive(Clone)]
@@ -1025,6 +1045,9 @@ pub struct Processor<'l> {
     /// The key of the term being defined, without its quotes: where errors
     /// inside its definition go.
     term_at: Option<Span>,
+    /// Term definitions written in the document being checked, with their
+    /// term, as they are made.
+    written: Vec<(Arc<str>, Arc<TermDefinition>)>,
 }
 
 /// A context definition's entries, `@import`ed ones merged in.
@@ -1121,7 +1144,22 @@ impl<'l> Processor<'l> {
             log: Vec::new(),
             scoped: FxHashMap::default(),
             term_at: None,
+            written: Vec::new(),
         }
+    }
+
+    /// Each term definition written in the document being checked that
+    /// processing has made so far (in its contexts, and in the scoped
+    /// contexts of its terms, applied or only validated), with its term.
+    /// The same definition can be listed more than once.
+    pub fn take_written(&mut self) -> Vec<(Arc<str>, Arc<TermDefinition>)> {
+        std::mem::take(&mut self.written)
+    }
+
+    /// The document the JSON being read is in (`None`: the one being
+    /// checked).
+    fn doc(&self) -> Option<Arc<str>> {
+        self.site.as_ref().map(|s| s.doc.clone())
     }
 
     /// The warnings so far (`jsonld-context`, severity warning).
@@ -1173,6 +1211,7 @@ impl<'l> Processor<'l> {
             scoped.source.as_ref().map(|url| Site {
                 span: at,
                 url: url.clone(),
+                doc: scoped.doc.clone().unwrap_or_else(|| url.clone()),
             }),
         );
         let quiet = std::mem::replace(&mut self.quiet, true);
@@ -1231,8 +1270,17 @@ impl<'l> Processor<'l> {
     /// `@import` value. Returns the site to restore.
     fn enter(&mut self, local: &Local, e: &Entry) -> Option<Site> {
         let saved = self.site.clone();
-        if e.foreign && self.site.is_none() {
-            self.site = local.import.clone();
+        if e.foreign
+            && let Some(import) = &local.import
+        {
+            self.site = Some(match &self.site {
+                None => import.clone(),
+                // Errors still go where the remote context is named.
+                Some(s) => Site {
+                    doc: import.doc.clone(),
+                    ..s.clone()
+                },
+            });
         }
         saved
     }
@@ -1442,6 +1490,7 @@ impl<'l> Processor<'l> {
         let site = self.site.replace(Site {
             span: site_span,
             url: loaded.url.clone(),
+            doc: loaded.url.clone(),
         });
         let used_base = std::mem::replace(&mut self.used_base, false);
         let start = self.log.len();
@@ -1523,6 +1572,7 @@ impl<'l> Processor<'l> {
                 .as_ref()
                 .map_or(self.term_at.unwrap_or(at), |s| s.span),
             url: loaded.url.clone(),
+            doc: loaded.url.clone(),
         };
         Ok((json, site))
     }
@@ -1819,7 +1869,8 @@ impl<'l> Processor<'l> {
         // 10
         let mut def = TermDefinition {
             protected: f.protected,
-            span: self.site.is_none().then_some(unquoted(e.key_span)),
+            source: self.doc(),
+            span: Some(unquoted(e.key_span)),
             ..TermDefinition::default()
         };
         // 11
@@ -1879,7 +1930,7 @@ impl<'l> Processor<'l> {
             match self.expand(result, f, defined, r, false, true)? {
                 Some(iri) if is_absolute_iri(&iri) || is_blank_node(&iri) => {
                     def.iri = Some(Arc::from(iri));
-                    def.iri_span = self.site.is_none().then_some(unquoted(m.value.span));
+                    def.iri_span = Some(unquoted(m.value.span));
                 }
                 _ => {
                     return Err(self.err(
@@ -1965,7 +2016,7 @@ impl<'l> Processor<'l> {
                         def.prefix = true;
                     }
                     def.iri = Some(Arc::from(iri));
-                    def.iri_span = self.site.is_none().then_some(unquoted(id.span));
+                    def.iri_span = Some(unquoted(id.span));
                 }
                 _ => {
                     return Err(self.err(
@@ -2063,6 +2114,7 @@ impl<'l> Processor<'l> {
                 json: Arc::new(m.value.clone()),
                 base_url: f.base_url.map(Arc::from),
                 source: self.site.as_ref().map(|s| s.url.clone()),
+                doc: self.doc(),
             });
         }
         // 22
@@ -2191,9 +2243,10 @@ impl<'l> Processor<'l> {
         previous: Option<Arc<TermDefinition>>,
         def: TermDefinition,
     ) -> Result<(), ContextError> {
+        let new = Arc::new(def);
         let def = match previous {
             Some(p) if p.protected && !f.override_protected => {
-                if !def.same_as(&p) {
+                if !new.same_as(&p) {
                     return Err(self.err(
                         ErrorCode::ProtectedTermRedefinition,
                         e.key_span,
@@ -2202,8 +2255,11 @@ impl<'l> Processor<'l> {
                 }
                 p
             }
-            _ => Arc::new(def),
+            _ => new.clone(),
         };
+        if new.is_local() {
+            self.written.push((Arc::from(e.key), new));
+        }
         result.terms.set(e.key, Some(def));
         defined.insert(e.key, true);
         Ok(())
@@ -2605,8 +2661,13 @@ mod tests {
         assert_eq!(iri(&c, "a"), Some("http://imported.org/a"));
         assert_eq!(iri(&c, "b"), Some("http://local.org/b"));
         assert_eq!(c.vocab(), Some("http://iv.org/"));
-        // Imported definitions have no span in the document.
-        assert!(c.term("a").unwrap().span.is_none() && c.term("b").unwrap().span.is_some());
+        // Imported definitions are written in the imported document.
+        let (a, b) = (c.term("a").unwrap(), c.term("b").unwrap());
+        assert_eq!(
+            a.source.as_deref(),
+            Some("http://example.com/imported.jsonld")
+        );
+        assert!(a.span.is_some() && b.is_local() && b.span.is_some());
         // An error inside the imported context is reported at the @import.
         let loader =
             NoNetwork::default().with("http://example.com/bad.jsonld", r#"{"@context": {"a": 5}}"#);
@@ -2650,7 +2711,9 @@ mod tests {
         assert_eq!(iri(&c, "b"), Some("http://b.org/"));
         // @base in a remote context is ignored.
         assert_eq!(c.base(), Some(BASE));
-        assert!(c.term("a").unwrap().span.is_none());
+        let a = c.term("a").unwrap();
+        assert_eq!(a.source.as_deref(), Some("http://example.com/ctx/a.jsonld"));
+        assert_eq!(a.span, Some(Span::new(28, 29)));
     }
 
     #[test]

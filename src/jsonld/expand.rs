@@ -23,6 +23,10 @@
 //! step 7 says) through a [`Processor`]. A context that fails to process is
 //! reported and the context in force before it stays.
 //!
+//! Expansion also records the document's [`SourceIndex`]: each key,
+//! `@type` and `@id` value it reads, the term definitions they resolve to,
+//! and the active context inside each object.
+//!
 //! Errors are the spec's, reported as `jsonld-context` diagnostics whose
 //! message starts with the W3C error code. The spec stops at the first one;
 //! here the entry (or object) in error is left out and expansion goes on.
@@ -34,6 +38,7 @@ use super::context::{
     expand_iri, has_keyword_form, is_absolute_iri, is_blank_node, is_keyword, resolve_iri,
 };
 use super::json::{Json, Member, Object, Value};
+use super::source::{Builder, SourceIndex, Use, UseKind, UseRole};
 use super::{DropReason, Dropped, UsedTerm, unquoted};
 use crate::syntax::{Form, Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
@@ -172,6 +177,7 @@ pub struct Expanded<'a> {
     /// Keys, types and `@vocab`-coerced values that are terms of the
     /// active context, in the order they are read.
     pub used_terms: Vec<UsedTerm>,
+    pub index: SourceIndex,
 }
 
 /// Expand the document `root`, whose URL is `base`, with contexts from
@@ -184,6 +190,7 @@ pub fn expand<'a>(root: &'a Json, base: Option<&str>, processor: &mut Processor)
         dropped: Vec::new(),
         used_terms: Vec::new(),
         iris: FxHashMap::default(),
+        index: Builder::default(),
     };
     let initial = ActiveContext::new(base);
     let items = match x.element(&initial, None, root, false) {
@@ -192,11 +199,13 @@ pub fn expand<'a>(root: &'a Json, base: Option<&str>, processor: &mut Processor)
         }
         ex => ex.into_vec(),
     };
+    let index = x.index.finish(x.processor.take_written());
     Expanded {
         items,
         errors: x.errors,
         dropped: x.dropped,
         used_terms: x.used_terms,
+        index,
     }
 }
 
@@ -283,9 +292,11 @@ struct Expander<'a, 'p, 'l, 'b> {
     errors: Vec<SyntaxError>,
     dropped: Vec<Dropped>,
     used_terms: Vec<UsedTerm>,
-    /// IRI expansions without the base IRI, by (context content, `@vocab`,
-    /// value): keys and types repeat across node objects.
-    iris: FxHashMap<(u64, bool, &'a str), Expansion>,
+    /// IRI expansions without the base IRI, and how the value is written,
+    /// by (context content, `@vocab`, value): keys and types repeat across
+    /// node objects.
+    iris: FxHashMap<(u64, bool, &'a str), (Expansion, Option<UseKind>)>,
+    index: Builder,
 }
 
 /// An IRI expansion (`None`: `null`) and the form the value is written in.
@@ -364,17 +375,29 @@ impl<'a> Expander<'a, '_, '_, '_> {
         document_relative: bool,
         vocab: bool,
     ) -> Expansion {
+        self.expand_kind(ctx, s, document_relative, vocab).0
+    }
+
+    /// [`Self::expand_iri`], and how `s` is written.
+    fn expand_kind(
+        &mut self,
+        ctx: &ActiveContext,
+        s: &'a str,
+        document_relative: bool,
+        vocab: bool,
+    ) -> (Expansion, Option<UseKind>) {
         let key = (ctx.content_id(), vocab, s);
-        let hit = match self.iris.get(&key) {
+        let (hit, kind) = match self.iris.get(&key) {
             Some(hit) => hit.clone(),
             None => {
                 let hit = expand_iri(ctx, s, false, vocab).map(|x| (Arc::from(x), form_of(ctx, s)));
-                self.iris.insert(key, hit.clone());
-                hit
+                let kind = self.index.classify(ctx, s, vocab);
+                self.iris.insert(key, (hit.clone(), kind));
+                (hit, kind)
             }
         };
         // Only a value nothing else expands is resolved against the base.
-        match (hit, ctx.base()) {
+        let hit = match (hit, ctx.base()) {
             (Some((x, form)), Some(base))
                 if document_relative
                     && !is_keyword(&x)
@@ -384,7 +407,31 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 Some((Arc::from(resolve_iri(base, s)), form))
             }
             (hit, _) => hit,
+        };
+        (hit, kind)
+    }
+
+    /// [`Self::expand_iri`] of `s`, written at `span` as a `role`, recorded
+    /// in the index.
+    fn expand_use(
+        &mut self,
+        ctx: &ActiveContext,
+        s: &'a str,
+        span: Span,
+        role: UseRole,
+        document_relative: bool,
+        vocab: bool,
+    ) -> Expansion {
+        let (hit, kind) = self.expand_kind(ctx, s, document_relative, vocab);
+        if let Some(kind) = kind {
+            self.index.push_use(Use {
+                span,
+                role,
+                iri: hit.as_ref().map(|(x, _)| x.clone()),
+                kind,
+            });
         }
+        hit
     }
 
     /// Whether `key` IRI-expands (with `@vocab`) to the keyword `kw`.
@@ -424,12 +471,12 @@ impl<'a> Expander<'a, '_, '_, '_> {
             return;
         };
         // Written in the document with no IRI of its own: the key spells it.
-        if d.span.is_some() && d.iri_span.is_none() {
+        if d.is_local() && d.iri_span.is_none() {
             return;
         }
         self.used_terms.push(UsedTerm {
             span,
-            definition: d.iri_span,
+            definition: d.iri_span.filter(|_| d.is_local()),
         });
     }
 
@@ -572,6 +619,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
             .and_then(Json::as_str)
             .is_some_and(|t| self.is_alias(&ctx, t, "@json"));
         // 13, 14
+        self.index.scope(el.span, o.close.is_some(), &ctx);
         let mut r = Map::default();
         self.entries(&ctx, &type_scoped, prop, &entries, input_json, &mut r);
         self.finish(prop, el, o, r)
@@ -590,14 +638,22 @@ impl<'a> Expander<'a, '_, '_, '_> {
         let mut nests: Vec<&'a Member> = Vec::new();
         for &m in entries {
             let key: &'a str = &m.key;
+            let kspan = unquoted(m.key_span);
             // 13.1
             if key == "@context" {
+                self.index.push_use(Use {
+                    span: kspan,
+                    role: UseRole::Key,
+                    iri: Some(Arc::from(key)),
+                    kind: UseKind::Keyword,
+                });
                 continue;
             }
-            let kspan = unquoted(m.key_span);
             // 13.2, 13.3
             self.term_use(ctx, key, kspan);
-            let Some((expanded, form)) = self.expand_iri(ctx, key, false, true) else {
+            let Some((expanded, form)) =
+                self.expand_use(ctx, key, kspan, UseRole::Key, false, true)
+            else {
                 let reason = if has_keyword_form(key) {
                     DropReason::KeywordLike
                 } else {
@@ -647,6 +703,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                     }
                     continue;
                 };
+                self.index.scope(nested.span, no.close.is_some(), &nctx);
                 let inner = map_entries(no);
                 if let Some(v) = inner
                     .iter()
@@ -721,7 +778,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                     let s = t.as_str().unwrap_or_default();
                     let span = unquoted(t.span);
                     self.term_use(type_scoped, s, span);
-                    match self.expand_iri(type_scoped, s, true, true) {
+                    match self.expand_use(type_scoped, s, span, UseRole::Type, true, true) {
                         Some((iri, form)) => r.types.push(TypeUse {
                             iri: IriUse { iri, span, form },
                             key: kspan,
@@ -1015,6 +1072,9 @@ impl<'a> Expander<'a, '_, '_, '_> {
             }
             let expanded_index = expand_iri(ctx, index, false, true);
             let none = expanded_index.as_deref() == Some("@none");
+            if container.contains(Container::TYPE) {
+                self.expand_use(ctx, index, ispan, UseRole::Type, false, true);
+            }
             let values = self.element(&map_ctx, Some(p), &im.value, true).into_vec();
             for mut item in values {
                 // 13.8.3.7.1
@@ -1222,7 +1282,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         if vocab {
             self.term_use(ctx, s, span);
         }
-        match self.expand_iri(ctx, s, true, vocab) {
+        match self.expand_use(ctx, s, span, UseRole::Id, true, vocab) {
             Some((iri, form)) => IriUse { iri, span, form },
             None => {
                 self.drop(span, DropReason::KeywordLike);

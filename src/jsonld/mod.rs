@@ -38,7 +38,10 @@
 //! [`parse_document`] also returns what JSON-LD drops silently ([`Dropped`]:
 //! undefined keys, relative or invalid IRIs, ill-formed language tags) and
 //! which references are terms whose IRI comes from a definition
-//! ([`UsedTerm`]), for the JSON-LD lints.
+//! ([`UsedTerm`]), for the JSON-LD lints, and the [`SourceIndex`] of the
+//! text ([`source`]: each key, `@type` and `@id` value with how it is
+//! written, the term definitions they use, the context inside each object),
+//! for the editor features.
 
 pub mod context;
 pub mod expand;
@@ -46,9 +49,11 @@ pub mod format;
 pub mod json;
 pub mod lint;
 pub mod loader;
+pub mod source;
 pub mod to_rdf;
 
 pub use loader::{ContextLoader, LoadError, NoNetwork, RemoteDocument};
+pub use source::SourceIndex;
 
 use crate::syntax::{Parsed, Span, Syntax};
 
@@ -98,12 +103,14 @@ pub struct UsedTerm {
 }
 
 /// A parsed JSON-LD document: the shared parse model, what JSON-LD dropped
-/// from it, and the terms it uses, each in text order.
+/// from it, and the terms it uses, each in text order, and its source
+/// index.
 #[derive(Debug, Default)]
 pub struct Document {
     pub parsed: Parsed,
     pub dropped: Vec<Dropped>,
     pub used_terms: Vec<UsedTerm>,
+    pub index: SourceIndex,
 }
 
 /// Parse a JSON-LD document into the shared parse model.
@@ -128,6 +135,7 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
     };
     let mut dropped = Vec::new();
     let mut used_terms = Vec::new();
+    let mut index = SourceIndex::default();
     if let Some(root) = &doc.root {
         let mut processor = context::Processor::new(loader);
         let expanded = expand::expand(root, base, &mut processor);
@@ -135,6 +143,7 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
         parsed.errors.extend(processor.take_warnings());
         dropped = expanded.dropped;
         used_terms = expanded.used_terms;
+        index = expanded.index;
         to_rdf::to_rdf(&expanded.items, &mut parsed, &mut dropped);
     }
     // The same scoped context can fail at each use: report each error once.
@@ -151,6 +160,7 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
         parsed,
         dropped,
         used_terms,
+        index,
     }
 }
 

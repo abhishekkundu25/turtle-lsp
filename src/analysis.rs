@@ -35,6 +35,10 @@ pub struct Analysis {
     /// that are context terms, for the JSON-LD lints (empty otherwise).
     pub dropped: Vec<crate::jsonld::Dropped>,
     pub used_terms: Vec<crate::jsonld::UsedTerm>,
+    /// JSON-LD only: the keys, types and `@id`s as written, the term
+    /// definitions they use, and the context inside each object (empty
+    /// otherwise).
+    pub source_index: crate::jsonld::SourceIndex,
     pub lines: LineIndex,
     /// Prefixes supplied from outside the document (prefixes.ttl / settings).
     pub external: Arc<PrefixMap>,
@@ -125,6 +129,7 @@ impl Analysis {
             mut parsed,
             dropped,
             used_terms,
+            index: source_index,
         } = match language {
             // Relative IRIs resolve against the document's URL.
             Syntax::JsonLd => crate::jsonld::parse_document(text, Some(&uri), loader),
@@ -181,6 +186,7 @@ impl Analysis {
             parsed,
             dropped,
             used_terms,
+            source_index,
             external,
             defs,
             refs_by_iri,
