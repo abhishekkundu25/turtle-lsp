@@ -3,7 +3,7 @@
   "private": true,
   "description": "End-to-end tests and benchmarks for the turtle-lsp Rust server",
   "scripts": {
-    "test": "cargo build --release --locked && cargo test --release --locked && node --test --test-timeout=30000 \"test/*.test.mjs\"",
+    "test": "cargo build --release --locked && cargo test --release --locked && node --test --test-timeout=30000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./test/pending-reporter.mjs --test-reporter-destination=stdout \"test/*.test.mjs\"",
     "test:pending": "cargo build --release --locked && node --test --test-timeout=30000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./test/pending-reporter.mjs --test-reporter-destination=stdout \"test/*.test.mjs\"",
     "bench":"cargo build --release --locked && node bench/perf.mjs",
     "vocab": "node tools/build-vocab.mjs",

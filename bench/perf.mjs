@@ -4,7 +4,8 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { execSync } from "node:child_process"
-import { startServer, uriOf } from "../test/lsp-client.mjs"
+import { positionOf, startServer, uriOf } from "../test/lsp-client.mjs"
+import { bigJsonLd } from "./jsonld-gen.mjs"
 
 const SUBJECTS = Number(process.argv[2] ?? 5000)
 const FILES = Number(process.argv[3] ?? 200)
@@ -201,8 +202,69 @@ record("keystroke -> diagnostics while validating", typing)
 await s2.stop()
 fs.rmSync(ws, { recursive: true, force: true })
 
+// JSON-LD next to Turtle of the same length (lines), in an empty workspace,
+// so each format is measured on its own. Documents are opened unsaved; each
+// open uses new IRIs and is closed after, so no open replaces another.
+// The JSON-LD file has an inline @context only: no context is fetched, and
+// after the first open, re-checking reuses what the server cached.
+const jws = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-bench-jsonld-"))
+const s3 = await startServer({ cwd: jws })
+const formats = {
+  turtle: { ext: "ttl", lang: "turtle", make: (tag) => bigDoc(SUBJECTS, tag) },
+  jsonld: { ext: "jsonld", lang: "jsonld", make: (tag) => bigJsonLd(30000, tag) },
+}
+const opens = { turtle: [], jsonld: [] }
+for (let round = 0; round < 5; round++) {
+  for (const [f, spec] of Object.entries(formats)) {
+    const doc = spec.make(`o${round}_`)
+    const u = uriOf(path.join(jws, `open${round}.${spec.ext}`))
+    const t1 = performance.now()
+    s3.open(u, doc, spec.lang)
+    await s3.diagnosticsFor(u, 120000)
+    opens[f].push(performance.now() - t1)
+    s3.close(u)
+  }
+}
+for (const [f, spec] of Object.entries(formats)) {
+  let doc = spec.make("")
+  record(`${f}: didOpen -> diagnostics (${doc.split("\n").length} lines, ${(doc.length / 1024).toFixed(0)} KB)`, opens[f])
+  const u = uriOf(path.join(jws, `big.${spec.ext}`))
+  s3.open(u, doc, spec.lang)
+  await s3.diagnosticsFor(u, 120000)
+  const keys = []
+  for (let i = 0; i < 15; i++) {
+    doc = doc.replace(`"Person ${i}"`, `"Person ${i}x"`)
+    const t1 = performance.now()
+    s3.change(u, doc)
+    await s3.diagnosticsFor(u, 120000)
+    keys.push(performance.now() - t1)
+  }
+  record(`${f}: keystroke -> diagnostics`, keys)
+  // Hover on the name property of a resource in the middle of the file.
+  const pos = positionOf(doc, f === "jsonld" ? `"name": "Person 700"` : `foaf:name "Person 2500"`, 2)
+  const hovers = []
+  let found = "no hover"
+  for (let i = 0; i < 10; i++) {
+    const t1 = performance.now()
+    const h = await s3.request("textDocument/hover", { textDocument: { uri: u }, position: pos })
+    hovers.push(performance.now() - t1)
+    if (h) found = "hover"
+  }
+  record(`${f}: hover on the name property`, hovers, found)
+  s3.close(u)
+}
+await s3.stop()
+fs.rmSync(jws, { recursive: true, force: true })
+const openRatio = pct(opens.jsonld, 50) / pct(opens.turtle, 50)
+
 console.log(`\nturtle-lsp perf (${SUBJECTS} subjects in big.ttl, ${FILES} workspace files)\n`)
 const table = rows.map((r) => ({ metric: r.name, "p50 ms": r.p50, "p95 ms": r.p95, n: r.n, notes: r.extra }))
 table.push({ metric: "server RSS after indexing + open + edits", "p50 ms": "", "p95 ms": "", n: 1, notes: `${rssIndexed} MB` })
 table.push({ metric: "server RSS at the end", "p50 ms": "", "p95 ms": "", n: 1, notes: `${rssEnd} MB` })
 console.table(table)
+// The JSON-LD budgets (docs/specs/jsonld.md); tests/jsonld_budget.rs asserts
+// them on the engine in release builds.
+const jsonldKey = rows.find((r) => r.name === "jsonld: keystroke -> diagnostics")
+console.log(
+  `JSON-LD budgets: open ${openRatio.toFixed(2)}x Turtle (budget 3x); keystroke p50 ${jsonldKey.p50} ms (budget 10 ms)`
+)

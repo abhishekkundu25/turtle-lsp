@@ -51,6 +51,10 @@ Queries are never run and no endpoint is contacted.
 
 `.nq` files get what N-Triples files get: syntax errors per line with recovery, hover, navigation, an outline grouped by graph, and formatting with one quad per line. Their quads join the workspace, so terms described in a dataset dump count as described in your Turtle files.
 
+## JSON-LD
+
+`.jsonld` files keep VS Code's JSON highlighting and get the server's checks: JSON syntax errors, `@context` errors, keys the context does not define, invalid IRIs and language tags, and SHACL results from your shapes on the key or value that breaks them. Their terms count in your Turtle and SPARQL files. Common contexts (schema.org, ActivityStreams, Verifiable Credentials, DID) are bundled; other remote contexts are fetched only with `turtle.imports.network` on. Completion, rename and formatting inside JSON-LD files are not there yet.
+
 ## Project prefixes
 
 If your Turtle files share a prefix header instead of declaring prefixes
@@ -67,7 +71,7 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation and the size above which it is skipped (default 2,000,000 triples).
 - `turtle.shacl.onType`: also validate while typing, not only on save (default on).
 - `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
-- `turtle.imports.network`: fetch `owl:imports` over the network (default off; ignored in untrusted workspaces). With it off, the quick fix on an unresolved import fetches that one import and caches it.
+- `turtle.imports.network`: fetch `owl:imports` and JSON-LD contexts over the network (default off; ignored in untrusted workspaces). With it off, the quick fix on an unresolved import fetches that one import and caches it.
 - `turtle.format.lineWidth`: line width for formatting (default 100).
 
 ## Also for Neovim and other editors

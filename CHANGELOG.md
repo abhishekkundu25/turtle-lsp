@@ -17,6 +17,31 @@
   it; the editor's settings override it.
 - `.pre-commit-hooks.yaml` with the hooks `turtle-lsp-check` and
   `turtle-lsp-format`.
+- **JSON-LD** (`.jsonld`, language id `jsonld`; JSON-LD 1.1), with an
+  engine that keeps the source position of every triple:
+  - diagnostics: JSON syntax errors with recovery (`json-syntax`), context
+    errors (`jsonld-context`), keys the context does not define
+    (`jsonld-undefined-term`), invalid IRIs and language tags
+    (`invalid-iri`, `invalid-language-tag`), and the vocabulary lints on
+    IRIs reached through the context;
+  - JSON-LD files join the workspace: their terms count in Turtle and SPARQL
+    files and the other way round, SHACL shapes in either format validate
+    their data with each result on the key, value or `@id`, and named graphs
+    follow the TriG rules;
+  - hover on keys and `@type` values, go to definition on `@vocab` keys, and
+    an outline of node objects;
+  - `turtle-lsp check` and the browser editor cover them;
+  - remote contexts come from workspace files, the import cache or the
+    bundled schema.org, ActivityStreams, Verifiable Credentials and DID
+    contexts; the network is used only with `imports.network` or
+    `--network`.
+  - W3C JSON-LD 1.1 suites: toRdf 443 pass, expand 365, remote-doc 6; 2
+    known failures in the runner's oracle; the rest (JSON-LD 1.0, options
+    the engine does not have, document loading) out of scope. On 364 public
+    documents, 339 graphs match oxjsonld's; the other 25 are known oxjsonld
+    differences from the spec.
+  - Not yet: completion, rename and formatting inside JSON-LD files,
+    compaction, and `.json` files.
 
 ### Performance
 
@@ -24,6 +49,10 @@
   instead of once per node. Validating 30 MB of generated TriG with 71
   SPARQL constraints per file went from 26 s to 0.6 s in the editor and the
   command line, with identical results.
+- **JSON-LD** on a 30,000-line file: open to first diagnostics 6.4 ms
+  (Turtle of the same length 5.1 ms), a keystroke 5.9 ms (Turtle 4.1 ms),
+  hover 0.1 ms. `tests/jsonld_budget.rs` holds release builds to opening
+  within 3x Turtle and a keystroke under 10 ms.
 
 ## 0.5.2 — 2026-10-20
 

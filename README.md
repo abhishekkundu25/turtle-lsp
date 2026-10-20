@@ -5,7 +5,7 @@
 # turtle-lsp
 
 A fast language server for RDF Turtle (`.ttl`), written in Rust. It also
-reads TriG, N-Triples and N-Quads, and SPARQL queries and updates.
+reads TriG, N-Triples, N-Quads and JSON-LD, and SPARQL queries and updates.
 
 A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
 the whole file formats in about 5 ms. The server starts in a few milliseconds.
@@ -35,7 +35,8 @@ the full W3C test suites and real public ontologies; see
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. See [SPARQL](#sparql).
-- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`).
+- **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics. Editing features inside JSON-LD files are mostly still to come. See [JSON-LD](#json-ld).
+- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
 
 ## Tested against the real world
@@ -50,6 +51,8 @@ public RDF files anyone can download (`npm run corpus`, results in
 | W3C SPARQL 1.1 and 1.2 syntax suites (query, update, federation) | 425 / 426 ¹ |
 | W3C SHACL Core suite | 98 / 98 |
 | W3C SHACL-SPARQL suite | 23 / 23 |
+| W3C JSON-LD 1.1 suites: toRdf, expand, remote-doc | 443, 365 and 6 pass; 2 known failures; the rest out of scope ³ |
+| JSON-LD on 364 public documents (schema.org examples, ActivityStreams, Verifiable Credentials 1.0 and 2.0, IIIF, DCAT-US, Croissant, GS1, DID) vs. [oxjsonld](https://crates.io/crates/oxjsonld) | Same graph for 339; the other 25 are known differences where oxjsonld departs from JSON-LD 1.1 ⁴ |
 | Parser vs. [Oxigraph](https://github.com/oxigraph/oxigraph) on public files (schema.org, Wikidata, DBpedia, QUDT, Brick, Gene Ontology, W3C vocabularies, a Web Data Commons N-Quads dump) | Same quads in 98 of 99 cases (2.56 million triples) ² |
 | Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
 | SPARQL on 1,317 real queries ([SIB sparql-examples](https://github.com/sib-swiss/sparql-examples): UniProt, Rhea, Bgee, neXtProt, ...) | Same verdict as [spargebra](https://crates.io/crates/spargebra) on all; the formatter kept every query's algebra and comments, and formatting twice changes nothing |
@@ -61,6 +64,9 @@ public RDF files anyone can download (`npm run corpus`, results in
 later `SELECT` expression) that the SPARQL parser library rejects.
 ² The other is the Web Data Commons slice: 26 of its 57,000 lines have a `[`
 inside an IRI, which Oxigraph rejects and turtle-lsp accepts.
+³ See [Conformance](#conformance) under JSON-LD.
+⁴ Listed with the reasons in `tests/jsonld_oracle.rs`; see
+[Conformance](#conformance) under JSON-LD.
 
 ## Performance
 
@@ -85,6 +91,19 @@ including JSON encoding and the pipe.
 
 ¹ Only the first edit after opening the file is that slow (it takes over from
 the indexed copy); later keystrokes take 4.3–4.9 ms.
+
+JSON-LD against Turtle of the same length (about 30,000 lines each; the
+JSON-LD file has 1,499 people under an inline `@context`), each opened alone
+in an empty workspace:
+
+| | Turtle | JSON-LD |
+|---|---:|---:|
+| Open file → first diagnostics, median | 5.1 ms | **6.4 ms** (1.3×) |
+| Keystroke → diagnostics, median | 4.1 ms | **5.9 ms** |
+| Hover | 0.1 ms | **0.1 ms** |
+
+`tests/jsonld_budget.rs` holds release builds to the JSON-LD budgets: opening
+within 3× the Turtle time, and a keystroke under 10 ms.
 
 Measured on an Apple M6 with macOS 27. Results vary a little between runs.
 Reproduce with `npm run bench`.
@@ -139,7 +158,8 @@ id, the file extension decides.
   The quads join the workspace like a TriG file's, so terms described in a
   `.nq` file count as described.
 
-The workspace index covers `.ttl`, `.turtle`, `.trig`, `.nt` and `.nq` files.
+The workspace index covers `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq` and
+`.jsonld` files.
 
 ## SPARQL
 
@@ -181,6 +201,95 @@ queries too. SPARQL files add nothing to the workspace's knowledge, so a
 query never makes a misspelled term look described. The server never runs a
 query or contacts an endpoint.
 
+## JSON-LD
+
+JSON-LD 1.1 files (`.jsonld`, language id `jsonld`) are RDF like the other
+formats. Plain `.json` files are not read, even with an `@context`.
+
+- **Diagnostics**: JSON syntax errors at the exact position, with recovery
+  (`json-syntax`); invalid `@context` definitions, cycles, redefined
+  protected terms and contexts that cannot be loaded (`jsonld-context`); a
+  key the context does not define, which JSON-LD silently drops
+  (`jsonld-undefined-term`, a warning); invalid IRIs and malformed language
+  tags at the value (`invalid-iri`, `invalid-language-tag`). The vocabulary
+  lints apply to IRIs reached through the context: `unknown-term` with "did
+  you mean", `deprecated-term`, and `undescribed-term` for your own
+  namespaces.
+- **One workspace**: classes and properties a JSON-LD file describes are
+  known in Turtle and SPARQL files (completion, hover, references, no
+  `undescribed-term`), and the other way round. `owl:imports` of an ontology
+  declared in JSON-LD resolve.
+- **SHACL**: Turtle shapes validate JSON-LD data, and shapes written in
+  JSON-LD are used. Each result is on the key, value or `@id` that breaks
+  the shape, or on the opening brace of a node without an `@id`. Named graphs (`@graph` with `@id`) follow the TriG rules.
+- **In the file**: hover on a key shows its expanded IRI, and on an `@type`
+  value also what the workspace says about it; go to definition on a key
+  that `@vocab` maps goes to where the workspace describes the term; the
+  outline lists node objects by `@id`.
+- **Command line**: `turtle-lsp check` checks `.jsonld` files with the same
+  codes, positions, exit codes and JSON and SARIF output as Turtle files.
+  `turtle-lsp format` leaves them alone.
+- **Browser**: the [browser editor](https://abhishekkundu25.github.io/turtle-lsp/)
+  gives JSON-LD files the same diagnostics and SHACL results. It uses the
+  bundled contexts and contexts in other files of the workspace, and never
+  fetches one.
+
+**Contexts.** A remote `@context` is loaded, in order, from a file in the
+workspace (a relative reference), the import cache, then the contexts bundled
+with the server: schema.org, ActivityStreams, Verifiable Credentials v1 and
+v2, and DID v1 (`data/jsonld-contexts`). The network is off by default, so
+opening a file never goes online; a context that cannot be loaded is a
+`jsonld-context` error at its URL. Turn the network on with the
+`imports.network` setting (`turtle.imports.network` in VS Code) or `--network`
+on the command line. A fetched context goes into the import cache and is read
+from there afterwards, network or not. Processed contexts are kept in memory,
+so re-checking a document processes only its inline contexts.
+
+**Not yet** (planned as phase 2; their tests are in `test/jsonld.test.mjs`,
+marked pending): completion, go to definition into `@context`, references and
+rename in JSON-LD files, formatting, semantic tokens, and nesting a named
+graph's nodes in the outline. Also not supported: compaction, flattening,
+framing, converting between JSON-LD and Turtle, and `.json` files.
+
+### Conformance
+
+The W3C JSON-LD 1.1 API suites, run offline by `tests/w3c_jsonld.rs`, with a
+status per test in `tests/w3c/jsonld/expected-status.tsv`:
+
+| Suite | Pass | Known failure | Out of scope |
+|---|---:|---:|---:|
+| toRdf | 443 | 0 | 24 |
+| expand | 365 | 2 | 19 |
+| remote-doc | 6 | 0 | 12 |
+
+- **Out of scope:** tests for JSON-LD 1.0 only (`specVersion` or
+  `processingMode` `json-ld-1.0`; 37 tests), options the engine does not have
+  (`expandContext`, 2; `rdfDirection`, 4), and remote-doc tests about loading
+  the input document itself (HTTP `Link` headers, HTML, content types,
+  missing documents; 12). The compact, flatten, frame, fromRdf and HTML suites are not run.
+- **Known failures:** both are in how the test runner reads the expected
+  expanded output (a number serde_json rounds differently, and a node with
+  `"@id": null`); the same inputs pass in the toRdf suite.
+
+On 364 public JSON-LD documents from schema.org, ActivityStreams, Verifiable
+Credentials 1.0 and 2.0, the IIIF cookbook, DCAT-US, Croissant, GS1 and DID
+(sources and licences in `tools/corpus/jsonld-sources.tsv`), the graph of
+339 is isomorphic to [oxjsonld](https://crates.io/crates/oxjsonld)'s
+(`tests/jsonld_oracle.rs`). The other 25 are known differences, each checked
+against the JSON-LD 1.1 spec:
+
+- 20 IIIF manifests with template `@id`s (`{{ id.url }}`): JSON-LD drops those
+  nodes, and oxjsonld still emits the list triples of their `@list` values;
+- 3 Verifiable Credentials where oxjsonld does not wrap an `@id`-coerced value
+  of an `@graph` container in a graph object;
+- 1 Verifiable Credential where oxjsonld keeps `@direction` as an RDF 1.2
+  directional string, which JSON-LD 1.1 toRdf drops;
+- 1 DCAT-US dataset where oxjsonld emits a triple from the value of a key no
+  context defines.
+
+`tests/jsonld_lints.rs` checks that the same documents get only the JSON-LD
+and vocabulary lints listed there, each checked by hand.
+
 ## Install
 
 - **VS Code:** install "Turtle RDF & SPARQL Language Server" from the
@@ -216,10 +325,11 @@ the plugin's `bin/`. No Rust needed; on a machine with no download it builds
 the server with `cargo` instead. The plugin also brings:
 
 - the server's config, `lsp/turtle_lsp.lua`, for Turtle, TriG, N-Triples,
-  N-Quads and SPARQL buffers, with `prefixes.ttl` or `.git` marking the
-  project root;
-- the file types Neovim does not detect itself: `.ttl` as `turtle` and `.nq`
-  as `nquads` (`.trig`, `.nt`, `.rq` and `.sparql` it already knows; `.ru`
+  N-Quads, JSON-LD and SPARQL buffers, with `prefixes.ttl` or `.git` marking
+  the project root;
+- the file types Neovim does not detect itself: `.ttl` as `turtle`, `.nq`
+  as `nquads` and `.jsonld` as `jsonld`, so plain `.json` buffers stay
+  unattached (`.trig`, `.nt`, `.rq` and `.sparql` it already knows; `.ru`
   stays Ruby);
 - no modelines in Turtle, TriG and SPARQL files: `@prefix ex: <...>` looks
   like one (" ex:") and would raise E518 on open.
@@ -233,12 +343,12 @@ Without a plugin manager, put the server on your `PATH` (see
 
 ```lua
 vim.filetype.add({
-  extension = { ttl = "turtle", nq = "nquads" },
+  extension = { ttl = "turtle", nq = "nquads", jsonld = "jsonld" },
 })
 
 vim.lsp.config("turtle_lsp", {
   cmd = { "turtle-lsp" },
-  filetypes = { "turtle", "trig", "ntriples", "nquads", "sparql" },
+  filetypes = { "turtle", "trig", "ntriples", "nquads", "jsonld", "sparql" },
   root_markers = { "prefixes.ttl", ".git" },
 })
 vim.lsp.enable("turtle_lsp")
@@ -260,8 +370,9 @@ with `vim.lsp.config("turtle_lsp", ...)`.
 ## VS Code
 
 The extension in [`editors/vscode`](editors/vscode) bundles the server and adds
-syntax highlighting for Turtle, TriG, N-Triples, N-Quads and SPARQL. Build and
-install it:
+syntax highlighting for Turtle, TriG, N-Triples, N-Quads and SPARQL. It also
+attaches the server to `.jsonld` files, which keep VS Code's JSON
+highlighting. Build and install it:
 
 ```sh
 cd editors/vscode
@@ -274,7 +385,8 @@ Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
 (prefixes for every file), `turtle.trace.server` (log LSP traffic), and the
 server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
 `turtle.shacl.maxTriples`, `turtle.shacl.onType`, `turtle.lint.undescribedTerms`,
-`turtle.imports.network` (off in untrusted workspaces) and
+`turtle.imports.network` (fetch imports and JSON-LD contexts; off in
+untrusted workspaces) and
 `turtle.format.lineWidth`.
 
 Other editors pass the server settings without the `turtle.` prefix, as
@@ -317,7 +429,7 @@ included, without an editor. `turtle-lsp format` formats files. With no
 subcommand, `turtle-lsp` is the language server, as before.
 
 ```sh
-turtle-lsp check                     # every RDF and SPARQL file under the workspace root
+turtle-lsp check                     # every RDF (JSON-LD included) and SPARQL file under the workspace root
 turtle-lsp check data/people.ttl     # only this file, with the whole workspace as context
 turtle-lsp check --fix               # also apply the safe fixes
 turtle-lsp format                    # format files in place
@@ -363,7 +475,7 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 | `--select CODE,...` | report only these diagnostic codes |
 | `--ignore CODE,...` | do not report these codes |
 | `--no-shacl` | skip SHACL validation |
-| `--network` | fetch `owl:imports` that are not in the cache (off by default) |
+| `--network` | fetch `owl:imports` and JSON-LD contexts that are not in the cache (off by default) |
 | `--max-diagnostics N` | print at most N problems per file; the summary still counts all |
 | `--statistics` | print a count per code instead of the problems |
 
@@ -371,7 +483,8 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 
 Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
 `unknown-term`, `undescribed-term`, `unresolved-import` and
-`shacl-violation`. `--format json` gives each problem's range, severity,
+`shacl-violation`, and for JSON-LD `json-syntax`, `jsonld-context`,
+`jsonld-undefined-term`, `invalid-iri` and `invalid-language-tag`. `--format json` gives each problem's range, severity,
 code, message and fixes, in an object with `"version": 1`.
 
 Settings come from [`turtle-lsp.json`](#settings-file-turtle-lspjson);
@@ -395,7 +508,7 @@ Agents that work through a shell can run the check after each edit. Add this
 to `AGENTS.md` or `CLAUDE.md`:
 
 ```markdown
-- After editing .ttl, .trig, .nt, .nq, .rq, .ru or .sparql files, run
+- After editing .ttl, .trig, .nt, .nq, .jsonld, .rq, .ru or .sparql files, run
   `turtle-lsp check <files>` and fix every error before you finish.
   Output is `path:line:col: severity[code] message`. Exit 1 means problems;
   exit 2 means the command itself failed.
@@ -417,7 +530,7 @@ or SPARQL file and shows the problems to Claude. Add it to
         "hooks": [
           {
             "type": "command",
-            "command": "f=$(jq -r '.tool_input.file_path'); case \"$f\" in *.ttl|*.trig|*.nt|*.nq|*.rq|*.ru|*.sparql) turtle-lsp check --max-diagnostics 30 \"$f\" 1>&2 || exit 2;; esac"
+            "command": "f=$(jq -r '.tool_input.file_path'); case \"$f\" in *.ttl|*.trig|*.nt|*.nq|*.jsonld|*.rq|*.ru|*.sparql) turtle-lsp check --max-diagnostics 30 \"$f\" 1>&2 || exit 2;; esac"
           }
         ]
       }
@@ -535,7 +648,7 @@ to a GitHub Release, and publishes them to the VS Code Marketplace. It needs a
 
 ```sh
 npm install     # test tooling only (LSP client, vocabulary generator)
-npm test        # cargo tests, parser cross-check against oxttl, end-to-end LSP tests, Neovim checks
+npm test        # cargo tests, parser cross-checks against oxttl and oxjsonld, end-to-end LSP tests, Neovim checks
 npm run bench   # latency benchmark on a 30k-line file in a 200-file workspace
 npm run vocab   # regenerate data/vocab.tsv from @zazuko/rdf-vocabularies
 npm run test:vscode  # VS Code extension: grammar tests, then checks inside a downloaded VS Code
@@ -549,5 +662,7 @@ npm run test:vscode  # VS Code extension: grammar tests, then checks inside a do
 - `editors/vscode/test/suite.cjs`: runs inside VS Code with the extension loaded; `editors/vscode/test/grammar.test.mjs` checks the highlighting grammars.
 - `tests/oxttl_oracle.rs`: on every valid fixture, the parser must produce the same triples as [oxttl](https://crates.io/crates/oxttl).
 - `tests/w3c_conformance.rs`: the vendored W3C suites (`tests/w3c`). Syntax tests must pass or fail as the manifest says; evaluation tests must give a dataset isomorphic to the expected N-Triples/N-Quads. Pass counts print on every run.
+- `tests/w3c_jsonld.rs`: the W3C JSON-LD 1.1 suites, against the status list `tests/w3c/jsonld/expected-status.tsv`; a regression or a known failure that starts passing fails the run. `tests/jsonld_oracle.rs` and `tests/jsonld_lints.rs` run on the public JSON-LD corpus that `npm run corpus` downloads, and skip without it. `tests/jsonld_budget.rs` holds release builds to the JSON-LD performance budgets.
+- Pending tests (`todo`, tagged with a phase such as `jsonld:phase2`) run but do not fail the build; `npm test` prints their count per tag and lists any that pass, to be promoted.
 
 Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license.
