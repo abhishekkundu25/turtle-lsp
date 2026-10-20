@@ -30,13 +30,13 @@ const show = (f) => JSON.stringify(f.diagnostics.map((d) => `${F.rangeKey(d.rang
 const languageOf = (name) => (name.endsWith(".jsonld") ? "jsonld" : /\.(rq|ru|sparql)$/.test(name) ? "sparql" : "turtle")
 const key = (d) => `${F.rangeKey(d.range)} ${d.severity} ${d.code}`
 
-test("JSON syntax errors at the same positions as in the language server", phase1("05"), () => {
+test("JSON syntax errors at the same positions as in the language server", { timeout: 40_000 }, () => {
   const f = fileOf(analyse([{ name: "broken.jsonld", text: F.SYNTAX }]), "broken.jsonld")
   assert.equal(f.kind, "jsonld")
   assert.deepEqual(sortRanges(rangesOf(f, "json-syntax")), [F.SYNTAX_MISSING_COMMA, F.SYNTAX_BAD_LITERAL], show(f))
 })
 
-test("bundled contexts load in the browser; any other remote context is reported at its URL", phase1("06"), () => {
+test("bundled contexts load in the browser; any other remote context is reported at its URL", { timeout: 40_000 }, () => {
   const files = F.BUNDLED_CONTEXTS.map((url, i) => ({ name: `bundled-${i}.jsonld`, text: F.remoteDoc(url) }))
   files.push({ name: "unknown.jsonld", text: F.remoteDoc(F.UNKNOWN_CONTEXT_URL) })
   const res = analyse(files)
@@ -67,7 +67,7 @@ test("JSON-LD lints at their positions", phase1("11"), () => {
   assert.deepEqual(rangesOf(f, "invalid-language-tag"), [F.LINTS_BAD_LANG], show(f))
 })
 
-test("Turtle and JSON-LD files know each other's terms", phase1("09"), () => {
+test("Turtle and JSON-LD files know each other's terms", { timeout: 40_000 }, () => {
   const res = analyse([
     { name: "vocab.jsonld", text: F.VOCAB },
     { name: "uses.ttl", text: F.USES },
@@ -131,7 +131,7 @@ async function serverDiagnostics(files) {
   }
 }
 
-test("the engine reports what the language server reports on a mixed Turtle and JSON-LD workspace", phase1("09"), async () => {
+test("the engine reports what the language server reports on a mixed Turtle and JSON-LD workspace", { timeout: 40_000 }, async () => {
   const files = [
     { name: "vocab.jsonld", text: F.VOCAB },
     { name: "uses.ttl", text: F.USES },
