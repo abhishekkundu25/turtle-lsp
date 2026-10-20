@@ -81,7 +81,7 @@ test("Turtle and JSON-LD files know each other's terms", { timeout: 40_000 }, ()
   assert.deepEqual(rangesOf(back, "undescribed-term"), [F.BACK_TYPO], show(back))
 })
 
-test("Turtle shapes validate JSON-LD data, each result on what breaks the shape", phase1("10"), () => {
+test("Turtle shapes validate JSON-LD data, each result on what breaks the shape", { timeout: 40_000 }, () => {
   const res = analyse([
     { name: "shapes.ttl", text: F.PERSON_SHAPES },
     { name: "people.jsonld", text: F.PEOPLE },
@@ -91,7 +91,7 @@ test("Turtle shapes validate JSON-LD data, each result on what breaks the shape"
   assert.deepEqual(sortRanges(rangesOf(f, "shacl-violation")), sortRanges(F.PEOPLE_RESULTS), show(f))
 })
 
-test("shapes written in JSON-LD are used", phase1("10"), () => {
+test("shapes written in JSON-LD are used", { timeout: 40_000 }, () => {
   const res = analyse([
     { name: "shapes.jsonld", text: F.JSONLD_SHAPES },
     { name: "data.ttl", text: F.THING_DATA },

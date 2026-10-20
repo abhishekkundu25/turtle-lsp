@@ -547,7 +547,7 @@ async function shaclSession(t, files) {
   return { w, server, save }
 }
 
-test("Turtle shapes validate JSON-LD data, each result on the key, value or @id that breaks the shape", phase1("10"), async (t) => {
+test("Turtle shapes validate JSON-LD data, each result on the key, value or @id that breaks the shape", { timeout: 25_000 }, async (t) => {
   const { server, save } = await shaclSession(t, { "shapes.ttl": F.PERSON_SHAPES, "people.jsonld": F.PEOPLE })
   const uri = save("people.jsonld")
   const diags = await until(server, uri, (d) => withCode(d, "shacl-violation").length >= F.PEOPLE_RESULTS.length, 5000)
@@ -610,7 +610,7 @@ test("check: a SHACL-SPARQL constraint reports a JSON-LD focus node on its @id",
   assert.deepEqual(cliRanges(r.of("bad.jsonld", "shacl-violation")), cliExpected([F.BAD_ASSET_ID]), r.out)
 })
 
-test("check: shapes written in JSON-LD validate Turtle data", phase1("10"), (t) => {
+test("check: shapes written in JSON-LD validate Turtle data", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "shapes.jsonld": F.JSONLD_SHAPES, "data.ttl": F.THING_DATA })
   const r = checkJson(w)
   assert.equal(r.code, 1)

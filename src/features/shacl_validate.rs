@@ -3,15 +3,18 @@
 //! The server hands a [`Job`] (the analyses of every workspace and external
 //! source, shared, so the snapshot is cheap) to a [`Worker`] on save and once
 //! after the initial index. The worker validates the union of the Turtle
-//! documents' triples, and each TriG / N-Triples / N-Quads dataset together
-//! with them, as data and shapes graph and sends back diagnostics per
+//! documents' triples (and of JSON-LD ones without named graphs), and each
+//! TriG / N-Triples / N-Quads dataset (and JSON-LD one with named graphs)
+//! together with them, as data and shapes graph and sends back diagnostics per
 //! document. Each job carries a generation; a newer job makes the worker
 //! abandon the current one, and the server drops results whose generation is
 //! not the latest.
 //!
 //! A result is shown on the triple (focus node, first path predicate, value)
 //! when the workspace has it, else on the focus node's first description,
-//! else on the constraint; never in an external source. Positions come from
+//! else on the constraint; never in an external source. In JSON-LD the
+//! triple's predicate is its key and its value the JSON value; a node is
+//! described at its `@id`, or, without one, at its own object's opening brace. Positions come from
 //! the analyses validated, so after further edits they stay where they were
 //! until the next save.
 
@@ -22,7 +25,7 @@ use crate::features::navigation;
 use crate::knowledge::Source;
 use crate::shacl::graph::{Graph, Id, Term};
 use crate::shacl::{Path, SH, ValidationResult, validate_focus};
-use crate::syntax::{Iri, PrefixMap, Role, Span, XSD};
+use crate::syntax::{Iri, PrefixMap, RDF, Role, Span, Syntax, XSD};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -227,9 +230,7 @@ pub fn has_shapes(a: &Analysis) -> bool {
 pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     let mut docs: Vec<&(Source, Arc<Analysis>)> = job.docs.iter().collect();
     docs.sort_by(|a, b| (a.0, &a.1.uri).cmp(&(b.0, &b.1.uri)));
-    let dataset = |d: &&(Source, Arc<Analysis>)| {
-        d.0 != Source::External && d.1.parsed.syntax != crate::syntax::Syntax::Turtle
-    };
+    let dataset = |d: &&(Source, Arc<Analysis>)| d.0 != Source::External && is_dataset(&d.1);
     let shared: Vec<&(Source, Arc<Analysis>)> =
         docs.iter().copied().filter(|d| !dataset(d)).collect();
     let mut out = ByUri::default();
@@ -277,6 +278,18 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
         }
     }
     Some(out)
+}
+
+/// Whether `a` is validated as a dataset of its own rather than as part of
+/// the shared graph: TriG, N-Triples and N-Quads always; JSON-LD when it has
+/// a named graph (`@graph` with an `@id`), as TriG with one would. A JSON-LD
+/// document without one is a fragment of the workspace graph, as Turtle is.
+fn is_dataset(a: &Analysis) -> bool {
+    match a.parsed.syntax {
+        Syntax::Turtle => false,
+        Syntax::JsonLd => a.parsed.triples.iter().any(|t| t.graph.is_some()),
+        Syntax::TriG | Syntax::NTriples | Syntax::NQuads => true,
+    }
 }
 
 /// A validation result in terms that do not depend on the graph it came from,
@@ -525,9 +538,25 @@ impl Placer<'_, '_, '_> {
                             Some((d, r.span))
                         })
                 }),
-            Term::Blank(_) => {
+            Term::Blank(b) => {
                 let ws =
                     |t: &(u32, &crate::shacl::graph::GTriple)| docs(self.g.origin[t.0 as usize].0);
+                // A JSON-LD node object without an `@id`: its opening brace,
+                // that of its own object even when it is nested. List nodes
+                // have none (their triples are the enclosing object's).
+                let (bd, _) = self.g.blank_origin(b);
+                if docs(bd) && self.doc(bd).parsed.syntax == Syntax::JsonLd {
+                    let list = |p: Iri| {
+                        p.strip_prefix(RDF)
+                            .is_some_and(|l| l == "first" || l == "rest")
+                    };
+                    let own = self.g.out(node).filter(ws).find(|(_, gt)| !list(gt.p));
+                    if let Some((t, _)) = own {
+                        let (d, tr) = self.origin(t);
+                        let object = self.doc(d).parsed.statements[tr.statement as usize].span;
+                        return Some((d, Span::new(object.start, object.start + 1)));
+                    }
+                }
                 if let Some((t, _)) = self.g.incoming(node).find(ws) {
                     let (d, tr) = self.origin(t);
                     return Some((d, tr.o_span));
@@ -939,5 +968,191 @@ mod tests {
         let name = by_message(&out, "ex:name");
         assert_eq!(name.severity, Some(DiagnosticSeverity::INFORMATION));
         assert!(!name.message.contains("imports"));
+    }
+
+    /// The text each result in `uri` covers (ASCII `text`), sorted.
+    fn covered(out: &ByUri, uri: &str, text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.split('\n').collect();
+        let offset = |p: Position| {
+            lines[..p.line as usize]
+                .iter()
+                .map(|l| l.len() + 1)
+                .sum::<usize>()
+                + p.character as usize
+        };
+        let mut c: Vec<String> = out
+            .get(uri)
+            .into_iter()
+            .flatten()
+            .map(|d| text[offset(d.range.start)..offset(d.range.end)].to_string())
+            .collect();
+        c.sort();
+        c
+    }
+
+    const PERSON_SHAPES: &str = "ex:S a sh:NodeShape ; sh:targetClass ex:P ;\n  sh:property [ sh:path ex:name ; sh:minCount 1 ] ;\n  sh:property [ sh:path ex:age ; sh:datatype <http://www.w3.org/2001/XMLSchema#integer> ] ;\n  sh:property [ sh:path ex:knows ; sh:class ex:P ] ;\n  sh:property [ sh:path ex:nick ; sh:maxCount 1 ] .\n";
+
+    #[test]
+    fn jsonld_results_on_the_key_value_id_or_brace() {
+        let shapes = analysis("file:///w/shapes.ttl", &format!("{HEAD}{PERSON_SHAPES}"));
+        // ann conforms. bob: no name (his @id). cy: age not an integer (the
+        // value); knows a non-P (the value). A node without @id and two
+        // nicks (the key). A nested node with an @id and no name (its own
+        // @id, not the outer one); a nested one without (its own brace).
+        let text = r#"{
+  "@context": { "@vocab": "http://example.com/" },
+  "@graph": [
+    { "@id": "http://example.com/ann", "@type": "P", "name": "Ann", "age": 1 },
+    { "@id": "http://example.com/bob", "@type": "P" },
+    { "@id": "http://example.com/cy", "@type": "P", "name": "Cy", "age": "old",
+      "knows": { "@id": "http://example.com/zed", "label": "Z" } },
+    { "@type": "P", "name": "Ed", "nick": ["E", "Eddie"] },
+    { "@id": "http://example.com/fay", "@type": "P", "name": "Fay",
+      "knows": { "@id": "http://example.com/gil", "@type": "P" } },
+    { "@id": "http://example.com/hal", "@type": "P", "name": "Hal",
+      "knows": { "@type": "P", "age": 2 } }
+  ]
+}
+"#;
+        let data = analysis("file:///w/people.jsonld", text);
+        let out = run(&job(vec![shapes, data], 1000), &|| false).unwrap();
+        assert_eq!(
+            covered(&out, "file:///w/people.jsonld", text),
+            [
+                "\"old\"",
+                "http://example.com/bob",
+                "http://example.com/gil",
+                "nick",
+                "{",
+                // zed is not a P: the value, the nested object.
+                "{ \"@id\": \"http://example.com/zed\", \"label\": \"Z\" }",
+            ],
+            "{out:#?}"
+        );
+        // The brace is the nested node's own, on the last line but two.
+        let brace = out["file:///w/people.jsonld"]
+            .iter()
+            .find(|d| d.range.end.character == d.range.start.character + 1)
+            .unwrap();
+        assert_eq!(
+            (brace.range.start.line, brace.range.start.character),
+            (11, 15)
+        );
+        assert!(!out.contains_key("file:///w/shapes.ttl"));
+    }
+
+    #[test]
+    fn jsonld_without_named_graphs_is_shared_with_them_a_dataset() {
+        let jsonld = |uri: &str, text: &str| analysis(uri, text).1;
+        let plain = jsonld(
+            "file:///w/a.jsonld",
+            r#"{ "@id": "http://example.com/a", "http://example.com/p": 1 }"#,
+        );
+        assert!(!is_dataset(&plain));
+        let named = jsonld(
+            "file:///w/g.jsonld",
+            r#"{ "@id": "http://example.com/g", "@graph": [ { "@id": "http://example.com/a", "http://example.com/p": 1 } ] }"#,
+        );
+        assert!(is_dataset(&named));
+        // A default-graph @graph (no @id) is not a named graph.
+        let default = jsonld(
+            "file:///w/d.jsonld",
+            r#"{ "@graph": [ { "@id": "http://example.com/a", "http://example.com/p": 1 } ] }"#,
+        );
+        assert!(!is_dataset(&default));
+        assert!(is_dataset(&analysis("file:///w/x.trig", "").1));
+        assert!(!is_dataset(&analysis("file:///w/x.ttl", "").1));
+
+        // Shapes in plain JSON-LD validate Turtle data (one shared unit),
+        // and plain JSON-LD data is merged with Turtle data.
+        let shapes = analysis(
+            "file:///w/shapes.jsonld",
+            r#"{
+  "@context": { "sh": "http://www.w3.org/ns/shacl#", "ex": "http://example.com/" },
+  "@id": "ex:S", "@type": "sh:NodeShape",
+  "sh:targetClass": { "@id": "ex:P" },
+  "sh:property": { "sh:path": { "@id": "ex:name" }, "sh:maxCount": 1 }
+}"#,
+        );
+        let ttl = format!("{HEAD}ex:t a ex:P ; ex:name \"T\" .\n");
+        let data = analysis("file:///w/data.ttl", &ttl);
+        let more = r#"{ "@id": "http://example.com/t", "http://example.com/name": "U" }"#;
+        let docs = vec![
+            shapes.clone(),
+            data.clone(),
+            analysis("file:///w/more.jsonld", more),
+        ];
+        let out = run(&job(docs, 1000), &|| false).unwrap();
+        // Two names once merged: on the first key, in the Turtle file.
+        assert_eq!(
+            covered(&out, "file:///w/data.ttl", &ttl),
+            ["ex:name"],
+            "{out:#?}"
+        );
+        assert!(!out.contains_key("file:///w/more.jsonld"));
+        // The same name in a named graph: a dataset, its result in it, and
+        // never merged with another dataset.
+        let run_g = |g: &str| {
+            format!(
+                r#"{{ "@id": "http://example.com/{g}", "@graph": [ {{ "@id": "http://example.com/t", "http://example.com/name": "U" }} ] }}"#
+            )
+        };
+        let (g1, g2) = (run_g("g1"), run_g("g2"));
+        let docs = vec![
+            shapes,
+            data,
+            analysis("file:///w/g1.jsonld", &g1),
+            analysis("file:///w/g2.jsonld", &g2),
+        ];
+        let out = run(&job(docs, 1000), &|| false).unwrap();
+        assert_eq!(
+            covered(&out, "file:///w/g1.jsonld", &g1),
+            ["http://example.com/name"]
+        );
+        assert_eq!(
+            covered(&out, "file:///w/g2.jsonld", &g2),
+            ["http://example.com/name"]
+        );
+        assert!(!out.contains_key("file:///w/data.ttl"), "{out:#?}");
+    }
+
+    #[test]
+    fn sparql_batches_jsonld_focus_nodes() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:P ;\n  sh:sparql [ sh:message \"no ex:bad\" ; sh:select \"SELECT $this ?value WHERE {{ $this <http://example.com/bad> ?value }}\" ] .\n"
+            ),
+        );
+        // 40 focus nodes, more than a batch needs: 20 with an @id, 20
+        // without; every other one is bad.
+        let nodes: Vec<String> = (0..40)
+            .map(|i| {
+                let id = if i < 20 {
+                    format!("\"@id\": \"ex:n{i}\", ")
+                } else {
+                    String::new()
+                };
+                let bad = if i % 2 == 0 { ", \"ex:bad\": 1" } else { "" };
+                format!("    {{ {id}\"@type\": \"ex:P\"{bad} }}")
+            })
+            .collect();
+        let text = format!(
+            "{{\n  \"@context\": {{ \"ex\": \"http://example.com/\" }},\n  \"@graph\": [\n{}\n  ]\n}}\n",
+            nodes.join(",\n")
+        );
+        let data = analysis("file:///w/many.jsonld", &text);
+        let out = run(&job(vec![shapes, data], 100_000), &|| false).unwrap();
+        let d = &out["file:///w/many.jsonld"];
+        assert_eq!(d.len(), 20, "{d:#?}");
+        assert!(d.iter().all(|d| d.message == "no ex:bad"));
+        let mut expected: Vec<String> = (0..20).step_by(2).map(|i| format!("ex:n{i}")).collect();
+        expected.extend(std::iter::repeat_n("{".to_string(), 10));
+        expected.sort();
+        assert_eq!(covered(&out, "file:///w/many.jsonld", &text), expected);
+        // Each brace on its own node's line (lines 3.. hold the nodes).
+        let mut lines: Vec<u32> = d.iter().map(|d| d.range.start.line).collect();
+        lines.sort();
+        assert_eq!(lines, (3..43).step_by(2).collect::<Vec<u32>>());
     }
 }
