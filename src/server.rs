@@ -25,7 +25,7 @@ use crate::features::{
     completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, shacl_validate,
     symbols,
 };
-use crate::settings::Settings;
+use crate::settings::{SETTINGS_FILE, Settings, read_settings_file};
 use crate::sparql::features as sparql_features;
 use crate::workspace::{
     DocKind, PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
@@ -79,8 +79,12 @@ pub struct Server {
     /// The client resolves a code action's edit lazily (`codeAction/resolve`).
     resolve_edits: bool,
     next_id: i32,
-    /// `initializationOptions` and the last `turtle` configuration section;
-    /// `settings` is the defaults overridden by these two, in that order.
+    /// `turtle-lsp.json` at the first workspace root (Null when absent or
+    /// invalid), `initializationOptions` and the last `turtle` configuration
+    /// section; `settings` is the defaults overridden by these, in that order.
+    file_settings: Value,
+    /// Why `turtle-lsp.json` was not used at startup, shown once started.
+    file_settings_error: Option<String>,
     init_options: Value,
     config: Value,
     settings: Settings,
@@ -213,9 +217,6 @@ impl Server {
             .as_ref()
             .and_then(|w| w.configuration)
             .unwrap_or(false);
-        let init_options = params.initialization_options.clone().unwrap_or_default();
-        let settings = Settings::from_layers([&init_options]);
-
         let resolve_edits = params
             .capabilities
             .text_document
@@ -239,6 +240,13 @@ impl Server {
         {
             roots.push(r);
         }
+        let (file_settings, file_settings_error) = if inline {
+            (Value::Null, None)
+        } else {
+            read_file_settings(roots.first())
+        };
+        let init_options = params.initialization_options.clone().unwrap_or_default();
+        let settings = Settings::from_layers([&file_settings, &init_options]);
         let ws = Workspace::new(roots.clone(), settings.prefixes.clone());
 
         let result = InitializeResult {
@@ -264,6 +272,8 @@ impl Server {
             watch_dynamic,
             resolve_edits,
             next_id: 0,
+            file_settings,
+            file_settings_error,
             init_options,
             config: Value::Null,
             settings,
@@ -298,6 +308,16 @@ impl Server {
             inline,
         };
         Ok((server, result, roots))
+    }
+}
+
+/// The settings layer from `turtle-lsp.json` at `root`, and why it was
+/// ignored if it was: Null when there is no root, no file, or a bad file.
+fn read_file_settings(root: Option<&PathBuf>) -> (Value, Option<String>) {
+    match root.map(|r| read_settings_file(r)) {
+        Some(Ok(Some(v))) => (v, None),
+        Some(Err(e)) => (Value::Null, Some(e)),
+        _ => (Value::Null, None),
     }
 }
 
@@ -511,6 +531,9 @@ impl Server {
     /// Before the first message: register file watchers, show indexing.
     fn start(&mut self) {
         self.register_watchers();
+        if let Some(e) = self.file_settings_error.take() {
+            self.warn_settings_file(e);
+        }
         if !self.indexed {
             self.index_progress = self.progress_begin("Indexing workspace");
         }
@@ -760,10 +783,15 @@ impl Server {
                 if let Some(p) = parse::<DidChangeWatchedFilesParams>(n.params) {
                     let mut prefixes_changed = false;
                     let mut disk_changed = false;
+                    let settings_file = self.ws.roots.first().map(|r| r.join(SETTINGS_FILE));
                     for ch in p.changes {
                         let Some(path) = uri_to_path(ch.uri.as_str()) else {
                             continue;
                         };
+                        if settings_file.as_ref() == Some(&path) {
+                            self.reload_settings_file();
+                            continue;
+                        }
                         if is_import_source(&path) {
                             // A catalog or an imported RDF/XML ontology changed.
                             self.imports.retry();
@@ -954,7 +982,32 @@ impl Server {
             return;
         }
         self.config = section;
-        let new = Settings::from_layers([&self.init_options, &self.config]);
+        self.relayer_settings();
+    }
+
+    /// `turtle-lsp.json` changed on disk: read it again. An invalid file
+    /// warns and counts as absent.
+    fn reload_settings_file(&mut self) {
+        let (file, error) = read_file_settings(self.ws.roots.first());
+        self.file_settings = file;
+        if let Some(e) = error {
+            self.warn_settings_file(e);
+        }
+        self.relayer_settings();
+    }
+
+    fn warn_settings_file(&self, error: String) {
+        let params = ShowMessageParams {
+            typ: MessageType::WARNING,
+            message: format!("turtle-lsp: {error}; its settings are ignored"),
+        };
+        let n = Notification::new(lsp_types::notification::ShowMessage::METHOD.into(), params);
+        let _ = self.conn.sender.send(n.into());
+    }
+
+    /// Recompute the settings from their layers and act on any change.
+    fn relayer_settings(&mut self) {
+        let new = Settings::from_layers([&self.file_settings, &self.init_options, &self.config]);
         if new == self.settings {
             return;
         }
@@ -1165,7 +1218,8 @@ impl Server {
         let opts = DidChangeWatchedFilesRegistrationOptions {
             watchers: vec![FileSystemWatcher {
                 glob_pattern: GlobPattern::String(
-                    "**/{*.ttl,*.turtle,*.trig,*.nt,*.nq,*.rdf,*.owl,catalog-v001.xml}".into(),
+                    "**/{*.ttl,*.turtle,*.trig,*.nt,*.nq,*.rdf,*.owl,catalog-v001.xml,turtle-lsp.json}"
+                        .into(),
                 ),
                 kind: None,
             }],

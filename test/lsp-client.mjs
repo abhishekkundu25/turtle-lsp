@@ -104,6 +104,8 @@ export async function startServer({
   const diagnostics = new Map()
   const waiters = []
   const logs = []
+  // `window/showMessage` notifications ({ type, message }), in order.
+  const messages = []
   const published = []
   // Every publication in order, with its diagnostics.
   const publications = []
@@ -121,6 +123,7 @@ export async function startServer({
     for (const w of waiters.splice(0)) w()
   })
   conn.onNotification("window/logMessage", (p) => logs.push(p.message))
+  conn.onNotification("window/showMessage", (p) => messages.push(p))
   conn.onNotification("$/progress", (p) => progress.push(p))
   conn.onRequest((method, params) => {
     serverRequests.push({ method, params })
@@ -147,6 +150,7 @@ export async function startServer({
     init,
     initMs,
     logs,
+    messages,
     stray,
     published,
     publications,

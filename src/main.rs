@@ -6,8 +6,18 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    // stdout carries the protocol; anything else must go to stderr.
-    if std::env::args().any(|a| a == "--version") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("check" | "format") => std::process::exit(turtle_lsp::cli::run(&args)),
+        Some("help" | "--help" | "-h") => {
+            print!("{}", turtle_lsp::cli::USAGE);
+            return;
+        }
+        _ => {}
+    }
+    // As the language server, stdout carries the protocol; anything else must
+    // go to stderr.
+    if args.iter().any(|a| a == "--version") {
         eprintln!("turtle-lsp {}", env!("CARGO_PKG_VERSION"));
         return;
     }

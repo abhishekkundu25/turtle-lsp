@@ -1,0 +1,18 @@
+# pre-commit hooks. They run the turtle-lsp binary on PATH: download it from
+# https://github.com/abhishekkundu25/turtle-lsp/releases/latest.
+# require_serial: each run loads the whole workspace, so one process is faster
+# than several.
+- id: turtle-lsp-check
+  name: turtle-lsp check
+  description: Check RDF and SPARQL files (syntax, prefixes, vocabularies, SHACL).
+  entry: turtle-lsp check
+  language: system
+  files: \.(ttl|trig|nt|nq|rq|ru|sparql)$
+  require_serial: true
+- id: turtle-lsp-format
+  name: turtle-lsp format
+  description: Format RDF and SPARQL files.
+  entry: turtle-lsp format
+  language: system
+  files: \.(ttl|trig|nt|nq|rq|ru|sparql)$
+  require_serial: true

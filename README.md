@@ -107,7 +107,8 @@ Why it is fast:
 
 Turtle files often leave out their `@prefix` lines and rely on a shared header.
 Put the header in a `prefixes.ttl` file: every Turtle file in that directory or
-below it can use those prefixes. You can also pass prefixes from the editor:
+below it can use those prefixes. You can also set prefixes in
+[`turtle-lsp.json`](#settings-file-turtle-lspjson) or pass them from the editor:
 
 ```lua
 init_options = { prefixes = { ex = "http://example.org/" } }
@@ -189,7 +190,8 @@ query or contacts an endpoint.
   [latest release](https://github.com/abhishekkundu25/turtle-lsp/releases/latest)
   (`turtle-lsp-<platform>.tar.gz`, or `.zip` on Windows; checksums in
   `SHA256SUMS`), put `turtle-lsp` on your `PATH`, and point your editor's LSP
-  client at it (it speaks LSP over stdio).
+  client at it (it speaks LSP over stdio). The same binary is the command-line
+  checker and formatter; see [Check from the command line](#check-from-the-command-line).
 - **From source:** `cargo build --release` (binary: `target/release/turtle-lsp`).
 
 ## Neovim (0.11+)
@@ -281,6 +283,199 @@ Other editors pass the server settings without the `turtle.` prefix, as
 ```lua
 init_options = { inlayHints = { labels = "all" }, format = { lineWidth = 80 } }
 ```
+
+## Settings file (turtle-lsp.json)
+
+An optional `turtle-lsp.json` at the workspace root holds settings for
+everyone who works on the project: every editor, the command line, coding
+agents and CI. It takes the same keys as `init_options`, nested or dotted
+(`"lint.undescribedTerms": false`). A top-level `"turtle"` object around them
+is also accepted.
+
+```json
+{
+  "prefixes": { "ex": "http://example.org/" },
+  "lint": { "undescribedTerms": false },
+  "shacl": { "maxTriples": 500000 },
+  "format": { "lineWidth": 80 }
+}
+```
+
+- **Order:** defaults, then `turtle-lsp.json`, then the editor's
+  `init_options`, then its `turtle` settings section. A later layer wins key by
+  key. An editor `prefixes` object replaces the file's prefixes; a dotted key
+  (`"prefixes.ex"`) adds one.
+- **On the command line,** flags win over the file.
+- **In the editor,** the server reads the file in the first workspace folder,
+  and again when it changes (if the editor reports file changes to the server).
+- **A file that is not a JSON object** is ignored, with one warning.
+
+## Check from the command line
+
+`turtle-lsp check` reports what the editor would show, SHACL validation
+included, without an editor. `turtle-lsp format` formats files. With no
+subcommand, `turtle-lsp` is the language server, as before.
+
+```sh
+turtle-lsp check                     # every RDF and SPARQL file under the workspace root
+turtle-lsp check data/people.ttl     # only this file, with the whole workspace as context
+turtle-lsp check --fix               # also apply the safe fixes
+turtle-lsp format                    # format files in place
+turtle-lsp format --check            # list files that would change; change nothing
+turtle-lsp format --diff             # print a unified diff instead
+```
+
+The workspace root is `--root DIR`, otherwise the nearest folder above with a
+`.git`, otherwise the current folder. Every file under it is loaded
+(`prefixes.ttl`, shapes, cached imports), so checking one file gives the same
+results as the editor. Only the files you name are reported.
+
+Output is one line per problem, sorted by file and position, with lines and
+columns starting at 1. A summary goes to stderr.
+
+```
+data/people.ttl:3:5: warning[undescribed-term] 'ex:lable' is not described anywhere in the workspace. Did you mean 'ex:label'?
+data/pumps.ttl:7:22: error[shacl-violation] obj:mill-0517 (sd:fillsPosition of obj:pump-07) is not an instance of sd:Position
+```
+
+**Exit codes**
+
+| Code | `check` | `format` (with or without `--check`, `--diff`) |
+|---|---|---|
+| 0 | no errors, and no more warnings than `--max-warnings` | nothing would change (or every file was formatted) |
+| 1 | an error (syntax, `sh:Violation`, ...), or too many warnings | a file would change |
+| 2 | the tool failed: a bad flag, an unreadable path, an internal error | the same, or a file with syntax errors (it is left alone) |
+
+Warnings, `sh:Warning` included, do not fail the check unless you pass
+`--max-warnings N`. `sh:Info` results and hints never do.
+
+**Options of `check`**
+
+| Option | Effect |
+|---|---|
+| `--root DIR` | the workspace root |
+| `--format F` | `concise` (default), `json`, `github` (workflow annotations) or `sarif` (GitHub code scanning) |
+| `--output-file PATH` | write the report to a file instead of stdout |
+| `--fix` | apply the safe fixes (add a missing prefix, remove an unused one), then report what is left |
+| `--unsafe-fixes` | needs `--fix`; also apply "did you mean" renames of terms, which can change meaning |
+| `--max-warnings N` | exit 1 when there are more than N warnings |
+| `--exit-zero` | exit 0 when the run completes, whatever it found |
+| `--select CODE,...` | report only these diagnostic codes |
+| `--ignore CODE,...` | do not report these codes |
+| `--no-shacl` | skip SHACL validation |
+| `--network` | fetch `owl:imports` that are not in the cache (off by default) |
+| `--max-diagnostics N` | print at most N problems per file; the summary still counts all |
+| `--statistics` | print a count per code instead of the problems |
+
+`format` takes `--root DIR`, `--check` and `--diff`.
+
+Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
+`unknown-term`, `undescribed-term`, `unresolved-import` and
+`shacl-violation`. `--format json` gives each problem's range, severity,
+code, message and fixes, in an object with `"version": 1`.
+
+Settings come from [`turtle-lsp.json`](#settings-file-turtle-lspjson);
+`format` uses its `format.lineWidth`.
+
+**pre-commit.** Put `turtle-lsp` on your `PATH`, then add to
+`.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/abhishekkundu25/turtle-lsp
+    rev: v0.6.0
+    hooks:
+      - id: turtle-lsp-check
+      - id: turtle-lsp-format
+```
+
+## For coding agents
+
+Agents that work through a shell can run the check after each edit. Add this
+to `AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+- After editing .ttl, .trig, .nt, .nq, .rq, .ru or .sparql files, run
+  `turtle-lsp check <files>` and fix every error before you finish.
+  Output is `path:line:col: severity[code] message`. Exit 1 means problems;
+  exit 2 means the command itself failed.
+- `turtle-lsp check --fix <files>` applies the safe fixes (missing and
+  unused prefixes).
+- Run `turtle-lsp format <files>` on the files you changed.
+```
+
+In Claude Code, a `PostToolUse` hook runs the check after every edit of an RDF
+or SPARQL file and shows the problems to Claude. Add it to
+`.claude/settings.json` (it needs `jq`):
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path'); case \"$f\" in *.ttl|*.trig|*.nt|*.nq|*.rq|*.ru|*.sparql) turtle-lsp check --max-diagnostics 30 \"$f\" 1>&2 || exit 2;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Exit code 2 is what makes Claude Code show the hook's stderr to Claude.
+`--max-diagnostics` keeps a badly broken file from filling the context.
+
+## In CI
+
+This GitHub workflow downloads the Linux binary from the latest release,
+checks it against `SHA256SUMS`, and annotates the pull request at the lines
+with problems:
+
+```yaml
+name: RDF
+on: [push, pull_request]
+jobs:
+  turtle-lsp:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install turtle-lsp
+        working-directory: ${{ runner.temp }}
+        run: |
+          base=https://github.com/abhishekkundu25/turtle-lsp/releases/latest/download
+          curl -fsSLO "$base/turtle-lsp-linux-x64.tar.gz"
+          curl -fsSLO "$base/SHA256SUMS"
+          sha256sum --check --ignore-missing SHA256SUMS
+          tar -xzf turtle-lsp-linux-x64.tar.gz
+          echo "$PWD" >> "$GITHUB_PATH"
+      - run: turtle-lsp check --format github
+      - run: turtle-lsp format --check
+```
+
+To pin a version, replace `latest/download` with `download/v0.6.0`.
+
+GitHub shows at most 10 annotations of each severity per step. For a large
+repository, upload SARIF to code scanning instead: the problems appear in the
+Security tab and on pull requests. Replace the check step with these two, and
+add `security-events: write` to `permissions`:
+
+```yaml
+      - run: turtle-lsp check --format sarif --output-file turtle-lsp.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: turtle-lsp.sarif
+          category: turtle-lsp
+```
+
+Imports come from the cache only, unless you pass `--network`, so a build
+does not depend on remote servers.
 
 ## Semantic highlighting and label hints
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **`turtle-lsp check`**: reports from the command line what the editor
+  shows (syntax errors, prefixes, vocabulary lints, SHACL validation) at
+  file:line:col, for coding agents, CI and pre-commit. Exit codes 0 (clean),
+  1 (problems) and 2 (the tool failed). Output formats `concise`, `json`,
+  `github` (workflow annotations) and `sarif` (code scanning). `--fix` applies
+  the safe quick fixes.
+- **`turtle-lsp format`**: formats files in place; `--check` and `--diff`
+  change nothing and exit 1 if a file would change.
+- **`turtle-lsp.json`**: optional settings file at the workspace root, with
+  the keys of the editor settings. The command line and the server both read
+  it; the editor's settings override it.
+- `.pre-commit-hooks.yaml` with the hooks `turtle-lsp-check` and
+  `turtle-lsp-format`.
+
 ## 0.5.2 — 2026-10-20
 
 ### Features

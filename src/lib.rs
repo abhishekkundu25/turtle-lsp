@@ -1,6 +1,9 @@
 //! Turtle (RDF 1.2) language server.
 
 pub mod analysis;
+pub mod batch;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cli;
 pub mod clock;
 pub mod features;
 pub mod imports;

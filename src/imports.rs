@@ -172,6 +172,67 @@ pub fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
         .collect()
 }
 
+/// The workspace's imports resolved once, on the calling thread (the command
+/// line): their status, and the ontologies loaded, keyed as the server keys
+/// them in the knowledge index.
+#[derive(Clone, Default)]
+pub struct Resolved {
+    pub status: FxHashMap<String, Status>,
+    pub loaded: Vec<(String, Arc<Analysis>)>,
+}
+
+impl Resolved {
+    /// The imports that are not loaded, sorted.
+    pub fn unresolved(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .status
+            .iter()
+            .filter(|(_, s)| matches!(s, Status::Unresolved(_)))
+            .map(|(i, _)| i.clone())
+            .collect();
+        v.sort();
+        v
+    }
+}
+
+/// Resolve the imports of the workspace documents in `k` as the server's
+/// background thread does (workspace, catalogs under `roots`, the import
+/// cache, then the network if `network`), but now and on this thread.
+pub fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Resolved {
+    let (mut imports, mut local) = (BTreeSet::new(), BTreeSet::new());
+    for (_, _, a) in k.docs().filter(|(_, src, _)| *src != Source::External) {
+        let d = doc_onto(a);
+        imports.extend(d.imports.iter().map(|i| i.to_string()));
+        local.extend(d.ontologies.iter().map(|i| norm(i).to_string()));
+    }
+    if imports.is_empty() {
+        return Resolved::default();
+    }
+    let job = Job {
+        generation: 0,
+        req: Request {
+            imports: imports.into_iter().collect(),
+            local: local.into_iter().collect(),
+            roots: roots.to_vec(),
+            cache: cache_dir().map(|d| d.join("imports")),
+            network,
+            fetch: Vec::new(),
+        },
+        refetch: None,
+    };
+    let Some(done) = resolve(&job, &mut Memo::default(), &|| false) else {
+        return Resolved::default();
+    };
+    Resolved {
+        status: done.status.into_iter().collect(),
+        loaded: done
+            .loaded
+            .into_iter()
+            .map(|l| (l.key, l.analysis))
+            .collect(),
+    }
+}
+
 /// `owl:imports` state of the server: what was asked, what came back.
 pub struct Imports {
     /// Resolve without loading or threads (see [`Imports::new_inline`]).
