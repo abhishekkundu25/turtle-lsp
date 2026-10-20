@@ -899,7 +899,10 @@ impl<'a> Parser<'a> {
                     }
                     K::RBrace | K::RBracket | K::Eof => break,
                     K::Str { .. } | K::Word => {
-                        self.error(t.span(), "Expected ',' between members");
+                        // On the value before the missing ',', as Turtle marks
+                        // the token before a missing '.'.
+                        let prev = members.last().map(|m| m.value.span);
+                        self.missing_separator(prev, t.span(), "Expected ',' between members");
                         break;
                     }
                     K::Colon => {
@@ -924,6 +927,18 @@ impl<'a> Parser<'a> {
             }),
             span: Span::new(open.start, end),
         }
+    }
+
+    /// A missing ',' is reported on the value before it, as Turtle marks the
+    /// token before a missing '.'; at `next` when that value has no text. Not
+    /// at all when the value already has an error there (an unclosed string
+    /// swallows the comma).
+    fn missing_separator(&mut self, prev: Option<Span>, next: Span, message: &str) {
+        let at = prev.filter(|s| s.end > s.start).unwrap_or(next);
+        if self.errors.iter().rev().any(|e| e.span == at) {
+            return;
+        }
+        self.error(at, message);
     }
 
     fn array(&mut self, open: Lexed) -> Json {
@@ -995,7 +1010,8 @@ impl<'a> Parser<'a> {
                         self.bump();
                     }
                     _ => {
-                        self.error(t.span(), "Expected ',' between items");
+                        let prev = items.last().map(|i| i.span);
+                        self.missing_separator(prev, t.span(), "Expected ',' between items");
                         break;
                     }
                 }
@@ -1252,12 +1268,12 @@ mod tests {
     #[test]
     fn a_missing_comma_between_members() {
         let text = r#"{"a": 1 "b": 2, "c": [3 4]}"#;
-        let (b, four) = (at(text, "\"b\"", 0), at(text, "4", 0));
+        let (one, three) = (at(text, "1", 0), at(text, "3", 0));
         assert_eq!(
             errors(text),
             vec![
-                (b.0, b.1, "Expected ',' between members".into()),
-                (four.0, four.1, "Expected ',' between items".into()),
+                (one.0, one.1, "Expected ',' between members".into()),
+                (three.0, three.1, "Expected ',' between items".into()),
             ]
         );
         let r = root(text);
@@ -1332,17 +1348,14 @@ mod tests {
     #[test]
     fn an_unclosed_string_ends_at_its_line() {
         let text = "{\n  \"a\": \"oops,\n  \"b\": 2\n}";
-        let (s, b) = (at(text, "\"oops,", 0), at(text, "\"b\"", 0));
+        let s = at(text, "\"oops,", 0);
         assert_eq!(
             errors(text),
-            vec![
-                (
-                    s.0,
-                    s.1,
-                    "Unclosed string: expected '\"' before the end of the line".into()
-                ),
-                (b.0, b.1, "Expected ',' between members".into()),
-            ]
+            vec![(
+                s.0,
+                s.1,
+                "Unclosed string: expected '\"' before the end of the line".into()
+            )]
         );
         let r = root(text);
         let o = r.as_object().unwrap();

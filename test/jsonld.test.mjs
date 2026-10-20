@@ -169,7 +169,7 @@ async function openFile(name) {
 
 // ---- JSON syntax (ticket 05) ----
 
-test("a missing comma is one json-syntax error on the value before it; parsing goes on to the next error", phase1("05"), async (t) => {
+test("a missing comma is one json-syntax error on the value before it; parsing goes on to the next error", { timeout: 25_000 }, async (t) => {
   const { uri, diags } = await openScratch(t, F.SYNTAX)
   assert.deepEqual(sortRanges(rangesOf(diags, "json-syntax")), [F.SYNTAX_MISSING_COMMA, F.SYNTAX_BAD_LITERAL], show(diags))
   assert.ok(withCode(diags, "json-syntax").every((d) => d.severity === 1), show(diags))
@@ -180,12 +180,12 @@ test("a missing comma is one json-syntax error on the value before it; parsing g
   assert.deepEqual(rangesOf(fixed, "json-syntax"), [F.SYNTAX_BAD_LITERAL], show(fixed))
 })
 
-test("a trailing comma is a json-syntax error on the comma", phase1("05"), async (t) => {
+test("a trailing comma is a json-syntax error on the comma", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.TRAILING_COMMA)
   assert.deepEqual(rangesOf(diags, "json-syntax"), [F.TRAILING_COMMA_AT], show(diags))
 })
 
-test("check: a JSON syntax error exits 1 at its line and column", phase1("05"), (t) => {
+test("check: a JSON syntax error exits 1 at its line and column", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "broken.jsonld": F.SYNTAX })
   const r = run(w, ["check"])
   assert.equal(r.code, 1, r.err)

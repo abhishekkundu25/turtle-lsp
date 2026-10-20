@@ -102,7 +102,8 @@ test("format --check: a .jsonld file is left alone", () => {
 
 // ---- JSON syntax errors ----
 
-// A missing comma: one error at the key that should follow it.
+// A missing comma: one error on the value before it, as Turtle marks the
+// token before a missing '.'.
 const BROKEN = `{
   "@id": "ex:a"
   "ex:name": "A"
@@ -118,7 +119,7 @@ test("a JSON syntax error is published at its exact range", async () => {
     diags.map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
     [
       {
-        range: { start: { line: 2, character: 2 }, end: { line: 2, character: 11 } },
+        range: { start: { line: 1, character: 9 }, end: { line: 1, character: 15 } },
         severity: 1,
         message: "Expected ',' between members",
       },
@@ -138,7 +139,7 @@ test("check: a JSON syntax error is reported at its exact range", (t) => {
     file.diagnostics.map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
     [
       {
-        range: { start: { line: 3, column: 3 }, end: { line: 3, column: 12 } },
+        range: { start: { line: 2, column: 10 }, end: { line: 2, column: 16 } },
         severity: "error",
         message: "Expected ',' between members",
       },
