@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
+pub mod jsonld;
+
 pub enum Target {
     Iri(Iri),
     /// A prefix name, as used or declared in this document.
@@ -72,6 +74,13 @@ pub fn definition(
     let Some(offset) = a.offset(enc, pos) else {
         return vec![];
     };
+    // A JSON-LD term: its definition's key, unless a bundled or remote
+    // context defines it.
+    if let Some(l) = jsonld::term_at(a, offset).and_then(|t| {
+        jsonld::definition_location(a, k, enc, a.source_index.definition(t.definition))
+    }) {
+        return vec![l];
+    }
     match target_at(a, offset) {
         Some((Target::Prefix(name), _)) => {
             if let Some(p) = a.parsed.prefixes.iter().find(|p| p.name == name) {
@@ -167,6 +176,9 @@ pub fn references(
     let Some(offset) = a.offset(enc, pos) else {
         return vec![];
     };
+    if let Some(t) = jsonld::term_at(a, offset) {
+        return jsonld_references(a, k, enc, t, include_decl);
+    }
     let mut out = Vec::new();
     match target_at(a, offset) {
         Some((Target::Prefix(name), _)) => {
@@ -199,6 +211,38 @@ pub fn references(
     out
 }
 
+/// A JSON-LD term's references: its definition's key (with `include_decl`),
+/// its uses in this document and its IRI's uses in the workspace.
+fn jsonld_references(
+    a: &Analysis,
+    k: &Knowledge,
+    enc: Encoding,
+    t: jsonld::TermAt,
+    include_decl: bool,
+) -> Vec<Location> {
+    let d = a.source_index.definition(t.definition);
+    let mut out = Vec::new();
+    if include_decl {
+        out.extend(jsonld::definition_location(a, k, enc, d));
+    }
+    out.extend(jsonld::use_spans(a, t.definition).map(|s| loc(a, enc, s)));
+    if let Some(iri) = d.iri.as_deref() {
+        out.extend(term_references(k, enc, iri, include_decl));
+    }
+    let mut seen = FxHashSet::default();
+    out.retain(|l| {
+        let r = l.range;
+        seen.insert((
+            l.uri.as_str().to_string(),
+            r.start.line,
+            r.start.character,
+            r.end.line,
+            r.end.character,
+        ))
+    });
+    out
+}
+
 /// Where the workspace's RDF documents (imports left out) use `iri`; its
 /// descriptions too with `include_decl`.
 pub fn term_references<K: IriKey + ?Sized>(
@@ -226,9 +270,6 @@ pub fn highlights(a: &Analysis, enc: Encoding, pos: Position) -> Vec<DocumentHig
     let Some(offset) = a.offset(enc, pos) else {
         return vec![];
     };
-    let Some((target, _)) = target_at(a, offset) else {
-        return vec![];
-    };
     let mk = |span: Span, write: bool| DocumentHighlight {
         range: a.range(enc, span),
         kind: Some(if write {
@@ -236,6 +277,19 @@ pub fn highlights(a: &Analysis, enc: Encoding, pos: Position) -> Vec<DocumentHig
         } else {
             DocumentHighlightKind::READ
         }),
+    };
+    // A JSON-LD term: its definition, if in this document, and its uses.
+    if let Some(t) = jsonld::term_at(a, offset) {
+        let d = a.source_index.definition(t.definition);
+        let def = (d.origin == crate::jsonld::source::Origin::Document).then_some(d.key);
+        return def
+            .into_iter()
+            .map(|s| mk(s, true))
+            .chain(jsonld::use_spans(a, t.definition).map(|s| mk(s, false)))
+            .collect();
+    }
+    let Some((target, _)) = target_at(a, offset) else {
+        return vec![];
     };
     match target {
         Target::Iri(iri) => a

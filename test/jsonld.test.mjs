@@ -673,7 +673,7 @@ test("hover on an @type value shows its expanded IRI and what the workspace says
   assert.deepEqual(h.range, F.EDIT_ANN_TYPE)
 })
 
-test("go to definition on a key goes to its @context entry", phase2, async () => {
+test("go to definition on a key goes to its @context entry", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const res = await s.request("textDocument/definition", { textDocument: { uri }, position: F.inside(F.EDIT_ANN_NAME, 1) })
   assert.deepEqual(locations(res), [{ uri, range: F.EDIT_NAME_DEF }])
@@ -685,13 +685,13 @@ test("go to definition on an @vocab key goes to where the workspace describes th
   assert.deepEqual(locations(res), [{ uri: fileUri("vocab.jsonld"), range: F.VOCAB_WEIGHT }])
 })
 
-test("go to definition on a key goes into a context file", phase2, async (t) => {
+test("go to definition on a key goes into a context file", { timeout: 25_000 }, async (t) => {
   const { uri } = await openScratch(t, F.USES_CTX_FILE)
   const res = await s.request("textDocument/definition", { textDocument: { uri }, position: F.inside(F.USES_CTX_FILE_NICKNAME, 1) })
   assert.deepEqual(locations(res), [{ uri: fileUri("people.context.jsonld"), range: F.CTX_FILE_NICKNAME }])
 })
 
-test("references on a key list its @context entry, its uses and the IRI's uses elsewhere", phase2, async () => {
+test("references on a key list its @context entry, its uses and the IRI's uses elsewhere", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const res = await s.request("textDocument/references", {
     textDocument: { uri },
@@ -704,6 +704,14 @@ test("references on a key list its @context entry, its uses and the IRI's uses e
     locations(res).some((l) => l.uri === fileUri("uses.ttl") && F.rangeKey(l.range) === F.rangeKey(F.USES_FOAF_NAME)),
     JSON.stringify(res),
   )
+})
+
+test("highlights on a key mark its @context entry as written and its uses as read", { timeout: 25_000 }, async () => {
+  const uri = await openEdit()
+  const res = await s.request("textDocument/documentHighlight", { textDocument: { uri }, position: F.inside(F.EDIT_BOB_NAME, 1) })
+  const got = (res ?? []).map((h) => `${F.rangeKey(h.range)} ${h.kind}`).sort()
+  const want = [`${F.rangeKey(F.EDIT_NAME_DEF)} 3`, `${F.rangeKey(F.EDIT_ANN_NAME)} 2`, `${F.rangeKey(F.EDIT_BOB_NAME)} 2`].sort()
+  assert.deepEqual(got, want, JSON.stringify(res))
 })
 
 test("renaming a term renames its @context entry and every use, and nothing else", phase2, async () => {
