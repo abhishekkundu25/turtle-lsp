@@ -1,6 +1,7 @@
 //! Turtle 1.2, TriG 1.2, N-Triples 1.2 and N-Quads 1.2 syntax: a lexer and a resilient
 //! recursive-descent parser that records the span of every term, so every
-//! editor feature reads one parse.
+//! editor feature reads one parse. JSON-LD documents produce the same
+//! [`Parsed`] through [`crate::jsonld`].
 
 mod iri;
 pub mod lexer;
@@ -14,10 +15,11 @@ pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 
-/// The language a document is written in. One parser reads all four: TriG
-/// adds graph blocks to Turtle, N-Triples is read as Turtle with every
+/// The language a document is written in. One parser reads the first four:
+/// TriG adds graph blocks to Turtle, N-Triples is read as Turtle with every
 /// construct N-Triples forbids reported as an error, and N-Quads is N-Triples
-/// with an optional graph label before each line's `.`.
+/// with an optional graph label before each line's `.`. JSON-LD has its own
+/// frontend ([`crate::jsonld`]) producing the same [`Parsed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Syntax {
     #[default]
@@ -25,23 +27,26 @@ pub enum Syntax {
     TriG,
     NTriples,
     NQuads,
+    /// JSON-LD 1.1 (`.jsonld`). Generic `.json` files are not JSON-LD.
+    JsonLd,
 }
 
 impl Syntax {
     /// From an LSP language id (`turtle`, `trig`, `ntriples` / `n-triples`,
-    /// `nquads` / `n-quads`).
+    /// `nquads` / `n-quads`, `jsonld`).
     pub fn from_language_id(id: &str) -> Option<Syntax> {
         match id.to_ascii_lowercase().as_str() {
             "turtle" => Some(Syntax::Turtle),
             "trig" => Some(Syntax::TriG),
             "ntriples" | "n-triples" => Some(Syntax::NTriples),
             "nquads" | "n-quads" => Some(Syntax::NQuads),
+            "jsonld" => Some(Syntax::JsonLd),
             _ => None,
         }
     }
 
     /// From the extension of a path or URI: `.ttl` / `.turtle`, `.trig`, `.nt`,
-    /// `.nq`.
+    /// `.nq`, `.jsonld`.
     pub fn from_extension(path: &str) -> Option<Syntax> {
         let name = path.rsplit(['/', '\\']).next()?;
         match name.rsplit_once('.')?.1 {
@@ -49,16 +54,18 @@ impl Syntax {
             "trig" => Some(Syntax::TriG),
             "nt" => Some(Syntax::NTriples),
             "nq" => Some(Syntax::NQuads),
+            "jsonld" => Some(Syntax::JsonLd),
             _ => None,
         }
     }
 
-    /// A `trig`, `ntriples` or `nquads` language id wins; otherwise (no id, an unknown
-    /// one, or the generic `turtle`) the extension decides; else Turtle.
+    /// A `trig`, `ntriples`, `nquads` or `jsonld` language id wins; otherwise
+    /// (no id, an unknown one such as `json`, or the generic `turtle`) the
+    /// extension decides; else Turtle.
     pub fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
         match language_id.and_then(Syntax::from_language_id) {
             // `turtle` is what editors send when they lump RDF files together:
-            // a `.trig`, `.nt` or `.nq` name is the better witness then.
+            // a `.trig`, `.nt`, `.nq` or `.jsonld` name is the better witness then.
             Some(Syntax::Turtle) | None => Syntax::from_extension(uri).unwrap_or_default(),
             Some(specific) => specific,
         }
@@ -70,9 +77,11 @@ impl Syntax {
         matches!(self, Syntax::NTriples | Syntax::NQuads)
     }
 
-    /// Whether the document can use prefixes (the line-based syntaxes cannot).
+    /// Whether the document can use `@prefix` / `PREFIX` prefixes and gets
+    /// the project's (`prefixes.ttl`): Turtle and TriG. The line-based
+    /// syntaxes have none, and JSON-LD defines its own in `@context`.
     pub fn has_prefixes(self) -> bool {
-        !self.is_line_based()
+        matches!(self, Syntax::Turtle | Syntax::TriG)
     }
 }
 

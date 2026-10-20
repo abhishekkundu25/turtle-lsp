@@ -76,12 +76,19 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
 
 /// [`parse`], with relative IRIs resolved against `base` (the document's own
 /// URL) until an `@base` replaces it. An invalid `base` is ignored.
+///
+/// JSON-LD goes to [`crate::jsonld::parse`] with no remote contexts
+/// ([`crate::jsonld::NoNetwork`]); `external` does not apply to it. Callers
+/// with a context loader call [`crate::jsonld::parse`] themselves.
 pub fn parse_with_base(
     src: &str,
     external: &PrefixMap,
     syntax: Syntax,
     base: Option<&str>,
 ) -> Parsed {
+    if syntax == Syntax::JsonLd {
+        return crate::jsonld::parse(src, base, &crate::jsonld::NoNetwork::default());
+    }
     let mut all = tokenize(src);
     if syntax != Syntax::TriG {
         // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
@@ -1948,6 +1955,31 @@ mod tests {
         );
         assert_eq!(Syntax::from_extension("C:\\x\\a.trig"), Some(Syntax::TriG));
         assert_eq!(Syntax::from_extension("/x/notes.txt"), None);
+    }
+
+    #[test]
+    fn jsonld_is_detected_by_extension_and_language_id_but_json_is_not() {
+        assert_eq!(Syntax::from_extension("/x/a.jsonld"), Some(Syntax::JsonLd));
+        assert_eq!(Syntax::from_language_id("jsonld"), Some(Syntax::JsonLd));
+        assert_eq!(Syntax::from_extension("/x/a.json"), None);
+        assert_eq!(Syntax::from_language_id("json"), None);
+        // Editors that call `.jsonld` files `json` (VS Code) or `turtle`.
+        for id in [None, Some("json"), Some("turtle"), Some("jsonld")] {
+            assert_eq!(
+                Syntax::detect(id, "file:///a.jsonld"),
+                Syntax::JsonLd,
+                "{id:?}"
+            );
+        }
+        assert_eq!(
+            Syntax::detect(Some("jsonld"), "untitled:Untitled-1"),
+            Syntax::JsonLd
+        );
+        assert_eq!(
+            Syntax::detect(Some("json"), "file:///a.json"),
+            Syntax::Turtle
+        );
+        assert!(!Syntax::JsonLd.is_line_based() && !Syntax::JsonLd.has_prefixes());
     }
 
     #[test]

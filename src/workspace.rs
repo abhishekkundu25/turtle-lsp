@@ -41,7 +41,7 @@ pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// What an open document is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DocKind {
-    /// Turtle, TriG, N-Triples or N-Quads.
+    /// Turtle, TriG, N-Triples, N-Quads or JSON-LD.
     Rdf(Syntax),
     /// A SPARQL query or update.
     Sparql,
@@ -205,7 +205,8 @@ fn canonical(path: &Path) -> PathBuf {
     }
 }
 
-/// A file this server reads: `.ttl`, `.turtle`, `.trig`, `.nt` or `.nq`.
+/// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`
+/// or `.jsonld`.
 pub fn is_turtle(path: &Path) -> bool {
     Syntax::from_extension(&path.to_string_lossy()).is_some()
 }
@@ -760,6 +761,22 @@ mod tests {
         assert!(!ws.disk.contains_key(&cached));
         assert_eq!(ws.knowledge().docs().count(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn jsonld_documents_are_rdf_and_parse_without_turtle_errors() {
+        assert_eq!(
+            DocKind::detect(Some("json"), "file:///w/a.jsonld"),
+            DocKind::Rdf(Syntax::JsonLd)
+        );
+        assert!(is_turtle(Path::new("/w/a.jsonld")) && !is_turtle(Path::new("/w/a.json")));
+        let mut ws = Workspace::default();
+        let uri = "file:///w/a.jsonld".to_string();
+        ws.open_doc(uri.clone(), r#"{"@id": "ex:a", "ex:p": 1}"#.into(), 1);
+        let a = ws.analysis(&uri).unwrap();
+        assert_eq!(a.parsed.syntax, Syntax::JsonLd);
+        assert_eq!(a.parsed.document_base.as_deref(), Some(uri.as_str()));
+        assert!(a.parsed.errors.is_empty() && a.external.is_empty());
     }
 
     #[test]

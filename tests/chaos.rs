@@ -213,6 +213,7 @@ fn doc_uri(syntax: Syntax) -> &'static str {
         Syntax::TriG => "file:///chaos/doc.trig",
         Syntax::NTriples => "file:///chaos/doc.nt",
         Syntax::NQuads => "file:///chaos/doc.nq",
+        Syntax::JsonLd => "file:///chaos/doc.jsonld",
     }
 }
 

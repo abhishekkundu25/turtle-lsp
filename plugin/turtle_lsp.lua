@@ -1,6 +1,7 @@
 -- File types turtle-lsp serves that Neovim does not detect itself. Neovim
--- already knows .trig, .nt, .rq and .sparql; .ru stays Ruby (Rack).
-vim.filetype.add({ extension = { ttl = "turtle", nq = "nquads" } })
+-- already knows .trig, .nt, .rq and .sparql; .ru stays Ruby (Rack). A
+-- .jsonld file gets its own type, so plain .json buffers stay unattached.
+vim.filetype.add({ extension = { ttl = "turtle", nq = "nquads", jsonld = "jsonld" } })
 
 -- "@prefix ex: <...>" and "PREFIX ex: <...>" look like a modeline (" ex:")
 -- and raise E518 on open, so these files read no modelines.

@@ -12,8 +12,11 @@ local query = fixtures .. "/query"
 local TIMEOUT = 10000
 
 vim.cmd("filetype on")
--- .nq has no filetype and .ru is Ruby (Rack) by default; see README "Neovim setup".
-vim.filetype.add({ extension = { ttl = "turtle", nq = "nquads", ru = "sparql" }, filename = { ["config.ru"] = "ruby" } })
+-- .nq and .jsonld have no filetype and .ru is Ruby (Rack) by default; see README "Neovim setup".
+vim.filetype.add({
+  extension = { ttl = "turtle", nq = "nquads", jsonld = "jsonld", ru = "sparql" },
+  filename = { ["config.ru"] = "ruby" },
+})
 -- "@prefix ex: <...>" looks like a Vim modeline (" ex:") and raises E518 on open.
 -- Turtle buffers need modelines off; see README "Neovim setup".
 vim.api.nvim_create_autocmd("BufReadPre", {
@@ -25,7 +28,7 @@ vim.api.nvim_create_autocmd("BufReadPre", {
 vim.lsp.config("turtle", {
   cmd = { server },
   -- Neovim's own filetypes for .trig, .nt, .rq and .sparql files.
-  filetypes = { "turtle", "trig", "ntriples", "nquads", "sparql" },
+  filetypes = { "turtle", "trig", "ntriples", "nquads", "jsonld", "sparql" },
   root_markers = { "prefixes.ttl", ".git" },
 })
 vim.lsp.enable("turtle")
@@ -279,6 +282,22 @@ check("a .nq buffer (filetype nquads) attaches with no warnings", function()
   assert(vim.bo[b].filetype == "nquads", "filetype " .. vim.bo[b].filetype)
   local d = problems(wait_diagnostics(b))
   assert(#d == 0, #d .. " problems: " .. fmt(vim.list_slice(d, 1, 5)))
+end)
+
+check("a .jsonld buffer (filetype jsonld) attaches with no diagnostics; a .json one does not", function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local file = dir .. "/people.jsonld"
+  vim.fn.writefile({ '{ "@id": "http://example.org/bob", "http://example.org/name": "Bob" }' }, file)
+  local ok, err = pcall(function()
+    local b = open(file)
+    assert(vim.bo[b].filetype == "jsonld", "filetype " .. vim.bo[b].filetype)
+    local d = wait_diagnostics(b)
+    assert(#d == 0, #d .. " diagnostics: " .. fmt(vim.list_slice(d, 1, 5)))
+    assert(vim.filetype.match({ filename = "package.json" }) == "json")
+  end)
+  vim.fn.delete(dir, "rf")
+  assert(ok, err)
 end)
 
 check("a .rq buffer (filetype sparql) attaches: no warnings, definition into the ontology", function()

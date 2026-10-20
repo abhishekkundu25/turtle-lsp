@@ -1262,6 +1262,7 @@ fn oxttl_quads(src: &str, syntax: Syntax, base: &str) -> Result<Vec<oxrdf::Quad>
             .for_slice(src)
             .map(|q| q.map_err(e))
             .collect(),
+        Syntax::JsonLd => unreachable!("the corpus reads no JSON-LD yet"),
     }
 }
 

@@ -70,12 +70,15 @@ pub fn formatting(a: &Analysis, enc: Encoding, opts: &Options) -> Vec<TextEdit> 
     }
 }
 
-/// The formatted text, or `None` when the document has syntax errors (or, as a
-/// safety net, when the result would not parse to the same triples).
+/// The formatted text, or `None` when the document has syntax errors or is
+/// JSON-LD (not formatted yet), or, as a safety net, when the result would
+/// not parse to the same triples.
 /// `parsed` is the parse of `text` with `external` prefixes; when its tokens
 /// were dropped the text is tokenized again.
 pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options) -> Option<String> {
-    if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
+    if parsed.syntax == Syntax::JsonLd
+        || parsed.errors.iter().any(|e| e.severity == Severity::Error)
+    {
         return None;
     }
     let local;

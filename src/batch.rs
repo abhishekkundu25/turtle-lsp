@@ -556,7 +556,8 @@ impl<'a> Input<'a> {
         out
     }
 
-    /// The formatter's verdict on `uri`, or None when it has no analysis.
+    /// The formatter's verdict on `uri`, or None when it has no analysis or
+    /// is JSON-LD (not formatted yet).
     fn format(&mut self, uri: &str) -> Option<Formatted> {
         let opts = format::Options {
             line_width: self.settings.format_line_width as usize,
@@ -589,6 +590,9 @@ impl<'a> Input<'a> {
             return Some(Formatted { guarantee, outcome });
         }
         let a = self.ws.analysis(uri)?;
+        if a.parsed.syntax == Syntax::JsonLd {
+            return None;
+        }
         let guarantee = "same graph";
         let errors = a
             .parsed
@@ -621,6 +625,7 @@ impl<'a> Input<'a> {
             Some(DocKind::Rdf(Syntax::TriG)) => "trig",
             Some(DocKind::Rdf(Syntax::NTriples)) => "ntriples",
             Some(DocKind::Rdf(Syntax::NQuads)) => "nquads",
+            Some(DocKind::Rdf(Syntax::JsonLd)) => "jsonld",
             _ => "turtle",
         }
     }

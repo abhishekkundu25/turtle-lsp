@@ -7,6 +7,7 @@ pub mod cli;
 pub mod clock;
 pub mod features;
 pub mod imports;
+pub mod jsonld;
 pub mod knowledge;
 pub mod server;
 pub mod settings;

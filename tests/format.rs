@@ -14,11 +14,12 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("test/fixtures")
 }
 
+/// The Turtle-family syntax of a fixture (the formatter does not read JSON-LD).
 fn syntax_of(path: &Path) -> Option<Syntax> {
-    Syntax::from_extension(&path.to_string_lossy())
+    Syntax::from_extension(&path.to_string_lossy()).filter(|s| *s != Syntax::JsonLd)
 }
 
-/// Every `.ttl`, `.trig` and `.nt` file under `dir`.
+/// Every `.ttl`, `.trig`, `.nt` and `.nq` file under `dir`.
 fn rdf_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -91,6 +92,7 @@ fn oxttl(src: &str, syntax: Syntax) -> Result<Vec<String>, String> {
                     .map_err(e)
             })
             .collect::<Result<_, _>>()?,
+        Syntax::JsonLd => unreachable!("oxttl reads no JSON-LD"),
     };
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut out = Vec::new();

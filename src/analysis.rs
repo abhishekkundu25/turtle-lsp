@@ -102,7 +102,14 @@ impl Analysis {
         keep_tokens: bool,
         language: Syntax,
     ) -> Analysis {
-        let mut parsed = syntax::parse(text, &external, language);
+        let mut parsed = match language {
+            // Relative IRIs resolve against the document's URL. No remote
+            // contexts yet: the desktop and browser loaders come later.
+            Syntax::JsonLd => {
+                crate::jsonld::parse(text, Some(&uri), &crate::jsonld::NoNetwork::default())
+            }
+            _ => syntax::parse(text, &external, language),
+        };
         if !keep_tokens {
             parsed.tokens = Vec::new();
             parsed.comments = Vec::new();

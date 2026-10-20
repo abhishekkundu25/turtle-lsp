@@ -22,7 +22,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::prefix_insertion;
 use crate::knowledge::{Knowledge, namespace_of};
 use crate::syntax::lexer::{Kind, is_pn_chars};
-use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span};
+use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span, Syntax};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -83,8 +83,8 @@ pub fn complete(
     pos: Position,
 ) -> CompletionResponse {
     // Everything offered here is a prefixed name or a keyword, none of which
-    // N-Triples or N-Quads allows.
-    if a.parsed.syntax.is_line_based() {
+    // N-Triples or N-Quads allows. JSON-LD completion is not written yet.
+    if a.parsed.syntax.is_line_based() || a.parsed.syntax == Syntax::JsonLd {
         return CompletionResponse::Array(vec![]);
     }
     let Some(offset) = a.offset(enc, pos) else {

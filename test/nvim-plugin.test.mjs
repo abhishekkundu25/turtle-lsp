@@ -97,12 +97,22 @@ test("build.lua installs the release's server in bin/, and vim.lsp.enable attach
       ft = vim.bo.filetype, modeline = vim.bo.modeline,
       name = c and c.name, cmd = c and c.config.cmd[1],
       nq = vim.filetype.match({ filename = "x.nq" }),
+      jsonld = vim.filetype.match({ filename = "x.jsonld" }),
+      json = vim.filetype.match({ filename = "x.json" }),
     }) .. "\\n")
     vim.cmd("qa!")`
   const r = await nvim(["--cmd", `set rtp^=${dir}`, "-c", `lua ${probe.replace(/\n\s*/g, " ")}`])
   const line = r.out.split("\n").find((l) => l.startsWith("RESULT "))
   assert.ok(line, r.out)
-  assert.deepEqual(JSON.parse(line.slice(7)), { ft: "turtle", modeline: false, name: "turtle_lsp", cmd: bin, nq: "nquads" })
+  assert.deepEqual(JSON.parse(line.slice(7)), {
+    ft: "turtle",
+    modeline: false,
+    name: "turtle_lsp",
+    cmd: bin,
+    nq: "nquads",
+    jsonld: "jsonld",
+    json: "json",
+  })
 })
 
 test("build.lua refuses a download whose checksum does not match SHA256SUMS", { skip }, async () => {
