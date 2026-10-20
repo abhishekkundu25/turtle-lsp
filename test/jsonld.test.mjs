@@ -118,7 +118,12 @@ function checkJson(ws, args = []) {
   const of = (file, code) => (report.files.find((f) => f.path === file)?.diagnostics ?? []).filter((d) => !code || d.code === code)
   return { ...r, report, of }
 }
-const cliRanges = (ds) => [...ds.map((d) => d.range)].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+const rangeKey = (r) => [r.start.line, r.start.column, r.end.line, r.end.column]
+const cliRanges = (ds) =>
+  [...ds.map((d) => d.range)].sort((a, b) => {
+    const [x, y] = [rangeKey(a), rangeKey(b)]
+    return x.map((v, i) => v - y[i]).find((d) => d !== 0) ?? 0
+  })
 const cliExpected = (rs) => cliRanges(rs.map((r) => ({ range: F.toCli(r) })))
 
 // ---- one workspace for the editor tests ----
@@ -555,7 +560,7 @@ test("Turtle shapes validate JSON-LD data, each result on the key, value or @id 
   assert.ok(withCode(diags, "shacl-violation").every((d) => d.severity === 1))
 })
 
-test("check: SHACL results in JSON-LD data at the same positions", phase1("10"), (t) => {
+test("check: SHACL results in JSON-LD data at the same positions", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "shapes.ttl": F.PERSON_SHAPES, "people.jsonld": F.PEOPLE })
   const r = checkJson(w)
   assert.equal(r.code, 1)
