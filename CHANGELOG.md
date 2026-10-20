@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Editing inside JSON-LD files** (phase 2):
+  - completion in keys and `@type` values from the context in force at the
+    cursor, workspace properties under `@vocab` and `prefix:local` names;
+    completing a known prefix the context lacks adds it to the `@context`
+    (idea credited to [SWLS](https://github.com/SemanticWebLanguageServer/swls));
+  - go to definition on a term reaches its `@context` entry, also in a
+    context file of the workspace; references and highlights on terms;
+  - rename of terms and keyword aliases (the `@context` entry and every use),
+    and of IRIs from any file, each JSON-LD use rewritten in its own form;
+    unsafe renames are refused with the reason;
+  - formatting in the editor, `turtle-lsp format` and the browser, keeping
+    the same JSON value;
+  - semantic tokens for keywords, properties and classes;
+  - the outline nests a named graph's nodes under the graph.
+
 ## 0.6.0 — 2026-10-20
 
 ### Features

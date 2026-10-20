@@ -251,6 +251,26 @@ for (const [f, spec] of Object.entries(formats)) {
     if (h) found = "hover"
   }
   record(`${f}: hover on the name property`, hovers, found)
+  if (f === "jsonld") {
+    // Completion in a key in the middle of the file, and formatting it all.
+    const at = positionOf(doc, `"name": "Person 700"`, 3)
+    const completions = []
+    let items = 0
+    for (let i = 0; i < 10; i++) {
+      const t1 = performance.now()
+      const res = await s3.request("textDocument/completion", { textDocument: { uri: u }, position: at })
+      completions.push(performance.now() - t1)
+      items = (Array.isArray(res) ? res : res?.items ?? []).length
+    }
+    record(`${f}: completion in a key`, completions, `${items} items`)
+    const formats = []
+    for (let i = 0; i < 5; i++) {
+      const t1 = performance.now()
+      await s3.request("textDocument/formatting", { textDocument: { uri: u }, options: { tabSize: 2, insertSpaces: true } })
+      formats.push(performance.now() - t1)
+    }
+    record(`${f}: format the whole file`, formats)
+  }
   s3.close(u)
 }
 await s3.stop()

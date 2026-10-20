@@ -35,7 +35,7 @@ the full W3C test suites and real public ontologies; see
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. See [SPARQL](#sparql).
-- **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics. Editing features inside JSON-LD files are mostly still to come. See [JSON-LD](#json-ld).
+- **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
 - **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
 
@@ -222,13 +222,33 @@ formats. Plain `.json` files are not read, even with an `@context`.
 - **SHACL**: Turtle shapes validate JSON-LD data, and shapes written in
   JSON-LD are used. Each result is on the key, value or `@id` that breaks
   the shape, or on the opening brace of a node without an `@id`. Named graphs (`@graph` with `@id`) follow the TriG rules.
-- **In the file**: hover on a key shows its expanded IRI, and on an `@type`
-  value also what the workspace says about it; go to definition on a key
-  that `@vocab` maps goes to where the workspace describes the term; the
-  outline lists node objects by `@id`.
+- **Completion**: in a key, the terms of the context in force at the cursor
+  (scoped contexts included), properties the workspace describes under
+  `@vocab`, and `prefix:local` names; in an `@type` value, classes the same
+  way. It works in half-typed JSON. Completing `prefix:` for a known prefix
+  the context lacks also adds it to the `@context` (an idea from
+  [SWLS](https://github.com/SemanticWebLanguageServer/swls)).
+- **Navigation**: hover on a key shows its expanded IRI, and on an `@type`
+  value also what the workspace says about it. Go to definition on a term
+  goes to its `@context` entry, in the file or in a context file of the
+  workspace; on a term of a bundled or remote context, or a key `@vocab`
+  maps, it goes to where the workspace describes the IRI. References and
+  highlights on a term list its definition, its uses and the IRI's uses in
+  other files.
+- **Rename**: renaming a term or a keyword alias changes its `@context` entry
+  and every use, and nothing else. Renaming an IRI, from any file, rewrites
+  each JSON-LD use in its own form: compact, `@vocab`-relative, relative to
+  `@base`, absolute, or the term definition it comes through. A rename that
+  cannot be written safely is refused with the reason.
+- **Formatting**: the layout of `JSON.stringify` with the editor's indent;
+  numbers, escapes and key order are kept, and the result must be the same
+  JSON value. A file with JSON syntax errors is not formatted.
+- **Semantic tokens and outline**: keywords and aliases, properties and
+  classes get their own colours; the outline lists node objects by `@id` and
+  nests a named graph's nodes under the graph.
 - **Command line**: `turtle-lsp check` checks `.jsonld` files with the same
-  codes, positions, exit codes and JSON and SARIF output as Turtle files.
-  `turtle-lsp format` leaves them alone.
+  codes, positions, exit codes and JSON and SARIF output as Turtle files, and
+  `turtle-lsp format` formats them.
 - **Browser**: the [browser editor](https://abhishekkundu25.github.io/turtle-lsp/)
   gives JSON-LD files the same diagnostics and SHACL results. It uses the
   bundled contexts and contexts in other files of the workspace, and never
@@ -245,11 +265,8 @@ on the command line. A fetched context goes into the import cache and is read
 from there afterwards, network or not. Processed contexts are kept in memory,
 so re-checking a document processes only its inline contexts.
 
-**Not yet** (planned as phase 2; their tests are in `test/jsonld.test.mjs`,
-marked pending): completion, go to definition into `@context`, references and
-rename in JSON-LD files, formatting, semantic tokens, and nesting a named
-graph's nodes in the outline. Also not supported: compaction, flattening,
-framing, converting between JSON-LD and Turtle, and `.json` files.
+**Not supported**: compaction, flattening, framing, converting between
+JSON-LD and Turtle, `.json` files, and editing bundled or remote contexts.
 
 ### Conformance
 
