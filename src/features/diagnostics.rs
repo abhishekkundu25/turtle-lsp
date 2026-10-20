@@ -1,8 +1,9 @@
 //! Diagnostics and the quick fixes attached to them.
 
 use crate::analysis::{Analysis, Encoding};
+use crate::jsonld;
 use crate::knowledge::Knowledge;
-use crate::syntax::{Form, Severity};
+use crate::syntax::{Form, Severity, Syntax};
 use crate::vocab::VOCABS;
 use lsp_types::*;
 use rustc_hash::FxHashMap;
@@ -86,6 +87,10 @@ pub struct TermUse<'a, K> {
     pub iri: K,
     /// The prefix as written, for a prefixed name (`foaf` in `foaf:name`).
     pub prefix: Option<&'a str>,
+    /// JSON-LD: the IRI is written in full in a string, as this text (an
+    /// absolute IRI, or a word `@vocab` or the base completes), so a fix
+    /// keeps that spelling, without angle brackets.
+    pub bare: Option<&'a str>,
 }
 
 /// `unknown-term` (warning, with a "did you mean" and `data.replace` in the
@@ -139,9 +144,10 @@ pub fn vocabulary_terms<'a, K>(
                     .or_insert_with(|| v.suggest(local).map(|t| t.local.as_str()));
                 if let Some(s) = suggestion {
                     msg.push_str(&format!(". Did you mean '{s}'?"));
-                    let replacement = match u.prefix {
-                        Some(p) => format!("{p}:{s}"),
-                        None => format!("<{}{s}>", v.namespace),
+                    let replacement = match (u.prefix, u.bare) {
+                        (Some(p), _) => format!("{p}:{s}"),
+                        (None, Some(written)) => bare_replacement(&u.iri, written, v.namespace, s),
+                        (None, None) => format!("<{}{s}>", v.namespace),
                     };
                     d.data = Some(json!({ "replace": replacement }));
                 }
@@ -150,6 +156,17 @@ pub fn vocabulary_terms<'a, K>(
             }
         }
     }
+}
+
+/// What replaces `written`, a JSON-LD string that spells `iri` in full or
+/// as its end (a `@vocab` word), so it spells `namespace` + `local`: the
+/// same beginning stays implied, else the full IRI.
+fn bare_replacement(iri: &str, written: &str, namespace: &str, local: &str) -> String {
+    let target = format!("{namespace}{local}");
+    iri.strip_suffix(written)
+        .and_then(|implied| target.strip_prefix(implied))
+        .filter(|r| !r.is_empty())
+        .map_or_else(|| target.clone(), str::to_string)
 }
 
 /// The title of the quick fix that adds candidate `c` (an `undeclared-prefix`
@@ -210,12 +227,12 @@ pub fn diagnostics_with(
         ..Default::default()
     };
 
+    let severity = |s| match s {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+    };
     for e in &a.parsed.errors {
-        let sev = match e.severity {
-            Severity::Error => DiagnosticSeverity::ERROR,
-            Severity::Warning => DiagnosticSeverity::WARNING,
-        };
-        out.push(mk(e.span, sev, e.code, e.message.clone()));
+        out.push(mk(e.span, severity(e.severity), e.code, e.message.clone()));
     }
 
     // Undeclared prefixes, with "add @prefix" fixes for every known namespace.
@@ -296,22 +313,48 @@ pub fn diagnostics_with(
     }
 
     // Terms of well-known vocabularies (matched by namespace IRI, not prefix name).
-    let uses = a.parsed.refs.iter().filter_map(|r| match r.form {
-        Form::A => None,
-        Form::PName { prefix_len } => Some(TermUse {
-            span: r.span,
-            iri: r.iri,
-            prefix: a
-                .text
-                .get(r.span.start as usize..(r.span.start + prefix_len) as usize),
-        }),
-        Form::Iri => Some(TermUse {
-            span: r.span,
-            iri: r.iri,
-            prefix: None,
-        }),
-    });
-    vocabulary_terms(uses, k, &mk, &mut out);
+    let text_at = |span: crate::syntax::Span, len: u32| {
+        a.text.get(span.start as usize..(span.start + len) as usize)
+    };
+    if a.parsed.syntax == Syntax::JsonLd {
+        for f in jsonld::lint::dropped(&a.text, &a.dropped) {
+            out.push(mk(f.span, severity(f.severity), f.code, f.message));
+        }
+        // A term of the context at its definition; anything else as written.
+        let iris = jsonld::lint::vocabulary_iris(&a.text, &a.parsed.refs, &a.used_terms);
+        let uses = iris.iter().map(|w| match w.form {
+            Form::PName { prefix_len } => TermUse {
+                span: w.span,
+                iri: w.iri,
+                prefix: text_at(w.span, prefix_len),
+                bare: None,
+            },
+            _ => TermUse {
+                span: w.span,
+                iri: w.iri,
+                prefix: None,
+                bare: text_at(w.span, w.span.end - w.span.start),
+            },
+        });
+        vocabulary_terms(uses, k, &mk, &mut out);
+    } else {
+        let uses = a.parsed.refs.iter().filter_map(|r| match r.form {
+            Form::A => None,
+            Form::PName { prefix_len } => Some(TermUse {
+                span: r.span,
+                iri: r.iri,
+                prefix: text_at(r.span, prefix_len),
+                bare: None,
+            }),
+            Form::Iri => Some(TermUse {
+                span: r.span,
+                iri: r.iri,
+                prefix: None,
+                bare: None,
+            }),
+        });
+        vocabulary_terms(uses, k, &mk, &mut out);
+    }
 
     for f in crate::features::shacl_lint::lint(a, k) {
         let sev = if f.error {
@@ -597,5 +640,151 @@ pub fn prefix_insertion(
     TextEdit {
         range: Range::new(pos, pos),
         new_text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Each diagnostic as (code, severity, the text it covers, data.replace).
+    fn jsonld(text: &str) -> Vec<(String, DiagnosticSeverity, String, Option<String>)> {
+        let a = Analysis::with_syntax(
+            "file:///x/a.jsonld".to_string(),
+            text,
+            Arc::default(),
+            false,
+            Syntax::JsonLd,
+        );
+        diagnostics(&a, &Knowledge::default(), Encoding::Utf8)
+            .into_iter()
+            .map(|d| {
+                let start = a.offset(Encoding::Utf8, d.range.start).unwrap();
+                let end = a.offset(Encoding::Utf8, d.range.end).unwrap();
+                let code = match d.code {
+                    Some(NumberOrString::String(c)) => c,
+                    _ => String::new(),
+                };
+                let replace = d
+                    .data
+                    .and_then(|x| x["replace"].as_str().map(str::to_string));
+                (
+                    code,
+                    d.severity.unwrap(),
+                    text[start as usize..end as usize].to_string(),
+                    replace,
+                )
+            })
+            .collect()
+    }
+
+    fn d(
+        code: &str,
+        severity: DiagnosticSeverity,
+        at: &str,
+        replace: Option<&str>,
+    ) -> (String, DiagnosticSeverity, String, Option<String>) {
+        (
+            code.to_string(),
+            severity,
+            at.to_string(),
+            replace.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn jsonld_lints_at_their_positions() {
+        // LINTS of test/jsonld-fixtures.mjs.
+        let text = r#"{
+  "@context": {
+    "ex": "https://jsonld.example.org/def/",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "vcard": "http://www.w3.org/2006/vcard/ns#",
+    "weight": "ex:weight",
+    "title": "rdfs:lable",
+    "seeAlso": { "@id": "rdfs:seeAlso", "@type": "@id" }
+  },
+  "@id": "ex:w11",
+  "@type": "vcard:Email",
+  "weight": 3,
+  "wieght": 4,
+  "rdfs:labl": "Widget eleven",
+  "title": "Eleven",
+  "seeAlso": "http://exa mple.org/x",
+  "rdfs:comment": { "@value": "Hallo", "@language": "de_DE" }
+}
+"#;
+        use DiagnosticSeverity as S;
+        let mut got = jsonld(text);
+        got.sort_by_key(|x| text.find(&format!("\"{}\"", x.2)));
+        assert_eq!(
+            got,
+            [
+                // On the definition, not on "title" where it is used.
+                d("unknown-term", S::WARNING, "rdfs:lable", None),
+                d("deprecated-term", S::HINT, "vcard:Email", None),
+                d("jsonld-undefined-term", S::WARNING, "wieght", None),
+                d("unknown-term", S::WARNING, "rdfs:labl", Some("rdfs:label")),
+                d("invalid-iri", S::WARNING, "http://exa mple.org/x", None),
+                d("invalid-language-tag", S::ERROR, "de_DE", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn jsonld_fixes_keep_the_spelling_written() {
+        use DiagnosticSeverity as S;
+        // A definition written as a compact IRI, an absolute IRI and a
+        // @vocab word, each fixed in its own spelling.
+        let text = r#"{
+  "@context": {
+    "@vocab": "http://www.w3.org/2000/01/rdf-schema#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "a": "rdfs:labl",
+    "b": {"@id": "http://www.w3.org/2000/01/rdf-schema#seeAlsoo"}
+  },
+  "@id": "http://ex.org/x",
+  "a": "x",
+  "b": "y",
+  "a2": "z",
+  "commnt": "w"
+}"#;
+        let mut got = jsonld(text);
+        got.sort_by_key(|x| text.find(&x.2));
+        assert_eq!(
+            got,
+            [
+                d("unknown-term", S::WARNING, "rdfs:labl", Some("rdfs:label")),
+                d(
+                    "unknown-term",
+                    S::WARNING,
+                    "http://www.w3.org/2000/01/rdf-schema#seeAlsoo",
+                    Some("http://www.w3.org/2000/01/rdf-schema#seeAlso")
+                ),
+                d("unknown-term", S::WARNING, "a2", None),
+                d("unknown-term", S::WARNING, "commnt", Some("comment")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bare_replacement_keeps_what_is_implied() {
+        let schema = "http://schema.org/";
+        let r = |iri, written| bare_replacement(iri, written, schema, "Person");
+        assert_eq!(r("http://schema.org/Persn", "Persn"), "Person");
+        assert_eq!(
+            r("http://schema.org/Persn", "http://schema.org/Persn"),
+            "http://schema.org/Person"
+        );
+        // Written escaped, or under another namespace: the full IRI.
+        assert_eq!(
+            r("http://schema.org/Persn", "Pers\\u006E"),
+            "http://schema.org/Person"
+        );
+        assert_eq!(
+            bare_replacement("https://schema.org/Persn", "Persn", schema, "Person"),
+            "http://schema.org/Person"
+        );
     }
 }

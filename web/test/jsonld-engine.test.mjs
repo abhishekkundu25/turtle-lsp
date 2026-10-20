@@ -58,7 +58,7 @@ test("a context from another file of the workspace is loaded", phase1("06"), () 
   assert.deepEqual(rangesOf(f, "jsonld-undefined-term"), [F.USES_CTX_FILE_TYPO], show(f))
 })
 
-test("JSON-LD lints at their positions", phase1("11"), () => {
+test("JSON-LD lints at their positions", { timeout: 40_000 }, () => {
   const f = fileOf(analyse([{ name: "lints.jsonld", text: F.LINTS }]), "lints.jsonld")
   assert.deepEqual(rangesOf(f, "jsonld-undefined-term"), [F.LINTS_UNDEFINED], show(f))
   assert.deepEqual(sortRanges(rangesOf(f, "unknown-term")), sortRanges([F.LINTS_DEF_TYPO, F.LINTS_KEY_TYPO]), show(f))

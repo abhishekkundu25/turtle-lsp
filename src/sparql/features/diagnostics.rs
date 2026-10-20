@@ -81,6 +81,7 @@ pub fn diagnostics(
                 span: r.span,
                 iri,
                 prefix,
+                bare: None,
             })
         })
     };

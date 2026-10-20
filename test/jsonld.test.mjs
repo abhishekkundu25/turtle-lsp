@@ -228,7 +228,7 @@ test("check: a context error is reported at the definition", { timeout: 25_000 }
 
 // ---- lints (ticket 11) ----
 
-test("a key the context does not define is a jsonld-undefined-term warning on the key", phase1("11"), async (t) => {
+test("a key the context does not define is a jsonld-undefined-term warning on the key", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.LINTS)
   assert.deepEqual(rangesOf(diags, "jsonld-undefined-term"), [F.LINTS_UNDEFINED], show(diags))
   assert.equal(withCode(diags, "jsonld-undefined-term")[0].severity, 2)
@@ -248,7 +248,7 @@ test("a misspelled vocabulary key is unknown-term with a did-you-mean fix", { ti
   assert.ok(texts.includes(F.LINTS.replace('"rdfs:labl"', '"rdfs:label"')), JSON.stringify(texts))
 })
 
-test("a misspelled vocabulary IRI in a term definition is unknown-term on the definition, not on each use", phase1("11"), async (t) => {
+test("a misspelled vocabulary IRI in a term definition is unknown-term on the definition, not on each use", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.LINTS)
   assert.deepEqual(sortRanges(rangesOf(diags, "unknown-term")), sortRanges([F.LINTS_DEF_TYPO, F.LINTS_KEY_TYPO]), show(diags))
 })
@@ -260,17 +260,17 @@ test("a deprecated vocabulary term reached through the context is deprecated-ter
   assert.deepEqual(d[0].tags, [2])
 })
 
-test("an invalid IRI is invalid-iri at the value", phase1("11"), async (t) => {
+test("an invalid IRI is invalid-iri at the value", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.LINTS)
   assert.deepEqual(rangesOf(diags, "invalid-iri"), [F.LINTS_BAD_IRI], show(diags))
 })
 
-test("a malformed language tag is invalid-language-tag at the tag", phase1("11"), async (t) => {
+test("a malformed language tag is invalid-language-tag at the tag", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.LINTS)
   assert.deepEqual(rangesOf(diags, "invalid-language-tag"), [F.LINTS_BAD_LANG], show(diags))
 })
 
-test("a misspelled type expanded through a bundled context's @vocab is unknown-term with a fix", phase1("11"), async (t) => {
+test("a misspelled type expanded through a bundled context's @vocab is unknown-term with a fix", { timeout: 25_000 }, async (t) => {
   const { uri, diags } = await openScratch(t, F.SCHEMA_DOC)
   const d = withCode(diags, "unknown-term")
   assert.deepEqual(d.map((x) => x.range), [F.SCHEMA_DOC_TYPO], show(diags))
@@ -278,7 +278,7 @@ test("a misspelled type expanded through a bundled context's @vocab is unknown-t
   assert.ok(texts.includes(F.SCHEMA_DOC.replace('"Persn"', '"Person"')), JSON.stringify(texts))
 })
 
-test("check: each JSON-LD lint at its position", phase1("11"), (t) => {
+test("check: each JSON-LD lint at its position", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "lints.jsonld": F.LINTS })
   const r = checkJson(w)
   const expect = {

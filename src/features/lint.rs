@@ -102,11 +102,13 @@ pub fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diag
                 prefix: a
                     .text
                     .get(r.span.start as usize..(r.span.start + prefix_len) as usize),
+                bare: None,
             }),
             Form::Iri => Some(TermUse {
                 span: r.span,
                 iri: r.iri,
                 prefix: None,
+                bare: None,
             }),
         });
     undescribed(

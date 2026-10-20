@@ -31,6 +31,10 @@ pub struct Analysis {
     /// The text this analysis was computed from.
     pub text: Arc<str>,
     pub parsed: Parsed,
+    /// JSON-LD only: what processing dropped silently, and the references
+    /// that are context terms, for the JSON-LD lints (empty otherwise).
+    pub dropped: Vec<crate::jsonld::Dropped>,
+    pub used_terms: Vec<crate::jsonld::UsedTerm>,
     pub lines: LineIndex,
     /// Prefixes supplied from outside the document (prefixes.ttl / settings).
     pub external: Arc<PrefixMap>,
@@ -117,10 +121,17 @@ impl Analysis {
         language: Syntax,
         loader: &dyn crate::jsonld::ContextLoader,
     ) -> Analysis {
-        let mut parsed = match language {
+        let crate::jsonld::Document {
+            mut parsed,
+            dropped,
+            used_terms,
+        } = match language {
             // Relative IRIs resolve against the document's URL.
-            Syntax::JsonLd => crate::jsonld::parse(text, Some(&uri), loader),
-            _ => syntax::parse(text, &external, language),
+            Syntax::JsonLd => crate::jsonld::parse_document(text, Some(&uri), loader),
+            _ => crate::jsonld::Document {
+                parsed: syntax::parse(text, &external, language),
+                ..Default::default()
+            },
         };
         if !keep_tokens {
             parsed.tokens = Vec::new();
@@ -168,6 +179,8 @@ impl Analysis {
             text: Arc::from(text),
             lines: LineIndex::new(text),
             parsed,
+            dropped,
+            used_terms,
             external,
             defs,
             refs_by_iri,

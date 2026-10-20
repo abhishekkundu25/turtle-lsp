@@ -34,7 +34,7 @@ use super::context::{
     expand_iri, has_keyword_form, is_absolute_iri, is_blank_node, is_keyword, resolve_iri,
 };
 use super::json::{Json, Member, Object, Value};
-use super::{DropReason, Dropped, unquoted};
+use super::{DropReason, Dropped, UsedTerm, unquoted};
 use crate::syntax::{Form, Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -169,6 +169,9 @@ pub struct Expanded<'a> {
     /// `jsonld-context` errors.
     pub errors: Vec<SyntaxError>,
     pub dropped: Vec<Dropped>,
+    /// Keys, types and `@vocab`-coerced values that are terms of the
+    /// active context, in the order they are read.
+    pub used_terms: Vec<UsedTerm>,
 }
 
 /// Expand the document `root`, whose URL is `base`, with contexts from
@@ -179,6 +182,7 @@ pub fn expand<'a>(root: &'a Json, base: Option<&str>, processor: &mut Processor)
         base,
         errors: Vec::new(),
         dropped: Vec::new(),
+        used_terms: Vec::new(),
         iris: FxHashMap::default(),
     };
     let initial = ActiveContext::new(base);
@@ -192,6 +196,7 @@ pub fn expand<'a>(root: &'a Json, base: Option<&str>, processor: &mut Processor)
         items,
         errors: x.errors,
         dropped: x.dropped,
+        used_terms: x.used_terms,
     }
 }
 
@@ -277,6 +282,7 @@ struct Expander<'a, 'p, 'l, 'b> {
     base: Option<&'b str>,
     errors: Vec<SyntaxError>,
     dropped: Vec<Dropped>,
+    used_terms: Vec<UsedTerm>,
     /// IRI expansions without the base IRI, by (context content, `@vocab`,
     /// value): keys and types repeat across node objects.
     iris: FxHashMap<(u64, bool, &'a str), Expansion>,
@@ -406,6 +412,25 @@ impl<'a> Expander<'a, '_, '_, '_> {
 
     fn drop(&mut self, span: Span, reason: DropReason) {
         self.dropped.push(Dropped { span, reason });
+    }
+
+    /// Records `s`, written at `span`, when it is a term of `ctx` (not a
+    /// keyword alias) whose IRI is not spelled by the term itself.
+    fn term_use(&mut self, ctx: &ActiveContext, s: &str, span: Span) {
+        let Some(d) = ctx
+            .term(s)
+            .filter(|d| d.iri.as_deref().is_some_and(|i| !is_keyword(i)))
+        else {
+            return;
+        };
+        // Written in the document with no IRI of its own: the key spells it.
+        if d.span.is_some() && d.iri_span.is_none() {
+            return;
+        }
+        self.used_terms.push(UsedTerm {
+            span,
+            definition: d.iri_span,
+        });
     }
 
     /// Apply a term's scoped context (`property`: a property-scoped one,
@@ -571,6 +596,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
             }
             let kspan = unquoted(m.key_span);
             // 13.2, 13.3
+            self.term_use(ctx, key, kspan);
             let Some((expanded, form)) = self.expand_iri(ctx, key, false, true) else {
                 let reason = if has_keyword_form(key) {
                     DropReason::KeywordLike
@@ -694,6 +720,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 for t in items_of(v) {
                     let s = t.as_str().unwrap_or_default();
                     let span = unquoted(t.span);
+                    self.term_use(type_scoped, s, span);
                     match self.expand_iri(type_scoped, s, true, true) {
                         Some((iri, form)) => r.types.push(TypeUse {
                             iri: IriUse { iri, span, form },
@@ -1192,6 +1219,9 @@ impl<'a> Expander<'a, '_, '_, '_> {
     /// what is written (which no IRI starts with: `@`), so the node converts
     /// to nothing.
     fn id(&mut self, ctx: &ActiveContext, s: &'a str, span: Span, vocab: bool) -> IriUse {
+        if vocab {
+            self.term_use(ctx, s, span);
+        }
         match self.expand_iri(ctx, s, true, vocab) {
             Some((iri, form)) => IriUse { iri, span, form },
             None => {

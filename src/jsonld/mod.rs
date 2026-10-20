@@ -36,8 +36,9 @@
 //! context error sits on the key of the term whose definition is wrong.
 //!
 //! [`parse_document`] also returns what JSON-LD drops silently ([`Dropped`]:
-//! undefined keys, relative or invalid IRIs, ill-formed language tags), for
-//! the JSON-LD lints.
+//! undefined keys, relative or invalid IRIs, ill-formed language tags) and
+//! which references are terms whose IRI comes from a definition
+//! ([`UsedTerm`]), for the JSON-LD lints.
 
 pub mod context;
 pub mod expand;
@@ -83,12 +84,25 @@ pub enum DropReason {
     BlankNodePredicate,
 }
 
-/// A parsed JSON-LD document: the shared parse model, and what JSON-LD
-/// dropped from it, in text order.
+/// A key, a type or a `@vocab`-coerced value written as a term of the
+/// active context (not a keyword alias) whose IRI the term itself does not
+/// spell: the IRI comes from its definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UsedTerm {
+    /// The term as written, without quotes: the span of its reference.
+    pub span: Span,
+    /// Where the definition's IRI is written in this document (its content,
+    /// without quotes); `None` for a term of a remote context.
+    pub definition: Option<Span>,
+}
+
+/// A parsed JSON-LD document: the shared parse model, what JSON-LD dropped
+/// from it, and the terms it uses, each in text order.
 #[derive(Debug, Default)]
 pub struct Document {
     pub parsed: Parsed,
     pub dropped: Vec<Dropped>,
+    pub used_terms: Vec<UsedTerm>,
 }
 
 /// Parse a JSON-LD document into the shared parse model.
@@ -112,12 +126,14 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
         ..Parsed::default()
     };
     let mut dropped = Vec::new();
+    let mut used_terms = Vec::new();
     if let Some(root) = &doc.root {
         let mut processor = context::Processor::new(loader);
         let expanded = expand::expand(root, base, &mut processor);
         parsed.errors.extend(expanded.errors);
         parsed.errors.extend(processor.take_warnings());
         dropped = expanded.dropped;
+        used_terms = expanded.used_terms;
         to_rdf::to_rdf(&expanded.items, &mut parsed, &mut dropped);
     }
     // The same scoped context can fail at each use: report each error once.
@@ -128,7 +144,13 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
     parsed.errors.sort_by_key(|e| (e.span.start, e.span.end));
     dropped.sort_unstable_by_key(|d| (d.span.start, d.span.end, d.reason));
     dropped.dedup();
-    Document { parsed, dropped }
+    used_terms.sort_unstable_by_key(|u| (u.span.start, u.span.end));
+    used_terms.dedup();
+    Document {
+        parsed,
+        dropped,
+        used_terms,
+    }
 }
 
 /// The content of a JSON string written at `span`, without its quotes.

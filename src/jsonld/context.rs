@@ -505,6 +505,11 @@ pub struct TermDefinition {
     /// The key that defined the term, when it is written in the document
     /// being checked (not in a remote context).
     pub span: Option<Span>,
+    /// Where the IRI mapping is written, when it is a string (`@id`,
+    /// `@reverse` or the whole definition) in the document being checked:
+    /// its content, without the quotes. `None` when the term's key spells
+    /// its IRI (a compact IRI, an IRI or a `@vocab` word).
+    pub iri_span: Option<Span>,
 }
 
 impl TermDefinition {
@@ -1873,6 +1878,7 @@ impl<'l> Processor<'l> {
             match self.expand(result, f, defined, r, false, true)? {
                 Some(iri) if is_absolute_iri(&iri) || is_blank_node(&iri) => {
                     def.iri = Some(Arc::from(iri));
+                    def.iri_span = self.site.is_none().then_some(unquoted(m.value.span));
                 }
                 _ => {
                     return Err(self.err(
@@ -1958,6 +1964,7 @@ impl<'l> Processor<'l> {
                         def.prefix = true;
                     }
                     def.iri = Some(Arc::from(iri));
+                    def.iri_span = self.site.is_none().then_some(unquoted(id.span));
                 }
                 _ => {
                     return Err(self.err(
