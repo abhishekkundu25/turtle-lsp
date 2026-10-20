@@ -1,7 +1,8 @@
 //! The JSON-LD performance budgets (docs/specs/jsonld.md), on a generated
 //! 30,000-line document like `bench/jsonld-gen.mjs`'s:
 //! - open to diagnostics within 3x a Turtle document of the same length;
-//! - keystroke to diagnostics under 10 ms, with the contexts cached.
+//! - keystroke to diagnostics under 10 ms, with the contexts cached; the
+//!   test holds it within 2x Turtle's open, which carries across machines.
 //!
 //! Each step is what the server does for an open document: parse into an
 //! [`Analysis`], put it in the [`Knowledge`], compute its diagnostics. The
@@ -196,7 +197,7 @@ fn json_ld_meets_its_budgets_on_a_30000_line_document() {
 
     eprintln!(
         "open: Turtle {:.1} ms, JSON-LD {:.1} ms ({:.2}x, budget 3x); \
-         JSON-LD keystroke {:.1} ms (budget 10 ms)",
+         JSON-LD keystroke {:.1} ms (budget 2x Turtle open; 10 ms)",
         ms(turtle_open),
         ms(jsonld_open),
         ms(jsonld_open) / ms(turtle_open),
@@ -208,9 +209,13 @@ fn json_ld_meets_its_budgets_on_a_30000_line_document() {
         ms(jsonld_open),
         ms(turtle_open)
     );
+    // A keystroke is held to Turtle's open time, not to a fixed 10 ms, so a
+    // slower CI runner measures the same thing: about 1.2x Turtle on any
+    // machine, 4 ms on a fast one. `npm run bench` reports the 10 ms budget.
     assert!(
-        keystroke < Duration::from_millis(10),
-        "a JSON-LD keystroke took {:.1} ms (budget 10 ms)",
-        ms(keystroke)
+        keystroke <= turtle_open * 2,
+        "a JSON-LD keystroke took {:.1} ms, over 2x Turtle's open {:.1} ms",
+        ms(keystroke),
+        ms(turtle_open)
     );
 }

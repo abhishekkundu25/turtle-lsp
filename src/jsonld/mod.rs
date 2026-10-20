@@ -576,14 +576,17 @@ mod tests {
         );
     }
 
-    /// The performance budget, run with `cargo test --release jsonld`: the
+    /// The parse alone, run with `cargo test --release jsonld`: the
     /// 30,000-line document of bench/jsonld-gen.mjs (people with compact
     /// IRIs, @type, @id references, typed and language-tagged values, a
     /// nested blank node and a @list) against the same data in Turtle.
-    /// Prints both times; fails when JSON-LD is over 3 times as slow.
+    /// Prints both times; fails when JSON-LD is over 4 times as slow. The
+    /// parse also builds the source index, about 2.3x Turtle on a fast core
+    /// and up to 3.1x on a slow CI runner; the 3x budget is on open to
+    /// diagnostics, in tests/jsonld_budget.rs.
     #[cfg(not(debug_assertions))]
     #[test]
-    fn parses_30000_lines_within_3x_of_turtle() {
+    fn parses_30000_lines_within_4x_of_turtle() {
         use std::fmt::Write as _;
         use std::time::{Duration, Instant};
         let context = r#"{
@@ -666,7 +669,7 @@ mod tests {
             j.triples.len(),
             jt.as_secs_f64() / tt.as_secs_f64()
         );
-        assert!(jt <= tt * 3, "JSON-LD {jt:?} vs Turtle {tt:?}");
+        assert!(jt <= tt * 4, "JSON-LD {jt:?} vs Turtle {tt:?}");
     }
 
     #[test]
