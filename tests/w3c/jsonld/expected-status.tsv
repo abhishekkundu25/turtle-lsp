@@ -86,10 +86,10 @@ toRdf#tc026	known-fail	0 quads, expected 3
 toRdf#tc027	known-fail	0 quads, expected 3
 toRdf#tc028	known-fail	0 quads, expected 3
 toRdf#tc029	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#tc030	known-fail	no error reported (expected invalid @propagate value)
+toRdf#tc030	pass
 toRdf#tc031	known-fail	0 quads, expected 2
-toRdf#tc032	known-fail	no error reported (expected invalid scoped context)
-toRdf#tc033	known-fail	no error reported (expected invalid scoped context)
+toRdf#tc032	pass
+toRdf#tc033	pass
 toRdf#tc034	known-fail	0 quads, expected 2
 toRdf#tc035	known-fail	0 quads, expected 3
 toRdf#tc036	known-fail	0 quads, expected 3
@@ -102,7 +102,7 @@ toRdf#tdi04	known-fail	0 quads, expected 3
 toRdf#tdi05	known-fail	0 quads, expected 3
 toRdf#tdi06	known-fail	0 quads, expected 3
 toRdf#tdi07	known-fail	0 quads, expected 3
-toRdf#tdi08	known-fail	no error reported (expected invalid base direction)
+toRdf#tdi08	pass
 toRdf#tdi09	out-of-scope	rdfDirection: the engine has no rdfDirection option
 toRdf#tdi10	out-of-scope	rdfDirection: the engine has no rdfDirection option
 toRdf#tdi11	out-of-scope	rdfDirection: the engine has no rdfDirection option
@@ -237,39 +237,39 @@ toRdf#te127	known-fail	0 quads, expected 2
 toRdf#te128	known-fail	0 quads, expected 2
 toRdf#te129	known-fail	0 quads, expected 1
 toRdf#te130	known-fail	0 quads, expected 1
-toRdf#tec01	known-fail	no error reported (expected invalid term definition)
-toRdf#tec02	known-fail	no error reported (expected keyword redefinition)
-toRdf#tem01	known-fail	no error reported (expected invalid container mapping)
+toRdf#tec01	pass
+toRdf#tec02	pass
+toRdf#tem01	pass
 toRdf#ten01	known-fail	no error reported (expected invalid @nest value)
 toRdf#ten02	known-fail	no error reported (expected invalid @nest value)
 toRdf#ten03	known-fail	no error reported (expected invalid @nest value)
 toRdf#ten04	known-fail	no error reported (expected invalid @nest value)
-toRdf#ten05	known-fail	no error reported (expected invalid @nest value)
-toRdf#ten06	known-fail	no error reported (expected invalid reverse property)
+toRdf#ten05	pass
+toRdf#ten06	pass
 toRdf#tep02	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#tep03	known-fail	no error reported (expected invalid @version value)
-toRdf#ter01	known-fail	no error reported (expected keyword redefinition)
+toRdf#tep03	pass
+toRdf#ter01	pass
 toRdf#ter02	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
 toRdf#ter03	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#ter04	known-fail	no error reported (expected loading remote context failed)
-toRdf#ter05	known-fail	no error reported (expected invalid remote context)
-toRdf#ter06	known-fail	no error reported (expected invalid local context)
-toRdf#ter07	known-fail	no error reported (expected invalid base IRI)
-toRdf#ter08	known-fail	no error reported (expected invalid vocab mapping)
-toRdf#ter09	known-fail	no error reported (expected invalid default language)
-toRdf#ter10	known-fail	no error reported (expected cyclic IRI mapping)
-toRdf#ter11	known-fail	no error reported (expected invalid term definition)
-toRdf#ter12	known-fail	no error reported (expected invalid type mapping)
-toRdf#ter13	known-fail	no error reported (expected invalid type mapping)
-toRdf#ter14	known-fail	no error reported (expected invalid reverse property)
-toRdf#ter15	known-fail	no error reported (expected invalid IRI mapping)
-toRdf#ter17	known-fail	no error reported (expected invalid reverse property)
-toRdf#ter18	known-fail	no error reported (expected invalid IRI mapping)
-toRdf#ter19	known-fail	no error reported (expected invalid keyword alias)
-toRdf#ter20	known-fail	no error reported (expected invalid IRI mapping)
+toRdf#ter04	pass
+toRdf#ter05	pass
+toRdf#ter06	pass
+toRdf#ter07	pass
+toRdf#ter08	pass
+toRdf#ter09	pass
+toRdf#ter10	pass
+toRdf#ter11	pass
+toRdf#ter12	pass
+toRdf#ter13	pass
+toRdf#ter14	pass
+toRdf#ter15	pass
+toRdf#ter17	pass
+toRdf#ter18	pass
+toRdf#ter19	pass
+toRdf#ter20	pass
 toRdf#ter21	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#ter22	known-fail	no error reported (expected invalid language mapping)
-toRdf#ter23	known-fail	no error reported (expected invalid type mapping)
+toRdf#ter22	pass
+toRdf#ter23	pass
 toRdf#ter24	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
 toRdf#ter25	known-fail	no error reported (expected invalid reverse property map)
 toRdf#ter26	known-fail	no error reported (expected colliding keywords)
@@ -289,17 +289,17 @@ toRdf#ter39	known-fail	no error reported (expected invalid language-tagged value
 toRdf#ter40	known-fail	no error reported (expected invalid typed value)
 toRdf#ter41	known-fail	no error reported (expected invalid set or list object)
 toRdf#ter42	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#ter43	known-fail	no error reported (expected invalid IRI mapping)
-toRdf#ter44	known-fail	no error reported (expected invalid IRI mapping)
-toRdf#ter48	known-fail	no error reported (expected invalid IRI mapping)
-toRdf#ter49	known-fail	no error reported (expected invalid term definition)
-toRdf#ter50	known-fail	no error reported (expected invalid IRI mapping)
+toRdf#ter43	pass
+toRdf#ter44	pass
+toRdf#ter48	pass
+toRdf#ter49	pass
+toRdf#ter50	pass
 toRdf#ter51	known-fail	no error reported (expected invalid value object value)
-toRdf#ter52	known-fail	no error reported (expected invalid term definition)
-toRdf#ter53	known-fail	no error reported (expected invalid @prefix value)
+toRdf#ter52	pass
+toRdf#ter53	pass
 toRdf#ter54	known-fail	no error reported (expected invalid typed value)
-toRdf#ter55	known-fail	no error reported (expected invalid type mapping)
-toRdf#ter56	known-fail	no error reported (expected keyword redefinition)
+toRdf#ter55	pass
+toRdf#ter56	pass
 toRdf#tin01	known-fail	0 quads, expected 2
 toRdf#tin02	known-fail	0 quads, expected 2
 toRdf#tin03	known-fail	0 quads, expected 2
@@ -365,7 +365,7 @@ toRdf#tm016	known-fail	0 quads, expected 2
 toRdf#tm017	known-fail	0 quads, expected 2
 toRdf#tm018	known-fail	0 quads, expected 2
 toRdf#tm019	known-fail	0 quads, expected 2
-toRdf#tm020	known-fail	no error reported (expected invalid type mapping)
+toRdf#tm020	pass
 toRdf#tn001	known-fail	0 quads, expected 2
 toRdf#tn002	known-fail	0 quads, expected 2
 toRdf#tn003	known-fail	0 quads, expected 3
@@ -395,9 +395,9 @@ toRdf#tp002	known-fail	0 quads, expected 2
 toRdf#tp003	known-fail	0 quads, expected 2
 toRdf#tp004	known-fail	0 quads, expected 2
 toRdf#tpi01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#tpi02	known-fail	no error reported (expected invalid term definition)
-toRdf#tpi03	known-fail	no error reported (expected invalid term definition)
-toRdf#tpi04	known-fail	no error reported (expected invalid term definition)
+toRdf#tpi02	pass
+toRdf#tpi03	pass
+toRdf#tpi04	pass
 toRdf#tpi05	known-fail	no error reported (expected invalid value object)
 toRdf#tpi06	known-fail	0 quads, expected 6
 toRdf#tpi07	known-fail	0 quads, expected 9
@@ -429,14 +429,14 @@ toRdf#tpr22	known-fail	0 quads, expected 4
 toRdf#tpr23	known-fail	0 quads, expected 1
 toRdf#tpr24	known-fail	0 quads, expected 1
 toRdf#tpr25	known-fail	0 quads, expected 7
-toRdf#tpr26	known-fail	no error reported (expected protected term redefinition)
+toRdf#tpr26	pass
 toRdf#tpr27	known-fail	0 quads, expected 1
-toRdf#tpr28	known-fail	no error reported (expected protected term redefinition)
+toRdf#tpr28	pass
 toRdf#tpr29	known-fail	0 quads, expected 2
 toRdf#tpr30	known-fail	0 quads, expected 2
-toRdf#tpr31	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr32	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr33	known-fail	no error reported (expected invalid term definition)
+toRdf#tpr31	pass
+toRdf#tpr32	pass
+toRdf#tpr33	pass
 toRdf#tpr34	known-fail	0 quads, expected 1
 toRdf#tpr35	known-fail	0 quads, expected 1
 toRdf#tpr36	known-fail	0 quads, expected 1
@@ -445,21 +445,21 @@ toRdf#tpr38	known-fail	0 quads, expected 1
 toRdf#tpr39	known-fail	0 quads, expected 3
 toRdf#tpr40	known-fail	0 quads, expected 2
 toRdf#tpr41	known-fail	0 quads, expected 1
-toRdf#tpr42	known-fail	no error reported (expected protected term redefinition)
+toRdf#tpr42	pass
 toRdf#tpr43	known-fail	0 quads, expected 2
 toRdf#trt01	known-fail	0 quads, expected 4
 toRdf#tso01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#tso02	known-fail	no error reported (expected invalid @import value)
-toRdf#tso03	known-fail	no error reported (expected invalid context entry)
+toRdf#tso02	pass
+toRdf#tso03	pass
 toRdf#tso05	known-fail	0 quads, expected 3
 toRdf#tso06	known-fail	0 quads, expected 3
 toRdf#tso07	known-fail	no error reported (expected protected term redefinition)
 toRdf#tso08	known-fail	0 quads, expected 1
 toRdf#tso09	known-fail	0 quads, expected 1
-toRdf#tso10	known-fail	no error reported (expected protected term redefinition)
+toRdf#tso10	pass
 toRdf#tso11	known-fail	0 quads, expected 1
-toRdf#tso12	known-fail	no error reported (expected invalid context entry)
-toRdf#tso13	known-fail	no error reported (expected invalid remote context)
+toRdf#tso12	pass
+toRdf#tso13	pass
 toRdf#ttn01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 toRdf#ttn02	known-fail	0 quads, expected 9
 toRdf#twf01	pass
@@ -629,10 +629,10 @@ expand#tc026	known-fail	0 quads, expected 3
 expand#tc027	known-fail	0 quads, expected 3
 expand#tc028	known-fail	0 quads, expected 3
 expand#tc029	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#tc030	known-fail	no error reported (expected invalid @propagate value)
+expand#tc030	pass
 expand#tc031	known-fail	0 quads, expected 2
-expand#tc032	known-fail	no error reported (expected invalid scoped context)
-expand#tc033	known-fail	no error reported (expected invalid scoped context)
+expand#tc032	pass
+expand#tc033	pass
 expand#tc034	known-fail	0 quads, expected 2
 expand#tc035	known-fail	0 quads, expected 3
 expand#tc036	known-fail	0 quads, expected 3
@@ -645,41 +645,41 @@ expand#tdi04	known-fail	0 quads, expected 3
 expand#tdi05	known-fail	0 quads, expected 3
 expand#tdi06	known-fail	0 quads, expected 3
 expand#tdi07	known-fail	0 quads, expected 3
-expand#tdi08	known-fail	no error reported (expected invalid base direction)
+expand#tdi08	pass
 expand#tdi09	known-fail	no error reported (expected invalid value object)
-expand#tec01	known-fail	no error reported (expected invalid term definition)
-expand#tec02	known-fail	no error reported (expected keyword redefinition)
-expand#tem01	known-fail	no error reported (expected invalid container mapping)
+expand#tec01	pass
+expand#tec02	pass
+expand#tem01	pass
 expand#ten01	known-fail	no error reported (expected invalid @nest value)
 expand#ten02	known-fail	no error reported (expected invalid @nest value)
 expand#ten03	known-fail	no error reported (expected invalid @nest value)
 expand#ten04	known-fail	no error reported (expected invalid @nest value)
-expand#ten05	known-fail	no error reported (expected invalid @nest value)
-expand#ten06	known-fail	no error reported (expected invalid reverse property)
+expand#ten05	pass
+expand#ten06	pass
 expand#tep02	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#tep03	known-fail	no error reported (expected invalid @version value)
-expand#ter01	known-fail	no error reported (expected keyword redefinition)
+expand#tep03	pass
+expand#ter01	pass
 expand#ter02	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
 expand#ter03	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-expand#ter04	known-fail	no error reported (expected loading remote context failed)
-expand#ter05	known-fail	no error reported (expected invalid remote context)
-expand#ter06	known-fail	no error reported (expected invalid local context)
-expand#ter07	known-fail	no error reported (expected invalid base IRI)
-expand#ter08	known-fail	no error reported (expected invalid vocab mapping)
-expand#ter09	known-fail	no error reported (expected invalid default language)
-expand#ter10	known-fail	no error reported (expected cyclic IRI mapping)
-expand#ter11	known-fail	no error reported (expected invalid term definition)
-expand#ter12	known-fail	no error reported (expected invalid type mapping)
-expand#ter13	known-fail	no error reported (expected invalid type mapping)
-expand#ter14	known-fail	no error reported (expected invalid reverse property)
-expand#ter15	known-fail	no error reported (expected invalid IRI mapping)
-expand#ter17	known-fail	no error reported (expected invalid reverse property)
-expand#ter18	known-fail	no error reported (expected invalid IRI mapping)
-expand#ter19	known-fail	no error reported (expected invalid keyword alias)
-expand#ter20	known-fail	no error reported (expected invalid IRI mapping)
+expand#ter04	pass
+expand#ter05	pass
+expand#ter06	pass
+expand#ter07	pass
+expand#ter08	pass
+expand#ter09	pass
+expand#ter10	pass
+expand#ter11	pass
+expand#ter12	pass
+expand#ter13	pass
+expand#ter14	pass
+expand#ter15	pass
+expand#ter17	pass
+expand#ter18	pass
+expand#ter19	pass
+expand#ter20	pass
 expand#ter21	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#ter22	known-fail	no error reported (expected invalid language mapping)
-expand#ter23	known-fail	no error reported (expected invalid type mapping)
+expand#ter22	pass
+expand#ter23	pass
 expand#ter24	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
 expand#ter25	known-fail	no error reported (expected invalid reverse property map)
 expand#ter26	known-fail	no error reported (expected colliding keywords)
@@ -699,19 +699,19 @@ expand#ter39	known-fail	no error reported (expected invalid language-tagged valu
 expand#ter40	known-fail	no error reported (expected invalid typed value)
 expand#ter41	known-fail	no error reported (expected invalid set or list object)
 expand#ter42	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#ter43	known-fail	no error reported (expected invalid IRI mapping)
-expand#ter44	known-fail	no error reported (expected invalid IRI mapping)
-expand#ter48	known-fail	no error reported (expected invalid IRI mapping)
-expand#ter49	known-fail	no error reported (expected invalid term definition)
-expand#ter50	known-fail	no error reported (expected invalid IRI mapping)
+expand#ter43	pass
+expand#ter44	pass
+expand#ter48	pass
+expand#ter49	pass
+expand#ter50	pass
 expand#ter51	known-fail	no error reported (expected invalid value object value)
-expand#ter52	known-fail	no error reported (expected invalid term definition)
-expand#ter53	known-fail	no error reported (expected invalid @prefix value)
+expand#ter52	pass
+expand#ter53	pass
 expand#ter54	known-fail	no error reported (expected invalid typed value)
-expand#ter55	known-fail	no error reported (expected invalid type mapping)
-expand#ter56	known-fail	no error reported (expected keyword redefinition)
+expand#ter55	pass
+expand#ter56	pass
 expand#tes01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#tes02	known-fail	no error reported (expected invalid container mapping)
+expand#tes02	pass
 expand#tin01	known-fail	0 quads, expected 2
 expand#tin02	known-fail	0 quads, expected 2
 expand#tin03	known-fail	0 quads, expected 2
@@ -774,7 +774,7 @@ expand#tm016	known-fail	0 quads, expected 2
 expand#tm017	known-fail	0 quads, expected 2
 expand#tm018	known-fail	0 quads, expected 2
 expand#tm019	known-fail	0 quads, expected 2
-expand#tm020	known-fail	no error reported (expected invalid type mapping)
+expand#tm020	pass
 expand#tn001	known-fail	0 quads, expected 2
 expand#tn002	known-fail	0 quads, expected 2
 expand#tn003	known-fail	0 quads, expected 3
@@ -788,9 +788,9 @@ expand#tp002	known-fail	0 quads, expected 2
 expand#tp003	known-fail	0 quads, expected 2
 expand#tp004	known-fail	0 quads, expected 2
 expand#tpi01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#tpi02	known-fail	no error reported (expected invalid term definition)
-expand#tpi03	known-fail	no error reported (expected invalid term definition)
-expand#tpi04	known-fail	no error reported (expected invalid term definition)
+expand#tpi02	pass
+expand#tpi03	pass
+expand#tpi04	pass
 expand#tpi05	known-fail	no error reported (expected invalid value object)
 expand#tpi06	known-fail	0 quads, expected 6
 expand#tpi07	known-fail	0 quads, expected 9
@@ -822,14 +822,14 @@ expand#tpr22	known-fail	0 quads, expected 4
 expand#tpr23	known-fail	0 quads, expected 1
 expand#tpr24	known-fail	0 quads, expected 1
 expand#tpr25	known-fail	0 quads, expected 7
-expand#tpr26	known-fail	no error reported (expected protected term redefinition)
+expand#tpr26	pass
 expand#tpr27	known-fail	0 quads, expected 1
-expand#tpr28	known-fail	no error reported (expected protected term redefinition)
+expand#tpr28	pass
 expand#tpr29	known-fail	0 quads, expected 2
 expand#tpr30	known-fail	0 quads, expected 2
-expand#tpr31	known-fail	no error reported (expected protected term redefinition)
-expand#tpr32	known-fail	no error reported (expected protected term redefinition)
-expand#tpr33	known-fail	no error reported (expected invalid term definition)
+expand#tpr31	pass
+expand#tpr32	pass
+expand#tpr33	pass
 expand#tpr34	known-fail	0 quads, expected 1
 expand#tpr35	known-fail	0 quads, expected 1
 expand#tpr36	known-fail	0 quads, expected 1
@@ -838,20 +838,20 @@ expand#tpr38	known-fail	0 quads, expected 1
 expand#tpr39	known-fail	0 quads, expected 3
 expand#tpr40	known-fail	0 quads, expected 2
 expand#tpr41	known-fail	0 quads, expected 1
-expand#tpr42	known-fail	no error reported (expected protected term redefinition)
+expand#tpr42	pass
 expand#tpr43	known-fail	0 quads, expected 2
 expand#tso01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#tso02	known-fail	no error reported (expected invalid @import value)
-expand#tso03	known-fail	no error reported (expected invalid context entry)
+expand#tso02	pass
+expand#tso03	pass
 expand#tso05	known-fail	0 quads, expected 3
 expand#tso06	known-fail	0 quads, expected 3
 expand#tso07	known-fail	no error reported (expected protected term redefinition)
 expand#tso08	known-fail	0 quads, expected 1
 expand#tso09	known-fail	0 quads, expected 1
-expand#tso10	known-fail	no error reported (expected protected term redefinition)
+expand#tso10	pass
 expand#tso11	known-fail	0 quads, expected 1
-expand#tso12	known-fail	no error reported (expected invalid context entry)
-expand#tso13	known-fail	no error reported (expected invalid remote context)
+expand#tso12	pass
+expand#tso13	pass
 expand#ttn01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 expand#ttn02	known-fail	0 quads, expected 9
 remote-doc#t0001	known-fail	0 quads, expected 1

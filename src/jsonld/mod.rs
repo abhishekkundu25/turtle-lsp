@@ -29,8 +29,10 @@
 //! - `tokens` stays empty: its kinds are Turtle's. Spans for highlighting
 //!   come from the [`json::Json`] tree.
 //!
-//! Only the JSON parser is real so far: [`parse`] returns its syntax errors
-//! and no triples.
+//! So far [`parse`] runs the JSON parser and processes each top-level
+//! `@context` (of the root object, or of each object in a root array) from
+//! the initial context, reporting `json-syntax` and `jsonld-context` errors;
+//! it produces no triples yet.
 
 pub mod context;
 pub mod expand;
@@ -41,7 +43,7 @@ pub mod to_rdf;
 
 pub use loader::{ContextLoader, LoadError, NoNetwork, RemoteDocument};
 
-use crate::syntax::{Parsed, Syntax};
+use crate::syntax::{Parsed, Syntax, SyntaxError};
 
 /// Parse a JSON-LD document into the shared parse model.
 ///
@@ -51,15 +53,43 @@ use crate::syntax::{Parsed, Syntax};
 /// error on the `@context` entry that names it, never a network access the
 /// loader did not allow.
 pub fn parse(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Parsed {
-    // Later stages: context processing, expansion and toRdf over `doc`.
+    // Later stages: expansion and toRdf over `doc`.
     let doc = json::parse(text);
-    let _ = loader;
+    let mut errors = doc.errors;
+    if let Some(root) = &doc.root {
+        check_top_level_contexts(root, base, loader, &mut errors);
+    }
     Parsed {
         syntax: Syntax::JsonLd,
         document_base: base.map(str::to_string),
-        errors: doc.errors,
+        errors,
         ..Parsed::default()
     }
+}
+
+/// Until expansion applies contexts where they occur: process each
+/// top-level `@context` from the initial context, so its errors show.
+fn check_top_level_contexts(
+    root: &json::Json,
+    base: Option<&str>,
+    loader: &dyn ContextLoader,
+    errors: &mut Vec<SyntaxError>,
+) {
+    let tops: &[json::Json] = match &root.value {
+        json::Value::Array(a) => &a.items,
+        _ => std::slice::from_ref(root),
+    };
+    let mut processor = context::Processor::new(loader);
+    let initial = context::ActiveContext::new(base);
+    for top in tops {
+        let Some(m) = top.as_object().and_then(|o| o.get("@context")) else {
+            continue;
+        };
+        if let Err(e) = processor.process(&initial, &m.value, base, context::Options::default()) {
+            errors.push(e.to_syntax_error());
+        }
+    }
+    errors.extend(processor.take_warnings());
 }
 
 #[cfg(test)]
@@ -67,13 +97,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_stub_parses_to_an_empty_jsonld_model() {
+    fn a_document_parses_to_an_empty_jsonld_model_for_now() {
         let text = r#"{"@context": "https://schema.org/", "@id": "ex:a", "name": "A"}"#;
-        let p = parse(text, Some("file:///x/a.jsonld"), &NoNetwork::default());
+        let p = parse(text, Some("file:///x/a.jsonld"), &loader::Bundled);
         assert_eq!(p.syntax, Syntax::JsonLd);
         assert_eq!(p.document_base.as_deref(), Some("file:///x/a.jsonld"));
         assert!(p.triples.is_empty() && p.refs.is_empty() && p.errors.is_empty());
         assert!(p.tokens.is_empty() && p.prefixes.is_empty());
+    }
+
+    #[test]
+    fn top_level_context_errors_are_diagnostics() {
+        let text = r#"[{"@context": {"ok": "http://ex.org/"}}, {"@context": {"a": 5, "@b": "http://x/"}}, {"@context": "https://example.org/ctx"}]"#;
+        let p = parse(text, Some("file:///x/a.jsonld"), &NoNetwork::default());
+        let got: Vec<_> = p
+            .errors
+            .iter()
+            .map(|e| {
+                let at = &text[e.span.start as usize..e.span.end as usize];
+                (e.code, e.severity, at, e.message.split(':').next().unwrap())
+            })
+            .collect();
+        use crate::syntax::Severity::*;
+        assert_eq!(
+            got,
+            [
+                ("jsonld-context", Error, "5", "invalid term definition"),
+                (
+                    "jsonld-context",
+                    Error,
+                    "\"https://example.org/ctx\"",
+                    "loading remote context failed"
+                ),
+            ]
+        );
+        assert!(p.errors[1].message.contains("imports.network"));
+        // Processing stopped at `"a": 5` before `"@b"`; alone, `"@b"` is a
+        // warning.
+        let text = r#"{"@context": {"@b": "http://x/"}}"#;
+        let p = parse(text, None, &NoNetwork::default());
+        assert_eq!(p.errors.len(), 1);
+        assert_eq!(
+            (p.errors[0].severity, p.errors[0].span),
+            (Warning, crate::syntax::Span::new(14, 18))
+        );
     }
 
     #[test]
