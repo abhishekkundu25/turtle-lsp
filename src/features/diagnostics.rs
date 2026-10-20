@@ -320,6 +320,29 @@ pub fn diagnostics_with(
         for f in jsonld::lint::dropped(&a.text, &a.dropped) {
             out.push(mk(f.span, severity(f.severity), f.code, f.message));
         }
+        // `rdfs:lable` with no `rdfs` in the context, for a prefix the
+        // workspace knows: an IRI with scheme `rdfs:`.
+        let mut namespaces: FxHashMap<&str, Option<String>> = FxHashMap::default();
+        for (span, word) in jsonld::lint::undefined_prefixes(&a.text, &a.source_index) {
+            let ns = namespaces.entry(word).or_insert_with(|| {
+                prefix_candidates(word, k)
+                    .into_iter()
+                    .next()
+                    .map(|c| c.namespace)
+            });
+            let Some(ns) = ns else { continue };
+            let written = text_at(span, span.end - span.start).unwrap_or_default();
+            let mut d = mk(
+                span,
+                DiagnosticSeverity::WARNING,
+                jsonld::lint::UNDEFINED_PREFIX,
+                format!(
+                    "'{word}' is not defined in the @context, so '{written}' is an IRI with scheme '{word}:'"
+                ),
+            );
+            d.data = Some(json!({ "prefix": word, "namespace": ns }));
+            out.push(d);
+        }
         // A term of the context at its definition; anything else as written.
         let iris = jsonld::lint::vocabulary_iris(&a.text, &a.parsed.refs, &a.used_terms);
         let uses = iris.iter().map(|w| match w.form {
@@ -442,6 +465,35 @@ pub fn code_actions(
                         ..Default::default()
                     }));
                 }
+            }
+            jsonld::lint::UNDEFINED_PREFIX => {
+                let (Some(p), Some(ns)) = (
+                    data.and_then(|x| x["prefix"].as_str()),
+                    data.and_then(|x| x["namespace"].as_str()),
+                ) else {
+                    continue;
+                };
+                let Some(offset) = a.offset(enc, d.range.start) else {
+                    continue;
+                };
+                if missing.iter().any(|q| q == p) {
+                    continue;
+                }
+                missing.push(p.to_string());
+                let member = format!("{}: {}", json!(p), json!(ns));
+                let (at, del, new_text) =
+                    jsonld::context_edit::add_member(text, offset as usize, &member);
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: format!("Add {member} to the @context"),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![d.clone()]),
+                    edit: edit(vec![TextEdit {
+                        range: a.range(enc, crate::syntax::Span::new(at as u32, (at + del) as u32)),
+                        new_text,
+                    }]),
+                    is_preferred: Some(true),
+                    ..Default::default()
+                }));
             }
             "unused-prefix" | "duplicate-prefix" => {
                 let start = a.offset(enc, d.range.start).unwrap_or(0);

@@ -9,6 +9,8 @@
 //! - **Definitions** ([`Definition`]): each term definition a use resolves
 //!   to, and each one written in the document, applied or not. Uses refer
 //!   to them by [`DefId`], so "the same definition" is an equality.
+//! - **Context IRIs** ([`SourceIndex::context_iris`]): strings in the
+//!   document's contexts that may be compact IRIs with a missing prefix.
 //! - **Scopes** ([`Scope`]): each JSON object expansion reads, with the
 //!   active context in force inside it ([`SourceIndex::scope_at`]).
 //!
@@ -157,6 +159,12 @@ pub struct SourceIndex {
     pub uses: Vec<Use>,
     /// Indexed by [`DefId`].
     pub definitions: Vec<Definition>,
+    /// Strings written `word:rest` in this document's contexts (a term's
+    /// IRI, `@id`, `@type`, `@reverse` or `@vocab`, a term key with no IRI
+    /// of its own) whose `word` no context object around them defines,
+    /// without quotes, in text order: see
+    /// [`super::lint::undefined_prefixes`].
+    pub context_iris: Vec<Span>,
     /// Sorted by start, outer before inner.
     scopes: Vec<Scope>,
     contexts: Vec<ActiveContext>,

@@ -130,7 +130,8 @@ test("a JSON syntax error is published at its exact range", async () => {
   const diags = await s.diagnosticsFor(uri)
   s.close(uri)
   assert.deepEqual(
-    diags.map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
+    // ex: is no prefix without a context (jsonld-undefined-prefix): only the syntax error is checked here.
+    diags.filter((d) => d.code === "json-syntax").map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
     [
       {
         range: { start: { line: 1, character: 9 }, end: { line: 1, character: 15 } },
@@ -150,7 +151,7 @@ test("check: a JSON syntax error is reported at its exact range", (t) => {
   const [file] = JSON.parse(r.out).files
   assert.equal(file.path, "broken.jsonld")
   assert.deepEqual(
-    file.diagnostics.map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
+    file.diagnostics.filter((d) => d.code === "json-syntax").map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
     [
       {
         range: { start: { line: 2, column: 10 }, end: { line: 2, column: 16 } },

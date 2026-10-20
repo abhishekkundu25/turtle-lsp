@@ -501,7 +501,7 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
 `unknown-term`, `undescribed-term`, `unresolved-import` and
 `shacl-violation`, and for JSON-LD `json-syntax`, `jsonld-context`,
-`jsonld-undefined-term`, `invalid-iri` and `invalid-language-tag`. `--format json` gives each problem's range, severity,
+`jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and `invalid-language-tag`. `--format json` gives each problem's range, severity,
 code, message and fixes, in an object with `"version": 1`.
 
 Settings come from [`turtle-lsp.json`](#settings-file-turtle-lspjson);

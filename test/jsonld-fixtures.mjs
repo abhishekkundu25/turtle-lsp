@@ -218,6 +218,43 @@ export const LINTS_CLEAN = `{
 }
 `
 
+// Compact IRIs whose prefix the context lacks: JSON-LD reads each as an
+// IRI with the prefix as its scheme (jsonld-undefined-prefix).
+export const NO_PREFIX = `{
+  "@context": {
+    "ex": "https://jsonld.example.org/def/",
+    "title": "rdfs:labl"
+  },
+  "@id": "ex:w30",
+  "@type": "schema:Thing",
+  "title": "Thirty",
+  "rdfs:comment": "x"
+}
+`
+export const NO_PREFIX_DEF = span(NO_PREFIX, [3, 14], [3, 23], "rdfs:labl")
+export const NO_PREFIX_TYPE = span(NO_PREFIX, [6, 12], [6, 24], "schema:Thing")
+export const NO_PREFIX_KEY = span(NO_PREFIX, [8, 3], [8, 15], "rdfs:comment")
+export const NO_PREFIX_FIXED = NO_PREFIX.replace('{\n    "ex"', '{\n    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",\n    "ex"')
+// NO_PREFIX_DEF and NO_PREFIX_TYPE in NO_PREFIX_FIXED.
+export const NO_PREFIX_FIXED_DEF = span(NO_PREFIX_FIXED, [4, 14], [4, 23], "rdfs:labl")
+export const NO_PREFIX_FIXED_TYPE = span(NO_PREFIX_FIXED, [7, 12], [7, 24], "schema:Thing")
+
+// IRIs with a scheme, none a forgotten prefix: a defined prefix, common URI
+// schemes (some also vocabulary prefixes: http, geo) and a scheme no
+// vocabulary uses.
+export const SCHEMES = `{
+  "@context": { "rdfs": "http://www.w3.org/2000/01/rdf-schema#", "ex": "https://jsonld.example.org/def/" },
+  "@id": "urn:uuid:6e8bc430-9c3a-11d9-9669-0800200c9a66",
+  "@type": "rdfs:Class",
+  "rdfs:label": "x",
+  "ex:p": { "@id": "did:example:123456789abcdefghi" },
+  "ex:q": { "@id": "http:example.org" },
+  "ex:r": { "@id": "geo:13.4125,103.8667" },
+  "ex:s": { "@id": "isbn:0451450523" },
+  "ex:t": { "@id": "mailto:someone@example.org" }
+}
+`
+
 // ---- remote contexts ---------------------------------------------------------------
 export const UNKNOWN_CONTEXT_URL = "https://contexts.example.org/unknown.jsonld"
 /** A document whose only context is `url`, defining "colour" (or not), and using an undefined "flavour". */

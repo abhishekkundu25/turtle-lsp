@@ -9,18 +9,36 @@
 //!   base;
 //! - `invalid-language-tag` (warning: JSON-LD processors should only warn
 //!   about an ill-formed tag) at the tag whose literal
-//!   is dropped.
+//!   is dropped;
+//! - `jsonld-undefined-prefix` (warning, from [`undefined_prefixes`]): a
+//!   key, `@type` or `@id` value, or an IRI written in a context, spelled
+//!   `word:rest` where the context defines no `word`. JSON-LD reads it as
+//!   an absolute IRI with scheme `word:`, valid and silent; when `word` is a
+//!   prefix the workspace knows, it is almost always a forgotten prefix.
 //!
 //! [`vocabulary_iris`] says where the shared vocabulary lints
 //! (`unknown-term`, `deprecated-term`) look: a term of the context is
 //! checked once, at the IRI its definition writes, not at each use.
 
-use super::{DropReason, Dropped, UsedTerm};
+use super::context::is_absolute_iri;
+use super::json::{Json, Value};
+use super::source::{SourceIndex, UseKind};
+use super::{DropReason, Dropped, UsedTerm, unquoted};
 use crate::syntax::{Form, Iri, Ref, Severity, Span};
 
 pub const UNDEFINED_TERM: &str = "jsonld-undefined-term";
 pub const INVALID_IRI: &str = "invalid-iri";
 pub const INVALID_LANGUAGE_TAG: &str = "invalid-language-tag";
+pub const UNDEFINED_PREFIX: &str = "jsonld-undefined-prefix";
+
+/// URI schemes `jsonld-undefined-prefix` never takes for a forgotten
+/// prefix, even where a vocabulary prefix has the same name (`http`,
+/// `geo`): the IANA-registered schemes JSON-LD data writes in `@id` values
+/// and keys, and `did` (W3C DIDs) and `doi`.
+pub const URI_SCHEMES: &[&str] = &[
+    "http", "https", "urn", "mailto", "did", "tag", "file", "data", "ftp", "tel", "ws", "wss",
+    "geo", "ni", "info", "doi",
+];
 
 /// One lint result.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +103,126 @@ pub fn dropped(text: &str, dropped: &[Dropped]) -> Vec<Finding> {
             })
         })
         .collect()
+}
+
+/// The word before the colon of `s` when JSON-LD would read `s` as an
+/// absolute IRI with that word as its scheme and it is no common URI
+/// scheme: `rdfs` for `rdfs:lable`, nothing for `http://x` or `urn:x`.
+fn scheme_word(s: &str) -> Option<&str> {
+    let (word, rest) = s.split_once(':')?;
+    let scheme = URI_SCHEMES.iter().any(|u| u.eq_ignore_ascii_case(word));
+    (!rest.starts_with("//") && !scheme && is_absolute_iri(s)).then_some(word)
+}
+
+/// The strings JSON-LD reads as absolute IRIs `word:rest` where the active
+/// context defines no `word` and `word` is no common URI scheme, as (span
+/// without quotes, `word`), in text order: keys, `@type` and `@id` values
+/// written so, and [`SourceIndex::context_iris`]. Whether `word` is a
+/// known prefix is the caller's check.
+pub fn undefined_prefixes<'t>(text: &'t str, index: &SourceIndex) -> Vec<(Span, &'t str)> {
+    let mut spans: Vec<Span> = index
+        .uses
+        .iter()
+        .filter(|u| u.kind == UseKind::Absolute)
+        .map(|u| u.span)
+        .chain(index.context_iris.iter().copied())
+        .collect();
+    spans.sort_by_key(|s| (s.start, s.end));
+    spans.dedup();
+    spans
+        .into_iter()
+        .filter_map(|span| {
+            let word = scheme_word(at(text, span))?;
+            let defined = index
+                .context_at(span.start)
+                .is_some_and(|c| c.term(word).is_some());
+            (!defined).then_some((span, word))
+        })
+        .collect()
+}
+
+/// [`SourceIndex::context_iris`] of the document at `root`.
+pub(crate) fn context_iris(root: &Json) -> Vec<Span> {
+    let mut out = Vec::new();
+    node(root, &mut Vec::new(), &mut out);
+    out.sort_by_key(|s| (s.start, s.end));
+    out
+}
+
+/// Looks for the contexts in `v`, outside contexts; `defined` holds the
+/// terms of the context objects around it.
+fn node<'j>(v: &'j Json, defined: &mut Vec<&'j str>, out: &mut Vec<Span>) {
+    match &v.value {
+        Value::Object(o) => {
+            for m in &o.members {
+                match &*m.key {
+                    "@context" => context(&m.value, defined, out),
+                    // A JSON literal holds no contexts.
+                    "@value" => {}
+                    _ => node(&m.value, defined, out),
+                }
+            }
+        }
+        Value::Array(a) => a.items.iter().for_each(|i| node(i, defined, out)),
+        _ => {}
+    }
+}
+
+/// The IRIs written in the context `v` (an object, a URL or an array of
+/// them) whose word before the colon neither it nor a context around it
+/// defines.
+fn context<'j>(v: &'j Json, defined: &mut Vec<&'j str>, out: &mut Vec<Span>) {
+    let objects: Vec<_> = match &v.value {
+        Value::Object(o) => vec![o],
+        Value::Array(a) => a.items.iter().filter_map(Json::as_object).collect(),
+        _ => vec![],
+    };
+    let mark = defined.len();
+    for o in &objects {
+        defined.extend(o.members.iter().map(|m| &*m.key));
+    }
+    for o in &objects {
+        for m in &o.members {
+            if m.key.starts_with('@') {
+                if &*m.key == "@vocab" {
+                    check(m.value.as_str(), m.value.span, defined, out);
+                }
+                continue;
+            }
+            match &m.value.value {
+                Value::String(_) => check(m.value.as_str(), m.value.span, defined, out),
+                Value::Object(def) => {
+                    let mut has_iri = false;
+                    for d in &def.members {
+                        match &*d.key {
+                            "@id" | "@reverse" => {
+                                has_iri = true;
+                                check(d.value.as_str(), d.value.span, defined, out);
+                            }
+                            "@type" => check(d.value.as_str(), d.value.span, defined, out),
+                            "@context" => context(&d.value, defined, out),
+                            _ => {}
+                        }
+                    }
+                    if !has_iri {
+                        check(Some(&m.key), m.key_span, defined, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    defined.truncate(mark);
+}
+
+/// Records the string `s` written at `span` (with its quotes) when its
+/// word before the colon is no URI scheme and not in `defined`.
+fn check(s: Option<&str>, span: Span, defined: &[&str], out: &mut Vec<Span>) {
+    if let Some(word) = s.and_then(scheme_word)
+        && !defined.contains(&word)
+    {
+        out.push(unquoted(span));
+    }
 }
 
 /// A vocabulary IRI where it is written: a reference, or a term
@@ -324,6 +462,50 @@ mod tests {
                 ("http://ex.org/b", Form::Iri),
             ]
         );
+    }
+
+    fn undefined(text: &str) -> Vec<(&str, &str)> {
+        let d = parse_document(text, Some(BASE), &NoNetwork::default());
+        undefined_prefixes(text, &d.index)
+            .into_iter()
+            .map(|(s, w)| (at(text, s), w))
+            .collect()
+    }
+
+    #[test]
+    fn words_the_context_does_not_define_before_a_colon() {
+        let text = r#"{
+  "@context": {
+    "@vocab": "voc:x",
+    "ex": "http://ex.org/",
+    "title": "rdfs:lable",
+    "own": "ex:own",
+    "seeAlso": { "@id": "rdfs:seeAlso", "@type": "xsd:anyURI" },
+    "dc:title": { "@language": "en" },
+    "s": { "@id": "http://ex.org/s", "@context": { "q": "sc:q", "sc": "http://sc.org/" } }
+  },
+  "@id": "http://ex.org/a",
+  "@type": ["foaf:Person", "ex:Person", "urn:x:y", "http://ex.org/T", "HTTP:z"],
+  "skos:prefLabel": "x",
+  "ex:p": { "@id": "did:example:1" },
+  "sameAs": { "@id": "geo:1,2" },
+  "_:b": 1
+}"#;
+        assert_eq!(
+            undefined(text),
+            [
+                ("voc:x", "voc"),
+                ("rdfs:lable", "rdfs"),
+                ("rdfs:seeAlso", "rdfs"),
+                ("xsd:anyURI", "xsd"),
+                ("dc:title", "dc"),
+                ("foaf:Person", "foaf"),
+                ("skos:prefLabel", "skos"),
+            ]
+        );
+        // Defined in the context, or in one around it.
+        let text = r#"{"@context": [{"rdfs": "http://www.w3.org/2000/01/rdf-schema#"}, {"l": "rdfs:label"}], "@graph": [{"@context": {"x": "rdfs:comment"}, "rdfs:seeAlso": {"@id": "rdfs:x"}}]}"#;
+        assert_eq!(undefined(text), []);
     }
 
     #[test]

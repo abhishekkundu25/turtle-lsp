@@ -293,6 +293,50 @@ test("check: each JSON-LD lint at its position", { timeout: 25_000 }, (t) => {
   }
 })
 
+// ---- undefined prefixes ----
+
+test("a compact IRI whose prefix the context lacks is jsonld-undefined-prefix on the string", { timeout: 25_000 }, async (t) => {
+  const { diags } = await openScratch(t, F.NO_PREFIX)
+  assert.deepEqual(sortRanges(rangesOf(diags, "jsonld-undefined-prefix")), sortRanges([F.NO_PREFIX_DEF, F.NO_PREFIX_TYPE, F.NO_PREFIX_KEY]), show(diags))
+  assert.ok(withCode(diags, "jsonld-undefined-prefix").every((d) => d.severity === 2))
+  // Defined prefixes, URI schemes and schemes no vocabulary uses are not.
+  for (const text of [F.SCHEMES, F.LINTS, F.LINTS_CLEAN]) {
+    const other = await openScratch(t, text)
+    assert.deepEqual(withCode(other.diags, "jsonld-undefined-prefix"), [], show(other.diags))
+  }
+})
+
+test("the jsonld-undefined-prefix fix adds the prefix to the @context, and the vocabulary lints then see the term", { timeout: 25_000 }, async (t) => {
+  const { uri, diags } = await openScratch(t, F.NO_PREFIX)
+  const d = withCode(diags, "jsonld-undefined-prefix").find((x) => F.rangeKey(x.range) === F.rangeKey(F.NO_PREFIX_DEF))
+  assert.ok(d, show(diags))
+  const actions = await s.request("textDocument/codeAction", { textDocument: { uri }, range: d.range, context: { diagnostics: [d] } })
+  const fix = actions.find((a) => a.isPreferred)
+  assert.ok(fix, JSON.stringify(actions))
+  assert.equal(F.applyEdits(F.NO_PREFIX, changesOf(fix.edit)[uri]), F.NO_PREFIX_FIXED)
+  const fixed = await openScratch(t, F.NO_PREFIX_FIXED)
+  assert.deepEqual(rangesOf(fixed.diags, "jsonld-undefined-prefix"), [F.NO_PREFIX_FIXED_TYPE], show(fixed.diags))
+  const typo = withCode(fixed.diags, "unknown-term")
+  assert.deepEqual(typo.map((x) => x.range), [F.NO_PREFIX_FIXED_DEF], show(fixed.diags))
+  const texts = await fixedTexts(s, fixed.uri, F.NO_PREFIX_FIXED, typo[0])
+  assert.ok(texts.includes(F.NO_PREFIX_FIXED.replace('"rdfs:labl"', '"rdfs:label"')), JSON.stringify(texts))
+})
+
+test("check --fix adds each missing prefix to the @context", { timeout: 25_000 }, (t) => {
+  const w = workspace(t, { "np.jsonld": F.NO_PREFIX })
+  const before = checkJson(w)
+  assert.deepEqual(cliRanges(before.of("np.jsonld", "jsonld-undefined-prefix")), cliExpected([F.NO_PREFIX_DEF, F.NO_PREFIX_TYPE, F.NO_PREFIX_KEY]), before.out)
+  assert.ok(before.of("np.jsonld", "jsonld-undefined-prefix").every((d) => d.fixes?.[0]?.safe), before.out)
+  run(w, ["check", "--fix"])
+  const text = fs.readFileSync(path.join(w, "np.jsonld"), "utf8")
+  assert.match(text, /"rdfs": "http:\/\/www\.w3\.org\/2000\/01\/rdf-schema#"/)
+  assert.match(text, /"schema": "/)
+  JSON.parse(text)
+  const after = checkJson(w)
+  assert.deepEqual(after.of("np.jsonld", "jsonld-undefined-prefix"), [], after.out)
+  assert.equal(after.of("np.jsonld", "unknown-term").length, 1, after.out)
+})
+
 // ---- context loading (ticket 06) ----
 
 // A local web server for remote contexts, counting requests.

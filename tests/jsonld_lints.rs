@@ -22,6 +22,7 @@ use turtle_lsp::syntax::{PrefixMap, Syntax};
 /// they reach through the context.
 const CODES: &[&str] = &[
     "jsonld-undefined-term",
+    "jsonld-undefined-prefix",
     "invalid-iri",
     "invalid-language-tag",
     "unknown-term",
@@ -259,9 +260,30 @@ const EXPECTED: &[(&str, &str, &str, &str)] = &[
         "dcat:next",
         "a DCAT 3 term; the snapshot has DCAT 2",
     ),
+    // Compact IRIs whose prefix no context defines: JSON-LD reads them as
+    // IRIs with the prefix as scheme (true positives).
+    (
+        "gs1/pact-extension.jsonld",
+        UNDEFINED_PREFIX,
+        "owl:*",
+        "its context defines no owl prefix, so owl:Class is the IRI <owl:Class>",
+    ),
+    (
+        "dcat-us/dataset-dataset.jsonld",
+        UNDEFINED_PREFIX,
+        "xsd:*",
+        "the DCAT-US 3.0 context defines no xsd prefix, so the literals are typed <xsd:date> and <xsd:dateTime>",
+    ),
+    (
+        "gs1/gs1Voc-1.16.jsonld",
+        UNDEFINED_PREFIX,
+        "dc11:title",
+        "the context defines dc and dcterms (both as Dublin Core elements), not dc11",
+    ),
 ];
 
 const UNDEFINED: &str = "jsonld-undefined-term";
+const UNDEFINED_PREFIX: &str = "jsonld-undefined-prefix";
 const INVALID_IRI: &str = "invalid-iri";
 const UNKNOWN: &str = "unknown-term";
 const DCAT_US_SCOPED: &str = "the DCAT-US 3.0 context defines it only in the type-scoped contexts of other types than the node's";

@@ -13,7 +13,7 @@
 //!   named graphs, each triple keeping the spans of the key, `@id` or value
 //!   that produced it;
 //! - [`lint`]: JSON-LD-specific warnings (undefined keys, invalid IRIs and
-//!   language tags).
+//!   language tags, compact IRIs whose prefix no context defines).
 //!
 //! What a JSON-LD [`Parsed`] holds:
 //! - `syntax` is [`Syntax::JsonLd`] and `document_base` the base passed in;
@@ -44,6 +44,7 @@
 //! for the editor features.
 
 pub mod context;
+pub mod context_edit;
 pub mod expand;
 pub mod format;
 pub mod json;
@@ -145,6 +146,7 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
         dropped = expanded.dropped;
         used_terms = expanded.used_terms;
         index = expanded.index;
+        index.context_iris = lint::context_iris(root);
         to_rdf::to_rdf(&expanded.items, &mut parsed, &mut dropped);
     }
     // The same scoped context can fail at each use: report each error once.
