@@ -1,33 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Features
-
-- **Editing inside JSON-LD files** (phase 2):
-  - completion in keys and `@type` values from the context in force at the
-    cursor, workspace properties under `@vocab` and `prefix:local` names;
-    completing a known prefix the context lacks adds it to the `@context`
-    (idea credited to [SWLS](https://github.com/SemanticWebLanguageServer/swls));
-  - go to definition on a term reaches its `@context` entry, also in a
-    context file of the workspace; references and highlights on terms;
-  - rename of terms and keyword aliases (the `@context` entry and every use),
-    and of IRIs from any file, each JSON-LD use rewritten in its own form;
-    unsafe renames are refused with the reason;
-  - formatting in the editor, `turtle-lsp format` and the browser, keeping
-    the same JSON value;
-  - semantic tokens for keywords, properties and classes;
-  - the outline nests a named graph's nodes under the graph.
-- **`jsonld-undefined-prefix`**: a warning when `rdfs:label` and the like
-  name a prefix the `@context` doesn't define, which JSON-LD reads as an IRI
-  with the scheme `rdfs:`; the quick fix (also `check --fix`) adds the prefix
-  to the `@context`.
-
-### Fixes
-
-- "Did you mean" now counts swapping two neighbouring letters as one edit, so
-  `foaf:nmae` and `rdfs:lable` get a suggestion.
-
 ## 0.6.0 — 2026-10-20
 
 ### Features
@@ -68,8 +40,25 @@
     the engine does not have, document loading) out of scope. On 364 public
     documents, 339 graphs match oxjsonld's; the other 25 are known oxjsonld
     differences from the spec.
-  - Not yet: completion, rename and formatting inside JSON-LD files,
-    compaction, and `.json` files.
+  - Not yet: compaction, flattening, framing and `.json` files.
+- **Editing inside JSON-LD files**:
+  - completion in keys and `@type` values from the context in force at the
+    cursor, workspace properties under `@vocab` and `prefix:local` names;
+    completing a known prefix the context lacks adds it to the `@context`
+    (idea credited to [SWLS](https://github.com/SemanticWebLanguageServer/swls));
+  - go to definition on a term reaches its `@context` entry, also in a
+    context file of the workspace; references and highlights on terms;
+  - rename of terms and keyword aliases (the `@context` entry and every use),
+    and of IRIs from any file, each JSON-LD use rewritten in its own form;
+    unsafe renames are refused with the reason;
+  - formatting in the editor, `turtle-lsp format` and the browser, keeping
+    the same JSON value;
+  - semantic tokens for keywords, properties and classes;
+  - the outline nests a named graph's nodes under the graph.
+- **`jsonld-undefined-prefix`**: a warning when `rdfs:label` and the like
+  name a prefix the `@context` doesn't define, which JSON-LD reads as an IRI
+  with the scheme `rdfs:`; the quick fix (also `check --fix`) adds the prefix
+  to the `@context`.
 
 ### Performance
 
@@ -77,10 +66,16 @@
   instead of once per node. Validating 30 MB of generated TriG with 71
   SPARQL constraints per file went from 26 s to 0.6 s in the editor and the
   command line, with identical results.
-- **JSON-LD** on a 30,000-line file: open to first diagnostics 6.4 ms
-  (Turtle of the same length 5.1 ms), a keystroke 5.9 ms (Turtle 4.1 ms),
-  hover 0.1 ms. `tests/jsonld_budget.rs` holds release builds to opening
-  within 3x Turtle and a keystroke under 10 ms.
+- **JSON-LD** on a 30,000-line file: open to first diagnostics 7.5 ms
+  (Turtle of the same length 5.9 ms), a keystroke 7.3 ms (Turtle 5.0 ms),
+  hover 0.1 ms, completion 0.4 ms, formatting the whole file 2.1 ms.
+  `tests/jsonld_budget.rs` holds release builds to opening within 3x Turtle
+  and a keystroke under 10 ms.
+
+### Fixes
+
+- "Did you mean" now counts swapping two neighbouring letters as one edit, so
+  `foaf:nmae` and `rdfs:lable` get a suggestion.
 
 ## 0.5.2 — 2026-10-20
 
