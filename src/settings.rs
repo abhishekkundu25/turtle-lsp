@@ -68,6 +68,8 @@ pub struct Settings {
     pub imports_network: bool,
     pub imports_unresolved: UnresolvedImports,
     pub format_line_width: u32,
+    /// "N references" lenses above the subjects a document describes.
+    pub code_lens_references: bool,
 }
 
 impl Default for Settings {
@@ -82,6 +84,7 @@ impl Default for Settings {
             imports_network: false,
             imports_unresolved: UnresolvedImports::Soften,
             format_line_width: 100,
+            code_lens_references: true,
         }
     }
 }
@@ -149,6 +152,7 @@ impl Settings {
                     self.format_line_width = n;
                 }
             }
+            ["codeLens", "references"] => set_bool(&mut self.code_lens_references, v),
             [head, rest @ ..] => {
                 // A nested group, e.g. {"shacl": {"enabled": false}}.
                 if let Value::Object(map) = v {
@@ -205,6 +209,7 @@ mod tests {
         assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(s.shacl_max_triples, 2_000_000);
         assert_eq!(s.format_line_width, 100);
+        assert!(s.code_lens_references);
         assert!(s.prefixes.is_empty());
     }
 
@@ -217,6 +222,7 @@ mod tests {
             "lint": {"undescribedTerms": false},
             "imports": {"network": true, "unresolved": "ignore"},
             "format": {"lineWidth": 80},
+            "codeLens": {"references": false},
             "server": {"path": "/ignored"},
         });
         let dotted = json!({
@@ -229,6 +235,7 @@ mod tests {
             "imports.network": true,
             "imports.unresolved": "ignore",
             "turtle.format.lineWidth": 80,
+            "codeLens.references": false,
         });
         let a = Settings::from_layers([&nested]);
         assert_eq!(a, Settings::from_layers([&dotted]));
@@ -238,6 +245,7 @@ mod tests {
         assert!(!a.shacl_enabled && !a.shacl_on_type);
         assert!(!a.lint_undescribed_terms && a.imports_network);
         assert_eq!(a.imports_unresolved, UnresolvedImports::Ignore);
+        assert!(!a.code_lens_references);
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
     }
 

@@ -4,6 +4,7 @@ pub mod format;
 pub mod hierarchy;
 pub mod hover;
 pub mod inlay;
+pub mod lens;
 pub mod lint;
 pub mod literals;
 pub mod navigation;

@@ -443,6 +443,9 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
             },
         )),
         inlay_hint_provider: Some(OneOf::Left(true)),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(true),
+        }),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
             code_action_kinds: Some(vec![
                 CodeActionKind::QUICKFIX,
@@ -1697,6 +1700,22 @@ impl Server {
                         sparql_features::inlay_hints(&q, self.ws.knowledge(), enc, p.range, mode)
                     }
                 }))
+            }
+            CodeLensRequest::METHOD => {
+                let p = params!(CodeLensParams);
+                let on = self.settings.code_lens_references;
+                json(serde_json::to_value(match open!(p.text_document.uri) {
+                    Open::Rdf(_, a) => crate::features::lens::code_lenses(&a, enc, on),
+                    Open::Sparql(..) => vec![],
+                }))
+            }
+            CodeLensResolve::METHOD => {
+                let l = params!(CodeLens);
+                json(serde_json::to_value(crate::features::lens::resolve(
+                    l,
+                    self.ws.knowledge(),
+                    enc,
+                )))
             }
             _ => Err((
                 ErrorCode::MethodNotFound,

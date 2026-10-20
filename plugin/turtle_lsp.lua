@@ -12,3 +12,16 @@ vim.api.nvim_create_autocmd("BufReadPre", {
     vim.opt_local.modeline = false
   end,
 })
+
+-- A reference lens's command (arguments: the document URI, the lens position
+-- and the reference locations): the references go to the quickfix list.
+vim.lsp.commands["turtle.showReferences"] = function(command, ctx)
+  local locations = (command.arguments or {})[3] or {}
+  local client = vim.lsp.get_client_by_id(ctx.client_id)
+  local encoding = client and client.offset_encoding or "utf-16"
+  vim.fn.setqflist({}, " ", {
+    title = command.title or "References",
+    items = vim.lsp.util.locations_to_items(locations, encoding),
+  })
+  vim.cmd("botright copen")
+end

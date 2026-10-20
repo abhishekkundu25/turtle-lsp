@@ -298,6 +298,19 @@ check("inlay hints show the label after an opaque name", async () => {
   await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 
+check("a reference lens opens the references view", async () => {
+  const doc = await open(path.join(ws, "people.ttl"))
+  await settledDiagnostics(doc)
+  const lenses = await vscode.commands.executeCommand("vscode.executeCodeLensProvider", doc.uri, 100)
+  const bob = lenses.find((l) => l.range.start.line === posOf(doc, "ex:bob a").line)
+  assert.ok(bob?.command, `lenses: ${JSON.stringify(lenses)}`)
+  assert.match(bob.command.title, /^[1-9]\d* references?$/)
+  assert.equal(bob.command.command, "turtle.showReferences")
+  // editor.action.showReferences rejects arguments that are not a URI, a position and locations.
+  await vscode.commands.executeCommand(bob.command.command, ...bob.command.arguments)
+  await vscode.commands.executeCommand("closeReferenceSearch")
+})
+
 check("saving a file that violates the project shapes shows a SHACL violation", async () => {
   // Created for this check and removed afterwards (the fixtures stay as they are).
   const file = path.join(project, "data", "__vscode-shacl.ttl")

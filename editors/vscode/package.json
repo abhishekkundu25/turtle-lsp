@@ -261,6 +261,12 @@
           "markdownDescription": "Line width the formatter aims for.",
           "scope": "resource"
         },
+        "turtle.codeLens.references": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the number of references above each subject a file describes. Click it to list the references.",
+          "scope": "resource"
+        },
         "turtle.trace.server": {
           "type": "string",
           "enum": [

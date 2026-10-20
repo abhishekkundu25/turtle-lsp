@@ -396,6 +396,30 @@ check("inlay hints show the label after an opaque name", function()
   vim.cmd("bwipeout!")
 end)
 
+check("running a reference lens fills the quickfix list", function()
+  -- The plugin registers the lens command (vim.lsp.commands["turtle.showReferences"]).
+  dofile(fixtures .. "/../../plugin/turtle_lsp.lua")
+  local b, c = open(people)
+  wait_diagnostics(b)
+  local lenses = request(b, "textDocument/codeLens", { textDocument = vim.lsp.util.make_text_document_params(b) })
+  local bob = pos_of(b, "ex:bob a")
+  local lens
+  for _, l in ipairs(lenses or {}) do
+    if l.range.start.line == bob.line then
+      lens = l
+    end
+  end
+  assert(lens and not lens.command, "lenses: " .. vim.inspect(lenses))
+  lens = request(b, "codeLens/resolve", lens)
+  assert(lens.command and lens.command.title:match("^%d+ references?$"), vim.inspect(lens))
+  vim.fn.setqflist({}, "r", { items = {} })
+  c:exec_cmd(lens.command, { bufnr = b })
+  local items = vim.fn.getqflist()
+  assert(#items == #lens.command.arguments[3] and #items > 0, "quickfix: " .. vim.inspect(items))
+  assert(vim.fn.getqflist({ winid = 0 }).winid ~= 0, "quickfix window not open")
+  vim.cmd("cclose")
+end)
+
 check("no LSP errors surfaced to the user", function()
   assert(#client_errors == 0, table.concat(client_errors, " || "))
 end)

@@ -47,6 +47,7 @@ function serverSettings(): Record<string, unknown> {
     // A restricted setting: in an untrusted workspace VS Code returns only the user's value.
     imports: { network: c.get<boolean>("imports.network"), unresolved: c.get<string>("imports.unresolved") },
     format: { lineWidth: c.get<number>("format.lineWidth") },
+    codeLens: { references: c.get<boolean>("codeLens.references") },
   }
 }
 
@@ -82,6 +83,33 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
   await client.start()
 }
 
+interface LspPosition {
+  line: number
+  character: number
+}
+interface LspLocation {
+  uri: string
+  range: { start: LspPosition; end: LspPosition }
+}
+
+const asPosition = (p: LspPosition) => new vscode.Position(p.line, p.character)
+
+/**
+ * A reference lens's command (`turtle.showReferences`, from the server, with
+ * the document URI, the lens position and the reference locations): opens
+ * the references view there. The client runs it itself: a lens command the
+ * server does not offer as an `executeCommand` reaches VS Code's command
+ * registry as is, with the protocol's JSON as arguments.
+ */
+async function showReferences(uri: string, position: LspPosition, locations: LspLocation[]): Promise<void> {
+  await vscode.commands.executeCommand(
+    "editor.action.showReferences",
+    vscode.Uri.parse(uri),
+    asPosition(position),
+    locations.map((l) => new vscode.Location(vscode.Uri.parse(l.uri), new vscode.Range(asPosition(l.range.start), asPosition(l.range.end)))),
+  )
+}
+
 /** Exposed for the integration tests. */
 export interface TurtleApi {
   client(): LanguageClient | undefined
@@ -104,6 +132,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Turtle
       await client?.stop()
       await start(context)
     }),
+    vscode.commands.registerCommand("turtle.showReferences", showReferences),
     vscode.workspace.onDidChangeConfiguration(async (e) => {
       if (e.affectsConfiguration("turtle.server.path")) {
         await vscode.commands.executeCommand("turtle.restartServer")
