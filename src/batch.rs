@@ -14,12 +14,12 @@
 //! `file:///work/` (the browser's convention); [`BatchFile::at_path`] opens a
 //! file on disk at its own `file:` URI.
 
-use crate::analysis::Encoding;
+use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::lint;
 use crate::features::shacl_validate;
 use crate::features::{diagnostics, format};
 use crate::imports;
-use crate::knowledge::Source;
+use crate::knowledge::{Knowledge, Source};
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
 use crate::syntax::{Severity, Syntax};
@@ -345,6 +345,33 @@ fn fix_all_in(
     FixOutcome { files, applied }
 }
 
+/// The diagnostics of one RDF file, SHACL results aside: what `check`
+/// reports for it, and what the server shows for a workspace file that is
+/// not open (`diagnostics.workspace`). `status` gives each import's status.
+pub fn rdf_diagnostics<'s>(
+    a: &Analysis,
+    k: &Knowledge,
+    enc: Encoding,
+    settings: &Settings,
+    status: impl Fn(&str) -> Option<&'s imports::Status>,
+) -> Vec<Diagnostic> {
+    let opts = diagnostics::Options::from_settings(settings);
+    let mut d = diagnostics::diagnostics_with(a, k, enc, &opts);
+    d.extend(imports::diagnostics_with(a, enc, status));
+    d
+}
+
+/// [`rdf_diagnostics`] for a SPARQL file.
+pub fn sparql_diagnostics(
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    settings: &Settings,
+) -> Vec<Diagnostic> {
+    let opts = diagnostics::Options::from_settings(settings);
+    sparql_features::diagnostics::diagnostics(q, k, enc, &opts)
+}
+
 /// The imports the input does not declare itself: in the order
 /// [`imports::unresolved_without_loading`] gives them, and each with its status.
 struct Unresolved {
@@ -442,22 +469,21 @@ impl<'a> Input<'a> {
     /// without SHACL (see [`Input::shacl`]).
     fn diagnostics(&mut self, uri: &str) -> Vec<Diagnostic> {
         let enc = self.enc;
-        let opts = diagnostics::Options::from_settings(self.settings);
+        let settings = self.settings;
         if self.ws.is_sparql(uri) {
             let Some(q) = self.ws.sparql(uri) else {
                 return Vec::new();
             };
-            return sparql_features::diagnostics::diagnostics(&q, self.ws.knowledge(), enc, &opts);
+            return sparql_diagnostics(&q, self.ws.knowledge(), enc, settings);
         }
         let Some(a) = self.ws.analysis(uri) else {
             return Vec::new();
         };
-        let mut d = diagnostics::diagnostics_with(&a, self.ws.knowledge(), enc, &opts);
-        let unresolved = &self.unresolved().status;
-        d.extend(imports::diagnostics_with(&a, enc, |iri| {
-            unresolved.get(iri)
-        }));
-        d
+        self.ws.knowledge();
+        self.unresolved();
+        let unresolved = &self.unresolved.as_ref().expect("computed above").status;
+        let k = self.ws.knowledge_mut();
+        rdf_diagnostics(&a, k, enc, settings, |iri| unresolved.get(iri))
     }
 
     /// Whether some file declares shapes, and if so (and `run`, and SHACL is

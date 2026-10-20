@@ -618,6 +618,15 @@ impl Knowledge {
             .filter_map(|(i, s)| s.as_ref().map(|s| (i as DocId, s.source, &s.analysis)))
     }
 
+    /// Every source with the key it was registered under (the URI of a
+    /// workspace document, the key of an external one), in no particular order.
+    pub fn sources(&self) -> impl Iterator<Item = (&str, Source, &Arc<Analysis>)> {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|s| (s.uri.as_str(), s.source, &s.analysis))
+    }
+
     fn is_current(&self, key: &Key, source: Source, a: &Arc<Analysis>) -> bool {
         self.by_key.get(key).is_some_and(|&id| {
             let s = self.slot(id);

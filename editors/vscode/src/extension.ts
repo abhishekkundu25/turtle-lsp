@@ -48,6 +48,7 @@ function serverSettings(): Record<string, unknown> {
     imports: { network: c.get<boolean>("imports.network"), unresolved: c.get<string>("imports.unresolved") },
     format: { lineWidth: c.get<number>("format.lineWidth") },
     codeLens: { references: c.get<boolean>("codeLens.references") },
+    diagnostics: { workspace: c.get<boolean>("diagnostics.workspace") },
   }
 }
 

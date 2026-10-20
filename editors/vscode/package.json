@@ -267,6 +267,12 @@
           "markdownDescription": "Show the number of references above each subject a file describes. Click it to list the references.",
           "scope": "resource"
         },
+        "turtle.diagnostics.workspace": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show problems in every workspace file, not only the open ones. Files that are not open are checked in the background, as `turtle-lsp check` checks them, and again when they change on disk.",
+          "scope": "window"
+        },
         "turtle.trace.server": {
           "type": "string",
           "enum": [

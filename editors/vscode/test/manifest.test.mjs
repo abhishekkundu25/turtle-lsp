@@ -37,6 +37,7 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.imports.unresolved": ["string", "soften"],
     "turtle.format.lineWidth": ["integer", 100],
     "turtle.codeLens.references": ["boolean", true],
+    "turtle.diagnostics.workspace": ["boolean", false],
   }
   for (const [key, [type, def]] of Object.entries(expected)) {
     assert.ok(settings[key], `${key} missing`)

@@ -42,6 +42,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod workspace_diagnostics;
+
 /// Files that feed `owl:imports` without being Turtle documents themselves.
 fn is_import_source(path: &std::path::Path) -> bool {
     path.file_name().is_some_and(|f| f == "catalog-v001.xml")
@@ -138,6 +140,8 @@ pub struct Server {
     /// Embedded in a host without threads (see [`Embedded`]): SHACL and
     /// imports run inline, and the host drives the timers.
     inline: bool,
+    /// Diagnostics of the files that are not open (`diagnostics.workspace`).
+    wsdiag: workspace_diagnostics::State,
 }
 
 /// A progress waiting for the client to accept its token.
@@ -250,6 +254,8 @@ impl Server {
         };
         let init_options = params.initialization_options.clone().unwrap_or_default();
         let settings = Settings::from_layers([&file_settings, &init_options]);
+        // Embedded, every file is open.
+        let wsdiag = workspace_diagnostics::State::new(settings.diagnostics_workspace && !inline);
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
         let contexts_rx = use_network(&mut ws, settings.imports_network, inline);
 
@@ -310,6 +316,7 @@ impl Server {
             shacl_progress: None,
             progress_pending: FxHashMap::default(),
             progress_live: FxHashSet::default(),
+            wsdiag,
             inline,
         };
         Ok((server, result, roots))
@@ -546,6 +553,14 @@ impl Server {
                     }
                     None
                 }
+                recv(self.wsdiag.due().map_or_else(never, crossbeam_channel::at)) -> _ => {
+                    self.wsdiag_start();
+                    None
+                }
+                recv(self.wsdiag.results()) -> chunk => {
+                    self.wsdiag_chunk(chunk.ok());
+                    None
+                }
                 recv(self.shacl_rx) -> outcome => {
                     match outcome {
                         Ok(o) => self.shacl_outcome(o),
@@ -770,6 +785,7 @@ impl Server {
                     let kind = DocKind::detect(Some(&doc.language_id), &uri);
                     self.ws
                         .open_doc_as(uri.clone(), doc.text, doc.version, kind);
+                    self.wsdiag_opened(&uri);
                     self.after_edit(&uri);
                     self.workspace_changed_inline();
                 }
@@ -805,8 +821,9 @@ impl Server {
                         self.ws.invalidate_prefixes();
                         self.knowledge_changed();
                     }
-                    // Clear diagnostics for the closed buffer.
-                    if !self.pull {
+                    // Clear diagnostics for the closed buffer, unless it goes
+                    // back to the workspace diagnostics.
+                    if !self.wsdiag_closed(&uri) && !self.pull {
                         self.send_diagnostics(&uri, vec![], None);
                     }
                     self.spelling.remove(&uri);
@@ -854,6 +871,7 @@ impl Server {
                             !open && path.file_name().is_some_and(|f| f == PREFIX_FILE);
                         if !open {
                             self.ws.reindex_disk_file(&path);
+                            self.wsdiag_disk_changed(&path);
                             disk_changed = true;
                         }
                     }
@@ -1085,6 +1103,7 @@ impl Server {
             self.contexts_rx = use_network(&mut self.ws, new.imports_network, self.inline);
         }
         self.settings = new;
+        self.wsdiag_setting();
         self.dirty.extend(self.ws.open.keys().cloned());
         self.knowledge_changed();
         self.validate_shacl();
@@ -1102,6 +1121,8 @@ impl Server {
         }
         // Labels and term kinds shown in open documents may come from elsewhere.
         self.display_stale = true;
+        // And the diagnostics of every closed file.
+        self.wsdiag.invalidate_all();
     }
 
     fn refresh_if_needed(&mut self) {
@@ -1162,6 +1183,7 @@ impl Server {
             self.knowledge_changed();
         }
         self.dirty.insert(uri.to_string());
+        self.wsdiag.yield_to_edit();
     }
 
     /// Diagnostics for `uri`, or the panic message if computing them failed.

@@ -465,6 +465,11 @@ impl Imports {
         changed
     }
 
+    /// The status of every import asked for so far, by IRI.
+    pub fn statuses(&self) -> &FxHashMap<String, Status> {
+        &self.status
+    }
+
     /// Information diagnostics on the unresolved imports of `a`.
     pub fn diagnostics(&self, a: &Analysis, enc: Encoding) -> Vec<Diagnostic> {
         diagnostics_with(a, enc, |iri| self.status.get(iri))

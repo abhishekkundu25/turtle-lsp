@@ -70,6 +70,8 @@ pub struct Settings {
     pub format_line_width: u32,
     /// "N references" lenses above the subjects a document describes.
     pub code_lens_references: bool,
+    /// Diagnose the workspace files that are not open, in the background.
+    pub diagnostics_workspace: bool,
 }
 
 impl Default for Settings {
@@ -85,6 +87,7 @@ impl Default for Settings {
             imports_unresolved: UnresolvedImports::Soften,
             format_line_width: 100,
             code_lens_references: true,
+            diagnostics_workspace: false,
         }
     }
 }
@@ -147,6 +150,7 @@ impl Settings {
                     self.imports_unresolved = u;
                 }
             }
+            ["diagnostics", "workspace"] => set_bool(&mut self.diagnostics_workspace, v),
             ["format", "lineWidth"] => {
                 if let Some(n) = v.as_u64().and_then(|n| u32::try_from(n).ok()) {
                     self.format_line_width = n;
@@ -210,6 +214,7 @@ mod tests {
         assert_eq!(s.shacl_max_triples, 2_000_000);
         assert_eq!(s.format_line_width, 100);
         assert!(s.code_lens_references);
+        assert!(!s.diagnostics_workspace);
         assert!(s.prefixes.is_empty());
     }
 
@@ -223,6 +228,7 @@ mod tests {
             "imports": {"network": true, "unresolved": "ignore"},
             "format": {"lineWidth": 80},
             "codeLens": {"references": false},
+            "diagnostics": {"workspace": true},
             "server": {"path": "/ignored"},
         });
         let dotted = json!({
@@ -236,6 +242,7 @@ mod tests {
             "imports.unresolved": "ignore",
             "turtle.format.lineWidth": 80,
             "codeLens.references": false,
+            "diagnostics.workspace": true,
         });
         let a = Settings::from_layers([&nested]);
         assert_eq!(a, Settings::from_layers([&dotted]));
@@ -247,6 +254,7 @@ mod tests {
         assert_eq!(a.imports_unresolved, UnresolvedImports::Ignore);
         assert!(!a.code_lens_references);
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
+        assert!(a.diagnostics_workspace);
     }
 
     #[test]
