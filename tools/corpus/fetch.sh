@@ -59,3 +59,6 @@ while IFS=$'\t' read -r name format url; do
     printf '%-24s FAILED %s\n' "$name" "$url"
   fi
 done < "$here/sources.tsv"
+
+# The JSON-LD corpus (tools/corpus/jsonld-sources.tsv).
+"$here/fetch-jsonld.sh" "$force"

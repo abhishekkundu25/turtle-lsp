@@ -31,3 +31,4 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 [dev-dependencies]
 oxrdf = { version = "0.3", features = ["rdf-12"] }
 oxttl = { version = "0.2.4", features = ["rdf-12"] }
+oxjsonld = { version = "0.2.6", features = ["rdf-12"] }
