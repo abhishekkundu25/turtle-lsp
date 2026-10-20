@@ -31,7 +31,9 @@ pub fn format(text: &str, opts: &Options) -> Option<String> {
 
     let again = json::parse(&out);
     if !again.errors.is_empty() || !same(again.root.as_ref()?, root) {
-        eprintln!("turtle-lsp: formatter bug: the formatted JSON differs from the original; no edits applied");
+        eprintln!(
+            "turtle-lsp: formatter bug: the formatted JSON differs from the original; no edits applied"
+        );
         return None;
     }
     Some(out)

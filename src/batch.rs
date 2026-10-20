@@ -593,7 +593,10 @@ impl<'a> Input<'a> {
         let jsonld = a.parsed.syntax == Syntax::JsonLd;
         let opts = if jsonld {
             // JSON convention; the editor passes its own indent.
-            format::Options { tab_size: 2, ..opts }
+            format::Options {
+                tab_size: 2,
+                ..opts
+            }
         } else {
             opts
         };

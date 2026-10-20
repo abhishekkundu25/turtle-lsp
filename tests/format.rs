@@ -529,7 +529,9 @@ fn jsonld_corpus_round_trip() {
             formatted += 1;
         }
     }
-    eprintln!("jsonld corpus: {seen} documents, {formatted} reformatted, {unchanged} already formatted");
+    eprintln!(
+        "jsonld corpus: {seen} documents, {formatted} reformatted, {unchanged} already formatted"
+    );
 }
 
 fn collect_jsonld(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -550,7 +552,10 @@ fn collect_jsonld(dir: &Path, out: &mut Vec<PathBuf>) {
 fn strip(j: &turtle_lsp::jsonld::json::Json) -> String {
     use turtle_lsp::jsonld::json::Value;
     match &j.value {
-        Value::Array(a) => format!("[{}]", a.items.iter().map(strip).collect::<Vec<_>>().join(",")),
+        Value::Array(a) => format!(
+            "[{}]",
+            a.items.iter().map(strip).collect::<Vec<_>>().join(",")
+        ),
         Value::Object(o) => format!(
             "{{{}}}",
             o.members

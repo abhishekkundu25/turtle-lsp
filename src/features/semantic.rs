@@ -219,7 +219,11 @@ fn jsonld_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
             }
         }
     }
-    for d in idx.definitions.iter().filter(|d| d.origin == Origin::Document) {
+    for d in idx
+        .definitions
+        .iter()
+        .filter(|d| d.origin == Origin::Document)
+    {
         let Some(iri) = &d.iri else { continue };
         if crate::jsonld::context::is_keyword(iri) {
             push(d.key.start, d.key.end, KEYWORD, DECLARATION);
