@@ -737,7 +737,7 @@ test("renaming an IRI from Turtle rewrites it in JSON-LD, compact and @vocab-rel
   assert.equal(F.applyEdits(F.EDIT, changes[fileUri("edit.jsonld")] ?? []), F.EDIT.replaceAll('"Widget"', '"Doohickey"'))
 })
 
-test("formatting JSON-LD keeps its JSON value, and formatted text stays as it is", phase2, async (t) => {
+test("formatting JSON-LD keeps its JSON value, and formatted text stays as it is", { timeout: 25_000 }, async (t) => {
   const { uri } = await openScratch(t, F.MESSY)
   const options = { tabSize: 2, insertSpaces: true }
   const edits = (await s.request("textDocument/formatting", { textDocument: { uri }, options })) ?? []
@@ -750,7 +750,7 @@ test("formatting JSON-LD keeps its JSON value, and formatted text stays as it is
   assert.deepEqual((await s.request("textDocument/formatting", { textDocument: { uri }, options })) ?? [], [])
 })
 
-test("format: JSON-LD files are formatted in place, and a second run changes nothing", phase2, (t) => {
+test("format: JSON-LD files are formatted in place, and a second run changes nothing", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "messy.jsonld": F.MESSY })
   const check = run(w, ["format", "--check"])
   assert.equal(check.code, 1)

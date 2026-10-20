@@ -557,8 +557,7 @@ impl<'a> Input<'a> {
         out
     }
 
-    /// The formatter's verdict on `uri`, or None when it has no analysis or
-    /// is JSON-LD (not formatted yet).
+    /// The formatter's verdict on `uri`, or None when it has no analysis.
     fn format(&mut self, uri: &str) -> Option<Formatted> {
         let opts = format::Options {
             line_width: self.settings.format_line_width as usize,
@@ -591,15 +590,25 @@ impl<'a> Input<'a> {
             return Some(Formatted { guarantee, outcome });
         }
         let a = self.ws.analysis(uri)?;
-        if a.parsed.syntax == Syntax::JsonLd {
-            return None;
-        }
+        let jsonld = a.parsed.syntax == Syntax::JsonLd;
+        let opts = if jsonld {
+            // JSON convention; the editor passes its own indent.
+            format::Options { tab_size: 2, ..opts }
+        } else {
+            opts
+        };
         let guarantee = "same graph";
         let errors = a
             .parsed
             .errors
             .iter()
-            .filter(|e| e.severity == Severity::Error)
+            .filter(|e| {
+                if jsonld {
+                    e.code == "json-syntax"
+                } else {
+                    e.severity == Severity::Error
+                }
+            })
             .count();
         let outcome = if errors > 0 {
             let s = if errors == 1 { "" } else { "s" };

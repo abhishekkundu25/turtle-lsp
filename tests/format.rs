@@ -14,7 +14,7 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("test/fixtures")
 }
 
-/// The Turtle-family syntax of a fixture (the formatter does not read JSON-LD).
+/// The Turtle-family syntax of a fixture (JSON-LD has its own test below).
 fn syntax_of(path: &Path) -> Option<Syntax> {
     Syntax::from_extension(&path.to_string_lossy()).filter(|s| *s != Syntax::JsonLd)
 }
@@ -488,4 +488,77 @@ fn relative_iris_format_when_parsed_with_a_base() {
         format(src, &parsed, &PrefixMap::default(), &Options::default()).as_deref(),
         Some("<> a <Thing> .\n\n<a> <b> <c> .\n")
     );
+}
+
+/// Every JSON-LD document of the private corpus that parses without JSON
+/// errors formats to the same JSON value and formats again to itself.
+#[test]
+fn jsonld_corpus_round_trip() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus/jsonld");
+    if !dir.is_dir() {
+        eprintln!("skipped: test/corpus/jsonld is absent");
+        return;
+    }
+    let opts = Options {
+        tab_size: 2,
+        ..Options::default()
+    };
+    let (mut seen, mut formatted, mut unchanged) = (0, 0, 0);
+    let mut files = Vec::new();
+    collect_jsonld(&dir, &mut files);
+    for p in files {
+        let Ok(text) = fs::read_to_string(&p) else {
+            continue;
+        };
+        let doc = turtle_lsp::jsonld::json::parse(&text);
+        if !doc.errors.is_empty() || doc.root.is_none() {
+            continue;
+        }
+        seen += 1;
+        let once = turtle_lsp::jsonld::format::format(&text, &opts)
+            .unwrap_or_else(|| panic!("{} was refused", p.display()));
+        let a = turtle_lsp::jsonld::json::parse(&text).root.unwrap();
+        let b = turtle_lsp::jsonld::json::parse(&once);
+        assert!(b.errors.is_empty(), "{}", p.display());
+        assert_eq!(strip(&a), strip(&b.root.unwrap()), "{}", p.display());
+        let twice = turtle_lsp::jsonld::format::format(&once, &opts).unwrap();
+        assert_eq!(once, twice, "not idempotent: {}", p.display());
+        if once == text {
+            unchanged += 1;
+        } else {
+            formatted += 1;
+        }
+    }
+    eprintln!("jsonld corpus: {seen} documents, {formatted} reformatted, {unchanged} already formatted");
+}
+
+fn collect_jsonld(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_jsonld(&p, out);
+        } else if p.extension().is_some_and(|x| x == "jsonld" || x == "json") {
+            out.push(p);
+        }
+    }
+}
+
+/// A span-free rendering of a JSON tree, for comparing values.
+fn strip(j: &turtle_lsp::jsonld::json::Json) -> String {
+    use turtle_lsp::jsonld::json::Value;
+    match &j.value {
+        Value::Array(a) => format!("[{}]", a.items.iter().map(strip).collect::<Vec<_>>().join(",")),
+        Value::Object(o) => format!(
+            "{{{}}}",
+            o.members
+                .iter()
+                .map(|m| format!("{:?}:{}", m.key, strip(&m.value)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        v => format!("{v:?}"),
+    }
 }

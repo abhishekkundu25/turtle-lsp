@@ -148,7 +148,7 @@ test("the engine reports what the language server reports on a mixed Turtle and 
   for (const f of got.files) assert.deepEqual(f.diagnostics.map(key).sort(), want[f.name].map(key).sort(), f.name)
 })
 
-test("JSON-LD is formatted with its graph kept, and formatted text stays as it is", phase2, () => {
+test("JSON-LD is formatted with its graph kept, and formatted text stays as it is", { timeout: 25_000 }, () => {
   const f = fileOf(analyse([{ name: "messy.jsonld", text: F.MESSY }]), "messy.jsonld")
   assert.equal(f.format?.status, "changed", JSON.stringify(f.format))
   assert.equal(f.format.guarantee, "same graph")

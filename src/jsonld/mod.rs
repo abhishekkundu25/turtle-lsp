@@ -42,6 +42,7 @@
 
 pub mod context;
 pub mod expand;
+pub mod format;
 pub mod json;
 pub mod lint;
 pub mod loader;

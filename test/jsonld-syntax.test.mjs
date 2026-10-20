@@ -49,16 +49,30 @@ test("the 'jsonld' language id wins over the file name", async () => {
   assert.deepEqual(diags, [], fmt(diags))
 })
 
-test("a JSON-LD document is not formatted", async () => {
-  const uri = uriOf(path.join(ws, "people.jsonld"))
-  s.open(uri, DOC, "jsonld")
+const formatEdits = async (text, options) => {
+  const uri = uriOf(path.join(ws, "fmt.jsonld"))
+  s.open(uri, text, "jsonld")
   await s.diagnosticsFor(uri)
-  const edits = await s.request("textDocument/formatting", {
-    textDocument: { uri },
-    options: { tabSize: 2, insertSpaces: true },
-  })
+  const edits = await s.request("textDocument/formatting", { textDocument: { uri }, options })
   s.close(uri)
-  assert.deepEqual(edits ?? [], [])
+  return edits ?? []
+}
+
+test("a JSON-LD document is formatted like JSON.stringify with the editor's indent", async () => {
+  const edits = await formatEdits(DOC, { tabSize: 2, insertSpaces: true })
+  assert.equal(edits.length, 1)
+  assert.equal(edits[0].newText, JSON.stringify(JSON.parse(DOC), null, 2) + "\n")
+})
+
+test("JSON-LD formatting honours tabs and the tab size", async () => {
+  const tabs = await formatEdits(DOC, { tabSize: 4, insertSpaces: false })
+  assert.equal(tabs[0].newText, JSON.stringify(JSON.parse(DOC), null, "\t") + "\n")
+  const four = await formatEdits(DOC, { tabSize: 4, insertSpaces: true })
+  assert.equal(four[0].newText, JSON.stringify(JSON.parse(DOC), null, 4) + "\n")
+})
+
+test("a JSON-LD document with a syntax error is not formatted", async () => {
+  assert.deepEqual(await formatEdits('{ "@id": "ex:a" "ex:name": "A" }', { tabSize: 2, insertSpaces: true }), [])
 })
 
 // ---- the command line ----
@@ -93,10 +107,10 @@ test("check: a plain .json file is not RDF", (t) => {
   assert.match(r.err, /package\.json: not an RDF or SPARQL file, skipped/)
 })
 
-test("format --check: a .jsonld file is left alone", () => {
+test("format --check: a .jsonld file in another layout is reported and left alone", () => {
   const r = run(["format", "--check", "people.jsonld"])
-  assert.equal(r.code, 0, r.err)
-  assert.equal(r.out, "")
+  assert.equal(r.code, 1, r.err)
+  assert.match(r.out + r.err, /people\.jsonld/)
   assert.equal(fs.readFileSync(path.join(ws, "people.jsonld"), "utf8"), DOC)
 })
 
