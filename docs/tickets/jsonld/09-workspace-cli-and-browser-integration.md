@@ -18,3 +18,8 @@
 - [ ] The editor and `check` agree on a mixed project (same diagnostics)
 
 Spec: docs/specs/jsonld.md ("Workspace, SHACL, CLI and web").
+
+**Carried over from 06 (context loader):**
+- `file:` contexts are read from anywhere on disk; restrict them to the workspace roots, as imports do.
+- With the network on, a context fetch runs on the parsing thread, which can be the server's main loop (up to the 10 s timeout). Move fetches to the background like imports.
+- When `imports.network` changes, already-indexed JSON-LD files on disk are not re-parsed (only open ones are).
