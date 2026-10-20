@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Ill-typed literals** get a warning (`invalid-literal`) on the literal,
+  naming its datatype: `"twelve"^^xsd:integer` gives "'twelve' is not a
+  valid xsd:integer". Checked are the lexical forms of the numeric types
+  (with the ranges of `xsd:byte`, `xsd:unsignedInt` and the other bounded
+  integers), `xsd:boolean`, the date and time types (days per month and
+  leap years included), the durations, `xsd:hexBinary`, `xsd:base64Binary`,
+  `xsd:language` and `rdf:JSON`, in Turtle, TriG, N-Triples, N-Quads and
+  JSON-LD, in the editor and in `turtle-lsp check`. SPARQL queries are not
+  checked. SHACL `sh:datatype` checks the same lexical forms, so it now also
+  rejects ill-formed `g*` dates, durations, binaries, `xsd:language` and
+  `rdf:JSON` values.
+
 ## 0.6.1 — 2026-10-21
 
 ### Fixes

@@ -379,6 +379,15 @@ pub fn diagnostics_with(
         vocabulary_terms(uses, k, &mk, &mut out);
     }
 
+    for (span, message) in crate::features::literals::invalid_literals(a) {
+        out.push(mk(
+            span,
+            DiagnosticSeverity::WARNING,
+            crate::features::literals::CODE,
+            message,
+        ));
+    }
+
     for f in crate::features::shacl_lint::lint(a, k) {
         let sev = if f.error {
             DiagnosticSeverity::ERROR

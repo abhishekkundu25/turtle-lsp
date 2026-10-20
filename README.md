@@ -21,7 +21,7 @@ the full W3C test suites and real public ontologies; see
 
 ## Features
 
-- **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags.
+- **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags, and ill-typed literals (`"twelve"^^xsd:integer`, `"2021-02-29"^^xsd:date`: a value not valid for its XSD datatype or `rdf:JSON`).
 - **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Properties a SHACL shape requires for the subject's class come first ("required by …"), then properties whose `rdfs:domain` fits; after a property, instances of its range (or `sh:class`) come first and `sh:in` values are offered. Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
 - **Hover**: label, comment, types and where a term is described.
 - **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix.
@@ -499,7 +499,7 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 `format` takes `--root DIR`, `--check` and `--diff`.
 
 Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
-`unknown-term`, `undescribed-term`, `unresolved-import` and
+`unknown-term`, `undescribed-term`, `invalid-literal`, `unresolved-import` and
 `shacl-violation`, and for JSON-LD `json-syntax`, `jsonld-context`,
 `jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and `invalid-language-tag`. `--format json` gives each problem's range, severity,
 code, message and fixes, in an object with `"version": 1`.

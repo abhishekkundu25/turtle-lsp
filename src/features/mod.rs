@@ -5,6 +5,7 @@ pub mod hierarchy;
 pub mod hover;
 pub mod inlay;
 pub mod lint;
+pub mod literals;
 pub mod navigation;
 pub mod refactor;
 pub mod semantic;
