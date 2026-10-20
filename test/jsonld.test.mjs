@@ -780,7 +780,7 @@ test("highlights on a key mark its @context entry as written and its uses as rea
   assert.deepEqual(got, want, JSON.stringify(res))
 })
 
-test("renaming a term renames its @context entry and every use, and nothing else", phase2, async () => {
+test("renaming a term renames its @context entry and every use, and nothing else", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const prepared = await s.request("textDocument/prepareRename", { textDocument: { uri }, position: F.inside(F.EDIT_ANN_NAME, 1) })
   assert.deepEqual(prepared?.range ?? prepared, F.EDIT_ANN_NAME)
@@ -790,7 +790,7 @@ test("renaming a term renames its @context entry and every use, and nothing else
   assert.equal(F.applyEdits(F.EDIT, changes[uri]), F.EDIT.replaceAll('"name":', '"fullName":'))
 })
 
-test("renaming a keyword alias renames its @context entry and every use", phase2, async () => {
+test("renaming a keyword alias renames its @context entry and every use", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const edit = await s.request("textDocument/rename", { textDocument: { uri }, position: F.inside(F.EDIT_ANN_ID_KEY, 1), newName: "ident" })
   const changes = changesOf(edit)
@@ -798,7 +798,7 @@ test("renaming a keyword alias renames its @context entry and every use", phase2
   assert.equal(F.applyEdits(F.EDIT, changes[uri]), F.EDIT.replaceAll('"id":', '"ident":'))
 })
 
-test("renaming an IRI from Turtle rewrites it in JSON-LD, compact and @vocab-relative", phase2, async () => {
+test("renaming an IRI from Turtle rewrites it in JSON-LD, compact and @vocab-relative", { timeout: 25_000 }, async () => {
   const uri = await openFile("uses.ttl")
   const edit = await s.request("textDocument/rename", { textDocument: { uri }, position: F.inside(F.USES_WIDGET, 4), newName: "ex:Doohickey" })
   const changes = changesOf(edit)
@@ -809,6 +809,57 @@ test("renaming an IRI from Turtle rewrites it in JSON-LD, compact and @vocab-rel
     sortRanges([F.EDIT_ANN_TYPE, F.EDIT_BOB_TYPE]),
   )
   assert.equal(F.applyEdits(F.EDIT, changes[fileUri("edit.jsonld")] ?? []), F.EDIT.replaceAll('"Widget"', '"Doohickey"'))
+})
+
+test("renaming a term of a bundled context is refused", { timeout: 25_000 }, async (t) => {
+  const text = '{ "@context": "https://schema.org/", "@type": "Person", "name": "Ann" }'
+  const { uri } = await openScratch(t, text)
+  const at = { line: 0, character: text.indexOf('"name"') + 2 }
+  // Both messages name the context.
+  await assert.rejects(s.request("textDocument/prepareRename", { textDocument: { uri }, position: at }), /schema\.org/)
+  await assert.rejects(s.request("textDocument/rename", { textDocument: { uri }, position: at, newName: "fullName" }), /schema\.org/)
+})
+
+test("renaming an IRI that a JSON-LD document reaches only through a bundled term is refused", { timeout: 25_000 }, async (t) => {
+  const { uri: jsonld } = await openScratch(t, '{ "@context": "https://schema.org/", "@id": "https://jsonld.example.org/def/w30", "name": "Thirty" }')
+  const ttl = '@prefix schema: <http://schema.org/> .\n<https://jsonld.example.org/def/w31> schema:name "Thirty-one" .\n'
+  const { uri } = await openScratch(t, ttl, "ttl")
+  const at = { line: 1, character: ttl.split("\n")[1].indexOf("schema:name") + 8 }
+  // The message names the JSON-LD document.
+  const name = jsonld.split("/").pop()
+  await assert.rejects(s.request("textDocument/rename", { textDocument: { uri }, position: at, newName: "schema:fullName" }), new RegExp(name))
+})
+
+test("renaming a term to an invalid name is refused", { timeout: 25_000 }, async () => {
+  const uri = await openEdit()
+  for (const newName of ["", "@name", "full name", 'full"name', "foaf:fullName"]) {
+    await assert.rejects(
+      s.request("textDocument/rename", { textDocument: { uri }, position: F.inside(F.EDIT_ANN_NAME, 1), newName }),
+      undefined,
+      JSON.stringify(newName),
+    )
+  }
+})
+
+test("renaming a term of a workspace context file renames it there and in the documents using it", { timeout: 25_000 }, async (t) => {
+  const { uri } = await openScratch(t, F.USES_CTX_FILE)
+  const prepared = await s.request("textDocument/prepareRename", { textDocument: { uri }, position: F.inside(F.USES_CTX_FILE_NICKNAME, 1) })
+  assert.deepEqual(prepared?.range ?? prepared, F.USES_CTX_FILE_NICKNAME)
+  const edit = await s.request("textDocument/rename", { textDocument: { uri }, position: F.inside(F.USES_CTX_FILE_NICKNAME, 1), newName: "alias" })
+  const changes = changesOf(edit)
+  assert.deepEqual(Object.keys(changes).sort(), [fileUri("people.context.jsonld"), uri].sort(), JSON.stringify(edit))
+  assert.deepEqual(changes[fileUri("people.context.jsonld")], [{ range: F.CTX_FILE_NICKNAME, newText: "alias" }])
+  assert.equal(F.applyEdits(F.USES_CTX_FILE, changes[uri]), F.USES_CTX_FILE.replace('"nickname":', '"alias":'))
+})
+
+test("renaming an IRI out of @vocab writes the JSON-LD use as a compact IRI", { timeout: 25_000 }, async () => {
+  const uri = await openEdit()
+  const edit = await s.request("textDocument/rename", { textDocument: { uri }, position: F.inside(F.EDIT_ANN_TYPE, 1), newName: "foaf:Gizmo" })
+  const changes = changesOf(edit)
+  assert.equal(F.applyEdits(F.EDIT, changes[uri] ?? []), F.EDIT.replaceAll('"Widget"', '"foaf:Gizmo"'))
+  // No foaf prefix in vocab.jsonld: absolute, without angle brackets.
+  assert.deepEqual(changes[fileUri("vocab.jsonld")], [{ range: F.VOCAB_WIDGET, newText: "http://xmlns.com/foaf/0.1/Gizmo" }])
+  assert.equal(F.applyEdits(F.USES, changes[fileUri("uses.ttl")] ?? []), F.USES.replace("ex:Widget", "foaf:Gizmo"))
 })
 
 test("formatting JSON-LD keeps its JSON value, and formatted text stays as it is", { timeout: 25_000 }, async (t) => {

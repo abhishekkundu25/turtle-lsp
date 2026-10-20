@@ -1446,7 +1446,7 @@ impl Server {
                     Open::Rdf(_, a) => {
                         let mut locs =
                             navigation::references(&a, self.ws.knowledge(), enc, pos, decl);
-                        if let Some(iri) = rdf_term_at(&a, enc, pos) {
+                        if let Some((_, iri)) = rdf_term_at(&a, enc, pos) {
                             let docs = self.ws.sparql_documents();
                             locs.extend(sparql_features::term_references(&iri, decl, &docs, enc));
                         }
@@ -1477,10 +1477,15 @@ impl Server {
             }
             PrepareRenameRequest::METHOD => {
                 let p = params!(TextDocumentPositionParams);
-                json(serde_json::to_value(match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => navigation::prepare_rename(&a, enc, p.position),
-                    Open::Sparql(_, q) => sparql_features::prepare_rename(&q, enc, p.position),
-                }))
+                match open!(p.text_document.uri) {
+                    Open::Rdf(_, a) => match navigation::prepare_rename(&a, enc, p.position) {
+                        Ok(r) => json(serde_json::to_value(r)),
+                        Err(msg) => Err((ErrorCode::InvalidParams, msg)),
+                    },
+                    Open::Sparql(_, q) => json(serde_json::to_value(
+                        sparql_features::prepare_rename(&q, enc, p.position),
+                    )),
+                }
             }
             Rename::METHOD => {
                 let p = params!(RenameParams);
@@ -1504,7 +1509,14 @@ impl Server {
                         };
                     }
                 };
-                let term = rdf_term_at(&a, enc, pos);
+                // A JSON-LD term is renamed as a term, not as its IRI.
+                let term = rdf_term_at(&a, enc, pos)
+                    .filter(|(offset, _)| navigation::jsonld::term_at(&a, *offset).is_none())
+                    .map(|(offset, old)| {
+                        navigation::renamed_iri_at(&a, offset, &old, &p.new_name)
+                            .map(|new| (old, new))
+                    })
+                    .transpose();
                 let file = self.prefix_file_for(&u);
                 let roots = self.ws.roots.clone();
                 let mut dirs: FxHashMap<PathBuf, Option<PathBuf>> = FxHashMap::default();
@@ -1521,15 +1533,10 @@ impl Server {
                 let renamed =
                     navigation::rename(&a, self.ws.knowledge(), enc, pos, &p.new_name, scope)
                         .and_then(|mut edit| {
-                            if let Some(old) = term {
+                            if let Some((old, new_iri)) = term? {
                                 let docs = self.ws.sparql_documents();
                                 sparql_features::rdf_term_rename(
-                                    &a,
-                                    &old,
-                                    &p.new_name,
-                                    &docs,
-                                    enc,
-                                    &mut edit,
+                                    &old, &new_iri, &docs, enc, &mut edit,
                                 )?;
                             }
                             Ok(edit)
@@ -1911,11 +1918,12 @@ impl Embedded {
     }
 }
 
-/// The IRI of the term at `pos` in an RDF document, if the cursor is on one.
-fn rdf_term_at(a: &Analysis, enc: Encoding, pos: Position) -> Option<String> {
+/// The offset and IRI of the term at `pos` in an RDF document, if the
+/// cursor is on one.
+fn rdf_term_at(a: &Analysis, enc: Encoding, pos: Position) -> Option<(u32, String)> {
     let offset = a.offset(enc, pos)?;
     match navigation::target_at(a, offset)? {
-        (navigation::Target::Iri(iri), _) => Some(iri.to_string()),
+        (navigation::Target::Iri(iri), _) => Some((offset, iri.to_string())),
         _ => None,
     }
 }

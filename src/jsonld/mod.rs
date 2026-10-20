@@ -49,6 +49,7 @@ pub mod format;
 pub mod json;
 pub mod lint;
 pub mod loader;
+pub mod rename;
 pub mod source;
 pub mod to_rdf;
 

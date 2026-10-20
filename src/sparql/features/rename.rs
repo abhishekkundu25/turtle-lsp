@@ -62,7 +62,7 @@ pub fn rename(
                 .filter(|_| r.form != Form::A)
                 .ok_or("nothing to rename here")?;
             let new_iri = rdf::renamed_iri(old, new_name, &scope_at(q, r.span.start))?;
-            rdf::rename_term(k, enc, old, &new_iri, &mut changes);
+            rdf::rename_term(k, enc, old, &new_iri, &mut changes)?;
             sparql_term_edits(&with_others(q, others), old, &new_iri, enc, &mut changes);
         }
     }
@@ -73,19 +73,17 @@ pub fn rename(
 }
 
 pub fn rdf_term_rename(
-    a: &Analysis,
     old: &str,
-    new_name: &str,
+    new_iri: &str,
     docs: &[Arc<SparqlAnalysis>],
     enc: Encoding,
     edit: &mut WorkspaceEdit,
 ) -> Result<(), String> {
-    let new_iri = rdf::renamed_iri(old, new_name, &a.prefix_map())?;
     let docs: Vec<&SparqlAnalysis> = docs.iter().map(|d| &**d).collect();
     sparql_term_edits(
         &docs,
         old,
-        &new_iri,
+        new_iri,
         enc,
         edit.changes.get_or_insert_with(HashMap::new),
     );

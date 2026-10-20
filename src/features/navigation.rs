@@ -4,7 +4,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, Source};
-use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span};
+use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
 use crate::workspace::{PREFIX_FILE, path_to_uri, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -318,8 +318,25 @@ pub fn highlights(a: &Analysis, enc: Encoding, pos: Position) -> Vec<DocumentHig
     }
 }
 
-pub fn prepare_rename(a: &Analysis, enc: Encoding, pos: Position) -> Option<PrepareRenameResponse> {
-    let offset = a.offset(enc, pos)?;
+/// What a rename at `pos` would change; `Err` for a JSON-LD term of a
+/// bundled or remote context, which can't be renamed.
+pub fn prepare_rename(
+    a: &Analysis,
+    enc: Encoding,
+    pos: Position,
+) -> Result<Option<PrepareRenameResponse>, String> {
+    let Some(offset) = a.offset(enc, pos) else {
+        return Ok(None);
+    };
+    // A JSON-LD term: its key (or a compact IRI's prefix part).
+    if let Some(t) = jsonld::term_at(a, offset) {
+        jsonld::check_term_renamable(a, t)?;
+        return Ok(Some(PrepareRenameResponse::Range(a.range(enc, t.span))));
+    }
+    Ok(prepare_iri_rename(a, enc, offset))
+}
+
+fn prepare_iri_rename(a: &Analysis, enc: Encoding, offset: u32) -> Option<PrepareRenameResponse> {
     let r = a.ref_at(offset);
     if r.is_some_and(|r| r.form == Form::A) {
         return None;
@@ -341,6 +358,8 @@ pub struct PrefixScope<'a> {
 /// renamed there and in every document that takes it from there.
 /// `new_name` may be a local name (`robert`), a prefixed name (`ex:robert`)
 /// or a full IRI (`<http://...>`); each occurrence keeps its file's style.
+/// A JSON-LD term (or keyword alias) is renamed as a term
+/// ([`jsonld::term_rename`]).
 pub fn rename(
     a: &Analysis,
     k: &Knowledge,
@@ -350,6 +369,12 @@ pub fn rename(
     scope: PrefixScope,
 ) -> Result<WorkspaceEdit, String> {
     let offset = a.offset(enc, pos).ok_or("invalid position")?;
+    if let Some(t) = jsonld::term_at(a, offset) {
+        return Ok(WorkspaceEdit {
+            changes: Some(jsonld::term_rename(a, k, enc, t, new_name)?),
+            ..Default::default()
+        });
+    }
     let (target, _) = target_at(a, offset).ok_or("nothing to rename here")?;
     let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
     match target {
@@ -440,14 +465,34 @@ pub fn rename(
             }
         }
         Target::Iri(old) => {
-            let new_iri = renamed_iri(&old, new_name, &a.prefix_map())?;
-            rename_term(k, enc, &old, &new_iri, &mut changes);
+            let new_iri = renamed_iri_at(a, offset, &old, new_name)?;
+            rename_term(k, enc, &old, &new_iri, &mut changes)?;
         }
     }
     Ok(WorkspaceEdit {
         changes: Some(changes),
         ..Default::default()
     })
+}
+
+/// [`renamed_iri`] for a rename started at `offset` of `a`: in JSON-LD,
+/// with the prefix terms of the context there, and `new_name` may also be
+/// an absolute IRI written as JSON-LD writes it (`http://...`).
+pub fn renamed_iri_at(
+    a: &Analysis,
+    offset: u32,
+    old: &str,
+    new_name: &str,
+) -> Result<String, String> {
+    let prefixes = jsonld::prefixes_at(a, offset);
+    if a.parsed.syntax == Syntax::JsonLd
+        && let Some((p, rest)) = new_name.split_once(':')
+        && !prefixes.contains_key(p)
+        && rest.starts_with("//")
+    {
+        return Ok(new_name.to_string());
+    }
+    renamed_iri(old, new_name, &prefixes)
 }
 
 /// The IRI term `old` is renamed to, from `new_name` as the user typed it:
@@ -469,17 +514,31 @@ pub fn renamed_iri(old: &str, new_name: &str, prefixes: &PrefixMap) -> Result<St
 
 /// Adds to `changes` the edits that rename IRI `old` to `new_iri` in the
 /// workspace's RDF documents (imports left out): each use keeps its form, a
-/// prefixed name when a prefix of its document shortens the new IRI.
+/// prefixed name when a prefix of its document shortens the new IRI. A
+/// JSON-LD document writes each use in its own form, never in angle
+/// brackets ([`jsonld::iri_rename`]). `Err` (the whole rename refused) when
+/// a JSON-LD use cannot be rewritten.
 pub fn rename_term(
     k: &Knowledge,
     enc: Encoding,
     old: &str,
     new_iri: &str,
     changes: &mut HashMap<Uri, Vec<TextEdit>>,
-) {
+) -> Result<(), String> {
+    let mut jsonld_changes = jsonld::Changes {
+        by_uri: std::mem::take(changes),
+    };
+    let refused = k
+        .docs_referencing(old)
+        .filter(|(_, src, other)| *src != Source::External && other.parsed.syntax == Syntax::JsonLd)
+        .try_for_each(|(_, _, other)| {
+            jsonld::iri_rename(other, k, enc, old, new_iri, &mut jsonld_changes)
+        });
+    *changes = jsonld_changes.by_uri;
+    refused?;
     for (_, _, other) in k
         .docs_referencing(old)
-        .filter(|(_, src, _)| *src != Source::External)
+        .filter(|(_, src, other)| *src != Source::External && other.parsed.syntax != Syntax::JsonLd)
     {
         let prefixes = other.prefix_map();
         let mut seen = FxHashSet::default();
@@ -501,6 +560,7 @@ pub fn rename_term(
             changes.insert(uri(&other.uri), edits);
         }
     }
+    Ok(())
 }
 
 pub fn prefix_file_uri(path: &std::path::Path) -> Option<String> {

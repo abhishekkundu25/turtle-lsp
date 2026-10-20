@@ -202,17 +202,15 @@ pub fn term_references(
     navigation::term_references(iri, include_declaration, docs, enc)
 }
 
-/// For an RDF document's `textDocument/rename` of term `old` (in `a`, to
-/// `new_name` as the user typed it): adds the edits for the workspace's
-/// SPARQL documents to `edit`, which already holds the RDF edits. An `Err`
-/// refuses the whole rename.
+/// For an RDF document's `textDocument/rename` of term `old` (to `new_iri`):
+/// adds the edits for the workspace's SPARQL documents to `edit`, which
+/// already holds the RDF edits. An `Err` refuses the whole rename.
 pub fn rdf_term_rename(
-    a: &Analysis,
     old: &str,
-    new_name: &str,
+    new_iri: &str,
     docs: &[Arc<SparqlAnalysis>],
     enc: Encoding,
     edit: &mut WorkspaceEdit,
 ) -> Result<(), String> {
-    rename::rdf_term_rename(a, old, new_name, docs, enc, edit)
+    rename::rdf_term_rename(old, new_iri, docs, enc, edit)
 }
