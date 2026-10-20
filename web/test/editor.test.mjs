@@ -832,6 +832,8 @@ test("the editor splits into two groups that share each file", async () => {
     await page.evaluate(() => window.monaco.editor.getEditors()[0].focus())
     await page.keyboard.press("ControlOrMeta+Backslash")
     await page.locator(".group").nth(1).waitFor()
+    // The new group's tab is drawn just after the group itself.
+    await page.locator('.group .tab[data-path="data/people.ttl"]').nth(1).waitFor()
     assert.equal(await page.locator(".group").count(), 2)
     assert.equal(await page.locator('.group .tab[data-path="data/people.ttl"]').count(), 2)
     // Typing in one group shows in the other: one model per file.
