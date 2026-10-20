@@ -142,7 +142,8 @@ check("a .jsonld file keeps the JSON language and gets the server's diagnostics"
     assert.ok(d.some(syntax), fmt(d))
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor")
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    // Windows refuses while the closed file's handles are still released.
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 })
   }
 })
 

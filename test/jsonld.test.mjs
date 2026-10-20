@@ -88,9 +88,11 @@ function flattenSymbols(syms) {
 
 // ---- the command line ----
 
-function workspace(t, files) {
+// `remove: false` leaves removing the folder to the caller, who must stop a
+// server running in it first: Windows refuses to remove a server's folder.
+function workspace(t, files, { remove = true } = {}) {
   const ws = tempDir("turtle-jsonld-")
-  t.after(() => fs.rmSync(ws, { recursive: true, force: true }))
+  if (remove) t.after(() => fs.rmSync(ws, { recursive: true, force: true }))
   for (const [name, text] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(ws, name)), { recursive: true })
     fs.writeFileSync(path.join(ws, name), text)
@@ -594,9 +596,18 @@ test("the editor and check report the same diagnostics on a mixed Turtle and JSO
 const shaclRanges = (diags) => sortRanges(rangesOf(diags, "shacl-violation"))
 
 async function shaclSession(t, files) {
-  const w = workspace(t, files)
-  const server = await startWithCache(w, path.join(w, ".cache"))
-  t.after(() => server.stop())
+  const w = workspace(t, files, { remove: false })
+  let server
+  // One cleanup, server first: a failed removal must not skip the stop, or
+  // the running server holds this test file open.
+  t.after(async () => {
+    try {
+      await server?.stop()
+    } finally {
+      fs.rmSync(w, { recursive: true, force: true, maxRetries: 10 })
+    }
+  })
+  server = await startWithCache(w, path.join(w, ".cache"))
   // Opens and saves `name`, which validates.
   const save = (name) => {
     const uri = uriOf(path.join(w, name))
