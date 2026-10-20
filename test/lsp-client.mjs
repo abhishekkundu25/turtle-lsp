@@ -80,7 +80,17 @@ function warmUp() {
   spawnSync(serverPath, ["--version"])
 }
 
-let lingering
+// Servers not yet stopped, with where each was started. The Node tests run
+// with --test-force-exit, so a server a test forgets to stop cannot hold its
+// file open; it is killed here and fails the file, naming the test's line.
+const running = new Map()
+process.once("exit", () => {
+  for (const [proc, where] of running) {
+    proc.kill()
+    console.error(`turtle-lsp started ${where} was never stopped`)
+    process.exitCode = 1
+  }
+})
 
 // `capabilities` and `initializationOptions` go into the initialize request;
 // `onRequest(method, params)` answers requests from the server (default null).
@@ -94,7 +104,15 @@ export async function startServer({
   warmUp()
   const env = serverEnv()
   const proc = spawn(serverPath, [], { cwd, env, stdio: ["pipe", "pipe", "pipe"] })
-  const exited = new Promise((r) => proc.once("exit", () => r(true)))
+  // The first frame outside this file is the caller.
+  const where = new Error().stack.split("\n").slice(2).find((l) => !l.includes("lsp-client.mjs"))?.trim() ?? "by a test"
+  running.set(proc, where)
+  const exited = new Promise((r) =>
+    proc.once("exit", () => {
+      running.delete(proc)
+      r(true)
+    }),
+  )
   // The server may exit before our last write (e.g. after shutdown/exit).
   proc.stdin.on("error", () => {})
   let stderr = ""
@@ -227,12 +245,6 @@ export async function startServer({
       // shutdown/exit is a leak, not something to paper over with kill().
       const gone = await Promise.race([exited, late(3000, false)])
       conn.dispose()
-      // Reports what keeps this test file running a minute after its last
-      // server stopped; unref'd, so it fires only when something holds it.
-      clearTimeout(lingering)
-      lingering = setTimeout(() => {
-        console.error(`# still running 60 s after stopping turtle-lsp (pid ${proc.pid}, exit code ${proc.exitCode}): ${process.getActiveResourcesInfo().join(", ")}`)
-      }, 60_000).unref()
       if (!gone) {
         proc.kill()
         throw new Error("turtle-lsp did not exit within 3 s of shutdown/exit")
