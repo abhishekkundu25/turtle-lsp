@@ -1,7 +1,7 @@
 // JSON-LD as its own syntax: `.jsonld` files and the `jsonld` language id
-// reach the JSON-LD frontend, never the Turtle parser. The frontend is still
-// empty, so a JSON-LD document has no diagnostics yet; plain `.json` files
-// are not JSON-LD.
+// reach the JSON-LD frontend, never the Turtle parser. The frontend reads
+// JSON only so far, so a valid JSON-LD document has no diagnostics and a
+// broken one has JSON syntax errors; plain `.json` files are not JSON-LD.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
@@ -98,4 +98,50 @@ test("format --check: a .jsonld file is left alone", () => {
   assert.equal(r.code, 0, r.err)
   assert.equal(r.out, "")
   assert.equal(fs.readFileSync(path.join(ws, "people.jsonld"), "utf8"), DOC)
+})
+
+// ---- JSON syntax errors ----
+
+// A missing comma: one error at the key that should follow it.
+const BROKEN = `{
+  "@id": "ex:a"
+  "ex:name": "A"
+}
+`
+
+test("a JSON syntax error is published at its exact range", async () => {
+  const uri = uriOf(path.join(ws, "broken-open.jsonld"))
+  s.open(uri, BROKEN, "jsonld")
+  const diags = await s.diagnosticsFor(uri)
+  s.close(uri)
+  assert.deepEqual(
+    diags.map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
+    [
+      {
+        range: { start: { line: 2, character: 2 }, end: { line: 2, character: 11 } },
+        severity: 1,
+        message: "Expected ',' between members",
+      },
+    ],
+    fmt(diags),
+  )
+})
+
+test("check: a JSON syntax error is reported at its exact range", (t) => {
+  fs.writeFileSync(path.join(ws, "broken.jsonld"), BROKEN)
+  t.after(() => fs.rmSync(path.join(ws, "broken.jsonld")))
+  const r = run(["check", "--format", "json", "broken.jsonld"])
+  assert.equal(r.code, 1, r.err)
+  const [file] = JSON.parse(r.out).files
+  assert.equal(file.path, "broken.jsonld")
+  assert.deepEqual(
+    file.diagnostics.map((d) => ({ range: d.range, severity: d.severity, message: d.message })),
+    [
+      {
+        range: { start: { line: 3, column: 3 }, end: { line: 3, column: 12 } },
+        severity: "error",
+        message: "Expected ',' between members",
+      },
+    ],
+  )
 })

@@ -29,8 +29,8 @@
 //! - `tokens` stays empty: its kinds are Turtle's. Spans for highlighting
 //!   come from the [`json::Json`] tree.
 //!
-//! Every stage is a stub for now: [`parse`] returns an empty parse with no
-//! errors.
+//! Only the JSON parser is real so far: [`parse`] returns its syntax errors
+//! and no triples.
 
 pub mod context;
 pub mod expand;
@@ -52,11 +52,12 @@ use crate::syntax::{Parsed, Syntax};
 /// loader did not allow.
 pub fn parse(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Parsed {
     // Later stages: context processing, expansion and toRdf over `doc`.
-    let _doc = json::parse(text);
+    let doc = json::parse(text);
     let _ = loader;
     Parsed {
         syntax: Syntax::JsonLd,
         document_base: base.map(str::to_string),
+        errors: doc.errors,
         ..Parsed::default()
     }
 }
@@ -77,7 +78,8 @@ mod tests {
 
     #[test]
     fn the_turtle_entry_point_hands_jsonld_to_this_frontend() {
-        // Turtle would report `{` and the strings as syntax errors.
+        // Turtle would report the strings and the colon; JSON only the
+        // unclosed `{`.
         let p = crate::syntax::parse_with_base(
             "{\"@id\": \"ex:a\"",
             &crate::syntax::PrefixMap::default(),
@@ -85,6 +87,17 @@ mod tests {
             None,
         );
         assert_eq!(p.syntax, Syntax::JsonLd);
-        assert!(p.errors.is_empty());
+        let errors: Vec<_> = p
+            .errors
+            .iter()
+            .map(|e| (e.span, e.message.as_str()))
+            .collect();
+        assert_eq!(
+            errors,
+            [(
+                crate::syntax::Span::new(0, 1),
+                "Unclosed object: expected '}'"
+            )]
+        );
     }
 }
