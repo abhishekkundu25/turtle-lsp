@@ -53,7 +53,17 @@ Queries are never run and no endpoint is contacted.
 
 ## JSON-LD
 
-`.jsonld` files keep VS Code's JSON highlighting and get the server's checks: JSON syntax errors, `@context` errors, keys the context does not define, invalid IRIs and language tags, and SHACL results from your shapes on the key or value that breaks them. Their terms count in your Turtle and SPARQL files. Common contexts (schema.org, ActivityStreams, Verifiable Credentials, DID) are bundled; other remote contexts are fetched only with `turtle.imports.network` on. Completion, rename and formatting inside JSON-LD files are not there yet.
+`.jsonld` files keep VS Code's JSON highlighting and get the server's checks: JSON syntax errors, `@context` errors, keys the context does not define, invalid IRIs and language tags, and SHACL results from your shapes on the key or value that breaks them. A compact IRI such as `rdfs:label` whose prefix the `@context` lacks gets a warning and a quick fix that adds the prefix.
+
+Editing works as in Turtle:
+
+- completion in keys and `@type` values from the context in force, including `@vocab` terms and `prefix:local` names; completing a known prefix the context lacks adds it to the `@context`;
+- hover, go to definition (into the `@context` entry or a context file), references and highlights on terms;
+- rename of terms, keyword aliases and IRIs, each use rewritten in its own form; unsafe renames are refused with the reason;
+- Format Document, keeping the same JSON value;
+- semantic highlighting of keywords, properties and classes, and an outline that nests named graphs.
+
+Their terms count in your Turtle and SPARQL files. Common contexts (schema.org, ActivityStreams, Verifiable Credentials, DID) are bundled; other remote contexts are fetched only with `turtle.imports.network` on.
 
 ## Project prefixes
 

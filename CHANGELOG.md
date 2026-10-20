@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.1 — 2026-10-21
+
+### Fixes
+
+- The VS Code Marketplace page described JSON-LD as it was before 0.6.0
+  ("completion, rename and formatting ... not there yet"); it now lists what
+  0.6.0 does, and the extension's name and description include JSON-LD.
+- The browser toolbox names pasted JSON-LD `pasted.jsonld` instead of
+  `pasted.trig`, and its page descriptions include JSON-LD.
+
+### Tests and CI
+
+- CI is green on Windows again. Two SHACL tests removed a folder their
+  server was still running in, which Windows refuses; the failure skipped
+  stopping the server, and the server held the test run open. A server a
+  test forgets to stop now fails its file instead of hanging the run.
+- The JSON-LD timing tests compare against Turtle on the same machine
+  instead of fixed times, so slower CI runners pass.
+- CI runs the build, the Rust tests and the Node tests as separate steps
+  with their own time limits (the Node tests 5 minutes).
+
 ## 0.6.0 — 2026-10-20
 
 ### Features

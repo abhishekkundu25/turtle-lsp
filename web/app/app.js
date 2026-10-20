@@ -154,6 +154,9 @@ function setTexts(texts) {
 // The guess at a pasted text's syntax, for its name.
 function pastedName(text) {
   const body = text.replace(/^\s*(#[^\n]*\n|\s+)*/g, "").replace(/^(\s*(PREFIX|BASE)\b[^\n]*\n)*/gi, "")
+  // A JSON object opens with a key, an array with an object; TriG's graph
+  // braces hold IRIs and prefixed names.
+  if (/^\s*(\{\s*["}]|\[\s*[{\]])/.test(text)) return "pasted.jsonld"
   if (/^\s*(SELECT|CONSTRUCT|ASK|DESCRIBE|INSERT|DELETE|WITH|LOAD|CLEAR|DROP|CREATE|ADD|MOVE|COPY)\b/i.test(body)) return "pasted.rq"
   if (/(^|\n)\s*(GRAPH\s+)?(<[^>]*>|[\w-]*:[\w.-]*|_:[\w.-]+)?\s*\{/i.test(body) && !/^\s*@?prefix\b/i.test(body)) return "pasted.trig"
   return "pasted.ttl"

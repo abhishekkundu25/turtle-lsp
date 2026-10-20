@@ -205,6 +205,11 @@ test("pasted text and opened files join the input", async () => {
     await page.getByRole("button", { name: "Add to input" }).click()
     await settled(page)
     await page.getByRole("button", { name: "pasted.ttl", exact: true }).waitFor()
+    await page.getByRole("button", { name: "Paste", exact: true }).click()
+    await page.getByRole("textbox", { name: "Pasted text" }).fill('{\n  "@context": { "ex": "https://e.org/" },\n  "@id": "ex:a"\n}\n')
+    await page.getByRole("button", { name: "Add to input" }).click()
+    await settled(page)
+    await page.getByRole("button", { name: "pasted.jsonld", exact: true }).waitFor()
     await page.locator("input[type=file]").first().setInputFiles({
       name: "extra.rq",
       mimeType: "application/sparql-query",
