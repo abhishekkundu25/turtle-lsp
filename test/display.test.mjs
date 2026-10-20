@@ -141,7 +141,7 @@ describe("display (UTF-8 positions, initializationOptions)", () => {
   before(async () => {
     s = await startServer({
       cwd: dir,
-      capabilities: { general: { positionEncodings: ["utf-8", "utf-16"] }, workspace: { inlayHint: { refreshSupport: true } } },
+      capabilities: { general: { positionEncodings: ["utf-8", "utf-16"] }, workspace: { inlayHint: { refreshSupport: true }, codeLens: { refreshSupport: true } } },
       initializationOptions: { inlayHints: { labels: "all" } },
     })
     s.open(uri, data)
@@ -168,8 +168,9 @@ describe("display (UTF-8 positions, initializationOptions)", () => {
     assert.equal(h.position.character, Buffer.byteLength("ex:café ex:P0042"))
   })
 
-  test("the client is asked to refresh inlay hints once the workspace is indexed", async () => {
+  test("the client is asked to refresh inlay hints and code lenses once the workspace is indexed", async () => {
     for (let i = 0; i < 40 && !s.serverRequests.length; i++) await new Promise((r) => setTimeout(r, 25))
     assert.ok(s.serverRequests.some((r) => r.method === "workspace/inlayHint/refresh"))
+    assert.ok(s.serverRequests.some((r) => r.method === "workspace/codeLens/refresh"))
   })
 })

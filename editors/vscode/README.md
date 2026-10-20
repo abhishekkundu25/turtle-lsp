@@ -82,7 +82,10 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.shacl.onType`: also validate while typing, not only on save (default on).
 - `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
 - `turtle.imports.network`: fetch `owl:imports` and JSON-LD contexts over the network (default off; ignored in untrusted workspaces). With it off, the quick fix on an unresolved import fetches that one import and caches it.
+- `turtle.imports.unresolved`: while an import can't be loaded, SHACL results it could change are warnings with a note (`soften`, the default); `ignore` keeps their full severity.
 - `turtle.format.lineWidth`: line width for formatting (default 100).
+- `turtle.codeLens.references`: show "N references" above each subject a file describes; click it to list them (default on).
+- `turtle.diagnostics.workspace`: also check the files that are not open, in the background, and show their problems (default off).
 
 ## Also for Neovim and other editors
 

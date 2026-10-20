@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Reference lenses**: "N references" above each subject a file describes
+  (Turtle, TriG, N-Triples, N-Quads, JSON-LD); clicking lists them (VS Code's
+  references view, Neovim's quickfix list). Counted only when shown. Setting
+  `codeLens.references` (default on).
+- **Workspace diagnostics** (`diagnostics.workspace`, default off): problems
+  in files that are not open, computed in the background with the same
+  checks as `turtle-lsp check`, and kept up to date as files change. An edit
+  pauses the work, so typing is not slowed.
+- **`imports.unresolved`**: `"ignore"` keeps SHACL results at full severity
+  while imports are unresolved, instead of softening them to warnings with a
+  note (`"soften"`, the default). For projects that validate without their
+  imports, as pySHACL does.
+
+### Fixes
+
+- VS Code passed `shacl.onType` to the server only after a settings change,
+  not at start.
+
+### Internals
+
+- The graph and the SPARQL dataset adapter moved from SHACL to a shared
+  `rdf` module; server commands are parsed in their own module.
+
 ## 0.6.2 — 2026-10-21
 
 ### Features

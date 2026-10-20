@@ -205,6 +205,8 @@ impl Server {
                 "semanticTokens",
                 lsp_types::request::SemanticTokensRefresh::METHOD,
             ),
+            // Reference counts, and the codeLens.references setting.
+            ("codeLens", lsp_types::request::CodeLensRefresh::METHOD),
         ]
         .into_iter()
         .filter(|(k, _)| {

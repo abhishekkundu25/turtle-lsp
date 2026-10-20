@@ -42,7 +42,7 @@ function serverSettings(): Record<string, unknown> {
   return {
     prefixes: c.get<Record<string, string>>("prefixes") ?? {},
     inlayHints: { labels: c.get<string>("inlayHints.labels") },
-    shacl: { enabled: c.get<boolean>("shacl.enabled"), maxTriples: c.get<number>("shacl.maxTriples") },
+    shacl: { enabled: c.get<boolean>("shacl.enabled"), maxTriples: c.get<number>("shacl.maxTriples"), onType: c.get<boolean>("shacl.onType") },
     lint: { undescribedTerms: c.get<boolean>("lint.undescribedTerms") },
     // A restricted setting: in an untrusted workspace VS Code returns only the user's value.
     imports: { network: c.get<boolean>("imports.network"), unresolved: c.get<string>("imports.unresolved") },
