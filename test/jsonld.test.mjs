@@ -344,7 +344,7 @@ test("offline, bundled contexts load and an unknown remote context is reported, 
   assert.deepEqual(hits.slice(before), [], "nothing goes online by default")
 })
 
-test("with imports.network on, a remote context is fetched once and then served from the cache", phase1("06"), async () => {
+test("with imports.network on, a remote context is fetched once and then served from the cache", { timeout: 25_000 }, async () => {
   const root = tempDir("turtle-jsonld-net-")
   const cache = path.join(root, "cache")
   const dir = path.join(root, "ws")
@@ -375,13 +375,13 @@ test("with imports.network on, a remote context is fetched once and then served 
   }
 })
 
-test("a context in a file next to the document is loaded", phase1("06"), async (t) => {
+test("a context in a file next to the document is loaded", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.USES_CTX_FILE)
   assert.deepEqual(withCode(diags, "jsonld-context"), [], show(diags))
   assert.deepEqual(rangesOf(diags, "jsonld-undefined-term"), [F.USES_CTX_FILE_TYPO], show(diags))
 })
 
-test("check: a remote context is fetched only with --network", phase1("06"), async (t) => {
+test("check: a remote context is fetched only with --network", { timeout: 25_000 }, async (t) => {
   const url = `${webBase}/ctx.jsonld`
   const w = workspace(t, { "remote.jsonld": F.remoteDoc(url) })
   const before = hits.length
@@ -493,7 +493,7 @@ test("check: JSON and SARIF output name JSON-LD files and their positions", { ti
   assert.ok(results.filter((r) => r.ruleId === "json-syntax").every((r) => r.level === "error"))
 })
 
-test("check: JSON-LD warnings exit as Turtle warnings do", phase1("09"), (t) => {
+test("check: JSON-LD warnings exit as Turtle warnings do", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "lints.jsonld": F.LINTS })
   const plain = checkJson(w, ["--select", "jsonld-undefined-term"])
   assert.equal(plain.code, 0, "warnings alone pass")
@@ -605,8 +605,12 @@ test("a JSON-LD dataset that mentions a violating shared node does not repeat it
   const run3 = save("run3.jsonld")
   const d3 = await until(server, run3, (d) => withCode(d, "shacl-violation").length > 0, 5000)
   assert.deepEqual(shaclRanges(d3), [F.ASSET_RUN_DESIGNATION], show(d3))
-  assert.deepEqual(shaclRanges(await server.diagnosticsFor(shared)), [F.SHARED_P7])
-  assert.deepEqual(shaclRanges(await server.diagnosticsFor(mentions)), [])
+  // The other files' diagnostics come from the same validation round: wait
+  // for the shared file's result rather than reading an earlier round.
+  const ds = await until(server, shared, (d) => withCode(d, "shacl-violation").length > 0, 5000)
+  assert.deepEqual(shaclRanges(ds), [F.SHARED_P7], show(ds))
+  const dm = await server.diagnosticsFor(mentions)
+  assert.deepEqual(shaclRanges(dm), [], show(dm))
 })
 
 test("check: a SHACL-SPARQL constraint reports a JSON-LD focus node on its @id", { timeout: 25_000 }, (t) => {

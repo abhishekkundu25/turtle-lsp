@@ -48,7 +48,7 @@ test("bundled contexts load in the browser; any other remote context is reported
   assert.deepEqual(rangesOf(unknown, "jsonld-context"), [F.remoteDocUrl(F.UNKNOWN_CONTEXT_URL)], show(unknown))
 })
 
-test("a context from another file of the workspace is loaded", phase1("06"), () => {
+test("a context from another file of the workspace is loaded", { timeout: 40_000 }, () => {
   const res = analyse([
     { name: "people.context.jsonld", text: F.CTX_FILE },
     { name: "uses.jsonld", text: F.USES_CTX_FILE },
