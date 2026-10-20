@@ -23,7 +23,7 @@ use crate::features::diagnostics::SOURCE;
 use crate::features::hover::short;
 use crate::features::navigation;
 use crate::knowledge::Source;
-use crate::shacl::graph::{Graph, Id, Term};
+use crate::rdf::graph::{Graph, Id, Term};
 use crate::shacl::{Path, SH, ValidationResult, validate_focus};
 use crate::syntax::{Iri, PrefixMap, RDF, Role, Span, Syntax, XSD};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -544,7 +544,7 @@ impl Placer<'_, '_, '_> {
                 }),
             Term::Blank(b) => {
                 let ws =
-                    |t: &(u32, &crate::shacl::graph::GTriple)| docs(self.g.origin[t.0 as usize].0);
+                    |t: &(u32, &crate::rdf::graph::GTriple)| docs(self.g.origin[t.0 as usize].0);
                 // A JSON-LD node object without an `@id`: its opening brace,
                 // that of its own object even when it is nested. List nodes
                 // have none (their triples are the enclosing object's).

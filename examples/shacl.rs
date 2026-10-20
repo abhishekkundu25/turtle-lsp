@@ -5,7 +5,7 @@
 //!     cargo run --release --example shacl -- FILE.ttl|FILE.trig ...
 
 use std::time::Instant;
-use turtle_lsp::shacl::graph::{Graph, Id, Term};
+use turtle_lsp::rdf::graph::{Graph, Id, Term};
 use turtle_lsp::shacl::validate;
 use turtle_lsp::syntax::{Node, PrefixMap, Syntax, parse};
 

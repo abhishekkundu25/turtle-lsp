@@ -24,9 +24,10 @@
 //! - literal comparisons follow [`super::literal`].
 
 use super::Path;
-use super::graph::{Graph, Id, Term};
 use super::literal;
-use super::sparql::{self, Answer, Index, PreBound};
+use super::sparql::{self, Answer, PreBound};
+use crate::rdf::Index;
+use crate::rdf::graph::{Graph, Id, Term};
 use crate::syntax::{Iri, RDF, XSD};
 use regex::{Regex, RegexBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -1644,7 +1645,7 @@ fn report_with(
         || shapes
             .iter()
             .any(|s| s.constraints.iter().any(|c| matches!(c.0, C::Sparql(_))));
-    let ix = uses_sparql.then(|| Index::new(g));
+    let ix = uses_sparql.then(|| Index::new(g, Some(sparql::SHAPES_GRAPH)));
     let mut run = Run {
         g,
         shapes: &shapes,

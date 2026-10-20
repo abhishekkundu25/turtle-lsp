@@ -1,8 +1,8 @@
-//! The graph SHACL validation reads: the union of several documents' triples,
-//! with blank nodes kept apart per document. Every distinct term gets a dense
-//! [`Id`]; literals are borrowed from the documents' parses, never copied.
-//! Triples are indexed by subject and object (compressed rows) and by
-//! predicate.
+//! The graph SHACL validation and SPARQL queries read: the union of several
+//! documents' triples, with blank nodes kept apart per document. Every
+//! distinct term gets a dense [`Id`]; literals are borrowed from the
+//! documents' parses, never copied. Triples are indexed by subject and object
+//! (compressed rows) and by predicate.
 
 use crate::syntax::{BlankId, Iri, Node, Triple};
 use rustc_hash::FxHashMap;
@@ -278,7 +278,7 @@ impl<'a> Graph<'a> {
     /// The members of the RDF collection starting at `head`, in order
     /// (cycle-safe; stops at the first malformed cell).
     pub fn list(&self, head: Id) -> Vec<Id> {
-        let v = super::shapes::vocab();
+        let v = list_vocab();
         let mut out = Vec::new();
         let mut cur = head;
         let mut seen = rustc_hash::FxHashSet::default();
@@ -316,6 +316,25 @@ fn blank_max(n: &Node, max: &mut u32) {
         Node::Blank(BlankId(b)) => *max = (*max).max(b.saturating_add(1)),
         _ => {}
     }
+}
+
+/// `rdf:first`, `rdf:rest` and `rdf:nil`, interned once.
+struct ListVocab {
+    rdf_first: Iri,
+    rdf_rest: Iri,
+    rdf_nil: Iri,
+}
+
+fn list_vocab() -> &'static ListVocab {
+    static V: std::sync::OnceLock<ListVocab> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        let rdf = |l: &str| Iri::intern(&format!("{}{l}", crate::syntax::RDF));
+        ListVocab {
+            rdf_first: rdf("first"),
+            rdf_rest: rdf("rest"),
+            rdf_nil: rdf("nil"),
+        }
+    })
 }
 
 #[cfg(test)]

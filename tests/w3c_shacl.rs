@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use turtle_lsp::shacl::graph::{Graph, Id, Term};
+use turtle_lsp::rdf::graph::{Graph, Id, Term};
 use turtle_lsp::shacl::validate::parse_path;
 use turtle_lsp::shacl::{self, validate_report};
 use turtle_lsp::syntax::{Iri, Parsed, PrefixMap, RDF, Syntax, XSD, parse_with_base};

@@ -10,6 +10,7 @@ pub mod features;
 pub mod imports;
 pub mod jsonld;
 pub mod knowledge;
+pub mod rdf;
 pub mod server;
 pub mod settings;
 pub mod shacl;
