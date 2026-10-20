@@ -34,6 +34,7 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.shacl.maxTriples": ["integer", 2000000],
     "turtle.lint.undescribedTerms": ["boolean", true],
     "turtle.imports.network": ["boolean", false],
+    "turtle.imports.unresolved": ["string", "soften"],
     "turtle.format.lineWidth": ["integer", 100],
   }
   for (const [key, [type, def]] of Object.entries(expected)) {
@@ -43,6 +44,7 @@ test("server settings are declared with the server's defaults", () => {
     assert.ok(settings[key].markdownDescription || settings[key].description, `${key} has no description`)
   }
   assert.deepEqual(settings["turtle.inlayHints.labels"].enum, ["opaque", "all", "off"])
+  assert.deepEqual(settings["turtle.imports.unresolved"].enum, ["soften", "ignore"])
 })
 
 test("JSON-LD files are served without taking over VS Code's JSON language", () => {

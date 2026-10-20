@@ -1743,6 +1743,8 @@ impl Server {
                 max_triples: self.settings.shacl_max_triples,
                 enc: self.enc,
                 unresolved: self.imports.unresolved(),
+                soften: self.settings.imports_unresolved
+                    == crate::settings::UnresolvedImports::Soften,
             };
             let diagnostics = shacl_validate::run(&job, &|| false).unwrap_or_default();
             self.shacl_outcome(shacl_validate::Outcome {
@@ -1770,6 +1772,8 @@ impl Server {
                 max_triples: self.settings.shacl_max_triples,
                 enc: self.enc,
                 unresolved: self.imports.unresolved(),
+                soften: self.settings.imports_unresolved
+                    == crate::settings::UnresolvedImports::Soften,
             });
         }
     }

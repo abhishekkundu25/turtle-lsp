@@ -364,6 +364,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         } else {
             vec!["http://example.invalid/missing".into()]
         },
+        soften: true,
     };
     let _ = turtle_lsp::features::shacl_validate::run(&job, &|| false);
     k.remove(doc_uri(syntax));

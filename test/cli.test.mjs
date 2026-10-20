@@ -260,6 +260,31 @@ test("check: owl:imports resolve from the import cache, offline", (t) => {
   assert.equal(found.code, 0)
 })
 
+test("check: imports.unresolved in turtle-lsp.json keeps SHACL results at full severity", (t) => {
+  const ws = workspace(t, {
+    "d.ttl": `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.org/> .
+<http://ex.com/d> a owl:Ontology ; owl:imports <http://ex.com/onto> .
+ex:S a sh:NodeShape ; sh:targetClass ex:P ;
+    sh:property [ sh:path ex:kind ; sh:class ex:Kind ] .
+ex:a a ex:P ; ex:kind ex:k .
+`,
+  })
+  const shacl = (r) => r.lines.filter((l) => l.includes("shacl-violation"))
+  const soft = run(ws, ["check"])
+  assert.equal(shacl(soft).length, 1, soft.out)
+  assert.match(shacl(soft)[0], /: warning\[shacl-violation\] .*\(may change once these imports resolve: http:\/\/ex\.com\/onto\)$/)
+  fs.writeFileSync(path.join(ws, "turtle-lsp.json"), JSON.stringify({ imports: { unresolved: "ignore" } }))
+  const full = run(ws, ["check"])
+  assert.equal(full.code, 1, full.err)
+  assert.equal(shacl(full).length, 1, full.out)
+  assert.match(shacl(full)[0], /: error\[shacl-violation\] /)
+  assert.doesNotMatch(shacl(full)[0], /imports/)
+  // The import is still reported.
+  assert.ok(full.lines.some((l) => /^d\.ttl:4:\d+: info\[unresolved-import\]/.test(l)), full.out)
+})
+
 // ---- format ----
 
 const UNFORMATTED = `@prefix ex: <http://example.org/> .

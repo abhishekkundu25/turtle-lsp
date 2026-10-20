@@ -42,6 +42,17 @@ pub enum InlayLabels {
     Off,
 }
 
+/// How SHACL results treat `owl:imports` that are not loaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UnresolvedImports {
+    /// Results the missing data could change are lowered to warnings and
+    /// say so.
+    #[default]
+    Soften,
+    /// As if the imports were empty: full severity, no note.
+    Ignore,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Prefixes available in every file (on top of any `prefixes.ttl`).
@@ -55,6 +66,7 @@ pub struct Settings {
     pub lint_undescribed_terms: bool,
     /// Fetch `owl:imports` over the network.
     pub imports_network: bool,
+    pub imports_unresolved: UnresolvedImports,
     pub format_line_width: u32,
 }
 
@@ -68,6 +80,7 @@ impl Default for Settings {
             shacl_on_type: true,
             lint_undescribed_terms: true,
             imports_network: false,
+            imports_unresolved: UnresolvedImports::Soften,
             format_line_width: 100,
         }
     }
@@ -126,6 +139,11 @@ impl Settings {
             ["shacl", "onType"] => set_bool(&mut self.shacl_on_type, v),
             ["lint", "undescribedTerms"] => set_bool(&mut self.lint_undescribed_terms, v),
             ["imports", "network"] => set_bool(&mut self.imports_network, v),
+            ["imports", "unresolved"] => {
+                if let Some(u) = v.as_str().and_then(parse_unresolved) {
+                    self.imports_unresolved = u;
+                }
+            }
             ["format", "lineWidth"] => {
                 if let Some(n) = v.as_u64().and_then(|n| u32::try_from(n).ok()) {
                     self.format_line_width = n;
@@ -159,6 +177,14 @@ fn parse_labels(s: &str) -> Option<InlayLabels> {
     }
 }
 
+fn parse_unresolved(s: &str) -> Option<UnresolvedImports> {
+    match s {
+        "soften" => Some(UnresolvedImports::Soften),
+        "ignore" => Some(UnresolvedImports::Ignore),
+        _ => None,
+    }
+}
+
 fn set_bool(slot: &mut bool, v: &Value) {
     if let Some(b) = v.as_bool() {
         *slot = b;
@@ -176,6 +202,7 @@ mod tests {
         assert_eq!(s.inlay_hint_labels, InlayLabels::Opaque);
         assert!(s.shacl_enabled && s.shacl_on_type);
         assert!(s.lint_undescribed_terms && !s.imports_network);
+        assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(s.shacl_max_triples, 2_000_000);
         assert_eq!(s.format_line_width, 100);
         assert!(s.prefixes.is_empty());
@@ -188,7 +215,7 @@ mod tests {
             "inlayHints": {"labels": "all"},
             "shacl": {"enabled": false, "maxTriples": 10, "onType": false},
             "lint": {"undescribedTerms": false},
-            "imports": {"network": true},
+            "imports": {"network": true, "unresolved": "ignore"},
             "format": {"lineWidth": 80},
             "server": {"path": "/ignored"},
         });
@@ -200,6 +227,7 @@ mod tests {
             "shacl.onType": false,
             "lint": {"undescribedTerms": false},
             "imports.network": true,
+            "imports.unresolved": "ignore",
             "turtle.format.lineWidth": 80,
         });
         let a = Settings::from_layers([&nested]);
@@ -209,6 +237,7 @@ mod tests {
         assert_eq!(a.inlay_hint_labels, InlayLabels::All);
         assert!(!a.shacl_enabled && !a.shacl_on_type);
         assert!(!a.lint_undescribed_terms && a.imports_network);
+        assert_eq!(a.imports_unresolved, UnresolvedImports::Ignore);
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
     }
 
@@ -218,6 +247,7 @@ mod tests {
         let config = json!({
             "inlayHints": {"labels": "sometimes"},
             "shacl": {"enabled": "no", "maxTriples": -1},
+            "imports": {"unresolved": "drop"},
             "format": {"lineWidth": 90},
         });
         let s = Settings::from_layers([&init, &config]);
@@ -226,6 +256,7 @@ mod tests {
         assert_eq!(s.inlay_hint_labels, InlayLabels::Opaque);
         assert!(s.shacl_enabled);
         assert_eq!(s.shacl_max_triples, 2_000_000);
+        assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(Settings::from_layers([&Value::Null]), Settings::default());
     }
 

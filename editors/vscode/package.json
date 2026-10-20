@@ -240,6 +240,20 @@
           "markdownDescription": "Fetch `owl:imports` that are not in the workspace over the network. Ignored in untrusted workspaces.",
           "scope": "machine-overridable"
         },
+        "turtle.imports.unresolved": {
+          "type": "string",
+          "enum": [
+            "soften",
+            "ignore"
+          ],
+          "enumDescriptions": [
+            "Show SHACL results that the missing data could change as warnings, with a note naming the imports.",
+            "Treat unresolved imports as empty: SHACL results keep their full severity and get no note."
+          ],
+          "default": "soften",
+          "markdownDescription": "How SHACL validation treats `owl:imports` that are not loaded. Either way, each unresolved import keeps its information diagnostic.",
+          "scope": "resource"
+        },
         "turtle.format.lineWidth": {
           "type": "integer",
           "default": 100,

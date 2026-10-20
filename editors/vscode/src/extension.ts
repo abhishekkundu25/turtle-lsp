@@ -45,7 +45,7 @@ function serverSettings(): Record<string, unknown> {
     shacl: { enabled: c.get<boolean>("shacl.enabled"), maxTriples: c.get<number>("shacl.maxTriples") },
     lint: { undescribedTerms: c.get<boolean>("lint.undescribedTerms") },
     // A restricted setting: in an untrusted workspace VS Code returns only the user's value.
-    imports: { network: c.get<boolean>("imports.network") },
+    imports: { network: c.get<boolean>("imports.network"), unresolved: c.get<string>("imports.unresolved") },
     format: { lineWidth: c.get<number>("format.lineWidth") },
   }
 }

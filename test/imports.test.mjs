@@ -311,3 +311,51 @@ test("workspace/executeCommand rejects an unknown command and bad arguments", as
     await s.stop()
   }
 })
+
+// A shape whose sh:class result an unresolved import could change.
+function shaclWorkspace(name) {
+  const root = tempDir(name)
+  const ws = path.join(root, "ws")
+  fs.mkdirSync(ws)
+  const text = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.com/> .
+<http://example.com/ont> a owl:Ontology ;
+    owl:imports <${base}/missing> .
+ex:S a sh:NodeShape ; sh:targetClass ex:P ;
+    sh:property [ sh:path ex:kind ; sh:class ex:Kind ] .
+ex:a a ex:P ; ex:kind ex:k .
+`
+  const file = path.join(ws, "app.ttl")
+  fs.writeFileSync(file, text)
+  return { ws, cache: path.join(root, "cache"), uri: uriOf(file), text }
+}
+
+test("imports.unresolved: soften lowers what an import could change; ignore keeps full severity", async () => {
+  const before = hits.length
+  const violation = (d) => d.find((x) => x.code === "shacl-violation")
+  const softened = (d) => violation(d)?.severity === 2 && /may change once these imports resolve/.test(violation(d).message)
+  const full = (d) => violation(d)?.severity === 1 && !/imports/.test(violation(d).message)
+  const imported = (d) => d.find((x) => x.code === "unresolved-import")
+  for (const [init, first, then, changed] of [
+    [undefined, softened, full, "ignore"],
+    [{ imports: { unresolved: "ignore" } }, full, softened, "soften"],
+  ]) {
+    const w = shaclWorkspace(`unresolved-${changed}`)
+    const s = await start(w.ws, w.cache, init)
+    try {
+      s.open(w.uri, w.text)
+      for (const want of [first, then]) {
+        const diags = await diagnosticsUntil(s, w.uri, (d) => want(d) && imported(d))
+        assert.equal(imported(diags).severity, 3)
+        assert.ok(await fetchAction(s, w.uri, imported(diags)), "the fetch fix is offered")
+        if (want === first) {
+          s.notify("workspace/didChangeConfiguration", { settings: { turtle: { imports: { unresolved: changed } } } })
+        }
+      }
+    } finally {
+      await s.stop()
+    }
+  }
+  assert.equal(hits.length, before, JSON.stringify(hits.slice(before)))
+})

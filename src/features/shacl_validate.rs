@@ -45,8 +45,12 @@ pub struct Job {
     pub max_triples: u64,
     pub enc: Encoding,
     /// The workspace's `owl:imports` that are not loaded. While any is,
-    /// errors that the missing data could change are shown as warnings.
+    /// errors that the missing data could change are shown as warnings
+    /// (unless `soften` is false).
     pub unresolved: Vec<String>,
+    /// Soften results while imports are unresolved (the `imports.unresolved`
+    /// setting); false treats them as empty.
+    pub soften: bool,
 }
 
 /// How to soften errors while imports are unresolved.
@@ -59,7 +63,7 @@ struct Soften {
 
 impl Soften {
     fn new(job: &Job) -> Option<Soften> {
-        if job.unresolved.is_empty() {
+        if !job.soften || job.unresolved.is_empty() {
             return None;
         }
         let mut named = job
@@ -786,6 +790,7 @@ mod tests {
             max_triples: max,
             enc: Encoding::Utf16,
             unresolved: vec![],
+            soften: true,
         }
     }
 
@@ -968,6 +973,16 @@ mod tests {
         let name = by_message(&out, "ex:name");
         assert_eq!(name.severity, Some(DiagnosticSeverity::INFORMATION));
         assert!(!name.message.contains("imports"));
+
+        // `imports.unresolved: "ignore"`: as without unresolved imports.
+        j.soften = false;
+        let ignored = run(&j, &|| false).unwrap();
+        assert_eq!(ignored, plain);
+        for needle in ["ex:kind", "ex:unit"] {
+            let d = by_message(&ignored, needle);
+            assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR), "{needle}");
+            assert!(!d.message.contains("imports"), "{}", d.message);
+        }
     }
 
     /// The text each result in `uri` covers (ASCII `text`), sorted.

@@ -482,6 +482,7 @@ impl<'a> Input<'a> {
             enc: self.enc,
             // Results a missing import could change soften.
             unresolved: self.unresolved().iris.clone(),
+            soften: self.settings.imports_unresolved == crate::settings::UnresolvedImports::Soften,
         };
         (
             true,
