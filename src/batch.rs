@@ -671,42 +671,71 @@ fn byte_offset(text: &str, pos: Position, enc: Encoding) -> Option<usize> {
 }
 
 /// Convert a report's UTF-8 columns to code points. Edits convert against
-/// the file they edit.
+/// the file they edit. Each file's line starts are found once: a large file
+/// can have thousands of problems.
 fn to_code_points(report: &mut FileReport, files: &[BatchFile]) {
-    let text_of = |name: &str| files.iter().find(|f| f.name == name).map(|f| &f.text[..]);
-    let Some(own) = text_of(&report.name) else {
-        return;
+    let mut lines: HashMap<&str, Lines> = HashMap::new();
+    let mut convert = |name: &str, r: Range| -> Option<Range> {
+        if !lines.contains_key(name) {
+            let f = files.iter().find(|f| f.name == name)?;
+            lines.insert(&f.name, Lines::new(&f.text));
+        }
+        Some(lines[name].range(r))
     };
+    let own = report.name.clone();
     for p in &mut report.problems {
-        p.diagnostic.range = range_to_code_points(own, p.diagnostic.range);
+        let Some(r) = convert(&own, p.diagnostic.range) else {
+            return;
+        };
+        p.diagnostic.range = r;
         for fix in &mut p.fixes {
             for (name, list) in &mut fix.edits {
-                let Some(text) = text_of(name) else {
-                    continue;
-                };
                 for e in list {
-                    e.range = range_to_code_points(text, e.range);
+                    if let Some(r) = convert(name, e.range) {
+                        e.range = r;
+                    }
                 }
             }
         }
     }
 }
 
-fn range_to_code_points(text: &str, r: Range) -> Range {
-    Range::new(
-        position_to_code_points(text, r.start),
-        position_to_code_points(text, r.end),
-    )
+/// A text and where each of its lines starts.
+struct Lines<'a> {
+    text: &'a str,
+    starts: Vec<usize>,
 }
 
-/// A position whose column counts UTF-8 bytes, with the column in code points.
-fn position_to_code_points(text: &str, pos: Position) -> Position {
-    let line = text.split('\n').nth(pos.line as usize).unwrap_or("");
-    let mut col = (pos.character as usize).min(line.len());
-    while !line.is_char_boundary(col) {
-        col -= 1;
+impl<'a> Lines<'a> {
+    fn new(text: &'a str) -> Lines<'a> {
+        let starts = std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        Lines { text, starts }
     }
-    Position::new(pos.line, line[..col].chars().count() as u32)
+
+    fn range(&self, r: Range) -> Range {
+        Range::new(self.position(r.start), self.position(r.end))
+    }
+
+    /// A position whose column counts UTF-8 bytes, with the column in code points.
+    fn position(&self, pos: Position) -> Position {
+        let line = match self.starts.get(pos.line as usize) {
+            Some(&start) => {
+                let end = self
+                    .starts
+                    .get(pos.line as usize + 1)
+                    .map_or(self.text.len(), |e| e - 1);
+                &self.text[start..end]
+            }
+            None => "",
+        };
+        let mut col = (pos.character as usize).min(line.len());
+        while !line.is_char_boundary(col) {
+            col -= 1;
+        }
+        Position::new(pos.line, line[..col].chars().count() as u32)
+    }
 }
 
 /// The URI a named file is opened at: its name as a path below

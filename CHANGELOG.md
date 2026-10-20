@@ -18,6 +18,13 @@
 - `.pre-commit-hooks.yaml` with the hooks `turtle-lsp-check` and
   `turtle-lsp-format`.
 
+### Performance
+
+- **SHACL-SPARQL constraints** run once for all focus nodes of a shape
+  instead of once per node. Validating 30 MB of generated TriG with 71
+  SPARQL constraints per file went from 26 s to 0.6 s in the editor and the
+  command line, with identical results.
+
 ## 0.5.2 — 2026-10-20
 
 ### Features
