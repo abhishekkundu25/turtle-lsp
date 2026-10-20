@@ -12,10 +12,18 @@
 //! index as it was. SPARQL files on disk are not read at startup: features
 //! that look across the workspace's queries (references and rename of a
 //! term) ask for them with [`Workspace::sparql_documents`].
+//!
+//! JSON-LD contexts: a `file:` context URL is served from the open document
+//! at that URL, else read from disk, but only inside the workspace roots (as
+//! local imports are); other URLs go to the context loader (the imports
+//! cache, the bundled contexts, the network when allowed). Which contexts
+//! each JSON-LD analysis loaded is recorded, so a change to one (an edit, a
+//! save, a fetch that arrived) analyzes the documents that use it again
+//! ([`Workspace::context_changed`]).
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
-use crate::jsonld::ContextLoader;
 use crate::jsonld::loader::{self, Bundled};
+use crate::jsonld::{ContextLoader, LoadError, RemoteDocument};
 use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::syntax::{PrefixMap, Syntax};
 use line_index::LineIndex;
@@ -23,7 +31,7 @@ use lsp_types::TextDocumentContentChangeEvent;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub const PREFIX_FILE: &str = "prefixes.ttl";
 pub const SKIP_DIRS: &[&str] = &[
@@ -111,6 +119,104 @@ pub struct Workspace {
     /// Where JSON-LD documents' remote contexts come from (None: the bundled
     /// contexts only).
     contexts: Option<Arc<dyn ContextLoader>>,
+    /// Document URI -> the context URLs its last JSON-LD analysis asked
+    /// for. Shared with the thread that builds the initial index.
+    context_uses: ContextUses,
+}
+
+type ContextUses = Arc<Mutex<FxHashMap<String, Vec<String>>>>;
+
+/// Record the contexts `uri`'s analysis asked for.
+fn record_contexts(uses: &ContextUses, uri: &str, asked: Vec<String>) {
+    let Ok(mut uses) = uses.lock() else { return };
+    if asked.is_empty() {
+        uses.remove(uri);
+    } else {
+        uses.insert(uri.to_string(), asked);
+    }
+}
+
+/// What a workspace hands to another one parsing files for it (the initial
+/// index, built on another thread): its context loader, and the record of
+/// which documents use which contexts.
+#[derive(Clone)]
+pub struct SharedContexts {
+    loader: Option<Arc<dyn ContextLoader>>,
+    uses: ContextUses,
+}
+
+/// The contexts of one JSON-LD analysis: a `file:` URL is the open
+/// document's text, else the file's, inside the workspace roots only; other
+/// URLs go to `web`. Every URL asked for is recorded.
+struct DocContexts<'a> {
+    open: &'a FxHashMap<String, Doc>,
+    roots: &'a [PathBuf],
+    web: &'a dyn ContextLoader,
+    asked: Mutex<Vec<String>>,
+}
+
+impl<'a> DocContexts<'a> {
+    fn new(
+        open: &'a FxHashMap<String, Doc>,
+        roots: &'a [PathBuf],
+        web: &'a dyn ContextLoader,
+    ) -> DocContexts<'a> {
+        DocContexts {
+            open,
+            roots,
+            web,
+            asked: Mutex::default(),
+        }
+    }
+
+    /// Record in `uses` what `uri`'s analysis asked for, when it is JSON-LD.
+    fn record(self, uses: &ContextUses, uri: &str, syntax: Syntax) {
+        if syntax == Syntax::JsonLd {
+            record_contexts(uses, uri, self.asked.into_inner().unwrap_or_default());
+        }
+    }
+
+    fn file(&self, url: &str) -> Result<RemoteDocument, LoadError> {
+        let key = normalize_uri(url);
+        if let Some(d) = self.open.get(&key) {
+            return Ok(RemoteDocument {
+                url: url.to_string(),
+                text: Arc::from(d.text.as_str()),
+            });
+        }
+        let path = uri_to_path(url).ok_or(LoadError::NotFound)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if !path.exists() {
+                return Err(LoadError::NotFound);
+            }
+            crate::imports::inside_workspace(&path, self.roots).map_err(LoadError::Failed)?;
+            loader::read_context_file(&path).map(|text| RemoteDocument {
+                url: url.to_string(),
+                text: text.into(),
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (path, self.roots);
+            Err(LoadError::NotFound)
+        }
+    }
+}
+
+impl ContextLoader for DocContexts<'_> {
+    fn load(&self, url: &str) -> Result<RemoteDocument, LoadError> {
+        if let Ok(mut asked) = self.asked.lock()
+            && !asked.iter().any(|u| u == url)
+        {
+            asked.push(url.to_string());
+        }
+        if url.starts_with("file:") {
+            self.file(url)
+        } else {
+            self.web.load(url)
+        }
+    }
 }
 
 /// The file a `file:` URL names. None in the browser build, which has no files.
@@ -233,8 +339,9 @@ impl Workspace {
         self.set_context_loader(loader::for_platform(network));
     }
 
-    /// Load JSON-LD contexts with `loader` from now on; open JSON-LD
-    /// documents are analyzed again.
+    /// Load JSON-LD contexts with `loader` from now on: open JSON-LD
+    /// documents are analyzed again, and indexed ones that use a web
+    /// context are parsed again.
     pub fn set_context_loader(&mut self, loader: Arc<dyn ContextLoader>) {
         self.contexts = Some(loader);
         for d in self.open.values_mut() {
@@ -242,10 +349,69 @@ impl Workspace {
                 d.analysis = None;
             }
         }
+        let on_web: Vec<PathBuf> = self
+            .context_users(|url| !url.starts_with("file:"))
+            .into_iter()
+            .filter(|u| !self.open.contains_key(u) && self.disk.contains_key(u))
+            .filter_map(|u| uri_to_path(&u))
+            .collect();
+        if !on_web.is_empty() {
+            self.index_paths(on_web);
+        }
     }
 
     fn contexts(&self) -> Arc<dyn ContextLoader> {
         self.contexts.clone().unwrap_or_else(|| Arc::new(Bundled))
+    }
+
+    /// The context loader and the record of context uses, for a workspace
+    /// that parses files for this one ([`Workspace::use_shared_contexts`]).
+    pub fn shared_contexts(&self) -> SharedContexts {
+        SharedContexts {
+            loader: self.contexts.clone(),
+            uses: self.context_uses.clone(),
+        }
+    }
+
+    /// Load contexts as the workspace that shared them does, and record
+    /// which documents use which in its record.
+    pub fn use_shared_contexts(&mut self, shared: SharedContexts) {
+        self.contexts = shared.loader;
+        self.context_uses = shared.uses;
+    }
+
+    /// The documents whose last analysis asked for a context URL `wanted`
+    /// accepts.
+    fn context_users(&self, wanted: impl Fn(&str) -> bool) -> Vec<String> {
+        let Ok(uses) = self.context_uses.lock() else {
+            return Vec::new();
+        };
+        uses.iter()
+            .filter(|(_, urls)| urls.iter().any(|u| wanted(u)))
+            .map(|(doc, _)| doc.clone())
+            .collect()
+    }
+
+    /// The context at `url` changed (an open context file was edited,
+    /// saved or closed, a file changed on disk, a fetch arrived): the open
+    /// documents that use it are analyzed again, and, with `disk`, the
+    /// indexed ones are parsed again. Whether any document uses it.
+    pub fn context_changed(&mut self, url: &str, disk: bool) -> bool {
+        let key = normalize_uri(url);
+        let users =
+            self.context_users(|u| u == url || (u.starts_with("file:") && normalize_uri(u) == key));
+        let mut paths = Vec::new();
+        for u in &users {
+            if let Some(d) = self.open.get_mut(u) {
+                d.analysis = None;
+            } else if disk && self.disk.contains_key(u) {
+                paths.extend(uri_to_path(u));
+            }
+        }
+        if !paths.is_empty() {
+            self.index_paths(paths);
+        }
+        !users.is_empty()
     }
 
     /// An open document that is a cached copy of an import: analyzed, but
@@ -385,20 +551,22 @@ impl Workspace {
                 (uri, s, ext)
             })
             .collect();
-        let open = &self.open;
+        let (open, roots, uses) = (&self.open, &self.roots, &self.context_uses);
         let contexts = self.contexts();
         let done: Vec<(String, Arc<Analysis>, Option<DocFacts>)> = jobs
             .into_par_iter()
             .filter_map(|(uri, syntax, ext)| {
                 let doc = open.get(&uri)?;
+                let loader = DocContexts::new(open, roots, &*contexts);
                 let a = Arc::new(Analysis::with_loader(
                     uri.clone(),
                     &doc.text,
                     ext,
                     true,
                     syntax,
-                    &*contexts,
+                    &loader,
                 ));
+                loader.record(uses, &uri, syntax);
                 let facts = (!doc.cached_import).then(|| DocFacts::new(&a));
                 Some((uri, a, facts))
             })
@@ -435,15 +603,17 @@ impl Workspace {
         };
         let external = self.external_prefixes_as(uri, syntax);
         let contexts = self.contexts();
-        let doc = self.open.get_mut(uri)?;
+        let loader = DocContexts::new(&self.open, &self.roots, &*contexts);
         let a = Arc::new(Analysis::with_loader(
             uri.to_string(),
-            &doc.text,
+            &self.open.get(uri)?.text,
             external,
             true,
             syntax,
-            &*contexts,
+            &loader,
         ));
+        loader.record(&self.context_uses, uri, syntax);
+        let doc = self.open.get_mut(uri)?;
         doc.analysis = Some(a.clone());
         if !doc.cached_import {
             self.knowledge.set(uri, Source::Open, a.clone());
@@ -657,6 +827,7 @@ impl Workspace {
             })
             .collect();
         let contexts = self.contexts();
+        let (open, roots, uses) = (&self.open, &self.roots, &self.context_uses);
         jobs.into_par_iter()
             .filter_map(|(uri, path, ext)| {
                 if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
@@ -664,7 +835,9 @@ impl Workspace {
                 }
                 let text = std::fs::read_to_string(&path).ok()?;
                 let syntax = Syntax::from_extension(&uri).unwrap_or_default();
-                let a = Analysis::with_loader(uri.clone(), &text, ext, false, syntax, &*contexts);
+                let loader = DocContexts::new(open, roots, &*contexts);
+                let a = Analysis::with_loader(uri.clone(), &text, ext, false, syntax, &loader);
+                loader.record(uses, &uri, syntax);
                 Some((uri, a))
             })
             .collect()
@@ -676,6 +849,9 @@ impl Workspace {
             self.index_paths(vec![path.to_path_buf()]);
         } else {
             self.disk.remove(&uri);
+            if !self.open.contains_key(&uri) {
+                record_contexts(&self.context_uses, &uri, Vec::new());
+            }
             self.sync(&uri);
         }
     }
@@ -823,6 +999,107 @@ mod tests {
         ws.set_context_loader(Arc::new(crate::jsonld::NoNetwork::default()));
         assert!(!Arc::ptr_eq(&a, &ws.analysis(ld).unwrap()));
         assert!(Arc::ptr_eq(&b, &ws.analysis(ttl).unwrap()));
+    }
+
+    /// A fresh directory (canonical), removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let d =
+                std::env::temp_dir().join(format!("turtle-lsp-ws-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            TempDir(canonical(&d))
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn context_errors(ws: &mut Workspace, uri: &str) -> Vec<String> {
+        ws.analysis(uri)
+            .unwrap()
+            .parsed
+            .errors
+            .iter()
+            .filter(|e| e.code == "jsonld-context")
+            .map(|e| e.message.clone())
+            .collect()
+    }
+
+    const USES_CTX: &str = r#"{"@context": "ctx.jsonld", "@id": "http://ex.org/a", "name": "A"}"#;
+    const CTX: &str = r#"{"@context": {"name": "http://ex.org/name"}}"#;
+
+    #[test]
+    fn a_file_context_comes_from_the_open_document_then_the_disk_inside_the_roots_only() {
+        let root = TempDir::new("ctx-root");
+        let outside = TempDir::new("ctx-outside");
+        for dir in [&root.0, &outside.0] {
+            std::fs::write(dir.join("ctx.jsonld"), CTX).unwrap();
+        }
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let inside = path_to_uri(&root.0.join("a.jsonld")).unwrap();
+        let away = path_to_uri(&outside.0.join("a.jsonld")).unwrap();
+        ws.open_doc(inside.clone(), USES_CTX.into(), 1);
+        ws.open_doc(away.clone(), USES_CTX.into(), 1);
+        assert_eq!(context_errors(&mut ws, &inside), Vec::<String>::new());
+        let refused = context_errors(&mut ws, &away);
+        assert!(
+            refused.len() == 1 && refused[0].contains("outside the workspace"),
+            "{refused:?}"
+        );
+        assert_eq!(ws.analysis(&inside).unwrap().parsed.triples.len(), 1);
+
+        // An open context file wins over the disk, and edits to it reach the
+        // documents that use it.
+        let ctx = path_to_uri(&root.0.join("ctx.jsonld")).unwrap();
+        ws.open_doc(ctx.clone(), r#"{"@context": {"name": null}}"#.into(), 1);
+        assert!(ws.context_changed(&ctx, false));
+        assert_eq!(ws.analysis(&inside).unwrap().parsed.triples.len(), 0);
+        // Outside the roots, an open document is served too (the browser
+        // has nothing else).
+        let away_ctx = path_to_uri(&outside.0.join("ctx.jsonld")).unwrap();
+        ws.open_doc(away_ctx.clone(), CTX.into(), 1);
+        assert!(ws.context_changed(&away_ctx, false));
+        assert_eq!(context_errors(&mut ws, &away), Vec::<String>::new());
+        assert!(!ws.context_changed("file:///nobody/uses.jsonld", true));
+    }
+
+    #[test]
+    fn indexed_json_ld_files_follow_their_context_file_and_the_network_setting() {
+        let root = TempDir::new("ctx-disk");
+        std::fs::write(root.0.join("ctx.jsonld"), CTX).unwrap();
+        std::fs::write(root.0.join("a.jsonld"), USES_CTX).unwrap();
+        let web = r#"{"@context": "https://example.org/unknown-context.jsonld", "@id": "http://ex.org/b"}"#;
+        std::fs::write(root.0.join("b.jsonld"), web).unwrap();
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.set_context_loader(Arc::new(crate::jsonld::NoNetwork::default()));
+        ws.index_paths(Workspace::scan_roots(&ws.roots.clone()));
+        let a = path_to_uri(&root.0.join("a.jsonld")).unwrap();
+        let b = path_to_uri(&root.0.join("b.jsonld")).unwrap();
+        let ctx = path_to_uri(&root.0.join("ctx.jsonld")).unwrap();
+        assert_eq!(ws.disk[&a].parsed.triples.len(), 1);
+        std::fs::write(root.0.join("ctx.jsonld"), r#"{"@context": {"name": null}}"#).unwrap();
+        assert!(ws.context_changed(&ctx, true));
+        assert_eq!(ws.disk[&a].parsed.triples.len(), 0);
+        // A new loader parses again the indexed files that use web contexts.
+        let before = ws.disk[&b].clone();
+        let a_before = ws.disk[&a].clone();
+        ws.set_context_loader(Arc::new(crate::jsonld::NoNetwork::default().with(
+            "https://example.org/unknown-context.jsonld",
+            r#"{"@context": {}}"#,
+        )));
+        assert!(!Arc::ptr_eq(&before, &ws.disk[&b]));
+        assert!(
+            ws.disk[&b].parsed.errors.is_empty(),
+            "{:?}",
+            ws.disk[&b].parsed.errors
+        );
+        assert!(Arc::ptr_eq(&a_before, &ws.disk[&a]));
     }
 
     #[test]

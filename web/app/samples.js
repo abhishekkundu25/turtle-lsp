@@ -80,6 +80,20 @@ const QUADS = `<https://toolbox.example.org/id/erin> <http://www.w3.org/1999/02/
 <https://toolbox.example.org/id/erin>   <https://toolbox.example.org/def/name> "Erin" <https://toolbox.example.org/graph/hr> .
 `
 
+// JSON-LD: a person described with a context of short keys. JSON has no
+// comments, so the guided workspace explains it in start-here.ttl.
+const CAROL = `{
+  "@context": {
+    "ex": "https://toolbox.example.org/def/",
+    "id": "https://toolbox.example.org/id/",
+    "name": "ex:name"
+  },
+  "@id": "id:carol",
+  "@type": "ex:Person",
+  "name": "Carol"
+}
+`
+
 export const SETS = {
   starter: {
     label: "Ontology, shapes, data and a query",
@@ -91,11 +105,12 @@ export const SETS = {
     ],
   },
   datasets: {
-    label: "Datasets (TriG and N-Quads)",
+    label: "Datasets (TriG, N-Quads and JSON-LD)",
     files: [
       { name: "ontology.ttl", text: ONTOLOGY },
       { name: "graphs.trig", text: GRAPHS },
       { name: "hr.nq", text: QUADS },
+      { name: "carol.jsonld", text: CAROL },
     ],
   },
   queries: {
@@ -128,7 +143,7 @@ const START = `${head([
   "3. Put the cursor on ex:worksFor and press F2 to rename it in every file.",
   "4. The problems in ontology/core.ttl and data/people.ttl are deliberate:",
   "   hover a squiggle, then press Ctrl+. (Cmd+.) for the fix.",
-  "",
+  "5. data/carol.jsonld is JSON-LD: hover its \"name\" key for the term it stands for.",
   "",
   "ex: and id: need no @prefix here: prefixes.ttl declares them for the",
   "whole workspace, as it does in VS Code.",
@@ -166,6 +181,7 @@ export const WORKSPACE = [
   { path: "data/people.ttl", text: PEOPLE },
   { path: "data/graphs.trig", text: head(["A dataset in TriG: one graph per year."]) + GRAPHS },
   { path: "data/hr.nq", text: head(["The same kind of data as N-Quads."]) + QUADS },
+  { path: "data/carol.jsonld", text: CAROL },
   { path: "queries/people.rq", text: PEOPLE_RQ },
   { path: "queries/move-to-acme.ru", text: MOVE },
 ]

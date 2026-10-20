@@ -40,6 +40,8 @@
     "nquads",
     "trig",
     "n-triples",
+    "json-ld",
+    "jsonld",
     "sparql query",
     "linked data",
     "semantic web",
@@ -53,7 +55,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru}"
+    "workspaceContains:**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}",
+    "onLanguage:json"
   ],
   "capabilities": {
     "untrustedWorkspaces": {

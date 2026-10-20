@@ -89,11 +89,10 @@ fn locate(
         .find(|d| d.source != Source::External)
     {
         let sel = *d.spans.first()?;
-        let statements = &d.analysis.parsed.statements;
-        let i = statements.partition_point(|s| s.span.end < sel.start);
-        let range = statements
-            .get(i)
-            .map(|s| s.span)
+        let parsed = &d.analysis.parsed;
+        let range = parsed
+            .statement_at(sel)
+            .map(|i| parsed.statements[i].span)
             .filter(|s| s.start <= sel.start && sel.end <= s.end)
             .unwrap_or(sel);
         return at(d.analysis, range, sel);
@@ -231,4 +230,84 @@ pub fn subtypes(
     asking: Option<&Analysis>,
 ) -> Vec<TypeHierarchyItem> {
     related(item, k, enc, asking, |k, i| k.subs(&i))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+
+    /// JSON-LD node objects nest, and so do their statements: a class
+    /// described in a nested node object is shown as that object, not as
+    /// the one around it.
+    const VOCAB: &str = r#"{
+  "@context": {
+    "ex": "http://ex.org/",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#"
+  },
+  "@id": "ex:vocab",
+  "ex:defines": {
+    "@id": "ex:Gadget",
+    "@type": "rdfs:Class",
+    "rdfs:subClassOf": { "@id": "ex:Thing", "@type": "rdfs:Class" }
+  }
+}
+"#;
+
+    /// The node object whose `@id` is `id`, braces included.
+    fn object(text: &str, id: &str) -> Span {
+        let at = text.find(&format!("\"@id\": \"{id}\"")).unwrap();
+        let start = text[..at].rfind('{').unwrap();
+        let mut depth = 0;
+        for (i, c) in text[start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Span::new(start as u32, (start + i + 1) as u32);
+                    }
+                }
+                _ => {}
+            }
+        }
+        unreachable!()
+    }
+
+    #[test]
+    fn the_innermost_json_ld_statement_contains_a_span() {
+        let p = crate::jsonld::parse(VOCAB, None, &crate::jsonld::NoNetwork::default());
+        let at = |id: &str| {
+            let i = VOCAB.find(&format!("\"{id}\"")).unwrap() as u32 + 1;
+            p.statement_at(Span::new(i, i + id.len() as u32))
+                .map(|i| p.statements[i].span)
+        };
+        assert_eq!(at("ex:Gadget"), Some(object(VOCAB, "ex:Gadget")));
+        assert_eq!(at("ex:Thing"), Some(object(VOCAB, "ex:Thing")));
+        assert_eq!(at("ex:vocab").map(|s| s.start), Some(0));
+        let around = p.statements_around(object(VOCAB, "ex:Thing")).count();
+        assert_eq!(around, 3, "{:?}", p.statements);
+    }
+
+    #[test]
+    fn a_class_described_in_a_nested_json_ld_object_is_shown_as_that_object() {
+        let mut ws = Workspace::default();
+        let (ld, ttl) = ("file:///w/vocab.jsonld", "file:///w/uses.ttl");
+        let uses = "@prefix ex: <http://ex.org/> .\nex:x a ex:Gadget , ex:Thing .\n";
+        ws.open_doc(ld.into(), VOCAB.into(), 1);
+        ws.open_doc(ttl.into(), uses.into(), 1);
+        let a = ws.analysis(ttl).unwrap();
+        let k = ws.knowledge();
+        let vocab = k.get(ld).unwrap().clone();
+        for id in ["ex:Gadget", "ex:Thing"] {
+            let col = uses.lines().nth(1).unwrap().find(id).unwrap() as u32 + 1;
+            let it = prepare(&a, k, Encoding::Utf8, Position::new(1, col)).unwrap()[0].clone();
+            assert_eq!(it.uri.as_str(), ld);
+            assert_eq!(
+                it.range,
+                vocab.range(Encoding::Utf8, object(VOCAB, id)),
+                "{id}"
+            );
+        }
+    }
 }

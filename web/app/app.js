@@ -11,7 +11,7 @@ const TOOLS = [
 ]
 const DEBOUNCE_MS = 200
 // The files a folder contributes, by extension; anything else is skipped.
-const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru)$/i
+const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/i
 // Limits for a folder, so a large tree cannot stall the tab.
 const MAX_FOLDER_FILES = 500
 const MAX_FILE_BYTES = 10 * 1024 * 1024

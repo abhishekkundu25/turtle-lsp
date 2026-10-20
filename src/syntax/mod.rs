@@ -274,5 +274,28 @@ pub struct Parsed {
     pub tokens: Vec<lexer::Token>,
 }
 
+impl Parsed {
+    /// The statements around `span`, innermost first. JSON-LD statements
+    /// nest as node objects do (sorted by start): every one that contains
+    /// `span`. The other syntaxes' statements never overlap: the last one
+    /// starting at or before `span`, which contains it when any does (an
+    /// unfinished statement may end before it).
+    pub fn statements_around(&self, span: Span) -> impl Iterator<Item = usize> + '_ {
+        let st = &self.statements;
+        let i = st.partition_point(|s| s.span.start <= span.start);
+        let nested = self.syntax == Syntax::JsonLd;
+        (0..i)
+            .rev()
+            .take(if nested { i } else { 1 })
+            .filter(move |&j| !nested || span.end <= st[j].span.end)
+    }
+
+    /// The innermost statement around `span` (see
+    /// [`Parsed::statements_around`]).
+    pub fn statement_at(&self, span: Span) -> Option<usize> {
+        self.statements_around(span).next()
+    }
+}
+
 /// Prefixes visible before the first line of a document (from `prefixes.ttl`).
 pub type PrefixMap = FxHashMap<String, String>;

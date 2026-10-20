@@ -125,6 +125,46 @@ test("hover and completion come from the language server", async () => {
   }
 })
 
+test("a .jsonld file opens with JSON colouring, and the language server checks and explains it", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "data/carol.jsonld")
+    const uri = "file:///work/data/carol.jsonld"
+    const language = await page.evaluate((u) => window.monaco.editor.getModel(window.monaco.Uri.parse(u)).getLanguageId(), uri)
+    assert.equal(language, "json")
+    assert.equal(await page.locator("#status-lang").textContent(), "JSON-LD")
+    // Monaco's JSON tokens, not the RDF syntaxes' colouring.
+    const tokens = await page.evaluate(() => window.monaco.editor.tokenize('{"name": "Carol"}', "json")[0].map((t) => t.type))
+    assert.ok(tokens.some((t) => t.includes("key") && t.endsWith(".json")), tokens.join(", "))
+    // Hover on the "name" key (not its context entry): the IRI it stands for.
+    await page.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0]
+      const m = ed.getModel()
+      ed.setPosition(m.getPositionAt(m.getValue().lastIndexOf('"name"') + 2))
+      ed.focus()
+      ed.trigger("test", "editor.action.showHover", {})
+    })
+    await page.locator(".monaco-hover", { hasText: "toolbox.example.org/def/name" }).waitFor()
+    // A JSON syntax error is the server's, reported once: Monaco's own JSON
+    // checks are off.
+    await page.evaluate((u) => {
+      const m = window.monaco.editor.getModel(window.monaco.Uri.parse(u))
+      m.setValue(m.getValue().replace('"id:carol",', '"id:carol"'))
+    }, uri)
+    await page.waitForFunction(
+      (u) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(u) }).some((m) => m.code === "json-syntax"),
+      uri,
+      { timeout: 10_000 }
+    )
+    await settled(page)
+    const owners = await page.evaluate((u) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(u) }).map((m) => m.owner), uri)
+    assert.deepEqual([...new Set(owners)], ["turtle-lsp"])
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("the file named in a hover opens at its line when clicked", async () => {
   const { page, close } = await open()
   try {

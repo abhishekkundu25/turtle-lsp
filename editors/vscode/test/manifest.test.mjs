@@ -44,3 +44,16 @@ test("server settings are declared with the server's defaults", () => {
   }
   assert.deepEqual(settings["turtle.inlayHints.labels"].enum, ["opaque", "all", "off"])
 })
+
+test("JSON-LD files are served without taking over VS Code's JSON language", () => {
+  // The JSON language (and its highlighting) stays VS Code's own: no language
+  // here claims .jsonld, and the client attaches to the files by name.
+  const claimed = pkg.contributes.languages.flatMap((l) => l.extensions ?? [])
+  assert.ok(!claimed.includes(".jsonld"), claimed.join(", "))
+  assert.ok(!pkg.contributes.languages.some((l) => l.id === "json" || l.id === "jsonld"))
+  assert.ok(pkg.activationEvents.some((e) => e.startsWith("workspaceContains:") && e.includes("jsonld")), pkg.activationEvents.join(", "))
+  assert.ok(pkg.activationEvents.includes("onLanguage:json"))
+  const source = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8")
+  assert.match(source, /\{ scheme: "file", pattern: JSONLD_PATTERN \}/)
+  assert.match(source, /const JSONLD_PATTERN = "\*\*\/\*\.jsonld"/)
+})

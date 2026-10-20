@@ -2,7 +2,7 @@
 // files and folders kept in this browser. VS Code's arrangement: explorer,
 // tabs, editor, Problems, status bar, command palette (F1).
 import { WORKSPACE } from "./samples.js"
-import { LspClient, connect, markers, registerSyntax, languageOf } from "./editor-lsp.js"
+import { LspClient, connect, markers, registerSyntax, languageOf, quietJson } from "./editor-lsp.js"
 import { zip } from "./zip.js"
 import * as store from "./store.js"
 import { createSearch } from "./search.js"
@@ -14,11 +14,11 @@ import { createDiff } from "./diff.js"
 
 const ROOT = "file:///work/"
 // The files a folder contributes, by extension; anything else is skipped.
-const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru)$/i
+const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/i
 const MAX_FILES = 2000
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 const SAVE_DELAY_MS = 300
-const ICON = { turtle: "TTL", trig: "TRIG", ntriples: "NT", nquads: "NQ", sparql: "RQ" }
+const ICON = { turtle: "TTL", trig: "TRIG", ntriples: "NT", nquads: "NQ", sparql: "RQ", json: "LD" }
 
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
@@ -347,7 +347,7 @@ function renderStatus() {
   $("status-warnings").textContent = w
   $("status-shacl").textContent = s
   $("status-labels").textContent = settings.labelsText()
-  $("status-lang").textContent = W.active ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL" }[languageOf(W.active)] : ""
+  $("status-lang").textContent = W.active ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL", json: "JSON-LD" }[languageOf(W.active)] : ""
   const pos = W.active && editor.getPosition()
   $("status-pos").textContent = pos ? `Ln ${pos.lineNumber}, Col ${pos.column}` : ""
 }
@@ -1185,6 +1185,7 @@ async function main() {
     window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject)
   })
   registerSyntax(monaco)
+  quietJson(monaco)
   defineThemes()
   theme = createTheme({ monaco })
 

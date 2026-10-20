@@ -359,10 +359,11 @@ fn subject_at(a: &Analysis, offset: u32) -> (Option<Node>, Option<u32>, Option<(
     }
     let statements = &a.parsed.statements;
     let Some(open) = open else {
-        // Top level: the last statement that starts after the previous '.'.
-        let i = statements.partition_point(|s| s.span.start <= offset);
-        let Some(st) = i
-            .checked_sub(1)
+        // Top level: the last statement that starts after the previous '.'
+        // (in JSON-LD, which has no tokens, the innermost around `offset`).
+        let Some(st) = a
+            .parsed
+            .statement_at(Span::new(offset, offset))
             .filter(|&i| statements[i].span.start >= stop)
         else {
             return (None, None, None);
@@ -377,10 +378,7 @@ fn subject_at(a: &Analysis, offset: u32) -> (Option<Node>, Option<u32>, Option<(
         return (node, Some(st as u32), None);
     };
     let at = toks[open].start;
-    let st = statements
-        .partition_point(|s| s.span.start <= at)
-        .checked_sub(1)
-        .map(|i| i as u32);
+    let st = a.parsed.statement_at(Span::new(at, at)).map(|i| i as u32);
     let node = st.and_then(|st| {
         statement_triples(a, st)
             .iter()
@@ -549,11 +547,8 @@ fn prev_predicate(a: &Analysis, i: usize) -> Option<Iri> {
 
 /// The top-level subject of the statement that contains `span`.
 fn statement_subject(a: &Analysis, span: Span) -> Option<Iri> {
-    let st = &a.parsed.statements;
-    let i = st
-        .partition_point(|s| s.span.start <= span.start)
-        .checked_sub(1)?;
-    st[i].subject.map(|s| s.0)
+    let i = a.parsed.statement_at(span)?;
+    a.parsed.statements[i].subject.map(|s| s.0)
 }
 
 /// `class`'s object references whose predicate is one of `preds`. Each
@@ -673,16 +668,16 @@ fn constraint_path(k: &Knowledge, doc: DocId, pc: &PropertyConstraint) -> Option
     }
     let p = preds();
     let a = k.doc(doc);
-    let st = a
-        .parsed
-        .statements
-        .partition_point(|s| s.span.start <= pc.span.start)
-        .checked_sub(1)?;
-    let triples = statement_triples(a, st as u32);
-    let shape = triples
-        .iter()
-        .find(|t| t.p == p.sh_property && t.o_span == pc.span)
-        .map(|t| t.o.clone())?;
+    // The statement whose sh:property is the constraint (in JSON-LD the
+    // constraint is a node object nested in it).
+    let (triples, shape) = a.parsed.statements_around(pc.span).find_map(|st| {
+        let triples = statement_triples(a, st as u32);
+        let shape = triples
+            .iter()
+            .find(|t| t.p == p.sh_property && t.o_span == pc.span)
+            .map(|t| t.o.clone())?;
+        Some((triples, shape))
+    })?;
     let mut node = triples
         .iter()
         .find(|t| t.s == shape && t.p == p.sh_path)

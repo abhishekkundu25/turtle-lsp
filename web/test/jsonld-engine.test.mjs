@@ -101,7 +101,7 @@ test("shapes written in JSON-LD are used", { timeout: 40_000 }, () => {
   assert.deepEqual(rangesOf(f, "shacl-violation"), [F.THING_T1], show(f))
 })
 
-test("a sample workspace holds a .jsonld file", phase1("09"), () => {
+test("a sample workspace holds a .jsonld file", { timeout: 40_000 }, () => {
   const names = Object.values(SETS).flatMap((set) => set.files.map((f) => f.name))
   assert.ok(names.some((n) => n.endsWith(".jsonld")), names.join(", "))
 })

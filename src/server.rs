@@ -111,6 +111,9 @@ pub struct Server {
     /// Knowledge changed since the last display refresh.
     display_stale: bool,
     imports: crate::imports::Imports,
+    /// JSON-LD contexts fetched in the background (with `imports.network`),
+    /// by URL, once each has arrived or failed.
+    contexts_rx: Receiver<String>,
     /// SHACL validation thread, started when the workspace first has shapes.
     shacl: Option<shacl_validate::Worker>,
     shacl_rx: Receiver<shacl_validate::Outcome>,
@@ -248,7 +251,7 @@ impl Server {
         let init_options = params.initialization_options.clone().unwrap_or_default();
         let settings = Settings::from_layers([&file_settings, &init_options]);
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
-        ws.set_network(settings.imports_network);
+        let contexts_rx = use_network(&mut ws, settings.imports_network, inline);
 
         let result = InitializeResult {
             capabilities: capabilities(enc, pull),
@@ -294,6 +297,7 @@ impl Server {
             } else {
                 crate::imports::Imports::new()
             },
+            contexts_rx,
             shacl: None,
             shacl_rx: never(),
             shacl_generation: 0,
@@ -310,6 +314,23 @@ impl Server {
         };
         Ok((server, result, roots))
     }
+}
+
+/// Load JSON-LD contexts with the network when `network` is on: in the
+/// background, so the main loop never waits for a fetch (inline when
+/// embedded, where there are no threads). The receiver names each context
+/// fetched.
+fn use_network(ws: &mut Workspace, network: bool, inline: bool) -> Receiver<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if network && !inline {
+        let (loader, fetched) =
+            crate::jsonld::loader::DesktopLoader::in_background(crate::imports::import_cache_dir());
+        ws.set_context_loader(Arc::new(loader));
+        return fetched;
+    }
+    let _ = inline;
+    ws.set_network(network);
+    never()
 }
 
 /// The settings layer from `turtle-lsp.json` at `root`, and why it was
@@ -340,10 +361,11 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     // Index the workspace in the background.
     let (tx, index_rx) = unbounded();
     let prefixes = server.ws.settings_prefixes.clone();
-    let network = server.settings.imports_network;
+    // The same context loader: a context is fetched once, in the background.
+    let contexts = server.ws.shared_contexts();
     std::thread::spawn(move || {
         let mut tmp = Workspace::new(roots.clone(), prefixes);
-        tmp.set_network(network);
+        tmp.use_shared_contexts(contexts);
         let files = Workspace::scan_roots(&roots);
         let _ = tx.send(tmp.parse_paths(files));
     });
@@ -502,6 +524,14 @@ impl Server {
                 recv(self.shacl_progress_due.map_or_else(never, crossbeam_channel::at)) -> _ => {
                     self.shacl_progress_due = None;
                     self.shacl_progress = self.progress_begin("Validating SHACL shapes");
+                    None
+                }
+                recv(self.contexts_rx) -> url => {
+                    match url {
+                        Ok(url) => self.context_fetched(&url),
+                        // The loader is gone: a disconnected channel is always ready.
+                        Err(_) => self.contexts_rx = never(),
+                    }
                     None
                 }
                 recv(self.imports.results()) -> done => {
@@ -760,6 +790,10 @@ impl Server {
                     let uri = normalize_uri(p.text_document.uri.as_str());
                     self.ws.close_doc(&uri);
                     self.dirty.remove(&uri);
+                    // Unsaved edits to a context file are gone with the buffer.
+                    if self.ws.context_changed(&uri, true) {
+                        self.knowledge_changed();
+                    }
                     // Unsaved edits to a prefixes.ttl are gone with the buffer.
                     if uri.ends_with(&format!("/{PREFIX_FILE}")) {
                         self.ws.invalidate_prefixes();
@@ -799,6 +833,11 @@ impl Server {
                             // A catalog or an imported RDF/XML ontology changed.
                             self.imports.retry();
                             continue;
+                        }
+                        let key = normalize_uri(ch.uri.as_str());
+                        // A JSON-LD context file on disk (the open copy wins).
+                        if !self.ws.open.contains_key(&key) && self.ws.context_changed(&key, true) {
+                            disk_changed = true;
                         }
                         if !is_turtle(&path) {
                             continue;
@@ -841,6 +880,9 @@ impl Server {
             self.ws.invalidate_prefixes();
             self.knowledge_changed();
         }
+        if self.ws.context_changed(uri, true) {
+            self.knowledge_changed();
+        }
         self.imports.retry();
         self.shacl_typing_due = None;
         self.validate_shacl();
@@ -857,6 +899,17 @@ impl Server {
         let k = self.ws.knowledge();
         if let Some(done) = self.imports.sync(k, &roots, network) {
             self.imports_done(done);
+        }
+    }
+
+    /// A JSON-LD context fetched in the background arrived (or failed):
+    /// the documents waiting for it are analyzed again.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn context_fetched(&mut self, url: &str) {
+        self.ensure_indexed();
+        if self.ws.context_changed(url, true) {
+            self.knowledge_changed();
+            self.validate_shacl();
         }
     }
 
@@ -1021,7 +1074,9 @@ impl Server {
             self.ws.invalidate_prefixes();
         }
         if new.imports_network != self.settings.imports_network {
-            self.ws.set_network(new.imports_network);
+            // Indexed JSON-LD files are parsed again with the new loader.
+            self.ensure_indexed();
+            self.contexts_rx = use_network(&mut self.ws, new.imports_network, self.inline);
         }
         self.settings = new;
         self.dirty.extend(self.ws.open.keys().cloned());
@@ -1093,6 +1148,11 @@ impl Server {
             // it is saved (re-reading the workspace per keystroke stalls).
             self.ws.invalidate_open_prefixes();
             self.dirty.extend(self.ws.open.keys().cloned());
+            self.knowledge_changed();
+        }
+        // A context file being edited: the open documents using it follow;
+        // indexed ones are parsed again when it is saved or closed.
+        if self.ws.context_changed(uri, false) {
             self.knowledge_changed();
         }
         self.dirty.insert(uri.to_string());

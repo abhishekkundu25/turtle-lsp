@@ -8,11 +8,15 @@
 //!   remote-doc runner inject documents through it;
 //! - [`Bundled`] serves the common contexts compiled in
 //!   (`data/jsonld-contexts`): the browser engine's loader;
-//! - [`DesktopLoader`] (not in the browser build) resolves a URL, in order,
-//!   from the file a `file:` URL names, the imports cache, the bundled
-//!   contexts, then the network when allowed, caching what it fetched.
+//! - [`DesktopLoader`] (not in the browser build) resolves a web URL, in
+//!   order, from the imports cache, the bundled contexts, then the network
+//!   when allowed, caching what it fetched. The network is used inline (the
+//!   command line) or in the background (the language server, whose main
+//!   loop must not wait for it: see [`DesktopLoader::in_background`]).
 //!
-//! [`for_platform`] picks the desktop or the browser loader.
+//! [`for_platform`] picks the desktop or the browser loader. `file:` URLs
+//! are the workspace's business (open documents first, then files inside
+//! the workspace roots): see `crate::workspace`.
 
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -37,6 +41,9 @@ pub enum LoadError {
     NotFound,
     /// Any other failure (I/O, HTTP, not JSON), described for the user.
     Failed(String),
+    /// Being fetched in the background: the document is parsed again when
+    /// it arrives.
+    Pending,
 }
 
 /// Loads context documents by absolute URL. Synchronous: parsing a document
@@ -181,33 +188,53 @@ fn is_web(url: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use desktop::DesktopLoader;
+pub use desktop::{DesktopLoader, read_context_file};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod desktop {
     use super::{ContextLoader, LoadError, RemoteDocument, bundled, is_web, refused};
     use crate::imports::{self, MAX_FETCH_BYTES};
-    use rustc_hash::FxHashMap;
+    use crossbeam_channel::{Receiver, Sender, unbounded};
+    use rustc_hash::{FxHashMap, FxHashSet};
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     const ACCEPT: &str = "application/ld+json, application/json;q=0.9";
     /// A failed fetch is not tried again for this long.
     const RETRY_FETCH_AFTER: Duration = Duration::from_secs(300);
 
-    /// Loads contexts on the desktop, in order: the file a `file:` URL
-    /// names; the imports cache (`<hash>.jsonld` beside the cached imports);
-    /// the bundled contexts; then, only with `network`, the web, saving what
-    /// it fetched to the cache. Web documents are kept in memory once
-    /// loaded, and a failed fetch is not retried for five minutes.
+    /// Loads web contexts on the desktop, in order: the imports cache
+    /// (`<hash>.jsonld` beside the cached imports); the bundled contexts;
+    /// then, only when the network is on, the web, saving what it fetched to
+    /// the cache. Documents are kept in memory once loaded, and a failed
+    /// fetch is not retried for five minutes. Other URLs are not found.
+    ///
+    /// Clones share their state (memory, fetches in flight).
+    #[derive(Clone)]
     pub struct DesktopLoader {
+        inner: Arc<Inner>,
+    }
+
+    struct Inner {
         cache: Option<PathBuf>,
-        network: bool,
+        network: Network,
         memo: Mutex<FxHashMap<String, Memo>>,
         /// Held while fetching, so documents parsed in parallel fetch a
         /// context once.
         fetching: Mutex<()>,
+    }
+
+    enum Network {
+        Off,
+        /// Fetch while the document waits.
+        Inline,
+        /// Fetch on another thread; the URL goes to `done` once the result
+        /// is known (loaded or failed).
+        Background {
+            queued: Mutex<FxHashSet<String>>,
+            done: Sender<String>,
+        },
     }
 
     #[derive(Clone)]
@@ -217,16 +244,44 @@ mod desktop {
     }
 
     impl DesktopLoader {
-        /// `cache` is the imports cache directory (None: no cache).
+        /// `cache` is the imports cache directory (None: no cache). With
+        /// `network`, a context that is neither cached nor bundled is
+        /// fetched while the document waits.
         pub fn new(cache: Option<PathBuf>, network: bool) -> DesktopLoader {
-            DesktopLoader {
-                cache,
-                network,
-                memo: Mutex::default(),
-                fetching: Mutex::default(),
-            }
+            let network = if network {
+                Network::Inline
+            } else {
+                Network::Off
+            };
+            DesktopLoader::with(cache, network)
         }
 
+        /// A loader that fetches in the background: a context that is
+        /// neither cached nor bundled is [`LoadError::Pending`] at first,
+        /// and its URL arrives on the receiver once it has been fetched (or
+        /// failed); documents that use it are then parsed again.
+        pub fn in_background(cache: Option<PathBuf>) -> (DesktopLoader, Receiver<String>) {
+            let (done, rx) = unbounded();
+            let network = Network::Background {
+                queued: Mutex::default(),
+                done,
+            };
+            (DesktopLoader::with(cache, network), rx)
+        }
+
+        fn with(cache: Option<PathBuf>, network: Network) -> DesktopLoader {
+            DesktopLoader {
+                inner: Arc::new(Inner {
+                    cache,
+                    network,
+                    memo: Mutex::default(),
+                    fetching: Mutex::default(),
+                }),
+            }
+        }
+    }
+
+    impl Inner {
         fn remembered(&self, url: &str) -> Option<Result<RemoteDocument, LoadError>> {
             match self.memo.lock().ok()?.get(url)? {
                 Memo::Loaded(doc) => Some(Ok(doc.clone())),
@@ -292,31 +347,48 @@ mod desktop {
 
     impl ContextLoader for DesktopLoader {
         fn load(&self, url: &str) -> Result<RemoteDocument, LoadError> {
-            if let Some(path) = url::Url::parse(url)
-                .ok()
-                .filter(|u| u.scheme() == "file")
-                .and_then(|u| u.to_file_path().ok())
-            {
-                return read_limited(&path).map(|text| RemoteDocument {
-                    url: url.to_string(),
-                    text: text.into(),
-                });
-            }
+            let inner = &self.inner;
             if !is_web(url) {
                 return Err(LoadError::NotFound);
             }
-            if let Some(r) = self.remembered(url) {
+            if let Some(r) = inner.remembered(url) {
                 return r;
             }
-            if let Some(doc) = self.cached(url).or_else(|| bundled(url)) {
-                self.remember(url, &Ok(doc.clone()));
+            if let Some(doc) = inner.cached(url).or_else(|| bundled(url)) {
+                inner.remember(url, &Ok(doc.clone()));
                 return Ok(doc);
             }
-            if !self.network {
-                return Err(refused(url));
+            match &inner.network {
+                Network::Off => Err(refused(url)),
+                Network::Inline => inner.fetch(url),
+                Network::Background { queued, .. } => {
+                    let first = queued
+                        .lock()
+                        .map(|mut q| q.insert(url.to_string()))
+                        .unwrap_or(false);
+                    if first {
+                        let inner = inner.clone();
+                        let url = url.to_string();
+                        std::thread::spawn(move || {
+                            let _ = inner.fetch(&url);
+                            if let Network::Background { queued, done } = &inner.network {
+                                if let Ok(mut q) = queued.lock() {
+                                    q.remove(&url);
+                                }
+                                let _ = done.send(url);
+                            }
+                        });
+                    }
+                    Err(LoadError::Pending)
+                }
             }
-            self.fetch(url)
         }
+    }
+
+    /// The text of a context file on disk: at most [`MAX_FETCH_BYTES`],
+    /// UTF-8, without a BOM.
+    pub fn read_context_file(path: &Path) -> Result<String, LoadError> {
+        read_limited(path)
     }
 
     /// A context file's text: at most [`MAX_FETCH_BYTES`], UTF-8, no BOM.
@@ -533,7 +605,7 @@ mod desktop_tests {
     }
 
     #[test]
-    fn a_file_url_is_read_from_disk() {
+    fn a_context_file_is_read_without_its_bom_and_the_loader_leaves_file_urls_alone() {
         let dir = TempDir::new("file");
         let path = dir.0.join("ctx.jsonld");
         std::fs::write(
@@ -541,18 +613,67 @@ mod desktop_tests {
             "\u{feff}{\"@context\": {\"a\": \"http://ex.org/a\"}}",
         )
         .unwrap();
-        let l = DesktopLoader::new(None, false);
-        let url = file_url(&path);
-        let doc = l.load(&url).unwrap();
-        assert_eq!(doc.url, url);
-        assert!(doc.text.starts_with('{'));
+        assert!(read_context_file(&path).unwrap().starts_with('{'));
         assert_eq!(
-            l.load(&file_url(&dir.0.join("missing.jsonld"))),
+            read_context_file(&dir.0.join("missing.jsonld")),
             Err(LoadError::NotFound)
         );
-        // Edits to the file are seen.
-        std::fs::write(&path, "{}").unwrap();
-        assert_eq!(&*l.load(&url).unwrap().text, "{}");
+        // The workspace serves `file:` URLs (open documents, then files
+        // inside its roots); the loader never reads one.
+        let l = DesktopLoader::new(None, false);
+        assert_eq!(l.load(&file_url(&path)), Err(LoadError::NotFound));
+    }
+
+    /// A local HTTP server answering every request with a context; the
+    /// requested paths are logged.
+    fn serve() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = log.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]);
+                seen.lock()
+                    .unwrap()
+                    .push(head.split(' ').nth(1).unwrap_or("").to_string());
+                let body = r#"{"@context": {"a": "http://ex.org/a"}}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/ld+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (base, log)
+    }
+
+    #[test]
+    fn in_the_background_a_context_is_pending_then_loaded_and_fetched_once() {
+        let cache = TempDir::new("background");
+        let (base, log) = serve();
+        let url = format!("{base}/ctx.jsonld");
+        let (l, done) = DesktopLoader::in_background(Some(cache.0.clone()));
+        assert_eq!(l.load(&url), Err(LoadError::Pending));
+        // Asked again while the fetch runs: still pending, not fetched twice.
+        let again = l.load(&url);
+        assert!(
+            again == Err(LoadError::Pending) || again.is_ok(),
+            "{again:?}"
+        );
+        let arrived = done
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(arrived, url);
+        let doc = l.load(&url).unwrap();
+        assert!(doc.text.contains("ex.org"));
+        assert!(cache_file_as(&cache.0, &url, "jsonld").is_file());
+        assert_eq!(*log.lock().unwrap(), ["/ctx.jsonld"]);
+        // Nothing else is announced.
+        assert!(done.try_recv().is_err());
     }
 
     #[test]

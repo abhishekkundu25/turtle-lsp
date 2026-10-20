@@ -5,10 +5,33 @@
 
 export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 
-// The language of a path, as the server and Monaco know it.
+// The language of a path, as the server and Monaco know it. JSON-LD is
+// Monaco's own JSON (its highlighting); the server knows a `.jsonld` name
+// is JSON-LD.
 export function languageOf(path) {
   const ext = path.toLowerCase().split(".").pop()
-  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql" }[ext] ?? "turtle"
+  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json" }[ext] ?? "turtle"
+}
+
+// Monaco's JSON support keeps only what the server does not do: colours,
+// brackets and selection. Its own checks, hovers and completion would
+// repeat (or contradict) the server's on JSON-LD.
+export function quietJson(monaco) {
+  const json = monaco.languages.json?.jsonDefaults
+  if (!json) return
+  json.setDiagnosticsOptions({ validate: false })
+  json.setModeConfiguration({
+    tokens: true,
+    selectionRanges: true,
+    foldingRanges: true,
+    colors: false,
+    completionItems: false,
+    hovers: false,
+    documentSymbols: false,
+    documentFormattingEdits: false,
+    documentRangeFormattingEdits: false,
+    diagnostics: false,
+  })
 }
 
 export class LspClient {
@@ -132,7 +155,9 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   const triggers = capabilities.completionProvider?.triggerCharacters ?? []
   const legend = capabilities.semanticTokensProvider?.legend ?? { tokenTypes: [], tokenModifiers: [] }
 
-  for (const lang of LANGUAGES) {
+  // The server's features also serve JSON-LD files (Monaco's json language;
+  // only `.jsonld` files are ever opened in it).
+  for (const lang of [...LANGUAGES, "json"]) {
     monaco.languages.registerHoverProvider(lang, {
       async provideHover(model, position) {
         const h = await client.request("textDocument/hover", at(model, position))

@@ -10,7 +10,7 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::{SOURCE, TermUse};
 use crate::knowledge::{Knowledge, namespace_of};
-use crate::syntax::{Form, Iri, IriKey, Role, Span};
+use crate::syntax::{Form, Iri, IriKey, PrefixMap, Role, Span, Syntax};
 use crate::vocab::levenshtein;
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -111,7 +111,8 @@ pub fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diag
                 bare: None,
             }),
         });
-    undescribed(
+    let jsonld = a.parsed.syntax == Syntax::JsonLd;
+    undescribed_written(
         uses,
         &a.text,
         k,
@@ -122,12 +123,66 @@ pub fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diag
         },
         |p| {
             prefixes
-                .get_or_insert_with(|| a.prefix_map())
+                .get_or_insert_with(|| {
+                    if jsonld {
+                        jsonld_prefixes(a)
+                    } else {
+                        a.prefix_map()
+                    }
+                })
                 .get(p)
                 .cloned()
         },
         |span| a.range(enc, span),
+        |written, used, s| {
+            if jsonld {
+                jsonld_iri(written, used, s)
+            } else {
+                format!("<{s}>")
+            }
+        },
     )
+}
+
+/// The prefixes a JSON-LD document uses, from its compact IRIs: each
+/// `prefix:local` it writes expands to the prefix's IRI followed by `local`.
+/// (Its prefixes live in `@context`, not in the parse's prefix list.)
+fn jsonld_prefixes(a: &Analysis) -> PrefixMap {
+    let mut out = PrefixMap::default();
+    for r in &a.parsed.refs {
+        let Form::PName { prefix_len } = r.form else {
+            continue;
+        };
+        let Some(written) = a.text.get(r.span.start as usize..r.span.end as usize) else {
+            continue;
+        };
+        let (Some(prefix), Some(local)) = (
+            written.get(..prefix_len as usize),
+            written.get(prefix_len as usize + 1..),
+        ) else {
+            continue;
+        };
+        if !out.contains_key(prefix)
+            && let Some(ns) = r.iri.strip_suffix(local)
+        {
+            out.insert(prefix.to_string(), ns.to_string());
+        }
+    }
+    out
+}
+
+/// How JSON-LD writes `suggestion` where `written` (expanding to `used`)
+/// is: as a term when `written` is one that `@vocab` expanded (`colur` for
+/// `.../colur`), else as the absolute IRI (a JSON string, no brackets).
+fn jsonld_iri(written: &str, used: &str, suggestion: &str) -> String {
+    if !written.contains(':')
+        && let Some(vocab) = used.strip_suffix(written)
+        && let Some(term) = suggestion.strip_prefix(vocab)
+        && plain_local(term)
+    {
+        return term.to_string();
+    }
+    suggestion.to_string()
 }
 
 /// The `undescribed-term` diagnostics for `uses` (the document decides which
@@ -139,9 +194,30 @@ pub fn undescribed<'a, K>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     text: &str,
     k: &Knowledge,
+    skip: impl FnMut(Span) -> bool,
+    namespace: impl FnMut(&str) -> Option<String>,
+    range: impl Fn(Span) -> Range,
+) -> Vec<Diagnostic>
+where
+    K: std::ops::Deref<Target = str> + IriKey + Copy + Eq + std::hash::Hash,
+{
+    undescribed_written(uses, text, k, skip, namespace, range, |_, _, s| {
+        format!("<{s}>")
+    })
+}
+
+/// [`undescribed`], where `full(written, used, suggestion)` writes a
+/// suggestion that no prefix shortens, in place of `written` (which
+/// expands to `used`).
+#[allow(clippy::too_many_arguments)]
+fn undescribed_written<'a, K>(
+    uses: impl Iterator<Item = TermUse<'a, K>>,
+    text: &str,
+    k: &Knowledge,
     mut skip: impl FnMut(Span) -> bool,
     mut namespace: impl FnMut(&str) -> Option<String>,
     range: impl Fn(Span) -> Range,
+    full: impl Fn(&str, &str, &str) -> String,
 ) -> Vec<Diagnostic>
 where
     K: std::ops::Deref<Target = str> + IriKey + Copy + Eq + std::hash::Hash,
@@ -178,7 +254,7 @@ where
                     .filter(|l| plain_local(l))
                     .map(|l| format!("{prefix}:{l}"))
             });
-            let replacement = pname.unwrap_or_else(|| format!("<{s}>"));
+            let replacement = pname.unwrap_or_else(|| full(written, &u.iri, &s));
             d.severity = Some(DiagnosticSeverity::WARNING);
             d.message
                 .push_str(&format!(". Did you mean '{replacement}'?"));

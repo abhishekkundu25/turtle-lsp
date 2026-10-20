@@ -656,7 +656,7 @@ fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool) -> Option<
 
 /// Local imports are read only from inside the workspace: a cloned repository
 /// must not make the editor read arbitrary files of the user's.
-fn inside_workspace(path: &Path, roots: &[PathBuf]) -> Result<(), String> {
+pub(crate) fn inside_workspace(path: &Path, roots: &[PathBuf]) -> Result<(), String> {
     let real = path.canonicalize().map_err(|e| e.to_string())?;
     if roots
         .iter()

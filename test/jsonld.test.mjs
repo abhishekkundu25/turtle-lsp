@@ -456,7 +456,7 @@ test("owl:imports of an ontology a JSON-LD file declares resolve", { timeout: 25
   assert.deepEqual(rangesOf(diags, "undescribed-term"), [F.USES_GADGT], show(diags))
 })
 
-test("in JSON-LD, a typo of a term Turtle describes is undescribed-term with a fix", phase1("09"), async (t) => {
+test("in JSON-LD, a typo of a term Turtle describes is undescribed-term with a fix", { timeout: 25_000 }, async (t) => {
   const { uri } = await openScratch(t, F.BACK)
   const diags = await until(s, uri, (d) => withCode(d, "undescribed-term").length > 0)
   assert.deepEqual(rangesOf(diags, "undescribed-term"), [F.BACK_TYPO], show(diags))

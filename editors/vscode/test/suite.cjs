@@ -126,6 +126,26 @@ check("quick fix adds a missing well-known prefix", async () => {
   await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
 })
 
+check("a .jsonld file keeps the JSON language and gets the server's diagnostics", async () => {
+  const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "turtle-jsonld-"))
+  try {
+    const file = path.join(dir, "broken.jsonld")
+    fs.writeFileSync(file, '{\n  "@id": "http://e/a"\n  "http://e/p": 1\n}\n')
+    const doc = await open(file)
+    assert.equal(doc.languageId, "json")
+    const syntax = (x) => (x.code?.value ?? x.code) === "json-syntax" && x.source === "turtle"
+    let d = []
+    for (let i = 0; i < 60 && !d.some(syntax); i++) {
+      await sleep(50)
+      d = vscode.languages.getDiagnostics(doc.uri)
+    }
+    assert.ok(d.some(syntax), fmt(d))
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 check("organise prefixes is offered as a source action", async () => {
   const content = "@prefix z: <http://z/> .\n@prefix a: <http://a/> .\n@prefix u: <http://u/> .\na:x z:p a:y .\n"
   const doc = await vscode.workspace.openTextDocument({ language: "turtle", content })

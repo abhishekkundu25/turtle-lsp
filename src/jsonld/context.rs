@@ -1264,6 +1264,7 @@ impl<'l> Processor<'l> {
             ),
             LoadError::NotFound => format!("{url} was not found"),
             LoadError::Failed(why) => format!("{url}: {why}"),
+            LoadError::Pending => format!("{url} is being fetched"),
         };
         self.err(ErrorCode::LoadingRemoteContextFailed, span, why)
     }

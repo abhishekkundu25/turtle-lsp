@@ -7,6 +7,18 @@ import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-lan
 
 let client: LanguageClient | undefined
 
+const RDF_LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
+
+// JSON-LD files keep VS Code's own JSON language (and its highlighting): the
+// server attaches to them by name, and detects JSON-LD from the extension.
+const JSONLD_PATTERN = "**/*.jsonld"
+
+/** Whether the server handles `doc`. */
+function isServed(doc: vscode.TextDocument): boolean {
+  if (doc.uri.scheme !== "file" && doc.uri.scheme !== "untitled") return false
+  return RDF_LANGUAGES.includes(doc.languageId) || (doc.uri.scheme === "file" && doc.uri.path.endsWith(".jsonld"))
+}
+
 const exe = process.platform === "win32" ? "turtle-lsp.exe" : "turtle-lsp"
 
 function findServer(context: vscode.ExtensionContext): string | undefined {
@@ -59,6 +71,7 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
       { scheme: "untitled", language: "nquads" },
       { scheme: "file", language: "sparql" },
       { scheme: "untitled", language: "sparql" },
+      { scheme: "file", pattern: JSONLD_PATTERN },
     ],
     initializationOptions: serverSettings(),
     // Later changes reach the server as workspace/didChangeConfiguration.
@@ -74,6 +87,17 @@ export interface TurtleApi {
   client(): LanguageClient | undefined
 }
 
+/**
+ * Whether to start the server now. Opening any JSON file activates the
+ * extension (`onLanguage:json`, for `.jsonld` files): start only once the
+ * workspace has a file the server handles, or one is open.
+ */
+async function wanted(): Promise<boolean> {
+  if (vscode.workspace.textDocuments.some(isServed)) return true
+  const files = await vscode.workspace.findFiles("**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}", "**/node_modules/**", 1)
+  return files.length > 0
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<TurtleApi> {
   context.subscriptions.push(
     vscode.commands.registerCommand("turtle.restartServer", async () => {
@@ -86,7 +110,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<Turtle
       }
     }),
   )
-  await start(context)
+  if (await wanted()) {
+    await start(context)
+  } else {
+    const waiting = vscode.workspace.onDidOpenTextDocument(async (doc) => {
+      if (client || !isServed(doc)) return
+      waiting.dispose()
+      await start(context)
+    })
+    context.subscriptions.push(waiting)
+  }
   return { client: () => client }
 }
 
