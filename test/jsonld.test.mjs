@@ -762,7 +762,7 @@ test("format: JSON-LD files are formatted in place, and a second run changes not
   assert.equal(fs.readFileSync(path.join(w, "messy.jsonld"), "utf8"), once)
 })
 
-test("semantic tokens mark keywords, properties and classes", phase2, async () => {
+test("semantic tokens mark keywords, properties and classes", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const types = s.init.capabilities.semanticTokensProvider.legend.tokenTypes
   const res = await s.request("textDocument/semanticTokens/full", { textDocument: { uri } })
@@ -778,6 +778,34 @@ test("semantic tokens mark keywords, properties and classes", phase2, async () =
   for (const [r, type] of expect) {
     assert.deepEqual(tokenAt(r), { line: r.start.line, character: r.start.character, length: r.end.character - r.start.character, type }, JSON.stringify(tokens))
   }
+})
+
+test("an alias used as a value is a keyword", { timeout: 25_000 }, async (t) => {
+  const text = '{ "@context": { "ident": "@id", "name": "http://schema.org/name" }, "ident": "http://ex.org/a", "@type": "ident", "name": "A" }'
+  const { uri } = await openScratch(t, text)
+  const types = s.init.capabilities.semanticTokensProvider.legend.tokenTypes
+  const res = await s.request("textDocument/semanticTokens/full", { textDocument: { uri } })
+  const tokens = decodeTokens(res?.data ?? [], types)
+  const typeAt = (needle) => tokens.find((x) => x.character === text.indexOf(needle) + 1)?.type
+  const shown = JSON.stringify(tokens)
+  assert.equal(typeAt('"ident": "@id"'), "keyword", shown) // definition key
+  assert.equal(typeAt('"ident": "http'), "keyword", shown) // as a key
+  assert.equal(typeAt('"ident", "name"'), "keyword", shown) // as a value
+  assert.equal(typeAt('"name": "A"'), "property", shown)
+})
+
+test("a semantic tokens range request returns only tokens in range", { timeout: 25_000 }, async () => {
+  const uri = await openEdit()
+  const types = s.init.capabilities.semanticTokensProvider.legend.tokenTypes
+  const r = F.EDIT_ANN_OBJECT
+  const res = await s.request("textDocument/semanticTokens/range", { textDocument: { uri }, range: r })
+  const tokens = decodeTokens(res?.data ?? [], types)
+  assert.ok(tokens.length >= 4, JSON.stringify(tokens))
+  for (const x of tokens) {
+    assert.equal(x.line, r.start.line, JSON.stringify(tokens))
+    assert.ok(x.character >= r.start.character && x.character + x.length <= r.end.character, JSON.stringify(tokens))
+  }
+  assert.ok(tokens.some((x) => x.character === F.EDIT_ANN_NAME.start.character && x.type === "property"), JSON.stringify(tokens))
 })
 
 test("the outline lists each node object by its @id", { timeout: 25_000 }, async () => {

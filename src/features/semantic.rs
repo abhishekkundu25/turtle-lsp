@@ -92,6 +92,9 @@ pub(crate) struct Class {
 /// touches `to` is included, so a range ending at a token's start keeps it).
 fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
     let p = &a.parsed;
+    if p.syntax == crate::syntax::Syntax::JsonLd {
+        return jsonld_tokens(a, k, from, to);
+    }
     let wanted = |s: u32, e: u32| e > from && s <= to && s < e;
     let mut out: Vec<Raw> = Vec::new();
     let mut push = |start: u32, end: u32, ty: u32, mods: u32| {
@@ -172,6 +175,59 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
         push(local_start, end, ty, c.mods | decl);
     }
 
+    sort_and_dedupe(&mut out);
+    out
+}
+
+/// JSON-LD tokens from the source index: keywords and aliases are keywords,
+/// keys that expand to an IRI are properties, `@type` values are classes,
+/// and term definitions in this document are declarations.
+fn jsonld_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
+    use crate::jsonld::source::{Origin, UseKind, UseRole};
+    let idx = &a.source_index;
+    let wanted = |s: u32, e: u32| e > from && s <= to && s < e;
+    let mut classes: rustc_hash::FxHashMap<std::sync::Arc<str>, Class> = Default::default();
+    let mut classify_iri = |iri: &std::sync::Arc<str>| {
+        *classes
+            .entry(iri.clone())
+            .or_insert_with(|| classify(k, iri))
+    };
+    let mut out: Vec<Raw> = Vec::new();
+    let mut push = |start: u32, end: u32, ty: u32, mods: u32| {
+        if wanted(start, end) {
+            out.push(Raw {
+                start,
+                end,
+                ty,
+                mods,
+            });
+        }
+    };
+    let first = idx.uses.partition_point(|u| u.span.end <= from);
+    for u in idx.uses[first..].iter().take_while(|u| u.span.start <= to) {
+        let (start, end) = (u.span.start, u.span.end);
+        match u.kind {
+            UseKind::Keyword | UseKind::Alias { .. } => push(start, end, KEYWORD, 0),
+            _ => {
+                let Some(iri) = &u.iri else { continue };
+                let c = classify_iri(iri);
+                match u.role {
+                    UseRole::Type => push(start, end, CLASS, c.mods),
+                    UseRole::Key => push(start, end, PROPERTY, c.mods),
+                    UseRole::Id => {}
+                }
+            }
+        }
+    }
+    for d in idx.definitions.iter().filter(|d| d.origin == Origin::Document) {
+        let Some(iri) = &d.iri else { continue };
+        if crate::jsonld::context::is_keyword(iri) {
+            push(d.key.start, d.key.end, KEYWORD, DECLARATION);
+        } else if !iri.starts_with("_:") {
+            let c = classify_iri(iri);
+            push(d.key.start, d.key.end, PROPERTY, c.mods | DECLARATION);
+        }
+    }
     sort_and_dedupe(&mut out);
     out
 }
