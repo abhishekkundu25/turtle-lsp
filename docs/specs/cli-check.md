@@ -230,7 +230,7 @@ and the LSP tests already use: a process, its input and its output.
 **The shared module and the corpus**
 - **Toolbox parity.** The web engine's existing tests (`npm run web:test`)
   must still pass unchanged after `analyse` and `fix_all` move into the core.
-- **The real-world corpus:** `check` on the ../ontology-design fragments
+- **The real-world corpus:** `check` on a private real-world corpus
   matches the editor's diagnostics for the same files.
 
 **Performance**
