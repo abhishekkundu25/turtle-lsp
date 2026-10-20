@@ -25,7 +25,7 @@ use crate::shacl::{Path, SH, ValidationResult, validate_focus};
 use crate::syntax::{Iri, PrefixMap, Role, Span, XSD};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_types::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -51,7 +51,7 @@ struct Soften {
     /// Appended to a softened message.
     note: String,
     /// Namespaces some loaded document defines a term in.
-    described: rustc_hash::FxHashSet<String>,
+    described: FxHashSet<String>,
 }
 
 impl Soften {
@@ -222,7 +222,8 @@ pub fn has_shapes(a: &Analysis) -> bool {
 /// its own (generated runs, dumps, snapshots that reuse the same IRIs): it is
 /// validated with the Turtle documents (ontology, shapes, shared data) but
 /// never merged with another dataset, which would turn two versions of a node
-/// into one node with two values.
+/// into one node with two values. A dataset shows only the results its data
+/// changes: one the shared graph has on its own is shown there, once.
 pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     let mut docs: Vec<&(Source, Arc<Analysis>)> = job.docs.iter().collect();
     docs.sort_by(|a, b| (a.0, &a.1.uri).cmp(&(b.0, &b.1.uri)));
@@ -235,16 +236,33 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     let soften = Soften::new(job);
     let soften = soften.as_ref();
     // The shared graph, its results placed in the Turtle documents.
-    validate_unit(job, &shared, None, soften, cancelled, &mut out)?;
+    let mut shared_results = FxHashSet::default();
+    validate_unit(
+        job,
+        &shared,
+        None,
+        soften,
+        cancelled,
+        &mut shared_results,
+        &mut out,
+    )?;
     for d in docs.iter().copied().filter(dataset) {
         // The dataset first, so results it causes are placed in it; only its
         // own nodes are focus nodes (the shared ones were validated above).
         let mut unit = vec![d];
         unit.extend(shared.iter().copied());
-        validate_unit(job, &unit, Some(&d.1), soften, cancelled, &mut out)?;
+        validate_unit(
+            job,
+            &unit,
+            Some(&d.1),
+            soften,
+            cancelled,
+            &mut shared_results,
+            &mut out,
+        )?;
     }
     for list in out.values_mut() {
-        let mut seen = rustc_hash::FxHashSet::default();
+        let mut seen = FxHashSet::default();
         list.retain(|d| seen.insert((d.range.start, d.range.end, d.message.clone())));
         if list.len() > MAX_PER_DOC {
             let hidden = list.len() - MAX_PER_DOC;
@@ -261,14 +279,63 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
     Some(out)
 }
 
+/// A validation result in terms that do not depend on the graph it came from,
+/// to tell a dataset's results that the shared graph also has.
+#[derive(PartialEq, Eq, Hash)]
+struct ResultKey<'j> {
+    /// The constraint: its parameter triple as (document URI, index).
+    param: (&'j str, u32),
+    focus: TermKey<'j>,
+    value: Option<TermKey<'j>>,
+    path: String,
+    component: Iri,
+    messages: Vec<(String, Option<Iri>)>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+enum TermKey<'j> {
+    Iri(Iri),
+    /// (document URI, the blank node's number in it)
+    Blank(&'j str, u32),
+    Value(crate::syntax::Node),
+}
+
+fn result_key<'j>(
+    g: &Graph,
+    docs: &[&'j (Source, Arc<Analysis>)],
+    r: &ValidationResult,
+) -> ResultKey<'j> {
+    let uri = |d: u32| docs[d as usize].1.uri.as_str();
+    let term = |id: Id| match g.term(id) {
+        Term::Iri(i) => TermKey::Iri(i),
+        Term::Blank(b) => {
+            let (d, n) = g.blank_origin(b);
+            TermKey::Blank(uri(d), n)
+        }
+        Term::Value(n) => TermKey::Value(n.clone()),
+    };
+    let (d, i) = g.origin[r.param as usize];
+    ResultKey {
+        param: (uri(d), i),
+        focus: term(r.focus),
+        value: r.value.map(term),
+        path: format!("{:?}", r.path),
+        component: r.component,
+        messages: r.computed_messages.clone(),
+    }
+}
+
 /// Validate one data graph (`docs` merged). With `dataset` (then `docs[0]`),
-/// only nodes that dataset mentions are focus nodes. `None` when cancelled.
-fn validate_unit(
+/// only nodes that dataset mentions are focus nodes, results in
+/// `shared_results` are dropped and the rest are placed in the dataset;
+/// without, results are added to `shared_results`. `None` when cancelled.
+fn validate_unit<'j>(
     job: &Job,
-    docs: &[&(Source, Arc<Analysis>)],
+    docs: &[&'j (Source, Arc<Analysis>)],
     dataset: Option<&Arc<Analysis>>,
     soften: Option<&Soften>,
     cancelled: &dyn Fn() -> bool,
+    shared_results: &mut FxHashSet<ResultKey<'j>>,
     out: &mut ByUri,
 ) -> Option<()> {
     let workspace = |s: Source| s != Source::External;
@@ -295,7 +362,7 @@ fn validate_unit(
     let triples: Vec<&[crate::syntax::Triple]> =
         docs.iter().map(|d| d.1.parsed.triples.as_slice()).collect();
     let g = Graph::new(&triples);
-    let mine: Option<rustc_hash::FxHashSet<Id>> = dataset.map(|_| {
+    let mine: Option<FxHashSet<Id>> = dataset.map(|_| {
         g.triples
             .iter()
             .zip(&g.origin)
@@ -311,8 +378,17 @@ fn validate_unit(
         enc: job.enc,
         prefixes: FxHashMap::default(),
         soften,
+        in_dataset: dataset.is_some(),
     };
     for r in &results {
+        let key = result_key(&g, docs, r);
+        if dataset.is_some() {
+            if shared_results.contains(&key) {
+                continue;
+            }
+        } else {
+            shared_results.insert(key);
+        }
         if let Some((uri, d)) = place.diagnostic(r) {
             out.entry(uri).or_default().push(d);
         }
@@ -345,6 +421,8 @@ struct Placer<'p, 'g, 'a> {
     enc: Encoding,
     prefixes: FxHashMap<u32, PrefixMap>,
     soften: Option<&'p Soften>,
+    /// Whether `docs[0]` is a dataset whose results all go in it.
+    in_dataset: bool,
 }
 
 /// The first predicate a path follows, and whether it is followed backwards.
@@ -375,8 +453,17 @@ impl Placer<'_, '_, '_> {
         (d, &self.doc(d).parsed.triples[i as usize])
     }
 
-    /// Where a result goes: (document, span).
+    /// Where a result goes: (document, span). A dataset's result, caused by
+    /// its data, goes in the dataset (which mentions every focus node).
     fn location(&self, r: &ValidationResult) -> Option<(u32, Span)> {
+        let at = self.anywhere(r);
+        if self.in_dataset && at.is_none_or(|(d, _)| d != 0) {
+            return self.description_in(0, r.focus).or(at);
+        }
+        at
+    }
+
+    fn anywhere(&self, r: &ValidationResult) -> Option<(u32, Span)> {
         let g = self.g;
         let step = r.path.as_ref().and_then(first_step);
         if let Some((p, inverse)) = step {
@@ -414,14 +501,24 @@ impl Placer<'_, '_, '_> {
 
     /// The first place the workspace describes `node`.
     fn description(&self, node: Id) -> Option<(u32, Span)> {
+        self.described(node, &|d| self.in_workspace(d))
+    }
+
+    /// The first place document `d` describes `node`.
+    fn description_in(&self, d: u32, node: Id) -> Option<(u32, Span)> {
+        self.described(node, &|e| e == d && self.in_workspace(e))
+    }
+
+    /// The first place a document `docs` accepts describes `node`.
+    fn described(&self, node: Id, docs: &dyn Fn(u32) -> bool) -> Option<(u32, Span)> {
         match self.g.term(node) {
             Term::Iri(i) => (0..self.docs.len() as u32)
-                .filter(|&d| self.in_workspace(d))
+                .filter(|&d| docs(d))
                 .find_map(|d| Some((d, *self.doc(d).defs.get(&i)?.first()?)))
                 .or_else(|| {
                     // Only referenced: its first occurrence.
                     (0..self.docs.len() as u32)
-                        .filter(|&d| self.in_workspace(d))
+                        .filter(|&d| docs(d))
                         .find_map(|d| {
                             let a = self.doc(d);
                             let r = a.refs_of(&i).find(|r| r.role != Role::Predicate)?;
@@ -429,9 +526,8 @@ impl Placer<'_, '_, '_> {
                         })
                 }),
             Term::Blank(_) => {
-                let ws = |t: &(u32, &crate::shacl::graph::GTriple)| {
-                    self.in_workspace(self.g.origin[t.0 as usize].0)
-                };
+                let ws =
+                    |t: &(u32, &crate::shacl::graph::GTriple)| docs(self.g.origin[t.0 as usize].0);
                 if let Some((t, _)) = self.g.incoming(node).find(ws) {
                     let (d, tr) = self.origin(t);
                     return Some((d, tr.o_span));
@@ -696,6 +792,74 @@ mod tests {
         // On the focus node's description.
         assert_eq!(name.range.start.line, 2);
         assert!(!out.contains_key("file:///w/shapes.ttl"));
+    }
+
+    #[test]
+    fn a_dataset_shows_only_the_results_its_data_changes() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:P ;\n  sh:property [ sh:path ex:name ; sh:minCount 1 ] ;\n  sh:property [ sh:path ex:age ; sh:datatype <http://www.w3.org/2001/XMLSchema#integer> ] ;\n  sh:property [ sh:path ex:friend ; sh:nodeKind sh:IRI ] ;\n  sh:sparql [ sh:message \"no ex:bad\" ; sh:select \"SELECT $this ?value WHERE {{ $this <http://example.com/bad> ?value }}\" ] .\n"
+            ),
+        );
+        let data = analysis(
+            "file:///w/data.ttl",
+            &format!(
+                "{HEAD}ex:a a ex:P ;\n  ex:age \"x\" ;\n  ex:bad 1 ; ex:friend [ ] .\nex:b ex:age \"y\" ; ex:name \"B\" .\n"
+            ),
+        );
+        let trig = |text: &str| analysis("file:///w/g.trig", &format!("{HEAD}{text}"));
+        let check = |g: &str| {
+            let docs = vec![shapes.clone(), data.clone(), trig(g)];
+            run(&job(docs, 1000), &|| false).unwrap()
+        };
+        let messages = |out: &ByUri, uri: &str| {
+            let mut m: Vec<String> = out
+                .get(uri)
+                .into_iter()
+                .flatten()
+                .map(|d| d.message.clone())
+                .collect();
+            m.sort();
+            m
+        };
+        let shared = vec![
+            "\"x\" (ex:age of ex:a) is not a valid xsd:integer literal".to_string(),
+            "a blank node (ex:friend of ex:a) is not of node kind sh:IRI".into(),
+            "ex:name of ex:a: expected at least 1 value(s)".into(),
+            "no ex:bad".into(),
+        ];
+        // Unrelated to ex:a, or mentioning it without changing its results
+        // (its own blank node numbers those of the shared files differently):
+        // shown once, in the shared file.
+        for g in [
+            "ex:g { ex:c ex:knows ex:d . }",
+            "ex:g { ex:a ex:knows [ ] . }",
+        ] {
+            let out = check(g);
+            assert_eq!(messages(&out, "file:///w/data.ttl"), shared, "{g}");
+            assert!(!out.contains_key("file:///w/g.trig"), "{g}: {out:#?}");
+        }
+        // Results the dataset adds are shown in it.
+        let out = check("ex:g { ex:a ex:age \"z\" ; ex:bad 2 . }");
+        assert_eq!(messages(&out, "file:///w/data.ttl"), shared);
+        assert_eq!(
+            messages(&out, "file:///w/g.trig"),
+            [
+                "\"z\" (ex:age of ex:a) is not a valid xsd:integer literal",
+                "no ex:bad"
+            ]
+        );
+        // Also one on a shared triple: on the node in the dataset.
+        let out = check("ex:g { ex:b a ex:P . }");
+        assert_eq!(messages(&out, "file:///w/data.ttl"), shared);
+        let d = &out["file:///w/g.trig"];
+        assert_eq!(d.len(), 1, "{d:#?}");
+        assert_eq!(
+            d[0].message,
+            "\"y\" (ex:age of ex:b) is not a valid xsd:integer literal"
+        );
+        assert_eq!(d[0].range.start.line, 2);
     }
 
     #[test]

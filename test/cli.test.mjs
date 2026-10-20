@@ -89,6 +89,28 @@ test("check: a SHACL violation is reported at the triple's line", (t) => {
   assert.match(w.lines[0], /^data\/people\.ttl:4:1: warning\[shacl-violation\]/)
 })
 
+test("check: a TriG dataset that mentions a violating node does not repeat its violations", (t) => {
+  const ex = "@prefix ex: <http://example.org/> .\n"
+  const sparql = `ex:PersonShape sh:sparql [ sh:message "no ex:bad" ; sh:select "SELECT $this ?value WHERE { $this <http://example.org/bad> ?value }" ] .\n`
+  const ws = workspace(t, {
+    "prefixes.ttl": PREFIXES,
+    "shapes.ttl": SHAPES + sparql,
+    "data/people.ttl": "ex:alice a ex:Person ;\n    ex:bad 1 .\n",
+    "unrelated.trig": `${ex}ex:g { ex:bob ex:name "Bob" . }\n`,
+    "mentions.trig": `${ex}ex:g { ex:carol ex:knows ex:alice . ex:alice ex:nick "Al" . }\n`,
+  })
+  const r = run(ws, ["check"])
+  const shacl = r.lines.filter((l) => l.includes("shacl-violation")).sort()
+  assert.deepEqual(shacl, [
+    "data/people.ttl:1:1: error[shacl-violation] ex:name of ex:alice: expected at least 1 value(s)",
+    "data/people.ttl:1:1: error[shacl-violation] no ex:bad",
+  ], r.out)
+  // A violation the dataset adds is reported in it.
+  fs.writeFileSync(path.join(ws, "mentions.trig"), `${ex}ex:g { ex:alice ex:bad 2 . }\n`)
+  const added = run(ws, ["check"]).lines.filter((l) => l.startsWith("mentions.trig") && l.includes("shacl-violation"))
+  assert.deepEqual(added, ["mentions.trig:2:8: error[shacl-violation] no ex:bad"])
+})
+
 test("check: one file is checked with the workspace's prefixes and shapes as context", (t) => {
   const ws = workspace(t, {
     ".git/HEAD": "ref: refs/heads/main\n",

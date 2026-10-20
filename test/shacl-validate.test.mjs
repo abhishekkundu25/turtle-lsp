@@ -286,6 +286,29 @@ test("a violation that only exists with a dataset merged in is reported in that 
 })
 
 
+test("a dataset that mentions a violating shared node does not repeat its violation", async () => {
+  // Without a designation: shown on the node, which the dataset also describes.
+  const missing = GOOD.replace(' ;\n    sd:designation "=P07" .', " .")
+  const run5 = '{ obj:pump-07 rdfs:label "Pump 07, run 5" . }\n'
+  const { s, dir, pump, end } = await session({}, { "run5.trig": run5 })
+  const file = path.join(dir, "data", "pump.ttl")
+  try {
+    const uri = uriOf(path.join(dir, "run5.trig"))
+    s.conn.sendNotification("textDocument/didOpen", {
+      textDocument: { uri, languageId: "trig", version: 1, text: run5 },
+    })
+    assert.notEqual(missing, GOOD)
+    s.open(pump, missing)
+    save(s, pump, file, missing)
+    const d = shacl(await until(s, pump, (d) => shacl(d).length > 0))
+    assert.equal(d.length, 1, JSON.stringify(d))
+    assert.equal(d[0].message, MESSAGE)
+    assert.deepEqual(shacl(await s.diagnosticsFor(uri)), [])
+  } finally {
+    await end()
+  }
+})
+
 test("typing validates the unsaved text once typing pauses; editing back clears it", async () => {
   const w = await session()
   try {

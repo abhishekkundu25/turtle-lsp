@@ -218,6 +218,13 @@ impl<'a> Graph<'a> {
         }
     }
 
+    /// The (document, number in that document) of blank node `Term::Blank(b)`.
+    pub fn blank_origin(&self, b: u32) -> (u32, u32) {
+        // A document without blank nodes shares its base with the next one.
+        let d = self.blank_base.partition_point(|&base| base <= b).max(1) - 1;
+        (d as u32, b - self.blank_base.get(d).copied().unwrap_or(0))
+    }
+
     pub fn as_iri(&self, id: Id) -> Option<Iri> {
         match self.term(id) {
             Term::Iri(i) => Some(i),
