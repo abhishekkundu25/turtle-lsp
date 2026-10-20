@@ -7,7 +7,8 @@
 //!   whose triples are dropped. A relative IRI with no base to resolve it
 //!   is not reported: in the editor and `check`, the document's URL is the
 //!   base;
-//! - `invalid-language-tag` (error, as in Turtle) at the tag whose literal
+//! - `invalid-language-tag` (warning: JSON-LD processors should only warn
+//!   about an ill-formed tag) at the tag whose literal
 //!   is dropped.
 //!
 //! [`vocabulary_iris`] says where the shared vocabulary lints
@@ -70,7 +71,7 @@ pub fn dropped(text: &str, dropped: &[Dropped]) -> Vec<Finding> {
                         m.push_str(&format!(": {e}"));
                     }
                     m.push_str(". JSON-LD drops the literal");
-                    (Severity::Error, INVALID_LANGUAGE_TAG, m)
+                    (Severity::Warning, INVALID_LANGUAGE_TAG, m)
                 }
                 DropReason::NullTerm | DropReason::RelativeIri | DropReason::BlankNodePredicate => {
                     return None;
@@ -213,7 +214,7 @@ mod tests {
             [
                 (UNDEFINED_TERM, Warning, Span::new(344, 350)),
                 (INVALID_IRI, Warning, Span::new(423, 444)),
-                (INVALID_LANGUAGE_TAG, Error, Span::new(500, 505)),
+                (INVALID_LANGUAGE_TAG, Warning, Span::new(500, 505)),
             ]
         );
         assert_eq!(span_of(LINTS, "wieght"), Span::new(344, 350));

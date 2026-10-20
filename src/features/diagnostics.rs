@@ -727,7 +727,7 @@ mod tests {
                 d("jsonld-undefined-term", S::WARNING, "wieght", None),
                 d("unknown-term", S::WARNING, "rdfs:labl", Some("rdfs:label")),
                 d("invalid-iri", S::WARNING, "http://exa mple.org/x", None),
-                d("invalid-language-tag", S::ERROR, "de_DE", None),
+                d("invalid-language-tag", S::WARNING, "de_DE", None),
             ]
         );
     }
