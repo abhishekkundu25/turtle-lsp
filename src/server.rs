@@ -247,7 +247,8 @@ impl Server {
         };
         let init_options = params.initialization_options.clone().unwrap_or_default();
         let settings = Settings::from_layers([&file_settings, &init_options]);
-        let ws = Workspace::new(roots.clone(), settings.prefixes.clone());
+        let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
+        ws.set_network(settings.imports_network);
 
         let result = InitializeResult {
             capabilities: capabilities(enc, pull),
@@ -339,8 +340,10 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     // Index the workspace in the background.
     let (tx, index_rx) = unbounded();
     let prefixes = server.ws.settings_prefixes.clone();
+    let network = server.settings.imports_network;
     std::thread::spawn(move || {
         let mut tmp = Workspace::new(roots.clone(), prefixes);
+        tmp.set_network(network);
         let files = Workspace::scan_roots(&roots);
         let _ = tx.send(tmp.parse_paths(files));
     });
@@ -1016,6 +1019,9 @@ impl Server {
             self.ensure_indexed();
             self.ws.settings_prefixes = new.prefixes.clone();
             self.ws.invalidate_prefixes();
+        }
+        if new.imports_network != self.settings.imports_network {
+            self.ws.set_network(new.imports_network);
         }
         self.settings = new;
         self.dirty.extend(self.ws.open.keys().cloned());

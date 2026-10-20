@@ -47,8 +47,6 @@ pub const CATALOG_FILE: &str = "catalog-v001.xml";
 pub const MAX_DEPTH: u32 = 5;
 pub const MAX_FETCH_BYTES: u64 = 20 * 1024 * 1024;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(not(target_arch = "wasm32"))]
-const ACCEPT: &str = "text/turtle, application/n-triples;q=0.9, application/rdf+xml;q=0.8";
 /// RDF/XML with a longer start tag is refused: quick-xml's cost per start tag
 /// grows faster than its size (RUSTSEC-2026-0194, RUSTSEC-2026-0195).
 const MAX_XML_TAG_BYTES: usize = 64 * 1024;
@@ -214,7 +212,7 @@ pub fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Resolved 
             imports: imports.into_iter().collect(),
             local: local.into_iter().collect(),
             roots: roots.to_vec(),
-            cache: cache_dir().map(|d| d.join("imports")),
+            cache: import_cache_dir(),
             network,
             fetch: Vec::new(),
         },
@@ -279,7 +277,7 @@ impl Imports {
             status: FxHashMap::default(),
             registered: FxHashSet::default(),
             per_doc: FxHashMap::default(),
-            cache: cache_dir().map(|d| d.join("imports")),
+            cache: import_cache_dir(),
             fetch: BTreeSet::new(),
             refetch: None,
         }
@@ -1043,15 +1041,54 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// GET `url`: (body, content type, final URL after redirects).
-#[cfg(target_arch = "wasm32")]
-fn fetch(_url: &str) -> Result<(Vec<u8>, Option<String>, String), String> {
-    Err("imports are not fetched in the browser build".into())
+fn fetch(url: &str) -> Result<(Vec<u8>, Option<String>, String), String> {
+    http_get(url, ACCEPT)
+        .map(|r| (r.body, r.content_type, r.final_url))
+        .map_err(|e| e.message)
 }
 
-/// GET `url`: (body, content type, final URL after redirects).
+/// An HTTP response read by [`http_get`].
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct HttpResponse {
+    pub body: Vec<u8>,
+    pub content_type: Option<String>,
+    /// Where the body was finally read from, after redirects.
+    pub final_url: String,
+    /// The `Link` header, if any.
+    pub link: Option<String>,
+}
+
+/// Why [`http_get`] failed: the HTTP status, if the server answered.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct HttpError {
+    pub status: Option<u16>,
+    pub message: String,
+}
+
+const ACCEPT: &str = "text/turtle, application/n-triples;q=0.9, application/rdf+xml;q=0.8";
+
+/// GET `url` with `accept`, following redirects, within [`FETCH_TIMEOUT`]
+/// and [`MAX_FETCH_BYTES`].
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn http_get(_url: &str, _accept: &str) -> Result<HttpResponse, HttpError> {
+    Err(HttpError {
+        status: None,
+        message: "the browser build does not fetch".into(),
+    })
+}
+
+/// GET `url` with `accept`, following redirects, within [`FETCH_TIMEOUT`]
+/// and [`MAX_FETCH_BYTES`].
 #[cfg(not(target_arch = "wasm32"))]
-fn fetch(url: &str) -> Result<(Vec<u8>, Option<String>, String), String> {
+pub(crate) fn http_get(url: &str, accept: &str) -> Result<HttpResponse, HttpError> {
     use ureq::ResponseExt;
+    let failed = |e: ureq::Error| HttpError {
+        status: match e {
+            ureq::Error::StatusCode(s) => Some(s),
+            _ => None,
+        },
+        message: e.to_string(),
+    };
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(FETCH_TIMEOUT))
         .max_redirects(10)
@@ -1060,25 +1097,33 @@ fn fetch(url: &str) -> Result<(Vec<u8>, Option<String>, String), String> {
         .into();
     let mut resp = agent
         .get(url)
-        .header("Accept", ACCEPT)
+        .header("Accept", accept)
         .call()
-        .map_err(|e| e.to_string())?;
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+        .map_err(failed)?;
+    let header = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let content_type = header("content-type");
+    let link = header("link");
     let final_url = resp.get_uri().to_string();
     let body = resp
         .body_mut()
         .with_config()
         .limit(MAX_FETCH_BYTES)
         .read_to_vec()
-        .map_err(|e| e.to_string())?;
-    Ok((body, content_type, final_url))
+        .map_err(failed)?;
+    Ok(HttpResponse {
+        body,
+        content_type,
+        final_url,
+        link,
+    })
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -1116,7 +1161,18 @@ pub fn cache_dir() -> Option<PathBuf> {
 
 /// The cache file for `url`: Turtle (RDF/XML is cached as N-Triples).
 fn cache_file(dir: &Path, url: &str) -> PathBuf {
-    dir.join(format!("{}.ttl", hash_name(url)))
+    cache_file_as(dir, url, "ttl")
+}
+
+/// The cache file for `url` holding a document of kind `extension` (JSON-LD
+/// contexts are cached as `.jsonld` beside the imports).
+pub(crate) fn cache_file_as(dir: &Path, url: &str, extension: &str) -> PathBuf {
+    dir.join(format!("{}.{extension}", hash_name(url)))
+}
+
+/// The import cache: [`cache_dir`]`/imports`.
+pub fn import_cache_dir() -> Option<PathBuf> {
+    cache_dir().map(|d| d.join("imports"))
 }
 
 /// 64-bit FNV-1a of `s`, as 16 hex digits.

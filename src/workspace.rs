@@ -14,6 +14,8 @@
 //! term) ask for them with [`Workspace::sparql_documents`].
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
+use crate::jsonld::ContextLoader;
+use crate::jsonld::loader::{self, Bundled};
 use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::syntax::{PrefixMap, Syntax};
 use line_index::LineIndex;
@@ -106,6 +108,9 @@ pub struct Workspace {
     uri_prefix_cache: FxHashMap<String, Arc<PrefixMap>>,
     /// Where fetched imports are cached (canonical), if there is a cache.
     import_cache: Option<PathBuf>,
+    /// Where JSON-LD documents' remote contexts come from (None: the bundled
+    /// contexts only).
+    contexts: Option<Arc<dyn ContextLoader>>,
 }
 
 /// The file a `file:` URL names. None in the browser build, which has no files.
@@ -216,9 +221,31 @@ impl Workspace {
         Workspace {
             roots,
             settings_prefixes,
-            import_cache: crate::imports::cache_dir().map(|d| canonical(&d.join("imports"))),
+            import_cache: crate::imports::import_cache_dir().map(|d| canonical(&d)),
+            contexts: Some(loader::for_platform(false)),
             ..Default::default()
         }
+    }
+
+    /// Load JSON-LD contexts with [`loader::for_platform`]: the network is
+    /// used only when `network` (`imports.network`, `--network`) is on.
+    pub fn set_network(&mut self, network: bool) {
+        self.set_context_loader(loader::for_platform(network));
+    }
+
+    /// Load JSON-LD contexts with `loader` from now on; open JSON-LD
+    /// documents are analyzed again.
+    pub fn set_context_loader(&mut self, loader: Arc<dyn ContextLoader>) {
+        self.contexts = Some(loader);
+        for d in self.open.values_mut() {
+            if d.kind == DocKind::Rdf(Syntax::JsonLd) {
+                d.analysis = None;
+            }
+        }
+    }
+
+    fn contexts(&self) -> Arc<dyn ContextLoader> {
+        self.contexts.clone().unwrap_or_else(|| Arc::new(Bundled))
     }
 
     /// An open document that is a cached copy of an import: analyzed, but
@@ -359,16 +386,18 @@ impl Workspace {
             })
             .collect();
         let open = &self.open;
+        let contexts = self.contexts();
         let done: Vec<(String, Arc<Analysis>, Option<DocFacts>)> = jobs
             .into_par_iter()
             .filter_map(|(uri, syntax, ext)| {
                 let doc = open.get(&uri)?;
-                let a = Arc::new(Analysis::with_syntax(
+                let a = Arc::new(Analysis::with_loader(
                     uri.clone(),
                     &doc.text,
                     ext,
                     true,
                     syntax,
+                    &*contexts,
                 ));
                 let facts = (!doc.cached_import).then(|| DocFacts::new(&a));
                 Some((uri, a, facts))
@@ -405,13 +434,15 @@ impl Workspace {
             None => return self.disk.get(uri).cloned(),
         };
         let external = self.external_prefixes_as(uri, syntax);
+        let contexts = self.contexts();
         let doc = self.open.get_mut(uri)?;
-        let a = Arc::new(Analysis::with_syntax(
+        let a = Arc::new(Analysis::with_loader(
             uri.to_string(),
             &doc.text,
             external,
             true,
             syntax,
+            &*contexts,
         ));
         doc.analysis = Some(a.clone());
         if !doc.cached_import {
@@ -625,13 +656,16 @@ impl Workspace {
                 Some((uri, p, ext))
             })
             .collect();
+        let contexts = self.contexts();
         jobs.into_par_iter()
             .filter_map(|(uri, path, ext)| {
                 if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
                     return None;
                 }
                 let text = std::fs::read_to_string(&path).ok()?;
-                Some((uri.clone(), Analysis::new(uri, &text, ext, false)))
+                let syntax = Syntax::from_extension(&uri).unwrap_or_default();
+                let a = Analysis::with_loader(uri.clone(), &text, ext, false, syntax, &*contexts);
+                Some((uri, a))
             })
             .collect()
     }
@@ -777,6 +811,18 @@ mod tests {
         assert_eq!(a.parsed.syntax, Syntax::JsonLd);
         assert_eq!(a.parsed.document_base.as_deref(), Some(uri.as_str()));
         assert!(a.parsed.errors.is_empty() && a.external.is_empty());
+    }
+
+    #[test]
+    fn a_new_context_loader_analyzes_open_jsonld_documents_again() {
+        let mut ws = Workspace::default();
+        let (ld, ttl) = ("file:///w/a.jsonld", "file:///w/a.ttl");
+        ws.open_doc(ld.into(), "{}".into(), 1);
+        ws.open_doc(ttl.into(), "".into(), 1);
+        let (a, b) = (ws.analysis(ld).unwrap(), ws.analysis(ttl).unwrap());
+        ws.set_context_loader(Arc::new(crate::jsonld::NoNetwork::default()));
+        assert!(!Arc::ptr_eq(&a, &ws.analysis(ld).unwrap()));
+        assert!(Arc::ptr_eq(&b, &ws.analysis(ttl).unwrap()));
     }
 
     #[test]

@@ -378,6 +378,7 @@ impl<'a> Input<'a> {
     ) -> Input<'a> {
         let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
         let mut ws = Workspace::new(roots, settings.prefixes.clone());
+        ws.set_network(disk.is_some_and(|d| d.network));
         for f in files {
             ws.open_doc(f.uri.clone(), f.text.clone(), 1);
         }

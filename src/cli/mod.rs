@@ -38,7 +38,7 @@ Options:
   --select CODE,...     report only these diagnostic codes
   --ignore CODE,...     do not report these codes
   --no-shacl            skip SHACL validation
-  --network             fetch owl:imports that are not in the cache
+  --network             fetch owl:imports and JSON-LD contexts not in the cache
   --max-diagnostics N   print at most N problems per file
   --statistics          print a count per code instead of the problems
 

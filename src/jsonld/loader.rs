@@ -3,8 +3,16 @@
 //! document is available (a file next to the document, the imports cache,
 //! the bundled common contexts) and whether the network may be used.
 //!
-//! [`NoNetwork`] serves only the documents given to it: tests and the W3C
-//! remote-doc runner inject documents through it.
+//! The loaders:
+//! - [`NoNetwork`] serves only the documents given to it: tests and the W3C
+//!   remote-doc runner inject documents through it;
+//! - [`Bundled`] serves the common contexts compiled in
+//!   (`data/jsonld-contexts`): the browser engine's loader;
+//! - [`DesktopLoader`] (not in the browser build) resolves a URL, in order,
+//!   from the file a `file:` URL names, the imports cache, the bundled
+//!   contexts, then the network when allowed, caching what it fetched.
+//!
+//! [`for_platform`] picks the desktop or the browser loader.
 
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -71,6 +79,339 @@ impl ContextLoader for NoNetwork {
     }
 }
 
+/// The loader for this build: [`DesktopLoader`] over the user's imports
+/// cache, fetching only when `network` is on; [`Bundled`] in the browser.
+pub fn for_platform(network: bool) -> Arc<dyn ContextLoader> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return Arc::new(DesktopLoader::new(
+        crate::imports::import_cache_dir(),
+        network,
+    ));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = network;
+        Arc::new(Bundled)
+    }
+}
+
+// ---- bundled contexts ----
+
+/// A context compiled in: the URLs it is served for (without the scheme;
+/// `http:` and `https:` both match), the URL it was fetched from, its text.
+struct BundledContext {
+    urls: &'static [&'static str],
+    source: &'static str,
+    text: &'static str,
+}
+
+/// See `data/jsonld-contexts/README.md` for where each came from.
+static BUNDLED: &[BundledContext] = &[
+    BundledContext {
+        urls: &[
+            "schema.org",
+            "schema.org/",
+            "schema.org/docs/jsonldcontext.json",
+            "schema.org/docs/jsonldcontext.jsonld",
+        ],
+        source: "https://schema.org/docs/jsonldcontext.jsonld",
+        text: include_str!("../../data/jsonld-contexts/schema-org.jsonld"),
+    },
+    BundledContext {
+        urls: &[
+            "www.w3.org/ns/activitystreams",
+            "www.w3.org/ns/activitystreams.jsonld",
+        ],
+        source: "https://www.w3.org/ns/activitystreams",
+        text: include_str!("../../data/jsonld-contexts/activitystreams.jsonld"),
+    },
+    BundledContext {
+        urls: &["www.w3.org/2018/credentials/v1"],
+        source: "https://www.w3.org/2018/credentials/v1",
+        text: include_str!("../../data/jsonld-contexts/credentials-v1.jsonld"),
+    },
+    BundledContext {
+        urls: &["www.w3.org/ns/credentials/v2"],
+        source: "https://www.w3.org/ns/credentials/v2",
+        text: include_str!("../../data/jsonld-contexts/credentials-v2.jsonld"),
+    },
+    BundledContext {
+        urls: &["www.w3.org/ns/did/v1"],
+        source: "https://www.w3.org/ns/did/v1",
+        text: include_str!("../../data/jsonld-contexts/did-v1.jsonld"),
+    },
+];
+
+/// The bundled context served for `url`, if any. Its `url` is where the
+/// bundled copy was fetched from.
+pub fn bundled(url: &str) -> Option<RemoteDocument> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    BUNDLED
+        .iter()
+        .find(|c| c.urls.contains(&rest))
+        .map(|c| RemoteDocument {
+            url: c.source.to_string(),
+            text: Arc::from(c.text),
+        })
+}
+
+/// A loader serving only the bundled contexts: the browser engine's, which
+/// has neither files nor network. Other URLs fail as with [`NoNetwork`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Bundled;
+
+impl ContextLoader for Bundled {
+    fn load(&self, url: &str) -> Result<RemoteDocument, LoadError> {
+        bundled(url).ok_or_else(|| refused(url))
+    }
+}
+
+/// The error for a document nobody supplied: a web URL needs the network.
+fn refused(url: &str) -> LoadError {
+    if is_web(url) {
+        LoadError::NetworkNotAllowed
+    } else {
+        LoadError::NotFound
+    }
+}
+
+fn is_web(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use desktop::DesktopLoader;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod desktop {
+    use super::{ContextLoader, LoadError, RemoteDocument, bundled, is_web, refused};
+    use crate::imports::{self, MAX_FETCH_BYTES};
+    use rustc_hash::FxHashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const ACCEPT: &str = "application/ld+json, application/json;q=0.9";
+    /// A failed fetch is not tried again for this long.
+    const RETRY_FETCH_AFTER: Duration = Duration::from_secs(300);
+
+    /// Loads contexts on the desktop, in order: the file a `file:` URL
+    /// names; the imports cache (`<hash>.jsonld` beside the cached imports);
+    /// the bundled contexts; then, only with `network`, the web, saving what
+    /// it fetched to the cache. Web documents are kept in memory once
+    /// loaded, and a failed fetch is not retried for five minutes.
+    pub struct DesktopLoader {
+        cache: Option<PathBuf>,
+        network: bool,
+        memo: Mutex<FxHashMap<String, Memo>>,
+        /// Held while fetching, so documents parsed in parallel fetch a
+        /// context once.
+        fetching: Mutex<()>,
+    }
+
+    #[derive(Clone)]
+    enum Memo {
+        Loaded(RemoteDocument),
+        Failed(Instant, LoadError),
+    }
+
+    impl DesktopLoader {
+        /// `cache` is the imports cache directory (None: no cache).
+        pub fn new(cache: Option<PathBuf>, network: bool) -> DesktopLoader {
+            DesktopLoader {
+                cache,
+                network,
+                memo: Mutex::default(),
+                fetching: Mutex::default(),
+            }
+        }
+
+        fn remembered(&self, url: &str) -> Option<Result<RemoteDocument, LoadError>> {
+            match self.memo.lock().ok()?.get(url)? {
+                Memo::Loaded(doc) => Some(Ok(doc.clone())),
+                Memo::Failed(at, e) if at.elapsed() < RETRY_FETCH_AFTER => Some(Err(e.clone())),
+                Memo::Failed(..) => None,
+            }
+        }
+
+        fn remember(&self, url: &str, result: &Result<RemoteDocument, LoadError>) {
+            let memo = match result {
+                Ok(doc) => Memo::Loaded(doc.clone()),
+                Err(e) => Memo::Failed(Instant::now(), e.clone()),
+            };
+            if let Ok(mut m) = self.memo.lock() {
+                m.insert(url.to_string(), memo);
+            }
+        }
+
+        /// The cached copy of `url`; its final URL is in a `.url` file
+        /// beside it when a redirect changed it.
+        fn cached(&self, url: &str) -> Option<RemoteDocument> {
+            let path = imports::cache_file_as(self.cache.as_ref()?, url, "jsonld");
+            let text = read_limited(&path).ok()?;
+            let final_url = std::fs::read_to_string(path.with_extension("url"))
+                .ok()
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| url.to_string());
+            Some(RemoteDocument {
+                url: final_url,
+                text: text.into(),
+            })
+        }
+
+        /// Save a fetched document; a failed write only costs a fetch later.
+        fn save(&self, url: &str, doc: &RemoteDocument) {
+            let Some(dir) = &self.cache else { return };
+            let path = imports::cache_file_as(dir, url, "jsonld");
+            let redirect = path.with_extension("url");
+            if doc.url != url {
+                if imports::write_atomic(&redirect, doc.url.as_bytes()).is_err() {
+                    return;
+                }
+            } else {
+                let _ = std::fs::remove_file(&redirect);
+            }
+            let _ = imports::write_atomic(&path, doc.text.as_bytes());
+        }
+
+        fn fetch(&self, url: &str) -> Result<RemoteDocument, LoadError> {
+            let _one_at_a_time = self.fetching.lock();
+            if let Some(r) = self.remembered(url) {
+                return r;
+            }
+            let result = fetch(url);
+            if let Ok(doc) = &result {
+                self.save(url, doc);
+            }
+            self.remember(url, &result);
+            result
+        }
+    }
+
+    impl ContextLoader for DesktopLoader {
+        fn load(&self, url: &str) -> Result<RemoteDocument, LoadError> {
+            if let Some(path) = url::Url::parse(url)
+                .ok()
+                .filter(|u| u.scheme() == "file")
+                .and_then(|u| u.to_file_path().ok())
+            {
+                return read_limited(&path).map(|text| RemoteDocument {
+                    url: url.to_string(),
+                    text: text.into(),
+                });
+            }
+            if !is_web(url) {
+                return Err(LoadError::NotFound);
+            }
+            if let Some(r) = self.remembered(url) {
+                return r;
+            }
+            if let Some(doc) = self.cached(url).or_else(|| bundled(url)) {
+                self.remember(url, &Ok(doc.clone()));
+                return Ok(doc);
+            }
+            if !self.network {
+                return Err(refused(url));
+            }
+            self.fetch(url)
+        }
+    }
+
+    /// A context file's text: at most [`MAX_FETCH_BYTES`], UTF-8, no BOM.
+    fn read_limited(path: &Path) -> Result<String, LoadError> {
+        let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => LoadError::NotFound,
+            _ => LoadError::Failed(e.to_string()),
+        })?;
+        if meta.len() > MAX_FETCH_BYTES {
+            return Err(too_large());
+        }
+        let bytes = std::fs::read(path).map_err(|e| LoadError::Failed(e.to_string()))?;
+        text_of(bytes)
+    }
+
+    fn too_large() -> LoadError {
+        LoadError::Failed(format!(
+            "larger than {} MB",
+            MAX_FETCH_BYTES / (1024 * 1024)
+        ))
+    }
+
+    fn text_of(bytes: Vec<u8>) -> Result<String, LoadError> {
+        let text = String::from_utf8(bytes)
+            .map_err(|_| LoadError::Failed("the document is not UTF-8".into()))?;
+        Ok(match text.strip_prefix('\u{feff}') {
+            Some(t) => t.to_string(),
+            None => text,
+        })
+    }
+
+    /// GET a context. A response that is not JSON but links to a JSON-LD
+    /// alternate (`Link: <...>; rel="alternate"; type="application/ld+json"`,
+    /// as schema.org answers) is followed once.
+    pub(super) fn fetch(url: &str) -> Result<RemoteDocument, LoadError> {
+        let mut r = get(url)?;
+        if !is_json(r.content_type.as_deref())
+            && let Some(alt) = r.link.as_deref().and_then(alternate_jsonld)
+            && let Some(alt) = url::Url::parse(&r.final_url)
+                .ok()
+                .and_then(|base| base.join(&alt).ok())
+        {
+            r = get(alt.as_str())?;
+        }
+        let text = text_of(r.body)?;
+        serde_json::from_str::<serde::de::IgnoredAny>(&text)
+            .map_err(|e| LoadError::Failed(format!("{url} is not JSON: {e}")))?;
+        Ok(RemoteDocument {
+            url: r.final_url,
+            text: text.into(),
+        })
+    }
+
+    fn get(url: &str) -> Result<imports::HttpResponse, LoadError> {
+        imports::http_get(url, ACCEPT).map_err(|e| match e.status {
+            Some(404 | 410) => LoadError::NotFound,
+            _ => LoadError::Failed(format!("{url} could not be fetched: {}", e.message)),
+        })
+    }
+
+    fn is_json(content_type: Option<&str>) -> bool {
+        content_type.is_some_and(|ct| {
+            let ct = ct
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            ct == "application/json" || ct.ends_with("+json")
+        })
+    }
+
+    /// The target of the first `rel="alternate"` link of type
+    /// `application/ld+json` in a `Link` header.
+    pub(super) fn alternate_jsonld(header: &str) -> Option<String> {
+        header.split(',').find_map(|link| {
+            let (target, params) = link.trim().strip_prefix('<')?.split_once('>')?;
+            let mut alternate = false;
+            let mut jsonld = false;
+            for p in params.split(';') {
+                let Some((k, v)) = p.split_once('=') else {
+                    continue;
+                };
+                let v = v.trim().trim_matches('"');
+                match k.trim().to_ascii_lowercase().as_str() {
+                    "rel" => alternate = v.split_whitespace().any(|r| r == "alternate"),
+                    "type" => jsonld = v.eq_ignore_ascii_case("application/ld+json"),
+                    _ => {}
+                }
+            }
+            (alternate && jsonld).then(|| target.to_string())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +429,173 @@ mod tests {
             Err(LoadError::NetworkNotAllowed)
         );
         assert_eq!(l.load("file:///x/ctx.jsonld"), Err(LoadError::NotFound));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod desktop_tests {
+    use super::*;
+    use crate::imports::cache_file_as;
+    use std::path::PathBuf;
+
+    /// A fresh directory, removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let d =
+                std::env::temp_dir().join(format!("turtle-lsp-ctx-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            TempDir(d)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn file_url(path: &std::path::Path) -> String {
+        url::Url::from_file_path(path).unwrap().to_string()
+    }
+
+    #[test]
+    fn offline_the_common_contexts_come_from_the_bundle() {
+        let cache = TempDir::new("bundled");
+        let l = DesktopLoader::new(Some(cache.0.clone()), false);
+        for url in [
+            "https://schema.org/",
+            "http://schema.org",
+            "https://schema.org/docs/jsonldcontext.json",
+        ] {
+            let doc = l.load(url).unwrap();
+            assert_eq!(doc.url, "https://schema.org/docs/jsonldcontext.jsonld");
+            assert!(doc.text.contains("\"@vocab\": \"http://schema.org/\""));
+        }
+        for url in [
+            "https://www.w3.org/ns/activitystreams",
+            "https://www.w3.org/2018/credentials/v1",
+            "https://www.w3.org/ns/credentials/v2",
+            "https://www.w3.org/ns/did/v1",
+        ] {
+            assert_eq!(l.load(url).unwrap().url, url);
+            assert_eq!(Bundled.load(url).unwrap().url, url);
+        }
+        // Nothing was written to the cache.
+        assert_eq!(std::fs::read_dir(&cache.0).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn every_bundled_context_is_json() {
+        for c in BUNDLED {
+            let v: serde_json::Value = serde_json::from_str(c.text).unwrap();
+            assert!(v.get("@context").is_some(), "{}", c.source);
+        }
+    }
+
+    #[test]
+    fn with_the_network_off_an_unknown_remote_context_is_refused() {
+        let cache = TempDir::new("refused");
+        let l = DesktopLoader::new(Some(cache.0.clone()), false);
+        assert_eq!(
+            l.load("https://example.org/context.jsonld"),
+            Err(LoadError::NetworkNotAllowed)
+        );
+        assert_eq!(
+            Bundled.load("https://example.org/context.jsonld"),
+            Err(LoadError::NetworkNotAllowed)
+        );
+        assert_eq!(l.load("urn:x:context"), Err(LoadError::NotFound));
+    }
+
+    #[test]
+    fn a_cached_context_is_served_without_the_network() {
+        let cache = TempDir::new("cached");
+        let url = "https://example.org/context.jsonld";
+        let moved = "https://example.org/v2/context.jsonld";
+        std::fs::write(
+            cache_file_as(&cache.0, url, "jsonld"),
+            r#"{"@context": {}}"#,
+        )
+        .unwrap();
+        let other = "https://example.org/other";
+        let path = cache_file_as(&cache.0, other, "jsonld");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::write(path.with_extension("url"), moved).unwrap();
+
+        let l = DesktopLoader::new(Some(cache.0.clone()), false);
+        let doc = l.load(url).unwrap();
+        assert_eq!((doc.url.as_str(), &*doc.text), (url, r#"{"@context": {}}"#));
+        // The cache comes before the bundle, and keeps a redirect's target.
+        assert_eq!(l.load(other).unwrap().url, moved);
+    }
+
+    #[test]
+    fn a_file_url_is_read_from_disk() {
+        let dir = TempDir::new("file");
+        let path = dir.0.join("ctx.jsonld");
+        std::fs::write(
+            &path,
+            "\u{feff}{\"@context\": {\"a\": \"http://ex.org/a\"}}",
+        )
+        .unwrap();
+        let l = DesktopLoader::new(None, false);
+        let url = file_url(&path);
+        let doc = l.load(&url).unwrap();
+        assert_eq!(doc.url, url);
+        assert!(doc.text.starts_with('{'));
+        assert_eq!(
+            l.load(&file_url(&dir.0.join("missing.jsonld"))),
+            Err(LoadError::NotFound)
+        );
+        // Edits to the file are seen.
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(&*l.load(&url).unwrap().text, "{}");
+    }
+
+    #[test]
+    fn link_headers_name_the_jsonld_alternate() {
+        use super::desktop::alternate_jsonld;
+        assert_eq!(
+            alternate_jsonld(
+                r#"</docs/jsonldcontext.jsonld>; rel="alternate"; type="application/ld+json""#
+            )
+            .as_deref(),
+            Some("/docs/jsonldcontext.jsonld")
+        );
+        assert_eq!(
+            alternate_jsonld(r#"<a.html>; rel="alternate"; type="text/html", <b.jsonld>; rel=alternate; type="application/ld+json""#)
+                .as_deref(),
+            Some("b.jsonld")
+        );
+        assert_eq!(
+            alternate_jsonld(r#"<c.jsonld>; rel="http://www.w3.org/ns/json-ld#context""#),
+            None
+        );
+    }
+
+    /// Fetches a context from the web: only with TURTLE_LSP_NETWORK_TESTS=1.
+    #[test]
+    fn with_the_network_on_a_context_is_fetched_once_then_cached() {
+        if std::env::var_os("TURTLE_LSP_NETWORK_TESTS").is_none() {
+            return;
+        }
+        let cache = TempDir::new("network");
+        let url = "https://www.w3.org/ns/odrl.jsonld";
+        let l = DesktopLoader::new(Some(cache.0.clone()), true);
+        let doc = l.load(url).unwrap();
+        assert!(doc.text.contains("@context"));
+        assert!(cache_file_as(&cache.0, url, "jsonld").is_file());
+        let offline = DesktopLoader::new(Some(cache.0.clone()), false);
+        assert_eq!(offline.load(url).unwrap(), doc);
+        // schema.org's home page is HTML linking to its context.
+        let doc = super::desktop::fetch("https://schema.org/").unwrap();
+        assert!(
+            doc.url.ends_with("/docs/jsonldcontext.jsonld"),
+            "{}",
+            doc.url
+        );
     }
 }

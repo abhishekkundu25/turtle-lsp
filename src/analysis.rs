@@ -95,6 +95,8 @@ impl Analysis {
     }
 
     /// For a document whose language is known, e.g. from the LSP language id.
+    /// JSON-LD contexts come from the bundled ones only (see
+    /// [`Analysis::with_loader`]).
     pub fn with_syntax(
         uri: String,
         text: &str,
@@ -102,12 +104,22 @@ impl Analysis {
         keep_tokens: bool,
         language: Syntax,
     ) -> Analysis {
+        let loader = crate::jsonld::loader::Bundled;
+        Analysis::with_loader(uri, text, external, keep_tokens, language, &loader)
+    }
+
+    /// [`Analysis::with_syntax`], with JSON-LD's remote contexts from `loader`.
+    pub fn with_loader(
+        uri: String,
+        text: &str,
+        external: Arc<PrefixMap>,
+        keep_tokens: bool,
+        language: Syntax,
+        loader: &dyn crate::jsonld::ContextLoader,
+    ) -> Analysis {
         let mut parsed = match language {
-            // Relative IRIs resolve against the document's URL. No remote
-            // contexts yet: the desktop and browser loaders come later.
-            Syntax::JsonLd => {
-                crate::jsonld::parse(text, Some(&uri), &crate::jsonld::NoNetwork::default())
-            }
+            // Relative IRIs resolve against the document's URL.
+            Syntax::JsonLd => crate::jsonld::parse(text, Some(&uri), loader),
             _ => syntax::parse(text, &external, language),
         };
         if !keep_tokens {
