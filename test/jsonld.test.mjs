@@ -20,6 +20,17 @@ const phase1 = (ticket) => ({ todo: `jsonld:phase1 (ticket ${ticket})`, timeout:
 const phase2 = { todo: "jsonld:phase2", timeout: 25_000 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// Hooks get no time limit from --test-timeout: a step that never settles
+// fails with its name instead of holding the run.
+const HOOK = { timeout: 30_000 }
+function step(name, promise, ms = 12_000) {
+  let timer
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${name}: no answer within ${ms} ms`)), ms)
+  })
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer))
+}
 const withCode = (diags, code) => diags.filter((d) => d.code === code)
 const rangesOf = (diags, code) => withCode(diags, code).map((d) => d.range)
 const sortRanges = (rs) => [...rs].sort((a, b) => F.rangeKey(a).localeCompare(F.rangeKey(b)))
@@ -141,13 +152,13 @@ before(async () => {
   fs.writeFileSync(path.join(ws, "uses.ttl"), F.USES)
   fs.writeFileSync(path.join(ws, "edit.jsonld"), F.EDIT)
   fs.writeFileSync(path.join(ws, "people.context.jsonld"), F.CTX_FILE)
-  s = await startServer({ cwd: ws })
-  await s.request("workspace/symbol", { query: "" })
-})
+  s = await step("starting the server", startServer({ cwd: ws }))
+  await step("indexing the workspace (workspace/symbol)", s.request("workspace/symbol", { query: "" }))
+}, HOOK)
 after(async () => {
   await s?.stop()
   fs.rmSync(ws, { recursive: true, force: true })
-})
+}, HOOK)
 
 const fileUri = (name) => uriOf(path.join(ws, name))
 
@@ -354,11 +365,11 @@ before(async () => {
       res.end()
     }
   })
-  await new Promise((r) => web.listen(0, "127.0.0.1", r))
+  await step("starting the context web server", new Promise((r) => web.listen(0, "127.0.0.1", r)))
   webBase = `http://127.0.0.1:${web.address().port}`
   process.env.NO_PROXY = "127.0.0.1,localhost"
-})
-after(() => web?.close())
+}, HOOK)
+after(() => web?.close(), HOOK)
 
 // A server on `cwd` with its own import cache `cache`.
 async function startWithCache(cwd, cache, initializationOptions) {
