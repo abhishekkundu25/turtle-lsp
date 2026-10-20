@@ -788,7 +788,7 @@ test("the outline lists each node object by its @id", { timeout: 25_000 }, async
   assert.deepEqual(byName("bob") && { range: byName("bob").range, selectionRange: byName("bob").selectionRange }, { range: F.EDIT_BOB_OBJECT, selectionRange: F.EDIT_BOB_ID }, JSON.stringify(syms))
 })
 
-test("the outline nests a named graph's nodes under the graph", phase2, async (t) => {
+test("the outline nests a named graph's nodes under the graph", { timeout: 25_000 }, async (t) => {
   const { uri } = await openScratch(t, F.assetRun("run1", '"A"'))
   const syms = await s.request("textDocument/documentSymbol", { textDocument: { uri } })
   const graph = flattenSymbols(syms).find((x) => x.name === "ex:run1")

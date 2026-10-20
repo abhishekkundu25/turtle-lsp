@@ -78,6 +78,10 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
         })
     };
     let subject = |st: &Statement| {
+        // A JSON-LD graph node is shown as its graph, not also as a subject.
+        if a.parsed.graphs.iter().any(|g| g.span == st.span) {
+            return None;
+        }
         let (iri, span) = st.subject.as_ref()?;
         Some(DocumentSymbol {
             name: written(text, *span).to_string(),
@@ -99,6 +103,9 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
     let mut next = 0;
     for g in &a.parsed.graphs {
         let (from, to) = (g.statements.start as usize, g.statements.end as usize);
+        if from < next {
+            continue; // nested inside the previous graph
+        }
         out.extend(statements[next.min(from)..from].iter().filter_map(subject));
         let name_span = g
             .name_span

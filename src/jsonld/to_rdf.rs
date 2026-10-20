@@ -41,8 +41,8 @@ use super::expand::{Item, ListObject, Literal, NodeObject, ValueObject};
 use super::json::{Json, Value};
 use super::{DropReason, Dropped};
 use crate::syntax::{
-    BlankId, Form, GraphName, Iri, Node, Parsed, RDF, RDF_TYPE, Ref, Role, Span, Statement, Triple,
-    XSD,
+    BlankId, Form, GraphBlock, GraphName, Iri, Node, Parsed, RDF, RDF_TYPE, Ref, Role, Span,
+    Statement, Triple, XSD,
 };
 use rustc_hash::FxHashMap;
 use std::fmt::Write as _;
@@ -319,10 +319,26 @@ impl<'e> Rdf<'e, '_> {
                 Some(Node::Blank(b)) => G::Named(GraphName::Blank(*b)),
                 _ => G::Dropped,
             };
+            let block = match (&inner, &n.id) {
+                (G::Named(name), Some(id)) => {
+                    self.out.graphs.push(GraphBlock {
+                        span: n.span,
+                        name: Some(*name),
+                        name_span: Some(id.span),
+                        statements: self.out.statements.len() as u32
+                            ..self.out.statements.len() as u32,
+                    });
+                    Some(self.out.graphs.len() - 1)
+                }
+                _ => None,
+            };
             for item in items {
                 if let Item::Node(c) = item {
                     self.node(c, inner, Role::Subject);
                 }
+            }
+            if let Some(i) = block {
+                self.out.graphs[i].statements.end = self.out.statements.len() as u32;
             }
         }
         (s, stmt)
