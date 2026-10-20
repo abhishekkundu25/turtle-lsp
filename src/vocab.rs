@@ -82,7 +82,7 @@ impl Vocabulary {
             .zip(names)
             // Edit distance is at least the difference in length.
             .filter(|(_, (_, c))| c.abs_diff(n) <= max)
-            .map(|(t, (l, _))| (levenshtein(&lower, l), t))
+            .map(|(t, (l, _))| (edit_distance(&lower, l), t))
             .filter(|(d, _)| *d <= max)
             .min_by_key(|(d, t)| (*d, t.local.len()))
             .map(|(_, t)| t)
@@ -217,17 +217,27 @@ fn unescape(s: &str) -> String {
     out
 }
 
-pub fn levenshtein(a: &str, b: &str) -> usize {
+/// Edit distance with adjacent transpositions (optimal string alignment):
+/// insertions, deletions, substitutions and swapping two neighbouring
+/// characters each cost 1, so `lable` is 1 from `label`.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
+    let mut before: Vec<usize> = vec![0; b.len() + 1];
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut cur = vec![0; b.len() + 1];
-    for (i, ca) in a.chars().enumerate() {
+    for i in 0..a.len() {
         cur[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            cur[j + 1] = (prev[j + 1] + 1)
+        for j in 0..b.len() {
+            let mut d = (prev[j + 1] + 1)
                 .min(cur[j] + 1)
-                .min(prev[j] + usize::from(ca != *cb));
+                .min(prev[j] + usize::from(a[i] != b[j]));
+            if i > 0 && j > 0 && a[i] == b[j - 1] && a[i - 1] == b[j] {
+                d = d.min(before[j - 1] + 1);
+            }
+            cur[j + 1] = d;
         }
+        std::mem::swap(&mut before, &mut prev);
         std::mem::swap(&mut prev, &mut cur);
     }
     prev[b.len()]
@@ -238,11 +248,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_swap_of_neighbours_is_one_edit() {
+        assert_eq!(edit_distance("lable", "label"), 1);
+        assert_eq!(edit_distance("ab", "ba"), 1);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("ca", "abc"), 3);
+    }
+
+    #[test]
     fn foaf_by_namespace() {
         let (v, local) = VOCABS.lookup("http://xmlns.com/foaf/0.1/Person").unwrap();
         assert_eq!(v.prefix, "foaf");
         assert_eq!(v.term(local).unwrap().kind, TermKind::Class);
         assert_eq!(v.suggest("Persn").unwrap().local, "Person");
+        assert_eq!(v.suggest("Preson").unwrap().local, "Person");
     }
 
     #[test]
@@ -268,7 +288,7 @@ mod tests {
             let max = (local.chars().count() / 3).clamp(1, 3);
             v.terms()
                 .iter()
-                .map(|t| (levenshtein(&lower, &t.local.to_lowercase()), t))
+                .map(|t| (edit_distance(&lower, &t.local.to_lowercase()), t))
                 .filter(|(d, _)| *d <= max)
                 .min_by_key(|(d, t)| (*d, t.local.len()))
                 .map(|(_, t)| t.local.as_str())

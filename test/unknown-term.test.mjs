@@ -65,8 +65,8 @@ ex:alice a foaf:Gadget ;
     w.map((d) => [d.range.start.line, d.message]),
     [
       [9, "'namee' is not defined in the foaf vocabulary <http://xmlns.com/foaf/0.1/>. Did you mean 'name'?"],
-      // A transposition is two edits, over the limit for a four-letter name.
-      [10, "'nmae' is not defined in the foaf vocabulary <http://xmlns.com/foaf/0.1/>"],
+      // Swapping two neighbouring letters is one edit.
+      [10, "'nmae' is not defined in the foaf vocabulary <http://xmlns.com/foaf/0.1/>. Did you mean 'name'?"],
     ]
   )
   assert.deepEqual(w[0].data, { replace: "foaf:name" })

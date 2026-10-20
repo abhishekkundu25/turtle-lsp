@@ -18,6 +18,15 @@
     the same JSON value;
   - semantic tokens for keywords, properties and classes;
   - the outline nests a named graph's nodes under the graph.
+- **`jsonld-undefined-prefix`**: a warning when `rdfs:label` and the like
+  name a prefix the `@context` doesn't define, which JSON-LD reads as an IRI
+  with the scheme `rdfs:`; the quick fix (also `check --fix`) adds the prefix
+  to the `@context`.
+
+### Fixes
+
+- "Did you mean" now counts swapping two neighbouring letters as one edit, so
+  `foaf:nmae` and `rdfs:lable` get a suggestion.
 
 ## 0.6.0 — 2026-10-20
 

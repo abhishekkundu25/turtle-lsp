@@ -11,7 +11,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::{SOURCE, TermUse};
 use crate::knowledge::{Knowledge, namespace_of};
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Role, Span, Syntax};
-use crate::vocab::levenshtein;
+use crate::vocab::edit_distance;
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
@@ -46,7 +46,7 @@ fn suggest(k: &Knowledge, ns: &str, local: &str) -> Option<Iri> {
             if l.is_empty() || !plausible(local, l) {
                 return None;
             }
-            let d = levenshtein(&lower, &l.to_lowercase());
+            let d = edit_distance(&lower, &l.to_lowercase());
             (d <= max).then_some((d, l.len(), t))
         })
         .min_by(|x, y| (x.0, x.1, x.2.as_str()).cmp(&(y.0, y.1, y.2.as_str())))

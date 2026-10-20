@@ -774,7 +774,7 @@ mod tests {
             got,
             [
                 // On the definition, not on "title" where it is used.
-                d("unknown-term", S::WARNING, "rdfs:lable", None),
+                d("unknown-term", S::WARNING, "rdfs:lable", Some("rdfs:label")),
                 d("deprecated-term", S::HINT, "vcard:Email", None),
                 d("jsonld-undefined-term", S::WARNING, "wieght", None),
                 d("unknown-term", S::WARNING, "rdfs:labl", Some("rdfs:label")),
