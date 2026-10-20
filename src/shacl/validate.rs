@@ -502,6 +502,17 @@ const MAX_DEPTH: usize = 64;
 /// nodes, which pays off only for many.
 const MIN_BATCH: usize = 16;
 
+/// Nor do shapes with fewer than one focus node per this many triples: a
+/// query the optimizer would start from `$this` can, batched, start from a
+/// pattern over the whole graph (20 focus nodes in 300,000
+/// triples ran 50x slower batched).
+const TRIPLES_PER_BATCHED_FOCUS: usize = 1000;
+
+/// Too few focus nodes for the graph's size to run SPARQL checks batched.
+fn sparse(focus: usize, triples: usize) -> bool {
+    focus.saturating_mul(TRIPLES_PER_BATCHED_FOCUS) < triples
+}
+
 /// The property path rooted at `node`.
 pub fn parse_path(g: &Graph, node: Id) -> Path {
     path_at(g, node, 0)
@@ -1432,7 +1443,11 @@ impl Run<'_, '_, '_> {
         focus: Id,
         constants: &[(Variable, RdfTerm)],
     ) -> Option<Vec<QuerySolution>> {
-        if !check.batch || self.batch.len() < self.min_batch || !self.in_batch.contains(&focus) {
+        if !check.batch
+            || self.batch.len() < self.min_batch
+            || sparse(self.batch.len(), self.g.len())
+            || !self.in_batch.contains(&focus)
+        {
             return None;
         }
         let key = (shape.node, check as *const Check);
@@ -1896,6 +1911,42 @@ mod tests {
             assert!(!one_by_one.is_empty(), "{sel}");
             assert_eq!(run(1), one_by_one, "{sel}");
         }
+    }
+
+    /// Few focus nodes in a large graph run one by one: batched, this query
+    /// starts from the patterns over the whole graph (50x slower).
+    #[test]
+    fn few_focus_nodes_in_a_large_graph_run_one_by_one() {
+        let mut data = String::new();
+        for i in 0..20 {
+            data.push_str(&format!("ex:n{i} a ex:C ; ex:p ex:v{i} .\n"));
+        }
+        for i in 0..100_000 {
+            data.push_str(&format!(
+                "ex:o{i} ex:q ex:v{} ; ex:r {} .\n",
+                i % 5000,
+                i % 7
+            ));
+        }
+        let sel = "SELECT $this ?value WHERE { ?value ex:q ?v . ?value ex:r ?r . $this ex:p ?v }";
+        let p = parse(
+            &format!(
+                "{HEAD}ex:S sh:targetClass ex:C ; sh:sparql [ sh:prefixes ex:P ; sh:select \"{sel}\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n{data}"
+            ),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        let g = Graph::new(&[&p.triples]);
+        assert!(sparse(20, g.len()), "20 focus nodes in {} triples", g.len());
+        assert!(!sparse(300, g.len()));
+        let run = |min_batch| {
+            report_with(&g, &|| false, &|_| true, min_batch)
+                .unwrap()
+                .results
+                .len()
+        };
+        assert_eq!(run(1), run(usize::MAX));
+        assert_eq!(run(1), 400);
     }
 
     /// One SPARQL constraint on 10,000 focus nodes (run with --nocapture
