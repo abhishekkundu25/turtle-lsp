@@ -16,6 +16,7 @@
 //! SPARQL completion (`sparql::features::completion`), which finds the slot
 //! and the subject from the query's structure instead.
 
+mod jsonld;
 pub(crate) mod ranking;
 
 use crate::analysis::{Analysis, Encoding};
@@ -83,14 +84,17 @@ pub fn complete(
     pos: Position,
 ) -> CompletionResponse {
     // Everything offered here is a prefixed name or a keyword, none of which
-    // N-Triples or N-Quads allows. JSON-LD completion is not written yet.
-    if a.parsed.syntax.is_line_based() || a.parsed.syntax == Syntax::JsonLd {
+    // N-Triples or N-Quads allows.
+    if a.parsed.syntax.is_line_based() {
         return CompletionResponse::Array(vec![]);
     }
     let Some(offset) = a.offset(enc, pos) else {
         return CompletionResponse::Array(vec![]);
     };
     let offset = offset as usize;
+    if a.parsed.syntax == Syntax::JsonLd {
+        return jsonld::complete(a, text, k, enc, offset);
+    }
     let start = word_start(text, offset);
     let end = word_end(text, offset);
     let typed = &text[start..offset];
@@ -182,9 +186,30 @@ pub(crate) fn prefixed_terms(
             )
         }
     };
+    Some(namespace_terms(
+        k,
+        &ns,
+        local,
+        slot,
+        &|l| format!("{pfx}:{l}"),
+        import,
+    ))
+}
+
+/// The terms of namespace `ns` whose local name matches `local`, labelled
+/// `label(local name)`: the bundled vocabulary's, then those the workspace
+/// defines or uses.
+pub(crate) fn namespace_terms(
+    k: &Knowledge,
+    ns: &str,
+    local: &str,
+    slot: Slot,
+    label: &dyn Fn(&str) -> String,
+    import: Option<(String, String)>,
+) -> Vec<Candidate> {
     let mut cands = Vec::new();
     let mut seen: FxHashSet<String> = FxHashSet::default();
-    if let Some(v) = VOCABS.by_namespace(&ns) {
+    if let Some(v) = VOCABS.by_namespace(ns) {
         for t in v.terms() {
             if !fuzzy(local, &t.local) {
                 continue;
@@ -192,7 +217,7 @@ pub(crate) fn prefixed_terms(
             seen.insert(t.local.clone());
             cands.push(Candidate {
                 tier: ranking::NONE,
-                label: format!("{pfx}:{}", t.local),
+                label: label(&t.local),
                 kind: term_item_kind(t.kind),
                 detail: if t.label.is_empty() {
                     format!("{}{}", ns, t.local)
@@ -206,30 +231,30 @@ pub(crate) fn prefixed_terms(
         }
     }
     // Terms the workspace defines or uses in this namespace.
-    for iri in k.terms_in(&ns) {
-        let Some(l) = iri.strip_prefix(ns.as_str()) else {
+    for iri in k.terms_in(ns) {
+        let Some(l) = iri.strip_prefix(ns) else {
             continue;
         };
         if l.is_empty() || seen.contains(l) || !is_local_name(l) || !fuzzy(local, l) {
             continue;
         }
         let kind = guess_kind(k, &iri);
-        let label = k.label(&iri);
+        let name = k.label(&iri);
         cands.push(Candidate {
             tier: ranking::NONE,
-            label: format!("{pfx}:{l}"),
+            label: label(l),
             kind: match kind {
                 TermKind::Class => CompletionItemKind::CLASS,
                 TermKind::Property => CompletionItemKind::PROPERTY,
                 TermKind::Individual => CompletionItemKind::REFERENCE,
             },
-            detail: label.unwrap_or(&iri).to_string(),
+            detail: name.unwrap_or(&iri).to_string(),
             iri: Some(iri.to_string()),
             rank: rank(slot, kind),
             import: import.clone(),
         });
     }
-    Some(cands)
+    cands
 }
 
 /// Prefixes matching `typed`: those in scope, then the well-known ones not

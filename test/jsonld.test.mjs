@@ -638,23 +638,89 @@ const completionLabels = async (uri, position) => {
   return (Array.isArray(res) ? res : res?.items ?? []).map((i) => i.label)
 }
 
-test("completion in a key offers the context's terms", phase2, async () => {
+test("completion in a key offers the context's terms", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const labels = await completionLabels(uri, F.inside(F.EDIT_ANN_NAME, 2))
   assert.ok(labels.includes("name"), labels.slice(0, 30).join(", "))
   assert.ok(labels.includes("knows"), labels.slice(0, 30).join(", "))
 })
 
-test("completion in a key offers @vocab terms the workspace describes", phase2, async () => {
+test("completion in a key offers @vocab terms the workspace describes", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const labels = await completionLabels(uri, F.inside(F.EDIT_BOB_WEIGHT, 2))
   assert.ok(labels.includes("weight"), labels.slice(0, 30).join(", "))
 })
 
-test("completion in an @type value offers @vocab classes", phase2, async () => {
+test("completion in an @type value offers @vocab classes", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const labels = await completionLabels(uri, F.inside(F.EDIT_ANN_TYPE, 3))
   assert.ok(labels.includes("Widget"), labels.slice(0, 30).join(", "))
+})
+
+const completionItems = async (uri, position) => {
+  const res = await s.request("textDocument/completion", { textDocument: { uri }, position })
+  return Array.isArray(res) ? res : res?.items ?? []
+}
+
+test("completion in a half-typed key (an unclosed string) offers the context's terms inside the quotes", { timeout: 25_000 }, async (t) => {
+  const text = `{
+  "@context": { "foaf": "http://xmlns.com/foaf/0.1/", "knows": "foaf:knows" },
+  "@id": "x",
+  "kn
+}
+`
+  const { uri } = await openScratch(t, text)
+  const items = await completionItems(uri, { line: 3, character: 5 })
+  const knows = items.find((i) => i.label === "knows")
+  assert.ok(knows, items.slice(0, 30).map((i) => i.label).join(", "))
+  assert.equal(knows.detail, "http://xmlns.com/foaf/0.1/knows")
+  assert.deepEqual(knows.textEdit.range, { start: { line: 3, character: 3 }, end: { line: 3, character: 5 } })
+  assert.equal(knows.textEdit.newText, "knows")
+})
+
+test("completion in a key offers the terms of a scoped context there only", { timeout: 25_000 }, async (t) => {
+  const text = `{
+  "@context": {
+    "@vocab": "https://jsonld.example.org/def/",
+    "part": { "@id": "partOf", "@context": { "colourName": "https://jsonld.example.org/def/colour" } }
+  },
+  "part": { "co": 1 },
+  "other": { "co": 1 }
+}
+`
+  const { uri } = await openScratch(t, text)
+  const inPart = await completionLabels(uri, { line: 5, character: 14 })
+  assert.ok(inPart.includes("colourName"), inPart.slice(0, 30).join(", "))
+  const inOther = await completionLabels(uri, { line: 6, character: 15 })
+  assert.ok(!inOther.includes("colourName"), inOther.slice(0, 30).join(", "))
+  assert.ok(inOther.includes("part"), inOther.slice(0, 30).join(", "))
+})
+
+test("completing a compact IRI whose prefix the context lacks adds the prefix to @context", { timeout: 25_000 }, async (t) => {
+  const text = `{
+  "@context": {
+    "@vocab": "https://jsonld.example.org/def/"
+  },
+  "@id": "x",
+  "foaf:na"
+}
+`
+  const { uri } = await openScratch(t, text)
+  const items = await completionItems(uri, { line: 5, character: 10 })
+  const name = items.find((i) => i.label === "foaf:name")
+  assert.ok(name, items.slice(0, 30).map((i) => i.label).join(", "))
+  assert.equal(
+    F.applyEdits(text, [name.textEdit, ...(name.additionalTextEdits ?? [])]),
+    `{
+  "@context": {
+    "foaf": "http://xmlns.com/foaf/0.1/",
+    "@vocab": "https://jsonld.example.org/def/"
+  },
+  "@id": "x",
+  "foaf:name"
+}
+`,
+  )
 })
 
 test("hover on a key shows its expanded IRI, over the key", { timeout: 25_000 }, async () => {
