@@ -111,6 +111,7 @@ pub fn parse_with_base(
                 span: Span::new(t.start, t.end),
                 message: msg.to_string(),
                 severity: Severity::Error,
+                code: "syntax",
             });
         }
     }
@@ -351,6 +352,7 @@ impl<'a> P<'a> {
             span,
             message: message.into(),
             severity: Severity::Error,
+            code: "syntax",
         });
     }
     fn warning(&mut self, span: Span, message: impl Into<String>) {
@@ -358,6 +360,7 @@ impl<'a> P<'a> {
             span,
             message: message.into(),
             severity: Severity::Warning,
+            code: "syntax",
         });
     }
 

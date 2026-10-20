@@ -250,6 +250,9 @@ pub struct SyntaxError {
     pub span: Span,
     pub message: String,
     pub severity: Severity,
+    /// The diagnostic code: `syntax` for Turtle and its relatives,
+    /// `json-syntax` and `jsonld-context` for JSON-LD.
+    pub code: &'static str,
 }
 
 #[derive(Debug, Default)]

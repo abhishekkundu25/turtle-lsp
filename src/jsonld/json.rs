@@ -383,6 +383,7 @@ impl<'a> Parser<'a> {
             span,
             message,
             severity: Severity::Error,
+            code: "json-syntax",
         });
     }
 

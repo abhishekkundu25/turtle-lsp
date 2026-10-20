@@ -215,7 +215,7 @@ pub fn diagnostics_with(
             Severity::Error => DiagnosticSeverity::ERROR,
             Severity::Warning => DiagnosticSeverity::WARNING,
         };
-        out.push(mk(e.span, sev, "syntax", e.message.clone()));
+        out.push(mk(e.span, sev, e.code, e.message.clone()));
     }
 
     // Undeclared prefixes, with "add @prefix" fixes for every known namespace.
