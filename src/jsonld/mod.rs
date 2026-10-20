@@ -643,18 +643,20 @@ mod tests {
             &j.errors[..1]
         );
         assert_eq!(j.triples.len(), t.triples.len());
-        let best = |f: &dyn Fn()| {
-            (0..7)
-                .map(|_| {
-                    let t = Instant::now();
-                    f();
-                    t.elapsed()
-                })
-                .min()
-                .unwrap_or(Duration::ZERO)
+        let time = |f: &dyn Fn()| {
+            let t = Instant::now();
+            f();
+            t.elapsed()
         };
-        let jt = best(&|| drop(parse(&json, Some(BASE), &loader)));
-        let tt = best(&|| drop(crate::syntax::parse(&ttl, &prefixes, Syntax::Turtle)));
+        // Alternated, so load from other tests running in parallel slows
+        // both alike; the best of each is kept.
+        let (mut jt, mut tt) = (Duration::MAX, Duration::MAX);
+        for _ in 0..7 {
+            jt = jt.min(time(&|| drop(parse(&json, Some(BASE), &loader))));
+            tt = tt.min(time(&|| {
+                drop(crate::syntax::parse(&ttl, &prefixes, Syntax::Turtle))
+            }));
+        }
         eprintln!(
             "JSON-LD {} lines, {} triples: {jt:?}; Turtle: {tt:?} ({:.2}x)",
             json.lines().count(),
