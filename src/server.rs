@@ -453,7 +453,10 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
             ..Default::default()
         })),
         execute_command_provider: Some(ExecuteCommandOptions {
-            commands: vec![crate::imports::FETCH_COMMAND.into()],
+            commands: crate::commands::COMMANDS
+                .iter()
+                .map(|c| c.to_string())
+                .collect(),
             work_done_progress_options: Default::default(),
         }),
         ..Default::default()
@@ -1603,25 +1606,11 @@ impl Server {
                 json(serde_json::to_value(actions))
             }
             ExecuteCommand::METHOD => {
-                let p = params!(ExecuteCommandParams);
-                let iri = match (p.command.as_str(), p.arguments.as_slice()) {
-                    (crate::imports::FETCH_COMMAND, [Value::String(iri)]) => iri,
-                    (crate::imports::FETCH_COMMAND, _) => {
-                        return Err((
-                            ErrorCode::InvalidParams,
-                            format!("{} takes one IRI", p.command),
-                        ));
-                    }
-                    _ => {
-                        return Err((
-                            ErrorCode::InvalidParams,
-                            format!("unknown command {}", p.command),
-                        ));
-                    }
-                };
-                // The job starts when this batch ends; its answer republishes
-                // diagnostics like any other resolution pass.
-                self.imports.fetch(iri);
+                match crate::commands::parse(params!(ExecuteCommandParams))? {
+                    // The job starts when this batch ends; its answer
+                    // republishes diagnostics like any other resolution pass.
+                    crate::commands::Command::FetchImport { iri } => self.imports.fetch(&iri),
+                }
                 ok(Value::Null)
             }
             CodeActionResolveRequest::METHOD => {
