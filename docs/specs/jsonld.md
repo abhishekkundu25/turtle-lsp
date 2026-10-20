@@ -1,6 +1,6 @@
 # JSON-LD support
 
-Status: spec, not scheduled. Phase 1 only; tickets in `.scratch/jsonld/issues/`.
+Status: spec, not scheduled. Phase 1 only; tickets in `docs/tickets/jsonld/`.
 
 ## Problem Statement
 
