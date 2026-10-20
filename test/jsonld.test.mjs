@@ -196,25 +196,25 @@ test("check: a JSON syntax error exits 1 at its line and column", { timeout: 25_
 
 // ---- @context errors (ticket 07) ----
 
-test("an invalid term definition is a jsonld-context error on the term", phase1("07"), async (t) => {
+test("an invalid term definition is a jsonld-context error on the term", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.CTX_INVALID)
   assert.deepEqual(rangesOf(diags, "jsonld-context"), [F.CTX_INVALID_AT], show(diags))
   assert.equal(withCode(diags, "jsonld-context")[0].severity, 1)
 })
 
-test("a cyclic IRI mapping is one jsonld-context error, on a term of the cycle", phase1("07"), async (t) => {
+test("a cyclic IRI mapping is one jsonld-context error, on a term of the cycle", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.CTX_CYCLE)
   const found = rangesOf(diags, "jsonld-context")
   assert.equal(found.length, 1, show(diags))
   assert.ok([F.rangeKey(F.CTX_CYCLE_A), F.rangeKey(F.CTX_CYCLE_B)].includes(F.rangeKey(found[0])), show(diags))
 })
 
-test("redefining a protected term is a jsonld-context error on the redefinition", phase1("07"), async (t) => {
+test("redefining a protected term is a jsonld-context error on the redefinition", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.CTX_PROTECTED)
   assert.deepEqual(rangesOf(diags, "jsonld-context"), [F.CTX_PROTECTED_AT], show(diags))
 })
 
-test("check: a context error is reported at the definition", phase1("07"), (t) => {
+test("check: a context error is reported at the definition", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "context-error.jsonld": F.CTX_INVALID })
   const r = checkJson(w)
   assert.equal(r.code, 1, r.err)
@@ -234,7 +234,7 @@ test("a key the context does not define is a jsonld-undefined-term warning on th
   }
 })
 
-test("a misspelled vocabulary key is unknown-term with a did-you-mean fix", phase1("11"), async (t) => {
+test("a misspelled vocabulary key is unknown-term with a did-you-mean fix", { timeout: 25_000 }, async (t) => {
   const { uri, diags } = await openScratch(t, F.LINTS)
   const typos = withCode(diags, "unknown-term").filter((d) => F.rangeKey(d.range) === F.rangeKey(F.LINTS_KEY_TYPO))
   assert.equal(typos.length, 1, show(diags))
@@ -248,7 +248,7 @@ test("a misspelled vocabulary IRI in a term definition is unknown-term on the de
   assert.deepEqual(sortRanges(rangesOf(diags, "unknown-term")), sortRanges([F.LINTS_DEF_TYPO, F.LINTS_KEY_TYPO]), show(diags))
 })
 
-test("a deprecated vocabulary term reached through the context is deprecated-term", phase1("11"), async (t) => {
+test("a deprecated vocabulary term reached through the context is deprecated-term", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.LINTS)
   const d = withCode(diags, "deprecated-term")
   assert.deepEqual(d.map((x) => x.range), [F.LINTS_DEPRECATED], show(diags))
@@ -324,7 +324,7 @@ async function startWithCache(cwd, cache, initializationOptions) {
   return server
 }
 
-test("offline, bundled contexts load and an unknown remote context is reported, not fetched", phase1("06"), async (t) => {
+test("offline, bundled contexts load and an unknown remote context is reported, not fetched", { timeout: 25_000 }, async (t) => {
   for (const url of F.BUNDLED_CONTEXTS) {
     const { diags } = await openScratch(t, F.remoteDoc(url))
     assert.deepEqual(withCode(diags, "jsonld-context"), [], `${url}: ${show(diags)}`)
@@ -402,7 +402,7 @@ test("check: a remote context is fetched only with --network", phase1("06"), asy
 
 // ---- cross-file knowledge (ticket 09) ----
 
-test("Turtle completion offers terms a JSON-LD file describes", phase1("09"), async (t) => {
+test("Turtle completion offers terms a JSON-LD file describes", { timeout: 25_000 }, async (t) => {
   const text = "@prefix ex: <https://jsonld.example.org/def/> .\nex:w2 a ex:Gad\n"
   const { uri } = await openScratch(t, text, "ttl")
   const res = await s.request("textDocument/completion", { textDocument: { uri }, position: { line: 1, character: 14 } })
@@ -410,7 +410,7 @@ test("Turtle completion offers terms a JSON-LD file describes", phase1("09"), as
   assert.ok(labels.includes("ex:Gadget"), labels.slice(0, 30).join(", "))
 })
 
-test("SPARQL completion offers terms a JSON-LD file describes", phase1("09"), async (t) => {
+test("SPARQL completion offers terms a JSON-LD file describes", { timeout: 25_000 }, async (t) => {
   const text = "PREFIX ex: <https://jsonld.example.org/def/>\nSELECT * WHERE { ?w a ex:Gad }\n"
   const { uri } = await openScratch(t, text, "rq")
   const res = await s.request("textDocument/completion", { textDocument: { uri }, position: { line: 1, character: 28 } })
@@ -418,13 +418,13 @@ test("SPARQL completion offers terms a JSON-LD file describes", phase1("09"), as
   assert.ok(labels.includes("ex:Gadget"), labels.slice(0, 30).join(", "))
 })
 
-test("Turtle hover shows what a JSON-LD file says about a term", phase1("09"), async () => {
+test("Turtle hover shows what a JSON-LD file says about a term", { timeout: 25_000 }, async () => {
   const uri = await openFile("uses.ttl")
   const h = await s.request("textDocument/hover", { textDocument: { uri }, position: F.inside(F.USES_WIDGET, 4) })
   assert.match(JSON.stringify(h?.contents ?? ""), /Widget from JSON-LD/)
 })
 
-test("references from Turtle include the JSON-LD @id that describes the term", phase1("09"), async () => {
+test("references from Turtle include the JSON-LD @id that describes the term", { timeout: 25_000 }, async () => {
   const uri = await openFile("uses.ttl")
   const res = await s.request("textDocument/references", {
     textDocument: { uri },
@@ -435,7 +435,7 @@ test("references from Turtle include the JSON-LD @id that describes the term", p
   assert.deepEqual(found.map((l) => l.range), [F.VOCAB_WIDGET], JSON.stringify(res))
 })
 
-test("terms a JSON-LD file describes are not undescribed-term in Turtle; a typo of one is", phase1("09"), async () => {
+test("terms a JSON-LD file describes are not undescribed-term in Turtle; a typo of one is", { timeout: 25_000 }, async () => {
   const uri = await openFile("uses.ttl")
   const diags = await until(s, uri, (d) => withCode(d, "undescribed-term").length > 0)
   assert.deepEqual(rangesOf(diags, "undescribed-term"), [F.USES_GADGT], show(diags))
@@ -443,7 +443,7 @@ test("terms a JSON-LD file describes are not undescribed-term in Turtle; a typo 
   assert.ok(texts.includes(F.USES.replace("ex:Gadgt", "ex:Gadget")), JSON.stringify(texts))
 })
 
-test("owl:imports of an ontology a JSON-LD file declares resolve", phase1("09"), async () => {
+test("owl:imports of an ontology a JSON-LD file declares resolve", { timeout: 25_000 }, async () => {
   const uri = await openFile("uses.ttl")
   const diags = await until(s, uri, (d) => withCode(d, "unresolved-import").length === 0 && withCode(d, "undescribed-term").length > 0)
   assert.deepEqual(rangesOf(diags, "unresolved-import"), [], show(diags))
@@ -459,13 +459,13 @@ test("in JSON-LD, a typo of a term Turtle describes is undescribed-term with a f
   assert.ok(texts.includes(F.BACK.replace('"ex:Sprockett"', '"ex:Sprocket"')), JSON.stringify(texts))
 })
 
-test("in JSON-LD, a key expanded through @vocab to an undescribed own term is undescribed-term", phase1("09"), async (t) => {
+test("in JSON-LD, a key expanded through @vocab to an undescribed own term is undescribed-term", { timeout: 25_000 }, async (t) => {
   const { uri } = await openScratch(t, F.VOCAB_KEYS)
   const diags = await until(s, uri, (d) => withCode(d, "undescribed-term").length > 0)
   assert.deepEqual(rangesOf(diags, "undescribed-term"), [F.VOCAB_KEYS_TYPO], show(diags))
 })
 
-test("check: JSON and SARIF output name JSON-LD files and their positions", phase1("09"), (t) => {
+test("check: JSON and SARIF output name JSON-LD files and their positions", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "broken.jsonld": F.SYNTAX })
   const json = checkJson(w)
   assert.deepEqual(json.report.files.map((f) => f.path), ["broken.jsonld"])
@@ -501,7 +501,7 @@ test("check: JSON-LD warnings exit as Turtle warnings do", phase1("09"), (t) => 
   assert.equal(run(w, ["check", "--exit-zero"]).code, 0)
 })
 
-test("the editor and check report the same diagnostics on a mixed Turtle and JSON-LD project", phase1("09"), async (t) => {
+test("the editor and check report the same diagnostics on a mixed Turtle and JSON-LD project", { timeout: 25_000 }, async (t) => {
   const files = { "vocab.jsonld": F.VOCAB, "uses.ttl": F.USES, "lints.jsonld": F.LINTS, "broken.jsonld": F.SYNTAX, "back.jsonld": F.BACK }
   const w = workspace(t, files)
   const cli = checkJson(w)
@@ -562,7 +562,7 @@ test("check: SHACL results in JSON-LD data at the same positions", phase1("10"),
   assert.deepEqual(cliRanges(r.of("people.jsonld", "shacl-violation")), cliExpected(F.PEOPLE_RESULTS), r.out)
 })
 
-test("check: JSON-LD named graphs follow the TriG rules: never merged, results that need a dataset in it, shared results not repeated", phase1("10"), (t) => {
+test("check: JSON-LD named graphs follow the TriG rules: never merged, results that need a dataset in it, shared results not repeated", { timeout: 25_000 }, (t) => {
   const w = workspace(t, {
     "shapes.ttl": F.ASSET_SHAPES,
     "shared.ttl": F.SHARED_ASSETS,
@@ -592,7 +592,7 @@ test("check: JSON-LD named graphs follow the TriG rules: never merged, results t
   )
 })
 
-test("a JSON-LD dataset that mentions a violating shared node does not repeat its result in the editor", phase1("10"), async (t) => {
+test("a JSON-LD dataset that mentions a violating shared node does not repeat its result in the editor", { timeout: 25_000 }, async (t) => {
   const files = { "shapes.ttl": F.ASSET_SHAPES, "shared.ttl": F.SHARED_ASSETS, "mentions.jsonld": F.MENTIONS, "run3.jsonld": F.assetRun("run3", '["A", "B"]') }
   const { server, save } = await shaclSession(t, files)
   const shared = save("shared.ttl")
@@ -604,7 +604,7 @@ test("a JSON-LD dataset that mentions a violating shared node does not repeat it
   assert.deepEqual(shaclRanges(await server.diagnosticsFor(mentions)), [])
 })
 
-test("check: a SHACL-SPARQL constraint reports a JSON-LD focus node on its @id", phase1("10"), (t) => {
+test("check: a SHACL-SPARQL constraint reports a JSON-LD focus node on its @id", { timeout: 25_000 }, (t) => {
   const w = workspace(t, { "shapes.ttl": F.ASSET_SHAPES, "bad.jsonld": F.BAD_ASSET })
   const r = checkJson(w)
   assert.deepEqual(cliRanges(r.of("bad.jsonld", "shacl-violation")), cliExpected([F.BAD_ASSET_ID]), r.out)
@@ -648,14 +648,14 @@ test("completion in an @type value offers @vocab classes", phase2, async () => {
   assert.ok(labels.includes("Widget"), labels.slice(0, 30).join(", "))
 })
 
-test("hover on a key shows its expanded IRI, over the key", phase2, async () => {
+test("hover on a key shows its expanded IRI, over the key", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const h = await s.request("textDocument/hover", { textDocument: { uri }, position: F.inside(F.EDIT_ANN_NAME, 1) })
   assert.match(JSON.stringify(h?.contents ?? ""), /http:\/\/xmlns\.com\/foaf\/0\.1\/name/)
   assert.deepEqual(h.range, F.EDIT_ANN_NAME)
 })
 
-test("hover on an @type value shows its expanded IRI and what the workspace says about it", phase2, async () => {
+test("hover on an @type value shows its expanded IRI and what the workspace says about it", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const h = await s.request("textDocument/hover", { textDocument: { uri }, position: F.inside(F.EDIT_ANN_TYPE, 1) })
   const md = JSON.stringify(h?.contents ?? "")
@@ -670,7 +670,7 @@ test("go to definition on a key goes to its @context entry", phase2, async () =>
   assert.deepEqual(locations(res), [{ uri, range: F.EDIT_NAME_DEF }])
 })
 
-test("go to definition on an @vocab key goes to where the workspace describes the term", phase2, async () => {
+test("go to definition on an @vocab key goes to where the workspace describes the term", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const res = await s.request("textDocument/definition", { textDocument: { uri }, position: F.inside(F.EDIT_BOB_WEIGHT, 1) })
   assert.deepEqual(locations(res), [{ uri: fileUri("vocab.jsonld"), range: F.VOCAB_WEIGHT }])
@@ -771,7 +771,7 @@ test("semantic tokens mark keywords, properties and classes", phase2, async () =
   }
 })
 
-test("the outline lists each node object by its @id", phase2, async () => {
+test("the outline lists each node object by its @id", { timeout: 25_000 }, async () => {
   const uri = await openEdit()
   const syms = flattenSymbols(await s.request("textDocument/documentSymbol", { textDocument: { uri } }))
   const byName = (name) => syms.find((x) => x.name === name)

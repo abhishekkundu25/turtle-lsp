@@ -1,249 +1,249 @@
 # W3C JSON-LD 1.1 expected statuses (tests/w3c_jsonld.rs).
 # test<TAB>pass|known-fail|out-of-scope<TAB>reason
 # Rewrite from the actual results: JSONLD_W3C_WRITE=1 cargo test --release --test w3c_jsonld
-toRdf#t0001	known-fail	0 quads, expected 1
-toRdf#t0002	known-fail	0 quads, expected 1
-toRdf#t0003	known-fail	0 quads, expected 1
-toRdf#t0004	known-fail	0 quads, expected 1
-toRdf#t0005	known-fail	0 quads, expected 2
-toRdf#t0006	known-fail	0 quads, expected 1
-toRdf#t0007	known-fail	0 quads, expected 1
-toRdf#t0008	known-fail	0 quads, expected 1
-toRdf#t0009	known-fail	0 quads, expected 1
-toRdf#t0010	known-fail	0 quads, expected 2
-toRdf#t0011	known-fail	0 quads, expected 2
-toRdf#t0012	known-fail	0 quads, expected 2
-toRdf#t0013	known-fail	0 quads, expected 1
-toRdf#t0014	known-fail	0 quads, expected 3
-toRdf#t0015	known-fail	0 quads, expected 5
-toRdf#t0016	known-fail	0 quads, expected 1
-toRdf#t0017	known-fail	0 quads, expected 1
-toRdf#t0018	known-fail	0 quads, expected 1
-toRdf#t0019	known-fail	0 quads, expected 1
-toRdf#t0020	known-fail	0 quads, expected 1
-toRdf#t0022	known-fail	0 quads, expected 1
-toRdf#t0023	known-fail	0 quads, expected 1
-toRdf#t0024	known-fail	0 quads, expected 1
-toRdf#t0025	known-fail	0 quads, expected 3
-toRdf#t0026	known-fail	0 quads, expected 2
-toRdf#t0027	known-fail	0 quads, expected 8
-toRdf#t0028	known-fail	0 quads, expected 6
-toRdf#t0029	known-fail	0 quads, expected 4
-toRdf#t0030	known-fail	0 quads, expected 7
-toRdf#t0031	known-fail	0 quads, expected 3
-toRdf#t0032	known-fail	0 quads, expected 3
-toRdf#t0033	known-fail	0 quads, expected 3
-toRdf#t0034	known-fail	0 quads, expected 3
-toRdf#t0035	known-fail	0 quads, expected 4
-toRdf#t0036	known-fail	0 quads, expected 6
-toRdf#t0113	known-fail	0 quads, expected 1
-toRdf#t0114	known-fail	0 quads, expected 1
-toRdf#t0115	known-fail	0 quads, expected 3
-toRdf#t0116	known-fail	0 quads, expected 2
-toRdf#t0117	known-fail	0 quads, expected 2
+toRdf#t0001	pass
+toRdf#t0002	pass
+toRdf#t0003	pass
+toRdf#t0004	pass
+toRdf#t0005	pass
+toRdf#t0006	pass
+toRdf#t0007	pass
+toRdf#t0008	pass
+toRdf#t0009	pass
+toRdf#t0010	pass
+toRdf#t0011	pass
+toRdf#t0012	pass
+toRdf#t0013	pass
+toRdf#t0014	pass
+toRdf#t0015	pass
+toRdf#t0016	pass
+toRdf#t0017	pass
+toRdf#t0018	pass
+toRdf#t0019	pass
+toRdf#t0020	pass
+toRdf#t0022	pass
+toRdf#t0023	pass
+toRdf#t0024	pass
+toRdf#t0025	pass
+toRdf#t0026	pass
+toRdf#t0027	pass
+toRdf#t0028	pass
+toRdf#t0029	pass
+toRdf#t0030	pass
+toRdf#t0031	pass
+toRdf#t0032	pass
+toRdf#t0033	pass
+toRdf#t0034	pass
+toRdf#t0035	pass
+toRdf#t0036	pass
+toRdf#t0113	pass
+toRdf#t0114	pass
+toRdf#t0115	pass
+toRdf#t0116	pass
+toRdf#t0117	pass
 toRdf#t0118	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#t0119	known-fail	0 quads, expected 3
-toRdf#t0120	known-fail	0 quads, expected 42
-toRdf#t0121	known-fail	0 quads, expected 42
-toRdf#t0122	known-fail	0 quads, expected 42
-toRdf#t0123	known-fail	0 quads, expected 42
-toRdf#t0124	known-fail	0 quads, expected 42
-toRdf#t0125	known-fail	0 quads, expected 42
-toRdf#t0126	known-fail	0 quads, expected 42
-toRdf#t0127	known-fail	0 quads, expected 6
-toRdf#t0128	known-fail	0 quads, expected 3
-toRdf#t0129	known-fail	0 quads, expected 3
-toRdf#t0130	known-fail	0 quads, expected 1
-toRdf#t0131	known-fail	0 quads, expected 1
-toRdf#t0132	known-fail	0 quads, expected 1
-toRdf#t0133	known-fail	0 quads, expected 4
-toRdf#tc001	known-fail	0 quads, expected 2
-toRdf#tc002	known-fail	0 quads, expected 2
-toRdf#tc003	known-fail	0 quads, expected 2
-toRdf#tc004	known-fail	0 quads, expected 3
-toRdf#tc005	known-fail	0 quads, expected 6
-toRdf#tc006	known-fail	0 quads, expected 3
-toRdf#tc007	known-fail	0 quads, expected 3
-toRdf#tc008	known-fail	0 quads, expected 3
-toRdf#tc009	known-fail	0 quads, expected 3
-toRdf#tc010	known-fail	0 quads, expected 5
-toRdf#tc011	known-fail	0 quads, expected 3
-toRdf#tc012	known-fail	0 quads, expected 3
-toRdf#tc013	known-fail	0 quads, expected 6
-toRdf#tc014	known-fail	0 quads, expected 3
-toRdf#tc015	known-fail	0 quads, expected 5
-toRdf#tc016	known-fail	0 quads, expected 6
-toRdf#tc017	known-fail	0 quads, expected 5
-toRdf#tc018	known-fail	0 quads, expected 3
-toRdf#tc019	known-fail	0 quads, expected 7
-toRdf#tc020	known-fail	0 quads, expected 2
-toRdf#tc021	known-fail	0 quads, expected 10
-toRdf#tc022	known-fail	0 quads, expected 2
-toRdf#tc023	known-fail	0 quads, expected 4
-toRdf#tc024	known-fail	0 quads, expected 7
-toRdf#tc025	known-fail	0 quads, expected 4
-toRdf#tc026	known-fail	0 quads, expected 3
-toRdf#tc027	known-fail	0 quads, expected 3
-toRdf#tc028	known-fail	0 quads, expected 3
+toRdf#t0119	pass
+toRdf#t0120	pass
+toRdf#t0121	pass
+toRdf#t0122	pass
+toRdf#t0123	pass
+toRdf#t0124	pass
+toRdf#t0125	pass
+toRdf#t0126	pass
+toRdf#t0127	pass
+toRdf#t0128	pass
+toRdf#t0129	pass
+toRdf#t0130	pass
+toRdf#t0131	pass
+toRdf#t0132	pass
+toRdf#t0133	pass
+toRdf#tc001	pass
+toRdf#tc002	pass
+toRdf#tc003	pass
+toRdf#tc004	pass
+toRdf#tc005	pass
+toRdf#tc006	pass
+toRdf#tc007	pass
+toRdf#tc008	pass
+toRdf#tc009	pass
+toRdf#tc010	pass
+toRdf#tc011	pass
+toRdf#tc012	pass
+toRdf#tc013	pass
+toRdf#tc014	pass
+toRdf#tc015	pass
+toRdf#tc016	pass
+toRdf#tc017	pass
+toRdf#tc018	pass
+toRdf#tc019	pass
+toRdf#tc020	pass
+toRdf#tc021	pass
+toRdf#tc022	pass
+toRdf#tc023	pass
+toRdf#tc024	pass
+toRdf#tc025	pass
+toRdf#tc026	pass
+toRdf#tc027	pass
+toRdf#tc028	pass
 toRdf#tc029	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 toRdf#tc030	pass
-toRdf#tc031	known-fail	0 quads, expected 2
+toRdf#tc031	pass
 toRdf#tc032	pass
 toRdf#tc033	pass
-toRdf#tc034	known-fail	0 quads, expected 2
-toRdf#tc035	known-fail	0 quads, expected 3
-toRdf#tc036	known-fail	0 quads, expected 3
-toRdf#tc037	known-fail	0 quads, expected 1
-toRdf#tc038	known-fail	0 quads, expected 7
-toRdf#tdi01	known-fail	0 quads, expected 3
-toRdf#tdi02	known-fail	0 quads, expected 9
-toRdf#tdi03	known-fail	0 quads, expected 6
-toRdf#tdi04	known-fail	0 quads, expected 3
-toRdf#tdi05	known-fail	0 quads, expected 3
-toRdf#tdi06	known-fail	0 quads, expected 3
-toRdf#tdi07	known-fail	0 quads, expected 3
+toRdf#tc034	pass
+toRdf#tc035	pass
+toRdf#tc036	pass
+toRdf#tc037	pass
+toRdf#tc038	pass
+toRdf#tdi01	pass
+toRdf#tdi02	pass
+toRdf#tdi03	pass
+toRdf#tdi04	pass
+toRdf#tdi05	pass
+toRdf#tdi06	pass
+toRdf#tdi07	pass
 toRdf#tdi08	pass
 toRdf#tdi09	out-of-scope	rdfDirection: the engine has no rdfDirection option
 toRdf#tdi10	out-of-scope	rdfDirection: the engine has no rdfDirection option
 toRdf#tdi11	out-of-scope	rdfDirection: the engine has no rdfDirection option
 toRdf#tdi12	out-of-scope	rdfDirection: the engine has no rdfDirection option
 toRdf#te001	pass
-toRdf#te002	known-fail	0 quads, expected 7
+toRdf#te002	pass
 toRdf#te003	pass
-toRdf#te004	known-fail	0 quads, expected 11
-toRdf#te005	known-fail	0 quads, expected 6
-toRdf#te006	known-fail	0 quads, expected 4
-toRdf#te007	known-fail	0 quads, expected 3
-toRdf#te008	known-fail	0 quads, expected 2
-toRdf#te009	known-fail	0 quads, expected 9
-toRdf#te010	known-fail	0 quads, expected 2
-toRdf#te011	known-fail	0 quads, expected 2
-toRdf#te012	known-fail	0 quads, expected 9
-toRdf#te013	known-fail	0 quads, expected 7
+toRdf#te004	pass
+toRdf#te005	pass
+toRdf#te006	pass
+toRdf#te007	pass
+toRdf#te008	pass
+toRdf#te009	pass
+toRdf#te010	pass
+toRdf#te011	pass
+toRdf#te012	pass
+toRdf#te013	pass
 toRdf#te014	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#te015	known-fail	0 quads, expected 6
-toRdf#te016	known-fail	0 quads, expected 9
-toRdf#te017	known-fail	0 quads, expected 9
-toRdf#te018	known-fail	0 quads, expected 9
+toRdf#te015	pass
+toRdf#te016	pass
+toRdf#te017	pass
+toRdf#te018	pass
 toRdf#te019	pass
-toRdf#te020	known-fail	0 quads, expected 11
-toRdf#te021	known-fail	0 quads, expected 13
-toRdf#te022	known-fail	0 quads, expected 1
-toRdf#te023	known-fail	0 quads, expected 16
-toRdf#te024	known-fail	0 quads, expected 4
-toRdf#te025	known-fail	0 quads, expected 3
+toRdf#te020	pass
+toRdf#te021	pass
+toRdf#te022	pass
+toRdf#te023	pass
+toRdf#te024	pass
+toRdf#te025	pass
 toRdf#te026	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#te027	known-fail	0 quads, expected 12
-toRdf#te028	known-fail	0 quads, expected 4
-toRdf#te029	known-fail	0 quads, expected 34
-toRdf#te030	known-fail	0 quads, expected 3
-toRdf#te031	known-fail	0 quads, expected 3
-toRdf#te032	known-fail	0 quads, expected 1
-toRdf#te033	known-fail	0 quads, expected 3
-toRdf#te034	known-fail	0 quads, expected 5
-toRdf#te035	known-fail	0 quads, expected 5
-toRdf#te036	known-fail	0 quads, expected 23
-toRdf#te037	known-fail	0 quads, expected 3
+toRdf#te027	pass
+toRdf#te028	pass
+toRdf#te029	pass
+toRdf#te030	pass
+toRdf#te031	pass
+toRdf#te032	pass
+toRdf#te033	pass
+toRdf#te034	pass
+toRdf#te035	pass
+toRdf#te036	pass
+toRdf#te037	pass
 toRdf#te038	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#te039	known-fail	0 quads, expected 3
-toRdf#te040	known-fail	0 quads, expected 4
-toRdf#te041	known-fail	0 quads, expected 3
-toRdf#te042	known-fail	0 quads, expected 3
-toRdf#te043	known-fail	0 quads, expected 5
-toRdf#te044	known-fail	0 quads, expected 3
+toRdf#te039	pass
+toRdf#te040	pass
+toRdf#te041	pass
+toRdf#te042	pass
+toRdf#te043	pass
+toRdf#te044	pass
 toRdf#te045	pass
 toRdf#te046	pass
-toRdf#te047	known-fail	0 quads, expected 1
-toRdf#te048	known-fail	0 quads, expected 4
-toRdf#te049	known-fail	0 quads, expected 3
-toRdf#te050	known-fail	0 quads, expected 2
-toRdf#te051	known-fail	0 quads, expected 1
-toRdf#te052	known-fail	0 quads, expected 2
-toRdf#te053	known-fail	0 quads, expected 1
-toRdf#te054	known-fail	0 quads, expected 1
-toRdf#te055	known-fail	0 quads, expected 1
-toRdf#te056	known-fail	0 quads, expected 3
-toRdf#te057	known-fail	0 quads, expected 1
-toRdf#te058	known-fail	0 quads, expected 1
-toRdf#te059	known-fail	0 quads, expected 4
-toRdf#te060	known-fail	0 quads, expected 4
-toRdf#te061	known-fail	0 quads, expected 4
-toRdf#te062	known-fail	0 quads, expected 38
-toRdf#te063	known-fail	0 quads, expected 5
-toRdf#te064	known-fail	0 quads, expected 5
-toRdf#te065	known-fail	0 quads, expected 3
-toRdf#te066	known-fail	0 quads, expected 5
-toRdf#te067	known-fail	0 quads, expected 2
-toRdf#te068	known-fail	0 quads, expected 1
-toRdf#te069	known-fail	0 quads, expected 2
-toRdf#te070	known-fail	0 quads, expected 2
+toRdf#te047	pass
+toRdf#te048	pass
+toRdf#te049	pass
+toRdf#te050	pass
+toRdf#te051	pass
+toRdf#te052	pass
+toRdf#te053	pass
+toRdf#te054	pass
+toRdf#te055	pass
+toRdf#te056	pass
+toRdf#te057	pass
+toRdf#te058	pass
+toRdf#te059	pass
+toRdf#te060	pass
+toRdf#te061	pass
+toRdf#te062	pass
+toRdf#te063	pass
+toRdf#te064	pass
+toRdf#te065	pass
+toRdf#te066	pass
+toRdf#te067	pass
+toRdf#te068	pass
+toRdf#te069	pass
+toRdf#te070	pass
 toRdf#te071	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#te072	known-fail	0 quads, expected 1
-toRdf#te073	known-fail	0 quads, expected 3
-toRdf#te074	known-fail	0 quads, expected 3
+toRdf#te072	pass
+toRdf#te073	pass
+toRdf#te074	pass
 toRdf#te075	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#te076	known-fail	0 quads, expected 1
+toRdf#te076	pass
 toRdf#te077	out-of-scope	expandContext: the engine takes no initial context
-toRdf#te078	known-fail	0 quads, expected 9
-toRdf#te079	known-fail	0 quads, expected 2
-toRdf#te080	known-fail	0 quads, expected 2
-toRdf#te081	known-fail	0 quads, expected 2
-toRdf#te082	known-fail	0 quads, expected 2
-toRdf#te083	known-fail	0 quads, expected 2
-toRdf#te084	known-fail	0 quads, expected 2
-toRdf#te085	known-fail	0 quads, expected 2
-toRdf#te086	known-fail	0 quads, expected 2
-toRdf#te087	known-fail	0 quads, expected 2
-toRdf#te088	known-fail	0 quads, expected 15
-toRdf#te089	known-fail	0 quads, expected 1
-toRdf#te090	known-fail	0 quads, expected 1
-toRdf#te091	known-fail	0 quads, expected 1
-toRdf#te092	known-fail	0 quads, expected 11
-toRdf#te093	known-fail	0 quads, expected 4
-toRdf#te094	known-fail	0 quads, expected 4
-toRdf#te095	known-fail	0 quads, expected 4
-toRdf#te096	known-fail	0 quads, expected 4
-toRdf#te097	known-fail	0 quads, expected 4
-toRdf#te098	known-fail	0 quads, expected 4
-toRdf#te099	known-fail	0 quads, expected 4
-toRdf#te100	known-fail	0 quads, expected 4
-toRdf#te101	known-fail	0 quads, expected 4
-toRdf#te102	known-fail	0 quads, expected 3
-toRdf#te103	known-fail	0 quads, expected 4
-toRdf#te104	known-fail	0 quads, expected 4
-toRdf#te105	known-fail	0 quads, expected 8
-toRdf#te106	known-fail	0 quads, expected 4
-toRdf#te107	known-fail	0 quads, expected 8
-toRdf#te108	known-fail	0 quads, expected 6
-toRdf#te109	known-fail	0 quads, expected 2
-toRdf#te110	known-fail	0 quads, expected 11
-toRdf#te111	known-fail	0 quads, expected 10
-toRdf#te112	known-fail	0 quads, expected 10
-toRdf#te113	known-fail	0 quads, expected 2
-toRdf#te114	known-fail	0 quads, expected 2
+toRdf#te078	pass
+toRdf#te079	pass
+toRdf#te080	pass
+toRdf#te081	pass
+toRdf#te082	pass
+toRdf#te083	pass
+toRdf#te084	pass
+toRdf#te085	pass
+toRdf#te086	pass
+toRdf#te087	pass
+toRdf#te088	pass
+toRdf#te089	pass
+toRdf#te090	pass
+toRdf#te091	pass
+toRdf#te092	pass
+toRdf#te093	pass
+toRdf#te094	pass
+toRdf#te095	pass
+toRdf#te096	pass
+toRdf#te097	pass
+toRdf#te098	pass
+toRdf#te099	pass
+toRdf#te100	pass
+toRdf#te101	pass
+toRdf#te102	pass
+toRdf#te103	pass
+toRdf#te104	pass
+toRdf#te105	pass
+toRdf#te106	pass
+toRdf#te107	pass
+toRdf#te108	pass
+toRdf#te109	pass
+toRdf#te110	pass
+toRdf#te111	pass
+toRdf#te112	pass
+toRdf#te113	pass
+toRdf#te114	pass
 toRdf#te115	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
 toRdf#te116	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#te117	known-fail	0 quads, expected 1
-toRdf#te118	known-fail	0 quads, expected 4
-toRdf#te119	known-fail	0 quads, expected 2
-toRdf#te120	known-fail	0 quads, expected 3
-toRdf#te121	known-fail	0 quads, expected 2
-toRdf#te122	known-fail	0 quads, expected 2
-toRdf#te123	known-fail	no error reported (expected invalid typed value)
-toRdf#te124	known-fail	0 quads, expected 1
-toRdf#te125	known-fail	0 quads, expected 1
-toRdf#te126	known-fail	0 quads, expected 2
-toRdf#te127	known-fail	0 quads, expected 2
-toRdf#te128	known-fail	0 quads, expected 2
-toRdf#te129	known-fail	0 quads, expected 1
-toRdf#te130	known-fail	0 quads, expected 1
+toRdf#te117	pass
+toRdf#te118	pass
+toRdf#te119	pass
+toRdf#te120	pass
+toRdf#te121	pass
+toRdf#te122	pass
+toRdf#te123	pass
+toRdf#te124	pass
+toRdf#te125	pass
+toRdf#te126	pass
+toRdf#te127	pass
+toRdf#te128	pass
+toRdf#te129	pass
+toRdf#te130	pass
 toRdf#tec01	pass
 toRdf#tec02	pass
 toRdf#tem01	pass
-toRdf#ten01	known-fail	no error reported (expected invalid @nest value)
-toRdf#ten02	known-fail	no error reported (expected invalid @nest value)
-toRdf#ten03	known-fail	no error reported (expected invalid @nest value)
-toRdf#ten04	known-fail	no error reported (expected invalid @nest value)
+toRdf#ten01	pass
+toRdf#ten02	pass
+toRdf#ten03	pass
+toRdf#ten04	pass
 toRdf#ten05	pass
 toRdf#ten06	pass
 toRdf#tep02	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
@@ -271,389 +271,389 @@ toRdf#ter21	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 o
 toRdf#ter22	pass
 toRdf#ter23	pass
 toRdf#ter24	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#ter25	known-fail	no error reported (expected invalid reverse property map)
-toRdf#ter26	known-fail	no error reported (expected colliding keywords)
-toRdf#ter27	known-fail	no error reported (expected invalid @id value)
-toRdf#ter28	known-fail	no error reported (expected invalid type value)
-toRdf#ter29	known-fail	no error reported (expected invalid value object value)
-toRdf#ter30	known-fail	no error reported (expected invalid language-tagged string)
-toRdf#ter31	known-fail	no error reported (expected invalid @index value)
+toRdf#ter25	pass
+toRdf#ter26	pass
+toRdf#ter27	pass
+toRdf#ter28	pass
+toRdf#ter29	pass
+toRdf#ter30	pass
+toRdf#ter31	pass
 toRdf#ter32	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-toRdf#ter33	known-fail	no error reported (expected invalid @reverse value)
-toRdf#ter34	known-fail	no error reported (expected invalid reverse property value)
-toRdf#ter35	known-fail	no error reported (expected invalid language map value)
-toRdf#ter36	known-fail	no error reported (expected invalid reverse property value)
-toRdf#ter37	known-fail	no error reported (expected invalid value object)
-toRdf#ter38	known-fail	no error reported (expected invalid value object)
-toRdf#ter39	known-fail	no error reported (expected invalid language-tagged value)
-toRdf#ter40	known-fail	no error reported (expected invalid typed value)
-toRdf#ter41	known-fail	no error reported (expected invalid set or list object)
+toRdf#ter33	pass
+toRdf#ter34	pass
+toRdf#ter35	pass
+toRdf#ter36	pass
+toRdf#ter37	pass
+toRdf#ter38	pass
+toRdf#ter39	pass
+toRdf#ter40	pass
+toRdf#ter41	pass
 toRdf#ter42	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 toRdf#ter43	pass
 toRdf#ter44	pass
 toRdf#ter48	pass
 toRdf#ter49	pass
 toRdf#ter50	pass
-toRdf#ter51	known-fail	no error reported (expected invalid value object value)
+toRdf#ter51	pass
 toRdf#ter52	pass
 toRdf#ter53	pass
-toRdf#ter54	known-fail	no error reported (expected invalid typed value)
+toRdf#ter54	pass
 toRdf#ter55	pass
 toRdf#ter56	pass
-toRdf#tin01	known-fail	0 quads, expected 2
-toRdf#tin02	known-fail	0 quads, expected 2
-toRdf#tin03	known-fail	0 quads, expected 2
-toRdf#tin04	known-fail	0 quads, expected 3
-toRdf#tin05	known-fail	0 quads, expected 3
-toRdf#tin06	known-fail	0 quads, expected 23
-toRdf#tin07	known-fail	no error reported (expected invalid @included value)
-toRdf#tin08	known-fail	no error reported (expected invalid @included value)
-toRdf#tin09	known-fail	no error reported (expected invalid @included value)
-toRdf#tjs01	known-fail	0 quads, expected 1
-toRdf#tjs02	known-fail	0 quads, expected 1
-toRdf#tjs03	known-fail	0 quads, expected 1
-toRdf#tjs04	known-fail	0 quads, expected 1
-toRdf#tjs05	known-fail	0 quads, expected 1
-toRdf#tjs06	known-fail	0 quads, expected 1
-toRdf#tjs07	known-fail	0 quads, expected 1
-toRdf#tjs08	known-fail	0 quads, expected 1
-toRdf#tjs09	known-fail	0 quads, expected 1
-toRdf#tjs10	known-fail	0 quads, expected 1
-toRdf#tjs11	known-fail	0 quads, expected 1
-toRdf#tjs12	known-fail	0 quads, expected 1
-toRdf#tjs13	known-fail	0 quads, expected 1
-toRdf#tjs14	known-fail	0 quads, expected 1
-toRdf#tjs15	known-fail	0 quads, expected 1
-toRdf#tjs16	known-fail	0 quads, expected 1
-toRdf#tjs17	known-fail	0 quads, expected 1
-toRdf#tjs18	known-fail	0 quads, expected 1
-toRdf#tjs19	known-fail	0 quads, expected 1
-toRdf#tjs20	known-fail	0 quads, expected 1
-toRdf#tjs21	known-fail	0 quads, expected 1
-toRdf#tjs22	known-fail	0 quads, expected 1
-toRdf#tjs23	known-fail	0 quads, expected 1
-toRdf#tli01	known-fail	0 quads, expected 5
-toRdf#tli02	known-fail	0 quads, expected 3
-toRdf#tli03	known-fail	0 quads, expected 5
-toRdf#tli04	known-fail	0 quads, expected 3
-toRdf#tli05	known-fail	0 quads, expected 5
-toRdf#tli06	known-fail	0 quads, expected 3
-toRdf#tli07	known-fail	0 quads, expected 7
-toRdf#tli08	known-fail	0 quads, expected 5
-toRdf#tli09	known-fail	0 quads, expected 9
-toRdf#tli10	known-fail	0 quads, expected 7
-toRdf#tli11	known-fail	0 quads, expected 3
-toRdf#tli12	known-fail	0 quads, expected 2
-toRdf#tli13	known-fail	0 quads, expected 3
-toRdf#tli14	known-fail	0 quads, expected 2
-toRdf#tm001	known-fail	0 quads, expected 4
-toRdf#tm002	known-fail	0 quads, expected 4
-toRdf#tm003	known-fail	0 quads, expected 6
-toRdf#tm004	known-fail	0 quads, expected 8
-toRdf#tm005	known-fail	0 quads, expected 2
-toRdf#tm006	known-fail	0 quads, expected 3
-toRdf#tm007	known-fail	0 quads, expected 3
-toRdf#tm008	known-fail	0 quads, expected 3
-toRdf#tm009	known-fail	0 quads, expected 4
-toRdf#tm010	known-fail	0 quads, expected 4
-toRdf#tm011	known-fail	0 quads, expected 4
-toRdf#tm012	known-fail	0 quads, expected 4
-toRdf#tm013	known-fail	0 quads, expected 2
-toRdf#tm014	known-fail	0 quads, expected 2
-toRdf#tm015	known-fail	0 quads, expected 2
-toRdf#tm016	known-fail	0 quads, expected 2
-toRdf#tm017	known-fail	0 quads, expected 2
-toRdf#tm018	known-fail	0 quads, expected 2
-toRdf#tm019	known-fail	0 quads, expected 2
+toRdf#tin01	pass
+toRdf#tin02	pass
+toRdf#tin03	pass
+toRdf#tin04	pass
+toRdf#tin05	pass
+toRdf#tin06	pass
+toRdf#tin07	pass
+toRdf#tin08	pass
+toRdf#tin09	pass
+toRdf#tjs01	pass
+toRdf#tjs02	pass
+toRdf#tjs03	pass
+toRdf#tjs04	pass
+toRdf#tjs05	pass
+toRdf#tjs06	pass
+toRdf#tjs07	pass
+toRdf#tjs08	pass
+toRdf#tjs09	pass
+toRdf#tjs10	pass
+toRdf#tjs11	pass
+toRdf#tjs12	pass
+toRdf#tjs13	pass
+toRdf#tjs14	pass
+toRdf#tjs15	pass
+toRdf#tjs16	pass
+toRdf#tjs17	pass
+toRdf#tjs18	pass
+toRdf#tjs19	pass
+toRdf#tjs20	pass
+toRdf#tjs21	pass
+toRdf#tjs22	pass
+toRdf#tjs23	pass
+toRdf#tli01	pass
+toRdf#tli02	pass
+toRdf#tli03	pass
+toRdf#tli04	pass
+toRdf#tli05	pass
+toRdf#tli06	pass
+toRdf#tli07	pass
+toRdf#tli08	pass
+toRdf#tli09	pass
+toRdf#tli10	pass
+toRdf#tli11	pass
+toRdf#tli12	pass
+toRdf#tli13	pass
+toRdf#tli14	pass
+toRdf#tm001	pass
+toRdf#tm002	pass
+toRdf#tm003	pass
+toRdf#tm004	pass
+toRdf#tm005	pass
+toRdf#tm006	pass
+toRdf#tm007	pass
+toRdf#tm008	pass
+toRdf#tm009	pass
+toRdf#tm010	pass
+toRdf#tm011	pass
+toRdf#tm012	pass
+toRdf#tm013	pass
+toRdf#tm014	pass
+toRdf#tm015	pass
+toRdf#tm016	pass
+toRdf#tm017	pass
+toRdf#tm018	pass
+toRdf#tm019	pass
 toRdf#tm020	pass
-toRdf#tn001	known-fail	0 quads, expected 2
-toRdf#tn002	known-fail	0 quads, expected 2
-toRdf#tn003	known-fail	0 quads, expected 3
-toRdf#tn004	known-fail	0 quads, expected 4
-toRdf#tn005	known-fail	0 quads, expected 4
-toRdf#tn006	known-fail	0 quads, expected 5
-toRdf#tn007	known-fail	0 quads, expected 5
-toRdf#tn008	known-fail	0 quads, expected 3
-toRdf#tnt01	known-fail	0 quads, expected 1
-toRdf#tnt02	known-fail	0 quads, expected 1
-toRdf#tnt03	known-fail	0 quads, expected 1
-toRdf#tnt04	known-fail	0 quads, expected 1
-toRdf#tnt05	known-fail	0 quads, expected 1
-toRdf#tnt06	known-fail	0 quads, expected 1
-toRdf#tnt07	known-fail	0 quads, expected 1
-toRdf#tnt08	known-fail	0 quads, expected 1
-toRdf#tnt09	known-fail	0 quads, expected 1
-toRdf#tnt10	known-fail	0 quads, expected 1
-toRdf#tnt11	known-fail	0 quads, expected 1
-toRdf#tnt12	known-fail	0 quads, expected 1
-toRdf#tnt13	known-fail	0 quads, expected 1
-toRdf#tnt14	known-fail	0 quads, expected 1
-toRdf#tnt15	known-fail	0 quads, expected 1
-toRdf#tnt16	known-fail	0 quads, expected 1
-toRdf#tp001	known-fail	0 quads, expected 1
-toRdf#tp002	known-fail	0 quads, expected 2
-toRdf#tp003	known-fail	0 quads, expected 2
-toRdf#tp004	known-fail	0 quads, expected 2
+toRdf#tn001	pass
+toRdf#tn002	pass
+toRdf#tn003	pass
+toRdf#tn004	pass
+toRdf#tn005	pass
+toRdf#tn006	pass
+toRdf#tn007	pass
+toRdf#tn008	pass
+toRdf#tnt01	pass
+toRdf#tnt02	pass
+toRdf#tnt03	pass
+toRdf#tnt04	pass
+toRdf#tnt05	pass
+toRdf#tnt06	pass
+toRdf#tnt07	pass
+toRdf#tnt08	pass
+toRdf#tnt09	pass
+toRdf#tnt10	pass
+toRdf#tnt11	pass
+toRdf#tnt12	pass
+toRdf#tnt13	pass
+toRdf#tnt14	pass
+toRdf#tnt15	pass
+toRdf#tnt16	pass
+toRdf#tp001	pass
+toRdf#tp002	pass
+toRdf#tp003	pass
+toRdf#tp004	pass
 toRdf#tpi01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 toRdf#tpi02	pass
 toRdf#tpi03	pass
 toRdf#tpi04	pass
-toRdf#tpi05	known-fail	no error reported (expected invalid value object)
-toRdf#tpi06	known-fail	0 quads, expected 6
-toRdf#tpi07	known-fail	0 quads, expected 9
-toRdf#tpi08	known-fail	0 quads, expected 6
-toRdf#tpi09	known-fail	0 quads, expected 9
-toRdf#tpi10	known-fail	0 quads, expected 5
-toRdf#tpi11	known-fail	0 quads, expected 3
-toRdf#tpr01	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr02	known-fail	0 quads, expected 4
-toRdf#tpr03	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr04	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr05	known-fail	no error reported (expected invalid context nullification)
-toRdf#tpr06	known-fail	0 quads, expected 1
-toRdf#tpr08	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr09	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr10	known-fail	0 quads, expected 3
-toRdf#tpr11	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr12	known-fail	no error reported (expected protected term redefinition)
-toRdf#tpr13	known-fail	0 quads, expected 3
-toRdf#tpr14	known-fail	0 quads, expected 3
-toRdf#tpr15	known-fail	0 quads, expected 3
-toRdf#tpr16	known-fail	0 quads, expected 5
-toRdf#tpr17	known-fail	no error reported (expected invalid context nullification)
-toRdf#tpr18	known-fail	no error reported (expected invalid context nullification)
-toRdf#tpr19	known-fail	0 quads, expected 4
-toRdf#tpr20	known-fail	no error reported (expected invalid context nullification)
-toRdf#tpr21	known-fail	no error reported (expected invalid context nullification)
-toRdf#tpr22	known-fail	0 quads, expected 4
-toRdf#tpr23	known-fail	0 quads, expected 1
-toRdf#tpr24	known-fail	0 quads, expected 1
-toRdf#tpr25	known-fail	0 quads, expected 7
+toRdf#tpi05	pass
+toRdf#tpi06	pass
+toRdf#tpi07	pass
+toRdf#tpi08	pass
+toRdf#tpi09	pass
+toRdf#tpi10	pass
+toRdf#tpi11	pass
+toRdf#tpr01	pass
+toRdf#tpr02	pass
+toRdf#tpr03	pass
+toRdf#tpr04	pass
+toRdf#tpr05	pass
+toRdf#tpr06	pass
+toRdf#tpr08	pass
+toRdf#tpr09	pass
+toRdf#tpr10	pass
+toRdf#tpr11	pass
+toRdf#tpr12	pass
+toRdf#tpr13	pass
+toRdf#tpr14	pass
+toRdf#tpr15	pass
+toRdf#tpr16	pass
+toRdf#tpr17	pass
+toRdf#tpr18	pass
+toRdf#tpr19	pass
+toRdf#tpr20	pass
+toRdf#tpr21	pass
+toRdf#tpr22	pass
+toRdf#tpr23	pass
+toRdf#tpr24	pass
+toRdf#tpr25	pass
 toRdf#tpr26	pass
-toRdf#tpr27	known-fail	0 quads, expected 1
+toRdf#tpr27	pass
 toRdf#tpr28	pass
-toRdf#tpr29	known-fail	0 quads, expected 2
-toRdf#tpr30	known-fail	0 quads, expected 2
+toRdf#tpr29	pass
+toRdf#tpr30	pass
 toRdf#tpr31	pass
 toRdf#tpr32	pass
 toRdf#tpr33	pass
-toRdf#tpr34	known-fail	0 quads, expected 1
-toRdf#tpr35	known-fail	0 quads, expected 1
-toRdf#tpr36	known-fail	0 quads, expected 1
-toRdf#tpr37	known-fail	0 quads, expected 2
-toRdf#tpr38	known-fail	0 quads, expected 1
-toRdf#tpr39	known-fail	0 quads, expected 3
-toRdf#tpr40	known-fail	0 quads, expected 2
-toRdf#tpr41	known-fail	0 quads, expected 1
+toRdf#tpr34	pass
+toRdf#tpr35	pass
+toRdf#tpr36	pass
+toRdf#tpr37	pass
+toRdf#tpr38	pass
+toRdf#tpr39	pass
+toRdf#tpr40	pass
+toRdf#tpr41	pass
 toRdf#tpr42	pass
-toRdf#tpr43	known-fail	0 quads, expected 2
-toRdf#trt01	known-fail	0 quads, expected 4
+toRdf#tpr43	pass
+toRdf#trt01	pass
 toRdf#tso01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 toRdf#tso02	pass
 toRdf#tso03	pass
-toRdf#tso05	known-fail	0 quads, expected 3
-toRdf#tso06	known-fail	0 quads, expected 3
-toRdf#tso07	known-fail	no error reported (expected protected term redefinition)
-toRdf#tso08	known-fail	0 quads, expected 1
-toRdf#tso09	known-fail	0 quads, expected 1
+toRdf#tso05	pass
+toRdf#tso06	pass
+toRdf#tso07	pass
+toRdf#tso08	pass
+toRdf#tso09	pass
 toRdf#tso10	pass
-toRdf#tso11	known-fail	0 quads, expected 1
+toRdf#tso11	pass
 toRdf#tso12	pass
 toRdf#tso13	pass
 toRdf#ttn01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-toRdf#ttn02	known-fail	0 quads, expected 9
+toRdf#ttn02	pass
 toRdf#twf01	pass
 toRdf#twf02	pass
 toRdf#twf03	pass
-toRdf#twf04	known-fail	0 quads, expected 1
+toRdf#twf04	pass
 toRdf#twf05	pass
 toRdf#twf07	pass
 expand#t0001	pass
-expand#t0002	known-fail	0 quads, expected 7
+expand#t0002	pass
 expand#t0003	pass
-expand#t0004	known-fail	0 quads, expected 11
-expand#t0005	known-fail	0 quads, expected 6
-expand#t0006	known-fail	0 quads, expected 4
-expand#t0007	known-fail	0 quads, expected 3
-expand#t0008	known-fail	0 quads, expected 2
-expand#t0009	known-fail	0 quads, expected 9
-expand#t0010	known-fail	0 quads, expected 2
-expand#t0011	known-fail	0 quads, expected 2
-expand#t0012	known-fail	0 quads, expected 9
-expand#t0013	known-fail	0 quads, expected 7
-expand#t0014	known-fail	0 quads, expected 6
-expand#t0015	known-fail	0 quads, expected 6
-expand#t0016	known-fail	0 quads, expected 9
-expand#t0017	known-fail	0 quads, expected 9
-expand#t0018	known-fail	0 quads, expected 9
+expand#t0004	pass
+expand#t0005	pass
+expand#t0006	pass
+expand#t0007	pass
+expand#t0008	pass
+expand#t0009	pass
+expand#t0010	pass
+expand#t0011	pass
+expand#t0012	pass
+expand#t0013	pass
+expand#t0014	pass
+expand#t0015	pass
+expand#t0016	pass
+expand#t0017	pass
+expand#t0018	pass
 expand#t0019	pass
-expand#t0020	known-fail	0 quads, expected 11
-expand#t0021	known-fail	0 quads, expected 13
-expand#t0022	known-fail	0 quads, expected 1
-expand#t0023	known-fail	0 quads, expected 16
-expand#t0024	known-fail	0 quads, expected 4
-expand#t0025	known-fail	0 quads, expected 3
+expand#t0020	pass
+expand#t0021	pass
+expand#t0022	pass
+expand#t0023	pass
+expand#t0024	pass
+expand#t0025	pass
 expand#t0026	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-expand#t0027	known-fail	0 quads, expected 12
-expand#t0028	known-fail	0 quads, expected 4
-expand#t0029	known-fail	0 quads, expected 34
-expand#t0030	known-fail	0 quads, expected 3
-expand#t0031	known-fail	0 quads, expected 3
-expand#t0032	known-fail	0 quads, expected 1
-expand#t0033	known-fail	0 quads, expected 3
-expand#t0034	known-fail	0 quads, expected 5
-expand#t0035	known-fail	0 quads, expected 5
-expand#t0036	known-fail	0 quads, expected 23
-expand#t0037	known-fail	0 quads, expected 3
+expand#t0027	pass
+expand#t0028	pass
+expand#t0029	pass
+expand#t0030	pass
+expand#t0031	pass
+expand#t0032	pass
+expand#t0033	pass
+expand#t0034	pass
+expand#t0035	pass
+expand#t0036	pass
+expand#t0037	pass
 expand#t0038	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-expand#t0039	known-fail	0 quads, expected 3
-expand#t0040	known-fail	0 quads, expected 4
-expand#t0041	known-fail	0 quads, expected 3
-expand#t0042	known-fail	0 quads, expected 3
-expand#t0043	known-fail	0 quads, expected 5
-expand#t0044	known-fail	0 quads, expected 3
+expand#t0039	pass
+expand#t0040	pass
+expand#t0041	pass
+expand#t0042	pass
+expand#t0043	pass
+expand#t0044	pass
 expand#t0045	pass
 expand#t0046	pass
-expand#t0047	known-fail	0 quads, expected 1
-expand#t0048	known-fail	0 quads, expected 4
-expand#t0049	known-fail	0 quads, expected 3
-expand#t0050	known-fail	0 quads, expected 2
-expand#t0051	known-fail	0 quads, expected 1
-expand#t0052	known-fail	0 quads, expected 2
-expand#t0053	known-fail	0 quads, expected 1
-expand#t0054	known-fail	0 quads, expected 1
-expand#t0055	known-fail	0 quads, expected 1
-expand#t0056	known-fail	0 quads, expected 3
-expand#t0057	known-fail	0 quads, expected 1
-expand#t0058	known-fail	0 quads, expected 1
-expand#t0059	known-fail	0 quads, expected 4
-expand#t0060	known-fail	0 quads, expected 4
-expand#t0061	known-fail	0 quads, expected 4
-expand#t0062	known-fail	0 quads, expected 38
-expand#t0063	known-fail	0 quads, expected 5
-expand#t0064	known-fail	0 quads, expected 5
-expand#t0065	known-fail	0 quads, expected 3
-expand#t0066	known-fail	0 quads, expected 5
-expand#t0067	known-fail	0 quads, expected 2
-expand#t0068	known-fail	0 quads, expected 1
-expand#t0069	known-fail	0 quads, expected 2
-expand#t0070	known-fail	0 quads, expected 2
+expand#t0047	pass
+expand#t0048	pass
+expand#t0049	pass
+expand#t0050	pass
+expand#t0051	pass
+expand#t0052	pass
+expand#t0053	pass
+expand#t0054	pass
+expand#t0055	pass
+expand#t0056	pass
+expand#t0057	pass
+expand#t0058	pass
+expand#t0059	pass
+expand#t0060	pass
+expand#t0061	pass
+expand#t0062	pass
+expand#t0063	pass
+expand#t0064	pass
+expand#t0065	pass
+expand#t0066	pass
+expand#t0067	pass
+expand#t0068	pass
+expand#t0069	pass
+expand#t0070	pass
 expand#t0071	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-expand#t0072	known-fail	0 quads, expected 1
-expand#t0073	known-fail	0 quads, expected 3
-expand#t0074	known-fail	0 quads, expected 3
+expand#t0072	pass
+expand#t0073	pass
+expand#t0074	pass
 expand#t0075	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#t0076	known-fail	0 quads, expected 1
+expand#t0076	pass
 expand#t0077	out-of-scope	expandContext: the engine takes no initial context
-expand#t0078	known-fail	0 quads, expected 9
-expand#t0079	known-fail	0 quads, expected 2
-expand#t0080	known-fail	0 quads, expected 2
-expand#t0081	known-fail	0 quads, expected 2
-expand#t0082	known-fail	0 quads, expected 2
-expand#t0083	known-fail	0 quads, expected 2
-expand#t0084	known-fail	0 quads, expected 2
-expand#t0085	known-fail	0 quads, expected 2
-expand#t0086	known-fail	0 quads, expected 2
-expand#t0087	known-fail	0 quads, expected 2
-expand#t0088	known-fail	0 quads, expected 15
-expand#t0089	known-fail	0 quads, expected 1
-expand#t0090	known-fail	0 quads, expected 1
-expand#t0091	known-fail	0 quads, expected 1
-expand#t0092	known-fail	0 quads, expected 11
-expand#t0093	known-fail	0 quads, expected 4
-expand#t0094	known-fail	0 quads, expected 4
-expand#t0095	known-fail	0 quads, expected 4
-expand#t0096	known-fail	0 quads, expected 4
-expand#t0097	known-fail	0 quads, expected 4
-expand#t0098	known-fail	0 quads, expected 4
-expand#t0099	known-fail	0 quads, expected 4
-expand#t0100	known-fail	0 quads, expected 4
-expand#t0101	known-fail	0 quads, expected 4
-expand#t0102	known-fail	0 quads, expected 3
-expand#t0103	known-fail	0 quads, expected 4
-expand#t0104	known-fail	0 quads, expected 4
-expand#t0105	known-fail	0 quads, expected 8
-expand#t0106	known-fail	0 quads, expected 4
-expand#t0107	known-fail	0 quads, expected 8
-expand#t0108	known-fail	0 quads, expected 6
-expand#t0109	known-fail	0 quads, expected 2
-expand#t0110	known-fail	0 quads, expected 11
-expand#t0111	known-fail	0 quads, expected 10
-expand#t0112	known-fail	0 quads, expected 10
-expand#t0113	known-fail	0 quads, expected 2
-expand#t0114	known-fail	0 quads, expected 2
+expand#t0078	pass
+expand#t0079	pass
+expand#t0080	pass
+expand#t0081	pass
+expand#t0082	pass
+expand#t0083	pass
+expand#t0084	pass
+expand#t0085	pass
+expand#t0086	pass
+expand#t0087	pass
+expand#t0088	pass
+expand#t0089	pass
+expand#t0090	pass
+expand#t0091	pass
+expand#t0092	pass
+expand#t0093	pass
+expand#t0094	pass
+expand#t0095	pass
+expand#t0096	pass
+expand#t0097	pass
+expand#t0098	pass
+expand#t0099	pass
+expand#t0100	pass
+expand#t0101	pass
+expand#t0102	pass
+expand#t0103	pass
+expand#t0104	pass
+expand#t0105	pass
+expand#t0106	pass
+expand#t0107	pass
+expand#t0108	pass
+expand#t0109	pass
+expand#t0110	pass
+expand#t0111	pass
+expand#t0112	pass
+expand#t0113	pass
+expand#t0114	pass
 expand#t0115	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
 expand#t0116	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-expand#t0117	known-fail	0 quads, expected 1
-expand#t0118	known-fail	0 quads, expected 4
-expand#t0119	known-fail	0 quads, expected 2
-expand#t0120	known-fail	0 quads, expected 3
-expand#t0121	known-fail	0 quads, expected 2
-expand#t0122	known-fail	0 quads, expected 3
-expand#t0123	known-fail	no error reported (expected invalid typed value)
-expand#t0124	known-fail	0 quads, expected 1
-expand#t0125	known-fail	0 quads, expected 1
-expand#t0126	known-fail	0 quads, expected 2
-expand#t0127	known-fail	0 quads, expected 2
-expand#t0128	known-fail	0 quads, expected 2
-expand#t0129	known-fail	0 quads, expected 1
-expand#t0130	known-fail	0 quads, expected 1
-expand#t0131	known-fail	0 quads, expected 4
-expand#t0132	known-fail	0 quads, expected 1
-expand#tc001	known-fail	0 quads, expected 2
-expand#tc002	known-fail	0 quads, expected 2
-expand#tc003	known-fail	0 quads, expected 2
-expand#tc004	known-fail	0 quads, expected 3
-expand#tc005	known-fail	0 quads, expected 6
-expand#tc006	known-fail	0 quads, expected 3
-expand#tc007	known-fail	0 quads, expected 3
-expand#tc008	known-fail	0 quads, expected 3
-expand#tc009	known-fail	0 quads, expected 3
-expand#tc010	known-fail	0 quads, expected 5
-expand#tc011	known-fail	0 quads, expected 3
-expand#tc012	known-fail	0 quads, expected 3
-expand#tc013	known-fail	0 quads, expected 6
-expand#tc014	known-fail	0 quads, expected 3
-expand#tc015	known-fail	0 quads, expected 5
-expand#tc016	known-fail	0 quads, expected 6
-expand#tc017	known-fail	0 quads, expected 5
-expand#tc018	known-fail	0 quads, expected 3
-expand#tc019	known-fail	0 quads, expected 7
-expand#tc020	known-fail	0 quads, expected 2
-expand#tc021	known-fail	0 quads, expected 10
-expand#tc022	known-fail	0 quads, expected 2
-expand#tc023	known-fail	0 quads, expected 4
-expand#tc024	known-fail	0 quads, expected 7
-expand#tc025	known-fail	0 quads, expected 4
-expand#tc026	known-fail	0 quads, expected 3
-expand#tc027	known-fail	0 quads, expected 3
-expand#tc028	known-fail	0 quads, expected 3
+expand#t0117	pass
+expand#t0118	pass
+expand#t0119	pass
+expand#t0120	pass
+expand#t0121	pass
+expand#t0122	known-fail	runner oracle: it reads {"@id": null} as a fresh blank node, toRdf drops that node (toRdf#te122, same input, passes)
+expand#t0123	pass
+expand#t0124	pass
+expand#t0125	pass
+expand#t0126	pass
+expand#t0127	pass
+expand#t0128	pass
+expand#t0129	pass
+expand#t0130	pass
+expand#t0131	pass
+expand#t0132	pass
+expand#tc001	pass
+expand#tc002	pass
+expand#tc003	pass
+expand#tc004	pass
+expand#tc005	pass
+expand#tc006	pass
+expand#tc007	pass
+expand#tc008	pass
+expand#tc009	pass
+expand#tc010	pass
+expand#tc011	pass
+expand#tc012	pass
+expand#tc013	pass
+expand#tc014	pass
+expand#tc015	pass
+expand#tc016	pass
+expand#tc017	pass
+expand#tc018	pass
+expand#tc019	pass
+expand#tc020	pass
+expand#tc021	pass
+expand#tc022	pass
+expand#tc023	pass
+expand#tc024	pass
+expand#tc025	pass
+expand#tc026	pass
+expand#tc027	pass
+expand#tc028	pass
 expand#tc029	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 expand#tc030	pass
-expand#tc031	known-fail	0 quads, expected 2
+expand#tc031	pass
 expand#tc032	pass
 expand#tc033	pass
-expand#tc034	known-fail	0 quads, expected 2
-expand#tc035	known-fail	0 quads, expected 3
-expand#tc036	known-fail	0 quads, expected 3
-expand#tc037	known-fail	0 quads, expected 1
-expand#tc038	known-fail	0 quads, expected 7
-expand#tdi01	known-fail	0 quads, expected 3
-expand#tdi02	known-fail	0 quads, expected 9
-expand#tdi03	known-fail	0 quads, expected 6
-expand#tdi04	known-fail	0 quads, expected 3
-expand#tdi05	known-fail	0 quads, expected 3
-expand#tdi06	known-fail	0 quads, expected 3
-expand#tdi07	known-fail	0 quads, expected 3
+expand#tc034	pass
+expand#tc035	pass
+expand#tc036	pass
+expand#tc037	pass
+expand#tc038	pass
+expand#tdi01	pass
+expand#tdi02	pass
+expand#tdi03	pass
+expand#tdi04	pass
+expand#tdi05	pass
+expand#tdi06	pass
+expand#tdi07	pass
 expand#tdi08	pass
-expand#tdi09	known-fail	no error reported (expected invalid value object)
+expand#tdi09	pass
 expand#tec01	pass
 expand#tec02	pass
 expand#tem01	pass
-expand#ten01	known-fail	no error reported (expected invalid @nest value)
-expand#ten02	known-fail	no error reported (expected invalid @nest value)
-expand#ten03	known-fail	no error reported (expected invalid @nest value)
-expand#ten04	known-fail	no error reported (expected invalid @nest value)
+expand#ten01	pass
+expand#ten02	pass
+expand#ten03	pass
+expand#ten04	pass
 expand#ten05	pass
 expand#ten06	pass
 expand#tep02	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
@@ -681,186 +681,186 @@ expand#ter21	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 
 expand#ter22	pass
 expand#ter23	pass
 expand#ter24	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-expand#ter25	known-fail	no error reported (expected invalid reverse property map)
-expand#ter26	known-fail	no error reported (expected colliding keywords)
-expand#ter27	known-fail	no error reported (expected invalid @id value)
-expand#ter28	known-fail	no error reported (expected invalid type value)
-expand#ter29	known-fail	no error reported (expected invalid value object value)
-expand#ter30	known-fail	no error reported (expected invalid language-tagged string)
-expand#ter31	known-fail	no error reported (expected invalid @index value)
+expand#ter25	pass
+expand#ter26	pass
+expand#ter27	pass
+expand#ter28	pass
+expand#ter29	pass
+expand#ter30	pass
+expand#ter31	pass
 expand#ter32	out-of-scope	JSON-LD 1.0 only (specVersion json-ld-1.0)
-expand#ter33	known-fail	no error reported (expected invalid @reverse value)
-expand#ter34	known-fail	no error reported (expected invalid reverse property value)
-expand#ter35	known-fail	no error reported (expected invalid language map value)
-expand#ter36	known-fail	no error reported (expected invalid reverse property value)
-expand#ter37	known-fail	no error reported (expected invalid value object)
-expand#ter38	known-fail	no error reported (expected invalid value object)
-expand#ter39	known-fail	no error reported (expected invalid language-tagged value)
-expand#ter40	known-fail	no error reported (expected invalid typed value)
-expand#ter41	known-fail	no error reported (expected invalid set or list object)
+expand#ter33	pass
+expand#ter34	pass
+expand#ter35	pass
+expand#ter36	pass
+expand#ter37	pass
+expand#ter38	pass
+expand#ter39	pass
+expand#ter40	pass
+expand#ter41	pass
 expand#ter42	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 expand#ter43	pass
 expand#ter44	pass
 expand#ter48	pass
 expand#ter49	pass
 expand#ter50	pass
-expand#ter51	known-fail	no error reported (expected invalid value object value)
+expand#ter51	pass
 expand#ter52	pass
 expand#ter53	pass
-expand#ter54	known-fail	no error reported (expected invalid typed value)
+expand#ter54	pass
 expand#ter55	pass
 expand#ter56	pass
 expand#tes01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 expand#tes02	pass
-expand#tin01	known-fail	0 quads, expected 2
-expand#tin02	known-fail	0 quads, expected 2
-expand#tin03	known-fail	0 quads, expected 2
-expand#tin04	known-fail	0 quads, expected 3
-expand#tin05	known-fail	0 quads, expected 3
-expand#tin06	known-fail	0 quads, expected 23
-expand#tin07	known-fail	no error reported (expected invalid @included value)
-expand#tin08	known-fail	no error reported (expected invalid @included value)
-expand#tin09	known-fail	no error reported (expected invalid @included value)
-expand#tjs01	known-fail	0 quads, expected 1
-expand#tjs02	known-fail	0 quads, expected 1
-expand#tjs03	known-fail	0 quads, expected 1
-expand#tjs04	known-fail	0 quads, expected 1
-expand#tjs05	known-fail	0 quads, expected 1
-expand#tjs06	known-fail	0 quads, expected 1
-expand#tjs07	known-fail	0 quads, expected 1
-expand#tjs08	known-fail	0 quads, expected 1
-expand#tjs09	known-fail	0 quads, expected 1
-expand#tjs10	known-fail	0 quads, expected 1
-expand#tjs11	known-fail	0 quads, expected 1
-expand#tjs12	known-fail	0 quads, expected 1
-expand#tjs13	known-fail	0 quads, expected 1
-expand#tjs14	known-fail	0 quads, expected 1
-expand#tjs15	known-fail	0 quads, expected 1
-expand#tjs16	known-fail	0 quads, expected 1
-expand#tjs17	known-fail	0 quads, expected 1
-expand#tjs18	known-fail	0 quads, expected 1
-expand#tjs19	known-fail	0 quads, expected 1
-expand#tjs20	known-fail	0 quads, expected 1
-expand#tjs21	known-fail	0 quads, expected 1
-expand#tjs22	known-fail	0 quads, expected 1
-expand#tjs23	known-fail	0 quads, expected 1
-expand#tl001	known-fail	0 quads, expected 1
-expand#tli01	known-fail	0 quads, expected 5
-expand#tli02	known-fail	0 quads, expected 3
-expand#tli03	known-fail	0 quads, expected 5
-expand#tli04	known-fail	0 quads, expected 3
-expand#tli05	known-fail	0 quads, expected 5
-expand#tli06	known-fail	0 quads, expected 3
-expand#tli07	known-fail	0 quads, expected 7
-expand#tli08	known-fail	0 quads, expected 5
-expand#tli09	known-fail	0 quads, expected 9
-expand#tli10	known-fail	0 quads, expected 7
-expand#tm001	known-fail	0 quads, expected 4
-expand#tm002	known-fail	0 quads, expected 4
-expand#tm003	known-fail	0 quads, expected 6
-expand#tm004	known-fail	0 quads, expected 8
-expand#tm005	known-fail	0 quads, expected 2
-expand#tm006	known-fail	0 quads, expected 3
-expand#tm007	known-fail	0 quads, expected 3
-expand#tm008	known-fail	0 quads, expected 3
-expand#tm009	known-fail	0 quads, expected 4
-expand#tm010	known-fail	0 quads, expected 4
-expand#tm011	known-fail	0 quads, expected 4
-expand#tm012	known-fail	0 quads, expected 4
-expand#tm013	known-fail	0 quads, expected 2
-expand#tm014	known-fail	0 quads, expected 2
-expand#tm015	known-fail	0 quads, expected 2
-expand#tm016	known-fail	0 quads, expected 2
-expand#tm017	known-fail	0 quads, expected 2
-expand#tm018	known-fail	0 quads, expected 2
-expand#tm019	known-fail	0 quads, expected 2
+expand#tin01	pass
+expand#tin02	pass
+expand#tin03	pass
+expand#tin04	pass
+expand#tin05	pass
+expand#tin06	pass
+expand#tin07	pass
+expand#tin08	pass
+expand#tin09	pass
+expand#tjs01	pass
+expand#tjs02	pass
+expand#tjs03	pass
+expand#tjs04	pass
+expand#tjs05	pass
+expand#tjs06	pass
+expand#tjs07	pass
+expand#tjs08	pass
+expand#tjs09	pass
+expand#tjs10	pass
+expand#tjs11	pass
+expand#tjs12	known-fail	runner oracle: serde_json parses 333333333.33333329 as ...25 (not correctly rounded); toRdf#tjs12, same input, passes
+expand#tjs13	pass
+expand#tjs14	pass
+expand#tjs15	pass
+expand#tjs16	pass
+expand#tjs17	pass
+expand#tjs18	pass
+expand#tjs19	pass
+expand#tjs20	pass
+expand#tjs21	pass
+expand#tjs22	pass
+expand#tjs23	pass
+expand#tl001	pass
+expand#tli01	pass
+expand#tli02	pass
+expand#tli03	pass
+expand#tli04	pass
+expand#tli05	pass
+expand#tli06	pass
+expand#tli07	pass
+expand#tli08	pass
+expand#tli09	pass
+expand#tli10	pass
+expand#tm001	pass
+expand#tm002	pass
+expand#tm003	pass
+expand#tm004	pass
+expand#tm005	pass
+expand#tm006	pass
+expand#tm007	pass
+expand#tm008	pass
+expand#tm009	pass
+expand#tm010	pass
+expand#tm011	pass
+expand#tm012	pass
+expand#tm013	pass
+expand#tm014	pass
+expand#tm015	pass
+expand#tm016	pass
+expand#tm017	pass
+expand#tm018	pass
+expand#tm019	pass
 expand#tm020	pass
-expand#tn001	known-fail	0 quads, expected 2
-expand#tn002	known-fail	0 quads, expected 2
-expand#tn003	known-fail	0 quads, expected 3
-expand#tn004	known-fail	0 quads, expected 4
-expand#tn005	known-fail	0 quads, expected 4
-expand#tn006	known-fail	0 quads, expected 5
-expand#tn007	known-fail	0 quads, expected 5
-expand#tn008	known-fail	0 quads, expected 3
-expand#tp001	known-fail	0 quads, expected 1
-expand#tp002	known-fail	0 quads, expected 2
-expand#tp003	known-fail	0 quads, expected 2
-expand#tp004	known-fail	0 quads, expected 2
+expand#tn001	pass
+expand#tn002	pass
+expand#tn003	pass
+expand#tn004	pass
+expand#tn005	pass
+expand#tn006	pass
+expand#tn007	pass
+expand#tn008	pass
+expand#tp001	pass
+expand#tp002	pass
+expand#tp003	pass
+expand#tp004	pass
 expand#tpi01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 expand#tpi02	pass
 expand#tpi03	pass
 expand#tpi04	pass
-expand#tpi05	known-fail	no error reported (expected invalid value object)
-expand#tpi06	known-fail	0 quads, expected 6
-expand#tpi07	known-fail	0 quads, expected 9
-expand#tpi08	known-fail	0 quads, expected 6
-expand#tpi09	known-fail	0 quads, expected 9
-expand#tpi10	known-fail	0 quads, expected 5
-expand#tpi11	known-fail	0 quads, expected 3
-expand#tpr01	known-fail	no error reported (expected protected term redefinition)
-expand#tpr02	known-fail	0 quads, expected 4
-expand#tpr03	known-fail	no error reported (expected protected term redefinition)
-expand#tpr04	known-fail	no error reported (expected protected term redefinition)
-expand#tpr05	known-fail	no error reported (expected invalid context nullification)
-expand#tpr06	known-fail	0 quads, expected 1
-expand#tpr08	known-fail	no error reported (expected protected term redefinition)
-expand#tpr09	known-fail	no error reported (expected protected term redefinition)
-expand#tpr10	known-fail	0 quads, expected 3
-expand#tpr11	known-fail	no error reported (expected protected term redefinition)
-expand#tpr12	known-fail	no error reported (expected protected term redefinition)
-expand#tpr13	known-fail	0 quads, expected 3
-expand#tpr14	known-fail	0 quads, expected 3
-expand#tpr15	known-fail	0 quads, expected 3
-expand#tpr16	known-fail	0 quads, expected 5
-expand#tpr17	known-fail	no error reported (expected invalid context nullification)
-expand#tpr18	known-fail	no error reported (expected invalid context nullification)
-expand#tpr19	known-fail	0 quads, expected 4
-expand#tpr20	known-fail	no error reported (expected invalid context nullification)
-expand#tpr21	known-fail	no error reported (expected invalid context nullification)
-expand#tpr22	known-fail	0 quads, expected 4
-expand#tpr23	known-fail	0 quads, expected 1
-expand#tpr24	known-fail	0 quads, expected 1
-expand#tpr25	known-fail	0 quads, expected 7
+expand#tpi05	pass
+expand#tpi06	pass
+expand#tpi07	pass
+expand#tpi08	pass
+expand#tpi09	pass
+expand#tpi10	pass
+expand#tpi11	pass
+expand#tpr01	pass
+expand#tpr02	pass
+expand#tpr03	pass
+expand#tpr04	pass
+expand#tpr05	pass
+expand#tpr06	pass
+expand#tpr08	pass
+expand#tpr09	pass
+expand#tpr10	pass
+expand#tpr11	pass
+expand#tpr12	pass
+expand#tpr13	pass
+expand#tpr14	pass
+expand#tpr15	pass
+expand#tpr16	pass
+expand#tpr17	pass
+expand#tpr18	pass
+expand#tpr19	pass
+expand#tpr20	pass
+expand#tpr21	pass
+expand#tpr22	pass
+expand#tpr23	pass
+expand#tpr24	pass
+expand#tpr25	pass
 expand#tpr26	pass
-expand#tpr27	known-fail	0 quads, expected 1
+expand#tpr27	pass
 expand#tpr28	pass
-expand#tpr29	known-fail	0 quads, expected 2
-expand#tpr30	known-fail	0 quads, expected 2
+expand#tpr29	pass
+expand#tpr30	pass
 expand#tpr31	pass
 expand#tpr32	pass
 expand#tpr33	pass
-expand#tpr34	known-fail	0 quads, expected 1
-expand#tpr35	known-fail	0 quads, expected 1
-expand#tpr36	known-fail	0 quads, expected 1
-expand#tpr37	known-fail	0 quads, expected 2
-expand#tpr38	known-fail	0 quads, expected 1
-expand#tpr39	known-fail	0 quads, expected 3
-expand#tpr40	known-fail	0 quads, expected 2
-expand#tpr41	known-fail	0 quads, expected 1
+expand#tpr34	pass
+expand#tpr35	pass
+expand#tpr36	pass
+expand#tpr37	pass
+expand#tpr38	pass
+expand#tpr39	pass
+expand#tpr40	pass
+expand#tpr41	pass
 expand#tpr42	pass
-expand#tpr43	known-fail	0 quads, expected 2
+expand#tpr43	pass
 expand#tso01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
 expand#tso02	pass
 expand#tso03	pass
-expand#tso05	known-fail	0 quads, expected 3
-expand#tso06	known-fail	0 quads, expected 3
-expand#tso07	known-fail	no error reported (expected protected term redefinition)
-expand#tso08	known-fail	0 quads, expected 1
-expand#tso09	known-fail	0 quads, expected 1
+expand#tso05	pass
+expand#tso06	pass
+expand#tso07	pass
+expand#tso08	pass
+expand#tso09	pass
 expand#tso10	pass
-expand#tso11	known-fail	0 quads, expected 1
+expand#tso11	pass
 expand#tso12	pass
 expand#tso13	pass
 expand#ttn01	out-of-scope	processingMode json-ld-1.0: the engine is JSON-LD 1.1 only
-expand#ttn02	known-fail	0 quads, expected 9
-remote-doc#t0001	known-fail	0 quads, expected 1
-remote-doc#t0002	known-fail	0 quads, expected 1
-remote-doc#t0003	known-fail	0 quads, expected 1
+expand#ttn02	pass
+remote-doc#t0001	pass
+remote-doc#t0002	pass
+remote-doc#t0003	pass
 remote-doc#t0004	out-of-scope	loading the input document is the caller's job, not the engine's
-remote-doc#t0005	known-fail	0 quads, expected 1
-remote-doc#t0006	known-fail	0 quads, expected 1
-remote-doc#t0007	known-fail	0 quads, expected 1
+remote-doc#t0005	pass
+remote-doc#t0006	pass
+remote-doc#t0007	pass
 remote-doc#t0008	out-of-scope	loading the input document is the caller's job, not the engine's
 remote-doc#t0009	out-of-scope	HTTP Link headers belong to document loading; the engine takes text and a base
 remote-doc#t0010	out-of-scope	HTTP Link headers belong to document loading; the engine takes text and a base

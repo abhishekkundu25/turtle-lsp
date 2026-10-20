@@ -16,10 +16,11 @@
 //!   algorithm for an `@context` value written in the document. `options`
 //!   ([`Options`]) carry `override_protected`, `propagate` and
 //!   `validate_scoped_context` as the spec names them.
-//! - [`Processor::process_scoped`]`(&active, &scoped, at, propagate)`:
-//!   applies a term's scoped context ([`TermDefinition::context`]) during
-//!   expansion, with `override_protected` true and the term definition's
-//!   base URL. Pass `propagate = false` for a type-scoped context. `at` is
+//! - [`Processor::process_scoped`]`(&active, &scoped, at, propagate,
+//!   override_protected)`: applies a term's scoped context
+//!   ([`TermDefinition::context`]) during expansion, with the term
+//!   definition's base URL. A property-scoped context passes `true, true`, a
+//!   type-scoped one `false, false`. `at` is
 //!   the span to report errors on when the scoped context came from a remote
 //!   document (the key or type that applied it). Results are memoized per
 //!   processor by (active context, scoped context), so applying the same
@@ -45,11 +46,19 @@
 //!
 //! # Spans and remote documents
 //!
-//! Every error points into the document being checked. An error inside a
-//! remote context (or an `@import`ed one) is reported on the string that
-//! names it, with the remote URL in the message; warnings inside remote
-//! contexts are not reported. Term definitions written in the document keep
-//! the span of their key ([`TermDefinition::span`]).
+//! Every error points into the document being checked:
+//! - an error in a term definition (including in its scoped context, and in
+//!   the term definitions it depends on) sits on the term's key, without
+//!   the quotes;
+//! - an error in another entry of a context (`@vocab`, `@base`, ...) sits on
+//!   its value: a string's content without the quotes, other JSON whole;
+//! - an error inside a remote context (or an `@import`ed one) is reported on
+//!   the string that names it (or the term whose definition names it), with
+//!   the remote URL in the message; warnings inside remote contexts are not
+//!   reported.
+//!
+//! Term definitions written in the document keep the span of their key,
+//! without the quotes ([`TermDefinition::span`]).
 //!
 //! # Caching
 //!
@@ -63,6 +72,7 @@
 
 use super::json::{Json, Object, Value};
 use super::loader::{ContextLoader, LoadError};
+use super::unquoted;
 use crate::syntax::{Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
 use std::fmt;
@@ -691,6 +701,14 @@ impl ActiveContext {
         self.direction
     }
 
+    /// Identifies what the context holds apart from its base IRI (terms,
+    /// `@vocab`, default language and direction, previous context): clones
+    /// share it, and each processing result gets a new one. Expansion caches
+    /// IRI expansions by it.
+    pub fn content_id(&self) -> u64 {
+        self.id
+    }
+
     /// The context before a non-propagated context was applied.
     pub fn previous(&self) -> Option<&ActiveContext> {
         self.previous.as_deref()
@@ -980,8 +998,9 @@ struct Loaded {
     json: Result<Arc<Json>, String>,
 }
 
-/// Active context id, scoped context, propagate, base IRI.
-type ScopedKey = (u64, usize, bool, Option<Arc<str>>);
+/// Active context id, scoped context, propagate, override protected, base
+/// IRI.
+type ScopedKey = (u64, usize, bool, bool, Option<Arc<str>>);
 
 /// Runs context processing for one document: remote contexts come from its
 /// loader (each URL loaded once per processor) and the shared cache.
@@ -998,6 +1017,9 @@ pub struct Processor<'l> {
     /// Every load, in order, for the dependencies of cached results.
     log: Vec<Dep>,
     scoped: FxHashMap<ScopedKey, (Arc<Json>, ActiveContext)>,
+    /// The key of the term being defined, without its quotes: where errors
+    /// inside its definition go.
+    term_at: Option<Span>,
 }
 
 /// A context definition's entries, `@import`ed ones merged in.
@@ -1093,6 +1115,7 @@ impl<'l> Processor<'l> {
             loads: FxHashMap::default(),
             log: Vec::new(),
             scoped: FxHashMap::default(),
+            term_at: None,
         }
     }
 
@@ -1118,20 +1141,23 @@ impl<'l> Processor<'l> {
         r
     }
 
-    /// Apply a term's scoped context during expansion (override protected;
-    /// `propagate` false for a type-scoped context). Errors in a scoped
-    /// context from a remote document are reported at `at`.
+    /// Apply a term's scoped context during expansion. A property-scoped
+    /// context overrides protected terms and propagates; a type-scoped one
+    /// does neither (`propagate` and `override_protected` false). Errors in
+    /// a scoped context from a remote document are reported at `at`.
     pub fn process_scoped(
         &mut self,
         active: &ActiveContext,
         scoped: &ScopedContext,
         at: Span,
         propagate: bool,
+        override_protected: bool,
     ) -> Result<ActiveContext, ContextError> {
         let key: ScopedKey = (
             active.id,
             Arc::as_ptr(&scoped.json) as usize,
             propagate,
+            override_protected,
             active.base.clone(),
         );
         if let Some((_, r)) = self.scoped.get(&key) {
@@ -1152,7 +1178,7 @@ impl<'l> Processor<'l> {
             scoped.base_url.as_deref(),
             &[],
             Options {
-                override_protected: true,
+                override_protected,
                 propagate,
                 validate_scoped_context: true,
             },
@@ -1165,8 +1191,12 @@ impl<'l> Processor<'l> {
         r
     }
 
+    /// An error at `span`, or rather at the term being defined (its key,
+    /// without the quotes), or at the reference to the remote document it is
+    /// in.
     fn err(&self, code: ErrorCode, span: Span, message: impl Into<String>) -> ContextError {
         let message = message.into();
+        let span = self.term_at.unwrap_or(span);
         match &self.site {
             Some(s) => ContextError {
                 code,
@@ -1184,7 +1214,7 @@ impl<'l> Processor<'l> {
     fn warn(&mut self, span: Span, message: String) {
         if self.site.is_none() && !self.quiet {
             self.warnings.push(SyntaxError {
-                span,
+                span: self.term_at.unwrap_or(span),
                 message,
                 severity: Severity::Warning,
                 code: DIAGNOSTIC_CODE,
@@ -1313,14 +1343,15 @@ impl<'l> Processor<'l> {
                     }
                 }
                 Value::String(s) => {
-                    let url: Arc<str> = Arc::from(self.context_url(item.span, base_url, s)?);
+                    let at = unquoted(item.span);
+                    let url: Arc<str> = Arc::from(self.context_url(at, base_url, s)?);
                     if !options.validate_scoped_context && remote.contains(&url) {
                         continue;
                     }
                     if remote.len() >= MAX_REMOTE_CONTEXTS {
                         return Err(self.err(
                             ErrorCode::ContextOverflow,
-                            item.span,
+                            at,
                             format!(
                                 "more than {MAX_REMOTE_CONTEXTS} nested remote contexts (does a context include itself?)"
                             ),
@@ -1328,13 +1359,8 @@ impl<'l> Processor<'l> {
                     }
                     let mut remote = remote.to_vec();
                     remote.push(url.clone());
-                    result = self.remote(
-                        &result,
-                        &url,
-                        item.span,
-                        &remote,
-                        options.validate_scoped_context,
-                    )?;
+                    result =
+                        self.remote(&result, &url, at, &remote, options.validate_scoped_context)?;
                 }
                 Value::Object(o) => {
                     self.definition(&mut result, o, base_url, remote, options)?;
@@ -1363,7 +1389,10 @@ impl<'l> Processor<'l> {
         validate: bool,
     ) -> Result<ActiveContext, ContextError> {
         let (loaded, json) = self.load_json(span, url)?;
-        let site_span = self.site.as_ref().map_or(span, |s| s.span);
+        let site_span = self
+            .site
+            .as_ref()
+            .map_or(self.term_at.unwrap_or(span), |s| s.span);
         'cached: for p in self
             .cache
             .results(url, &loaded.text, active, remote, validate)
@@ -1461,8 +1490,9 @@ impl<'l> Processor<'l> {
                 "@import must be a string",
             ));
         };
-        let url = self.context_url(m.value.span, base_url, s)?;
-        let (loaded, json) = self.load_json(m.value.span, &url)?;
+        let at = unquoted(m.value.span);
+        let url = self.context_url(at, base_url, s)?;
+        let (loaded, json) = self.load_json(at, &url)?;
         let context = json
             .as_object()
             .and_then(|d| d.get("@context"))
@@ -1470,19 +1500,22 @@ impl<'l> Processor<'l> {
         let Some(context) = context else {
             return Err(self.err(
                 ErrorCode::InvalidRemoteContext,
-                m.value.span,
+                at,
                 format!("{url} has no top-level @context object to import"),
             ));
         };
         if context.get("@import").is_some() {
             return Err(self.err(
                 ErrorCode::InvalidContextEntry,
-                m.value.span,
+                at,
                 format!("{url} has an @import itself, which an imported context may not have"),
             ));
         }
         let site = Site {
-            span: self.site.as_ref().map_or(m.value.span, |s| s.span),
+            span: self
+                .site
+                .as_ref()
+                .map_or(self.term_at.unwrap_or(at), |s| s.span),
             url: loaded.url.clone(),
         };
         Ok((json, site))
@@ -1530,7 +1563,7 @@ impl<'l> Processor<'l> {
                     Some(b) => Ok(Some(Arc::from(resolve_iri(b, s)))),
                     None => Err(self.err(
                         ErrorCode::InvalidBaseIri,
-                        e.value.span,
+                        unquoted(e.value.span),
                         "a relative @base needs a base IRI to resolve against",
                     )),
                 },
@@ -1566,7 +1599,7 @@ impl<'l> Processor<'l> {
                         }
                         Ok(_) => Err(self.err(
                             ErrorCode::InvalidVocabMapping,
-                            e.value.span,
+                            unquoted(e.value.span),
                             format!("@vocab \"{s}\" is not an IRI or a blank node identifier"),
                         )),
                         Err(e) => Err(e),
@@ -1658,7 +1691,11 @@ impl<'l> Processor<'l> {
             self.define(result, f, e.key, defined)?;
         }
         // 6.3, ahead of 4-5: every local entry is defined by the end anyway.
+        // Not for what 6.2 returns as is: a blank node identifier, or an IRI
+        // whose suffix starts with `//`.
         if let Some(colon) = value.find(':').filter(|&i| i > 0)
+            && &value[..colon] != "_"
+            && !value[colon + 1..].starts_with("//")
             && let Some(e) = f.local.get(&value[..colon])
             && defined.get(e.key) != Some(&true)
         {
@@ -1686,7 +1723,9 @@ impl<'l> Processor<'l> {
             return Ok(());
         };
         let saved = self.enter(f.local, e);
+        let term_at = self.term_at.replace(unquoted(e.key_span));
         let r = self.define_entry(result, f, e, defined);
+        self.term_at = term_at;
         self.site = saved;
         r
     }
@@ -1774,7 +1813,7 @@ impl<'l> Processor<'l> {
         // 10
         let mut def = TermDefinition {
             protected: f.protected,
-            span: self.site.is_none().then_some(e.key_span),
+            span: self.site.is_none().then_some(unquoted(e.key_span)),
             ..TermDefinition::default()
         };
         // 11
@@ -1858,6 +1897,9 @@ impl<'l> Processor<'l> {
                 };
             }
             def.reverse = true;
+            // Not in the spec's step 13, but implementations (and the
+            // expand test 0131) keep a reverse term's property index.
+            self.index(result, f, defined, obj, &mut def)?;
             return self.finish(result, f, e, defined, previous, def);
         }
         // 14
@@ -1985,27 +2027,7 @@ impl<'l> Processor<'l> {
             }
         }
         // 20
-        if let Some(m) = member(obj, "@index") {
-            if !def.container.contains(Container::INDEX) {
-                return Err(self.err(
-                    InvalidTermDefinition,
-                    m.key_span,
-                    "@index needs an @index container",
-                ));
-            }
-            let index = match m.value.as_str() {
-                Some(s) => self.expand(result, f, defined, s, false, true)?,
-                None => None,
-            };
-            if !index.as_deref().is_some_and(is_absolute_iri) {
-                return Err(self.err(
-                    InvalidTermDefinition,
-                    m.value.span,
-                    "@index must be a property that expands to an IRI",
-                ));
-            }
-            def.index = m.value.as_str().map(Arc::from);
-        }
+        self.index(result, f, defined, obj, &mut def)?;
         // 21
         if let Some(m) = member(obj, "@context") {
             let checked = self.process_in(
@@ -2113,6 +2135,40 @@ impl<'l> Processor<'l> {
             ));
         }
         self.finish(result, f, e, defined, previous, def)
+    }
+
+    /// Step 20: a property index (`@index`, with an `@index` container).
+    fn index<'f>(
+        &mut self,
+        result: &mut ActiveContext,
+        f: &Frame<'f>,
+        defined: &mut Defined<'f>,
+        obj: Option<&Object>,
+        def: &mut TermDefinition,
+    ) -> Result<(), ContextError> {
+        use ErrorCode::*;
+        if let Some(m) = member(obj, "@index") {
+            if !def.container.contains(Container::INDEX) {
+                return Err(self.err(
+                    InvalidTermDefinition,
+                    m.key_span,
+                    "@index needs an @index container",
+                ));
+            }
+            let index = match m.value.as_str() {
+                Some(s) => self.expand(result, f, defined, s, false, true)?,
+                None => None,
+            };
+            if !index.as_deref().is_some_and(is_absolute_iri) {
+                return Err(self.err(
+                    InvalidTermDefinition,
+                    m.value.span,
+                    "@index must be a property that expands to an IRI",
+                ));
+            }
+            def.index = m.value.as_str().map(Arc::from);
+        }
+        Ok(())
     }
 
     /// Steps 27-28: check a protected definition, then store. (The spec
@@ -2262,7 +2318,7 @@ mod tests {
     fn term_spans_point_at_their_keys() {
         let text = r#"{"@context": {"ex": "http://ex.org/"}}"#;
         let c = ok(text);
-        assert_eq!(spanned(text, c.term("ex").unwrap().span.unwrap()), "\"ex\"");
+        assert_eq!(spanned(text, c.term("ex").unwrap().span.unwrap()), "ex");
     }
 
     #[test]
@@ -2375,7 +2431,7 @@ mod tests {
             .inspect(|w| assert_eq!((w.code, w.severity), (DIAGNOSTIC_CODE, Severity::Warning)))
             .map(|w| spanned(text, w.span))
             .collect();
-        assert_eq!(w, ["\"@ignoreMe\"", "\"@ignored\"", "\"@nope\""]);
+        assert_eq!(w, ["@ignoreMe", "t", "r"]);
         assert_eq!(expand_iri(&c, "@ignoreMe", false, true), None);
     }
 
@@ -2397,7 +2453,7 @@ mod tests {
             r#"{"@context": [{"@protected": true, "a": "http://a.org/"}, {"a": "http://b.org/"}]}"#;
         assert_eq!(
             fails(text),
-            (ErrorCode::ProtectedTermRedefinition, "\"a\"".into())
+            (ErrorCode::ProtectedTermRedefinition, "a".into())
         );
         // A term's @protected overrides the context's.
         ok(
@@ -2477,13 +2533,13 @@ mod tests {
         let loader = NoNetwork::default();
         let mut p = Processor::with_cache(&loader, &cache);
         let applied = p
-            .process_scoped(&c, &scoped, Span::default(), false)
+            .process_scoped(&c, &scoped, Span::default(), false, true)
             .unwrap();
         assert_eq!(iri(&applied, "name"), Some("http://schema.org/name"));
         assert!(applied.previous().unwrap().term("name").is_none());
         // Applying it again is memoized.
         let again = p
-            .process_scoped(&c, &scoped, Span::default(), false)
+            .process_scoped(&c, &scoped, Span::default(), false, true)
             .unwrap();
         assert_eq!(again.id, applied.id);
         // An invalid scoped context is an error at the definition inside it.
@@ -2495,7 +2551,7 @@ mod tests {
             "{}",
             e.message
         );
-        assert_eq!(spanned(text, e.span), "5");
+        assert_eq!(spanned(text, e.span), "bad");
         assert_eq!(
             e.to_syntax_error().message,
             format!("invalid scoped context: {}", e.message)
@@ -2522,7 +2578,7 @@ mod tests {
         let cache = ContextCache::new();
         let mut p = Processor::with_cache(&loader, &cache);
         let applied = p
-            .process_scoped(&c, &scoped, Span::new(3, 4), true)
+            .process_scoped(&c, &scoped, Span::new(3, 4), true, true)
             .unwrap();
         assert_eq!(iri(&applied, "x"), Some("http://x.org/"));
     }
@@ -2549,7 +2605,7 @@ mod tests {
         let text = r#"{"@context": {"@import": "bad.jsonld"}}"#;
         assert_eq!(
             fails_with(text, &loader),
-            (ErrorCode::InvalidTermDefinition, "\"bad.jsonld\"".into())
+            (ErrorCode::InvalidTermDefinition, "bad.jsonld".into())
         );
         let loader = NoNetwork::default().with(
             "http://example.com/nested.jsonld",
@@ -2558,14 +2614,14 @@ mod tests {
         let text = r#"{"@context": {"@import": "nested.jsonld"}}"#;
         assert_eq!(
             fails_with(text, &loader),
-            (ErrorCode::InvalidContextEntry, "\"nested.jsonld\"".into())
+            (ErrorCode::InvalidContextEntry, "nested.jsonld".into())
         );
         let loader =
             NoNetwork::default().with("http://example.com/arr.jsonld", r#"{"@context": []}"#);
         let text = r#"{"@context": {"@import": "arr.jsonld"}}"#;
         assert_eq!(
             fails_with(text, &loader),
-            (ErrorCode::InvalidRemoteContext, "\"arr.jsonld\"".into())
+            (ErrorCode::InvalidRemoteContext, "arr.jsonld".into())
         );
         assert_eq!(
             fails(r#"{"@context": {"@import": 5}}"#),
@@ -2596,7 +2652,7 @@ mod tests {
             fails(text),
             (
                 ErrorCode::LoadingRemoteContextFailed,
-                "\"https://example.org/missing.jsonld\"".into()
+                "https://example.org/missing.jsonld".into()
             )
         );
         let e = process(text).unwrap_err();
@@ -2608,7 +2664,7 @@ mod tests {
             fails(r#"{"@context": "urn:x:nothing"}"#),
             (
                 ErrorCode::LoadingRemoteContextFailed,
-                "\"urn:x:nothing\"".into()
+                "urn:x:nothing".into()
             )
         );
         let loader = NoNetwork::default()
@@ -2620,17 +2676,17 @@ mod tests {
             );
         assert_eq!(
             fails_with(r#"{"@context": "broken"}"#, &loader),
-            (ErrorCode::LoadingRemoteContextFailed, "\"broken\"".into())
+            (ErrorCode::LoadingRemoteContextFailed, "broken".into())
         );
         assert_eq!(
             fails_with(r#"{"@context": "plain"}"#, &loader),
-            (ErrorCode::InvalidRemoteContext, "\"plain\"".into())
+            (ErrorCode::InvalidRemoteContext, "plain".into())
         );
         let text = r#"{"@context": [{}, "bad"]}"#;
         let e = process_with(text, &loader).unwrap_err();
         assert_eq!(
             (e.code, spanned(text, e.span).as_str()),
-            (ErrorCode::InvalidIriMapping, "\"bad\"")
+            (ErrorCode::InvalidIriMapping, "bad")
         );
         assert!(e.message.ends_with("(in http://example.com/bad)"), "{e}");
     }
@@ -2641,7 +2697,7 @@ mod tests {
             NoNetwork::default().with("http://example.com/self", r#"{"@context": "self"}"#);
         assert_eq!(
             fails_with(r#"{"@context": "self"}"#, &loader),
-            (ErrorCode::ContextOverflow, "\"self\"".into())
+            (ErrorCode::ContextOverflow, "self".into())
         );
         // A scoped context naming its own document is not followed again.
         let loader = NoNetwork::default().with(
@@ -2655,15 +2711,16 @@ mod tests {
     fn cyclic_definitions() {
         assert_eq!(
             fails(r#"{"@context": {"a": "b:x", "b": "a:y"}}"#),
-            (ErrorCode::CyclicIriMapping, "\"a\"".into())
+            (ErrorCode::CyclicIriMapping, "a".into())
         );
         assert_eq!(
             fails(r#"{"@context": {"a": {"@id": "a:x"}}}"#),
-            (ErrorCode::CyclicIriMapping, "\"a\"".into())
+            (ErrorCode::CyclicIriMapping, "a".into())
         );
     }
 
-    /// Each error code, at the span of the offending JSON.
+    /// Each error code: in a term definition on the term's key, elsewhere on
+    /// the offending value (a string's content without the quotes).
     #[test]
     fn every_error_code_at_its_span() {
         use ErrorCode::*;
@@ -2684,13 +2741,13 @@ mod tests {
             (
                 r#"{"@context": [{"@base": null}, {"@base": "rel"}]}"#,
                 InvalidBaseIri,
-                "\"rel\"",
+                "rel",
             ),
             (r#"{"@context": {"@vocab": 5}}"#, InvalidVocabMapping, "5"),
             (
                 r#"{"@context": [{"@base": null}, {"@vocab": "rel"}]}"#,
                 InvalidVocabMapping,
-                "\"rel\"",
+                "rel",
             ),
             (
                 r#"{"@context": {"@language": 5}}"#,
@@ -2715,159 +2772,159 @@ mod tests {
             (
                 r#"{"@context": {"": "http://x.org/"}}"#,
                 InvalidTermDefinition,
-                "\"\"",
+                "",
             ),
-            (r#"{"@context": {"a": 5}}"#, InvalidTermDefinition, "5"),
+            (r#"{"@context": {"a": 5}}"#, InvalidTermDefinition, "a"),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@foo": 1}}}"#,
                 InvalidTermDefinition,
-                "\"@foo\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@index": "http://p/"}}}"#,
                 InvalidTermDefinition,
-                "\"@index\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@container": "@index", "@index": "@type"}}}"#,
                 InvalidTermDefinition,
-                "\"@type\"",
+                "a",
             ),
             (
                 r#"{"@context": {"@vocab": "http://x/", "a/b": {"@prefix": true}}}"#,
                 InvalidTermDefinition,
-                "\"@prefix\"",
+                "a/b",
             ),
             (
                 r#"{"@context": {"a": {"@id": "@type", "@prefix": true}}}"#,
                 InvalidTermDefinition,
-                "true",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@prefix": "yes"}}}"#,
                 InvalidPrefixValue,
-                "\"yes\"",
+                "a",
             ),
             (
                 r#"{"@context": {"@id": "http://x/"}}"#,
                 KeywordRedefinition,
-                "\"@id\"",
+                "@id",
             ),
             (
                 r#"{"@context": {"@type": {"@id": "http://x/"}}}"#,
                 KeywordRedefinition,
-                "\"@type\"",
+                "@type",
             ),
-            (r#"{"@context": {"a": {"@id": 5}}}"#, InvalidIriMapping, "5"),
+            (r#"{"@context": {"a": {"@id": 5}}}"#, InvalidIriMapping, "a"),
             (
                 r#"{"@context": [{"@base": null}, {"a": "relative"}]}"#,
                 InvalidIriMapping,
-                "\"relative\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@type": "@id"}}}"#,
                 InvalidIriMapping,
-                "\"a\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@reverse": 5}}}"#,
                 InvalidIriMapping,
-                "5",
+                "a",
             ),
             (
                 r#"{"@context": {"a:b": {"@id": "http://x/other"}}}"#,
                 InvalidIriMapping,
-                "\"http://x/other\"",
+                "a:b",
             ),
             (
                 r#"{"@context": {"a": "@context"}}"#,
                 InvalidKeywordAlias,
-                "\"@context\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@type": 5}}}"#,
                 InvalidTypeMapping,
-                "5",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@type": "_:b"}}}"#,
                 InvalidTypeMapping,
-                "\"_:b\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@type": "http://t/", "@container": "@type"}}}"#,
                 InvalidTypeMapping,
-                "\"http://t/\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@container": "@foo"}}}"#,
                 InvalidContainerMapping,
-                "\"@foo\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@container": ["@list", "@set"]}}}"#,
                 InvalidContainerMapping,
-                "[\"@list\", \"@set\"]",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@container": ["@graph", "@id", "@index"]}}}"#,
                 InvalidContainerMapping,
-                "[\"@graph\", \"@id\", \"@index\"]",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@container": ["@index", "@language"]}}}"#,
                 InvalidContainerMapping,
-                "[\"@index\", \"@language\"]",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@reverse": "http://x/", "@id": "http://y/"}}}"#,
                 InvalidReverseProperty,
-                "\"@id\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@reverse": "http://x/", "@container": "@list"}}}"#,
                 InvalidReverseProperty,
-                "\"@list\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@language": 5}}}"#,
                 InvalidLanguageMapping,
-                "5",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@direction": "up"}}}"#,
                 InvalidBaseDirection,
-                "\"up\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@nest": "@id"}}}"#,
                 InvalidNestValue,
-                "\"@id\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@nest": 5}}}"#,
                 InvalidNestValue,
-                "5",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@protected": "yes"}}}"#,
                 InvalidProtectedValue,
-                "\"yes\"",
+                "a",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@context": {"b": 5}}}}"#,
                 InvalidScopedContext,
-                "5",
+                "b",
             ),
             (
                 r#"{"@context": {"a": {"@id": "http://x/", "@context": 5}}}"#,
                 InvalidScopedContext,
-                "5",
+                "a",
             ),
             (
                 r#"{"@context": {"@import": "https://example.org/x"}}"#,
                 LoadingRemoteContextFailed,
-                "\"https://example.org/x\"",
+                "https://example.org/x",
             ),
         ];
         for (text, code, span) in cases {
@@ -2913,7 +2970,7 @@ mod tests {
         ok(r#"{"@context": {"http://x.org/p": {"@id": "http://x.org/p"}}}"#);
         assert_eq!(
             fails(r#"{"@context": {"http://x.org/p": {"@id": "http://y.org/p"}}}"#),
-            (ErrorCode::InvalidIriMapping, "\"http://y.org/p\"".into())
+            (ErrorCode::InvalidIriMapping, "http://x.org/p".into())
         );
     }
 
@@ -3012,7 +3069,7 @@ mod tests {
         assert_eq!(cache.stats().hits, hits + 1);
         assert_eq!(
             (e.code, spanned(text, e.span).as_str()),
-            (ErrorCode::InvalidTermDefinition, "\"outer\"")
+            (ErrorCode::InvalidTermDefinition, "outer")
         );
         assert!(e.message.ends_with("(in http://example.com/inner)"), "{e}");
     }

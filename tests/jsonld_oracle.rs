@@ -11,13 +11,13 @@
 //! [`NoNetwork`]. Without the corpus the test skips.
 //!
 //! Every file gets a line on stderr (`--nocapture` shows them): `ok`, `DIFF`
-//! with both quad counts and an example quad only one side has, or `skip`
-//! when oxjsonld itself rejects the document. The test only reports for now:
-//! it fails on a difference only with `JSONLD_ORACLE_STRICT=1`, which the
-//! engine work (ticket 08) makes the default.
+//! with both quad counts and an example quad only one side has, `known`
+//! for a difference listed in [`KNOWN`], or `skip` when oxjsonld itself
+//! rejects the document. The test fails on any unlisted difference, and on
+//! a listed one that changed or went away (update [`KNOWN`] then);
+//! `JSONLD_ORACLE_STRICT=0` only reports.
 //!
 //!     cargo test --release --test jsonld_oracle -- --nocapture
-//!     JSONLD_ORACLE_STRICT=1 cargo test --release --test jsonld_oracle
 
 use oxrdf::dataset::CanonicalizationAlgorithm;
 use oxrdf::{
@@ -30,6 +30,139 @@ use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::jsonld::{self, NoNetwork};
 use turtle_lsp::syntax::{GraphName, Node};
+
+/// Files where oxjsonld (0.2) departs from JSON-LD 1.1 and this engine
+/// follows it: (path, our quads, oxjsonld's quads, why). Each was checked by
+/// hand against the spec and the W3C suite.
+const KNOWN: &[(&str, usize, usize, &str)] = &[
+    // oxjsonld keeps the value of an @graph-container term that is written
+    // as an @id string as the object; JSON-LD 1.1 Expansion step 13.12 wraps
+    // every value in a graph object, so the object is a blank node naming a
+    // graph that holds the reference.
+    (
+        "vc-1.0/example-016-jwt-presentation.jsonld",
+        4,
+        4,
+        GRAPH_CONTAINER,
+    ),
+    (
+        "vc-1.0/example-016-jwt-presentation-no-iss.jsonld",
+        3,
+        3,
+        GRAPH_CONTAINER,
+    ),
+    (
+        "vc-1.0/example-016-jwt-presentation-no-jti.jsonld",
+        4,
+        4,
+        GRAPH_CONTAINER,
+    ),
+    // oxjsonld (rdf-12 feature) keeps @direction as an RDF 1.2 directional
+    // language-tagged string; JSON-LD 1.1 toRdf without rdfDirection drops
+    // the direction (W3C toRdf#tdi01 to #tdi07).
+    (
+        "vc-2.0/credential-name-language-direction-en-ok.jsonld",
+        3,
+        3,
+        DIRECTION,
+    ),
+    // The IIIF cookbook manifests have template @ids ("{{ id.url }}"), not
+    // IRIs, so the nodes are dropped with their triples; oxjsonld still
+    // emits the rdf:first/rdf:rest triples of the @list values of those
+    // nodes (the spec converts a list only for a triple it keeps). 0006 and
+    // 0007 also alias @none ("none") in the scoped context of "value";
+    // oxjsonld tags those strings "@none" (both read the same once
+    // normalized; checked by hand).
+    ("iiif/0001-mvm-image-manifest.jsonld", 4, 7, DROPPED_LIST),
+    ("iiif/0002-mvm-audio-manifest.jsonld", 3, 6, DROPPED_LIST),
+    ("iiif/0003-mvm-video-manifest.jsonld", 5, 8, DROPPED_LIST),
+    ("iiif/0004-canvas-size-manifest.jsonld", 4, 7, DROPPED_LIST),
+    (
+        "iiif/0005-image-service-manifest.jsonld",
+        7,
+        10,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0006-text-language-manifest.jsonld",
+        17,
+        24,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0007-string-formats-manifest.jsonld",
+        11,
+        16,
+        DROPPED_LIST,
+    ),
+    ("iiif/0008-rights-manifest.jsonld", 9, 12, DROPPED_LIST),
+    ("iiif/0009-book-1-manifest.jsonld", 35, 50, DROPPED_LIST),
+    (
+        "iiif/0010-book-2-viewing-direction-manifest-rtl.jsonld",
+        35,
+        50,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0010-book-2-viewing-direction-manifest-ttb.jsonld",
+        28,
+        40,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0011-book-3-behavior-manifest-continuous.jsonld",
+        28,
+        40,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0011-book-3-behavior-manifest-individuals.jsonld",
+        28,
+        40,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0013-placeholderCanvas-manifest.jsonld",
+        9,
+        14,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0014-accompanyingcanvas-manifest.jsonld",
+        10,
+        15,
+        DROPPED_LIST,
+    ),
+    ("iiif/0015-start-manifest.jsonld", 7, 10, DROPPED_LIST),
+    (
+        "iiif/0017-transcription-av-manifest.jsonld",
+        8,
+        11,
+        DROPPED_LIST,
+    ),
+    (
+        "iiif/0019-html-in-annotations-manifest.jsonld",
+        11,
+        16,
+        DROPPED_LIST,
+    ),
+    ("iiif/0021-tagging-manifest.jsonld", 11, 16, DROPPED_LIST),
+    (
+        "iiif/0022-linking-with-a-hotspot-manifest.jsonld",
+        19,
+        27,
+        DROPPED_LIST,
+    ),
+    // "geographicBoundingBox" is not defined for a dcat:DatasetSeries, so
+    // the key is dropped with its value (Expansion step 13.3); oxjsonld
+    // still emits the rdf:type triple of the node object in the value.
+    ("dcat-us/dataset-in_series.jsonld", 22, 23, UNDEFINED_KEY),
+];
+
+const GRAPH_CONTAINER: &str = "oxjsonld does not wrap an @id-coerced value of an @graph container";
+const DIRECTION: &str = "oxjsonld keeps @direction (RDF 1.2); JSON-LD 1.1 drops it";
+const DROPPED_LIST: &str = "oxjsonld emits the list triples of a node with an invalid @id";
+const UNDEFINED_KEY: &str = "oxjsonld emits a triple from the value of an undefined key";
 
 fn blank(id: u32) -> BlankNode {
     BlankNode::new_unchecked(format!("b{id}"))
@@ -150,7 +283,8 @@ fn corpus_graphs_match_oxjsonld() {
         }
     }
     let contexts = Arc::new(contexts);
-    let (mut same, mut differ, mut skipped) = (0, 0, 0);
+    let (mut same, mut differ, mut known, mut skipped) = (0, 0, 0, 0);
+    let mut problems = Vec::new();
     for (path, base) in &docs {
         let text = fs::read_to_string(dir.join(path)).unwrap();
         let mut want = match oracle(&text, base, &contexts) {
@@ -164,9 +298,20 @@ fn corpus_graphs_match_oxjsonld() {
         let mut got = ours(&text, base, &loader);
         want.canonicalize(CanonicalizationAlgorithm::Unstable);
         got.canonicalize(CanonicalizationAlgorithm::Unstable);
+        let listed = KNOWN.iter().find(|k| k.0 == path);
         if got == want {
             eprintln!("ok    {path} ({} quads)", want.len());
             same += 1;
+            if listed.is_some() {
+                problems.push(format!(
+                    "{path}: now matches oxjsonld; remove it from KNOWN"
+                ));
+            }
+        } else if let Some(&(_, ours, theirs, why)) = listed
+            && (got.len(), want.len()) == (ours, theirs)
+        {
+            eprintln!("known {path}: ours {ours} quads, oxjsonld {theirs}: {why}");
+            known += 1;
         } else {
             let example = want
                 .iter()
@@ -178,23 +323,31 @@ fn corpus_graphs_match_oxjsonld() {
                         .map(|q| format!("ours only: {q}"))
                 })
                 .unwrap_or_default();
-            eprintln!(
-                "DIFF  {path}: ours {} quads, oxjsonld {}; {example}",
+            let line = format!(
+                "{path}: ours {} quads, oxjsonld {}; {example}",
                 got.len(),
                 want.len()
             );
+            eprintln!("DIFF  {line}");
+            problems.push(line);
             differ += 1;
         }
     }
     eprintln!(
-        "jsonld oracle: {} documents, {same} isomorphic, {differ} differ, {skipped} rejected by oxjsonld",
+        "jsonld oracle: {} documents, {same} isomorphic, {known} known differences, {differ} differ, {skipped} rejected by oxjsonld",
         docs.len()
     );
     assert!(
         !docs.is_empty(),
         "test/corpus/jsonld/index.tsv lists no documents"
     );
-    if std::env::var("JSONLD_ORACLE_STRICT").is_ok_and(|v| v == "1") {
-        assert_eq!(differ, 0, "{differ} documents differ from oxjsonld");
+    if std::env::var("JSONLD_ORACLE_STRICT").is_ok_and(|v| v == "0") {
+        return;
     }
+    assert!(
+        problems.is_empty(),
+        "{} documents differ from oxjsonld beyond the KNOWN list:\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
 }
