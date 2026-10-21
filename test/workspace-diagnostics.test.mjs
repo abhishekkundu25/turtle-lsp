@@ -39,9 +39,19 @@ const FILES = {
 const ON = { diagnostics: { workspace: true } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// The servers started in each workspace. Hooks run in the order they are
+// registered, and Windows cannot remove a folder a running server has open, so
+// one hook stops them and then removes the folder.
+const servers = new Map()
+
 function workspace(t, files = FILES) {
   const dir = tempDir("turtle-wsdiag-")
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  servers.set(dir, [])
+  t.after(async () => {
+    for (const s of servers.get(dir)) await s.stop()
+    servers.delete(dir)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
   for (const [name, text] of Object.entries(files)) write(dir, name, text)
   return dir
 }
@@ -53,7 +63,7 @@ function write(dir, name, text) {
 
 async function session(t, dir, initializationOptions) {
   const s = await startServer({ cwd: dir, initializationOptions })
-  t.after(() => s.stop())
+  servers.get(dir).push(s)
   return s
 }
 
