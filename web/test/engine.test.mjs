@@ -7,7 +7,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createEngine } from "../app/engine.js"
-import { SETS } from "../app/samples.js"
+import { SETS, WORKSPACE } from "../app/samples.js"
 import { startServer, tempDir, uriOf } from "../../test/lsp-client.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -61,6 +61,54 @@ test("each file's kind comes from its name", () => {
   ]
   const kinds = engine.call("analyse", { files }).files.map((f) => f.kind)
   assert.deepEqual(kinds, ["turtle", "trig", "ntriples", "nquads", "sparql", "sparql", "sparql"])
+})
+
+// --- query ---------------------------------------------------------------------
+
+// The sample workspace with `text` as q.rq, asked to run q.rq.
+const ask = (text, limits = {}) =>
+  engine.call("query", { files: [...WORKSPACE.map((f) => ({ name: f.path, text: f.text })), { name: "q.rq", text }], query: "q.rq", ...limits })
+
+test("query: the sample's SELECT gives its rows as display strings, with the project's prefixes", () => {
+  const files = WORKSPACE.map((f) => ({ name: f.path, text: f.text }))
+  const r = engine.call("query", { files, query: "queries/people.rq" })
+  assert.equal(r.kind, "select")
+  assert.deepEqual(r.variables, ["name"])
+  assert.equal(r.total, r.rows.length)
+  assert.ok(r.rows.some((row) => row[0] === '"Alice"'), JSON.stringify(r.rows))
+  assert.equal(typeof r.elapsedMs, "number")
+  const p = ask("SELECT ?p ?nothing WHERE { ?p a ex:Person } ORDER BY ?p", { maxRows: 2 })
+  assert.equal(p.rows.length, 2)
+  assert.ok(p.total > 2)
+  assert.match(p.rows[0][0], /^id:/)
+  assert.equal(p.rows[0][1], null)
+})
+
+test("query: ASK gives a boolean, CONSTRUCT gives Turtle", () => {
+  assert.equal(ask("ASK { id:alice a ex:Person }").boolean, true)
+  assert.equal(ask("ASK { id:alice a ex:Organisation }").boolean, false)
+  const c = ask("CONSTRUCT { ?p ex:employer ?o } WHERE { ?p ex:worksFor ?o }", { maxRows: 1 })
+  assert.equal(c.kind, "construct")
+  assert.equal(c.shown, 1)
+  assert.ok(c.total > 1)
+  assert.match(c.turtle, /@prefix ex: <https:\/\/toolbox\.example\.org\/def\/> \./)
+  assert.match(c.turtle, /ex:employer/)
+})
+
+test("query: a syntax error has its line and column; a missing query file is a request error", () => {
+  const e = ask("SELECT ?s\nWHERE { ?s a }")
+  assert.equal(e.kind, "error")
+  assert.deepEqual([e.line, e.column], [2, 14])
+  assert.match(e.message, /syntax error/)
+  assert.throws(() => engine.call("query", { files: [], query: "nope.rq" }), /no file is named 'nope.rq'/)
+})
+
+test("query: the time limit stops a long query with a message, and the engine keeps answering", () => {
+  const e = ask("SELECT * WHERE { ?a ?b ?c . ?d ?e ?f . ?g ?h ?i . ?j ?k ?l }", { timeout: 0.05 })
+  assert.equal(e.kind, "error")
+  assert.equal(e.line, null)
+  assert.match(e.message, /time limit/)
+  assert.equal(ask("ASK {}").boolean, true)
 })
 
 // --- validate -------------------------------------------------------------------

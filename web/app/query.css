@@ -1,0 +1,26 @@
+/* SPARQL queries (query-pane.js): the Run button in the breadcrumbs bar and
+   the results pane under the editor. */
+.crumbs-path { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.qrun { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px 0 6px; border-radius: 3px; background: var(--focus); color: #fff; font-size: 12px; }
+.qrun:hover { filter: brightness(1.1); }
+.qrun:disabled { opacity: .6; cursor: default; }
+.qrun:focus-visible, .qloc:focus-visible, .qpane .ic:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
+.qrun .codicon { font-size: 14px; }
+
+.qpane { flex: 0 0 40%; min-height: 80px; display: flex; flex-direction: column; border-top: 1px solid var(--line); background: var(--bg); }
+.qpane-hd { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px 0 12px; flex: none; }
+.qpane-file, .qpane-status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qpane-body { flex: 1; overflow: auto; outline: none; padding: 0 12px 8px; }
+.qpane-body:focus-visible { box-shadow: inset 0 0 0 1px var(--focus); }
+.qpane-body[aria-busy="true"] { opacity: .5; }
+.qtable { border-collapse: collapse; font: 12px/1.5 var(--mono); }
+.qtable th, .qtable td { text-align: left; padding: 2px 12px 2px 6px; border-bottom: 1px solid var(--line); white-space: pre; vertical-align: top; }
+.qtable th { position: sticky; top: 0; background: var(--side); font-weight: 600; }
+.qtable tbody tr:hover { background: var(--hover); }
+.qbool { font: 600 14px var(--mono); margin: 8px 0; }
+.qturtle { font: 12px/1.5 var(--mono); margin: 4px 0; white-space: pre; }
+.qempty { color: var(--muted); margin: 6px 0; }
+.qerror { display: flex; align-items: baseline; gap: 6px; margin: 6px 0; }
+.qerror .codicon-error { color: var(--err); align-self: center; }
+.qerror .msg { white-space: pre-wrap; }
+.qloc { font: 12px var(--mono); color: var(--info); text-decoration: underline; padding: 0; }

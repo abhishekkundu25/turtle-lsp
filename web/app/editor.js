@@ -11,6 +11,7 @@ import { createTheme } from "./theme.js"
 import { createVim } from "./vim.js"
 import { createHierarchy } from "./hierarchy.js"
 import { createDiff } from "./diff.js"
+import { createQueryPane, isQuery } from "./query-pane.js"
 
 const ROOT = "file:///work/"
 // The files a folder contributes, by extension; anything else is skipped.
@@ -57,7 +58,7 @@ for (const key of ["tabs", "active"]) {
   Object.defineProperty(W, key, { get: () => W.groups[W.g][key], set: (v) => (W.groups[W.g][key] = v) })
 }
 let monaco, editor, client, hooks, search, settings, hierarchy
-let diff, theme, vim
+let diff, theme, vim, queries
 const pathByUri = new Map()
 
 // The folder opened in place that `path` is in, if any.
@@ -303,8 +304,10 @@ function renderTabs() {
       })
       .join("")
     q(".welcome").hidden = Boolean(g.active)
-    q(".crumbs").innerHTML = g.active ? g.active.split("/").map(esc).join(` <span class="codicon codicon-chevron-right"></span> `) : ""
+    q(".crumbs-path").innerHTML = g.active ? g.active.split("/").map(esc).join(` <span class="codicon codicon-chevron-right"></span> `) : ""
     g.el.classList.toggle("focused", i === W.g && W.groups.length > 1)
+    g.isQuery.set(isQuery(g.active))
+    queries.update(g)
   })
 }
 
@@ -421,14 +424,16 @@ function editorOptions() {
 function addGroup() {
   const el = document.createElement("section")
   el.className = "group"
-  el.innerHTML = `<div class="tabs" role="tablist" aria-label="Open files"></div><div class="crumbs"></div><div class="editor-host"></div><div class="welcome" hidden><p><b>No file open.</b> Pick one in the explorer.</p><p><kbd>Ctrl</kbd>+<kbd>P</kbd> Go to file · <kbd>F1</kbd> Commands · <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd> Format · <kbd>F2</kbd> Rename · <kbd>Ctrl</kbd>+<kbd>.</kbd> Quick fix</p></div>`
+  el.innerHTML = `<div class="tabs" role="tablist" aria-label="Open files"></div><div class="crumbs"><span class="crumbs-path"></span></div><div class="editor-host"></div><div class="welcome" hidden><p><b>No file open.</b> Pick one in the explorer.</p><p><kbd>Ctrl</kbd>+<kbd>P</kbd> Go to file · <kbd>F1</kbd> Commands · <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd> Format · <kbd>F2</kbd> Rename · <kbd>Ctrl</kbd>+<kbd>.</kbd> Quick fix</p></div>`
   $("groups").append(el)
   const ed = monaco.editor.create(el.querySelector(".editor-host"), editorOptions())
   const g = { tabs: [], active: null, views: new Map(), editor: ed, el }
   W.groups.push(g)
   ed.onDidFocusEditorText(() => focusGroup(W.groups.indexOf(g)))
   ed.onDidChangeCursorPosition(() => changed({ status: true }))
-  for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], contextMenuGroupId: c.menu, run: () => c.run() })
+  g.isQuery = ed.createContextKey("rdf.isQuery", false)
+  for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], precondition: c.when, contextMenuGroupId: c.menu, run: () => c.run() })
+  queries.attach(g, () => (focusGroup(W.groups.indexOf(g)), queries.run(g)))
   settings?.applyTo(ed)
   vim.attach(ed)
   el.addEventListener("mousedown", () => focusGroup(W.groups.indexOf(g)))
@@ -891,6 +896,7 @@ function resetWorkspace(files) {
 const COMMANDS = [
   { id: "rdf.fixAll", label: "RDF: Fix All Problems", run: fixAll },
   { id: "rdf.formatAll", label: "RDF: Format All Files", run: formatAll },
+  { id: "sparql.run", label: "SPARQL: Run Query", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, when: "rdf.isQuery", run: () => queries.run(W.groups[W.g]) },
   { id: "rdf.labels", label: "View: Toggle Labels", key: () => monaco.KeyMod.Alt | monaco.KeyCode.KeyL, run: toggleLabels },
   { id: "file.goto", label: "Go to File…", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, run: () => quickOpen() },
   { id: "file.gotoSymbol", label: "Go to Symbol in Workspace…", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyT, run: () => quickOpen("#") },
@@ -1253,6 +1259,16 @@ async function main() {
     },
   })
   monaco.editor.registerCommand("turtle.fetchImport", (_accessor, iri) => fetchImport(iri))
+  queries = createQueryPane({
+    files: () => [...W.files].map(([path, f]) => ({ name: path, text: f.model.getValue() })),
+    reveal: (path, line, column) => {
+      if (!W.files.has(path)) return
+      openTab(path)
+      editor.setPosition({ lineNumber: line, column })
+      editor.revealPositionInCenter({ lineNumber: line, column })
+      editor.focus()
+    },
+  })
   addGroup()
   focusGroup(0)
   monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyP, command: "editor.action.quickCommand" })
