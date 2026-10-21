@@ -1,6 +1,6 @@
 //! Batch analysis: a set of files analysed as one editor workspace, without
 //! the server's event loop. The browser toolbox (web/engine) and the
-//! command-line check both use it.
+//! command-line `check`, `format` and `query` use it.
 //!
 //! Every file is opened in a fresh [`Workspace`], so knowledge crosses files
 //! as it does in an editor. Files marked context inform the others but are
@@ -20,9 +20,10 @@ use crate::features::shacl_validate;
 use crate::features::{diagnostics, format};
 use crate::imports;
 use crate::knowledge::{Knowledge, Source};
+use crate::query::{self, Answer, Limits, QueryError};
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
-use crate::syntax::{Severity, Syntax};
+use crate::syntax::{PrefixMap, Severity, Syntax};
 use crate::workspace::{DocKind, Workspace};
 use lsp_types::{
     CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams, Diagnostic,
@@ -264,6 +265,74 @@ fn analyse_in(
     Report {
         files: out,
         has_shapes,
+    }
+}
+
+/// What [`query`] gave.
+#[derive(Clone, Debug)]
+pub struct QueryOutcome {
+    pub answer: Result<Answer, QueryError>,
+    /// The prefixes to show the results with: the project's (prefixes.ttl and
+    /// the `prefixes` setting, as the query sees them) and the query's own
+    /// `PREFIX` lines.
+    pub prefixes: PrefixMap,
+}
+
+/// Run the query `q` over `files` as one workspace: the default graph is the
+/// union of the RDF files' triples. SPARQL files, and a file at the query's
+/// own URI, are not data. The query and headerless data files get the
+/// project's prefixes as the editor gives them; `q.uri` is the query's base.
+pub fn query(
+    files: &[BatchFile],
+    q: &BatchFile,
+    settings: &Settings,
+    limits: &Limits,
+) -> QueryOutcome {
+    query_in(files, q, settings, limits, None)
+}
+
+/// [`query`] for files on disk: project prefixes come from `prefixes.ttl` up
+/// to the roots. Imports are not loaded: the data is the files given.
+pub fn query_on_disk(
+    files: &[BatchFile],
+    q: &BatchFile,
+    settings: &Settings,
+    limits: &Limits,
+    disk: &Disk,
+) -> QueryOutcome {
+    query_in(files, q, settings, limits, Some(disk))
+}
+
+fn query_in(
+    files: &[BatchFile],
+    q: &BatchFile,
+    settings: &Settings,
+    limits: &Limits,
+    disk: Option<&Disk>,
+) -> QueryOutcome {
+    let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
+    let mut ws = Workspace::new(roots, settings.prefixes.clone());
+    ws.set_network(disk.is_some_and(|d| d.network));
+    let data: Vec<&BatchFile> = files
+        .iter()
+        .filter(|f| f.uri != q.uri && DocKind::detect(None, &f.uri) != DocKind::Sparql)
+        .collect();
+    for f in &data {
+        ws.open_doc(f.uri.clone(), f.text.clone(), 1);
+    }
+    ws.open_doc_as(q.uri.clone(), q.text.clone(), 1, DocKind::Sparql);
+    let sparql = ws.sparql(&q.uri).expect("the query was just opened");
+    let analyses: Vec<Arc<Analysis>> = data.iter().filter_map(|f| ws.analysis(&f.uri)).collect();
+    let docs: Vec<&Analysis> = analyses.iter().map(Arc::as_ref).collect();
+    QueryOutcome {
+        answer: query::run(
+            &docs,
+            &q.text,
+            Some(sparql.base()),
+            &sparql.external,
+            limits,
+        ),
+        prefixes: query::display_prefixes(&q.text, &sparql.external),
     }
 }
 
@@ -949,6 +1018,53 @@ mod tests {
         let f = r.files[0].format.as_ref().unwrap();
         assert_eq!(f.guarantee, "same graph");
         assert!(matches!(f.outcome, FormatOutcome::Changed(_)));
+    }
+
+    #[test]
+    fn a_query_runs_over_the_rdf_files_with_the_project_prefixes() {
+        let settings = Settings::from_layers([&serde_json::json!({
+            "prefixes": {"ex": "http://example.org/"}
+        })]);
+        // A headerless data file, a SPARQL file (not data) and the query.
+        let files = [
+            file("a.ttl", "ex:a ex:p 1 .\n"),
+            file(
+                "b.ttl",
+                "@prefix ex: <http://example.org/> .\nex:b ex:p 2 .\n",
+            ),
+            file("other.rq", "SELECT * WHERE { ?s ?p ?o }\n"),
+        ];
+        let q = file(
+            "q.rq",
+            "PREFIX my: <http://my/>\nSELECT ?s WHERE { ?s ex:p ?o } ORDER BY ?s\n",
+        );
+        let out = query(&files, &q, &settings, &Limits::default());
+        let Ok(Answer::Solutions(s)) = out.answer else {
+            panic!("{:?}", out.answer)
+        };
+        let shown: Vec<String> = s
+            .rows
+            .iter()
+            .map(|r| query::render::term(r[0].as_ref().unwrap(), &out.prefixes))
+            .collect();
+        assert_eq!(shown, ["ex:a", "ex:b"]);
+        assert_eq!(
+            out.prefixes.get("my").map(String::as_str),
+            Some("http://my/")
+        );
+    }
+
+    #[test]
+    fn a_query_error_comes_back() {
+        let q = file("q.rq", "SELECT * WHERE { ?s ?p }\n");
+        let out = query(&[], &q, &Settings::default(), &Limits::default());
+        assert!(matches!(
+            out.answer,
+            Err(QueryError::Syntax { line: 1, .. })
+        ));
+        let q = file("u.rq", "INSERT DATA { <a:a> <a:b> <a:c> }\n");
+        let out = query(&[], &q, &Settings::default(), &Limits::default());
+        assert!(matches!(out.answer, Err(QueryError::Unsupported(_))));
     }
 
     #[cfg(unix)]

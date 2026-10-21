@@ -1,4 +1,5 @@
-//! The command line: `turtle-lsp check` and `turtle-lsp format`.
+//! The command line: `turtle-lsp check`, `turtle-lsp format` and
+//! `turtle-lsp query`.
 
 mod args;
 mod check;
@@ -6,6 +7,7 @@ mod diff;
 mod files;
 mod format;
 pub mod output;
+mod query;
 
 use args::Parsed;
 
@@ -14,9 +16,12 @@ Usage:
   turtle-lsp                      run the language server (stdio)
   turtle-lsp check [PATHS...]     report problems in RDF and SPARQL files
   turtle-lsp format [PATHS...]    format files in place
+  turtle-lsp query (FILE.rq | -e QUERY) [PATHS...]
+                                  run a SPARQL query over RDF files
   turtle-lsp --version            print the version
 
-Run 'turtle-lsp check --help' or 'turtle-lsp format --help' for options.
+Run 'turtle-lsp check --help', 'turtle-lsp format --help' or
+'turtle-lsp query --help' for options.
 ";
 
 const CHECK_USAGE: &str = "\
@@ -62,7 +67,37 @@ Exit codes: 0 done, 1 with --check or --diff when a file would change,
 2 the tool failed or a file could not be formatted.
 ";
 
-/// Run the subcommand in `args[0]` (`check` or `format`) with the rest of
+const QUERY_USAGE: &str = "\
+Usage: turtle-lsp query [OPTIONS] (FILE.rq | -e QUERY) [PATHS...]
+
+Run a SPARQL query (SELECT, ASK, CONSTRUCT or DESCRIBE) over the RDF files
+under PATHS (default: the workspace root). The default graph is the union of
+every triple of every file, named graphs included; GRAPH and FROM NAMED match
+nothing and FROM is ignored. SPARQL files are not data. prefixes.ttl and the
+'prefixes' setting apply to the query and to the data files, as in the
+editor. UPDATE is not run.
+
+Options:
+  -e, --execute QUERY   the query text, instead of a query file
+  --root DIR            the workspace root (default: the nearest folder with
+                        a .git, else the current folder)
+  --format F            table, json, csv, tsv or turtle (see below)
+  --timeout SECONDS     stop the query after this long (default 30; 0: never)
+  --limit ROWS          print at most ROWS rows of a table
+
+Formats:
+  SELECT                table (default), json, csv or tsv
+  ASK                   table (default; prints true or false) or json
+  CONSTRUCT, DESCRIBE   turtle (default)
+The table and Turtle show IRIs with the project's and the query's prefixes;
+json (SPARQL 1.1 results JSON), csv and tsv give full IRIs.
+
+Exit codes: 0 the query ran (an ASK answered true), 1 an ASK answered false,
+2 a syntax error (printed as FILE:LINE:COL: message), a time-out, an
+unsupported query or format, or another failure.
+";
+
+/// Run the subcommand in `args[0]` (`check`, `format` or `query`) with the rest of
 /// `args`; the process exit code.
 pub fn run(args: &[String]) -> i32 {
     // Parsing runs on rayon threads; give them room beyond the 2 MB default,
@@ -82,6 +117,10 @@ pub fn run(args: &[String]) -> i32 {
         "format" => args::parse_format(rest).and_then(|p| match p {
             Parsed::Run(a) => format::run(a),
             Parsed::Help => help(FORMAT_USAGE),
+        }),
+        "query" => args::parse_query(rest).and_then(|p| match p {
+            Parsed::Run(a) => query::run(a),
+            Parsed::Help => help(QUERY_USAGE),
         }),
         _ => Err(format!("unknown command '{command}'\n\n{USAGE}")),
     };

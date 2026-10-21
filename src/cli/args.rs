@@ -1,4 +1,4 @@
-//! Command-line arguments of `check` and `format`, parsed by hand.
+//! Command-line arguments of `check`, `format` and `query`, parsed by hand.
 
 use super::output::Format;
 use std::path::PathBuf;
@@ -28,6 +28,50 @@ pub struct FormatArgs {
     pub check: bool,
     pub diff: bool,
 }
+
+/// The output of `query`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryFormat {
+    Table,
+    Json,
+    Csv,
+    Tsv,
+    Turtle,
+}
+
+impl QueryFormat {
+    pub fn name(self) -> &'static str {
+        match self {
+            QueryFormat::Table => "table",
+            QueryFormat::Json => "json",
+            QueryFormat::Csv => "csv",
+            QueryFormat::Tsv => "tsv",
+            QueryFormat::Turtle => "turtle",
+        }
+    }
+}
+
+/// Where the query comes from.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QuerySource {
+    File(PathBuf),
+    Inline(String),
+}
+
+#[derive(Debug)]
+pub struct QueryArgs {
+    pub query: QuerySource,
+    pub paths: Vec<PathBuf>,
+    pub root: Option<PathBuf>,
+    /// None: the answer's own (a table, or Turtle for a graph).
+    pub format: Option<QueryFormat>,
+    /// None: no time limit.
+    pub timeout: Option<std::time::Duration>,
+    pub limit: Option<usize>,
+}
+
+/// The default `--timeout`, in seconds.
+pub const QUERY_TIMEOUT_SECONDS: u64 = 30;
 
 /// What the command line asks for.
 #[derive(Debug)]
@@ -206,6 +250,85 @@ pub fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String> {
     Ok(Parsed::Run(out))
 }
 
+/// Arguments of `query`, without the subcommand itself. The first path is
+/// the query file unless `-e` gives the query.
+pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
+    let mut inline = None;
+    let mut paths = Vec::new();
+    let mut root = None;
+    let mut format = None;
+    let mut timeout = Some(std::time::Duration::from_secs(QUERY_TIMEOUT_SECONDS));
+    let mut limit = None;
+    let mut it = Args::new(args);
+    while let Some(item) = it.next()? {
+        let flag = match item {
+            Item::Path(p) => {
+                paths.push(PathBuf::from(p));
+                continue;
+            }
+            Item::Flag(f) => f,
+        };
+        let f = flag.as_str();
+        match f {
+            "-h" | "--help" => return Ok(Parsed::Help),
+            "-e" | "--execute" => {
+                if inline.is_some() {
+                    return Err(format!("{f} is given twice"));
+                }
+                inline = Some(it.value(f)?);
+            }
+            "--root" => root = Some(PathBuf::from(it.value(f)?)),
+            "--format" => {
+                let v = it.value(f)?;
+                format = Some(match v.as_str() {
+                    "table" => QueryFormat::Table,
+                    "json" => QueryFormat::Json,
+                    "csv" => QueryFormat::Csv,
+                    "tsv" => QueryFormat::Tsv,
+                    "turtle" => QueryFormat::Turtle,
+                    _ => {
+                        return Err(format!(
+                            "--format must be table, json, csv, tsv or turtle, not '{v}'"
+                        ));
+                    }
+                });
+            }
+            "--timeout" => {
+                let v = it.value(f)?;
+                let secs: f64 = v
+                    .parse()
+                    .ok()
+                    .filter(|s: &f64| s.is_finite() && *s >= 0.0)
+                    .ok_or_else(|| format!("{f} needs a number of seconds, not '{v}'"))?;
+                timeout = (secs > 0.0).then(|| std::time::Duration::from_secs_f64(secs));
+            }
+            "--limit" => limit = Some(it.number(f)?),
+            _ => return Err(unknown(f, "query")),
+        }
+    }
+    if limit.is_some() && format.is_some_and(|f| f != QueryFormat::Table) {
+        return Err("--limit works only with the table format".to_string());
+    }
+    let query = match inline {
+        Some(text) => QuerySource::Inline(text),
+        None if paths.is_empty() => {
+            return Err(
+                "no query: give a query file or -e QUERY (see 'turtle-lsp query --help')"
+                    .to_string(),
+            );
+        }
+        None => QuerySource::File(paths.remove(0)),
+    };
+    Ok(Parsed::Run(QueryArgs {
+        query,
+        paths,
+        root,
+        format,
+        timeout,
+        limit,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +377,37 @@ mod tests {
         assert!(a.check && a.diff);
         assert_eq!(a.paths, [PathBuf::from("x.ttl")]);
         assert!(parse_format(&args("--fix")).is_err());
+    }
+
+    fn query(s: &str) -> Result<QueryArgs, String> {
+        match parse_query(&args(s))? {
+            Parsed::Run(a) => Ok(a),
+            Parsed::Help => Err("help".into()),
+        }
+    }
+
+    #[test]
+    fn cli_query_flags() {
+        let a = query("q.rq a.ttl --format=csv --timeout 1.5 data").unwrap();
+        assert_eq!(a.query, QuerySource::File(PathBuf::from("q.rq")));
+        assert_eq!(a.paths, [PathBuf::from("a.ttl"), PathBuf::from("data")]);
+        assert_eq!(a.format, Some(QueryFormat::Csv));
+        assert_eq!(a.timeout, Some(std::time::Duration::from_millis(1500)));
+        let a = query("-e ASK{} a.ttl --limit 3").unwrap();
+        assert_eq!(a.query, QuerySource::Inline("ASK{}".into()));
+        assert_eq!(a.paths, [PathBuf::from("a.ttl")]);
+        assert_eq!(a.limit, Some(3));
+        assert_eq!(a.timeout, Some(std::time::Duration::from_secs(30)));
+        assert_eq!(query("q.rq --timeout 0").unwrap().timeout, None);
+    }
+
+    #[test]
+    fn cli_query_bad_flags() {
+        assert!(query("").unwrap_err().contains("no query"));
+        assert!(query("q.rq --format xml").is_err());
+        assert!(query("q.rq --timeout -1").is_err());
+        assert!(query("q.rq --limit 3 --format json").is_err());
+        assert!(query("-e a -e b").is_err());
+        assert_eq!(query("--help").unwrap_err(), "help");
     }
 }

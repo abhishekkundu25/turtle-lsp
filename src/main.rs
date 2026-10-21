@@ -8,7 +8,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("check" | "format") => std::process::exit(turtle_lsp::cli::run(&args)),
+        Some("check" | "format" | "query") => std::process::exit(turtle_lsp::cli::run(&args)),
         Some("help" | "--help" | "-h") => {
             print!("{}", turtle_lsp::cli::USAGE);
             return;

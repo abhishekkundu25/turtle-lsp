@@ -52,7 +52,7 @@ pub fn current_dir() -> Result<PathBuf, String> {
 
 /// `path` without symbolic links (and on Windows without `\\?\`), or as it is
 /// when it cannot be resolved.
-fn real(path: &Path) -> PathBuf {
+pub fn real(path: &Path) -> PathBuf {
     let p = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     #[cfg(windows)]
     {
