@@ -21,9 +21,14 @@ MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, from the same commit).
   in the browser build too, which has no thread to cancel the token at the
   deadline.
 - `CancellationToken::with_max_kept_tuples` also cancels once the evaluation
-  has kept more than a number of tuples in memory: the cross product, hash
-  join, hash left join and MINUS builds, ORDER BY, DISTINCT and GROUP BY
-  groups count them. turtle-lsp uses it for `query.maxBufferedRows`.
+  holds more than a number of tuples in memory at once: the cross product,
+  hash join, hash left join and MINUS builds, ORDER BY, DISTINCT and GROUP BY
+  groups count theirs until the buffer is dropped. `kept_too_many()` stays
+  true once the limit was passed. turtle-lsp uses it for
+  `query.maxBufferedRows`.
+- Once the token is canceled, a dataset read returns the cancellation once
+  and ends, instead of an error for every remaining quad (which GROUP BY,
+  ORDER BY and join builds kept).
 - ORDER BY returns the cancellation instead of sorting what it gathered once
   the token is canceled (sorting tens of millions of rows took seconds).
 
@@ -33,5 +38,6 @@ Once a spareval release has the same checks, delete this folder and the
 `[patch.crates-io]` entries in `Cargo.toml` and `web/engine/Cargo.toml`, then
 run `cargo update -p spareval` in both places. The tests that cover this are
 `a_join_in_memory_stops_*`, `a_hash_join_in_memory_stops_at_the_time_limit`
-and `a_query_that_keeps_too_many_rows_stops` in `src/query/tests.rs`, and the
-in-memory join test in `web/test/engine.test.mjs`.
+and `a_query_that_keeps_too_many_rows_stops` in `src/query/tests.rs`,
+`tests/query_budget.rs`, `tests/query_cancel.rs`, and the in-memory join
+test in `web/test/engine.test.mjs`.
