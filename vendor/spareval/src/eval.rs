@@ -107,9 +107,16 @@ impl<'a, D: QueryableDataset<'a>> EvalDataset<'a, D> {
         let cancellation_token = self.cancellation_token.clone();
         self.dataset
             .internal_quads_for_pattern(subject, predicate, object, graph_name)
-            .map(move |r| {
-                cancellation_token.ensure_alive()?;
-                r.map_err(|e| QueryEvaluationError::Dataset(Box::new(e)))
+            // Once canceled, returns the cancellation once and ends.
+            .scan(false, move |cancelled, r| {
+                if *cancelled {
+                    return None;
+                }
+                if let Err(e) = cancellation_token.ensure_alive() {
+                    *cancelled = true;
+                    return Some(Err(e));
+                }
+                Some(r.map_err(|e| QueryEvaluationError::Dataset(Box::new(e))))
             })
     }
 
@@ -224,10 +231,21 @@ impl<'a, D: QueryableDataset<'a>> EvalDataset<'a, D> {
             )
         } else {
             let cancellation_token = self.cancellation_token.clone();
-            Box::new(self.dataset.internal_named_graphs().map(move |r| {
-                cancellation_token.ensure_alive()?;
-                r.map_err(|e| QueryEvaluationError::Dataset(Box::new(e)))
-            }))
+            Box::new(
+                self.dataset
+                    .internal_named_graphs()
+                    // Once canceled, returns the cancellation once and ends.
+                    .scan(false, move |cancelled, r| {
+                        if *cancelled {
+                            return None;
+                        }
+                        if let Err(e) = cancellation_token.ensure_alive() {
+                            *cancelled = true;
+                            return Some(Err(e));
+                        }
+                        Some(r.map_err(|e| QueryEvaluationError::Dataset(Box::new(e))))
+                    }),
+            )
         }
     }
 
