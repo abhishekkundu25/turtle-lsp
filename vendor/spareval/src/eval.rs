@@ -1219,10 +1219,11 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                             // Cartesian product
                             Rc::new(move |from| {
                                 let mut errors = Vec::default();
+                                let mut kept = cancellation_token.kept();
                                 let built_values = build(from.clone())
                                     .filter_map(|result| match result {
                                         Ok(result) => {
-                                            cancellation_token.keep();
+                                            kept.keep();
                                             Some(result)
                                         }
                                         Err(error) => {
@@ -1245,6 +1246,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                     built: built_values,
                                     buffered_results: errors,
                                     ticker: Ticker::new(cancellation_token.clone()),
+                                    _kept: kept,
                                 })
                             })
                         } else {
@@ -1255,11 +1257,12 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 .collect::<Vec<_>>();
                             Rc::new(move |from| {
                                 let mut errors = Vec::default();
+                                let mut kept = cancellation_token.kept();
                                 let mut built_values = InternalTupleSet::new(keys.clone());
                                 built_values.extend(build(from.clone()).filter_map(|result| {
                                     match result {
                                         Ok(result) => {
-                                            cancellation_token.keep();
+                                            kept.keep();
                                             Some(result)
                                         }
                                         Err(error) => {
@@ -1282,6 +1285,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                     built: built_values,
                                     buffered_results: errors,
                                     ticker: Ticker::new(cancellation_token.clone()),
+                                    _kept: kept,
                                 })
                             })
                         }
@@ -1347,14 +1351,15 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     MinusAlgorithm::HashBuildRightProbeLeft { keys } => {
                         if keys.is_empty() {
                             Rc::new(move |from| {
+                                let mut kept = cancellation_token.kept();
                                 let right: Vec<_> = right(from.clone())
                                     .filter_map(Result::ok)
-                                    .inspect(|_| cancellation_token.keep())
+                                    .inspect(|_| kept.keep())
                                     .collect();
                                 if right.is_empty() {
                                     return left(from);
                                 }
-                                Box::new(left(from).filter(move |left_tuple| {
+                                Box::new(kept.hold(left(from).filter(move |left_tuple| {
                                     if let Ok(left_tuple) = left_tuple {
                                         !right.iter().any(|right_tuple| {
                                             are_compatible_and_not_disjointed(
@@ -1365,7 +1370,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                     } else {
                                         true
                                     }
-                                }))
+                                })))
                             })
                         } else {
                             let keys = keys
@@ -1373,16 +1378,17 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 .map(|v| encode_variable(encoded_variables, v))
                                 .collect::<Vec<_>>();
                             Rc::new(move |from| {
+                                let mut kept = cancellation_token.kept();
                                 let mut right_values = InternalTupleSet::new(keys.clone());
                                 right_values.extend(
                                     right(from.clone())
                                         .filter_map(Result::ok)
-                                        .inspect(|_| cancellation_token.keep()),
+                                        .inspect(|_| kept.keep()),
                                 );
                                 if right_values.is_empty() {
                                     return left(from);
                                 }
-                                Box::new(left(from).filter(move |left_tuple| {
+                                Box::new(kept.hold(left(from).filter(move |left_tuple| {
                                     if let Ok(left_tuple) = left_tuple {
                                         !right_values.get(left_tuple).iter().any(|right_tuple| {
                                             are_compatible_and_not_disjointed(
@@ -1393,7 +1399,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                     } else {
                                         true
                                     }
-                                }))
+                                })))
                             })
                         }
                     }
@@ -1427,11 +1433,12 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                             .collect::<Vec<_>>();
                         Rc::new(move |from| {
                             let mut errors = Vec::default();
+                            let mut kept = cancellation_token.kept();
                             let mut right_values = InternalTupleSet::new(keys.clone());
                             right_values.extend(right(from.clone()).filter_map(
                                 |result| match result {
                                     Ok(result) => {
-                                        cancellation_token.keep();
+                                        kept.keep();
                                         Some(result)
                                     }
                                     Err(error) => {
@@ -1449,6 +1456,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 buffered_results: errors,
                                 expression: Rc::clone(&expression),
                                 ticker: Ticker::new(cancellation_token.clone()),
+                                _kept: kept,
                             })
                         })
                     }
@@ -1561,10 +1569,11 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 let cancellation_token = self.dataset.cancellation_token.clone();
                 Rc::new(move |from| {
                     let mut errors = Vec::default();
+                    let mut kept = cancellation_token.kept();
                     let mut values = child(from)
                         .filter_map(|result| match result {
                             Ok(result) => {
-                                cancellation_token.keep();
+                                kept.keep();
                                 Some(result)
                             }
                             Err(error) => {
@@ -1600,7 +1609,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         }
                         Ordering::Equal
                     });
-                    Box::new(errors.into_iter().chain(values.into_iter().map(Ok)))
+                    Box::new(kept.hold(errors.into_iter().chain(values.into_iter().map(Ok))))
                 })
             }
             GraphPattern::Distinct { inner } => {
@@ -1609,10 +1618,10 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 let child = child?;
                 let cancellation_token = self.dataset.cancellation_token.clone();
                 Rc::new(move |from| {
-                    let token = cancellation_token.clone();
+                    let mut kept = cancellation_token.kept();
                     Box::new(hash_deduplicate(child(from)).inspect(move |r| {
                         if r.is_ok() {
-                            token.keep();
+                            kept.keep();
                         }
                     }))
                 })
@@ -1717,6 +1726,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     let tuple_size = from.capacity();
                     let key_variables = Rc::clone(&key_variables);
                     let mut errors = Vec::default();
+                    let mut kept = dataset.cancellation_token.kept();
                     let mut accumulators_for_group = FxHashMap::<
                         Vec<Option<D::InternalTerm>>,
                         Vec<AccumulatorWrapper<'_, D::InternalTerm>>,
@@ -1745,7 +1755,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
 
                             let key_accumulators =
                                 accumulators_for_group.entry(key).or_insert_with(|| {
-                                    dataset.cancellation_token.keep();
+                                    kept.keep();
                                     accumulator_builders.iter().map(|c| c()).collect::<Vec<_>>()
                                 });
                             for accumulator in key_accumulators {
@@ -1755,30 +1765,31 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                     let accumulator_variables = accumulator_variables.clone();
                     let dataset = dataset.clone();
                     Box::new(
-                        errors
-                            .into_iter()
-                            .map(Err)
-                            .chain(accumulators_for_group.into_iter().map(
-                                move |(key, accumulators)| {
-                                    let mut result = InternalTuple::with_capacity(tuple_size);
-                                    for (variable, value) in key_variables.iter().zip(key) {
-                                        if let Some(value) = value {
-                                            result.set(*variable, value);
+                        kept.hold(
+                            errors.into_iter().map(Err).chain(
+                                accumulators_for_group.into_iter().map(
+                                    move |(key, accumulators)| {
+                                        let mut result = InternalTuple::with_capacity(tuple_size);
+                                        for (variable, value) in key_variables.iter().zip(key) {
+                                            if let Some(value) = value {
+                                                result.set(*variable, value);
+                                            }
                                         }
-                                    }
-                                    for (accumulator, variable) in
-                                        accumulators.into_iter().zip(&accumulator_variables)
-                                    {
-                                        if let Some(value) = accumulator.finish() {
-                                            result.set(
-                                                *variable,
-                                                dataset.internalize_expression_term(value)?,
-                                            );
+                                        for (accumulator, variable) in
+                                            accumulators.into_iter().zip(&accumulator_variables)
+                                        {
+                                            if let Some(value) = accumulator.finish() {
+                                                result.set(
+                                                    *variable,
+                                                    dataset.internalize_expression_term(value)?,
+                                                );
+                                            }
                                         }
-                                    }
-                                    Ok(result)
-                                },
-                            )),
+                                        Ok(result)
+                                    },
+                                ),
+                            ),
+                        ),
                     )
                 })
             }
@@ -3783,6 +3794,7 @@ struct CartesianProductJoinIterator<'a, T> {
     built: Vec<InternalTuple<T>>,
     buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
     ticker: Ticker,
+    _kept: KeptTuples,
 }
 
 impl<T: Clone + Eq> Iterator for CartesianProductJoinIterator<'_, T> {
@@ -3826,6 +3838,7 @@ struct HashJoinIterator<'a, T> {
     built: InternalTupleSet<T>,
     buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
     ticker: Ticker,
+    _kept: KeptTuples,
 }
 
 impl<T: Clone + Eq + Hash> Iterator for HashJoinIterator<'_, T> {
@@ -3875,6 +3888,7 @@ struct HashLeftJoinIterator<'a, T> {
     buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
     expression: Rc<dyn Fn(&InternalTuple<T>) -> Option<bool> + 'a>,
     ticker: Ticker,
+    _kept: KeptTuples,
 }
 
 impl<T: Clone + Eq + Hash> Iterator for HashLeftJoinIterator<'_, T> {
@@ -4735,8 +4749,14 @@ impl Timer {
 pub struct CancellationToken {
     value: Arc<AtomicBool>,
     check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
-    /// The tuples kept in memory so far, and the most allowed.
-    kept: Option<Arc<(AtomicUsize, usize)>>,
+    kept: Option<Arc<KeptCount>>,
+}
+
+/// The tuples kept in memory at once, the most allowed, and whether that was ever passed.
+struct KeptCount {
+    held: AtomicUsize,
+    max: usize,
+    passed: AtomicBool,
 }
 
 impl CancellationToken {
@@ -4770,29 +4790,33 @@ impl CancellationToken {
         }
     }
 
-    /// This token, also canceled once the evaluation has kept more than `max` tuples in memory:
-    /// the tuples it sorts (`ORDER BY`), deduplicates (`DISTINCT`), groups (one per group) or
-    /// builds a join from, counted over the whole evaluation.
+    /// This token, also canceled once the evaluation keeps more than `max` tuples in memory at
+    /// once: the tuples it sorts (`ORDER BY`), deduplicates (`DISTINCT`), groups (one per group)
+    /// or builds a join from, each counted until its buffer is dropped.
     #[must_use]
     pub fn with_max_kept_tuples(mut self, max: usize) -> Self {
-        self.kept = Some(Arc::new((AtomicUsize::new(0), max)));
+        self.kept = Some(Arc::new(KeptCount {
+            held: AtomicUsize::new(0),
+            max,
+            passed: AtomicBool::new(false),
+        }));
         self
     }
 
-    /// Whether the evaluation kept more tuples than [`CancellationToken::with_max_kept_tuples`] allows.
+    /// Whether the evaluation kept more tuples than [`CancellationToken::with_max_kept_tuples`]
+    /// allows at some point, even if it has freed them since.
     pub fn kept_too_many(&self) -> bool {
         self.kept
             .as_ref()
-            .is_some_and(|k| k.0.load(atomic::Ordering::Relaxed) > k.1)
+            .is_some_and(|k| k.passed.load(atomic::Ordering::Relaxed))
     }
 
-    /// Counts one tuple kept in memory; past the limit, cancels.
+    /// The count for one buffer, empty when there is no limit.
     #[inline]
-    fn keep(&self) {
-        if let Some(k) = &self.kept {
-            if k.0.fetch_add(1, atomic::Ordering::Relaxed) >= k.1 {
-                self.cancel();
-            }
+    fn kept(&self) -> KeptTuples {
+        KeptTuples {
+            token: self.kept.is_some().then(|| self.clone()),
+            count: 0,
         }
     }
 
@@ -4819,6 +4843,59 @@ impl CancellationToken {
         } else {
             Ok(())
         }
+    }
+}
+
+/// The tuples one buffer keeps in memory, counted on the token until the buffer is dropped.
+struct KeptTuples {
+    token: Option<CancellationToken>,
+    count: usize,
+}
+
+impl KeptTuples {
+    /// Counts one tuple kept in memory; past the limit, cancels.
+    #[inline]
+    fn keep(&mut self) {
+        if let Some(token) = &self.token {
+            if let Some(k) = &token.kept {
+                self.count += 1;
+                if k.held.fetch_add(1, atomic::Ordering::Relaxed) >= k.max {
+                    k.passed.store(true, atomic::Ordering::Relaxed);
+                    token.cancel();
+                }
+            }
+        }
+    }
+
+    /// `iter`, holding this count until it is dropped.
+    fn hold<I: Iterator>(self, iter: I) -> HoldingKept<I> {
+        HoldingKept { iter, _kept: self }
+    }
+}
+
+impl Drop for KeptTuples {
+    fn drop(&mut self) {
+        if let Some(k) = self.token.as_ref().and_then(|t| t.kept.as_ref()) {
+            k.held.fetch_sub(self.count, atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+struct HoldingKept<I> {
+    iter: I,
+    _kept: KeptTuples,
+}
+
+impl<I: Iterator> Iterator for HoldingKept<I> {
+    type Item = I::Item;
+
+    #[inline]
+    fn next(&mut self) -> Option<I::Item> {
+        self.iter.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
     }
 }
 
