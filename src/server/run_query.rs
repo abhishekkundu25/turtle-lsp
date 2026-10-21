@@ -113,7 +113,8 @@ impl State {
     }
 
     /// The results file stem of `uri`: its file stem, numbered when another
-    /// document run before has the same one.
+    /// document run before has the same one (in any case: `Same` and `same`
+    /// are one file on macOS and Windows).
     fn stem_for(&mut self, uri: &str) -> String {
         if let Some(s) = self.stems.get(uri) {
             return s.clone();
@@ -121,7 +122,8 @@ impl State {
         let base = stem(uri);
         let mut s = base.clone();
         for n in 2.. {
-            if !self.stems.values().any(|t| *t == s) {
+            let folded = s.to_lowercase();
+            if !self.stems.values().any(|t| t.to_lowercase() == folded) {
                 break;
             }
             s = format!("{base}-{n}");
@@ -475,6 +477,13 @@ mod tests {
         assert_eq!(stem("file:///w/people.rq"), "people");
         assert_eq!(stem("file:///w/a.b.sparql"), "a.b");
         assert_eq!(stem("untitled:Untitled-1"), "untitled_Untitled-1");
+    }
+
+    #[test]
+    fn stems_differ_by_more_than_case() {
+        let mut state = State::default();
+        assert_eq!(state.stem_for("file:///a/Same.rq"), "Same");
+        assert_eq!(state.stem_for("file:///b/same.rq"), "same-2");
     }
 
     #[test]

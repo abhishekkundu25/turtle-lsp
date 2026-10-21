@@ -314,7 +314,7 @@ fn evaluate_inner(
         }
         watch.stopped().unwrap_or_else(|| evaluation(e))
     };
-    match prepared.execute(data).map_err(fail)? {
+    let answer = match prepared.execute(data).map_err(fail)? {
         QueryResults::Solutions(solutions) => {
             let variables = solutions
                 .variables()
@@ -328,20 +328,24 @@ fn evaluate_inner(
                 let s = s.map_err(fail)?;
                 if rows.len() < max {
                     rows.push(s.values().to_vec());
+                    if limits.max_buffered_rows.is_some_and(|n| rows.len() > n) {
+                        return Err(too_many());
+                    }
                 } else {
                     omitted += 1;
                 }
             }
-            Ok(Answer::Solutions(Solutions {
+            Answer::Solutions(Solutions {
                 variables,
                 rows,
                 omitted,
-            }))
+            })
         }
-        QueryResults::Boolean(b) => Ok(Answer::Boolean(b)),
+        QueryResults::Boolean(b) => Answer::Boolean(b),
         QueryResults::Graph(triples) => {
             // The triples kept, and a hash of each one past the cap: enough
-            // to count distinct triples without keeping them.
+            // to count distinct triples without keeping them. Both count
+            // against the buffered rows.
             let mut seen = FxHashSet::default();
             let mut past = FxHashSet::default();
             let mut out = Vec::new();
@@ -356,17 +360,26 @@ fn evaluate_inner(
                     out.push(t);
                 } else {
                     past.insert(rustc_hash::FxBuildHasher.hash_one(&t));
-                    if limits.max_buffered_rows.is_some_and(|n| past.len() > n) {
-                        return Err(too_many());
-                    }
+                }
+                if limits
+                    .max_buffered_rows
+                    .is_some_and(|n| out.len() + past.len() > n)
+                {
+                    return Err(too_many());
                 }
             }
-            Ok(Answer::Triples(Triples {
+            Answer::Triples(Triples {
                 triples: out,
                 omitted: past.len(),
-            }))
+            })
         }
+    };
+    // A stop whose error the evaluator dropped (MINUS ignores the errors of
+    // its right side) is not a partial answer.
+    if token.kept_too_many() {
+        return Err(too_many());
     }
+    Ok(answer)
 }
 
 fn evaluation(e: QueryEvaluationError) -> QueryError {

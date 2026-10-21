@@ -733,3 +733,42 @@ fn a_query_that_keeps_too_many_rows_stops() {
     }
     assert_eq!(failed, Vec::<&str>::new());
 }
+
+/// MINUS drops the errors of its right side: a stop there is not an error of
+/// the evaluation, and the left side, reading no data, never sees it.
+#[test]
+fn a_stop_whose_error_is_dropped_is_not_a_partial_answer() {
+    let d = chain(100);
+    let limits = Limits {
+        max_buffered_rows: Some(10),
+        ..Limits::default()
+    };
+    assert_eq!(
+        run(
+            &[&d],
+            "SELECT ?x WHERE { BIND (1 AS ?x) MINUS { ?a ex:next ?b } }",
+            None,
+            &ex_prefixes(),
+            &limits
+        ),
+        Err(QueryError::TooManyRows(10))
+    );
+}
+
+/// The rows SELECT and the triples CONSTRUCT keep count too, also with no
+/// row cap.
+#[test]
+fn results_without_a_row_cap_keep_too_many_rows() {
+    let d = chain(100);
+    let limits = Limits {
+        max_buffered_rows: Some(10),
+        ..Limits::default()
+    };
+    for q in [
+        "SELECT ?s WHERE { ?s ex:next ?o }",
+        "CONSTRUCT { ?s ex:q ?o } WHERE { ?s ex:next ?o }",
+    ] {
+        let r = run(&[&d], q, None, &ex_prefixes(), &limits);
+        assert_eq!(r, Err(QueryError::TooManyRows(10)), "{q}");
+    }
+}
