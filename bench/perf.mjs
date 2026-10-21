@@ -147,6 +147,22 @@ for (let i = 0; i < 10; i++) {
 }
 record(`format (${text.split("\n").length} lines)`, fmts, `${fmtEdits} edit(s)`)
 
+// Run query: a join over the whole workspace, answered off the main loop.
+const queryUri = uriOf(path.join(ws, "people.rq"))
+s.open(
+  queryUri,
+  "PREFIX foaf: <http://xmlns.com/foaf/0.1/>\nSELECT (COUNT(*) AS ?n) WHERE { ?p a foaf:Person ; foaf:knows ?q . ?q foaf:name ?name }\n",
+  "sparql",
+)
+const queries = []
+let querySummary = ""
+for (let i = 0; i < 5; i++) {
+  const t1 = performance.now()
+  querySummary = await s.request("workspace/executeCommand", { command: "turtle.runQuery", arguments: [queryUri] })
+  queries.push(performance.now() - t1)
+}
+record("run query (join over the workspace)", queries, querySummary)
+
 const rssEnd = rss(s.proc.pid)
 await s.stop()
 
