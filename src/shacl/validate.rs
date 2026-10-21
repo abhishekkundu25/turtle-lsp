@@ -1808,6 +1808,34 @@ mod tests {
         }
     }
 
+    /// Two paths joined with nothing in common: minutes of work, stopped at
+    /// the time limit once, not once per focus node.
+    #[test]
+    fn a_slow_sparql_constraint_stops_at_the_time_limit() {
+        let mut body = "ex:S sh:targetClass ex:C ; sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE { ?a ex:next* ?b . ?c ex:next* ?d . FILTER (STRLEN(CONCAT(STR(?a), STR(?d))) < 0) }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n".to_string();
+        for i in 0..400 {
+            body.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
+        }
+        for i in 0..20 {
+            body.push_str(&format!("ex:n{i} a ex:C .\n"));
+        }
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        let g = Graph::new(&[&p.triples]);
+        let start = std::time::Instant::now();
+        let r = validate_report(&g, &|| false, &|_| true).unwrap();
+        let messages: Vec<&str> = r.failures.iter().map(|f| f.message.as_str()).collect();
+        assert_eq!(messages, [sparql::TIMED_OUT]);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
     #[test]
     fn cancelled_between_queries() {
         // Allow the poll before the focus node, stop at the one before the query.

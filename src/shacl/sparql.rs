@@ -13,10 +13,13 @@
 //! graph `$shapesGraph` names ([`SHAPES_GRAPH`]).
 
 use super::Path;
+use crate::clock::Instant;
 use crate::rdf::dataset::{BLANK, Index, STerm};
 use crate::rdf::graph::Id;
-use rustc_hash::FxHashMap;
-use spareval::{QueryEvaluator, QueryResults, QuerySolution};
+use rustc_hash::{FxHashMap, FxHashSet};
+use spareval::{
+    CancellationToken, QueryEvaluationError, QueryEvaluator, QueryResults, QuerySolution,
+};
 use spargebra::algebra::{
     AggregateExpression, Expression, Function, GraphPattern, OrderExpression,
 };
@@ -25,10 +28,24 @@ use spargebra::term::{
     Variable,
 };
 use spargebra::{Query, SparqlParser};
+use std::cell::RefCell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 /// The IRI `$shapesGraph` is bound to.
 pub const SHAPES_GRAPH: &str = "urn:x-shacl:shapes-graph";
+
+/// How long one SHACL-SPARQL query may run (in unit tests, long enough to
+/// tell a stop from a run of minutes).
+pub const TIME_LIMIT: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(10)
+};
+
+/// The failure of a query stopped at [`TIME_LIMIT`].
+pub const TIMED_OUT: &str = "SHACL-SPARQL query stopped after 10 s, its time limit: the results of this constraint are missing";
 
 /// The variables a query may see pre-bound, and which of them a subquery
 /// must return.
@@ -256,6 +273,9 @@ pub enum Answer {
 pub struct Engine {
     optimized: QueryEvaluator,
     plain: QueryEvaluator,
+    /// The queries that hit [`TIME_LIMIT`]: they fail at once from then on,
+    /// so a check does not take the limit again for every focus node.
+    timed_out: RefCell<FxHashSet<*const Query>>,
 }
 
 impl Default for Engine {
@@ -269,8 +289,20 @@ impl Default for Engine {
                 },
             ),
             plain: QueryEvaluator::new().without_optimizations(),
+            timed_out: RefCell::default(),
         }
     }
+}
+
+/// `evaluator`, stopped at [`TIME_LIMIT`] from now (the clock every 64th check).
+fn limited(evaluator: &QueryEvaluator) -> QueryEvaluator {
+    let deadline = Instant::now() + TIME_LIMIT;
+    let checks = AtomicU32::new(0);
+    evaluator
+        .clone()
+        .with_cancellation_token(CancellationToken::with_check(move || {
+            checks.fetch_add(1, Ordering::Relaxed).is_multiple_of(64) && Instant::now() >= deadline
+        }))
 }
 
 impl Engine {
@@ -281,22 +313,31 @@ impl Engine {
         query: &Query,
         bindings: Vec<(Variable, Term)>,
     ) -> Result<Answer, String> {
+        if self.timed_out.borrow().contains(&(query as *const Query)) {
+            return Err(TIMED_OUT.into());
+        }
+        let fail = |e: QueryEvaluationError| self.error(query, e);
         let substituted = substitute(query, &bindings, None);
+        let evaluator;
         let prepared = match &substituted {
-            Some(q) => self.optimized.prepare(q),
+            Some(q) => {
+                evaluator = limited(&self.optimized);
+                evaluator.prepare(q)
+            }
             None => {
-                let mut prepared = self.plain.prepare(query);
+                evaluator = limited(&self.plain);
+                let mut prepared = evaluator.prepare(query);
                 for (v, t) in bindings {
                     prepared = prepared.substitute_variable(v, t);
                 }
                 prepared
             }
         };
-        match prepared.execute(ix).map_err(|e| e.to_string())? {
+        match prepared.execute(ix).map_err(fail)? {
             QueryResults::Solutions(s) => s
                 .collect::<Result<Vec<_>, _>>()
                 .map(Answer::Solutions)
-                .map_err(|e| e.to_string()),
+                .map_err(fail),
             QueryResults::Boolean(b) => Ok(Answer::Boolean(b)),
             QueryResults::Graph(_) => Err("not a SELECT or ASK query".into()),
         }
@@ -315,6 +356,9 @@ impl Engine {
         bindings: &[(Variable, Term)],
         focus: &[Id],
     ) -> Option<Result<ByFocus, String>> {
+        if self.timed_out.borrow().contains(&(query as *const Query)) {
+            return Some(Err(TIMED_OUT.into()));
+        }
         let this = Variable::new_unchecked("this");
         let mut out = ByFocus::default();
         let mut rows = Vec::new();
@@ -337,17 +381,19 @@ impl Engine {
         if rows.is_empty() {
             return Some(Ok(out));
         }
+        let original = query;
         let query = substitute(query, bindings, Some((&this, &rows)))?;
-        let solutions = match self.optimized.prepare(&query).execute(ix) {
+        let evaluator = limited(&self.optimized);
+        let solutions = match evaluator.prepare(&query).execute(ix) {
             Ok(QueryResults::Solutions(s)) => s,
             Ok(_) => return Some(Err("not a SELECT query".into())),
-            Err(e) => return Some(Err(e.to_string())),
+            Err(e) => return Some(Err(self.error(original, e))),
         };
         let mut vars: Option<Arc<[Variable]>> = None;
         for sol in solutions {
             let sol = match sol {
                 Ok(s) => s,
-                Err(e) => return Some(Err(e.to_string())),
+                Err(e) => return Some(Err(self.error(original, e))),
             };
             let Some(list) = sol
                 .get(&this)
@@ -373,6 +419,18 @@ impl Engine {
             list.push(QuerySolution::from((Arc::clone(vars), values)));
         }
         Some(Ok(out))
+    }
+
+    /// The failure `e` of `query`; a stop is the time limit, the only thing
+    /// that cancels these queries.
+    fn error(&self, query: &Query, e: QueryEvaluationError) -> String {
+        match e {
+            QueryEvaluationError::Cancelled => {
+                self.timed_out.borrow_mut().insert(query);
+                TIMED_OUT.into()
+            }
+            e => e.to_string(),
+        }
     }
 }
 

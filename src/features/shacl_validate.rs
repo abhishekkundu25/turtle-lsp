@@ -24,7 +24,8 @@ use crate::features::hover::short;
 use crate::features::navigation;
 use crate::knowledge::Source;
 use crate::rdf::graph::{Graph, Id, Term};
-use crate::shacl::{Path, SH, ValidationResult, validate_focus};
+use crate::shacl::sparql::TIMED_OUT;
+use crate::shacl::{Path, SH, ValidationResult, validate_report};
 use crate::syntax::{Iri, PrefixMap, RDF, Role, Span, Syntax, XSD};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_types::*;
@@ -34,6 +35,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const CODE: &str = "shacl-violation";
 pub const SKIPPED_CODE: &str = "shacl-skipped";
+pub const TIMEOUT_CODE: &str = "shacl-sparql-timeout";
 /// Results shown per document; the rest are summarized in one diagnostic.
 const MAX_PER_DOC: usize = 1000;
 
@@ -388,7 +390,7 @@ fn validate_unit<'j>(
             .collect()
     });
     let keep = |id: Id| mine.as_ref().is_none_or(|m| m.contains(&id));
-    let results = validate_focus(&g, cancelled, &keep)?;
+    let report = validate_report(&g, cancelled, &keep)?;
     let mut place = Placer {
         g: &g,
         docs,
@@ -397,7 +399,7 @@ fn validate_unit<'j>(
         soften,
         in_dataset: dataset.is_some(),
     };
-    for r in &results {
+    for r in &report.results {
         let key = result_key(&g, docs, r);
         if dataset.is_some() {
             if shared_results.contains(&key) {
@@ -408,6 +410,14 @@ fn validate_unit<'j>(
         }
         if let Some((uri, d)) = place.diagnostic(r) {
             out.entry(uri).or_default().push(d);
+        }
+    }
+    for f in report.failures.iter().filter(|f| f.message == TIMED_OUT) {
+        if let Some((uri, d)) = place.timed_out(f.node) {
+            let list = out.entry(uri).or_default();
+            if !list.contains(&d) {
+                list.push(d);
+            }
         }
     }
     Some(())
@@ -472,6 +482,36 @@ impl Placer<'_, '_, '_> {
 
     /// Where a result goes: (document, span). A dataset's result, caused by
     /// its data, goes in the dataset (which mentions every focus node).
+    /// A warning on the `sh:select` or `sh:ask` of constraint `node`, whose
+    /// query hit the time limit.
+    fn timed_out(&self, node: Id) -> Option<(String, Diagnostic)> {
+        let query = [
+            Iri::intern(&format!("{SH}select")),
+            Iri::intern(&format!("{SH}ask")),
+        ];
+        let (t, _) = self.g.out(node).find(|(_, t)| query.contains(&t.p))?;
+        let (d, triple) = self.origin(t);
+        if !self.in_workspace(d) {
+            return None;
+        }
+        let a = self.doc(d);
+        let span = Span::new(
+            triple.p_span.start,
+            triple.o_span.end.max(triple.p_span.end),
+        );
+        Some((
+            a.uri.clone(),
+            Diagnostic {
+                range: a.range(self.enc, span),
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String(TIMEOUT_CODE.into())),
+                source: Some(SOURCE.into()),
+                message: TIMED_OUT.into(),
+                ..Default::default()
+            },
+        ))
+    }
+
     fn location(&self, r: &ValidationResult) -> Option<(u32, Span)> {
         let at = self.anywhere(r);
         if self.in_dataset && at.is_none_or(|(d, _)| d != 0) {
@@ -792,6 +832,27 @@ mod tests {
             unresolved: vec![],
             soften: true,
         }
+    }
+
+    #[test]
+    fn a_query_stopped_at_the_time_limit_is_a_warning_on_its_constraint() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:S sh:targetNode ex:n0 ;\n  sh:sparql [ sh:prefixes ex:P ;\n    sh:select \"SELECT $this WHERE {{ ?a ex:next* ?b . ?c ex:next* ?d . FILTER (STRLEN(CONCAT(STR(?a), STR(?d))) < 0) }}\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n"
+            ),
+        );
+        let mut chain = HEAD.to_string();
+        for i in 0..400 {
+            chain.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
+        }
+        let data = analysis("file:///w/data.ttl", &chain);
+        let out = run(&job(vec![shapes, data], 100_000), &|| false).unwrap();
+        let d = &out["file:///w/shapes.ttl"];
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].code, Some(NumberOrString::String(TIMEOUT_CODE.into())));
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(d[0].range.start.line, 4, "on the sh:select line");
     }
 
     #[test]

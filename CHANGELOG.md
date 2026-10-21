@@ -30,6 +30,10 @@
 
 - VS Code passed `shacl.onType` to the server only after a settings change,
   not at start.
+- A SHACL-SPARQL query stops after 10 s, with a warning on its `sh:select` or
+  `sh:ask` (`shacl-sparql-timeout`) that its constraint's results are
+  missing. Before, one slow constraint (two patterns with nothing in common)
+  could keep validation busy for minutes, and edits could not stop it.
 
 ### Internals
 
