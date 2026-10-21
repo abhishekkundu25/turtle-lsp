@@ -21,11 +21,10 @@
 //! fresh labels.
 //!
 //! The time limit and the cancellation flag are checked as the evaluator
-//! reads the data (every quad it asks for) and between results, so a query
-//! that runs away stops at the limit. `spareval` has no hook between the
-//! rows a join combines in memory, so a cross product can overrun the limit
-//! by the time it takes to combine one row with the whole other side
-//! (milliseconds to about a second for millions of rows). UPDATE is not run.
+//! reads the data (every quad it asks for), between results, and through the
+//! evaluator's cancellation token, which its joins ask every thousand rows
+//! they combine in memory (a patch of `spareval`, in vendor/spareval), so a
+//! query that runs away stops at the limit. UPDATE is not run.
 //!
 //! The renderers are in [`render`].
 
@@ -43,10 +42,10 @@ use spareval::{
 };
 use spargebra::term::{Term, Triple};
 use spargebra::{Query, SparqlParser};
-use std::cell::Cell;
 use std::fmt;
 use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// What a query returned.
@@ -162,12 +161,12 @@ impl fmt::Display for QueryError {
 impl std::error::Error for QueryError {}
 
 /// When to stop a query, and how much of its answer to keep.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Limits<'a> {
+#[derive(Clone, Debug, Default)]
+pub struct Limits {
     /// From the start of [`run`]; `None` for no limit.
     pub timeout: Option<Duration>,
     /// Stops the query when set (from another thread).
-    pub cancel: Option<&'a AtomicBool>,
+    pub cancel: Option<Arc<AtomicBool>>,
     /// Keep at most this many rows (or triples); the rest are counted, not
     /// kept ([`Solutions::omitted`], [`Triples::omitted`]). `None` keeps all.
     pub max_rows: Option<usize>,
@@ -182,7 +181,7 @@ pub fn run(
     prefixes: &PrefixMap,
     limits: &Limits,
 ) -> Result<Answer, QueryError> {
-    let watch = Watch::new(limits);
+    let watch = Arc::new(Watch::new(limits));
     let parsed = parse(query, base, prefixes)?;
     let triples: Vec<&[DocTriple]> = docs.iter().map(|a| a.parsed.triples.as_slice()).collect();
     let graph = Graph::new(&triples);
@@ -259,7 +258,7 @@ fn syntax_error(text: &str, message: String, offset: usize) -> QueryError {
 fn evaluate(
     index: &Index,
     query: &Query,
-    watch: &Watch,
+    watch: &Arc<Watch>,
     max_rows: Option<usize>,
 ) -> Result<Answer, QueryError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -276,10 +275,14 @@ fn evaluate(
 fn evaluate_inner(
     index: &Index,
     query: &Query,
-    watch: &Watch,
+    watch: &Arc<Watch>,
     max: usize,
 ) -> Result<Answer, QueryError> {
-    let evaluator = QueryEvaluator::new();
+    let token = {
+        let watch = watch.clone();
+        spareval::CancellationToken::with_check(move || watch.check().is_err())
+    };
+    let evaluator = QueryEvaluator::new().with_cancellation_token(token);
     let mut prepared = evaluator.prepare(query);
     // FROM and FROM NAMED are ignored: the default graph is the union.
     *prepared.dataset_mut() = spareval::QueryDatasetSpecification::new();
@@ -371,34 +374,45 @@ impl From<Stop> for QueryError {
     }
 }
 
-/// The limits of one run. Once stopped, it stays stopped.
-struct Watch<'a> {
+/// The limits of one run, shared with the evaluator's cancellation token.
+/// Once stopped, it stays stopped.
+struct Watch {
     start: Instant,
     timeout: Option<Duration>,
-    cancel: Option<&'a AtomicBool>,
-    stopped: Cell<Option<Stop>>,
+    cancel: Option<Arc<AtomicBool>>,
+    stopped: OnceLock<Stop>,
+    checks: AtomicU32,
 }
 
-impl<'a> Watch<'a> {
-    fn new(limits: &Limits<'a>) -> Watch<'a> {
+impl Watch {
+    fn new(limits: &Limits) -> Watch {
         Watch {
             start: Instant::now(),
             timeout: limits.timeout,
-            cancel: limits.cancel,
-            stopped: Cell::new(None),
+            cancel: limits.cancel.clone(),
+            stopped: OnceLock::new(),
+            checks: AtomicU32::new(0),
         }
     }
 
     fn check(&self) -> Result<(), Stop> {
         if let Some(s) = self.stopped.get() {
-            return Err(s);
+            return Err(*s);
         }
-        if self.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+        {
             return self.stop(Stop::Cancelled);
         }
-        // The clock at every check: the reads can be far apart (a join
-        // works through its buffered rows in between).
+        // The clock at every 64th check: a check is a data read, a result or
+        // a thousand rows a join combines, so checks come close together.
         if let Some(limit) = self.timeout
+            && self
+                .checks
+                .fetch_add(1, Ordering::Relaxed)
+                .is_multiple_of(64)
             && Instant::now().saturating_duration_since(self.start) >= limit
         {
             return self.stop(Stop::Timeout);
@@ -407,12 +421,11 @@ impl<'a> Watch<'a> {
     }
 
     fn stop(&self, s: Stop) -> Result<(), Stop> {
-        self.stopped.set(Some(s));
-        Err(s)
+        Err(*self.stopped.get_or_init(|| s))
     }
 
     fn stopped(&self) -> Option<QueryError> {
-        self.stopped.get().map(QueryError::from)
+        self.stopped.get().copied().map(QueryError::from)
     }
 }
 
@@ -431,7 +444,7 @@ fn halt(s: Stop) -> Stop {
 #[derive(Clone, Copy)]
 struct Watched<'a> {
     index: &'a Index<'a>,
-    watch: &'a Watch<'a>,
+    watch: &'a Watch,
 }
 
 impl<'a> QueryableDataset<'a> for Watched<'a> {

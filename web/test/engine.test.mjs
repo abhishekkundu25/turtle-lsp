@@ -111,6 +111,18 @@ test("query: the time limit stops a long query with a message, and the engine ke
   assert.equal(ask("ASK {}").boolean, true)
 })
 
+test("query: the time limit stops a join that combines rows in memory, reading no data", () => {
+  let chain = "@prefix ex: <http://example.org/> .\n"
+  for (let i = 0; i < 400; i++) chain += `ex:n${i} ex:next ex:n${i + 1} .\n`
+  const text = "PREFIX ex: <http://example.org/>\nSELECT (COUNT(*) AS ?n) WHERE { ?a ex:next* ?b . ?c ex:next* ?d }\n"
+  const t0 = performance.now()
+  const e = engine.call("query", { files: [{ name: "chain.ttl", text: chain }, { name: "q.rq", text }], query: "q.rq", timeout: 0.05 })
+  const ms = performance.now() - t0
+  assert.equal(e.kind, "error")
+  assert.match(e.message, /time limit/)
+  assert.ok(ms < 1000, `the query ran ${ms.toFixed(0)} ms`)
+})
+
 // --- validate -------------------------------------------------------------------
 
 test("a misspelled vocabulary term is reported with its fix", () => {

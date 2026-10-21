@@ -1,0 +1,254 @@
+--- a/lib/spareval/src/eval.rs
++++ b/lib/spareval/src/eval.rs
+@@ -1209,6 +1209,7 @@
+                 stat_children.push(right_stats);
+                 let left = left?;
+                 let right = right?;
++                let cancellation_token = self.dataset.cancellation_token.clone();
+ 
+                 match algorithm {
+                     JoinAlgorithm::HashBuildLeftProbeRight { keys } => {
+@@ -1240,6 +1241,7 @@
+                                     probe_iter,
+                                     built: built_values,
+                                     buffered_results: errors,
++                                    ticker: Ticker::new(cancellation_token.clone()),
+                                 })
+                             })
+                         } else {
+@@ -1273,6 +1275,7 @@
+                                     probe_iter,
+                                     built: built_values,
+                                     buffered_results: errors,
++                                    ticker: Ticker::new(cancellation_token.clone()),
+                                 })
+                             })
+                         }
+@@ -1400,6 +1403,7 @@
+                     encoded_variables,
+                     stat_children,
+                 )?;
++                let cancellation_token = self.dataset.cancellation_token.clone();
+ 
+                 match algorithm {
+                     LeftJoinAlgorithm::HashBuildRightProbeLeft { keys } => {
+@@ -1428,6 +1432,7 @@
+                                 right: right_values,
+                                 buffered_results: errors,
+                                 expression: Rc::clone(&expression),
++                                ticker: Ticker::new(cancellation_token.clone()),
+                             })
+                         })
+                     }
+@@ -3744,6 +3749,7 @@
+     probe_iter: Peekable<InternalTuplesIterator<'a, T>>,
+     built: Vec<InternalTuple<T>>,
+     buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
++    ticker: Ticker,
+ }
+ 
+ impl<T: Clone + Eq> Iterator for CartesianProductJoinIterator<'_, T> {
+@@ -3753,12 +3759,19 @@
+         loop {
+             if let Some(result) = self.buffered_results.pop() {
+                 return Some(result);
++            }
++            if self.ticker.is_cancelled() {
++                return None;
+             }
+             let probe_tuple = match self.probe_iter.next()? {
+                 Ok(probe_tuple) => probe_tuple,
+                 Err(error) => return Some(Err(error)),
+             };
+             for built_tuple in &self.built {
++                if self.ticker.tick() {
++                    self.buffered_results.clear();
++                    return Some(Err(QueryEvaluationError::Cancelled));
++                }
+                 if let Some(result_tuple) = probe_tuple.combine_with(built_tuple) {
+                     self.buffered_results.push(Ok(result_tuple))
+                 }
+@@ -3779,6 +3792,7 @@
+     probe_iter: Peekable<InternalTuplesIterator<'a, T>>,
+     built: InternalTupleSet<T>,
+     buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
++    ticker: Ticker,
+ }
+ 
+ impl<T: Clone + Eq + Hash> Iterator for HashJoinIterator<'_, T> {
+@@ -3788,17 +3802,26 @@
+         loop {
+             if let Some(result) = self.buffered_results.pop() {
+                 return Some(result);
++            }
++            if self.ticker.is_cancelled() {
++                return None;
+             }
+             let probe_tuple = match self.probe_iter.next()? {
+                 Ok(probe_tuple) => probe_tuple,
+                 Err(error) => return Some(Err(error)),
+             };
+-            self.buffered_results.extend(
+-                self.built
+-                    .get(&probe_tuple)
+-                    .iter()
+-                    .filter_map(|built_tuple| probe_tuple.combine_with(built_tuple).map(Ok)),
+-            )
++            if self.ticker.tick() {
++                return Some(Err(QueryEvaluationError::Cancelled));
++            }
++            for built_tuple in self.built.get(&probe_tuple) {
++                if self.ticker.tick() {
++                    self.buffered_results.clear();
++                    return Some(Err(QueryEvaluationError::Cancelled));
++                }
++                if let Some(result_tuple) = probe_tuple.combine_with(built_tuple) {
++                    self.buffered_results.push(Ok(result_tuple))
++                }
++            }
+         }
+     }
+ 
+@@ -3818,6 +3841,7 @@
+     right: InternalTupleSet<T>,
+     buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
+     expression: Rc<dyn Fn(&InternalTuple<T>) -> Option<bool> + 'a>,
++    ticker: Ticker,
+ }
+ 
+ impl<T: Clone + Eq + Hash> Iterator for HashLeftJoinIterator<'_, T> {
+@@ -3828,18 +3852,27 @@
+             if let Some(result) = self.buffered_results.pop() {
+                 return Some(result);
+             }
++            if self.ticker.is_cancelled() {
++                return None;
++            }
+             let left_tuple = match self.left_iter.next()? {
+                 Ok(left_tuple) => left_tuple,
+                 Err(error) => return Some(Err(error)),
+             };
+-            self.buffered_results.extend(
+-                self.right
+-                    .get(&left_tuple)
+-                    .iter()
+-                    .filter_map(|right_tuple| left_tuple.combine_with(right_tuple))
+-                    .filter(|tuple| (self.expression)(tuple).unwrap_or(false))
+-                    .map(Ok),
+-            );
++            if self.ticker.tick() {
++                return Some(Err(QueryEvaluationError::Cancelled));
++            }
++            for right_tuple in self.right.get(&left_tuple) {
++                if self.ticker.tick() {
++                    self.buffered_results.clear();
++                    return Some(Err(QueryEvaluationError::Cancelled));
++                }
++                if let Some(tuple) = left_tuple.combine_with(right_tuple) {
++                    if (self.expression)(&tuple).unwrap_or(false) {
++                        self.buffered_results.push(Ok(tuple))
++                    }
++                }
++            }
+             if self.buffered_results.is_empty() {
+                 // We have not manage to join with anything
+                 return Some(Ok(left_tuple));
+@@ -4663,9 +4696,12 @@
+ /// A token that can be used to mark something as canceled.
+ ///
+ /// To cancel run [`CancellationToken::cancel`] and to check if the token is canceled run [`CancellationToken::is_cancelled`].
++///
++/// The evaluation checks the token when it reads the dataset and, in joins, every 1024 tuples it combines in memory.
+ #[derive(Clone, Default)]
+ pub struct CancellationToken {
+     value: Arc<AtomicBool>,
++    check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+ }
+ 
+ impl CancellationToken {
+@@ -4673,17 +4709,45 @@
+     pub fn new() -> Self {
+         Self {
+             value: Arc::new(AtomicBool::new(false)),
++            check: None,
+         }
+     }
+ 
++    /// A token that is also canceled once `check` returns `true`, for example when a deadline has passed.
++    ///
++    /// `check` is called each time the evaluation checks the token, until it returns `true`.
++    ///
++    /// ```
++    /// use spareval::CancellationToken;
++    /// use std::time::{Duration, Instant};
++    ///
++    /// let deadline = Instant::now() + Duration::from_secs(10);
++    /// let token = CancellationToken::with_check(move || Instant::now() >= deadline);
++    /// assert!(!token.is_cancelled());
++    /// ```
+     #[inline]
++    pub fn with_check(check: impl Fn() -> bool + Send + Sync + 'static) -> Self {
++        Self {
++            value: Arc::new(AtomicBool::new(false)),
++            check: Some(Arc::new(check)),
++        }
++    }
++
++    #[inline]
+     pub fn cancel(&self) {
+         self.value.store(true, atomic::Ordering::Relaxed);
+     }
+ 
+     #[inline]
+     pub fn is_cancelled(&self) -> bool {
+-        self.value.load(atomic::Ordering::Relaxed)
++        if self.value.load(atomic::Ordering::Relaxed) {
++            return true;
++        }
++        if self.check.as_ref().is_some_and(|check| check()) {
++            self.cancel();
++            return true;
++        }
++        false
+     }
+ 
+     fn ensure_alive(&self) -> Result<(), QueryEvaluationError> {
+@@ -4694,3 +4758,38 @@
+         }
+     }
+ }
++
++/// Checks a [`CancellationToken`] every [`Ticker::CHECK_EVERY`] steps of work that reads no data.
++struct Ticker {
++    token: CancellationToken,
++    steps: u32,
++    cancelled: bool,
++}
++
++impl Ticker {
++    const CHECK_EVERY: u32 = 1024;
++
++    fn new(token: CancellationToken) -> Self {
++        Self {
++            token,
++            steps: 0,
++            cancelled: false,
++        }
++    }
++
++    /// Counts one step and returns whether the token is canceled.
++    #[inline]
++    fn tick(&mut self) -> bool {
++        if !self.cancelled {
++            self.steps = self.steps.wrapping_add(1);
++            if self.steps.is_multiple_of(Self::CHECK_EVERY) {
++                self.cancelled = self.token.is_cancelled();
++            }
++        }
++        self.cancelled
++    }
++
++    fn is_cancelled(&self) -> bool {
++        self.cancelled
++    }
++}

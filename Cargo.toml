@@ -32,3 +32,7 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 oxrdf = { version = "0.3", features = ["rdf-12"] }
 oxttl = { version = "0.2.4", features = ["rdf-12"] }
 oxjsonld = { version = "0.2.6", features = ["rdf-12"] }
+
+# spareval 0.2.7 with cancellation checks inside its joins (vendor/spareval/PATCH.md).
+[patch.crates-io]
+spareval = { path = "vendor/spareval" }

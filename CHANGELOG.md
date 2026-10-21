@@ -35,6 +35,9 @@
 
 - The graph and the SPARQL dataset adapter moved from SHACL to a shared
   `rdf` module; server commands are parsed in their own module.
+- spareval is patched (`vendor/spareval`) so the query time limit and
+  cancellation also stop joins that combine rows in memory. Unpatched, a
+  cross product or two unconnected property paths ran on past the limit.
 
 ## 0.6.2 — 2026-10-21
 

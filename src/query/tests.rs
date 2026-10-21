@@ -268,7 +268,7 @@ fn a_runaway_query_stops_at_the_time_limit() {
 #[test]
 fn a_cancelled_query_stops() {
     let d = big();
-    let flag = AtomicBool::new(false);
+    let flag = Arc::new(AtomicBool::new(false));
     let start = std::time::Instant::now();
     let r = std::thread::scope(|s| {
         s.spawn(|| {
@@ -281,7 +281,7 @@ fn a_cancelled_query_stops() {
             None,
             &ex_prefixes(),
             &Limits {
-                cancel: Some(&flag),
+                cancel: Some(flag.clone()),
                 ..Limits::default()
             },
         )
@@ -292,6 +292,71 @@ fn a_cancelled_query_stops() {
         "{:?}",
         start.elapsed()
     );
+}
+
+/// A chain of 400 `ex:next` links.
+fn chain() -> Analysis {
+    let mut text = HEAD.to_string();
+    for i in 0..400 {
+        text.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
+    }
+    doc("file:///w/chain.ttl", &text)
+}
+
+/// Joins that combine rows in memory, reading no data in between: each row of
+/// the product meets the 64 million rows of the other three patterns; the two
+/// paths are computed first, then their 80 000 pairs meet each other.
+const IN_MEMORY: [&str; 2] = [
+    "SELECT (COUNT(*) AS ?n) WHERE { ?a ?b ?c . ?d ?e ?f . ?g ?h ?i . ?j ?k ?l }",
+    "SELECT (COUNT(*) AS ?n) WHERE { ?a ex:next* ?b . ?c ex:next* ?d }",
+];
+
+#[test]
+fn a_join_in_memory_stops_at_the_time_limit() {
+    let d = chain();
+    for q in IN_MEMORY {
+        let start = std::time::Instant::now();
+        let limits = Limits {
+            timeout: Some(Duration::from_millis(20)),
+            ..Limits::default()
+        };
+        assert_eq!(
+            run(&[&d], q, None, &ex_prefixes(), &limits),
+            Err(QueryError::Timeout),
+            "{q}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "{q}: {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+#[test]
+fn a_join_in_memory_stops_when_cancelled() {
+    let d = chain();
+    for q in IN_MEMORY {
+        let flag = Arc::new(AtomicBool::new(false));
+        let start = std::time::Instant::now();
+        let r = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(20));
+                flag.store(true, Ordering::Relaxed);
+            });
+            let limits = Limits {
+                cancel: Some(flag.clone()),
+                ..Limits::default()
+            };
+            run(&[&d], q, None, &ex_prefixes(), &limits)
+        });
+        assert_eq!(r, Err(QueryError::Cancelled), "{q}");
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "{q}: {:?}",
+            start.elapsed()
+        );
+    }
 }
 
 fn capped(docs: &[&Analysis], q: &str, max: usize) -> Answer {

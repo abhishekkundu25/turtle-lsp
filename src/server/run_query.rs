@@ -329,7 +329,7 @@ fn execute(job: &Job, stem: &str) -> Report {
     let docs: Vec<&Analysis> = job.docs.iter().map(|a| &**a).collect();
     let limits = Limits {
         timeout: job.timeout,
-        cancel: Some(&job.cancel),
+        cancel: Some(job.cancel.clone()),
         max_rows: job.max_rows,
     };
     let outcome = query::run(&docs, &job.text, Some(&job.base), &job.prefixes, &limits);
