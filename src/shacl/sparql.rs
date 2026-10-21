@@ -275,7 +275,7 @@ pub struct Engine {
     plain: QueryEvaluator,
     /// The queries that hit [`TIME_LIMIT`]: they fail at once from then on,
     /// so a check does not take the limit again for every focus node.
-    timed_out: RefCell<FxHashSet<*const Query>>,
+    timed_out: RefCell<FxHashSet<Query>>,
 }
 
 impl Default for Engine {
@@ -313,10 +313,10 @@ impl Engine {
         query: &Query,
         bindings: Vec<(Variable, Term)>,
     ) -> Result<Answer, String> {
-        if self.timed_out.borrow().contains(&(query as *const Query)) {
+        if self.timed_out(query) {
             return Err(TIMED_OUT.into());
         }
-        let fail = |e: QueryEvaluationError| self.error(query, e);
+        let fail = |e: QueryEvaluationError| self.error(Some(query), e);
         let substituted = substitute(query, &bindings, None);
         let evaluator;
         let prepared = match &substituted {
@@ -356,7 +356,7 @@ impl Engine {
         bindings: &[(Variable, Term)],
         focus: &[Id],
     ) -> Option<Result<ByFocus, String>> {
-        if self.timed_out.borrow().contains(&(query as *const Query)) {
+        if self.timed_out(query) {
             return Some(Err(TIMED_OUT.into()));
         }
         let this = Variable::new_unchecked("this");
@@ -381,19 +381,18 @@ impl Engine {
         if rows.is_empty() {
             return Some(Ok(out));
         }
-        let original = query;
         let query = substitute(query, bindings, Some((&this, &rows)))?;
         let evaluator = limited(&self.optimized);
         let solutions = match evaluator.prepare(&query).execute(ix) {
             Ok(QueryResults::Solutions(s)) => s,
             Ok(_) => return Some(Err("not a SELECT query".into())),
-            Err(e) => return Some(Err(self.error(original, e))),
+            Err(e) => return Some(Err(self.error(None, e))),
         };
         let mut vars: Option<Arc<[Variable]>> = None;
         for sol in solutions {
             let sol = match sol {
                 Ok(s) => s,
-                Err(e) => return Some(Err(self.error(original, e))),
+                Err(e) => return Some(Err(self.error(None, e))),
             };
             let Some(list) = sol
                 .get(&this)
@@ -421,12 +420,21 @@ impl Engine {
         Some(Ok(out))
     }
 
-    /// The failure `e` of `query`; a stop is the time limit, the only thing
-    /// that cancels these queries.
-    fn error(&self, query: &Query, e: QueryEvaluationError) -> String {
+    /// Whether `query` hit the time limit before (no hashing while none did).
+    fn timed_out(&self, query: &Query) -> bool {
+        let set = self.timed_out.borrow();
+        !set.is_empty() && set.contains(query)
+    }
+
+    /// The failure `e` of `query`, or of a batch when `None`; a stop is the
+    /// time limit, the only thing that cancels these queries. A batch that
+    /// stops leaves its query unmarked: each focus node may be fast alone.
+    fn error(&self, query: Option<&Query>, e: QueryEvaluationError) -> String {
         match e {
             QueryEvaluationError::Cancelled => {
-                self.timed_out.borrow_mut().insert(query);
+                if let Some(q) = query {
+                    self.timed_out.borrow_mut().insert(q.clone());
+                }
                 TIMED_OUT.into()
             }
             e => e.to_string(),

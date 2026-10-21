@@ -1836,6 +1836,33 @@ mod tests {
         );
     }
 
+    /// A SPARQL target query that hits the time limit leaves the next one
+    /// to run.
+    #[test]
+    fn a_slow_sparql_target_leaves_the_next_one() {
+        let mut body = "ex:S1 sh:target [ a sh:SPARQLTarget ; sh:prefixes ex:P ; sh:select \"SELECT ?this WHERE { ?this ex:next* ?b . ?c ex:next* ?d . FILTER (STRLEN(CONCAT(STR(?b), STR(?d))) < 0) }\" ] ; sh:property [ sh:path ex:q ; sh:minCount 1 ] .\nex:S2 sh:target [ a sh:SPARQLTarget ; sh:prefixes ex:P ; sh:select \"SELECT ?this WHERE { ?this ex:p 1 }\" ] ; sh:property [ sh:path ex:q ; sh:minCount 1 ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\nex:a ex:p 1 .\n".to_string();
+        for i in 0..400 {
+            body.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
+        }
+        let (n, _, failures) = report(&body, &|| false).unwrap();
+        assert_eq!((n, failures), (1, 1));
+    }
+
+    /// Slow for 40 focus nodes at once, fast for each alone: the batch
+    /// that hits the time limit leaves the focus nodes to run one by one.
+    #[test]
+    fn a_slow_batch_runs_one_by_one() {
+        let mut body = "ex:S sh:targetClass ex:C ; sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT DISTINCT $this WHERE { $this ex:next* ?b . ?b ex:next* ?c . FILTER (STRLEN(CONCAT(STR($this), STR(?c))) > 0) }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n".to_string();
+        for i in 0..40 {
+            body.push_str(&format!("ex:h{i} a ex:C ; ex:next ex:c{i}x0 .\n"));
+            for j in 0..60 {
+                body.push_str(&format!("ex:c{i}x{j} ex:next ex:c{i}x{} .\n", j + 1));
+            }
+        }
+        let (n, _, failures) = report(&body, &|| false).unwrap();
+        assert_eq!((n, failures), (40, 0));
+    }
+
     #[test]
     fn cancelled_between_queries() {
         // Allow the poll before the focus node, stop at the one before the query.

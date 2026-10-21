@@ -480,8 +480,6 @@ impl Placer<'_, '_, '_> {
         (d, &self.doc(d).parsed.triples[i as usize])
     }
 
-    /// Where a result goes: (document, span). A dataset's result, caused by
-    /// its data, goes in the dataset (which mentions every focus node).
     /// A warning on the `sh:select` or `sh:ask` of constraint `node`, whose
     /// query hit the time limit.
     fn timed_out(&self, node: Id) -> Option<(String, Diagnostic)> {
@@ -512,6 +510,8 @@ impl Placer<'_, '_, '_> {
         ))
     }
 
+    /// Where a result goes: (document, span). A dataset's result, caused by
+    /// its data, goes in the dataset (which mentions every focus node).
     fn location(&self, r: &ValidationResult) -> Option<(u32, Span)> {
         let at = self.anywhere(r);
         if self.in_dataset && at.is_none_or(|(d, _)| d != 0) {
