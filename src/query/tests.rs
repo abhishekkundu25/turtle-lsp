@@ -294,18 +294,18 @@ fn a_cancelled_query_stops() {
     );
 }
 
-/// A chain of 400 `ex:next` links.
-fn chain() -> Analysis {
+/// A chain of `n` `ex:next` links.
+fn chain(n: usize) -> Analysis {
     let mut text = HEAD.to_string();
-    for i in 0..400 {
+    for i in 0..n {
         text.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
     }
     doc("file:///w/chain.ttl", &text)
 }
 
-/// Joins that combine rows in memory, reading no data in between: each row of
-/// the product meets the 64 million rows of the other three patterns; the two
-/// paths are computed first, then their 80 000 pairs meet each other.
+/// Cross products that combine rows in memory, reading no data in between:
+/// each row of the first meets the 64 million rows of the other three
+/// patterns; the two paths are computed first, then their 80 000 pairs meet.
 const IN_MEMORY: [&str; 2] = [
     "SELECT (COUNT(*) AS ?n) WHERE { ?a ?b ?c . ?d ?e ?f . ?g ?h ?i . ?j ?k ?l }",
     "SELECT (COUNT(*) AS ?n) WHERE { ?a ex:next* ?b . ?c ex:next* ?d }",
@@ -313,7 +313,7 @@ const IN_MEMORY: [&str; 2] = [
 
 #[test]
 fn a_join_in_memory_stops_at_the_time_limit() {
-    let d = chain();
+    let d = chain(400);
     for q in IN_MEMORY {
         let start = std::time::Instant::now();
         let limits = Limits {
@@ -335,7 +335,7 @@ fn a_join_in_memory_stops_at_the_time_limit() {
 
 #[test]
 fn a_join_in_memory_stops_when_cancelled() {
-    let d = chain();
+    let d = chain(400);
     for q in IN_MEMORY {
         let flag = Arc::new(AtomicBool::new(false));
         let start = std::time::Instant::now();
@@ -353,6 +353,35 @@ fn a_join_in_memory_stops_when_cancelled() {
         assert_eq!(r, Err(QueryError::Cancelled), "{q}");
         assert!(
             start.elapsed() < Duration::from_millis(500),
+            "{q}: {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+/// A hash join and a left join that combine rows in memory: the sorted
+/// subquery is computed first, so its 320 000 rows meet the other side's
+/// (170 million rows) with no data read. Unchecked they run for seconds.
+#[test]
+fn a_hash_join_in_memory_stops_at_the_time_limit() {
+    let d = chain(800);
+    for q in [
+        "SELECT (COUNT(*) AS ?n) WHERE { ?a ex:next* ?x . { SELECT ?b ?x WHERE { ?b ex:next* ?x } ORDER BY ?b } }",
+        "SELECT (COUNT(*) AS ?n) WHERE { { SELECT ?a ?x WHERE { ?a ex:next* ?x } ORDER BY ?a } OPTIONAL { SELECT ?b ?x WHERE { ?b ex:next* ?x } ORDER BY ?b } }",
+    ] {
+        let start = std::time::Instant::now();
+        // Past the paths and the sort (about 0.2 s), so the limit falls in the join.
+        let limits = Limits {
+            timeout: Some(Duration::from_millis(300)),
+            ..Limits::default()
+        };
+        assert_eq!(
+            run(&[&d], q, None, &ex_prefixes(), &limits),
+            Err(QueryError::Timeout),
+            "{q}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
             "{q}: {:?}",
             start.elapsed()
         );

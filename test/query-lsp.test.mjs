@@ -149,7 +149,9 @@ test("a slow query stops at the time limit, and typing is answered meanwhile", a
     const summary = await slow
     const total = performance.now() - t0
     assert.equal(summary, "stopped at the time limit (1 s, query.timeoutSeconds)")
-    assert.ok(total < 4000, `the query ran ${total.toFixed(0)} ms`)
+    // The 1 s limit, and 1 s for a slow machine: the query stops within a
+    // millisecond of the limit, so more than that is an overrun.
+    assert.ok(total < 2000, `the query ran ${total.toFixed(0)} ms`)
     assert.equal(s.messages.at(-1).type, 2)
     const md = fs.readFileSync(path.join(s.cacheDir, "query-results", "slow.md"), "utf8")
     assert.ok(md.includes("The query was stopped at the time limit (1 s, `query.timeoutSeconds`)."), md)
