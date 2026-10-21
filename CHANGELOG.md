@@ -19,7 +19,8 @@
   endpoints are out of scope.
 - **Reference lenses**: "N references" above each subject a file describes
   (Turtle, TriG, N-Triples, N-Quads, JSON-LD); clicking lists them (VS Code's
-  references view, Neovim's quickfix list). Counted only when shown. Setting
+  references view, Neovim's quickfix list, the browser editor's references
+  view). Counted only when shown. Setting
   `codeLens.references` (default on).
 - **Workspace diagnostics** (`diagnostics.workspace`, default off): problems
   in files that are not open, computed in the background with the same

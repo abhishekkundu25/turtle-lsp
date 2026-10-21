@@ -194,6 +194,24 @@ test("a quick fix applies its edit", async () => {
   }
 })
 
+test("a subject shows its reference count above it, and a click lists the references", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    const lens = page.locator(".codelens-decoration a", { hasText: /^\d+ references?$/ }).first()
+    await lens.waitFor({ timeout: 10_000 })
+    const n = Number((await lens.textContent()).split(" ")[0])
+    assert.ok(n > 0, await lens.textContent())
+    await lens.click()
+    const rows = page.locator(".reference-zone-widget .monaco-list-row")
+    await rows.first().waitFor()
+    assert.ok((await rows.count()) >= 1)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("rename changes a term in every file, and format lays a file out", async () => {
   const { page, close } = await open()
   try {

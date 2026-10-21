@@ -279,6 +279,23 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       releaseDocumentSemanticTokens() {},
     })
 
+    // "N references" above each subject; a click opens the references view.
+    // The query lens ("▶ Run query") is left out: the Run button does that.
+    monaco.languages.registerCodeLensProvider(lang, {
+      async provideCodeLenses(model) {
+        const r = await client.request("textDocument/codeLens", doc(model))
+        const lenses = (r ?? []).filter((l) => !l.command).map((l) => ({ range: toRange(monaco, l.range), lsp: l }))
+        return { lenses, dispose() {} }
+      },
+      async resolveCodeLens(model, lens) {
+        const r = await client.request("codeLens/resolve", lens.lsp)
+        if (!r?.command) return lens
+        const [, position, refs] = r.command.arguments
+        const p = new monaco.Position(position.line + 1, position.character + 1)
+        return { ...lens, command: { id: "editor.action.showReferences", title: r.command.title, arguments: [model.uri, p, locations(monaco, refs)] } }
+      },
+    })
+
     monaco.languages.registerInlayHintsProvider(lang, {
       onDidChangeInlayHints: inlayChanged.event,
       async provideInlayHints(model, range) {
