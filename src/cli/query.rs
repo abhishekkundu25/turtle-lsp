@@ -45,9 +45,11 @@ pub fn run(a: QueryArgs) -> Result<i32, String> {
         roots: vec![ws.root.clone()],
         network: settings.imports_network,
     };
+    // Every row is kept: --limit cuts the table only, after the total is known.
     let limits = Limits {
         timeout: a.timeout,
         cancel: None,
+        max_rows: None,
     };
     let outcome = batch::query_on_disk(&data, &q, &settings, &limits, &disk);
     let answer = match outcome.answer {
