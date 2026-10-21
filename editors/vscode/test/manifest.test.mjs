@@ -38,6 +38,8 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.format.lineWidth": ["integer", 100],
     "turtle.codeLens.references": ["boolean", true],
     "turtle.diagnostics.workspace": ["boolean", false],
+    "turtle.query.timeoutSeconds": ["number", 30],
+    "turtle.query.maxRows": ["integer", 1000],
   }
   for (const [key, [type, def]] of Object.entries(expected)) {
     assert.ok(settings[key], `${key} missing`)

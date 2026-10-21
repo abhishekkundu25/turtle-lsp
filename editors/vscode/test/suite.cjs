@@ -311,6 +311,27 @@ check("a reference lens opens the references view", async () => {
   await vscode.commands.executeCommand("closeReferenceSearch")
 })
 
+check("the Run query lens opens the results document", async () => {
+  const doc = await open(path.join(query, "people.rq"))
+  await settledDiagnostics(doc)
+  const lenses = await vscode.commands.executeCommand("vscode.executeCodeLensProvider", doc.uri, 100)
+  const runLens = lenses.find((l) => l.command?.command === "turtle.runQuery")
+  assert.ok(runLens, `lenses: ${JSON.stringify(lenses)}`)
+  assert.equal(runLens.command.title, "▶ Run query")
+  assert.equal(runLens.range.start.line, posOf(doc, "SELECT", 0).line)
+  const summary = await vscode.commands.executeCommand(runLens.command.command, ...runLens.command.arguments)
+  assert.match(String(summary), /^\d+ rows? in \d+ ms$/)
+  const isResults = (d) => d.uri.fsPath.endsWith(path.join("query-results", "people.md"))
+  let shown
+  for (let i = 0; i < 100 && !shown; i++) {
+    shown = vscode.window.visibleTextEditors.find((e) => isResults(e.document))
+    if (!shown) await sleep(50)
+  }
+  assert.ok(shown, "the results document is not shown")
+  assert.match(shown.document.getText(), /^# people\.rq\n/)
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+})
+
 check("saving a file that violates the project shapes shows a SHACL violation", async () => {
   // Created for this check and removed afterwards (the fixtures stay as they are).
   const file = path.join(project, "data", "__vscode-shacl.ttl")

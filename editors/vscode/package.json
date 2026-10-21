@@ -273,6 +273,20 @@
           "markdownDescription": "Show problems in every workspace file, not only the open ones. Files that are not open are checked in the background, as `turtle-lsp check` checks them, and again when they change on disk.",
           "scope": "window"
         },
+        "turtle.query.timeoutSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "markdownDescription": "Stop a query run with **▶ Run query** after this many seconds. `0` for no limit.",
+          "scope": "window"
+        },
+        "turtle.query.maxRows": {
+          "type": "integer",
+          "default": 1000,
+          "minimum": 0,
+          "markdownDescription": "Show at most this many rows (or triples) of a query's results; the total is still counted. `0` for no limit.",
+          "scope": "window"
+        },
         "turtle.trace.server": {
           "type": "string",
           "enum": [

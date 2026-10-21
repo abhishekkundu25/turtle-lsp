@@ -107,11 +107,11 @@ fn count(n: usize, what: &str) -> String {
     format!("{n} {what}{}", if n == 1 { "" } else { "s" })
 }
 
-/// The rows shown and, when some are not, the note saying so.
-fn cut<T>(items: &[T], max: Option<usize>, what: &str) -> (usize, Option<String>) {
+/// The rows shown, of `items` kept out of `total`, and, when some are not,
+/// the note saying so.
+fn cut<T>(items: &[T], total: usize, max: Option<usize>, what: &str) -> (usize, Option<String>) {
     let shown = max.map_or(items.len(), |m| m.min(items.len()));
-    let note =
-        (shown < items.len()).then(|| format!("showing {shown} of {}", count(items.len(), what)));
+    let note = (shown < total).then(|| format!("showing {shown} of {}", count(total, what)));
     (shown, note)
 }
 
@@ -119,7 +119,7 @@ fn cut<T>(items: &[T], max: Option<usize>, what: &str) -> (usize, Option<String>
 /// (unbound cells empty), at most `max_rows` rows and then a line "showing N
 /// of M rows". Widths count characters.
 pub fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
-    let (shown, note) = cut(&s.rows, max_rows, "row");
+    let (shown, note) = cut(&s.rows, s.total(), max_rows, "row");
     let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
     let cells: Vec<Vec<String>> = s.rows[..shown]
         .iter()
@@ -178,12 +178,12 @@ pub fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> St
     match a {
         Answer::Boolean(b) => format!("**{b}**\n"),
         Answer::Solutions(s) => {
-            if s.rows.is_empty() {
+            if s.total() == 0 {
                 return "No results.\n".into();
             }
-            let (shown, note) = cut(&s.rows, max_rows, "row");
+            let (shown, note) = cut(&s.rows, s.total(), max_rows, "row");
             let mut out = String::new();
-            let _ = writeln!(out, "{}\n", count(s.rows.len(), "row"));
+            let _ = writeln!(out, "{}\n", count(s.total(), "row"));
             let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
             let _ = writeln!(out, "| {} |", header.join(" | "));
             let _ = writeln!(out, "|{}", "---|".repeat(header.len().max(1)));
@@ -203,11 +203,11 @@ pub fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> St
             out
         }
         Answer::Triples(ts) => {
-            if ts.is_empty() {
+            if ts.total() == 0 {
                 return "No triples.\n".into();
             }
-            let (shown, note) = cut(ts, max_rows, "triple");
-            let mut out = format!("{}\n\n", count(ts.len(), "triple"));
+            let (shown, note) = cut(ts, ts.total(), max_rows, "triple");
+            let mut out = format!("{}\n\n", count(ts.total(), "triple"));
             let body = turtle(&ts[..shown], prefixes);
             let fence = fence_for(&body);
             let _ = write!(out, "{fence}turtle\n{body}");

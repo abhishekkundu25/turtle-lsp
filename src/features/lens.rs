@@ -11,10 +11,17 @@
 //! uses in SPARQL queries (finding those reads every query file from disk,
 //! too slow to do once per lens). A description of the IRI in another file
 //! is a declaration too, so it is not counted.
+//!
+//! A SPARQL document that is a query (not an update) gets one "▶ Run query"
+//! lens at its query form's keyword ([`query_lenses`]), already resolved: it
+//! runs [`RUN_QUERY`] with the document's URI. It is shown whatever the
+//! query's diagnostics: a run with a syntax error reports the error.
 
-use crate::analysis::{Analysis, Encoding};
+use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
+use crate::commands::RUN_QUERY;
 use crate::features::navigation::term_references;
 use crate::knowledge::Knowledge;
+use crate::sparql::TokenKind;
 use lsp_types::{CodeLens, Command};
 use serde_json::{Value, json};
 
@@ -48,6 +55,40 @@ pub fn code_lenses(a: &Analysis, enc: Encoding, enabled: bool) -> Vec<CodeLens> 
             data: Some(json!({ "uri": a.uri, "iri": iri.to_string() })),
         })
         .collect()
+}
+
+/// The title of the lens that runs a query.
+pub const RUN_QUERY_TITLE: &str = "▶ Run query";
+
+/// The "▶ Run query" lens of a SPARQL document: one, at the first `SELECT`,
+/// `CONSTRUCT`, `DESCRIBE` or `ASK` keyword after the prologue, when the
+/// document is a query; none for an update or a document with no query form.
+pub fn query_lenses(q: &SparqlAnalysis, enc: Encoding) -> Vec<CodeLens> {
+    if q.doc.is_update() {
+        return vec![];
+    }
+    let text = q.text();
+    let form = q
+        .doc
+        .tokens()
+        .iter()
+        .filter(|t| t.kind == TokenKind::Keyword)
+        .find(|t| {
+            let kw = t.text(text);
+            ["SELECT", "CONSTRUCT", "DESCRIBE", "ASK"]
+                .iter()
+                .any(|f| kw.eq_ignore_ascii_case(f))
+        });
+    let Some(form) = form else { return vec![] };
+    vec![CodeLens {
+        range: q.range(enc, form.span),
+        command: Some(Command {
+            title: RUN_QUERY_TITLE.into(),
+            command: RUN_QUERY.into(),
+            arguments: Some(vec![Value::String(q.uri.clone())]),
+        }),
+        data: None,
+    }]
 }
 
 /// `lens` with its title and [`SHOW_REFERENCES`] command; unchanged when its
@@ -139,6 +180,55 @@ mod tests {
         let big = "<http://x/a> <http://x/p> 1 .\n".repeat(MAX_LENS_BYTES / 29 + 1);
         let a = analysis("file:///big.nt", &big);
         assert!(code_lenses(&a, Encoding::Utf16, true).is_empty());
+    }
+
+    fn query(text: &str) -> SparqlAnalysis {
+        SparqlAnalysis::new(
+            "file:///w/q.rq".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+        )
+    }
+
+    #[test]
+    fn a_query_gets_a_run_lens_at_its_form() {
+        let q =
+            query("# people\nPREFIX ex: <http://example.org/>\n\nselect ?s WHERE { ?s ?p ?o }\n");
+        let lenses = query_lenses(&q, Encoding::Utf16);
+        assert_eq!(lenses.len(), 1, "{lenses:?}");
+        let l = &lenses[0];
+        assert_eq!(l.range.start, Position::new(3, 0));
+        assert_eq!(l.range.end, Position::new(3, 6));
+        let c = l.command.as_ref().unwrap();
+        assert_eq!(
+            (c.title.as_str(), c.command.as_str()),
+            (RUN_QUERY_TITLE, RUN_QUERY)
+        );
+        assert_eq!(c.arguments, Some(vec![json!("file:///w/q.rq")]));
+        // With a syntax error, still a query: the run reports the error.
+        assert_eq!(
+            query_lenses(&query("ASK { ?s ?p }"), Encoding::Utf16).len(),
+            1
+        );
+        assert_eq!(
+            query_lenses(&query("CONSTRUCT WHERE { ?s ?p ?o }"), Encoding::Utf16).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn updates_and_empty_documents_get_no_run_lens() {
+        for text in [
+            "INSERT DATA { <http://x/a> <http://x/p> 1 }",
+            "PREFIX ex: <http://example.org/>\nDELETE WHERE { ?s ex:p ?o }",
+            "",
+            "# nothing yet\n",
+        ] {
+            assert!(
+                query_lenses(&query(text), Encoding::Utf16).is_empty(),
+                "{text}"
+            );
+        }
     }
 
     #[test]

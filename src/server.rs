@@ -42,6 +42,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod run_query;
 mod workspace_diagnostics;
 
 /// Files that feed `owl:imports` without being Turtle documents themselves.
@@ -142,6 +143,12 @@ pub struct Server {
     inline: bool,
     /// Diagnostics of the files that are not open (`diagnostics.workspace`).
     wsdiag: workspace_diagnostics::State,
+    /// The "Run query" runs going on.
+    queries: run_query::State,
+    /// The client declared `window.showDocument.support`.
+    show_document: bool,
+    /// The request being handled is answered later (a query run).
+    answer_later: bool,
 }
 
 /// A progress waiting for the client to accept its token.
@@ -218,6 +225,10 @@ impl Server {
         .collect();
         let work_done_progress = raw
             .pointer("/capabilities/window/workDoneProgress")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let show_document = raw
+            .pointer("/capabilities/window/showDocument/support")
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let config_pull = params
@@ -319,6 +330,9 @@ impl Server {
             progress_pending: FxHashMap::default(),
             progress_live: FxHashSet::default(),
             wsdiag,
+            queries: Default::default(),
+            show_document,
+            answer_later: false,
             inline,
         };
         Ok((server, result, roots))
@@ -563,6 +577,12 @@ impl Server {
                     self.wsdiag_chunk(chunk.ok());
                     None
                 }
+                recv(self.queries.results()) -> done => {
+                    if let Ok(done) = done {
+                        self.query_done(done);
+                    }
+                    None
+                }
                 recv(self.shacl_rx) -> outcome => {
                     match outcome {
                         Ok(o) => self.shacl_outcome(o),
@@ -709,6 +729,7 @@ impl Server {
         req: Request,
         rest: impl Iterator<Item = Message>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        self.queries.cancel_all();
         self.conn.sender.send(Response::new_ok(req.id, ()).into())?;
         let mut rest = rest.map(Ok);
         let receiver = &self.inbox;
@@ -746,6 +767,9 @@ impl Server {
                 // A bug in one feature must not take the server down for the session.
                 let result = guard(&method, || self.request(req))
                     .unwrap_or_else(|msg| Err((ErrorCode::InternalError, msg)));
+                if std::mem::take(&mut self.answer_later) && result.is_ok() {
+                    return Ok(());
+                }
                 let resp = match result {
                     Ok(v) => Response::new_ok(id, v),
                     Err((code, message)) => Response::new_err(id, code as i32, message),
@@ -885,6 +909,15 @@ impl Server {
                         self.knowledge_changed();
                         self.validate_shacl();
                     }
+                }
+            }
+            Cancel::METHOD => {
+                if let Some(p) = parse::<CancelParams>(n.params) {
+                    let id = match p.id {
+                        NumberOrString::Number(n) => RequestId::from(n),
+                        NumberOrString::String(s) => RequestId::from(s),
+                    };
+                    self.query_cancel_request(&id);
                 }
             }
             _ => {}
@@ -1636,9 +1669,21 @@ impl Server {
                 match crate::commands::parse(params!(ExecuteCommandParams))? {
                     // The job starts when this batch ends; its answer
                     // republishes diagnostics like any other resolution pass.
-                    crate::commands::Command::FetchImport { iri } => self.imports.fetch(&iri),
+                    crate::commands::Command::FetchImport { iri } => {
+                        self.imports.fetch(&iri);
+                        ok(Value::Null)
+                    }
+                    // Answered when the query is done (see `run_query`).
+                    crate::commands::Command::RunQuery { uri } => {
+                        match self.run_query(req.id.clone(), &uri)? {
+                            Some(v) => ok(v),
+                            None => {
+                                self.answer_later = true;
+                                ok(Value::Null)
+                            }
+                        }
+                    }
                 }
-                ok(Value::Null)
             }
             CodeActionResolveRequest::METHOD => {
                 let action = params!(CodeAction);
@@ -1730,7 +1775,7 @@ impl Server {
                 let on = self.settings.code_lens_references;
                 json(serde_json::to_value(match open!(p.text_document.uri) {
                     Open::Rdf(_, a) => crate::features::lens::code_lenses(&a, enc, on),
-                    Open::Sparql(..) => vec![],
+                    Open::Sparql(_, q) => crate::features::lens::query_lenses(&q, enc),
                 }))
             }
             CodeLensResolve::METHOD => {

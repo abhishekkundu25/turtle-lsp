@@ -45,7 +45,7 @@ workspace and the vocabularies:
 - Quick fixes: add a missing `PREFIX` (or all of them), remove an unused one, fix a misspelled term; organise prefixes, shorten or expand an IRI.
 - Semantic highlighting, folding and an outline of the query or update operations.
 
-Queries are never run and no endpoint is contacted.
+**▶ Run query** above a query runs it over your workspace's files as the editor has them, unsaved edits included, and opens the results beside it as a Markdown table (or `true`/`false`, or Turtle for `CONSTRUCT` and `DESCRIBE`). The query runs in the background with a time limit and a row limit. No endpoint is contacted, and updates are never run.
 
 ## N-Quads
 
@@ -86,6 +86,7 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.format.lineWidth`: line width for formatting (default 100).
 - `turtle.codeLens.references`: show "N references" above each subject a file describes; click it to list them (default on).
 - `turtle.diagnostics.workspace`: also check the files that are not open, in the background, and show their problems (default off).
+- `turtle.query.timeoutSeconds`, `turtle.query.maxRows`: stop a query run with **▶ Run query** after this many seconds (default 30), and show at most this many rows of its results (default 1000); `0` for no limit.
 
 ## Also for Neovim and other editors
 

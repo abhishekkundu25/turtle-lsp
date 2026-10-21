@@ -8,14 +8,20 @@ use lsp_server::ErrorCode;
 use lsp_types::ExecuteCommandParams;
 use serde_json::Value;
 
+/// Run the SPARQL query of a document over the workspace (the "▶ Run query"
+/// lens), with the document's URI.
+pub const RUN_QUERY: &str = "turtle.runQuery";
+
 /// Every command name the server advertises.
-pub const COMMANDS: &[&str] = &[FETCH_COMMAND];
+pub const COMMANDS: &[&str] = &[FETCH_COMMAND, RUN_QUERY];
 
 /// A parsed `workspace/executeCommand` request.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     /// Fetch one `owl:imports` target from the network.
     FetchImport { iri: String },
+    /// Run the query of one SPARQL document.
+    RunQuery { uri: String },
 }
 
 /// Parses `params`; bad arguments and unknown commands are `InvalidParams`.
@@ -30,6 +36,13 @@ pub fn parse(params: ExecuteCommandParams) -> Result<Command, (ErrorCode, String
             iri: std::mem::take(iri),
         }),
         (FETCH_COMMAND, _) => Err((ErrorCode::InvalidParams, format!("{command} takes one IRI"))),
+        (RUN_QUERY, [Value::String(uri)]) => Ok(Command::RunQuery {
+            uri: std::mem::take(uri),
+        }),
+        (RUN_QUERY, _) => Err((
+            ErrorCode::InvalidParams,
+            format!("{command} takes one document URI"),
+        )),
         _ => Err((
             ErrorCode::InvalidParams,
             format!("unknown command {command}"),
@@ -77,6 +90,25 @@ mod tests {
             assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
             assert_eq!(msg, "turtle.fetchImport takes one IRI");
         }
+    }
+
+    #[test]
+    fn run_query_with_one_uri() {
+        let Ok(command) = parse(params(RUN_QUERY, vec![json!("file:///w/q.rq")])) else {
+            panic!("rejected")
+        };
+        assert_eq!(
+            command,
+            Command::RunQuery {
+                uri: "file:///w/q.rq".into()
+            }
+        );
+        let Err((code, msg)) = parse(params(RUN_QUERY, vec![])) else {
+            panic!("accepted")
+        };
+        assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
+        assert_eq!(msg, "turtle.runQuery takes one document URI");
+        assert!(COMMANDS.contains(&RUN_QUERY));
     }
 
     #[test]

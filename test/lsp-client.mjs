@@ -48,10 +48,10 @@ export function defaultCacheDir() {
   return base && path.join(base, "turtle-lsp")
 }
 
-// Files in a cache dir that are not a finished import (`imports/<16 hex>.ttl`)
-// or JSON-LD context (`imports/<16 hex>.jsonld`, with the `.url` of a
-// redirect beside it), e.g. a temp file left by an interrupted write. Paths
-// relative to `dir`.
+// Files in a cache dir that are not a finished import (`imports/<16 hex>.ttl`),
+// JSON-LD context (`imports/<16 hex>.jsonld`, with the `.url` of a redirect
+// beside it) or query results (`query-results/<name>.md`), e.g. a temp file
+// left by an interrupted write. Paths relative to `dir`.
 export function strayCacheFiles(dir) {
   if (!fs.existsSync(dir)) return []
   const files = fs
@@ -61,6 +61,8 @@ export function strayCacheFiles(dir) {
   const kept = new Set(files)
   return files.filter((f) => {
     if (/^imports[\\/][0-9a-f]{16}\.(ttl|jsonld)$/.test(f)) return false
+    // The results of "Run query", one per query file name.
+    if (/^query-results[\\/][^\\/]+\.md$/.test(f)) return false
     // A redirect's target, only beside the context it belongs to.
     return !(/^imports[\\/][0-9a-f]{16}\.url$/.test(f) && kept.has(f.replace(/\.url$/, ".jsonld")))
   })

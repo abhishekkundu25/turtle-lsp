@@ -9,6 +9,7 @@
 use crate::syntax::PrefixMap;
 use serde_json::Value;
 use std::path::Path;
+use std::time::Duration;
 
 /// The workspace settings file, read from the workspace root.
 pub const SETTINGS_FILE: &str = "turtle-lsp.json";
@@ -72,6 +73,11 @@ pub struct Settings {
     pub code_lens_references: bool,
     /// Diagnose the workspace files that are not open, in the background.
     pub diagnostics_workspace: bool,
+    /// "Run query" stops a query after this long; `None` (0) for no limit.
+    pub query_timeout: Option<Duration>,
+    /// "Run query" keeps at most this many rows (or triples) of an answer;
+    /// `None` (0) keeps all.
+    pub query_max_rows: Option<usize>,
 }
 
 impl Default for Settings {
@@ -88,6 +94,8 @@ impl Default for Settings {
             format_line_width: 100,
             code_lens_references: true,
             diagnostics_workspace: false,
+            query_timeout: Some(Duration::from_secs(30)),
+            query_max_rows: Some(1000),
         }
     }
 }
@@ -157,6 +165,16 @@ impl Settings {
                 }
             }
             ["codeLens", "references"] => set_bool(&mut self.code_lens_references, v),
+            ["query", "timeoutSeconds"] => {
+                if let Some(n) = v.as_f64().filter(|n| *n >= 0.0 && n.is_finite()) {
+                    self.query_timeout = (n > 0.0).then(|| Duration::from_secs_f64(n));
+                }
+            }
+            ["query", "maxRows"] => {
+                if let Some(n) = v.as_u64().and_then(|n| usize::try_from(n).ok()) {
+                    self.query_max_rows = (n > 0).then_some(n);
+                }
+            }
             [head, rest @ ..] => {
                 // A nested group, e.g. {"shacl": {"enabled": false}}.
                 if let Value::Object(map) = v {
@@ -215,6 +233,8 @@ mod tests {
         assert_eq!(s.format_line_width, 100);
         assert!(s.code_lens_references);
         assert!(!s.diagnostics_workspace);
+        assert_eq!(s.query_timeout, Some(Duration::from_secs(30)));
+        assert_eq!(s.query_max_rows, Some(1000));
         assert!(s.prefixes.is_empty());
     }
 
@@ -229,6 +249,7 @@ mod tests {
             "format": {"lineWidth": 80},
             "codeLens": {"references": false},
             "diagnostics": {"workspace": true},
+            "query": {"timeoutSeconds": 2.5, "maxRows": 0},
             "server": {"path": "/ignored"},
         });
         let dotted = json!({
@@ -243,6 +264,8 @@ mod tests {
             "turtle.format.lineWidth": 80,
             "codeLens.references": false,
             "diagnostics.workspace": true,
+            "query.timeoutSeconds": 2.5,
+            "query.maxRows": 0,
         });
         let a = Settings::from_layers([&nested]);
         assert_eq!(a, Settings::from_layers([&dotted]));
@@ -255,6 +278,10 @@ mod tests {
         assert!(!a.code_lens_references);
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
         assert!(a.diagnostics_workspace);
+        assert_eq!(a.query_timeout, Some(Duration::from_millis(2500)));
+        assert_eq!(a.query_max_rows, None);
+        let off = Settings::from_layers([&json!({"query": {"timeoutSeconds": 0, "maxRows": 5}})]);
+        assert_eq!((off.query_timeout, off.query_max_rows), (None, Some(5)));
     }
 
     #[test]
@@ -265,6 +292,7 @@ mod tests {
             "shacl": {"enabled": "no", "maxTriples": -1},
             "imports": {"unresolved": "drop"},
             "format": {"lineWidth": 90},
+            "query": {"timeoutSeconds": -1, "maxRows": 2.5},
         });
         let s = Settings::from_layers([&init, &config]);
         assert_eq!(s.prefixes["ex"], "http://a/");
@@ -273,6 +301,8 @@ mod tests {
         assert!(s.shacl_enabled);
         assert_eq!(s.shacl_max_triples, 2_000_000);
         assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
+        assert_eq!(s.query_timeout, Some(Duration::from_secs(30)));
+        assert_eq!(s.query_max_rows, Some(1000));
         assert_eq!(Settings::from_layers([&Value::Null]), Settings::default());
     }
 

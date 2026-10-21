@@ -45,6 +45,7 @@ use spargebra::term::{Term, Triple};
 use spargebra::{Query, SparqlParser};
 use std::cell::Cell;
 use std::fmt;
+use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -57,7 +58,7 @@ pub enum Answer {
     Boolean(bool),
     /// CONSTRUCT or DESCRIBE: the graph, each triple once, in the order the
     /// evaluator gave them.
-    Triples(Vec<Triple>),
+    Triples(Triples),
 }
 
 /// The solutions of a SELECT query.
@@ -65,8 +66,58 @@ pub enum Answer {
 pub struct Solutions {
     /// The projected variables, in order, without `?`.
     pub variables: Vec<String>,
-    /// One value per variable; `None` when unbound.
+    /// One value per variable; `None` when unbound. At most
+    /// [`Limits::max_rows`] of them.
     pub rows: Vec<Vec<Option<Term>>>,
+    /// The rows counted past [`Limits::max_rows`] and not kept.
+    pub omitted: usize,
+}
+
+impl Solutions {
+    /// Every row the query returned, those not kept included.
+    pub fn total(&self) -> usize {
+        self.rows.len() + self.omitted
+    }
+}
+
+/// The graph of a CONSTRUCT or DESCRIBE query. Derefs to its triples.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Triples {
+    /// Each triple once, at most [`Limits::max_rows`] of them.
+    pub triples: Vec<Triple>,
+    /// The distinct triples counted past [`Limits::max_rows`] and not kept.
+    pub omitted: usize,
+}
+
+impl Triples {
+    /// Every distinct triple the query returned, those not kept included.
+    pub fn total(&self) -> usize {
+        self.triples.len() + self.omitted
+    }
+}
+
+impl From<Vec<Triple>> for Triples {
+    fn from(triples: Vec<Triple>) -> Triples {
+        Triples {
+            triples,
+            omitted: 0,
+        }
+    }
+}
+
+impl std::ops::Deref for Triples {
+    type Target = [Triple];
+    fn deref(&self) -> &[Triple] {
+        &self.triples
+    }
+}
+
+impl<'a> IntoIterator for &'a Triples {
+    type Item = &'a Triple;
+    type IntoIter = std::slice::Iter<'a, Triple>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.triples.iter()
+    }
 }
 
 /// Why a query gave no answer.
@@ -110,23 +161,16 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
-/// When to stop a query.
-#[derive(Clone, Copy, Debug)]
+/// When to stop a query, and how much of its answer to keep.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Limits<'a> {
     /// From the start of [`run`]; `None` for no limit.
     pub timeout: Option<Duration>,
     /// Stops the query when set (from another thread).
     pub cancel: Option<&'a AtomicBool>,
-}
-
-impl Default for Limits<'_> {
-    /// No limit.
-    fn default() -> Self {
-        Limits {
-            timeout: None,
-            cancel: None,
-        }
-    }
+    /// Keep at most this many rows (or triples); the rest are counted, not
+    /// kept ([`Solutions::omitted`], [`Triples::omitted`]). `None` keeps all.
+    pub max_rows: Option<usize>,
 }
 
 /// Runs `query` over the union of `docs`. `base` resolves relative IRIs;
@@ -144,7 +188,7 @@ pub fn run(
     let graph = Graph::new(&triples);
     let index = Index::new(&graph, None);
     watch.check().map_err(QueryError::from)?;
-    evaluate(&index, &parsed, &watch)
+    evaluate(&index, &parsed, &watch, limits.max_rows)
 }
 
 /// The prefixes to show results with: `external` and the query's own
@@ -212,9 +256,14 @@ fn syntax_error(text: &str, message: String, offset: usize) -> QueryError {
 /// unwinds out of the evaluator at once ([`halt`]): the evaluator keeps going
 /// after a read error (a join or an aggregate collects errors and finishes
 /// its input), so an error alone would not stop work already buffered.
-fn evaluate(index: &Index, query: &Query, watch: &Watch) -> Result<Answer, QueryError> {
+fn evaluate(
+    index: &Index,
+    query: &Query,
+    watch: &Watch,
+    max_rows: Option<usize>,
+) -> Result<Answer, QueryError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        evaluate_inner(index, query, watch)
+        evaluate_inner(index, query, watch, max_rows.unwrap_or(usize::MAX))
     })) {
         Ok(answer) => answer,
         Err(payload) => match payload.downcast_ref::<Stop>() {
@@ -224,7 +273,12 @@ fn evaluate(index: &Index, query: &Query, watch: &Watch) -> Result<Answer, Query
     }
 }
 
-fn evaluate_inner(index: &Index, query: &Query, watch: &Watch) -> Result<Answer, QueryError> {
+fn evaluate_inner(
+    index: &Index,
+    query: &Query,
+    watch: &Watch,
+    max: usize,
+) -> Result<Answer, QueryError> {
     let evaluator = QueryEvaluator::new();
     let mut prepared = evaluator.prepare(query);
     // FROM and FROM NAMED are ignored: the default graph is the union.
@@ -239,24 +293,46 @@ fn evaluate_inner(index: &Index, query: &Query, watch: &Watch) -> Result<Answer,
                 .map(|v| v.as_str().to_owned())
                 .collect();
             let mut rows = Vec::new();
+            let mut omitted = 0;
             for s in solutions {
                 watch.check()?;
-                rows.push(s.map_err(fail)?.values().to_vec());
+                let s = s.map_err(fail)?;
+                if rows.len() < max {
+                    rows.push(s.values().to_vec());
+                } else {
+                    omitted += 1;
+                }
             }
-            Ok(Answer::Solutions(Solutions { variables, rows }))
+            Ok(Answer::Solutions(Solutions {
+                variables,
+                rows,
+                omitted,
+            }))
         }
         QueryResults::Boolean(b) => Ok(Answer::Boolean(b)),
         QueryResults::Graph(triples) => {
+            // The triples kept, and a hash of each one past the cap: enough
+            // to count distinct triples without keeping them.
             let mut seen = FxHashSet::default();
+            let mut past = FxHashSet::default();
             let mut out = Vec::new();
             for t in triples {
                 watch.check()?;
                 let t = t.map_err(fail)?;
-                if seen.insert(t.clone()) {
+                if seen.contains(&t) {
+                    continue;
+                }
+                if out.len() < max {
+                    seen.insert(t.clone());
                     out.push(t);
+                } else {
+                    past.insert(rustc_hash::FxBuildHasher.hash_one(&t));
                 }
             }
-            Ok(Answer::Triples(out))
+            Ok(Answer::Triples(Triples {
+                triples: out,
+                omitted: past.len(),
+            }))
         }
     }
 }

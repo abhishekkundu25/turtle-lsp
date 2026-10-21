@@ -49,6 +49,7 @@ function serverSettings(): Record<string, unknown> {
     format: { lineWidth: c.get<number>("format.lineWidth") },
     codeLens: { references: c.get<boolean>("codeLens.references") },
     diagnostics: { workspace: c.get<boolean>("diagnostics.workspace") },
+    query: { timeoutSeconds: c.get<number>("query.timeoutSeconds"), maxRows: c.get<number>("query.maxRows") },
   }
 }
 

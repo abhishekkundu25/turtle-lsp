@@ -127,10 +127,11 @@ test("JSON-LD lenses are the nodes with an @id the document describes", async ()
   )
 })
 
-test("SPARQL documents get no lenses", async () => {
+test("SPARQL documents get no reference lenses, only Run query", async () => {
   const uri = at("q.rq")
   s.open(uri, fs.readFileSync(path.join(ws, "q.rq"), "utf8"), "sparql")
-  assert.deepEqual(await lenses(uri), [])
+  const ls = await lenses(uri)
+  assert.deepEqual(ls.map((l) => l.command?.command), ["turtle.runQuery"])
 })
 
 test("codeLens.references off gives no lenses", async () => {

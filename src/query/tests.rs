@@ -254,7 +254,7 @@ fn a_runaway_query_stops_at_the_time_limit() {
         &ex_prefixes(),
         &Limits {
             timeout: Some(Duration::from_millis(20)),
-            cancel: None,
+            ..Limits::default()
         },
     );
     assert_eq!(r, Err(QueryError::Timeout));
@@ -281,8 +281,8 @@ fn a_cancelled_query_stops() {
             None,
             &ex_prefixes(),
             &Limits {
-                timeout: None,
                 cancel: Some(&flag),
+                ..Limits::default()
             },
         )
     });
@@ -292,6 +292,59 @@ fn a_cancelled_query_stops() {
         "{:?}",
         start.elapsed()
     );
+}
+
+fn capped(docs: &[&Analysis], q: &str, max: usize) -> Answer {
+    let limits = Limits {
+        max_rows: Some(max),
+        ..Limits::default()
+    };
+    run(docs, q, None, &ex_prefixes(), &limits).unwrap()
+}
+
+#[test]
+fn the_row_cap_keeps_the_first_rows_and_counts_the_rest() {
+    let d = big();
+    let q = "SELECT ?s WHERE { ?s ex:p ?o } ORDER BY ?o";
+    let Answer::Solutions(all) = run_on(&[&d], q).unwrap() else {
+        panic!("not solutions")
+    };
+    assert_eq!((all.rows.len(), all.omitted), (150, 0));
+    let Answer::Solutions(s) = capped(&[&d], q, 10) else {
+        panic!("not solutions")
+    };
+    assert_eq!((s.rows.len(), s.omitted, s.total()), (10, 140, 150));
+    assert_eq!(s.rows[..], all.rows[..10]);
+    let m = markdown(&Answer::Solutions(s.clone()), &ex_prefixes(), None);
+    assert!(m.starts_with("150 rows\n"), "{m}");
+    assert!(m.ends_with("_Showing 10 of 150 rows._\n"), "{m}");
+    assert!(table(&s, &ex_prefixes(), None).ends_with("showing 10 of 150 rows\n"));
+    // Under the cap: nothing omitted.
+    let Answer::Solutions(s) = capped(&[&d], q, 1000) else {
+        panic!("not solutions")
+    };
+    assert_eq!((s.rows.len(), s.omitted), (150, 0));
+    // Zero keeps none but still counts.
+    let Answer::Solutions(s) = capped(&[&d], q, 0) else {
+        panic!("not solutions")
+    };
+    assert_eq!((s.rows.len(), s.total()), (0, 150));
+    let m = markdown(&Answer::Solutions(s), &ex_prefixes(), None);
+    assert!(m.contains("_Showing 0 of 150 rows._"), "{m}");
+}
+
+#[test]
+fn the_row_cap_counts_distinct_triples() {
+    let d = big();
+    // Every ?s twice: the duplicates are not counted.
+    let q = "CONSTRUCT { ?s ex:q 1 } WHERE { { ?s ex:p ?o } UNION { ?s ex:p ?o } }";
+    let Answer::Triples(ts) = capped(&[&d], q, 5) else {
+        panic!("not triples")
+    };
+    assert_eq!((ts.len(), ts.omitted, ts.total()), (5, 145, 150));
+    let m = markdown(&Answer::Triples(ts), &ex_prefixes(), Some(1000));
+    assert!(m.starts_with("150 triples\n"), "{m}");
+    assert!(m.ends_with("_Showing 5 of 150 triples._\n"), "{m}");
 }
 
 #[test]
@@ -332,6 +385,7 @@ fn sample() -> Solutions {
             vec![Some(BlankNode::new_unchecked("g1").into()), None],
             vec![Some(iri("c")), Some(lang("say \"hi\",\nok", "en"))],
         ],
+        omitted: 0,
     }
 }
 
@@ -376,6 +430,7 @@ fn markdown_escapes_pipes_and_cuts_at_the_row_limit() {
         &Answer::Solutions(Solutions {
             variables: vec!["v".into()],
             rows: vec![vec![Some(lit("a`b"))]],
+            omitted: 0,
         }),
         &PrefixMap::default(),
         None,
@@ -403,7 +458,7 @@ fn markdown_triples_are_a_turtle_block() {
         lit("v"),
     );
     let m = markdown(
-        &Answer::Triples(vec![t.clone(), t]),
+        &Answer::Triples(vec![t.clone(), t].into()),
         &ex_prefixes(),
         Some(1),
     );
@@ -443,7 +498,7 @@ fn json_results_with_datatypes_languages_and_booleans() {
     let t: serde_json::Value =
         serde_json::from_str(&json(&Answer::Boolean(true)).unwrap()).unwrap();
     assert_eq!(t, serde_json::json!({"head": {}, "boolean": true}));
-    assert_eq!(json(&Answer::Triples(vec![])), None);
+    assert_eq!(json(&Answer::Triples(Triples::default())), None);
 }
 
 #[test]
