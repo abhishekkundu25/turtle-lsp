@@ -40,7 +40,7 @@ use lsp_types::request::Request as _;
 use lsp_types::{MessageType, ShowDocumentParams, ShowMessageParams, Uri};
 use rustc_hash::FxHashMap;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -318,14 +318,8 @@ impl Server {
 
 /// The last path segment of `uri`, percent-decoded where it can be.
 fn file_name(uri: &str) -> String {
-    if let Some(name) = uri_to_path(uri)
-        .as_deref()
-        .and_then(Path::file_name)
-        .and_then(|n| n.to_str())
-    {
-        return name.to_owned();
-    }
-    uri.rsplit('/').next().unwrap_or(uri).to_owned()
+    crate::workspace::file_uri_name(uri)
+        .unwrap_or_else(|| uri.rsplit('/').next().unwrap_or(uri).to_owned())
 }
 
 /// The results file's stem: the document's name without its extension.
