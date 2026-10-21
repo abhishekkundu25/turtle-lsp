@@ -195,11 +195,21 @@ not by its extension.
   shorten or expand an IRI.
 - **Semantic highlighting, folding and outline** (the query form, or each
   update operation, with its clauses).
+- **▶ Run query**: a code lens above a query runs it over the workspace's
+  files as the editor has them, unsaved edits included, and opens the
+  results as a Markdown document (a table, `true`/`false`, or Turtle for
+  `CONSTRUCT` and `DESCRIBE`) with `window/showDocument`; VS Code opens it
+  beside the query. The query runs on its own thread with a time limit and
+  a row limit (`query.timeoutSeconds`, default 30; `query.maxRows`, default
+  1000), so typing never waits for it.
 
 Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
 queries too. SPARQL files add nothing to the workspace's knowledge, so a
-query never makes a misspelled term look described. The server never runs a
-query or contacts an endpoint.
+query never makes a misspelled term look described. A query runs only when
+you ask, over the workspace's own files: the default graph is the union of
+every triple of every file, named graphs included; `GRAPH` and `FROM NAMED`
+match nothing, `FROM` is ignored, imports are not queried, updates are never
+run and no endpoint is contacted.
 
 ## JSON-LD
 
@@ -404,9 +414,10 @@ server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
 `turtle.shacl.maxTriples`, `turtle.shacl.onType`, `turtle.lint.undescribedTerms`,
 `turtle.imports.network` (fetch imports and JSON-LD contexts; off in
 untrusted workspaces), `turtle.imports.unresolved` (`soften` or `ignore`),
-`turtle.format.lineWidth`, `turtle.codeLens.references` and
+`turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
-default).
+default), and `turtle.query.timeoutSeconds` and `turtle.query.maxRows` (for
+▶ Run query).
 
 Other editors pass the server settings without the `turtle.` prefix, as
 `init_options` or as the `turtle` section of `settings`:
@@ -454,6 +465,8 @@ turtle-lsp check --fix               # also apply the safe fixes
 turtle-lsp format                    # format files in place
 turtle-lsp format --check            # list files that would change; change nothing
 turtle-lsp format --diff             # print a unified diff instead
+turtle-lsp query people.rq           # run a query over the workspace's files
+turtle-lsp query -e 'SELECT ?s WHERE { ?s a foaf:Person }' data/
 ```
 
 The workspace root is `--root DIR`, otherwise the nearest folder above with a
@@ -499,6 +512,15 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 | `--statistics` | print a count per code instead of the problems |
 
 `format` takes `--root DIR`, `--check` and `--diff`.
+
+`query` runs a SELECT, ASK, CONSTRUCT or DESCRIBE query (from a file, or
+inline with `-e`) over the RDF files under the paths given (default: the
+workspace root), with the project's prefixes. `--format` is `table` (the
+default for SELECT), `json` (SPARQL JSON results), `csv`, `tsv`, or `turtle`
+(the default for CONSTRUCT and DESCRIBE); an ASK prints `true` or `false`.
+`--timeout SECONDS` (default 30) and `--limit ROWS` (table only). Exit codes:
+0 ran, 1 an ASK answered false, 2 an error (a syntax error is printed as
+`FILE:LINE:COL: message`).
 
 Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
 `unknown-term`, `undescribed-term`, `invalid-literal`, `unresolved-import` and

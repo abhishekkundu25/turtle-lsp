@@ -4,6 +4,15 @@
 
 ### Features
 
+- **Run SPARQL queries over the workspace.** A "▶ Run query" code lens above
+  each query runs it over the workspace's files as the editor has them
+  (unsaved edits included) and opens the results as Markdown, beside the
+  query in VS Code, in any LSP editor through `window/showDocument`. It runs
+  on its own thread with `query.timeoutSeconds` (default 30) and
+  `query.maxRows` (default 1000). `turtle-lsp query` does the same from the
+  command line, with table, JSON, CSV, TSV or Turtle output. The default
+  graph is the union of every file's triples; named graphs, updates and
+  endpoints are out of scope.
 - **Reference lenses**: "N references" above each subject a file describes
   (Turtle, TriG, N-Triples, N-Quads, JSON-LD); clicking lists them (VS Code's
   references view, Neovim's quickfix list). Counted only when shown. Setting
