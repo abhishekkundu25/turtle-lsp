@@ -570,3 +570,17 @@ fn turtle_writes_iris_no_prefixed_name_can_carry_in_full() {
         "@prefix ex: <http://example.com/> .\n\n<http://example.com/-x> ex:p 1.5 .\n"
     );
 }
+
+#[test]
+fn turtle_writes_rdf_type_as_a() {
+    let t = Triple::new(
+        NamedNode::new_unchecked(format!("{EX}alice")),
+        NamedNode::new_unchecked(crate::syntax::RDF_TYPE),
+        NamedNode::new_unchecked(format!("{EX}Person")),
+    );
+    let out = turtle(&[t], &ex_prefixes());
+    assert_eq!(
+        out,
+        "@prefix ex: <http://example.com/> .\n\nex:alice a ex:Person .\n"
+    );
+}

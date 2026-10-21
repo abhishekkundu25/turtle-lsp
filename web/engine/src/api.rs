@@ -186,6 +186,7 @@ fn query(files: &[BatchFile], req: &Value) -> Result<Value, String> {
     let max_rows = req["maxRows"].as_u64().map_or(1000, |n| n as usize);
     let limits = Limits {
         timeout: (seconds > 0.0).then(|| Duration::from_secs_f64(seconds)),
+        max_rows: Some(max_rows),
         ..Default::default()
     };
     let start = Instant::now();
@@ -203,7 +204,7 @@ fn query(files: &[BatchFile], req: &Value) -> Result<Value, String> {
                         .collect()
                 })
                 .collect();
-            json!({ "kind": "select", "variables": s.variables, "rows": rows, "total": s.rows.len() })
+            json!({ "kind": "select", "variables": s.variables, "rows": rows, "total": s.total() })
         }
         Ok(Answer::Boolean(b)) => json!({ "kind": "ask", "boolean": b }),
         Ok(Answer::Triples(t)) => {
@@ -212,7 +213,7 @@ fn query(files: &[BatchFile], req: &Value) -> Result<Value, String> {
                 "kind": "construct",
                 "turtle": render::turtle(&t[..shown], p),
                 "shown": shown,
-                "total": t.len(),
+                "total": t.len() + t.omitted,
             })
         }
         Err(QueryError::Syntax {

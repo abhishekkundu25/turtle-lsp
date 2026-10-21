@@ -426,7 +426,11 @@ pub fn turtle(triples: &[Triple], prefixes: &PrefixMap) -> String {
         body.push_str(&turtle_term(&(*s).clone().into(), &mut iri));
         for (k, (p, objects)) in preds.iter().enumerate() {
             body.push_str(if k == 0 { " " } else { " ;\n    " });
-            body.push_str(&iri(p));
+            if *p == crate::syntax::RDF_TYPE {
+                body.push('a');
+            } else {
+                body.push_str(&iri(p));
+            }
             for (j, o) in objects.iter().enumerate() {
                 body.push_str(if j == 0 { " " } else { ", " });
                 body.push_str(&turtle_term(o, &mut iri));
