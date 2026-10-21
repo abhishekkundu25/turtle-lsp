@@ -329,6 +329,10 @@ check("the Run query lens opens the results document", async () => {
   }
   assert.ok(shown, "the results document is not shown")
   assert.match(shown.document.getText(), /^# people\.rq\n/)
+  // Beside the query, which keeps the focus.
+  const queryEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === doc.uri.toString())
+  assert.ok(queryEditor && shown.viewColumn !== queryEditor.viewColumn, "the results are not beside the query")
+  assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), doc.uri.toString())
   await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 })
 

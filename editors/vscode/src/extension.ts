@@ -80,6 +80,20 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
     // Later changes reach the server as workspace/didChangeConfiguration.
     synchronize: { configurationSection: "turtle" },
     outputChannelName: "Turtle",
+    middleware: {
+      window: {
+        // Query results open beside the query, which keeps the focus.
+        showDocument: async (params, token, next) => {
+          if (!/\/query-results\/[^/]+\.md$/.test(params.uri)) return next(params, token)
+          await vscode.window.showTextDocument(vscode.Uri.parse(params.uri), {
+            viewColumn: vscode.ViewColumn.Beside,
+            preserveFocus: true,
+            preview: false,
+          })
+          return { success: true }
+        },
+      },
+    },
   }
   client = new LanguageClient("turtle", "Turtle", serverOptions, clientOptions)
   await client.start()
