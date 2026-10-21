@@ -2,8 +2,8 @@
 
 This folder holds spareval 0.2.7 as published on crates.io (oxigraph commit
 `0e81a29d`, `lib/spareval`), with one change to `src/eval.rs`. Both
-`Cargo.toml` files use it through `[patch.crates-io]`. spareval's license is
-MIT OR Apache-2.0.
+`Cargo.toml` files use it through `[patch.crates-io]`. spareval is licensed
+MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, from the same commit).
 
 ## The change
 
