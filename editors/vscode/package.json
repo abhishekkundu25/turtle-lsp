@@ -287,6 +287,13 @@
           "markdownDescription": "Show at most this many rows (or triples) of a query's results; the total is still counted. `0` for no limit.",
           "scope": "window"
         },
+        "turtle.query.maxBufferedRows": {
+          "type": "integer",
+          "default": 10000000,
+          "minimum": 0,
+          "markdownDescription": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (about 100 bytes each). `0` for no limit.",
+          "scope": "window"
+        },
         "turtle.trace.server": {
           "type": "string",
           "enum": [

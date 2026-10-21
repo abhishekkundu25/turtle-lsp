@@ -19,14 +19,29 @@ export function createQueryPane({ files, reveal }) {
   let seq = 0
   const pending = new Map()
 
+  // A worker that failed to load, died or whose engine crashed answers nothing
+  // more: fail what waits on it, and start a new one for the next run.
+  function drop(w, message) {
+    if (worker !== w) return
+    worker = null
+    w.terminate()
+    for (const p of pending.values()) p.reject(new Error(message))
+    pending.clear()
+  }
+
   function call(payload) {
     if (!worker) {
-      worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" })
-      worker.onmessage = ({ data }) => {
+      const w = (worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" }))
+      w.onmessage = ({ data }) => {
         const p = pending.get(data.id)
         pending.delete(data.id)
         if ("error" in data) p?.reject(new Error(data.error))
         else p?.resolve(data.ok)
+        if (data.crashed) drop(w, "the query engine crashed")
+      }
+      w.onerror = w.onmessageerror = (e) => {
+        e.preventDefault()
+        drop(w, "the query engine stopped" + (e.message ? `: ${e.message}` : ""))
       }
     }
     const id = ++seq

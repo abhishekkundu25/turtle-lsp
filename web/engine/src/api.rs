@@ -187,6 +187,7 @@ fn query(files: &[BatchFile], req: &Value) -> Result<Value, String> {
     let limits = Limits {
         timeout: (seconds > 0.0).then(|| Duration::from_secs_f64(seconds)),
         max_rows: Some(max_rows),
+        max_buffered_rows: Some(turtle_lsp::settings::QUERY_MAX_BUFFERED_ROWS),
         ..Default::default()
     };
     let start = Instant::now();

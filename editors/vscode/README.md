@@ -87,6 +87,7 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.codeLens.references`: show "N references" above each subject a file describes; click it to list them (default on).
 - `turtle.diagnostics.workspace`: also check the files that are not open, in the background, and show their problems (default off).
 - `turtle.query.timeoutSeconds`, `turtle.query.maxRows`: stop a query run with **▶ Run query** after this many seconds (default 30), and show at most this many rows of its results (default 1000); `0` for no limit.
+- `turtle.query.maxBufferedRows`: stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (default 10 000 000, about 1 GB); `0` for no limit.
 
 ## Also for Neovim and other editors
 

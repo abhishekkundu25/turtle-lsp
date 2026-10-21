@@ -68,6 +68,8 @@ pub struct QueryArgs {
     /// None: no time limit.
     pub timeout: Option<std::time::Duration>,
     pub limit: Option<usize>,
+    /// None: no limit.
+    pub max_buffered_rows: Option<usize>,
 }
 
 /// The default `--timeout`, in seconds.
@@ -259,6 +261,7 @@ pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
     let mut format = None;
     let mut timeout = Some(std::time::Duration::from_secs(QUERY_TIMEOUT_SECONDS));
     let mut limit = None;
+    let mut max_buffered_rows = Some(crate::settings::QUERY_MAX_BUFFERED_ROWS);
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
         let flag = match item {
@@ -303,6 +306,10 @@ pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
                 timeout = (secs > 0.0).then(|| std::time::Duration::from_secs_f64(secs));
             }
             "--limit" => limit = Some(it.number(f)?),
+            "--max-buffered-rows" => {
+                let n: usize = it.number(f)?;
+                max_buffered_rows = (n > 0).then_some(n);
+            }
             _ => return Err(unknown(f, "query")),
         }
     }
@@ -326,6 +333,7 @@ pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
         format,
         timeout,
         limit,
+        max_buffered_rows,
     }))
 }
 
@@ -399,6 +407,10 @@ mod tests {
         assert_eq!(a.limit, Some(3));
         assert_eq!(a.timeout, Some(std::time::Duration::from_secs(30)));
         assert_eq!(query("q.rq --timeout 0").unwrap().timeout, None);
+        assert_eq!(a.max_buffered_rows, Some(10_000_000));
+        let rows = |s: &str| query(s).unwrap().max_buffered_rows;
+        assert_eq!(rows("q.rq --max-buffered-rows 500"), Some(500));
+        assert_eq!(rows("q.rq --max-buffered-rows 0"), None);
     }
 
     #[test]
@@ -406,6 +418,8 @@ mod tests {
         assert!(query("").unwrap_err().contains("no query"));
         assert!(query("q.rq --format xml").is_err());
         assert!(query("q.rq --timeout -1").is_err());
+        assert!(query("q.rq --max-buffered-rows -1").is_err());
+        assert!(query("q.rq --max-buffered-rows lots").is_err());
         assert!(query("q.rq --limit 3 --format json").is_err());
         assert!(query("-e a -e b").is_err());
         assert_eq!(query("--help").unwrap_err(), "help");

@@ -14,9 +14,15 @@ const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf" }
 
 let server, origin, browser
+// Serve a query worker that fails to load, for the next request of it.
+let brokenWorker = false
 before(async () => {
   server = http.createServer((req, res) => {
     const rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
+    if (rel === "/worker.js" && brokenWorker) {
+      brokenWorker = false
+      return res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" }).end('throw new Error("boom")')
+    }
     const file = path.join(app, path.normalize(rel))
     if (!file.startsWith(app) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end()
     res.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" })
@@ -109,6 +115,21 @@ test("Ctrl+Enter runs the query: true or false, Turtle, and an error at its line
     await openFile(page, "data/people.ttl")
     await runButton(page).waitFor({ state: "hidden" })
     assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
+test("a query worker that fails to load gives an error, and the next run starts a new one", async () => {
+  const { page, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    brokenWorker = true
+    await runButton(page).click()
+    await pane(page).locator(".qerror", { hasText: "the query engine stopped" }).waitFor({ timeout: 10_000 })
+    assert.equal(await runButton(page).isEnabled(), true)
+    await runButton(page).click()
+    await pane(page).locator("table").waitFor()
   } finally {
     await close()
   }

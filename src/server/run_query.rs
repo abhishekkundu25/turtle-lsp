@@ -12,7 +12,8 @@
 //! The query runs on a thread of its own (never the main loop), with
 //! `query.timeoutSeconds` and `query.maxRows`. The thread renders the
 //! results as Markdown and writes them to
-//! `<cache dir>/query-results/<file stem>.md` (overwritten each run), then
+//! `<cache dir>/query-results/<file stem>.md` (overwritten each run; a
+//! second document of the same name gets `<file stem>-2.md`), then
 //! hands a [`Done`] to the main loop, which opens the file with
 //! `window/showDocument` (`takeFocus: false`) when the client supports it,
 //! else shows the summary with `window/showMessage`, and answers the
@@ -51,6 +52,8 @@ pub struct State {
     done_rx: Receiver<Done>,
     next_id: u64,
     running: FxHashMap<String, Running>,
+    /// The results file stem of each document run so far.
+    stems: FxHashMap<String, String>,
 }
 
 struct Running {
@@ -85,6 +88,7 @@ struct Job {
     docs: Vec<Arc<Analysis>>,
     timeout: Option<Duration>,
     max_rows: Option<usize>,
+    max_buffered_rows: Option<usize>,
     cancel: Arc<AtomicBool>,
     out: Option<PathBuf>,
 }
@@ -97,6 +101,7 @@ impl Default for State {
             done_rx,
             next_id: 0,
             running: FxHashMap::default(),
+            stems: FxHashMap::default(),
         }
     }
 }
@@ -105,6 +110,24 @@ impl State {
     /// Finished runs, for the main loop.
     pub fn results(&self) -> Receiver<Done> {
         self.done_rx.clone()
+    }
+
+    /// The results file stem of `uri`: its file stem, numbered when another
+    /// document run before has the same one.
+    fn stem_for(&mut self, uri: &str) -> String {
+        if let Some(s) = self.stems.get(uri) {
+            return s.clone();
+        }
+        let base = stem(uri);
+        let mut s = base.clone();
+        for n in 2.. {
+            if !self.stems.values().any(|t| *t == s) {
+                break;
+            }
+            s = format!("{base}-{n}");
+        }
+        self.stems.insert(uri.to_owned(), s.clone());
+        s
     }
 
     /// Stop every run (the server is going away).
@@ -167,11 +190,12 @@ impl Server {
             docs,
             timeout: self.settings.query_timeout,
             max_rows: self.settings.query_max_rows,
+            max_buffered_rows: self.settings.query_max_buffered_rows,
             cancel: cancel.clone(),
             out: if self.inline { None } else { results_dir() },
         };
         if self.inline {
-            let report = execute(&job, &stem(&uri));
+            let report = execute(&job, &self.queries.stem_for(&uri));
             return Ok(Some(self.deliver(&job.name, report)));
         }
         // A newer run of the same document replaces the one going on.
@@ -191,7 +215,7 @@ impl Server {
             },
         );
         let out = self.queries.done_tx.clone();
-        let stem = stem(&uri);
+        let stem = self.queries.stem_for(&uri);
         std::thread::Builder::new()
             .name("run-query".into())
             .stack_size(16 << 20)
@@ -331,6 +355,7 @@ fn execute(job: &Job, stem: &str) -> Report {
         timeout: job.timeout,
         cancel: Some(job.cancel.clone()),
         max_rows: job.max_rows,
+        max_buffered_rows: job.max_buffered_rows,
     };
     let outcome = query::run(&docs, &job.text, Some(&job.base), &job.prefixes, &limits);
     let elapsed = Instant::now().saturating_duration_since(start);
@@ -340,6 +365,9 @@ fn execute(job: &Job, stem: &str) -> Report {
             "stopped at the time limit ({}, query.timeoutSeconds)",
             duration(job.timeout.unwrap_or(elapsed))
         ),
+        Err(QueryError::TooManyRows(n)) => {
+            format!("stopped: it kept more than {n} rows in memory (query.maxBufferedRows)")
+        }
         Err(e) => e.to_string(),
     };
     let failed = outcome.is_err();
@@ -418,6 +446,9 @@ fn document(job: &Job, outcome: &Result<Answer, QueryError>, elapsed: Duration) 
                     "The query was stopped at the time limit ({}, `query.timeoutSeconds`).",
                     duration(job.timeout.unwrap_or(elapsed))
                 ),
+                QueryError::TooManyRows(n) => format!(
+                    "The query was stopped: it kept more than {n} rows in memory (`query.maxBufferedRows`)."
+                ),
                 e => capitalize(&e.to_string()),
             };
             out.push_str(&line);
@@ -473,6 +504,7 @@ mod tests {
             docs: vec![data.clone()],
             timeout: Some(Duration::from_secs(5)),
             max_rows: Some(1),
+            max_buffered_rows: None,
             cancel: Arc::new(AtomicBool::new(false)),
             out: Some(dir.clone()),
         };
@@ -483,6 +515,24 @@ mod tests {
         assert!(md.contains("over 1 file.\n\n2 rows\n"), "{md}");
         assert!(md.contains("| `ex:a` |") && !md.contains("`ex:b`"), "{md}");
         assert!(md.ends_with("_Showing 1 of 2 rows._\n"), "{md}");
+
+        let over = Job {
+            max_buffered_rows: Some(1),
+            ..job("SELECT ?s WHERE { ?s ex:p ?o } ORDER BY ?o")
+        };
+        let r = execute(&over, "q");
+        assert_eq!(
+            (r.failed, r.summary.as_str()),
+            (
+                true,
+                "stopped: it kept more than 1 rows in memory (query.maxBufferedRows)"
+            )
+        );
+        let md = std::fs::read_to_string(r.file.unwrap()).unwrap();
+        assert!(
+            md.contains("kept more than 1 rows in memory (`query.maxBufferedRows`)."),
+            "{md}"
+        );
 
         let r = execute(&job("SELECT ?s WHERE { ?s ex:p }"), "q");
         assert!(

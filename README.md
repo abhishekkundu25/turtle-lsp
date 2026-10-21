@@ -201,7 +201,9 @@ not by its extension.
   `CONSTRUCT` and `DESCRIBE`) with `window/showDocument`; VS Code opens it
   beside the query. The query runs on its own thread with a time limit and
   a row limit (`query.timeoutSeconds`, default 30; `query.maxRows`, default
-  1000), so typing never waits for it.
+  1000), so typing never waits for it. A query that keeps more than
+  `query.maxBufferedRows` rows in memory to sort, group, deduplicate or join
+  them (default 10 000 000, about 1 GB; `0` for no limit) is stopped too.
 
 Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
 queries too. SPARQL files add nothing to the workspace's knowledge, so a
@@ -416,8 +418,8 @@ server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
 untrusted workspaces), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
-default), and `turtle.query.timeoutSeconds` and `turtle.query.maxRows` (for
-▶ Run query).
+default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
+`turtle.query.maxBufferedRows` (for ▶ Run query).
 
 Other editors pass the server settings without the `turtle.` prefix, as
 `init_options` or as the `turtle` section of `settings`:
@@ -518,7 +520,8 @@ inline with `-e`) over the RDF files under the paths given (default: the
 workspace root), with the project's prefixes. `--format` is `table` (the
 default for SELECT), `json` (SPARQL JSON results), `csv`, `tsv`, or `turtle`
 (the default for CONSTRUCT and DESCRIBE); an ASK prints `true` or `false`.
-`--timeout SECONDS` (default 30) and `--limit ROWS` (table only). Exit codes:
+`--timeout SECONDS` (default 30), `--limit ROWS` (table only) and
+`--max-buffered-rows N` (default 10 000 000; `0` for no limit). Exit codes:
 0 ran, 1 an ASK answered false, 2 an error (a syntax error is printed as
 `FILE:LINE:COL: message`).
 

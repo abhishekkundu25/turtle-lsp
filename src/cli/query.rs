@@ -50,6 +50,7 @@ pub fn run(a: QueryArgs) -> Result<i32, String> {
         timeout: a.timeout,
         cancel: None,
         max_rows: None,
+        max_buffered_rows: a.max_buffered_rows,
     };
     let outcome = batch::query_on_disk(&data, &q, &settings, &limits, &disk);
     let answer = match outcome.answer {
@@ -67,6 +68,11 @@ pub fn run(a: QueryArgs) -> Result<i32, String> {
             let secs = a.timeout.map_or(0.0, |t| t.as_secs_f64());
             return Err(format!(
                 "the query was stopped at the time limit ({secs} s; see --timeout)"
+            ));
+        }
+        Err(QueryError::TooManyRows(n)) => {
+            return Err(format!(
+                "the query was stopped: it kept more than {n} rows in memory (see --max-buffered-rows)"
             ));
         }
         Err(e) => return Err(e.to_string()),

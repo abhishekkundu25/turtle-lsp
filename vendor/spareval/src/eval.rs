@@ -34,7 +34,7 @@ use std::hash::{Hash, Hasher};
 use std::iter::{Peekable, empty, once};
 use std::marker::PhantomData;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, atomic};
 use std::{fmt, io};
 // TODO: make expression raise error when relevant (storage I/O)
@@ -1221,7 +1221,10 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 let mut errors = Vec::default();
                                 let built_values = build(from.clone())
                                     .filter_map(|result| match result {
-                                        Ok(result) => Some(result),
+                                        Ok(result) => {
+                                            cancellation_token.keep();
+                                            Some(result)
+                                        }
                                         Err(error) => {
                                             errors.push(Err(error));
                                             None
@@ -1255,7 +1258,10 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 let mut built_values = InternalTupleSet::new(keys.clone());
                                 built_values.extend(build(from.clone()).filter_map(|result| {
                                     match result {
-                                        Ok(result) => Some(result),
+                                        Ok(result) => {
+                                            cancellation_token.keep();
+                                            Some(result)
+                                        }
                                         Err(error) => {
                                             errors.push(Err(error));
                                             None
@@ -1335,13 +1341,16 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 stat_children.push(right_stats);
                 let left = left?;
                 let right = right?;
+                let cancellation_token = self.dataset.cancellation_token.clone();
 
                 match algorithm {
                     MinusAlgorithm::HashBuildRightProbeLeft { keys } => {
                         if keys.is_empty() {
                             Rc::new(move |from| {
-                                let right: Vec<_> =
-                                    right(from.clone()).filter_map(Result::ok).collect();
+                                let right: Vec<_> = right(from.clone())
+                                    .filter_map(Result::ok)
+                                    .inspect(|_| cancellation_token.keep())
+                                    .collect();
                                 if right.is_empty() {
                                     return left(from);
                                 }
@@ -1365,7 +1374,11 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                                 .collect::<Vec<_>>();
                             Rc::new(move |from| {
                                 let mut right_values = InternalTupleSet::new(keys.clone());
-                                right_values.extend(right(from.clone()).filter_map(Result::ok));
+                                right_values.extend(
+                                    right(from.clone())
+                                        .filter_map(Result::ok)
+                                        .inspect(|_| cancellation_token.keep()),
+                                );
                                 if right_values.is_empty() {
                                     return left(from);
                                 }
@@ -1417,7 +1430,10 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                             let mut right_values = InternalTupleSet::new(keys.clone());
                             right_values.extend(right(from.clone()).filter_map(
                                 |result| match result {
-                                    Ok(result) => Some(result),
+                                    Ok(result) => {
+                                        cancellation_token.keep();
+                                        Some(result)
+                                    }
                                     Err(error) => {
                                         errors.push(Err(error));
                                         None
@@ -1542,17 +1558,25 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                         })
                     })
                     .collect::<Result<Vec<_>, QueryEvaluationError>>()?;
+                let cancellation_token = self.dataset.cancellation_token.clone();
                 Rc::new(move |from| {
                     let mut errors = Vec::default();
                     let mut values = child(from)
                         .filter_map(|result| match result {
-                            Ok(result) => Some(result),
+                            Ok(result) => {
+                                cancellation_token.keep();
+                                Some(result)
+                            }
                             Err(error) => {
                                 errors.push(Err(error));
                                 None
                             }
                         })
                         .collect::<Vec<_>>();
+                    if cancellation_token.is_cancelled() {
+                        // Sorting what was gathered would only delay the stop.
+                        return Box::new(once(Err(QueryEvaluationError::Cancelled)));
+                    }
                     values.sort_unstable_by(|a, b| {
                         for comp in &by {
                             match comp {
@@ -1583,7 +1607,15 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
                 let (child, child_stats) = self.graph_pattern_evaluator(inner, encoded_variables);
                 stat_children.push(child_stats);
                 let child = child?;
-                Rc::new(move |from| Box::new(hash_deduplicate(child(from))))
+                let cancellation_token = self.dataset.cancellation_token.clone();
+                Rc::new(move |from| {
+                    let token = cancellation_token.clone();
+                    Box::new(hash_deduplicate(child(from)).inspect(move |r| {
+                        if r.is_ok() {
+                            token.keep();
+                        }
+                    }))
+                })
             }
             GraphPattern::Reduced { inner } => {
                 let (child, child_stats) = self.graph_pattern_evaluator(inner, encoded_variables);
@@ -1713,6 +1745,7 @@ impl<'a, D: QueryableDataset<'a>> SimpleEvaluator<'a, D> {
 
                             let key_accumulators =
                                 accumulators_for_group.entry(key).or_insert_with(|| {
+                                    dataset.cancellation_token.keep();
                                     accumulator_builders.iter().map(|c| c()).collect::<Vec<_>>()
                                 });
                             for accumulator in key_accumulators {
@@ -4702,6 +4735,8 @@ impl Timer {
 pub struct CancellationToken {
     value: Arc<AtomicBool>,
     check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// The tuples kept in memory so far, and the most allowed.
+    kept: Option<Arc<(AtomicUsize, usize)>>,
 }
 
 impl CancellationToken {
@@ -4710,6 +4745,7 @@ impl CancellationToken {
         Self {
             value: Arc::new(AtomicBool::new(false)),
             check: None,
+            kept: None,
         }
     }
 
@@ -4730,6 +4766,33 @@ impl CancellationToken {
         Self {
             value: Arc::new(AtomicBool::new(false)),
             check: Some(Arc::new(check)),
+            kept: None,
+        }
+    }
+
+    /// This token, also canceled once the evaluation has kept more than `max` tuples in memory:
+    /// the tuples it sorts (`ORDER BY`), deduplicates (`DISTINCT`), groups (one per group) or
+    /// builds a join from, counted over the whole evaluation.
+    #[must_use]
+    pub fn with_max_kept_tuples(mut self, max: usize) -> Self {
+        self.kept = Some(Arc::new((AtomicUsize::new(0), max)));
+        self
+    }
+
+    /// Whether the evaluation kept more tuples than [`CancellationToken::with_max_kept_tuples`] allows.
+    pub fn kept_too_many(&self) -> bool {
+        self.kept
+            .as_ref()
+            .is_some_and(|k| k.0.load(atomic::Ordering::Relaxed) > k.1)
+    }
+
+    /// Counts one tuple kept in memory; past the limit, cancels.
+    #[inline]
+    fn keep(&self) {
+        if let Some(k) = &self.kept {
+            if k.0.fetch_add(1, atomic::Ordering::Relaxed) >= k.1 {
+                self.cancel();
+            }
         }
     }
 

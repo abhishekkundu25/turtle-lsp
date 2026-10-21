@@ -84,6 +84,9 @@ Options:
   --format F            table, json, csv, tsv or turtle (see below)
   --timeout SECONDS     stop the query after this long (default 30; 0: never)
   --limit ROWS          print at most ROWS rows of a table
+  --max-buffered-rows N stop the query once it keeps more than N rows in
+                        memory to sort, group or join them (default
+                        10000000, about 1 GB; 0: never)
 
 Formats:
   SELECT                table (default), json, csv or tsv

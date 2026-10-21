@@ -78,7 +78,14 @@ pub struct Settings {
     /// "Run query" keeps at most this many rows (or triples) of an answer;
     /// `None` (0) keeps all.
     pub query_max_rows: Option<usize>,
+    /// "Run query" stops a query that keeps more than this many rows in
+    /// memory (to sort, deduplicate, group or join them); `None` (0) for no
+    /// limit.
+    pub query_max_buffered_rows: Option<usize>,
 }
+
+/// The default `query.maxBufferedRows`: about 1 GB, at about 100 bytes a row.
+pub const QUERY_MAX_BUFFERED_ROWS: usize = 10_000_000;
 
 impl Default for Settings {
     fn default() -> Settings {
@@ -96,6 +103,7 @@ impl Default for Settings {
             diagnostics_workspace: false,
             query_timeout: Some(Duration::from_secs(30)),
             query_max_rows: Some(1000),
+            query_max_buffered_rows: Some(QUERY_MAX_BUFFERED_ROWS),
         }
     }
 }
@@ -175,6 +183,11 @@ impl Settings {
                     self.query_max_rows = (n > 0).then_some(n);
                 }
             }
+            ["query", "maxBufferedRows"] => {
+                if let Some(n) = v.as_u64().and_then(|n| usize::try_from(n).ok()) {
+                    self.query_max_buffered_rows = (n > 0).then_some(n);
+                }
+            }
             [head, rest @ ..] => {
                 // A nested group, e.g. {"shacl": {"enabled": false}}.
                 if let Value::Object(map) = v {
@@ -235,6 +248,7 @@ mod tests {
         assert!(!s.diagnostics_workspace);
         assert_eq!(s.query_timeout, Some(Duration::from_secs(30)));
         assert_eq!(s.query_max_rows, Some(1000));
+        assert_eq!(s.query_max_buffered_rows, Some(10_000_000));
         assert!(s.prefixes.is_empty());
     }
 
@@ -249,7 +263,7 @@ mod tests {
             "format": {"lineWidth": 80},
             "codeLens": {"references": false},
             "diagnostics": {"workspace": true},
-            "query": {"timeoutSeconds": 2.5, "maxRows": 0},
+            "query": {"timeoutSeconds": 2.5, "maxRows": 0, "maxBufferedRows": 0},
             "server": {"path": "/ignored"},
         });
         let dotted = json!({
@@ -266,6 +280,7 @@ mod tests {
             "diagnostics.workspace": true,
             "query.timeoutSeconds": 2.5,
             "query.maxRows": 0,
+            "query.maxBufferedRows": 0,
         });
         let a = Settings::from_layers([&nested]);
         assert_eq!(a, Settings::from_layers([&dotted]));
@@ -279,9 +294,12 @@ mod tests {
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
         assert!(a.diagnostics_workspace);
         assert_eq!(a.query_timeout, Some(Duration::from_millis(2500)));
-        assert_eq!(a.query_max_rows, None);
-        let off = Settings::from_layers([&json!({"query": {"timeoutSeconds": 0, "maxRows": 5}})]);
+        assert_eq!((a.query_max_rows, a.query_max_buffered_rows), (None, None));
+        let off = Settings::from_layers([
+            &json!({"query": {"timeoutSeconds": 0, "maxRows": 5, "maxBufferedRows": 500}}),
+        ]);
         assert_eq!((off.query_timeout, off.query_max_rows), (None, Some(5)));
+        assert_eq!(off.query_max_buffered_rows, Some(500));
     }
 
     #[test]
@@ -292,7 +310,7 @@ mod tests {
             "shacl": {"enabled": "no", "maxTriples": -1},
             "imports": {"unresolved": "drop"},
             "format": {"lineWidth": 90},
-            "query": {"timeoutSeconds": -1, "maxRows": 2.5},
+            "query": {"timeoutSeconds": -1, "maxRows": 2.5, "maxBufferedRows": -1},
         });
         let s = Settings::from_layers([&init, &config]);
         assert_eq!(s.prefixes["ex"], "http://a/");
@@ -303,6 +321,11 @@ mod tests {
         assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(s.query_timeout, Some(Duration::from_secs(30)));
         assert_eq!(s.query_max_rows, Some(1000));
+        assert_eq!(s.query_max_buffered_rows, Some(10_000_000));
+        for bad in [json!(2.5), json!("lots"), json!(true)] {
+            let s = Settings::from_layers([&json!({"query": {"maxBufferedRows": bad}})]);
+            assert_eq!(s.query_max_buffered_rows, Some(10_000_000), "{bad}");
+        }
         assert_eq!(Settings::from_layers([&Value::Null]), Settings::default());
     }
 

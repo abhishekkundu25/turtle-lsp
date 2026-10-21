@@ -135,6 +135,8 @@ pub enum QueryError {
     Unsupported(String),
     /// The time limit passed.
     Timeout,
+    /// The evaluation kept more than this many rows in memory.
+    TooManyRows(usize),
     /// The caller's cancellation flag was set.
     Cancelled,
     /// The evaluator failed (an unsupported custom function or `SERVICE`).
@@ -152,6 +154,10 @@ impl fmt::Display for QueryError {
             } => write!(f, "syntax error at {line}:{column}: {message}"),
             QueryError::Unsupported(why) => f.write_str(why),
             QueryError::Timeout => f.write_str("the query was stopped at the time limit"),
+            QueryError::TooManyRows(n) => write!(
+                f,
+                "the query was stopped: it kept more than {n} rows in memory"
+            ),
             QueryError::Cancelled => f.write_str("the query was cancelled"),
             QueryError::Evaluation(why) => write!(f, "the query failed: {why}"),
         }
@@ -170,6 +176,9 @@ pub struct Limits {
     /// Keep at most this many rows (or triples); the rest are counted, not
     /// kept ([`Solutions::omitted`], [`Triples::omitted`]). `None` keeps all.
     pub max_rows: Option<usize>,
+    /// Stop once the evaluation keeps more than this many rows in memory (to
+    /// sort, deduplicate, group or join them); `None` for no limit.
+    pub max_buffered_rows: Option<usize>,
 }
 
 /// Runs `query` over the union of `docs`. `base` resolves relative IRIs;
@@ -187,7 +196,7 @@ pub fn run(
     let graph = Graph::new(&triples);
     let index = Index::new(&graph, None);
     watch.check().map_err(QueryError::from)?;
-    evaluate(&index, &parsed, &watch, limits.max_rows)
+    evaluate(&index, &parsed, &watch, limits)
 }
 
 /// The prefixes to show results with: `external` and the query's own
@@ -228,19 +237,26 @@ fn parse(text: &str, base: Option<&str>, prefixes: &PrefixMap) -> Result<Query, 
         }
     }
     let fixed = crate::sparql::validate::text_for_spargebra(text, doc.tokens());
-    parser.clone().parse_query(&fixed).map_err(|_| {
-        // The diagnostics found nothing (they should have): locate it here.
-        let e = crate::sparql::validate::locate(&fixed, parser, false);
-        let offset = match e.at {
-            crate::sparql::validate::ErrorAt::Token(s) => s.start as usize,
-            _ => text.len(),
-        };
-        syntax_error(text, e.message, offset)
-    })
+    // The diagnostics found nothing (they should have): locate it here.
+    parser
+        .clone()
+        .parse_query(&fixed)
+        .map_err(|_| located(text, doc.tokens(), parser))
+}
+
+/// The syntax error of `text` (tokenized as `tokens`), which `parser`
+/// rejects, at its place in `text`: the parser is given a rewritten copy.
+fn located(text: &str, tokens: &[crate::sparql::Token], parser: SparqlParser) -> QueryError {
+    let e = crate::sparql::validate::check_tokens(text, tokens, parser, false);
+    let offset = match e.as_ref().map(|e| e.at) {
+        Some(crate::sparql::validate::ErrorAt::Token(s)) => s.start as usize,
+        _ => text.len(),
+    };
+    syntax_error(text, e.map_or_else(String::new, |e| e.message), offset)
 }
 
 fn syntax_error(text: &str, message: String, offset: usize) -> QueryError {
-    let offset = offset.min(text.len());
+    let offset = text.floor_char_boundary(offset.min(text.len()));
     let before = &text[..offset];
     let line_start = before.rfind('\n').map_or(0, |i| i + 1);
     QueryError::Syntax {
@@ -259,10 +275,10 @@ fn evaluate(
     index: &Index,
     query: &Query,
     watch: &Arc<Watch>,
-    max_rows: Option<usize>,
+    limits: &Limits,
 ) -> Result<Answer, QueryError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        evaluate_inner(index, query, watch, max_rows.unwrap_or(usize::MAX))
+        evaluate_inner(index, query, watch, limits)
     })) {
         Ok(answer) => answer,
         Err(payload) => match payload.downcast_ref::<Stop>() {
@@ -276,18 +292,28 @@ fn evaluate_inner(
     index: &Index,
     query: &Query,
     watch: &Arc<Watch>,
-    max: usize,
+    limits: &Limits,
 ) -> Result<Answer, QueryError> {
-    let token = {
+    let max = limits.max_rows.unwrap_or(usize::MAX);
+    let mut token = {
         let watch = watch.clone();
         spareval::CancellationToken::with_check(move || watch.check().is_err())
     };
-    let evaluator = QueryEvaluator::new().with_cancellation_token(token);
+    if let Some(n) = limits.max_buffered_rows {
+        token = token.with_max_kept_tuples(n);
+    }
+    let evaluator = QueryEvaluator::new().with_cancellation_token(token.clone());
     let mut prepared = evaluator.prepare(query);
     // FROM and FROM NAMED are ignored: the default graph is the union.
     *prepared.dataset_mut() = spareval::QueryDatasetSpecification::new();
     let data = Watched { index, watch };
-    let fail = |e: QueryEvaluationError| watch.stopped().unwrap_or_else(|| evaluation(e));
+    let too_many = || QueryError::TooManyRows(limits.max_buffered_rows.unwrap_or(usize::MAX));
+    let fail = |e: QueryEvaluationError| {
+        if token.kept_too_many() {
+            return too_many();
+        }
+        watch.stopped().unwrap_or_else(|| evaluation(e))
+    };
     match prepared.execute(data).map_err(fail)? {
         QueryResults::Solutions(solutions) => {
             let variables = solutions
@@ -330,6 +356,9 @@ fn evaluate_inner(
                     out.push(t);
                 } else {
                     past.insert(rustc_hash::FxBuildHasher.hash_one(&t));
+                    if limits.max_buffered_rows.is_some_and(|n| past.len() > n) {
+                        return Err(too_many());
+                    }
                 }
             }
             Ok(Answer::Triples(Triples {

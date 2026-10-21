@@ -94,6 +94,25 @@ test("running writes the results file and opens it beside the query", async () =
   }
 })
 
+test("query files of the same name in different folders keep their own results", async () => {
+  for (const d of ["a", "b"]) fs.mkdirSync(path.join(ws, d), { recursive: true })
+  fs.writeFileSync(path.join(ws, "a", "same.rq"), QUERY)
+  fs.writeFileSync(path.join(ws, "b", "same.rq"), "PREFIX ex: <http://example.org/>\nASK { ex:alice ex:age 30 }\n")
+  const s = await startServer({ cwd: ws, capabilities: showDocument, onRequest })
+  try {
+    const results = (name) => fs.readFileSync(path.join(s.cacheDir, "query-results", name), "utf8")
+    assert.match(await run(s, at("a/same.rq")), /^3 rows/)
+    assert.match(await run(s, at("b/same.rq")), /^true/)
+    assert.match(await run(s, at("a/same.rq")), /^3 rows/)
+    assert.ok(results("same.md").includes('`"Alice"`'), results("same.md"))
+    assert.ok(results("same-2.md").includes("**true**"), results("same-2.md"))
+    const shown = showDocuments(s).map((r) => path.basename(fileURLToPath(r.params.uri)))
+    assert.deepEqual(shown, ["same.md", "same-2.md", "same.md"])
+  } finally {
+    await s.stop()
+  }
+})
+
 test("the query sees unsaved edits to the data and to itself", async () => {
   const s = await startServer({ cwd: ws, capabilities: showDocument, onRequest })
   try {

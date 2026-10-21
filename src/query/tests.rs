@@ -678,3 +678,58 @@ fn turtle_writes_rdf_type_as_a() {
         "@prefix ex: <http://example.com/> .\n\nex:alice a ex:Person .\n"
     );
 }
+
+/// The fallback (the diagnostics missed an error) gives the place in the text
+/// as written, not in the copy the parser sees (`ex:a\.b\.c`, two bytes
+/// longer), and never cuts a character.
+#[test]
+fn a_fallback_syntax_error_is_placed_in_the_written_text() {
+    let text = "SELECT * WHERE { ?s ex:a.b.c ?o . ?s ?p }";
+    let doc = Document::parse(text, &ex_prefixes(), None);
+    let parser = SparqlParser::new().with_prefix("ex", EX).unwrap();
+    let QueryError::Syntax { line, column, .. } = located(text, doc.tokens(), parser) else {
+        unreachable!()
+    };
+    assert_eq!((line, column), (1, text.rfind('}').unwrap() as u32 + 1));
+    let QueryError::Syntax { offset, column, .. } = syntax_error("\"é\"", String::new(), 2) else {
+        unreachable!()
+    };
+    assert_eq!((offset, column), (1, 2));
+}
+
+/// Each place the evaluator keeps rows counts them against
+/// `max_buffered_rows`: over it the query stops, under it or without it the
+/// answer is the same.
+#[test]
+fn a_query_that_keeps_too_many_rows_stops() {
+    let d = chain(100);
+    let mut failed = Vec::new();
+    for q in [
+        "SELECT ?s WHERE { ?s ex:next ?o } ORDER BY ?s",
+        "SELECT DISTINCT ?s WHERE { ?s ex:next ?o }",
+        "SELECT ?s (COUNT(*) AS ?n) WHERE { ?s ex:next ?o } GROUP BY ?s",
+        "SELECT (COUNT(*) AS ?n) WHERE { ?a ex:next ?b . ?c ex:next ?d }",
+        "SELECT ?a WHERE { ?a ex:next ?b MINUS { ?c ex:next ?d } }",
+        "SELECT ?a WHERE { ?a ex:next ?b MINUS { ?b ex:next ?c } }",
+        "SELECT (COUNT(*) AS ?n) WHERE { { SELECT ?a ?x WHERE { ?a ex:next* ?x } LIMIT 1000000 } { SELECT ?b ?x WHERE { ?b ex:next* ?x } LIMIT 1000000 } }",
+        "SELECT (COUNT(*) AS ?n) WHERE { { SELECT ?a ?x WHERE { ?a ex:next* ?x } LIMIT 1000000 } OPTIONAL { SELECT ?b ?x WHERE { ?b ex:next* ?x } LIMIT 1000000 } }",
+        "CONSTRUCT { ?s ex:q ?o } WHERE { ?s ex:next ?o }",
+    ] {
+        let with = |n: Option<usize>| {
+            let limits = Limits {
+                max_rows: Some(1),
+                max_buffered_rows: n,
+                ..Limits::default()
+            };
+            run(&[&d], q, None, &ex_prefixes(), &limits)
+        };
+        let all = with(None);
+        if with(Some(10)) != Err(QueryError::TooManyRows(10))
+            || all.is_err()
+            || with(Some(10_000_000)) != all
+        {
+            failed.push(q);
+        }
+    }
+    assert_eq!(failed, Vec::<&str>::new());
+}

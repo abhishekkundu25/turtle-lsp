@@ -1,5 +1,14 @@
 --- a/lib/spareval/src/eval.rs
 +++ b/lib/spareval/src/eval.rs
+@@ -34,7 +34,7 @@
+ use std::iter::{Peekable, empty, once};
+ use std::marker::PhantomData;
+ use std::rc::Rc;
+-use std::sync::atomic::AtomicBool;
++use std::sync::atomic::{AtomicBool, AtomicUsize};
+ use std::sync::{Arc, atomic};
+ use std::{fmt, io};
+ // TODO: make expression raise error when relevant (storage I/O)
 @@ -1209,6 +1209,7 @@
                  stat_children.push(right_stats);
                  let left = left?;
@@ -8,7 +17,19 @@
  
                  match algorithm {
                      JoinAlgorithm::HashBuildLeftProbeRight { keys } => {
-@@ -1240,6 +1241,7 @@
+@@ -1220,7 +1221,10 @@
+                                 let mut errors = Vec::default();
+                                 let built_values = build(from.clone())
+                                     .filter_map(|result| match result {
+-                                        Ok(result) => Some(result),
++                                        Ok(result) => {
++                                            cancellation_token.keep();
++                                            Some(result)
++                                        }
+                                         Err(error) => {
+                                             errors.push(Err(error));
+                                             None
+@@ -1240,6 +1244,7 @@
                                      probe_iter,
                                      built: built_values,
                                      buffered_results: errors,
@@ -16,7 +37,19 @@
                                  })
                              })
                          } else {
-@@ -1273,6 +1275,7 @@
+@@ -1253,7 +1258,10 @@
+                                 let mut built_values = InternalTupleSet::new(keys.clone());
+                                 built_values.extend(build(from.clone()).filter_map(|result| {
+                                     match result {
+-                                        Ok(result) => Some(result),
++                                        Ok(result) => {
++                                            cancellation_token.keep();
++                                            Some(result)
++                                        }
+                                         Err(error) => {
+                                             errors.push(Err(error));
+                                             None
+@@ -1273,6 +1281,7 @@
                                      probe_iter,
                                      built: built_values,
                                      buffered_results: errors,
@@ -24,7 +57,39 @@
                                  })
                              })
                          }
-@@ -1400,6 +1403,7 @@
+@@ -1332,13 +1341,16 @@
+                 stat_children.push(right_stats);
+                 let left = left?;
+                 let right = right?;
++                let cancellation_token = self.dataset.cancellation_token.clone();
+ 
+                 match algorithm {
+                     MinusAlgorithm::HashBuildRightProbeLeft { keys } => {
+                         if keys.is_empty() {
+                             Rc::new(move |from| {
+-                                let right: Vec<_> =
+-                                    right(from.clone()).filter_map(Result::ok).collect();
++                                let right: Vec<_> = right(from.clone())
++                                    .filter_map(Result::ok)
++                                    .inspect(|_| cancellation_token.keep())
++                                    .collect();
+                                 if right.is_empty() {
+                                     return left(from);
+                                 }
+@@ -1362,7 +1374,11 @@
+                                 .collect::<Vec<_>>();
+                             Rc::new(move |from| {
+                                 let mut right_values = InternalTupleSet::new(keys.clone());
+-                                right_values.extend(right(from.clone()).filter_map(Result::ok));
++                                right_values.extend(
++                                    right(from.clone())
++                                        .filter_map(Result::ok)
++                                        .inspect(|_| cancellation_token.keep()),
++                                );
+                                 if right_values.is_empty() {
+                                     return left(from);
+                                 }
+@@ -1400,6 +1416,7 @@
                      encoded_variables,
                      stat_children,
                  )?;
@@ -32,7 +97,19 @@
  
                  match algorithm {
                      LeftJoinAlgorithm::HashBuildRightProbeLeft { keys } => {
-@@ -1428,6 +1432,7 @@
+@@ -1413,7 +1430,10 @@
+                             let mut right_values = InternalTupleSet::new(keys.clone());
+                             right_values.extend(right(from.clone()).filter_map(
+                                 |result| match result {
+-                                    Ok(result) => Some(result),
++                                    Ok(result) => {
++                                        cancellation_token.keep();
++                                        Some(result)
++                                    }
+                                     Err(error) => {
+                                         errors.push(Err(error));
+                                         None
+@@ -1428,6 +1448,7 @@
                                  right: right_values,
                                  buffered_results: errors,
                                  expression: Rc::clone(&expression),
@@ -40,7 +117,59 @@
                              })
                          })
                      }
-@@ -3744,6 +3749,7 @@
+@@ -1537,17 +1558,25 @@
+                         })
+                     })
+                     .collect::<Result<Vec<_>, QueryEvaluationError>>()?;
++                let cancellation_token = self.dataset.cancellation_token.clone();
+                 Rc::new(move |from| {
+                     let mut errors = Vec::default();
+                     let mut values = child(from)
+                         .filter_map(|result| match result {
+-                            Ok(result) => Some(result),
++                            Ok(result) => {
++                                cancellation_token.keep();
++                                Some(result)
++                            }
+                             Err(error) => {
+                                 errors.push(Err(error));
+                                 None
+                             }
+                         })
+                         .collect::<Vec<_>>();
++                    if cancellation_token.is_cancelled() {
++                        // Sorting what was gathered would only delay the stop.
++                        return Box::new(once(Err(QueryEvaluationError::Cancelled)));
++                    }
+                     values.sort_unstable_by(|a, b| {
+                         for comp in &by {
+                             match comp {
+@@ -1578,7 +1607,15 @@
+                 let (child, child_stats) = self.graph_pattern_evaluator(inner, encoded_variables);
+                 stat_children.push(child_stats);
+                 let child = child?;
+-                Rc::new(move |from| Box::new(hash_deduplicate(child(from))))
++                let cancellation_token = self.dataset.cancellation_token.clone();
++                Rc::new(move |from| {
++                    let token = cancellation_token.clone();
++                    Box::new(hash_deduplicate(child(from)).inspect(move |r| {
++                        if r.is_ok() {
++                            token.keep();
++                        }
++                    }))
++                })
+             }
+             GraphPattern::Reduced { inner } => {
+                 let (child, child_stats) = self.graph_pattern_evaluator(inner, encoded_variables);
+@@ -1708,6 +1745,7 @@
+ 
+                             let key_accumulators =
+                                 accumulators_for_group.entry(key).or_insert_with(|| {
++                                    dataset.cancellation_token.keep();
+                                     accumulator_builders.iter().map(|c| c()).collect::<Vec<_>>()
+                                 });
+                             for accumulator in key_accumulators {
+@@ -3744,6 +3782,7 @@
      probe_iter: Peekable<InternalTuplesIterator<'a, T>>,
      built: Vec<InternalTuple<T>>,
      buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
@@ -48,14 +177,13 @@
  }
  
  impl<T: Clone + Eq> Iterator for CartesianProductJoinIterator<'_, T> {
-@@ -3753,12 +3759,19 @@
-         loop {
+@@ -3754,11 +3793,18 @@
              if let Some(result) = self.buffered_results.pop() {
                  return Some(result);
-+            }
+             }
 +            if self.ticker.is_cancelled() {
 +                return None;
-             }
++            }
              let probe_tuple = match self.probe_iter.next()? {
                  Ok(probe_tuple) => probe_tuple,
                  Err(error) => return Some(Err(error)),
@@ -68,7 +196,7 @@
                  if let Some(result_tuple) = probe_tuple.combine_with(built_tuple) {
                      self.buffered_results.push(Ok(result_tuple))
                  }
-@@ -3779,6 +3792,7 @@
+@@ -3779,6 +3825,7 @@
      probe_iter: Peekable<InternalTuplesIterator<'a, T>>,
      built: InternalTupleSet<T>,
      buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
@@ -76,7 +204,7 @@
  }
  
  impl<T: Clone + Eq + Hash> Iterator for HashJoinIterator<'_, T> {
-@@ -3788,17 +3802,26 @@
+@@ -3788,17 +3835,26 @@
          loop {
              if let Some(result) = self.buffered_results.pop() {
                  return Some(result);
@@ -109,7 +237,7 @@
          }
      }
  
-@@ -3818,6 +3841,7 @@
+@@ -3818,6 +3874,7 @@
      right: InternalTupleSet<T>,
      buffered_results: Vec<Result<InternalTuple<T>, QueryEvaluationError>>,
      expression: Rc<dyn Fn(&InternalTuple<T>) -> Option<bool> + 'a>,
@@ -117,7 +245,7 @@
  }
  
  impl<T: Clone + Eq + Hash> Iterator for HashLeftJoinIterator<'_, T> {
-@@ -3828,18 +3852,27 @@
+@@ -3828,18 +3885,27 @@
              if let Some(result) = self.buffered_results.pop() {
                  return Some(result);
              }
@@ -153,7 +281,7 @@
              if self.buffered_results.is_empty() {
                  // We have not manage to join with anything
                  return Some(Ok(left_tuple));
-@@ -4663,9 +4696,12 @@
+@@ -4663,16 +4729,70 @@
  /// A token that can be used to mark something as canceled.
  ///
  /// To cancel run [`CancellationToken::cancel`] and to check if the token is canceled run [`CancellationToken::is_cancelled`].
@@ -163,17 +291,20 @@
  pub struct CancellationToken {
      value: Arc<AtomicBool>,
 +    check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
++    /// The tuples kept in memory so far, and the most allowed.
++    kept: Option<Arc<(AtomicUsize, usize)>>,
  }
  
  impl CancellationToken {
-@@ -4673,17 +4709,45 @@
+     #[inline]
      pub fn new() -> Self {
-         Self {
-             value: Arc::new(AtomicBool::new(false)),
++        Self {
++            value: Arc::new(AtomicBool::new(false)),
 +            check: None,
-         }
-     }
- 
++            kept: None,
++        }
++    }
++
 +    /// A token that is also canceled once `check` returns `true`, for example when a deadline has passed.
 +    ///
 +    /// `check` is called each time the evaluation checks the token, until it returns `true`.
@@ -186,18 +317,42 @@
 +    /// let token = CancellationToken::with_check(move || Instant::now() >= deadline);
 +    /// assert!(!token.is_cancelled());
 +    /// ```
-     #[inline]
++    #[inline]
 +    pub fn with_check(check: impl Fn() -> bool + Send + Sync + 'static) -> Self {
-+        Self {
-+            value: Arc::new(AtomicBool::new(false)),
+         Self {
+             value: Arc::new(AtomicBool::new(false)),
 +            check: Some(Arc::new(check)),
++            kept: None,
 +        }
 +    }
 +
++    /// This token, also canceled once the evaluation has kept more than `max` tuples in memory:
++    /// the tuples it sorts (`ORDER BY`), deduplicates (`DISTINCT`), groups (one per group) or
++    /// builds a join from, counted over the whole evaluation.
++    #[must_use]
++    pub fn with_max_kept_tuples(mut self, max: usize) -> Self {
++        self.kept = Some(Arc::new((AtomicUsize::new(0), max)));
++        self
++    }
++
++    /// Whether the evaluation kept more tuples than [`CancellationToken::with_max_kept_tuples`] allows.
++    pub fn kept_too_many(&self) -> bool {
++        self.kept
++            .as_ref()
++            .is_some_and(|k| k.0.load(atomic::Ordering::Relaxed) > k.1)
++    }
++
++    /// Counts one tuple kept in memory; past the limit, cancels.
 +    #[inline]
-     pub fn cancel(&self) {
-         self.value.store(true, atomic::Ordering::Relaxed);
++    fn keep(&self) {
++        if let Some(k) = &self.kept {
++            if k.0.fetch_add(1, atomic::Ordering::Relaxed) >= k.1 {
++                self.cancel();
++            }
+         }
      }
+ 
+@@ -4683,7 +4803,14 @@
  
      #[inline]
      pub fn is_cancelled(&self) -> bool {
@@ -213,7 +368,7 @@
      }
  
      fn ensure_alive(&self) -> Result<(), QueryEvaluationError> {
-@@ -4694,3 +4758,38 @@
+@@ -4694,3 +4821,38 @@
          }
      }
  }
