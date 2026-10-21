@@ -113,3 +113,27 @@ test("Ctrl+Enter runs the query: true or false, Turtle, and an error at its line
     await close()
   }
 })
+
+test("the suggestion list shows its rows in full (page styles stay out of Monaco's widgets)", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    await page.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0]
+      ed.getModel().setValue("PREFIX ex: <http://example.org/>\nselect ?name where { ?p a ex:Person ; ex:name ?na }\n")
+      ed.setPosition({ lineNumber: 2, column: 50 })
+      ed.focus()
+    })
+    await page.keyboard.press("Control+Space")
+    const row = page.locator(".suggest-widget .monaco-list-row").first()
+    await row.waitFor()
+    const [list, item] = await Promise.all([
+      page.locator(".suggest-widget .monaco-list").boundingBox(),
+      row.boundingBox(),
+    ])
+    assert.ok(list.height >= item.height, `list ${list.height}px, row ${item.height}px`)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})

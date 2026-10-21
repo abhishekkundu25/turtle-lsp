@@ -21,7 +21,7 @@ html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 [hidden] { display: none !important; }
-.hidden-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+input.hidden-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .sp { flex: 1; }
 kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; }
 
@@ -47,12 +47,12 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line); b
 .view-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .ic { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 4px; color: var(--fg); }
 .ic:hover { background: var(--hover); }
-.tree, .outline { flex: 1; overflow: auto; outline: none; padding-bottom: 12px; }
-.tree.drop { box-shadow: inset 0 0 0 1px var(--focus); }
+#tree, .outline { flex: 1; overflow: auto; outline: none; padding-bottom: 12px; }
+#tree.drop { box-shadow: inset 0 0 0 1px var(--focus); }
 .row { display: flex; align-items: center; height: 22px; padding-right: 8px; cursor: pointer; white-space: nowrap; user-select: none; }
 .row:hover { background: var(--hover); }
 .row.sel { background: var(--select); }
-.tree:focus .row.sel { box-shadow: inset 0 0 0 1px var(--focus); }
+#tree:focus .row.sel { box-shadow: inset 0 0 0 1px var(--focus); }
 .row.drop { background: var(--select); }
 .row .tw { width: 16px; flex: none; text-align: center; font-size: 14px; }
 .row .fi { width: 30px; flex: none; font: 600 8.5px var(--mono); color: var(--muted); text-align: center; }
@@ -64,7 +64,7 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line); b
 .row.has-w .nm { color: var(--warn); }
 .tree-input { width: 100%; height: 20px; font: inherit; color: var(--fg); background: var(--input); border: 1px solid var(--focus); outline: none; padding: 0 4px; }
 
-.center { grid-area: center; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+main.center { grid-area: center; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .groups { flex: 1; display: flex; min-height: 0; }
 .group { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .group + .group { border-left: 1px solid var(--line); }
@@ -105,7 +105,7 @@ kbd { font: 11px var(--mono); padding: 1px 4px; border: 1px solid var(--line); b
 
 .outline .row { padding-left: 12px; }
 
-.status { grid-area: status; display: flex; align-items: center; background: var(--status); color: var(--status-fg); font-size: 12px; padding: 0 6px; }
+footer.status { grid-area: status; display: flex; align-items: center; background: var(--status); color: var(--status-fg); font-size: 12px; padding: 0 6px; }
 .st { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px; color: var(--status-fg); white-space: nowrap; }
 .st .codicon { font-size: 14px; }
 button.st:hover, a.st:hover { background: rgba(255, 255, 255, .12); }
