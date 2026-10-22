@@ -51,7 +51,7 @@ this wave), `Cargo.toml` (no new crate and no new feature).
 response path goes through `Session`). Runs in the same wave as 32a, with disjoint
 files (see 32a).
 
-**Status:** ready-for-agent
+**Status:** done. RSS after 20 documentSymbol requests on the 100k-triple file: 1.05x RSS before (109 -> 114 MB), baseline binary 3.12x; budget 1.3x. No mi_collect hook needed. Measured under load; re-measured quietly in 36.
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
