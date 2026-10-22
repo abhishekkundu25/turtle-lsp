@@ -33,8 +33,7 @@ use crate::clock::Instant;
 use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::hierarchy;
 use crate::features::{
-    completion, diagnostics, embedded, format, hover, inlay, navigation, quickfix, refactor,
-    semantic, shacl_validate, symbols,
+    completion, diagnostics, embedded, format, navigation, quickfix, refactor, shacl_validate,
 };
 use crate::ide;
 use crate::settings::{Layer, SETTINGS_FILE, Settings, read_settings_file};
@@ -582,7 +581,7 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
         document_formatting_provider: Some(OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
-                legend: semantic::legend(),
+                legend: ide::Session::semantic_tokens_legend(),
                 range: Some(true),
                 full: Some(SemanticTokensFullOptions::Bool(true)),
                 work_done_progress_options: Default::default(),
@@ -1636,14 +1635,10 @@ impl Server {
             }
             HoverRequest::METHOD => {
                 let p = params!(HoverParams);
-                let pos = p.text_document_position_params.position;
+                let at = p.text_document_position_params;
                 json(serde_json::to_value(
-                    match open!(p.text_document_position_params.text_document.uri) {
-                        ide::Doc::Rdf(a) => hover::hover(&a, self.ws.knowledge(), enc, pos),
-                        ide::Doc::Sparql(q) => {
-                            sparql_features::hover(&q, self.ws.knowledge(), enc, pos)
-                        }
-                    },
+                    self.session()
+                        .hover(at.text_document.uri.as_str(), at.position),
                 ))
             }
             GotoDefinition::METHOD => {
@@ -1716,25 +1711,24 @@ impl Server {
             }
             DocumentSymbolRequest::METHOD => {
                 let p = params!(DocumentSymbolParams);
-                json(serde_json::to_value(DocumentSymbolResponse::Nested(
-                    match open!(p.text_document.uri) {
-                        ide::Doc::Rdf(a) => symbols::document_symbols(&a, enc),
-                        ide::Doc::Sparql(q) => sparql_features::document_symbols(&q, enc),
-                    },
-                )))
+                let syms = self
+                    .session()
+                    .document_symbols(p.text_document.uri.as_str());
+                json(serde_json::to_value(
+                    syms.map(DocumentSymbolResponse::Nested),
+                ))
             }
             WorkspaceSymbolRequest::METHOD => {
                 let p = params!(WorkspaceSymbolParams);
                 json(serde_json::to_value(WorkspaceSymbolResponse::Flat(
-                    symbols::workspace_symbols(self.ws.knowledge(), enc, &p.query),
+                    self.session().workspace_symbols(&p.query),
                 )))
             }
             FoldingRangeRequest::METHOD => {
                 let p = params!(FoldingRangeParams);
-                json(serde_json::to_value(match open!(p.text_document.uri) {
-                    ide::Doc::Rdf(a) => symbols::folding_ranges(&a),
-                    ide::Doc::Sparql(q) => sparql_features::folding_ranges(&q),
-                }))
+                json(serde_json::to_value(
+                    self.session().folding_ranges(p.text_document.uri.as_str()),
+                ))
             }
             DocumentDiagnosticRequest::METHOD => {
                 let p = params!(DocumentDiagnosticParams);
@@ -1829,65 +1823,45 @@ impl Server {
             }
             TypeHierarchySupertypes::METHOD | TypeHierarchySubtypes::METHOD => {
                 let item = params!(TypeHierarchySupertypesParams).item;
-                let asking =
-                    hierarchy::asking_uri(&item).and_then(|u| self.ws.analysis(&normalize_uri(u)));
-                let k = self.ws.knowledge();
+                let mut s = self.session();
                 json(serde_json::to_value(
                     if req.method == TypeHierarchySupertypes::METHOD {
-                        hierarchy::supertypes(&item, k, enc, asking.as_deref())
+                        s.supertypes(&item)
                     } else {
-                        hierarchy::subtypes(&item, k, enc, asking.as_deref())
+                        s.subtypes(&item)
                     },
                 ))
             }
             SemanticTokensFullRequest::METHOD => {
                 let p = params!(SemanticTokensParams);
-                json(serde_json::to_value(match open!(p.text_document.uri) {
-                    ide::Doc::Rdf(a) => semantic::full(&a, self.ws.knowledge(), enc),
-                    ide::Doc::Sparql(q) => {
-                        sparql_features::semantic_tokens_full(&q, self.ws.knowledge(), enc)
-                    }
-                }))
+                json(serde_json::to_value(
+                    self.session()
+                        .semantic_tokens_full(p.text_document.uri.as_str()),
+                ))
             }
             SemanticTokensRangeRequest::METHOD => {
                 let p = params!(SemanticTokensRangeParams);
-                json(serde_json::to_value(match open!(p.text_document.uri) {
-                    ide::Doc::Rdf(a) => semantic::range(&a, self.ws.knowledge(), enc, p.range),
-                    ide::Doc::Sparql(q) => sparql_features::semantic_tokens_range(
-                        &q,
-                        self.ws.knowledge(),
-                        enc,
-                        p.range,
-                    ),
-                }))
+                json(serde_json::to_value(self.session().semantic_tokens_range(
+                    p.text_document.uri.as_str(),
+                    p.range,
+                )))
             }
             InlayHintRequest::METHOD => {
                 let p = params!(InlayHintParams);
-                let mode = self.settings.inlay_hint_labels;
-                json(serde_json::to_value(match open!(p.text_document.uri) {
-                    ide::Doc::Rdf(a) => {
-                        inlay::inlay_hints(&a, self.ws.knowledge(), enc, p.range, mode)
-                    }
-                    ide::Doc::Sparql(q) => {
-                        sparql_features::inlay_hints(&q, self.ws.knowledge(), enc, p.range, mode)
-                    }
-                }))
+                json(serde_json::to_value(
+                    self.session()
+                        .inlay_hints(p.text_document.uri.as_str(), p.range),
+                ))
             }
             CodeLensRequest::METHOD => {
                 let p = params!(CodeLensParams);
-                let on = self.settings.code_lens_references;
-                json(serde_json::to_value(match open!(p.text_document.uri) {
-                    ide::Doc::Rdf(a) => crate::features::lens::code_lenses(&a, enc, on),
-                    ide::Doc::Sparql(q) => crate::features::lens::query_lenses(&q, enc),
-                }))
+                json(serde_json::to_value(
+                    self.session().code_lenses(p.text_document.uri.as_str()),
+                ))
             }
             CodeLensResolve::METHOD => {
-                let l = params!(CodeLens);
-                json(serde_json::to_value(crate::features::lens::resolve(
-                    l,
-                    self.ws.knowledge(),
-                    enc,
-                )))
+                let lens = params!(CodeLens);
+                json(serde_json::to_value(self.session().resolve_code_lens(lens)))
             }
             _ => Err((
                 ErrorCode::MethodNotFound,
