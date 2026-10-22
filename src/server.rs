@@ -25,21 +25,27 @@
 //! generation: anything outside the document that can change its diagnostics
 //! (prefixes.ttl, the disk index, settings) bumps the generation.
 //!
-//! Every request is routed by document kind: RDF documents to `features`,
-//! SPARQL documents to `sparql::features`; neither runs on the other.
+//! Requests are answered by `ide::Session`, which routes each by document
+//! kind: RDF documents to `features`, SPARQL documents to
+//! `sparql::features`; neither runs on the other.
+//!
+//! The server's state is in groups, each a struct of its own that the server
+//! drives: `progress` (work-done progress), `shacl` (validation scheduling
+//! and results), `refresh` (pulled-diagnostics result ids and refresh
+//! requests), `layers` (the settings and their layers) and `index` (the
+//! workspace index as it arrives). They send to the client through
+//! `client::Client`, the connection's sender and request ids.
 
-use crate::analysis::{Analysis, Encoding};
+use crate::analysis::Encoding;
 use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
-use crate::settings::{Layer, SETTINGS_FILE, Settings, read_settings_file};
+use crate::settings::SETTINGS_FILE;
 use crate::workspace::{
     Change, Dirty, DocKind, Effects, Workspace, is_import_source, normalize_uri, uri_to_path,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crossbeam_channel::Sender;
-use crossbeam_channel::{Receiver, never, unbounded};
+use crossbeam_channel::{Receiver, Sender, never, unbounded};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
@@ -52,11 +58,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod client;
+mod index;
+mod layers;
+mod progress;
+mod refresh;
 mod run_query;
+mod shacl;
 mod timers;
 pub(crate) mod worker;
 mod workspace_diagnostics;
 
+use client::Client;
+use index::Index;
+use layers::Layers;
+use progress::{Progress, Work};
+use refresh::Refresh;
+use shacl::Shacl;
 use timers::{Timer, Timers};
 use worker::{Fed, Feed};
 
@@ -71,9 +89,6 @@ const DESCRIBED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis
 
 /// How long a client that has sent `shutdown` is waited for to send `exit`.
 const EXIT_WAIT: Duration = Duration::from_secs(30);
-
-/// How long an embedded host (no threads) waits for one SHACL validation.
-const INLINE_SHACL_LIMIT: Duration = Duration::from_secs(10);
 
 /// The stack of the thread that runs the main loop (see `main`): deep
 /// documents nest deeply, and the OS default (1 MiB on Windows) is too
@@ -113,7 +128,7 @@ const SHACL_TYPING_DEBOUNCE: Duration = Duration::from_secs(1);
 const SHACL_PROGRESS_DELAY: Duration = Duration::from_millis(200);
 
 pub struct Server {
-    conn: Connection,
+    client: Client,
     /// Every message read so far. lsp-server hands over messages through a
     /// rendezvous channel, so without this queue a batch would never hold
     /// more than one message.
@@ -125,82 +140,22 @@ pub struct Server {
     /// from the key (`%7E` for `~`, `c%3A` for `C:`): diagnostics go back
     /// under the client's spelling.
     spelling: FxHashMap<String, String>,
-    /// The initial workspace index: the files parsed, or why it failed.
-    index: Feed<Result<Vec<(String, Analysis)>, String>>,
-    /// Indexed files parsed again after prefixes changed. This server holds
-    /// the sender, so the channel never disconnects.
-    #[cfg(not(target_arch = "wasm32"))]
-    reindex_tx: Sender<Result<Vec<crate::workspace::Reparsed>, String>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    reindex_rx: Receiver<Result<Vec<crate::workspace::Reparsed>, String>>,
-    /// How long `shutdown` waits for `exit`.
-    exit_wait: Duration,
-    /// The initial workspace index has been merged.
-    indexed: bool,
+    index: Index,
     watch_dynamic: bool,
     /// The client resolves a code action's edit lazily (`codeAction/resolve`).
     resolve_edits: bool,
-    next_id: i32,
-    /// `turtle-lsp.json` at the first workspace root (Null when absent or
-    /// invalid), `initializationOptions` and the last `turtle` configuration
-    /// section; `settings` is the defaults overridden by these, in that order.
-    /// The first configuration section the client sends (in
-    /// `didChangeConfiguration` or a `workspace/configuration` answer)
-    /// replaces `initializationOptions`: the client's latest view of its
-    /// settings supersedes its start-up snapshot, so a key the user removed
-    /// falls back to `turtle-lsp.json` or the default.
-    file_settings: Value,
-    /// The warning about `turtle-lsp.json` at startup (unusable, or keys it may
-    /// not set), shown once started.
-    file_settings_error: Option<String>,
-    init_options: Value,
-    config: Value,
-    settings: Settings,
-    /// The client can answer `workspace/configuration`.
-    config_pull: bool,
-    /// The pending `workspace/configuration` request.
-    config_request: Option<RequestId>,
-    /// The client pulls diagnostics; nothing is pushed to it.
-    pull: bool,
-    refresh_support: bool,
-    /// Bumped whenever knowledge outside a document changes (prefixes.ttl,
-    /// the disk index, settings). Part of every pulled report's result id.
-    generation: u64,
-    /// A pulled report went out since the last `workspace/diagnostic/refresh`.
-    reported: bool,
-    /// The generation moved after a report went out: refresh at end of batch.
-    refresh_needed: bool,
-    /// The knowledge index's described generation last acted on.
-    described_seen: u64,
+    layers: Layers,
+    refresh: Refresh,
     /// What waits for a time to come: acting on a described-set change (see
     /// `check_described`), validating after typing stops (`shacl.onType`;
     /// each edit pushes it back), showing a long SHACL run's progress.
     timers: Timers,
-    /// `workspace/{inlayHint,semanticTokens}/refresh`, those the client supports.
-    display_refresh: Vec<&'static str>,
-    /// Knowledge changed since the last display refresh.
-    display_stale: bool,
     imports: crate::imports::Imports,
     /// JSON-LD contexts fetched in the background (with `imports.network`),
     /// by URL, once each has arrived or failed.
     contexts: Feed<String>,
-    /// SHACL validation thread, started when the workspace first has shapes.
-    shacl: Option<shacl_validate::Worker>,
-    shacl_feed: Feed<shacl_validate::Outcome>,
-    /// The latest validation job; older results are dropped.
-    shacl_generation: u64,
-    /// The latest validation results per document.
-    shacl_diagnostics: shacl_validate::ByUri,
-    /// The client declared `window.workDoneProgress`.
-    work_done_progress: bool,
-    /// Tokens of the progress shown, per kind of work.
-    index_progress: Option<String>,
-    imports_progress: Option<String>,
-    shacl_progress: Option<String>,
-    /// Progress whose create request is unanswered, by that request's id.
-    progress_pending: FxHashMap<RequestId, PendingProgress>,
-    /// Tokens whose `begin` went out and whose `end` has not.
-    progress_live: FxHashSet<String>,
+    shacl: Shacl,
+    progress: Progress,
     /// Embedded in a host without threads (see [`Embedded`]): SHACL and
     /// imports run inline, and the host drives the timers.
     inline: bool,
@@ -208,30 +163,19 @@ pub struct Server {
     wsdiag: workspace_diagnostics::State,
     /// The "Run query" runs going on.
     queries: run_query::State,
-    /// The client declared `window.showDocument.support`.
-    show_document: bool,
-    /// The request being handled is answered later (a query run).
-    answer_later: bool,
     /// Tests: panic once after the next batch.
     #[cfg(test)]
     fault: bool,
 }
 
-/// A progress waiting for the client to accept its token.
-struct PendingProgress {
-    token: String,
-    title: String,
-    /// The end message, when the work ended before the client answered.
-    ended: Option<String>,
-}
-
 impl Server {
-    /// A server for the client's `initialize` params (`raw`), not started,
-    /// with the initialize result to answer and the workspace roots. It reads
-    /// no messages and indexes nothing: the caller wires both.
+    /// A server for the client's `initialize` params (`raw`), sending on
+    /// `sender`, not started, with the initialize result to answer and the
+    /// workspace roots. It reads no messages and indexes nothing: the caller
+    /// wires both.
     #[allow(clippy::type_complexity)]
     fn configure(
-        conn: Connection,
+        sender: Sender<Message>,
         raw: Value,
         inline: bool,
     ) -> Result<(Server, Value, Vec<PathBuf>), Box<dyn std::error::Error + Send + Sync>> {
@@ -326,24 +270,20 @@ impl Server {
         {
             roots.push(r);
         }
-        let (file_settings, file_settings_error) = if inline {
+        let file_settings = if inline {
             (Value::Null, None)
         } else {
-            read_file_settings(roots.first())
+            layers::read_file(roots.first())
         };
         let init_options = params.initialization_options.clone().unwrap_or_default();
-        let settings = Settings::from_layers([
-            (Layer::File, &file_settings),
-            (Layer::Client, &init_options),
-        ]);
+        let layers = Layers::new(file_settings, init_options, config_pull);
+        let settings = layers.settings();
         // Embedded, every file is open.
         let wsdiag = workspace_diagnostics::State::new(settings.diagnostics_workspace && !inline);
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
         // Without watchers (see `register_watchers`), nothing reports new files.
         ws.set_rescan_sparql(!watch_dynamic);
         let contexts = use_network(&mut ws, settings.imports_network, inline);
-        #[cfg(not(target_arch = "wasm32"))]
-        let (reindex_tx, reindex_rx) = unbounded();
 
         let result = InitializeResult {
             capabilities: capabilities(enc, pull),
@@ -357,58 +297,28 @@ impl Server {
         result["capabilities"]["typeHierarchyProvider"] = Value::Bool(true);
 
         let server = Server {
-            conn,
+            client: Client::new(sender),
             inbox: never(),
             ws,
             enc,
             dirty: FxHashSet::default(),
             spelling: FxHashMap::default(),
-            index: Feed::default(),
-            #[cfg(not(target_arch = "wasm32"))]
-            reindex_tx,
-            #[cfg(not(target_arch = "wasm32"))]
-            reindex_rx,
-            exit_wait: EXIT_WAIT,
-            indexed: false,
+            index: Index::new(),
             watch_dynamic,
             resolve_edits,
-            next_id: 0,
-            file_settings,
-            file_settings_error,
-            init_options,
-            config: Value::Null,
-            settings,
-            config_pull,
-            config_request: None,
-            pull,
-            refresh_support,
-            generation: 0,
-            reported: false,
-            refresh_needed: false,
-            described_seen: 0,
+            layers,
+            refresh: Refresh::new(pull, refresh_support, display_refresh),
             timers: Timers::default(),
-            display_refresh,
-            display_stale: false,
             imports: if inline {
                 crate::imports::Imports::new_inline()
             } else {
                 crate::imports::Imports::new()
             },
             contexts,
-            shacl: None,
-            shacl_feed: Feed::default(),
-            shacl_generation: 0,
-            shacl_diagnostics: Default::default(),
-            work_done_progress,
-            index_progress: None,
-            imports_progress: None,
-            shacl_progress: None,
-            progress_pending: FxHashMap::default(),
-            progress_live: FxHashSet::default(),
+            shacl: Shacl::default(),
+            progress: Progress::new(work_done_progress),
             wsdiag,
-            queries: Default::default(),
-            show_document,
-            answer_later: false,
+            queries: run_query::State::new(show_document),
             inline,
             #[cfg(test)]
             fault: false,
@@ -434,26 +344,6 @@ fn use_network(ws: &mut Workspace, network: bool, inline: bool) -> Feed<String> 
     Feed::default()
 }
 
-/// The settings layer from `turtle-lsp.json` at `root`, and the warning to
-/// show for it, if any: Null when there is no root, no file, or a bad file;
-/// the warning names the keys of a good file that it may not set.
-fn read_file_settings(root: Option<&PathBuf>) -> (Value, Option<String>) {
-    match root.map(|r| read_settings_file(r)) {
-        Some(Ok(Some(v))) => {
-            let (_, ignored) = Settings::layered([(Layer::File, &v)]);
-            let warning = ignored
-                .message(SETTINGS_FILE)
-                .map(|m| format!("turtle-lsp: {m}"));
-            (v, warning)
-        }
-        Some(Err(e)) => (
-            Value::Null,
-            Some(format!("turtle-lsp: {e}; its settings are ignored")),
-        ),
-        _ => (Value::Null, None),
-    }
-}
-
 /// Returns whether the session ended cleanly (`shutdown` then `exit`); the
 /// process should exit with code 1 otherwise, as the LSP spec asks.
 #[cfg(not(target_arch = "wasm32"))]
@@ -466,8 +356,8 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let (conn, io) = Connection::stdio();
     let (id, raw) = conn.initialize_start()?;
 
-    let (mut server, result, roots) = Server::configure(conn, raw, false)?;
-    server.conn.initialize_finish(id, result)?;
+    let (mut server, result, roots) = Server::configure(conn.sender.clone(), raw, false)?;
+    conn.initialize_finish(id, result)?;
 
     // Index the workspace in the background. What changes on disk meanwhile
     // is remembered, so that the index does not undo it when it lands.
@@ -495,10 +385,10 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
             "turtle-lsp could not start its indexing thread: {e}"
         )));
     }
-    server.index = Feed::open(index_rx);
+    server.index.expect(index_rx);
 
     let (inbox_tx, inbox) = unbounded();
-    let incoming = server.conn.receiver.clone();
+    let incoming = conn.receiver.clone();
     std::thread::spawn(move || {
         for msg in incoming {
             if inbox_tx.send(msg).is_err() {
@@ -510,9 +400,10 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
 
     let ended = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
-    // server still holds one would keep the process alive forever after the
-    // editor disappears (stdin closed without shutdown/exit).
+    // server (or the connection) still holds one would keep the process alive
+    // forever after the editor disappears (stdin closed without shutdown/exit).
     drop(server);
+    drop(conn);
     end_session(ended, || io.join())
 }
 
@@ -652,7 +543,7 @@ impl Server {
                     self.guarded("the initial index", |s| s.index_arrived(got));
                     None
                 }
-                recv(self.reindex_rx) -> done => {
+                recv(self.index.reparsed()) -> done => {
                     if let Ok(done) = done {
                         self.guarded("reindexing", |s| s.reindexed(done));
                     }
@@ -689,8 +580,8 @@ impl Server {
                     }
                     None
                 }
-                recv(self.shacl_feed.rx()) -> got => {
-                    match self.shacl_feed.take(got) {
+                recv(self.shacl.rx()) -> got => {
+                    match self.shacl.take(got) {
                         Fed::Got(o) => self.guarded("SHACL validation", |s| s.shacl_outcome(o)),
                         // The thread is gone.
                         Fed::Gone => self.guarded("SHACL validation", |s| s.shacl_gone()),
@@ -711,7 +602,7 @@ impl Server {
     }
 
     /// The initial index arrived, or its thread ended without one.
-    fn index_arrived(&mut self, got: Fed<Result<Vec<(String, Analysis)>, String>>) {
+    fn index_arrived(&mut self, got: Fed<index::Initial>) {
         self.merge_index(match got {
             Fed::Got(files) => files,
             Fed::Gone => Err("turtle-lsp internal error: the indexing thread ended".into()),
@@ -721,20 +612,21 @@ impl Server {
     /// The validation thread is gone.
     #[cfg(not(target_arch = "wasm32"))]
     fn shacl_gone(&mut self) {
-        self.shacl = None;
+        self.shacl.gone();
         self.timers.clear(Timer::ShaclProgress);
-        let token = self.shacl_progress.take();
-        self.progress_end(token, "Validation stopped".into());
+        self.progress
+            .end(&self.client, Work::Shacl, "Validation stopped".into());
     }
 
     /// Before the first message: register file watchers, show indexing.
     fn start(&mut self) {
         self.register_watchers();
-        if let Some(e) = self.file_settings_error.take() {
-            self.show_warning(e);
+        if let Some(e) = self.layers.take_file_error() {
+            self.client.warn(e);
         }
-        if !self.indexed {
-            self.index_progress = self.progress_begin("Indexing workspace");
+        if !self.index.merged() {
+            self.progress
+                .begin(&mut self.client, Work::Index, "Indexing workspace");
         }
     }
 
@@ -764,10 +656,10 @@ impl Server {
                 Message::Request(req) if req.method == lsp_types::request::Shutdown::METHOD => {
                     if self.inline {
                         // The host ends the session; nothing waits for `exit`.
-                        self.conn.sender.send(Response::new_ok(req.id, ()).into())?;
+                        self.client.send(Response::new_ok(req.id, ()))?;
                         return Ok(Some(Ended::Exit));
                     }
-                    return self.shutdown(req, rest.into_iter()).map(Some);
+                    return self.shutdown(req, rest.into_iter(), EXIT_WAIT).map(Some);
                 }
                 Message::Notification(n) if n.method == lsp_types::notification::Exit::METHOD => {
                     return Ok(Some(Ended::ExitWithoutShutdown));
@@ -778,7 +670,7 @@ impl Server {
                         ErrorCode::RequestCanceled as i32,
                         "request cancelled".into(),
                     );
-                    self.conn.sender.send(Message::Response(resp))?;
+                    self.client.send(resp)?;
                 }
                 msg => self.handle(msg)?,
             }
@@ -812,7 +704,8 @@ impl Server {
                 Timer::Described => s.described_settled(),
                 Timer::ShaclTyping => s.validate_shacl(),
                 Timer::ShaclProgress => {
-                    s.shacl_progress = s.progress_begin("Validating SHACL shapes");
+                    s.progress
+                        .begin(&mut s.client, Work::Shacl, "Validating SHACL shapes");
                 }
             });
         }
@@ -828,7 +721,7 @@ impl Server {
     fn check_described(&mut self) {
         // Analyzes the documents edited in this batch (diagnostics would anyway).
         let g = self.ws.knowledge().described_generation();
-        if g != self.described_seen {
+        if self.refresh.described_moved(g) {
             self.timers
                 .set(Timer::Described, Instant::now() + DESCRIBED_DEBOUNCE);
         }
@@ -837,25 +730,26 @@ impl Server {
     /// The pause after a described-set change has passed.
     fn described_settled(&mut self) {
         let g = self.ws.knowledge().described_generation();
-        if g != self.described_seen {
-            self.described_seen = g;
+        if self.refresh.described_settled(g) {
             self.knowledge_changed();
         }
     }
 
-    /// Answer `shutdown`, then wait for `exit`; other requests are refused.
+    /// Answer `shutdown`, then wait up to `exit_wait` for `exit`; other
+    /// requests are refused.
     fn shutdown(
         &self,
         req: Request,
         rest: impl Iterator<Item = Message>,
+        exit_wait: Duration,
     ) -> Result<Ended, Box<dyn std::error::Error + Send + Sync>> {
         self.queries.cancel_all();
-        self.conn.sender.send(Response::new_ok(req.id, ()).into())?;
+        self.client.send(Response::new_ok(req.id, ()))?;
         let mut rest = rest;
         loop {
             let msg = match rest.next() {
                 Some(m) => m,
-                None => match self.inbox.recv_timeout(self.exit_wait) {
+                None => match self.inbox.recv_timeout(exit_wait) {
                     Ok(m) => m,
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                         return Ok(Ended::ShutdownTimedOut);
@@ -875,7 +769,7 @@ impl Server {
                         ErrorCode::InvalidRequest as i32,
                         "the server is shutting down".into(),
                     );
-                    self.conn.sender.send(resp.into())?;
+                    self.client.send(resp)?;
                 }
                 _ => {}
             }
@@ -893,25 +787,22 @@ impl Server {
                 // A bug in one feature must not take the server down for the session.
                 let result = guard(&method, || self.request(req))
                     .unwrap_or_else(|msg| Err((ErrorCode::InternalError, msg)));
-                if std::mem::take(&mut self.answer_later) && result.is_ok() {
-                    return Ok(());
-                }
                 let resp = match result {
-                    Ok(v) => Response::new_ok(id, v),
+                    // Answered later (a query run).
+                    Ok(None) => return Ok(()),
+                    Ok(Some(v)) => Response::new_ok(id, v),
                     Err((code, message)) => Response::new_err(id, code as i32, message),
                 };
-                self.conn.sender.send(Message::Response(resp))?;
+                self.client.send(resp)?;
             }
             Message::Notification(n) => {
                 let method = n.method.clone();
                 let _ = guard(&method, || self.notification(n));
             }
             Message::Response(r) => {
-                if let Some(p) = self.progress_pending.remove(&r.id) {
-                    self.progress_accepted(p, r.response_result.is_ok());
-                }
-                if self.config_request.as_ref() == Some(&r.id) {
-                    self.config_request = None;
+                self.progress
+                    .accepted(&self.client, &r.id, r.response_result.is_ok());
+                if self.layers.config_answered(&r.id) {
                     // One item per requested section: [turtle].
                     if let Some(section) = r.response_result.ok().and_then(|v| v.get(0).cloned()) {
                         let _ = guard("workspace/configuration", || self.set_config(section));
@@ -954,7 +845,7 @@ impl Server {
                     );
                     self.after_edit(fx);
                     // SHACL results stay until typing pauses (or the next save).
-                    if self.settings.shacl_on_type {
+                    if self.layers.settings().shacl_on_type {
                         self.timers
                             .set(Timer::ShaclTyping, Instant::now() + SHACL_TYPING_DEBOUNCE);
                     }
@@ -973,7 +864,7 @@ impl Server {
                     self.apply(fx);
                     // Clear diagnostics for the closed buffer, unless it goes
                     // back to the workspace diagnostics.
-                    if !self.wsdiag_closed(&uri) && !self.pull {
+                    if !self.wsdiag_closed(&uri) && !self.refresh.pull() {
                         self.send_diagnostics(&uri, vec![], None);
                     }
                     self.spelling.remove(&uri);
@@ -985,8 +876,7 @@ impl Server {
                 match settings.get("turtle") {
                     Some(section) => self.set_config(section.clone()),
                     // Clients that only signal "something changed" are asked.
-                    None if self.config_pull => self.request_config(),
-                    None => {}
+                    None => self.layers.request_config(&mut self.client),
                 }
             }
             DidChangeWatchedFiles::METHOD => {
@@ -1058,7 +948,7 @@ impl Server {
         let reader = self.ws.reader();
         #[cfg(not(target_arch = "wasm32"))]
         if !self.inline {
-            let (tx, failed) = (self.reindex_tx.clone(), self.reindex_tx.clone());
+            let (tx, failed) = (self.index.reparsed_sender(), self.index.reparsed_sender());
             let started = worker::spawn_guarded(
                 "reindex",
                 WORKER_STACK,
@@ -1087,7 +977,7 @@ impl Server {
                     });
                 }
             }
-            Err(msg) => self.show_warning(msg),
+            Err(msg) => self.client.warn(msg),
         }
     }
 
@@ -1102,11 +992,11 @@ impl Server {
     /// Start resolving `owl:imports` if they changed (never before the
     /// initial index, which may describe the imported ontologies).
     fn sync_imports(&mut self) {
-        if !self.indexed {
+        if !self.index.merged() {
             return;
         }
         let roots = self.ws.roots().to_vec();
-        let network = self.settings.imports_network;
+        let network = self.layers.settings().imports_network;
         let k = self.ws.knowledge();
         if let Some(done) = self.imports.sync(k, &roots, network) {
             self.imports_done(done);
@@ -1134,9 +1024,10 @@ impl Server {
 
     /// Show progress while a resolution pass is running.
     fn track_imports_progress(&mut self) {
-        match (self.imports.busy(), self.imports_progress.is_some()) {
+        match (self.imports.busy(), self.progress.is_shown(Work::Imports)) {
             (true, false) => {
-                self.imports_progress = self.progress_begin("Resolving owl:imports");
+                self.progress
+                    .begin(&mut self.client, Work::Imports, "Resolving owl:imports");
             }
             (false, true) => {
                 let n = self.imports.unresolved().len();
@@ -1145,160 +1036,53 @@ impl Server {
                     1 => "1 import unresolved".to_string(),
                     n => format!("{n} imports unresolved"),
                 };
-                let token = self.imports_progress.take();
-                self.progress_end(token, msg);
+                self.progress.end(&self.client, Work::Imports, msg);
             }
             _ => {}
         }
     }
 
-    /// Ask the client for a progress token for `title`, when the client
-    /// supports progress. `begin` goes out once the client accepts the token
-    /// (see `progress_accepted`); the main loop never waits for that.
-    fn progress_begin(&mut self, title: &str) -> Option<String> {
-        if !self.work_done_progress {
-            return None;
-        }
-        let token = format!("turtle-progress-{}", self.next_id + 1);
-        let id = self.send_request(
-            lsp_types::request::WorkDoneProgressCreate::METHOD,
-            WorkDoneProgressCreateParams {
-                token: NumberOrString::String(token.clone()),
-            },
-        );
-        self.progress_pending.insert(
-            id,
-            PendingProgress {
-                token: token.clone(),
-                title: title.into(),
-                ended: None,
-            },
-        );
-        Some(token)
-    }
-
-    /// The client answered a create request: begin (and end, if the work is
-    /// already over). A refused token is dropped.
-    fn progress_accepted(&mut self, p: PendingProgress, ok: bool) {
-        if !ok {
-            return;
-        }
-        self.send_progress(
-            &p.token,
-            WorkDoneProgress::Begin(WorkDoneProgressBegin {
-                title: p.title,
-                cancellable: Some(false),
-                ..Default::default()
-            }),
-        );
-        match p.ended {
-            Some(message) => self.send_end(&p.token, message),
-            None => {
-                self.progress_live.insert(p.token);
-            }
-        }
-    }
-
-    fn progress_end(&mut self, token: Option<String>, message: String) {
-        let Some(token) = token else { return };
-        if self.progress_live.remove(&token) {
-            self.send_end(&token, message);
-        } else if let Some(p) = self
-            .progress_pending
-            .values_mut()
-            .find(|p| p.token == token)
-        {
-            p.ended = Some(message);
-        }
-    }
-
-    fn send_end(&self, token: &str, message: String) {
-        self.send_progress(
-            token,
-            WorkDoneProgress::End(WorkDoneProgressEnd {
-                message: Some(message),
-            }),
-        );
-    }
-
-    fn send_progress(&self, token: &str, value: WorkDoneProgress) {
-        let params = ProgressParams {
-            token: NumberOrString::String(token.into()),
-            value: ProgressParamsValue::WorkDone(value),
-        };
-        let n = Notification::new(lsp_types::notification::Progress::METHOD.into(), params);
-        let _ = self.conn.sender.send(Message::Notification(n));
-    }
-
-    fn request_config(&mut self) {
-        let params = ConfigurationParams {
-            items: vec![ConfigurationItem {
-                scope_uri: None,
-                section: Some("turtle".into()),
-            }],
-        };
-        let id = self.send_request(lsp_types::request::WorkspaceConfiguration::METHOD, params);
-        self.config_request = Some(id);
-    }
-
-    /// The client's `turtle` configuration section changed. It replaces
-    /// `initializationOptions` as well as the previous section (see
-    /// [`Server::file_settings`]).
+    /// The client's `turtle` configuration section changed (see [`Layers`]).
     fn set_config(&mut self, section: Value) {
-        if section.is_null() {
-            return;
+        if self.layers.set_config(section) {
+            self.relayer_settings();
         }
-        self.init_options = Value::Null;
-        self.config = section;
-        self.relayer_settings();
     }
 
     /// `turtle-lsp.json` changed on disk: read it again. An invalid file
     /// warns and counts as absent.
     fn reload_settings_file(&mut self) {
-        let (file, error) = read_file_settings(self.ws.roots().first());
-        self.file_settings = file;
-        if let Some(e) = error {
-            self.show_warning(e);
+        if let Some(e) = self.layers.reload_file(self.ws.roots().first()) {
+            self.client.warn(e);
         }
         self.relayer_settings();
     }
 
-    fn show_warning(&self, message: String) {
-        let params = ShowMessageParams {
-            typ: MessageType::WARNING,
-            message,
-        };
-        let n = Notification::new(lsp_types::notification::ShowMessage::METHOD.into(), params);
-        let _ = self.conn.sender.send(n.into());
-    }
-
     /// Recompute the settings from their layers and act on any change.
     fn relayer_settings(&mut self) {
-        let new = Settings::from_layers([
-            (Layer::File, &self.file_settings),
-            (Layer::Client, &self.init_options),
-            (Layer::Client, &self.config),
-        ]);
-        if new == self.settings {
+        let Some(change) = self.layers.relayer() else {
             return;
-        }
+        };
         // Any setting can change every document's diagnostics, and SHACL's.
         let mut fx = Effects {
             shacl: true,
             ..Effects::knowledge()
         };
-        if new.prefixes != self.settings.prefixes {
+        if change.prefixes() {
             // The background index was built with the old prefixes.
             self.ensure_indexed();
-            fx.add(self.ws.set_settings_prefixes(new.prefixes.clone()));
+            fx.add(
+                self.ws
+                    .set_settings_prefixes(change.settings().prefixes.clone()),
+            );
         }
-        if new.imports_network != self.settings.imports_network {
+        if change.network() {
             // Indexed JSON-LD files are parsed again with the new loader.
             self.ensure_indexed();
-            self.contexts = use_network(&mut self.ws, new.imports_network, self.inline);
+            let network = change.settings().imports_network;
+            self.contexts = use_network(&mut self.ws, network, self.inline);
         }
-        self.settings = new;
+        self.layers.commit(change);
         self.wsdiag_setting();
         self.apply(fx);
     }
@@ -1330,13 +1114,7 @@ impl Server {
         self.wsdiag_disk_changed(&on_disk);
         self.reindex_in_background(reparse);
         if knowledge {
-            // Pulled reports handed out so far are stale.
-            self.generation += 1;
-            if self.reported {
-                self.refresh_needed = true;
-            }
-            // Labels and term kinds shown in open documents may come from elsewhere.
-            self.display_stale = true;
+            self.refresh.knowledge_changed();
         }
         // And the diagnostics of every closed file.
         if knowledge || closed_files {
@@ -1348,28 +1126,17 @@ impl Server {
     }
 
     fn refresh_if_needed(&mut self) {
-        if std::mem::take(&mut self.display_stale) {
-            for m in self.display_refresh.clone() {
-                self.send_request(m, ());
-            }
-        }
-        if !std::mem::take(&mut self.refresh_needed) {
-            return;
-        }
-        self.reported = false;
-        if self.refresh_support {
-            self.send_request(lsp_types::request::WorkspaceDiagnosticRefresh::METHOD, ());
-        }
+        self.refresh.send(&mut self.client);
     }
 
     /// The initial index arrived (or failed, with the reason). Either way
     /// the server goes on: documents that are open are analyzed as ever.
-    fn merge_index(&mut self, files: Result<Vec<(String, Analysis)>, String>) {
-        let token = self.index_progress.take();
+    fn merge_index(&mut self, files: index::Initial) {
         let files = match files {
             Ok(files) => {
-                self.progress_end(
-                    token,
+                self.progress.end(
+                    &self.client,
+                    Work::Index,
                     match files.len() {
                         1 => "1 file".to_string(),
                         n => format!("{n} files"),
@@ -1378,18 +1145,16 @@ impl Server {
                 files
             }
             Err(msg) => {
-                self.progress_end(token, "Indexing failed".into());
-                self.show_warning(format!(
+                self.progress
+                    .end(&self.client, Work::Index, "Indexing failed".into());
+                self.client.warn(format!(
                     "{msg}. The workspace's files are not indexed; the documents you open still work."
                 ));
                 Vec::new()
             }
         };
         self.ws.merge_initial_index(files);
-        self.indexed = true;
-        // The sender is gone now; a disconnected channel is always ready, which
-        // would wake the main loop forever.
-        self.index.close();
+        self.index.set_merged();
         self.apply(Effects {
             shacl: true,
             ..Effects::knowledge()
@@ -1400,13 +1165,8 @@ impl Server {
     /// ...) must not come from a half-built index: a rename sent right after
     /// start-up would silently miss files. Wait for the initial index once.
     fn ensure_indexed(&mut self) {
-        if !self.indexed {
-            let got = if self.index.is_open() {
-                self.index.rx().recv()
-            } else {
-                Err(crossbeam_channel::RecvError)
-            };
-            let got = self.index.take(got);
+        if !self.index.merged() {
+            let got = self.index.wait();
             self.index_arrived(got);
         }
     }
@@ -1425,14 +1185,14 @@ impl Server {
             let status = |iri: &str| self.imports.statuses().get(iri);
             let inputs = DiagnosticInputs {
                 import_status: &status,
-                shacl: self.shacl_diagnostics.get(uri).map_or(&[], Vec::as_slice),
-                indexed: self.indexed,
+                shacl: self.shacl.diagnostics().get(uri).map_or(&[], Vec::as_slice),
+                indexed: self.index.merged(),
                 cached_import,
-                ..DiagnosticInputs::new(&self.settings)
+                ..DiagnosticInputs::new(self.layers.settings())
             };
             // Not `self.session()`: `inputs` borrows other fields of `self`.
-            let mut s =
-                ide::Session::new(&mut self.ws, self.enc, &self.settings, self.resolve_edits);
+            let settings = self.layers.settings();
+            let mut s = ide::Session::new(&mut self.ws, self.enc, settings, self.resolve_edits);
             s.diagnostics(uri, &inputs)
         })
         // A cached copy of an import is read-only: nothing to fix there.
@@ -1441,7 +1201,7 @@ impl Server {
 
     fn publish_dirty(&mut self) {
         let dirty: Vec<String> = self.dirty.drain().collect();
-        if self.pull {
+        if self.refresh.pull() {
             return;
         }
         for uri in dirty {
@@ -1465,11 +1225,8 @@ impl Server {
             .ws
             .version(&uri)
             .map_or_else(|| "disk".to_string(), |v| v.to_string());
-        // The described set is part of the id: other documents' edits that
-        // change it may not have bumped the generation yet (debounced).
         let described = self.ws.knowledge().described_generation();
-        let mut result_id = Some(format!("{version}:{}:{described}", self.generation));
-        self.reported = true;
+        let mut result_id = Some(self.refresh.report_id(&version, described));
         if p.previous_result_id.is_some() && p.previous_result_id == result_id {
             return DocumentDiagnosticReport::Unchanged(RelatedUnchangedDocumentDiagnosticReport {
                 related_documents: None,
@@ -1500,20 +1257,8 @@ impl Server {
             diagnostics,
             version,
         };
-        let n = Notification::new(
-            lsp_types::notification::PublishDiagnostics::METHOD.into(),
-            params,
-        );
-        let _ = self.conn.sender.send(Message::Notification(n));
-    }
-
-    /// Send a request to the client; the answer is matched by the returned id.
-    fn send_request(&mut self, method: &str, params: impl serde::Serialize) -> RequestId {
-        self.next_id += 1;
-        let id = RequestId::from(format!("turtle-{}", self.next_id));
-        let req = Request::new(id.clone(), method.into(), params);
-        let _ = self.conn.sender.send(Message::Request(req));
-        id
+        self.client
+            .notify(lsp_types::notification::PublishDiagnostics::METHOD, params);
     }
 
     fn register_watchers(&mut self) {
@@ -1541,15 +1286,22 @@ impl Server {
                 register_options: serde_json::to_value(opts).ok(),
             }],
         };
-        self.send_request(lsp_types::request::RegisterCapability::METHOD, params);
+        self.client
+            .request(lsp_types::request::RegisterCapability::METHOD, params);
     }
 
     /// The editor session over this server's workspace, for one request.
     fn session(&mut self) -> ide::Session<'_> {
-        ide::Session::new(&mut self.ws, self.enc, &self.settings, self.resolve_edits)
+        ide::Session::new(
+            &mut self.ws,
+            self.enc,
+            self.layers.settings(),
+            self.resolve_edits,
+        )
     }
 
-    fn request(&mut self, req: Request) -> Result<Value, (ErrorCode, String)> {
+    /// The answer to `req`: None when it is answered later (a query run).
+    fn request(&mut self, req: Request) -> Result<Option<Value>, (ErrorCode, String)> {
         use lsp_types::request::*;
         let bad = |e: serde_json::Error| (ErrorCode::InvalidParams, e.to_string());
         let ok = |v: Value| Ok(v);
@@ -1561,7 +1313,7 @@ impl Server {
         let json =
             |v: serde_json::Result<Value>| v.map_err(|e| (ErrorCode::InternalError, e.to_string()));
 
-        match req.method.as_str() {
+        let answer = match req.method.as_str() {
             Completion::METHOD => {
                 let p = params!(CompletionParams);
                 json(serde_json::to_value(self.session().completion(&p)))
@@ -1689,10 +1441,7 @@ impl Server {
                     crate::commands::Command::RunQuery { uri } => {
                         match self.run_query(req.id.clone(), &uri)? {
                             Some(v) => ok(v),
-                            None => {
-                                self.answer_later = true;
-                                ok(Value::Null)
-                            }
+                            None => return Ok(None),
                         }
                     }
                 }
@@ -1764,91 +1513,64 @@ impl Server {
                 ErrorCode::MethodNotFound,
                 format!("unhandled method {}", req.method),
             )),
-        }
+        };
+        answer.map(Some)
     }
 
     /// Start validating the workspace in the background (once indexed, when
     /// enabled and some workspace document has shapes); otherwise clear the
     /// results shown.
     fn validate_shacl(&mut self) {
-        if !self.indexed {
+        if !self.index.merged() {
             return;
         }
-        self.shacl_generation += 1;
         let docs: Vec<_> = self
             .ws
             .knowledge()
             .docs()
             .map(|(_, s, a)| (s, a.clone()))
             .collect();
-        let wanted = self.settings.shacl_enabled
-            && docs.iter().any(|(s, a)| {
-                *s != crate::knowledge::Source::External && shacl_validate::has_shapes(a)
-            });
-        if !wanted {
-            if let Some(w) = &self.shacl {
-                w.cancel(self.shacl_generation);
-            }
+        let imports = &self.imports;
+        let job = self.shacl.job(docs, self.layers.settings(), self.enc, || {
+            imports.unresolved()
+        });
+        let Some(job) = job else {
             self.timers.clear(Timer::ShaclProgress);
-            let token = self.shacl_progress.take();
-            self.progress_end(token, "Validation off".into());
-            if !self.shacl_diagnostics.is_empty() {
-                self.shacl_diagnostics.clear();
+            self.progress
+                .end(&self.client, Work::Shacl, "Validation off".into());
+            if self.shacl.clear() {
                 self.knowledge_changed();
             }
             return;
-        }
-        let job = shacl_validate::Job {
-            generation: self.shacl_generation,
-            docs,
-            max_triples: self.settings.shacl_max_triples,
-            enc: self.enc,
-            unresolved: self.imports.unresolved(),
-            soften: self.settings.imports_unresolved == crate::settings::UnresolvedImports::Soften,
         };
         if self.inline {
-            // Nothing else runs meanwhile, so the run is held to a time
-            // limit of its own, besides the budget every validation has.
-            let deadline = Instant::now() + INLINE_SHACL_LIMIT;
-            let diagnostics = shacl_validate::run(&job, &move || Instant::now() >= deadline)
-                .unwrap_or_else(|| shacl_stopped(&job));
-            self.shacl_outcome(shacl_validate::Outcome {
-                generation: job.generation,
-                diagnostics,
-            });
+            let outcome = shacl::run_inline(&job);
+            self.shacl_outcome(outcome);
             return;
         }
-        if self.shacl.is_none() {
-            let (worker, rx) = shacl_validate::Worker::start();
-            self.shacl = Some(worker);
-            self.shacl_feed = Feed::open(rx);
-        }
         // A superseded run counts as the same validation going on.
-        if self.work_done_progress
-            && self.shacl_progress.is_none()
+        if self.progress.supported()
+            && !self.progress.is_shown(Work::Shacl)
             && !self.timers.is_set(Timer::ShaclProgress)
         {
             self.timers
                 .set(Timer::ShaclProgress, Instant::now() + SHACL_PROGRESS_DELAY);
         }
-        if let Some(w) = &self.shacl {
-            w.submit(job);
-        }
+        self.shacl.submit(job);
     }
 
     fn shacl_outcome(&mut self, o: shacl_validate::Outcome) {
-        if o.generation != self.shacl_generation {
+        if !self.shacl.is_current(&o) {
             return;
         }
         self.timers.clear(Timer::ShaclProgress);
-        if let Some(token) = self.shacl_progress.take() {
-            self.progress_end(Some(token), violation_summary(&o.diagnostics));
+        if self.progress.is_shown(Work::Shacl) {
+            let summary = shacl::violation_summary(&o.diagnostics);
+            self.progress.end(&self.client, Work::Shacl, summary);
         }
-        if o.diagnostics == self.shacl_diagnostics {
-            return;
+        if self.shacl.set_results(o.diagnostics) {
+            self.knowledge_changed();
         }
-        self.shacl_diagnostics = o.diagnostics;
-        self.knowledge_changed();
     }
 }
 
@@ -1872,15 +1594,11 @@ impl Embedded {
     pub fn start(params: Value) -> Result<(Embedded, Vec<Message>), String> {
         let (here, host) = Connection::memory();
         let (mut server, result, _roots) =
-            Server::configure(here, params, true).map_err(|e| e.to_string())?;
+            Server::configure(here.sender, params, true).map_err(|e| e.to_string())?;
         let (inbox, inbox_rx) = unbounded();
         server.inbox = inbox_rx;
         let init = Response::new_ok(RequestId::from(0), result);
-        server
-            .conn
-            .sender
-            .send(init.into())
-            .map_err(|e| e.to_string())?;
+        server.client.send(init).map_err(|e| e.to_string())?;
         server.start();
         server.merge_index(Ok(Vec::new()));
         let mut embedded = Embedded {
@@ -1933,103 +1651,8 @@ impl Embedded {
     }
 }
 
-/// What a validation that hit its time limit shows: a warning on each shapes
-/// file that the results are missing, not a clean bill of health.
-fn shacl_stopped(job: &shacl_validate::Job) -> shacl_validate::ByUri {
-    job.docs
-        .iter()
-        .filter(|(s, a)| *s != crate::knowledge::Source::External && shacl_validate::has_shapes(a))
-        .map(|(_, a)| {
-            let d = Diagnostic {
-                severity: Some(DiagnosticSeverity::WARNING),
-                code: Some(NumberOrString::String(shacl_validate::SKIPPED_CODE.into())),
-                source: Some(diagnostics::SOURCE.to_string()),
-                message: format!(
-                    "SHACL validation stopped after {} s, its time limit: the results are missing",
-                    INLINE_SHACL_LIMIT.as_secs()
-                ),
-                ..Default::default()
-            };
-            (a.uri.clone(), vec![d])
-        })
-        .collect()
-}
-
-/// Counts of a validation's results by severity, e.g. "2 errors, 1 warning
-/// in 2 files", or "No problems". Skip notices are not results.
-fn violation_summary(by_uri: &shacl_validate::ByUri) -> String {
-    let is_result = |d: &&Diagnostic| !matches!(&d.code, Some(NumberOrString::String(c)) if c == shacl_validate::SKIPPED_CODE);
-    let (mut errors, mut warnings, mut info, mut files) = (0, 0, 0, 0);
-    for diags in by_uri.values() {
-        let mut any = false;
-        for d in diags.iter().filter(is_result) {
-            any = true;
-            match d.severity {
-                Some(DiagnosticSeverity::WARNING) => warnings += 1,
-                Some(DiagnosticSeverity::INFORMATION) | Some(DiagnosticSeverity::HINT) => info += 1,
-                _ => errors += 1,
-            }
-        }
-        files += usize::from(any);
-    }
-    let plural = |n: usize, one: &str, many: &str| match n {
-        0 => None,
-        1 => Some(format!("1 {one}")),
-        n => Some(format!("{n} {many}")),
-    };
-    let parts: Vec<String> = [
-        plural(errors, "error", "errors"),
-        plural(warnings, "warning", "warnings"),
-        plural(info, "info", "info"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if parts.is_empty() {
-        return "No problems".into();
-    }
-    let files = if files == 1 {
-        "1 file".to_string()
-    } else {
-        format!("{files} files")
-    };
-    format!("{} in {files}", parts.join(", "))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::guard;
-
-    #[test]
-    fn violation_summary_counts_results_and_files() {
-        use super::{Diagnostic, NumberOrString, violation_summary};
-        use lsp_types::DiagnosticSeverity as S;
-        let d = |code: &str, severity: S| Diagnostic {
-            code: Some(NumberOrString::String(code.into())),
-            severity: Some(severity),
-            ..Default::default()
-        };
-        let mut by = super::shacl_validate::ByUri::default();
-        assert_eq!(violation_summary(&by), "No problems");
-        by.insert("a".into(), vec![d("shacl-skipped", S::INFORMATION)]);
-        assert_eq!(violation_summary(&by), "No problems");
-        by.insert("b".into(), vec![d("shacl-violation", S::ERROR)]);
-        assert_eq!(violation_summary(&by), "1 error in 1 file");
-        by.insert(
-            "c".into(),
-            vec![
-                d("shacl-violation", S::ERROR),
-                d("shacl-violation", S::WARNING),
-            ],
-        );
-        assert_eq!(violation_summary(&by), "2 errors, 1 warning in 2 files");
-        by.insert("d".into(), vec![d("shacl-violation", S::INFORMATION)]);
-        assert_eq!(
-            violation_summary(&by),
-            "2 errors, 1 warning, 1 info in 3 files"
-        );
-    }
-
     use super::*;
     use crate::workspace::{PANIC_IN_ANALYSIS, PANIC_IN_FACTS, path_to_uri};
     use serde_json::json;
@@ -2186,16 +1809,16 @@ mod tests {
     fn a_failed_initial_index_is_reported_and_the_server_works_without_it() {
         let (here, host) = Connection::memory();
         let (mut server, _, _) = Server::configure(
-            here,
+            here.sender,
             json!({"capabilities": {"window": {"workDoneProgress": true}}}),
             false,
         )
         .unwrap();
-        assert!(!server.indexed);
+        assert!(!server.index.merged());
         server.index_arrived(Fed::Got(Err(
             "turtle-lsp internal error in index: boom".into()
         )));
-        assert!(server.indexed);
+        assert!(server.index.merged());
         let sent: Vec<Message> = host.receiver.try_iter().collect();
         let warned = sent.iter().any(|m| {
             matches!(m,
@@ -2207,9 +1830,9 @@ mod tests {
         // A thread that ended without a word is a failure too, not 0 files.
         let (here, host) = Connection::memory();
         let (mut server, _, _) =
-            Server::configure(here, json!({"capabilities": {}}), false).unwrap();
+            Server::configure(here.sender, json!({"capabilities": {}}), false).unwrap();
         server.index_arrived(Fed::Gone);
-        assert!(server.indexed);
+        assert!(server.index.merged());
         let sent: Vec<Message> = host.receiver.try_iter().collect();
         assert!(
             sent.iter()
@@ -2234,7 +1857,7 @@ mod tests {
         let (here, _host) = Connection::memory();
         let root = path_to_uri(&dir).unwrap();
         let (mut server, _, roots) = Server::configure(
-            here,
+            here.sender,
             json!({"capabilities": {}, "workspaceFolders": [{"uri": root, "name": "w"}]}),
             false,
         )
@@ -2271,7 +1894,7 @@ mod tests {
         let (here, _host) = Connection::memory();
         let root = path_to_uri(&dir).unwrap();
         let (mut server, _, _) = Server::configure(
-            here,
+            here.sender,
             json!({"capabilities": {}, "workspaceFolders": [{"uri": root, "name": "w"}]}),
             false,
         )
@@ -2313,8 +1936,7 @@ mod tests {
         let ended = |messages: Vec<Message>, wait_ms: u64, drop_inbox: bool| {
             let (here, _host) = Connection::memory();
             let (mut server, _, _) =
-                Server::configure(here, json!({"capabilities": {}}), false).unwrap();
-            server.exit_wait = Duration::from_millis(wait_ms);
+                Server::configure(here.sender, json!({"capabilities": {}}), false).unwrap();
             let (tx, rx) = unbounded();
             server.inbox = rx;
             for m in messages {
@@ -2327,7 +1949,9 @@ mod tests {
                 std::mem::forget(tx);
             }
             let req = Request::new(1.into(), "shutdown".into(), Value::Null);
-            server.shutdown(req, std::iter::empty()).unwrap()
+            server
+                .shutdown(req, std::iter::empty(), Duration::from_millis(wait_ms))
+                .unwrap()
         };
         let exit = || notify("exit", Value::Null);
         assert_eq!(ended(vec![exit()], 5000, false), Ended::Exit);
@@ -2370,37 +1994,6 @@ mod tests {
     }
 
     #[test]
-    fn a_validation_that_hits_its_time_limit_says_so_on_the_shapes() {
-        use crate::knowledge::Source;
-        let text = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://e.org/> .\nex:S a sh:NodeShape ; sh:targetNode ex:n ; sh:property [ sh:path ex:p ; sh:minCount 1 ] .\n";
-        let a = Arc::new(Analysis::new(
-            "file:///w/shapes.ttl".into(),
-            text,
-            Arc::default(),
-            false,
-        ));
-        let job = shacl_validate::Job {
-            generation: 1,
-            docs: vec![(Source::Disk, a)],
-            max_triples: 1000,
-            enc: Encoding::Utf16,
-            unresolved: vec![],
-            soften: true,
-        };
-        // Cancelled at once, as a deadline already past would: no results ...
-        assert!(shacl_validate::run(&job, &|| true).is_none());
-        // ... and not a clean bill of health.
-        let stopped = shacl_stopped(&job);
-        let d = &stopped["file:///w/shapes.ttl"];
-        assert_eq!(d.len(), 1);
-        assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
-        assert!(d[0].message.contains("stopped") && d[0].message.contains("time limit"));
-        assert!(violation_summary(&stopped) == "No problems");
-        // Uncancelled it validates.
-        assert!(shacl_validate::run(&job, &|| false).is_some());
-    }
-
-    #[test]
     fn guard_turns_a_panic_into_an_error() {
         let r: Result<(), String> = quietly(|| guard("hover", || panic!("boom")));
         let msg = r.unwrap_err();
@@ -2440,7 +2033,7 @@ mod review_tests {
         let (here, host) = Connection::memory();
         let root = path_to_uri(root).unwrap();
         let (server, _, _) = Server::configure(
-            here,
+            here.sender,
             json!({
                 "capabilities": {},
                 "workspaceFolders": [{"uri": root, "name": "w"}],
@@ -2481,11 +2074,15 @@ mod review_tests {
         let dir = Dir::new("shape");
         let (mut s, _client) = server_at(&dir.0, Value::Null);
         s.notification(configuration(json!({"format": {"lineWidth": 80}})));
-        assert_eq!(s.settings.format_line_width, 100, "no turtle section");
+        assert_eq!(
+            s.layers.settings().format_line_width,
+            100,
+            "no turtle section"
+        );
         s.notification(configuration(
             json!({"turtle": {"format": {"lineWidth": 80}}}),
         ));
-        assert_eq!(s.settings.format_line_width, 80);
+        assert_eq!(s.layers.settings().format_line_width, 80);
     }
 
     /// A key the user removed is not kept from `initializationOptions`: the
@@ -2495,12 +2092,12 @@ mod review_tests {
     fn a_configuration_section_replaces_the_initialization_options() {
         let dir = Dir::new("layers");
         let (mut s, _client) = server_at(&dir.0, json!({"format": {"lineWidth": 80}}));
-        assert_eq!(s.settings.format_line_width, 80);
+        assert_eq!(s.layers.settings().format_line_width, 80);
         s.notification(configuration(
             json!({"turtle": {"codeLens": {"references": false}}}),
         ));
-        assert_eq!(s.settings.format_line_width, 100);
-        assert!(!s.settings.code_lens_references);
+        assert_eq!(s.layers.settings().format_line_width, 100);
+        assert!(!s.layers.settings().code_lens_references);
 
         let dir = Dir::new("layers-file");
         std::fs::write(
@@ -2509,13 +2106,13 @@ mod review_tests {
         )
         .unwrap();
         let (mut s, _client) = server_at(&dir.0, json!({"format": {"lineWidth": 80}}));
-        assert_eq!(s.settings.format_line_width, 80);
+        assert_eq!(s.layers.settings().format_line_width, 80);
         s.notification(configuration(json!({"turtle": {}})));
-        assert_eq!(s.settings.format_line_width, 90);
+        assert_eq!(s.layers.settings().format_line_width, 90);
         // A client that only says "something changed" keeps what it sent.
         let (mut s, _client) = server_at(&dir.0, json!({"format": {"lineWidth": 80}}));
         s.notification(configuration(Value::Null));
-        assert_eq!(s.settings.format_line_width, 80);
+        assert_eq!(s.layers.settings().format_line_width, 80);
     }
 
     /// A notification that changes a prefixes.ttl and a data file it
@@ -2544,7 +2141,8 @@ mod review_tests {
         assert_eq!(first_subject(&s, &data), "http://newer.example/b");
         // Nothing was left to parse again in the background.
         assert!(
-            s.reindex_rx
+            s.index
+                .reparsed()
                 .recv_timeout(Duration::from_millis(500))
                 .is_err()
         );

@@ -27,6 +27,7 @@
 //! threads), the query runs inline and the summary is shown as a message.
 
 use super::Server;
+use super::client::Client;
 use crate::analysis::Analysis;
 use crate::clock::Instant;
 use crate::knowledge::Source;
@@ -34,10 +35,9 @@ use crate::query::{self, Answer, Limits, QueryError};
 use crate::syntax::PrefixMap;
 use crate::workspace::{is_sparql_path, path_to_uri, uri_to_path};
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use lsp_server::{ErrorCode, Message, Notification, RequestId, Response};
-use lsp_types::notification::Notification as _;
+use lsp_server::{ErrorCode, RequestId, Response};
 use lsp_types::request::Request as _;
-use lsp_types::{MessageType, ShowDocumentParams, ShowMessageParams, Uri};
+use lsp_types::{MessageType, ShowDocumentParams, Uri};
 use rustc_hash::FxHashMap;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -48,6 +48,8 @@ use std::time::Duration;
 /// The runs going on, by document URI, and the channel their results come
 /// back on.
 pub struct State {
+    /// The client declared `window.showDocument.support`.
+    show_document: bool,
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
     next_id: u64,
@@ -93,10 +95,12 @@ struct Job {
     out: Option<PathBuf>,
 }
 
-impl Default for State {
-    fn default() -> State {
+impl State {
+    /// Runs for a client that can show a document (`show_document`) or not.
+    pub fn new(show_document: bool) -> State {
         let (done_tx, done_rx) = unbounded();
         State {
+            show_document,
             done_tx,
             done_rx,
             next_id: 0,
@@ -104,9 +108,7 @@ impl Default for State {
             stems: FxHashMap::default(),
         }
     }
-}
 
-impl State {
     /// Finished runs, for the main loop.
     pub fn results(&self) -> Receiver<Done> {
         self.done_rx.clone()
@@ -190,21 +192,25 @@ impl Server {
             base,
             prefixes,
             docs,
-            timeout: self.settings.query_timeout,
-            max_rows: self.settings.query_max_rows,
-            max_buffered_rows: self.settings.query_max_buffered_rows,
+            timeout: self.layers.settings().query_timeout,
+            max_rows: self.layers.settings().query_max_rows,
+            max_buffered_rows: self.layers.settings().query_max_buffered_rows,
             cancel: cancel.clone(),
             out: if self.inline { None } else { results_dir() },
         };
         if self.inline {
             let report = execute(&job, &self.queries.stem_for(&uri));
-            return Ok(Some(self.deliver(&job.name, report)));
+            return Ok(Some(self.queries.deliver(
+                &mut self.client,
+                &job.name,
+                report,
+            )));
         }
         // A newer run of the same document replaces the one going on.
         if let Some(old) = self.queries.running.remove(&uri) {
             old.cancel.store(true, Ordering::Relaxed);
             let resp = Response::new_ok(old.request, "cancelled: a newer run replaced it");
-            let _ = self.conn.sender.send(resp.into());
+            let _ = self.client.send(resp);
         }
         self.queries.next_id += 1;
         let run_id = self.queries.next_id;
@@ -250,11 +256,8 @@ impl Server {
             return;
         };
         let name = file_name(&done.uri);
-        let summary = self.deliver(&name, done.report);
-        let _ = self
-            .conn
-            .sender
-            .send(Response::new_ok(run.request, summary).into());
+        let summary = self.queries.deliver(&mut self.client, &name, done.report);
+        let _ = self.client.send(Response::new_ok(run.request, summary));
     }
 
     /// A `$/cancelRequest` for `id`: when it is a pending run, stop it and
@@ -276,12 +279,14 @@ impl Server {
                 ErrorCode::RequestCanceled as i32,
                 "request cancelled".into(),
             );
-            let _ = self.conn.sender.send(resp.into());
+            let _ = self.client.send(resp);
         }
     }
+}
 
+impl State {
     /// Open the results file, or show the summary; the summary.
-    fn deliver(&mut self, name: &str, report: Report) -> Value {
+    fn deliver(&self, client: &mut Client, name: &str, report: Report) -> Value {
         let file = report
             .file
             .as_ref()
@@ -296,20 +301,15 @@ impl Server {
                     take_focus: Some(false),
                     selection: None,
                 };
-                self.send_request(lsp_types::request::ShowDocument::METHOD, params);
+                client.request(lsp_types::request::ShowDocument::METHOD, params);
             }
             _ => {
-                let params = ShowMessageParams {
-                    typ: if report.failed {
-                        MessageType::WARNING
-                    } else {
-                        MessageType::INFO
-                    },
-                    message: format!("{name}: {}", report.summary),
+                let typ = if report.failed {
+                    MessageType::WARNING
+                } else {
+                    MessageType::INFO
                 };
-                let n =
-                    Notification::new(lsp_types::notification::ShowMessage::METHOD.into(), params);
-                let _ = self.conn.sender.send(Message::Notification(n));
+                client.show(typ, format!("{name}: {}", report.summary));
             }
         }
         Value::String(report.summary)
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn stems_differ_by_more_than_case() {
-        let mut state = State::default();
+        let mut state = State::new(false);
         assert_eq!(state.stem_for("file:///a/Same.rq"), "Same");
         assert_eq!(state.stem_for("file:///b/same.rq"), "same-2");
     }

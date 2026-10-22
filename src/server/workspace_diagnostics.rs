@@ -350,7 +350,7 @@ fn under(roots: &[PathBuf], uri: &str) -> bool {
 impl Server {
     /// `diagnostics.workspace` may have changed: start or stop.
     pub(super) fn wsdiag_setting(&mut self) {
-        let on = self.settings.diagnostics_workspace && !self.inline;
+        let on = self.layers.settings().diagnostics_workspace && !self.inline;
         if on == self.wsdiag.enabled {
             return;
         }
@@ -378,7 +378,7 @@ impl Server {
         }
         self.wsdiag.yield_to_edit();
         // Pushed live diagnostics replace these; pulled ones do not.
-        if self.wsdiag.shown.remove(uri).is_some() && self.pull {
+        if self.wsdiag.shown.remove(uri).is_some() && self.refresh.pull() {
             self.send_diagnostics(uri, Vec::new(), None);
         }
     }
@@ -387,7 +387,7 @@ impl Server {
     /// pass would. False when it is not a workspace file (or the setting is
     /// off), and the caller clears them as usual.
     pub(super) fn wsdiag_closed(&mut self, uri: &str) -> bool {
-        if !self.wsdiag.enabled || !self.indexed || !under(self.ws.roots(), uri) {
+        if !self.wsdiag.enabled || !self.index.merged() || !under(self.ws.roots(), uri) {
             return false;
         }
         self.wsdiag.yield_to_edit();
@@ -404,7 +404,7 @@ impl Server {
             text.map(|text| {
                 let external = self.ws.external_prefixes_for(uri);
                 let q = SparqlAnalysis::new(uri.to_string(), &text, external);
-                let inputs = DiagnosticInputs::new(&self.settings);
+                let inputs = DiagnosticInputs::new(self.layers.settings());
                 diagnose::document(Doc::Sparql(&q), self.ws.knowledge(), self.enc, &inputs)
             })
         } else {
@@ -441,7 +441,7 @@ impl Server {
     /// The debounce passed: start the pass that is due.
     pub(super) fn wsdiag_start(&mut self) {
         self.wsdiag.due = None;
-        if !self.wsdiag.enabled || !self.indexed {
+        if !self.wsdiag.enabled || !self.index.merged() {
             // The initial index calls `knowledge_changed` when it lands.
             return;
         }
@@ -479,7 +479,8 @@ impl Server {
             return;
         }
         let shacl = self
-            .shacl_diagnostics
+            .shacl
+            .diagnostics()
             .iter()
             .filter(|(u, _)| !ws.is_open(u))
             .map(|(u, d)| (u.clone(), d.clone()))
@@ -503,7 +504,7 @@ impl Server {
             sources,
             targets,
             sparql,
-            settings: self.settings.clone(),
+            settings: self.layers.settings().clone(),
             enc: self.enc,
             imports: self.imports.statuses().clone(),
             shacl,
