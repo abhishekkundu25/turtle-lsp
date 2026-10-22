@@ -208,6 +208,7 @@ every file.
 | # | Ticket | Blocked by | Files |
 |---|---|---|---|
 | 37 | [SHACL checks honour cancellation and the step budget](37-shacl-cancel-in-checks.md) | 33b | `src/shacl/validate.rs` |
+| 38 | [Syntax error cap: 1,000 in the editor, none in `check`](38-syntax-error-cap-editor-only.md) | 34a, 32b | `src/syntax/parser.rs`, `src/features/diagnostics.rs` |
 
 ## Outcome (2026-10-22)
 
