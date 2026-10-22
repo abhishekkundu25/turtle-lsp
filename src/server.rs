@@ -40,7 +40,7 @@ use crate::ide;
 use crate::settings::{Layer, SETTINGS_FILE, Settings, read_settings_file};
 use crate::sparql::features as sparql_features;
 use crate::workspace::{
-    DocKind, PREFIX_FILE, Workspace, is_sparql_path, is_turtle, normalize_uri, uri_to_path,
+    Change, Dirty, DocKind, Effects, Workspace, is_import_source, normalize_uri, uri_to_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::Sender;
@@ -64,25 +64,6 @@ mod workspace_diagnostics;
 
 use timers::{Timer, Timers};
 use worker::{Fed, Feed};
-
-/// Files that feed `owl:imports` without being Turtle documents themselves.
-fn is_import_source(path: &std::path::Path) -> bool {
-    path.file_name().is_some_and(|f| f == "catalog-v001.xml")
-        || path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("rdf") || e.eq_ignore_ascii_case("owl"))
-}
-
-/// Whether `path` names a kind of file the server watches: if it was deleted,
-/// it was a file, not a folder.
-fn is_watched_file(path: &std::path::Path) -> bool {
-    is_turtle(path)
-        || is_import_source(path)
-        || is_sparql_path(path)
-        || path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-}
 
 /// The files the client is asked to report changes of: RDF documents, SPARQL
 /// queries, JSON-LD context files (`.json` too), imports sources and the
@@ -958,19 +939,24 @@ impl Server {
                         self.spelling.insert(uri.clone(), doc.uri.to_string());
                     }
                     let kind = DocKind::detect(Some(&doc.language_id), &uri);
-                    self.ws
+                    let fx = self
+                        .ws
                         .open_doc_as(uri.clone(), doc.text, doc.version, kind);
                     self.wsdiag_opened(&uri);
-                    self.after_edit(&uri);
+                    self.after_edit(fx);
                     self.workspace_changed_inline();
                 }
             }
             DidChangeTextDocument::METHOD => {
                 if let Some(p) = parse::<DidChangeTextDocumentParams>(n.params) {
                     let uri = normalize_uri(p.text_document.uri.as_str());
-                    self.ws
-                        .change_doc(&uri, p.text_document.version, p.content_changes, self.enc);
-                    self.after_edit(&uri);
+                    let fx = self.ws.change_doc(
+                        &uri,
+                        p.text_document.version,
+                        p.content_changes,
+                        self.enc,
+                    );
+                    self.after_edit(fx);
                     // SHACL results stay until typing pauses (or the next save).
                     if self.settings.shacl_on_type {
                         self.timers
@@ -986,17 +972,9 @@ impl Server {
             DidCloseTextDocument::METHOD => {
                 if let Some(p) = parse::<DidCloseTextDocumentParams>(n.params) {
                     let uri = normalize_uri(p.text_document.uri.as_str());
-                    self.ws.close_doc(&uri);
+                    let fx = self.ws.close_doc(&uri);
                     self.dirty.remove(&uri);
-                    // Unsaved edits to a context file are gone with the buffer.
-                    if self.ws.context_changed(&uri, true) {
-                        self.knowledge_changed();
-                    }
-                    // Unsaved edits to a prefixes.ttl are gone with the buffer.
-                    if uri.ends_with(&format!("/{PREFIX_FILE}")) {
-                        self.prefix_file_changed(&uri);
-                        self.knowledge_changed();
-                    }
+                    self.apply(fx);
                     // Clear diagnostics for the closed buffer, unless it goes
                     // back to the workspace diagnostics.
                     if !self.wsdiag_closed(&uri) && !self.pull {
@@ -1043,21 +1021,13 @@ impl Server {
         }
     }
 
-    /// Files changed on disk, as the client's watchers report. Catalogs,
-    /// imported RDF/XML files and JSON-LD context files count wherever they
-    /// are (an import or a context may name a skipped or hidden folder);
-    /// for the index, only what the scan would have looked at is of concern:
-    /// nothing in a skipped or hidden directory, nothing outside the roots.
-    ///
-    /// A changed prefixes.ttl is taken first, so the files of the same
-    /// notification are parsed once, with the new prefixes.
+    /// Files changed on disk, as the client's watchers report. The settings
+    /// file and the imports sources (catalogs, imported RDF/XML files, which
+    /// count wherever they are) are the server's; the workspace says what
+    /// the rest means ([`Workspace::files_changed`]).
     fn watched_files_changed(&mut self, changes: Vec<FileEvent>) {
-        let mut prefix_files: Vec<PathBuf> = Vec::new();
-        let mut gone_dirs: Vec<PathBuf> = Vec::new();
-        let mut disk_changed = false;
-        let mut sparql_paths: Vec<PathBuf> = Vec::new();
-        let mut reindex: Vec<PathBuf> = Vec::new();
         let settings_file = self.ws.roots().first().map(|r| r.join(SETTINGS_FILE));
+        let mut files: Vec<(PathBuf, Change)> = Vec::new();
         for ch in changes {
             let Some(path) = uri_to_path(ch.uri.as_str()) else {
                 continue;
@@ -1066,88 +1036,19 @@ impl Server {
                 self.reload_settings_file();
                 continue;
             }
-            // A deleted path that no watched kind of file names may be a
-            // folder, and the files indexed below it are gone with it.
-            if ch.typ == FileChangeType::DELETED && !is_watched_file(&path) {
-                if self.ws.watched_dir(&path) {
-                    gone_dirs.push(path);
-                }
-                continue;
-            }
             if is_import_source(&path) {
                 // A catalog or an imported RDF/XML ontology changed.
                 self.imports.retry();
-                continue;
             }
-            let key = normalize_uri(ch.uri.as_str());
-            let open = self.ws.is_open(&key);
-            // A JSON-LD context file on disk (the open copy wins).
-            if !open && self.ws.context_changed(&key, true) {
-                disk_changed = true;
-            }
-            if !self.ws.watched(&path) {
-                continue;
-            }
-            if is_sparql_path(&path) {
-                // Read on demand, never indexed; but a closed query is diagnosed.
-                sparql_paths.push(path);
-                continue;
-            }
-            if !is_turtle(&path) {
-                continue;
-            }
-            if open {
-                // An open prefixes.ttl was handled on save.
-                continue;
-            }
-            if path.file_name().is_some_and(|f| f == PREFIX_FILE) {
-                prefix_files.push(path.clone());
-            }
-            self.wsdiag_disk_changed(&path);
-            reindex.push(path);
+            let change = match ch.typ {
+                FileChangeType::CREATED => Change::Created,
+                FileChangeType::DELETED => Change::Deleted,
+                _ => Change::Changed,
+            };
+            files.push((path, change));
         }
-        // The new prefixes first: the files changed with them are parsed
-        // below with those, and only the others are left to parse again.
-        let prefixes_changed = !prefix_files.is_empty();
-        let mut stale = Vec::new();
-        for file in &prefix_files {
-            stale.extend(self.ws.prefixes_changed(Some(file)));
-        }
-        if prefixes_changed {
-            self.dirty.extend(self.ws.open_uris().map(str::to_owned));
-        }
-        // The files of one notification are parsed together.
-        if self.ws.reindex_disk_files(&reindex) {
-            disk_changed = true;
-        }
-        if self.ws.remove_under_any(&gone_dirs) {
-            disk_changed = true;
-            // The files below a deleted folder are no longer shown.
-            self.wsdiag.invalidate_all();
-        }
-        if !sparql_paths.is_empty() {
-            self.ws.sparql_files_changed(&sparql_paths);
-            self.wsdiag.invalidate_all();
-        }
-        let parsed: FxHashSet<&PathBuf> = reindex.iter().collect();
-        stale.retain(|p| !parsed.contains(p));
-        stale.sort();
-        stale.dedup();
-        self.reindex_in_background(stale);
-        if prefixes_changed || disk_changed {
-            self.knowledge_changed();
-            self.validate_shacl();
-        }
-    }
-
-    /// The prefixes.ttl `uri` was saved or closed with unsaved edits: the
-    /// indexed files it serves are parsed again if their prefixes differ.
-    fn prefix_file_changed(&mut self, uri: &str) {
-        let stale = match uri_to_path(uri) {
-            Some(file) => self.ws.prefixes_changed(Some(&file)),
-            None => self.ws.prefixes_changed(None),
-        };
-        self.reindex_in_background(stale);
+        let fx = self.ws.files_changed(&files);
+        self.apply(fx);
     }
 
     /// Parse indexed files again (their prefixes changed), on a thread of
@@ -1184,8 +1085,10 @@ impl Server {
         match done {
             Ok(files) => {
                 if self.ws.add_reparsed(files) > 0 {
-                    self.knowledge_changed();
-                    self.validate_shacl();
+                    self.apply(Effects {
+                        shacl: true,
+                        ..Effects::knowledge()
+                    });
                 }
             }
             Err(msg) => self.show_warning(msg),
@@ -1194,16 +1097,10 @@ impl Server {
 
     /// A document was saved: a catalog or ontology file may have changed too.
     fn on_save(&mut self, uri: &str) {
-        if uri.ends_with(&format!("/{PREFIX_FILE}")) {
-            self.prefix_file_changed(uri);
-            self.knowledge_changed();
-        }
-        if self.ws.context_changed(uri, true) {
-            self.knowledge_changed();
-        }
+        let fx = self.ws.save_doc(uri);
         self.imports.retry();
         self.timers.clear(Timer::ShaclTyping);
-        self.validate_shacl();
+        self.apply(fx);
     }
 
     /// Start resolving `owl:imports` if they changed (never before the
@@ -1225,10 +1122,8 @@ impl Server {
     #[cfg(not(target_arch = "wasm32"))]
     fn context_fetched(&mut self, url: &str) {
         self.ensure_indexed();
-        if self.ws.context_changed(url, true) {
-            self.knowledge_changed();
-            self.validate_shacl();
-        }
+        let fx = self.ws.context_fetched(url);
+        self.apply(fx);
     }
 
     fn imports_done(&mut self, done: crate::imports::Done) {
@@ -1392,12 +1287,15 @@ impl Server {
         if new == self.settings {
             return;
         }
+        // Any setting can change every document's diagnostics, and SHACL's.
+        let mut fx = Effects {
+            shacl: true,
+            ..Effects::knowledge()
+        };
         if new.prefixes != self.settings.prefixes {
             // The background index was built with the old prefixes.
             self.ensure_indexed();
-            self.ws.set_settings_prefixes(new.prefixes.clone());
-            let stale = self.ws.prefixes_changed(None);
-            self.reindex_in_background(stale);
+            fx.add(self.ws.set_settings_prefixes(new.prefixes.clone()));
         }
         if new.imports_network != self.settings.imports_network {
             // Indexed JSON-LD files are parsed again with the new loader.
@@ -1406,25 +1304,51 @@ impl Server {
         }
         self.settings = new;
         self.wsdiag_setting();
-        self.dirty.extend(self.ws.open_uris().map(str::to_owned));
-        self.knowledge_changed();
-        self.validate_shacl();
+        self.apply(fx);
     }
 
     /// Something outside any one document changed that can change its
-    /// diagnostics: pulled reports handed out so far are stale.
+    /// diagnostics (see [`Server::apply`]).
     fn knowledge_changed(&mut self) {
-        self.generation += 1;
+        self.apply(Effects::knowledge());
+    }
+
+    /// Act on what a change to the workspace means beyond itself.
+    fn apply(&mut self, fx: Effects) {
+        let Effects {
+            dirty,
+            knowledge,
+            shacl,
+            reparse,
+            on_disk,
+            closed_files,
+        } = fx;
         // Diagnostics read the knowledge index (add-prefix candidates, lints),
-        // so every open document is due again.
-        self.dirty.extend(self.ws.open_uris().map(str::to_owned));
-        if self.reported {
-            self.refresh_needed = true;
+        // so with knowledge every open document is due again.
+        if knowledge || dirty == Dirty::AllOpen {
+            self.dirty.extend(self.ws.open_uris().map(str::to_owned));
         }
-        // Labels and term kinds shown in open documents may come from elsewhere.
-        self.display_stale = true;
+        if let Dirty::One(uri) = dirty {
+            self.dirty.insert(uri);
+        }
+        self.wsdiag_disk_changed(&on_disk);
+        self.reindex_in_background(reparse);
+        if knowledge {
+            // Pulled reports handed out so far are stale.
+            self.generation += 1;
+            if self.reported {
+                self.refresh_needed = true;
+            }
+            // Labels and term kinds shown in open documents may come from elsewhere.
+            self.display_stale = true;
+        }
         // And the diagnostics of every closed file.
-        self.wsdiag.invalidate_all();
+        if knowledge || closed_files {
+            self.wsdiag.invalidate_all();
+        }
+        if shacl {
+            self.validate_shacl();
+        }
     }
 
     fn refresh_if_needed(&mut self) {
@@ -1470,8 +1394,10 @@ impl Server {
         // The sender is gone now; a disconnected channel is always ready, which
         // would wake the main loop forever.
         self.index.close();
-        self.knowledge_changed();
-        self.validate_shacl();
+        self.apply(Effects {
+            shacl: true,
+            ..Effects::knowledge()
+        });
     }
 
     /// Answers that look across the workspace (definition, references, rename,
@@ -1489,26 +1415,10 @@ impl Server {
         }
     }
 
-    fn after_edit(&mut self, uri: &str) {
-        if uri.ends_with(&format!("/{PREFIX_FILE}")) {
-            // Open documents follow the edit; indexed files are re-read when
-            // it is saved (re-reading the workspace per keystroke stalls).
-            match uri_to_path(uri) {
-                Some(file) => self.ws.invalidate_open_prefixes(&file),
-                // No file path (the browser build): every open document.
-                None => {
-                    self.ws.prefixes_changed(None);
-                }
-            }
-            self.dirty.extend(self.ws.open_uris().map(str::to_owned));
-            self.knowledge_changed();
-        }
-        // A context file being edited: the open documents using it follow;
-        // indexed ones are parsed again when it is saved or closed.
-        if self.ws.context_changed(uri, false) {
-            self.knowledge_changed();
-        }
-        self.dirty.insert(uri.to_string());
+    /// A document was opened or edited: act on what that means, and let
+    /// workspace diagnostics make way for the edit.
+    fn after_edit(&mut self, fx: Effects) {
+        self.apply(fx);
         self.wsdiag.yield_to_edit();
     }
 
@@ -2743,7 +2653,7 @@ mod review_tests {
     #[test]
     fn prefixes_and_a_data_file_changed_together_parse_the_data_once_with_the_new_prefixes() {
         let dir = Dir::new("prefixes");
-        let prefixes = dir.0.join(PREFIX_FILE);
+        let prefixes = dir.0.join("prefixes.ttl");
         let data = dir.0.join("data.ttl");
         std::fs::write(&prefixes, "@prefix ex: <http://old.example/> .\n").unwrap();
         std::fs::write(&data, "ex:a ex:p ex:o .\n").unwrap();

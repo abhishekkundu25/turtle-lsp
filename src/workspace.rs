@@ -21,6 +21,14 @@
 //! each JSON-LD analysis loaded is recorded, so a change to one (an edit, a
 //! save, a fetch that arrived) analyzes the documents that use it again
 //! ([`Workspace::context_changed`]).
+//!
+//! Effects: every method that changes what the workspace holds from outside
+//! (a document opened, edited, saved or closed, files changed on disk, the
+//! settings prefixes, a context fetched) returns [`Effects`], what the change
+//! means beyond itself: which open documents to diagnose again, whether
+//! knowledge outside any one document changed, whether SHACL is due, which
+//! indexed files to parse again. The workspace decides that; the caller (the
+//! server) only acts on it.
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
 use crate::jsonld::loader::{self, Bundled};
@@ -89,6 +97,87 @@ impl DocKind {
         }
         DocKind::Rdf(Syntax::detect(language_id, uri))
     }
+}
+
+/// Which open documents a change makes due for diagnostics.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Dirty {
+    #[default]
+    None,
+    /// This document (the one edited).
+    One(String),
+    /// Every open document.
+    AllOpen,
+}
+
+/// How a file on disk changed, as the client's watchers report it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    Created,
+    Changed,
+    Deleted,
+}
+
+/// What a change to the workspace means beyond itself, for the caller to act
+/// on (see the module doc). A plain value: a caller with nothing to act on
+/// (`batch`, tests) drops it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Effects {
+    /// The open documents whose diagnostics are due again.
+    pub dirty: Dirty,
+    /// Knowledge outside any one document changed (prefixes, the disk index,
+    /// a context): every open document is due again, whatever `dirty` says,
+    /// and so is every closed file shown by workspace diagnostics.
+    pub knowledge: bool,
+    /// The data SHACL validates changed: validate again.
+    pub shacl: bool,
+    /// Indexed files whose prefixes changed, to parse again (off the main
+    /// loop if the caller can) with [`Workspace::prefix_jobs`].
+    pub reparse: Vec<PathBuf>,
+    /// RDF files that changed on disk and are not open, in the order
+    /// reported: workspace diagnostics take them first, or forget them when
+    /// they are gone.
+    pub on_disk: Vec<PathBuf>,
+    /// SPARQL files changed on disk: the closed files' diagnostics are due
+    /// again, though knowledge did not change.
+    pub closed_files: bool,
+}
+
+impl Effects {
+    /// Knowledge outside any one document changed: every open document is due.
+    pub fn knowledge() -> Effects {
+        Effects {
+            dirty: Dirty::AllOpen,
+            knowledge: true,
+            ..Effects::default()
+        }
+    }
+
+    fn one(uri: &str) -> Effects {
+        Effects {
+            dirty: Dirty::One(uri.to_string()),
+            ..Effects::default()
+        }
+    }
+
+    /// Add what `other` says. Two different documents are every open one.
+    pub fn add(&mut self, other: Effects) {
+        self.dirty = match (std::mem::take(&mut self.dirty), other.dirty) {
+            (Dirty::None, d) | (d, Dirty::None) => d,
+            (Dirty::One(a), Dirty::One(b)) if a == b => Dirty::One(a),
+            _ => Dirty::AllOpen,
+        };
+        self.knowledge |= other.knowledge;
+        self.shacl |= other.shacl;
+        self.reparse.extend(other.reparse);
+        self.on_disk.extend(other.on_disk);
+        self.closed_files |= other.closed_files;
+    }
+}
+
+/// Whether `uri` names a prefixes.ttl.
+fn is_prefix_uri(uri: &str) -> bool {
+    uri.ends_with(&format!("/{PREFIX_FILE}"))
 }
 
 pub struct Doc {
@@ -457,6 +546,25 @@ pub fn is_turtle(path: &Path) -> bool {
     Syntax::from_extension(&path.to_string_lossy()).is_some()
 }
 
+/// Files that feed `owl:imports` without being Turtle documents themselves.
+pub fn is_import_source(path: &Path) -> bool {
+    path.file_name().is_some_and(|f| f == "catalog-v001.xml")
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("rdf") || e.eq_ignore_ascii_case("owl"))
+}
+
+/// Whether `path` names a kind of file the server watches: if it was deleted,
+/// it was a file, not a folder.
+fn is_watched_file(path: &Path) -> bool {
+    is_turtle(path)
+        || is_import_source(path)
+        || is_sparql_path(path)
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+}
+
 impl Workspace {
     pub fn new(roots: Vec<PathBuf>, settings_prefixes: PrefixMap) -> Workspace {
         Workspace {
@@ -487,10 +595,16 @@ impl Workspace {
         &self.settings_prefixes
     }
 
-    /// Replace the settings prefixes. Nothing else: the caller tells the
-    /// workspace what to read again ([`Workspace::prefixes_changed`]).
-    pub fn set_settings_prefixes(&mut self, prefixes: PrefixMap) {
+    /// Replace the settings prefixes: every open document is analyzed again,
+    /// and the indexed files whose prefixes differ now are to be parsed
+    /// again.
+    pub fn set_settings_prefixes(&mut self, prefixes: PrefixMap) -> Effects {
         self.settings_prefixes = prefixes;
+        Effects {
+            shacl: true,
+            reparse: self.prefixes_changed(None),
+            ..Effects::knowledge()
+        }
     }
 
     /// Whether `uri` is an open document.
@@ -596,6 +710,20 @@ impl Workspace {
             .collect()
     }
 
+    /// The JSON-LD context at `url` was fetched in the background (or the
+    /// fetch failed): the documents that use it are analyzed or parsed
+    /// again.
+    pub fn context_fetched(&mut self, url: &str) -> Effects {
+        if self.context_changed(url, true) {
+            Effects {
+                shacl: true,
+                ..Effects::knowledge()
+            }
+        } else {
+            Effects::default()
+        }
+    }
+
     /// The context at `url` changed (an open context file was edited,
     /// saved or closed, a file changed on disk, a fetch arrived): the open
     /// documents that use it are analyzed again, and, with `disk`, the
@@ -627,18 +755,20 @@ impl Workspace {
     // ---- documents ----
 
     /// The kind comes from the URI's extension.
-    pub fn open_doc(&mut self, uri: String, text: String, version: i32) {
+    pub fn open_doc(&mut self, uri: String, text: String, version: i32) -> Effects {
         let kind = DocKind::detect(None, &uri);
-        self.open_doc_as(uri, text, version, kind);
+        self.open_doc_as(uri, text, version, kind)
     }
 
+    /// Open a document. The document is due for diagnostics; opening a
+    /// prefixes.ttl or a context file is an edit of it ([`Workspace::change_doc`]).
     pub fn open_doc_as(
         &mut self,
         uri: String,
         text: String,
         version: i32,
         kind: impl Into<DocKind>,
-    ) {
+    ) -> Effects {
         let kind = kind.into();
         let cached_import = kind != DocKind::Sparql
             && self.import_cache.as_ref().is_some_and(|cache| {
@@ -652,7 +782,7 @@ impl Workspace {
             self.disk.remove(&uri);
         }
         self.open.insert(
-            uri,
+            uri.clone(),
             Doc {
                 text,
                 version,
@@ -662,57 +792,116 @@ impl Workspace {
                 cached_import,
             },
         );
+        self.edited(&uri)
     }
 
+    /// Apply the client's edits to the open document `uri`. The document is
+    /// due for diagnostics. An edit to a prefixes.ttl analyzes the open
+    /// documents below it again and changes knowledge; the indexed files
+    /// follow when it is saved or closed (re-reading the workspace per
+    /// keystroke stalls). An edit to a context file analyzes the open
+    /// documents that use it again.
     pub fn change_doc(
         &mut self,
         uri: &str,
         version: i32,
         changes: Vec<TextDocumentContentChangeEvent>,
         enc: Encoding,
-    ) {
-        let Some(doc) = self.open.get_mut(uri) else {
-            return;
-        };
-        for ch in changes {
-            match ch.range {
-                None => doc.text = ch.text,
-                Some(r) => {
-                    let lines = LineIndex::new(&doc.text);
-                    let (Some(s), Some(e)) = (
-                        offset_in(&lines, &doc.text, enc, r.start),
-                        offset_in(&lines, &doc.text, enc, r.end),
-                    ) else {
-                        continue;
-                    };
-                    let (s, e) = (s.min(e) as usize, e.max(s) as usize);
-                    doc.text
-                        .replace_range(s.min(doc.text.len())..e.min(doc.text.len()), &ch.text);
+    ) -> Effects {
+        if let Some(doc) = self.open.get_mut(uri) {
+            for ch in changes {
+                match ch.range {
+                    None => doc.text = ch.text,
+                    Some(r) => {
+                        let lines = LineIndex::new(&doc.text);
+                        let (Some(s), Some(e)) = (
+                            offset_in(&lines, &doc.text, enc, r.start),
+                            offset_in(&lines, &doc.text, enc, r.end),
+                        ) else {
+                            continue;
+                        };
+                        let (s, e) = (s.min(e) as usize, e.max(s) as usize);
+                        doc.text
+                            .replace_range(s.min(doc.text.len())..e.min(doc.text.len()), &ch.text);
+                    }
                 }
             }
+            doc.version = version;
+            doc.analysis = None;
+            doc.query = None;
         }
-        doc.version = version;
-        doc.analysis = None;
-        doc.query = None;
+        self.edited(uri)
+    }
+
+    /// The text of `uri` (open, or not open when the client skipped the
+    /// open) is new: what that means beyond the document itself.
+    fn edited(&mut self, uri: &str) -> Effects {
+        let mut fx = Effects::one(uri);
+        if is_prefix_uri(uri) {
+            match uri_to_path(uri) {
+                Some(file) => self.invalidate_open_prefixes(&file),
+                // No file path (the browser build): every open document.
+                None => {
+                    self.prefixes_changed(None);
+                }
+            }
+            fx.add(Effects::knowledge());
+        }
+        if self.context_changed(uri, false) {
+            fx.add(Effects::knowledge());
+        }
+        if !self.open.contains_key(uri) {
+            // Not among the open documents, but due all the same.
+            fx.dirty = Dirty::One(uri.to_string());
+        }
+        fx
+    }
+
+    /// The open document `uri` was saved: a saved prefixes.ttl lists the
+    /// indexed files it serves whose prefixes differ now, a saved context
+    /// file parses the indexed files that use it again, and SHACL is due.
+    pub fn save_doc(&mut self, uri: &str) -> Effects {
+        let mut fx = Effects {
+            shacl: true,
+            ..Effects::default()
+        };
+        if is_prefix_uri(uri) {
+            fx.add(Effects {
+                reparse: self.prefix_file_changed(uri),
+                ..Effects::knowledge()
+            });
+        }
+        if self.context_changed(uri, true) {
+            fx.add(Effects::knowledge());
+        }
+        fx
     }
 
     /// Closing a file indexes it from disk again, when the scan would have
     /// ([`Workspace::indexable`]). Closing a SPARQL document leaves the index
-    /// untouched.
-    pub fn close_doc(&mut self, uri: &str) {
-        if self
-            .open
-            .remove(uri)
-            .is_some_and(|d| d.cached_import || d.kind == DocKind::Sparql)
-        {
-            return;
+    /// untouched. Unsaved edits to a context file or a prefixes.ttl are gone
+    /// with the buffer: what they changed changes back.
+    pub fn close_doc(&mut self, uri: &str) -> Effects {
+        let gone = self.open.remove(uri);
+        if !gone.is_some_and(|d| d.cached_import || d.kind == DocKind::Sparql) {
+            // Only what the scan would index goes back to the index: an RDF file
+            // below a root (a .txt opened as Turtle, or a file elsewhere, does not).
+            if let Some(path) = uri_to_path(uri).filter(|p| is_turtle(p)) {
+                self.reindex_disk_file(&path);
+            }
+            self.sync(uri);
         }
-        // Only what the scan would index goes back to the index: an RDF file
-        // below a root (a .txt opened as Turtle, or a file elsewhere, does not).
-        if let Some(path) = uri_to_path(uri).filter(|p| is_turtle(p)) {
-            self.reindex_disk_file(&path);
+        let mut fx = Effects::default();
+        if self.context_changed(uri, true) {
+            fx.add(Effects::knowledge());
         }
-        self.sync(uri);
+        if is_prefix_uri(uri) {
+            fx.add(Effects {
+                reparse: self.prefix_file_changed(uri),
+                ..Effects::knowledge()
+            });
+        }
+        fx
     }
 
     /// Register the winning analysis of `uri` with the knowledge index: the
@@ -1112,7 +1301,7 @@ impl Workspace {
     /// The open prefixes.ttl at `file` is being edited: the open documents
     /// below it re-resolve. Indexed files follow when it is saved (see
     /// [`Workspace::prefixes_changed`]).
-    pub fn invalidate_open_prefixes(&mut self, file: &Path) {
+    fn invalidate_open_prefixes(&mut self, file: &Path) {
         self.sparql_files = None;
         self.prefix_files.remove(file);
         self.uri_prefix_cache.clear();
@@ -1140,7 +1329,7 @@ impl Workspace {
     /// files whose prefixes differ now are returned, for the caller to parse
     /// again ([`Workspace::prefix_jobs`], off the main loop if it can). A
     /// file the change leaves with the same prefixes is not among them.
-    pub fn prefixes_changed(&mut self, file: Option<&Path>) -> Vec<PathBuf> {
+    fn prefixes_changed(&mut self, file: Option<&Path>) -> Vec<PathBuf> {
         let scope = file.and_then(Path::parent).map(Path::to_path_buf);
         match file {
             Some(file) => {
@@ -1187,6 +1376,16 @@ impl Workspace {
             }
         }
         stale
+    }
+
+    /// The prefixes.ttl `uri` was saved or closed with unsaved edits: the
+    /// indexed files it serves whose prefixes differ now (all of them when it
+    /// has no file path).
+    fn prefix_file_changed(&mut self, uri: &str) -> Vec<PathBuf> {
+        match uri_to_path(uri) {
+            Some(file) => self.prefixes_changed(Some(&file)),
+            None => self.prefixes_changed(None),
+        }
     }
 
     fn is_open_path(&self, path: &Path) -> bool {
@@ -1459,6 +1658,88 @@ impl Workspace {
             self.forget_disk(uri);
         }
         !gone.is_empty()
+    }
+
+    /// Files changed on disk, as the client's watchers report. JSON-LD
+    /// context files count wherever they are (a context may name a skipped
+    /// or hidden folder); for the index, only what the scan would have
+    /// looked at is of concern: nothing in a skipped or hidden directory,
+    /// nothing outside the roots. Catalogs and imported RDF/XML files are
+    /// the caller's (imports), and so is the settings file.
+    ///
+    /// A changed prefixes.ttl is taken first, so the files of the same
+    /// change are parsed once, with the new prefixes; the indexed files it
+    /// serves and that did not change are left to parse again.
+    pub fn files_changed(&mut self, changes: &[(PathBuf, Change)]) -> Effects {
+        let mut fx = Effects::default();
+        let mut prefix_files: Vec<PathBuf> = Vec::new();
+        let mut gone_dirs: Vec<PathBuf> = Vec::new();
+        let mut disk_changed = false;
+        let mut sparql_paths: Vec<PathBuf> = Vec::new();
+        let mut reindex: Vec<PathBuf> = Vec::new();
+        for (path, change) in changes {
+            // A deleted path that no watched kind of file names may be a
+            // folder, and the files indexed below it are gone with it.
+            if *change == Change::Deleted && !is_watched_file(path) {
+                if self.watched_dir(path) {
+                    gone_dirs.push(path.clone());
+                }
+                continue;
+            }
+            if is_import_source(path) {
+                continue;
+            }
+            let key = path_to_uri(path).unwrap_or_default();
+            let open = self.open.contains_key(&key);
+            // A JSON-LD context file on disk (the open copy wins).
+            if !open && self.context_changed(&key, true) {
+                disk_changed = true;
+            }
+            if !self.watched(path) {
+                continue;
+            }
+            if is_sparql_path(path) {
+                // Read on demand, never indexed; but a closed query is diagnosed.
+                sparql_paths.push(path.clone());
+                continue;
+            }
+            if !is_turtle(path) || open {
+                // An open prefixes.ttl was handled on save.
+                continue;
+            }
+            if path.file_name().is_some_and(|f| f == PREFIX_FILE) {
+                prefix_files.push(path.clone());
+            }
+            fx.on_disk.push(path.clone());
+            reindex.push(path.clone());
+        }
+        // The new prefixes first: the files changed with them are parsed
+        // below with those, and only the others are left to parse again.
+        let mut stale = Vec::new();
+        for file in &prefix_files {
+            stale.extend(self.prefixes_changed(Some(file)));
+        }
+        // The files of one change are parsed together.
+        disk_changed |= self.reindex_disk_files(&reindex);
+        // The files below a deleted folder are no longer shown: knowledge
+        // changed, and with it every closed file.
+        disk_changed |= self.remove_under_any(&gone_dirs);
+        if !sparql_paths.is_empty() {
+            self.sparql_files_changed(&sparql_paths);
+            fx.closed_files = true;
+        }
+        let parsed: rustc_hash::FxHashSet<&PathBuf> = reindex.iter().collect();
+        stale.retain(|p| !parsed.contains(p));
+        stale.sort();
+        stale.dedup();
+        fx.reparse = stale;
+        if !prefix_files.is_empty() || disk_changed {
+            fx.add(Effects {
+                shacl: true,
+                ..Effects::knowledge()
+            });
+        }
+        fx
     }
 }
 
@@ -2768,6 +3049,257 @@ pub(crate) mod tests {
         assert_eq!(ws.open[uri].version, 2);
         ws.change_doc("file:///w/closed.ttl", 3, vec![full("x")], Encoding::Utf16);
         assert!(ws.text("file:///w/closed.ttl").is_none());
+    }
+
+    // ---- effects ----
+
+    /// `Effects` with knowledge changed and SHACL due.
+    fn knowledge_and_shacl() -> Effects {
+        Effects {
+            shacl: true,
+            ..Effects::knowledge()
+        }
+    }
+
+    fn sorted(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn an_edit_to_a_data_file_is_that_document_alone() {
+        let root = TempDir::new("fx-data");
+        let a = write(&root.0, "a.ttl", TTL);
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(vec![a.clone()]);
+        let one = Effects {
+            dirty: Dirty::One(uri(&a)),
+            ..Effects::default()
+        };
+        assert_eq!(ws.open_doc(uri(&a), TTL.into(), 1), one);
+        let edit = vec![full("@prefix ex: <http://e.org/> .\nex:C a ex:D .\n")];
+        assert_eq!(ws.change_doc(&uri(&a), 2, edit, Encoding::Utf16), one);
+        assert_eq!(
+            ws.save_doc(&uri(&a)),
+            Effects {
+                shacl: true,
+                ..Effects::default()
+            }
+        );
+    }
+
+    #[test]
+    fn an_edit_to_an_open_prefix_file_reaches_open_documents_now_and_indexed_files_on_save() {
+        let root = TempDir::new("fx-prefixes");
+        let pf = write(
+            &root.0,
+            "prefixes.ttl",
+            "@prefix one: <http://one.org/> .\n",
+        );
+        let served = vec![
+            write(&root.0, "x.ttl", "one:s one:p one:o .\n"),
+            write(&root.0, "deeper/y.ttl", "one:s one:p one:o .\n"),
+        ];
+        // A folder with a prefixes.ttl of its own is not served.
+        let own = write(
+            &root.0,
+            "own/prefixes.ttl",
+            "@prefix two: <http://two.org/> .\n",
+        );
+        let not_served = write(&root.0, "own/z.ttl", "two:s two:p two:o .\n");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(vec![
+            pf.clone(),
+            served[0].clone(),
+            served[1].clone(),
+            own,
+            not_served,
+        ]);
+        let open = uri(&root.0.join("open.ttl"));
+        ws.open_doc(open.clone(), "one:s one:p one:o .\n".into(), 1);
+        assert!(ws.analysis(&open).unwrap().external.contains_key("one"));
+
+        let text = "@prefix one: <http://one.org/> .\n";
+        assert_eq!(ws.open_doc(uri(&pf), text.into(), 1), Effects::knowledge());
+        let edit = vec![full("@prefix uno: <http://uno.org/> .\n")];
+        let fx = ws.change_doc(&uri(&pf), 2, edit, Encoding::Utf16);
+        // Every open document is due, and none is left to parse again yet.
+        assert_eq!(fx, Effects::knowledge());
+        assert!(ws.analysis(&open).unwrap().external.contains_key("uno"));
+        let indexed = |ws: &Workspace| ws.indexed_analysis(&uri(&served[0])).unwrap().clone();
+        assert!(indexed(&ws).external.contains_key("one"));
+
+        let mut fx = ws.save_doc(&uri(&pf));
+        fx.reparse.sort();
+        assert_eq!(
+            fx,
+            Effects {
+                reparse: sorted(served),
+                ..knowledge_and_shacl()
+            }
+        );
+    }
+
+    #[test]
+    fn closing_a_context_file_with_unsaved_edits_reaches_its_users() {
+        let root = TempDir::new("fx-context");
+        let ctx = write(&root.0, "ctx.jsonld", CTX);
+        let closed = write(&root.0, "b.jsonld", USES_CTX);
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(vec![closed.clone()]);
+        let user = uri(&root.0.join("a.jsonld"));
+        ws.open_doc(user.clone(), USES_CTX.into(), 1);
+        let triples = |ws: &mut Workspace| ws.analysis(&user).unwrap().parsed.triples.len();
+        assert_eq!(triples(&mut ws), 1);
+        let indexed = |ws: &Workspace| ws.indexed_analysis(&uri(&closed)).unwrap().clone();
+        let before = indexed(&ws);
+
+        let unsaved = r#"{"@context": {"name": null}}"#;
+        assert_eq!(
+            ws.open_doc(uri(&ctx), unsaved.into(), 1),
+            Effects::knowledge()
+        );
+        assert_eq!(triples(&mut ws), 0);
+        // An edit does not parse the indexed users again.
+        assert!(Arc::ptr_eq(&before, &indexed(&ws)));
+
+        assert_eq!(ws.close_doc(&uri(&ctx)), Effects::knowledge());
+        assert_eq!(triples(&mut ws), 1);
+        assert!(!Arc::ptr_eq(&before, &indexed(&ws)));
+    }
+
+    #[test]
+    fn a_settings_prefix_change_lists_every_indexed_turtle_file() {
+        let root = TempDir::new("fx-settings");
+        let turtle = vec![
+            write(&root.0, "a.ttl", TTL),
+            write(&root.0, "sub/b.ttl", TTL),
+            write(&root.0, "c.trig", TTL),
+        ];
+        let others = [
+            write(
+                &root.0,
+                "d.nt",
+                "<http://e.org/s> <http://e.org/p> <http://e.org/o> .\n",
+            ),
+            write(&root.0, "e.jsonld", r#"{"@id": "http://e.org/s"}"#),
+        ];
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(turtle.iter().chain(&others).cloned().collect());
+        let mut prefixes = PrefixMap::default();
+        prefixes.insert("set".into(), "http://set.org/".into());
+        let mut fx = ws.set_settings_prefixes(prefixes);
+        fx.reparse.sort();
+        assert_eq!(
+            fx,
+            Effects {
+                reparse: sorted(turtle),
+                ..knowledge_and_shacl()
+            }
+        );
+    }
+
+    #[test]
+    fn a_prefix_file_and_a_data_file_changed_together_parse_the_data_once() {
+        let root = TempDir::new("fx-together");
+        let pf = write(
+            &root.0,
+            "prefixes.ttl",
+            "@prefix ex: <http://old.example/> .\n",
+        );
+        let data = write(&root.0, "data.ttl", "ex:a ex:p ex:o .\n");
+        let other = write(&root.0, "other.ttl", "ex:a ex:p ex:o .\n");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let created = |p: &PathBuf| (p.clone(), Change::Created);
+        ws.files_changed(&[created(&data), created(&pf), created(&other)]);
+        assert_eq!(ws.indexed_count(), 3);
+
+        std::fs::write(&pf, "@prefix ex: <http://newer.example/> .\n").unwrap();
+        std::fs::write(&data, "ex:b ex:p ex:o .\n").unwrap();
+        let before = INDEX_PASSES.with(|c| c.get());
+        let fx = ws.files_changed(&[
+            (data.clone(), Change::Changed),
+            (pf.clone(), Change::Changed),
+        ]);
+        assert_eq!(INDEX_PASSES.with(|c| c.get()) - before, 1);
+        let a = ws.indexed_analysis(&uri(&data)).unwrap();
+        assert!(
+            a.external
+                .get("ex")
+                .is_some_and(|i| i == "http://newer.example/")
+        );
+        // Only the file that did not change is left to parse again.
+        assert_eq!(
+            fx,
+            Effects {
+                reparse: vec![other],
+                on_disk: vec![data, pf],
+                ..knowledge_and_shacl()
+            }
+        );
+    }
+
+    #[test]
+    fn a_deleted_folder_forgets_the_files_below_it() {
+        let root = TempDir::new("fx-folder");
+        let below = [
+            write(&root.0, "gone/a.ttl", TTL),
+            write(&root.0, "gone/deep/b.ttl", TTL),
+        ];
+        let kept = write(&root.0, "kept.ttl", TTL);
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(below.iter().chain([&kept]).cloned().collect());
+        std::fs::remove_dir_all(root.0.join("gone")).unwrap();
+        let fx = ws.files_changed(&[(root.0.join("gone"), Change::Deleted)]);
+        assert_eq!(fx, knowledge_and_shacl());
+        assert!(below.iter().all(|p| !ws.is_indexed(&uri(p))));
+        assert!(ws.is_indexed(&uri(&kept)));
+        // Nothing indexed below it: nothing changed.
+        let fx = ws.files_changed(&[(root.0.join("gone"), Change::Deleted)]);
+        assert_eq!(fx, Effects::default());
+    }
+
+    #[test]
+    fn a_query_changed_on_disk_makes_closed_files_due_but_changes_no_knowledge() {
+        let root = TempDir::new("fx-query");
+        let q = write(&root.0, "q.rq", "SELECT * WHERE { ?s ?p ?o }\n");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let fx = ws.files_changed(&[(q, Change::Changed)]);
+        assert_eq!(
+            fx,
+            Effects {
+                closed_files: true,
+                ..Effects::default()
+            }
+        );
+    }
+
+    #[test]
+    fn effects_add_up() {
+        let (a, b) = ("file:///w/a.ttl", "file:///w/b.ttl");
+        let mut fx = Effects::one(a);
+        fx.add(Effects::one(a));
+        assert_eq!(fx.dirty, Dirty::One(a.into()));
+        fx.add(Effects {
+            reparse: vec![PathBuf::from("/w/c.ttl")],
+            ..Effects::default()
+        });
+        assert_eq!(fx.dirty, Dirty::One(a.into()));
+        fx.add(Effects::one(b));
+        assert_eq!(fx.dirty, Dirty::AllOpen);
+        fx.add(Effects {
+            shacl: true,
+            ..Effects::default()
+        });
+        assert_eq!(
+            fx,
+            Effects {
+                dirty: Dirty::AllOpen,
+                shacl: true,
+                reparse: vec![PathBuf::from("/w/c.ttl")],
+                ..Effects::default()
+            }
+        );
     }
 }
 

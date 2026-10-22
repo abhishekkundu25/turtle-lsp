@@ -419,17 +419,22 @@ impl Server {
         true
     }
 
-    /// The RDF file at `path` changed on disk (it is not open): it goes
-    /// first in the next pass, or is cleared if it is gone.
-    pub(super) fn wsdiag_disk_changed(&mut self, path: &Path) {
+    /// The RDF files at `paths` changed on disk (they are not open): each
+    /// goes first in the next pass (the last one first), or is cleared if it
+    /// is gone.
+    pub(super) fn wsdiag_disk_changed(&mut self, paths: &[PathBuf]) {
         if !self.wsdiag.enabled {
             return;
         }
-        let Some(uri) = path_to_uri(path) else { return };
-        if path.is_file() {
-            self.wsdiag.prioritize(uri);
-        } else if self.wsdiag.shown.remove(&uri).is_some() {
-            self.send_diagnostics(&uri, Vec::new(), None);
+        for path in paths {
+            let Some(uri) = path_to_uri(path) else {
+                continue;
+            };
+            if path.is_file() {
+                self.wsdiag.prioritize(uri);
+            } else if self.wsdiag.shown.remove(&uri).is_some() {
+                self.send_diagnostics(&uri, Vec::new(), None);
+            }
         }
     }
 
