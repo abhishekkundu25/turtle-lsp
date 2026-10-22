@@ -196,12 +196,12 @@ pub struct ContextError {
 impl ContextError {
     /// The `jsonld-context` diagnostic: "<W3C code>: <message>".
     pub fn to_syntax_error(&self) -> SyntaxError {
-        SyntaxError {
-            span: self.span,
-            message: self.to_string(),
-            severity: Severity::Error,
-            code: DIAGNOSTIC_CODE,
-        }
+        SyntaxError::new(
+            self.span,
+            self.to_string(),
+            Severity::Error,
+            DIAGNOSTIC_CODE,
+        )
     }
 }
 
@@ -949,7 +949,7 @@ impl ContextCache {
         }
         let doc = super::json::parse(text);
         let json = match (doc.root, doc.errors.first()) {
-            (_, Some(e)) => Err(e.message.clone()),
+            (_, Some(e)) => Err(e.message().to_string()),
             (None, None) => Err("the document is empty".to_string()),
             (Some(root), None) => Ok(Arc::new(root)),
         };
@@ -1297,12 +1297,12 @@ impl<'l> Processor<'l> {
 
     fn warn(&mut self, span: Span, message: String) {
         if self.site.is_none() && !self.quiet {
-            self.warnings.push(SyntaxError {
-                span: self.term_at.unwrap_or(span),
+            self.warnings.push(SyntaxError::new(
+                self.term_at.unwrap_or(span),
                 message,
-                severity: Severity::Warning,
-                code: DIAGNOSTIC_CODE,
-            });
+                Severity::Warning,
+                DIAGNOSTIC_CODE,
+            ));
         }
     }
 
@@ -2699,7 +2699,7 @@ mod tests {
         );
         assert_eq!(spanned(text, e.span), "bad");
         assert_eq!(
-            e.to_syntax_error().message,
+            e.to_syntax_error().message(),
             format!("invalid scoped context: {}", e.message)
         );
         // Scoped contexts may redefine protected terms and reset the context.
@@ -3087,7 +3087,7 @@ mod tests {
         let e = process(r#"{"@context": {"a": 5}}"#)
             .unwrap_err()
             .to_syntax_error();
-        assert!(e.message.starts_with("invalid term definition: "));
+        assert!(e.message().starts_with("invalid term definition: "));
         assert_eq!((e.code, e.severity), (DIAGNOSTIC_CODE, Severity::Error));
     }
 

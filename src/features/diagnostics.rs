@@ -164,7 +164,12 @@ pub fn diagnostics_with(
         Severity::Warning => DiagnosticSeverity::WARNING,
     };
     for e in &a.parsed.errors {
-        out.push(mk(e.span, severity(e.severity), e.code, e.message.clone()));
+        out.push(mk(
+            e.span,
+            severity(e.severity),
+            e.code,
+            e.message().to_string(),
+        ));
     }
 
     // Undeclared prefixes, with "add @prefix" fixes for every known namespace.

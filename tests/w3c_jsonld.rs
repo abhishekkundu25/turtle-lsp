@@ -640,14 +640,16 @@ fn run(t: &Test) -> Result<(), String> {
             .errors
             .iter()
             .filter(|e| e.severity == Severity::Error)
-            .map(|e| e.message.as_str())
+            .map(|e| e.message())
             .collect();
         return negative(&errors, t.error_code.as_deref());
     }
     if let Some(e) = error {
         return Err(format!(
             "error at {}..{}: {}",
-            e.span.start, e.span.end, e.message
+            e.span.start,
+            e.span.end,
+            e.message()
         ));
     }
     let want = match (t.suite, t.kind, &t.expect) {

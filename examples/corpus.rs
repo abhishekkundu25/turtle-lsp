@@ -418,7 +418,7 @@ fn check(case: &Case) -> Row {
         .iter()
         .filter(|e| e.severity == Severity::Error)
         .take(10)
-        .map(|e| format!("{} at {}", e.message, line_col(text, e.span.start)))
+        .map(|e| format!("{} at {}", e.message(), line_col(text, e.span.start)))
         .collect();
 
     // 1. Parser against oxttl.
@@ -491,7 +491,7 @@ fn check(case: &Case) -> Row {
                 .errors
                 .iter()
                 .take(3)
-                .map(|e| format!("{} at {}", e.message, line_col(&out, e.span.start)))
+                .map(|e| format!("{} at {}", e.message(), line_col(&out, e.span.start)))
                 .collect::<Vec<_>>()
                 .join("; ")
         ));
@@ -560,7 +560,7 @@ fn compare_lines(
         .filter(|e| e.severity == Severity::Error)
     {
         ours.entry(lines.line(e.span.start as usize))
-            .or_insert_with(|| e.message.clone());
+            .or_insert_with(|| e.message().to_string());
     }
     let mut theirs: BTreeMap<usize, String> = BTreeMap::new();
     for (offset, message) in &ox_errors {

@@ -598,7 +598,7 @@ pub(super) fn parse(bytes: &[u8], format: Format, base: &str) -> Result<Ontology
     if a.parsed.triples.is_empty()
         && let Some(e) = a.parsed.errors.first()
     {
-        return Err(e.message.clone());
+        return Err(e.message().to_string());
     }
     let p = preds();
     let imports = a

@@ -1274,7 +1274,7 @@ fn depth_errors(text: &str, syntax: Syntax) -> usize {
     parse(text, &PrefixMap::default(), syntax)
         .errors
         .iter()
-        .filter(|e| e.message.starts_with("Nested more than"))
+        .filter(|e| e.message().starts_with("Nested more than"))
         .count()
 }
 
@@ -1799,24 +1799,16 @@ fn the_span_check_sees_every_span_field() {
         (
             "error",
             Box::new(move |p| {
-                p.errors.push(SyntaxError {
-                    span: bad,
-                    message: String::new(),
-                    severity: Severity::Error,
-                    code: "syntax",
-                })
+                p.errors
+                    .push(SyntaxError::new(bad, "", Severity::Error, "syntax"))
             }),
         ),
         ("comment", Box::new(move |p| p.comments.push(bad))),
         (
             "token",
             Box::new(move |p| {
-                p.tokens.push(lexer::Token {
-                    kind: lexer::Kind::Comment,
-                    start: 0,
-                    end: 99,
-                    error: None,
-                })
+                p.tokens
+                    .push(lexer::Token::new(lexer::Kind::Comment, 0, 99))
             }),
         ),
         (

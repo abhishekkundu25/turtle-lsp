@@ -510,14 +510,14 @@ fn analyze(
 /// failure as its one error, so it shows as a diagnostic.
 fn failed_analysis(uri: String, syntax: Syntax, external: Arc<PrefixMap>, msg: &str) -> Analysis {
     let mut a = Analysis::with_loader(uri, "", external, true, syntax, &Bundled);
-    a.parsed.errors.push(SyntaxError {
-        span: Span::default(),
-        message: format!(
+    a.parsed.errors.push(SyntaxError::new(
+        Span::default(),
+        format!(
             "{msg}. The rest of the server keeps working; please report this file at https://github.com/abhishekkundu25/turtle-lsp/issues"
         ),
-        severity: Severity::Error,
-        code: "internal-error",
-    });
+        Severity::Error,
+        "internal-error",
+    ));
     a
 }
 
@@ -2027,7 +2027,7 @@ pub(crate) mod tests {
             .errors
             .iter()
             .filter(|e| e.code == "jsonld-context")
-            .map(|e| e.message.clone())
+            .map(|e| e.message().to_string())
             .collect()
     }
 

@@ -166,7 +166,7 @@ pub fn parse_document_with(
     let mut seen = rustc_hash::FxHashSet::default();
     parsed
         .errors
-        .retain(|e| seen.insert((e.span, e.message.clone())));
+        .retain(|e| seen.insert((e.span, e.message().to_string())));
     parsed.errors.sort_by_key(|e| (e.span.start, e.span.end));
     dropped.sort_unstable_by_key(|d| (d.span.start, d.span.end, d.reason));
     dropped.dedup();
@@ -514,7 +514,11 @@ mod tests {
         let text = "{\n  \"@context\": {\n    \"ex\": \"https://jsonld.example.org/def/\",\n    \"weight\": 5\n  },\n  \"@id\": \"ex:w10\",\n  \"ex:colour\": \"red\"\n}\n";
         let p = parse(text, None, &NoNetwork::default());
         assert_eq!(errors(text, &p), [("jsonld-context", "weight")]);
-        assert!(p.errors[0].message.starts_with("invalid term definition: "));
+        assert!(
+            p.errors[0]
+                .message()
+                .starts_with("invalid term definition: ")
+        );
         let text = "{\n  \"@context\": {\n    \"a\": \"b:x\",\n    \"b\": \"a:y\"\n  },\n  \"@id\": \"https://jsonld.example.org/def/w15\",\n  \"a\": 1\n}\n";
         let p = parse(text, None, &NoNetwork::default());
         assert_eq!(p.errors.len(), 1);
@@ -540,7 +544,7 @@ mod tests {
             .map(|e| {
                 (
                     at(text, e.span),
-                    e.message.split(':').next().unwrap(),
+                    e.message().split(':').next().unwrap(),
                     e.code,
                 )
             })
@@ -566,7 +570,7 @@ mod tests {
                     e.code,
                     e.severity,
                     at(text, e.span),
-                    e.message.split(':').next().unwrap(),
+                    e.message().split(':').next().unwrap(),
                 )
             })
             .collect();
@@ -582,7 +586,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(p.errors[1].message.contains("imports.network"));
+        assert!(p.errors[1].message().contains("imports.network"));
         // Processing stopped at `"a": 5` before `"@b"`; alone, `"@b"` is a
         // warning.
         let text = r#"{"@context": {"@b": "http://x/"}}"#;
@@ -609,7 +613,7 @@ mod tests {
         let errors: Vec<_> = p
             .errors
             .iter()
-            .map(|e| (e.code, e.severity, e.span, e.message.as_str()))
+            .map(|e| (e.code, e.severity, e.span, e.message()))
             .collect();
         assert_eq!(
             errors,
@@ -625,11 +629,7 @@ mod tests {
         // unclosed `{`.
         let p = parse(text, None, &NoNetwork::default());
         assert_eq!(p.syntax, Syntax::JsonLd);
-        let errors: Vec<_> = p
-            .errors
-            .iter()
-            .map(|e| (e.span, e.message.as_str()))
-            .collect();
+        let errors: Vec<_> = p.errors.iter().map(|e| (e.span, e.message())).collect();
         assert_eq!(errors, [(Span::new(0, 1), "Unclosed object: expected '}'")]);
     }
 
@@ -827,7 +827,7 @@ mod tests {
             .parsed
             .errors
             .iter()
-            .filter(|e| e.message.starts_with("context overflow"))
+            .filter(|e| e.message().starts_with("context overflow"))
             .collect();
         assert_eq!(overflow.len(), 1, "{:?}", d.parsed.errors);
     }

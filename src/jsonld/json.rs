@@ -47,6 +47,7 @@
 //!   where the checking stopped.
 
 use crate::syntax::{Severity, Span, SyntaxError};
+use std::borrow::Cow;
 
 /// A parsed JSON document.
 #[derive(Clone, Debug, Default)]
@@ -523,7 +524,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn error(&mut self, span: Span, message: impl Into<String>) {
+    fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
         if self.quiet || self.stopped {
             return;
         }
@@ -541,33 +542,29 @@ impl<'a> Parser<'a> {
                 .min(self.b.len() as u32);
             (
                 Span::new(at, at),
-                format!(
+                Cow::Owned(format!(
                     "More than {MAX_ERRORS} syntax errors; the rest of the file is not checked"
-                ),
+                )),
             )
         } else {
             (span, message.into())
         };
-        self.errors.push(SyntaxError {
+        self.errors.push(SyntaxError::new(
             span,
             message,
-            severity: Severity::Error,
-            code: "json-syntax",
-        });
+            Severity::Error,
+            "json-syntax",
+        ));
     }
 
     /// A warning: valid JSON that deserves a second look (see the module
     /// doc). Not counted with the errors; capped on its own.
-    fn warn(&mut self, span: Span, code: &'static str, message: impl Into<String>) {
+    fn warn(&mut self, span: Span, code: &'static str, message: impl Into<Cow<'static, str>>) {
         if self.quiet || self.stopped || self.warnings.len() >= MAX_ERRORS {
             return;
         }
-        self.warnings.push(SyntaxError {
-            span,
-            message: message.into(),
-            severity: Severity::Warning,
-            code,
-        });
+        self.warnings
+            .push(SyntaxError::new(span, message, Severity::Warning, code));
     }
 
     fn eof(&self) -> Lexed {
@@ -1112,7 +1109,7 @@ impl<'a> Parser<'a> {
     /// token before a missing '.'; at `next` when that value has no text. Not
     /// at all when the value already has an error there (an unclosed string
     /// swallows the comma).
-    fn missing_separator(&mut self, prev: Option<Span>, next: Span, message: &str) {
+    fn missing_separator(&mut self, prev: Option<Span>, next: Span, message: &'static str) {
         let at = prev.filter(|s| s.end > s.start).unwrap_or(next);
         if self.errors.iter().rev().any(|e| e.span == at) {
             return;
@@ -1245,7 +1242,7 @@ mod tests {
         parse(text)
             .errors
             .into_iter()
-            .map(|e| (e.span.start, e.span.end, e.message))
+            .map(|e| (e.span.start, e.span.end, e.message().to_string()))
             .collect()
     }
 
@@ -1262,7 +1259,7 @@ mod tests {
             .into_iter()
             .map(|e| {
                 assert_eq!(e.severity, Severity::Warning);
-                (e.span.start, e.span.end, e.code, e.message)
+                (e.span.start, e.span.end, e.code, e.message().to_string())
             })
             .collect()
     }
@@ -1879,7 +1876,7 @@ mod tests {
         assert_eq!(errs.len(), MAX_ERRORS + 1);
         assert!(
             errs[MAX_ERRORS]
-                .message
+                .message()
                 .starts_with("More than 100 syntax errors")
         );
     }
@@ -1907,7 +1904,7 @@ mod tests {
                 &text[..20.min(text.len())]
             );
             let cap = errs.last().unwrap();
-            assert!(cap.message.starts_with("More than 100 syntax errors"));
+            assert!(cap.message().starts_with("More than 100 syntax errors"));
             assert_eq!(cap.span.start, cap.span.end);
             assert!(cap.span.end as usize <= text.len());
             assert!(text.is_char_boundary(cap.span.end as usize));
@@ -1950,7 +1947,7 @@ mod tests {
                     parse(text)
                         .errors
                         .iter()
-                        .all(|e| !e.message.starts_with("Unclosed string"))
+                        .all(|e| !e.message().starts_with("Unclosed string"))
                 },
                 "{text:?}"
             );

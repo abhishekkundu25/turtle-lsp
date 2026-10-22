@@ -425,12 +425,12 @@ impl<'a> Expander<'a, '_, '_, '_> {
     }
 
     fn error(&mut self, code: &str, span: Span, message: impl std::fmt::Display) -> Skip {
-        self.errors.push(SyntaxError {
+        self.errors.push(SyntaxError::new(
             span,
-            message: format!("{code}: {message}"),
-            severity: Severity::Error,
-            code: super::context::DIAGNOSTIC_CODE,
-        });
+            format!("{code}: {message}"),
+            Severity::Error,
+            super::context::DIAGNOSTIC_CODE,
+        ));
         Skip
     }
 

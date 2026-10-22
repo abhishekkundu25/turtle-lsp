@@ -239,7 +239,7 @@ fn run(t: &Test) -> Outcome {
         Err(e) => return Outcome::Fail(e),
     };
     if let Some(e) = docs.iter().find_map(|a| a.parsed.errors.first()) {
-        return Outcome::Fail(format!("the data does not parse: {}", e.message));
+        return Outcome::Fail(format!("the data does not parse: {}", e.message()));
     }
     let expected = match expected(&t.local(result), result) {
         Ok(e) => e,

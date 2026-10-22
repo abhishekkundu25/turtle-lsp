@@ -11,6 +11,7 @@ mod parser;
 pub use iri::{Iri, IriKey, IriMap};
 pub use parser::{has_scheme, parse, parse_with_base};
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 
 pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
@@ -290,11 +291,33 @@ pub enum Severity {
 #[derive(Clone, Debug)]
 pub struct SyntaxError {
     pub span: Span,
-    pub message: String,
+    /// Borrowed when the text is fixed, as most are.
+    pub message: Cow<'static, str>,
     pub severity: Severity,
     /// The diagnostic code: `syntax` for Turtle and its relatives,
     /// `json-syntax` and `jsonld-context` for JSON-LD.
     pub code: &'static str,
+}
+
+impl SyntaxError {
+    pub fn new(
+        span: Span,
+        message: impl Into<Cow<'static, str>>,
+        severity: Severity,
+        code: &'static str,
+    ) -> SyntaxError {
+        SyntaxError {
+            span,
+            message: message.into(),
+            severity,
+            code,
+        }
+    }
+
+    /// What is wrong, as shown to the user.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 #[derive(Debug, Default)]

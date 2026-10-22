@@ -19,6 +19,12 @@
 //! blank node) before each line's `.`, which puts the line's triple in that
 //! graph. A literal graph label or a fifth term is an error; prefixed names
 //! and relative IRIs are reported as in N-Triples.
+//!
+//! A document reports at most [`MAX_ERRORS`] syntax errors and warnings: the
+//! ones that start first in the text, in the order they were found. One more
+//! error, empty and at the end of the last one shown, says that there are
+//! more. Parsing goes on past the cap, so the triples of every statement
+//! that parses are still there.
 
 use super::lexer::{Kind, Token, tokenize};
 use super::*;
@@ -31,6 +37,15 @@ type R<T> = Result<T, ()>;
 /// Real data rarely goes past a dozen; thousands only come from generated or
 /// hostile input, and would overflow a worker thread's stack.
 pub const MAX_NESTING: u32 = 256;
+
+/// How many syntax errors a document reports, as JSON's
+/// ([`crate::jsonld::json::MAX_ERRORS`]).
+pub const MAX_ERRORS: usize = 100;
+
+/// How many errors the parser holds before it drops all but the first
+/// [`MAX_ERRORS`]: a multiple of it, so that dropping is rare and a broken
+/// document never holds an error per token.
+const ERRORS_HELD: usize = 4 * MAX_ERRORS;
 
 const TT_HOLDS_NO_REIFIED_TRIPLE: &str =
     "A triple term <<( )>> cannot contain a reified triple << >>: write it as a triple term";
@@ -93,12 +108,12 @@ pub fn parse_with_base(
         return Parsed {
             syntax,
             document_base: base.map(str::to_string),
-            errors: vec![SyntaxError {
-                span: Span::new(0, 0),
-                message: "JSON-LD documents are parsed by jsonld::parse".to_string(),
-                severity: Severity::Error,
-                code: "syntax",
-            }],
+            errors: vec![SyntaxError::new(
+                Span::new(0, 0),
+                "JSON-LD documents are parsed by jsonld::parse",
+                Severity::Error,
+                "syntax",
+            )],
             ..Parsed::default()
         };
     }
@@ -106,38 +121,19 @@ pub fn parse_with_base(
     if syntax != Syntax::TriG {
         // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
         for t in all.iter_mut().filter(|t| t.kind == Kind::Graph) {
-            t.kind = Kind::Error;
-            t.error = Some(super::lexer::UNEXPECTED_WORD);
+            *t = t.into_unexpected_word();
         }
     }
-    let mut out = Parsed {
+    let out = Parsed {
         syntax,
         document_base: base.map(str::to_string),
         ..Parsed::default()
     };
-    for t in &all {
-        if t.kind == Kind::Comment {
-            out.comments.push(Span::new(t.start, t.end));
-        }
-        if let Some(msg) = t.error {
-            out.errors.push(SyntaxError {
-                span: Span::new(t.start, t.end),
-                message: msg.to_string(),
-                severity: Severity::Error,
-                code: "syntax",
-            });
-        }
-    }
-    let toks: Vec<Token> = all
-        .iter()
-        .copied()
-        .filter(|t| t.kind != Kind::Comment)
-        .collect();
-    out.tokens = all;
     let mut p = P {
         src,
-        toks,
+        toks: all,
         pos: 0,
+        prev: None,
         prefixes: external
             .iter()
             .map(|(k, v)| (k.clone(), Iri::intern(v)))
@@ -160,11 +156,24 @@ pub fn parse_with_base(
         pname_cache: FxHashMap::default(),
         buf: String::new(),
         v: vocab(),
+        reported: 0,
     };
+    for i in 0..p.toks.len() {
+        let t = p.toks[i];
+        if t.kind == Kind::Comment {
+            p.out.comments.push(Span::new(t.start, t.end));
+        }
+        if let Some(msg) = t.error() {
+            p.error(Span::new(t.start, t.end), msg);
+        }
+    }
+    p.pos = p.skip_comments(0);
     p.document();
     if syntax.is_line_based() {
         p.ntriples_restrictions();
     }
+    p.cap_errors();
+    p.out.tokens = p.toks;
     p.out
 }
 
@@ -176,8 +185,13 @@ type Flagged = (Node, bool);
 
 struct P<'a> {
     src: &'a str,
+    /// Every token, comments too: they become [`Parsed::tokens`]. The parser
+    /// steps over the comments.
     toks: Vec<Token>,
+    /// The current token, never a comment (`toks.len()` at the end).
     pos: usize,
+    /// The token before `pos` that is not a comment.
+    prev: Option<usize>,
     /// Prefix name -> namespace, as declared so far.
     prefixes: FxHashMap<String, Iri>,
     base: Option<oxiri::Iri<String>>,
@@ -210,6 +224,8 @@ struct P<'a> {
     /// Scratch space for building IRIs from prefixed names.
     buf: String,
     v: &'static Vocab,
+    /// Errors and warnings reported so far, the dropped ones too.
+    reported: usize,
 }
 
 fn is_starter(k: Kind) -> bool {
@@ -321,16 +337,37 @@ impl<'a> P<'a> {
     }
     fn bump(&mut self) -> Token {
         let t = self.toks[self.pos];
-        self.pos += 1;
+        self.advance();
         t
     }
     fn eat(&mut self, k: Kind) -> bool {
         if self.peek_kind() == Some(k) {
-            self.pos += 1;
+            self.advance();
             true
         } else {
             false
         }
+    }
+    /// Step to the next token that is not a comment.
+    fn advance(&mut self) {
+        self.prev = Some(self.pos);
+        self.pos = self.skip_comments(self.pos + 1);
+    }
+    /// The first token at or after `i` that is not a comment.
+    fn skip_comments(&self, mut i: usize) -> usize {
+        while self.toks.get(i).is_some_and(|t| t.kind == Kind::Comment) {
+            i += 1;
+        }
+        i
+    }
+    /// The kind of the `n`th token after the current one, comments not
+    /// counted (0 is the current one).
+    fn kind_ahead(&self, n: usize) -> Option<Kind> {
+        let mut i = self.pos;
+        for _ in 0..n {
+            i = self.skip_comments(i + 1);
+        }
+        self.toks.get(i).map(|t| t.kind)
     }
     fn text(&self, t: Token) -> &'a str {
         t.text(self.src)
@@ -352,7 +389,7 @@ impl<'a> P<'a> {
     /// the cost is the size of that gap, not the length of the line.
     fn line_indent(&self) -> Option<u32> {
         let t = self.toks.get(self.pos)?;
-        let from = match self.pos.checked_sub(1) {
+        let from = match self.prev {
             Some(i) => self.toks[i].end as usize,
             None => 0,
         };
@@ -369,27 +406,69 @@ impl<'a> P<'a> {
             .then_some(offset as u32)
     }
     fn prev_span(&self) -> Span {
-        match self.pos.checked_sub(1).and_then(|i| self.toks.get(i)) {
+        match self.prev.map(|i| self.toks[i]) {
             Some(t) => Span::new(t.start, t.end),
             None => Span::new(0, 0),
         }
     }
 
-    fn error(&mut self, span: Span, message: impl Into<String>) {
-        self.out.errors.push(SyntaxError {
-            span,
-            message: message.into(),
-            severity: Severity::Error,
-            code: "syntax",
+    fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
+        self.report(SyntaxError::new(span, message, Severity::Error, "syntax"));
+    }
+    fn warning(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
+        self.report(SyntaxError::new(span, message, Severity::Warning, "syntax"));
+    }
+    fn report(&mut self, e: SyntaxError) {
+        self.reported += 1;
+        self.out.errors.push(e);
+        if self.out.errors.len() >= ERRORS_HELD {
+            self.keep_first_errors();
+        }
+    }
+
+    /// Keep the [`MAX_ERRORS`] errors that start first in the text (the
+    /// first reported, on a tie), in the order they were reported. A later
+    /// error that starts before them all can still take a place.
+    fn keep_first_errors(&mut self) {
+        let errors = &mut self.out.errors;
+        if errors.len() <= MAX_ERRORS {
+            return;
+        }
+        let mut order: Vec<usize> = (0..errors.len()).collect();
+        order.select_nth_unstable_by_key(MAX_ERRORS, |&i| (errors[i].span.start, i));
+        let mut keep = vec![false; errors.len()];
+        for &i in &order[..MAX_ERRORS] {
+            keep[i] = true;
+        }
+        let mut i = 0;
+        errors.retain(|_| {
+            i += 1;
+            keep[i - 1]
         });
     }
-    fn warning(&mut self, span: Span, message: impl Into<String>) {
-        self.out.errors.push(SyntaxError {
-            span,
-            message: message.into(),
-            severity: Severity::Warning,
-            code: "syntax",
-        });
+
+    /// Past [`MAX_ERRORS`], the first ones and one error that says so, at
+    /// the end of the last one shown.
+    fn cap_errors(&mut self) {
+        if self.reported <= MAX_ERRORS {
+            return;
+        }
+        self.keep_first_errors();
+        let at = self
+            .out
+            .errors
+            .iter()
+            .map(|e| e.span.end)
+            .max()
+            .unwrap_or(0);
+        self.out.errors.push(SyntaxError::new(
+            Span::new(at, at),
+            Cow::Owned(format!(
+                "More than {MAX_ERRORS} syntax errors; the rest are not shown"
+            )),
+            Severity::Error,
+            "syntax",
+        ));
     }
 
     /// Report "Expected X" at the current token (or after the last token at EOF).
@@ -478,11 +557,11 @@ impl<'a> P<'a> {
 
     fn recover(&mut self, from: usize) {
         if self.pos == from {
-            self.pos += 1;
+            self.advance();
         }
         while let Some(t) = self.peek() {
             if t.kind == Kind::Dot {
-                self.pos += 1;
+                self.advance();
                 return;
             }
             if self.in_graph && t.kind == Kind::RBrace {
@@ -491,21 +570,18 @@ impl<'a> P<'a> {
             if self.is_starter(t.kind) && self.at_line_start() {
                 return;
             }
-            self.pos += 1;
+            self.advance();
         }
     }
 
     // ---- TriG graph blocks ----
 
-    fn kind_at(&self, i: usize) -> Option<Kind> {
-        self.toks.get(i).map(|t| t.kind)
-    }
-
-    /// Length in tokens of a graph name at `i` (IRI, prefixed name, `_:b`, `[]`).
-    fn label_len(&self, i: usize) -> Option<usize> {
-        match self.kind_at(i)? {
+    /// Length in tokens of a graph name at the current token (IRI, prefixed
+    /// name, `_:b`, `[]`).
+    fn label_len(&self) -> Option<usize> {
+        match self.kind_ahead(0)? {
             Kind::Iri | Kind::PName | Kind::BNode => Some(1),
-            Kind::LBracket if self.kind_at(i + 1) == Some(Kind::RBracket) => Some(2),
+            Kind::LBracket if self.kind_ahead(1) == Some(Kind::RBracket) => Some(2),
             _ => None,
         }
     }
@@ -515,11 +591,11 @@ impl<'a> P<'a> {
         if !self.trig {
             return false;
         }
-        match self.kind_at(self.pos) {
+        match self.peek_kind() {
             Some(Kind::LBrace | Kind::Graph) => true,
             _ => self
-                .label_len(self.pos)
-                .is_some_and(|n| self.kind_at(self.pos + n) == Some(Kind::LBrace)),
+                .label_len()
+                .is_some_and(|n| self.kind_ahead(n) == Some(Kind::LBrace)),
         }
     }
 
@@ -528,7 +604,7 @@ impl<'a> P<'a> {
         let Some(t) = self.peek() else {
             return self.expected(WHAT);
         };
-        match self.label_len(self.pos) {
+        match self.label_len() {
             Some(_) if matches!(t.kind, Kind::Iri | Kind::PName) => {
                 let iri = self.iri(Role::Graph)?;
                 Ok((GraphName::Iri(iri), Span::new(t.start, t.end)))
@@ -537,7 +613,8 @@ impl<'a> P<'a> {
                 let node = if n == 1 {
                     self.labelled_bnode()
                 } else {
-                    self.pos += 2;
+                    self.advance();
+                    self.advance();
                     self.fresh_bnode()
                 };
                 let Node::Blank(b) = node else { unreachable!() };
@@ -658,7 +735,7 @@ impl<'a> P<'a> {
                         None
                     }
                 }
-                Kind::Iri if t.error.is_none() => {
+                Kind::Iri if t.error().is_none() => {
                     let text = self.text(*t);
                     let raw = &text[1..text.len() - 1];
                     let raw = if raw.contains('\\') {
@@ -773,7 +850,7 @@ impl<'a> P<'a> {
         }
         match self.peek() {
             Some(t) if t.kind == Kind::Dot => {
-                self.pos += 1;
+                self.advance();
                 Ok(())
             }
             None => {
@@ -884,9 +961,7 @@ impl<'a> P<'a> {
     fn triples(&mut self) -> R<()> {
         let from = self.out.triples.len();
         match self.peek_kind() {
-            Some(Kind::LBracket)
-                if self.toks.get(self.pos + 1).map(|t| t.kind) != Some(Kind::RBracket) =>
-            {
+            Some(Kind::LBracket) if self.kind_ahead(1) != Some(Kind::RBracket) => {
                 let s = self.blank_node_property_list()?;
                 if !self.at_statement_end() {
                     self.predicate_object_list(&s, false)?;
@@ -933,10 +1008,9 @@ impl<'a> P<'a> {
                 Ok((Node::Iri(iri), bad))
             }
             Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
-            Some(Kind::LBracket)
-                if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
-            {
-                self.pos += 2;
+            Some(Kind::LBracket) if self.kind_ahead(1) == Some(Kind::RBracket) => {
+                self.advance();
+                self.advance();
                 Ok((self.fresh_bnode(), false))
             }
             Some(Kind::LParen) => Ok((self.collection()?, false)),
@@ -1026,8 +1100,9 @@ impl<'a> P<'a> {
         match self.peek_kind() {
             Some(Kind::BNode) => Ok(self.labelled_bnode()),
             Some(Kind::LBracket) => {
-                if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) {
-                    self.pos += 2;
+                if self.kind_ahead(1) == Some(Kind::RBracket) {
+                    self.advance();
+                    self.advance();
                     Ok(self.fresh_bnode())
                 } else {
                     self.blank_node_property_list()
@@ -1191,7 +1266,7 @@ impl<'a> P<'a> {
         loop {
             match self.peek_kind() {
                 Some(Kind::RParen) => {
-                    self.pos += 1;
+                    self.advance();
                     break;
                 }
                 None => {
@@ -1275,10 +1350,9 @@ impl<'a> P<'a> {
                 Ok((Node::Iri(iri), bad))
             }
             Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
-            Some(Kind::LBracket)
-                if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
-            {
-                self.pos += 2;
+            Some(Kind::LBracket) if self.kind_ahead(1) == Some(Kind::RBracket) => {
+                self.advance();
+                self.advance();
                 Ok((self.fresh_bnode(), false))
             }
             Some(Kind::LTriple) => self.reified_triple(),
@@ -1291,9 +1365,7 @@ impl<'a> P<'a> {
     fn rt_object(&mut self) -> R<Flagged> {
         let nested = match self.peek_kind() {
             Some(Kind::LParen) => true,
-            Some(Kind::LBracket) => {
-                self.toks.get(self.pos + 1).map(|t| t.kind) != Some(Kind::RBracket)
-            }
+            Some(Kind::LBracket) => self.kind_ahead(1) != Some(Kind::RBracket),
             _ => false,
         };
         let start = self.start();
@@ -1425,10 +1497,10 @@ impl<'a> P<'a> {
             let iri = match self.iri_cache.get(text) {
                 Some(&iri) => iri,
                 None => {
-                    let warnings = self.out.errors.len();
+                    let warnings = self.reported;
                     let iri = Iri::intern(&self.resolve_iri(t));
                     // Invalid IRIs are not cached, so each occurrence is reported.
-                    if self.out.errors.len() == warnings {
+                    if self.reported == warnings {
                         self.iri_cache.insert(text, iri);
                     }
                     iri
@@ -1640,7 +1712,92 @@ mod tests {
         parse(src, &PrefixMap::default(), Syntax::NQuads)
     }
     fn messages(r: &Parsed) -> Vec<&str> {
-        r.errors.iter().map(|e| e.message.as_str()).collect()
+        r.errors.iter().map(|e| e.message()).collect()
+    }
+
+    #[test]
+    fn fixed_messages_are_borrowed() {
+        let r = p("@prefix ex: <http://e/> .\nex:a ex:p \"open\nex:b ex:p ex:o");
+        let unterminated = r
+            .errors
+            .iter()
+            .find(|e| e.message() == "Unterminated string")
+            .expect("the lexer's error");
+        assert!(matches!(unterminated.message, Cow::Borrowed(_)));
+        let missing_dot = r
+            .errors
+            .iter()
+            .find(|e| e.message() == "Expected '.' to end the statement")
+            .expect("the parser's error");
+        assert!(matches!(missing_dot.message, Cow::Borrowed(_)));
+    }
+
+    /// `n` lines, each a statement that parses and one that does not.
+    fn broken_lines(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("<http://e/s{i}> <http://e/p> <http://e/o{i}> . <http://e/t{i}> <http://e/p> .\n"))
+            .collect()
+    }
+
+    #[test]
+    fn errors_are_capped_and_parsing_goes_on() {
+        let src = broken_lines(1000);
+        let r = p(&src);
+        assert_eq!(r.errors.len(), MAX_ERRORS + 1);
+        let line = |e: &SyntaxError| src[..e.span.start as usize].matches('\n').count();
+        for (i, e) in r.errors[..MAX_ERRORS].iter().enumerate() {
+            assert_eq!(line(e), i, "{e:?}");
+            assert_eq!(e.message(), "Expected an object, found '.'");
+        }
+        let cap = &r.errors[MAX_ERRORS];
+        assert_eq!(
+            cap.message(),
+            "More than 100 syntax errors; the rest are not shown"
+        );
+        assert_eq!((cap.severity, cap.code), (Severity::Error, "syntax"));
+        let last_shown = r.errors[MAX_ERRORS - 1].span.end;
+        assert_eq!(cap.span, Span::new(last_shown, last_shown));
+        // Every valid statement still gives its triple, the last line's too.
+        assert_eq!(r.triples.len(), 1000);
+        assert_eq!(r.statements.len(), 2000);
+        assert!(
+            r.triples
+                .iter()
+                .any(|t| t.o == Node::Iri(Iri::intern("http://e/o999")))
+        );
+    }
+
+    #[test]
+    fn up_to_the_cap_every_error_is_shown() {
+        let r = p(&broken_lines(MAX_ERRORS));
+        assert_eq!(r.errors.len(), MAX_ERRORS);
+        assert!(r.errors.iter().all(|e| e.message().starts_with("Expected")));
+        let r = p(&broken_lines(MAX_ERRORS + 1));
+        assert_eq!(r.errors.len(), MAX_ERRORS + 1);
+        assert!(r.errors[MAX_ERRORS].message().starts_with("More than 100"));
+    }
+
+    #[test]
+    fn the_cap_keeps_the_errors_that_come_first_in_the_text() {
+        // The lexer's errors are found before the parser's; here they come
+        // last in the text, so the parser's are the ones shown.
+        let mut src = broken_lines(300);
+        for i in 0..300 {
+            src.push_str(&format!("<http://e/u{i}> <http://e/p> \"open\n"));
+        }
+        let r = p(&src);
+        assert_eq!(r.errors.len(), MAX_ERRORS + 1);
+        let starts: Vec<u32> = r.errors[..MAX_ERRORS]
+            .iter()
+            .map(|e| e.span.start)
+            .collect();
+        assert!(starts.is_sorted(), "{starts:?}");
+        assert!(
+            r.errors[..MAX_ERRORS]
+                .iter()
+                .all(|e| e.message() == "Expected an object, found '.'")
+        );
+        assert_eq!(r.triples.len(), 600);
     }
 
     #[test]
@@ -1683,9 +1840,13 @@ mod tests {
         assert!(
             r.errors
                 .iter()
-                .any(|e| e.message.contains("Unterminated string"))
+                .any(|e| e.message().contains("Unterminated string"))
         );
-        assert!(r.errors.iter().any(|e| e.message.contains("Expected '.'")));
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.message().contains("Expected '.'"))
+        );
         assert!(
             r.prefix_uses
                 .iter()
@@ -2146,7 +2307,9 @@ mod tests {
             let src = format!("<a> <p> \"x\\{nl}<b> <p> <o> .{nl}<c> <p> <o> .{nl}");
             let r = p(&src);
             assert!(
-                r.errors.iter().any(|e| e.message == "Unterminated string"),
+                r.errors
+                    .iter()
+                    .any(|e| e.message() == "Unterminated string"),
                 "{nl:?}: {:?}",
                 r.errors
             );
@@ -2296,7 +2459,7 @@ mod tests {
             let r = p(&format!("@prefix ex: <http://e/> .\n{src}"));
             assert!(
                 r.errors.iter().any(|e| e
-                    .message
+                    .message()
                     .contains("triple term <<( )>> cannot contain a reified")),
                 "{src}: {:?}",
                 r.errors

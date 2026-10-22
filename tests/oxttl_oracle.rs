@@ -47,7 +47,7 @@ fn check(name: &str, src: &str) {
 
 fn check_as(name: &str, src: &str, syntax: Syntax) {
     let ours = parse(src, &PrefixMap::default(), syntax);
-    let errors: Vec<_> = ours.errors.iter().map(|e| (&e.message, e.span)).collect();
+    let errors: Vec<_> = ours.errors.iter().map(|e| (e.message(), e.span)).collect();
     assert!(errors.is_empty(), "{name}: unexpected errors {errors:?}");
     let ox = oxttl_quads(src, syntax)
         .unwrap_or_else(|e| panic!("{name}: oxttl rejected a fixture: {e}"));
@@ -169,7 +169,7 @@ fn turtle_only_constructs_are_not_ntriples() {
         );
         let ours = parse(src, &PrefixMap::default(), Syntax::NTriples);
         assert!(
-            ours.errors.iter().any(|e| e.message.contains(want)),
+            ours.errors.iter().any(|e| e.message().contains(want)),
             "{src:?}: {:?}",
             ours.errors
         );
