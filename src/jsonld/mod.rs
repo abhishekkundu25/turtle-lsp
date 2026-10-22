@@ -239,6 +239,7 @@ mod tests {
                 value,
                 datatype,
                 lang,
+                ..
             } => match lang {
                 Some(l) => format!("{value:?}@{l}"),
                 None => format!("{value:?}^^<{datatype}>"),

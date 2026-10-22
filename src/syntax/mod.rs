@@ -9,7 +9,7 @@ pub mod names;
 mod parser;
 
 pub use iri::{Iri, IriKey, IriMap};
-pub use parser::{parse, parse_with_base};
+pub use parser::{has_scheme, parse, parse_with_base};
 use rustc_hash::FxHashMap;
 
 pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
@@ -46,11 +46,12 @@ impl Syntax {
         }
     }
 
-    /// From the extension of a path or URI: `.ttl` / `.turtle`, `.trig`, `.nt`,
-    /// `.nq`, `.jsonld`.
+    /// From the extension of a path or URI, in any letter case (`Data.TTL` is
+    /// Turtle): `.ttl` / `.turtle`, `.trig`, `.nt`, `.nq`, `.jsonld`.
     pub fn from_extension(path: &str) -> Option<Syntax> {
         let name = path.rsplit(['/', '\\']).next()?;
-        match name.rsplit_once('.')?.1 {
+        let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+        match ext.as_str() {
             "ttl" | "turtle" => Some(Syntax::Turtle),
             "trig" => Some(Syntax::TriG),
             "nt" => Some(Syntax::NTriples),
@@ -169,6 +170,38 @@ pub struct PrefixUse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlankId(pub u32);
 
+/// The base direction of a directional language-tagged string
+/// (`"text"@ar--rtl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Direction {
+    Ltr,
+    Rtl,
+}
+
+impl Direction {
+    /// `ltr` or `rtl`, as written after `--`.
+    pub fn parse(s: &str) -> Option<Direction> {
+        match s {
+            "ltr" => Some(Direction::Ltr),
+            "rtl" => Some(Direction::Rtl),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Direction::Ltr => "ltr",
+            Direction::Rtl => "rtl",
+        }
+    }
+}
+
+impl std::fmt::Display for Direction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Node {
     Iri(Iri),
@@ -176,7 +209,10 @@ pub enum Node {
     Literal {
         value: Box<str>,
         datatype: Iri,
+        /// The bare language tag, lowercased (`en`, never `en--rtl`).
         lang: Option<Iri>,
+        /// The base direction; only with a `lang` (`rdf:dirLangString`).
+        dir: Option<Direction>,
     },
     Triple(Box<(Node, Iri, Node)>),
 }
@@ -197,6 +233,11 @@ pub struct Triple {
     /// The TriG or N-Quads graph the triple is in; `None` is the default
     /// graph (and always the case in Turtle and N-Triples).
     pub graph: Option<GraphName>,
+    /// A term was written as a prefixed name whose prefix is not declared.
+    /// The term is kept as the name's own text (`nope:p`), which is not what
+    /// the author meant, so [`crate::rdf::Graph::new`] leaves the triple out
+    /// of the query and SHACL graph.
+    pub unresolved: bool,
 }
 
 /// The name of a TriG or N-Quads graph: an IRI or a blank node. Kept apart from [`Node`]
@@ -300,3 +341,33 @@ impl Parsed {
 
 /// Prefixes visible before the first line of a document (from `prefixes.ttl`).
 pub type PrefixMap = FxHashMap<String, String>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extensions_are_read_in_any_letter_case() {
+        for (path, syntax) in [
+            ("a/Data.TTL", Syntax::Turtle),
+            ("x.Turtle", Syntax::Turtle),
+            ("file:///w/G.TriG", Syntax::TriG),
+            ("a.NT", Syntax::NTriples),
+            ("a.Nq", Syntax::NQuads),
+            ("C:\\w\\ctx.JSONLD", Syntax::JsonLd),
+        ] {
+            assert_eq!(Syntax::from_extension(path), Some(syntax), "{path}");
+        }
+        assert_eq!(Syntax::from_extension("a.JSON"), None);
+        assert_eq!(
+            Syntax::detect(Some("turtle"), "file:///W/DATA.NQ"),
+            Syntax::NQuads
+        );
+    }
+
+    #[test]
+    fn a_node_stays_small() {
+        // Every triple holds two; the base direction fits beside the tag.
+        assert!(std::mem::size_of::<Node>() <= 32);
+    }
+}

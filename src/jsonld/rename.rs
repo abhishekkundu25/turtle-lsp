@@ -734,6 +734,7 @@ mod tests {
                     value,
                     datatype,
                     lang: Some(l),
+                    ..
                 } => {
                     let _ = datatype;
                     Literal::new_language_tagged_literal_unchecked(&**value, l.as_str()).into()

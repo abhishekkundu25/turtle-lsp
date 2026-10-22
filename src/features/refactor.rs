@@ -60,6 +60,9 @@ pub fn code_actions(
     let end = a.offset(enc, params.range.end).unwrap_or(start).max(start);
     if let Some(r) = ref_in(a, start, end) {
         match r.form {
+            // A relative `<...>` stays relative: a prefix for its resolved IRI
+            // would tie the file to where it lives.
+            Form::Iri if !written_absolute(a, r) => {}
             Form::Iri => {
                 let scope = Scope::at(a, r.span.start);
                 if let Some(pname) = shorten(&r.iri, &scope) {
@@ -192,12 +195,22 @@ fn each_shortenable(a: &Analysis, mut f: impl FnMut(&Ref, String) -> bool) {
         while let Some(p) = decls.next_if(|p| p.span.end <= r.span.start) {
             scope.insert(p.name.clone(), p.iri.to_string());
         }
-        if let Some(pname) = shorten(&r.iri, &scope)
+        if written_absolute(a, r)
+            && let Some(pname) = shorten(&r.iri, &scope)
             && !f(r, pname)
         {
             return;
         }
     }
+}
+
+/// Whether the `<...>` at `r` is written with a scheme. A relative one is
+/// resolved against the document's URL (or its `@base`), and the refactorings
+/// that rewrite IRIs leave it as written.
+fn written_absolute(a: &Analysis, r: &Ref) -> bool {
+    a.text
+        .get(r.span.start as usize + 1..r.span.end as usize)
+        .is_some_and(crate::syntax::has_scheme)
 }
 
 fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
@@ -216,7 +229,10 @@ fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
 /// valid absolute IRIs (the parser warns about others in `<...>`) without dot
 /// segments, which a `@base` would remove.
 fn expand(a: &Analysis, iri: &str) -> Option<String> {
-    expand_iri(iri, a.parsed.base.is_some())
+    expand_iri(
+        iri,
+        a.parsed.base.is_some() || a.parsed.document_base.is_some(),
+    )
 }
 
 /// `<iri>` for a prefixed name standing for `iri`; `None` for an invalid
@@ -273,7 +289,11 @@ fn extract_edits(a: &Analysis, enc: Encoding, ns: &str, name: &str) -> Vec<TextE
     let mut edits = vec![insert];
     for r in a.parsed.refs.iter().filter(|r| r.form == Form::Iri) {
         let iri: &str = &r.iri;
-        if r.span.start >= from && iri.starts_with(ns) && is_pn_local(&iri[ns.len()..]) {
+        if r.span.start >= from
+            && iri.starts_with(ns)
+            && is_pn_local(&iri[ns.len()..])
+            && written_absolute(a, r)
+        {
             edits.push(TextEdit {
                 range: a.range(enc, r.span),
                 new_text: spaced(text, r.span, format!("{name}:{}", &iri[ns.len()..])),

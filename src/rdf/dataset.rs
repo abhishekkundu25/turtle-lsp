@@ -5,7 +5,7 @@
 //! named graph.
 
 use super::graph::{GTriple, Graph, Id, Term as GTerm};
-use crate::syntax::{Iri, Node};
+use crate::syntax::{Direction, Iri, Node};
 use rustc_hash::FxHashMap;
 use spareval::{InternalQuad, QueryableDataset};
 use spargebra::term::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple};
@@ -27,11 +27,14 @@ pub enum STerm {
     Other(Box<Term>),
 }
 
+/// A literal's lexical form, datatype, language tag and base direction.
+type LiteralKey<'a> = (&'a str, Iri, Option<Iri>, Option<Direction>);
+
 /// A [`Graph`] as a SPARQL dataset: the graph is the default graph and, when
 /// the dataset is given one, also a named graph.
 pub struct Index<'a> {
     g: &'a Graph<'a>,
-    literals: FxHashMap<(&'a str, Iri, Option<Iri>), Id>,
+    literals: FxHashMap<LiteralKey<'a>, Id>,
     /// The IRI of the named graph that is the same graph.
     graph: Option<&'a str>,
 }
@@ -42,7 +45,7 @@ impl<'a> Index<'a> {
     pub fn new(g: &'a Graph<'a>, graph: Option<&'a str>) -> Index<'a> {
         let literals = g
             .terms()
-            .filter_map(|(id, t)| t.literal().map(|(v, d, l)| ((v, d, l), id)))
+            .filter_map(|(id, t)| t.literal().map(|(v, d, l)| ((v, d, l, t.direction()), id)))
             .collect();
         Index { g, literals, graph }
     }
@@ -51,7 +54,7 @@ impl<'a> Index<'a> {
         match self.g.term(id) {
             GTerm::Iri(i) => NamedNode::new_unchecked(i.as_str()).into(),
             GTerm::Blank(b) => BlankNode::new_unchecked(format!("g{b}")).into(),
-            GTerm::Value(n) => node_term(n),
+            GTerm::Value(n) => node_term(n, self.g.term_blank_base(id)),
         }
     }
 
@@ -85,8 +88,17 @@ impl<'a> Index<'a> {
                     Some(l) => Iri::get(l).map(Some),
                     None => Some(None),
                 };
+                let dir = l.direction().map(|d| {
+                    if Some(d) == directions()[Direction::Rtl as usize].direction() {
+                        Direction::Rtl
+                    } else {
+                        Direction::Ltr
+                    }
+                });
                 match (Iri::get(l.datatype().as_str()), lang) {
-                    (Some(dt), Some(lang)) => self.literals.get(&(l.value(), dt, lang)).copied(),
+                    (Some(dt), Some(lang)) => {
+                        self.literals.get(&(l.value(), dt, lang, dir)).copied()
+                    }
                     _ => None,
                 }
             }
@@ -149,26 +161,40 @@ impl<'a> Index<'a> {
     }
 }
 
-fn node_term(n: &Node) -> Term {
+/// A literal or triple term of the graph as an RDF term. `blank_base` is added
+/// to the numbers of the blank nodes inside a triple term, which then have the
+/// names the same nodes have outside ([`Index::term`]).
+fn node_term(n: &Node, blank_base: u32) -> Term {
     match n {
         Node::Iri(i) => NamedNode::new_unchecked(i.as_str()).into(),
-        Node::Blank(b) => BlankNode::new_unchecked(format!("t{}", b.0)).into(),
+        Node::Blank(b) => {
+            BlankNode::new_unchecked(format!("g{}", blank_base.saturating_add(b.0))).into()
+        }
         Node::Literal {
             value,
             datatype,
             lang,
-        } => match lang {
-            Some(l) => {
+            dir,
+        } => match (lang, dir) {
+            (Some(l), Some(d)) => Literal::new_directional_language_tagged_literal_unchecked(
+                value.as_ref(),
+                l.as_str(),
+                directions()[*d as usize]
+                    .direction()
+                    .expect("a directional literal"),
+            )
+            .into(),
+            (Some(l), None) => {
                 Literal::new_language_tagged_literal_unchecked(value.as_ref(), l.as_str()).into()
             }
-            None => Literal::new_typed_literal(
+            _ => Literal::new_typed_literal(
                 value.as_ref(),
                 NamedNode::new_unchecked(datatype.as_str()),
             )
             .into(),
         },
         Node::Triple(t) => {
-            let s: NamedOrBlankNode = match node_term(&t.0) {
+            let s: NamedOrBlankNode = match node_term(&t.0, blank_base) {
                 Term::NamedNode(n) => n.into(),
                 Term::BlankNode(b) => b.into(),
                 _ => BlankNode::default().into(),
@@ -176,10 +202,25 @@ fn node_term(n: &Node) -> Term {
             Term::Triple(Box::new(Triple::new(
                 s,
                 NamedNode::new_unchecked(t.1.as_str()),
-                node_term(&t.2),
+                node_term(&t.2, blank_base),
             )))
         }
     }
+}
+
+/// A literal of each base direction, indexed by [`Direction`]. `oxrdf` does not
+/// come through `spargebra`'s re-exports, so its `BaseDirection` is read from
+/// these instead of being named.
+fn directions() -> &'static [Literal; 2] {
+    static D: std::sync::OnceLock<[Literal; 2]> = std::sync::OnceLock::new();
+    D.get_or_init(|| {
+        let of = |d: &str| {
+            format!("\"\"@und--{d}")
+                .parse()
+                .expect("a directional literal")
+        };
+        [of("ltr"), of("rtl")]
+    })
 }
 
 impl<'a> QueryableDataset<'a> for &'a Index<'a> {
@@ -218,5 +259,167 @@ impl<'a> QueryableDataset<'a> for &'a Index<'a> {
             STerm::Graph => NamedNode::new_unchecked(self.graph.unwrap_or_default()).into(),
             STerm::Other(t) => *t,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::analysis::Analysis;
+    use crate::query::{Answer, Limits, run};
+    use crate::syntax::PrefixMap;
+    use spargebra::term::Term;
+    use std::sync::Arc;
+
+    const EX: &str = "http://example.com/";
+
+    fn doc(uri: &str, body: &str) -> Analysis {
+        let text = format!("@prefix ex: <{EX}> .\n{body}");
+        Analysis::new(uri.into(), &text, Arc::new(PrefixMap::default()), false)
+    }
+
+    fn rows(docs: &[&Analysis], query: &str) -> Vec<Vec<Option<Term>>> {
+        let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
+        match run(docs, query, None, &prefixes, &Limits::default()) {
+            Ok(Answer::Solutions(s)) => s.rows,
+            other => panic!("not solutions: {other:?}"),
+        }
+    }
+
+    fn ask(docs: &[&Analysis], query: &str) -> bool {
+        let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
+        match run(docs, query, None, &prefixes, &Limits::default()) {
+            Ok(Answer::Boolean(b)) => b,
+            other => panic!("not a boolean: {other:?}"),
+        }
+    }
+
+    fn text(t: &Option<Term>) -> String {
+        match t {
+            Some(Term::Literal(l)) => l.value().to_string(),
+            other => panic!("not a literal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_directional_string_has_a_language_and_a_direction() {
+        let d = doc(
+            "file:///d.ttl",
+            "ex:s ex:l \"hi\"@en--rtl , \"hi\"@en , \"salut\"@FR--ltr .\n",
+        );
+        let r = rows(
+            &[&d],
+            "SELECT ?v (LANG(?l) AS ?lang) (LANGDIR(?l) AS ?dir) (DATATYPE(?l) AS ?dt) \
+             WHERE { ex:s ex:l ?l . BIND(STR(?l) AS ?v) } ORDER BY ?lang ?dir",
+        );
+        let shown: Vec<_> = r
+            .iter()
+            .map(|row| {
+                let dt = match &row[3] {
+                    Some(Term::NamedNode(n)) => n.as_str().rsplit('#').next().unwrap().to_string(),
+                    other => panic!("{other:?}"),
+                };
+                (text(&row[1]), text(&row[2]), dt)
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("en".to_string(), String::new(), "langString".to_string()),
+                (
+                    "en".to_string(),
+                    "rtl".to_string(),
+                    "dirLangString".to_string()
+                ),
+                (
+                    "fr".to_string(),
+                    "ltr".to_string(),
+                    "dirLangString".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_constant_directional_string_matches_only_its_own_direction() {
+        let d = doc("file:///d.ttl", "ex:s ex:l \"hi\"@en--rtl .\n");
+        assert!(ask(&[&d], "ASK { ex:s ex:l \"hi\"@en--rtl }"));
+        assert!(!ask(&[&d], "ASK { ex:s ex:l \"hi\"@en--ltr }"));
+        assert!(!ask(&[&d], "ASK { ex:s ex:l \"hi\"@en }"));
+    }
+
+    const JOIN: &str = "SELECT ?t ?v WHERE { ?t ex:r ?tt . BIND(SUBJECT(?tt) AS ?x) ?x ex:p ?v } \
+                        ORDER BY ?t";
+
+    #[test]
+    fn a_blank_node_in_a_triple_term_is_the_same_node_outside_it() {
+        let d = doc(
+            "file:///d.ttl",
+            "ex:t ex:r <<( _:x ex:q 1 )>> .\n_:x ex:p 2 .\n",
+        );
+        let r = rows(&[&d], JOIN);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(text(&r[0][1]), "2");
+    }
+
+    #[test]
+    fn the_same_blank_label_in_two_documents_stays_two_nodes_in_triple_terms() {
+        let a = doc(
+            "file:///a.ttl",
+            "ex:t ex:r <<( _:x ex:q 1 )>> .\n_:x ex:p 2 .\n",
+        );
+        let b = doc(
+            "file:///b.ttl",
+            "ex:u ex:r <<( _:x ex:q 1 )>> .\n_:x ex:p 3 .\n",
+        );
+        let r = rows(&[&a, &b], JOIN);
+        let shown: Vec<_> = r
+            .iter()
+            .map(|row| match &row[0] {
+                Some(Term::NamedNode(n)) => (
+                    n.as_str().rsplit('/').next().unwrap().to_string(),
+                    text(&row[1]),
+                ),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("t".to_string(), "2".to_string()),
+                ("u".to_string(), "3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_relative_iri_is_the_absolute_one_in_query_results() {
+        let a = doc("file:///w/a.ttl", "<#me> ex:p 1 .\n");
+        let b = doc("file:///w/b.ttl", "<#me> ex:p 2 .\n");
+        let r = rows(&[&a, &b], "SELECT ?s ?v WHERE { ?s ex:p ?v } ORDER BY ?v");
+        let subjects: Vec<_> = r
+            .iter()
+            .map(|row| match &row[0] {
+                Some(Term::NamedNode(n)) => n.as_str().to_string(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(subjects, ["file:///w/a.ttl#me", "file:///w/b.ttl#me"]);
+    }
+
+    #[test]
+    fn triples_with_an_undeclared_prefix_are_not_in_the_graph() {
+        let d = Analysis::new(
+            "file:///d.ttl".into(),
+            "@prefix ex: <http://example.com/> .\nex:a ex:p nope:o , ex:o .\nnope:s ex:p ex:o .\n",
+            Arc::new(PrefixMap::default()),
+            false,
+        );
+        assert_eq!(d.parsed.triples.len(), 3);
+        let r = rows(&[&d], "SELECT ?s ?o WHERE { ?s ex:p ?o }");
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(!ask(
+            &[&d],
+            "ASK { ?s ?p ?o FILTER (STRSTARTS(STR(?o), \"nope:\")) }"
+        ));
     }
 }

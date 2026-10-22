@@ -16,9 +16,11 @@ fn node(n: &Node) -> Option<String> {
             value,
             datatype,
             lang,
-        } => Some(match lang {
-            Some(l) => format!("{value:?}@{l}"),
-            None => format!("{value:?}^^<{datatype}>"),
+            dir,
+        } => Some(match (lang, dir) {
+            (Some(l), Some(d)) => format!("{value:?}@{l}--{d}"),
+            (Some(l), None) => format!("{value:?}@{l}"),
+            _ => format!("{value:?}^^<{datatype}>"),
         }),
         Node::Triple(_) => None,
     }
@@ -30,7 +32,6 @@ fn ox_term(t: &oxrdf::Term) -> Option<String> {
         Term::NamedNode(n) => Some(format!("<{}>", n.as_str())),
         Term::BlankNode(_) => None,
         Term::Literal(l) => Some(match (l.language(), l.direction()) {
-            // Ours keeps the base direction in the tag, as written: `@ar--rtl`.
             (Some(lang), Some(dir)) => format!("{:?}@{lang}--{dir}", l.value()),
             (Some(lang), None) => format!("{:?}@{}", l.value(), lang),
             _ => format!("{:?}^^<{}>", l.value(), l.datatype().as_str()),

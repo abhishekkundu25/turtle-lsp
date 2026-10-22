@@ -478,3 +478,33 @@ describe("files changing on disk", () => {
     w.close(probe)
   })
 })
+
+// ---------- relative IRIs resolve against the document's URI ----------
+
+test("a relative @base or BASE is no syntax error (the document's URI is the base)", async () => {
+  for (const [name, text] of [
+    ["base-turtle", "@base <rel/> .\n<x> <http://example.org/p> <y> .\n"],
+    ["base-sparql", "BASE <../up/>\n<x> <http://example.org/p> <y> .\n"],
+  ]) {
+    const { diags } = await diagnose(name, text)
+    assert.deepEqual(
+      diags.filter((d) => d.severity === 1),
+      [],
+      `${name}: ${fmt(diags)}`,
+    )
+  }
+})
+
+test("a TriG graph and a relative IRI inside it resolve against the file", async () => {
+  const uri = uriOf(path.join(ws, "__base.trig"))
+  const text = "<g> { <#me> <http://example.org/p> <o> }\n"
+  s.open(uri, text, "trig")
+  const diags = await s.diagnosticsFor(uri)
+  assert.deepEqual(problems(diags).filter((d) => d.severity === 1), [], fmt(diags))
+  const locs = await s.request("textDocument/definition", {
+    textDocument: { uri },
+    position: positionOf(text, "<g>", 2),
+  })
+  assert.equal(locs.length, 1, JSON.stringify(locs))
+  s.close(uri)
+})

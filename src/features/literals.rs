@@ -44,6 +44,7 @@ pub fn invalid_literals(a: &Analysis) -> Vec<(Span, String)> {
             value,
             datatype,
             lang: None,
+            ..
         } = &t.o
         else {
             continue;

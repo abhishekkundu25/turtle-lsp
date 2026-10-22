@@ -33,7 +33,7 @@ use turtle_lsp::imports;
 use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::settings::InlayLabels;
 use turtle_lsp::sparql::{self, Document, Level, features as sparql_features};
-use turtle_lsp::syntax::{Parsed, PrefixMap, Severity, Syntax, parse};
+use turtle_lsp::syntax::{Parsed, PrefixMap, Severity, Syntax, parse, parse_with_base};
 
 struct Rng(u64);
 impl Rng {
@@ -681,7 +681,8 @@ fn code_actions_keep_the_graph(
     }
     let syntax = a.parsed.syntax;
     let triples = |t: &str| {
-        let mut v: Vec<String> = parse(t, &PrefixMap::default(), syntax)
+        let base = a.parsed.document_base.as_deref();
+        let mut v: Vec<String> = parse_with_base(t, &PrefixMap::default(), syntax, base)
             .triples
             .iter()
             .map(|t| format!("{:?} {:?} {:?} {:?}", t.s, t.p, t.o, t.graph))
@@ -695,7 +696,12 @@ fn code_actions_keep_the_graph(
             continue;
         };
         let after = refactor::apply(a, enc, &refactor::edits_of(a, enc, &c));
-        let reparsed = parse(&after, &PrefixMap::default(), syntax);
+        let reparsed = parse_with_base(
+            &after,
+            &PrefixMap::default(),
+            syntax,
+            a.parsed.document_base.as_deref(),
+        );
         assert!(
             reparsed.errors.is_empty() && triples(&after) == before,
             "'{}' changed the graph:\n{after}",
@@ -1754,6 +1760,7 @@ fn the_span_check_sees_every_span_field() {
                     o_span: ok,
                     statement: 0,
                     graph: None,
+                    unresolved: false,
                 })
             }),
         ),
@@ -1769,6 +1776,7 @@ fn the_span_check_sees_every_span_field() {
                     o_span: bad,
                     statement: 0,
                     graph: None,
+                    unresolved: false,
                 })
             }),
         ),
@@ -1783,6 +1791,7 @@ fn the_span_check_sees_every_span_field() {
                     o_span: ok,
                     statement: 3,
                     graph: None,
+                    unresolved: false,
                 })
             }),
         ),

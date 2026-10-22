@@ -846,7 +846,10 @@ fn term_name(g: &Graph, prefixes: &PrefixMap, id: Id) -> String {
         t => match t.literal() {
             Some((lex, dt, lang)) => {
                 if let Some(l) = lang {
-                    format!("{lex:?}@{}", l.as_str())
+                    match t.direction() {
+                        Some(d) => format!("{lex:?}@{}--{d}", l.as_str()),
+                        None => format!("{lex:?}@{}", l.as_str()),
+                    }
                 } else if dt.as_str() == format!("{XSD}string") {
                     format!("{lex:?}")
                 } else if ["integer", "decimal", "double", "boolean"]

@@ -4,7 +4,7 @@
 //! documents' parses, never copied. Triples are indexed by subject and object
 //! (compressed rows) and by predicate.
 
-use crate::syntax::{BlankId, Iri, Node, Triple};
+use crate::syntax::{BlankId, Direction, Iri, Node, Triple};
 use rustc_hash::FxHashMap;
 use std::hash::{Hash, Hasher};
 
@@ -52,7 +52,16 @@ impl<'a> Term<'a> {
                 value,
                 datatype,
                 lang,
+                ..
             }) => Some((value, *datatype, *lang)),
+            _ => None,
+        }
+    }
+
+    /// The base direction of a directional language-tagged string.
+    pub fn direction(&self) -> Option<Direction> {
+        match self {
+            Term::Value(Node::Literal { dir, .. }) => *dir,
             _ => None,
         }
     }
@@ -113,11 +122,15 @@ pub struct Graph<'a> {
     by_p: FxHashMap<Iri, Vec<u32>>,
     /// Per document: the number its blank nodes are offset by.
     blank_base: Vec<u32>,
+    /// Per triple term with blank nodes: the offset of its document, so the
+    /// blank nodes inside carry the numbers the same nodes have outside.
+    term_base: FxHashMap<Id, u32>,
 }
 
 impl<'a> Graph<'a> {
     /// The union of `docs`; a blank node of one document never equals one of
-    /// another. Triple terms are compared by content.
+    /// another. Triple terms are compared by content. Triples with an
+    /// undeclared prefix ([`Triple::unresolved`]) are left out.
     pub fn new(docs: &[&'a [Triple]]) -> Graph<'a> {
         let total: usize = docs.iter().map(|d| d.len()).sum();
         let mut g = Graph {
@@ -129,12 +142,16 @@ impl<'a> Graph<'a> {
             by_o: Rows::default(),
             by_p: FxHashMap::default(),
             blank_base: Vec::with_capacity(docs.len()),
+            term_base: FxHashMap::default(),
         };
         let mut base = 0u32;
         for (d, triples) in docs.iter().enumerate() {
             g.blank_base.push(base);
             let mut max = 0u32;
             for (i, t) in triples.iter().enumerate() {
+                if t.unresolved {
+                    continue;
+                }
                 let s = g.add(base, &t.s, &mut max);
                 let o = g.add(base, &t.o, &mut max);
                 g.by_p.entry(t.p).or_default().push(g.triples.len() as u32);
@@ -167,7 +184,11 @@ impl<'a> Graph<'a> {
         } else {
             u32::MAX
         };
-        self.intern(term, scope)
+        let id = self.intern(term, scope);
+        if scope != u32::MAX {
+            self.term_base.entry(id).or_insert(base);
+        }
+        id
     }
 
     fn intern(&mut self, t: Term<'a>, scope: u32) -> Id {
@@ -216,6 +237,12 @@ impl<'a> Graph<'a> {
             }
             _ => self.id(Term::Value(n)),
         }
+    }
+
+    /// The number added to the blank nodes inside triple term `id` to get
+    /// their numbers in the graph (0 for a term without blank nodes).
+    pub fn term_blank_base(&self, id: Id) -> u32 {
+        self.term_base.get(&id).copied().unwrap_or(0)
     }
 
     /// The (document, number in that document) of blank node `Term::Blank(b)`.
@@ -340,7 +367,7 @@ fn list_vocab() -> &'static ListVocab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::{PrefixMap, Syntax, parse};
+    use crate::syntax::{Direction, PrefixMap, Syntax, parse};
 
     #[test]
     fn blank_nodes_stay_apart_per_document() {
@@ -376,5 +403,45 @@ mod tests {
             Iri::intern("http://e/p"),
         );
         assert_eq!(g.list(head.unwrap()).len(), 3);
+    }
+
+    #[test]
+    fn triples_with_an_undeclared_prefix_stay_out_of_the_graph() {
+        let p = parse(
+            "<http://e/a> <http://e/p> nope:o , <http://e/o> .\nnope:s <http://e/p> <http://e/o> .\n<http://e/b> <http://e/p> <http://e/o> .",
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert_eq!(p.triples.len(), 4);
+        let g = Graph::new(&[&p.triples]);
+        assert_eq!(g.len(), 2);
+        // `origin` still names the triple's place in the document.
+        assert_eq!(g.origin, [(0, 1), (0, 3)]);
+    }
+
+    #[test]
+    fn a_literal_has_a_direction_apart_from_its_tag() {
+        let p = parse(
+            "<http://e/a> <http://e/p> \"x\"@ar--rtl , \"x\"@ar--ltr , \"x\"@ar .",
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        let g = Graph::new(&[&p.triples]);
+        // Three literals: the tag alone does not tell them apart.
+        let objects: Vec<_> = g.triples.iter().map(|t| g.term(t.o)).collect();
+        assert_eq!(g.terms().count(), 4);
+        let dirs: Vec<_> = objects
+            .iter()
+            .map(|t| (t.literal().unwrap().2.map(|l| l.to_string()), t.direction()))
+            .collect();
+        let ar = Some("ar".to_string());
+        assert_eq!(
+            dirs,
+            [
+                (ar.clone(), Some(Direction::Rtl)),
+                (ar.clone(), Some(Direction::Ltr)),
+                (ar, None)
+            ]
+        );
     }
 }

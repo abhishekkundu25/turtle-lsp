@@ -179,25 +179,22 @@ fn term(n: &Node) -> Term {
             value,
             datatype,
             lang,
-        } => match lang {
-            // The base direction stays in the tag, as in Turtle: `ar--rtl`.
-            Some(l) => match l.split_once("--") {
-                Some((l, dir)) => Literal::new_directional_language_tagged_literal_unchecked(
-                    &**value,
-                    l,
-                    if dir == "rtl" {
-                        BaseDirection::Rtl
-                    } else {
-                        BaseDirection::Ltr
-                    },
-                ),
-                None => Literal::new_language_tagged_literal_unchecked(&**value, l.as_str()),
-            }
+            dir,
+        } => match (lang, dir) {
+            (Some(l), Some(d)) => Literal::new_directional_language_tagged_literal_unchecked(
+                &**value,
+                l.as_str(),
+                match d {
+                    turtle_lsp::syntax::Direction::Rtl => BaseDirection::Rtl,
+                    turtle_lsp::syntax::Direction::Ltr => BaseDirection::Ltr,
+                },
+            )
             .into(),
-            None => {
-                Literal::new_typed_literal(&**value, NamedNode::new_unchecked(datatype.as_str()))
-                    .into()
+            (Some(l), None) => {
+                Literal::new_language_tagged_literal_unchecked(&**value, l.as_str()).into()
             }
+            _ => Literal::new_typed_literal(&**value, NamedNode::new_unchecked(datatype.as_str()))
+                .into(),
         },
         Node::Triple(t) => oxrdf::Triple::new(
             subject(&t.0),

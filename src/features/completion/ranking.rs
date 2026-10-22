@@ -725,6 +725,7 @@ fn turtle_literal(n: &Node, prefixes: &PrefixMap) -> Option<String> {
         value,
         datatype,
         lang,
+        dir,
     } = n
     else {
         return None;
@@ -746,7 +747,10 @@ fn turtle_literal(n: &Node, prefixes: &PrefixMap) -> Option<String> {
         s
     };
     if let Some(l) = lang {
-        return Some(format!("{}@{}", quoted(), &**l));
+        return Some(match dir {
+            Some(d) => format!("{}@{}--{d}", quoted(), &**l),
+            None => format!("{}@{}", quoted(), &**l),
+        });
     }
     let local = datatype.strip_prefix(XSD).unwrap_or("");
     let bare = match local {
@@ -781,6 +785,7 @@ mod tests {
             value: value.into(),
             datatype: Iri::intern(dt),
             lang: lang.map(Iri::intern),
+            dir: None,
         }
     }
 

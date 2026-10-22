@@ -85,12 +85,26 @@ fn indexed_predicates() -> &'static [(Iri, Index)] {
     })
 }
 
-/// English (or untagged) text wins; otherwise the first one seen.
+/// Whether text in language `lang` is English for display: untagged, `en` or
+/// `en-*` (not `enm`, Middle English).
+pub fn is_english(lang: Option<Iri>) -> bool {
+    lang.is_none_or(|l| &*l == "en" || l.starts_with("en-"))
+}
+
+/// The first English (or untagged) text wins; otherwise the first one seen.
 fn prefer(map: &mut IriMap<u32>, triples: &[syntax::Triple], s: Iri, i: u32) {
     let Node::Literal { lang, .. } = &triples[i as usize].o else {
         return;
     };
-    if lang.is_none_or(|l| l.starts_with("en")) || !map.contains_key(&s) {
+    let better = match map.get(&s) {
+        None => true,
+        Some(&old) => {
+            is_english(*lang)
+                && !matches!(&triples[old as usize].o,
+                    Node::Literal { lang, .. } if is_english(*lang))
+        }
+    };
+    if better {
         map.insert(s, i);
     }
 }
@@ -139,7 +153,9 @@ impl Analysis {
                 crate::jsonld::context::ContextCache::global(),
             ),
             _ => crate::jsonld::Document {
-                parsed: syntax::parse(text, &external, language),
+                // Relative IRIs resolve against the document's URL, as in JSON-LD:
+                // `<#me>` in two files is two IRIs.
+                parsed: syntax::parse_with_base(text, &external, language, Some(&uri)),
                 ..Default::default()
             },
         };
@@ -235,7 +251,7 @@ impl Analysis {
 
     fn is_en(&self, i: u32) -> bool {
         match &self.parsed.triples[i as usize].o {
-            Node::Literal { lang, .. } => lang.is_none_or(|l| l.starts_with("en")),
+            Node::Literal { lang, .. } => is_english(*lang),
             _ => false,
         }
     }
@@ -284,8 +300,17 @@ impl Analysis {
 }
 
 /// The LSP position of byte `offset` (clamped to the end of the text).
+///
+/// An offset inside a multi-byte character (a stale or foreign span) moves back
+/// to the character's start.
 pub fn position_in(lines: &LineIndex, enc: Encoding, offset: u32) -> Position {
-    let lc = lines.line_col(TextSize::from(offset.min(u32::from(lines.len()))));
+    let mut at = offset.min(u32::from(lines.len()));
+    let lc = loop {
+        match lines.try_line_col(TextSize::from(at)) {
+            Some(lc) => break lc,
+            None => at -= 1,
+        }
+    };
     match enc {
         Encoding::Utf8 => Position::new(lc.line, lc.col),
         Encoding::Utf16 => {
@@ -430,5 +455,122 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_position_inside_a_character_snaps_to_its_start() {
+        let text = "é😀x\n";
+        let lines = LineIndex::new(text);
+        for enc in [Encoding::Utf8, Encoding::Utf16] {
+            for offset in 0..=text.len() as u32 + 3 {
+                let at = offset.min(text.len() as u32);
+                let mut start = at as usize;
+                while !text.is_char_boundary(start) {
+                    start -= 1;
+                }
+                // No panic, and the same position as the character's start.
+                assert_eq!(
+                    position_in(&lines, enc, offset),
+                    position_in(&lines, enc, start as u32),
+                    "{enc:?} {offset}"
+                );
+            }
+        }
+    }
+
+    fn doc(uri: &str, text: &str) -> Analysis {
+        Analysis::new(uri.into(), text, Arc::new(PrefixMap::default()), false)
+    }
+
+    fn iris(a: &Analysis) -> Vec<String> {
+        a.parsed.refs.iter().map(|r| r.iri.to_string()).collect()
+    }
+
+    #[test]
+    fn relative_iris_resolve_against_the_document_uri() {
+        let text = "<#me> <p> <rel/x> .\n";
+        let a = doc("file:///w/a.ttl", text);
+        let b = doc("file:///w/b.ttl", text);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(
+            iris(&a),
+            ["file:///w/a.ttl#me", "file:///w/p", "file:///w/rel/x"]
+        );
+        assert_eq!(iris(&b)[0], "file:///w/b.ttl#me");
+        // Definitions, references and triples all carry the absolute IRI, so
+        // the two files' `<#me>` are two resources.
+        assert!(a.defs.contains_key("file:///w/a.ttl#me"));
+        assert!(!a.defs.contains_key("file:///w/b.ttl#me"));
+        assert_eq!(a.parsed.document_base.as_deref(), Some("file:///w/a.ttl"));
+    }
+
+    #[test]
+    fn a_relative_base_directive_resolves_against_the_document_uri() {
+        let a = doc(
+            "file:///w/a.ttl",
+            "@base <rel/> .\n<x> <p> <o> .\nBASE <../up/>\n<y> <p> <o> .\n",
+        );
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(a.parsed.base.as_deref(), Some("file:///w/up/"));
+        assert_eq!(iris(&a)[0], "file:///w/rel/x");
+        assert_eq!(iris(&a)[3], "file:///w/up/y");
+        // An absolute base needs no document base.
+        let b = doc(
+            "untitled:Untitled-1",
+            "@base <http://e/d/> .\n<x> <p> <o> .\n",
+        );
+        assert!(b.parsed.errors.is_empty(), "{:?}", b.parsed.errors);
+        assert_eq!(iris(&b)[0], "http://e/d/x");
+        // An unsaved buffer's URI is a base too.
+        let c = doc("untitled:Untitled-1", "<#me> <p> <o> .\n");
+        assert!(c.parsed.errors.is_empty(), "{:?}", c.parsed.errors);
+        assert_eq!(iris(&c)[0], "untitled:Untitled-1#me");
+    }
+
+    #[test]
+    fn every_line_based_and_trig_syntax_reads_the_uri_as_base() {
+        let trig = doc("file:///w/a.trig", "<g> { <#me> <p> <o> }\n");
+        assert_eq!(
+            iris(&trig),
+            [
+                "file:///w/g",
+                "file:///w/a.trig#me",
+                "file:///w/p",
+                "file:///w/o"
+            ]
+        );
+        let nq = doc(
+            "file:///w/a.nq",
+            "<http://e/s> <http://e/p> <http://e/o> <http://e/g> .\n",
+        );
+        assert!(nq.parsed.errors.is_empty(), "{:?}", nq.parsed.errors);
+        assert_eq!(nq.parsed.document_base.as_deref(), Some("file:///w/a.nq"));
+        // N-Quads still wants absolute IRIs: a relative one is reported.
+        let rel = doc("file:///w/a.nq", "<s> <http://e/p> <http://e/o> .\n");
+        assert!(
+            rel.parsed
+                .errors
+                .iter()
+                .any(|e| e.message.contains("absolute"))
+        );
+    }
+
+    #[test]
+    fn the_first_english_label_wins() {
+        let a = doc(
+            "file:///w/a.ttl",
+            "@prefix ex: <http://e/> . @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+             ex:a rdfs:label \"alt\"@enm , \"first\"@en-GB , \"second\"@en , \"plain\" .\n\
+             ex:b rdfs:label \"nur\"@de , \"mittel\"@enm .\n\
+             ex:c rdfs:label \"un\"@fr , \"one\"@en .\n",
+        );
+        assert_eq!(a.label("http://e/a"), Some("first"));
+        // No English text: the first one seen, and `enm` is not English.
+        assert_eq!(a.label("http://e/b"), Some("nur"));
+        assert_eq!(a.label_en("http://e/b"), Some(("nur", false)));
+        assert_eq!(a.label("http://e/c"), Some("one"));
+        assert!(!is_english(Some(Iri::intern("enm"))));
+        assert!(is_english(Some(Iri::intern("en-us"))));
+        assert!(is_english(None));
     }
 }

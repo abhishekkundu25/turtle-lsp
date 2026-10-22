@@ -76,3 +76,46 @@ test("implementation on a class lists its subclasses and instances", async () =>
   const where = locs.map((l) => `${path.basename(l.uri)}:${l.range.start.line}`).sort()
   assert.deepEqual(where, ["vocab.ttl:19", "vocab.ttl:9"], where.join(" "))
 })
+
+// ---------- relative IRIs: the document's URI is the base ----------
+
+const sameFile = (a, b) => a === b
+
+test("<#me> in two files is two resources: definition and references stay in their file", async () => {
+  const text = (n) => `<#me> a <http://example.org/T${n}> .\n<#other> <http://example.org/knows> <#me> .\n`
+  const a = uriOf(path.join(dir, "__base-a.ttl"))
+  const b = uriOf(path.join(dir, "__base-b.ttl"))
+  s.open(a, text(1))
+  s.open(b, text(2))
+  await s.diagnosticsFor(a)
+  await s.diagnosticsFor(b)
+  const pos = positionOf(text(1), "<#me> .", 2)
+  const refs = await s.request("textDocument/references", {
+    textDocument: { uri: a },
+    position: pos,
+    context: { includeDeclaration: true },
+  })
+  assert.deepEqual(
+    [...new Set(refs.map((r) => r.uri))],
+    [a],
+    `references of <#me> reached another file: ${JSON.stringify(refs)}`,
+  )
+  assert.equal(refs.length, 2, JSON.stringify(refs))
+  const defs = await s.request("textDocument/definition", { textDocument: { uri: a }, position: pos })
+  assert.ok(defs.length === 1 && sameFile(defs[0].uri, a), JSON.stringify(defs))
+  s.close(a)
+  s.close(b)
+})
+
+test("a relative @base is resolved against the file, not reported", async () => {
+  const text = "@base <rel/> .\n<x> <http://example.org/p> <y> .\n"
+  const uri = uriOf(path.join(dir, "__base-rel.ttl"))
+  s.open(uri, text)
+  const diags = await s.diagnosticsFor(uri)
+  assert.deepEqual(
+    diags.filter((d) => d.severity === 1),
+    [],
+    fmt(diags),
+  )
+  s.close(uri)
+})

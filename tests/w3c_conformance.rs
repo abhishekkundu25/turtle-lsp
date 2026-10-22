@@ -194,20 +194,21 @@ fn term(n: &Node) -> Term {
             value,
             datatype,
             lang,
-        } => match lang {
-            Some(l) => match l.split_once("--") {
-                Some((l, dir)) => Literal::new_directional_language_tagged_literal_unchecked(
-                    &**value,
-                    l,
-                    match dir.to_ascii_lowercase().as_str() {
-                        "rtl" => oxrdf::BaseDirection::Rtl,
-                        _ => oxrdf::BaseDirection::Ltr,
-                    },
-                ),
-                None => Literal::new_language_tagged_literal_unchecked(&**value, &**l),
-            }
+            dir,
+        } => match (lang, dir) {
+            (Some(l), Some(d)) => Literal::new_directional_language_tagged_literal_unchecked(
+                &**value,
+                &**l,
+                match d {
+                    syntax::Direction::Rtl => oxrdf::BaseDirection::Rtl,
+                    syntax::Direction::Ltr => oxrdf::BaseDirection::Ltr,
+                },
+            )
             .into(),
-            None => Literal::new_typed_literal(&**value, nn(datatype)).into(),
+            (Some(l), None) => {
+                Literal::new_language_tagged_literal_unchecked(&**value, &**l).into()
+            }
+            _ => Literal::new_typed_literal(&**value, nn(datatype)).into(),
         },
         Node::Triple(t) => {
             let (s, p, o) = &**t;

@@ -274,3 +274,25 @@ test("organise prefixes on a CRLF file writes no stray carriage returns", async 
   const { text: out } = await apply(text, "b:x", "Organise prefixes")
   assert.equal(out, "@prefix a:\r\n  <http://a/> .\r\n@prefix b: <http://b/> .\r\nb:x a:y a:z .\r\n")
 })
+
+test("renaming a relative IRI writes the absolute IRI and leaves another file's <#me> alone", async () => {
+  const text = "<#me> <http://example.org/p> <#me> .\n"
+  const a = uriOf(path.join(ws, "__rename-a.ttl"))
+  const b = uriOf(path.join(ws, "__rename-b.ttl"))
+  s.open(a, text)
+  s.open(b, text)
+  await s.diagnosticsFor(a)
+  await s.diagnosticsFor(b)
+  try {
+    const edit = await s.request("textDocument/rename", {
+      textDocument: { uri: a },
+      position: positionOf(text, "<#me>", 3),
+      newName: "you",
+    })
+    assert.deepEqual(Object.keys(edit.changes), [a])
+    assert.equal(applyEdits(text, edit.changes[a]), `<${a}#you> <http://example.org/p> <${a}#you> .\n`)
+  } finally {
+    s.close(a)
+    s.close(b)
+  }
+})

@@ -1276,9 +1276,11 @@ fn node(n: &Node) -> Option<String> {
             value,
             datatype,
             lang,
-        } => Some(match lang {
-            Some(l) => format!("{value:?}@{}", &**l),
-            None => format!("{value:?}^^<{}>", &**datatype),
+            dir,
+        } => Some(match (lang, dir) {
+            (Some(l), Some(d)) => format!("{value:?}@{}--{d}", &**l),
+            (Some(l), None) => format!("{value:?}@{}", &**l),
+            _ => format!("{value:?}^^<{}>", &**datatype),
         }),
         Node::Blank(_) | Node::Triple(_) => None,
     }

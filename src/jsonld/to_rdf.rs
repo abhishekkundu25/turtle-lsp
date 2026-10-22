@@ -237,6 +237,7 @@ impl<'e> Rdf<'e, '_> {
             o_span,
             statement: stmt,
             graph,
+            unresolved: false,
         });
     }
 
@@ -445,6 +446,7 @@ impl<'e> Rdf<'e, '_> {
             value,
             datatype,
             lang,
+            dir: None,
         })
     }
 
