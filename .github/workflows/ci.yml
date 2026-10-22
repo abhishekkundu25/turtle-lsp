@@ -50,6 +50,16 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: npm ci
+      # The JSON-LD corpus the corpus tests read: with CI=true they fail when it
+      # is absent. Downloaded again only when its source list or checksums change.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test/corpus/jsonld
+          key: jsonld-corpus-${{ hashFiles('tools/corpus/jsonld-sources.tsv', 'tools/corpus/jsonld-sha256.tsv') }}
+      - name: JSON-LD corpus
+        shell: bash
+        timeout-minutes: 10
+        run: tools/corpus/fetch-jsonld.sh
       # npm test, split so each part has its own time limit: the build may
       # start without a cache; the Node tests take about a minute on Windows.
       - run: cargo build --release --locked
