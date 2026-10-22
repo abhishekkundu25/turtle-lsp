@@ -40,7 +40,7 @@ wave as 27b, in separate regions of `src/server.rs`. 27b's ticket names the regi
 the one shared `use crate::workspace::{..}` statement: 28a removes `path_to_uri` from
 it, and the second to land keeps both removals.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
