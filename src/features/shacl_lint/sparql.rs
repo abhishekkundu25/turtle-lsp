@@ -14,52 +14,18 @@ use crate::analysis::Analysis;
 use crate::features::embedded::{self, Lit, Queries};
 use crate::knowledge::Knowledge;
 use crate::shacl::sparql::{Role, restrictions};
+use crate::shacl::vocab;
 use crate::sparql::validate::{self, ErrorAt, ErrorKind};
-use crate::syntax::{Iri, Node, RDF_TYPE, Span};
+use crate::syntax::{Node, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spargebra::{Query, SparqlParser};
-use std::sync::OnceLock;
 
 pub const SYNTAX: &str = "shacl-sparql-syntax";
 pub const PREFIX: &str = "shacl-sparql-prefix";
 pub const UNSUPPORTED: &str = "shacl-sparql-unsupported";
 
-struct V {
-    rdf_type: Iri,
-    ask: Iri,
-    validators: [Iri; 3],
-    parameter: Iri,
-    path: Iri,
-    ask_validator: Iri,
-    select_validator: Iri,
-    target: Iri,
-    target_types: [Iri; 2],
-}
-
-fn v() -> &'static V {
-    static V: OnceLock<V> = OnceLock::new();
-    V.get_or_init(|| {
-        let sh = |l: &str| Iri::intern(&format!("{}{l}", crate::shacl::SH));
-        V {
-            rdf_type: Iri::intern(RDF_TYPE),
-            ask: sh("ask"),
-            validators: [
-                sh("validator"),
-                sh("nodeValidator"),
-                sh("propertyValidator"),
-            ],
-            parameter: sh("parameter"),
-            path: sh("path"),
-            ask_validator: sh("SPARQLAskValidator"),
-            select_validator: sh("SPARQLSelectValidator"),
-            target: sh("target"),
-            target_types: [sh("SPARQLTarget"), sh("SPARQLTargetType")],
-        }
-    })
-}
-
 pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
-    let v = v();
+    let v = vocab::get();
     let triples = &a.parsed.triples;
     let Some(mut qs) = Queries::new(a, k) else {
         return;
@@ -79,14 +45,14 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
     let mut targets: FxHashSet<&Node> = FxHashSet::default();
     let mut validators: FxHashSet<&Node> = FxHashSet::default();
     for t in triples {
-        if v.validators.contains(&t.p) {
+        if v.is_validator(t.p) {
             components.entry(&t.o).or_default().push(&t.s);
         } else if t.p == v.target {
             targets.insert(&t.o);
         } else if t.p == v.rdf_type
             && let Node::Iri(c) = &t.o
         {
-            if v.target_types.contains(c) {
+            if *c == v.sparql_target || *c == v.sparql_target_type {
                 targets.insert(&t.s);
             } else if *c == v.ask_validator || *c == v.select_validator {
                 validators.insert(&t.s);

@@ -15,11 +15,12 @@
 use crate::analysis::Analysis;
 use crate::features::hover::short;
 use crate::knowledge::{Knowledge, namespace_of};
-use crate::shacl::shapes::{Term, vocab};
-use crate::shacl::{ShapeKind, Shapes};
-use crate::syntax::{Iri, Node, PrefixMap, RDF, Span, XSD};
+use crate::rdf::Graph;
+use crate::shacl::{Shape, ShapeKind, Shapes, model, vocab};
+use crate::syntax::{Iri, Node, PrefixMap, RDF, Span, Triple, XSD};
 use crate::vocab::{TermKind, VOCABS};
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 
 mod sparql;
 
@@ -78,13 +79,50 @@ impl Ctx<'_> {
     }
 }
 
+/// The triples the shape model reads: all of the document's. A triple with
+/// an undeclared prefix ([`Triple::unresolved`]) still counts here, as the
+/// author wrote it (`sh:path foaf:name` before `foaf:` is declared), while
+/// [`Graph::new`] leaves it out of the graph that validation reads; such a
+/// document's triples are copied with the flag cleared.
+fn model_triples(triples: &[Triple]) -> Cow<'_, [Triple]> {
+    if !triples.iter().any(|t| t.unresolved) {
+        return Cow::Borrowed(triples);
+    }
+    Cow::Owned(
+        triples
+            .iter()
+            .map(|t| Triple {
+                unresolved: false,
+                ..t.clone()
+            })
+            .collect(),
+    )
+}
+
+/// Whether `triples` can hold a shape or a SHACL parameter: a predicate in
+/// the SHACL namespace, or a type there.
+fn mentions_shacl(triples: &[Triple]) -> bool {
+    let rdf_type = vocab::get().rdf_type;
+    let shacl = |i: &Iri| i.starts_with(crate::shacl::SH);
+    triples
+        .iter()
+        .any(|t| shacl(&t.p) || matches!(&t.o, Node::Iri(o) if t.p == rdf_type && shacl(o)))
+}
+
 pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
     let triples = &a.parsed.triples;
-    let shapes = Shapes::new(triples);
+    if !mentions_shacl(triples) {
+        return Vec::new();
+    }
+    let all = model_triples(triples);
+    let g = Graph::new(&[&*all]);
+    let shapes = Shapes::new(&g);
     if shapes.shapes.is_empty() && !triples.iter().any(|t| t.p.starts_with(crate::shacl::SH)) {
         return Vec::new();
     }
-    let v = vocab();
+    // The document triple a graph triple number stands for.
+    let doc = |n: u32| &triples[g.origin(n).1 as usize];
+    let v = vocab::get();
     let mut cx = Ctx {
         a,
         k,
@@ -106,15 +144,15 @@ pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
             && let Some((_, i)) = &s.path
         {
             cx.push(
-                triples[*i as usize].p_span,
+                doc(*i).p_span,
                 false,
                 "shacl-misplaced",
                 "A sh:NodeShape cannot have sh:path; make it a sh:PropertyShape".into(),
             );
         }
         match s.kind {
-            ShapeKind::Property if s.path.is_none() && !path_elsewhere(k, s.node) => {
-                let span = shape_span(a, &shapes, s);
+            ShapeKind::Property if s.path.is_none() && !path_elsewhere(k, g.as_iri(s.node)) => {
+                let span = shape_span(a, &g, s);
                 cx.push(
                     span,
                     true,
@@ -124,7 +162,7 @@ pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
             }
             ShapeKind::Node if s.typed_node_shape || s.via_node || !s.targets.is_empty() => {
                 for &i in &s.params {
-                    let t = &triples[i as usize];
+                    let t = doc(i);
                     if node_only_not.contains(&t.p) {
                         let name = cx.name(&t.p);
                         cx.push(
@@ -144,7 +182,8 @@ pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
 
     // Parameter values.
     let mut class_known: FxHashMap<Iri, bool> = FxHashMap::default();
-    let mut counts: FxHashMap<Term, [Option<(i64, u32)>; 4]> = FxHashMap::default();
+    // Per subject (an IRI or a blank node).
+    let mut counts: FxHashMap<&Node, [Option<(i64, u32)>; 4]> = FxHashMap::default();
     let count_preds = [
         v.min_count,
         v.max_count,
@@ -156,7 +195,7 @@ pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
             continue;
         }
         if let Some(slot) = count_preds.iter().position(|&p| p == t.p) {
-            if let (Node::Literal { value, .. }, Some(s)) = (&t.o, Term::of(&t.s))
+            if let (Node::Literal { value, .. }, Node::Iri(_) | Node::Blank(_)) = (&t.o, &t.s)
                 && let Ok(n) = value.trim().trim_start_matches('+').parse::<i64>()
             {
                 if n < 0 {
@@ -168,15 +207,16 @@ pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
                         format!("{name} must not be negative"),
                     );
                 }
-                counts.entry(s).or_default()[slot].get_or_insert((n, i as u32));
+                counts.entry(&t.s).or_default()[slot].get_or_insert((n, i as u32));
             }
             continue;
         }
         let Node::Iri(o) = &t.o else {
             // sh:and / sh:or / sh:xone members.
             if t.p == v.and || t.p == v.or || t.p == v.xone {
-                for m in shapes.list(triples, &t.o) {
-                    let mt = &triples[m as usize];
+                let head = g.node(0, &t.o);
+                for m in head.map(|h| model::list(&g, h)).unwrap_or_default() {
+                    let mt = doc(m);
                     if let Node::Iri(o) = &mt.o {
                         dangling(&mut cx, *o, mt.o_span);
                     }
@@ -249,35 +289,35 @@ pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
 
 /// Where to report a property shape: its subject when it has an IRI, the
 /// opening `[` of an inline shape, else its type.
-fn shape_span(a: &Analysis, shapes: &Shapes, s: &crate::shacl::Shape) -> Span {
+fn shape_span(a: &Analysis, g: &Graph, s: &Shape) -> Span {
     let triples = &a.parsed.triples;
-    if let Term::Iri(i) = s.node
+    let doc = |n: u32| &triples[g.origin(n).1 as usize];
+    if let Some(i) = g.as_iri(s.node)
         && let Some(span) = a.defs.get(&i).and_then(|d| d.first())
     {
         return *span;
     }
     if let Some(i) = s.via_property {
-        let o = triples[i as usize].o_span;
+        let o = doc(i).o_span;
         return if a.text.as_bytes().get(o.start as usize) == Some(&b'[') {
             Span::new(o.start, o.start + 1)
         } else {
             o
         };
     }
-    let own = shapes.triples_of(s.node);
-    own.iter()
-        .map(|&i| &triples[i as usize])
-        .find(|t| t.p == vocab().rdf_type)
-        .or_else(|| own.first().map(|&i| &triples[i as usize]))
+    let own = || g.out(s.node).map(|(n, _)| doc(n));
+    own()
+        .find(|t| t.p == vocab::get().rdf_type)
+        .or_else(|| own().next())
         .map_or_else(Span::default, |t| t.o_span)
 }
 
 /// An IRI property shape whose `sh:path` another source states.
-fn path_elsewhere(k: &Knowledge, node: Term) -> bool {
-    let Term::Iri(iri) = node else {
+fn path_elsewhere(k: &Knowledge, node: Option<Iri>) -> bool {
+    let Some(iri) = node else {
         return false;
     };
-    let path = vocab().path;
+    let path = vocab::get().path;
     k.descriptions(&iri).iter().any(|d| {
         d.analysis
             .parsed
@@ -290,7 +330,7 @@ fn path_elsewhere(k: &Knowledge, node: Term) -> bool {
 /// Known as a class: typed as one (or a node shape, an implicit class
 /// target), in a class hierarchy, or with instances.
 fn is_known_class(k: &Knowledge, iri: Iri) -> bool {
-    let v = vocab();
+    let v = vocab::get();
     k.types(&iri)
         .iter()
         .any(|t| *t == v.rdfs_class || *t == v.owl_class || *t == v.node_shape)
@@ -316,7 +356,7 @@ fn is_datatype(k: &Knowledge, iri: Iri) -> bool {
             Some(t) => t.kind == TermKind::Class && !NOT_DATATYPES.contains(&&*iri),
         };
     }
-    !judged(k, &iri) || k.types(&iri).contains(&vocab().rdfs_datatype)
+    !judged(k, &iri) || k.types(&iri).contains(&vocab::get().rdfs_datatype)
 }
 
 fn dangling(cx: &mut Ctx, iri: Iri, span: Span) {
@@ -330,4 +370,73 @@ fn dangling(cx: &mut Ctx, iri: Iri, span: Span) {
         "shacl-dangling-shape",
         format!("Shape {name} is not described anywhere in the workspace"),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::knowledge::Source;
+    use std::sync::Arc;
+
+    /// Triples with an undeclared prefix still count in the shape model, as
+    /// they did when the lint read the parse directly: `nope:S` is a node
+    /// shape, `sh:path nope:p` makes `ex:T` a property shape, and the list
+    /// cell holding `nope:A` still leads to `ex:Gone`.
+    #[test]
+    fn undeclared_prefixes_still_count() {
+        let text = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\n\
+                    nope:S a sh:NodeShape ; sh:minCount 1 ; sh:property [ sh:minCount 1 ] .\n\
+                    ex:T a sh:NodeShape ; sh:path nope:p ; sh:minCount 1 .\n\
+                    ex:U sh:or ( nope:A ex:Gone ) .\n\
+                    ex:V sh:targetNode ex:U .\n";
+        let a = Arc::new(Analysis::new(
+            "file:///w/shapes.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/shapes.ttl", Source::Open, a.clone());
+        let found: Vec<_> = lint(&a, &k)
+            .into_iter()
+            .map(|f| {
+                (
+                    f.code,
+                    f.error,
+                    &text[f.span.start as usize..f.span.end as usize],
+                    f.message,
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "shacl-misplaced",
+                    false,
+                    "sh:minCount",
+                    "sh:minCount applies to property shapes only; this is a node shape (no sh:path)"
+                        .to_owned()
+                ),
+                (
+                    "shacl-missing-path",
+                    true,
+                    "[",
+                    "Property shape has no sh:path".to_owned()
+                ),
+                (
+                    "shacl-misplaced",
+                    false,
+                    "sh:path",
+                    "A sh:NodeShape cannot have sh:path; make it a sh:PropertyShape".to_owned()
+                ),
+                (
+                    "shacl-dangling-shape",
+                    false,
+                    "ex:Gone",
+                    "Shape ex:Gone is not described anywhere in the workspace".to_owned()
+                ),
+            ]
+        );
+    }
 }

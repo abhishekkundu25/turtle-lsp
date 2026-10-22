@@ -27,8 +27,8 @@
 //!   a pattern that does not compile is ignored;
 //! - literal comparisons follow [`super::literal`].
 
-use super::Path;
 use super::literal;
+use super::model::Path;
 use super::sparql::{self, Answer, Cancel, Fail, Role};
 use crate::rdf::Index;
 use crate::rdf::graph::{Graph, Id, Term};
