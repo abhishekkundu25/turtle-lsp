@@ -28,7 +28,7 @@
 //! Every request is routed by document kind: RDF documents to `features`,
 //! SPARQL documents to `sparql::features`; neither runs on the other.
 
-use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
+use crate::analysis::{Analysis, Encoding};
 use crate::clock::Instant;
 use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::hierarchy;
@@ -36,11 +36,11 @@ use crate::features::{
     completion, diagnostics, embedded, format, hover, inlay, navigation, quickfix, refactor,
     semantic, shacl_validate, symbols,
 };
+use crate::ide;
 use crate::settings::{Layer, SETTINGS_FILE, Settings, read_settings_file};
 use crate::sparql::features as sparql_features;
 use crate::workspace::{
-    DocKind, PREFIX_FILE, Workspace, is_sparql_path, is_turtle, normalize_uri, path_to_uri,
-    uri_to_path,
+    DocKind, PREFIX_FILE, Workspace, is_sparql_path, is_turtle, normalize_uri, uri_to_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::Sender;
@@ -53,6 +53,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1643,6 +1644,11 @@ impl Server {
         self.send_request(lsp_types::request::RegisterCapability::METHOD, params);
     }
 
+    /// The editor session over this server's workspace, for one request.
+    fn session(&mut self) -> ide::Session<'_> {
+        ide::Session::new(&mut self.ws, self.enc, &self.settings, self.resolve_edits)
+    }
+
     fn request(&mut self, req: Request) -> Result<Value, (ErrorCode, String)> {
         use lsp_types::request::*;
         let enc = self.enc;
@@ -1653,34 +1659,23 @@ impl Server {
                 serde_json::from_value::<$t>(req.params.clone()).map_err(bad)?
             };
         }
-        // An RDF document's analysis; a SPARQL document answers `$empty`.
+        // An RDF document's analysis; a SPARQL document answers `null`.
         macro_rules! doc {
             ($uri:expr) => {
-                doc!($uri, Value::Null)
+                match self.session().doc($uri.as_str()) {
+                    Some(ide::Doc::Rdf(a)) => a,
+                    Some(ide::Doc::Sparql(_)) | None => return ok(Value::Null),
+                }
             };
-            ($uri:expr, $empty:expr) => {{
-                let u = normalize_uri($uri.as_str());
-                if self.ws.is_sparql(&u) {
-                    return ok($empty);
-                }
-                match self.ws.analysis(&u) {
-                    Some(a) => (u, a),
-                    None => return ok(Value::Null),
-                }
-            }};
         }
         // The document by kind.
         macro_rules! open {
-            ($uri:expr) => {{
-                let u = normalize_uri($uri.as_str());
-                match self.ws.sparql(&u) {
-                    Some(q) => Open::Sparql(u, q),
-                    None => match self.ws.analysis(&u) {
-                        Some(a) => Open::Rdf(u, a),
-                        None => return ok(Value::Null),
-                    },
+            ($uri:expr) => {
+                match self.session().doc($uri.as_str()) {
+                    Some(doc) => doc,
+                    None => return ok(Value::Null),
                 }
-            }};
+            };
         }
         let json =
             |v: serde_json::Result<Value>| v.map_err(|e| (ErrorCode::InternalError, e.to_string()));
@@ -1689,8 +1684,8 @@ impl Server {
             Completion::METHOD => {
                 let p = params!(CompletionParams);
                 let a = match open!(p.text_document_position.text_document.uri) {
-                    Open::Rdf(_, a) => a,
-                    Open::Sparql(_, q) => {
+                    ide::Doc::Rdf(a) => a,
+                    ide::Doc::Sparql(q) => {
                         return json(serde_json::to_value(sparql_features::completion(
                             &q,
                             self.ws.knowledge(),
@@ -1734,8 +1729,8 @@ impl Server {
                 let pos = p.text_document_position_params.position;
                 json(serde_json::to_value(
                     match open!(p.text_document_position_params.text_document.uri) {
-                        Open::Rdf(_, a) => hover::hover(&a, self.ws.knowledge(), enc, pos),
-                        Open::Sparql(_, q) => {
+                        ide::Doc::Rdf(a) => hover::hover(&a, self.ws.knowledge(), enc, pos),
+                        ide::Doc::Sparql(q) => {
                             sparql_features::hover(&q, self.ws.knowledge(), enc, pos)
                         }
                     },
@@ -1743,151 +1738,68 @@ impl Server {
             }
             GotoDefinition::METHOD => {
                 let p = params!(GotoDefinitionParams);
-                let pos = p.text_document_position_params.position;
-                let locs = match open!(p.text_document_position_params.text_document.uri) {
-                    Open::Rdf(u, a) => {
-                        let prefix_file = self.prefix_file_for(&u);
-                        navigation::definition(&a, self.ws.knowledge(), enc, pos, prefix_file)
-                    }
-                    Open::Sparql(u, q) => {
-                        let prefix_file = self.prefix_file_for(&u);
-                        sparql_features::definition(&q, self.ws.knowledge(), enc, pos, prefix_file)
-                    }
-                };
-                json(serde_json::to_value(GotoDefinitionResponse::Array(locs)))
+                let at = p.text_document_position_params;
+                let locs = self
+                    .session()
+                    .definition(at.text_document.uri.as_str(), at.position);
+                json(serde_json::to_value(
+                    locs.map(GotoDefinitionResponse::Array),
+                ))
             }
             GotoTypeDefinition::METHOD => {
                 let p = params!(GotoDefinitionParams);
-                let (_, a) = doc!(
-                    p.text_document_position_params.text_document.uri,
-                    Value::Array(vec![])
-                );
-                let locs = navigation::type_definition(
-                    &a,
-                    self.ws.knowledge(),
-                    enc,
-                    p.text_document_position_params.position,
-                );
-                json(serde_json::to_value(GotoDefinitionResponse::Array(locs)))
+                let at = p.text_document_position_params;
+                let locs = self
+                    .session()
+                    .type_definition(at.text_document.uri.as_str(), at.position);
+                json(serde_json::to_value(
+                    locs.map(GotoDefinitionResponse::Array),
+                ))
             }
             GotoImplementation::METHOD => {
                 let p = params!(GotoDefinitionParams);
-                let (_, a) = doc!(
-                    p.text_document_position_params.text_document.uri,
-                    Value::Array(vec![])
-                );
-                let locs = navigation::implementations(
-                    &a,
-                    self.ws.knowledge(),
-                    enc,
-                    p.text_document_position_params.position,
-                );
-                json(serde_json::to_value(GotoDefinitionResponse::Array(locs)))
+                let at = p.text_document_position_params;
+                let locs = self
+                    .session()
+                    .implementations(at.text_document.uri.as_str(), at.position);
+                json(serde_json::to_value(
+                    locs.map(GotoDefinitionResponse::Array),
+                ))
             }
             References::METHOD => {
                 let p = params!(ReferenceParams);
-                let pos = p.text_document_position.position;
-                let decl = p.context.include_declaration;
-                match open!(p.text_document_position.text_document.uri) {
-                    Open::Rdf(_, a) => {
-                        let mut locs =
-                            navigation::references(&a, self.ws.knowledge(), enc, pos, decl);
-                        if let Some((_, iri)) = rdf_term_at(&a, enc, pos) {
-                            let docs = self.ws.sparql_documents();
-                            locs.extend(sparql_features::term_references(&iri, decl, &docs, enc));
-                        }
-                        json(serde_json::to_value(locs))
-                    }
-                    Open::Sparql(_, q) => {
-                        let others = self.sparql_others(&q, pos);
-                        json(serde_json::to_value(sparql_features::references(
-                            &q,
-                            self.ws.knowledge(),
-                            enc,
-                            pos,
-                            decl,
-                            &others,
-                        )))
-                    }
-                }
+                let at = p.text_document_position;
+                json(serde_json::to_value(self.session().references(
+                    at.text_document.uri.as_str(),
+                    at.position,
+                    p.context.include_declaration,
+                )))
             }
             DocumentHighlightRequest::METHOD => {
                 let p = params!(DocumentHighlightParams);
-                let pos = p.text_document_position_params.position;
+                let at = p.text_document_position_params;
                 json(serde_json::to_value(
-                    match open!(p.text_document_position_params.text_document.uri) {
-                        Open::Rdf(_, a) => navigation::highlights(&a, enc, pos),
-                        Open::Sparql(_, q) => sparql_features::highlights(&q, enc, pos),
-                    },
+                    self.session()
+                        .highlights(at.text_document.uri.as_str(), at.position),
                 ))
             }
             PrepareRenameRequest::METHOD => {
                 let p = params!(TextDocumentPositionParams);
-                match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => match navigation::prepare_rename(&a, enc, p.position) {
-                        Ok(r) => json(serde_json::to_value(r)),
-                        Err(msg) => Err((ErrorCode::InvalidParams, msg)),
-                    },
-                    Open::Sparql(_, q) => json(serde_json::to_value(
-                        sparql_features::prepare_rename(&q, enc, p.position),
-                    )),
+                match self
+                    .session()
+                    .prepare_rename(p.text_document.uri.as_str(), p.position)
+                {
+                    Ok(r) => json(serde_json::to_value(r)),
+                    Err(msg) => Err((ErrorCode::InvalidParams, msg)),
                 }
             }
             Rename::METHOD => {
                 let p = params!(RenameParams);
-                let pos = p.text_document_position.position;
-                let (u, a) = match open!(p.text_document_position.text_document.uri) {
-                    Open::Rdf(u, a) => (u, a),
-                    Open::Sparql(u, q) => {
-                        let prefix_file = self.prefix_file_for(&u);
-                        let others = self.sparql_others(&q, pos);
-                        return match sparql_features::rename(
-                            &q,
-                            self.ws.knowledge(),
-                            enc,
-                            pos,
-                            &p.new_name,
-                            prefix_file,
-                            &others,
-                        ) {
-                            Ok(edit) => json(serde_json::to_value(edit)),
-                            Err(msg) => Err((ErrorCode::InvalidParams, msg)),
-                        };
-                    }
-                };
-                // A JSON-LD term is renamed as a term, not as its IRI.
-                let term = rdf_term_at(&a, enc, pos)
-                    .filter(|(offset, _)| navigation::jsonld::term_at(&a, *offset).is_none())
-                    .map(|(offset, old)| {
-                        navigation::renamed_iri_at(&a, offset, &old, &p.new_name)
-                            .map(|new| (old, new))
-                    })
-                    .transpose();
-                let file = self.prefix_file_for(&u);
-                let roots = self.ws.roots().to_vec();
-                let mut dirs: FxHashMap<PathBuf, Option<PathBuf>> = FxHashMap::default();
-                let mut file_of = |uri: &str| {
-                    let dir = uri_to_path(uri)?.parent()?.to_path_buf();
-                    dirs.entry(dir)
-                        .or_insert_with_key(|d| crate::workspace::find_prefix_file(&roots, d))
-                        .clone()
-                };
-                let scope = navigation::PrefixScope {
-                    file,
-                    file_of: &mut file_of,
-                };
-                let renamed =
-                    navigation::rename(&a, self.ws.knowledge(), enc, pos, &p.new_name, scope)
-                        .and_then(|mut edit| {
-                            if let Some((old, new_iri)) = term? {
-                                let docs = self.ws.sparql_documents();
-                                sparql_features::rdf_term_rename(
-                                    &old, &new_iri, &docs, enc, &mut edit,
-                                )?;
-                            }
-                            Ok(edit)
-                        });
-                match renamed {
+                let at = p.text_document_position;
+                match self
+                    .session()
+                    .rename(at.text_document.uri.as_str(), at.position, &p.new_name)
+                {
                     Ok(edit) => json(serde_json::to_value(edit)),
                     Err(msg) => Err((ErrorCode::InvalidParams, msg)),
                 }
@@ -1896,8 +1808,8 @@ impl Server {
                 let p = params!(DocumentSymbolParams);
                 json(serde_json::to_value(DocumentSymbolResponse::Nested(
                     match open!(p.text_document.uri) {
-                        Open::Rdf(_, a) => symbols::document_symbols(&a, enc),
-                        Open::Sparql(_, q) => sparql_features::document_symbols(&q, enc),
+                        ide::Doc::Rdf(a) => symbols::document_symbols(&a, enc),
+                        ide::Doc::Sparql(q) => sparql_features::document_symbols(&q, enc),
                     },
                 )))
             }
@@ -1910,8 +1822,8 @@ impl Server {
             FoldingRangeRequest::METHOD => {
                 let p = params!(FoldingRangeParams);
                 json(serde_json::to_value(match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => symbols::folding_ranges(&a),
-                    Open::Sparql(_, q) => sparql_features::folding_ranges(&q),
+                    ide::Doc::Rdf(a) => symbols::folding_ranges(&a),
+                    ide::Doc::Sparql(q) => sparql_features::folding_ranges(&q),
                 }))
             }
             DocumentDiagnosticRequest::METHOD => {
@@ -1921,8 +1833,8 @@ impl Server {
             CodeActionRequest::METHOD => {
                 let p = params!(CodeActionParams);
                 let a = match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => a,
-                    Open::Sparql(_, q) => {
+                    ide::Doc::Rdf(a) => a,
+                    ide::Doc::Sparql(q) => {
                         return json(serde_json::to_value(sparql_features::code_actions(
                             &q,
                             self.ws.knowledge(),
@@ -1991,13 +1903,13 @@ impl Server {
                 let opts =
                     format::Options::from_lsp(&p.options, self.settings.format_line_width as usize);
                 json(serde_json::to_value(match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => format::formatting(&a, enc, &opts),
-                    Open::Sparql(_, q) => sparql_features::formatting(&q, enc, &opts),
+                    ide::Doc::Rdf(a) => format::formatting(&a, enc, &opts),
+                    ide::Doc::Sparql(q) => sparql_features::formatting(&q, enc, &opts),
                 }))
             }
             TypeHierarchyPrepare::METHOD => {
                 let p = params!(TypeHierarchyPrepareParams);
-                let (_, a) = doc!(p.text_document_position_params.text_document.uri);
+                let a = doc!(p.text_document_position_params.text_document.uri);
                 json(serde_json::to_value(hierarchy::prepare(
                     &a,
                     self.ws.knowledge(),
@@ -2021,8 +1933,8 @@ impl Server {
             SemanticTokensFullRequest::METHOD => {
                 let p = params!(SemanticTokensParams);
                 json(serde_json::to_value(match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => semantic::full(&a, self.ws.knowledge(), enc),
-                    Open::Sparql(_, q) => {
+                    ide::Doc::Rdf(a) => semantic::full(&a, self.ws.knowledge(), enc),
+                    ide::Doc::Sparql(q) => {
                         sparql_features::semantic_tokens_full(&q, self.ws.knowledge(), enc)
                     }
                 }))
@@ -2030,8 +1942,8 @@ impl Server {
             SemanticTokensRangeRequest::METHOD => {
                 let p = params!(SemanticTokensRangeParams);
                 json(serde_json::to_value(match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => semantic::range(&a, self.ws.knowledge(), enc, p.range),
-                    Open::Sparql(_, q) => sparql_features::semantic_tokens_range(
+                    ide::Doc::Rdf(a) => semantic::range(&a, self.ws.knowledge(), enc, p.range),
+                    ide::Doc::Sparql(q) => sparql_features::semantic_tokens_range(
                         &q,
                         self.ws.knowledge(),
                         enc,
@@ -2043,10 +1955,10 @@ impl Server {
                 let p = params!(InlayHintParams);
                 let mode = self.settings.inlay_hint_labels;
                 json(serde_json::to_value(match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => {
+                    ide::Doc::Rdf(a) => {
                         inlay::inlay_hints(&a, self.ws.knowledge(), enc, p.range, mode)
                     }
-                    Open::Sparql(_, q) => {
+                    ide::Doc::Sparql(q) => {
                         sparql_features::inlay_hints(&q, self.ws.knowledge(), enc, p.range, mode)
                     }
                 }))
@@ -2055,8 +1967,8 @@ impl Server {
                 let p = params!(CodeLensParams);
                 let on = self.settings.code_lens_references;
                 json(serde_json::to_value(match open!(p.text_document.uri) {
-                    Open::Rdf(_, a) => crate::features::lens::code_lenses(&a, enc, on),
-                    Open::Sparql(_, q) => crate::features::lens::query_lenses(&q, enc),
+                    ide::Doc::Rdf(a) => crate::features::lens::code_lenses(&a, enc, on),
+                    ide::Doc::Sparql(q) => crate::features::lens::query_lenses(&q, enc),
                 }))
             }
             CodeLensResolve::METHOD => {
@@ -2157,42 +2069,6 @@ impl Server {
         self.shacl_diagnostics = o.diagnostics;
         self.knowledge_changed();
     }
-
-    /// The workspace's SPARQL documents for a query's references or rename,
-    /// read only when the cursor is on a term (an IRI, prefixed name or `a`):
-    /// variables and prefixes stay within the document.
-    fn sparql_others(&mut self, q: &SparqlAnalysis, pos: Position) -> Vec<Arc<SparqlAnalysis>> {
-        let on_term = q
-            .offset(self.enc, pos)
-            .is_some_and(|off| q.doc.structure().refs.iter().any(|r| r.span.contains(off)));
-        if on_term {
-            self.ws.sparql_documents()
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn prefix_file_for(&mut self, uri: &str) -> Option<Arc<Analysis>> {
-        let dir = uri_to_path(uri)?.parent()?.to_path_buf();
-        let file = self.ws.find_prefix_file(&dir)?;
-        let file_uri = path_to_uri(&file)?;
-        if let Some(a) = self.ws.analysis(&file_uri) {
-            return Some(a);
-        }
-        let text = std::fs::read_to_string(&file).ok()?;
-        Some(Arc::new(Analysis::new(
-            file_uri,
-            &text,
-            Arc::new(Default::default()),
-            false,
-        )))
-    }
-}
-
-/// An open document, by kind.
-enum Open {
-    Rdf(String, Arc<Analysis>),
-    Sparql(String, Arc<SparqlAnalysis>),
 }
 
 /// A server driven by its host instead of its own loop, for a host with no
@@ -2273,16 +2149,6 @@ impl Embedded {
 
     fn sent(&mut self) -> Vec<Message> {
         self.outbox.try_iter().collect()
-    }
-}
-
-/// The offset and IRI of the term at `pos` in an RDF document, if the
-/// cursor is on one.
-fn rdf_term_at(a: &Analysis, enc: Encoding, pos: Position) -> Option<(u32, String)> {
-    let offset = a.offset(enc, pos)?;
-    match navigation::target_at(a, offset)? {
-        (navigation::Target::Iri(iri), _) => Some((offset, iri.to_string())),
-        _ => None,
     }
 }
 
@@ -2384,7 +2250,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::workspace::{PANIC_IN_ANALYSIS, PANIC_IN_FACTS};
+    use crate::workspace::{PANIC_IN_ANALYSIS, PANIC_IN_FACTS, path_to_uri};
     use serde_json::json;
 
     const TTL: &str = "@prefix ex: <http://e.org/> .\nex:A a ex:B .\n";
@@ -2765,6 +2631,7 @@ mod tests {
 #[cfg(test)]
 mod review_tests {
     use super::*;
+    use crate::workspace::path_to_uri;
     use serde_json::json;
 
     /// A fresh folder below the temp dir (canonical), removed when dropped.
