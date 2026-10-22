@@ -30,14 +30,10 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::clock::Instant;
-use crate::diagnose::{self, DiagnosticInputs, Doc};
-use crate::features::hierarchy;
-use crate::features::{
-    completion, diagnostics, embedded, format, navigation, quickfix, refactor, shacl_validate,
-};
+use crate::diagnose::DiagnosticInputs;
+use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
 use crate::settings::{Layer, SETTINGS_FILE, Settings, read_settings_file};
-use crate::sparql::features as sparql_features;
 use crate::workspace::{
     Change, Dirty, DocKind, Effects, Workspace, is_import_source, normalize_uri, uri_to_path,
 };
@@ -1425,8 +1421,6 @@ impl Server {
     /// Diagnostics for `uri`, or the panic message if computing them failed.
     fn diagnostics_for(&mut self, uri: &str) -> Result<Option<Vec<Diagnostic>>, String> {
         let cached_import = self.ws.is_cached_import(uri);
-        let enc = self.enc;
-        let sparql = self.ws.is_sparql(uri);
         guard("diagnostics", || {
             let status = |iri: &str| self.imports.statuses().get(iri);
             let inputs = DiagnosticInputs {
@@ -1436,14 +1430,10 @@ impl Server {
                 cached_import,
                 ..DiagnosticInputs::new(&self.settings)
             };
-            if sparql {
-                let q = self.ws.sparql(uri);
-                return q.map(|q| {
-                    diagnose::document(Doc::Sparql(&q), self.ws.knowledge(), enc, &inputs)
-                });
-            }
-            let a = self.ws.analysis(uri);
-            a.map(|a| diagnose::document(Doc::Rdf(&a), self.ws.knowledge(), enc, &inputs))
+            // Not `self.session()`: `inputs` borrows other fields of `self`.
+            let mut s =
+                ide::Session::new(&mut self.ws, self.enc, &self.settings, self.resolve_edits);
+            s.diagnostics(uri, &inputs)
         })
         // A cached copy of an import is read-only: nothing to fix there.
         .map(|d| d.or_else(|| cached_import.then(Vec::new)))
@@ -1561,30 +1551,11 @@ impl Server {
 
     fn request(&mut self, req: Request) -> Result<Value, (ErrorCode, String)> {
         use lsp_types::request::*;
-        let enc = self.enc;
         let bad = |e: serde_json::Error| (ErrorCode::InvalidParams, e.to_string());
         let ok = |v: Value| Ok(v);
         macro_rules! params {
             ($t:ty) => {
                 serde_json::from_value::<$t>(req.params.clone()).map_err(bad)?
-            };
-        }
-        // An RDF document's analysis; a SPARQL document answers `null`.
-        macro_rules! doc {
-            ($uri:expr) => {
-                match self.session().doc($uri.as_str()) {
-                    Some(ide::Doc::Rdf(a)) => a,
-                    Some(ide::Doc::Sparql(_)) | None => return ok(Value::Null),
-                }
-            };
-        }
-        // The document by kind.
-        macro_rules! open {
-            ($uri:expr) => {
-                match self.session().doc($uri.as_str()) {
-                    Some(doc) => doc,
-                    None => return ok(Value::Null),
-                }
             };
         }
         let json =
@@ -1593,46 +1564,13 @@ impl Server {
         match req.method.as_str() {
             Completion::METHOD => {
                 let p = params!(CompletionParams);
-                let a = match open!(p.text_document_position.text_document.uri) {
-                    ide::Doc::Rdf(a) => a,
-                    ide::Doc::Sparql(q) => {
-                        return json(serde_json::to_value(sparql_features::completion(
-                            &q,
-                            self.ws.knowledge(),
-                            enc,
-                            &p,
-                        )));
-                    }
-                };
-                // `?` and `$` start variables, which RDF documents have none
-                // of outside the SPARQL queries of SHACL shapes.
-                let trigger = p
-                    .context
-                    .as_ref()
-                    .and_then(|c| c.trigger_character.as_deref());
-                if matches!(trigger, Some("?" | "$"))
-                    && !a
-                        .offset(enc, p.text_document_position.position)
-                        .is_some_and(|o| embedded::in_query(&a, o))
-                {
-                    return ok(Value::Null);
-                }
-                json(serde_json::to_value(completion::complete(
-                    &a,
-                    self.ws.knowledge(),
-                    enc,
-                    p.text_document_position.position,
-                )))
+                json(serde_json::to_value(self.session().completion(&p)))
             }
             ResolveCompletionItem::METHOD => {
                 let item = params!(CompletionItem);
-                let k = self.ws.knowledge();
-                let sparql = item.data.as_ref().is_some_and(|d| d["sparql"] == true);
-                json(serde_json::to_value(if sparql {
-                    sparql_features::resolve_completion(item, k)
-                } else {
-                    completion::resolve(item, k)
-                }))
+                json(serde_json::to_value(
+                    self.session().resolve_completion(item),
+                ))
             }
             HoverRequest::METHOD => {
                 let p = params!(HoverParams);
@@ -1737,31 +1675,7 @@ impl Server {
             }
             CodeActionRequest::METHOD => {
                 let p = params!(CodeActionParams);
-                let a = match open!(p.text_document.uri) {
-                    ide::Doc::Rdf(a) => a,
-                    ide::Doc::Sparql(q) => {
-                        return json(serde_json::to_value(sparql_features::code_actions(
-                            &q,
-                            self.ws.knowledge(),
-                            enc,
-                            &p,
-                            self.resolve_edits,
-                        )));
-                    }
-                };
-                let only = p.context.only.as_deref();
-                let mut actions: Vec<_> = quickfix::code_actions(&a, self.ws.knowledge(), enc, &p)
-                    .into_iter()
-                    .filter(|c| match c {
-                        CodeActionOrCommand::CodeAction(c) => {
-                            c.kind.as_ref().is_none_or(|k| refactor::wanted(only, k))
-                        }
-                        CodeActionOrCommand::Command(_) => true,
-                    })
-                    .collect();
-                actions.extend(refactor::code_actions(&a, enc, &p, self.resolve_edits));
-                actions.extend(crate::imports::fetch_actions(&a, enc, &p));
-                json(serde_json::to_value(actions))
+                json(serde_json::to_value(self.session().code_actions(&p)))
             }
             ExecuteCommand::METHOD => {
                 match crate::commands::parse(params!(ExecuteCommandParams))? {
@@ -1785,41 +1699,23 @@ impl Server {
             }
             CodeActionResolveRequest::METHOD => {
                 let action = params!(CodeAction);
-                let Some(uri) = action
-                    .data
-                    .as_ref()
-                    .and_then(|d| d["uri"].as_str())
-                    .map(normalize_uri)
-                else {
-                    return json(serde_json::to_value(action));
-                };
-                if let Some(q) = self.ws.sparql(&uri) {
-                    return json(serde_json::to_value(sparql_features::resolve_code_action(
-                        &q, enc, action,
-                    )));
-                }
-                let Some(a) = self.ws.analysis(&uri) else {
-                    return json(serde_json::to_value(action));
-                };
-                json(serde_json::to_value(refactor::resolve(&a, enc, action)))
+                json(serde_json::to_value(
+                    self.session().resolve_code_action(action),
+                ))
             }
             Formatting::METHOD => {
                 let p = params!(DocumentFormattingParams);
-                let opts =
-                    format::Options::from_lsp(&p.options, self.settings.format_line_width as usize);
-                json(serde_json::to_value(match open!(p.text_document.uri) {
-                    ide::Doc::Rdf(a) => format::formatting(&a, enc, &opts),
-                    ide::Doc::Sparql(q) => sparql_features::formatting(&q, enc, &opts),
-                }))
+                json(serde_json::to_value(
+                    self.session()
+                        .formatting(p.text_document.uri.as_str(), &p.options),
+                ))
             }
             TypeHierarchyPrepare::METHOD => {
                 let p = params!(TypeHierarchyPrepareParams);
-                let a = doc!(p.text_document_position_params.text_document.uri);
-                json(serde_json::to_value(hierarchy::prepare(
-                    &a,
-                    self.ws.knowledge(),
-                    enc,
-                    p.text_document_position_params.position,
+                let at = p.text_document_position_params;
+                json(serde_json::to_value(self.session().prepare_type_hierarchy(
+                    at.text_document.uri.as_str(),
+                    at.position,
                 )))
             }
             TypeHierarchySupertypes::METHOD | TypeHierarchySubtypes::METHOD => {
