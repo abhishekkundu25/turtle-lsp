@@ -5,7 +5,8 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
-import { startServer, uriOf, tempDir } from "./lsp-client.mjs"
+import { spawnSync } from "node:child_process"
+import { startServer, uriOf, tempDir, serverPath } from "./lsp-client.mjs"
 
 const dir = tempDir("shacl-sparql-lint-")
 fs.writeFileSync(
@@ -56,4 +57,42 @@ test("a malformed query is reported on the literal and clears when fixed", async
   s.change(uri, shapes("$this ex:p ?v . FILTER NOT EXISTS { ?v a ex:C }"))
   assert.deepEqual(sparql(await s.diagnosticsFor(uri)), [])
   s.close(uri)
+})
+
+// A path this long overflowed the stack and aborted the server's SHACL thread
+// while it indexed the folder (no file open), and `check`.
+const longPath = shapes(`$this ex:p${"/ex:p".repeat(20000)} ?v .`)
+
+test("a 20,000-step path in sh:select is one error, not an abort", async () => {
+  const uri = uriOf(path.join(dir, "long-path.ttl"))
+  s.open(uri, longPath)
+  const diags = sparql(await s.diagnosticsFor(uri))
+  assert.equal(diags.length, 1, JSON.stringify(diags.map((d) => d.message)))
+  assert.equal(diags[0].code, "shacl-sparql-syntax")
+  assert.equal(diags[0].severity, 1)
+  assert.match(diags[0].message, /too large to check \(more than \d+ steps in one property path\)/)
+  s.close(uri)
+  // The server still answers.
+  assert.ok(Array.isArray(await s.request("workspace/symbol", { query: "" })))
+})
+
+test("check reports a 20,000-step path in sh:select and exits 1, no abort", () => {
+  const ws = tempDir("shacl-sparql-long-")
+  try {
+    fs.writeFileSync(path.join(ws, "shapes.ttl"), longPath)
+    fs.writeFileSync(path.join(ws, "prefixes.ttl"), fs.readFileSync(path.join(dir, "prefixes.ttl")))
+    const r = spawnSync(serverPath, ["check", "--root", ws], {
+      cwd: ws,
+      encoding: "utf8",
+      timeout: 60000,
+      env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), NO_COLOR: "1" },
+    })
+    assert.equal(r.signal, null, r.stderr)
+    assert.equal(r.status, 1, r.stderr)
+    const lines = r.stdout.split("\n").filter((l) => l.includes("shacl-sparql"))
+    assert.equal(lines.length, 1, r.stdout)
+    assert.match(lines[0], /^shapes\.ttl:\d+:\d+: error\[shacl-sparql-syntax\] .*too large to check/)
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true })
+  }
 })

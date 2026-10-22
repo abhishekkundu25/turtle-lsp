@@ -80,9 +80,18 @@ fn parse_error(parser: SparqlParser, text: &str, update: bool) -> Option<String>
 /// The text of token `t` as `spargebra` is given it: the dots of a prefixed
 /// name's local part escaped (`ec:1.1.1.353` becomes `ec:1\.1\.1\.353`, the
 /// same IRI). `spargebra` 0.4 rejects a local name with two dots or more,
-/// which the grammar allows (real queries use EC numbers so).
+/// which the grammar allows (real queries use EC numbers so). `TRUE` and
+/// `False` become `true` and `false`: the grammar matches them in any case,
+/// `spargebra` only in lower case.
 pub fn token_for_spargebra<'a>(text: &'a str, t: &Token) -> Cow<'a, str> {
     let written = &text[t.span.start as usize..t.span.end as usize];
+    if t.kind == TokenKind::Boolean {
+        return if written.bytes().all(|b| b.is_ascii_lowercase()) {
+            Cow::Borrowed(written)
+        } else {
+            Cow::Owned(written.to_ascii_lowercase())
+        };
+    }
     if t.kind != TokenKind::PName {
         return Cow::Borrowed(written);
     }

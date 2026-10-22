@@ -113,6 +113,26 @@ test("an unclosed group is reported", async () => {
   assert.equal(ofCode(diags, "syntax").length, 1, fmt(diags))
 })
 
+// A chain this long overflowed the stack and aborted the server: one error now.
+for (const [name, where, what] of [
+  ["a 20,000-term ||", `?s ?p ?o FILTER(?o${" || ?o".repeat(20000)})`, "operators in one expression"],
+  ["a 20,000-step path", `?s ex:p${"/ex:p".repeat(20000)} ?o`, "steps in one property path"],
+  ["20,000 !", `?s ?p ?o FILTER(${"!".repeat(20000)}?o)`, "unary operators in a row"],
+]) {
+  test(`${name} is one syntax error and the server goes on`, async () => {
+    const diags = await diagsOf(`${EX}SELECT * WHERE { ${where} }\n`)
+    const e = ofCode(diags, "syntax")
+    assert.equal(e.length, 1, fmt(diags))
+    assert.match(e[0].message, new RegExp(`too large to check \\(more than \\d+ ${what}\\)`))
+    assert.deepEqual(problems(await diagsOf(`${EX}SELECT * WHERE { ?s ?p ?o }\n`)), [])
+  })
+}
+
+test("true and false are read in any case", async () => {
+  const diags = await diagsOf(`SELECT * WHERE { ?s ?p ?o FILTER(TRUE && False || ?o = FALSE) }\n`)
+  assert.deepEqual(problems(diags), [], fmt(diags))
+})
+
 test("syntax errors are reported as the text changes, on the unsaved text", async () => {
   const good = `${EX}SELECT ?x WHERE { ?x a ex:Person }\n`
   const { uri } = await q.scratch(good)

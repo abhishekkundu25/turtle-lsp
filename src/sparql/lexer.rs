@@ -552,7 +552,7 @@ impl Lexer<'_> {
                     let w = &self.src[i..wend];
                     let kind = if w == "a" {
                         TokenKind::A
-                    } else if w == "true" || w == "false" {
+                    } else if w.eq_ignore_ascii_case("true") || w.eq_ignore_ascii_case("false") {
                         TokenKind::Boolean
                     } else if keyword(w).is_some() {
                         TokenKind::Keyword
