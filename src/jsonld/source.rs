@@ -9,8 +9,11 @@
 //! - **Definitions** ([`Definition`]): each term definition a use resolves
 //!   to, and each one written in the document, applied or not. Uses refer
 //!   to them by [`DefId`], so "the same definition" is an equality.
-//! - **Context IRIs** ([`SourceIndex::context_iris`]): strings in the
-//!   document's contexts that may be compact IRIs with a missing prefix.
+//! - **Context strings** ([`ContextString`]): each string of a context
+//!   expansion processed (a term's key and IRI, `@id`, `@type`, `@vocab`...)
+//!   with the term definitions it names where it is written, for the lints
+//!   and for rename. Contexts that expansion does not read (inside a `@json`
+//!   literal, under a key it drops) are not here.
 //! - **Scopes** ([`Scope`]): each JSON object expansion reads, with the
 //!   active context in force inside it ([`SourceIndex::scope_at`]).
 //!
@@ -21,6 +24,8 @@
 use super::context::{
     ActiveContext, TermDefinition, has_keyword_form, is_absolute_iri, is_keyword,
 };
+use super::json::{Json, Member, Object, Value};
+use super::unquoted;
 use crate::syntax::Span;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -135,6 +140,54 @@ impl Use {
     }
 }
 
+/// What a [`ContextString`] is in its context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextRole {
+    /// The key of a term defined by an object with no `@id` or `@reverse`:
+    /// the key is the term's IRI (or compact IRI).
+    KeyIsIri,
+    /// The key of any other term definition.
+    Key,
+    /// A term definition written as a string: its IRI.
+    Value,
+    /// A definition's `@id` or `@reverse`.
+    Id,
+    /// A definition's `@type`.
+    Type,
+    /// A definition's `@index`.
+    Index,
+    /// A definition's `@nest`.
+    Nest,
+    /// The context's `@vocab`.
+    Vocab,
+}
+
+impl ContextRole {
+    /// The string may be a term as a whole (a key is only ever read for the
+    /// prefix of its compact IRI).
+    pub fn names_a_term(self) -> bool {
+        !matches!(self, ContextRole::Key | ContextRole::KeyIsIri)
+    }
+}
+
+/// A string of a context expansion processed, with the term definitions it
+/// names where it is written. Only strings that are read as IRIs or terms
+/// are here, not `@container` or `@language` values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextString {
+    /// The string, without quotes.
+    pub span: Span,
+    pub role: ContextRole,
+    /// The definition of the term this whole string is, in the contexts in
+    /// force at the string (`None` for a key, a keyword, and a string that
+    /// is no term there).
+    pub term: Option<DefId>,
+    /// The definition of the prefix before the first colon of the string
+    /// (`ex` for `ex:name`), when the string is `prefix:suffix` and the
+    /// prefix is a term there.
+    pub prefix: Option<DefId>,
+}
+
 /// A JSON object expansion read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Scope {
@@ -159,12 +212,8 @@ pub struct SourceIndex {
     pub uses: Vec<Use>,
     /// Indexed by [`DefId`].
     pub definitions: Vec<Definition>,
-    /// Strings written `word:rest` in this document's contexts (a term's
-    /// IRI, `@id`, `@type`, `@reverse` or `@vocab`, a term key with no IRI
-    /// of its own) whose `word` no context object around them defines,
-    /// without quotes, in text order: see
-    /// [`super::lint::undefined_prefixes`].
-    pub context_iris: Vec<Span>,
+    /// The strings of the contexts expansion processed, in text order.
+    pub context_strings: Vec<ContextString>,
     /// Sorted by start, outer before inner.
     scopes: Vec<Scope>,
     contexts: Vec<ActiveContext>,
@@ -247,6 +296,25 @@ pub(crate) struct Builder {
     ids: FxHashMap<(Option<Arc<str>>, u32), DefId>,
     /// Context by content id: an index into `contexts`.
     by_content: FxHashMap<u64, u32>,
+    /// The strings of contexts, before the definitions they name are known.
+    strings: Vec<Pending>,
+}
+
+/// A [`ContextString`] whose definitions are still being found: one written
+/// in the document is known by where its key starts.
+struct Pending {
+    span: Span,
+    role: ContextRole,
+    term: Target,
+    prefix: Target,
+}
+
+#[derive(Clone, Copy)]
+enum Target {
+    None,
+    Def(DefId),
+    /// The term written in this document with its key at this offset.
+    Written(u32),
 }
 
 impl Builder {
@@ -351,11 +419,45 @@ impl Builder {
         });
     }
 
+    /// Records the strings of the context `value` (an object, a URL, an
+    /// array of them, or `null`), which expansion processed in `before` to
+    /// get `after`.
+    pub fn context_strings(&mut self, value: &Json, before: &ActiveContext, after: &ActiveContext) {
+        let mut walk = Walk {
+            builder: self,
+            before,
+            after,
+            value: value.span,
+            levels: Vec::new(),
+        };
+        walk.context(value);
+    }
+
     /// The index, with the definitions `written` in the document.
     pub fn finish(mut self, written: Vec<(Arc<str>, Arc<TermDefinition>)>) -> SourceIndex {
         for (term, d) in written {
             self.define(&term, &d);
         }
+        let ids = &self.ids;
+        let known = |t: Target| match t {
+            Target::None => None,
+            Target::Def(id) => Some(id),
+            Target::Written(key) => ids.get(&(None, key)).copied(),
+        };
+        let mut strings: Vec<ContextString> = self
+            .strings
+            .iter()
+            .map(|p| ContextString {
+                span: p.span,
+                role: p.role,
+                term: known(p.term),
+                prefix: known(p.prefix),
+            })
+            .collect();
+        // The same context read twice.
+        strings.sort_by_key(|c| (c.span.start, c.span.end));
+        strings.dedup_by_key(|c| c.span);
+        self.index.context_strings = strings;
         let mut index = self.index;
         index.uses.sort_by_key(|u| (u.span.start, u.span.end));
         // The same string read twice (an `@id` map key with several values).
@@ -385,6 +487,202 @@ impl Builder {
             stack.push(i as u32);
         }
         index
+    }
+}
+
+/// The context objects of one `@context` value (or of the `@context` of a
+/// term definition in it), with the terms each defines.
+struct Level<'j> {
+    frames: Vec<Frame<'j>>,
+    /// The frame being read: later ones of the array are not yet applied.
+    current: usize,
+}
+
+struct Frame<'j> {
+    members: &'j [Member],
+    /// Term (any key but a keyword) to where its key starts; with many
+    /// members only.
+    map: Option<FxHashMap<&'j str, u32>>,
+}
+
+const LINEAR_FRAME: usize = 8;
+
+impl<'j> Frame<'j> {
+    fn new(o: &'j Object) -> Frame<'j> {
+        let map = (o.members.len() > LINEAR_FRAME).then(|| {
+            o.members
+                .iter()
+                .filter(|m| !m.key.starts_with('@'))
+                .map(|m| (&*m.key, unquoted(m.key_span).start))
+                .collect()
+        });
+        Frame {
+            members: &o.members,
+            map,
+        }
+    }
+
+    /// Where the key of the (last) definition of `word` starts.
+    fn key_of(&self, word: &str) -> Option<u32> {
+        match &self.map {
+            Some(map) => map.get(word).copied(),
+            None => self
+                .members
+                .iter()
+                .rev()
+                .find(|m| &*m.key == word)
+                .map(|m| unquoted(m.key_span).start),
+        }
+    }
+}
+
+/// Reads a context value as expansion processed it.
+struct Walk<'b, 'j> {
+    builder: &'b mut Builder,
+    before: &'b ActiveContext,
+    after: &'b ActiveContext,
+    /// Where the whole `@context` value is written.
+    value: Span,
+    levels: Vec<Level<'j>>,
+}
+
+impl<'j> Walk<'_, 'j> {
+    /// The context `v`: an object, an array of contexts, or something that
+    /// holds no strings of this document (a URL, `null`).
+    fn context(&mut self, v: &'j Json) {
+        let objects: Vec<&'j Object> = match &v.value {
+            Value::Object(o) => vec![o],
+            Value::Array(a) => a.items.iter().filter_map(Json::as_object).collect(),
+            _ => return,
+        };
+        if objects.is_empty() {
+            return;
+        }
+        self.levels.push(Level {
+            frames: objects.iter().map(|&o| Frame::new(o)).collect(),
+            current: 0,
+        });
+        let at = self.levels.len() - 1;
+        for (i, o) in objects.iter().enumerate() {
+            self.levels[at].current = i;
+            self.object(o);
+        }
+        self.levels.pop();
+    }
+
+    fn object(&mut self, o: &'j Object) {
+        for m in &o.members {
+            let key = &*m.key;
+            if key.starts_with('@') {
+                if key == "@vocab" {
+                    self.string(&m.value, ContextRole::Vocab);
+                }
+                continue;
+            }
+            match &m.value.value {
+                Value::String(_) => {
+                    self.key(m, ContextRole::Key);
+                    self.string(&m.value, ContextRole::Value);
+                }
+                Value::Object(def) => {
+                    let own_iri = def
+                        .members
+                        .iter()
+                        .any(|d| matches!(&*d.key, "@id" | "@reverse"));
+                    let role = if own_iri {
+                        ContextRole::Key
+                    } else {
+                        ContextRole::KeyIsIri
+                    };
+                    self.key(m, role);
+                    for d in &def.members {
+                        match &*d.key {
+                            "@id" | "@reverse" => self.string(&d.value, ContextRole::Id),
+                            "@type" => self.string(&d.value, ContextRole::Type),
+                            "@index" => self.string(&d.value, ContextRole::Index),
+                            "@nest" => self.string(&d.value, ContextRole::Nest),
+                            "@context" => self.context(&d.value),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => self.key(m, ContextRole::Key),
+            }
+        }
+    }
+
+    /// The key of the term definition `m`: only its prefix can name a term.
+    fn key(&mut self, m: &'j Member, role: ContextRole) {
+        let prefix = self.prefix(&m.key);
+        self.builder.strings.push(Pending {
+            span: unquoted(m.key_span),
+            role,
+            term: Target::None,
+            prefix,
+        });
+    }
+
+    /// The string `v`, if it is one.
+    fn string(&mut self, v: &'j Json, role: ContextRole) {
+        let Some(s) = v.as_str() else { return };
+        let term = if s.starts_with('@') || s.is_empty() {
+            Target::None
+        } else {
+            self.resolve(s)
+        };
+        let prefix = self.prefix(s);
+        self.builder.strings.push(Pending {
+            span: unquoted(v.span),
+            role,
+            term,
+            prefix,
+        });
+    }
+
+    /// The definition of the prefix of `s` (`ex` for `ex:name`) when it has
+    /// one that is not a scheme-like `//` or a blank node label.
+    fn prefix(&mut self, s: &str) -> Target {
+        match s.find(':') {
+            Some(i) if i > 0 && &s[..i] != "_" && !s[i + 1..].starts_with("//") => {
+                self.resolve(&s[..i])
+            }
+            _ => Target::None,
+        }
+    }
+
+    /// The definition of the term `word` where the string being read is: in
+    /// the context object around it, else the ones before it in the same
+    /// array and those around that (all of them: a term-scoped context is
+    /// applied after its whole context), else what the contexts processed
+    /// before this value, and the URLs in it, defined. Known limit: the
+    /// contexts of the URLs of an array are only seen through the context
+    /// the whole value gives, so a term a URL defines and a *later* object
+    /// of the same array defines again is not found for the strings between
+    /// them.
+    fn resolve(&mut self, word: &str) -> Target {
+        for (n, level) in self.levels.iter().enumerate().rev() {
+            let top = if n + 1 == self.levels.len() {
+                level.current
+            } else {
+                level.frames.len().saturating_sub(1)
+            };
+            if let Some(key) = level.frames[..=top]
+                .iter()
+                .rev()
+                .find_map(|f| f.key_of(word))
+            {
+                return Target::Written(key);
+            }
+        }
+        // A definition this value writes that was not found above comes
+        // after the string: it is not in force there.
+        let after = self.after.term(word).filter(|d| {
+            !(d.source.is_none() && d.span.is_some_and(|s| self.value.contains(s.start)))
+        });
+        match after.or_else(|| self.before.term(word)) {
+            Some(d) => Target::Def(self.builder.define(word, d)),
+            None => Target::None,
+        }
     }
 }
 
@@ -570,6 +868,106 @@ mod tests {
         let id = ix.definition_at(unused).unwrap();
         assert_eq!(def(&ix, id, DOC).2.as_deref(), Some("ex:unused"));
         assert!(ix.uses_of(id).next().is_none());
+    }
+
+    /// The context strings as (text, role, term's key, prefix's key) where
+    /// the keys are the text at the key of the definition each names.
+    fn strings(text: &str) -> Vec<(String, ContextRole, Option<String>, Option<String>)> {
+        let ix = index(text);
+        let key = |id: Option<DefId>| {
+            id.map(|id| {
+                let d = ix.definition(id);
+                let origin = match d.origin {
+                    Origin::Document => text,
+                    Origin::File(_) => CTX,
+                    Origin::Remote(_) => "",
+                };
+                format!("{}@{}", at(origin, d.key), d.key.start)
+            })
+        };
+        ix.context_strings
+            .iter()
+            .map(|c| {
+                (
+                    at(text, c.span).to_string(),
+                    c.role,
+                    key(c.term),
+                    key(c.prefix),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn context_strings_name_the_definitions_in_force_where_they_are_written() {
+        let got = strings(DOC);
+        let find = |s: &str| got.iter().filter(|g| g.0 == s).collect::<Vec<_>>();
+        let ex = DOC.find("\"ex\"").unwrap() + 1;
+        let ex_key = Some(format!("ex@{ex}"));
+        // A prefix defined in the same object, for a string of the object
+        // and of a context nested in a term.
+        for s in ["ex:name", "ex:unused", "ex:Person", "ex:nick"] {
+            let g = find(s);
+            assert_eq!(g.len(), 1, "{s}");
+            assert_eq!(g[0].3, ex_key, "{s}");
+        }
+        // Not terms, not prefixes: a keyword, a URL, an absolute IRI.
+        assert_eq!(find("@id")[0].2, None);
+        assert_eq!(find("http://vocab.org/")[0].3, None);
+        // Keys: the prefix of a compact-IRI key is a prefix; roles tell a
+        // key that is the IRI from one that has its own.
+        let text = r#"{"@context": {"ex": "http://ex.org/", "ex:a": {"@type": "@id"}, "b": {"@id": "ex:b"}, "c": null}}"#;
+        let got = strings(text);
+        let roles: Vec<_> = got.iter().map(|g| (g.0.as_str(), g.1)).collect();
+        assert_eq!(
+            roles,
+            [
+                ("ex", ContextRole::Key),
+                ("http://ex.org/", ContextRole::Value),
+                ("ex:a", ContextRole::KeyIsIri),
+                ("@id", ContextRole::Type),
+                ("b", ContextRole::Key),
+                ("ex:b", ContextRole::Id),
+                ("c", ContextRole::Key),
+            ]
+        );
+        let key_ex = Some(format!("ex@{}", text.find("\"ex\"").unwrap() + 1));
+        assert_eq!(got[2].3, key_ex);
+        assert_eq!(got[5].3, key_ex);
+    }
+
+    #[test]
+    fn a_context_string_names_the_definition_of_its_own_scope() {
+        // Two definitions of `ex`: the string names the one in force where
+        // it is written.
+        let text = r#"{"@context": [{"ex": "http://one.org/", "a": "ex:a"}, {"ex": "http://two.org/", "b": "ex:b"}],
+  "@graph": [{"@context": {"ex": "http://three.org/", "c": "ex:c"}}]}"#;
+        let got = strings(text);
+        let prefix = |s: &str| got.iter().find(|g| g.0 == s).unwrap().3.clone().unwrap();
+        let start = |n: usize| text.match_indices("\"ex\"").nth(n).unwrap().0 + 1;
+        assert_eq!(prefix("ex:a"), format!("ex@{}", start(0)));
+        assert_eq!(prefix("ex:b"), format!("ex@{}", start(1)));
+        assert_eq!(prefix("ex:c"), format!("ex@{}", start(2)));
+        // A definition of a later object of the array is not in force yet.
+        let text = r#"{"@context": [{"a": "ex:a"}, {"ex": "http://two.org/"}]}"#;
+        assert_eq!(strings(text)[1].3, None);
+        // A context of the file named before it is.
+        let text = r#"{"@context": ["ctx.jsonld", {"a": "shared"}]}"#;
+        let got = strings(text);
+        assert_eq!(got[1].2.as_deref().map(|s| &s[..6]), Some("shared"));
+    }
+
+    #[test]
+    fn contexts_nothing_reads_leave_no_strings() {
+        // Inside a @json literal, and under a key expansion drops.
+        let json = r#"{"@context": {"j": {"@id": "http://ex.org/j", "@type": "@json"}}, "j": {"@context": {"a": "b:c"}}}"#;
+        let got = strings(json);
+        assert!(got.iter().all(|g| g.0 != "b:c"), "{got:?}");
+        let dropped =
+            r#"{"@context": {"ex": "http://ex.org/"}, "nope": {"@context": {"a": "b:c"}}}"#;
+        assert!(strings(dropped).iter().all(|g| g.0 != "b:c"));
+        let read = r#"{"@context": {"ex": "http://ex.org/"}, "ex:p": {"@context": {"a": "b:c"}}}"#;
+        assert!(strings(read).iter().any(|g| g.0 == "b:c"));
     }
 
     #[test]

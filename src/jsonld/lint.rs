@@ -15,15 +15,18 @@
 //!   `word:rest` where the context defines no `word`. JSON-LD reads it as
 //!   an absolute IRI with scheme `word:`, valid and silent; when `word` is a
 //!   prefix the workspace knows, it is almost always a forgotten prefix.
+//!   Only contexts expansion read are checked ([`SourceIndex::context_strings`]):
+//!   a `@context` inside a `@json` literal is data, and one under a key
+//!   JSON-LD drops applies nowhere. A prefix counts where the contexts in
+//!   force at the string define it, not a later object of the same array.
 //!
 //! [`vocabulary_iris`] says where the shared vocabulary lints
 //! (`unknown-term`, `deprecated-term`) look: a term of the context is
 //! checked once, at the IRI its definition writes, not at each use.
 
 use super::context::is_absolute_iri;
-use super::json::{Json, Value};
-use super::source::{SourceIndex, UseKind};
-use super::{DropReason, Dropped, UsedTerm, unquoted};
+use super::source::{ContextRole, SourceIndex, UseKind};
+use super::{DropReason, Dropped, UsedTerm};
 use crate::syntax::{Form, Iri, Ref, Severity, Span};
 
 pub const UNDEFINED_TERM: &str = "jsonld-undefined-term";
@@ -117,112 +120,50 @@ fn scheme_word(s: &str) -> Option<&str> {
 /// The strings JSON-LD reads as absolute IRIs `word:rest` where the active
 /// context defines no `word` and `word` is no common URI scheme, as (span
 /// without quotes, `word`), in text order: keys, `@type` and `@id` values
-/// written so, and [`SourceIndex::context_iris`]. Whether `word` is a
-/// known prefix is the caller's check.
+/// written so, and the IRIs of the contexts expansion processed
+/// ([`SourceIndex::context_strings`]: a term's IRI, `@id`, `@reverse`,
+/// `@type`, `@vocab`, a term key with no IRI of its own), where the
+/// contexts before the string define no `word`. Whether `word` is a known
+/// prefix is the caller's check.
 pub fn undefined_prefixes<'t>(text: &'t str, index: &SourceIndex) -> Vec<(Span, &'t str)> {
-    let mut spans: Vec<Span> = index
+    // The span, and whether the contexts already say `word` is defined
+    // (`None`: look it up in the active context at the span).
+    let mut spans: Vec<(Span, Option<bool>)> = index
         .uses
         .iter()
         .filter(|u| u.kind == UseKind::Absolute)
-        .map(|u| u.span)
-        .chain(index.context_iris.iter().copied())
+        .map(|u| (u.span, None))
+        .chain(
+            index
+                .context_strings
+                .iter()
+                .filter(|c| {
+                    matches!(
+                        c.role,
+                        ContextRole::KeyIsIri
+                            | ContextRole::Value
+                            | ContextRole::Id
+                            | ContextRole::Type
+                            | ContextRole::Vocab
+                    )
+                })
+                .map(|c| (c.span, Some(c.prefix.is_some()))),
+        )
         .collect();
-    spans.sort_by_key(|s| (s.start, s.end));
-    spans.dedup();
+    spans.sort_by_key(|(s, _)| (s.start, s.end));
+    spans.dedup_by_key(|(s, _)| *s);
     spans
         .into_iter()
-        .filter_map(|span| {
+        .filter_map(|(span, known)| {
             let word = scheme_word(at(text, span))?;
-            let defined = index
-                .context_at(span.start)
-                .is_some_and(|c| c.term(word).is_some());
+            let defined = known.unwrap_or_else(|| {
+                index
+                    .context_at(span.start)
+                    .is_some_and(|c| c.term(word).is_some())
+            });
             (!defined).then_some((span, word))
         })
         .collect()
-}
-
-/// [`SourceIndex::context_iris`] of the document at `root`.
-pub(crate) fn context_iris(root: &Json) -> Vec<Span> {
-    let mut out = Vec::new();
-    node(root, &mut Vec::new(), &mut out);
-    out.sort_by_key(|s| (s.start, s.end));
-    out
-}
-
-/// Looks for the contexts in `v`, outside contexts; `defined` holds the
-/// terms of the context objects around it.
-fn node<'j>(v: &'j Json, defined: &mut Vec<&'j str>, out: &mut Vec<Span>) {
-    match &v.value {
-        Value::Object(o) => {
-            for m in &o.members {
-                match &*m.key {
-                    "@context" => context(&m.value, defined, out),
-                    // A JSON literal holds no contexts.
-                    "@value" => {}
-                    _ => node(&m.value, defined, out),
-                }
-            }
-        }
-        Value::Array(a) => a.items.iter().for_each(|i| node(i, defined, out)),
-        _ => {}
-    }
-}
-
-/// The IRIs written in the context `v` (an object, a URL or an array of
-/// them) whose word before the colon neither it nor a context around it
-/// defines.
-fn context<'j>(v: &'j Json, defined: &mut Vec<&'j str>, out: &mut Vec<Span>) {
-    let objects: Vec<_> = match &v.value {
-        Value::Object(o) => vec![o],
-        Value::Array(a) => a.items.iter().filter_map(Json::as_object).collect(),
-        _ => vec![],
-    };
-    let mark = defined.len();
-    for o in &objects {
-        defined.extend(o.members.iter().map(|m| &*m.key));
-    }
-    for o in &objects {
-        for m in &o.members {
-            if m.key.starts_with('@') {
-                if &*m.key == "@vocab" {
-                    check(m.value.as_str(), m.value.span, defined, out);
-                }
-                continue;
-            }
-            match &m.value.value {
-                Value::String(_) => check(m.value.as_str(), m.value.span, defined, out),
-                Value::Object(def) => {
-                    let mut has_iri = false;
-                    for d in &def.members {
-                        match &*d.key {
-                            "@id" | "@reverse" => {
-                                has_iri = true;
-                                check(d.value.as_str(), d.value.span, defined, out);
-                            }
-                            "@type" => check(d.value.as_str(), d.value.span, defined, out),
-                            "@context" => context(&d.value, defined, out),
-                            _ => {}
-                        }
-                    }
-                    if !has_iri {
-                        check(Some(&m.key), m.key_span, defined, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    defined.truncate(mark);
-}
-
-/// Records the string `s` written at `span` (with its quotes) when its
-/// word before the colon is no URI scheme and not in `defined`.
-fn check(s: Option<&str>, span: Span, defined: &[&str], out: &mut Vec<Span>) {
-    if let Some(word) = s.and_then(scheme_word)
-        && !defined.contains(&word)
-    {
-        out.push(unquoted(span));
-    }
 }
 
 /// A vocabulary IRI where it is written: a reference, or a term
@@ -506,6 +447,51 @@ mod tests {
         // Defined in the context, or in one around it.
         let text = r#"{"@context": [{"rdfs": "http://www.w3.org/2000/01/rdf-schema#"}, {"l": "rdfs:label"}], "@graph": [{"@context": {"x": "rdfs:comment"}, "rdfs:seeAlso": {"@id": "rdfs:x"}}]}"#;
         assert_eq!(undefined(text), []);
+    }
+
+    #[test]
+    fn a_json_literal_holds_no_contexts() {
+        // The literal is data: its `@context` is not a context, so its
+        // `rdfs:label` is not a forgotten prefix.
+        let coerced = r#"{"@context": {"j": {"@id": "http://ex.org/j", "@type": "@json"}}, "@id": "http://ex.org/a", "j": {"@context": {"l": "rdfs:label"}, "foaf:name": "x", "@type": "skos:Concept"}}"#;
+        assert_eq!(undefined(coerced), []);
+        let value_object = r#"{"@context": {"ex": "http://ex.org/"}, "@id": "ex:a", "ex:j": {"@type": "@json", "@value": {"@context": {"l": "rdfs:label"}, "@id": "foaf:x"}}}"#;
+        assert_eq!(undefined(value_object), []);
+        let in_array = r#"{"@context": {"j": {"@id": "http://ex.org/j", "@type": "@json"}}, "@id": "http://ex.org/a", "j": [{"@context": [{"l": "rdfs:label"}]}, 1]}"#;
+        assert_eq!(undefined(in_array), []);
+        // The same strings where expansion reads them are reported.
+        let real =
+            r#"{"@context": {"l": "rdfs:label"}, "@id": "http://ex.org/a", "foaf:name": "x"}"#;
+        assert_eq!(
+            undefined(real),
+            [("rdfs:label", "rdfs"), ("foaf:name", "foaf")]
+        );
+        let nested = r#"{"@context": {"ex": "http://ex.org/"}, "@id": "ex:a", "ex:p": {"@context": {"l": "rdfs:label"}, "ex:q": 1}}"#;
+        assert_eq!(undefined(nested), [("rdfs:label", "rdfs")]);
+    }
+
+    #[test]
+    fn a_context_nothing_reads_is_not_linted() {
+        // The key is dropped, so expansion never applies the context under
+        // it; and what it would define is in force nowhere.
+        let text = r#"{"@context": {"ex": "http://ex.org/"}, "@id": "ex:a", "nothing": {"@context": {"l": "rdfs:label"}}}"#;
+        assert_eq!(undefined(text), []);
+    }
+
+    #[test]
+    fn a_prefix_counts_where_the_contexts_in_force_define_it() {
+        // Defined by the object itself, by an earlier object of the array,
+        // by the document's context for a context nested in a term, and by
+        // a context processed before the value.
+        let text = r#"{"@context": [{"ex": "http://ex.org/"}, {"a": "ex:a", "t": {"@id": "ex:t", "@context": {"b": "ex:b", "c": "sc:c", "sc": "http://sc.org/"}}}], "@graph": [{"@context": {"d": "ex:d"}, "@id": "ex:x"}]}"#;
+        assert_eq!(undefined(text), []);
+        // A later object of the array is not applied yet.
+        let text =
+            r#"{"@context": [{"a": "ex:a"}, {"ex": "http://ex.org/"}], "@id": "http://ex.org/x"}"#;
+        assert_eq!(undefined(text), [("ex:a", "ex")]);
+        // A term another scope defines does not reach this one.
+        let text = r#"{"@context": {"ex": "http://ex.org/", "t": {"@id": "ex:t", "@context": {"sc": "http://sc.org/"}}, "u": "sc:u"}, "@id": "ex:x"}"#;
+        assert_eq!(undefined(text), [("sc:u", "sc")]);
     }
 
     #[test]

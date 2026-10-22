@@ -10,6 +10,8 @@ use turtle_lsp::features::format::{Options, format};
 use turtle_lsp::syntax::lexer::{Kind, tokenize};
 use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse};
 
+include!("support/corpus.rs");
+
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("test/fixtures")
 }
@@ -494,11 +496,9 @@ fn relative_iris_format_when_parsed_with_a_base() {
 /// errors formats to the same JSON value and formats again to itself.
 #[test]
 fn jsonld_corpus_round_trip() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus/jsonld");
-    if !dir.is_dir() {
-        eprintln!("skipped: test/corpus/jsonld is absent");
+    let Some(dir) = corpus_path("jsonld") else {
         return;
-    }
+    };
     let opts = Options {
         tab_size: 2,
         ..Options::default()

@@ -1,5 +1,6 @@
 //! The JSON-LD performance budgets (docs/specs/jsonld.md), on a generated
-//! 30,000-line document like `bench/jsonld-gen.mjs`'s:
+//! 30,000-line document, the one `bench/jsonld-gen.mjs` writes (both read
+//! `bench/jsonld-people.tpl`, through `tests/support/jsonld_people.rs`):
 //! - open to diagnostics within 3x a Turtle document of the same length;
 //! - keystroke to diagnostics under 10 ms, with the contexts cached; the
 //!   test holds it within 2x Turtle's open, which carries across machines.
@@ -42,72 +43,12 @@ fn turtle(lines: usize, tag: &str) -> String {
     out
 }
 
-/// `bench/jsonld-gen.mjs`'s document, pretty-printed the same way: one
-/// `@graph` of people under an inline `@context`, 20 lines per person.
+include!("support/jsonld_people.rs");
+
+/// `bench/jsonld-gen.mjs`'s document: the same template, one `@graph` of
+/// people under an inline `@context`, 20 lines per person.
 fn jsonld(lines: usize, tag: &str) -> String {
-    let n = ((lines - 27) as f64 / 20.0).round() as usize;
-    let mut out = String::from(
-        r#"{
-  "@context": {
-    "ex": "http://example.org/",
-    "foaf": "http://xmlns.com/foaf/0.1/",
-    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-    "schema": "https://schema.org/",
-    "xsd": "http://www.w3.org/2001/XMLSchema#",
-    "name": "foaf:name",
-    "knows": {
-      "@id": "foaf:knows",
-      "@type": "@id"
-    },
-    "born": {
-      "@id": "schema:birthDate",
-      "@type": "xsd:date"
-    },
-    "comment": {
-      "@id": "rdfs:comment",
-      "@language": "en"
-    },
-    "address": "schema:address",
-    "skills": {
-      "@id": "ex:skills",
-      "@container": "@list"
-    }
-  },
-  "@graph": ["#,
-    );
-    for i in 0..n {
-        let sep = if i + 1 < n { "," } else { "" };
-        out += &format!(
-            r#"
-    {{
-      "@id": "ex:p{tag}{i}",
-      "@type": "foaf:Person",
-      "name": "Person {i}",
-      "born": "19{:02}-01-01",
-      "comment": "A longer description of person {i}",
-      "knows": [
-        "ex:p{tag}{}",
-        "ex:p{tag}{}"
-      ],
-      "address": {{
-        "@type": "schema:PostalAddress",
-        "schema:addressLocality": "Town {}"
-      }},
-      "skills": [
-        "rdf",
-        "sparql",
-        "skill-{}"
-      ]
-    }}{sep}"#,
-            50 + i % 50,
-            (i + 1) % n,
-            (i + 7) % n,
-            i % 100,
-            i % 13,
-        );
-    }
-    out += "\n  ]\n}\n";
-    out
+    people_jsonld(lines, tag)
 }
 
 /// Parse, index and diagnose `text` as the open document `uri`; the number

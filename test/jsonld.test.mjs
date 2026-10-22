@@ -1,8 +1,8 @@
-// JSON-LD, every planned feature, through the LSP protocol and the command
-// line. Each test is pending (`todo`), tagged with its phase and, for phase
-// 1, the ticket in docs/tickets/jsonld/ that promotes it. A pending test runs
-// and reports but does not fail the build; the ticket that makes one pass
-// removes its `todo` in the same change.
+// JSON-LD through the LSP protocol and the command line: JSON syntax and
+// @context errors, the lints, context loading, cross-file knowledge, SHACL,
+// and the editing features (completion, hover, definition, references,
+// rename, formatting, semantic tokens). Every test runs and fails the build
+// when it fails.
 //
 // Tests assert codes and ranges, never message wording. Every expected range
 // is written out in test/jsonld-fixtures.mjs, next to the fixture text it
@@ -15,9 +15,7 @@ import http from "node:http"
 import path from "node:path"
 import { serverPath, startServer, tempDir, uriOf } from "./lsp-client.mjs"
 import * as F from "./jsonld-fixtures.mjs"
-
-const phase1 = (ticket) => ({ todo: `jsonld:phase1 (ticket ${ticket})`, timeout: 25_000 })
-const phase2 = { todo: "jsonld:phase2", timeout: 25_000 }
+import { bigJsonLd } from "../bench/jsonld-gen.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const withCode = (diags, code) => diags.filter((d) => d.code === code)
@@ -131,7 +129,7 @@ const cliExpected = (rs) => cliRanges(rs.map((r) => ({ range: F.toCli(r) })))
 // ---- one workspace for the editor tests ----
 //
 // vocab.jsonld describes ex: terms; uses.ttl uses them (and ex:Gadgt, a typo);
-// edit.jsonld is the phase-2 document; people.context.jsonld is a context
+// edit.jsonld is the editing document; people.context.jsonld is a context
 // file other documents name by a relative URL.
 
 let ws
@@ -171,7 +169,7 @@ async function openFile(name) {
 }
 
 // =====================================================================================
-// Phase 1
+// Diagnostics, context loading, cross-file knowledge and SHACL
 // =====================================================================================
 
 // ---- JSON syntax (ticket 05) ----
@@ -337,6 +335,39 @@ test("check --fix adds each missing prefix to the @context", { timeout: 25_000 }
   const after = checkJson(w)
   assert.deepEqual(after.of("np.jsonld", "jsonld-undefined-prefix"), [], after.out)
   assert.equal(after.of("np.jsonld", "unknown-term").length, 1, after.out)
+})
+
+// A @json literal is data. Its @context is not a context, so a prefix written
+// there is no forgotten prefix, and the fix must not add one to the literal
+// (that would change the rdf:JSON value).
+const JSON_LITERAL = `{
+  "@context": {
+    "ex": "https://jsonld.example.org/def/",
+    "data": { "@id": "ex:data", "@type": "@json" }
+  },
+  "@id": "ex:j1",
+  "data": { "@context": { "label": "rdfs:label" }, "kind": "foaf:Person" },
+  "ex:note": { "@type": "@json", "@value": { "@context": { "l": "rdfs:label" } } }
+}
+`
+
+test("a @json literal gets no jsonld-undefined-prefix, and no fix", { timeout: 25_000 }, async (t) => {
+  const { uri, diags } = await openScratch(t, JSON_LITERAL)
+  assert.deepEqual(withCode(diags, "jsonld-undefined-prefix"), [], show(diags))
+  const actions = (await s.request("textDocument/codeAction", { textDocument: { uri }, range: { start: { line: 6, character: 0 }, end: { line: 7, character: 0 } }, context: { diagnostics: [] } })) ?? []
+  assert.deepEqual(
+    actions.filter((a) => /@context/.test(a.title ?? "")),
+    [],
+    JSON.stringify(actions),
+  )
+})
+
+test("check --fix leaves a @json literal's @context as it is", { timeout: 25_000 }, (t) => {
+  const w = workspace(t, { "literal.jsonld": JSON_LITERAL })
+  const before = checkJson(w)
+  assert.deepEqual(before.of("literal.jsonld", "jsonld-undefined-prefix"), [], before.out)
+  run(w, ["check", "--fix"])
+  assert.equal(fs.readFileSync(path.join(w, "literal.jsonld"), "utf8"), JSON_LITERAL)
 })
 
 // ---- context loading (ticket 06) ----
@@ -682,7 +713,7 @@ test("check: shapes written in JSON-LD validate Turtle data", { timeout: 25_000 
 })
 
 // =====================================================================================
-// Phase 2: editing inside JSON-LD
+// Editing inside JSON-LD
 // =====================================================================================
 
 async function openEdit() {
@@ -1002,4 +1033,17 @@ test("the outline nests a named graph's nodes under the graph", { timeout: 25_00
   const graph = flattenSymbols(syms).find((x) => x.name === "ex:run1")
   assert.ok(graph, JSON.stringify(syms))
   assert.deepEqual(flattenSymbols(graph.children).map((x) => x.name), ["ex:p8"])
+})
+
+// ---- the bench ----
+
+test("the bench's JSON-LD generator writes the document the Rust budget tests read", () => {
+  // src/jsonld/mod.rs asserts the same line count and FNV-1a digest of the
+  // document its generator (tests/support/jsonld_people.rs) writes.
+  const text = bigJsonLd(600, "w")
+  assert.equal(text.split("\n").length - 1, 609)
+  let h = 0xcbf29ce484222325n
+  for (const b of Buffer.from(text)) h = ((h ^ BigInt(b)) * 0x100000001b3n) & 0xffffffffffffffffn
+  assert.equal(h.toString(16).padStart(16, "0"), "bbc6c5ea77801ed1")
+  assert.equal(JSON.parse(text)["@graph"].length, 29)
 })

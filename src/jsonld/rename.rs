@@ -14,19 +14,49 @@
 //!   `@id`, `@reverse`, `@type`, `@index` or `@nest`, `@vocab`, and
 //!   compact-IRI keys of the term as a prefix.
 //!
+//! What the contexts write with a term is read from the strings expansion
+//! recorded ([`SourceIndex::context_strings`]), each with the definition it
+//! names where it is written: a term of another scope with the same name is
+//! left alone, and so is anything in a `@json` literal. Each text is parsed
+//! once per call, and the helpers read that tree.
+//!
 //! Each rewritten form is checked by expanding it again in the active
 //! context of the use: a form that would not give the new IRI (or that is a
 //! term, which would bring the term's coercions) is not written. When no
 //! form passes, or the context cannot be trusted (the old form does not
 //! expand to the old IRI in it), the new IRI is written absolute.
 
-use super::context::{ActiveContext, TermDefinition, expand_iri};
-use super::json::{self, Json, Object, Value};
-use super::source::{DefId, Definition, Origin, SourceIndex, Use, UseKind, UseRole};
-use super::unquoted;
+use super::context::{ActiveContext, ContextCache, Processor, TermDefinition, expand_iri};
+use super::json::{self, Json, Value};
+use super::source::{ContextString, DefId, Definition, Origin, SourceIndex, Use, UseKind, UseRole};
+use super::{NoNetwork, expand, unquoted};
 use crate::syntax::Span;
+use rustc_hash::FxHashMap;
+use std::cell::OnceCell;
 use std::fmt::Write as _;
 use std::sync::Arc;
+
+/// The JSON tree of a text, parsed when first needed and once for a whole
+/// rename.
+struct Tree<'t> {
+    text: &'t str,
+    root: OnceCell<Option<Json>>,
+}
+
+impl<'t> Tree<'t> {
+    fn new(text: &'t str) -> Tree<'t> {
+        Tree {
+            text,
+            root: OnceCell::new(),
+        }
+    }
+
+    fn root(&self) -> Option<&Json> {
+        self.root
+            .get_or_init(|| json::parse(self.text).root)
+            .as_ref()
+    }
+}
 
 /// A text edit: `span` of the text named by `origin` (this document's, or a
 /// workspace context file's) becomes `text`, already escaped for a JSON
@@ -77,6 +107,7 @@ pub fn iri_edits(
     new: &str,
     context_text: &mut dyn FnMut(&str) -> Option<Arc<str>>,
 ) -> Result<Vec<Edit>, String> {
+    let tree = Tree::new(text);
     let mut edits = Vec::new();
     // Each definition once, with the first use that goes through it.
     let mut through: Vec<(DefId, Span)> = Vec::new();
@@ -118,36 +149,44 @@ pub fn iri_edits(
         }
     }
     for (id, at) in through {
-        definition_edits(text, ix, id, at, new, context_text, &mut edits)?;
+        definition_edits(&tree, ix, id, at, new, context_text, &mut edits)?;
     }
-    let here: Vec<(Span, String)> = edits
+    let here: Vec<(Span, &str)> = edits
         .iter()
         .filter(|e| e.origin == Origin::Document)
-        .map(|e| (e.span, e.text.clone()))
+        .map(|e| (e.span, e.text.as_str()))
         .collect();
-    check_duplicate_keys(text, &here)?;
+    if let Some(root) = tree.root() {
+        check_duplicate_keys(text, root, &here)?;
+    }
     Ok(edits)
 }
 
-/// `Err` when `edits` would make a key of a JSON object of `text` equal to
-/// another key of that object, as written.
-pub fn check_duplicate_keys(text: &str, edits: &[(Span, String)]) -> Result<(), String> {
-    fn walk(text: &str, v: &Json, edits: &[(Span, String)]) -> Result<(), String> {
+/// `Err` when `edits` would make a key of a JSON object of `root` (the tree
+/// of `text`) equal to another key of that object, as written.
+fn check_duplicate_keys(text: &str, root: &Json, edits: &[(Span, &str)]) -> Result<(), String> {
+    fn walk(text: &str, v: &Json, edits: &FxHashMap<Span, &str>) -> Result<(), String> {
         match &v.value {
             Value::Object(o) => {
-                let mut keys: Vec<(&str, bool)> = Vec::new();
+                let mut keys: Vec<(&str, bool)> = Vec::with_capacity(o.members.len());
                 for m in &o.members {
                     let span = unquoted(m.key_span);
-                    let written = text
-                        .get(span.start as usize..span.end as usize)
-                        .unwrap_or("");
-                    keys.push(match edits.iter().find(|(s, _)| *s == span) {
-                        Some((_, t)) => (t.as_str(), true),
-                        None => (written, false),
+                    keys.push(match edits.get(&span) {
+                        Some(t) => (t, true),
+                        None => (
+                            text.get(span.start as usize..span.end as usize)
+                                .unwrap_or(""),
+                            false,
+                        ),
                     });
                 }
-                for (i, (k, changed)) in keys.iter().enumerate() {
-                    if *changed && keys.iter().enumerate().any(|(j, (o, _))| j != i && o == k) {
+                if keys.iter().any(|(_, changed)| *changed) {
+                    let mut count: FxHashMap<&str, u32> = FxHashMap::default();
+                    for (k, _) in &keys {
+                        *count.entry(k).or_default() += 1;
+                    }
+                    if let Some((k, _)) = keys.iter().find(|(k, changed)| *changed && count[k] > 1)
+                    {
                         return Err(format!(
                             "the rename would write the key \"{k}\" twice in one object"
                         ));
@@ -164,10 +203,8 @@ pub fn check_duplicate_keys(text: &str, edits: &[(Span, String)]) -> Result<(), 
     if edits.is_empty() {
         return Ok(());
     }
-    match &json::parse(text).root {
-        Some(root) => walk(text, root, edits),
-        None => Ok(()),
-    }
+    let by_span: FxHashMap<Span, &str> = edits.iter().copied().collect();
+    walk(text, root, &by_span)
 }
 
 /// The IRI-expansion flags (document-relative, `@vocab`) a use of `role`
@@ -288,7 +325,7 @@ fn relative_forms(base: Option<&str>, new: &str, written: &str) -> Vec<String> {
 /// whose key is its IRI is renamed too, at its key and its uses. `Err` when
 /// that cannot be done.
 fn definition_edits(
-    text: &str,
+    tree: &Tree,
     ix: &SourceIndex,
     id: DefId,
     at: Span,
@@ -296,6 +333,7 @@ fn definition_edits(
     context_text: &mut dyn FnMut(&str) -> Option<Arc<str>>,
     edits: &mut Vec<Edit>,
 ) -> Result<(), String> {
+    let text = tree.text;
     let d = ix.definition(id);
     let term = &d.term;
     let fail = |why: &str| {
@@ -348,7 +386,7 @@ fn definition_edits(
         };
         let mut uses: Vec<Span> = ix.uses_of(id).map(|u| u.span).collect();
         // An `@id` that spells the key (ignored by JSON-LD) follows it.
-        uses.extend(own_id(text, d.key));
+        uses.extend(tree.root().and_then(|root| own_id(text, root, d.key)));
         if uses.iter().any(|&s| raw(text, s) != Some(written)) {
             return fail("a use is written with escapes");
         }
@@ -388,7 +426,7 @@ fn definition_edits(
 
 /// The `@id` of the term definition whose key is at `key`, when it spells
 /// the key.
-fn own_id(text: &str, key: Span) -> Option<Span> {
+fn own_id(text: &str, root: &Json, key: Span) -> Option<Span> {
     fn find(v: &Json, key: Span) -> Option<&Json> {
         match &v.value {
             Value::Object(o) => o.members.iter().find_map(|m| {
@@ -402,8 +440,7 @@ fn own_id(text: &str, key: Span) -> Option<Span> {
             _ => None,
         }
     }
-    let doc = json::parse(text);
-    let id = find(doc.root.as_ref()?, key)?.as_object()?.get("@id")?;
+    let id = find(root, key)?.as_object()?.get("@id")?;
     let term = text.get(key.start as usize..key.end as usize)?;
     (id.value.as_str()? == term).then(|| unquoted(id.value.span))
 }
@@ -500,6 +537,7 @@ pub fn term_edits(
     same_origin: &dyn Fn(&Origin) -> bool,
     key: Option<Span>,
 ) -> Result<Vec<(Span, String)>, String> {
+    let tree = Tree::new(text);
     let mut edits: Vec<(Span, String)> = Vec::new();
     let changed = |what: &str| format!("'{}' is written differently {what}", r.term);
     let new = r.new.to_string();
@@ -565,139 +603,92 @@ pub fn term_edits(
             }
         }
     }
-    // What the contexts write with the term.
-    let mut scan = Scan {
-        r,
-        text,
-        refs: Vec::new(),
-        defs: 0,
-        err: None,
+    // What the contexts write with the term, in the scopes that name this
+    // definition. A text without an index (a workspace context file) is
+    // expanded for one.
+    let built: Option<SourceIndex> = match ix {
+        Some(_) => None,
+        None => tree.root().map(|root| {
+            let (loader, cache) = (NoNetwork::default(), ContextCache::new());
+            let mut processor = Processor::with_cache(&loader, &cache);
+            expand::expand(root, None, &mut processor).index
+        }),
     };
-    if let Some(root) = &json::parse(text).root {
-        scan.walk(root);
+    let contexts = ix.or(built.as_ref());
+    let id = id.or_else(|| {
+        let (key, ix) = (key?, built.as_ref()?);
+        ix.definitions
+            .iter()
+            .position(|d| d.origin == Origin::Document && d.key == key)
+            .map(|i| DefId(i as u32))
+    });
+    if let Some(contexts) = contexts {
+        for span in context_refs(r, text, &contexts.context_strings, id)? {
+            edits.push((span, new.clone()));
+        }
     }
-    if let Some(e) = scan.err {
-        return Err(e);
-    }
-    let own = usize::from(key.is_some());
-    if !scan.refs.is_empty() && scan.defs > own {
-        return Err(format!(
-            "'{}' is defined more than once and its contexts refer to it; rename it by hand",
-            r.term
-        ));
-    }
-    edits.extend(scan.refs.into_iter().map(|s| (s, new.clone())));
     edits.sort_by_key(|(s, _)| (s.start, s.end));
     edits.dedup_by_key(|(s, _)| *s);
-    check_duplicate_keys(text, &edits)?;
+    let renames: Vec<(Span, &str)> = edits.iter().map(|(s, t)| (*s, t.as_str())).collect();
+    if let Some(root) = tree.root() {
+        check_duplicate_keys(text, root, &renames)?;
+    }
     Ok(edits)
 }
 
-/// The places the `@context`s of a text write a term: as an IRI (a term
-/// definition's string, `@id`, `@reverse`, `@type`, `@index`, `@nest`, or
-/// `@vocab`) or, for a prefix, at the start of a compact IRI (there, or as
-/// a key).
-struct Scan<'a> {
-    r: &'a TermRename<'a>,
-    text: &'a str,
-    /// The spans to replace with the new name.
-    refs: Vec<Span>,
-    /// How many definitions of the term the contexts write. Known
-    /// limitation: scoping is not followed. A reference outside the scope of
-    /// the definition being renamed (say, in a context processed before it)
-    /// is rewritten too; only a term defined more than once is refused.
-    defs: usize,
-    err: Option<String>,
-}
-
-impl Scan<'_> {
-    fn walk(&mut self, v: &Json) {
-        match &v.value {
-            Value::Object(o) => {
-                for m in &o.members {
-                    if &*m.key == "@context" {
-                        self.context(&m.value);
-                    } else {
-                        self.walk(&m.value);
-                    }
-                }
-            }
-            Value::Array(a) => a.items.iter().for_each(|i| self.walk(i)),
-            _ => {}
-        }
-    }
-
-    fn context(&mut self, v: &Json) {
-        match &v.value {
-            Value::Array(a) => a.items.iter().for_each(|i| self.context(i)),
-            Value::Object(o) => self.map(o),
-            _ => {}
-        }
-    }
-
-    fn map(&mut self, o: &Object) {
-        for m in &o.members {
-            let k = &*m.key;
-            if k == "@vocab" {
-                self.reference(&m.value);
-                continue;
-            }
-            if k.starts_with('@') {
-                continue;
-            }
-            if k == self.r.term {
-                self.defs += 1;
-            } else {
-                self.name(k, unquoted(m.key_span), false);
-            }
-            match &m.value.value {
-                Value::String(_) => self.reference(&m.value),
-                Value::Object(d) => {
-                    for dm in &d.members {
-                        match &*dm.key {
-                            "@id" | "@reverse" | "@type" | "@index" | "@nest" => {
-                                self.reference(&dm.value)
-                            }
-                            "@context" => self.context(&dm.value),
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn reference(&mut self, v: &Json) {
-        if let Some(s) = v.as_str() {
-            self.name(s, unquoted(v.span), true);
-        }
-    }
-
-    /// A string `s` written at `span`, read as an IRI (`whole`: the term
-    /// alone refers to it too).
-    fn name(&mut self, s: &str, span: Span, whole: bool) {
-        let (term, new) = (self.r.term, self.r.new);
-        let after = |name: &str| s.strip_prefix(name).and_then(|r| r.strip_prefix(':'));
-        if s == new || after(new).is_some_and(|r| !r.starts_with("//")) {
-            self.err = Some(format!("'{new}' is already used in a context"));
-            return;
-        }
-        let target = if whole && s == term {
-            span
-        } else if self.r.prefix && after(term).is_some_and(|r| !r.starts_with("//")) {
-            Span::new(span.start, span.start + term.len() as u32)
-        } else {
-            return;
+/// The places the contexts of a text write the term `r`, among the
+/// processed context `strings` of the text: as an IRI (a term definition's
+/// string, `@id`, `@reverse`, `@type`, `@index`, `@nest` or `@vocab`) or,
+/// for a prefix, at the start of a compact IRI (there, or as a key), where
+/// they name the definition `id`. A same-named term of another context, or
+/// of the same context in another place of the array, is not this one and
+/// stays as it is.
+fn context_refs(
+    r: &TermRename,
+    text: &str,
+    strings: &[ContextString],
+    id: Option<DefId>,
+) -> Result<Vec<Span>, String> {
+    let (term, new) = (r.term, r.new);
+    let mut refs = Vec::new();
+    for c in strings {
+        let Some(s) = text.get(c.span.start as usize..c.span.end as usize) else {
+            continue;
         };
-        if raw(self.text, target) == Some(term) {
-            self.refs.push(target);
+        let after = |name: &str| {
+            s.strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .filter(|rest| !rest.starts_with("//"))
+        };
+        // A term of that name is defined here, the one renamed or not.
+        if !c.role.names_a_term() && s == term {
+            continue;
+        }
+        if s == new || after(new).is_some() {
+            return Err(format!("'{new}' is already used in a context"));
+        }
+        let (target, span) = if c.role.names_a_term() && s == term {
+            (c.term, c.span)
+        } else if r.prefix && after(term).is_some() {
+            (
+                c.prefix,
+                Span::new(c.span.start, c.span.start + term.len() as u32),
+            )
         } else {
-            self.err = Some(format!(
+            continue;
+        };
+        if id.is_none() || target != id {
+            continue;
+        }
+        if raw(text, span) == Some(term) {
+            refs.push(span);
+        } else {
+            return Err(format!(
                 "'{term}' is written with escapes in a context; rename it by hand"
             ));
         }
     }
+    Ok(refs)
 }
 
 #[cfg(test)]
@@ -712,6 +703,8 @@ mod tests {
 
     const BASE: &str = "file:///ws/doc.jsonld";
     const CTX_URL: &str = "file:///ws/people.context.jsonld";
+
+    include!("../../tests/support/corpus.rs");
 
     // ---- the graph check ----
 
@@ -1088,10 +1081,164 @@ mod tests {
         let text =
             r#"{"@context": {"@vocab": "https://ex.example/", "p": {"@type": "@id"}}, "p": "x"}"#;
         assert!(rename_term(text, "p", "q").is_err());
-        // Defined twice, and referred to in a context.
+    }
+
+    #[test]
+    fn a_term_defined_again_in_an_inner_scope_keeps_its_inner_references() {
+        // The inner `ex` is another definition: what its context writes with
+        // it is not renamed with the outer one.
         let text = r#"{"@context": {"ex": "https://ex.example/", "p": "ex:p"},
   "ex:q": {"@context": {"ex": "https://other.example/", "r": "ex:r"}, "r": 1}, "p": 2}"#;
-        assert!(rename_term(text, "ex", "e").is_err());
+        let after = rename_term(text, "ex", "e").unwrap();
+        assert_eq!(
+            after,
+            r#"{"@context": {"e": "https://ex.example/", "p": "e:p"},
+  "e:q": {"@context": {"ex": "https://other.example/", "r": "ex:r"}, "r": 1}, "p": 2}"#
+        );
+        // And the inner one, renamed, leaves the outer references.
+        let after = rename_term(text, "r", "r2").unwrap();
+        assert!(after.contains(r#""r2": "ex:r""#), "{after}");
+        // A term referred to by a context written before it is defined
+        // (a later object of the array) is not that term.
+        let text = r#"{"@context": [{"b": "http://ex.org/a"}, {"a": "http://ex.org/x"}], "@id": "http://ex.org/s", "b": 1, "a": 2}"#;
+        let after = rename_term(text, "a", "c").unwrap();
+        assert_eq!(after, text.replace("\"a\"", "\"c\""));
+        // Two objects of the same array: each reference names the definition
+        // in force where it is written.
+        let text = r#"{"@context": [{"a": "http://ex.org/a1", "u": "a"}, {"a": "http://ex.org/a2", "v": "a"}], "@id": "http://ex.org/s", "u": 1}"#;
+        let after = rename_term(text, "u", "u2").unwrap();
+        assert_eq!(after, text.replace("\"u\"", "\"u2\""));
+    }
+
+    #[test]
+    fn a_context_in_a_json_literal_is_not_renamed() {
+        // The literal's `@context` is data: the term `ex` there is not the
+        // document's, and the rename must leave it as it is (the graph check
+        // in `rename_term` would catch a change to the literal).
+        let text = r#"{"@context": {"ex": "https://ex.example/", "j": {"@id": "ex:j", "@type": "@json"}},
+  "@id": "ex:a", "j": {"@context": {"ex": "https://not.example/", "q": "ex:q"}, "ex:k": 1}}"#;
+        let after = rename_term(text, "ex", "e").unwrap();
+        assert_eq!(
+            after,
+            r#"{"@context": {"e": "https://ex.example/", "j": {"@id": "e:j", "@type": "@json"}},
+  "@id": "e:a", "j": {"@context": {"ex": "https://not.example/", "q": "ex:q"}, "ex:k": 1}}"#
+        );
+        // Also when the literal is a value object.
+        let text = r#"{"@context": {"ex": "https://ex.example/"}, "@id": "ex:a",
+  "ex:j": {"@type": "@json", "@value": {"@context": {"q": "ex:q"}, "ex:k": "ex:v"}}}"#;
+        let after = rename_term(text, "ex", "e").unwrap();
+        assert!(
+            after.contains(r#""@context": {"q": "ex:q"}, "ex:k": "ex:v""#),
+            "{after}"
+        );
+        assert!(
+            after.contains(r#""e:j""#) && after.contains(r#""@id": "e:a""#),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn a_document_context_naming_a_term_of_a_context_file_follows_its_rename() {
+        // The URL in the array defines `nickname`; the object after it
+        // writes it, and a context nested in a term of that object defines a
+        // `nickname` of its own, which is not the file's.
+        let text = r#"{"@context": ["people.context.jsonld", {"nick": "nickname", "t": {"@id": "ex:t", "@context": {"nickname": "ex:other", "again": "nickname"}}}], "@id": "https://ex.example/a", "nick": "x"}"#;
+        let loader = NoNetwork::default().with(CTX_URL, CTX);
+        let ix = parse_document(text, Some(BASE), &loader).index;
+        let id = DefId(
+            ix.definitions
+                .iter()
+                .position(|d| matches!(&d.origin, Origin::File(_)) && &*d.term == "nickname")
+                .unwrap() as u32,
+        );
+        let r = TermRename {
+            term: "nickname",
+            new: "alias",
+            prefix: false,
+        };
+        let in_file = |o: &Origin| matches!(o, Origin::File(_));
+        let edits = term_edits(&r, text, Some(&ix), Some(id), &in_file, None).unwrap();
+        // The first `"nickname"` only; the nested context has its own.
+        let first = text.find("\"nickname\"").unwrap() as u32 + 1;
+        assert_eq!(edits, [(Span::new(first, first + 8), "alias".to_string())]);
+    }
+
+    #[test]
+    fn a_context_file_is_renamed_through_its_own_scopes() {
+        // `term_edits` on the text of a workspace context file (no index).
+        let file = r#"{"@context": {"ex": "https://ex.example/", "p": "ex:p", "t": {"@id": "ex:t", "@context": {"ex": "https://in.example/", "q": "ex:q"}}}}"#;
+        let ix = parse_document(file, Some(CTX_URL), &NoNetwork::default()).index;
+        let key = Span::new(
+            file.find("\"ex\"").unwrap() as u32 + 1,
+            file.find("\"ex\"").unwrap() as u32 + 3,
+        );
+        let r = TermRename {
+            term: "ex",
+            new: "e",
+            prefix: true,
+        };
+        let edits = term_edits(&r, file, None, None, &|_| false, Some(key)).unwrap();
+        let after = apply(file, edits);
+        assert_eq!(
+            after,
+            file.replacen("\"ex\"", "\"e\"", 1)
+                .replacen("ex:p", "e:p", 1)
+                .replacen("\"ex:t\"", "\"e:t\"", 1)
+        );
+        assert!(ix.definitions.len() >= 3);
+    }
+
+    #[test]
+    fn a_rename_parses_the_text_once() {
+        use crate::jsonld::json::parses::during;
+        let loader = NoNetwork::default().with(CTX_URL, CTX);
+        // A term of the document, with its uses and what its contexts write.
+        let ix = parse_document(DOC, Some(BASE), &loader).index;
+        let offset = DOC.find("\"foaf\"").unwrap() as u32 + 1;
+        let id = ix.definition_at(offset).unwrap();
+        let d = ix.definition(id);
+        let r = TermRename {
+            term: "foaf",
+            new: "f",
+            prefix: true,
+        };
+        let document = |o: &Origin| *o == Origin::Document;
+        let (edits, parses) =
+            during(|| term_edits(&r, DOC, Some(&ix), Some(id), &document, Some(d.key)));
+        assert!(edits.unwrap().len() > 3);
+        assert_eq!(parses, 1);
+        // A workspace context file: the index comes from the same tree.
+        let file = r#"{"@context": {"ex": "https://ex.example/", "p": "ex:p"}}"#;
+        let key = Span::new(15, 17);
+        let r = TermRename {
+            term: "ex",
+            new: "e",
+            prefix: true,
+        };
+        let (edits, parses) = during(|| term_edits(&r, file, None, None, &|_| false, Some(key)));
+        assert_eq!(edits.unwrap().len(), 2);
+        assert_eq!(parses, 1);
+        // An IRI whose uses go through a term whose key is its IRI (the
+        // `@id` of the definition and the duplicate-key check read the tree).
+        let text = r#"{"@context": {"ex": "https://ex.example/", "ex:knows": {"@type": "@id"}},
+  "@id": "ex:a", "ex:knows": "ex:b"}"#;
+        let ix = parse_document(text, Some(BASE), &loader).index;
+        let (edits, parses) = during(|| {
+            iri_edits(
+                text,
+                &ix,
+                "https://ex.example/knows",
+                "https://ex.example/met",
+                &mut |_| None,
+            )
+        });
+        assert_eq!(edits.unwrap().len(), 2);
+        assert_eq!(parses, 1);
+        // The text is parsed only when something reads it.
+        let tree = Tree::new(DOC);
+        assert!(tree.root.get().is_none());
+        let (_, parses) = during(|| tree.root().map(|_| tree.root()));
+        assert_eq!(parses, 1);
     }
 
     /// `iri_edits` of `text` (a remote context at `REMOTE`).
@@ -1139,19 +1286,14 @@ mod tests {
         // A term renamed to a key written in the same object (not a use).
         let text =
             r#"{"@context": {"ex": "https://ex.example/", "p": "ex:p"}, "p": 1, "@id": "ex:a"}"#;
-        assert!(
-            check_duplicate_keys(
-                text,
-                &[(
-                    Span::new(
-                        text.rfind("\"p\"").unwrap() as u32 + 1,
-                        text.rfind("\"p\"").unwrap() as u32 + 2
-                    ),
-                    "@id".into()
-                )]
-            )
-            .is_err()
-        );
+        let key = text.rfind("\"p\"").unwrap() as u32 + 1;
+        let rename = [(Span::new(key, key + 1), "@id")];
+        let tree = Tree::new(text);
+        let root = tree.root().unwrap();
+        assert!(check_duplicate_keys(text, root, &rename).is_err());
+        // The same edit where no key is repeated.
+        let rename = [(Span::new(key, key + 1), "q")];
+        assert!(check_duplicate_keys(text, root, &rename).is_ok());
     }
 
     // ---- the corpus ----
@@ -1162,12 +1304,11 @@ mod tests {
     /// every graph must stay the same apart from the renamed IRI.
     #[test]
     fn corpus_renames_keep_the_graph() {
-        use std::path::Path;
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus/jsonld");
-        let Ok(index) = std::fs::read_to_string(dir.join("index.tsv")) else {
-            eprintln!("skipping: test/corpus/jsonld not present");
+        let Some(index_path) = corpus_path("jsonld/index.tsv") else {
             return;
         };
+        let dir = index_path.parent().unwrap().to_path_buf();
+        let index = std::fs::read_to_string(index_path).unwrap();
         let mut loader = NoNetwork::default();
         let mut docs = Vec::new();
         for line in index.lines() {

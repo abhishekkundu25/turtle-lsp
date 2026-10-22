@@ -8,7 +8,8 @@
 //! `index.tsv` names each document with its base IRI and each remote
 //! `@context` file with the IRI it answers. Both parsers get those contexts
 //! offline: oxjsonld through its document loader callback, ours through
-//! [`NoNetwork`]. Without the corpus the test skips.
+//! [`NoNetwork`]. Without the corpus the test prints `skipped`, and fails when
+//! `CI=true`.
 //!
 //! Every file gets a line on stderr (`--nocapture` shows them): `ok`, `DIFF`
 //! with both quad counts and an example quad only one side has, `known`
@@ -30,6 +31,8 @@ use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::jsonld::{self, NoNetwork};
 use turtle_lsp::syntax::{GraphName, Node};
+
+include!("support/corpus.rs");
 
 /// Files where oxjsonld (0.2) departs from JSON-LD 1.1 and this engine
 /// follows it: (path, our quads, oxjsonld's quads, why). Each was checked by
@@ -259,11 +262,11 @@ fn oracle(
 
 #[test]
 fn corpus_graphs_match_oxjsonld() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus/jsonld");
-    let Ok(index) = fs::read_to_string(dir.join("index.tsv")) else {
-        eprintln!("skipping: test/corpus/jsonld not present (run tools/corpus/fetch-jsonld.sh)");
+    let Some(index_path) = corpus_path("jsonld/index.tsv") else {
         return;
     };
+    let dir = index_path.parent().unwrap().to_path_buf();
+    let index = fs::read_to_string(index_path).unwrap();
     let mut docs = Vec::new();
     let mut contexts = HashMap::new();
     let mut loader = NoNetwork::default();
@@ -349,5 +352,21 @@ fn corpus_graphs_match_oxjsonld() {
         "{} documents differ from oxjsonld beyond the KNOWN list:\n{}",
         problems.len(),
         problems.join("\n")
+    );
+}
+
+/// A missing corpus is skipped on a developer's machine and an error in CI.
+#[test]
+fn a_missing_corpus_fails_in_ci_and_skips_elsewhere() {
+    let absent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/no-such-corpus");
+    assert_eq!(corpus_in(&absent, "jsonld/index.tsv", false), None);
+    let in_ci = std::panic::catch_unwind(|| corpus_in(&absent, "jsonld/index.tsv", true));
+    let message = *in_ci.unwrap_err().downcast::<String>().unwrap();
+    assert!(message.contains("CI=true does not skip"), "{message}");
+    // A corpus that is there is used in both.
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert_eq!(
+        corpus_in(here, "Cargo.toml", true),
+        Some(here.join("Cargo.toml"))
     );
 }

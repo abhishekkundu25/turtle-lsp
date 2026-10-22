@@ -25,7 +25,8 @@
 //!
 //! Expansion also records the document's [`SourceIndex`]: each key,
 //! `@type` and `@id` value it reads, the term definitions they resolve to,
-//! and the active context inside each object.
+//! the active context inside each object, and the strings of the contexts it
+//! processes with the definitions they name where they are written.
 //!
 //! Errors are the spec's, reported as `jsonld-context` diagnostics whose
 //! message starts with the W3C error code. The spec stops at the first one;
@@ -567,8 +568,14 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 .processor
                 .process(&ctx, &m.value, self.base, Options::default())
             {
-                Ok(c) => ctx = Cow::Owned(c),
-                Err(e) => self.context_error(e),
+                Ok(c) => {
+                    self.index.context_strings(&m.value, &ctx, &c);
+                    ctx = Cow::Owned(c);
+                }
+                Err(e) => {
+                    self.index.context_strings(&m.value, &ctx, &ctx);
+                    self.context_error(e);
+                }
             }
         }
         // 10, 11

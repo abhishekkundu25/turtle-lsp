@@ -24,7 +24,8 @@
 //! - `graph` is the named graph (`@graph` with an `@id`), as in TriG;
 //! - `refs` are the IRIs written in the document (an `@id`, a key, a type)
 //!   with their roles; `errors` carry `json-syntax` and `jsonld-context`
-//!   problems;
+//!   problems, and the warnings of [`json`] (`json-duplicate-key`,
+//!   `json-lone-surrogate`);
 //! - `prefixes`, `prefix_uses`, `graphs` and `comments` stay empty: JSON-LD
 //!   prefixes live in `@context`, and JSON has no comments or graph blocks;
 //! - `tokens` stays empty: its kinds are Turtle's. Spans for highlighting
@@ -147,6 +148,7 @@ pub fn parse_document_with(
         errors: doc.errors,
         ..Parsed::default()
     };
+    parsed.errors.extend(doc.warnings);
     let mut dropped = Vec::new();
     let mut used_terms = Vec::new();
     let mut index = SourceIndex::default();
@@ -158,7 +160,6 @@ pub fn parse_document_with(
         dropped = expanded.dropped;
         used_terms = expanded.used_terms;
         index = expanded.index;
-        index.context_iris = lint::context_iris(root);
         to_rdf::to_rdf(&expanded.items, &mut parsed, &mut dropped);
     }
     // The same scoped context can fail at each use: report each error once.
@@ -194,6 +195,35 @@ mod tests {
     use crate::syntax::{Form, GraphName, Node, Role, Severity::*};
 
     const BASE: &str = "file:///x/a.jsonld";
+
+    include!("../../tests/support/jsonld_people.rs");
+
+    /// FNV-1a of the bytes of `text`.
+    fn fnv1a(text: &str) -> u64 {
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    /// The Rust and the JavaScript generators of the budget document write
+    /// the same bytes: `test/jsonld.test.mjs` asserts the same digest of
+    /// `bench/jsonld-gen.mjs`'s 600-line document tagged `w`.
+    #[test]
+    fn the_budget_document_is_the_one_the_bench_writes() {
+        let doc = people_jsonld(600, "w");
+        assert_eq!(doc.lines().count(), 609);
+        assert_eq!(format!("{:016x}", fnv1a(&doc)), "bbc6c5ea77801ed1");
+        // It is JSON-LD: no errors, one node a person.
+        let p = parse(&doc, Some(BASE), &NoNetwork::default());
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(
+            doc.matches("\"@type\": \"foaf:Person\"").count(),
+            people_count(600)
+        );
+        // Lines come in whole people, from the template alone.
+        assert_eq!(people_count(30_000), 1499);
+        assert_eq!(people_jsonld(30_000, "").lines().count(), 30_009);
+    }
 
     fn at(text: &str, span: Span) -> &str {
         &text[span.start as usize..span.end as usize]
@@ -601,55 +631,20 @@ mod tests {
     fn parses_30000_lines_within_4x_of_turtle() {
         use std::fmt::Write as _;
         use std::time::{Duration, Instant};
-        let context = r#"{
-    "ex": "http://example.org/",
-    "foaf": "http://xmlns.com/foaf/0.1/",
-    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-    "schema": "https://schema.org/",
-    "xsd": "http://www.w3.org/2001/XMLSchema#",
-    "name": "foaf:name",
-    "knows": {
-      "@id": "foaf:knows",
-      "@type": "@id"
-    },
-    "born": {
-      "@id": "schema:birthDate",
-      "@type": "xsd:date"
-    },
-    "comment": {
-      "@id": "rdfs:comment",
-      "@language": "en"
-    },
-    "address": "schema:address",
-    "skills": {
-      "@id": "ex:skills",
-      "@container": "@list"
-    }
-  }"#;
-        // 20 lines a person, as bench/jsonld-gen.mjs writes them.
-        let n = (30_000 - 30) / 20;
-        let mut json = format!("{{\n  \"@context\": {context},\n  \"@graph\": [\n");
+        // The people of bench/jsonld-people.tpl, as the bench writes them
+        // (tests/jsonld_budget.rs reads the same template).
+        let json = people_jsonld(30_000, "");
+        let n = people_count(30_000);
         let mut ttl = String::from(
             "@prefix ex: <http://example.org/> .\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n@prefix schema: <https://schema.org/> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\n",
         );
         for i in 0..n {
-            let born = format!("19{:02}-01-01", 50 + i % 50);
-            let (k1, k2) = ((i + 1) % n, (i + 7) % n);
-            let sep = if i + 1 < n { "," } else { "" };
-            let _ = write!(
-                json,
-                "    {{\n      \"@id\": \"ex:p{i}\",\n      \"@type\": \"foaf:Person\",\n      \"name\": \"Person {i}\",\n      \"born\": \"{born}\",\n      \"comment\": \"A longer description of person {i}\",\n      \"knows\": [\n        \"ex:p{k1}\",\n        \"ex:p{k2}\"\n      ],\n      \"address\": {{\n        \"@type\": \"schema:PostalAddress\",\n        \"schema:addressLocality\": \"Town {}\"\n      }},\n      \"skills\": [\n        \"rdf\",\n        \"sparql\",\n        \"skill-{}\"\n      ]\n    }}{sep}\n",
-                i % 100,
-                i % 13
-            );
+            let (born, k1, k2, town, skill) = person_values(i, n);
             let _ = write!(
                 ttl,
-                "ex:p{i} a foaf:Person ;\n  foaf:name \"Person {i}\" ;\n  schema:birthDate \"{born}\"^^xsd:date ;\n  rdfs:comment \"A longer description of person {i}\"@en ;\n  foaf:knows ex:p{k1} , ex:p{k2} ;\n  schema:address [ a schema:PostalAddress ; schema:addressLocality \"Town {}\" ] ;\n  ex:skills ( \"rdf\" \"sparql\" \"skill-{}\" ) .\n\n",
-                i % 100,
-                i % 13
+                "ex:p{i} a foaf:Person ;\n  foaf:name \"Person {i}\" ;\n  schema:birthDate \"19{born}-01-01\"^^xsd:date ;\n  rdfs:comment \"A longer description of person {i}\"@en ;\n  foaf:knows ex:p{k1} , ex:p{k2} ;\n  schema:address [ a schema:PostalAddress ; schema:addressLocality \"Town {town}\" ] ;\n  ex:skills ( \"rdf\" \"sparql\" \"skill-{skill}\" ) .\n\n",
             );
         }
-        json.push_str("  ]\n}\n");
         assert!(json.lines().count() >= 29_000, "{}", json.lines().count());
         let loader = NoNetwork::default();
         let prefixes = crate::syntax::PrefixMap::default();
@@ -686,27 +681,51 @@ mod tests {
 
     #[test]
     fn the_deepest_json_expands_on_a_small_stack() {
-        // As deep as the JSON parser goes, in objects, @list arrays and
-        // @reverse maps, on the 2 MiB stack of a default thread (parsing
-        // threads get 8 MiB, the browser engine 32).
+        // As deep as the JSON parser goes (`MAX_DEPTH` levels in all, the
+        // top-level object included), in objects, @list arrays and @reverse
+        // maps, on the 2 MiB stack of a default thread (parsing threads get
+        // 8 MiB, the browser engine 32).
         let depth = json::MAX_DEPTH as usize - 2;
+        // `depth` (254) nested objects below the root: 255 levels of 256.
         let objects = format!(
             "{{\"@context\": {{\"@vocab\": \"http://ex.org/\"}}, \"@id\": \"http://ex.org/a\", {}\"p\": 1{}}}",
-            "\"p\": {\"q\": 0, ".repeat(depth / 2),
-            "}".repeat(depth / 2)
+            "\"p\": {\"q\": 0, ".repeat(depth),
+            "}".repeat(depth)
         );
         let lists = format!(
             "{{\"@context\": {{\"@vocab\": \"http://ex.org/\", \"l\": {{\"@container\": \"@list\"}}}}, \"l\": {}1{}}}",
             "[".repeat(depth),
             "]".repeat(depth)
         );
+        // Each `@reverse` step is two objects.
         let reverse = format!(
             "{{\"@id\": \"http://ex.org/a\", {}\"@id\": \"http://ex.org/b\"{}}}",
-            "\"@reverse\": {\"http://ex.org/p\": {".repeat(depth / 3),
-            "}}".repeat(depth / 3)
+            "\"@reverse\": {\"http://ex.org/p\": {".repeat(depth / 2),
+            "}}".repeat(depth / 2)
         );
+        let levels = |text: &str| {
+            json::tokens(text)
+                .iter()
+                .fold((0usize, 0usize), |(d, max), t| match t.kind {
+                    json::TokenKind::LBrace | json::TokenKind::LBracket => (d + 1, max.max(d + 1)),
+                    json::TokenKind::RBrace | json::TokenKind::RBracket => (d - 1, max),
+                    _ => (d, max),
+                })
+                .1
+        };
+        // The texts really nest as deep as the parser allows.
+        assert_eq!(levels(&objects), depth + 1);
+        assert_eq!(levels(&lists), depth + 1);
+        assert_eq!(levels(&reverse), depth + 1);
+        // Unoptimized frames are several times larger: a debug build gets
+        // the 8 MiB the parsing threads have.
+        let stack = if cfg!(debug_assertions) {
+            8 << 20
+        } else {
+            2 << 20
+        };
         std::thread::Builder::new()
-            .stack_size(2 << 20)
+            .stack_size(stack)
             .spawn(move || {
                 for text in [objects, lists, reverse] {
                     let p = parse(&text, None, &NoNetwork::default());
@@ -715,7 +734,7 @@ mod tests {
                         "{:?}",
                         p.errors
                     );
-                    assert!(p.triples.len() >= depth / 3, "{}", p.triples.len());
+                    assert!(p.triples.len() >= depth / 2, "{}", p.triples.len());
                 }
             })
             .unwrap()
