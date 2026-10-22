@@ -4,47 +4,50 @@
 // @id references, typed and language-tagged values, nested blank nodes and
 // @list.
 //
+// The document is described once, in bench/jsonld-people.tpl (a head, one
+// person with %TAG%, %I%, %BORN%, %K1%, %K2%, %TOWN% and %SKILL% to fill,
+// and a tail, split by `@@` lines). The Rust budget tests
+// (tests/jsonld_budget.rs, src/jsonld/mod.rs) read the same file through
+// tests/support/jsonld_people.rs, and write the same text.
+//
 //   import { bigJsonLd } from "./jsonld-gen.mjs"
 //   const text = bigJsonLd(30000)          // about 30,000 lines
 //
 //   node bench/jsonld-gen.mjs [lines=30000] [out.jsonld]   // stdout without out
 import fs from "node:fs"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
-const context = {
-  ex: "http://example.org/",
-  foaf: "http://xmlns.com/foaf/0.1/",
-  rdfs: "http://www.w3.org/2000/01/rdf-schema#",
-  schema: "https://schema.org/",
-  xsd: "http://www.w3.org/2001/XMLSchema#",
-  name: "foaf:name",
-  knows: { "@id": "foaf:knows", "@type": "@id" },
-  born: { "@id": "schema:birthDate", "@type": "xsd:date" },
-  comment: { "@id": "rdfs:comment", "@language": "en" },
-  address: "schema:address",
-  skills: { "@id": "ex:skills", "@container": "@list" },
+const template = fs.readFileSync(fileURLToPath(new URL("./jsonld-people.tpl", import.meta.url)), "utf8")
+const [head, person, tail, ...extra] = template.split("@@\n")
+if (tail === undefined || extra.length) throw new Error("jsonld-people.tpl needs a head, a person and a tail between @@ lines")
+
+const lineCount = (s) => s.split("\n").length - 1
+
+/** How many people make a document of about `lines` lines. */
+function peopleCount(lines) {
+  return Math.max(1, Math.round((lines - lineCount(head) - lineCount(tail)) / lineCount(person)))
 }
 
-function person(i, n, tag) {
+/** What person `i` of `n` has that varies. */
+function values(i, n) {
   return {
-    "@id": `ex:p${tag}${i}`,
-    "@type": "foaf:Person",
-    name: `Person ${i}`,
-    born: `19${String(50 + (i % 50)).padStart(2, "0")}-01-01`,
-    comment: `A longer description of person ${i}`,
-    knows: [`ex:p${tag}${(i + 1) % n}`, `ex:p${tag}${(i + 7) % n}`],
-    address: { "@type": "schema:PostalAddress", "schema:addressLocality": `Town ${i % 100}` },
-    skills: ["rdf", "sparql", `skill-${i % 13}`],
+    "%BORN%": String(50 + (i % 50)).padStart(2, "0"),
+    "%K1%": String((i + 1) % n),
+    "%K2%": String((i + 7) % n),
+    "%TOWN%": String(i % 100),
+    "%SKILL%": String(i % 13),
   }
 }
 
 /** A pretty-printed document of about `lines` lines; `tag` makes IRIs unique per file. */
 export function bigJsonLd(lines = 30000, tag = "") {
-  const perPerson = JSON.stringify(person(0, 1, tag), null, 2).split("\n").length
-  const fixed = JSON.stringify({ "@context": context, "@graph": [] }, null, 2).split("\n").length
-  const n = Math.max(1, Math.round((lines - fixed) / perPerson))
-  const graph = Array.from({ length: n }, (_, i) => person(i, n, tag))
-  return JSON.stringify({ "@context": context, "@graph": graph }, null, 2) + "\n"
+  const n = peopleCount(lines)
+  const people = []
+  for (let i = 0; i < n; i++) {
+    const v = { "%TAG%": tag, "%I%": String(i), ...values(i, n) }
+    people.push(person.replace(/%[A-Z0-9]+%/g, (k) => v[k]).replace(/\n$/, ""))
+  }
+  return head + people.join(",\n") + "\n" + tail
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

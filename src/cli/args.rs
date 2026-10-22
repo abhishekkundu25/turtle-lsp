@@ -1,37 +1,37 @@
 //! Command-line arguments of `check`, `format` and `query`, parsed by hand.
 
-use super::output::Format;
+use super::output::{self, Format};
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
-pub struct CheckArgs {
-    pub paths: Vec<PathBuf>,
-    pub root: Option<PathBuf>,
-    pub format: Option<Format>,
-    pub output_file: Option<PathBuf>,
-    pub fix: bool,
-    pub unsafe_fixes: bool,
-    pub max_warnings: Option<usize>,
-    pub exit_zero: bool,
-    pub select: Vec<String>,
-    pub ignore: Vec<String>,
-    pub no_shacl: bool,
-    pub network: bool,
-    pub max_diagnostics: Option<usize>,
-    pub statistics: bool,
+pub(crate) struct CheckArgs {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) root: Option<PathBuf>,
+    pub(crate) format: Option<Format>,
+    pub(crate) output_file: Option<PathBuf>,
+    pub(crate) fix: bool,
+    pub(crate) unsafe_fixes: bool,
+    pub(crate) max_warnings: Option<usize>,
+    pub(crate) exit_zero: bool,
+    pub(crate) select: Vec<String>,
+    pub(crate) ignore: Vec<String>,
+    pub(crate) no_shacl: bool,
+    pub(crate) network: bool,
+    pub(crate) max_diagnostics: Option<usize>,
+    pub(crate) statistics: bool,
 }
 
 #[derive(Debug, Default)]
-pub struct FormatArgs {
-    pub paths: Vec<PathBuf>,
-    pub root: Option<PathBuf>,
-    pub check: bool,
-    pub diff: bool,
+pub(crate) struct FormatArgs {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) root: Option<PathBuf>,
+    pub(crate) check: bool,
+    pub(crate) diff: bool,
 }
 
 /// The output of `query`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QueryFormat {
+pub(crate) enum QueryFormat {
     Table,
     Json,
     Csv,
@@ -40,7 +40,7 @@ pub enum QueryFormat {
 }
 
 impl QueryFormat {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             QueryFormat::Table => "table",
             QueryFormat::Json => "json",
@@ -53,31 +53,31 @@ impl QueryFormat {
 
 /// Where the query comes from.
 #[derive(Debug, PartialEq, Eq)]
-pub enum QuerySource {
+pub(crate) enum QuerySource {
     File(PathBuf),
     Inline(String),
 }
 
 #[derive(Debug)]
-pub struct QueryArgs {
-    pub query: QuerySource,
-    pub paths: Vec<PathBuf>,
-    pub root: Option<PathBuf>,
+pub(crate) struct QueryArgs {
+    pub(crate) query: QuerySource,
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) root: Option<PathBuf>,
     /// None: the answer's own (a table, or Turtle for a graph).
-    pub format: Option<QueryFormat>,
+    pub(crate) format: Option<QueryFormat>,
     /// None: no time limit.
-    pub timeout: Option<std::time::Duration>,
-    pub limit: Option<usize>,
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) limit: Option<usize>,
     /// None: no limit.
-    pub max_buffered_rows: Option<usize>,
+    pub(crate) max_buffered_rows: Option<usize>,
 }
 
 /// The default `--timeout`, in seconds.
-pub const QUERY_TIMEOUT_SECONDS: u64 = 30;
+pub(crate) const QUERY_TIMEOUT_SECONDS: u64 = 30;
 
 /// What the command line asks for.
 #[derive(Debug)]
-pub enum Parsed<T> {
+pub(crate) enum Parsed<T> {
     Run(T),
     Help,
 }
@@ -155,11 +155,28 @@ impl<'a> Args<'a> {
     }
 }
 
-fn codes(v: &str) -> impl Iterator<Item = String> + '_ {
-    v.split(',')
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-        .map(str::to_string)
+/// The diagnostic codes in a `--select` or `--ignore` value; a code
+/// turtle-lsp never reports is an error, so a typo does not filter everything.
+fn codes(flag: &str, v: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for c in v.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+        if !output::is_known_code(c) {
+            return Err(format!(
+                "{flag}: unknown diagnostic code '{c}' (known codes: {})",
+                output::known_codes()
+            ));
+        }
+        out.push(c.to_string());
+    }
+    Ok(out)
+}
+
+/// `-` would be standard input, which no command reads.
+fn no_stdin(paths: &[PathBuf]) -> Result<(), String> {
+    if paths.iter().any(|p| p.as_os_str() == "-") {
+        return Err("'-' (standard input) is not supported; name a file or folder".to_string());
+    }
+    Ok(())
 }
 
 fn unknown(flag: &str, command: &str) -> String {
@@ -167,7 +184,7 @@ fn unknown(flag: &str, command: &str) -> String {
 }
 
 /// Arguments of `check`, without the subcommand itself.
-pub fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
+pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
     let mut out = CheckArgs::default();
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
@@ -199,8 +216,8 @@ pub fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
             "--output-file" => out.output_file = Some(PathBuf::from(it.value(f)?)),
             "--max-warnings" => out.max_warnings = Some(it.number(f)?),
             "--max-diagnostics" => out.max_diagnostics = Some(it.number(f)?),
-            "--select" => out.select.extend(codes(&it.value(f)?)),
-            "--ignore" => out.ignore.extend(codes(&it.value(f)?)),
+            "--select" => out.select.extend(codes(f, &it.value(f)?)?),
+            "--ignore" => out.ignore.extend(codes(f, &it.value(f)?)?),
             _ => {
                 let slot = match f {
                     "--fix" => &mut out.fix,
@@ -219,11 +236,15 @@ pub fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
     if out.unsafe_fixes && !out.fix {
         return Err("--unsafe-fixes works only with --fix".to_string());
     }
+    if out.statistics && out.format.is_some() {
+        return Err("--statistics prints counts in its own layout; drop --format".to_string());
+    }
+    no_stdin(&out.paths)?;
     Ok(Parsed::Run(out))
 }
 
 /// Arguments of `format`, without the subcommand itself.
-pub fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String> {
+pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String> {
     let mut out = FormatArgs::default();
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
@@ -249,12 +270,13 @@ pub fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String> {
             _ => return Err(unknown(f, "format")),
         }
     }
+    no_stdin(&out.paths)?;
     Ok(Parsed::Run(out))
 }
 
 /// Arguments of `query`, without the subcommand itself. The first path is
 /// the query file unless `-e` gives the query.
-pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
+pub(crate) fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
     let mut inline = None;
     let mut paths = Vec::new();
     let mut root = None;
@@ -298,12 +320,12 @@ pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
             }
             "--timeout" => {
                 let v = it.value(f)?;
-                let secs: f64 = v
-                    .parse()
+                let secs = v
+                    .parse::<f64>()
                     .ok()
-                    .filter(|s: &f64| s.is_finite() && *s >= 0.0)
+                    .and_then(crate::settings::seconds)
                     .ok_or_else(|| format!("{f} needs a number of seconds, not '{v}'"))?;
-                timeout = (secs > 0.0).then(|| std::time::Duration::from_secs_f64(secs));
+                timeout = (!secs.is_zero()).then_some(secs);
             }
             "--limit" => limit = Some(it.number(f)?),
             "--max-buffered-rows" => {
@@ -313,6 +335,7 @@ pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
             _ => return Err(unknown(f, "query")),
         }
     }
+    no_stdin(&paths)?;
     if limit.is_some() && format.is_some_and(|f| f != QueryFormat::Table) {
         return Err("--limit works only with the table format".to_string());
     }
@@ -354,12 +377,14 @@ mod tests {
 
     #[test]
     fn cli_check_flags_and_paths() {
-        let a =
-            check("a.ttl --format=json --max-warnings 3 --select x,y --select z --fix b").unwrap();
+        let a = check(
+            "a.ttl --format=json --max-warnings 3 --select syntax,io --select encoding --fix b",
+        )
+        .unwrap();
         assert_eq!(a.paths, [PathBuf::from("a.ttl"), PathBuf::from("b")]);
         assert_eq!(a.format, Some(Format::Json));
         assert_eq!(a.max_warnings, Some(3));
-        assert_eq!(a.select, ["x", "y", "z"]);
+        assert_eq!(a.select, ["syntax", "io", "encoding"]);
         assert!(a.fix && !a.unsafe_fixes);
         let a = check("-- --fix").unwrap();
         assert_eq!(a.paths, [PathBuf::from("--fix")]);
@@ -375,6 +400,37 @@ mod tests {
         assert!(check("--fix=yes").is_err());
         assert!(check("--unsafe-fixes").is_err());
         assert_eq!(check("--help").unwrap_err(), "help");
+    }
+
+    #[test]
+    fn cli_check_rejects_unknown_codes_and_what_does_not_combine() {
+        for flag in ["--select", "--ignore"] {
+            let e = check(&format!("{flag} syntax,sintax")).unwrap_err();
+            assert!(
+                e.contains("'sintax'") && e.contains("undeclared-prefix"),
+                "{e}"
+            );
+        }
+        // Every code the output knows is accepted, and so are io and encoding.
+        assert!(check("--select io,encoding,shacl-violation --ignore unused-prefix").is_ok());
+        assert!(check("--statistics --format json").is_err());
+        assert!(check("--statistics").is_ok());
+    }
+
+    #[test]
+    fn cli_standard_input_is_rejected_by_every_command() {
+        for e in [
+            check("-").unwrap_err(),
+            match parse_format(&args("-")) {
+                Err(e) => e,
+                Ok(_) => panic!("accepted"),
+            },
+            query("q.rq -").unwrap_err(),
+        ] {
+            assert!(e.contains("standard input"), "{e}");
+        }
+        // Also after --.
+        assert!(check("-- -").is_err());
     }
 
     #[test]
@@ -418,6 +474,11 @@ mod tests {
         assert!(query("").unwrap_err().contains("no query"));
         assert!(query("q.rq --format xml").is_err());
         assert!(query("q.rq --timeout -1").is_err());
+        // A number a Duration cannot hold is an error, not a panic.
+        for bad in ["1e300", "1.9e19", "inf", "NaN"] {
+            let e = query(&format!("q.rq --timeout {bad}")).unwrap_err();
+            assert!(e.contains("needs a number of seconds"), "{bad}: {e}");
+        }
         assert!(query("q.rq --max-buffered-rows -1").is_err());
         assert!(query("q.rq --max-buffered-rows lots").is_err());
         assert!(query("q.rq --limit 3 --format json").is_err());

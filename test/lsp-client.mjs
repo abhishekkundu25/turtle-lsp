@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process"
 import { Transform } from "node:stream"
+import { after } from "node:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -22,16 +23,19 @@ export function tempDir(prefix) {
 
 // Every server gets a private import cache (TURTLE_LSP_CACHE_DIR) unless the
 // caller's environment sets one, so the suite never touches the user's real
-// cache. The caches live under one temp dir, removed when the test process exits.
+// cache. The caches live under one temp dir, removed when the test process
+// exits or is stopped by SIGINT or SIGTERM (see `cleanup`).
 let cacheRoot
 let caches = 0
+//
+// The test servers listen on loopback, which the server does not fetch from
+// unless the environment says so (TURTLE_LSP_ALLOW_PRIVATE_HOSTS=1): the
+// suite says so, and a test of the refusal sets it to 0 for one server.
 export function serverEnv() {
-  if (process.env.TURTLE_LSP_CACHE_DIR) return process.env
-  if (!cacheRoot) {
-    cacheRoot = tempDir("turtle-lsp-caches-")
-    process.once("exit", () => fs.rmSync(cacheRoot, { recursive: true, force: true }))
-  }
-  return { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(cacheRoot, String(++caches)) }
+  const env = { TURTLE_LSP_ALLOW_PRIVATE_HOSTS: "1", ...process.env }
+  if (env.TURTLE_LSP_CACHE_DIR) return env
+  cacheRoot ??= tempDir("turtle-lsp-caches-")
+  return { ...env, TURTLE_LSP_CACHE_DIR: path.join(cacheRoot, String(++caches)) }
 }
 
 // The cache directory the server uses when TURTLE_LSP_CACHE_DIR is not set
@@ -48,10 +52,11 @@ export function defaultCacheDir() {
   return base && path.join(base, "turtle-lsp")
 }
 
-// Files in a cache dir that are not a finished import (`imports/<16 hex>.ttl`),
-// JSON-LD context (`imports/<16 hex>.jsonld`, with the `.url` of a redirect
-// beside it) or query results (`query-results/<name>.md`), e.g. a temp file
-// left by an interrupted write. Paths relative to `dir`.
+// Files in a cache dir that are not a finished import (`imports/<64 hex>.<ext>`
+// for ttl, trig, nt, nq), JSON-LD document (`imports/<64 hex>.jsonld`, with the
+// `.url` file that names its URL beside it) or query results
+// (`query-results/<name>.md`), e.g. a temp file left by an interrupted write.
+// Paths relative to `dir`.
 export function strayCacheFiles(dir) {
   if (!fs.existsSync(dir)) return []
   const files = fs
@@ -60,11 +65,11 @@ export function strayCacheFiles(dir) {
     .map((e) => path.relative(dir, path.join(e.parentPath ?? e.path, e.name)))
   const kept = new Set(files)
   return files.filter((f) => {
-    if (/^imports[\\/][0-9a-f]{16}\.(ttl|jsonld)$/.test(f)) return false
+    if (/^imports[\\/][0-9a-f]{64}\.(ttl|trig|nt|nq|jsonld)$/.test(f)) return false
     // The results of "Run query", one per query file name.
     if (/^query-results[\\/][^\\/]+\.md$/.test(f)) return false
-    // A redirect's target, only beside the context it belongs to.
-    return !(/^imports[\\/][0-9a-f]{16}\.url$/.test(f) && kept.has(f.replace(/\.url$/, ".jsonld")))
+    // The URL file of a JSON-LD document, only beside the document it belongs to.
+    return !(/^imports[\\/][0-9a-f]{64}\.url$/.test(f) && kept.has(f.replace(/\.url$/, ".jsonld")))
   })
 }
 
@@ -82,17 +87,54 @@ function warmUp() {
   spawnSync(serverPath, ["--version"])
 }
 
-// Servers not yet stopped, with where each was started. The Node tests run
-// with --test-force-exit, so a server a test forgets to stop cannot hold its
-// file open; it is killed here and fails the file, naming the test's line.
+// Servers not yet stopped, with where each was started. One a test forgets to
+// stop would hold its file's process open, so the file's last hook kills it and
+// fails the file, naming the test's line; the process exit does the same for
+// a client used outside the test runner.
 const running = new Map()
+
+// Kills the servers still running and returns where each was started.
+function killRunning() {
+  const leaked = [...running.values()]
+  for (const proc of running.keys()) proc.kill()
+  running.clear()
+  return leaked
+}
+
+const neverStopped = (where) => `turtle-lsp started ${where} was never stopped`
+
+function removeCaches() {
+  if (cacheRoot) fs.rmSync(cacheRoot, { recursive: true, force: true })
+  cacheRoot = undefined
+}
+
 process.once("exit", () => {
-  for (const [proc, where] of running) {
-    proc.kill()
-    console.error(`turtle-lsp started ${where} was never stopped`)
+  for (const where of killRunning()) {
+    console.error(neverStopped(where))
     process.exitCode = 1
   }
+  removeCaches()
 })
+// Ctrl-C or a runner timeout: the exit handler does not run on a signal, so
+// clean up here and re-raise it, ending the process as it would have ended.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    killRunning()
+    removeCaches()
+    process.kill(process.pid, signal)
+  })
+}
+// Under the test runner (no --test-force-exit), a leaked server would keep the
+// file's process alive: kill it after the file's other hooks, which stop the
+// servers they own, and fail the file.
+if (process.env.NODE_TEST_CONTEXT) {
+  setImmediate(() =>
+    after(() => {
+      const leaked = killRunning()
+      if (leaked.length) throw new Error(leaked.map(neverStopped).join("\n"))
+    }),
+  )
+}
 
 // `capabilities` and `initializationOptions` go into the initialize request;
 // `onRequest(method, params)` answers requests from the server (default null).
@@ -219,6 +261,17 @@ export async function startServer({
       conn.sendNotification("textDocument/didChange", {
         textDocument: { uri, version: v },
         contentChanges: [{ text }],
+      })
+    },
+    // Incremental sync: `changes` ({ range, text }, UTF-16 positions) in one
+    // didChange, applied in order, each to the text the one before left.
+    changeRange(uri, changes) {
+      const v = (versions.get(uri) ?? 1) + 1
+      versions.set(uri, v)
+      diagnostics.delete(uri)
+      conn.sendNotification("textDocument/didChange", {
+        textDocument: { uri, version: v },
+        contentChanges: changes.map(({ range, text }) => ({ range, text })),
       })
     },
     close(uri) {

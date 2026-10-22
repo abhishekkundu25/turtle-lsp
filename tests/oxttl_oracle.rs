@@ -1,61 +1,15 @@
 //! Cross-checks the parser against oxttl (Oxigraph) on every valid fixture:
-//! both must produce the same ground triples (quads for TriG, with graph
-//! names) and the same count. Turtle fixtures are compared with oxttl's
+//! both must produce the same number of triples (quads for TriG) and
+//! isomorphic datasets, blank nodes, triple terms and graph names included
+//! (tests/support/oracle.rs). Turtle fixtures are compared with oxttl's
 //! Turtle parser, TriG with its TriG parser, N-Triples with its N-Triples parser.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use turtle_lsp::syntax::{GraphName, Node, PrefixMap, Syntax, parse};
+use turtle_lsp::syntax::{PrefixMap, Syntax, parse};
 
-fn node(n: &Node) -> Option<String> {
-    match n {
-        Node::Iri(i) => Some(format!("<{i}>")),
-        Node::Blank(_) => None,
-        Node::Literal {
-            value,
-            datatype,
-            lang,
-        } => Some(match lang {
-            Some(l) => format!("{value:?}@{l}"),
-            None => format!("{value:?}^^<{datatype}>"),
-        }),
-        Node::Triple(_) => None,
-    }
-}
-
-fn ox_term(t: &oxrdf::Term) -> Option<String> {
-    use oxrdf::Term;
-    match t {
-        Term::NamedNode(n) => Some(format!("<{}>", n.as_str())),
-        Term::BlankNode(_) => None,
-        Term::Literal(l) => Some(match (l.language(), l.direction()) {
-            // Ours keeps the base direction in the tag, as written: `@ar--rtl`.
-            (Some(lang), Some(dir)) => format!("{:?}@{lang}--{dir}", l.value()),
-            (Some(lang), None) => format!("{:?}@{}", l.value(), lang),
-            _ => format!("{:?}^^<{}>", l.value(), l.datatype().as_str()),
-        }),
-        #[allow(unreachable_patterns)]
-        _ => None,
-    }
-}
-
-/// The graph a triple is in: blank graph names compare as "blank".
-fn graph(g: Option<GraphName>) -> String {
-    match g {
-        None => "DEFAULT".into(),
-        Some(GraphName::Iri(i)) => format!("<{i}>"),
-        Some(GraphName::Blank(_)) => "blank".into(),
-    }
-}
-
-fn ox_graph(g: &oxrdf::GraphName) -> String {
-    match g {
-        oxrdf::GraphName::DefaultGraph => "DEFAULT".into(),
-        oxrdf::GraphName::NamedNode(n) => format!("<{}>", n.as_str()),
-        oxrdf::GraphName::BlankNode(_) => "blank".into(),
-    }
-}
+#[path = "support/oracle.rs"]
+mod oracle;
 
 /// oxttl's quads for `src`, or its first error.
 fn oxttl_quads(src: &str, syntax: Syntax) -> Result<Vec<oxrdf::Quad>, String> {
@@ -93,56 +47,20 @@ fn check(name: &str, src: &str) {
 
 fn check_as(name: &str, src: &str, syntax: Syntax) {
     let ours = parse(src, &PrefixMap::default(), syntax);
-    let errors: Vec<_> = ours.errors.iter().map(|e| (&e.message, e.span)).collect();
+    let errors: Vec<_> = ours.errors.iter().map(|e| (e.message(), e.span)).collect();
     assert!(errors.is_empty(), "{name}: unexpected errors {errors:?}");
     let ox = oxttl_quads(src, syntax)
         .unwrap_or_else(|e| panic!("{name}: oxttl rejected a fixture: {e}"));
     assert_eq!(ours.triples.len(), ox.len(), "{name}: triple count differs");
-    let a: BTreeSet<String> = ours
-        .triples
-        .iter()
-        .filter_map(|t| {
-            Some(format!(
-                "{} <{}> {} {}",
-                node(&t.s)?,
-                t.p,
-                node(&t.o)?,
-                graph(t.graph)
-            ))
-        })
-        .collect();
-    let b: BTreeSet<String> = ox
-        .iter()
-        .filter_map(|t| {
-            let s = match &t.subject {
-                oxrdf::NamedOrBlankNode::NamedNode(n) => format!("<{}>", n.as_str()),
-                _ => return None,
-            };
-            Some(format!(
-                "{s} <{}> {} {}",
-                t.predicate.as_str(),
-                ox_term(&t.object)?,
-                ox_graph(&t.graph_name)
-            ))
-        })
-        .collect();
-    // Every graph name is used the same way (blank names count per kind).
-    let names = |v: Vec<String>| {
-        let mut v = v;
-        v.sort();
-        v
-    };
-    assert_eq!(
-        names(ours.triples.iter().map(|t| graph(t.graph)).collect()),
-        names(ox.iter().map(|q| ox_graph(&q.graph_name)).collect()),
-        "{name}: graph names differ"
-    );
-    let only_ours: Vec<_> = a.difference(&b).take(5).collect();
-    let only_ox: Vec<_> = b.difference(&a).take(5).collect();
-    assert!(
-        only_ours.is_empty() && only_ox.is_empty(),
-        "{name}: ours-only {only_ours:#?} oxttl-only {only_ox:#?}"
-    );
+    if let Some(diff) = oracle::difference(
+        &oracle::ours(&ours.triples),
+        "ours",
+        &oracle::canonical(ox),
+        "oxttl",
+        5,
+    ) {
+        panic!("{name}: {diff}");
+    }
 }
 
 #[test]
@@ -251,7 +169,7 @@ fn turtle_only_constructs_are_not_ntriples() {
         );
         let ours = parse(src, &PrefixMap::default(), Syntax::NTriples);
         assert!(
-            ours.errors.iter().any(|e| e.message.contains(want)),
+            ours.errors.iter().any(|e| e.message().contains(want)),
             "{src:?}: {:?}",
             ours.errors
         );
@@ -260,4 +178,40 @@ fn turtle_only_constructs_are_not_ntriples() {
             assert!(oxttl_quads(src, Syntax::Turtle).is_ok(), "{src:?}");
         }
     }
+}
+
+/// The oracle's own check: blank nodes match under renaming, a changed or
+/// missing quad does not, and the fingerprint of a difference does not
+/// depend on blank node labels.
+#[test]
+fn the_oracle_compares_up_to_blank_node_renaming() {
+    let ttl = |src: &str| oracle::canonical(oxttl_quads(src, Syntax::Turtle).unwrap());
+    let a = ttl("<http://e/s> <http://e/p> _:x . _:x <http://e/q> \"v\"@EN .\n");
+    let renamed = ttl("_:other <http://e/q> \"v\"@en . <http://e/s> <http://e/p> _:other .\n");
+    assert_eq!(oracle::difference(&a, "a", &renamed, "b", 5), None);
+    assert_eq!(oracle::fingerprint(&a, &renamed), 0);
+    let changed = ttl("<http://e/s> <http://e/p> _:x . _:x <http://e/q> \"w\"@en .\n");
+    let diff = oracle::difference(&a, "a", &changed, "b", 5).expect("a difference");
+    assert!(
+        diff.contains("only a (1)") && diff.contains("only b (1)"),
+        "{diff}"
+    );
+    let changed_again = ttl("<http://e/s> <http://e/p> _:y . _:y <http://e/q> \"w\"@en .\n");
+    assert_ne!(oracle::fingerprint(&a, &changed), 0);
+    assert_eq!(
+        oracle::fingerprint(&a, &changed),
+        oracle::fingerprint(&a, &changed_again)
+    );
+    let other = ttl("<http://e/s> <http://e/p> _:x . _:x <http://e/q> \"z\"@en .\n");
+    assert_ne!(
+        oracle::fingerprint(&a, &changed),
+        oracle::fingerprint(&a, &other)
+    );
+    // Ours, converted: the same as oxttl's.
+    let src = "@prefix e: <http://e/> .\ne:s e:p [ e:q \"v\"@en ] .\n";
+    let ours = parse(src, &PrefixMap::default(), Syntax::Turtle);
+    assert_eq!(
+        oracle::difference(&oracle::ours(&ours.triples), "ours", &a, "oxttl", 5),
+        None
+    );
 }

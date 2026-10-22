@@ -56,9 +56,19 @@ fn suites_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/w3c/sparql-tests")
 }
 
+/// The manifests under `dir`, without the SPARQL 1.1 evaluation suites
+/// (`sparql11/` directories not named `syntax-*`), which
+/// tests/w3c_sparql_eval.rs runs.
 fn manifests(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
+        let eval_suite = p.parent().is_some_and(|d| d.ends_with("sparql11"))
+            && !p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("syntax-"));
+        if p.is_dir() && eval_suite {
+            continue;
+        }
         if p.is_dir() {
             manifests(&p, out);
         } else if p.file_name().is_some_and(|n| n == "manifest.ttl") {

@@ -2,7 +2,7 @@
   "name": "turtle-language-server",
   "displayName": "Turtle RDF, SPARQL & JSON-LD Language Server (TTL, OWL, SHACL)",
   "description": "Fast Turtle (.ttl) and RDF 1.2 support written in Rust, also for TriG, N-Triples, N-Quads, JSON-LD and SPARQL: syntax highlighting, error checking, SHACL validation, completion of 80+ vocabularies (rdf, rdfs, owl, skos, shacl, schema.org, foaf), hover docs, go to definition, rename, formatting and quick fixes for ontologies, queries and linked data.",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "publisher": "abhishekkundu25",
   "license": "MIT",
   "repository": {
@@ -61,10 +61,15 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces turtle.server.path and turtle.imports.network are ignored: the bundled server is used and nothing is fetched over the network.",
+      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, turtle.query.*, turtle.shacl.maxTriples and turtle.diagnostics.workspace, and network imports are off: nothing is fetched unless you run the quick fix that fetches one unresolved import. A server inside the workspace is never run.",
       "restrictedConfigurations": [
         "turtle.server.path",
-        "turtle.imports.network"
+        "turtle.imports.network",
+        "turtle.query.timeoutSeconds",
+        "turtle.query.maxRows",
+        "turtle.query.maxBufferedRows",
+        "turtle.shacl.maxTriples",
+        "turtle.diagnostics.workspace"
       ]
     },
     "virtualWorkspaces": {
@@ -219,7 +224,7 @@
           "type": "integer",
           "default": 2000000,
           "minimum": 0,
-          "markdownDescription": "Skip SHACL validation when the workspace holds more triples than this.",
+          "markdownDescription": "The most triples one SHACL run validates: the shared Turtle triples plus every dataset (TriG, N-Triples, N-Quads, JSON-LD with named graphs) checked against them. A dataset that would pass the limit is skipped, with a note. `0` for no limit.",
           "scope": "resource"
         },
         "turtle.shacl.onType": {
@@ -237,7 +242,7 @@
         "turtle.imports.network": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Fetch `owl:imports` that are not in the workspace over the network. Ignored in untrusted workspaces.",
+          "markdownDescription": "Fetch `owl:imports` and remote JSON-LD contexts that are not in the workspace over the network. Private, loopback and link-local addresses are refused. `turtle-lsp.json` cannot turn this on. Ignored in untrusted workspaces.",
           "scope": "machine-overridable"
         },
         "turtle.imports.unresolved": {
@@ -291,7 +296,7 @@
           "type": "integer",
           "default": 10000000,
           "minimum": 0,
-          "markdownDescription": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (about 100 bytes each). `0` for no limit.",
+          "markdownDescription": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (ordinary rows take about 100 bytes each; long text values take more). `0` for no limit.",
           "scope": "window"
         },
         "turtle.trace.server": {
@@ -387,7 +392,7 @@
     "vscode-languageclient": "10.1.2"
   },
   "devDependencies": {
-    "@types/node": "26.6.5",
+    "@types/node": "20.19.43",
     "@types/vscode": "1.91.0",
     "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "4.0.0",

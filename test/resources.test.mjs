@@ -170,6 +170,38 @@ test("an idle server uses no CPU after opening, editing, formatting and closing 
   }
 })
 
+test("an idle server uses no CPU after a prefixes.ttl change re-parsed its files, and exits when the editor does", async () => {
+  const dir = tempDir("turtle-lsp-prefixes-")
+  try {
+    fs.writeFileSync(path.join(dir, "prefixes.ttl"), "@prefix ex: <http://one.org/> .\n")
+    for (let i = 0; i < 300; i++) fs.writeFileSync(path.join(dir, `f${i}.ttl`), `ex:s${i} ex:p ex:o${i} .\n`)
+    const s = await startServer({ cwd: dir })
+    const probe = uriOf(path.join(dir, "probe.ttl"))
+    const defines = async (iri) => {
+      s.open(probe, `<${iri}> <http://e.org/p> <http://e.org/o> .\n`)
+      const locs = await s.request("textDocument/definition", {
+        textDocument: { uri: probe },
+        position: { line: 0, character: 3 },
+      })
+      return locs.filter((l) => !l.uri.endsWith("probe.ttl")).length
+    }
+    assert.equal(await defines("http://one.org/s7"), 1)
+    fs.writeFileSync(path.join(dir, "prefixes.ttl"), "@prefix ex: <http://two.org/> .\n")
+    s.notify("workspace/didChangeWatchedFiles", { changes: [{ uri: uriOf(path.join(dir, "prefixes.ttl")), type: 2 }] })
+    const end = Date.now() + 10000
+    while ((await defines("http://two.org/s7")) !== 1) {
+      assert.ok(Date.now() < end, "the files were never re-parsed")
+      await sleep(50)
+    }
+    assert.equal(await defines("http://one.org/s7"), 0)
+    s.close(probe)
+    await assertIdle(s, "after a prefixes.ttl change")
+    await s.stop()
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("the server exits when the editor goes away while a long query is open", async () => {
   const body = Array.from({ length: 5000 }, (_, i) => `?s${i} <https://e.org/p> ?o${i} .`).join("\n")
   const s = rawServer(path.join(fixtures, "query"))

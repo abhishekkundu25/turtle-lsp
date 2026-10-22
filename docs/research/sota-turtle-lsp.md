@@ -2,6 +2,11 @@
 
 Research date: 2026-10-13. Every claim below links to the source that owns it. Where a source was unreachable or a claim could not be checked, the text says so.
 
+> **Historical.** Written on 2026-10-13, this research describes the code and the
+> tools as they were then; file names, figures and decisions may have
+> changed since. README.md, ARCHITECTURE.md and the module docs describe
+> the code as it is now.
+
 ## Summary
 
 - **No existing Turtle server is clearly better than what this repo could become.** The Stardog servers (which this repo builds on) offer only hover, folding and diagnostics for Turtle, and are pinned to chevrotain 4.7.0 and vscode-languageserver 5. The newer projects are small and young: zed-rdf's `rdf-lsp` (Rust), shifty-lsp (Python, SHACL plus `owl:imports`) and onto-vis (VS Code, cross-file IRI index). The best design reference is **Qlue-ls**, a SPARQL server. It uses a resilient LL parser over a lossless rowan tree and has prefix code actions and diagnostics that carry over to Turtle directly.

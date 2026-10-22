@@ -4,36 +4,25 @@
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
-import http from "node:http"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { chromium, webkit, firefox } from "playwright-core"
+import { listen } from "./static-server.mjs"
 
 // BROWSER=webkit or BROWSER=firefox runs these in Playwright's builds of
 // those browsers; the default is the installed Google Chrome.
 const BROWSER = process.env.BROWSER ?? "chrome"
 const launch = () => (BROWSER === "chrome" ? chromium.launch({ channel: "chrome", headless: true }) : { webkit, firefox }[BROWSER].launch({ headless: true }))
 
-const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf" }
-
 let server, origin, browser
 before(async () => {
-  server = http.createServer((req, res) => {
-    const rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
-    const file = path.join(app, path.normalize(rel))
-    if (!file.startsWith(app) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end()
-    res.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" })
-    fs.createReadStream(file).pipe(res)
-  })
-  await new Promise((r) => server.listen(0, "127.0.0.1", r))
-  origin = `http://127.0.0.1:${server.address().port}`
+  server = await listen()
+  origin = server.origin
   browser = await launch()
 })
 after(async () => {
   await browser?.close()
-  await new Promise((r) => server.close(r))
+  await server?.close()
 })
 
 // A fresh browser profile on the editor, ready: Monaco loaded, the server
@@ -56,6 +45,8 @@ async function open({ context, intro = false } = {}) {
   return { page, ctx, errors, foreign, close: () => ctx.close() }
 }
 
+// Wait until the workspace is written to the browser's storage (the page says so in body[data-saved]).
+const saved = (page) => page.locator("body[data-saved='true']").waitFor({ timeout: 10_000 })
 // Wait until the language server has nothing pending.
 const settled = (page) => page.locator("body[data-busy='false']").waitFor({ timeout: 10_000 })
 const item = (page, p) => page.locator(`[role=treeitem][data-path="${p}"]`)
@@ -339,7 +330,7 @@ test("the workspace is kept in the browser across a reload", async () => {
     await at(first.page, "id:bob", 0)
     await first.page.keyboard.type("# kept\n")
     await settled(first.page)
-    await first.page.waitForTimeout(600)
+    await saved(first.page)
     await first.page.close()
     const second = await open({ context })
     assert.match(await text(second.page, "data/people.ttl"), /# kept\nid:bob/)
@@ -653,7 +644,7 @@ test("a folder opened in place stays linked after a reload", inPlace, async () =
     const first = await open({ context })
     await first.page.getByRole("button", { name: "Open Folder in Place" }).click()
     await item(first.page, "proj/a.ttl").waitFor()
-    await first.page.waitForTimeout(600)
+    await saved(first.page)
     await first.page.close()
     const { page } = await open({ context })
     await openFile(page, "proj/a.ttl")
@@ -704,7 +695,7 @@ test("a disk folder named like a folder of the browser gets its own name; the br
     await at(page, "@prefix", 0)
     await page.keyboard.type("# mine\n")
     await page.keyboard.press("ControlOrMeta+s")
-    await page.waitForTimeout(300)
+    await page.locator("#toast", { hasText: "Kept in this browser" }).waitFor()
     assert.equal(await page.locator('.tab[data-path="data/graphs.trig"]').getAttribute("class"), "tab")
     assert.equal(await disk(page, "graphs.trig", "data"), null)
     // The disk folder's own files still save to it.
@@ -736,12 +727,12 @@ test("resetting the workspace unlinks folders opened in place, also after a relo
       await at(page, "@prefix", 0)
       await page.keyboard.type("# mine\n")
       await page.keyboard.press("ControlOrMeta+s")
-      await page.waitForTimeout(300)
+      await page.locator("#toast", { hasText: "Kept in this browser" }).waitFor()
       assert.equal(await page.locator('.tab[data-path="data/graphs.trig"]').getAttribute("class"), "tab")
       assert.equal(await disk(page, "graphs.trig", "data"), null)
     }
     await edit()
-    await page.waitForTimeout(600)
+    await saved(page)
     await page.close()
     page = (await open({ context })).page
     await edit()

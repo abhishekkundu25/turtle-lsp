@@ -170,3 +170,14 @@ test("a shared prefix can be renamed and then renamed back", async () => {
     })
   }
 })
+
+test("a prefix is renamed only to a valid prefix name", async () => {
+  // PN_PREFIX: starts with a letter, no trailing dot, no colon or space.
+  for (const bad of ["1x", "a.", "-a", "_a", "a b", "a:b", "é!"]) {
+    await assert.rejects(rename("data.ttl", "ex:a", bad), /not a valid prefix name/, bad)
+  }
+  for (const ok of ["a.b", "a-1", "é"]) {
+    const edit = await rename("data.ttl", "ex:a", ok)
+    assert.ok(edited(edit)["data.ttl"].every((e) => e.endsWith(` ${ok}`)), ok)
+  }
+})

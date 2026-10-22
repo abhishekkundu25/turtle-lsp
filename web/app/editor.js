@@ -4,7 +4,11 @@
 import { WORKSPACE } from "./samples.js"
 import { LspClient, connect, markers, registerSyntax, languageOf, quietJson } from "./editor-lsp.js"
 import { zip } from "./zip.js"
-import * as store from "./store.js"
+import { createWorkspaceStore, claim } from "./workspace-store.js"
+import { $, esc } from "./dom.js"
+import { dirOf, nameOf, join, under, uriOf } from "./paths.js"
+import { LIMITS, picked, walkDropped, walkHandle, admit, limitsNote, readTextCapped } from "./files.js"
+import { toMonacoRange, fromMonacoRange } from "./text.js"
 import { createSearch } from "./search.js"
 import { createSettings } from "./settings.js"
 import { createTheme } from "./theme.js"
@@ -13,21 +17,11 @@ import { createHierarchy } from "./hierarchy.js"
 import { createDiff } from "./diff.js"
 import { createQueryPane, isQuery } from "./query-pane.js"
 
-const ROOT = "file:///work/"
-// The files a folder contributes, by extension; anything else is skipped.
-const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/i
-const MAX_FILES = 2000
-const MAX_FILE_BYTES = 10 * 1024 * 1024
 const SAVE_DELAY_MS = 300
+// A fetched ontology larger than this is refused.
+const MAX_FETCH_BYTES = LIMITS.fileBytes
+const FETCH_TIMEOUT_MS = 30_000
 const ICON = { turtle: "TTL", trig: "TRIG", ntriples: "NT", nquads: "NQ", sparql: "RQ", json: "LD" }
-
-const $ = (id) => document.getElementById(id)
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
-const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "")
-const nameOf = (p) => p.slice(p.lastIndexOf("/") + 1)
-const join = (dir, name) => (dir ? `${dir}/${name}` : name)
-const under = (p, dir) => p === dir || p.startsWith(dir + "/")
-const uriOf = (path) => ROOT + path.split("/").map(encodeURIComponent).join("/")
 
 // ---- state --------------------------------------------------------------------------
 
@@ -53,6 +47,7 @@ const W = {
   panel: true,
   editing: null, // { mode: "newFile" | "newFolder" | "rename", dir, path }
   folded: new Set(), // files whose problems are folded in the Problems panel
+  readOnly: false, // another tab owns the workspace: this one shows it and writes nothing
 }
 for (const key of ["tabs", "active"]) {
   Object.defineProperty(W, key, { get: () => W.groups[W.g][key], set: (v) => (W.groups[W.g][key] = v) })
@@ -60,6 +55,47 @@ for (const key of ["tabs", "active"]) {
 let monaco, editor, client, hooks, search, settings, hierarchy
 let diff, theme, vim, queries
 const pathByUri = new Map()
+
+// What the browser keeps of the workspace (workspace-store.js): the files
+// touched since the last write, and the layout when it changed. A cursor
+// move or a diagnostics publish is neither.
+const ws = createWorkspaceStore({
+  delay: SAVE_DELAY_MS,
+  source: {
+    file(path) {
+      const f = W.files.get(path)
+      return f ? { text: f.model.getValue(), disk: f.disk } : null
+    },
+    layout: () => ({
+      folders: [...W.folders],
+      expanded: [...W.expanded],
+      roots: [...W.roots].map(([path, handle]) => ({ path, handle })),
+      groups: W.groups.map((g) => ({ tabs: g.tabs, active: g.active })),
+      focused: W.g,
+      settings: settings.values(),
+    }),
+  },
+  // `body[data-saved]`: "true" once everything is written, "false" while a
+  // change waits or is being written, "error" when storage refuses, "readonly"
+  // in a tab that does not own the workspace.
+  onState(state) {
+    document.body.dataset.saved = state === "clean" ? "true" : state === "pending" || state === "saving" ? "false" : state
+    if (state === "clean") $("status-storage").textContent = "Kept in this browser"
+    else if (state === "error") $("status-storage").textContent = "Not kept: this browser refuses storage"
+    else if (state === "readonly") $("status-storage").textContent = "Read-only: open in another tab"
+  },
+  onConflict: (paths) => toast(`${paths.length} file${paths.length === 1 ? " was" : "s were"} changed in another tab and not saved here: ${paths.join(", ")}`),
+})
+let restoring = false // the workspace is being read back: nothing to write
+const touch = (path) => restoring || ws.touch(path)
+const touchLayout = () => restoring || ws.touchLayout()
+
+// A change to the workspace in a tab that does not own it is refused.
+function writable() {
+  if (!W.readOnly) return true
+  toast("This workspace is open in another tab, so this tab is read-only. Close the other tab to edit here.")
+  return false
+}
 
 // The folder opened in place that `path` is in, if any.
 function rootOf(path) {
@@ -78,6 +114,7 @@ function setDisk(f, disk, version) {
   f.disk = disk
   if (version === undefined) version = disk !== null && f.model.getValue() === disk ? f.model.getAlternativeVersionId() : NaN
   f.saved = version
+  touch(f.path)
 }
 
 // ---- the workspace ---------------------------------------------------------------------
@@ -102,23 +139,21 @@ function addFile(path, text, { disk } = {}) {
   const key = model.uri.toString()
   pathByUri.set(key, path)
   // A file created inside a folder opened in place is not on disk yet.
-  const f = { model }
+  const f = { model, path }
   setDisk(f, disk !== undefined ? disk : rootOf(path) ? null : undefined)
   W.files.set(path, f)
   // Each change goes as its range and text (Monaco orders them from the end
   // of the document, so they apply in sequence).
   model.onDidChangeContent((e) => {
-    const contentChanges = e.changes.map((c) => ({
-      range: {
-        start: { line: c.range.startLineNumber - 1, character: c.range.startColumn - 1 },
-        end: { line: c.range.endLineNumber - 1, character: c.range.endColumn - 1 },
-      },
-      text: c.text,
-    }))
+    const contentChanges = e.changes.map((c) => ({ range: fromMonacoRange(c.range), text: c.text }))
     client.notify("textDocument/didChange", { textDocument: { uri: key, version: model.getVersionId() }, contentChanges })
+    touch(path)
     changed({ tabs: true })
   })
-  client.notify("textDocument/didOpen", { textDocument: { uri: key, languageId: languageOf(path), version: model.getVersionId(), text } })
+  // The model's text, which the server's copy must equal: Monaco may have
+  // normalised the line endings of `text`.
+  client.notify("textDocument/didOpen", { textDocument: { uri: key, languageId: languageOf(path), version: model.getVersionId(), text: model.getValue() } })
+  touch(path)
 }
 
 // `keepGroups`: a group left without tabs stays (a move puts the tab back).
@@ -132,6 +167,7 @@ function removeFile(path, { keepGroups = false } = {}) {
   pathByUri.delete(key)
   f.model.dispose()
   W.files.delete(path)
+  touch(path)
   for (let i = W.groups.length - 1; i >= 0; i--) {
     W.groups[i].views.delete(path)
     closeTab(path, { group: i, quiet: true, force: true, keepGroup: keepGroups })
@@ -169,6 +205,7 @@ function movePath(from, to) {
 
 // Drag and drop within the explorer: `path` into folder `dir`.
 function moveInto(path, dir) {
+  if (!writable()) return
   const dest = join(dir, nameOf(path))
   if (dest === path || under(dir, path)) return
   if (W.files.has(dest) || folderList().has(dest)) return toast(`${dest} already exists.`)
@@ -177,10 +214,11 @@ function moveInto(path, dir) {
   movePath(path, dest)
   if (folder) W.folders.delete(path)
   if (dir) W.expanded.add(dir)
-  changed({ tree: true, tabs: true })
+  changed({ tree: true, tabs: true, layout: true })
 }
 
 function deletePath(path) {
+  if (!writable()) return
   const removed = [...W.files].filter(([p]) => under(p, path)).map(([p, f]) => ({ path: p, text: f.model.getValue() }))
   const folders = [...W.folders].filter((d) => under(d, path))
   const roots = [...W.roots].filter(([r]) => under(r, path))
@@ -188,40 +226,23 @@ function deletePath(path) {
   for (const d of folders) W.folders.delete(d)
   for (const [r] of roots) W.roots.delete(r)
   if (W.selected && under(W.selected, path)) W.selected = null
-  changed({ tree: true, tabs: true })
+  changed({ tree: true, tabs: true, layout: true })
   toast(`Deleted ${nameOf(path)}`, "Undo", () => {
     for (const d of folders) W.folders.add(d)
     for (const [r, handle] of roots) W.roots.set(r, handle)
     for (const f of removed) addFile(f.path, f.text)
-    changed({ tree: true })
+    changed({ tree: true, layout: true })
   })
-}
-
-// ---- persistence -------------------------------------------------------------------------
-
-let saveTimer
-function persist() {
-  clearTimeout(saveTimer)
-  saveTimer = setTimeout(async () => {
-    const ok = await store.save({
-      files: [...W.files].map(([path, f]) => ({ path, text: f.model.getValue(), disk: f.disk })),
-      folders: [...W.folders],
-      expanded: [...W.expanded],
-      roots: [...W.roots].map(([path, handle]) => ({ path, handle })),
-      groups: W.groups.map((g) => ({ tabs: g.tabs, active: g.active })),
-      focused: W.g,
-      settings: settings.values(),
-    })
-    $("status-storage").textContent = ok ? "Kept in this browser" : "Not kept: this browser refuses storage"
-  }, SAVE_DELAY_MS)
 }
 
 // ---- rendering ------------------------------------------------------------------------------
 
 let frame = null
 const due = { tree: false, tabs: false, problems: false, status: false }
-// Something changed: redraw what it affects on the next frame, and keep it.
+// Something changed: redraw what it affects on the next frame. `layout`: the
+// folders, tabs or settings changed, which the browser keeps.
 function changed(what = {}) {
+  if (what.layout) touchLayout()
   for (const k of Object.keys(due)) due[k] ||= Boolean(what[k])
   if (!frame) {
     frame = requestAnimationFrame(() => {
@@ -233,7 +254,6 @@ function changed(what = {}) {
       for (const k of Object.keys(due)) due[k] = false
     })
   }
-  persist()
 }
 
 const NONE = { e: 0, w: 0 }
@@ -371,7 +391,7 @@ function openTab(path, { focus = true } = {}) {
   const view = g.views.get(path)
   if (view) editor.restoreViewState(view)
   if (focus) editor.focus()
-  changed({ tree: true, tabs: true, status: true })
+  changed({ tree: true, tabs: true, status: true, layout: true })
   if (!$("view-outline").hidden) renderOutline()
 }
 
@@ -402,7 +422,7 @@ async function closeTab(path, { group = W.g, quiet = false, force = false, keepG
     else editor.setModel(null)
     if (W.groups[focused]) focusGroup(focused)
   }
-  changed({ tabs: true, status: true })
+  changed({ tabs: true, status: true, layout: true })
 }
 
 // ---- editor groups (the split editor) ----------------------------------------------------
@@ -410,6 +430,7 @@ async function closeTab(path, { group = W.g, quiet = false, force = false, keepG
 function editorOptions() {
   return {
     model: null,
+    readOnly: W.readOnly,
     automaticLayout: true,
     theme: theme.monacoTheme(),
     fontSize: 13,
@@ -471,7 +492,7 @@ function split() {
   if (W.groups.length === 1) addGroup()
   focusGroup(W.groups.length - 1)
   if (path) openTab(path)
-  changed({ tabs: true })
+  changed({ tabs: true, layout: true })
 }
 
 function closeGroup(i) {
@@ -485,7 +506,7 @@ function closeGroup(i) {
 
 function reveal(path, range) {
   openTab(path)
-  const r = new monaco.Range(range.start.line + 1, range.start.character + 1, range.end.line + 1, range.end.character + 1)
+  const r = toMonacoRange(monaco, range)
   editor.setSelection(r)
   editor.revealRangeInCenter(r)
   editor.focus()
@@ -511,14 +532,14 @@ async function renderOutline() {
 // ---- import and export --------------------------------------------------------------------------
 
 // `entries`: [{ file, path }] with paths relative to the target folder.
-async function importEntries(entries, dir = "") {
-  let added = 0, replaced = 0, skipped = 0
+// `skipped`: files already left out by the walk that found them.
+async function importEntries(entries, dir = "", skipped = 0) {
+  if (!writable()) return
+  let added = 0, replaced = 0
   let first = null
-  for (const { file, path, onDisk } of entries) {
-    if (!KNOWN.test(file.name) || file.size > MAX_FILE_BYTES || W.files.size >= MAX_FILES) {
-      skipped++
-      continue
-    }
+  const { take, skipped: refused } = admit(entries, { have: W.files.size })
+  skipped += refused
+  for (const { file, path, onDisk } of take) {
     const dest = join(dir, path)
     if (W.files.has(dest)) replaced++
     else added++
@@ -528,51 +549,26 @@ async function importEntries(entries, dir = "") {
     for (let d = dirOf(dest); d; d = dirOf(d)) W.expanded.add(d)
   }
   if (first) openTab(first, { focus: false })
-  changed({ tree: true })
+  changed({ tree: true, layout: true })
   const parts = [`${added} file${added === 1 ? "" : "s"} imported`]
   if (replaced) parts.push(`${replaced} replaced`)
-  if (skipped) parts.push(`${skipped} skipped (only Turtle, TriG, N-Triples, N-Quads and SPARQL files up to 10 MB)`)
+  if (skipped) parts.push(`${skipped} skipped (${limitsNote()})`)
   toast(parts.join(", "))
 }
-const picked = (list) => [...list].map((file) => ({ file, path: file.webkitRelativePath || file.name }))
-
-// The files under dropped items, folders walked, paths kept.
-async function dropped(items) {
-  const out = []
-  const walk = async (entry) => {
-    if (entry.isFile) {
-      const file = await new Promise((res, rej) => entry.file(res, rej))
-      out.push({ file, path: entry.fullPath.replace(/^\//, "") })
-    } else if (entry.isDirectory) {
-      const reader = entry.createReader()
-      for (;;) {
-        const batch = await new Promise((res, rej) => reader.readEntries(res, rej))
-        if (!batch.length) break
-        for (const e of batch) await walk(e)
-      }
-    }
-  }
-  for (const entry of [...items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean)) await walk(entry)
-  return out
+// Items dropped from the desktop, imported into `dir`.
+async function importDropped(items, dir) {
+  const { entries, skipped } = await walkDropped(items)
+  return importEntries(entries, dir, skipped)
 }
 
 // A folder on the disk, opened for editing in place: Ctrl+S writes back.
 async function openInPlace() {
+  if (!writable()) return
   let dir
   try {
     dir = await window.showDirectoryPicker({ mode: "readwrite" })
   } catch {
     return
-  }
-  const entries = []
-  const walk = async (handle, prefix) => {
-    for await (const [name, h] of handle.entries()) {
-      if (h.kind === "directory") {
-        if (!name.startsWith(".") && name !== "node_modules") await walk(h, join(prefix, name))
-      } else if (KNOWN.test(name)) {
-        entries.push({ file: await h.getFile(), path: join(prefix, name), onDisk: true })
-      }
-    }
   }
   // The same folder again updates its files; another one never takes in the
   // files already in the workspace: a name in use gets a number, as in VS Code.
@@ -584,9 +580,9 @@ async function openInPlace() {
     root = dir.name
     for (let k = 2; taken(root); k++) root = `${dir.name} (${k})`
   }
-  await walk(dir, root)
+  const { entries, skipped } = await walkHandle(dir, root)
   W.roots.set(root, dir)
-  await importEntries(entries)
+  await importEntries(entries, "", skipped)
   $("status-storage").textContent = `${root}: Ctrl+S saves to disk`
 }
 
@@ -643,6 +639,7 @@ async function saveAll() {
 
 // Put the disk text back into `path` (undoable).
 async function revert(path = W.active) {
+  if (!writable()) return
   const f = W.files.get(path)
   if (!f || f.disk === undefined) return toast("Only files of a folder opened in place can be reverted.")
   try {
@@ -690,26 +687,46 @@ function ask(message, detail, buttons) {
 // declaring its IRI, which is what makes the import present here.
 const FETCHED = { "text/turtle": "ttl", "application/x-turtle": "ttl", "application/n-triples": "nt", "application/trig": "trig", "application/n-quads": "nq" }
 async function fetchImport(iri) {
-  let r
+  if (!writable()) return
+  let u
   try {
-    r = await fetch(iri, { headers: { Accept: "text/turtle, application/n-triples;q=0.9, application/trig;q=0.8, application/n-quads;q=0.7" } })
+    u = new URL(iri)
+    // The IRI also goes into a Turtle line below: nothing that ends its brackets.
+    if ((u.protocol !== "http:" && u.protocol !== "https:") || /[\u0000-\u0020<>"{}|^`\\]/.test(iri)) throw new Error("not an address")
   } catch {
-    return toast(`Could not fetch ${iri}: the site does not allow pages to read it, or it is offline. Download the file and import it instead.`)
+    return toast(`Could not fetch ${String(iri).slice(0, 200)}: it is not an http or https address.`)
   }
-  if (!r.ok) return toast(`Could not fetch ${iri}: HTTP ${r.status}`)
-  const type = (r.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase()
-  const ext = FETCHED[type] ?? (type === "" || type === "text/plain" ? iri.match(/\.(ttl|nt|trig|nq)$/i)?.[1]?.toLowerCase() : undefined)
-  if (!ext) return toast(`${iri} came back as ${type || "an unknown type"}: only Turtle, N-Triples, TriG and N-Quads can be loaded here.`)
-  const text = await r.text()
-  const u = new URL(iri)
-  const stem = (u.pathname.split("/").filter(Boolean).pop() ?? "").replace(/\.[^.]*$/, "") || "ontology"
-  let path = `imports/${u.host}/${stem}.${ext}`
-  for (let k = 2; W.files.has(path); k++) path = `imports/${u.host}/${stem}-${k}.${ext}`
-  const head = `# Fetched from <${iri}> on ${new Date().toISOString().slice(0, 10)}.\n<${iri}> a <http://www.w3.org/2002/07/owl#Ontology> .\n\n`
-  addFile(path, head + text)
-  for (let d = dirOf(path); d; d = dirOf(d)) W.expanded.add(d)
-  changed({ tree: true })
-  toast(`Fetched ${iri} into ${path}`)
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), FETCH_TIMEOUT_MS)
+  try {
+    let r
+    try {
+      r = await fetch(u, { headers: { Accept: "text/turtle, application/n-triples;q=0.9, application/trig;q=0.8, application/n-quads;q=0.7" }, signal: abort.signal, credentials: "omit", referrerPolicy: "no-referrer" })
+    } catch {
+      return toast(`Could not fetch ${iri}: the site does not allow pages to read it, or it is offline. Download the file and import it instead.`)
+    }
+    if (!r.ok) return toast(`Could not fetch ${iri}: HTTP ${r.status}`)
+    const type = (r.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase()
+    const ext = FETCHED[type] ?? (type === "" || type === "text/plain" ? u.pathname.match(/\.(ttl|nt|trig|nq)$/i)?.[1]?.toLowerCase() : undefined)
+    if (!ext) return toast(`${iri} came back as ${type || "an unknown type"}: only Turtle, N-Triples, TriG and N-Quads can be loaded here.`)
+    let text
+    try {
+      text = await readTextCapped(r, MAX_FETCH_BYTES)
+    } catch {
+      return toast(`Could not fetch ${iri}: the connection broke or took too long. Download the file and import it instead.`)
+    }
+    if (text === null) return toast(`${iri} is larger than ${MAX_FETCH_BYTES / 1024 / 1024} MB: download it and import it instead.`)
+    const stem = (u.pathname.split("/").filter(Boolean).pop() ?? "").replace(/\.[^.]*$/, "") || "ontology"
+    let path = `imports/${u.host}/${stem}.${ext}`
+    for (let k = 2; W.files.has(path); k++) path = `imports/${u.host}/${stem}-${k}.${ext}`
+    const head = `# Fetched from <${iri}> on ${new Date().toISOString().slice(0, 10)}.\n<${iri}> a <http://www.w3.org/2002/07/owl#Ontology> .\n\n`
+    addFile(path, head + text)
+    for (let d = dirOf(path); d; d = dirOf(d)) W.expanded.add(d)
+    changed({ tree: true, layout: true })
+    toast(`Fetched ${iri} into ${path}`)
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function copy(text) {
@@ -739,29 +756,60 @@ function exportZip() {
 
 // ---- commands --------------------------------------------------------------------------------------
 
+// Put `text` into `model` as one undoable step.
+function replaceText(model, text) {
+  model.pushStackElement()
+  model.pushEditOperations([], [{ range: model.getFullModelRange(), text }], () => null)
+  model.pushStackElement()
+}
+
+// The model of `path` if it is still the one that had version `version`: a
+// result computed for an older text must not overwrite newer edits.
+function unchanged(path, model, version) {
+  const f = W.files.get(path)
+  return Boolean(f && f.model === model && !model.isDisposed() && model.getVersionId() === version)
+}
+
 async function fixAll() {
-  const files = [...W.files].map(([path, f]) => ({ name: path, text: f.model.getValue() }))
+  if (!writable()) return
+  const snapshot = [...W.files].map(([path, f]) => ({ path, model: f.model, version: f.model.getVersionId(), text: f.model.getValue() }))
   try {
-    const { files: fixed, applied } = await client.fixAll(files)
+    const { files: fixed, applied } = await client.fixAll(snapshot.map(({ path, text }) => ({ name: path, text })))
+    const at = new Map(snapshot.map((s) => [s.path, s]))
+    let stale = 0
     for (const { name, text } of fixed) {
-      const m = W.files.get(name)?.model
-      if (m && m.getValue() !== text) m.pushEditOperations([], [{ range: m.getFullModelRange(), text }], () => null)
+      const s = at.get(name)
+      if (!s || s.text === text) continue
+      if (!unchanged(name, s.model, s.version)) stale++
+      else replaceText(s.model, text)
     }
-    toast(applied ? `Applied ${applied} fix${applied === 1 ? "" : "es"}` : "Nothing to fix")
+    const note = stale ? `; ${stale} file${stale === 1 ? "" : "s"} changed meanwhile and ${stale === 1 ? "was" : "were"} left as ${stale === 1 ? "it is" : "they are"}: run Fix All again` : ""
+    toast((applied ? `Applied ${applied} fix${applied === 1 ? "" : "es"}` : "Nothing to fix") + note)
   } catch (e) {
     toast(`Fixing failed: ${e.message}`)
   }
 }
 
 async function formatAll() {
+  if (!writable()) return
   let n = 0
-  for (const [, f] of W.files) {
-    const r = await client.request("textDocument/formatting", { textDocument: { uri: f.model.uri.toString() }, options: { tabSize: 4, insertSpaces: true } })
+  let stale = 0
+  for (const [path, f] of [...W.files]) {
+    const { model } = f
+    const version = model.getVersionId()
+    const r = await client.request("textDocument/formatting", { textDocument: { uri: model.uri.toString() }, options: { tabSize: 4, insertSpaces: true } })
     if (!r?.length) continue
-    f.model.pushEditOperations([], r.map((e) => ({ range: new monaco.Range(e.range.start.line + 1, e.range.start.character + 1, e.range.end.line + 1, e.range.end.character + 1), text: e.newText })), () => null)
+    if (!unchanged(path, model, version)) {
+      stale++
+      continue
+    }
+    model.pushStackElement()
+    model.pushEditOperations([], r.map((e) => ({ range: toMonacoRange(monaco, e.range), text: e.newText })), () => null)
+    model.pushStackElement()
     n++
   }
-  toast(n ? `Formatted ${n} file${n === 1 ? "" : "s"}` : "Every file is already formatted (or has syntax errors)")
+  const note = stale ? ` (${stale} file${stale === 1 ? "" : "s"} changed meanwhile and ${stale === 1 ? "was" : "were"} skipped: run it again)` : ""
+  toast((n ? `Formatted ${n} file${n === 1 ? "" : "s"}` : "Every file is already formatted (or has syntax errors)") + note)
 }
 
 function toggleLabels() {
@@ -772,12 +820,13 @@ function toggleLabels() {
 const targetDir = () => (W.selected == null ? "" : W.files.has(W.selected) ? dirOf(W.selected) : W.selected)
 
 function startNew(mode, dir = targetDir()) {
+  if (!writable()) return
   if (dir) W.expanded.add(dir)
   W.editing = { mode, dir }
   renderTree()
 }
 function startRename(path = W.selected) {
-  if (!path) return
+  if (!path || !writable()) return
   W.editing = { mode: "rename", path, dir: dirOf(path) }
   renderTree()
 }
@@ -801,7 +850,7 @@ function finishEdit(value) {
     movePath(e.path, dest)
     W.folders.delete(e.path)
   }
-  changed({ tree: true, tabs: true })
+  changed({ tree: true, tabs: true, layout: true })
 }
 
 // Go to File (Ctrl+P), as VS Code's Quick Open: a name finds files, "#name"
@@ -898,7 +947,7 @@ function resetWorkspace(files) {
   for (const f of files) addFile(f.path, f.text)
   const first = files.find((f) => f.path === "start-here.ttl") ?? files[0]
   if (first) openTab(first.path)
-  changed({ tree: true, tabs: true, problems: true, status: true })
+  changed({ tree: true, tabs: true, problems: true, status: true, layout: true })
 }
 
 const COMMANDS = [
@@ -912,7 +961,7 @@ const COMMANDS = [
   { id: "file.saveAll", label: "File: Save All", key: () => monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyCode.KeyS), run: saveAll },
   { id: "file.revert", label: "File: Revert File", run: () => revert() },
   { id: "file.compareSaved", label: "File: Compare with Saved", run: () => W.active && diff.compareWithSaved(W.active, W.files.get(W.active)) },
-  { id: "rdf.previewFormat", label: "RDF: Preview Formatting", run: () => W.active && diff.previewFormatting(W.active, W.files.get(W.active)) },
+  { id: "rdf.previewFormat", label: "RDF: Preview Formatting", run: () => W.active && writable() && diff.previewFormatting(W.active, W.files.get(W.active)) },
   { id: "view.split", label: "View: Split Editor", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Backslash, run: split },
   { id: "file.new", label: "File: New File", run: () => startNew("newFile") },
   { id: "file.newFolder", label: "File: New Folder", run: () => startNew("newFolder") },
@@ -924,8 +973,8 @@ const COMMANDS = [
   { id: "view.typeHierarchy", label: "Show Type Hierarchy", key: () => monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyH, menu: "navigation", run: () => (showView("hierarchy"), hierarchy.show()) },
   { id: "settings.open", label: "Preferences: Open Settings", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Comma, run: () => settings.open() },
   { id: "view.panel", label: "View: Toggle Panel", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyJ, run: () => togglePanel() },
-  { id: "workspace.sample", label: "Workspace: Reset to the Sample", run: () => resetWorkspace(WORKSPACE) },
-  { id: "workspace.clear", label: "Workspace: Remove All Files", run: () => resetWorkspace([]) },
+  { id: "workspace.sample", label: "Workspace: Reset to the Sample", run: () => writable() && resetWorkspace(WORKSPACE) },
+  { id: "workspace.clear", label: "Workspace: Remove All Files", run: () => writable() && resetWorkspace([]) },
 ]
 
 function togglePanel(open = !W.panel) {
@@ -988,7 +1037,7 @@ function wire() {
     W.selected = p
     if (W.files.has(p)) openTab(p)
     else W.expanded.has(p) ? W.expanded.delete(p) : W.expanded.add(p)
-    changed({ tree: true })
+    changed({ tree: true, layout: true })
   })
   tree.addEventListener("contextmenu", (e) => {
     e.preventDefault()
@@ -1031,7 +1080,7 @@ function wire() {
       const next = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))]
       if (next) (W.selected = next.dataset.path), renderTree()
       e.preventDefault()
-    } else if (e.key === "Enter" && W.selected) W.files.has(W.selected) ? openTab(W.selected) : (W.expanded.has(W.selected) ? W.expanded.delete(W.selected) : W.expanded.add(W.selected), changed({ tree: true }))
+    } else if (e.key === "Enter" && W.selected) W.files.has(W.selected) ? openTab(W.selected) : (W.expanded.has(W.selected) ? W.expanded.delete(W.selected) : W.expanded.add(W.selected), changed({ tree: true, layout: true }))
   })
   tree.addEventListener("focusout", (e) => {
     if (e.target.classList?.contains("tree-input")) setTimeout(() => W.editing && finishEdit(e.target.value), 0)
@@ -1059,7 +1108,7 @@ function wire() {
     const moving = e.dataTransfer?.getData(MOVE)
     if (moving) return moveInto(moving, dir)
     const items = e.dataTransfer?.items
-    if (items?.length && items[0].webkitGetAsEntry) importEntries(await dropped(items), dir)
+    if (items?.length && items[0].webkitGetAsEntry) importDropped(items, dir)
     else if (e.dataTransfer?.files?.length) importEntries(picked(e.dataTransfer.files), dir)
   })
 
@@ -1071,7 +1120,7 @@ function wire() {
     "Open Folder in Place": openInPlace,
     "Download File": () => downloadFile(),
     "Export Workspace as Zip": exportZip,
-    "Collapse Folders": () => (W.expanded.clear(), changed({ tree: true })),
+    "Collapse Folders": () => (W.expanded.clear(), changed({ tree: true, layout: true })),
     "Fix All Problems": fixAll,
   }
   document.addEventListener("click", (e) => {
@@ -1192,6 +1241,58 @@ function defineThemes() {
   monaco.editor.defineTheme("rdf-dark", { base: "vs-dark", inherit: true, rules: rules(true), colors: {} })
 }
 
+// The workspace as the browser kept it replaces the one shown (nothing of it
+// is written back: it is what is already kept).
+function restoreWorkspace(kept) {
+  restoring = true
+  try {
+    for (const p of [...W.files.keys()]) removeFile(p)
+    while (W.groups.length > 1) closeGroup(W.groups.length - 1)
+    Object.assign(W.groups[0], { tabs: [], active: null })
+    W.groups[0].views.clear()
+    focusGroup(0)
+    W.folders = new Set(kept.folders ?? [])
+    W.roots.clear()
+    W.folded.clear()
+    W.selected = null
+    for (const r of kept.roots ?? []) W.roots.set(r.path, r.handle)
+    for (const f of kept.files) addFile(f.path, f.text, { disk: f.disk })
+    W.expanded = new Set(kept.expanded ?? [])
+    const groups = kept.groups ?? [{ tabs: kept.tabs ?? [], active: kept.active }]
+    groups.slice(0, 2).forEach((saved, i) => {
+      if (i > 0) addGroup()
+      focusGroup(i)
+      W.tabs = (saved.tabs ?? []).filter((p) => W.files.has(p))
+      const active = saved.active && W.files.has(saved.active) ? saved.active : W.tabs[0]
+      if (active) openTab(active, { focus: false })
+      if (i > 0 && !W.tabs.length) closeGroup(i)
+    })
+    focusGroup(Math.min(kept.focused ?? 0, W.groups.length - 1))
+  } finally {
+    restoring = false
+  }
+}
+
+// The settings the browser kept (or, from before there were settings, the
+// labels choice).
+const keptSettings = (kept) => kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {})
+
+// The tab that owned the workspace has gone and this one owns it now: show
+// what that tab kept, settings included (the ones this tab started with are
+// out of date, and would be written back), and let the editors write.
+async function takeOver() {
+  const kept = await ws.load()
+  if (kept) settings.replace(keptSettings(kept))
+  if (kept?.files) restoreWorkspace(kept)
+  W.readOnly = false
+  ws.setReadOnly(false)
+  for (const g of W.groups) g.editor.updateOptions({ readOnly: false })
+  document.body.dataset.saved = "true"
+  $("status-storage").textContent = "Kept in this browser"
+  changed({ tree: true, tabs: true, problems: true, status: true })
+  toast("The other tab was closed. You can edit here now.")
+}
+
 async function main() {
   window.MonacoEnvironment = { getWorkerUrl: () => "monaco-worker.js" }
   monaco = await new Promise((resolve, reject) => {
@@ -1240,14 +1341,19 @@ async function main() {
   })
   hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
   $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
+  // One tab owns the workspace; another one shows it and writes nothing.
+  const ownership = await claim()
+  W.readOnly = !ownership.owner
+  ws.setReadOnly(W.readOnly)
+  document.body.dataset.saved = W.readOnly ? "readonly" : "true"
   // Settings go to the server before the first file opens.
-  const kept = await store.load()
+  const kept = await ws.load()
   vim = createVim({
     monaco,
     status: $("status-vim"),
     commands: { save: () => save(), saveAll: () => saveAll(), close: () => W.active && closeTab(W.active), open: (path) => W.files.has(path) && (openTab(path), true) },
   })
-  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true }), onClose: () => editor?.focus(), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
+  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: keptSettings(kept), onChange: () => changed({ status: true, layout: true }), onClose: () => editor?.focus(), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
   diff = createDiff({ monaco, client, mount: document.querySelector(".center"), toast, options: editorOptions, setup: (ed) => settings.applyTo(ed), onClose: () => editor?.focus() })
 
   // Cross-file navigation (definition, references) opens the file in a tab.
@@ -1289,25 +1395,17 @@ async function main() {
   addEventListener("beforeunload", (e) => {
     if ([...W.files.keys()].some(dirty)) e.preventDefault()
   })
-  if (kept?.files) {
-    for (const d of kept.folders ?? []) W.folders.add(d)
-    for (const r of kept.roots ?? []) W.roots.set(r.path, r.handle)
-    for (const f of kept.files) addFile(f.path, f.text, { disk: f.disk })
-    W.expanded = new Set(kept.expanded ?? [])
-    const groups = kept.groups ?? [{ tabs: kept.tabs ?? [], active: kept.active }]
-    groups.slice(0, 2).forEach((saved, i) => {
-      if (i > 0) addGroup()
-      focusGroup(i)
-      W.tabs = (saved.tabs ?? []).filter((p) => W.files.has(p))
-      const active = saved.active && W.files.has(saved.active) ? saved.active : W.tabs[0]
-      if (active) openTab(active, { focus: false })
-      if (i > 0 && !W.tabs.length) closeGroup(i)
-    })
-    focusGroup(Math.min(kept.focused ?? 0, W.groups.length - 1))
-  } else {
-    resetWorkspace(WORKSPACE)
+  if (W.readOnly) {
+    $("status-storage").textContent = "Read-only: open in another tab"
+    toast("This workspace is open in another tab, so this tab shows it read-only. Close the other tab to edit here.")
+    ownership.whenFree.then(takeOver)
   }
+  if (kept?.files) restoreWorkspace(kept)
+  else resetWorkspace(WORKSPACE)
   changed({ tree: true, tabs: true, problems: true, status: true })
+  // Hand over what is waiting to be written when the page goes.
+  addEventListener("pagehide", () => ws.flush())
+  document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && ws.flush())
   try {
     if (!localStorage.getItem(INTRO_SEEN)) (localStorage.setItem(INTRO_SEEN, "1"), intro())
   } catch {}

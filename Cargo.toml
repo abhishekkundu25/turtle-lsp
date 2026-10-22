@@ -1,9 +1,14 @@
 [package]
 name = "turtle-lsp"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
+# 1.91: `str::floor_char_boundary` (src/query/mod.rs) is the newest std item in use,
+# found by `cargo clippy` (clippy::incompatible_msrv); let chains need 1.88 and the
+# highest `rust-version` among the dependencies is 1.88 (icu_*, sha2). CI builds with
+# rust-toolchain.toml. Lower this only after clippy passes on the lower number.
+rust-version = "1.91"
 license = "MIT"
-description = "Fast language server for RDF Turtle"
+description = "Fast language server and command-line checker for RDF (Turtle, TriG, N-Triples, N-Quads, JSON-LD) and SPARQL, with SHACL validation"
 repository = "https://github.com/abhishekkundu25/turtle-lsp"
 
 [dependencies]
@@ -12,14 +17,22 @@ line-index = "0.1.2"
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 oxilangtag = "0.1.6"
+# Two oxiri versions are in the tree on purpose: this crate parses and resolves IRIs
+# with 0.3, while the Oxigraph crates (oxrdf, spargebra, spareval, oxttl, oxjsonld)
+# still depend on 0.2.
 oxiri = "0.3.1"
 oxrdfxml = { version = "0.2.4", features = ["rdf-12"] }
 rayon = "1.12.0"
-regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case", "unicode-gencat"] }
+# Default features: spareval turns them on anyway and Cargo unifies features, so a
+# trimmed list here would change nothing but the manifest.
+regex = "1.13.1"
 rustc-hash = "2.1.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-spareval = { version = "0.2", features = ["sparql-12", "sep-0006"] }
+# Exact pin: the [patch.crates-io] entry below only applies while the registry version
+# it replaces still satisfies this requirement. With "0.2", `cargo update` would pick a
+# published 0.2.8, ignore the patch (a warning) and drop the cancellation checks.
+spareval = { version = "=0.2.7", features = ["sparql-12", "sep-0006"] }
 spargebra = { version = "0.4", features = ["sparql-12"] }
 url = "2.5.8"
 
@@ -36,3 +49,14 @@ oxjsonld = { version = "0.2.6", features = ["rdf-12"] }
 # spareval 0.2.7 with cancellation checks inside its joins (vendor/spareval/PATCH.md).
 [patch.crates-io]
 spareval = { path = "vendor/spareval" }
+
+# Whole-program optimisation, one codegen unit, no symbols.
+# `panic` stays "unwind": Server::guarded, the worker and SHACL threads catch handler
+# panics (catch_unwind), and a query's Stop cancellation unwinds out of spareval's joins
+# (src/query/mod.rs, vendor/spareval/PATCH.md). The browser build (web/engine) has its
+# own profile.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"

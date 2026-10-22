@@ -1,25 +1,29 @@
 //! Turtle 1.2, TriG 1.2, N-Triples 1.2 and N-Quads 1.2 syntax: a lexer and a resilient
 //! recursive-descent parser that records the span of every term, so every
-//! editor feature reads one parse. JSON-LD documents produce the same
-//! [`Parsed`] through [`crate::jsonld`].
+//! editor feature reads one parse. JSON-LD has its own frontend, which builds
+//! the same [`Parsed`]; this module does not call it.
 
 mod iri;
 pub mod lexer;
+pub(crate) mod names;
 mod parser;
 
-pub use iri::{Iri, IriKey, IriMap};
+pub use iri::Iri;
+pub(crate) use iri::{IriKey, IriMap};
+pub(crate) use parser::has_scheme;
 pub use parser::{parse, parse_with_base};
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 
 pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+pub(crate) const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 
 /// The language a document is written in. One parser reads the first four:
 /// TriG adds graph blocks to Turtle, N-Triples is read as Turtle with every
 /// construct N-Triples forbids reported as an error, and N-Quads is N-Triples
 /// with an optional graph label before each line's `.`. JSON-LD has its own
-/// frontend ([`crate::jsonld`]) producing the same [`Parsed`].
+/// frontend, which builds the same [`Parsed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Syntax {
     #[default]
@@ -34,7 +38,7 @@ pub enum Syntax {
 impl Syntax {
     /// From an LSP language id (`turtle`, `trig`, `ntriples` / `n-triples`,
     /// `nquads` / `n-quads`, `jsonld`).
-    pub fn from_language_id(id: &str) -> Option<Syntax> {
+    pub(crate) fn from_language_id(id: &str) -> Option<Syntax> {
         match id.to_ascii_lowercase().as_str() {
             "turtle" => Some(Syntax::Turtle),
             "trig" => Some(Syntax::TriG),
@@ -45,11 +49,12 @@ impl Syntax {
         }
     }
 
-    /// From the extension of a path or URI: `.ttl` / `.turtle`, `.trig`, `.nt`,
-    /// `.nq`, `.jsonld`.
+    /// From the extension of a path or URI, in any letter case (`Data.TTL` is
+    /// Turtle): `.ttl` / `.turtle`, `.trig`, `.nt`, `.nq`, `.jsonld`.
     pub fn from_extension(path: &str) -> Option<Syntax> {
         let name = path.rsplit(['/', '\\']).next()?;
-        match name.rsplit_once('.')?.1 {
+        let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+        match ext.as_str() {
             "ttl" | "turtle" => Some(Syntax::Turtle),
             "trig" => Some(Syntax::TriG),
             "nt" => Some(Syntax::NTriples),
@@ -62,7 +67,7 @@ impl Syntax {
     /// A `trig`, `ntriples`, `nquads` or `jsonld` language id wins; otherwise
     /// (no id, an unknown one such as `json`, or the generic `turtle`) the
     /// extension decides; else Turtle.
-    pub fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
+    pub(crate) fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
         match language_id.and_then(Syntax::from_language_id) {
             // `turtle` is what editors send when they lump RDF files together:
             // a `.trig`, `.nt`, `.nq` or `.jsonld` name is the better witness then.
@@ -80,7 +85,7 @@ impl Syntax {
     /// Whether the document can use `@prefix` / `PREFIX` prefixes and gets
     /// the project's (`prefixes.ttl`): Turtle and TriG. The line-based
     /// syntaxes have none, and JSON-LD defines its own in `@context`.
-    pub fn has_prefixes(self) -> bool {
+    pub(crate) fn has_prefixes(self) -> bool {
         matches!(self, Syntax::Turtle | Syntax::TriG)
     }
 }
@@ -96,7 +101,7 @@ impl Span {
     pub fn new(start: u32, end: u32) -> Self {
         Span { start, end }
     }
-    pub fn contains(&self, offset: u32) -> bool {
+    pub(crate) fn contains(&self, offset: u32) -> bool {
         self.start <= offset && offset <= self.end
     }
 }
@@ -118,7 +123,7 @@ pub enum Role {
 impl Role {
     /// Where a resource is introduced: a top-level subject, or a graph name
     /// (the block holds the graph's triples). Definition goes here.
-    pub fn is_definition(self) -> bool {
+    pub(crate) fn is_definition(self) -> bool {
         matches!(self, Role::Subject | Role::Graph)
     }
 }
@@ -168,6 +173,38 @@ pub struct PrefixUse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlankId(pub u32);
 
+/// The base direction of a directional language-tagged string
+/// (`"text"@ar--rtl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Direction {
+    Ltr,
+    Rtl,
+}
+
+impl Direction {
+    /// `ltr` or `rtl`, as written after `--`.
+    pub(crate) fn parse(s: &str) -> Option<Direction> {
+        match s {
+            "ltr" => Some(Direction::Ltr),
+            "rtl" => Some(Direction::Rtl),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Direction::Ltr => "ltr",
+            Direction::Rtl => "rtl",
+        }
+    }
+}
+
+impl std::fmt::Display for Direction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Node {
     Iri(Iri),
@@ -175,7 +212,10 @@ pub enum Node {
     Literal {
         value: Box<str>,
         datatype: Iri,
+        /// The bare language tag, lowercased (`en`, never `en--rtl`).
         lang: Option<Iri>,
+        /// The base direction; only with a `lang` (`rdf:dirLangString`).
+        dir: Option<Direction>,
     },
     Triple(Box<(Node, Iri, Node)>),
 }
@@ -196,6 +236,11 @@ pub struct Triple {
     /// The TriG or N-Quads graph the triple is in; `None` is the default
     /// graph (and always the case in Turtle and N-Triples).
     pub graph: Option<GraphName>,
+    /// A term was written as a prefixed name whose prefix is not declared.
+    /// The term is kept as the name's own text (`nope:p`), which is not what
+    /// the author meant, so [`crate::rdf::Graph::new`] leaves the triple out
+    /// of the query and SHACL graph.
+    pub unresolved: bool,
 }
 
 /// The name of a TriG or N-Quads graph: an IRI or a blank node. Kept apart from [`Node`]
@@ -248,18 +293,40 @@ pub enum Severity {
 #[derive(Clone, Debug)]
 pub struct SyntaxError {
     pub span: Span,
-    pub message: String,
+    /// Borrowed when the text is fixed, as most are.
+    pub(crate) message: Cow<'static, str>,
     pub severity: Severity,
     /// The diagnostic code: `syntax` for Turtle and its relatives,
     /// `json-syntax` and `jsonld-context` for JSON-LD.
     pub code: &'static str,
 }
 
+impl SyntaxError {
+    pub fn new(
+        span: Span,
+        message: impl Into<Cow<'static, str>>,
+        severity: Severity,
+        code: &'static str,
+    ) -> SyntaxError {
+        SyntaxError {
+            span,
+            message: message.into(),
+            severity,
+            code,
+        }
+    }
+
+    /// What is wrong, as shown to the user.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Parsed {
     pub syntax: Syntax,
     pub prefixes: Vec<PrefixDecl>,
-    pub base: Option<String>,
+    pub(crate) base: Option<String>,
     /// The base the parse started from (the document's URL), if any; `base`
     /// is the last `@base` directive.
     pub document_base: Option<String>,
@@ -280,7 +347,7 @@ impl Parsed {
     /// `span`. The other syntaxes' statements never overlap: the last one
     /// starting at or before `span`, which contains it when any does (an
     /// unfinished statement may end before it).
-    pub fn statements_around(&self, span: Span) -> impl Iterator<Item = usize> + '_ {
+    pub(crate) fn statements_around(&self, span: Span) -> impl Iterator<Item = usize> + '_ {
         let st = &self.statements;
         let i = st.partition_point(|s| s.span.start <= span.start);
         let nested = self.syntax == Syntax::JsonLd;
@@ -292,10 +359,40 @@ impl Parsed {
 
     /// The innermost statement around `span` (see
     /// [`Parsed::statements_around`]).
-    pub fn statement_at(&self, span: Span) -> Option<usize> {
+    pub(crate) fn statement_at(&self, span: Span) -> Option<usize> {
         self.statements_around(span).next()
     }
 }
 
 /// Prefixes visible before the first line of a document (from `prefixes.ttl`).
 pub type PrefixMap = FxHashMap<String, String>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extensions_are_read_in_any_letter_case() {
+        for (path, syntax) in [
+            ("a/Data.TTL", Syntax::Turtle),
+            ("x.Turtle", Syntax::Turtle),
+            ("file:///w/G.TriG", Syntax::TriG),
+            ("a.NT", Syntax::NTriples),
+            ("a.Nq", Syntax::NQuads),
+            ("C:\\w\\ctx.JSONLD", Syntax::JsonLd),
+        ] {
+            assert_eq!(Syntax::from_extension(path), Some(syntax), "{path}");
+        }
+        assert_eq!(Syntax::from_extension("a.JSON"), None);
+        assert_eq!(
+            Syntax::detect(Some("turtle"), "file:///W/DATA.NQ"),
+            Syntax::NQuads
+        );
+    }
+
+    #[test]
+    fn a_node_stays_small() {
+        // Every triple holds two; the base direction fits beside the tag.
+        assert!(std::mem::size_of::<Node>() <= 32);
+    }
+}

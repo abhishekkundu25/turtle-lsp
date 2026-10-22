@@ -1,0 +1,20 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.com/ns#> .
+
+ex:Target
+    a sh:SPARQLTarget ;
+    sh:prefixes ex:Declarations ;
+    sh:select """
+        SELECT ?this
+        WHERE { ?this a ex:Thing ; ex:status ?s . VALUES ?s { "open" "pending" } }
+    """ .
+
+ex:Declarations sh:declare [ sh:prefix "ex" ; sh:namespace "http://example.com/ns#" ] .
+
+ex:Function
+    a sh:SPARQLFunction ;
+    sh:parameter [ sh:path ex:a ; sh:datatype <http://www.w3.org/2001/XMLSchema#integer> ] ;
+    sh:returnType <http://www.w3.org/2001/XMLSchema#integer> ;
+    sh:select "SELECT ($a + 1 AS ?result) WHERE { }" .
+
+ex:Data a ex:Thing ; ex:status "open" .

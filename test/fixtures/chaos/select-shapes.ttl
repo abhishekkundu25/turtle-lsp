@@ -1,0 +1,67 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/ns#> .
+
+ex:Prefixes
+    sh:declare [ sh:prefix "ex" ; sh:namespace "http://example.com/ns#"^^xsd:anyURI ] ,
+               [ sh:prefix "rdfs" ; sh:namespace "http://www.w3.org/2000/01/rdf-schema#"^^xsd:anyURI ] .
+
+ex:PersonShape
+    a sh:NodeShape ;
+    sh:targetClass ex:Person ;
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "{$this} must have a label" ;
+        sh:prefixes ex:Prefixes ;
+        sh:select """
+            SELECT $this ?value
+            WHERE {
+                $this ex:knows ?value .
+                FILTER NOT EXISTS { ?value rdfs:label ?l }
+                OPTIONAL { ?value ex:age ?age . FILTER(?age > 18 && STRLEN(STR(?value)) < 100) }
+            }
+            ORDER BY ?value
+            LIMIT 10
+        """ ;
+    ] ;
+    sh:property [
+        sh:path ( ex:knows [ sh:inversePath ex:knownBy ] ) ;
+        sh:sparql [
+            sh:prefixes ex:Prefixes ;
+            sh:select '''SELECT $this ?value WHERE { $this $PATH ?value . ?value a ?t . FILTER(?t != ex:Robot) }''' ;
+        ]
+    ] .
+
+ex:Ask
+    a sh:SPARQLAskValidator ;
+    sh:prefixes ex:Prefixes ;
+    sh:ask """ASK { $value a ex:Person ; rdfs:label ?l . FILTER(LANG(?l) = "en") }""" .
+
+ex:Rule
+    a sh:NodeShape ;
+    sh:rule [
+        a sh:SPARQLRule ;
+        sh:prefixes ex:Prefixes ;
+        sh:construct """
+            CONSTRUCT { $this ex:friend ?y }
+            WHERE { $this ex:knows ?y . ?y ex:knows $this }
+        """ ;
+    ] ;
+    sh:rule [
+        a sh:SPARQLUpdate ;
+        sh:prefixes ex:Prefixes ;
+        sh:update """
+            INSERT { $this ex:checked true }
+            WHERE { $this a ex:Person }
+        """ ;
+    ] .
+
+ex:Broken
+    a sh:NodeShape ;
+    sh:sparql [
+        sh:select "SELECT $this WHERE { $this ex:p ?o . FILTER( }" ;
+    ] ,
+    [
+        sh:select """SELECT ?x WHERE { ?x undeclared:p ?o }""" ;
+    ] .

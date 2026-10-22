@@ -4,14 +4,15 @@
 //! match the expected `sh:ValidationReport` as a multiset of (focus node,
 //! path, value, source shape, source constraint, severity, component), plus
 //! `sh:resultMessage` where the expected report gives one. Blank nodes match
-//! any blank node; paths compare by structure. A test whose expected result
-//! is `sht:Failure` passes when validation reports a failure.
+//! any blank node; paths compare by structure, the expected one read from
+//! the report by [`expected_path`] (not by the validator's own path reader).
+//! A test whose expected result is `sht:Failure` passes when validation
+//! reports a failure. Pass counts go to stderr.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use turtle_lsp::rdf::graph::{Graph, Id, Term};
-use turtle_lsp::shacl::validate::parse_path;
-use turtle_lsp::shacl::{self, validate_report};
+use turtle_lsp::shacl::{self, Path as ShPath, validate_report};
 use turtle_lsp::syntax::{Iri, Parsed, PrefixMap, RDF, Syntax, XSD, parse_with_base};
 
 const MF: &str = "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#";
@@ -96,6 +97,57 @@ fn term(g: &Graph, id: Id) -> String {
     }
 }
 
+/// A SHACL path in the report graph, in SPARQL property path syntax with
+/// every group in parentheses: `<p>`, `^(x)`, `(a / b)`, `(a | b)`,
+/// `(x)*`, `(x)+`, `(x)?`; `invalid` for a node that is no path.
+fn expected_path(g: &Graph, node: Id) -> String {
+    let path = |n: Id| expected_path(g, n);
+    let join = |head: Id, sep: &str| {
+        let members: Vec<String> = g.list(head).into_iter().map(path).collect();
+        format!("({})", members.join(sep))
+    };
+    if let Term::Iri(i) = g.term(node) {
+        return format!("<{}>", i.as_str());
+    }
+    if g.object(node, iri(&format!("{RDF}first"))).is_some() {
+        return join(node, " / ");
+    }
+    if let Some(inner) = g.object(node, sh("inversePath")) {
+        return format!("^({})", path(inner));
+    }
+    if let Some(list) = g.object(node, sh("alternativePath")) {
+        return join(list, " | ");
+    }
+    for (p, op) in [
+        ("zeroOrMorePath", "*"),
+        ("oneOrMorePath", "+"),
+        ("zeroOrOnePath", "?"),
+    ] {
+        if let Some(inner) = g.object(node, sh(p)) {
+            return format!("({}){op}", path(inner));
+        }
+    }
+    "invalid".into()
+}
+
+/// The validator's path, written as [`expected_path`] writes the report's.
+fn actual_path(p: &ShPath) -> String {
+    let join = |ps: &[ShPath], sep: &str| {
+        let members: Vec<String> = ps.iter().map(actual_path).collect();
+        format!("({})", members.join(sep))
+    };
+    match p {
+        ShPath::Predicate(i) => format!("<{}>", i.as_str()),
+        ShPath::Inverse(q) => format!("^({})", actual_path(q)),
+        ShPath::Sequence(ps) => join(ps, " / "),
+        ShPath::Alternative(ps) => join(ps, " | "),
+        ShPath::ZeroOrMore(q) => format!("({})*", actual_path(q)),
+        ShPath::OneOrMore(q) => format!("({})+", actual_path(q)),
+        ShPath::ZeroOrOne(q) => format!("({})?", actual_path(q)),
+        ShPath::Invalid => "invalid".into(),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 struct Key {
     focus: String,
@@ -160,7 +212,7 @@ fn cases(suite: &Suite, url: &str) -> Vec<Case> {
                         focus: opt(r, "focusNode"),
                         path: g
                             .object(r, sh("resultPath"))
-                            .map_or(String::new(), |p| format!("{:?}", parse_path(&g, p))),
+                            .map_or(String::new(), |p| expected_path(&g, p)),
                         value: opt(r, "value"),
                         shape: opt(r, "sourceShape"),
                         constraint: opt(r, "sourceConstraint"),
@@ -225,7 +277,7 @@ fn run(suite: &Suite, case: &mut Case) -> Option<String> {
             messages.sort();
             Key {
                 focus: term(&g, r.focus),
-                path: r.path.as_ref().map_or(String::new(), |p| format!("{p:?}")),
+                path: r.path.as_ref().map_or(String::new(), actual_path),
                 value: r.value.map_or(String::new(), |v| term(&g, v)),
                 shape: term(&g, r.shape),
                 constraint: r.constraint.map_or(String::new(), |c| term(&g, c)),
@@ -271,7 +323,10 @@ fn run_suite(suite: &Suite) -> (usize, usize) {
         for mut case in cases(suite, &url_of(suite, f)) {
             total += 1;
             let failure = run(suite, &mut case);
-            let allowed = suite.allowed.iter().any(|(t, _)| case.iri.contains(t));
+            let allowed = suite
+                .allowed
+                .iter()
+                .any(|(t, _)| case.iri == format!("<{t}>"));
             match (failure, allowed) {
                 (None, false) => passed += 1,
                 (None, true) => allowed_passing.push(case.iri.clone()),
@@ -280,11 +335,17 @@ fn run_suite(suite: &Suite) -> (usize, usize) {
             }
         }
     }
-    println!(
-        "W3C SHACL {}: {passed}/{total} pass, {} allowed failures",
-        suite.name,
-        suite.allowed.len()
-    );
+    // Straight to stderr, past the test harness's capture of `eprintln!`.
+    std::io::Write::write_all(
+        &mut std::io::stderr(),
+        format!(
+            "W3C SHACL {}: {passed}/{total} pass, {} allowed failures\n",
+            suite.name,
+            suite.allowed.len()
+        )
+        .as_bytes(),
+    )
+    .unwrap();
     assert!(
         allowed_passing.is_empty(),
         "allow-listed tests now pass: {allowed_passing:?}"

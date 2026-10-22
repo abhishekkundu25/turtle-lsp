@@ -1,47 +1,61 @@
-# name	format	url
+# name	format	url	sha256
 # format: ttl, nt, trig, nq, or rdf (RDF/XML, converted to N-Triples by the harness);
 # nq-head: the first megabytes of a gzipped N-Quads dump, cut at the last full line;
 # sparql-examples: a tarball of the SIB sparql-examples repository, unpacked into
 # NAME/; every sh:select / sh:ask / sh:construct / sh:describe / sh:update in
 # its .ttl files is a SPARQL case.
-schemaorg	ttl	https://schema.org/version/latest/schemaorg-current-https.ttl
-w3c-shacl	ttl	https://www.w3.org/ns/shacl.ttl
-w3c-prov	ttl	https://www.w3.org/ns/prov.ttl
-w3c-org	ttl	https://www.w3.org/ns/org.ttl
-w3c-dcat	ttl	https://www.w3.org/ns/dcat.ttl
-w3c-sosa	ttl	https://www.w3.org/ns/sosa/
-w3c-ssn	ttl	https://www.w3.org/ns/ssn/
-w3c-owl	ttl	https://www.w3.org/2002/07/owl.ttl
-w3c-rdfs	ttl	https://www.w3.org/2000/01/rdf-schema.ttl
-w3c-time	ttl	https://www.w3.org/2006/time
-w3c-skos	rdf	https://www.w3.org/2004/02/skos/core.rdf
-dcterms	ttl	https://www.dublincore.org/specifications/dublin-core/dcmi-terms/dublin_core_terms.ttl
-foaf	rdf	http://xmlns.com/foaf/spec/index.rdf
-brick	ttl	https://brickschema.org/schema/Brick.ttl
-saref	ttl	https://saref.etsi.org/core/v3.2.1/saref.ttl
-qudt-schema	ttl	https://qudt.org/2.1/schema/qudt
-qudt-units	ttl	https://qudt.org/2.1/vocab/unit
-qudt-quantitykinds	ttl	https://qudt.org/2.1/vocab/quantitykind
-dbpedia-ontology	nt	https://downloads.dbpedia.org/2016-10/dbpedia_2016-10.nt
-dbpedia-berlin	nt	https://dbpedia.org/data/Berlin.ntriples
-dbpedia-einstein	nt	https://dbpedia.org/data/Albert_Einstein.ntriples
-dbpedia-rdf-ttl	ttl	https://dbpedia.org/data/Resource_Description_Framework.ttl
-wikidata-Q42	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q42.ttl
-wikidata-Q64	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q64.ttl
-wikidata-Q90	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q90.ttl
-wikidata-Q937	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q937.ttl
-wikidata-Q2	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q2.ttl
-wikidata-Q42-nt	nt	https://www.wikidata.org/wiki/Special:EntityData/Q42.nt
-obo-bfo	rdf	http://purl.obolibrary.org/obo/bfo.owl
-obo-ro	rdf	http://purl.obolibrary.org/obo/ro.owl
-obo-pato	rdf	http://purl.obolibrary.org/obo/pato.owl
-obo-go-basic	rdf	http://purl.obolibrary.org/obo/go/go-basic.owl
-w3c-odrl	ttl	https://www.w3.org/ns/odrl/2/ODRL22.ttl
-w3c-vcard	ttl	https://www.w3.org/2006/vcard/ns.ttl
-w3c-locn	ttl	https://www.w3.org/ns/locn.ttl
-w3c-activitystreams	ttl	https://www.w3.org/ns/activitystreams-owl
-gist-core	ttl	https://raw.githubusercontent.com/semanticarts/gist/develop/ontologies/gistCore.ttl
-dcat-ap-shacl	ttl	https://raw.githubusercontent.com/SEMICeu/DCAT-AP/master/releases/3.0.0/shacl/dcat-ap-SHACL.ttl
-shacl-shacl	ttl	https://raw.githubusercontent.com/w3c/data-shapes/gh-pages/shacl12-test-suite/tests/core/complex/shacl-shacl.ttl
-wdc-rdfa	nq-head	http://data.dws.informatik.uni-mannheim.de/structureddata/2023-12/quads/dpef.html-rdfa.nq-00000.gz
-sib-sparql-examples	sparql-examples	https://codeload.github.com/sib-swiss/sparql-examples/tar.gz/45e5b53a2d59a121221cd66a8596ef868cc58021
+#
+# sha256: the hash fetch.sh checks after it stores a file (and for files already
+# present on every run). A change prints a warning and keeps the file; with
+# CORPUS_STRICT=1 it fails the run. It covers the file as stored in test/corpus/:
+# for nq-head the cut file, not the gzip range; for sparql-examples a tree hash
+# (the sha256 of `sha256sum`-style lines, "HASH  ./path", for every file under
+# the unpacked directory, sorted by path in the C locale). Empty means unchecked.
+# Update one with: tools/corpus/fetch.sh -f, then copy the hash from the warning.
+#
+# URLs are https and versioned where the publisher has versions: schema.org
+# release, git commit, OBO dated release, Wikidata entity revision. A row stays
+# unversioned when the publisher offers only the current file (W3C /ns/, DCMI,
+# Brick, QUDT 2.1, DBpedia live data, the GO and OBO "latest" files); its hash
+# changes when the publisher edits it, and the warning is the signal.
+schemaorg	ttl	https://schema.org/version/30.1/schemaorg-current-https.ttl	7f15ca89398c4f235f478a4b3b8d1f975d63c5a860b77c8a8fce01f791b7ae2f
+w3c-shacl	ttl	https://www.w3.org/ns/shacl.ttl	0e5d8aea0eab98a072d4a02faaee1ee914ec99eab2ca473429726faed4a13f69
+w3c-prov	ttl	https://www.w3.org/ns/prov.ttl	d7ea634dbcd31347eba38157197f69d314077ef7f88fd4f90e4f24a78bfe1097
+w3c-org	ttl	https://www.w3.org/ns/org.ttl	3e01f89a17475a88f8b1606ca0fae04800d34dbbf93adc6db12dc30929848729
+w3c-dcat	ttl	https://www.w3.org/ns/dcat.ttl	d1624d3bbf364f6fc1d43b9a188bbb9e67639b1a7d46a5cb7ea3f5d47d02b62f
+w3c-sosa	ttl	https://www.w3.org/ns/sosa/	c70b0d1c843c0047e4c98e0a89392e46a05752ff6365bda7f7f55303905a0392
+w3c-ssn	ttl	https://www.w3.org/ns/ssn/	184d86189191146e314cc52b1bceb96fca11e70aacbc160d71588102a5153eb9
+w3c-owl	ttl	https://www.w3.org/2002/07/owl.ttl	718fa1db7840d3315bfce94398543f91437ef6fe933054fd93f5471d19262fc5
+w3c-rdfs	ttl	https://www.w3.org/2000/01/rdf-schema.ttl	ecee3a011b7c13ea2a7e40b0a208bfe6be53d69fdd53ee035e09e9f9e5108ad6
+w3c-time	ttl	https://www.w3.org/2006/time	251bd6970b0d7a5efa97ff681afe81a297df85deab3d860fa4f8eeba72d8f16c
+w3c-skos	rdf	https://www.w3.org/2004/02/skos/core.rdf	e79633b8d0564816cee8a99f5c9acf9a0e6fc7257c7209acd684ecad53a89dd6
+dcterms	ttl	https://www.dublincore.org/specifications/dublin-core/dcmi-terms/dublin_core_terms.ttl	13df401072dd7015bf9d75162f3e41c8138075304b7b9cc1aa1e9c16db976797
+foaf	rdf	https://xmlns.com/foaf/spec/index.rdf	3d859b5d92a2c3d041545d014fa826f682ca06d056af8c7b31e32d930abf2bc5
+brick	ttl	https://brickschema.org/schema/Brick.ttl	6631d217d480b1942f7c273bf59a8b0b992ac169dec53735a6f5d8f67a037bbe
+saref	ttl	https://saref.etsi.org/core/v3.2.1/saref.ttl	d3d859e57c7a07558a8c674868eb37a5f529636876ac7f4b26c140b2bedb218a
+qudt-schema	ttl	https://qudt.org/2.1/schema/qudt	25e9d4c127f5579b3fee083870fcbc38e0e01502f581b587c771a327b172107e
+qudt-units	ttl	https://qudt.org/2.1/vocab/unit	e370350d293d2c84d1d67b8963920ac2c5f153a9c283ac958b6a033e3c845511
+qudt-quantitykinds	ttl	https://qudt.org/2.1/vocab/quantitykind	f6b11065f2c093221f8720252fca0ecb34b5bc9dc4590d0c2871021125fc78a9
+dbpedia-ontology	nt	https://downloads.dbpedia.org/2016-10/dbpedia_2016-10.nt	2f0dc5b3f9fc570716e11d3428fb2a5468b1aae73b2903c1067feb28e26672f3
+dbpedia-berlin	nt	https://dbpedia.org/data/Berlin.ntriples	1c0e304eff6a300fc49a6c8a0d2120b05cddb3cde8750b7eba202882071ac94f
+dbpedia-einstein	nt	https://dbpedia.org/data/Albert_Einstein.ntriples	f110298dfdafd98e32df3c9765fe23fac0b1a9335ae9c9c0c1802da1b21ffb70
+dbpedia-rdf-ttl	ttl	https://dbpedia.org/data/Resource_Description_Framework.ttl	e414f03a41d05aa29b3edc4ca53bcb9398ae2037c7d49f1456996c4ec8867f49
+wikidata-Q42	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q42.ttl?revision=2557857485	a7e7179f60233cac735f95f9298ddb4f19afccf61cd52257423a1a8074cecf2a
+wikidata-Q64	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q64.ttl?revision=2556967470	5456bc46c678ae71b8bad6b88da7590a817f584e6688ff127d66fa268439f9ef
+wikidata-Q90	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q90.ttl?revision=2555380840	d2d35000247434d61256b13d0d79f21c49bd55128021d92b647d184507387195
+wikidata-Q937	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q937.ttl?revision=2557626532	2c1b84d1bda56967abdd1776b56bb250488f3b92bf8bbaf22bf5ef5ab7b2a8c0
+wikidata-Q2	ttl	https://www.wikidata.org/wiki/Special:EntityData/Q2.ttl?revision=2556598420	82a9084c2a4c87f029e99e87b56ea8d0ae3915452aa5b1b213007b68f9fb9844
+wikidata-Q42-nt	nt	https://www.wikidata.org/wiki/Special:EntityData/Q42.nt?revision=2557857485	d8fedef39637688ab770c7fe1b8ea5bd6e0c8c10d15a4012513d9f2ba03f4b17
+obo-bfo	rdf	https://purl.obolibrary.org/obo/bfo/2019-08-26/bfo.owl	ca399c2b8b79f4d12b296d5c4ea4c00940e1f82cee7d1a50ddc292aa4f6c4666
+obo-ro	rdf	https://purl.obolibrary.org/obo/ro/releases/2026-09-04/ro.owl	9a3190d49564743aa00f0b0f2e2d9c5fc5673ac7bb3c369284bf490294d42f77
+obo-pato	rdf	https://purl.obolibrary.org/obo/pato/releases/2026-10-01/pato.owl	27c1bb7d2bfeb3592274b27ad1632bc7834a71f38d216210730fc44060d3ef0c
+obo-go-basic	rdf	https://purl.obolibrary.org/obo/go/go-basic.owl	13a907d2a6586d0f7a4ba7cb556b7fe31240039268b85b01857e3f2da53e50d9
+w3c-odrl	ttl	https://www.w3.org/ns/odrl/2/ODRL22.ttl	7895765e80d86d1d0349d945a28b8a2479f03169572345080a5b3e561ef31457
+w3c-vcard	ttl	https://www.w3.org/2006/vcard/ns.ttl	2442baf3d07d660910a0e24dd96b1efe1ec22cb26d12cdfd415195da91b43a0c
+w3c-locn	ttl	https://www.w3.org/ns/locn.ttl	b6661139db549f0a277a4b1842ed6cb25ee6980f89291f3629b786213de0258e
+w3c-activitystreams	ttl	https://www.w3.org/ns/activitystreams-owl	e28fd3be62791b42422f2e97c0ab56141238e774be7aa860e5f03da1b2fe158f
+gist-core	ttl	https://raw.githubusercontent.com/semanticarts/gist/4669a16af13ca30be27cb1fecd2176fe120af899/ontologies/gistCore.ttl	14b779ab6874ccfa65cce9cefb6fd66030a94e41dd67110e4f4576da6682c4c6
+dcat-ap-shacl	ttl	https://raw.githubusercontent.com/SEMICeu/DCAT-AP/fff059bd9c14c1adff5abfd6f32ff437eaec3390/releases/3.0.0/shacl/dcat-ap-SHACL.ttl	92f76609d78d257123e75bc6b7155df5cc0a63f14c29fbc12b0ac95c56af2059
+shacl-shacl	ttl	https://raw.githubusercontent.com/w3c/data-shapes/162b858054d71f777951b3908b351bc07d4e8401/shacl12-test-suite/tests/core/complex/shacl-shacl.ttl	6eb0458907d726a430190543f60731e3f35938b06b3580955a6024126586d383
+wdc-rdfa	nq-head	https://data.dws.informatik.uni-mannheim.de/structureddata/2023-12/quads/dpef.html-rdfa.nq-00000.gz	fb299ccd3ef15cebed68ea6201d7a8a714462516f7e8775b9615f7790bf22ccc
+sib-sparql-examples	sparql-examples	https://codeload.github.com/sib-swiss/sparql-examples/tar.gz/45e5b53a2d59a121221cd66a8596ef868cc58021	75ae95d8116c620ecee5b1777feda9d0987b59a57f29369336ae195b2617cde8

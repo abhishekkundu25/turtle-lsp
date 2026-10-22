@@ -13,6 +13,7 @@
 
 use super::{Token, TokenKind};
 use crate::syntax::Span;
+use crate::syntax::names::{is_pn_chars, is_pn_chars_base, is_pn_chars_u};
 
 /// Keywords, upper case. Matched case-insensitively.
 const KEYWORDS: &[&str] = &[
@@ -137,7 +138,7 @@ const FUNCTIONS: &[&str] = &[
 ];
 
 /// Aggregate function names in their grammar spelling.
-pub const AGGREGATES: &[&str] = &[
+pub(crate) const AGGREGATES: &[&str] = &[
     "AVG",
     "COUNT",
     "GROUP_CONCAT",
@@ -148,7 +149,7 @@ pub const AGGREGATES: &[&str] = &[
 ];
 
 /// The keyword `word` is, in upper case, if it is one.
-pub fn keyword(word: &str) -> Option<&'static str> {
+pub(crate) fn keyword(word: &str) -> Option<&'static str> {
     KEYWORDS
         .iter()
         .find(|k| k.eq_ignore_ascii_case(word))
@@ -157,7 +158,7 @@ pub fn keyword(word: &str) -> Option<&'static str> {
 
 /// The grammar spelling of built-in function or aggregate `word` (`STRLEN`,
 /// `isBLANK`, `langMatches`, `GROUP_CONCAT`), if it is one.
-pub fn function(word: &str) -> Option<&'static str> {
+pub(crate) fn function(word: &str) -> Option<&'static str> {
     FUNCTIONS
         .iter()
         .chain(AGGREGATES)
@@ -166,40 +167,19 @@ pub fn function(word: &str) -> Option<&'static str> {
 }
 
 /// Whether `word` names an aggregate (`COUNT`, `SUM`, ...).
-pub fn is_aggregate(word: &str) -> bool {
+pub(crate) fn is_aggregate(word: &str) -> bool {
     AGGREGATES.iter().any(|k| k.eq_ignore_ascii_case(word))
 }
 
 /// Every keyword (upper case) and every built-in function and aggregate (in
 /// its grammar spelling), for completion.
-pub fn words() -> impl Iterator<Item = (&'static str, TokenKind)> {
+pub(crate) fn words() -> impl Iterator<Item = (&'static str, TokenKind)> {
     KEYWORDS.iter().map(|k| (*k, TokenKind::Keyword)).chain(
         FUNCTIONS
             .iter()
             .chain(AGGREGATES)
             .map(|f| (*f, TokenKind::Function)),
     )
-}
-
-pub(crate) fn is_pn_chars_base(c: char) -> bool {
-    matches!(c,
-        'A'..='Z' | 'a'..='z' | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
-        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
-        | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
-        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
-}
-
-pub(crate) fn is_pn_chars_u(c: char) -> bool {
-    c == '_' || is_pn_chars_base(c)
-}
-
-pub(crate) fn is_pn_chars(c: char) -> bool {
-    is_pn_chars_u(c)
-        || c == '-'
-        || c.is_ascii_digit()
-        || c == '\u{B7}'
-        || ('\u{300}'..='\u{36F}').contains(&c)
-        || ('\u{203F}'..='\u{2040}').contains(&c)
 }
 
 fn is_varname_rest(c: char) -> bool {
@@ -552,7 +532,7 @@ impl Lexer<'_> {
                     let w = &self.src[i..wend];
                     let kind = if w == "a" {
                         TokenKind::A
-                    } else if w == "true" || w == "false" {
+                    } else if w.eq_ignore_ascii_case("true") || w.eq_ignore_ascii_case("false") {
                         TokenKind::Boolean
                     } else if keyword(w).is_some() {
                         TokenKind::Keyword

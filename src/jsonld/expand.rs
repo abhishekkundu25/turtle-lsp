@@ -25,7 +25,8 @@
 //!
 //! Expansion also records the document's [`SourceIndex`]: each key,
 //! `@type` and `@id` value it reads, the term definitions they resolve to,
-//! and the active context inside each object.
+//! the active context inside each object, and the strings of the contexts it
+//! processes with the definitions they name where they are written.
 //!
 //! Errors are the spec's, reported as `jsonld-context` diagnostics whose
 //! message starts with the W3C error code. The spec stops at the first one;
@@ -39,7 +40,7 @@ use super::context::{
 };
 use super::json::{Json, Member, Object, Value};
 use super::source::{Builder, SourceIndex, Use, UseKind, UseRole};
-use super::{DropReason, Dropped, UsedTerm, unquoted};
+use super::{DropReason, Dropped, UsedTerm};
 use crate::syntax::{Form, Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -47,7 +48,7 @@ use std::sync::Arc;
 
 /// An expanded element.
 #[derive(Clone, Debug)]
-pub enum Item<'a> {
+pub(crate) enum Item<'a> {
     Node(Box<NodeObject<'a>>),
     Value(ValueObject<'a>),
     List(ListObject<'a>),
@@ -57,7 +58,7 @@ impl Item<'_> {
     /// Where the item is written: a node object's JSON object (or the
     /// `@id` of one written only as a reference), a value's JSON, a list's
     /// array or `@list` object.
-    pub fn span(&self) -> Span {
+    pub(crate) fn span(&self) -> Span {
         match self {
             Item::Node(n) => n.reference_span(),
             Item::Value(v) => v.span,
@@ -68,56 +69,56 @@ impl Item<'_> {
 
 /// An IRI (or blank node identifier) as written in the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IriUse {
+pub(crate) struct IriUse {
     /// The expanded value: an absolute IRI, a blank node identifier, or a
     /// relative IRI when no base resolved it.
-    pub iri: Arc<str>,
+    pub(crate) iri: Arc<str>,
     /// The string it is written in, without quotes.
-    pub span: Span,
-    pub form: Form,
+    pub(crate) span: Span,
+    pub(crate) form: Form,
 }
 
 /// A `@type` of a node object.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypeUse {
-    pub iri: IriUse,
+pub(crate) struct TypeUse {
+    pub(crate) iri: IriUse,
     /// The key that gave it: `@type` (or an alias), or the property of a
     /// `@type` map.
-    pub key: Span,
+    pub(crate) key: Span,
 }
 
 /// A property and its values, as one key gives them.
 #[derive(Clone, Debug)]
-pub struct Property<'a> {
-    pub iri: Arc<str>,
+pub(crate) struct Property<'a> {
+    pub(crate) iri: Arc<str>,
     /// The key, without quotes.
-    pub key: Span,
-    pub form: Form,
-    pub items: Vec<Item<'a>>,
+    pub(crate) key: Span,
+    pub(crate) form: Form,
+    pub(crate) items: Vec<Item<'a>>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct NodeObject<'a> {
+pub(crate) struct NodeObject<'a> {
     /// The JSON object, or the string a value coerced to `@id` is written
     /// in (without quotes).
-    pub span: Span,
-    pub id: Option<IriUse>,
-    pub types: Vec<TypeUse>,
-    pub props: Vec<Property<'a>>,
+    pub(crate) span: Span,
+    pub(crate) id: Option<IriUse>,
+    pub(crate) types: Vec<TypeUse>,
+    pub(crate) props: Vec<Property<'a>>,
     /// `@reverse` properties: each item is a node object whose property
     /// points at this node.
-    pub reverse: Vec<Property<'a>>,
+    pub(crate) reverse: Vec<Property<'a>>,
     /// `@graph`: this node names a graph holding these items.
-    pub graph: Option<Vec<Item<'a>>>,
-    pub included: Vec<Item<'a>>,
+    pub(crate) graph: Option<Vec<Item<'a>>>,
+    pub(crate) included: Vec<Item<'a>>,
     /// Written as an object with entries besides `@id` (and `@index`): it
     /// describes the node, rather than only referring to it.
-    pub described: bool,
+    pub(crate) described: bool,
 }
 
 impl NodeObject<'_> {
     /// The node's `@id` when it is only referred to, else its span.
-    pub fn reference_span(&self) -> Span {
+    pub(crate) fn reference_span(&self) -> Span {
         match &self.id {
             Some(id) if !self.described => id.span,
             _ => self.span,
@@ -125,7 +126,7 @@ impl NodeObject<'_> {
     }
 
     /// A graph object: `@graph`, and nothing but `@id` and `@index` beside it.
-    pub fn is_graph_object(&self) -> bool {
+    pub(crate) fn is_graph_object(&self) -> bool {
         self.graph.is_some()
             && self.types.is_empty()
             && self.props.is_empty()
@@ -136,7 +137,7 @@ impl NodeObject<'_> {
 
 /// The value of a value object, borrowed from the document.
 #[derive(Clone, Copy, Debug)]
-pub enum Literal<'a> {
+pub(crate) enum Literal<'a> {
     String(&'a str),
     /// A JSON number as written.
     Number(&'a str),
@@ -146,43 +147,47 @@ pub enum Literal<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ValueObject<'a> {
+pub(crate) struct ValueObject<'a> {
     /// The JSON scalar, or the `{"@value": ...}` object.
-    pub span: Span,
-    pub value: Literal<'a>,
+    pub(crate) span: Span,
+    pub(crate) value: Literal<'a>,
     /// The datatype IRI, where it is written (`None`: from a term's type
     /// mapping in the context) and how.
-    pub datatype: Option<(Arc<str>, Option<Span>, Form)>,
+    pub(crate) datatype: Option<(Arc<str>, Option<Span>, Form)>,
     /// The language tag, and where it is written (`None`: from the context).
-    pub language: Option<(Arc<str>, Option<Span>)>,
-    pub direction: Option<Direction>,
+    pub(crate) language: Option<(Arc<str>, Option<Span>)>,
+    pub(crate) direction: Option<Direction>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ListObject<'a> {
+pub(crate) struct ListObject<'a> {
     /// The array or `{"@list": ...}` object.
-    pub span: Span,
-    pub items: Vec<Item<'a>>,
+    pub(crate) span: Span,
+    pub(crate) items: Vec<Item<'a>>,
 }
 
 /// An expanded document.
 #[derive(Debug, Default)]
-pub struct Expanded<'a> {
+pub(crate) struct Expanded<'a> {
     /// The top-level node objects (the content of a top-level object that
     /// has only `@graph`).
-    pub items: Vec<Item<'a>>,
+    pub(crate) items: Vec<Item<'a>>,
     /// `jsonld-context` errors.
-    pub errors: Vec<SyntaxError>,
-    pub dropped: Vec<Dropped>,
+    pub(crate) errors: Vec<SyntaxError>,
+    pub(crate) dropped: Vec<Dropped>,
     /// Keys, types and `@vocab`-coerced values that are terms of the
     /// active context, in the order they are read.
-    pub used_terms: Vec<UsedTerm>,
-    pub index: SourceIndex,
+    pub(crate) used_terms: Vec<UsedTerm>,
+    pub(crate) index: SourceIndex,
 }
 
 /// Expand the document `root`, whose URL is `base`, with contexts from
 /// `processor`.
-pub fn expand<'a>(root: &'a Json, base: Option<&str>, processor: &mut Processor) -> Expanded<'a> {
+pub(crate) fn expand<'a>(
+    root: &'a Json,
+    base: Option<&str>,
+    processor: &mut Processor,
+) -> Expanded<'a> {
     let mut x = Expander {
         processor,
         base,
@@ -304,29 +309,9 @@ type Expansion = Option<(Arc<str>, Form)>;
 
 /// An object's entries as a map: with duplicate keys, the last one.
 fn map_entries(o: &Object) -> Vec<&Member> {
-    let usable = |m: &&Member| !matches!(m.value.value, Value::Invalid);
-    let n = o.members.len();
-    if n <= 16 {
-        return o
-            .members
-            .iter()
-            .enumerate()
-            .filter(|(i, m)| !o.members[i + 1..].iter().any(|later| later.key == m.key))
-            .map(|(_, m)| m)
-            .filter(usable)
-            .collect();
-    }
-    let mut last: FxHashMap<&str, usize> = FxHashMap::default();
-    for (i, m) in o.members.iter().enumerate() {
-        last.insert(&m.key, i);
-    }
-    o.members
-        .iter()
-        .enumerate()
-        .filter(|(i, m)| last[&*m.key] == *i)
-        .map(|(_, m)| m)
-        .filter(usable)
-        .collect()
+    let mut entries = o.entries();
+    entries.retain(|m| !matches!(m.value.value, Value::Invalid));
+    entries
 }
 
 /// A value, or each item of an array.
@@ -444,12 +429,12 @@ impl<'a> Expander<'a, '_, '_, '_> {
     }
 
     fn error(&mut self, code: &str, span: Span, message: impl std::fmt::Display) -> Skip {
-        self.errors.push(SyntaxError {
+        self.errors.push(SyntaxError::new(
             span,
-            message: format!("{code}: {message}"),
-            severity: Severity::Error,
-            code: super::context::DIAGNOSTIC_CODE,
-        });
+            format!("{code}: {message}"),
+            Severity::Error,
+            super::context::DIAGNOSTIC_CODE,
+        ));
         Skip
     }
 
@@ -526,9 +511,9 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 match ctx.term(p.key).and_then(|d| d.context.clone()) {
                     Some(sc) => {
                         let c = self.scoped(ctx, &sc, p.span, true);
-                        Ex::One(self.value_expansion(&c, Some(p.key), lit, el.span))
+                        Ex::One(self.value_expansion(&c, Some(p.key), lit, el.span, el.inner))
                     }
-                    None => Ex::One(self.value_expansion(ctx, Some(p.key), lit, el.span)),
+                    None => Ex::One(self.value_expansion(ctx, Some(p.key), lit, el.span, el.inner)),
                 }
             }
             // 5
@@ -587,8 +572,14 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 .processor
                 .process(&ctx, &m.value, self.base, Options::default())
             {
-                Ok(c) => ctx = Cow::Owned(c),
-                Err(e) => self.context_error(e),
+                Ok(c) => {
+                    self.index.context_strings(&m.value, &ctx, &c);
+                    ctx = Cow::Owned(c);
+                }
+                Err(e) => {
+                    self.index.context_strings(&m.value, &ctx, &ctx);
+                    self.context_error(e);
+                }
             }
         }
         // 10, 11
@@ -603,7 +594,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         for m in &type_keys {
             let mut terms: Vec<(&str, Span)> = items_of(&m.value)
                 .iter()
-                .filter_map(|t| Some((t.as_str()?, unquoted(t.span))))
+                .filter_map(|t| Some((t.as_str()?, t.inner)))
                 .collect();
             terms.sort_by(|a, b| a.0.cmp(b.0));
             for (t, span) in terms {
@@ -638,7 +629,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         let mut nests: Vec<&'a Member> = Vec::new();
         for &m in entries {
             let key: &'a str = &m.key;
-            let kspan = unquoted(m.key_span);
+            let kspan = m.key_inner;
             // 13.1
             if key == "@context" {
                 self.index.push_use(Use {
@@ -689,7 +680,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         for m in nests {
             let scoped = ctx.term(&m.key).and_then(|d| d.context.clone());
             let nctx = match &scoped {
-                Some(sc) => self.scoped(ctx, sc, unquoted(m.key_span), true),
+                Some(sc) => self.scoped(ctx, sc, m.key_inner, true),
                 None => ctx.clone(),
             };
             for nested in items_of(&m.value) {
@@ -711,7 +702,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 {
                     self.error(
                         "invalid @nest value",
-                        unquoted(v.key_span),
+                        v.key_inner,
                         "a @nest object cannot be a value object",
                     );
                     continue;
@@ -733,7 +724,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         input_json: bool,
         r: &mut Map<'a>,
     ) -> Result<(), Skip> {
-        let kspan = unquoted(m.key_span);
+        let kspan = m.key_inner;
         let v = &m.value;
         // 13.4.1
         if prop.is_some_and(|p| p.key == "@reverse") {
@@ -757,7 +748,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 let Some(s) = v.as_str() else {
                     return Err(self.error("invalid @id value", v.span, "@id must be a string"));
                 };
-                let span = unquoted(v.span);
+                let span = v.inner;
                 r.id = Some(self.id(ctx, s, span, false));
                 r.keys |= bit;
             }
@@ -776,7 +767,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 }
                 for t in items_of(v) {
                     let s = t.as_str().unwrap_or_default();
-                    let span = unquoted(t.span);
+                    let span = t.inner;
                     self.term_use(type_scoped, s, span);
                     match self.expand_use(type_scoped, s, span, UseRole::Type, true, true) {
                         Some((iri, form)) => r.types.push(TypeUse {
@@ -836,7 +827,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                         "@language must be a string",
                     ));
                 };
-                r.language = Some((s, unquoted(v.span)));
+                r.language = Some((s, v.inner));
                 r.keys |= bit;
             }
             "@direction" => {
@@ -926,7 +917,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         r: &mut Map<'a>,
     ) -> Result<(), Skip> {
         let key: &'a str = &m.key;
-        let kspan = unquoted(m.key_span);
+        let kspan = m.key_inner;
         let v = &m.value;
         let def = ctx.term(key);
         let container = def.map_or(Container::default(), |d| d.container);
@@ -962,7 +953,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 let lang: &'a str = &lm.key;
                 let none = lang == "@none"
                     || expand_iri(ctx, lang, false, true).as_deref() == Some("@none");
-                let language = (!none).then(|| (Arc::from(lang), Some(unquoted(lm.key_span))));
+                let language = (!none).then(|| (Arc::from(lang), Some(lm.key_inner)));
                 for item in items_of(&lm.value) {
                     match &item.value {
                         Value::Null | Value::Invalid => {}
@@ -1058,7 +1049,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         let mut out = Vec::new();
         for im in map_entries(map) {
             let index: &'a str = &im.key;
-            let ispan = unquoted(im.key_span);
+            let ispan = im.key_inner;
             // 13.8.3.1 - 13.8.3.3
             let mut map_ctx = if by_id_or_type {
                 ctx.previous().unwrap_or(ctx).clone()
@@ -1092,6 +1083,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                         Some(&index_key),
                         Literal::String(index),
                         im.key_span,
+                        im.key_inner,
                     );
                     let Some(prop_iri) = expand_iri(ctx, &index_key, false, true) else {
                         continue;
@@ -1295,13 +1287,15 @@ impl<'a> Expander<'a, '_, '_, '_> {
         }
     }
 
-    /// Value Expansion (§5.3) of a scalar written at `span`.
+    /// Value Expansion (§5.3) of a scalar written at `span`; `inner` is its
+    /// text without quotes ([`Json::inner`]).
     fn value_expansion(
         &mut self,
         ctx: &ActiveContext,
         prop: Option<&str>,
         lit: Literal<'a>,
         span: Span,
+        inner: Span,
     ) -> Item<'a> {
         let def = prop.and_then(|p| ctx.term(p));
         let mapping = def.and_then(|d| d.type_mapping.clone());
@@ -1312,7 +1306,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 _ => None,
             }
         {
-            let at = unquoted(span);
+            let at = inner;
             return Item::Node(Box::new(NodeObject {
                 span: at,
                 id: Some(self.id(ctx, s, at, vocab)),

@@ -4,9 +4,10 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::navigation::uri;
 use crate::knowledge::{DocId, Knowledge, Source};
 use crate::syntax::lexer::{Kind, tokenize};
-use crate::syntax::{GraphName, Iri, PrefixMap, Span, Statement};
+use crate::syntax::names::{Scope, shorten};
+use crate::syntax::{GraphName, Iri, Span, Statement, Syntax};
 use lsp_types::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 fn kind_for(a: &Analysis, iri: &str) -> SymbolKind {
     kind_of(a.types.get(iri).map(Vec::as_slice).unwrap_or(&[]))
@@ -32,7 +33,8 @@ fn written(text: &str, span: Span) -> &str {
 }
 
 #[allow(deprecated)]
-pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<DocumentSymbol> {
+pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
+    let text: &str = &a.text;
     let mut out = Vec::new();
     if !a.parsed.prefixes.is_empty() {
         let first = a.parsed.prefixes.first().unwrap().span;
@@ -64,14 +66,17 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
         });
     }
     let prefixes = a.prefix_map();
+    // Only JSON-LD has statements that are graphs; looked up once, not per statement.
+    let graph_spans: FxHashSet<Span> = if a.parsed.syntax == Syntax::JsonLd {
+        a.parsed.graphs.iter().map(|g| g.span).collect()
+    } else {
+        FxHashSet::default()
+    };
     let detail = |iri: &Iri| {
         a.label(iri).map(str::to_string).or_else(|| {
             a.types.get(iri).map(|ts| {
                 ts.iter()
-                    .map(|t| {
-                        crate::features::completion::shorten(t, &prefixes)
-                            .unwrap_or_else(|| t.to_string())
-                    })
+                    .map(|t| shorten(t, &prefixes).unwrap_or_else(|| t.to_string()))
                     .collect::<Vec<_>>()
                     .join(", ")
             })
@@ -79,7 +84,7 @@ pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<Document
     };
     let subject = |st: &Statement| {
         // A JSON-LD graph node is shown as its graph, not also as a subject.
-        if a.parsed.graphs.iter().any(|g| g.span == st.span) {
+        if graph_spans.contains(&st.span) {
             return None;
         }
         let (iri, span) = st.subject.as_ref()?;
@@ -260,7 +265,7 @@ pub fn workspace_symbols(k: &Knowledge, enc: Encoding, query: &str) -> Vec<Symbo
     let q = query.to_lowercase();
     let mut out = Vec::new();
     // Each description site is a symbol, named with that file's prefixes.
-    let mut prefixes: FxHashMap<DocId, PrefixMap> = FxHashMap::default();
+    let mut prefixes: FxHashMap<DocId, Scope> = FxHashMap::default();
     for iri in k.described_terms() {
         let label = k.label(&iri);
         let mut kind = None;
@@ -269,9 +274,10 @@ pub fn workspace_symbols(k: &Knowledge, enc: Encoding, query: &str) -> Vec<Symbo
                 continue;
             }
             let a = d.analysis;
-            let p = prefixes.entry(d.doc).or_insert_with(|| a.prefix_map());
-            let name =
-                crate::features::completion::shorten(&iri, p).unwrap_or_else(|| format!("<{iri}>"));
+            let name = prefixes
+                .entry(d.doc)
+                .or_insert_with(|| Scope::whole(a))
+                .write(&iri);
             if !q.is_empty()
                 && !name.to_lowercase().contains(&q)
                 && !label.is_some_and(|l| l.to_lowercase().contains(&q))
@@ -295,6 +301,13 @@ pub fn workspace_symbols(k: &Knowledge, enc: Encoding, query: &str) -> Vec<Symbo
         }
     }
     out
+}
+
+/// Whether only blanks precede `offset` on its line.
+fn on_own_line(text: &str, offset: u32) -> bool {
+    let before = &text[..offset as usize];
+    let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
+    line.trim().is_empty()
 }
 
 pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
@@ -322,7 +335,7 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
     let mut nested = Vec::new();
     let mut open: Vec<(Kind, u32)> = Vec::new();
     let mut prev_line = 0;
-    for t in a.parsed.tokens.iter().filter(|t| t.kind != Kind::Comment) {
+    for t in a.tokens().iter().filter(|t| t.kind != Kind::Comment) {
         let closes = match t.kind {
             Kind::LBracket
             | Kind::LParen
@@ -357,9 +370,9 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
         }
         prev_line = here;
     }
-    // Runs of consecutive comment lines.
+    // Runs of consecutive comment lines; a comment after code is not one.
     let mut run: Option<(u32, u32, u32)> = None; // (start, end, last line)
-    for c in &a.parsed.comments {
+    for c in a.comments().filter(|c| on_own_line(&a.text, c.start)) {
         let l = line(c.start);
         run = match run {
             Some((s, _, last)) if l == last + 1 => Some((s, c.end, l)),
@@ -375,4 +388,59 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
     }
     out.extend(nested);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn analysis(uri: &str, text: &str) -> Analysis {
+        Analysis::new(uri.into(), text, Arc::default(), true)
+    }
+
+    fn comment_folds(text: &str) -> Vec<(u32, u32)> {
+        folding_ranges(&analysis("file:///t/doc.ttl", text))
+            .into_iter()
+            .filter(|f| f.kind == Some(FoldingRangeKind::Comment))
+            .map(|f| (f.start_line, f.end_line))
+            .collect()
+    }
+
+    #[test]
+    fn trailing_comments_do_not_fold() {
+        // Own-line comments fold as a run; a comment after code is no part
+        // of one, and does not join the run below it.
+        let text = "# a\n# b\nex:s ex:p ex:o . # tail\n# c\nex:t ex:p ex:o . # tail\n# d\n# e\n";
+        assert_eq!(comment_folds(text), vec![(0, 1), (5, 6)]);
+        let only_trailing = "ex:s ex:p ex:o . # one\nex:t ex:p ex:o . # two\n";
+        assert_eq!(comment_folds(only_trailing), vec![]);
+        // A run keeps folding when its comments are indented.
+        assert_eq!(
+            comment_folds("  # a\n\t# b\nex:s ex:p ex:o .\n"),
+            vec![(0, 1)]
+        );
+    }
+
+    #[test]
+    fn the_outline_of_a_20000_graph_trig_file_is_quick() {
+        let mut text = String::new();
+        for i in 0..20_000 {
+            text.push_str(&format!(
+                "GRAPH <http://e.org/g{i}> {{ <http://e.org/s{i}> <http://e.org/p> <http://e.org/o> . }}\n"
+            ));
+        }
+        let a = analysis("file:///t/big.trig", &text);
+        assert_eq!(a.parsed.graphs.len(), 20_000);
+        let start = std::time::Instant::now();
+        let out = document_symbols(&a, Encoding::Utf16);
+        let took = start.elapsed();
+        assert_eq!(out.len(), 20_000);
+        assert_eq!(out[7].children.as_ref().map(Vec::len), Some(1));
+        // The 100 ms bound holds for the optimised build the tests run in, on
+        // a shared CI runner too (50 ms was missed there at 60 ms).
+        if !cfg!(debug_assertions) {
+            assert!(took.as_millis() < 100, "took {took:?}");
+        }
+    }
 }

@@ -1,8 +1,8 @@
-// JSON-LD, every planned feature, through the LSP protocol and the command
-// line. Each test is pending (`todo`), tagged with its phase and, for phase
-// 1, the ticket in docs/tickets/jsonld/ that promotes it. A pending test runs
-// and reports but does not fail the build; the ticket that makes one pass
-// removes its `todo` in the same change.
+// JSON-LD through the LSP protocol and the command line: JSON syntax and
+// @context errors, the lints, context loading, cross-file knowledge, SHACL,
+// and the editing features (completion, hover, definition, references,
+// rename, formatting, semantic tokens). Every test runs and fails the build
+// when it fails.
 //
 // Tests assert codes and ranges, never message wording. Every expected range
 // is written out in test/jsonld-fixtures.mjs, next to the fixture text it
@@ -12,12 +12,11 @@ import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
+import crypto from "node:crypto"
 import path from "node:path"
 import { serverPath, startServer, tempDir, uriOf } from "./lsp-client.mjs"
 import * as F from "./jsonld-fixtures.mjs"
-
-const phase1 = (ticket) => ({ todo: `jsonld:phase1 (ticket ${ticket})`, timeout: 25_000 })
-const phase2 = { todo: "jsonld:phase2", timeout: 25_000 }
+import { bigJsonLd } from "../bench/jsonld-gen.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const withCode = (diags, code) => diags.filter((d) => d.code === code)
@@ -89,7 +88,7 @@ function workspace(t, files, { remove = true } = {}) {
   return ws
 }
 
-const cliEnv = (ws) => ({ ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), NO_COLOR: "1", NO_PROXY: "127.0.0.1,localhost" })
+const cliEnv = (ws) => ({ ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), TURTLE_LSP_ALLOW_PRIVATE_HOSTS: "1", NO_COLOR: "1", NO_PROXY: "127.0.0.1,localhost" })
 
 function run(ws, args) {
   const r = spawnSync(serverPath, args, { cwd: ws, encoding: "utf8", timeout: 60_000, env: cliEnv(ws) })
@@ -131,7 +130,7 @@ const cliExpected = (rs) => cliRanges(rs.map((r) => ({ range: F.toCli(r) })))
 // ---- one workspace for the editor tests ----
 //
 // vocab.jsonld describes ex: terms; uses.ttl uses them (and ex:Gadgt, a typo);
-// edit.jsonld is the phase-2 document; people.context.jsonld is a context
+// edit.jsonld is the editing document; people.context.jsonld is a context
 // file other documents name by a relative URL.
 
 let ws
@@ -171,7 +170,7 @@ async function openFile(name) {
 }
 
 // =====================================================================================
-// Phase 1
+// Diagnostics, context loading, cross-file knowledge and SHACL
 // =====================================================================================
 
 // ---- JSON syntax (ticket 05) ----
@@ -339,6 +338,39 @@ test("check --fix adds each missing prefix to the @context", { timeout: 25_000 }
   assert.equal(after.of("np.jsonld", "unknown-term").length, 1, after.out)
 })
 
+// A @json literal is data. Its @context is not a context, so a prefix written
+// there is no forgotten prefix, and the fix must not add one to the literal
+// (that would change the rdf:JSON value).
+const JSON_LITERAL = `{
+  "@context": {
+    "ex": "https://jsonld.example.org/def/",
+    "data": { "@id": "ex:data", "@type": "@json" }
+  },
+  "@id": "ex:j1",
+  "data": { "@context": { "label": "rdfs:label" }, "kind": "foaf:Person" },
+  "ex:note": { "@type": "@json", "@value": { "@context": { "l": "rdfs:label" } } }
+}
+`
+
+test("a @json literal gets no jsonld-undefined-prefix, and no fix", { timeout: 25_000 }, async (t) => {
+  const { uri, diags } = await openScratch(t, JSON_LITERAL)
+  assert.deepEqual(withCode(diags, "jsonld-undefined-prefix"), [], show(diags))
+  const actions = (await s.request("textDocument/codeAction", { textDocument: { uri }, range: { start: { line: 6, character: 0 }, end: { line: 7, character: 0 } }, context: { diagnostics: [] } })) ?? []
+  assert.deepEqual(
+    actions.filter((a) => /@context/.test(a.title ?? "")),
+    [],
+    JSON.stringify(actions),
+  )
+})
+
+test("check --fix leaves a @json literal's @context as it is", { timeout: 25_000 }, (t) => {
+  const w = workspace(t, { "literal.jsonld": JSON_LITERAL })
+  const before = checkJson(w)
+  assert.deepEqual(before.of("literal.jsonld", "jsonld-undefined-prefix"), [], before.out)
+  run(w, ["check", "--fix"])
+  assert.equal(fs.readFileSync(path.join(w, "literal.jsonld"), "utf8"), JSON_LITERAL)
+})
+
 // ---- context loading (ticket 06) ----
 
 // A local web server for remote contexts, counting requests.
@@ -416,6 +448,78 @@ test("with imports.network on, a remote context is fetched once and then served 
     }
     assert.deepEqual(hits.slice(before), ["/ctx.jsonld"], "fetched once, then cached")
     assert.ok(fs.existsSync(cache) && fs.readdirSync(cache, { recursive: true }).length > 0, "cached in the imports cache directory")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// A server for `cwd` that is not told to fetch from loopback (the suite's
+// servers listen there, and are told to).
+async function startStrictWithCache(cwd, cache, initializationOptions) {
+  const prev = process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS
+  process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS = "0"
+  try {
+    return await startWithCache(cwd, cache, initializationOptions)
+  } finally {
+    if (prev === undefined) delete process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS
+    else process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS = prev
+  }
+}
+
+test("by default a remote context is not fetched from a loopback address, even with imports.network on", { timeout: 25_000 }, async () => {
+  const root = tempDir("turtle-jsonld-strict-")
+  const dir = path.join(root, "ws")
+  fs.mkdirSync(dir)
+  const url = `${webBase}/ctx.jsonld`
+  const text = F.remoteDoc(url)
+  fs.writeFileSync(path.join(dir, "remote.jsonld"), text)
+  const uri = uriOf(path.join(dir, "remote.jsonld"))
+  const before = hits.length
+  const server = await startStrictWithCache(dir, path.join(root, "cache"), { imports: { network: true } })
+  try {
+    server.open(uri, text, "jsonld")
+    const diags = await until(server, uri, (d) => withCode(d, "jsonld-context").length > 0, 4000)
+    assert.deepEqual(rangesOf(diags, "jsonld-context"), [F.remoteDocUrl(url)], show(diags))
+    assert.match(withCode(diags, "jsonld-context")[0].message, /loopback/)
+    await sleep(300)
+    assert.deepEqual(hits.slice(before), [], "no request reached the server")
+  } finally {
+    await server.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a cached context without the file that names its URL is not trusted, and is fetched again", { timeout: 25_000 }, async () => {
+  const root = tempDir("turtle-jsonld-cached-")
+  try {
+    const cache = path.join(root, "cache")
+    const dir = path.join(root, "ws")
+    fs.mkdirSync(dir)
+    const url = `${webBase}/ctx.jsonld`
+    const text = F.remoteDoc(url)
+    fs.writeFileSync(path.join(dir, "remote.jsonld"), text)
+    const uri = uriOf(path.join(dir, "remote.jsonld"))
+    // A context where this URL's cache entry would be, that nothing says is its own.
+    const imports = path.join(cache, "imports")
+    fs.mkdirSync(imports, { recursive: true })
+    const name = crypto.createHash("sha256").update(url).digest("hex")
+    fs.writeFileSync(path.join(imports, `${name}.jsonld`), `{ "@context": { "planted": "https://evil.example/" } }`)
+    const before = hits.length
+    const server = await startWithCache(dir, cache, { imports: { network: true } })
+    try {
+      server.open(uri, text, "jsonld")
+      const loaded = (d) => withCode(d, "jsonld-context").length === 0 && withCode(d, "jsonld-undefined-term").length > 0
+      const diags = await until(server, uri, loaded, 4000)
+      assert.deepEqual(rangesOf(diags, "jsonld-undefined-term"), [F.REMOTE_DOC_FLAVOUR], show(diags))
+    } finally {
+      await server.stop()
+    }
+    assert.deepEqual(hits.slice(before), ["/ctx.jsonld"])
+    assert.equal(
+      fs.readFileSync(path.join(imports, `${name}.url`), "utf8"),
+      `# turtle-lsp cache for ${url}\n`,
+    )
+    assert.ok(!fs.readFileSync(path.join(imports, `${name}.jsonld`), "utf8").includes("planted"))
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -682,7 +786,7 @@ test("check: shapes written in JSON-LD validate Turtle data", { timeout: 25_000 
 })
 
 // =====================================================================================
-// Phase 2: editing inside JSON-LD
+// Editing inside JSON-LD
 // =====================================================================================
 
 async function openEdit() {
@@ -1002,4 +1106,17 @@ test("the outline nests a named graph's nodes under the graph", { timeout: 25_00
   const graph = flattenSymbols(syms).find((x) => x.name === "ex:run1")
   assert.ok(graph, JSON.stringify(syms))
   assert.deepEqual(flattenSymbols(graph.children).map((x) => x.name), ["ex:p8"])
+})
+
+// ---- the bench ----
+
+test("the bench's JSON-LD generator writes the document the Rust budget tests read", () => {
+  // src/jsonld/mod.rs asserts the same line count and FNV-1a digest of the
+  // document its generator (tests/support/jsonld_people.rs) writes.
+  const text = bigJsonLd(600, "w")
+  assert.equal(text.split("\n").length - 1, 609)
+  let h = 0xcbf29ce484222325n
+  for (const b of Buffer.from(text)) h = ((h ^ BigInt(b)) * 0x100000001b3n) & 0xffffffffffffffffn
+  assert.equal(h.toString(16).padStart(16, "0"), "bbc6c5ea77801ed1")
+  assert.equal(JSON.parse(text)["@graph"].length, 29)
 })

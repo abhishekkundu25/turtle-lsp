@@ -1,6 +1,6 @@
 # Spec: turtle-lsp from "fast and correct" to state of the art
 
-Status: ready-for-agent · 2026-10-13 · Tickets: `.scratch/sota-roadmap/issues/`
+Status: done in 0.2.0 · 2026-10-13. Its tickets were kept in a local folder (`.scratch/`) that is not part of the repository.
 
 ## Problem Statement
 

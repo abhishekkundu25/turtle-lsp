@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run before it (one group per
+# pull request, in progress canceled). A push to main gets a group of its own
+# commit: in a shared group GitHub cancels a *pending* run when a newer one
+# queues, whatever cancel-in-progress says, and the release waits for the CI
+# run of its tagged commit (release.yml, job "ci"), which a canceled run fails.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Actions are pinned to full commit SHAs (tags can be moved); Dependabot bumps them.
 jobs:
   test:
@@ -16,7 +25,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A hang fails the job instead of holding a runner for 6 hours; each test
     # step below has its own, shorter limit.
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +40,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
       - name: Install Neovim (for the editor checks)
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
         with:
@@ -39,22 +50,48 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: npm ci
+      # The JSON-LD corpus the corpus tests read: with CI=true they fail when it
+      # is absent. Downloaded again only when its source list or checksums change.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test/corpus/jsonld
+          key: jsonld-corpus-${{ hashFiles('tools/corpus/jsonld-sources.tsv', 'tools/corpus/jsonld-sha256.tsv') }}
+      - name: JSON-LD corpus
+        shell: bash
+        timeout-minutes: 10
+        run: tools/corpus/fetch-jsonld.sh
       # npm test, split so each part has its own time limit: the build may
       # start without a cache; the Node tests take about a minute on Windows.
       - run: cargo build --release --locked
         timeout-minutes: 20
+      # Compiling the test binaries (fat LTO, one link each) takes longer than
+      # running them, most on Windows; each gets its own limit.
+      - run: cargo test --release --locked --no-run
+        timeout-minutes: 30
       - run: cargo test --release --locked
         timeout-minutes: 10
       - run: npm run test:node
         timeout-minutes: 5
       - name: Chaos test, longer run
+        timeout-minutes: 5
         env:
           CHAOS_ITERS: "30000"
         run: cargo test --release --locked --test chaos
+      # What the integration tests left under target/tmp, to read a failure that
+      # does not reproduce locally.
+      - name: Keep the test folders of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-tmp-${{ matrix.os }}
+          path: target/tmp
+          if-no-files-found: ignore
+          retention-days: 7
 
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,20 +100,98 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
+      # The browser engine has its own lock file (web/engine/Cargo.lock) and the
+      # same rules. It depends on the server by path, which deny.toml's
+      # `wildcards = "deny"` rejects unless path dependencies are allowed: the
+      # copy below adds that one line (not needed once deny.toml has it).
+      - name: deny.toml for web/engine
+        run: |
+          if grep -q '^allow-wildcard-paths' deny.toml; then
+            cp deny.toml deny-web.toml
+          else
+            awk '{ print } /^\[bans\]$/ { print "allow-wildcard-paths = true" }' deny.toml > deny-web.toml
+          fi
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          manifest-path: web/engine/Cargo.toml
+          arguments: --all-features --config deny-web.toml
+      # spareval is vendored with a patch; the copy must be the release plus
+      # that patch and nothing else (and spareval = "0.2" must not resolve to a
+      # newer release unnoticed).
+      - name: vendor/spareval is spareval 0.2.7 plus its patch
+        run: tools/check-vendor.sh
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            editors/vscode/package-lock.json
       # The extension ships only its runtime dependencies; dev tools stay local.
       - working-directory: editors/vscode
         run: npm audit --omit=dev --audit-level=moderate
+      # The site ships Monaco and monaco-vim from the root tree, where they are
+      # devDependencies: --omit=dev would audit nothing here.
+      - run: npm audit --audit-level=moderate
+
+  web:
+    name: Browser build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The compiler pinned in rust-toolchain.toml, with the browser target.
+      - run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            .
+            web/engine
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      # The engine for wasm32 (web/app/engine.wasm), then Monaco beside the pages.
+      - run: node web/build.mjs
+        timeout-minutes: 15
+      - run: cargo clippy --locked -- -D warnings
+        working-directory: web/engine
+      # The engine tests compare it with the native server, so build that too.
+      - run: cargo build --release --locked
+        timeout-minutes: 15
+      - name: Engine tests (no browser)
+        timeout-minutes: 5
+        run: >-
+          node --test --test-force-exit --test-timeout=60000
+          web/test/engine.test.mjs web/test/host.test.mjs
+          web/test/jsonld-engine.test.mjs web/test/lsp.test.mjs
+      # The page in a real browser. The test drives Google Chrome (Playwright's
+      # "chrome" channel), so install that one rather than rely on the runner image.
+      - run: npx playwright-core install chrome
+        timeout-minutes: 5
+      - name: Toolbox page in Chrome
+        timeout-minutes: 5
+        run: node --test --test-force-exit --test-timeout=60000 web/test/browser.test.mjs
 
   vscode:
-    name: VS Code extension (${{ matrix.os }})
+    name: VS Code extension (${{ matrix.os }}, ${{ matrix.vscode }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        vscode: [stable]
+        include:
+          # The oldest VS Code the extension claims (engines.vscode).
+          - { os: ubuntu-latest, vscode: "1.91.0" }
+    env:
+      VSCODE_VERSION: ${{ matrix.vscode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,6 +201,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
       - run: cargo build --release --locked
       - working-directory: editors/vscode
         run: npm ci && npm run typecheck
@@ -98,6 +215,83 @@ jobs:
         run: npm test
       # Catches packaging errors (e.g. @types/vscode newer than engines.vscode)
       # before a release does.
-      - if: runner.os == 'Linux'
+      - if: runner.os == 'Linux' && matrix.vscode == 'stable'
         working-directory: editors/vscode
         run: npm run package
+
+  # Performance (bench/perf.mjs). GitHub-hosted runners share hardware, so the
+  # timings are noisy: the gate is wide (1.5x on the p50 of the keystroke rows,
+  # which each have 20 or more samples) and the job never blocks a pull request.
+  # On main it compares with the artefact the last main run uploaded and fails
+  # over the ratio; the run's artefact is uploaded either way, so the next
+  # comparison is against this commit (a slow drift of under 1.5x per commit is
+  # not caught). Set the repository variable PERF_GATE to "off" to make main
+  # report only, for example while the runner image is changing.
+  perf:
+    name: Performance (ubuntu-latest, noisy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # `actions: read` lists and downloads the last main run's artefact.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PERF_GATE: ${{ vars.PERF_GATE }}
+      # The documented ratio: current p50 / main p50 of a keystroke row.
+      PERF_MAX_RATIO: "1.5"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: cargo build --release --locked
+        timeout-minutes: 20
+      # Instruction counts (perf stat) are steadier than times, where the runner
+      # lets a user read the counters; they cover the whole run (the bench and
+      # the servers it starts), are kept beside the results and are not gated.
+      - name: Benchmark
+        id: bench
+        timeout-minutes: 10
+        run: |
+          if command -v perf >/dev/null 2>&1 && perf stat -e instructions:u -- true >/dev/null 2>&1; then
+            perf stat -x, -e instructions:u -o perf-stat.csv -- node bench/perf.mjs --json bench-results.json
+            { echo '### Instructions (user mode, whole run)'; echo; echo '```'; cat perf-stat.csv; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "perf stat cannot read the counters on this runner: timings only."
+            node bench/perf.mjs --json bench-results.json
+          fi
+      # The newest unexpired bench-results artefact that a run on main uploaded.
+      - name: Download the last main results
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=bench-results&per_page=50" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")][0].workflow_run.id // empty')
+          if [ -z "$run_id" ]; then
+            echo "No earlier main results to compare with."
+          else
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name bench-results --dir base
+          fi
+      - name: Compare with the last main results
+        if: hashFiles('base/bench-results.json') != ''
+        run: |
+          gate=--report-only
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PERF_GATE" != off ]; then gate=; fi
+          node bench/perf.mjs --compare base/bench-results.json bench-results.json --max-ratio "$PERF_MAX_RATIO" $gate
+      - name: Keep the results (main)
+        if: always() && github.event_name == 'push' && steps.bench.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-results
+          path: |
+            bench-results.json
+            perf-stat.csv
+          if-no-files-found: error
+          retention-days: 90

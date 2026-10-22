@@ -18,19 +18,19 @@ use std::sync::Arc;
 
 /// The JSON-LD term under the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TermAt {
-    pub definition: DefId,
+pub(crate) struct TermAt {
+    pub(crate) definition: DefId,
     /// The text under the cursor: a use, a compact IRI's prefix part or a
     /// definition's key.
-    pub span: Span,
+    pub(crate) span: Span,
     /// The cursor is on the definition's key.
-    pub on_definition: bool,
+    pub(crate) on_definition: bool,
 }
 
 /// The term (or alias) used or defined at `offset`, or the prefix term of a
 /// compact IRI whose prefix part `offset` is on. `None` elsewhere, and in
 /// documents other than JSON-LD.
-pub fn term_at(a: &Analysis, offset: u32) -> Option<TermAt> {
+pub(crate) fn term_at(a: &Analysis, offset: u32) -> Option<TermAt> {
     let ix = &a.source_index;
     if let Some(id) = ix.definition_at(offset) {
         return Some(TermAt {
@@ -56,7 +56,7 @@ pub fn term_at(a: &Analysis, offset: u32) -> Option<TermAt> {
 
 /// The spans in `a` of the uses of definition `id`: the whole string of a
 /// term or alias, the prefix part of a compact IRI.
-pub fn use_spans(a: &Analysis, id: DefId) -> impl Iterator<Item = Span> + '_ {
+pub(crate) fn use_spans(a: &Analysis, id: DefId) -> impl Iterator<Item = Span> + '_ {
     a.source_index.uses_of(id).map(|u| match u.kind {
         UseKind::Compact { prefix_len, .. } => Span::new(u.span.start, u.span.start + prefix_len),
         _ => u.span,
@@ -67,7 +67,7 @@ pub fn use_spans(a: &Analysis, id: DefId) -> impl Iterator<Item = Span> + '_ {
 /// workspace context file (its analysis, else its text on disk). `None` for
 /// a bundled or remote context, or a file whose text no longer has the key
 /// there.
-pub fn definition_location(
+pub(crate) fn definition_location(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
@@ -98,7 +98,7 @@ pub fn definition_location(
 
 /// A workspace context file's URI and text, by its URL: its analysis's
 /// text, else its text on disk.
-pub fn context_file(k: &Knowledge, url: &str) -> Option<(String, Arc<str>)> {
+pub(crate) fn context_file(k: &Knowledge, url: &str) -> Option<(String, Arc<str>)> {
     let uri = normalize_uri(url);
     if let Some(f) = k.get(&uri) {
         let text = f.text.clone();
@@ -110,7 +110,7 @@ pub fn context_file(k: &Knowledge, url: &str) -> Option<(String, Arc<str>)> {
 
 /// The prefixes a new name typed at `offset` may use: the document's (and
 /// the settings'), and in JSON-LD the prefix terms of the active context.
-pub fn prefixes_at(a: &Analysis, offset: u32) -> PrefixMap {
+pub(crate) fn prefixes_at(a: &Analysis, offset: u32) -> PrefixMap {
     let mut m = a.prefix_map();
     if let Some(ctx) = a.source_index.context_at(offset) {
         for (t, d) in ctx.terms() {
@@ -124,12 +124,12 @@ pub fn prefixes_at(a: &Analysis, offset: u32) -> PrefixMap {
 
 /// Collects text edits by document URI, each range once.
 #[derive(Default)]
-pub struct Changes {
-    pub by_uri: HashMap<Uri, Vec<TextEdit>>,
+pub(crate) struct Changes {
+    pub(crate) by_uri: HashMap<Uri, Vec<TextEdit>>,
 }
 
 impl Changes {
-    pub fn push(&mut self, uri: &str, range: lsp_types::Range, new_text: String) {
+    pub(crate) fn push(&mut self, uri: &str, range: lsp_types::Range, new_text: String) {
         let edits = self.by_uri.entry(super::uri(uri)).or_default();
         if !edits.iter().any(|e| e.range == range) {
             edits.push(TextEdit { range, new_text });
@@ -159,7 +159,7 @@ impl Changes {
 /// Adds the edits renaming IRI `old` to `new` in JSON-LD document `a` (and
 /// in the workspace context files whose definitions it uses). `Err`, naming
 /// the document, when a use there cannot be rewritten.
-pub fn iri_rename(
+pub(crate) fn iri_rename(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
@@ -192,7 +192,7 @@ pub fn iri_rename(
 
 /// `Err` when term `t` of `a` is defined by a bundled or remote context,
 /// which can't be renamed.
-pub fn check_term_renamable(a: &Analysis, t: TermAt) -> Result<(), String> {
+pub(crate) fn check_term_renamable(a: &Analysis, t: TermAt) -> Result<(), String> {
     let d = a.source_index.definition(t.definition);
     match &d.origin {
         Origin::Remote(url) => Err(format!(
@@ -207,7 +207,7 @@ pub fn check_term_renamable(a: &Analysis, t: TermAt) -> Result<(), String> {
 /// definition's key and every use resolving to it, here and, for a term of
 /// a workspace context file, in that file and every workspace document
 /// using it. A term of a bundled or remote context is refused.
-pub fn term_rename(
+pub(crate) fn term_rename(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
@@ -294,4 +294,117 @@ pub fn term_rename(
         out.push_spans(&doc.uri, &doc.text, enc, edits);
     }
     Ok(out.by_uri)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::{Workspace, path_to_uri};
+    use std::path::PathBuf;
+
+    /// A fresh directory (canonical), removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let d =
+                std::env::temp_dir().join(format!("turtle-lsp-nav-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            TempDir(crate::workspace::real(&d))
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `text` (one line) with `edits` applied.
+    fn apply(text: &str, edits: &[TextEdit]) -> String {
+        let mut edits = edits.to_vec();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.range.start.character));
+        let mut out = text.to_string();
+        for e in edits {
+            assert_eq!(e.range.start.line, 0);
+            let (s, t) = (
+                e.range.start.character as usize,
+                e.range.end.character as usize,
+            );
+            out.replace_range(s..t, &e.new_text);
+        }
+        out
+    }
+
+    /// A prefix of a workspace context file, renamed from a document: every
+    /// document using the file gets its uses renamed and what its own
+    /// context writes with the prefix, whether or not it uses the prefix
+    /// outside its context, so each expands as before.
+    #[test]
+    fn a_context_file_prefix_is_renamed_in_each_document_s_own_context_too() {
+        let dir = TempDir::new("prefix-rename");
+        let files = [
+            (
+                "ctx.jsonld",
+                r#"{"@context": {"old": "http://ex.org/", "name": "old:name"}}"#,
+            ),
+            (
+                "a.jsonld",
+                r#"{"@context": "ctx.jsonld", "@id": "http://ex.org/a", "old:p": 1}"#,
+            ),
+            (
+                "b.jsonld",
+                r#"{"@context": ["ctx.jsonld", {"x": "old:x"}], "@id": "http://ex.org/b", "x": 1, "old:q": 2}"#,
+            ),
+            (
+                "c.jsonld",
+                r#"{"@context": ["ctx.jsonld", {"y": {"@id": "old:y"}}], "@id": "http://ex.org/c", "y": 1}"#,
+            ),
+        ];
+        let mut ws = Workspace::new(vec![dir.0.clone()], PrefixMap::default());
+        let uri = |name: &str| path_to_uri(&dir.0.join(name)).unwrap();
+        for (name, text) in files {
+            std::fs::write(dir.0.join(name), text).unwrap();
+            ws.open_doc(uri(name), text.into(), 1);
+        }
+        let triples = |ws: &mut Workspace, name: &str| {
+            let a = ws.analysis(&uri(name)).unwrap();
+            assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+            let mut t: Vec<String> = a.parsed.triples.iter().map(|t| format!("{t:?}")).collect();
+            t.sort();
+            t
+        };
+        let before: Vec<Vec<String>> = files.iter().map(|f| triples(&mut ws, f.0)).collect();
+        let a = ws.analysis(&uri("a.jsonld")).unwrap();
+        let at = files[1].1.find("old:p").unwrap() as u32 + 1;
+        let t = term_at(&a, at).expect("the prefix of old:p");
+        let changes = term_rename(&a, ws.knowledge(), Encoding::Utf16, t, "neu").unwrap();
+        let renamed: Vec<(&str, String)> = files
+            .iter()
+            .map(|(name, text)| {
+                let edits = changes
+                    .iter()
+                    .find(|(u, _)| u.as_str() == uri(name))
+                    .map_or(&[][..], |(_, e)| &e[..]);
+                (*name, apply(text, edits))
+            })
+            .collect();
+        assert_eq!(
+            renamed[2].1,
+            r#"{"@context": ["ctx.jsonld", {"x": "neu:x"}], "@id": "http://ex.org/b", "x": 1, "neu:q": 2}"#
+        );
+        assert_eq!(
+            renamed[3].1,
+            r#"{"@context": ["ctx.jsonld", {"y": {"@id": "neu:y"}}], "@id": "http://ex.org/c", "y": 1}"#
+        );
+        // Each expands as before.
+        for (name, text) in &renamed {
+            ws.open_doc(uri(name), text.clone(), 2);
+        }
+        ws.context_changed(&uri("ctx.jsonld"), false);
+        for (i, (name, _)) in files.iter().enumerate() {
+            assert_eq!(triples(&mut ws, name), before[i], "{name}");
+        }
+    }
 }

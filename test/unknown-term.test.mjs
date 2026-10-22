@@ -26,7 +26,8 @@ after(async () => {
   }
 })
 
-test("10,000 uses of 2,000 distinct unknown terms are checked fast", async () => {
+// How long this takes: latency.test.mjs.
+test("10,000 uses of 2,000 distinct unknown terms are each reported", async () => {
   // Locals shaped like real foaf names (6-12 letters), so most candidates are
   // within the length window and the suggestion search does real work.
   const letters = "abcdefghijklmnopqrstuvwxyz"
@@ -39,13 +40,11 @@ test("10,000 uses of 2,000 distinct unknown terms are checked fast", async () =>
   for (let i = 0; i < 10_000; i++) lines.push(`ex:s${i % 50} foaf:${local(i % 2000)} "v" .`)
   const text = header + lines.join("\n") + "\n"
   const uri = uriOf(path.join(ws, "big.ttl"))
-  const t0 = performance.now()
   s.open(uri, text)
   const diags = await s.diagnosticsFor(uri, 30_000)
-  const ms = performance.now() - t0
-  console.log(`# unknown-term: 10,000 uses / 2,000 locals diagnosed in ${ms.toFixed(0)} ms`)
   assert.equal(unknown(diags).length, 10_000)
-  assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms`)
+  // One per use, on the use: 2,000 distinct terms, each on 5 lines.
+  assert.equal(new Set(unknown(diags).map((d) => d.range.start.line)).size, 10_000)
 })
 
 test("terms the document describes are known; a typo keeps its warning and fix", async () => {
@@ -78,4 +77,40 @@ ex:alice a foaf:Gadget ;
   const fix = actions.find((a) => a.title === "Change to 'foaf:name'")
   assert.ok(fix, JSON.stringify(actions))
   assert.equal(fix.edit.changes[uri][0].newText, "foaf:name")
+})
+
+test("GeoSPARQL functions are not unknown terms, in Turtle or SPARQL", async () => {
+  const geof = "http://www.opengis.net/def/function/geosparql/"
+  const ttl = uriOf(path.join(ws, "geo.ttl"))
+  s.open(ttl, `@prefix geof: <${geof}> .\n@prefix ex: <http://example.org/> .\nex:q ex:uses geof:sfWithin , geof:distance .\n`)
+  assert.deepEqual(unknown(await s.diagnosticsFor(ttl)), [])
+  const rq = uriOf(path.join(ws, "geo.rq"))
+  s.open(rq, `PREFIX geof: <${geof}>\nSELECT * WHERE { ?a ?p ?b FILTER(geof:sfWithin(?a, ?b) && geof:distance(?a, ?b) > 1) }\n`, "sparql")
+  assert.deepEqual(unknown(await s.diagnosticsFor(rq)), [])
+})
+
+test("a local name with a colon is found: og:audio:album is known, og:audio:albm is not", async () => {
+  const text = `@prefix og: <http://ogp.me/ns#> .\n@prefix ex: <http://example.org/> .\nex:s ex:p og:audio:type , og:audio:album , og:audio:albm .\n`
+  const uri = uriOf(path.join(ws, "og.ttl"))
+  s.open(uri, text)
+  const w = unknown(await s.diagnosticsFor(uri))
+  assert.deepEqual(
+    w.map((d) => d.message),
+    ["'audio:albm' is not defined in the og vocabulary <http://ogp.me/ns#>. Did you mean 'audio:album'?"],
+  )
+  assert.deepEqual(w[0].data, { replace: "og:audio:album" })
+})
+
+test("https://schema.org/ is the schema vocabulary", async () => {
+  const text = `@prefix s: <https://schema.org/> .\n@prefix ex: <http://example.org/> .\nex:a a s:Person ; s:nme "x" .\nex:b a <https://schema.org/Persn> .\n`
+  const uri = uriOf(path.join(ws, "schema-https.ttl"))
+  s.open(uri, text)
+  const w = unknown(await s.diagnosticsFor(uri))
+  assert.deepEqual(
+    w.map((d) => [d.range.start.line, d.message]),
+    [
+      [2, "'nme' is not defined in the schema vocabulary <http://schema.org/>. Did you mean 'name'?"],
+      [3, "'Persn' is not defined in the schema vocabulary <http://schema.org/>. Did you mean 'Person'?"],
+    ],
+  )
 })

@@ -4,7 +4,8 @@
 // model. Values are kept as { key: value } for the keys that differ from the
 // default; the caller stores that object with the workspace.
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
+import { esc } from "./dom.js"
+
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const LABELS = "turtle.inlayHints.labels"
 
@@ -60,11 +61,15 @@ function valid(s, v) {
  * @param {() => void} [o.onClose] called when the page closes (to give the focus back)
  * @param {Record<string, (value: any) => void>} [o.effects] per key, called with its value at once and after every change
  * @returns {{ open(): void, close(): void, isOpen(): boolean, values(): object, get(key: string): any,
- *   set(key: string, value: any): void, toggleLabels(): void, labelsText(): string, applyTo(editor: object): void }}
+ *   set(key: string, value: any): void, replace(saved: object): void, toggleLabels(): void, labelsText(): string, applyTo(editor: object): void }}
  */
 export function createSettings({ monaco, client, mount, opener, saved = {}, onChange, onClose, effects = {} }) {
   const vals = {}
-  for (const [k, v] of Object.entries(saved ?? {})) if (BY_KEY.has(k) && valid(BY_KEY.get(k), v) && !same(v, BY_KEY.get(k).def)) vals[k] = v
+  const load = (saved) => {
+    for (const k of Object.keys(vals)) delete vals[k]
+    for (const [k, v] of Object.entries(saved ?? {})) if (BY_KEY.has(k) && valid(BY_KEY.get(k), v) && !same(v, BY_KEY.get(k).def)) vals[k] = v
+  }
+  load(saved)
   const get = (key) => (key in vals ? vals[key] : BY_KEY.get(key).def)
   let otherLabels = get(LABELS) === "all" ? "opaque" : get(LABELS) // the mode the status-bar button goes back to
   let prefixRows = Object.entries(get("turtle.prefixes")) // rows being edited, complete or not
@@ -119,6 +124,18 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
     else applyEditors()
     if (!page.hidden) markModified()
     onChange()
+  }
+
+  // Every value replaced with `saved` (what `values()` returned, in this tab
+  // or another) and applied at once. Not a change: `onChange` is not called.
+  function replace(saved) {
+    load(saved)
+    otherLabels = get(LABELS) === "all" ? "opaque" : get(LABELS)
+    prefixRows = Object.entries(get("turtle.prefixes"))
+    applyEditors()
+    sendTurtle()
+    applyEffects()
+    if (!page.hidden) render()
   }
 
   // ---- the page ----
@@ -281,6 +298,7 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
     values: () => structuredClone(vals),
     get,
     set,
+    replace,
     applyTo,
     toggleLabels() {
       set(LABELS, get(LABELS) === "all" ? otherLabels : "all")

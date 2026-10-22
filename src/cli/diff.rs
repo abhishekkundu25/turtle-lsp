@@ -25,7 +25,7 @@ struct Op {
 
 /// The unified diff from `a` to `b` with the given file labels; empty when
 /// the texts are equal.
-pub fn unified(a: &str, b: &str, a_label: &str, b_label: &str) -> String {
+pub(crate) fn unified(a: &str, b: &str, a_label: &str, b_label: &str) -> String {
     let a: Vec<&str> = a.split_inclusive('\n').collect();
     let b: Vec<&str> = b.split_inclusive('\n').collect();
     let ops = script(&a, &b);

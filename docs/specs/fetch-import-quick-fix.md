@@ -1,6 +1,6 @@
 # Fetch one import on request, and open cached imports
 
-Status: done · 2026-10-18 · Branch: `fetch-import-quick-fix`
+Status: done in 0.4.0 · 2026-10-18 · Branch: `fetch-import-quick-fix`
 
 ## Problem Statement
 

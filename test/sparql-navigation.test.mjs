@@ -3,7 +3,10 @@
 // unless projected), semantic tokens, folding, outline and inlay hints.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import path from "node:path"
 import { queryServer, positionOf, where, slice } from "./query-client.mjs"
+import { startServer, tempDir, uriOf } from "./lsp-client.mjs"
 
 const EX = "PREFIX ex: <https://query.example.org/def/>\n"
 
@@ -222,4 +225,72 @@ test("label inlay hints show on opaque IRIs in a query", async () => {
     const labels = (hints ?? []).map((h) => (typeof h.label === "string" ? h.label : h.label.map((p) => p.value).join("")))
     assert.ok(labels.some((l) => l.includes("Douglas Adams")), labels.join(" | "))
   })
+})
+
+// --- the SPARQL files of the workspace are found once and kept current --------------------
+
+test("references see a query file created, rewritten, deleted or removed with its folder", async () => {
+  const dir = tempDir("turtle-sparql-index-")
+  const TTL = "@prefix ex: <http://example.org/> .\nex:Thing a ex:Kind .\nex:other ex:rel ex:Thing .\n"
+  const query = (term) => `PREFIX ex: <http://example.org/>\nSELECT * WHERE { ?s ex:${term} ?o }\n`
+  const file = (name, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true })
+    fs.writeFileSync(path.join(dir, name), text)
+    return path.join(dir, name)
+  }
+  file("data.ttl", TTL)
+  const q1 = file("q1.rq", query("Thing"))
+  const s = await startServer({ cwd: dir })
+  const CREATED = 1
+  const CHANGED = 2
+  const DELETED = 3
+  const event = (p, type) => ({ uri: uriOf(p), type })
+  try {
+    await s.request("workspace/symbol", { query: "" })
+    const uri = uriOf(path.join(dir, "data.ttl"))
+    s.open(uri, TTL)
+    await s.diagnosticsFor(uri)
+    const users = async () => {
+      const refs = await s.request("textDocument/references", {
+        textDocument: { uri },
+        position: positionOf(TTL, "ex:Thing a", 4),
+        context: { includeDeclaration: false },
+      })
+      return where(refs)
+        .filter((w) => w.includes(".rq:"))
+        .map((w) => w.split(":")[0])
+    }
+    assert.deepEqual(await users(), ["q1.rq"])
+    // Created: the watcher says so.
+    const q2 = file("q2.rq", query("Thing"))
+    s.notify("workspace/didChangeWatchedFiles", { changes: [event(q2, CREATED)] })
+    assert.deepEqual(await users(), ["q1.rq", "q2.rq"])
+    // Rewritten, with no notice at all (a client with no watcher).
+    file("q2.rq", query("Nothing") + "# longer than before\n")
+    assert.deepEqual(await users(), ["q1.rq"])
+    // Deleted.
+    fs.rmSync(q1)
+    s.notify("workspace/didChangeWatchedFiles", { changes: [event(q1, DELETED)] })
+    assert.deepEqual(await users(), [])
+    // A folder of queries, removed whole: the client reports the folder.
+    const inner = file("sub/deep/q3.rq", query("Thing"))
+    s.notify("workspace/didChangeWatchedFiles", { changes: [event(inner, CREATED), event(q2, CHANGED)] })
+    assert.deepEqual(await users(), ["q3.rq"])
+    fs.rmSync(path.join(dir, "sub"), { recursive: true })
+    s.notify("workspace/didChangeWatchedFiles", { changes: [event(path.join(dir, "sub"), DELETED)] })
+    assert.deepEqual(await users(), [])
+    // A rename edits the queries that are there now.
+    const q4 = file("q4.rq", query("Thing"))
+    s.notify("workspace/didChangeWatchedFiles", { changes: [event(q4, CREATED)] })
+    const edit = await s.request("textDocument/rename", {
+      textDocument: { uri },
+      position: positionOf(TTL, "ex:Thing a", 4),
+      newName: "Renamed",
+    })
+    const touched = Object.keys(edit.changes ?? {}).map((u) => path.basename(u)).sort()
+    assert.deepEqual(touched, ["data.ttl", "q4.rq"])
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

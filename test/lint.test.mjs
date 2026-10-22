@@ -219,3 +219,62 @@ test("typing a new subject re-diagnoses other open files once typing pauses, not
     fs.rmSync(ws, { recursive: true, force: true })
   }
 })
+
+test("1,000 undescribed terms against a 30,000-term namespace are diagnosed in under 50 ms", async () => {
+  const NS = "https://ontology.example.com/big#"
+  // Letters-only names of 9-16 characters, all distinct: a typo of one
+  // differs from the others by letters, not only by digits.
+  const letters = "abcdefghijklmnopqrstuvwxyz"
+  const name = (i) => {
+    let s = ""
+    let n = i
+    for (let k = 0; k < 4; k++, n = Math.floor(n / 26)) s += letters[n % 26]
+    for (let k = 0, h = i * 2654435761; k < 5 + (i % 8); k++, h = Math.floor(h / 7) + k * 13) s += letters[(h >>> 0) % 26]
+    return s
+  }
+  const ws = tempDir("turtle-lint-big-")
+  const s0 = performance.now()
+  const defs = []
+  for (let i = 0; i < 30_000; i++) defs.push(`ex:${name(i)} a owl:Class .`)
+  fs.writeFileSync(
+    path.join(ws, "big.ttl"),
+    `@prefix ex: <${NS}> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n${defs.join("\n")}\n`,
+  )
+  const s = await startServer({ cwd: ws })
+  try {
+    await s.request("workspace/symbol", { query: "" })
+    // 1,000 distinct names that nothing describes, each one letter off a
+    // described name (the first letter is kept: ex:Signal is not ex:signal).
+    const uses = []
+    for (let i = 0; i < 1000; i++) {
+      const n = name(i * 29)
+      uses.push(`inst:i${i} a ex:${n.slice(0, 6)}${n[6] === "q" ? "z" : "q"}${n.slice(7)} .`)
+    }
+    const text = `@prefix ex: <${NS}> .\n@prefix inst: <https://ontology.example.com/inst#> .\n${uses.join("\n")}\n`
+    const uri = uriOf(path.join(ws, "use.ttl"))
+    // Warm up: the first diagnosis of a file also loads the index.
+    s.open(uri, text + "\n")
+    await s.diagnosticsFor(uri, 30_000)
+    let best = Infinity
+    let diags
+    for (let round = 0; round < 3; round++) {
+      const t0 = performance.now()
+      s.change(uri, text + `# ${round}\n`)
+      diags = await s.diagnosticsFor(uri, 30_000)
+      best = Math.min(best, performance.now() - t0)
+    }
+    console.log(`# lint: 1,000 undescribed terms / 30,000 described diagnosed in ${best.toFixed(0)} ms`)
+    const flagged = lint(diags)
+    assert.equal(flagged.length, 1000)
+    // The first 100 flagged terms get a search; the rest stay information.
+    const suggested = flagged.filter((d) => d.severity === 2)
+    assert.ok(suggested.length > 0 && suggested.length <= 100, `${suggested.length} suggestions`)
+    assert.ok(flagged.slice(0, 100).some((d) => d.severity === 2))
+    assert.ok(flagged.slice(100).every((d) => d.severity === 3 && d.data === undefined))
+    assert.ok(best < 50, `took ${best.toFixed(0)} ms`)
+  } finally {
+    await s.stop()
+    fs.rmSync(ws, { recursive: true, force: true })
+  }
+  assert.ok(performance.now() - s0 < 60_000)
+})

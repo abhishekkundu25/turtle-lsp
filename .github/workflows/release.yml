@@ -3,8 +3,20 @@ name: Release
 # Push a tag like v0.1.0 to build every platform, create a GitHub Release with
 # the .vsix files, the server on its own for other editors (.tar.gz, .zip on
 # Windows; Neovim's build.lua downloads it), checksums and build attestations,
-# and publish to the VS Code Marketplace. Needs the secret VSCE_PAT (Azure
-# DevOps token, Marketplace: Manage).
+# and publish to the VS Code Marketplace.
+#
+# Nothing is released unless
+#   - the tag, Cargo.toml, the extension's package.json and the top CHANGELOG
+#     heading name the same version (test/versions.test.mjs),
+#   - the CI workflow passed on the tagged commit (job "ci"),
+#   - the server inside each .vsix ran on its own platform (step "Smoke test").
+#
+# The Marketplace publish is its own job, in the environment "release" (create
+# it in the repository settings, with the secret VSCE_PAT: an Azure DevOps
+# token, Marketplace: Manage, and required reviewers or a tag rule). That job
+# installs without scripts and holds no write permission; the secret is only in
+# the environment of the publish step. A run started by hand (workflow_dispatch)
+# only builds; it never releases or publishes.
 on:
   push:
     tags: ["v*"]
@@ -13,14 +25,76 @@ on:
 permissions:
   contents: read
 
+# Two runs for one tag (a re-run of the push, a second dispatch) never release at once.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  versions:
+    name: Versions agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # RELEASE_TAG is empty for a run on a branch: only the manifests are compared.
+      - name: Tag, manifests and CHANGELOG name one version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: node --test test/versions.test.mjs
+
+  # Waits for the CI workflow of the tagged commit (a push to main runs it).
+  # Runs beside the build, so a slow CI run costs no extra time.
+  ci:
+    name: CI passed on this commit
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for a successful CI run of the tagged commit
+        run: |
+          url="repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"
+          start=$SECONDS
+          while true; do
+            ok=$(gh api "$url" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+            open=$(gh api "$url" --jq '[.workflow_runs[] | select(.status != "completed")] | length')
+            total=$(gh api "$url" --jq '.total_count')
+            if [ "$ok" -gt 0 ]; then
+              echo "CI passed on $GITHUB_SHA"
+              exit 0
+            fi
+            if [ "$open" -eq 0 ] && [ "$total" -gt 0 ]; then
+              echo "CI ran on $GITHUB_SHA and did not pass; fix it, then re-run this workflow."
+              exit 1
+            fi
+            # No run at all: the tag points at a commit that was never pushed to main.
+            if [ "$total" -eq 0 ] && [ $((SECONDS - start)) -gt 600 ]; then
+              echo "No CI run for $GITHUB_SHA: tag a commit on main."
+              exit 1
+            fi
+            echo "CI has not finished on $GITHUB_SHA (runs: $total, unfinished: $open); waiting"
+            sleep 30
+          done
+
   build:
     name: ${{ matrix.vsce }}
+    needs: versions
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
+          # darwin-x64 is cross-built on the Apple Silicon runner and runs under Rosetta.
           - { os: macos-latest, vsce: darwin-arm64, cargo: aarch64-apple-darwin }
           - { os: macos-latest, vsce: darwin-x64, cargo: x86_64-apple-darwin }
           - { os: ubuntu-latest, vsce: linux-x64, cargo: x86_64-unknown-linux-musl }
@@ -39,20 +113,103 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - name: Check the tag matches the extension version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          v=$(node -p "require('./editors/vscode/package.json').version")
-          test "v$v" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != package.json v$v"; exit 1; }
+      # No install scripts: nothing from a dependency's postinstall runs before
+      # the .vsix that gets attested is built. esbuild takes its binary from the
+      # optionalDependencies of the lock file, not from its install script.
       - working-directory: editors/vscode
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Package
         working-directory: editors/vscode
         env:
           VSCE_TARGET: ${{ matrix.vsce }}
           CARGO_TARGET: ${{ matrix.cargo }}
         run: npm run package
+      # Runs the server that is inside the .vsix, on the platform it was built
+      # for: its version, the check command on a clean and a broken file, and an
+      # initialize / shutdown / exit round trip over stdio.
+      - name: Smoke test the packaged server
+        shell: bash
+        env:
+          EXE: ${{ matrix.vsce == 'win32-x64' && 'turtle-lsp.exe' || 'turtle-lsp' }}
+        run: |
+          rm -rf smoke-vsix && mkdir smoke-vsix
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z x -y -osmoke-vsix editors/vscode/*.vsix > /dev/null
+          else
+            unzip -q editors/vscode/*.vsix -d smoke-vsix
+          fi
+          export SMOKE_SERVER="smoke-vsix/extension/server/$EXE"
+          test -f "$SMOKE_SERVER" || { echo "no $SMOKE_SERVER in the .vsix"; exit 1; }
+          node --input-type=module - <<'JS'
+          import { spawn, spawnSync } from "node:child_process"
+          import assert from "node:assert/strict"
+          import fs from "node:fs"
+          import os from "node:os"
+          import path from "node:path"
+
+          const server = process.env.SMOKE_SERVER
+          const want = /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync("Cargo.toml", "utf8"))[1]
+          const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-"))
+          const env = { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(tmp, "cache") }
+          const run = (args) => spawnSync(server, args, { encoding: "utf8", env, timeout: 60_000 })
+          try {
+            const v = run(["--version"])
+            const said = `${v.stdout}${v.stderr}`.trim()
+            assert.equal(said, `turtle-lsp ${want}`, `--version printed ${JSON.stringify(said)}`)
+            console.log(`ok - ${said}`)
+
+            const ws = path.join(tmp, "ws")
+            fs.mkdirSync(ws)
+            fs.writeFileSync(path.join(ws, "ok.ttl"), '@prefix ex: <http://example.org/> .\nex:a ex:p "x" .\n')
+            fs.writeFileSync(path.join(ws, "bad.ttl"), "<http://example.org/a> <http://example.org/p> .\n")
+            const clean = run(["check", "--root", ws, path.join(ws, "ok.ttl")])
+            assert.equal(clean.status, 0, `check on a clean file: ${clean.stdout}${clean.stderr}`)
+            const broken = run(["check", "--root", ws, path.join(ws, "bad.ttl")])
+            assert.equal(broken.status, 1, `check on a broken file: ${broken.stdout}${broken.stderr}`)
+            assert.match(broken.stdout, /bad\.ttl/)
+            console.log("ok - check: a clean file passes, a broken file fails")
+
+            await new Promise((resolve, reject) => {
+              const child = spawn(server, [], { env, stdio: ["pipe", "pipe", "inherit"] })
+              const timer = setTimeout(() => (child.kill(), reject(new Error("no answer in 30 s"))), 30_000)
+              const send = (m) => {
+                const body = JSON.stringify({ jsonrpc: "2.0", ...m })
+                child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
+              }
+              let buf = Buffer.alloc(0)
+              child.stdout.on("data", (d) => {
+                buf = Buffer.concat([buf, d])
+                for (;;) {
+                  const end = buf.indexOf("\r\n\r\n")
+                  if (end < 0) return
+                  const len = Number(/Content-Length: (\d+)/i.exec(buf.subarray(0, end).toString())[1])
+                  if (buf.length < end + 4 + len) return
+                  const msg = JSON.parse(buf.subarray(end + 4, end + 4 + len).toString())
+                  buf = buf.subarray(end + 4 + len)
+                  if (msg.id === undefined) continue
+                  if (msg.id === 1) {
+                    if (!msg.result?.capabilities) return reject(new Error(`initialize: ${JSON.stringify(msg)}`))
+                    send({ method: "initialized", params: {} })
+                    send({ id: 2, method: "shutdown" })
+                  } else if (msg.id === 2) {
+                    if (msg.error || msg.result !== null) return reject(new Error(`shutdown: ${JSON.stringify(msg)}`))
+                    send({ method: "exit" })
+                  }
+                }
+              })
+              child.on("error", reject)
+              child.on("exit", (code) => {
+                clearTimeout(timer)
+                code === 0 ? resolve() : reject(new Error(`exit code ${code}`))
+              })
+              send({ id: 1, method: "initialize", params: { processId: process.pid, rootUri: null, capabilities: {} } })
+            })
+            console.log("ok - initialize / shutdown / exit round trip")
+          } finally {
+            fs.rmSync(tmp, { recursive: true, force: true })
+          }
+          JS
+          rm -rf smoke-vsix
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vsix-${{ matrix.vsce }}
@@ -67,11 +224,13 @@ jobs:
           CARGO_TARGET: ${{ matrix.cargo }}
         run: |
           mkdir -p bin
+          # The licence and the third-party notices travel with the binary.
+          cp LICENSE THIRD_PARTY_NOTICES.md "target/$CARGO_TARGET/release/"
           cd "target/$CARGO_TARGET/release"
           if [ "$VSCE_TARGET" = win32-x64 ]; then
-            7z a "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.zip" turtle-lsp.exe
+            7z a "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.zip" turtle-lsp.exe LICENSE THIRD_PARTY_NOTICES.md
           else
-            tar -czf "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.tar.gz" turtle-lsp
+            tar -czf "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.tar.gz" turtle-lsp LICENSE THIRD_PARTY_NOTICES.md
           fi
       - if: matrix.vsce != 'alpine-x64'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -81,9 +240,10 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [versions, ci, build]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Only this job can write: the release itself and the provenance attestations.
     permissions:
       contents: write
@@ -114,9 +274,6 @@ jobs:
             dist/*.vsix
             dist/*.tar.gz
             dist/*.zip
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
       - name: Release notes from CHANGELOG.md
         run: |
           v="${GITHUB_REF_NAME#v}"
@@ -133,10 +290,39 @@ jobs:
           body_path: dist/NOTES.md
           generate_release_notes: true
           fail_on_unmatched_files: true
-      - name: Publish to the VS Code Marketplace
+
+  # The only job that sees VSCE_PAT. It cannot write to the repository, cannot
+  # mint an attestation or an OIDC token, and runs no install script.
+  publish:
+    name: Publish to the VS Code Marketplace
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # vsce only uploads the finished .vsix files; it needs no install script.
+      - working-directory: editors/vscode
+        run: npm ci --ignore-scripts
+      # --skip-duplicate: a re-run after a partial publish skips the targets
+      # the Marketplace already has instead of failing on them.
+      - name: vsce publish
         working-directory: editors/vscode
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
-          npm ci
-          for f in ../../dist/*.vsix; do npx vsce publish --packagePath "$f"; done
+          for f in ../../dist/*.vsix; do
+            npx vsce publish --skip-duplicate --packagePath "$f"
+          done

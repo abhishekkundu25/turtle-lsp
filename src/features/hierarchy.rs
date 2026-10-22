@@ -10,10 +10,10 @@
 //! super or sub term.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::features::completion::shorten;
 use crate::features::hover::short;
 use crate::features::navigation::uri;
 use crate::knowledge::{Knowledge, Source};
+use crate::syntax::names::shorten;
 use crate::syntax::{Iri, PrefixMap, Span};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;
@@ -179,7 +179,7 @@ pub fn prepare(
 }
 
 /// The document a hierarchy item was asked from (its `data.uri`).
-pub fn asking_uri(item: &TypeHierarchyItem) -> Option<&str> {
+pub(crate) fn asking_uri(item: &TypeHierarchyItem) -> Option<&str> {
     item.data.as_ref()?.get("uri")?.as_str()
 }
 

@@ -140,3 +140,31 @@ test("N-Triples gets no prefix help: no completions, no add-prefix fix", async (
   const items = Array.isArray(res) ? res : res.items
   assert.deepEqual(items, [])
 })
+
+test("the outline of a TriG file with 20,000 graphs lists each graph with its subject", async () => {
+  let text = ""
+  for (let i = 0; i < 20_000; i++) text += `GRAPH <http://e.org/g${i}> { <http://e.org/s${i}> <http://e.org/p> <http://e.org/o> . }\n`
+  const uri = uriOf(path.join(dir, "__big.trig"))
+  await openAs(uri, text, "trig")
+  try {
+    const syms = await s.request("textDocument/documentSymbol", { textDocument: { uri } })
+    assert.equal(syms.length, 20_000)
+    assert.equal(syms[19_999].name, "<http://e.org/g19999>")
+    assert.deepEqual(syms[19_999].children.map((c) => c.name), ["<http://e.org/s19999>"])
+  } finally {
+    s.close(uri)
+  }
+})
+
+test("comments after a statement do not fold; own-line comments do", async () => {
+  const text = "# a\n# b\n<http://e/s> <http://e/p> <http://e/o> . # one\n# c\n<http://e/t> <http://e/p> <http://e/o> . # two\n# d\n# e\n"
+  const uri = uriOf(path.join(dir, "__folds.trig"))
+  await openAs(uri, text, "trig")
+  try {
+    const folds = await s.request("textDocument/foldingRange", { textDocument: { uri } })
+    const comments = folds.filter((f) => f.kind === "comment").map((f) => [f.startLine, f.endLine])
+    assert.deepEqual(comments, [[0, 1], [5, 6]])
+  } finally {
+    s.close(uri)
+  }
+})

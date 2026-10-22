@@ -5,18 +5,19 @@
 //! `tools/corpus/fetch-jsonld.sh`) into `test/corpus/jsonld/`, which is not
 //! tracked. Documents are checked as `check` checks them, with their URL as
 //! the base and the corpus's remote contexts offline. Without the corpus the
-//! test skips.
+//! test prints `skipped`, and fails when `CI=true`.
 //!
 //!     cargo test --release --test jsonld_lints -- --nocapture
 
 use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 use turtle_lsp::analysis::{Analysis, Encoding};
 use turtle_lsp::features::diagnostics::diagnostics;
 use turtle_lsp::jsonld::NoNetwork;
 use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::syntax::{PrefixMap, Syntax};
+
+include!("support/corpus.rs");
 
 /// The codes this test watches: the JSON-LD lints and the vocabulary lints
 /// they reach through the context.
@@ -186,6 +187,36 @@ const EXPECTED: &[(&str, &str, &str, &str)] = &[
         PROV_LABEL,
     ),
     (
+        "croissant/huggingface-data_provenance_initiative.jsonld",
+        UNKNOWN,
+        "equivalentProperty",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-squad_v2.jsonld",
+        UNKNOWN,
+        "type",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-squad_v2.jsonld",
+        UNKNOWN,
+        "usage",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-wildchat.jsonld",
+        UNKNOWN,
+        "wasAssociatedWith",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-wildchat.jsonld",
+        UNKNOWN,
+        "id",
+        SCHEMA_VOCAB,
+    ),
+    (
         "dcat-us/document.jsonld",
         UNKNOWN,
         "dcterms:mediaType",
@@ -288,6 +319,7 @@ const INVALID_IRI: &str = "invalid-iri";
 const UNKNOWN: &str = "unknown-term";
 const DCAT_US_SCOPED: &str = "the DCAT-US 3.0 context defines it only in the type-scoped contexts of other types than the node's";
 const PROV_LABEL: &str = "not a PROV-O term (rdfs:label, dcterms:description)";
+const SCHEMA_VOCAB: &str = "a word the context's @vocab https://schema.org/ expands that schema.org does not define (true positive; https://schema.org/ is the schema vocabulary since the alias)";
 const DCTERMS: &str = "a dcterms term, not a DCAT one";
 
 /// `text` matches `pattern`, which may end in `*`.
@@ -300,11 +332,11 @@ fn matches(pattern: &str, text: &str) -> bool {
 
 #[test]
 fn the_corpus_gets_only_the_listed_lints() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus/jsonld");
-    let Ok(index) = fs::read_to_string(dir.join("index.tsv")) else {
-        eprintln!("skipping: test/corpus/jsonld not present (run tools/corpus/fetch-jsonld.sh)");
+    let Some(index_path) = corpus_path("jsonld/index.tsv") else {
         return;
     };
+    let dir = index_path.parent().unwrap().to_path_buf();
+    let index = fs::read_to_string(index_path).unwrap();
     let mut docs = Vec::new();
     let mut loader = NoNetwork::default();
     for line in index.lines() {

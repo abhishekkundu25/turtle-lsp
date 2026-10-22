@@ -21,7 +21,7 @@ the full W3C test suites and real public ontologies; see
 
 ## Features
 
-- **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags, and ill-typed literals (`"twelve"^^xsd:integer`, `"2021-02-29"^^xsd:date`: a value not valid for its XSD datatype or `rdf:JSON`). With `diagnostics.workspace` on, files that are not open are checked too, in the background, as `turtle-lsp check` checks them.
+- **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file; past 1,000 in one file, the editor shows the first 1,000 and one error that says there are more, and `turtle-lsp check` reports them all), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags, and ill-typed literals (`"twelve"^^xsd:integer`, `"2021-02-29"^^xsd:date`: a value not valid for its XSD datatype or `rdf:JSON`). With `diagnostics.workspace` on, files that are not open are checked too, in the background, as `turtle-lsp check` checks them.
 - **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Properties a SHACL shape requires for the subject's class come first ("required by …"), then properties whose `rdfs:domain` fits; after a property, instances of its range (or `sh:class`) come first and `sh:in` values are offered. Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
 - **Hover**: label, comment, types and where a term is described.
 - **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix. "N references" above each subject a file describes (code lenses; `codeLens.references` turns them off).
@@ -31,24 +31,28 @@ the full W3C test suites and real public ontologies; see
 - **Quick fixes and refactorings**: add a missing prefix (your project's own binding first), add all missing prefixes, remove an unused prefix, fix a misspelled term; organise prefixes, shorten or expand an IRI, and extract a prefix for a repeated namespace.
 - **Type hierarchy**: super- and subclasses (and sub-properties) across the workspace, imports and vocabularies.
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
-- **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, N-Triples or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose.
+- **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, TriG, N-Triples, N-Quads, JSON-LD or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose. See [Network access](#network-access) for what is fetched and the limits.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. The SPARQL queries of SHACL shapes (`sh:select`, `sh:ask`, `sh:construct`, `sh:update`) get SPARQL highlighting, completion and hover inside the string. See [SPARQL](#sparql).
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
-- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)).
-- **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
+- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)).
+- **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` (default 2,000,000: the most triples one run validates, the shared triples and every dataset together) and `turtle.shacl.onType` (validate while typing; on by default). What validation could not check is reported, not passed over: a failed SHACL-SPARQL query or a check cut short is a `shacl-failure` warning, and a shape whose `sh:path` cannot be read is a `shacl-invalid-path` error.
 
 ## Tested against the real world
 
 Every release is checked against the official W3C test suites and against
 public RDF files anyone can download (`npm run corpus`, results in
 [docs/research/corpus-validation.md](docs/research/corpus-validation.md)).
+`npm run corpus` downloads over `https` only and fails when a download
+fails. A file whose SHA-256 differs from the checksum recorded in
+`tools/corpus` gets a warning, or fails the run with `CORPUS_STRICT=1`.
 
 | Check | Result |
 |---|---|
 | W3C Turtle, TriG, N-Triples and N-Quads suites | 1137 / 1137 |
 | W3C SPARQL 1.1 and 1.2 syntax suites (query, update, federation) | 425 / 426 ¹ |
+| W3C SPARQL 1.1 query evaluation (aggregates, BIND, CONSTRUCT, EXISTS, functions, grouping, negation, property paths, subqueries) through the query engine | 176 / 183 in scope (7 known failures in spareval 0.2.7; 21 out of scope: named graphs, RDF/XML data) |
 | W3C SHACL Core suite | 98 / 98 |
 | W3C SHACL-SPARQL suite | 23 / 23 |
 | W3C JSON-LD 1.1 suites: toRdf, expand, remote-doc | 443, 365 and 6 pass; 2 known failures; the rest out of scope ³ |
@@ -57,7 +61,7 @@ public RDF files anyone can download (`npm run corpus`, results in
 | Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
 | SPARQL on 1,317 real queries ([SIB sparql-examples](https://github.com/sib-swiss/sparql-examples): UniProt, Rhea, Bgee, neXtProt, ...) | Same verdict as [spargebra](https://crates.io/crates/spargebra) on all; the formatter kept every query's algebra and comments, and formatting twice changes nothing |
 | Gene Ontology (118 MB, 1.28 million triples) | Parsed in 0.4 s, formatted in 0.8 s |
-| Fuzz testing | 20,000 randomly damaged files, every editor feature run on each, without a crash |
+| Fuzz testing (`tests/chaos.rs`) | On every CI run, 30,000 randomly damaged Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with SPARQL among them), 30,000 JSON-LD documents and 30,000 SPARQL queries and updates, with every editor feature run on each, without a crash |
 | Resource checks | No CPU use while idle, no server left running after the editor quits |
 
 ¹ The one left is a SPARQL 1.2 proposal (a projected variable reused in a
@@ -78,19 +82,16 @@ including JSON encoding and the pipe.
 | | Previous Node.js server | turtle-lsp (Rust) | Speedup |
 |---|---:|---:|---:|
 | Keystroke → diagnostics, median | 4,911 ms | **4.3 ms** | ~1,100× |
-| Keystroke → diagnostics, p95 | 8,341 ms | **9.6 ms** ¹ | ~870× |
-| Start-up (`initialize`) | 2,537 ms | **4 ms** | ~600× |
-| Open file → first diagnostics | 1,884 ms | **30 ms** | ~60× |
+| Keystroke → diagnostics, p95 | 8,341 ms | **4.8 ms** | ~1,700× |
+| Start-up (`initialize`) | 2,537 ms | **1.3 ms** | ~2,000× |
+| Open file → first diagnostics | 1,884 ms | **5.7 ms** | ~330× |
 | Completion after `foaf:` | 21 ms | **0.2 ms** | ~100× |
 | Completion with nothing typed | 476 ms, 48,203 items, 9.5 MB | **0.1 ms**, 6 items, 1 KB | |
 | Go to definition | 0.1 ms, 7 locations (every use) | **0.1 ms**, 1 location (the definition) | |
-| Format the whole file | — | **5 ms** | |
-| Semantic tokens, whole file | — | **6 ms** | |
-| Save → SHACL results (~180k triples) | — | **13 ms** | |
-| Memory (resident, after indexing) | 959 MB | **138 MB** | ~7× less |
-
-¹ Only the first edit after opening the file is that slow (it takes over from
-the indexed copy); later keystrokes take 4.3–4.9 ms.
+| Format the whole file | — | **4.6 ms** | |
+| Semantic tokens, whole file | — | **3.6 ms** | |
+| Save → SHACL results (~180k triples) | — | **9.8 ms** | |
+| Memory (resident, after indexing, opening and editing) | 959 MB | **144 MB** | ~7× less |
 
 JSON-LD against Turtle of the same length (about 30,000 lines each; the
 JSON-LD file has 1,499 people under an inline `@context`), each opened alone
@@ -98,15 +99,30 @@ in an empty workspace:
 
 | | Turtle | JSON-LD |
 |---|---:|---:|
-| Open file → first diagnostics, median | 5.1 ms | **6.4 ms** (1.3×) |
-| Keystroke → diagnostics, median | 4.1 ms | **5.9 ms** |
+| Open file → first diagnostics, median | 4.9 ms | **6.2 ms** (1.27×) |
+| Keystroke → diagnostics, median | 4.2 ms | **6.1 ms** |
 | Hover | 0.1 ms | **0.1 ms** |
 
-`tests/jsonld_budget.rs` holds release builds to the JSON-LD budgets: opening
-within 3× the Turtle time, and a keystroke under 10 ms.
+The JSON-LD budgets are opening within 3× the Turtle time and a keystroke
+under 10 ms; `npm run bench` reports both. `tests/jsonld_budget.rs` holds
+release builds to the first, and to a keystroke within 2× the Turtle opening
+time, which carries across machines.
 
-Measured on an Apple M6 with macOS 27. Results vary a little between runs.
-Reproduce with `npm run bench`.
+Memory on large inputs: after 20 `documentSymbol` requests on a
+100,000-triple file (a 5.5 MB answer each), the server holds 113 MB, 1.07
+times what it held before the first request. `turtle-lsp format --check` on
+a 2.5 MB file peaks at 88 MB resident, 35 bytes per input byte (142 MB
+committed, 57 bytes per byte), and so does `turtle-lsp check --no-shacl`.
+`npm run bench` fails when either commits more than 64 bytes per input byte
+(0.7.1: 88). It checks the committed figure because the resident one depends
+on the system: Linux reports about 40% more for the same commit.
+
+Measured with `npm run bench` at commit 15bd504 on an Apple M6 (12 cores)
+with macOS 27.0: the median of three runs, load average 1.7 to 1.8. Results
+vary a little between runs. The
+bench also has stress rows (near-miss IRIs, a 2.4 MB file, typed completion
+over 40,000 subjects, 200 TriG datasets, `check` on the workspace); CI runs
+it on every push to main and every pull request (see [Performance in CI](#performance-in-ci)).
 
 Why it is fast:
 
@@ -119,8 +135,10 @@ Why it is fast:
   their documentation only when you select one.
 - **Background indexing.** Workspace files are parsed in parallel on a
   separate thread, so start-up does not wait for them.
-- **Embedded vocabularies.** 84 vocabularies (about 21,000 terms) are compiled
-  into the binary and parsed only when first used.
+- **Embedded vocabularies.** `data/vocab.tsv` has 83 namespaces and 20,993
+  terms (`grep -c '^@ns' data/vocab.tsv` counts the namespaces). They are
+  compiled into the binary and parsed only when first used. Two of them,
+  GeoSPARQL's `geof` and `geor`, have no terms and are not checked.
 
 ## Project prefixes
 
@@ -203,7 +221,14 @@ not by its extension.
   a row limit (`query.timeoutSeconds`, default 30; `query.maxRows`, default
   1000), so typing never waits for it. A query that keeps more than
   `query.maxBufferedRows` rows in memory to sort, group, deduplicate or join
-  them (default 10 000 000, about 1 GB; `0` for no limit) is stopped too.
+  them (default 10 000 000; `0` for no limit) is stopped too. That limit
+  counts rows, not bytes: ordinary rows take about 100 bytes each, but a row
+  with long text (a `GROUP_CONCAT` result, say) takes more, so memory use can
+  pass 1 GB. A query that joins more than 200 patterns or path steps at once
+  is refused before it runs. While it runs, an editor that shows progress
+  shows "Running <file>" with the seconds so far and a cancel button, and
+  an editor that can refresh code lenses shows the lens as
+  "■ Cancel query" (the `turtle.cancelQuery` command). Either one stops it.
 
 Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
 queries too. SPARQL files add nothing to the workspace's knowledge, so a
@@ -304,7 +329,8 @@ v2, and DID v1 (`data/jsonld-contexts`). The network is off by default, so
 opening a file never goes online; a context that cannot be loaded is a
 `jsonld-context` error at its URL. Turn the network on with the
 `imports.network` setting (`turtle.imports.network` in VS Code) or `--network`
-on the command line. A fetched context goes into the import cache and is read
+on the command line; [Network access](#network-access) has the rules every
+fetch follows. A fetched context goes into the import cache and is read
 from there afterwards, network or not. Processed contexts are kept in memory,
 so re-checking a document processes only its inline contexts.
 
@@ -361,7 +387,11 @@ and vocabulary lints listed there, each checked by hand.
   `SHA256SUMS`), put `turtle-lsp` on your `PATH`, and point your editor's LSP
   client at it (it speaks LSP over stdio). The same binary is the command-line
   checker and formatter; see [Check from the command line](#check-from-the-command-line).
-- **From source:** `cargo build --release` (binary: `target/release/turtle-lsp`).
+- **From source:** `cargo build --release --locked` (binary:
+  `target/release/turtle-lsp`). It needs Rust 1.91 or newer; with rustup,
+  `rust-toolchain.toml` picks the compiler CI uses. The release profile
+  links the whole program at once, so a build takes about a minute, and
+  strips symbols, so a panic's backtrace shows no function names.
 
 ## Neovim (0.11+)
 
@@ -379,18 +409,34 @@ plugin:
 ```
 
 That is all. When lazy.nvim installs or updates the plugin it runs
-`build.lua`, which downloads the server for your machine from that release
-(macOS, Linux and Windows; checked against the release's `SHA256SUMS`) into
-the plugin's `bin/`. No Rust needed; on a machine with no download it builds
-the server with `cargo` instead. The plugin also brings:
+`build.lua`, which puts the server for your machine in the plugin's `bin/`.
+No Rust needed. `build.lua`:
+
+- downloads the server from the GitHub release of the plugin's version
+  (macOS, Linux and Windows), over `https` only, redirects included;
+- checks the archive against the release's `SHA256SUMS`;
+- when the `gh` command is installed, also checks the archive with
+  `gh attestation verify`. A failed check stops the install. A `gh` that is
+  not signed in fails this check: run `gh auth login` first;
+- keeps the old server until the new one is complete;
+- builds the server with `cargo` (Rust 1.91 or newer) when the release has
+  no download for your machine, or no such release exists yet.
+
+To download from a mirror, set `TURTLE_LSP_RELEASE_URL` to the folder that
+holds the release files. Downloads from it are checked against its
+`SHA256SUMS`, but they are not held to `https` and get no attestation check.
+Without lazy.nvim, run `nvim -l build.lua` in the plugin's folder. The plugin
+also brings:
 
 - the server's config, `lsp/turtle_lsp.lua`, for Turtle, TriG, N-Triples,
-  N-Quads, JSON-LD and SPARQL buffers, with `prefixes.ttl` or `.git` marking
-  the project root;
-- the file types Neovim does not detect itself: `.ttl` as `turtle`, `.nq`
-  as `nquads` and `.jsonld` as `jsonld`, so plain `.json` buffers stay
-  unattached (`.trig`, `.nt`, `.rq` and `.sparql` it already knows; `.ru`
-  stays Ruby);
+  N-Quads, JSON-LD and SPARQL buffers. The project root is the folder of the
+  nearest `turtle-lsp.json`, else the repository (`.git`), else the nearest
+  `prefixes.ttl`, so a `prefixes.ttl` in a subfolder stays part of the
+  project;
+- the file types Neovim does not detect itself: `.ttl` and `.turtle` as
+  `turtle`, `.nq` as `nquads` and `.jsonld` as `jsonld`, so plain `.json`
+  buffers stay unattached (`.trig`, `.nt`, `.rq` and `.sparql` it already
+  knows; `.ru` stays Ruby);
 - no modelines in Turtle, TriG and SPARQL files: `@prefix ex: <...>` looks
   like one (" ex:") and would raise E518 on open.
 
@@ -403,13 +449,13 @@ Without a plugin manager, put the server on your `PATH` (see
 
 ```lua
 vim.filetype.add({
-  extension = { ttl = "turtle", nq = "nquads", jsonld = "jsonld" },
+  extension = { ttl = "turtle", turtle = "turtle", nq = "nquads", jsonld = "jsonld" },
 })
 
 vim.lsp.config("turtle_lsp", {
   cmd = { "turtle-lsp" },
   filetypes = { "turtle", "trig", "ntriples", "nquads", "jsonld", "sparql" },
-  root_markers = { "prefixes.ttl", ".git" },
+  root_markers = { "turtle-lsp.json", ".git", "prefixes.ttl" },
 })
 vim.lsp.enable("turtle_lsp")
 
@@ -423,7 +469,7 @@ vim.api.nvim_create_autocmd("BufReadPre", {
 ```
 
 To build the server from source with lazy.nvim instead of downloading it,
-add `build = "cargo build --release"` to the spec and set
+add `build = "cargo build --release --locked"` to the spec and set
 `cmd = { vim.fn.stdpath("data") .. "/lazy/turtle-lsp/target/release/turtle-lsp" }`
 with `vim.lsp.config("turtle_lsp", ...)`.
 
@@ -444,9 +490,10 @@ code --install-extension turtle-lsp-*.vsix
 Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
 (prefixes for every file), `turtle.trace.server` (log LSP traffic), and the
 server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
-`turtle.shacl.maxTriples`, `turtle.shacl.onType`, `turtle.lint.undescribedTerms`,
-`turtle.imports.network` (fetch imports and JSON-LD contexts; off in
-untrusted workspaces), `turtle.imports.unresolved` (`soften` or `ignore`),
+`turtle.shacl.maxTriples` (the most triples one SHACL run validates: the
+shared triples and every dataset together), `turtle.shacl.onType`,
+`turtle.lint.undescribedTerms`, `turtle.imports.network` (fetch imports and
+JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
 default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
@@ -455,12 +502,40 @@ typing in Turtle and TriG strings, for the SPARQL queries of SHACL shapes
 (`editor.quickSuggestions` for `[turtle]` and `[trig]`; set it back in
 your settings to turn that off).
 
+The extension sends the server only the settings you set, so a key you
+leave unset comes from [`turtle-lsp.json`](#settings-file-turtle-lspjson)
+or takes its default. In an untrusted workspace, `turtle.server.path`,
+`turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples` and
+`turtle.diagnostics.workspace` take your user settings only, network
+imports are off, and no server inside the workspace is run.
+`turtle.server.path` must be an absolute path to a file that exists.
+
 Other editors pass the server settings without the `turtle.` prefix, as
 `init_options` or as the `turtle` section of `settings`:
 
 ```lua
 init_options = { inlayHints = { labels = "all" }, format = { lineWidth = 80 } }
 ```
+
+## Browser editor and toolbox
+
+The [browser editor](https://abhishekkundu25.github.io/turtle-lsp/) and its
+toolbox page run the server compiled to WebAssembly (`web/engine`) in your
+browser. Files never leave the tab.
+
+- **Storage**: the editor keeps the workspace in the browser's IndexedDB,
+  one record per file. The database is at version 2; a build of the editor
+  from before version 2 cannot open it. Where storage is refused (some
+  private windows), nothing is kept and the editor works the same.
+- **One tab edits**: the first tab that opens the workspace owns it. Another
+  tab shows the workspace read-only, and takes over when the first tab
+  closes.
+- **Limits**: opening or dropping a folder reads at most 1,000 files, each
+  of at most 10 MB, and only Turtle, TriG, N-Triples, N-Quads, JSON-LD and
+  SPARQL files.
+- **Content Security Policy**: both pages load scripts only from the site
+  itself. The editor may connect to other `http` and `https` sites, for the
+  "Fetch" quick fix; the toolbox connects to none.
 
 ## Settings file (turtle-lsp.json)
 
@@ -483,16 +558,79 @@ is also accepted.
   `init_options`, then its `turtle` settings section. A later layer wins key by
   key. An editor `prefixes` object replaces the file's prefixes; a dotted key
   (`"prefixes.ex"`) adds one.
+- **Once the editor sends its `turtle` settings section,** that section replaces
+  `init_options`: a key you remove from the editor's settings comes from
+  `turtle-lsp.json` again, or takes its default.
 - **On the command line,** flags win over the file.
 - **In the editor,** the server reads the file in the first workspace folder,
   and again when it changes (if the editor reports file changes to the server).
-- **A file that is not a JSON object** is ignored, with one warning.
+- **The file cannot turn on the network or lift a limit**, because any
+  repository you clone can ship one. It cannot set `imports.network`, and it
+  cannot raise `query.timeoutSeconds`, `query.maxRows`,
+  `query.maxBufferedRows` or `shacl.maxTriples` past their defaults (`0`,
+  no limit, counts as past); it can lower them. The server and the command
+  line ignore such a key with one warning that names it. Set these in the
+  editor's settings, or pass `--network` and the other flags.
+- **A file that is not a JSON object,** or is larger than 1 MB, is ignored,
+  with one warning.
+- **A time limit that cannot be held** (negative, or too large) is ignored
+  with a warning, by the editor, `format` and `query`. `check` stops with
+  exit code 2 instead, so a CI gate never runs on settings it was not given.
+
+## Network access
+
+turtle-lsp goes online in two cases only:
+
+- `imports.network` is on (`turtle.imports.network` in VS Code; `--network`
+  for `check`). Then `owl:imports` and JSON-LD `@context` URLs that are not
+  in the workspace, a catalog, the import cache or the bundled contexts are
+  fetched.
+- You run the quick fix "Fetch `<IRI>` and cache it" on an unresolved
+  import. It fetches that one import, with the setting on or off.
+
+Otherwise nothing is fetched: opening a file never goes online, and a
+`turtle-lsp.json` cannot turn the network on. Every fetch follows these
+rules (`src/fetch.rs`):
+
+| Rule | Limit |
+|---|---|
+| Schemes | `http` and `https`; a redirect from `https` to `http` is refused |
+| Redirects | at most 10 per document, each one checked against these rules |
+| Addresses | loopback, private, link-local, cloud metadata (`169.254.169.254`), carrier-grade NAT, multicast and unspecified addresses are refused, also when a host name resolves to one. Set `TURTLE_LSP_ALLOW_PRIVATE_HOSTS=1` in the server's environment to allow them (an intranet server, a vocabulary on this machine) |
+| One document | at most 20 MB, and 10 s with its redirects |
+| One pass over the imports | at most 100 requests and 100 MB; what is left over is reported as unresolved, with the reason |
+
+A fetched document goes into the import cache: `$TURTLE_LSP_CACHE_DIR`, else
+`~/Library/Caches/turtle-lsp` (macOS), `%LOCALAPPDATA%\turtle-lsp`
+(Windows), or `$XDG_CACHE_HOME/turtle-lsp` (`~/.cache/turtle-lsp`), under
+`imports/`. Each file is named by the SHA-256 of its URL and records the
+URL (in its first line, or in a `.url` file beside a cached JSON-LD
+document), which is checked when the file is read, so a file another URL
+produced is never taken for this one. Files cached by versions before this naming are
+not read. A fetched import is read in the syntax its content type names,
+else the one its URL's extension names, else the one its first bytes show
+(RDF/XML, JSON-LD or Turtle); never the one the import IRI suggests.
+
+`file:` imports, catalog entries and JSON-LD contexts are read only inside
+the workspace folders, and the check happens before any file is touched. A
+missing file and a file outside the workspace get the same message, so a
+cloned repository cannot probe your disk. A `file:` URL that names a host
+other than `localhost` is refused, and so is a Windows network share
+(`\\server\share`) unless the workspace is on one.
+
+The browser editor never fetches a JSON-LD context. Its "Fetch" quick fix
+asks your browser to download the import (at most 10 MB, 30 s), and only
+sites that allow other pages to read them (CORS) answer.
 
 ## Check from the command line
 
 `turtle-lsp check` reports what the editor would show, SHACL validation
 included, without an editor. `turtle-lsp format` formats files. With no
-subcommand, `turtle-lsp` is the language server, as before.
+subcommand, `turtle-lsp` is the language server, as before. A word that is
+not a command is an error (exit 2); it does not start the server.
+`turtle-lsp help check` (or `format`, `query`), or the command with
+`--help`, prints that command's options, and `turtle-lsp --version` prints
+the version to stdout.
 
 ```sh
 turtle-lsp check                     # every RDF (JSON-LD included) and SPARQL file under the workspace root
@@ -508,7 +646,13 @@ turtle-lsp query -e 'SELECT ?s WHERE { ?s a foaf:Person }' data/
 The workspace root is `--root DIR`, otherwise the nearest folder above with a
 `.git`, otherwise the current folder. Every file under it is loaded
 (`prefixes.ttl`, shapes, cached imports), so checking one file gives the same
-results as the editor. Only the files you name are reported.
+results as the editor. Only the files you name are reported. Paths are
+files or folders; `-` (standard input) is not supported.
+
+A folder scan takes at most 20,000 files, in path order, and skips files
+over 50 MB. `TURTLE_LSP_MAX_FILES=N` changes the first limit. A scan that
+stops at the limit, or skips a file, prints a warning and makes the run
+exit 2, so a CI gate never passes on files it did not check.
 
 Output is one line per problem, sorted by file and position, with lines and
 columns starting at 1. A summary goes to stderr.
@@ -524,10 +668,16 @@ data/pumps.ttl:7:22: error[shacl-violation] obj:mill-0517 (sd:fillsPosition of o
 |---|---|---|
 | 0 | no errors, and no more warnings than `--max-warnings` | nothing would change (or every file was formatted) |
 | 1 | an error (syntax, `sh:Violation`, ...), or too many warnings | a file would change |
-| 2 | the tool failed: a bad flag, an unreadable path, an internal error | the same, or a file with syntax errors (it is left alone) |
+| 2 | the tool failed, or did not cover everything: a bad flag, an unknown code in `--select` or `--ignore`, a file that cannot be read or is not UTF-8 (also reported as an `io` or `encoding` error), a scan that stopped at its limit, a skipped file over 50 MB, a context file that cannot be read, a `--fix` that could not be written | the same, or a file with syntax errors (it is left alone), or a file that could not be written |
 
 Warnings, `sh:Warning` included, do not fail the check unless you pass
 `--max-warnings N`. `sh:Info` results and hints never do.
+
+`format` and `check --fix` write a file through a temporary file in its
+folder, renamed over the original, with the original's permissions. A
+reader sees the old text or the new, never half of it. A symbolic link stays
+a link: the file it points at is replaced. A file that changed after it was
+read, and a read-only file, are left alone and reported.
 
 **Options of `check`**
 
@@ -540,12 +690,12 @@ Warnings, `sh:Warning` included, do not fail the check unless you pass
 | `--unsafe-fixes` | needs `--fix`; also apply "did you mean" renames of terms, which can change meaning |
 | `--max-warnings N` | exit 1 when there are more than N warnings |
 | `--exit-zero` | exit 0 when the run completes, whatever it found |
-| `--select CODE,...` | report only these diagnostic codes |
-| `--ignore CODE,...` | do not report these codes |
+| `--select CODE,...` | report only these diagnostic codes (an unknown code is an error) |
+| `--ignore CODE,...` | do not report these codes (an unknown code is an error) |
 | `--no-shacl` | skip SHACL validation |
 | `--network` | fetch `owl:imports` and JSON-LD contexts that are not in the cache (off by default) |
 | `--max-diagnostics N` | print at most N problems per file; the summary still counts all |
-| `--statistics` | print a count per code instead of the problems |
+| `--statistics` | print a count per code instead of the problems (not with `--format`) |
 
 `format` takes `--root DIR`, `--check` and `--diff`.
 
@@ -554,16 +704,27 @@ inline with `-e`) over the RDF files under the paths given (default: the
 workspace root), with the project's prefixes. `--format` is `table` (the
 default for SELECT), `json` (SPARQL JSON results), `csv`, `tsv`, or `turtle`
 (the default for CONSTRUCT and DESCRIBE); an ASK prints `true` or `false`.
-`--timeout SECONDS` (default 30), `--limit ROWS` (table only) and
-`--max-buffered-rows N` (default 10 000 000; `0` for no limit). Exit codes:
-0 ran, 1 an ASK answered false, 2 an error (a syntax error is printed as
-`FILE:LINE:COL: message`).
+`--timeout SECONDS` (default 30; `0` for no limit), `--limit ROWS` (table
+only) and `--max-buffered-rows N` (default 10 000 000; it counts rows, not
+bytes; `0` for no limit). Queries are SPARQL 1.1 and 1.2, with `LATERAL`
+([SEP-0006](https://github.com/w3c/sparql-dev/blob/main/SEP/SEP-0006/sep-0006.md)).
+A query that joins more than 200 triple patterns or path steps at once is
+refused before it runs, because planning it would take longer than any time
+limit. A table cell shows at most 1,000 characters. Exit codes: 0 ran, 1 an
+ASK answered false, 2 an error (a syntax error is printed as
+`FILE:LINE:COL: message`; a query stopped by its time limit is an error,
+never a partial answer).
 
 Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
-`unknown-term`, `undescribed-term`, `invalid-literal`, `unresolved-import` and
-`shacl-violation`, and for JSON-LD `json-syntax`, `jsonld-context`,
-`jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and `invalid-language-tag`. `--format json` gives each problem's range, severity,
-code, message and fixes, in an object with `"version": 1`.
+`unknown-term`, `undescribed-term`, `invalid-literal`, `unresolved-import`,
+`shacl-violation`, `shacl-failure`, `shacl-invalid-path`, `io` and
+`encoding`, and for JSON-LD `json-syntax`, `jsonld-context`,
+`jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and
+`invalid-language-tag`. An unknown code in `--select` or `--ignore` prints
+the full list. `--format json` gives each problem's range, severity, code,
+message and fixes, in an object with `"version": 1`. SARIF reports give
+each file as a percent-encoded path relative to the root, or as an absolute
+`file:` URI for a file outside it.
 
 Settings come from [`turtle-lsp.json`](#settings-file-turtle-lspjson);
 `format` uses its `format.lineWidth`.
@@ -574,7 +735,7 @@ Settings come from [`turtle-lsp.json`](#settings-file-turtle-lspjson);
 ```yaml
 repos:
   - repo: https://github.com/abhishekkundu25/turtle-lsp
-    rev: v0.6.0
+    rev: vX.Y.Z # a release tag
     hooks:
       - id: turtle-lsp-check
       - id: turtle-lsp-format
@@ -589,7 +750,7 @@ to `AGENTS.md` or `CLAUDE.md`:
 - After editing .ttl, .trig, .nt, .nq, .jsonld, .rq, .ru or .sparql files, run
   `turtle-lsp check <files>` and fix every error before you finish.
   Output is `path:line:col: severity[code] message`. Exit 1 means problems;
-  exit 2 means the command itself failed.
+  exit 2 means the command itself failed or did not check every file.
 - `turtle-lsp check --fix <files>` applies the safe fixes (missing and
   unused prefixes).
 - Run `turtle-lsp format <files>` on the files you changed.
@@ -635,7 +796,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install turtle-lsp
         working-directory: ${{ runner.temp }}
         run: |
@@ -649,7 +812,9 @@ jobs:
       - run: turtle-lsp format --check
 ```
 
-To pin a version, replace `latest/download` with `download/v0.6.0`.
+To pin a version, replace `latest/download` with `download/vX.Y.Z`, where
+`vX.Y.Z` is a release tag. The actions are pinned to full commit SHAs,
+because a tag can be moved; Dependabot can keep the SHAs current.
 
 GitHub shows at most 10 annotations of each severity per step. For a large
 repository, upload SARIF to code scanning instead: the problems appear in the
@@ -658,7 +823,7 @@ add `security-events: write` to `permissions`:
 
 ```yaml
       - run: turtle-lsp check --format sarif --output-file turtle-lsp.sarif
-      - uses: github/codeql-action/upload-sarif@v4
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always()
         with:
           sarif_file: turtle-lsp.sarif
@@ -666,7 +831,10 @@ add `security-events: write` to `permissions`:
 ```
 
 Imports come from the cache only, unless you pass `--network`, so a build
-does not depend on remote servers.
+does not depend on remote servers. A `turtle-lsp.json` in the checked-out
+repository cannot turn the network on (see
+[Settings file](#settings-file-turtle-lspjson)), so a pull request cannot
+make CI fetch URLs of its choosing.
 
 ## Semantic highlighting and label hints
 
@@ -716,21 +884,42 @@ vim.api.nvim_create_autocmd("LspAttach", {
 
 ## Releasing
 
-Push a tag that matches `editors/vscode/package.json`'s version (for example
-`v0.1.0`). The release workflow builds the server for macOS (arm64, x64),
-Linux (x64, arm64, Alpine) and Windows (x64), attaches a `.vsix` per platform
-to a GitHub Release, and publishes them to the VS Code Marketplace. It needs a
-`VSCE_PAT` repository secret.
+Push a tag `vX.Y.Z` on a commit of `main`. The release workflow
+(`.github/workflows/release.yml`) builds the server for macOS (arm64, x64),
+Linux (x64, arm64, Alpine) and Windows (x64), attaches a `.vsix` per
+platform, the server on its own (`.tar.gz`, `.zip` on Windows),
+`SHA256SUMS` and build attestations to a GitHub Release, and publishes the
+`.vsix` files to the VS Code Marketplace. Nothing is released unless:
+
+- the tag, `Cargo.toml`, `Cargo.lock`, `editors/vscode/package.json` and its
+  `package-lock.json`, and the top versioned heading of `CHANGELOG.md` name
+  the same version (`test/versions.test.mjs`; an `## Unreleased` heading on
+  top fails a release);
+- the CI workflow passed on the tagged commit;
+- the server inside each `.vsix` ran on its own platform (the smoke test).
+
+The Marketplace publish runs in the GitHub environment `release`, which
+must hold the `VSCE_PAT` secret (an Azure DevOps token with Marketplace:
+Manage). Create the environment in the repository settings, with required
+reviewers or a tag rule. A run started by hand only builds. The release
+checklist for maintainers is in [AGENTS.md](AGENTS.md#release).
 
 ## Development
 
 ```sh
 npm install     # test tooling only (LSP client, vocabulary generator)
 npm test        # cargo tests, parser cross-checks against oxttl and oxjsonld, end-to-end LSP tests, Neovim checks
-npm run bench   # latency benchmark on a 30k-line file in a 200-file workspace
+npm run test:latency  # the wall-clock checks of the end-to-end tests, run one at a time (test:node runs them last)
+npm run bench   # latency benchmark on a 30k-line file in a 200-file workspace, plus stress rows
 npm run vocab   # regenerate data/vocab.tsv from @zazuko/rdf-vocabularies
+npm run corpus  # download the public corpus and compare the parser and formatter on it
+npm run web:test     # build the browser engine and run the web tests
 npm run test:vscode  # VS Code extension: grammar tests, then checks inside a downloaded VS Code
 ```
+
+[AGENTS.md](AGENTS.md) lists the commands to run one test file, and the rules
+for fixtures and temporary folders; [ARCHITECTURE.md](ARCHITECTURE.md) maps
+the modules.
 
 - `test/lsp.test.mjs`: behaviour over stdio, the way an editor talks to the server.
 - `test/project.test.mjs`: a project of headerless fragments sharing one `prefixes.ttl` (`test/fixtures/project`).
@@ -740,7 +929,19 @@ npm run test:vscode  # VS Code extension: grammar tests, then checks inside a do
 - `editors/vscode/test/suite.cjs`: runs inside VS Code with the extension loaded; `editors/vscode/test/grammar.test.mjs` checks the highlighting grammars.
 - `tests/oxttl_oracle.rs`: on every valid fixture, the parser must produce the same triples as [oxttl](https://crates.io/crates/oxttl).
 - `tests/w3c_conformance.rs`: the vendored W3C suites (`tests/w3c`). Syntax tests must pass or fail as the manifest says; evaluation tests must give a dataset isomorphic to the expected N-Triples/N-Quads. Pass counts print on every run.
-- `tests/w3c_jsonld.rs`: the W3C JSON-LD 1.1 suites, against the status list `tests/w3c/jsonld/expected-status.tsv`; a regression or a known failure that starts passing fails the run. `tests/jsonld_oracle.rs` and `tests/jsonld_lints.rs` run on the public JSON-LD corpus that `npm run corpus` downloads, and skip without it. `tests/jsonld_budget.rs` holds release builds to the JSON-LD performance budgets.
-- Pending tests (`todo`, tagged with a phase such as `jsonld:phase2`) run but do not fail the build; `npm test` prints their count per tag and lists any that pass, to be promoted.
+- `tests/w3c_sparql.rs` and `tests/w3c_sparql_eval.rs`: the W3C SPARQL syntax suites, and the SPARQL 1.1 query evaluation tests run through the query engine, against the status list `tests/w3c/sparql-tests/sparql11/eval-status.tsv` (`tests/w3c/README.md` says what is in scope).
+- `tests/chaos.rs`: randomly damaged Turtle, TriG, N-Triples, N-Quads, JSON-LD and SPARQL files through the parser and every editor feature; `CHAOS_ITERS` and `CHAOS_SEED` change the run. `test/protocol-errors.test.mjs` sends the server input an editor never should.
+- `tests/diagnostics_agree.rs`: the editor and `check` give a document the same diagnostics.
+- `tests/w3c_jsonld.rs`: the W3C JSON-LD 1.1 suites, against the status list `tests/w3c/jsonld/expected-status.tsv`; a regression or a known failure that starts passing fails the run. `tests/jsonld_oracle.rs` and `tests/jsonld_lints.rs` run on the public JSON-LD corpus that `npm run corpus` downloads. Without it they print `skipped`, and with `CI=true` they fail, so a CI run that checked nothing is never reported as passing. `tests/jsonld_budget.rs` holds release builds to the JSON-LD performance budgets.
+- Pending tests (`todo`, tagged with a phase such as `jsonld:phase2`) run, and their failures do not fail the build; `npm test` prints their count per tag. A pending test that starts passing is listed and fails the run, so it gets promoted.
 
-Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license.
+### Performance in CI
+
+The CI job "Performance" runs `node bench/perf.mjs --json bench-results.json`
+on `ubuntu-latest` on every push to `main` and every pull request, and
+compares the keystroke rows' median with the results of the last run on
+`main`. On `main`, a ratio over 1.5 fails the job; on a pull request it is
+reported only. To make `main` report only, for example while the runner
+image changes, set the repository variable `PERF_GATE` to `off`.
+
+Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists the crates, data and packages that the binary, the `.vsix` and the browser site include, with their licences.

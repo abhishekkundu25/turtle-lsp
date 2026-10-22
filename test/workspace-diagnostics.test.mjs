@@ -146,6 +146,20 @@ test("files that are not open get the diagnostics check reports", async (t) => {
   assert.ok(s.publications.every((p) => p.version == null))
 })
 
+test("an open file shows what check reports for it (one composer for editor and check)", async (t) => {
+  const dir = workspace(t)
+  const expected = check(dir)
+  const s = await session(t, dir, ON)
+  for (const name of ["data/broken.ttl", "data/undeclared.ttl", "data/typo.ttl", "queries/q.rq"]) {
+    const u = uri(dir, name)
+    const text = fs.readFileSync(path.join(dir, name), "utf8")
+    s.open(u, text, name.endsWith(".rq") ? "sparql" : "turtle")
+    await until(s, u, (_, p) => p.version === 1)
+    assert.ok(expected[name].length > 0, name)
+    assert.deepEqual(fromServer(latest(s, u).diagnostics), expected[name], name)
+  }
+})
+
 test("opening a file switches it to live diagnostics; closing hands it back", async (t) => {
   const dir = workspace(t)
   const s = await session(t, dir, ON)
@@ -230,7 +244,7 @@ test("with the setting off (the default) nothing is published for closed files",
 
 test("a keystroke is answered while the background pass runs", async (t) => {
   // A few hundred files over a described vocabulary, each with an unknown
-  // term to report.
+  // term to report: the pass takes about a second.
   let vocab = "ex:next a rdf:Property .\n"
   for (let j = 0; j < 7; j++) vocab += `ex:Thing${j} a rdfs:Class .\n`
   const files = { "prefixes.ttl": PREFIXES, "vocab.ttl": vocab }
@@ -240,33 +254,45 @@ test("a keystroke is answered while the background pass runs", async (t) => {
     files[`gen/f${i}.ttl`] = `${text}ex:s${i}_0 rdfs:lable "typo" .\n`
   }
   const dir = workspace(t, files)
-  const s = await session(t, dir, ON)
   const edited = uri(dir, "gen/f0.ttl")
   const text = files["gen/f0.ttl"]
-  s.open(edited, text)
-  await until(s, edited, (_, p) => p.version === 1)
   const closed = (p) => p.version == null && p.uri !== edited
-  // The pass is under way.
-  const end = Date.now() + 20000
-  while (!s.publications.some(closed)) {
-    if (Date.now() > end) throw new Error("no background diagnostics")
-    await sleep(5)
-  }
-  const before = s.publications.filter(closed).length
-  const answered = []
-  for (let i = 0; i < 5; i++) {
-    s.change(edited, `${text}ex:extra${i} a ex:Thing0 .\n`)
-    const t0 = performance.now()
-    await s.request("textDocument/hover", { textDocument: { uri: edited }, position: { line: 0, character: 3 } })
-    answered.push(performance.now() - t0)
-  }
-  await until(s, edited, (_, p) => p.version === 6, 2000)
-  assert.ok(Math.max(...answered) < 200, `hover took ${answered.map((x) => x.toFixed(0))} ms`)
-  assert.ok(before < 299, `the pass was over before the keystrokes (${before} files)`)
-  // The pass resumes and reaches every closed file.
-  const all = Date.now() + 30000
-  while (new Set(s.publications.filter(closed).map((p) => p.uri)).size < 299) {
-    if (Date.now() > all) throw new Error("the pass never finished")
-    await sleep(20)
+  const distinct = (pubs) => new Set(pubs.filter(closed).map((p) => p.uri)).size
+  // Ordered, not timed (how fast a hover is answered: latency.test.mjs).
+  // Whether the pass was still running when the server answered the first
+  // hover is read from the order of the messages: the closed files published
+  // before that answer. If the pass had already finished (a client too slow
+  // to see it start), the session proves nothing and a new one is tried.
+  for (let attempt = 1; ; attempt++) {
+    const s = await session(t, dir, ON)
+    s.open(edited, text)
+    await until(s, edited, (_, p) => p.version === 1)
+    // The pass is under way.
+    const end = Date.now() + 20000
+    while (!s.publications.some(closed)) {
+      if (Date.now() > end) throw new Error("no background diagnostics")
+      await sleep(5)
+    }
+    let beforeAnswer
+    for (let i = 0; i < 5; i++) {
+      s.change(edited, `${text}ex:extra${i} a ex:Thing0 .\n`)
+      const hover = s.request("textDocument/hover", { textDocument: { uri: edited }, position: { line: 0, character: 3 } })
+      // Every publication that came before the answer is recorded by now.
+      if (i === 0) await hover.then(() => (beforeAnswer = distinct(s.publications)))
+      assert.ok(await hover, `no hover ${i}`)
+    }
+    await until(s, edited, (_, p) => p.version === 6)
+    if (beforeAnswer < 299) {
+      // The pass resumes and reaches every closed file.
+      const all = Date.now() + 30000
+      while (distinct(s.publications) < 299) {
+        if (Date.now() > all) throw new Error(`the pass never finished (${distinct(s.publications)} files)`)
+        await sleep(20)
+      }
+      return
+    }
+    assert.ok(attempt < 3, "in 3 sessions the pass was over before the first keystroke was answered")
+    await s.stop()
+    servers.get(dir).splice(servers.get(dir).indexOf(s), 1)
   }
 })

@@ -13,9 +13,11 @@
 //!   document read by the expanded-form oracle. Expansion that changes the
 //!   RDF fails; differences RDF cannot carry (`@index`, free-floating values)
 //!   are not checked;
-//! - negative tests: at least one error. The engine reports `json-syntax`
-//!   and `jsonld-context` codes, not the W3C error codes, so the code is not
-//!   compared.
+//! - negative tests: an error whose message starts with the test's
+//!   `expectErrorCode` (the engine's `jsonld-context` messages begin with
+//!   the W3C error code). A test that fails with another error, or with
+//!   the engine's own `json-syntax` errors, is listed `known-fail` with
+//!   what it reports instead.
 //!
 //! The expanded-form oracle turns an expanded JSON-LD document into quads
 //! with the JSON-LD 1.1 deserialization rules (no rdfDirection, no
@@ -238,20 +240,21 @@ fn term(n: &Node) -> Term {
             value,
             datatype,
             lang,
-        } => match lang {
-            Some(l) => match l.split_once("--") {
-                Some((l, dir)) => Literal::new_directional_language_tagged_literal_unchecked(
-                    &**value,
-                    l,
-                    match dir.to_ascii_lowercase().as_str() {
-                        "rtl" => oxrdf::BaseDirection::Rtl,
-                        _ => oxrdf::BaseDirection::Ltr,
-                    },
-                ),
-                None => Literal::new_language_tagged_literal_unchecked(&**value, &**l),
-            }
+            dir,
+        } => match (lang, dir) {
+            (Some(l), Some(d)) => Literal::new_directional_language_tagged_literal_unchecked(
+                &**value,
+                &**l,
+                match d {
+                    turtle_lsp::syntax::Direction::Rtl => oxrdf::BaseDirection::Rtl,
+                    turtle_lsp::syntax::Direction::Ltr => oxrdf::BaseDirection::Ltr,
+                },
+            )
             .into(),
-            None => Literal::new_typed_literal(&**value, nn(datatype)).into(),
+            (Some(l), None) => {
+                Literal::new_language_tagged_literal_unchecked(&**value, &**l).into()
+            }
+            _ => Literal::new_typed_literal(&**value, nn(datatype)).into(),
         },
         // JSON-LD has no triple terms.
         Node::Triple(_) => nn("urn:unexpected-triple-term").into(),
@@ -597,6 +600,28 @@ fn first_lines(d: &Dataset) -> String {
         .collect::<String>()
 }
 
+/// A negative test passes when one of the `errors` (messages) starts with
+/// the expected W3C error code.
+fn negative(errors: &[&str], code: Option<&str>) -> Result<(), String> {
+    match (errors.first(), code) {
+        (None, _) => Err(format!(
+            "no error reported (expected {})",
+            code.unwrap_or("an error")
+        )),
+        (Some(_), None) => Ok(()),
+        (Some(_), Some(code)) if errors.iter().any(|m| m.starts_with(code)) => Ok(()),
+        (Some(_), Some(code)) => Err(format!(
+            "expected error {code}, reported: {}",
+            errors
+                .iter()
+                .take(3)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )),
+    }
+}
+
 /// `Ok` if the test passes, else why not.
 fn run(t: &Test) -> Result<(), String> {
     let loader = SuiteLoader {
@@ -611,18 +636,20 @@ fn run(t: &Test) -> Result<(), String> {
     let parsed = jsonld::parse(&doc.text, Some(base), &loader);
     let error = parsed.errors.iter().find(|e| e.severity == Severity::Error);
     if t.kind == Kind::Negative {
-        return match error {
-            Some(_) => Ok(()),
-            None => Err(format!(
-                "no error reported (expected {})",
-                t.error_code.as_deref().unwrap_or("an error")
-            )),
-        };
+        let errors: Vec<&str> = parsed
+            .errors
+            .iter()
+            .filter(|e| e.severity == Severity::Error)
+            .map(|e| e.message())
+            .collect();
+        return negative(&errors, t.error_code.as_deref());
     }
     if let Some(e) = error {
         return Err(format!(
             "error at {}..{}: {}",
-            e.span.start, e.span.end, e.message
+            e.span.start,
+            e.span.end,
+            e.message()
         ));
     }
     let want = match (t.suite, t.kind, &t.expect) {
@@ -888,4 +915,24 @@ fn numbers_serialize_as_json_ld_and_jcs_expect() {
             "1e+21"
         ]
     );
+}
+
+/// A negative test compares the error code, not only that there is an error.
+#[test]
+fn a_negative_test_needs_its_error_code() {
+    let reported = ["invalid scoped context: invalid IRI mapping", "json-ish"];
+    assert_eq!(negative(&reported, Some("invalid scoped context")), Ok(()));
+    assert_eq!(
+        negative(&reported, Some("invalid IRI mapping")).unwrap_err(),
+        "expected error invalid IRI mapping, reported: invalid scoped context: invalid IRI mapping | json-ish"
+    );
+    // Any of the errors may carry the code; the engine reports several.
+    assert_eq!(negative(&reported, Some("json-ish")), Ok(()));
+    assert!(
+        negative(&[], Some("loading document failed"))
+            .unwrap_err()
+            .starts_with("no error reported")
+    );
+    // A test with no code only needs an error.
+    assert_eq!(negative(&reported, None), Ok(()));
 }

@@ -1,7 +1,7 @@
 // JSON-LD as its own syntax: `.jsonld` files and the `jsonld` language id
-// reach the JSON-LD frontend, never the Turtle parser. The frontend reads
-// JSON only so far, so a valid JSON-LD document has no diagnostics and a
-// broken one has JSON syntax errors; plain `.json` files are not JSON-LD.
+// reach the JSON-LD frontend, never the Turtle parser. A valid document has
+// no diagnostics and a broken one has JSON syntax errors; plain `.json`
+// files are not JSON-LD.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
@@ -160,4 +160,55 @@ test("check: a JSON syntax error is reported at its exact range", (t) => {
       },
     ],
   )
+})
+
+// ---- warnings, the BOM and the error cap ----
+
+// Valid JSON that deserves a second look is a warning, never a syntax error.
+const REPEATED = `{
+  "@context": { "ex": "http://example.org/" },
+  "@id": "ex:a",
+  "ex:name": "A",
+  "ex:name": "B\\ud83d"
+}
+`
+
+test("a repeated key and a lone surrogate are warnings, the document is still formatted", async () => {
+  const uri = uriOf(path.join(ws, "repeated.jsonld"))
+  s.open(uri, REPEATED, "jsonld")
+  const diags = await s.diagnosticsFor(uri)
+  const edits = await s.request("textDocument/formatting", { textDocument: { uri }, options: { tabSize: 2, insertSpaces: true } })
+  s.close(uri)
+  assert.deepEqual(diags.filter((d) => d.code === "json-syntax"), [], fmt(diags))
+  const warnings = diags.filter((d) => d.code === "json-duplicate-key" || d.code === "json-lone-surrogate")
+  assert.deepEqual(
+    warnings.map((d) => ({ code: d.code, severity: d.severity, range: d.range })),
+    [
+      // At the earlier key.
+      { code: "json-duplicate-key", severity: 2, range: { start: { line: 3, character: 2 }, end: { line: 3, character: 11 } } },
+      { code: "json-lone-surrogate", severity: 2, range: { start: { line: 4, character: 15 }, end: { line: 4, character: 21 } } },
+    ],
+    fmt(diags),
+  )
+  assert.equal(edits.length, 1, "formatted despite the warnings")
+})
+
+test("the formatter keeps a leading byte order mark", async () => {
+  const edits = await formatEdits("\uFEFF" + DOC, { tabSize: 2, insertSpaces: true })
+  assert.equal(edits.length, 1)
+  assert.equal(edits[0].newText, "\uFEFF" + JSON.stringify(JSON.parse(DOC), null, 2) + "\n")
+})
+
+test("the 'more than 100 syntax errors' note comes after the last error it reports", async () => {
+  const text = `[${",".repeat(300)}1]`
+  const uri = uriOf(path.join(ws, "many-errors.jsonld"))
+  s.open(uri, text, "jsonld")
+  const diags = (await s.diagnosticsFor(uri)).filter((d) => d.code === "json-syntax")
+  s.close(uri)
+  assert.equal(diags.length, 101, fmt(diags))
+  const note = diags[diags.length - 1]
+  assert.match(note.message, /^More than 100 syntax errors/)
+  const key = (p) => p.line * 1e6 + p.character
+  assert.ok(diags.slice(0, -1).every((d) => key(d.range.end) <= key(note.range.start)), "after every other error")
+  assert.deepEqual(note.range.start, note.range.end)
 })

@@ -1,5 +1,7 @@
 # Editing feedback: SHACL while typing, import-aware prefix fix, progress
 
+Status: done in 0.3.0.
+
 ## Problem Statement
 
 SHACL results only change on save, so a violation typed into a file stays

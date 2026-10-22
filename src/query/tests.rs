@@ -243,10 +243,14 @@ fn big() -> Analysis {
     doc("file:///w/big.ttl", &text)
 }
 
+// The time-limit tests check the error only: how soon a query stops is a
+// latency, checked by tests/query_latency.rs in a test binary of its own.
+// The cancellations are ordered, not timed: the flag is set once the
+// evaluation has made a number of checks ([`cancelled_after`]).
+
 #[test]
 fn a_runaway_query_stops_at_the_time_limit() {
     let d = big();
-    let start = std::time::Instant::now();
     let r = run(
         &[&d],
         RUNAWAY,
@@ -258,39 +262,55 @@ fn a_runaway_query_stops_at_the_time_limit() {
         },
     );
     assert_eq!(r, Err(QueryError::Timeout));
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
-    );
+}
+
+/// The watch a test evaluates `q` over `d` with, and the dataset: what
+/// [`run`] builds, so a test can read the watch's count of checks.
+fn evaluate_with(d: &Analysis, q: &str, limits: &Limits) -> (Result<Answer, QueryError>, u32) {
+    let watch = Arc::new(Watch::new(limits));
+    let parsed = parse(q, None, &ex_prefixes()).unwrap();
+    let triples = [d.parsed.triples.as_slice()];
+    let graph = Graph::new(&triples);
+    let index = Index::new(&graph, None);
+    let r = evaluate(&index, &parsed, &watch, limits);
+    (r, watch.checks.load(Ordering::Relaxed))
+}
+
+/// Evaluates `q` over `d` with a cancel flag that another thread sets once
+/// the evaluation has made `after` checks, so the flag lands while the query
+/// runs however loaded the machine is. The watch counts its checks only with
+/// a time limit: an hour, never reached.
+fn cancelled_after(d: &Analysis, q: &str, after: u32) -> Result<Answer, QueryError> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let limits = Limits {
+        timeout: Some(Duration::from_secs(3600)),
+        cancel: Some(flag.clone()),
+        ..Limits::default()
+    };
+    let watch = Arc::new(Watch::new(&limits));
+    let parsed = parse(q, None, &ex_prefixes()).unwrap();
+    let triples = [d.parsed.triples.as_slice()];
+    let graph = Graph::new(&triples);
+    let index = Index::new(&graph, None);
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            while watch.checks.load(Ordering::Relaxed) < after && !done.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            flag.store(true, Ordering::Relaxed);
+        });
+        let r = evaluate(&index, &parsed, &watch, &limits);
+        done.store(true, Ordering::Relaxed);
+        r
+    })
 }
 
 #[test]
 fn a_cancelled_query_stops() {
-    let d = big();
-    let flag = Arc::new(AtomicBool::new(false));
-    let start = std::time::Instant::now();
-    let r = std::thread::scope(|s| {
-        s.spawn(|| {
-            std::thread::sleep(Duration::from_millis(20));
-            flag.store(true, Ordering::Relaxed);
-        });
-        run(
-            &[&d],
-            RUNAWAY,
-            None,
-            &ex_prefixes(),
-            &Limits {
-                cancel: Some(flag.clone()),
-                ..Limits::default()
-            },
-        )
-    });
-    assert_eq!(r, Err(QueryError::Cancelled));
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
+    assert_eq!(
+        cancelled_after(&big(), RUNAWAY, 100),
+        Err(QueryError::Cancelled)
     );
 }
 
@@ -315,7 +335,6 @@ const IN_MEMORY: [&str; 2] = [
 fn a_join_in_memory_stops_at_the_time_limit() {
     let d = chain(400);
     for q in IN_MEMORY {
-        let start = std::time::Instant::now();
         let limits = Limits {
             timeout: Some(Duration::from_millis(20)),
             ..Limits::default()
@@ -325,11 +344,6 @@ fn a_join_in_memory_stops_at_the_time_limit() {
             Err(QueryError::Timeout),
             "{q}"
         );
-        assert!(
-            start.elapsed() < Duration::from_millis(500),
-            "{q}: {:?}",
-            start.elapsed()
-        );
     }
 }
 
@@ -337,26 +351,49 @@ fn a_join_in_memory_stops_at_the_time_limit() {
 fn a_join_in_memory_stops_when_cancelled() {
     let d = chain(400);
     for q in IN_MEMORY {
-        let flag = Arc::new(AtomicBool::new(false));
-        let start = std::time::Instant::now();
-        let r = std::thread::scope(|s| {
-            s.spawn(|| {
-                std::thread::sleep(Duration::from_millis(20));
-                flag.store(true, Ordering::Relaxed);
-            });
-            let limits = Limits {
-                cancel: Some(flag.clone()),
-                ..Limits::default()
-            };
-            run(&[&d], q, None, &ex_prefixes(), &limits)
-        });
-        assert_eq!(r, Err(QueryError::Cancelled), "{q}");
-        assert!(
-            start.elapsed() < Duration::from_millis(500),
-            "{q}: {:?}",
-            start.elapsed()
+        // Past the reads of the data (a few thousand checks), in the join.
+        assert_eq!(
+            cancelled_after(&d, q, 20_000),
+            Err(QueryError::Cancelled),
+            "{q}"
         );
     }
+}
+
+/// Counted, not timed: a cross product combined in memory checks the watch
+/// every 1024 rows it combines (the spareval patch, vendor/spareval), so the
+/// checks of the whole evaluation are at least the rows / 1024. Reading the
+/// data alone checks far less often (one check a triple), so a join that
+/// stopped checking fails here at once instead of running for minutes in
+/// the tests above. (The paths of `IN_MEMORY[1]` read about as often as
+/// their join combines rows: no use for a count.)
+#[test]
+fn a_join_in_memory_checks_the_watch_as_it_combines_rows() {
+    let limits = Limits {
+        timeout: Some(Duration::from_secs(3600)),
+        ..Limits::default()
+    };
+    let d = chain(30);
+    let (r, checks) = evaluate_with(&d, IN_MEMORY[0], &limits);
+    let rows = match r {
+        Ok(Answer::Solutions(s)) => match &s.rows[0][0] {
+            Some(Term::Literal(l)) => l.value().parse::<u32>().unwrap(),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(rows, 30 * 30 * 30 * 30);
+    // The four patterns' reads.
+    let (_, one_pattern) = evaluate_with(&d, "SELECT * WHERE { ?a ?b ?c }", &limits);
+    let reads = 4 * one_pattern;
+    assert!(
+        reads * 2 < rows / 1024,
+        "the reads alone ({reads} checks) would pass for {rows} rows"
+    );
+    assert!(
+        checks >= rows / 1024,
+        "{checks} checks for {rows} rows combined"
+    );
 }
 
 /// A hash join and a left join that combine rows in memory: the sorted
@@ -369,8 +406,6 @@ fn a_hash_join_in_memory_stops_at_the_time_limit() {
         "SELECT (COUNT(*) AS ?n) WHERE { ?a ex:next* ?x . { SELECT ?b ?x WHERE { ?b ex:next* ?x } ORDER BY ?b } }",
         "SELECT (COUNT(*) AS ?n) WHERE { { SELECT ?a ?x WHERE { ?a ex:next* ?x } ORDER BY ?a } OPTIONAL { SELECT ?b ?x WHERE { ?b ex:next* ?x } ORDER BY ?b } }",
     ] {
-        let start = std::time::Instant::now();
-        // Past the paths and the sort (about 0.2 s), so the limit falls in the join.
         let limits = Limits {
             timeout: Some(Duration::from_millis(300)),
             ..Limits::default()
@@ -380,12 +415,25 @@ fn a_hash_join_in_memory_stops_at_the_time_limit() {
             Err(QueryError::Timeout),
             "{q}"
         );
-        assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "{q}: {:?}",
-            start.elapsed()
-        );
     }
+}
+
+/// Unpatched spareval 0.2.7 panics when `=` compares two directional
+/// language-tagged strings (`rdf:dirLangString`): see
+/// `vendor/spareval/PATCH.md`. They are equal when the value, the language
+/// and the direction all are.
+#[test]
+fn equality_of_directional_language_strings_is_answered() {
+    let d = doc(
+        "file:///w/dir.ttl",
+        &format!("{HEAD}ex:a ex:p \"x\"@en--ltr .\n"),
+    );
+    let ask = |filter: &str| run_on(&[&d], &format!("ASK {{ ex:a ex:p ?o FILTER({filter}) }}"));
+    assert_eq!(ask("?o = \"x\"@en--ltr"), Ok(Answer::Boolean(true)));
+    assert_eq!(ask("?o = \"x\"@en--rtl"), Ok(Answer::Boolean(false)));
+    assert_eq!(ask("?o = \"x\"@de--ltr"), Ok(Answer::Boolean(false)));
+    assert_eq!(ask("?o = \"y\"@en--ltr"), Ok(Answer::Boolean(false)));
+    assert_eq!(ask("?o != \"x\"@en--rtl"), Ok(Answer::Boolean(true)));
 }
 
 fn capped(docs: &[&Analysis], q: &str, max: usize) -> Answer {
@@ -753,6 +801,192 @@ fn a_stop_whose_error_is_dropped_is_not_a_partial_answer() {
         ),
         Err(QueryError::TooManyRows(10))
     );
+}
+
+/// `n` subjects of two triples each, for a cross product that takes seconds.
+fn wide(n: usize) -> Analysis {
+    let mut text = HEAD.to_string();
+    for i in 0..n {
+        text.push_str(&format!("ex:s{i} ex:p ex:o{i} ; ex:q ex:r{i} .\n"));
+    }
+    doc("file:///w/wide.ttl", &text)
+}
+
+/// One query per form, each a MINUS whose right side is an in-memory cross
+/// product (36 million rows over `wide(3000)`) with a one-row left side. Cut
+/// short, the right side ends early and the left side survives: a wrong
+/// answer in every form, unless the stop is reported.
+const MINUS_CROSS: [&str; 3] = [
+    "ASK { VALUES ?d { ex:s2999 } MINUS { ?a ?b ?c . ?d ?e ?f } }",
+    "SELECT ?d WHERE { VALUES ?d { ex:s2999 } MINUS { ?a ?b ?c . ?d ?e ?f } }",
+    "CONSTRUCT { ?d ex:seen ex:yes } WHERE { VALUES ?d { ex:s2999 } MINUS { ?a ?b ?c . ?d ?e ?f } }",
+];
+
+#[test]
+fn a_minus_cut_short_by_the_time_limit_is_an_error_in_every_form() {
+    let d = wide(3000);
+    let limits = Limits {
+        timeout: Some(Duration::from_millis(100)),
+        ..Limits::default()
+    };
+    for q in MINUS_CROSS {
+        assert_eq!(
+            run(&[&d], q, None, &ex_prefixes(), &limits),
+            Err(QueryError::Timeout),
+            "{q}"
+        );
+    }
+}
+
+#[test]
+fn a_minus_cut_short_by_a_cancel_flag_is_an_error_in_every_form() {
+    let d = wide(3000);
+    for q in MINUS_CROSS {
+        assert_eq!(
+            cancelled_after(&d, q, 1_000),
+            Err(QueryError::Cancelled),
+            "{q}"
+        );
+    }
+}
+
+// --- long cells --------------------------------------------------------------
+
+/// One row with a literal of `n` characters (`é`, two bytes each).
+fn one_long_cell(n: usize) -> Solutions {
+    Solutions {
+        variables: vec!["v".into()],
+        rows: vec![
+            vec![Some(Literal::new_simple_literal("é".repeat(n)).into())],
+            vec![Some(iri("short"))],
+        ],
+        omitted: 0,
+    }
+}
+
+#[test]
+fn the_table_and_markdown_cut_a_long_cell_and_say_so() {
+    let s = one_long_cell(render::MAX_CELL_CHARS + 500);
+    let t = table(&s, &ex_prefixes(), None);
+    // The cut text (its opening quote included) and the mark, no more.
+    let cell = t.lines().nth(2).unwrap();
+    assert_eq!(cell.chars().count(), render::MAX_CELL_CHARS + 1, "{t}");
+    assert!(cell.ends_with('…'), "{t}");
+    assert!(t.contains("ex:short"), "{t}");
+    assert!(
+        t.ends_with("1 cell shortened to 1000 characters\n"),
+        "{}",
+        &t[t.len() - 60..]
+    );
+
+    let m = markdown(&Answer::Solutions(s), &ex_prefixes(), None);
+    let cell = m.lines().find(|l| l.contains('é')).unwrap();
+    // "| `", the cut text, "…", "` |"
+    assert_eq!(
+        cell.chars().count(),
+        3 + render::MAX_CELL_CHARS + 1 + 3,
+        "{cell}"
+    );
+    assert!(
+        m.ends_with("\n_1 cell shortened to 1000 characters._\n"),
+        "{m}"
+    );
+}
+
+#[test]
+fn a_cell_at_the_cap_is_whole_and_unremarked() {
+    // The cell is the quote, the text and the quote.
+    let s = one_long_cell(render::MAX_CELL_CHARS - 2);
+    let t = table(&s, &ex_prefixes(), None);
+    assert!(!t.contains('…') && !t.contains("shortened"), "{t}");
+    let m = markdown(&Answer::Solutions(s), &ex_prefixes(), None);
+    assert!(!m.contains('…') && !m.contains("shortened"), "{m}");
+}
+
+#[test]
+fn the_row_note_and_the_cell_note_both_show() {
+    let mut s = one_long_cell(render::MAX_CELL_CHARS + 1);
+    s.omitted = 4;
+    let t = table(&s, &ex_prefixes(), Some(1));
+    assert!(
+        t.ends_with("showing 1 of 6 rows\n1 cell shortened to 1000 characters\n"),
+        "{}",
+        &t[t.len() - 80..]
+    );
+}
+
+// --- planning limits ---------------------------------------------------------
+
+/// `?s ex:p/ex:p/... ?o` with `n` steps.
+fn path_query(n: usize) -> String {
+    format!("ASK {{ ?s {} ?o }}", vec!["ex:p"; n].join("/"))
+}
+
+fn complexity(q: &str) -> Result<(), QueryError> {
+    check_complexity(&parse(q, None, &ex_prefixes()).unwrap())
+}
+
+#[test]
+fn a_long_path_is_refused_at_once() {
+    // Planning is about cubic in the steps: 22 s for 1 000 of them, with no
+    // clock check on the way. Refused before the evaluation starts: a cancel
+    // flag set beforehand, which the first check would report, is never seen.
+    let d = chain(3);
+    let limits = Limits {
+        cancel: Some(Arc::new(AtomicBool::new(true))),
+        ..Limits::default()
+    };
+    let r = run(&[&d], &path_query(1000), None, &ex_prefixes(), &limits);
+    assert!(matches!(r, Err(QueryError::TooComplex(_))), "{r:?}");
+}
+
+#[test]
+fn the_widest_join_is_counted_where_it_is() {
+    let n = MAX_JOIN_WIDTH;
+    let body = |n: usize| {
+        let ps: Vec<String> = (0..n).map(|i| format!("?v{i} ex:p ?v{}", i + 1)).collect();
+        ps.join(" . ")
+    };
+    let bgp = |n: usize| format!("ASK {{ {} }}", body(n));
+    let groups = |n: usize| {
+        let gs: Vec<String> = (0..n).map(|i| format!("{{ ?v{i} ex:p ?w{i} }}")).collect();
+        format!("ASK {{ {} }}", gs.join(" "))
+    };
+    let exists = |n: usize| format!("ASK {{ FILTER EXISTS {{ {} }} }}", body(n));
+    let optional = |n: usize| format!("SELECT * {{ OPTIONAL {{ {} }} }}", body(n));
+    for (what, at, over) in [
+        ("path steps", path_query(n), path_query(n + 1)),
+        ("a basic graph pattern", bgp(n), bgp(n + 1)),
+        ("joined groups", groups(n), groups(n + 1)),
+        ("an EXISTS", exists(n), exists(n + 1)),
+        ("an OPTIONAL", optional(n), optional(n + 1)),
+    ] {
+        assert_eq!(complexity(&at), Ok(()), "{what} at the limit");
+        assert!(
+            matches!(complexity(&over), Err(QueryError::TooComplex(_))),
+            "{what} over the limit"
+        );
+    }
+}
+
+#[test]
+fn unions_alternatives_and_optionals_plan_in_linear_time_and_are_not_counted() {
+    let many = 1000;
+    let union = (0..many)
+        .map(|i| format!("{{ ?s ex:p{i} ?o }}"))
+        .collect::<Vec<_>>()
+        .join(" UNION ");
+    let optional: String = (0..many)
+        .map(|i| format!("OPTIONAL {{ ?s ex:p{i} ?o{i} }}"))
+        .collect();
+    let alt = vec!["ex:p"; many].join("|");
+    for q in [
+        format!("ASK {{ {union} }}"),
+        format!("SELECT * {{ ?s ex:q ?x {optional} }}"),
+        format!("ASK {{ ?s {alt} ?o }}"),
+    ] {
+        assert_eq!(complexity(&q), Ok(()), "{}", &q[..40]);
+    }
 }
 
 /// The rows SELECT and the triples CONSTRUCT keep count too, also with no

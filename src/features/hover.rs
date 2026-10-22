@@ -2,6 +2,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
+use crate::syntax::names::{Scope, declaration_at, shorten};
 use crate::syntax::{Form, Iri, PrefixMap};
 use crate::vocab::{TermKind, VOCABS};
 use crate::workspace::uri_to_path;
@@ -38,11 +39,13 @@ pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Optio
                     .find(|u| u.span == r.span)
                     .map(|u| u.name.to_string())
                     .unwrap_or_default();
-                let ns = a.prefix_map().get(&name).cloned().unwrap_or_default();
-                let origin = if a.parsed.prefixes.iter().any(|p| p.name == name) {
-                    "declared in this file"
-                } else {
-                    "from the project prefixes"
+                // The declaration in scope, as go-to-definition finds it.
+                let (ns, origin) = match declaration_at(a, &name, offset) {
+                    Some(p) => (p.iri.to_string(), "declared in this file"),
+                    None => (
+                        a.external.get(&name).cloned().unwrap_or_default(),
+                        "from the project prefixes",
+                    ),
                 };
                 return Some(md(
                     format!("**{name}:** → `<{ns}>`  \n_{origin}_"),
@@ -54,7 +57,7 @@ pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Optio
         Form::A => Some("a (rdf:type)".to_string()),
         Form::Iri => None,
     };
-    let prefixes = a.prefix_map();
+    let prefixes = Scope::at(a, r.span.start);
     let label = text_label.unwrap_or_else(|| short(&r.iri, &prefixes));
     let body = describe_iri(&r.iri, &label, k, &prefixes)?;
     Some(md(body, a.range(enc, r.span)))
@@ -62,11 +65,11 @@ pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Optio
 
 /// `iri` as `prefix:local` with the document's prefixes, else with the
 /// well-known vocabulary's prefix, else `<iri>`.
-pub fn short(iri: &str, prefixes: &PrefixMap) -> String {
-    crate::features::completion::shorten(iri, prefixes)
+pub(crate) fn short(iri: &str, prefixes: &PrefixMap) -> String {
+    shorten(iri, prefixes)
         .or_else(|| {
             let (v, local) = VOCABS.lookup(iri)?;
-            crate::features::completion::shorten(
+            shorten(
                 iri,
                 &PrefixMap::from_iter([(v.prefix.to_string(), v.namespace.to_string())]),
             )
@@ -83,7 +86,12 @@ fn shorts(iris: &[Iri], prefixes: &PrefixMap) -> String {
 }
 
 /// Markdown description of an IRI from the workspace and bundled vocabularies.
-pub fn describe_iri(iri: &str, label: &str, k: &Knowledge, prefixes: &PrefixMap) -> Option<String> {
+pub(crate) fn describe_iri(
+    iri: &str,
+    label: &str,
+    k: &Knowledge,
+    prefixes: &PrefixMap,
+) -> Option<String> {
     let mut out = format!("**{label}**");
     let mut kind = None;
     let mut text_label = None;
@@ -247,5 +255,54 @@ mod tests {
             h.range,
             Some(a.range(Encoding::Utf16, Span::new(at, at + 4)))
         );
+    }
+
+    #[test]
+    fn hover_and_definition_agree_on_the_declaration_in_scope() {
+        let text = "@prefix ex: <http://a/> .\nex:x ex:p ex:o .\n@prefix ex: <http://b/> .\nex:y ex:p ex:o .\n";
+        let external: PrefixMap =
+            PrefixMap::from_iter([("ex".to_string(), "http://ext/".to_string())]);
+        let a = Analysis::new("file:///w/doc.ttl".into(), text, Arc::new(external), true);
+        let k = Knowledge::default();
+        let at = |needle: &str| a.position(Encoding::Utf16, text.find(needle).unwrap() as u32 + 1);
+        let hover_text = |needle: &str| {
+            let h = hover(&a, &k, Encoding::Utf16, at(needle)).unwrap();
+            let HoverContents::Markup(m) = h.contents else {
+                panic!()
+            };
+            m.value
+        };
+        for (needle, ns, line) in [("ex:x", "http://a/", 0), ("ex:y", "http://b/", 2)] {
+            let defs =
+                crate::features::navigation::definition(&a, &k, Encoding::Utf16, at(needle), None);
+            assert_eq!(defs.len(), 1, "{needle}");
+            assert_eq!(defs[0].range.start.line, line, "{needle}");
+            let md = hover_text(needle);
+            assert!(md.contains(&format!("<{ns}>")), "{needle}: {md}");
+            assert!(md.contains("declared in this file"), "{needle}: {md}");
+        }
+    }
+
+    #[test]
+    fn a_prefix_used_above_its_declaration_comes_from_outside() {
+        let text = "ex:x ex:p ex:o .\n@prefix ex: <http://b/> .\n";
+        let external: PrefixMap =
+            PrefixMap::from_iter([("ex".to_string(), "http://ext/".to_string())]);
+        let a = Analysis::new("file:///w/doc.ttl".into(), text, Arc::new(external), true);
+        let pos = a.position(Encoding::Utf16, 1);
+        let h = hover(&a, &Knowledge::default(), Encoding::Utf16, pos).unwrap();
+        let HoverContents::Markup(m) = h.contents else {
+            panic!()
+        };
+        assert!(m.value.contains("<http://ext/>"), "{}", m.value);
+        assert!(m.value.contains("from the project prefixes"), "{}", m.value);
+        let defs = crate::features::navigation::definition(
+            &a,
+            &Knowledge::default(),
+            Encoding::Utf16,
+            pos,
+            None,
+        );
+        assert!(defs.is_empty(), "{defs:?}");
     }
 }

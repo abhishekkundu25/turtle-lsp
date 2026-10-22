@@ -10,7 +10,8 @@
 //! `target/corpus/report-only.md` instead of the full report.
 //!
 //! Per RDF file (Turtle, TriG, N-Triples, N-Quads) it reports:
-//! - parser: our triples against oxttl's (count, ground triples, graph names),
+//! - parser: our triples against oxttl's (count, and the datasets compared
+//!   canonically, blank nodes and graph names included: tests/support/oracle.rs),
 //!   and whether both agree the file is valid. In N-Triples and N-Quads both
 //!   must reject exactly the same lines (real-world dumps have invalid lines)
 //!   and agree on the quads of the others;
@@ -61,7 +62,7 @@ use std::time::{Duration, Instant};
 use turtle_lsp::features::format::{Options, format};
 use turtle_lsp::sparql::{self, Document, Level, TokenKind};
 use turtle_lsp::syntax::lexer::{Kind, tokenize};
-use turtle_lsp::syntax::{GraphName, Node, PrefixMap, Severity, Syntax, parse_with_base};
+use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse_with_base};
 
 const TIME_LIMIT: Duration = Duration::from_secs(300);
 const GEN_MAX_BYTES: usize = 5 << 20;
@@ -417,7 +418,7 @@ fn check(case: &Case) -> Row {
         .iter()
         .filter(|e| e.severity == Severity::Error)
         .take(10)
-        .map(|e| format!("{} at {}", e.message, line_col(text, e.span.start)))
+        .map(|e| format!("{} at {}", e.message(), line_col(text, e.span.start)))
         .collect();
 
     // 1. Parser against oxttl.
@@ -490,7 +491,7 @@ fn check(case: &Case) -> Row {
                 .errors
                 .iter()
                 .take(3)
-                .map(|e| format!("{} at {}", e.message, line_col(&out, e.span.start)))
+                .map(|e| format!("{} at {}", e.message(), line_col(&out, e.span.start)))
                 .collect::<Vec<_>>()
                 .join("; ")
         ));
@@ -559,7 +560,7 @@ fn compare_lines(
         .filter(|e| e.severity == Severity::Error)
     {
         ours.entry(lines.line(e.span.start as usize))
-            .or_insert_with(|| e.message.clone());
+            .or_insert_with(|| e.message().to_string());
     }
     let mut theirs: BTreeMap<usize, String> = BTreeMap::new();
     for (offset, message) in &ox_errors {
@@ -1266,96 +1267,25 @@ fn oxttl_quads(src: &str, syntax: Syntax, base: &str) -> Result<Vec<oxrdf::Quad>
     }
 }
 
-// ---- parser comparison (as tests/oxttl_oracle.rs: ground triples as sets,
-// counts and graph names in full) ----
+// ---- parser comparison (as tests/oxttl_oracle.rs: the counts, and the
+// canonical datasets, blank nodes and triple terms included) ----
 
-fn node(n: &Node) -> Option<String> {
-    match n {
-        Node::Iri(i) => Some(format!("<{}>", &**i)),
-        Node::Literal {
-            value,
-            datatype,
-            lang,
-        } => Some(match lang {
-            Some(l) => format!("{value:?}@{}", &**l),
-            None => format!("{value:?}^^<{}>", &**datatype),
-        }),
-        Node::Blank(_) | Node::Triple(_) => None,
-    }
-}
-
-fn ox_term(t: &oxrdf::Term) -> Option<String> {
-    use oxrdf::Term;
-    match t {
-        Term::NamedNode(n) => Some(format!("<{}>", n.as_str())),
-        Term::Literal(l) => Some(match (l.language(), l.direction()) {
-            (Some(lang), Some(dir)) => format!("{:?}@{lang}--{dir}", l.value()),
-            (Some(lang), None) => format!("{:?}@{lang}", l.value()),
-            _ => format!("{:?}^^<{}>", l.value(), l.datatype().as_str()),
-        }),
-        _ => None,
-    }
-}
-
-fn graph(g: Option<GraphName>) -> String {
-    match g {
-        None => "DEFAULT".into(),
-        Some(GraphName::Iri(i)) => format!("<{}>", &*i),
-        Some(GraphName::Blank(_)) => "blank".into(),
-    }
-}
-
-fn ox_graph(g: &oxrdf::GraphName) -> String {
-    match g {
-        oxrdf::GraphName::DefaultGraph => "DEFAULT".into(),
-        oxrdf::GraphName::NamedNode(n) => format!("<{}>", n.as_str()),
-        oxrdf::GraphName::BlankNode(_) => "blank".into(),
-    }
-}
+#[path = "../tests/support/oracle.rs"]
+mod oracle;
 
 fn compare(ours: &[&turtle_lsp::syntax::Triple], ox: &[oxrdf::Quad]) -> Option<String> {
     let mut diff = String::new();
     if ours.len() != ox.len() {
         writeln!(diff, "triple count: ours {} oxttl {}", ours.len(), ox.len()).unwrap();
     }
-    let a: BTreeSet<String> = ours
-        .iter()
-        .filter_map(|t| {
-            Some(format!(
-                "{} <{}> {} {}",
-                node(&t.s)?,
-                &*t.p,
-                node(&t.o)?,
-                graph(t.graph)
-            ))
-        })
-        .collect();
-    let b: BTreeSet<String> = ox
-        .iter()
-        .filter_map(|q| {
-            let s = match &q.subject {
-                oxrdf::NamedOrBlankNode::NamedNode(n) => format!("<{}>", n.as_str()),
-                _ => return None,
-            };
-            Some(format!(
-                "{s} <{}> {} {}",
-                q.predicate.as_str(),
-                ox_term(&q.object)?,
-                ox_graph(&q.graph_name)
-            ))
-        })
-        .collect();
-    let only_ours: Vec<_> = a.difference(&b).take(5).collect();
-    let only_ox: Vec<_> = b.difference(&a).take(5).collect();
-    if !only_ours.is_empty() || !only_ox.is_empty() {
-        writeln!(diff, "only ours: {only_ours:#?}\nonly oxttl: {only_ox:#?}").unwrap();
-    }
-    let mut ga: Vec<String> = ours.iter().map(|t| graph(t.graph)).collect();
-    let mut gb: Vec<String> = ox.iter().map(|q| ox_graph(&q.graph_name)).collect();
-    ga.sort();
-    gb.sort();
-    if ga != gb {
-        writeln!(diff, "graph names differ").unwrap();
+    if let Some(d) = oracle::difference(
+        &oracle::ours(ours.iter().copied()),
+        "ours",
+        &oracle::canonical(ox.iter().cloned()),
+        "oxttl",
+        5,
+    ) {
+        diff.push_str(&d);
     }
     (!diff.is_empty()).then_some(diff)
 }

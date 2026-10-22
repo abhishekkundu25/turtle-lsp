@@ -98,11 +98,12 @@ test("a narrow line width breaks a long projection and object list, and nothing 
   }
 })
 
-test("formatting is fast on a long query", async () => {
+// How long this takes: latency.test.mjs.
+test("a long query is formatted: one pattern per line", async () => {
   const body = Array.from({ length: 2000 }, (_, i) => `?s${i} <https://e.org/p> ?o${i} .`).join(" ")
   const text = `SELECT * WHERE { ${body} }\n`
-  const t0 = performance.now()
   const edits = await format(text)
   assert.equal(edits.length, 1)
-  assert.ok(performance.now() - t0 < 2000, `${performance.now() - t0} ms`)
+  const out = apply(text, edits)
+  assert.equal(out.split("\n").filter((l) => l.includes("<https://e.org/p>")).length, 2000)
 })

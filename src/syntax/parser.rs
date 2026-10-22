@@ -19,6 +19,12 @@
 //! blank node) before each line's `.`, which puts the line's triple in that
 //! graph. A literal graph label or a fifth term is an error; prefixed names
 //! and relative IRIs are reported as in N-Triples.
+//!
+//! Every syntax error and warning is kept, in the order found: the lexer's
+//! first, then the parser's, then the N-Triples restrictions. Each costs a
+//! span and, for a fixed message, a borrowed string. The editor shows the
+//! first [`crate::features::diagnostics::MAX_SYNTAX_ERRORS`] of a document;
+//! `turtle-lsp check` reports them all.
 
 use super::lexer::{Kind, Token, tokenize};
 use super::*;
@@ -27,10 +33,13 @@ use std::sync::OnceLock;
 
 type R<T> = Result<T, ()>;
 
-/// Deepest nesting of `[ ]`, `( )`, `<< >>` and `<<( )>>` the parser follows.
+/// Deepest nesting of `[ ]`, `( )`, `<< >>`, `<<( )>>` and `{| |}` the parser follows.
 /// Real data rarely goes past a dozen; thousands only come from generated or
 /// hostile input, and would overflow a worker thread's stack.
-pub const MAX_NESTING: u32 = 256;
+pub(crate) const MAX_NESTING: u32 = 256;
+
+const TT_HOLDS_NO_REIFIED_TRIPLE: &str =
+    "A triple term <<( )>> cannot contain a reified triple << >>: write it as a triple term";
 
 /// IRIs the parser produces itself, interned once.
 struct Vocab {
@@ -77,54 +86,91 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
 /// [`parse`], with relative IRIs resolved against `base` (the document's own
 /// URL) until an `@base` replaces it. An invalid `base` is ignored.
 ///
-/// JSON-LD goes to [`crate::jsonld::parse`] with no remote contexts
-/// ([`crate::jsonld::NoNetwork`]); `external` does not apply to it. Callers
-/// with a context loader call [`crate::jsonld::parse`] themselves.
+/// For the Turtle family only. It never fails, but it does not read JSON-LD,
+/// which has its own frontend: given [`Syntax::JsonLd`] it returns no triples
+/// and one `syntax` error at offset 0.
 pub fn parse_with_base(
     src: &str,
     external: &PrefixMap,
     syntax: Syntax,
     base: Option<&str>,
 ) -> Parsed {
-    if syntax == Syntax::JsonLd {
-        return crate::jsonld::parse(src, base, &crate::jsonld::NoNetwork::default());
+    run(src, external, syntax, base, None).0
+}
+
+impl Parsed {
+    /// The graph of `src` and no more: [`parse_with_base`] without the
+    /// tokens, references, prefix uses and comment spans the editor features
+    /// read, for a check of what a text says (the formatter's). The second
+    /// value is how many comments the text has. Room for `triples` triples,
+    /// the number the text is expected to have, is made at the start.
+    pub(crate) fn graph_only(
+        src: &str,
+        external: &PrefixMap,
+        syntax: Syntax,
+        base: Option<&str>,
+        triples: usize,
+    ) -> (Parsed, usize) {
+        run(src, external, syntax, base, Some(triples))
     }
-    let mut all = tokenize(src);
-    if syntax != Syntax::TriG {
-        // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
-        for t in all.iter_mut().filter(|t| t.kind == Kind::Graph) {
-            t.kind = Kind::Error;
-            t.error = Some(super::lexer::UNEXPECTED_WORD);
+}
+
+impl Syntax {
+    /// The tokens [`parse_with_base`] reads `src` as, comments included:
+    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, which has its
+    /// own frontend.
+    pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
+        if self == Syntax::JsonLd {
+            return Vec::new();
         }
+        let mut all = tokenize(src);
+        if self != Syntax::TriG {
+            // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
+            for t in all.iter_mut().filter(|t| t.kind == Kind::Graph) {
+                *t = t.into_unexpected_word();
+            }
+        }
+        all
     }
-    let mut out = Parsed {
+}
+
+/// The parse of `src`, and how many comments it has. With `graph_only` (the
+/// number of triples expected), the tokens, references, prefix uses and
+/// comment spans are left out.
+fn run(
+    src: &str,
+    external: &PrefixMap,
+    syntax: Syntax,
+    base: Option<&str>,
+    graph_only: Option<usize>,
+) -> (Parsed, usize) {
+    if syntax == Syntax::JsonLd {
+        let refused = Parsed {
+            syntax,
+            document_base: base.map(str::to_string),
+            errors: vec![SyntaxError::new(
+                Span::new(0, 0),
+                "JSON-LD documents are parsed by jsonld::parse",
+                Severity::Error,
+                "syntax",
+            )],
+            ..Parsed::default()
+        };
+        return (refused, 0);
+    }
+    let out = Parsed {
         syntax,
         document_base: base.map(str::to_string),
+        triples: Vec::with_capacity(graph_only.unwrap_or(0)),
         ..Parsed::default()
     };
-    for t in &all {
-        if t.kind == Kind::Comment {
-            out.comments.push(Span::new(t.start, t.end));
-        }
-        if let Some(msg) = t.error {
-            out.errors.push(SyntaxError {
-                span: Span::new(t.start, t.end),
-                message: msg.to_string(),
-                severity: Severity::Error,
-                code: "syntax",
-            });
-        }
-    }
-    let toks: Vec<Token> = all
-        .iter()
-        .copied()
-        .filter(|t| t.kind != Kind::Comment)
-        .collect();
-    out.tokens = all;
+    let full = graph_only.is_none();
     let mut p = P {
         src,
-        toks,
+        toks: syntax.tokens(src),
+        full,
         pos: 0,
+        prev: None,
         prefixes: external
             .iter()
             .map(|(k, v)| (k.clone(), Iri::intern(v)))
@@ -148,17 +194,48 @@ pub fn parse_with_base(
         buf: String::new(),
         v: vocab(),
     };
+    let mut comments = 0;
+    for i in 0..p.toks.len() {
+        let t = p.toks[i];
+        if t.kind == Kind::Comment {
+            comments += 1;
+            if full {
+                p.out.comments.push(Span::new(t.start, t.end));
+            }
+        }
+        if let Some(msg) = t.error() {
+            p.error(Span::new(t.start, t.end), msg);
+        }
+    }
+    p.pos = p.skip_comments(0);
     p.document();
     if syntax.is_line_based() {
         p.ntriples_restrictions();
     }
-    p.out
+    if full {
+        p.out.tokens = p.toks;
+    }
+    (p.out, comments)
 }
+
+/// A term, and whether it is a prefixed name with an undeclared prefix or a
+/// triple term holding one ([`Triple::unresolved`]). Kept per occurrence, not
+/// per IRI: an undeclared `urn:x` stands in as the IRI `urn:x`, which
+/// `<urn:x>` also is.
+type Flagged = (Node, bool);
 
 struct P<'a> {
     src: &'a str,
+    /// Every token, comments too: they become [`Parsed::tokens`]. The parser
+    /// steps over the comments.
     toks: Vec<Token>,
+    /// Keep the tokens, references, prefix uses and comment spans
+    /// ([`Parsed::graph_only`] does not).
+    full: bool,
+    /// The current token, never a comment (`toks.len()` at the end).
     pos: usize,
+    /// The token before `pos` that is not a comment.
+    prev: Option<usize>,
     /// Prefix name -> namespace, as declared so far.
     prefixes: FxHashMap<String, Iri>,
     base: Option<oxiri::Iri<String>>,
@@ -302,66 +379,99 @@ impl<'a> P<'a> {
     }
     fn bump(&mut self) -> Token {
         let t = self.toks[self.pos];
-        self.pos += 1;
+        self.advance();
         t
     }
     fn eat(&mut self, k: Kind) -> bool {
         if self.peek_kind() == Some(k) {
-            self.pos += 1;
+            self.advance();
             true
         } else {
             false
         }
     }
+    /// Step to the next token that is not a comment.
+    fn advance(&mut self) {
+        self.prev = Some(self.pos);
+        self.pos = self.skip_comments(self.pos + 1);
+    }
+    /// The first token at or after `i` that is not a comment.
+    fn skip_comments(&self, mut i: usize) -> usize {
+        while self.toks.get(i).is_some_and(|t| t.kind == Kind::Comment) {
+            i += 1;
+        }
+        i
+    }
+    /// The kind of the `n`th token after the current one, comments not
+    /// counted (0 is the current one).
+    fn kind_ahead(&self, n: usize) -> Option<Kind> {
+        let mut i = self.pos;
+        for _ in 0..n {
+            i = self.skip_comments(i + 1);
+        }
+        self.toks.get(i).map(|t| t.kind)
+    }
     fn text(&self, t: Token) -> &'a str {
         t.text(self.src)
     }
-    /// Where a new statement can start, for recovery: column 0, or inside a
-    /// graph block, first on its line and no deeper than the block's statements.
-    fn at_line_start(&self, t: Token) -> bool {
-        if t.start == 0 || self.src.as_bytes()[t.start as usize - 1] == b'\n' {
-            return true;
-        }
-        match self.graph_indent {
-            Some(indent) if self.in_graph => self.indent_of(t).is_some_and(|c| c <= indent),
-            _ => false,
+    /// Where a new statement can start, for recovery: the current token is at
+    /// column 0, or inside a graph block, first on its line and no deeper
+    /// than the block's statements.
+    fn at_line_start(&self) -> bool {
+        match self.line_indent() {
+            Some(0) => true,
+            Some(c) => self.in_graph && self.graph_indent.is_some_and(|indent| c <= indent),
+            None => false,
         }
     }
 
-    /// The column of `t` if only spaces and tabs precede it on its line.
-    fn indent_of(&self, t: Token) -> Option<u32> {
-        let before = &self.src.as_bytes()[..t.start as usize];
-        let line_start = before
-            .iter()
-            .rposition(|c| *c == b'\n')
-            .map_or(0, |p| p + 1);
-        before[line_start..]
-            .iter()
+    /// The column of the current token if only spaces and tabs precede it on
+    /// its line. Looks only at the gap since the previous token (no token
+    /// ends a line but a string, and a comment reaches the line's end), so
+    /// the cost is the size of that gap, not the length of the line.
+    fn line_indent(&self) -> Option<u32> {
+        let t = self.toks.get(self.pos)?;
+        let from = match self.prev {
+            Some(i) => self.toks[i].end as usize,
+            None => 0,
+        };
+        let gap = &self.src.as_bytes()[from..t.start as usize];
+        let (row, offset) = match gap.iter().rposition(|c| matches!(c, b'\n' | b'\r')) {
+            Some(i) => (&gap[i + 1..], gap.len() - i - 1),
+            // No line break since the previous token: the same line, unless
+            // this is the first token and nothing but blanks precedes it.
+            None if from == 0 => (gap, gap.len()),
+            None => return None,
+        };
+        row.iter()
             .all(|c| matches!(c, b' ' | b'\t'))
-            .then_some((before.len() - line_start) as u32)
+            .then_some(offset as u32)
     }
     fn prev_span(&self) -> Span {
-        match self.pos.checked_sub(1).and_then(|i| self.toks.get(i)) {
+        match self.prev.map(|i| self.toks[i]) {
             Some(t) => Span::new(t.start, t.end),
             None => Span::new(0, 0),
         }
     }
 
-    fn error(&mut self, span: Span, message: impl Into<String>) {
-        self.out.errors.push(SyntaxError {
-            span,
-            message: message.into(),
-            severity: Severity::Error,
-            code: "syntax",
-        });
+    fn add_ref(&mut self, r: Ref) {
+        if self.full {
+            self.out.refs.push(r);
+        }
     }
-    fn warning(&mut self, span: Span, message: impl Into<String>) {
-        self.out.errors.push(SyntaxError {
-            span,
-            message: message.into(),
-            severity: Severity::Warning,
-            code: "syntax",
-        });
+    fn add_prefix_use(&mut self, u: PrefixUse) {
+        if self.full {
+            self.out.prefix_uses.push(u);
+        }
+    }
+
+    fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
+        let e = SyntaxError::new(span, message, Severity::Error, "syntax");
+        self.out.errors.push(e);
+    }
+    fn warning(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
+        let e = SyntaxError::new(span, message, Severity::Warning, "syntax");
+        self.out.errors.push(e);
     }
 
     /// Report "Expected X" at the current token (or after the last token at EOF).
@@ -401,7 +511,9 @@ impl<'a> P<'a> {
         Node::Blank(BlankId(id))
     }
 
-    fn emit(&mut self, s: &Node, p: Iri, o: Node, p_span: Span, o_span: Span) {
+    /// Add a triple; `unresolved` says one of its terms is, or holds, an
+    /// undeclared-prefix name.
+    fn emit(&mut self, s: &Node, p: Iri, o: Node, p_span: Span, o_span: Span, unresolved: bool) {
         self.out.triples.push(Triple {
             s: s.clone(),
             p,
@@ -410,6 +522,7 @@ impl<'a> P<'a> {
             o_span,
             statement: self.statement,
             graph: self.graph,
+            unresolved,
         });
     }
 
@@ -447,34 +560,31 @@ impl<'a> P<'a> {
 
     fn recover(&mut self, from: usize) {
         if self.pos == from {
-            self.pos += 1;
+            self.advance();
         }
         while let Some(t) = self.peek() {
             if t.kind == Kind::Dot {
-                self.pos += 1;
+                self.advance();
                 return;
             }
             if self.in_graph && t.kind == Kind::RBrace {
                 return;
             }
-            if self.at_line_start(t) && self.is_starter(t.kind) {
+            if self.is_starter(t.kind) && self.at_line_start() {
                 return;
             }
-            self.pos += 1;
+            self.advance();
         }
     }
 
     // ---- TriG graph blocks ----
 
-    fn kind_at(&self, i: usize) -> Option<Kind> {
-        self.toks.get(i).map(|t| t.kind)
-    }
-
-    /// Length in tokens of a graph name at `i` (IRI, prefixed name, `_:b`, `[]`).
-    fn label_len(&self, i: usize) -> Option<usize> {
-        match self.kind_at(i)? {
+    /// Length in tokens of a graph name at the current token (IRI, prefixed
+    /// name, `_:b`, `[]`).
+    fn label_len(&self) -> Option<usize> {
+        match self.kind_ahead(0)? {
             Kind::Iri | Kind::PName | Kind::BNode => Some(1),
-            Kind::LBracket if self.kind_at(i + 1) == Some(Kind::RBracket) => Some(2),
+            Kind::LBracket if self.kind_ahead(1) == Some(Kind::RBracket) => Some(2),
             _ => None,
         }
     }
@@ -484,11 +594,11 @@ impl<'a> P<'a> {
         if !self.trig {
             return false;
         }
-        match self.kind_at(self.pos) {
+        match self.peek_kind() {
             Some(Kind::LBrace | Kind::Graph) => true,
             _ => self
-                .label_len(self.pos)
-                .is_some_and(|n| self.kind_at(self.pos + n) == Some(Kind::LBrace)),
+                .label_len()
+                .is_some_and(|n| self.kind_ahead(n) == Some(Kind::LBrace)),
         }
     }
 
@@ -497,7 +607,7 @@ impl<'a> P<'a> {
         let Some(t) = self.peek() else {
             return self.expected(WHAT);
         };
-        match self.label_len(self.pos) {
+        match self.label_len() {
             Some(_) if matches!(t.kind, Kind::Iri | Kind::PName) => {
                 let iri = self.iri(Role::Graph)?;
                 Ok((GraphName::Iri(iri), Span::new(t.start, t.end)))
@@ -506,7 +616,8 @@ impl<'a> P<'a> {
                 let node = if n == 1 {
                     self.labelled_bnode()
                 } else {
-                    self.pos += 2;
+                    self.advance();
+                    self.advance();
                     self.fresh_bnode()
                 };
                 let Node::Blank(b) = node else { unreachable!() };
@@ -601,7 +712,7 @@ impl<'a> P<'a> {
                 }
                 _ => {
                     if self.graph_indent.is_none() {
-                        self.graph_indent = self.indent_of(t);
+                        self.graph_indent = self.line_indent();
                     }
                     let start = self.pos;
                     if self.statement().is_err() {
@@ -627,7 +738,7 @@ impl<'a> P<'a> {
                         None
                     }
                 }
-                Kind::Iri if t.error.is_none() => {
+                Kind::Iri if t.error().is_none() => {
                     let text = self.text(*t);
                     let raw = &text[1..text.len() - 1];
                     let raw = if raw.contains('\\') {
@@ -716,7 +827,7 @@ impl<'a> P<'a> {
         }
         self.label = Some((name, span));
         match self.peek() {
-            Some(t) if is_term(t.kind) && !(self.at_line_start(t) && self.is_starter(t.kind)) => {
+            Some(t) if is_term(t.kind) && !(self.is_starter(t.kind) && self.at_line_start()) => {
                 self.error(
                     Span::new(t.start, t.end),
                     "An N-Quads line has at most four terms: subject, predicate, object and graph",
@@ -742,7 +853,7 @@ impl<'a> P<'a> {
         }
         match self.peek() {
             Some(t) if t.kind == Kind::Dot => {
-                self.pos += 1;
+                self.advance();
                 Ok(())
             }
             None => {
@@ -752,7 +863,7 @@ impl<'a> P<'a> {
             }
             // In a graph block, the closing `}` ends the last statement.
             Some(t) if self.in_graph && t.kind == Kind::RBrace => Ok(()),
-            Some(t) if self.at_line_start(t) && self.is_starter(t.kind) => {
+            Some(t) if self.is_starter(t.kind) && self.at_line_start() => {
                 let s = self.prev_span();
                 self.error(s, "Expected '.' to end the statement");
                 Ok(())
@@ -853,23 +964,21 @@ impl<'a> P<'a> {
     fn triples(&mut self) -> R<()> {
         let from = self.out.triples.len();
         match self.peek_kind() {
-            Some(Kind::LBracket)
-                if self.toks.get(self.pos + 1).map(|t| t.kind) != Some(Kind::RBracket) =>
-            {
+            Some(Kind::LBracket) if self.kind_ahead(1) != Some(Kind::RBracket) => {
                 let s = self.blank_node_property_list()?;
                 if !self.at_statement_end() {
-                    self.predicate_object_list(&s)?;
+                    self.predicate_object_list(&s, false)?;
                 }
             }
             Some(Kind::LTriple) => {
-                let s = self.reified_triple()?;
+                let (s, bad) = self.reified_triple()?;
                 if !self.at_statement_end() {
-                    self.predicate_object_list(&s)?;
+                    self.predicate_object_list(&s, bad)?;
                 }
             }
             _ => {
-                let s = self.subject()?;
-                self.predicate_object_list(&s)?;
+                let (s, bad) = self.subject()?;
+                self.predicate_object_list(&s, bad)?;
             }
         }
         if self.quads {
@@ -886,7 +995,7 @@ impl<'a> P<'a> {
         }
     }
 
-    fn subject(&mut self) -> R<Node> {
+    fn subject(&mut self) -> R<Flagged> {
         match self.peek_kind() {
             Some(Kind::Iri | Kind::PName) => {
                 let t = self.peek().unwrap();
@@ -895,29 +1004,29 @@ impl<'a> P<'a> {
                 } else {
                     Role::Subject
                 };
-                let iri = self.iri(role)?;
+                let (iri, bad) = self.flagged_iri(role)?;
                 if role == Role::Subject && self.subject.is_none() {
                     self.subject = Some((iri, Span::new(t.start, t.end)));
                 }
-                Ok(Node::Iri(iri))
+                Ok((Node::Iri(iri), bad))
             }
-            Some(Kind::BNode) => Ok(self.labelled_bnode()),
-            Some(Kind::LBracket)
-                if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
-            {
-                self.pos += 2;
-                Ok(self.fresh_bnode())
+            Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
+            Some(Kind::LBracket) if self.kind_ahead(1) == Some(Kind::RBracket) => {
+                self.advance();
+                self.advance();
+                Ok((self.fresh_bnode(), false))
             }
-            Some(Kind::LParen) => self.collection(),
+            Some(Kind::LParen) => Ok((self.collection()?, false)),
             Some(Kind::LTriple) => self.reified_triple(),
             _ => self.expected("a subject"),
         }
     }
 
-    fn predicate_object_list(&mut self, s: &Node) -> R<()> {
+    /// `s_bad`: the subject is an undeclared-prefix name.
+    fn predicate_object_list(&mut self, s: &Node, s_bad: bool) -> R<()> {
         loop {
-            let (p, p_span) = self.verb()?;
-            self.object_list(s, p, p_span)?;
+            let (p, p_span, p_bad) = self.verb()?;
+            self.object_list(s, p, p_span, s_bad || p_bad)?;
             if self.peek_kind() != Some(Kind::Semicolon) {
                 return Ok(());
             }
@@ -928,8 +1037,8 @@ impl<'a> P<'a> {
         }
     }
 
-    /// The predicate and its span.
-    fn verb(&mut self) -> R<(Iri, Span)> {
+    /// The predicate, its span and whether it is an undeclared-prefix name.
+    fn verb(&mut self) -> R<(Iri, Span, bool)> {
         let role = if self.quoted > 0 {
             Role::Quoted
         } else {
@@ -939,46 +1048,64 @@ impl<'a> P<'a> {
             Some(t) if t.kind == Kind::A => {
                 self.bump();
                 let span = Span::new(t.start, t.end);
-                self.out.refs.push(Ref {
+                self.add_ref(Ref {
                     span,
                     iri: self.v.rdf_type,
                     role,
                     form: Form::A,
                 });
-                Ok((self.v.rdf_type, span))
+                Ok((self.v.rdf_type, span, false))
             }
             Some(t) if matches!(t.kind, Kind::Iri | Kind::PName) => {
-                Ok((self.iri(role)?, Span::new(t.start, t.end)))
+                let (iri, bad) = self.flagged_iri(role)?;
+                Ok((iri, Span::new(t.start, t.end), bad))
             }
             _ => self.expected("a predicate"),
         }
     }
 
-    fn object_list(&mut self, s: &Node, p: Iri, p_span: Span) -> R<()> {
+    /// `sp_bad`: the subject or the predicate is an undeclared-prefix name.
+    fn object_list(&mut self, s: &Node, p: Iri, p_span: Span, sp_bad: bool) -> R<()> {
         loop {
             let start = self.start();
-            let o = self.object()?;
+            let (o, o_bad) = self.object()?;
             let o_span = self.span_from(start);
-            self.emit(s, p, o.clone(), p_span, o_span);
-            self.annotation(s, p, p_span, &o, o_span)?;
+            let bad = sp_bad || o_bad;
+            self.emit(s, p, o.clone(), p_span, o_span, bad);
+            self.annotation(s, p, p_span, &o, o_span, bad)?;
             if !self.eat(Kind::Comma) {
                 return Ok(());
             }
         }
     }
 
-    fn object(&mut self) -> R<Node> {
+    fn object(&mut self) -> R<Flagged> {
         let role = if self.quoted > 0 {
             Role::Quoted
         } else {
             Role::Object
         };
+        let node = match self.peek_kind() {
+            Some(Kind::Iri | Kind::PName) => {
+                let (iri, bad) = self.flagged_iri(role)?;
+                return Ok((Node::Iri(iri), bad));
+            }
+            Some(Kind::LTripleTerm) => return self.triple_term(),
+            Some(Kind::LTriple) => return self.reified_triple(),
+            _ => self.plain_object()?,
+        };
+        Ok((node, false))
+    }
+
+    /// An object that is no IRI and holds none that counts for
+    /// [`Triple::unresolved`]: a blank node, a collection or a literal.
+    fn plain_object(&mut self) -> R<Node> {
         match self.peek_kind() {
-            Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(role)?)),
             Some(Kind::BNode) => Ok(self.labelled_bnode()),
             Some(Kind::LBracket) => {
-                if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) {
-                    self.pos += 2;
+                if self.kind_ahead(1) == Some(Kind::RBracket) {
+                    self.advance();
+                    self.advance();
                     Ok(self.fresh_bnode())
                 } else {
                     self.blank_node_property_list()
@@ -1000,6 +1127,7 @@ impl<'a> P<'a> {
                     value: text.into(),
                     datatype,
                     lang: None,
+                    dir: None,
                 })
             }
             Some(Kind::Boolean) => {
@@ -1008,10 +1136,9 @@ impl<'a> P<'a> {
                     value: self.text(t).into(),
                     datatype: self.v.boolean,
                     lang: None,
+                    dir: None,
                 })
             }
-            Some(Kind::LTripleTerm) => self.triple_term(),
-            Some(Kind::LTriple) => self.reified_triple(),
             _ => self.expected("an object"),
         }
     }
@@ -1023,7 +1150,7 @@ impl<'a> P<'a> {
             Some(Kind::LangTag) => {
                 let lt = self.bump();
                 let tag = &self.text(lt)[1..];
-                let (lang, dir) = match tag.split_once("--") {
+                let (lang, dir_text) = match tag.split_once("--") {
                     Some((l, d)) => (l, Some(d)),
                     None => (tag, None),
                 };
@@ -1033,9 +1160,11 @@ impl<'a> P<'a> {
                         format!("Invalid language tag '{lang}': {e}"),
                     );
                 }
-                if let Some(d) = dir
-                    && d != "ltr"
-                    && d != "rtl"
+                // An unknown direction is reported and dropped: the literal is
+                // then a plain language-tagged string.
+                let dir = dir_text.and_then(Direction::parse);
+                if let Some(d) = dir_text
+                    && dir.is_none()
                 {
                     self.error(
                         Span::new(lt.start, lt.end),
@@ -1047,10 +1176,11 @@ impl<'a> P<'a> {
                 } else {
                     self.v.lang_string
                 };
+                // Keyed by the token (`@en--rtl`), the cache holds the bare tag.
                 let lang = match self.iri_cache.get(self.text(lt)) {
                     Some(&l) => l,
                     None => {
-                        let l = Iri::intern(&tag.to_ascii_lowercase());
+                        let l = Iri::intern(&lang.to_ascii_lowercase());
                         self.iri_cache.insert(self.text(lt), l);
                         l
                     }
@@ -1059,6 +1189,7 @@ impl<'a> P<'a> {
                     value,
                     datatype,
                     lang: Some(lang),
+                    dir,
                 })
             }
             Some(Kind::Caret2) => {
@@ -1081,12 +1212,14 @@ impl<'a> P<'a> {
                     value,
                     datatype,
                     lang: None,
+                    dir: None,
                 })
             }
             _ => Ok(Node::Literal {
                 value,
                 datatype: self.v.string,
                 lang: None,
+                dir: None,
             }),
         }
     }
@@ -1094,7 +1227,7 @@ impl<'a> P<'a> {
     /// Run `f` one nesting level deeper. Past [`MAX_NESTING`] the statement
     /// is abandoned with an error: unbounded recursion would overflow the
     /// stack, which no panic guard can catch.
-    fn nested(&mut self, f: impl FnOnce(&mut Self) -> R<Node>) -> R<Node> {
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         if self.depth >= MAX_NESTING {
             let span = self
                 .peek()
@@ -1115,7 +1248,7 @@ impl<'a> P<'a> {
     fn blank_node_property_list_inner(&mut self) -> R<Node> {
         let open = self.bump();
         let b = self.fresh_bnode();
-        self.predicate_object_list(&b)?;
+        self.predicate_object_list(&b, false)?;
         if !self.eat(Kind::RBracket) {
             if self.peek().is_none() {
                 self.error(Span::new(open.start, open.end), "Unclosed '['");
@@ -1136,7 +1269,7 @@ impl<'a> P<'a> {
         loop {
             match self.peek_kind() {
                 Some(Kind::RParen) => {
-                    self.pos += 1;
+                    self.advance();
                     break;
                 }
                 None => {
@@ -1145,8 +1278,8 @@ impl<'a> P<'a> {
                 }
                 _ => {
                     let start = self.start();
-                    let item = self.object()?;
-                    items.push((item, self.span_from(start)));
+                    let (item, bad) = self.object()?;
+                    items.push((item, bad, self.span_from(start)));
                 }
             }
         }
@@ -1158,49 +1291,72 @@ impl<'a> P<'a> {
         let mut cur = head.clone();
         let n = items.len();
         let (first, rest) = (self.v.first, self.v.rest);
-        for (i, (item, span)) in items.into_iter().enumerate() {
-            self.emit(&cur, first, item, span, span);
+        for (i, (item, bad, span)) in items.into_iter().enumerate() {
+            self.emit(&cur, first, item, span, span, bad);
             let next = if i + 1 == n {
                 nil.clone()
             } else {
                 self.fresh_bnode()
             };
-            self.emit(&cur, rest, next.clone(), span, span);
+            self.emit(&cur, rest, next.clone(), span, span, false);
             cur = next;
         }
         Ok(head)
     }
 
-    /// `<<( s p o )>>`
-    fn triple_term(&mut self) -> R<Node> {
+    /// `<<( s p o )>>`: unresolved when one of its terms is.
+    fn triple_term(&mut self) -> R<Flagged> {
         self.nested(Self::triple_term_inner)
     }
 
-    fn triple_term_inner(&mut self) -> R<Node> {
+    fn triple_term_inner(&mut self) -> R<Flagged> {
         self.bump();
         self.quoted += 1;
         let r = (|| {
-            let s = self.quoted_subject()?;
-            let (p, _) = self.verb()?;
-            let o = self.quoted_object()?;
+            let (s, s_bad) = self.tt_subject()?;
+            let (p, _, p_bad) = self.verb()?;
+            let (o, o_bad) = self.tt_object()?;
             if !self.eat(Kind::RTripleTerm) {
                 return self.expected("')>>'");
             }
-            Ok(Node::Triple(Box::new((s, p, o))))
+            Ok((Node::Triple(Box::new((s, p, o))), s_bad || p_bad || o_bad))
         })();
         self.quoted -= 1;
         r
     }
 
-    fn quoted_subject(&mut self) -> R<Node> {
+    /// `ttSubject ::= iri | BlankNode`: a triple term holds no reified triple.
+    fn tt_subject(&mut self) -> R<Flagged> {
+        let (start, reified) = (self.start(), self.peek_kind() == Some(Kind::LTriple));
+        let s = self.rt_subject()?;
+        if reified {
+            self.error(self.span_from(start), TT_HOLDS_NO_REIFIED_TRIPLE);
+        }
+        Ok(s)
+    }
+
+    /// `ttObject ::= iri | BlankNode | literal | tripleTerm`.
+    fn tt_object(&mut self) -> R<Flagged> {
+        let (start, reified) = (self.start(), self.peek_kind() == Some(Kind::LTriple));
+        let o = self.rt_object()?;
+        if reified {
+            self.error(self.span_from(start), TT_HOLDS_NO_REIFIED_TRIPLE);
+        }
+        Ok(o)
+    }
+
+    /// `rtSubject ::= iri | BlankNode | reifiedTriple`.
+    fn rt_subject(&mut self) -> R<Flagged> {
         match self.peek_kind() {
-            Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(Role::Quoted)?)),
-            Some(Kind::BNode) => Ok(self.labelled_bnode()),
-            Some(Kind::LBracket)
-                if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
-            {
-                self.pos += 2;
-                Ok(self.fresh_bnode())
+            Some(Kind::Iri | Kind::PName) => {
+                let (iri, bad) = self.flagged_iri(Role::Quoted)?;
+                Ok((Node::Iri(iri), bad))
+            }
+            Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
+            Some(Kind::LBracket) if self.kind_ahead(1) == Some(Kind::RBracket) => {
+                self.advance();
+                self.advance();
+                Ok((self.fresh_bnode(), false))
             }
             Some(Kind::LTriple) => self.reified_triple(),
             _ => self.expected("a subject"),
@@ -1209,12 +1365,10 @@ impl<'a> P<'a> {
 
     /// The object of a triple term or reified triple: no collections and no
     /// `[ ... ]` with content. Those are reported and parsed anyway.
-    fn quoted_object(&mut self) -> R<Node> {
+    fn rt_object(&mut self) -> R<Flagged> {
         let nested = match self.peek_kind() {
             Some(Kind::LParen) => true,
-            Some(Kind::LBracket) => {
-                self.toks.get(self.pos + 1).map(|t| t.kind) != Some(Kind::RBracket)
-            }
+            Some(Kind::LBracket) => self.kind_ahead(1) != Some(Kind::RBracket),
             _ => false,
         };
         let start = self.start();
@@ -1228,65 +1382,80 @@ impl<'a> P<'a> {
         Ok(o)
     }
 
-    /// `<< s p o ~ r >>`: returns the reifier.
-    fn reified_triple(&mut self) -> R<Node> {
+    /// `<< s p o ~ r >>`: returns the reifier, flagged when it is an
+    /// undeclared-prefix name.
+    fn reified_triple(&mut self) -> R<Flagged> {
         self.nested(Self::reified_triple_inner)
     }
 
-    fn reified_triple_inner(&mut self) -> R<Node> {
+    fn reified_triple_inner(&mut self) -> R<Flagged> {
         let open = self.bump();
         self.quoted += 1;
         let r = (|| {
-            let s = self.quoted_subject()?;
-            let (p, _) = self.verb()?;
-            let o = self.quoted_object()?;
+            let (s, s_bad) = self.rt_subject()?;
+            let (p, _, p_bad) = self.verb()?;
+            let (o, o_bad) = self.rt_object()?;
             let reifier = if self.eat(Kind::Tilde) {
                 self.reifier()?
             } else {
-                self.fresh_bnode()
+                (self.fresh_bnode(), false)
             };
             if !self.eat(Kind::RTriple) {
                 return self.expected("'>>'");
             }
-            Ok((reifier, Node::Triple(Box::new((s, p, o)))))
+            let triple = Node::Triple(Box::new((s, p, o)));
+            Ok((reifier, triple, s_bad || p_bad || o_bad))
         })();
         self.quoted -= 1;
-        let (reifier, triple) = r?;
+        let ((reifier, r_bad), triple, t_bad) = r?;
         let span = self.span_from(open.start);
-        self.emit(&reifier, self.v.reifies, triple, span, span);
-        Ok(reifier)
+        self.emit(&reifier, self.v.reifies, triple, span, span, r_bad || t_bad);
+        Ok((reifier, r_bad))
     }
 
-    fn reifier(&mut self) -> R<Node> {
+    fn reifier(&mut self) -> R<Flagged> {
         match self.peek_kind() {
-            Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(Role::Object)?)),
-            Some(Kind::BNode) => Ok(self.labelled_bnode()),
-            _ => Ok(self.fresh_bnode()),
+            Some(Kind::Iri | Kind::PName) => {
+                let (iri, bad) = self.flagged_iri(Role::Object)?;
+                Ok((Node::Iri(iri), bad))
+            }
+            Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
+            _ => Ok((self.fresh_bnode(), false)),
         }
     }
 
     /// `~ reifier` and `{| ... |}` after an object. The `rdf:reifies` triples
-    /// point at the annotated predicate and object.
-    fn annotation(&mut self, s: &Node, p: Iri, p_span: Span, o: &Node, o_span: Span) -> R<()> {
-        let mut last: Option<Node> = None;
+    /// point at the annotated predicate and object; `spo_bad` says one of
+    /// those three is an undeclared-prefix name.
+    fn annotation(
+        &mut self,
+        s: &Node,
+        p: Iri,
+        p_span: Span,
+        o: &Node,
+        o_span: Span,
+        spo_bad: bool,
+    ) -> R<()> {
+        let mut last: Option<Flagged> = None;
         let reifies = self.v.reifies;
         loop {
             match self.peek_kind() {
                 Some(Kind::Tilde) => {
                     self.bump();
-                    let r = self.reifier()?;
+                    let (r, r_bad) = self.reifier()?;
                     self.emit(
                         &r,
                         reifies,
                         Node::Triple(Box::new((s.clone(), p, o.clone()))),
                         p_span,
                         o_span,
+                        r_bad || spo_bad,
                     );
-                    last = Some(r);
+                    last = Some((r, r_bad));
                 }
                 Some(Kind::LAnnotation) => {
                     self.bump();
-                    let r = match last.take() {
+                    let (r, r_bad) = match last.take() {
                         Some(r) => r,
                         None => {
                             let r = self.fresh_bnode();
@@ -1296,11 +1465,12 @@ impl<'a> P<'a> {
                                 Node::Triple(Box::new((s.clone(), p, o.clone()))),
                                 p_span,
                                 o_span,
+                                spo_bad,
                             );
-                            r
+                            (r, false)
                         }
                     };
-                    self.predicate_object_list(&r)?;
+                    self.nested(|this| this.predicate_object_list(&r, r_bad))?;
                     if !self.eat(Kind::RAnnotation) {
                         return self.expected("'|}'");
                     }
@@ -1316,6 +1486,13 @@ impl<'a> P<'a> {
     /// An undeclared prefix is not a parse failure: it is recorded in
     /// `prefix_uses` and reported by the diagnostics layer.
     fn iri(&mut self, role: Role) -> R<Iri> {
+        self.flagged_iri(role).map(|(iri, _)| iri)
+    }
+
+    /// [`P::iri`], and whether it is a prefixed name with an undeclared
+    /// prefix, which stands in as an IRI of its own text
+    /// ([`Triple::unresolved`]).
+    fn flagged_iri(&mut self, role: Role) -> R<(Iri, bool)> {
         let t = self.bump();
         let span = Span::new(t.start, t.end);
         if t.kind == Kind::Iri {
@@ -1332,13 +1509,13 @@ impl<'a> P<'a> {
                     iri
                 }
             };
-            self.out.refs.push(Ref {
+            self.add_ref(Ref {
                 span,
                 iri,
                 role,
                 form: Form::Iri,
             });
-            return Ok(iri);
+            return Ok((iri, false));
         }
         let text = self.text(t);
         let colon = text.find(':').unwrap_or(text.len());
@@ -1359,13 +1536,13 @@ impl<'a> P<'a> {
                 entry
             }
         };
-        self.out.prefix_uses.push(PrefixUse {
+        self.add_prefix_use(PrefixUse {
             name,
             span,
             resolved,
         });
         if resolved {
-            self.out.refs.push(Ref {
+            self.add_ref(Ref {
                 span,
                 iri,
                 role,
@@ -1374,7 +1551,7 @@ impl<'a> P<'a> {
                 },
             });
         }
-        Ok(iri)
+        Ok((iri, !resolved))
     }
 
     fn resolve_iri(&mut self, t: Token) -> Cow<'a, str> {
@@ -1389,6 +1566,14 @@ impl<'a> P<'a> {
             Cow::Borrowed(raw)
         };
         match &self.base {
+            // An absolute IRI without dot segments resolves to itself: check it
+            // and skip building the resolved copy.
+            Some(_) if has_scheme(&raw) && !raw.contains("/.") && !raw.contains(":.") => {
+                if let Err(e) = oxiri::Iri::parse(&*raw) {
+                    self.warning(Span::new(t.start, t.end), format!("Invalid IRI: {e}"));
+                }
+                raw
+            }
             Some(base) => match oxiri::IriRef::parse(&*raw).and_then(|r| base.resolve(&r)) {
                 Ok(iri) => Cow::Owned(iri.into_inner()),
                 Err(e) => {
@@ -1408,7 +1593,9 @@ impl<'a> P<'a> {
     }
 }
 
-fn has_scheme(s: &str) -> bool {
+/// Whether `s` starts with a URI scheme and `:`: an absolute IRI, not a
+/// relative reference.
+pub(crate) fn has_scheme(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && s.find(':').is_some_and(|i| {
@@ -1467,7 +1654,7 @@ fn unescape_iri(raw: &str) -> String {
 }
 
 /// Lexical value of a string token (quotes stripped, escapes decoded).
-pub fn string_value(tok: &str) -> String {
+pub(crate) fn string_value(tok: &str) -> String {
     let q = &tok[..1];
     let long = tok.len() >= 6 && tok.starts_with(&q.repeat(3));
     let inner = if long {
@@ -1528,7 +1715,74 @@ mod tests {
         parse(src, &PrefixMap::default(), Syntax::NQuads)
     }
     fn messages(r: &Parsed) -> Vec<&str> {
-        r.errors.iter().map(|e| e.message.as_str()).collect()
+        r.errors.iter().map(|e| e.message()).collect()
+    }
+
+    #[test]
+    fn fixed_messages_are_borrowed() {
+        let r = p("@prefix ex: <http://e/> .\nex:a ex:p \"open\nex:b ex:p ex:o");
+        let unterminated = r
+            .errors
+            .iter()
+            .find(|e| e.message() == "Unterminated string")
+            .expect("the lexer's error");
+        assert!(matches!(unterminated.message, Cow::Borrowed(_)));
+        let missing_dot = r
+            .errors
+            .iter()
+            .find(|e| e.message() == "Expected '.' to end the statement")
+            .expect("the parser's error");
+        assert!(matches!(missing_dot.message, Cow::Borrowed(_)));
+    }
+
+    /// `n` lines, each a statement that parses and one that does not.
+    fn broken_lines(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("<http://e/s{i}> <http://e/p> <http://e/o{i}> . <http://e/t{i}> <http://e/p> .\n"))
+            .collect()
+    }
+
+    #[test]
+    fn every_error_is_kept_and_parsing_goes_on() {
+        let src = broken_lines(1500);
+        let r = p(&src);
+        assert_eq!(r.errors.len(), 1500);
+        let line = |e: &SyntaxError| src[..e.span.start as usize].matches('\n').count();
+        for (i, e) in r.errors.iter().enumerate() {
+            assert_eq!(line(e), i, "{e:?}");
+            assert_eq!(e.message(), "Expected an object, found '.'");
+            assert_eq!((e.severity, e.code), (Severity::Error, "syntax"));
+        }
+        // Every valid statement still gives its triple, the last line's too.
+        assert_eq!(r.triples.len(), 1500);
+        assert_eq!(r.statements.len(), 3000);
+        assert!(
+            r.triples
+                .iter()
+                .any(|t| t.o == Node::Iri(Iri::intern("http://e/o1499")))
+        );
+    }
+
+    #[test]
+    fn errors_come_in_the_order_found_not_the_order_in_the_text() {
+        // The lexer's errors are found before the parser's; here they come
+        // last in the text.
+        let mut src = broken_lines(300);
+        for i in 0..300 {
+            src.push_str(&format!("<http://e/u{i}> <http://e/p> \"open\n"));
+        }
+        let r = p(&src);
+        // A missing '.' after each unterminated string as well.
+        assert_eq!(r.errors.len(), 900);
+        let (lexer, parser) = r.errors.split_at(300);
+        assert!(lexer.iter().all(|e| e.message() == "Unterminated string"));
+        assert!(
+            parser[..300]
+                .iter()
+                .all(|e| e.message() == "Expected an object, found '.'")
+        );
+        assert!(lexer[0].span.start > parser[299].span.start);
+        assert_eq!(r.triples.len(), 600);
     }
 
     #[test]
@@ -1571,9 +1825,13 @@ mod tests {
         assert!(
             r.errors
                 .iter()
-                .any(|e| e.message.contains("Unterminated string"))
+                .any(|e| e.message().contains("Unterminated string"))
         );
-        assert!(r.errors.iter().any(|e| e.message.contains("Expected '.'")));
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.message().contains("Expected '.'"))
+        );
         assert!(
             r.prefix_uses
                 .iter()
@@ -1985,10 +2243,373 @@ mod tests {
         assert!(!Syntax::JsonLd.is_line_based() && !Syntax::JsonLd.has_prefixes());
     }
 
+    /// Parse on a 2 MiB stack, the smallest any host thread gets: a missing
+    /// depth guard aborts the process here instead of failing an assertion.
+    fn parse_small_stack(src: String) -> Vec<String> {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || messages(&p(&src)).into_iter().map(str::to_owned).collect())
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn deep_nesting_is_one_error_not_an_abort() {
+        let n = 100_000;
+        let cases = [
+            ("{|", format!("<a> <p> <o> {}", "{| <p> <o> ".repeat(n))),
+            ("[", format!("<a> <p> {}", "[ <p> ".repeat(n))),
+            ("(", format!("<a> <p> {}", "( ".repeat(n))),
+            ("<<", format!("{} <p> <o> .", "<< ".repeat(n))),
+            ("<<(", format!("<a> <p> {}", "<<( <a> <p> ".repeat(n))),
+        ];
+        for (open, src) in cases {
+            let errors = parse_small_stack(src);
+            let deep: Vec<_> = errors
+                .iter()
+                .filter(|m| m.contains("Nested more than 256 levels deep"))
+                .collect();
+            assert_eq!(deep.len(), 1, "{open}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn annotation_nesting_up_to_the_limit_parses() {
+        let n = MAX_NESTING as usize;
+        let src = format!(
+            "<a> <p> <o> {}{}.",
+            "{| <p> <o> ".repeat(n),
+            "|} ".repeat(n)
+        );
+        let errors = parse_small_stack(src);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn backslash_newline_in_a_short_string_keeps_the_next_statement() {
+        for nl in ["\n", "\r", "\r\n"] {
+            let src = format!("<a> <p> \"x\\{nl}<b> <p> <o> .{nl}<c> <p> <o> .{nl}");
+            let r = p(&src);
+            assert!(
+                r.errors
+                    .iter()
+                    .any(|e| e.message() == "Unterminated string"),
+                "{nl:?}: {:?}",
+                r.errors
+            );
+            let subjects: Vec<_> = r
+                .statements
+                .iter()
+                .filter_map(|s| s.subject.map(|x| x.0.as_str()))
+                .collect();
+            assert!(subjects.contains(&"b"), "{nl:?}: {subjects:?}");
+            assert!(subjects.contains(&"c"), "{nl:?}: {subjects:?}");
+        }
+    }
+
+    #[test]
+    fn cr_only_file_keeps_its_triples_after_a_comment() {
+        let src = "# header\r<a> <p> <o> .\r# mid\r<b> <p> <o> .\r";
+        let r = p(src);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.triples.len(), 2);
+        assert_eq!(r.comments.len(), 2);
+        // A statement missing its dot is still recovered at a CR line start.
+        let r = p("<a> <p> <o>\r<b> <p> <o> .\r");
+        assert_eq!(r.triples.len(), 2, "{:?}", r.errors);
+    }
+
     #[test]
     fn string_values() {
         assert_eq!(string_value("\"a\\nb\""), "a\nb");
         assert_eq!(string_value("'''x''y'''"), "x''y");
         assert_eq!(string_value("\"\\u00e9\""), "é");
+    }
+
+    #[test]
+    fn a_base_direction_is_kept_apart_from_the_language_tag() {
+        let r = p("<http://e/a> <http://e/p> \"x\"@AR--rtl, \"y\"@en--ltr, \"z\"@en, \"w\" .");
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let lits: Vec<_> = r
+            .triples
+            .iter()
+            .map(|t| match &t.o {
+                Node::Literal {
+                    datatype,
+                    lang,
+                    dir,
+                    ..
+                } => (
+                    datatype.rsplit('#').next().unwrap().to_string(),
+                    lang.map(|l| l.to_string()),
+                    dir.map(|d| d.to_string()),
+                ),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            lits,
+            vec![
+                ("dirLangString".to_string(), some("ar"), some("rtl")),
+                ("dirLangString".to_string(), some("en"), some("ltr")),
+                ("langString".to_string(), some("en"), None),
+                ("string".to_string(), None, None),
+            ]
+        );
+        // An unknown direction is reported and the literal is a plain tagged string.
+        let r = p("<http://e/a> <http://e/p> \"x\"@en--up .");
+        assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+        assert!(matches!(
+            &r.triples[0].o,
+            Node::Literal {
+                lang: Some(_),
+                dir: None,
+                ..
+            }
+        ));
+    }
+
+    /// The same text at a line start `n` tokens in: the cost of recovering must
+    /// not grow with the length of the line.
+    #[test]
+    fn recovery_inside_a_long_trig_line_is_linear() {
+        let tokens = 200_000;
+        let body = "<http://e/a> ".repeat(tokens);
+        for src in [
+            // An error, then 200k tokens that start statements but are mid-line.
+            format!(
+                "<http://e/g> {{ <http://e/s> <http://e/p> ) {body} }}\n<http://e/z> <http://e/p> <http://e/o> ."
+            ),
+            format!("<http://e/s> <http://e/p> ) {body}\n<http://e/z> <http://e/p> <http://e/o> ."),
+        ] {
+            let started = std::time::Instant::now();
+            let r = trig(&src);
+            let took = started.elapsed();
+            let limit = if cfg!(debug_assertions) { 5.0 } else { 0.5 };
+            assert!(took.as_secs_f64() < limit, "{took:?} for {tokens} tokens");
+            assert!(!r.errors.is_empty());
+            // Recovery still stops at the next line start.
+            assert!(
+                r.triples
+                    .iter()
+                    .any(|t| matches!(t.s, Node::Iri(i) if &*i == "http://e/z")),
+                "{:?}",
+                r.errors
+            );
+        }
+    }
+
+    #[test]
+    fn line_starts_are_found_from_the_gap_before_the_token() {
+        // Indented statements in a block, a multi-line string and a comment
+        // between tokens.
+        let r = trig("<g> {\n  <a> <p> <o>\n  <b> <p> <o> .\n}\n");
+        assert_eq!(r.triples.len(), 2, "{:?}", r.errors);
+        let r = p("<a> <p> \"\"\"x\n<b> <p> <o> .\n\"\"\" .\n<c> <p> <o> .");
+        assert_eq!(r.triples.len(), 2, "{:?}", r.errors);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let r = p("<a> <p> <o> # c\n<b> <p> <o> .");
+        assert_eq!(r.triples.len(), 2, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn a_name_with_an_undeclared_prefix_marks_its_triples() {
+        let r = p(
+            "@prefix ex: <http://e/> .\nex:a ex:p nope:o , ex:o2 .\nnope:s ex:p ex:o .\nex:a ex:q [ nope:r 1 ] .\nex:a ex:p <<( ex:x ex:y nope:z )>> .\nex:b ex:p ex:o .",
+        );
+        let flags: Vec<_> = r.triples.iter().map(|t| t.unresolved).collect();
+        // ex:a p nope:o | ex:a p ex:o2 | nope:s p o | _:b nope:r 1 | ex:a q _:b | ex:a p <<( )>> | ex:b p o
+        assert_eq!(flags, [true, false, true, true, false, true, false]);
+        assert_eq!(
+            r.prefix_uses.iter().filter(|u| !u.resolved).count(),
+            4,
+            "{:?}",
+            r.prefix_uses
+        );
+        // A name the document declares is resolved, however late.
+        let r = p("ex:a ex:p ex:o .\n@prefix ex: <http://e/> .\nex:a ex:p ex:o .");
+        let flags: Vec<_> = r.triples.iter().map(|t| t.unresolved).collect();
+        assert_eq!(flags, [true, false]);
+    }
+
+    #[test]
+    fn a_triple_term_holds_no_reified_triple() {
+        let ok = |src: &str| {
+            let r = p(&format!("@prefix ex: <http://e/> .\n{src}"));
+            assert!(r.errors.is_empty(), "{src}: {:?}", r.errors);
+        };
+        let bad = |src: &str| {
+            let r = p(&format!("@prefix ex: <http://e/> .\n{src}"));
+            assert!(
+                r.errors.iter().any(|e| e
+                    .message()
+                    .contains("triple term <<( )>> cannot contain a reified")),
+                "{src}: {:?}",
+                r.errors
+            );
+        };
+        // rtSubject and rtObject take reified triples and triple terms.
+        ok("<< << ex:a ex:p ex:o >> ex:q << ex:b ex:p ex:o >> >> ex:r ex:s .");
+        ok("<< ex:a ex:p <<( ex:b ex:p ex:o )>> >> ex:r ex:s .");
+        ok("ex:a ex:p <<( ex:b ex:p <<( ex:c ex:p ex:o )>> )>> .");
+        // ttSubject and ttObject do not.
+        bad("ex:a ex:p <<( << ex:b ex:p ex:o >> ex:q ex:o )>> .");
+        bad("ex:a ex:p <<( ex:b ex:q << ex:b ex:p ex:o >> )>> .");
+        bad("ex:a ex:p <<( ex:b ex:q <<( ex:c ex:p << ex:d ex:p ex:o >> )>> )>> .");
+        // Inside a reified triple, a triple term still holds none.
+        bad("<< ex:a ex:p <<( ex:b ex:q << ex:c ex:p ex:o >> )>> >> ex:r ex:s .");
+    }
+
+    #[test]
+    fn absolute_iris_resolve_to_themselves_but_lose_dot_segments() {
+        let r = parse_with_base(
+            "<http://e/a/../b> <http://e/./p> <http://e/o#x> , <urn:a:b> , <http://e> , <http://e/a/b/> .",
+            &PrefixMap::default(),
+            Syntax::Turtle,
+            Some("file:///w/d.ttl"),
+        );
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let iris: Vec<_> = r.refs.iter().map(|r| r.iri.to_string()).collect();
+        assert_eq!(
+            iris,
+            [
+                "http://e/b",
+                "http://e/p",
+                "http://e/o#x",
+                "urn:a:b",
+                "http://e",
+                "http://e/a/b/"
+            ]
+        );
+        // An invalid absolute IRI is still reported once.
+        let r = parse_with_base(
+            "<http://e/%zz> <http://e/p> <http://e/o> .",
+            &PrefixMap::default(),
+            Syntax::Turtle,
+            Some("file:///w/d.ttl"),
+        );
+        assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn a_graph_only_parse_has_the_same_graph_and_nothing_else() {
+        let cases = [
+            (
+                Syntax::Turtle,
+                "@prefix ex: <http://e/> . # c1\nex:a ex:p [ ex:q ( 1 2 ) ] ; a ex:C . # c2\n<< ex:a ex:p ex:b >> ex:r nope:x .\n",
+            ),
+            (
+                Syntax::TriG,
+                "@prefix ex: <http://e/> .\nGRAPH ex:g { ex:a ex:p ex:b } # c\n{ ex:c ex:p ex:d . }\nex:broken ex:p .\n",
+            ),
+            (
+                Syntax::NTriples,
+                "<http://e/a> <http://e/p> \"x\" . # c\n<a> <http://e/p> <http://e/b> .\n",
+            ),
+            (
+                Syntax::NQuads,
+                "<http://e/a> <http://e/p> <http://e/b> <http://e/g> .\n",
+            ),
+            (Syntax::JsonLd, "{}"),
+        ];
+        let ext: PrefixMap = [("ext".to_string(), "http://ext/".to_string())]
+            .into_iter()
+            .collect();
+        for (syntax, text) in cases {
+            let full = parse_with_base(text, &ext, syntax, Some("file:///w/a"));
+            let (graph, comments) = Parsed::graph_only(text, &ext, syntax, Some("file:///w/a"), 3);
+            let quads = |p: &Parsed| -> Vec<String> {
+                p.triples
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "{:?} {:?} {:?} {:?} {}",
+                            t.s, t.p, t.o, t.graph, t.unresolved
+                        )
+                    })
+                    .collect()
+            };
+            let errors = |p: &Parsed| -> Vec<String> {
+                p.errors
+                    .iter()
+                    .map(|e| format!("{:?} {}", e.span, e.message()))
+                    .collect()
+            };
+            assert_eq!(quads(&graph), quads(&full), "{syntax:?}");
+            assert_eq!(errors(&graph), errors(&full), "{syntax:?}");
+            let names = |p: &Parsed| -> Vec<_> { p.graphs.iter().map(|g| g.name).collect() };
+            assert_eq!(names(&graph), names(&full), "{syntax:?}");
+            assert_eq!(comments, full.comments.len(), "{syntax:?}");
+            assert!(
+                graph.tokens.is_empty()
+                    && graph.refs.is_empty()
+                    && graph.prefix_uses.is_empty()
+                    && graph.comments.is_empty(),
+                "{syntax:?}"
+            );
+            let keys = |ts: &[Token]| -> Vec<_> {
+                ts.iter()
+                    .map(|t| (t.kind, t.start, t.end, t.error()))
+                    .collect()
+            };
+            assert_eq!(keys(&syntax.tokens(text)), keys(&full.tokens), "{syntax:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use crate::syntax::{PrefixMap, Syntax, parse};
+
+    fn flags(text: &str) -> Vec<bool> {
+        parse(text, &PrefixMap::default(), Syntax::Turtle)
+            .triples
+            .iter()
+            .map(|t| t.unresolved)
+            .collect()
+    }
+
+    /// `urn:isbn:1` with no `urn:` prefix declared is a mistake; `<urn:isbn:1>`
+    /// is an absolute IRI with the same text. Only the first is unresolved,
+    /// in either order, in every position.
+    #[test]
+    fn an_absolute_iri_spelled_like_an_undeclared_name_is_resolved() {
+        let p = "<http://e.org/p>";
+        assert_eq!(
+            flags(&format!("<urn:isbn:1> {p} 1 .\nurn:isbn:1 {p} 2 .\n")),
+            [false, true]
+        );
+        assert_eq!(
+            flags(&format!("urn:isbn:1 {p} 2 .\n<urn:isbn:1> {p} 1 .\n")),
+            [true, false]
+        );
+        assert_eq!(
+            flags(
+                "<http://e.org/s> urn:x:p <urn:x:o> .\n<http://e.org/s> <urn:x:p> urn:x:o .\n<http://e.org/s> <urn:x:p> <urn:x:o> .\n"
+            ),
+            [true, true, false]
+        );
+        // Inside a triple term, and as a reifier.
+        assert_eq!(
+            flags(&format!(
+                "<http://e.org/s> {p} <<( <urn:x:a> {p} <urn:x:b> )>> .\n<http://e.org/s> {p} <<( urn:x:a {p} <urn:x:b> )>> .\n"
+            )),
+            [false, true]
+        );
+        assert_eq!(
+            flags(&format!(
+                "<http://e.org/s> {p} <urn:x:o> ~ <urn:x:r> .\n<http://e.org/s> {p} <urn:x:o> ~ urn:x:r .\n"
+            )),
+            [false, false, false, true]
+        );
+        // The graph keeps the absolute IRI's triple.
+        let parsed = parse(
+            &format!("urn:isbn:1 {p} 2 .\n<urn:isbn:1> {p} 1 .\n"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert_eq!(crate::rdf::Graph::new(&[&parsed.triples]).len(), 1);
     }
 }

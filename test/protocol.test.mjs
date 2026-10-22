@@ -181,3 +181,47 @@ describe("cancellation", () => {
     s.close(uri)
   })
 })
+
+describe("file watchers", () => {
+  test("the client is asked for RDF files, queries, JSON contexts and every deletion (folders)", async () => {
+    const s = await startServer({
+      capabilities: { workspace: { didChangeWatchedFiles: { dynamicRegistration: true } } },
+    })
+    try {
+      let reg
+      for (let i = 0; i < 80 && !reg; i++) {
+        reg = s.serverRequests.find((r) => r.method === "client/registerCapability")
+        if (!reg) await sleep(25)
+      }
+      const { registrations } = reg.params
+      assert.deepEqual(registrations.map((r) => r.method), ["workspace/didChangeWatchedFiles"])
+      const watchers = registrations[0].registerOptions.watchers
+      const files = watchers.find((w) => w.kind === undefined).globPattern
+      for (const ext of ["ttl", "turtle", "trig", "nt", "nq", "jsonld", "json", "rdf", "owl", "rq", "sparql", "ru"]) {
+        assert.ok(files.includes(`*.${ext}`), `${ext} is not watched: ${files}`)
+      }
+      assert.ok(files.includes("catalog-v001.xml"), files)
+      // A deleted or renamed folder takes its files with it, and a file glob
+      // does not report that: deletions of anything are asked for (kind 4).
+      assert.ok(watchers.some((w) => w.globPattern === "**/*" && w.kind === 4), JSON.stringify(watchers))
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("an event for a path the server does not look at costs nothing and breaks nothing", async () => {
+    const s = await startServer()
+    try {
+      const hits = ["node_modules/x/a.ttl", ".git/b.ttl", "target/c.json", "d/node_modules"].map((p) => ({
+        uri: uriOf(path.join(ws, p)),
+        type: p.endsWith("node_modules") ? 3 : 2,
+      }))
+      s.notify("workspace/didChangeWatchedFiles", { changes: [...hits, { uri: "untitled:Untitled-1", type: 3 }] })
+      const symbols = await s.request("workspace/symbol", { query: "" })
+      assert.ok(symbols.length > 0)
+      assert.equal(s.stderr.includes("panicked"), false, s.stderr)
+    } finally {
+      await s.stop()
+    }
+  })
+})

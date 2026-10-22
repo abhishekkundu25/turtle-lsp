@@ -6,31 +6,18 @@
 // first.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import fs from "node:fs"
-import http from "node:http"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
-
-const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf" }
+import { listen } from "./static-server.mjs"
 
 let server, origin, browser
 before(async () => {
-  server = http.createServer((req, res) => {
-    const rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
-    const file = path.join(app, path.normalize(rel))
-    if (!file.startsWith(app) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end()
-    res.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" })
-    fs.createReadStream(file).pipe(res)
-  })
-  await new Promise((r) => server.listen(0, "127.0.0.1", r))
-  origin = `http://127.0.0.1:${server.address().port}`
+  server = await listen()
+  origin = server.origin
   browser = await chromium.launch({ channel: "chrome", headless: true })
 })
 after(async () => {
   await browser?.close()
-  await new Promise((r) => server.close(r))
+  await server?.close()
 })
 
 const ready = (page) => page.locator("body[data-ready='true']").waitFor({ timeout: 20_000 })
@@ -38,6 +25,9 @@ const ready = (page) => page.locator("body[data-ready='true']").waitFor({ timeou
 // Open the editor with the system set to `system`. Every page load records,
 // at DOMContentLoaded (before the editor is ready), the theme attribute and
 // the body background in window.__firstPaint.
+// Wait until the workspace is written to the browser's storage (the page says so in body[data-saved]).
+const saved = (page) => page.locator("body[data-saved='true']").waitFor({ timeout: 10_000 })
+
 async function open(system) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: system })
   await ctx.addInitScript(() => {
@@ -136,7 +126,7 @@ test("Auto follows the system and its changes while open", async () => {
     await looks(page, "light")
     assert.equal(await stored(page), "auto")
     // Auto is there from the first paint after a reload.
-    await page.waitForTimeout(500)
+    await saved(page)
     await page.reload()
     assert.equal((await page.evaluate(() => window.__firstPaint)).bg, LIGHT_BG)
     assert.deepEqual(errors, [])
@@ -155,7 +145,7 @@ test("the choice survives a reload and is there at the first paint; Reset All re
     await openSettings(page)
     await themeControl(page).selectOption("light")
     await looks(page, "light")
-    await page.waitForTimeout(500) // the workspace is kept 300 ms after a change
+    await saved(page)
     await page.reload()
     const probe = await page.evaluate(() => window.__firstPaint)
     assert.deepEqual(probe, { theme: "light", bg: LIGHT_BG, ready: "false" })
@@ -168,7 +158,7 @@ test("the choice survives a reload and is there at the first paint; Reset All re
     assert.equal(await themeControl(page).inputValue(), "dark")
     await looks(page, "dark")
     assert.equal(await stored(page), "dark")
-    await page.waitForTimeout(500)
+    await saved(page)
     await page.reload()
     assert.equal((await page.evaluate(() => window.__firstPaint)).bg, DARK_BG)
     await ready(page)

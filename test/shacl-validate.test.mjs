@@ -186,19 +186,16 @@ ex:ChainShape sh:targetSubjectsOf ex:next ;
     w.s.open(w.pump, BAD)
     await w.s.diagnosticsFor(w.pump)
     // The run after the initial index may still be going; start a new one.
-    const t0 = performance.now()
+    const before = w.s.publications.length
+    const validated = () => w.s.publications.slice(before).some((p) => p.uri === w.pump && shacl(p.diagnostics).length > 0)
     save(w.s, w.pump, file, BAD)
-    const answered = []
+    // Ordered, not timed (how fast: latency.test.mjs): every hover is
+    // answered before the validation's results are published.
     for (let i = 0; i < 5; i++) {
-      const t = performance.now()
       await w.s.request("textDocument/hover", { textDocument: { uri: w.pump }, position: { line: 1, character: 3 } })
-      answered.push(performance.now() - t)
+      assert.equal(validated(), false, `the validation ended before hover ${i} was answered`)
     }
-    const lastAnswer = performance.now() - t0
     await until(w.s, w.pump, (d) => shacl(d).length > 0, 20000)
-    const validated = performance.now() - t0
-    assert.ok(Math.max(...answered) < 200, `hover took ${answered.map((x) => x.toFixed(0))} ms`)
-    assert.ok(validated > lastAnswer, `validation (${validated.toFixed(0)} ms) ended before the requests (${lastAnswer.toFixed(0)} ms)`)
   } finally {
     await w.end()
   }
@@ -457,6 +454,40 @@ test("progress: nothing is sent for a token the client refuses", async () => {
     assert.ok(w.s.serverRequests.some((r) => r.method === "window/workDoneProgress/create"))
     await sleep(200)
     assert.deepEqual(w.s.progress, [])
+  } finally {
+    await w.end()
+  }
+})
+
+// A shape's path nested 20,000 steps deep (flat triples, so the file itself is
+// not nested) cannot be read: the shape is not validated, and says so.
+const nestedPath = (steps) => {
+  let text = `@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.com/> .
+ex:PathShape${steps} sh:targetNode ex:a${steps} ;
+    sh:property [ sh:path _:b0 ; sh:minCount 1 ] .
+ex:a${steps} ex:other 1 .
+`
+  for (let i = 0; i < steps; i++) text += `_:b${i} sh:inversePath _:b${i + 1} .\n`
+  return text + `_:b${steps} sh:inversePath ex:p .\n`
+}
+const invalidPath = (diags) => diags.filter((d) => d.code === "shacl-invalid-path")
+
+test("a path too deep to read is an error on its shape; a short one validates", async () => {
+  const deep = nestedPath(20000)
+  const short = nestedPath(10)
+  const w = await session({}, { "deep-shape.ttl": deep, "short-shape.ttl": short })
+  try {
+    const deepUri = uriOf(path.join(w.dir, "deep-shape.ttl"))
+    w.s.open(deepUri, deep)
+    const [d] = invalidPath(await until(w.s, deepUri, (d) => invalidPath(d).length > 0, 10000))
+    assert.equal(d.severity, 1)
+    assert.equal(deep.split("\n")[d.range.start.line].trim().startsWith("sh:property"), true, JSON.stringify(d.range))
+    // 11 steps are read: the missing value is a violation, not a path error.
+    const shortUri = uriOf(path.join(w.dir, "short-shape.ttl"))
+    w.s.open(shortUri, short)
+    const diags = await until(w.s, shortUri, (d) => shacl(d).length > 0, 10000)
+    assert.deepEqual(invalidPath(diags), [])
   } finally {
     await w.end()
   }

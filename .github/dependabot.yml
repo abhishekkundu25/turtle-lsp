@@ -6,6 +6,12 @@ updates:
     schedule: { interval: weekly }
     groups:
       cargo: { patterns: ["*"] }
+  # The browser engine has its own Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /web/engine
+    schedule: { interval: weekly }
+    groups:
+      cargo-web: { patterns: ["*"] }
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
@@ -18,6 +24,10 @@ updates:
     # package. Raise both together by hand.
     ignore:
       - dependency-name: "@types/vscode"
+      # The extension host of the oldest supported VS Code runs Node 20: keep the
+      # Node types on that major.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       vscode-extension: { patterns: ["*"] }
   - package-ecosystem: github-actions

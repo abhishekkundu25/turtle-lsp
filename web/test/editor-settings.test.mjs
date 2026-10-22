@@ -5,32 +5,22 @@
 // Run `npm run web:build` first.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import fs from "node:fs"
-import http from "node:http"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
-
-const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf" }
+import { listen } from "./static-server.mjs"
 
 let server, origin, browser
 before(async () => {
-  server = http.createServer((req, res) => {
-    const rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
-    const file = path.join(app, path.normalize(rel))
-    if (!file.startsWith(app) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end()
-    res.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" })
-    fs.createReadStream(file).pipe(res)
-  })
-  await new Promise((r) => server.listen(0, "127.0.0.1", r))
-  origin = `http://127.0.0.1:${server.address().port}`
+  server = await listen()
+  origin = server.origin
   browser = await chromium.launch({ channel: "chrome", headless: true })
 })
 after(async () => {
   await browser?.close()
-  await new Promise((r) => server.close(r))
+  await server?.close()
 })
+
+// Wait until the workspace is written to the browser's storage (the page says so in body[data-saved]).
+const saved = (page) => page.locator("body[data-saved='true']").waitFor({ timeout: 10_000 })
 
 async function open() {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -238,7 +228,7 @@ test("settings survive a reload; Reset and Reset All restore the defaults", asyn
     await control(page, "Minimap: Enabled").uncheck()
     await control(page, "Inlay Hints: Labels").selectOption("all")
     assert.equal(await settingsPage(page).locator(".stg-item.modified").count(), 3)
-    await page.waitForTimeout(500) // the workspace is kept 300 ms after a change
+    await saved(page)
     await page.reload()
     await page.locator("body[data-ready='true']").waitFor({ timeout: 20_000 })
     await labelsIs(page, "Labels: All")

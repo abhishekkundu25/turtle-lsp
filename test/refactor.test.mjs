@@ -209,3 +209,90 @@ test("extract prefix is not offered when a prefix already covers the IRI", async
   const { actions } = await actionsAt(s, iris, "<http://ex.example/bob>,", { offsetInNeedle: 3 })
   assert.ok(!titles(actions).some((t) => t.startsWith("Extract")), titles(actions).join(", "))
 })
+
+// ---------- renaming a term: the new name must be writable ----------
+
+const renameDoc = `@prefix ex: <http://example.org/> .
+ex:a ex:p ex:b .
+<http://example.org/a> ex:q 1 .
+`
+
+async function renameTerm(newName) {
+  const uri = scratch()
+  s.open(uri, renameDoc)
+  await s.diagnosticsFor(uri)
+  try {
+    const edit = await s.request("textDocument/rename", {
+      textDocument: { uri },
+      position: positionOf(renameDoc, "ex:a ex:p", 4),
+      newName,
+    })
+    return applyEdits(renameDoc, edit.changes[uri])
+  } finally {
+    s.close(uri)
+  }
+}
+
+test("renaming to a local name a prefixed name cannot hold writes the full IRI everywhere", async () => {
+  const out = await renameTerm("<http://example.org/-a>")
+  assert.equal(
+    out,
+    `@prefix ex: <http://example.org/> .
+<http://example.org/-a> ex:p ex:b .
+<http://example.org/-a> ex:q 1 .
+`
+  )
+  // A name that does fit is still written with the prefix.
+  assert.match(await renameTerm("a-1"), /^ex:a-1 ex:p ex:b \.$/m)
+})
+
+test("a rename to something that is no IRI is refused, not written", async () => {
+  for (const bad of ["foo bar", "ex:foo bar", "<http://example.org/a b>", "<not an iri>", "a>b"]) {
+    await assert.rejects(renameTerm(bad), /not a valid IRI/, bad)
+  }
+})
+
+test("hover writes an IRI the way Turtle can read it back", async () => {
+  const text = `@prefix ex: <http://example.org/> .\n<http://example.org/-a> ex:p <http://example.org/b> .\n`
+  const uri = scratch()
+  s.open(uri, text)
+  await s.diagnosticsFor(uri)
+  try {
+    const hover = (needle) =>
+      s.request("textDocument/hover", { textDocument: { uri }, position: positionOf(text, needle, 3) })
+    assert.match((await hover("<http://example.org/-a>")).contents.value, /^\*\*<http:\/\/example\.org\/-a>\*\*/)
+    assert.match((await hover("<http://example.org/b>")).contents.value, /^\*\*ex:b\*\*/)
+  } finally {
+    s.close(uri)
+  }
+})
+
+// ---------- line endings ----------
+
+test("organise prefixes on a CRLF file writes no stray carriage returns", async () => {
+  const text = "@prefix b: <http://b/> .\r\n@prefix a:\r\n  <http://a/> .\r\nb:x a:y a:z .\r\n"
+  const { text: out } = await apply(text, "b:x", "Organise prefixes")
+  assert.equal(out, "@prefix a:\r\n  <http://a/> .\r\n@prefix b: <http://b/> .\r\nb:x a:y a:z .\r\n")
+})
+
+test("renaming a relative IRI writes the absolute IRI and leaves another file's <#me> alone", async () => {
+  const text = "<#me> <http://example.org/p> <#me> .\n"
+  const a = uriOf(path.join(ws, "__rename-a.ttl"))
+  const b = uriOf(path.join(ws, "__rename-b.ttl"))
+  s.open(a, text)
+  s.open(b, text)
+  await s.diagnosticsFor(a)
+  await s.diagnosticsFor(b)
+  try {
+    const edit = await s.request("textDocument/rename", {
+      textDocument: { uri: a },
+      position: positionOf(text, "<#me>", 3),
+      newName: "you",
+    })
+    assert.deepEqual(Object.keys(edit.changes), [a])
+    assert.equal(applyEdits(text, edit.changes[a]), `<${a}#you> <http://example.org/p> <${a}#you> .\n`)
+  } finally {
+    s.close(a)
+    s.close(b)
+  }
+})

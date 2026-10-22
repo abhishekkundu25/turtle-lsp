@@ -4,8 +4,9 @@ use super::args::CheckArgs;
 use super::files::{self, Context};
 use super::output::{self, CheckedFile, Format, Summary};
 use crate::batch::{self, Columns, Disk, Options, Problem};
-use lsp_types::{DiagnosticSeverity, NumberOrString};
+use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
 use serde_json::json;
+use std::collections::HashMap;
 use std::io::Write;
 
 /// The SHACL run was skipped: shown as a warning, so a check never passes
@@ -19,8 +20,16 @@ fn code(p: &Problem) -> &str {
     }
 }
 
+/// A file in the report: its problems, as shown and sorted.
+struct Checked<'a> {
+    shown: &'a str,
+    root_relative: Option<&'a str>,
+    uri: &'a str,
+    problems: Vec<Problem>,
+}
+
 /// Runs the check; the exit code.
-pub fn run(a: CheckArgs) -> Result<i32, String> {
+pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     let cwd = files::current_dir()?;
     let root = files::find_root(a.root.as_deref(), &cwd)?;
     let mut flags = serde_json::Map::new();
@@ -30,31 +39,56 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
     if a.network {
         flags.insert("imports.network".into(), json!(true));
     }
-    let settings = files::settings(&root, &flags.into());
-    let ws = files::load(root, cwd, &a.paths, Context::Workspace)?;
+    let settings = files::settings_strict(&root, &flags.into())?;
+    let ws = files::load_lenient(root, cwd, &a.paths, Context::Workspace)?;
     let disk = Disk {
         roots: vec![ws.root.clone()],
         network: settings.imports_network,
     };
     let mut batch: Vec<batch::BatchFile> = ws.files.iter().map(files::File::batch).collect();
+    // Something kept the run from covering what it was asked to: exit 2.
+    let mut failed_run = ws.incomplete || !ws.unread.is_empty();
 
     if a.fix {
         let outcome = batch::fix_all_on_disk(&batch, &settings, a.unsafe_fixes, &disk);
-        let mut changed = 0;
+        let index: HashMap<&str, usize> = batch
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.name.as_str(), i))
+            .collect();
+        let (mut changed, mut unwritten) = (0, 0);
+        let mut new_texts = Vec::new();
         for fixed in outcome.files {
-            let Some(i) = batch.iter().position(|f| f.name == fixed.name) else {
+            let Some(&i) = index.get(fixed.name.as_str()) else {
                 continue;
             };
             if batch[i].text == fixed.text {
                 continue;
             }
-            std::fs::write(&ws.files[i].path, &fixed.text)
-                .map_err(|e| format!("{}: {e}", fixed.name))?;
-            batch[i].text = fixed.text;
-            changed += 1;
+            let file = &ws.files[i];
+            match files::write_back(&file.path, file.stamp, &fixed.text) {
+                Ok(()) => {
+                    changed += 1;
+                    new_texts.push((i, fixed.text));
+                }
+                Err(e) => {
+                    eprintln!("{}: not fixed: {e}", file.shown);
+                    unwritten += 1;
+                }
+            }
         }
-        if outcome.applied > 0 {
-            let s = |n: usize| if n == 1 { "" } else { "s" };
+        for (i, text) in new_texts {
+            batch[i].text = text;
+        }
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        if unwritten > 0 {
+            failed_run = true;
+            eprintln!(
+                "Fixed {changed} file{}; {unwritten} file{} could not be written",
+                s(changed),
+                s(unwritten)
+            );
+        } else if outcome.applied > 0 {
             eprintln!(
                 "Applied {} fix{} in {changed} file{}",
                 outcome.applied,
@@ -64,24 +98,28 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
         }
     }
 
+    let format = a.format.unwrap_or(Format::Concise);
+    // Only the machine-readable reports carry fixes; the others, and the
+    // statistics, never show them. `--fix` finds its own.
+    let shows_fixes = !a.statistics && matches!(format, Format::Json | Format::Sarif);
     let opts = Options {
         shacl: !a.no_shacl,
         columns: Columns::CodePoints,
+        fixes: shows_fixes,
     };
     let report = batch::analyse_on_disk(&batch, &settings, &opts, &disk);
 
     let keep = |c: &str| {
         (a.select.is_empty() || a.select.iter().any(|s| s == c)) && !a.ignore.iter().any(|s| s == c)
     };
-    // (index into ws.files, its problems), for every reported file and every
-    // context file with a skipped SHACL run.
-    let mut checked: Vec<(usize, Vec<Problem>)> = Vec::new();
-    for (i, fr) in report.files.into_iter().enumerate() {
-        let reported = ws.files[i].reported;
+    // Every reported file and every context file with a skipped SHACL run,
+    // and the reported files that could not be read.
+    let mut checked: Vec<Checked> = Vec::new();
+    for (file, fr) in ws.files.iter().zip(report.files) {
         let mut problems: Vec<Problem> = fr
             .problems
             .into_iter()
-            .filter(|p| reported || code(p) == SHACL_SKIPPED)
+            .filter(|p| file.reported || code(p) == SHACL_SKIPPED)
             .filter(|p| keep(code(p)))
             .map(|mut p| {
                 if code(&p) == SHACL_SKIPPED {
@@ -90,26 +128,54 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
                 p
             })
             .collect();
-        if !reported && problems.is_empty() {
+        if !file.reported && problems.is_empty() {
             continue;
         }
         problems.sort_by(|x, y| {
             let (r, s) = (x.diagnostic.range.start, y.diagnostic.range.start);
             (r.line, r.character, code(x)).cmp(&(s.line, s.character, code(y)))
         });
-        checked.push((i, problems));
+        checked.push(Checked {
+            shown: &file.shown,
+            root_relative: file.root_relative.as_deref(),
+            uri: &file.uri,
+            problems,
+        });
     }
-    checked.sort_by(|x, y| ws.files[x.0].shown.cmp(&ws.files[y.0].shown));
+    for u in &ws.unread {
+        let problems = if keep(u.code) {
+            vec![Problem {
+                diagnostic: Diagnostic {
+                    range: Range::default(),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String(u.code.to_string())),
+                    source: Some("turtle-lsp".to_string()),
+                    message: format!("The file could not be checked: {}", u.message),
+                    ..Default::default()
+                },
+                fixes: Vec::new(),
+            }]
+        } else {
+            Vec::new()
+        };
+        checked.push(Checked {
+            shown: &u.shown,
+            root_relative: u.root_relative.as_deref(),
+            uri: &u.uri,
+            problems,
+        });
+    }
+    checked.sort_by(|x, y| x.shown.cmp(y.shown));
 
     let mut summary = Summary {
-        files_checked: ws.files.iter().filter(|f| f.reported).count(),
+        files_checked: ws.files.iter().filter(|f| f.reported).count() + ws.unread.len(),
         ..Summary::default()
     };
-    for (_, problems) in &checked {
-        if !problems.is_empty() {
+    for c in &checked {
+        if !c.problems.is_empty() {
             summary.files_with_problems += 1;
         }
-        for p in problems {
+        for p in &c.problems {
             match p.diagnostic.severity {
                 Some(DiagnosticSeverity::WARNING) => summary.warnings += 1,
                 Some(DiagnosticSeverity::INFORMATION) => summary.infos += 1,
@@ -123,19 +189,19 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
     let view = |all: bool| -> Vec<CheckedFile> {
         checked
             .iter()
-            .map(|(i, problems)| CheckedFile {
-                path: &ws.files[*i].shown,
-                root_relative: &ws.files[*i].root_relative,
+            .map(|c| CheckedFile {
+                path: c.shown,
+                root_relative: c.root_relative,
+                uri: c.uri,
                 problems: if all {
-                    problems
+                    &c.problems
                 } else {
-                    &problems[..problems.len().min(limit)]
+                    &c.problems[..c.problems.len().min(limit)]
                 },
             })
             .collect()
     };
 
-    let format = a.format.unwrap_or(Format::Concise);
     let write = |out: &mut dyn Write| -> std::io::Result<()> {
         if a.statistics {
             output::statistics(&view(true), out)?;
@@ -165,5 +231,11 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
     }
 
     let failed = summary.errors > 0 || a.max_warnings.is_some_and(|m| summary.warnings > m);
-    Ok(if failed && !a.exit_zero { 1 } else { 0 })
+    Ok(if failed_run {
+        2
+    } else if failed && !a.exit_zero {
+        1
+    } else {
+        0
+    })
 }

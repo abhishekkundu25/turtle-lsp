@@ -176,43 +176,207 @@ const MAX_NESTING: u32 = 256;
 /// algebra one level deeper (about 20,000 overflow an 8 MB stack).
 const MAX_OPTIONALS: u32 = 4096;
 
+// `spargebra` builds and `spareval` plans a chain of binary operators, a
+// property path or a run of `!` one level deeper per element, and both
+// recurse over it. Measured on an 8 MiB stack (release build; `Document`
+// parse, `query::run` and the formatter), the process aborts at about
+//
+//   `||` or `&&` chain      8,000 operators (`query::run`; parse alone 128,000)
+//   `+ - * /` chain        12,500           (`query::run`; parse alone 16,000)
+//   `/` path               17,000 or more   (parse; `query::run` is too slow to reach it)
+//   `|` path                9,000           (`query::run`; parse alone 84,000)
+//   `!` run                12,500           (`query::run`; parse alone 15,500)
+//
+// Each limit is the lowest abort point of its kind divided by four, rounded.
+// No query comes near.
+
+/// Operators (`||`, `&&`, `+`, `-`, `*`, `/`) in one expression.
+pub(crate) const MAX_OPERATORS: u32 = 2000;
+
+/// `/` and `|` in one property path.
+pub(crate) const MAX_PATH_STEPS: u32 = 2000;
+
+/// `!`, `+` and `-` one after another.
+pub(crate) const MAX_UNARY: u32 = 3000;
+
+/// The kinds of chain counted: indexes of [`Frame::runs`] and [`LIMITS`].
+const OPERATORS: usize = 0;
+const PATH: usize = 1;
+const UNARY: usize = 2;
+const LIMITS: [u32; 3] = [MAX_OPERATORS, MAX_PATH_STEPS, MAX_UNARY];
+
+/// One kind of chain at one bracket level.
+#[derive(Clone, Copy, Default)]
+struct Run {
+    /// Elements of the chain being read.
+    len: u32,
+    /// The longest chain that closed inside a bracket of this chain: the
+    /// recursion goes through it on top of this one.
+    inner: u32,
+    /// The longest total of a chain that ended at this level.
+    worst: u32,
+}
+
+impl Run {
+    /// The chain ends here. Its total is the longest so far at this level.
+    fn end(&mut self) -> u32 {
+        self.worst = self.worst.max(self.len + self.inner);
+        self.len = 0;
+        self.inner = 0;
+        self.worst
+    }
+}
+
+/// A bracket level of the text: its chains, by kind.
+struct Frame {
+    /// A `(` level: where an expression's operators are.
+    paren: bool,
+    runs: [Run; 3],
+}
+
+impl Frame {
+    fn new(paren: bool) -> Frame {
+        Frame {
+            paren,
+            runs: [Run::default(); 3],
+        }
+    }
+}
+
+/// Why a chain of `kind` is too long.
+fn too_long(kind: usize) -> String {
+    let n = LIMITS[kind];
+    let what = match kind {
+        OPERATORS => "operators in one expression",
+        PATH => "steps in one property path",
+        _ => "unary operators in a row",
+    };
+    format!("SPARQL syntax error: too large to check (more than {n} {what})")
+}
+
 /// Why `spargebra` is not given the text, and where: the bracket that opens
-/// nesting level [`MAX_NESTING`] + 1, or the `OPTIONAL` / `MINUS` past
-/// [`MAX_OPTIONALS`].
+/// nesting level [`MAX_NESTING`] + 1, the `OPTIONAL` / `MINUS` past
+/// [`MAX_OPTIONALS`], or the token that makes an expression, a property path
+/// or a run of unary operators longer than [`MAX_OPERATORS`],
+/// [`MAX_PATH_STEPS`] or [`MAX_UNARY`]. A chain counts with the longest chain
+/// inside its brackets, which the recursion also goes through.
 pub(crate) fn too_complex(text: &str, tokens: &[Token]) -> Option<(Span, String)> {
     let mut depth = 0u32;
     let mut optionals = 0u32;
+    let mut frames = vec![Frame::new(false)];
     for t in tokens {
-        match (t.kind, t.text(text)) {
-            (TokenKind::Punct, "{" | "(" | "[" | "<<" | "<<(" | "{|") => {
-                depth += 1;
-                if depth > MAX_NESTING {
-                    return Some((
-                        t.span,
-                        format!(
-                            "SPARQL syntax error: nested too deeply (more than {MAX_NESTING} levels)"
-                        ),
-                    ));
-                }
-            }
-            (TokenKind::Punct, "}" | ")" | "]" | ">>" | ")>>" | "|}") => {
-                depth = depth.saturating_sub(1);
-            }
-            (TokenKind::Keyword, w)
-                if w.eq_ignore_ascii_case("OPTIONAL") || w.eq_ignore_ascii_case("MINUS") =>
-            {
-                optionals += 1;
-                if optionals > MAX_OPTIONALS {
-                    return Some((
-                        t.span,
-                        format!(
-                            "SPARQL syntax error: too large to check (more than {MAX_OPTIONALS} OPTIONAL and MINUS clauses)"
-                        ),
-                    ));
-                }
-            }
-            _ => {}
+        if t.kind == TokenKind::Comment {
+            continue;
         }
+        let word = t.text(text);
+        let w = if t.kind == TokenKind::Punct { word } else { "" };
+        let open = matches!(w, "{" | "(" | "[" | "<<" | "<<(" | "{|");
+        let close = matches!(w, "}" | ")" | "]" | ">>" | ")>>" | "|}");
+        let frame = frames.last_mut().expect("the root frame stays");
+
+        // A run of unary operators goes on. Any other token but a bracket's
+        // opening ends it (the chains in a bracket add to it).
+        if matches!(w, "!" | "+" | "-") {
+            let run = &mut frame.runs[UNARY];
+            run.len += 1;
+            if run.len + run.inner > MAX_UNARY {
+                return Some((t.span, too_long(UNARY)));
+            }
+        } else if !open && frame.runs[UNARY].end() > MAX_UNARY {
+            return Some((t.span, too_long(UNARY)));
+        }
+        if frame.paren && matches!(w, "||" | "&&" | "+" | "-" | "*" | "/") {
+            let run = &mut frame.runs[OPERATORS];
+            run.len += 1;
+            if run.len + run.inner > MAX_OPERATORS {
+                return Some((t.span, too_long(OPERATORS)));
+            }
+        }
+        if matches!(w, "/" | "|") {
+            let run = &mut frame.runs[PATH];
+            run.len += 1;
+            if run.len + run.inner > MAX_PATH_STEPS {
+                return Some((t.span, too_long(PATH)));
+            }
+        }
+        // A separator ends the expression or the path. So does a group
+        // opening outside an expression.
+        if matches!(w, "." | ";" | ",") || (w == "{" && !frame.paren) {
+            for kind in [OPERATORS, PATH] {
+                if frame.runs[kind].end() > LIMITS[kind] {
+                    return Some((t.span, too_long(kind)));
+                }
+            }
+        }
+
+        if open {
+            depth += 1;
+            if depth > MAX_NESTING {
+                return Some((
+                    t.span,
+                    format!(
+                        "SPARQL syntax error: nested too deeply (more than {MAX_NESTING} levels)"
+                    ),
+                ));
+            }
+            frames.push(Frame::new(w == "("));
+        } else if close {
+            depth = depth.saturating_sub(1);
+            if frames.len() > 1 {
+                if let Some(why) = close_frame(&mut frames, t.span) {
+                    return Some(why);
+                }
+                // The closing bracket ends the unary run around it, and a
+                // group's the chains of the level (a group is no operand).
+                let outer = frames.last_mut().expect("the root frame stays");
+                let ended: &[usize] = if w == "}" && !outer.paren {
+                    &[OPERATORS, PATH, UNARY]
+                } else {
+                    &[UNARY]
+                };
+                for &kind in ended {
+                    if outer.runs[kind].end() > LIMITS[kind] {
+                        return Some((t.span, too_long(kind)));
+                    }
+                }
+            }
+        } else if t.kind == TokenKind::Keyword
+            && (word.eq_ignore_ascii_case("OPTIONAL") || word.eq_ignore_ascii_case("MINUS"))
+        {
+            optionals += 1;
+            if optionals > MAX_OPTIONALS {
+                return Some((
+                    t.span,
+                    format!(
+                        "SPARQL syntax error: too large to check (more than {MAX_OPTIONALS} OPTIONAL and MINUS clauses)"
+                    ),
+                ));
+            }
+        }
+    }
+    // Brackets left open: the chains in them count the same.
+    let at = tokens.last().map_or(Span::new(0, 0), |t| t.span);
+    while frames.len() > 1 {
+        if let Some(why) = close_frame(&mut frames, at) {
+            return Some(why);
+        }
+    }
+    let root = frames.last_mut().expect("the root frame stays");
+    (0..LIMITS.len())
+        .find_map(|kind| (root.runs[kind].end() > LIMITS[kind]).then(|| (at, too_long(kind))))
+}
+
+/// Pops the innermost frame: its chains add to the chains of the level
+/// around it. `Some` when one is too long.
+fn close_frame(frames: &mut Vec<Frame>, at: Span) -> Option<(Span, String)> {
+    let mut child = frames.pop()?;
+    let outer = frames.last_mut()?;
+    for (kind, limit) in LIMITS.iter().enumerate() {
+        let total = child.runs[kind].end();
+        if total > *limit {
+            return Some((at, too_long(kind)));
+        }
+        outer.runs[kind].inner = outer.runs[kind].inner.max(total);
     }
     None
 }

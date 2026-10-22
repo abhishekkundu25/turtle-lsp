@@ -13,7 +13,7 @@ use crate::analysis::Analysis;
 use crate::shacl::literal::well_formed;
 use crate::syntax::{Node, RDF, Span, XSD};
 
-pub const CODE: &str = "invalid-literal";
+pub(crate) const CODE: &str = "invalid-literal";
 
 /// The longest value a message quotes in full.
 const MAX_SHOWN: usize = 40;
@@ -31,19 +31,20 @@ fn shown(value: &str) -> String {
 }
 
 /// Whether `lexical` is not in the lexical space of `datatype`.
-pub fn ill_typed(datatype: &str, lexical: &str) -> bool {
+pub(crate) fn ill_typed(datatype: &str, lexical: &str) -> bool {
     !well_formed(datatype, lexical.trim_matches([' ', '\t', '\n', '\r']))
 }
 
 /// Each ill-typed literal of `a` that is a triple's object (literals inside
 /// triple terms are not checked), with the message.
-pub fn invalid_literals(a: &Analysis) -> Vec<(Span, String)> {
+pub(crate) fn invalid_literals(a: &Analysis) -> Vec<(Span, String)> {
     let mut out = Vec::new();
     for t in &a.parsed.triples {
         let Node::Literal {
             value,
             datatype,
             lang: None,
+            ..
         } = &t.o
         else {
             continue;

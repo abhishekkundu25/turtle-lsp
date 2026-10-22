@@ -165,7 +165,8 @@ multi-line description ${i}""" ;
   return out
 }
 
-test("lenses on a 30,000-line document are cheap", { timeout: 60_000 }, async (t) => {
+// How long the lenses of this document take: latency.test.mjs.
+test("lenses on a 30,000-line document: one per subject, each resolved", { timeout: 60_000 }, async () => {
   const dir = tempDir("turtle-lens-big-")
   const big = await startServer({ cwd: dir })
   try {
@@ -173,17 +174,12 @@ test("lenses on a 30,000-line document are cheap", { timeout: 60_000 }, async (t
     const uri = uriOf(path.join(dir, "big.ttl"))
     big.open(uri, text)
     await big.diagnosticsFor(uri, 30_000)
-    let t0 = performance.now()
     const ls = await big.request("textDocument/codeLens", { textDocument: { uri } })
-    const listMs = performance.now() - t0
     assert.equal(ls.length, 5000)
-    t0 = performance.now()
+    // Unresolved in the list: the counts come with codeLens/resolve.
+    assert.ok(ls.every((l) => l.command === undefined || l.command === null), JSON.stringify(ls[0]))
     const resolved = await Promise.all(ls.map((l) => big.request("codeLens/resolve", l)))
-    const resolveMs = performance.now() - t0
     assert.ok(resolved.every((l) => l.command.title === "1 reference"))
-    const lines = text.split("\n").length
-    t.diagnostic(`codeLens (${lines} lines, ${ls.length} lenses): ${listMs.toFixed(1)} ms; resolving all: ${resolveMs.toFixed(1)} ms`)
-    assert.ok(listMs < 1000, `codeLens took ${listMs.toFixed(0)} ms`)
   } finally {
     await big.stop()
     fs.rmSync(dir, { recursive: true, force: true })

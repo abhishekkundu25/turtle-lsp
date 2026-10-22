@@ -21,10 +21,15 @@
 mod jsonld;
 pub(crate) mod ranking;
 
+// `ranking` and the other modules of this directory write IRIs through here.
+pub(crate) use crate::syntax::names::shorten;
+
 use crate::analysis::{Analysis, Encoding};
-use crate::features::diagnostics::prefix_insertion;
-use crate::knowledge::{Knowledge, namespace_of};
-use crate::syntax::lexer::{Kind, is_pn_chars};
+use crate::knowledge::Knowledge;
+use crate::syntax::lexer::Kind;
+use crate::syntax::names::{
+    Scope, declaration_edit, is_pn_chars, is_pn_local, vocabulary_namespace,
+};
 use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span, Syntax};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;
@@ -49,19 +54,24 @@ pub(crate) enum Slot {
 
 pub(crate) struct Candidate {
     /// Ranking tier (see [`ranking`]); sorts before everything else.
-    pub tier: u8,
-    pub label: String,
-    pub kind: CompletionItemKind,
-    pub detail: String,
-    pub iri: Option<String>,
-    pub rank: u8,
+    pub(crate) tier: u8,
+    pub(crate) label: String,
+    pub(crate) kind: CompletionItemKind,
+    pub(crate) detail: String,
+    pub(crate) iri: Option<String>,
+    pub(crate) rank: u8,
     /// A prefix to declare on accept: (name, namespace).
-    pub import: Option<(String, String)>,
+    pub(crate) import: Option<(String, String)>,
 }
 
 impl Candidate {
     /// A candidate that is no term (a keyword, a variable, a function).
-    pub fn plain(label: String, kind: CompletionItemKind, detail: String, rank: u8) -> Candidate {
+    pub(crate) fn plain(
+        label: String,
+        kind: CompletionItemKind,
+        detail: String,
+        rank: u8,
+    ) -> Candidate {
         Candidate {
             tier: ranking::NONE,
             label,
@@ -78,13 +88,7 @@ impl Candidate {
 /// `@prefix` (Turtle, TriG) or `PREFIX` (SPARQL).
 pub(crate) type Directive = &'static str;
 
-pub fn complete(
-    a: &Analysis,
-    text: &str,
-    k: &Knowledge,
-    enc: Encoding,
-    pos: Position,
-) -> CompletionResponse {
+pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> CompletionResponse {
     // Everything offered here is a prefixed name or a keyword, none of which
     // N-Triples or N-Quads allows.
     if a.parsed.syntax.is_line_based() {
@@ -95,24 +99,26 @@ pub fn complete(
     };
     let offset = offset as usize;
     if a.parsed.syntax == Syntax::JsonLd {
-        return jsonld::complete(a, text, k, enc, offset);
+        return jsonld::complete(a, k, enc, offset);
     }
     if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {
         return r;
     }
     // In any other string (a label, a description) nothing: editors suggest
     // while typing in Turtle strings, for the queries.
-    let t = &a.parsed.tokens;
+    let t = a.tokens();
     let i = t.partition_point(|t| t.start < offset as u32);
     if i > 0 && t[i - 1].kind == Kind::String && offset < t[i - 1].end as usize {
         return CompletionResponse::Array(vec![]);
     }
+    let text: &str = &a.text;
     let start = word_start(text, offset);
     let end = word_end(text, offset);
     let typed = &text[start..offset];
     let replace = a.range(enc, Span::new(start as u32, end as u32));
     let slot = slot_at(a, start as u32);
-    let prefixes = a.prefix_map();
+    // Only what is declared above the cursor can be written there.
+    let prefixes = Scope::at(a, start as u32);
 
     let ranked = match slot {
         Slot::Predicate => ranking::predicates(a, k, start as u32, &prefixes),
@@ -124,9 +130,22 @@ pub fn complete(
 
     let mut cands: Vec<Candidate> = Vec::new();
     let mut incomplete = false;
+    // The ranking moves some terms up; the long lists are cut around those.
+    let promoted = |iri: Iri| ranked.iris.contains_key(&iri);
+    let best = Best {
+        typed,
+        promoted: &promoted,
+    };
 
     if let Some(colon) = typed.find(':') {
-        match prefixed_terms(k, &typed[..colon], &typed[colon + 1..], slot, &prefixes) {
+        match prefixed_terms_best(
+            k,
+            &typed[..colon],
+            &typed[colon + 1..],
+            slot,
+            &prefixes,
+            Some(best),
+        ) {
             Some(c) => cands = c,
             None => return CompletionResponse::Array(vec![]),
         }
@@ -153,7 +172,7 @@ pub fn complete(
                 ));
             }
         }
-        described_candidates(&mut cands, typed, slot, k, &prefixes);
+        described_candidates_best(&mut cands, typed, slot, k, &prefixes, Some(best));
         if !typed.starts_with('@') {
             local_name_candidates(&mut cands, typed, slot, &prefixes);
         }
@@ -161,7 +180,7 @@ pub fn complete(
 
     incomplete |= finish(&mut cands, ranked, slot, typed, k, &prefixes);
     let items = items(cands, replace, &prefixes, "@prefix", |p, ns| {
-        prefix_insertion(a, text, enc, p, ns)
+        declaration_edit(a, enc, p, ns, start as u32)
     });
     CompletionResponse::List(CompletionList {
         is_incomplete: incomplete,
@@ -188,6 +207,29 @@ pub(crate) fn prefixed_terms(
     slot: Slot,
     prefixes: &PrefixMap,
 ) -> Option<Vec<Candidate>> {
+    prefixed_terms_best(k, pfx, local, slot, prefixes, None)
+}
+
+/// What a completion keeps of a long list of candidates: the best
+/// [`LIMIT`] + 1 (one more than it shows, to tell it cut some), by the order
+/// [`finish`] sorts in, and every candidate `promoted` says the ranking will
+/// move up, which that order does not know. `typed` is what was typed.
+#[derive(Clone, Copy)]
+pub(crate) struct Best<'a> {
+    pub(crate) typed: &'a str,
+    pub(crate) promoted: &'a dyn Fn(Iri) -> bool,
+}
+
+/// [`prefixed_terms`], building candidates only for the `best` ones when
+/// given (the others cannot be among the first [`LIMIT`] after sorting).
+pub(crate) fn prefixed_terms_best(
+    k: &Knowledge,
+    pfx: &str,
+    local: &str,
+    slot: Slot,
+    prefixes: &PrefixMap,
+    best: Option<Best>,
+) -> Option<Vec<Candidate>> {
     let (ns, import) = match prefixes.get(pfx) {
         Some(ns) => (ns.clone(), None),
         None => {
@@ -198,13 +240,14 @@ pub(crate) fn prefixed_terms(
             )
         }
     };
-    Some(namespace_terms(
+    Some(namespace_terms_best(
         k,
         &ns,
         local,
         slot,
         &|l| format!("{pfx}:{l}"),
         import,
+        best,
     ))
 }
 
@@ -218,6 +261,18 @@ pub(crate) fn namespace_terms(
     slot: Slot,
     label: &dyn Fn(&str) -> String,
     import: Option<(String, String)>,
+) -> Vec<Candidate> {
+    namespace_terms_best(k, ns, local, slot, label, import, None)
+}
+
+fn namespace_terms_best(
+    k: &Knowledge,
+    ns: &str,
+    local: &str,
+    slot: Slot,
+    label: &dyn Fn(&str) -> String,
+    import: Option<(String, String)>,
+    best: Option<Best>,
 ) -> Vec<Candidate> {
     let mut cands = Vec::new();
     let mut seen: FxHashSet<String> = FxHashSet::default();
@@ -243,14 +298,21 @@ pub(crate) fn namespace_terms(
         }
     }
     // Terms the workspace defines or uses in this namespace.
+    let mut rows: Vec<(Iri, TermKind)> = Vec::new();
     for iri in k.terms_in(ns) {
         let Some(l) = iri.strip_prefix(ns) else {
             continue;
         };
-        if l.is_empty() || seen.contains(l) || !is_local_name(l) || !fuzzy(local, l) {
+        if l.is_empty() || seen.contains(l) || !is_pn_local(l) || !fuzzy(local, l) {
             continue;
         }
-        let kind = guess_kind(k, &iri);
+        rows.push((iri, guess_kind(k, &iri)));
+    }
+    if let Some(best) = best {
+        keep_best(&mut rows, ns, slot, label, best);
+    }
+    for (iri, kind) in rows {
+        let l = iri.strip_prefix(ns).unwrap_or_default();
         let name = k.label(&iri);
         cands.push(Candidate {
             tier: ranking::NONE,
@@ -267,6 +329,58 @@ pub(crate) fn namespace_terms(
         });
     }
     cands
+}
+
+/// Drops from `rows` (workspace terms of `ns`) those that [`finish`] would
+/// cut: all but the best [`LIMIT`] + 1 by its order, and those `best` says
+/// are promoted. Keeps all of them when the label is not `label(local name)`
+/// with something fixed before the local name.
+fn keep_best(
+    rows: &mut Vec<(Iri, TermKind)>,
+    ns: &str,
+    slot: Slot,
+    label: &dyn Fn(&str) -> String,
+    best: Best,
+) {
+    if rows.len() <= LIMIT + 1 {
+        return;
+    }
+    let affix = label("");
+    if label("zz") != format!("{affix}zz") {
+        return;
+    }
+    let lower = lower_typed(best.typed);
+    let key = |&(iri, kind): &(Iri, TermKind)| {
+        let l = iri.strip_prefix(ns).unwrap_or_default();
+        // The local name of the label: after the first colon of the label.
+        let shown = if affix.contains(':') { l } else { local_of(l) };
+        (
+            ranking::NONE,
+            rank(slot, kind),
+            !starts_with_lowercase(shown, &lower),
+            affix.len() + l.len(),
+        )
+    };
+    let (promoted, rest): (Vec<_>, Vec<_>) = std::mem::take(rows)
+        .into_iter()
+        .partition(|r| (best.promoted)(r.0));
+    let mut keyed: Vec<_> = rest.into_iter().map(|r| (key(&r), r)).collect();
+    let order = |a: &((u8, u8, bool, usize), (Iri, TermKind)),
+                 b: &((u8, u8, bool, usize), (Iri, TermKind))| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.0.strip_prefix(ns).cmp(&b.1.0.strip_prefix(ns)))
+    };
+    if keyed.len() > LIMIT + 1 {
+        keyed.select_nth_unstable_by(LIMIT + 1, order);
+        keyed.truncate(LIMIT + 1);
+    }
+    rows.extend(promoted);
+    rows.extend(keyed.into_iter().map(|(_, r)| r));
+}
+
+/// The lower-cased last part of what was typed, as [`finish`] compares.
+fn lower_typed(typed: &str) -> String {
+    typed.rsplit(':').next().unwrap_or("").to_lowercase()
 }
 
 /// Prefixes matching `typed`: those in scope, then the well-known ones not
@@ -319,24 +433,64 @@ pub(crate) fn described_candidates(
     k: &Knowledge,
     prefixes: &PrefixMap,
 ) {
+    described_candidates_best(cands, typed, slot, k, prefixes, None)
+}
+
+/// [`described_candidates`], building candidates only for the `best` ones
+/// when given.
+pub(crate) fn described_candidates_best(
+    cands: &mut Vec<Candidate>,
+    typed: &str,
+    slot: Slot,
+    k: &Knowledge,
+    prefixes: &PrefixMap,
+    best: Option<Best>,
+) {
     if typed.is_empty() || !matches!(slot, Slot::Subject | Slot::Object | Slot::Class) {
         return;
     }
-    let mut seen = FxHashSet::default();
+    let mut rows: Vec<(String, Iri)> = Vec::new();
     for iri in k.described_terms() {
         if let Some(short) = shorten(&iri, prefixes) {
             let local = short.split_once(':').map_or("", |x| x.1);
-            if fuzzy(typed, local) && seen.insert(short.clone()) {
-                cands.push(Candidate {
-                    tier: ranking::NONE,
-                    label: short,
-                    kind: CompletionItemKind::REFERENCE,
-                    detail: k.label(&iri).unwrap_or(&iri).to_string(),
-                    iri: Some(iri.to_string()),
-                    rank: 3,
-                    import: None,
-                });
+            if fuzzy(typed, local) {
+                rows.push((short, iri));
             }
+        }
+    }
+    if let Some(best) = best
+        && rows.len() > LIMIT + 1
+    {
+        // All of them are the same tier and rank: the order is that of the
+        // names, but for those the ranking moves up.
+        let lower = lower_typed(best.typed);
+        let key = |r: &(String, Iri)| (!starts_with_lowercase(local_of(&r.0), &lower), r.0.len());
+        let (promoted, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut rows)
+            .into_iter()
+            .partition(|r| (best.promoted)(r.1));
+        let mut keyed: Vec<_> = rest.into_iter().map(|r| (key(&r), r)).collect();
+        if keyed.len() > LIMIT + 1 {
+            let order = |a: &((bool, usize), (String, Iri)), b: &((bool, usize), (String, Iri))| {
+                a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0))
+            };
+            keyed.select_nth_unstable_by(LIMIT + 1, order);
+            keyed.truncate(LIMIT + 1);
+        }
+        rows.extend(promoted);
+        rows.extend(keyed.into_iter().map(|(_, r)| r));
+    }
+    let mut seen = FxHashSet::default();
+    for (short, iri) in rows {
+        if seen.insert(iri) {
+            cands.push(Candidate {
+                tier: ranking::NONE,
+                label: short,
+                kind: CompletionItemKind::REFERENCE,
+                detail: k.label(&iri).unwrap_or(&iri).to_string(),
+                iri: Some(iri.to_string()),
+                rank: 3,
+                import: None,
+            });
         }
     }
 }
@@ -404,22 +558,46 @@ pub(crate) fn finish(
 ) -> bool {
     let mut incomplete = apply_ranking(cands, ranked, slot, typed, k, prefixes);
     let lower = typed.rsplit(':').next().unwrap_or("").to_lowercase();
-    cands.sort_by(|x, y| {
-        let px = !local_of(&x.label).to_lowercase().starts_with(&lower);
-        let py = !local_of(&y.label).to_lowercase().starts_with(&lower);
-        (x.tier, x.rank, px, x.label.len(), &x.label).cmp(&(
-            y.tier,
-            y.rank,
-            py,
-            y.label.len(),
-            &y.label,
-        ))
-    });
-    if cands.len() > LIMIT {
-        cands.truncate(LIMIT);
+    // Each candidate's sort key once, not at every comparison; ties keep the
+    // order the candidates were found in.
+    let keys: Vec<(u8, u8, bool, usize)> = cands
+        .iter()
+        .map(|c| {
+            (
+                c.tier,
+                c.rank,
+                !starts_with_lowercase(local_of(&c.label), &lower),
+                c.label.len(),
+            )
+        })
+        .collect();
+    let order_of = |&a: &u32, &b: &u32| {
+        let (x, y) = (a as usize, b as usize);
+        (keys[x], &cands[x].label, x).cmp(&(keys[y], &cands[y].label, y))
+    };
+    let mut order: Vec<u32> = (0..cands.len() as u32).collect();
+    if order.len() > LIMIT {
+        // Only the first LIMIT are kept: find them, then sort just those.
+        order.select_nth_unstable_by(LIMIT, order_of);
+        order.truncate(LIMIT);
         incomplete = true;
     }
+    order.sort_unstable_by(order_of);
+    let mut found: Vec<Option<Candidate>> = cands.drain(..).map(Some).collect();
+    cands.extend(order.iter().filter_map(|&i| found[i as usize].take()));
     incomplete
+}
+
+/// Whether `local`, lower-cased, starts with `lower` (already lower-cased).
+fn starts_with_lowercase(local: &str, lower: &str) -> bool {
+    if local.is_ascii() && lower.is_ascii() {
+        local
+            .as_bytes()
+            .get(..lower.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(lower.as_bytes()))
+    } else {
+        local.to_lowercase().starts_with(lower)
+    }
 }
 
 /// The completion items, in the candidates' order, replacing `replace`. A
@@ -464,7 +642,7 @@ pub(crate) fn items(
 }
 
 /// Fill in documentation lazily so the list itself stays small.
-pub fn resolve(mut item: CompletionItem, k: &Knowledge) -> CompletionItem {
+pub(crate) fn resolve(mut item: CompletionItem, k: &Knowledge) -> CompletionItem {
     let Some(iri) = item
         .data
         .as_ref()
@@ -574,7 +752,7 @@ fn written(iri: &str, prefixes: &PrefixMap) -> (String, Option<(String, String)>
     }
     if let Some((v, local)) = VOCABS.lookup(iri)
         && !prefixes.contains_key(v.prefix)
-        && is_local_name(local)
+        && is_pn_local(local)
     {
         return (
             format!("{}:{local}", v.prefix),
@@ -590,7 +768,7 @@ pub(crate) fn may_match(iri: &str, typed: &str, prefixes: &PrefixMap) -> bool {
         Some((p, local)) => prefixes
             .get(p)
             .is_some_and(|ns| iri.starts_with(ns.as_str()) && fuzzy(local, &iri[ns.len()..])),
-        None => fuzzy(typed, &iri[namespace_of(iri).len()..]),
+        None => fuzzy(typed, &iri[vocabulary_namespace(iri).len()..]),
     }
 }
 
@@ -623,7 +801,7 @@ fn guess_kind(k: &Knowledge, iri: &crate::syntax::Iri) -> TermKind {
 
 /// What kind of term belongs at `offset`, from the tokens before it.
 fn slot_at(a: &Analysis, offset: u32) -> Slot {
-    let toks = &a.parsed.tokens;
+    let toks = a.tokens();
     let i = toks.partition_point(|t| t.end <= offset);
     let prev = toks[..i].iter().rev().find(|t| t.kind != Kind::Comment);
     let Some(prev) = prev else {
@@ -694,10 +872,6 @@ fn word_end(text: &str, offset: usize) -> usize {
     e
 }
 
-pub(crate) fn is_local_name(l: &str) -> bool {
-    l.chars().all(|c| is_pn_chars(c) || c == '.') && !l.ends_with('.')
-}
-
 /// Case-insensitive subsequence match; empty query matches everything.
 pub(crate) fn fuzzy(query: &str, cand: &str) -> bool {
     let mut it = cand.chars().flat_map(char::to_lowercase);
@@ -705,17 +879,6 @@ pub(crate) fn fuzzy(query: &str, cand: &str) -> bool {
         .chars()
         .flat_map(char::to_lowercase)
         .all(|q| it.any(|c| c == q))
-}
-
-/// `iri` as `prefix:local` using the longest matching namespace.
-pub fn shorten(iri: &str, prefixes: &PrefixMap) -> Option<String> {
-    prefixes
-        .iter()
-        .filter(|(_, ns)| {
-            !ns.is_empty() && iri.starts_with(ns.as_str()) && is_local_name(&iri[ns.len()..])
-        })
-        .max_by_key(|(_, ns)| ns.len())
-        .map(|(p, ns)| format!("{p}:{}", &iri[ns.len()..]))
 }
 
 #[cfg(test)]
@@ -747,7 +910,7 @@ mod tests {
         k.set("file:///w/shapes.ttl", Source::Open, a.clone());
         let offset = (text.find(needle).unwrap() + needle.len()) as u32;
         let pos = a.position(Encoding::Utf16, offset);
-        let items = match complete(&a, text, &k, Encoding::Utf16, pos) {
+        let items = match complete(&a, &k, Encoding::Utf16, pos) {
             CompletionResponse::Array(items) => items,
             CompletionResponse::List(l) => l.items,
         };
@@ -760,6 +923,53 @@ mod tests {
                 (i.label, e.range)
             })
             .collect()
+    }
+
+    /// The items offered at the end of the first `needle` of `text`.
+    fn items_at(text: &str, needle: &str) -> Vec<CompletionItem> {
+        let a = Arc::new(Analysis::new(
+            "file:///w/doc.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/doc.ttl", Source::Open, a.clone());
+        let offset = (text.find(needle).unwrap() + needle.len()) as u32;
+        let pos = a.position(Encoding::Utf16, offset);
+        match complete(&a, &k, Encoding::Utf16, pos) {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(l) => l.items,
+        }
+    }
+
+    #[test]
+    fn a_prefix_declared_only_further_down_is_added_at_the_cursor() {
+        let foaf = "@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n";
+        let below = format!("<http://e/a> <http://e/p> foaf:Pers\n{foaf}");
+        let items = items_at(&below, "foaf:Pers");
+        let person = items.iter().find(|i| i.label == "foaf:Person").unwrap();
+        let added = person
+            .additional_text_edits
+            .as_ref()
+            .expect("a declaration");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].new_text, foaf);
+        assert_eq!(added[0].range.start, Position::new(0, 0));
+        // Declared above the cursor: nothing to add.
+        let above = format!("{foaf}<http://e/a> <http://e/p> foaf:Pers\n");
+        let items = items_at(&above, "foaf:Pers");
+        let person = items.iter().find(|i| i.label == "foaf:Person").unwrap();
+        assert!(person.additional_text_edits.is_none());
+    }
+
+    #[test]
+    fn completion_never_writes_a_name_turtle_cannot_read() {
+        let text = "@prefix ex: <http://example.org/> .\n<http://example.org/-x> a ex:Thing .\nex:s ex:p ex:";
+        let items = items_at(text, "ex:s ex:p ex:");
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"ex:Thing"), "{labels:?}");
+        assert!(!labels.contains(&"ex:-x"), "{labels:?}");
     }
 
     #[test]
@@ -814,8 +1024,7 @@ mod tests {
         );
         let offset = (text.find("foaf:na").unwrap() + 7) as u32;
         let pos = a.position(Encoding::Utf16, offset);
-        let CompletionResponse::List(l) =
-            complete(&a, text, &Knowledge::default(), Encoding::Utf16, pos)
+        let CompletionResponse::List(l) = complete(&a, &Knowledge::default(), Encoding::Utf16, pos)
         else {
             panic!()
         };
@@ -847,5 +1056,228 @@ mod tests {
     fn other_strings_get_no_completion() {
         let text = format!("{SHAPES}rdfs:label \"Ali\" .\n");
         assert_eq!(complete_at(&text, "\"Ali"), []);
+    }
+
+    /// A deterministic spread of numbers.
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    /// The order before: a stable sort of everything by the key computed at
+    /// each comparison, then the first [`LIMIT`].
+    fn sorted_the_old_way(mut cands: Vec<Candidate>, typed: &str) -> Vec<String> {
+        let lower = typed.rsplit(':').next().unwrap_or("").to_lowercase();
+        cands.sort_by(|x, y| {
+            let px = !local_of(&x.label).to_lowercase().starts_with(&lower);
+            let py = !local_of(&y.label).to_lowercase().starts_with(&lower);
+            (x.tier, x.rank, px, x.label.len(), &x.label).cmp(&(
+                y.tier,
+                y.rank,
+                py,
+                y.label.len(),
+                &y.label,
+            ))
+        });
+        cands.truncate(LIMIT);
+        cands
+            .into_iter()
+            .map(|c| format!("{}|{}", c.label, c.detail))
+            .collect()
+    }
+
+    fn random_candidates(seed: u64, n: usize) -> Vec<Candidate> {
+        let mut seed = seed;
+        (0..n)
+            .map(|i| {
+                // Names that tie on length and prefix, duplicates, upper and
+                // lower case, and a non-ASCII name now and then.
+                let name = match lcg(&mut seed) % 9 {
+                    0 => format!("ex:Pé{}", lcg(&mut seed) % 40),
+                    1 => format!("ex:P{}", lcg(&mut seed) % 40),
+                    2 => format!("ex:p{}", lcg(&mut seed) % 40),
+                    3 => format!("ex:q{}", lcg(&mut seed) % 400),
+                    _ => format!("ex:p{}", lcg(&mut seed) % 4000),
+                };
+                Candidate {
+                    tier: (lcg(&mut seed) % 4) as u8,
+                    rank: (lcg(&mut seed) % 3) as u8,
+                    detail: format!("#{i}"),
+                    ..Candidate::plain(name, CompletionItemKind::PROPERTY, String::new(), 0)
+                }
+            })
+            .collect()
+    }
+
+    /// Sorting computed the lower-cased name of both candidates at every
+    /// comparison (31 ms for `ex:p` over 40,000 terms). The order is the same,
+    /// ties and duplicate names included, and the cut is as before.
+    #[test]
+    fn candidates_are_ordered_as_a_full_stable_sort_would() {
+        let k = Knowledge::default();
+        let prefixes = PrefixMap::default();
+        for (seed, n) in [(1, 150), (2, 201), (3, 202), (4, 3000), (5, 20000)] {
+            for typed in ["ex:p", "ex:P", "p", "ex:", "ex:pé", ""] {
+                let cands = random_candidates(seed, n);
+                let expected = sorted_the_old_way(random_candidates(seed, n), typed);
+                let mut got = cands;
+                let incomplete = finish(
+                    &mut got,
+                    ranking::Ranking::default(),
+                    Slot::Predicate,
+                    typed,
+                    &k,
+                    &prefixes,
+                );
+                let got: Vec<String> = got
+                    .into_iter()
+                    .map(|c| format!("{}|{}", c.label, c.detail))
+                    .collect();
+                assert_eq!(got, expected, "seed {seed} n {n} typed {typed:?}");
+                assert_eq!(incomplete, n > LIMIT);
+            }
+        }
+    }
+
+    fn knowledge_of_widgets(n: usize) -> Knowledge {
+        let mut k = Knowledge::default();
+        for f in 0..n.div_ceil(500) {
+            let mut t = String::from(
+                "@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n",
+            );
+            for i in f * 500..((f + 1) * 500).min(n) {
+                let ty = match i % 7 {
+                    0 => "owl:Class",
+                    1 => "owl:ObjectProperty",
+                    _ => "ex:Widget",
+                };
+                t.push_str(&format!("ex:p{i} a {ty} ; rdfs:label \"W{i}\" .\n"));
+            }
+            let uri = format!("file:///w/w{f}.ttl");
+            let a = Arc::new(Analysis::new(
+                uri.clone(),
+                &t,
+                Arc::new(PrefixMap::default()),
+                true,
+            ));
+            k.set(&uri, Source::Disk, a);
+        }
+        k
+    }
+
+    /// Building a candidate for each of 40,000 terms to keep 200 of them was
+    /// most of the cost. Only the best (and those the ranking moves up) are
+    /// built; the items are the ones a full build gives.
+    #[test]
+    fn a_long_list_is_cut_to_what_would_be_shown_anyway() {
+        let k = knowledge_of_widgets(6000);
+        let prefixes: PrefixMap = [("ex".to_string(), "http://example.org/".to_string())]
+            .into_iter()
+            .collect();
+        let ranked = || {
+            let mut r = ranking::Ranking::default();
+            // Terms far down the plain order, moved up by the ranking.
+            for (i, tier) in [
+                (5998, ranking::REQUIRED),
+                (4001, ranking::SHAPE),
+                (3, ranking::SCHEMA),
+            ] {
+                r.iris.insert(
+                    Iri::intern(&format!("http://example.org/p{i}")),
+                    ranking::Hit {
+                        tier,
+                        detail: Some(format!("ranked {i}")),
+                        enumerated: false,
+                    },
+                );
+            }
+            r
+        };
+        for slot in [Slot::Predicate, Slot::Object, Slot::Subject, Slot::Class] {
+            for typed in ["ex:p", "ex:P1", "ex:p59", "ex:zz"] {
+                let (pfx, local) = typed.split_once(':').unwrap();
+                let show = |cands: Vec<Candidate>| {
+                    let mut cands = cands;
+                    let incomplete = finish(&mut cands, ranked(), slot, typed, &k, &prefixes);
+                    let items: Vec<String> = cands
+                        .into_iter()
+                        .map(|c| format!("{}|{}|{}|{}", c.label, c.detail, c.tier, c.rank))
+                        .collect();
+                    (items, incomplete)
+                };
+                let whole = show(prefixed_terms(&k, pfx, local, slot, &prefixes).unwrap());
+                let r = ranked();
+                let promoted = |i: Iri| r.iris.contains_key(&i);
+                let best = Best {
+                    typed,
+                    promoted: &promoted,
+                };
+                let cut =
+                    show(prefixed_terms_best(&k, pfx, local, slot, &prefixes, Some(best)).unwrap());
+                assert_eq!(cut, whole, "{slot:?} {typed}");
+            }
+            // Without a prefix: the resources described, written with the prefixes in scope.
+            for typed in ["p", "p1", "P59", "zz"] {
+                let show = |best: Option<Best>| {
+                    let mut cands = Vec::new();
+                    described_candidates_best(&mut cands, typed, slot, &k, &prefixes, best);
+                    let incomplete = finish(&mut cands, ranked(), slot, typed, &k, &prefixes);
+                    let items: Vec<String> = cands
+                        .into_iter()
+                        .map(|c| format!("{}|{}|{}", c.label, c.detail, c.tier))
+                        .collect();
+                    (items, incomplete)
+                };
+                let r = ranked();
+                let promoted = |i: Iri| r.iris.contains_key(&i);
+                let best = Best {
+                    typed,
+                    promoted: &promoted,
+                };
+                assert_eq!(show(Some(best)), show(None), "{slot:?} {typed}");
+            }
+        }
+    }
+
+    /// Completion of `ex:p` over 40,000 described terms took 31 ms against
+    /// 1.3 ms for the same list unfiltered. The work is counted, not timed: the
+    /// candidates built are the few that are shown.
+    #[test]
+    fn typed_completion_over_forty_thousand_terms_builds_few_candidates() {
+        let k = knowledge_of_widgets(40_000);
+        let prefixes: PrefixMap = [("ex".to_string(), "http://example.org/".to_string())]
+            .into_iter()
+            .collect();
+        let promoted = |_: Iri| false;
+        let best = Best {
+            typed: "ex:p",
+            promoted: &promoted,
+        };
+        let cands =
+            prefixed_terms_best(&k, "ex", "p", Slot::Predicate, &prefixes, Some(best)).unwrap();
+        assert!(cands.len() <= LIMIT + 1, "{}", cands.len());
+        let mut cands = Vec::new();
+        let best = Best {
+            typed: "p",
+            promoted: &promoted,
+        };
+        described_candidates_best(&mut cands, "p", Slot::Subject, &k, &prefixes, Some(best));
+        assert!(cands.len() <= LIMIT + 1, "{}", cands.len());
+        // And the whole answer is the 200 items.
+        let text = "@prefix ex: <http://example.org/> .\n\nex:p";
+        let a = Arc::new(Analysis::new(
+            "file:///w/doc.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let pos = a.position(Encoding::Utf16, text.len() as u32);
+        let CompletionResponse::List(list) = complete(&a, &k, Encoding::Utf16, pos) else {
+            panic!("a list")
+        };
+        assert_eq!(list.items.len(), LIMIT);
+        assert!(list.is_incomplete);
     }
 }

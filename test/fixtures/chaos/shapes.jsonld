@@ -1,0 +1,41 @@
+{
+  "@context": {
+    "@vocab": "http://example.com/ns#",
+    "sh": "http://www.w3.org/ns/shacl#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "name": { "@id": "http://xmlns.com/foaf/0.1/name", "@language": "en" },
+    "knows": { "@id": "http://xmlns.com/foaf/0.1/knows", "@type": "@id" },
+    "age": { "@id": "ex:age", "@type": "xsd:integer" },
+    "items": { "@id": "ex:items", "@container": "@list" },
+    "tags": { "@id": "ex:tags", "@container": "@set" },
+    "label": { "@id": "http://www.w3.org/2000/01/rdf-schema#label", "@container": "@language" }
+  },
+  "@graph": [
+    {
+      "@id": "ex:PersonShape",
+      "@type": "sh:NodeShape",
+      "sh:targetClass": { "@id": "ex:Person" },
+      "sh:sparql": {
+        "sh:message": "needs a name",
+        "sh:select": "PREFIX foaf: <http://xmlns.com/foaf/0.1/>\nSELECT $this WHERE { $this a <http://example.com/ns#Person> . FILTER NOT EXISTS { $this foaf:name ?n } }"
+      }
+    },
+    {
+      "@id": "ex:alice",
+      "@type": "Person",
+      "name": "Alice",
+      "age": 42,
+      "knows": ["ex:bob", { "@id": "ex:carol", "name": "Carol" }],
+      "items": [1, "two", { "@value": "3", "@type": "xsd:integer" }],
+      "tags": ["a", "b"],
+      "label": { "en": "Alice", "de": ["Alica"] },
+      "@reverse": { "knows": { "@id": "ex:dave" } }
+    },
+    {
+      "@id": "ex:bob",
+      "@included": [{ "@id": "ex:erin", "@type": ["Person", "ex:Thing"] }],
+      "@nest": { "age": 7 },
+      "http://example.com/ns#nested": { "@id": "_:b0", "knows": { "@id": "_:b1" } }
+    }
+  ]
+}

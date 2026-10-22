@@ -10,7 +10,12 @@ use lsp_types::{Position, Range, TextEdit};
 /// last declaration (`BASE`, `PREFIX` or `VERSION`) of the prologue, so it
 /// joins the block; with no prologue, above the first line of the query
 /// that is not a comment, followed by a blank line.
-pub fn add_prefix(q: &SparqlAnalysis, enc: Encoding, name: &str, namespace: &str) -> TextEdit {
+pub(crate) fn add_prefix(
+    q: &SparqlAnalysis,
+    enc: Encoding,
+    name: &str,
+    namespace: &str,
+) -> TextEdit {
     let st = q.doc.structure();
     let text = q.text();
     let line = format!("PREFIX {name}: <{namespace}>");

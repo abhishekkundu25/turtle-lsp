@@ -4,8 +4,8 @@
 //!
 //! A pass diagnoses the closed files on one thread of its own (never the
 //! rayon pool the main loop parses with), one file at a time, with the
-//! functions `turtle-lsp check` uses ([`batch::rdf_diagnostics`],
-//! [`batch::sparql_diagnostics`]) plus the server's latest SHACL results.
+//! composer `turtle-lsp check` uses ([`diagnose::document`]), with the
+//! server's latest SHACL results.
 //! The thread keeps a copy of the knowledge index, brought up to date from
 //! the server's at the start of each pass (unchanged sources cost nothing).
 //!
@@ -33,35 +33,45 @@
 //! file right away (from the file on disk), not an empty list.
 
 use super::Server;
-use crate::analysis::{Encoding, SparqlAnalysis};
-use crate::batch;
+use super::worker::Spawn;
+use crate::analysis::SparqlAnalysis;
 use crate::clock::Instant;
-use crate::features::shacl_validate;
-use crate::imports::Status;
-use crate::knowledge::{Knowledge, Source};
-use crate::settings::Settings;
-use crate::workspace::{
-    Workspace, is_sparql_path, is_turtle, path_to_uri, scan_roots_matching, uri_to_path,
-};
-use crossbeam_channel::{Receiver, Sender, never, unbounded};
+use crate::diagnose::{self, DiagnosticInputs, Doc};
+use crate::workspace::{is_rdf_file, is_sparql_path, path_to_uri, uri_to_path};
 use lsp_types::Diagnostic;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 use std::time::Duration;
+// The passes run on a thread: the browser build has none, and there
+// workspace diagnostics are always off.
+#[cfg(not(target_arch = "wasm32"))]
+use {
+    crate::analysis::Encoding,
+    crate::features::shacl_validate,
+    crate::imports::Status,
+    crate::knowledge::{Knowledge, Source},
+    crate::settings::Settings,
+    crate::workspace::{Workspace, scan_roots_matching},
+    crossbeam_channel::{Receiver, Sender, never, unbounded},
+    std::path::Path,
+    std::sync::Arc,
+    std::sync::atomic::{AtomicU64, Ordering},
+};
 
 /// Pause after the last edit or change before a pass starts.
-pub const DEBOUNCE: Duration = Duration::from_millis(300);
+pub(crate) const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Files per chunk of results sent back to the main loop.
+#[cfg(not(target_arch = "wasm32"))]
 const CHUNK: usize = 16;
 
 /// The server's side: what is shown, what is due, the pass running.
 #[derive(Default)]
-pub struct State {
+pub(crate) struct State {
     enabled: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     worker: Option<Worker>,
+    #[cfg(not(target_arch = "wasm32"))]
     results: Option<Receiver<Chunk>>,
     generation: u64,
     running: Option<Running>,
@@ -84,15 +94,18 @@ struct Todo {
 }
 
 struct Running {
+    #[cfg(not(target_arch = "wasm32"))]
     generation: u64,
     /// The RDF files asked for, in order, and those whose result came back.
     targets: Vec<String>,
     received: FxHashSet<String>,
     sparql: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     all: bool,
 }
 
 /// One pass, as sent to the thread.
+#[cfg(not(target_arch = "wasm32"))]
 struct Job {
     generation: u64,
     /// Every source of the server's knowledge index: (key, source, analysis).
@@ -107,25 +120,28 @@ struct Job {
     shacl: shacl_validate::ByUri,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct SparqlScan {
     roots: Vec<PathBuf>,
     open: FxHashSet<String>,
 }
 
 /// Results of a pass, a few files at a time; the last chunk is `finished`.
-pub struct Chunk {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct Chunk {
     generation: u64,
     results: Vec<(String, Vec<Diagnostic>)>,
     finished: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Worker {
     jobs: Sender<Job>,
     latest: Arc<AtomicU64>,
 }
 
 impl State {
-    pub fn new(enabled: bool) -> State {
+    pub(crate) fn new(enabled: bool) -> State {
         State {
             enabled,
             ..Default::default()
@@ -133,18 +149,20 @@ impl State {
     }
 
     /// When the next pass is due, for the main loop's timer.
-    pub fn due(&self) -> Option<Instant> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn due(&self) -> Option<Instant> {
         self.due
     }
 
     /// Results from the thread, for the main loop.
-    pub fn results(&self) -> Receiver<Chunk> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn results(&self) -> Receiver<Chunk> {
         self.results.clone().unwrap_or_else(never)
     }
 
     /// Every closed file is due again (after [`DEBOUNCE`]); the running
     /// pass, which reads the old state, stops.
-    pub fn invalidate_all(&mut self) {
+    pub(crate) fn invalidate_all(&mut self) {
         if !self.enabled {
             return;
         }
@@ -157,7 +175,7 @@ impl State {
 
     /// An edit (or an open or close) arrived: stop the running pass and push
     /// the next one back. A pass that stops resumes with its unfinished files.
-    pub fn yield_to_edit(&mut self) {
+    pub(crate) fn yield_to_edit(&mut self) {
         if !self.enabled || (self.running.is_none() && self.todo.is_none()) {
             return;
         }
@@ -177,6 +195,7 @@ impl State {
     fn stop_running(&mut self) {
         let Some(r) = self.running.take() else { return };
         self.generation += 1;
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(w) = &self.worker {
             w.latest.store(self.generation, Ordering::Relaxed);
         }
@@ -194,16 +213,20 @@ impl State {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Worker {
-    fn start() -> (Worker, Receiver<Chunk>) {
+    /// Start the thread; Err when it cannot be started.
+    fn start() -> std::io::Result<(Worker, Receiver<Chunk>)> {
         let (jobs, job_rx) = unbounded::<Job>();
         let (out, out_rx) = unbounded();
         let latest = Arc::new(AtomicU64::new(0));
         let seen = latest.clone();
-        std::thread::Builder::new()
-            .name("workspace-diagnostics".into())
-            .stack_size(16 << 20)
-            .spawn(move || {
+        // Always a thread: the loop waits for passes. Embedded, workspace
+        // diagnostics are off and never start one.
+        Spawn::Thread.run(
+            "workspace-diagnostics",
+            16 << 20,
+            move || {
                 let mut k = Mirror::default();
                 while let Ok(mut job) = job_rx.recv() {
                     // Only the newest queued job matters.
@@ -219,20 +242,25 @@ impl Worker {
                         break;
                     }
                 }
-            })
-            .expect("spawn the workspace diagnostics thread");
-        (Worker { jobs, latest }, out_rx)
+            },
+            // A file's panic is caught where it is diagnosed; the loop's own
+            // reaches the main loop as the channel's end.
+            |_| {},
+        )?;
+        Ok((Worker { jobs, latest }, out_rx))
     }
 }
 
 /// The thread's copy of the knowledge index.
 #[derive(Default)]
+#[cfg(not(target_arch = "wasm32"))]
 struct Mirror {
     knowledge: Knowledge,
     /// (external, key) of every source registered.
     keys: FxHashSet<(bool, String)>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Mirror {
     /// Make the copy hold exactly `sources`. A source registered with the
     /// same analysis is left alone.
@@ -259,6 +287,7 @@ impl Mirror {
 
 /// Diagnose the files of `job`, sending results a chunk at a time. Stops
 /// early (sending nothing more) once `cancelled`; Err when the server is gone.
+#[cfg(not(target_arch = "wasm32"))]
 fn run(
     job: &Job,
     k: &Knowledge,
@@ -274,17 +303,19 @@ fn run(
         })
         .map_err(|_| ())
     };
-    let shacl = |uri: &str| job.shacl.get(uri).cloned().unwrap_or_default();
     for uri in &job.targets {
         if cancelled() {
             return Ok(());
         }
         let d = guarded(|| {
             let a = k.get(uri)?;
-            let mut d =
-                batch::rdf_diagnostics(a, k, job.enc, &job.settings, |iri| job.imports.get(iri));
-            d.extend(shacl(uri));
-            Some(d)
+            let status = |iri: &str| job.imports.get(iri);
+            let inputs = DiagnosticInputs {
+                import_status: &status,
+                shacl: job.shacl.get(uri).map_or(&[], Vec::as_slice),
+                ..DiagnosticInputs::new(&job.settings)
+            };
+            Some(diagnose::document(Doc::Rdf(a), k, job.enc, &inputs))
         });
         if let Some(d) = d {
             chunk.push((uri.clone(), d));
@@ -320,6 +351,7 @@ fn run(
 }
 
 /// The diagnostics of the SPARQL file at `path`, read from disk.
+#[cfg(not(target_arch = "wasm32"))]
 fn sparql_file(
     prefixes: &mut Workspace,
     uri: &str,
@@ -330,10 +362,12 @@ fn sparql_file(
     let text = std::fs::read_to_string(path).ok()?;
     let external = prefixes.external_prefixes_for(uri);
     let q = SparqlAnalysis::new(uri.to_string(), &text, external);
-    Some(batch::sparql_diagnostics(&q, k, job.enc, &job.settings))
+    let inputs = DiagnosticInputs::new(&job.settings);
+    Some(diagnose::document(Doc::Sparql(&q), k, job.enc, &inputs))
 }
 
 /// `f`, with a panic turned into an internal-error diagnostic.
+#[cfg(not(target_arch = "wasm32"))]
 fn guarded(f: impl FnOnce() -> Option<Vec<Diagnostic>>) -> Option<Vec<Diagnostic>> {
     super::guard("workspace diagnostics", f)
         .unwrap_or_else(|msg| Some(vec![super::internal_error_diagnostic(&msg)]))
@@ -345,9 +379,10 @@ fn under(roots: &[PathBuf], uri: &str) -> bool {
 }
 
 impl Server {
-    /// `diagnostics.workspace` may have changed: start or stop.
+    /// `diagnostics.workspace` may have changed: start or stop. Embedded,
+    /// every file is open: they are off.
     pub(super) fn wsdiag_setting(&mut self) {
-        let on = self.settings.diagnostics_workspace && !self.inline;
+        let on = self.layers.settings().diagnostics_workspace && self.spawn == Spawn::Thread;
         if on == self.wsdiag.enabled {
             return;
         }
@@ -356,13 +391,19 @@ impl Server {
             self.wsdiag.invalidate_all();
             return;
         }
-        // Off: clear every closed file shown; the thread ends with its channel.
+        self.wsdiag_off();
+    }
+
+    /// Turn workspace diagnostics off: clear every closed file shown; the
+    /// thread ends with its channel.
+    fn wsdiag_off(&mut self) {
         let old = std::mem::take(&mut self.wsdiag);
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(w) = &old.worker {
             w.latest.store(old.generation + 1, Ordering::Relaxed);
         }
         for uri in old.shown.into_keys() {
-            if !self.ws.open.contains_key(&uri) {
+            if !self.ws.is_open(&uri) {
                 self.send_diagnostics(&uri, Vec::new(), None);
             }
         }
@@ -375,7 +416,7 @@ impl Server {
         }
         self.wsdiag.yield_to_edit();
         // Pushed live diagnostics replace these; pulled ones do not.
-        if self.wsdiag.shown.remove(uri).is_some() && self.pull {
+        if self.wsdiag.shown.remove(uri).is_some() && self.refresh.pull() {
             self.send_diagnostics(uri, Vec::new(), None);
         }
     }
@@ -384,14 +425,14 @@ impl Server {
     /// pass would. False when it is not a workspace file (or the setting is
     /// off), and the caller clears them as usual.
     pub(super) fn wsdiag_closed(&mut self, uri: &str) -> bool {
-        if !self.wsdiag.enabled || !self.indexed || !under(&self.ws.roots, uri) {
+        if !self.wsdiag.enabled || !self.index.merged() || !under(self.ws.roots(), uri) {
             return false;
         }
         self.wsdiag.yield_to_edit();
         let Some(path) = uri_to_path(uri) else {
             return false;
         };
-        let d = if is_turtle(&path) {
+        let d = if is_rdf_file(&path) {
             match self.diagnostics_for(uri) {
                 Ok(d) => d,
                 Err(msg) => Some(vec![super::internal_error_diagnostic(&msg)]),
@@ -401,7 +442,8 @@ impl Server {
             text.map(|text| {
                 let external = self.ws.external_prefixes_for(uri);
                 let q = SparqlAnalysis::new(uri.to_string(), &text, external);
-                batch::sparql_diagnostics(&q, self.ws.knowledge(), self.enc, &self.settings)
+                let inputs = DiagnosticInputs::new(self.layers.settings());
+                diagnose::document(Doc::Sparql(&q), self.ws.knowledge(), self.enc, &inputs)
             })
         } else {
             None
@@ -415,39 +457,44 @@ impl Server {
         true
     }
 
-    /// The RDF file at `path` changed on disk (it is not open): it goes
-    /// first in the next pass, or is cleared if it is gone.
-    pub(super) fn wsdiag_disk_changed(&mut self, path: &Path) {
+    /// The RDF files at `paths` changed on disk (they are not open): each
+    /// goes first in the next pass (the last one first), or is cleared if it
+    /// is gone.
+    pub(super) fn wsdiag_disk_changed(&mut self, paths: &[PathBuf]) {
         if !self.wsdiag.enabled {
             return;
         }
-        let Some(uri) = path_to_uri(path) else { return };
-        if path.is_file() {
-            self.wsdiag.prioritize(uri);
-        } else if self.wsdiag.shown.remove(&uri).is_some() {
-            self.send_diagnostics(&uri, Vec::new(), None);
+        for path in paths {
+            let Some(uri) = path_to_uri(path) else {
+                continue;
+            };
+            if path.is_file() {
+                self.wsdiag.prioritize(uri);
+            } else if self.wsdiag.shown.remove(&uri).is_some() {
+                self.send_diagnostics(&uri, Vec::new(), None);
+            }
         }
     }
 
     /// The debounce passed: start the pass that is due.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn wsdiag_start(&mut self) {
         self.wsdiag.due = None;
-        if !self.wsdiag.enabled || !self.indexed {
+        if !self.wsdiag.enabled || !self.index.merged() {
             // The initial index calls `knowledge_changed` when it lands.
             return;
         }
         let Some(todo) = self.wsdiag.todo.take() else {
             return;
         };
-        let roots = self.ws.roots.clone();
+        let roots = self.ws.roots().to_vec();
         let k = self.ws.knowledge();
         let sources = k
             .sources()
             .map(|(key, s, a)| (key.to_string(), s, a.clone()))
             .collect();
-        let open = &self.ws.open;
-        let closed =
-            |u: &String| !open.contains_key(u) && self.ws.disk.contains_key(u) && under(&roots, u);
+        let ws = &self.ws;
+        let closed = |u: &str| !ws.is_open(u) && ws.is_indexed(u) && under(&roots, u);
         let mut seen = FxHashSet::default();
         let mut targets: Vec<String> = todo
             .first
@@ -455,33 +502,43 @@ impl Server {
             .filter(|u| closed(u) && seen.insert(u.clone()))
             .collect();
         if todo.all {
-            let mut rest: Vec<String> = self
-                .ws
-                .disk
-                .keys()
+            let mut rest: Vec<String> = ws
+                .indexed_uris()
                 .filter(|u| closed(u) && !seen.contains(*u))
-                .cloned()
+                .map(str::to_owned)
                 .collect();
             rest.sort();
             targets.extend(rest);
         }
         let sparql = todo.sparql.then(|| SparqlScan {
             roots: roots.clone(),
-            open: open.keys().cloned().collect(),
+            open: ws.open_uris().map(str::to_owned).collect(),
         });
         if targets.is_empty() && sparql.is_none() {
             return;
         }
         let shacl = self
-            .shacl_diagnostics
+            .shacl
+            .diagnostics()
             .iter()
-            .filter(|(u, _)| !open.contains_key(*u))
+            .filter(|(u, _)| !ws.is_open(u))
             .map(|(u, d)| (u.clone(), d.clone()))
             .collect();
         if self.wsdiag.worker.is_none() {
-            let (w, rx) = Worker::start();
-            self.wsdiag.worker = Some(w);
-            self.wsdiag.results = Some(rx);
+            match Worker::start() {
+                Ok((w, rx)) => {
+                    self.wsdiag.worker = Some(w);
+                    self.wsdiag.results = Some(rx);
+                }
+                Err(e) => {
+                    // Off until the settings change again.
+                    self.client.warn(format!(
+                        "turtle-lsp could not start its workspace diagnostics thread: {e}. Workspace diagnostics are off."
+                    ));
+                    self.wsdiag_off();
+                    return;
+                }
+            }
         }
         self.wsdiag.generation += 1;
         let generation = self.wsdiag.generation;
@@ -497,7 +554,7 @@ impl Server {
             sources,
             targets,
             sparql,
-            settings: self.settings.clone(),
+            settings: self.layers.settings().clone(),
             enc: self.enc,
             imports: self.imports.statuses().clone(),
             shacl,
@@ -509,6 +566,7 @@ impl Server {
     }
 
     /// Results of a pass arrived: publish those that changed.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn wsdiag_chunk(&mut self, chunk: Option<Chunk>) {
         let Some(chunk) = chunk else {
             // The thread is gone (a bug): stop listening to it.
@@ -528,7 +586,7 @@ impl Server {
         let mut seen = Vec::with_capacity(chunk.results.len());
         for (uri, d) in chunk.results {
             seen.push(uri.clone());
-            if self.ws.open.contains_key(&uri) {
+            if self.ws.is_open(&uri) {
                 continue;
             }
             let before = self.wsdiag.shown.get(&uri);
@@ -556,7 +614,7 @@ impl Server {
                 .wsdiag
                 .shown
                 .keys()
-                .filter(|u| !r.received.contains(*u) && !self.ws.open.contains_key(*u))
+                .filter(|u| !r.received.contains(*u) && !self.ws.is_open(u))
                 .cloned()
                 .collect();
             for uri in gone {

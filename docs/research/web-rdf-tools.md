@@ -4,6 +4,11 @@ Date: 2026-10-19. Purpose: decide what a browser-only RDF toolbox built on
 turtle-lsp (compiled to WebAssembly, run in a Web Worker) must do to beat the
 online tools people use today.
 
+> **Historical.** Written on 2026-10-19, this research describes the code and the
+> tools as they were then; file names, figures and decisions may have
+> changed since. README.md, ARCHITECTURE.md and the module docs describe
+> the code as it is now.
+
 Method: the tools' own pages, READMEs and announcements, fetched on the date
 above. Where a page could not be fetched, the row says so and the cell is
 marked "(not verified)".

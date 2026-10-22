@@ -120,6 +120,35 @@ test("Ctrl+Enter runs the query: true or false, Turtle, and an error at its line
   }
 })
 
+test("a prefix only Settings declares is known to the query, as it is to the editor", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    const body = pane(page).locator(".qpane-body")
+    const text = "SELECT ?p WHERE { ?p a zz:Person } ORDER BY ?p"
+    await setText(page, text)
+    await page.keyboard.press("ControlOrMeta+Enter")
+    await body.getByText("Undeclared prefix 'zz:'").waitFor()
+    // Settings → Prefixes: zz:, in no file.
+    await page.keyboard.press("ControlOrMeta+Comma")
+    const settings = page.getByRole("region", { name: "Settings" })
+    await settings.waitFor()
+    await settings.getByRole("button", { name: "Add Prefix" }).click()
+    await settings.getByLabel("Prefix name").fill("zz")
+    await settings.getByLabel("Namespace IRI").fill("https://toolbox.example.org/def/")
+    await page.locator("body[data-busy='false']").waitFor()
+    await page.keyboard.press("Escape")
+    await settings.waitFor({ state: "hidden" })
+    await setText(page, text)
+    await page.keyboard.press("ControlOrMeta+Enter")
+    await body.locator("table").waitFor()
+    assert.ok((await body.locator("td").allTextContents()).some((c) => c.startsWith("id:")))
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("a query worker that fails to load gives an error, and the next run starts a new one", async () => {
   const { page, close } = await open()
   try {

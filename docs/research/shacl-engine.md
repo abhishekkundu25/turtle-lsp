@@ -2,6 +2,11 @@
 
 Research date: 2026-10-13. Time-boxed evaluation for ticket 14 (SHACL validation on save).
 
+> **Historical.** Written on 2026-10-13, this research describes the code and the
+> tools as they were then; file names, figures and decisions may have
+> changed since. README.md, ARCHITECTURE.md and the module docs describe
+> the code as it is now.
+
 ## Decision
 
 **Implement SHACL Core ourselves** (`src/shacl/graph.rs`, `src/shacl/validate.rs`, `src/shacl/literal.rs`), on the triples the parser already produced. All three candidates pull in a full SPARQL engine, an async runtime or both, and none takes our triples without copying them into its own store.
@@ -16,6 +21,14 @@ The only new crate is `regex` 1.13.1 (MIT OR Apache-2.0), used for `sh:pattern`.
 | Crates in the build (normal dependencies) | – | +3 (`regex`, `regex-automata`, `regex-syntax`) |
 
 Of the +1.27 MB, `regex` with only the `std` feature is about 0.79 MB. The Unicode features (`unicode-perl`, `unicode-case`, `unicode-gencat`) add 0.48 MB. They are kept because XPath regular expressions are Unicode-aware: `\w`, `\d`, `\p{L}`, and the `i` flag.
+
+> **Correction (2026-10 audit).** The feature trim measured here
+> (`default-features = false` with the three Unicode features) stopped
+> having an effect in 0.3.0. `spareval`, added then for SHACL-SPARQL, turns
+> on the default `regex` features, and Cargo unifies features across the
+> build, so every `perf-*` and `unicode-*` feature is on whatever this crate
+> asks for. The trim was removed; `Cargo.toml` now asks for the defaults and
+> says why.
 
 ## Candidates
 

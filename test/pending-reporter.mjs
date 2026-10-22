@@ -1,7 +1,12 @@
 // A node:test reporter that counts pending (`todo`) tests by tag: the todo
 // text's first word (`jsonld:phase1`), and the ticket in parentheses when
 // there is one (`jsonld:phase1 (ticket 05)`). Pending tests that pass are
-// listed by name: promote them by removing their `todo`.
+// listed by name and fail the run (`process.exitCode = 1`): promote them by
+// removing their `todo`.
+//
+// The summary is written when the event stream ends, which never happens under
+// `--test-force-exit` (the process exits first), so `npm run test:node` does
+// not use that flag.
 //
 //   node --test --test-reporter=spec --test-reporter-destination=stdout \
 //     --test-reporter=./test/pending-reporter.mjs --test-reporter-destination=stdout "test/*.test.mjs"
@@ -30,6 +35,9 @@ export default async function* pendingReporter(source) {
     const tickets = [...e.tickets].sort(([a], [b]) => a.localeCompare(b)).map(([t, n]) => `${t}: ${n}`)
     out += `  ${tag}: ${e.total}${tickets.length ? ` (ticket ${tickets.join(", ")})` : ""}${e.passing ? `, ${e.passing} passing` : ""}\n`
   }
-  if (passing.length) out += `pending tests that pass, to promote:\n${passing.map((p) => `  ${p}\n`).join("")}`
+  if (passing.length) {
+    out += `pending tests that pass, to promote:\n${passing.map((p) => `  ${p}\n`).join("")}`
+    process.exitCode = 1
+  }
   yield out
 }

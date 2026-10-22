@@ -13,6 +13,7 @@ import http from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import crypto from "node:crypto"
 import { startServer, tempDir as longTempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -175,7 +176,7 @@ test("with the setting on, an import is fetched once (following redirects) and t
   }
   const fetched = hits.slice(before)
   assert.deepEqual(fetched.map((h) => h.url), ["/old", "/onto.ttl"])
-  assert.match(fetched[0].accept, /^text\/turtle, application\/n-triples;q=0\.9, application\/rdf\+xml;q=0\.8$/)
+  assert.match(fetched[0].accept, /^text\/turtle, application\/trig;q=0\.9, .*application\/ld\+json;q=0\.8, application\/rdf\+xml;q=0\.8$/)
   assert.equal(fs.readdirSync(path.join(w.cache, "imports")).length, 1)
 
   // A new session, with or without the network: the cached copy is used.
@@ -358,4 +359,139 @@ test("imports.unresolved: soften lowers what an import could change; ignore keep
     }
   }
   assert.equal(hits.length, before, JSON.stringify(hits.slice(before)))
+})
+
+// ---- fetch policy ----
+
+// Like `start`, for a server that is not told to fetch from loopback (the
+// suite's servers listen there, and are told to).
+async function startStrict(cwd, cache, initializationOptions) {
+  const prev = process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS
+  process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS = "0"
+  try {
+    return await start(cwd, cache, initializationOptions)
+  } finally {
+    if (prev === undefined) delete process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS
+    else process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS = prev
+  }
+}
+
+test("by default an import is not fetched from a loopback address, even when the network is on", async () => {
+  const before = hits.length
+  const w = remoteWorkspace("loopback", `${base}/onto.ttl`)
+  const s = await startStrict(w.ws, w.cache, { imports: { network: true } })
+  try {
+    s.open(w.uri, w.text)
+    const diags = await diagnosticsUntil(s, w.uri, (d) => d.some((x) => x.code === "unresolved-import"))
+    const d = diags.find((x) => x.code === "unresolved-import")
+    assert.match(d.message, /loopback address/)
+    assert.match(d.message, /TURTLE_LSP_ALLOW_PRIVATE_HOSTS/)
+    await sleep(300)
+    assert.equal(hits.length, before, "no request reached the server")
+  } finally {
+    await s.stop()
+  }
+  assert.ok(!fs.existsSync(path.join(w.cache, "imports")), "nothing cached")
+})
+
+test("a file: import that names a host is refused, on every system", async () => {
+  const root = tempDir("filehost")
+  const ws = path.join(root, "ws")
+  fs.mkdirSync(ws)
+  const iri = "file://example.invalid/share/x.ttl"
+  const text = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<http://example.com/ont/app> a owl:Ontology ; owl:imports <${iri}> .
+`
+  const file = path.join(ws, "app.ttl")
+  fs.writeFileSync(file, text)
+  fs.writeFileSync(
+    path.join(ws, "catalog-v001.xml"),
+    `<catalog><uri name="http://example.com/mapped" uri="file://example.invalid/share/y.ttl"/></catalog>`,
+  )
+  const s = await start(ws, path.join(root, "cache"))
+  try {
+    const uri = uriOf(file)
+    s.open(uri, text)
+    const diags = await diagnosticsUntil(s, uri, (d) => d.some((x) => x.code === "unresolved-import"))
+    assert.match(diags.find((x) => x.code === "unresolved-import").message, /naming a host/)
+  } finally {
+    await s.stop()
+  }
+})
+
+test("a cache file that does not name the import's URL is not used, and is replaced by a fetch", async () => {
+  const before = hits.length
+  const iri = `${base}/onto.ttl`
+  const w = remoteWorkspace("cache-header", iri)
+  // The cache names files by the SHA-256 of the URL; a file there that was
+  // not written for this URL (planted, or another URL's after a collision) says nothing.
+  const dir = path.join(w.cache, "imports")
+  fs.mkdirSync(dir, { recursive: true })
+  const name = crypto.createHash("sha256").update(iri).digest("hex") + ".ttl"
+  const planted = "<http://example.com/evil> a <http://www.w3.org/2002/07/owl#Class> .\n"
+  fs.writeFileSync(path.join(dir, name), planted)
+  const s = await start(w.ws, w.cache, { imports: { network: true } })
+  try {
+    s.open(w.uri, w.text)
+    await hoverUntil(s, w.uri, positionOf(w.text, "r:Remote", 3), "Remote thing")
+  } finally {
+    await s.stop()
+  }
+  assert.deepEqual(hits.slice(before).map((h) => h.url), ["/onto.ttl"])
+  const kept = fs.readFileSync(path.join(dir, name), "utf8")
+  assert.ok(kept.startsWith(`# turtle-lsp cache for ${iri}\n`), kept)
+  assert.ok(!kept.includes("evil"), kept)
+  assert.deepEqual(fs.readdirSync(dir), [name], "no temporary file is left")
+})
+
+test("imports in TriG and JSON-LD are read in their own syntax, whatever their IRI looks like", async () => {
+  const root = tempDir("syntaxes")
+  const ws = path.join(root, "ws")
+  // In a hidden folder, which the workspace does not index: the terms are
+  // known only if the imports are read.
+  fs.mkdirSync(path.join(ws, ".vendor"), { recursive: true })
+  fs.writeFileSync(
+    path.join(ws, "catalog-v001.xml"),
+    `<catalog>
+<uri name="http://example.com/ont/graphs" uri=".vendor/graphs.trig"/>
+<uri name="http://example.com/ont/linked" uri=".vendor/linked.jsonld"/>
+</catalog>`,
+  )
+  fs.writeFileSync(
+    path.join(ws, ".vendor", "graphs.trig"),
+    `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix g: <http://example.com/g#> .
+<http://example.com/graph> { g:Trig a owl:Class ; rdfs:label "Trig thing" . }
+`,
+  )
+  fs.writeFileSync(
+    path.join(ws, ".vendor", "linked.jsonld"),
+    JSON.stringify({
+      "@context": { rdfs: "http://www.w3.org/2000/01/rdf-schema#", owl: "http://www.w3.org/2002/07/owl#" },
+      "@id": "http://example.com/j#Json",
+      "@type": "owl:Class",
+      "rdfs:label": "Json thing",
+    }),
+  )
+  const text = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix g: <http://example.com/g#> .
+@prefix j: <http://example.com/j#> .
+<http://example.com/ont/app> a owl:Ontology ;
+    owl:imports <http://example.com/ont/graphs>, <http://example.com/ont/linked> .
+<http://example.com/ont/app#x> a g:Trig, j:Json .
+`
+  const file = path.join(ws, "app.ttl")
+  fs.writeFileSync(file, text)
+  const s = await start(ws, path.join(root, "cache"))
+  try {
+    const uri = uriOf(file)
+    s.open(uri, text)
+    await hoverUntil(s, uri, positionOf(text, "g:Trig", 3), "Trig thing")
+    await hoverUntil(s, uri, positionOf(text, "j:Json", 3), "Json thing")
+    const diags = await diagnosticsUntil(s, uri, (d) => !d.some((x) => x.code === "unresolved-import"))
+    assert.ok(!diags.some((x) => x.code === "unresolved-import"), JSON.stringify(diags))
+  } finally {
+    await s.stop()
+  }
 })

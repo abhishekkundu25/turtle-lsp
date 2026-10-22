@@ -112,7 +112,7 @@ impl Iri {
     }
 
     /// The handle for `s` if it was ever interned. Never interns.
-    pub fn get(s: &str) -> Option<Iri> {
+    pub(crate) fn get(s: &str) -> Option<Iri> {
         let shard = interner().shards[shard_of(s)]
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -222,7 +222,7 @@ impl serde::Serialize for Iri {
 
 /// Anything an [`IriMap`] can be queried with: a handle, or text (looked up
 /// without interning).
-pub trait IriKey {
+pub(crate) trait IriKey {
     fn iri_key(&self) -> Option<Iri>;
 }
 
@@ -252,7 +252,7 @@ impl<T: IriKey + ?Sized> IriKey for &T {
 
 /// A map keyed by [`Iri`] that can also be queried with `&str`.
 #[derive(Clone, Debug)]
-pub struct IriMap<V>(FxHashMap<Iri, V>);
+pub(crate) struct IriMap<V>(FxHashMap<Iri, V>);
 
 impl<V> Default for IriMap<V> {
     fn default() -> Self {
@@ -261,10 +261,10 @@ impl<V> Default for IriMap<V> {
 }
 
 impl<V> IriMap<V> {
-    pub fn get<K: IriKey + ?Sized>(&self, key: &K) -> Option<&V> {
+    pub(crate) fn get<K: IriKey + ?Sized>(&self, key: &K) -> Option<&V> {
         self.0.get(&key.iri_key()?)
     }
-    pub fn contains_key<K: IriKey + ?Sized>(&self, key: &K) -> bool {
+    pub(crate) fn contains_key<K: IriKey + ?Sized>(&self, key: &K) -> bool {
         self.get(key).is_some()
     }
 }

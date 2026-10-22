@@ -66,17 +66,25 @@
 //!
 //! # Caching
 //!
-//! A [`ContextCache`] (by default [`ContextCache::global`], shared by every
-//! thread) keeps each remote document's parsed JSON and its processed
+//! A [`ContextCache`], passed to [`Processor::with_cache`] by whoever owns
+//! the processors ([`ContextCache::global`] is the one for a command-line
+//! run), keeps each remote document's parsed JSON and its processed
 //! results, keyed by URL and content. A result is reused when the context it
 //! was applied to is the same (an empty initial context, or the very result
 //! of an earlier cached step), and when every document it loaded on the way
-//! (nested contexts, imports) still has the same content. So re-checking a
+//! (nested contexts, imports) still has the same content. A context half
+//! built (an inline object applied, the rest of the array not yet) is never
+//! the same as another, so nothing is cached for it. So re-checking a
 //! document re-processes only its inline contexts.
+//!
+//! # Work limit
+//!
+//! Remote contexts nest at most [`MAX_REMOTE_CONTEXTS`] deep, and one
+//! `@context` takes at most [`MAX_CONTEXT_STEPS`] steps (remote contexts
+//! applied, contexts processed); one more is a `context overflow`.
 
 use super::json::{Json, Object, Value};
 use super::loader::{ContextLoader, LoadError};
-use super::unquoted;
 use crate::syntax::{Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
 use std::fmt;
@@ -84,17 +92,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The diagnostic code of every context error.
-pub const DIAGNOSTIC_CODE: &str = "jsonld-context";
+pub(crate) const DIAGNOSTIC_CODE: &str = "jsonld-context";
 
 /// How many remote contexts may be nested (the spec's "processor defined
 /// limit"); one more is a `context overflow`.
-pub const MAX_REMOTE_CONTEXTS: usize = 32;
+pub(crate) const MAX_REMOTE_CONTEXTS: usize = 32;
+
+/// How many remote contexts may be applied, and local contexts processed,
+/// for one `@context` (or one scoped context) before it is a `context
+/// overflow`. Contexts that include one another several times over (`["c",
+/// "c"]` at every level) would otherwise take 2^depth steps even though
+/// each level is small and the nesting is within [`MAX_REMOTE_CONTEXTS`].
+pub(crate) const MAX_CONTEXT_STEPS: usize = 4096;
 
 // ---- errors ----
 
 /// The JSON-LD 1.1 error codes context processing raises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ErrorCode {
+pub(crate) enum ErrorCode {
     ContextOverflow,
     CyclicIriMapping,
     InvalidBaseDirection,
@@ -126,7 +141,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// The code as the spec writes it (`invalid term definition`).
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         use ErrorCode::*;
         match self {
             ContextOverflow => "context overflow",
@@ -168,24 +183,24 @@ impl fmt::Display for ErrorCode {
 
 /// A context processing error: the algorithm stops at the first one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContextError {
-    pub code: ErrorCode,
+pub(crate) struct ContextError {
+    pub(crate) code: ErrorCode,
     /// The offending key or value in the document (for a remote context,
     /// the string naming it).
-    pub span: Span,
+    pub(crate) span: Span,
     /// What is wrong, without the code.
-    pub message: String,
+    pub(crate) message: String,
 }
 
 impl ContextError {
     /// The `jsonld-context` diagnostic: "<W3C code>: <message>".
-    pub fn to_syntax_error(&self) -> SyntaxError {
-        SyntaxError {
-            span: self.span,
-            message: self.to_string(),
-            severity: Severity::Error,
-            code: DIAGNOSTIC_CODE,
-        }
+    pub(crate) fn to_syntax_error(&self) -> SyntaxError {
+        SyntaxError::new(
+            self.span,
+            self.to_string(),
+            Severity::Error,
+            DIAGNOSTIC_CODE,
+        )
     }
 }
 
@@ -198,7 +213,7 @@ impl fmt::Display for ContextError {
 // ---- keywords and IRIs ----
 
 /// The JSON-LD 1.1 keywords.
-pub const KEYWORDS: &[&str] = &[
+pub(crate) const KEYWORDS: &[&str] = &[
     "@base",
     "@container",
     "@context",
@@ -251,20 +266,20 @@ const TERM_KEYWORDS: &[&str] = &[
     "@type",
 ];
 
-pub fn is_keyword(s: &str) -> bool {
+pub(crate) fn is_keyword(s: &str) -> bool {
     KEYWORDS.contains(&s)
 }
 
 /// `@` followed by one or more ASCII letters: reserved for future keywords.
 /// Such terms and IRIs are ignored (with a warning) unless they are
 /// keywords.
-pub fn has_keyword_form(s: &str) -> bool {
+pub(crate) fn has_keyword_form(s: &str) -> bool {
     s.strip_prefix('@')
         .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// Whether `s` has the form of an absolute IRI: a scheme and a colon.
-pub fn is_absolute_iri(s: &str) -> bool {
+pub(crate) fn is_absolute_iri(s: &str) -> bool {
     let Some(colon) = s.find(':') else {
         return false;
     };
@@ -275,13 +290,13 @@ pub fn is_absolute_iri(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
 }
 
-pub fn is_blank_node(s: &str) -> bool {
+pub(crate) fn is_blank_node(s: &str) -> bool {
     s.starts_with("_:")
 }
 
 /// Resolve `reference` against `base` (RFC 3986 §5.2, without
 /// normalization). Neither is checked for validity.
-pub fn resolve_iri(base: &str, reference: &str) -> String {
+pub(crate) fn resolve_iri(base: &str, reference: &str) -> String {
     let r = UriParts::parse(reference);
     if r.scheme.is_some() {
         return UriParts {
@@ -424,33 +439,33 @@ fn remove_dot_segments(path: &str) -> String {
 
 /// A base direction (`@direction`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Direction {
+pub(crate) enum Direction {
     Ltr,
     Rtl,
 }
 
 /// A container mapping, as a set of container keywords.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Container(u8);
+pub(crate) struct Container(u8);
 
 impl Container {
-    pub const LIST: Container = Container(1);
-    pub const SET: Container = Container(2);
-    pub const INDEX: Container = Container(4);
-    pub const LANGUAGE: Container = Container(8);
-    pub const GRAPH: Container = Container(16);
-    pub const ID: Container = Container(32);
-    pub const TYPE: Container = Container(64);
+    pub(crate) const LIST: Container = Container(1);
+    pub(crate) const SET: Container = Container(2);
+    pub(crate) const INDEX: Container = Container(4);
+    pub(crate) const LANGUAGE: Container = Container(8);
+    pub(crate) const GRAPH: Container = Container(16);
+    pub(crate) const ID: Container = Container(32);
+    pub(crate) const TYPE: Container = Container(64);
 
-    pub fn contains(self, other: Container) -> bool {
+    pub(crate) fn contains(self, other: Container) -> bool {
         self.0 & other.0 == other.0
     }
 
-    pub fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         self.0 == 0
     }
 
-    pub fn with(self, other: Container) -> Container {
+    pub(crate) fn with(self, other: Container) -> Container {
         Container(self.0 | other.0)
     }
 
@@ -475,56 +490,56 @@ impl Container {
 /// A term's scoped context, kept unprocessed as the spec does: expansion
 /// applies it with [`Processor::process_scoped`].
 #[derive(Clone, Debug)]
-pub struct ScopedContext {
+pub(crate) struct ScopedContext {
     /// The `@context` value of the term definition. Its spans are in the
     /// document named by `source` (`None`: the document being checked).
-    pub json: Arc<Json>,
+    pub(crate) json: Arc<Json>,
     /// The base URL relative context references in it resolve against.
-    pub base_url: Option<Arc<str>>,
+    pub(crate) base_url: Option<Arc<str>>,
     /// The remote document that names it, for error messages, if any.
-    pub source: Option<Arc<str>>,
+    pub(crate) source: Option<Arc<str>>,
     /// The document its JSON is written in, if not the one being checked:
     /// `source`, or a context that document `@import`s.
-    pub doc: Option<Arc<str>>,
+    pub(crate) doc: Option<Arc<str>>,
 }
 
 /// A term definition (§4.2).
 #[derive(Clone, Debug, Default)]
-pub struct TermDefinition {
+pub(crate) struct TermDefinition {
     /// The IRI mapping: an IRI, a blank node identifier or a keyword (for an
     /// alias). `None` for a term mapped to `null`, kept so a later
     /// definition can be checked against a protected one.
-    pub iri: Option<Arc<str>>,
-    pub reverse: bool,
+    pub(crate) iri: Option<Arc<str>>,
+    pub(crate) reverse: bool,
     /// `@id`, `@vocab`, `@json`, `@none` or an IRI.
-    pub type_mapping: Option<Arc<str>>,
+    pub(crate) type_mapping: Option<Arc<str>>,
     /// `Some(None)`: `"@language": null`.
-    pub language: Option<Option<Arc<str>>>,
+    pub(crate) language: Option<Option<Arc<str>>>,
     /// `Some(None)`: `"@direction": null`.
-    pub direction: Option<Option<Direction>>,
-    pub container: Container,
-    pub context: Option<ScopedContext>,
+    pub(crate) direction: Option<Option<Direction>>,
+    pub(crate) container: Container,
+    pub(crate) context: Option<ScopedContext>,
     /// Usable as the prefix of a compact IRI.
-    pub prefix: bool,
-    pub protected: bool,
-    pub nest: Option<Arc<str>>,
-    pub index: Option<Arc<str>>,
+    pub(crate) prefix: bool,
+    pub(crate) protected: bool,
+    pub(crate) nest: Option<Arc<str>>,
+    pub(crate) index: Option<Arc<str>>,
     /// The document the definition is written in: `None` for the document
     /// being checked, else the URL of the remote (or `@import`ed) context.
-    pub source: Option<Arc<str>>,
+    pub(crate) source: Option<Arc<str>>,
     /// The key that defined the term, without the quotes, in the text of
     /// the document `source` names.
-    pub span: Option<Span>,
+    pub(crate) span: Option<Span>,
     /// Where the IRI mapping is written, when it is a string (`@id`,
     /// `@reverse` or the whole definition), in the same text: its content,
     /// without the quotes. `None` when the term's key spells its IRI (a
     /// compact IRI, an IRI or a `@vocab` word).
-    pub iri_span: Option<Span>,
+    pub(crate) iri_span: Option<Span>,
 }
 
 impl TermDefinition {
     /// Written in the document being checked.
-    pub fn is_local(&self) -> bool {
+    pub(crate) fn is_local(&self) -> bool {
         self.source.is_none()
     }
 }
@@ -658,9 +673,19 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Set in the id of a context that exists only in the middle of context
+/// processing (some of the local context applied, not all of it): nothing
+/// else will ever hold that exact context, so nothing is cached for it.
+const IN_PROGRESS: u64 = 1 << 63;
+
+/// A new id for a context being built by processing.
+fn in_progress_id() -> u64 {
+    next_id() | IN_PROGRESS
+}
+
 /// The active context (§4.1). Cheap to clone.
 #[derive(Clone, Debug)]
-pub struct ActiveContext {
+pub(crate) struct ActiveContext {
     terms: Terms,
     base: Option<Arc<str>>,
     original_base: Option<Arc<str>>,
@@ -676,7 +701,7 @@ pub struct ActiveContext {
 impl ActiveContext {
     /// The initial context of a document at `base` (its base IRI and
     /// original base URL).
-    pub fn new(base: Option<&str>) -> ActiveContext {
+    pub(crate) fn new(base: Option<&str>) -> ActiveContext {
         ActiveContext::reset(base.map(Arc::from))
     }
 
@@ -693,33 +718,34 @@ impl ActiveContext {
         }
     }
 
-    pub fn term(&self, term: &str) -> Option<&TermDefinition> {
+    pub(crate) fn term(&self, term: &str) -> Option<&TermDefinition> {
         self.terms.get(term).map(|d| &**d)
     }
 
     /// Every term definition, in no particular order.
-    pub fn terms(&self) -> impl Iterator<Item = (&str, &TermDefinition)> {
+    pub(crate) fn terms(&self) -> impl Iterator<Item = (&str, &TermDefinition)> {
         self.terms.iter()
     }
 
     /// The base IRI relative IRIs resolve against.
-    pub fn base(&self) -> Option<&str> {
+    pub(crate) fn base(&self) -> Option<&str> {
         self.base.as_deref()
     }
 
-    pub fn original_base(&self) -> Option<&str> {
+    #[cfg(test)]
+    pub(crate) fn original_base(&self) -> Option<&str> {
         self.original_base.as_deref()
     }
 
-    pub fn vocab(&self) -> Option<&str> {
+    pub(crate) fn vocab(&self) -> Option<&str> {
         self.vocab.as_deref()
     }
 
-    pub fn default_language(&self) -> Option<&str> {
+    pub(crate) fn default_language(&self) -> Option<&str> {
         self.language.as_deref()
     }
 
-    pub fn default_direction(&self) -> Option<Direction> {
+    pub(crate) fn default_direction(&self) -> Option<Direction> {
         self.direction
     }
 
@@ -727,16 +753,16 @@ impl ActiveContext {
     /// `@vocab`, default language and direction, previous context): clones
     /// share it, and each processing result gets a new one. Expansion caches
     /// IRI expansions by it.
-    pub fn content_id(&self) -> u64 {
+    pub(crate) fn content_id(&self) -> u64 {
         self.id
     }
 
     /// The context before a non-propagated context was applied.
-    pub fn previous(&self) -> Option<&ActiveContext> {
+    pub(crate) fn previous(&self) -> Option<&ActiveContext> {
         self.previous.as_deref()
     }
 
-    pub fn has_protected(&self) -> bool {
+    pub(crate) fn has_protected(&self) -> bool {
         self.terms.iter().any(|(_, d)| d.protected)
     }
 
@@ -753,7 +779,7 @@ impl ActiveContext {
 }
 
 /// IRI Expansion (§4.3) outside context processing. `None` is `null`.
-pub fn expand_iri(
+pub(crate) fn expand_iri(
     active: &ActiveContext,
     value: &str,
     document_relative: bool,
@@ -810,7 +836,7 @@ fn expand_from_step_4(
 // ---- the cache ----
 
 /// Processed remote contexts by URL and content, shared across threads.
-pub struct ContextCache {
+pub(crate) struct ContextCache {
     docs: Mutex<Vec<CachedDoc>>,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -818,9 +844,10 @@ pub struct ContextCache {
 
 /// How often a remote context was taken from the cache, or processed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CacheStats {
-    pub hits: u64,
-    pub misses: u64,
+#[cfg(test)]
+pub(crate) struct CacheStats {
+    pub(crate) hits: u64,
+    pub(crate) misses: u64,
 }
 
 const MAX_CACHED_DOCS: usize = 64;
@@ -840,12 +867,16 @@ enum Input {
     Pristine,
     /// The context with this id.
     Id(u64),
+    /// A context half built: no result is kept for it.
+    InProgress,
 }
 
 impl Input {
     fn of(active: &ActiveContext) -> Input {
         if active.is_pristine() {
             Input::Pristine
+        } else if active.id & IN_PROGRESS != 0 {
+            Input::InProgress
         } else {
             Input::Id(active.id)
         }
@@ -882,7 +913,7 @@ impl Default for ContextCache {
 }
 
 impl ContextCache {
-    pub fn new() -> ContextCache {
+    pub(crate) fn new() -> ContextCache {
         ContextCache {
             docs: Mutex::new(Vec::new()),
             hits: AtomicU64::new(0),
@@ -890,13 +921,15 @@ impl ContextCache {
         }
     }
 
-    /// The process-wide cache.
-    pub fn global() -> &'static ContextCache {
+    /// The process-wide cache, for a command-line run. A server keeps its
+    /// own and hands it to each [`Processor`].
+    pub(crate) fn global() -> &'static ContextCache {
         static CACHE: OnceLock<ContextCache> = OnceLock::new();
         CACHE.get_or_init(ContextCache::new)
     }
 
-    pub fn stats(&self) -> CacheStats {
+    #[cfg(test)]
+    pub(crate) fn stats(&self) -> CacheStats {
         CacheStats {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
@@ -918,7 +951,7 @@ impl ContextCache {
         }
         let doc = super::json::parse(text);
         let json = match (doc.root, doc.errors.first()) {
-            (_, Some(e)) => Err(e.message.clone()),
+            (_, Some(e)) => Err(e.message().to_string()),
             (None, None) => Err("the document is empty".to_string()),
             (Some(root), None) => Ok(Arc::new(root)),
         };
@@ -949,6 +982,9 @@ impl ContextCache {
         validate: bool,
     ) -> Vec<Processed> {
         let input = Input::of(active);
+        if input == Input::InProgress {
+            return Vec::new();
+        }
         let Ok(docs) = self.docs.lock() else {
             return Vec::new();
         };
@@ -974,6 +1010,9 @@ impl ContextCache {
     }
 
     fn store(&self, url: &str, text: &Arc<str>, p: Processed) {
+        if p.input == Input::InProgress {
+            return;
+        }
         if let Ok(mut docs) = self.docs.lock()
             && let Some(doc) = docs
                 .iter_mut()
@@ -989,10 +1028,10 @@ impl ContextCache {
 
 /// The flags of the Context Processing algorithm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Options {
-    pub override_protected: bool,
-    pub propagate: bool,
-    pub validate_scoped_context: bool,
+pub(crate) struct Options {
+    pub(crate) override_protected: bool,
+    pub(crate) propagate: bool,
+    pub(crate) validate_scoped_context: bool,
 }
 
 impl Default for Options {
@@ -1029,7 +1068,7 @@ type ScopedKey = (u64, usize, bool, bool, Option<Arc<str>>);
 
 /// Runs context processing for one document: remote contexts come from its
 /// loader (each URL loaded once per processor) and the shared cache.
-pub struct Processor<'l> {
+pub(crate) struct Processor<'l> {
     loader: &'l dyn ContextLoader,
     cache: &'l ContextCache,
     warnings: Vec<SyntaxError>,
@@ -1042,6 +1081,9 @@ pub struct Processor<'l> {
     /// Every load, in order, for the dependencies of cached results.
     log: Vec<Dep>,
     scoped: FxHashMap<ScopedKey, (Arc<Json>, ActiveContext)>,
+    /// Steps taken for the context being processed, against
+    /// [`MAX_CONTEXT_STEPS`].
+    steps: usize,
     /// The key of the term being defined, without its quotes: where errors
     /// inside its definition go.
     term_at: Option<Span>,
@@ -1061,6 +1103,7 @@ struct Local<'a> {
 struct Entry<'a> {
     key: &'a str,
     key_span: Span,
+    key_inner: Span,
     value: &'a Json,
     /// From the imported context.
     foreign: bool,
@@ -1086,6 +1129,7 @@ impl<'a> Local<'a> {
                 entries.push(Entry {
                     key: &m.key,
                     key_span: m.key_span,
+                    key_inner: m.key_inner,
                     value: &m.value,
                     foreign,
                 });
@@ -1127,12 +1171,12 @@ fn member<'a>(o: Option<&'a Object>, key: &str) -> Option<&'a super::json::Membe
 }
 
 impl<'l> Processor<'l> {
-    /// A processor using the process-wide [`ContextCache::global`].
-    pub fn new(loader: &'l dyn ContextLoader) -> Processor<'l> {
-        Processor::with_cache(loader, ContextCache::global())
-    }
-
-    pub fn with_cache(loader: &'l dyn ContextLoader, cache: &'l ContextCache) -> Processor<'l> {
+    /// A processor over `loader`, keeping processed remote contexts in
+    /// `cache`: whoever owns the processors owns the cache.
+    pub(crate) fn with_cache(
+        loader: &'l dyn ContextLoader,
+        cache: &'l ContextCache,
+    ) -> Processor<'l> {
         Processor {
             loader,
             cache,
@@ -1143,6 +1187,7 @@ impl<'l> Processor<'l> {
             loads: FxHashMap::default(),
             log: Vec::new(),
             scoped: FxHashMap::default(),
+            steps: 0,
             term_at: None,
             written: Vec::new(),
         }
@@ -1152,7 +1197,7 @@ impl<'l> Processor<'l> {
     /// processing has made so far (in its contexts, and in the scoped
     /// contexts of its terms, applied or only validated), with its term.
     /// The same definition can be listed more than once.
-    pub fn take_written(&mut self) -> Vec<(Arc<str>, Arc<TermDefinition>)> {
+    pub(crate) fn take_written(&mut self) -> Vec<(Arc<str>, Arc<TermDefinition>)> {
         std::mem::take(&mut self.written)
     }
 
@@ -1163,14 +1208,14 @@ impl<'l> Processor<'l> {
     }
 
     /// The warnings so far (`jsonld-context`, severity warning).
-    pub fn take_warnings(&mut self) -> Vec<SyntaxError> {
+    pub(crate) fn take_warnings(&mut self) -> Vec<SyntaxError> {
         std::mem::take(&mut self.warnings)
     }
 
     /// Context Processing (§4.1.2) of `local`, an `@context` value in the
     /// document, over `active`. `base_url` resolves relative context
     /// references (the document's URL).
-    pub fn process(
+    pub(crate) fn process(
         &mut self,
         active: &ActiveContext,
         local: &Json,
@@ -1179,6 +1224,7 @@ impl<'l> Processor<'l> {
     ) -> Result<ActiveContext, ContextError> {
         let site = self.site.take();
         self.log.clear();
+        self.steps = 0;
         let r = self.process_in(active, local, base_url, &[], options);
         self.site = site;
         r
@@ -1188,7 +1234,7 @@ impl<'l> Processor<'l> {
     /// context overrides protected terms and propagates; a type-scoped one
     /// does neither (`propagate` and `override_protected` false). Errors in
     /// a scoped context from a remote document are reported at `at`.
-    pub fn process_scoped(
+    pub(crate) fn process_scoped(
         &mut self,
         active: &ActiveContext,
         scoped: &ScopedContext,
@@ -1216,6 +1262,7 @@ impl<'l> Processor<'l> {
         );
         let quiet = std::mem::replace(&mut self.quiet, true);
         self.log.clear();
+        self.steps = 0;
         let r = self.process_in(
             active,
             &scoped.json,
@@ -1257,12 +1304,12 @@ impl<'l> Processor<'l> {
 
     fn warn(&mut self, span: Span, message: String) {
         if self.site.is_none() && !self.quiet {
-            self.warnings.push(SyntaxError {
-                span: self.term_at.unwrap_or(span),
+            self.warnings.push(SyntaxError::new(
+                self.term_at.unwrap_or(span),
                 message,
-                severity: Severity::Warning,
-                code: DIAGNOSTIC_CODE,
-            });
+                Severity::Warning,
+                DIAGNOSTIC_CODE,
+            ));
         }
     }
 
@@ -1353,8 +1400,36 @@ impl<'l> Processor<'l> {
         }
     }
 
+    /// Take one step of the work budget.
+    fn step(&mut self, span: Span) -> Result<(), ContextError> {
+        self.steps += 1;
+        if self.steps > MAX_CONTEXT_STEPS {
+            return Err(self.err(
+                ErrorCode::ContextOverflow,
+                span,
+                format!(
+                    "too many contexts to process (more than {MAX_CONTEXT_STEPS}; do contexts include one another many times over?)"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// The Context Processing algorithm.
     fn process_in(
+        &mut self,
+        active: &ActiveContext,
+        local: &Json,
+        base_url: Option<&str>,
+        remote: &[Arc<str>],
+        options: Options,
+    ) -> Result<ActiveContext, ContextError> {
+        self.step(local.span)?;
+        self.process_items(active, local, base_url, remote, options)
+    }
+
+    /// Steps 1 to 5 of [`Processor::process_in`], without taking a step.
+    fn process_items(
         &mut self,
         active: &ActiveContext,
         local: &Json,
@@ -1372,6 +1447,7 @@ impl<'l> Processor<'l> {
         }
         if !propagate && result.previous.is_none() {
             result.previous = Some(Arc::new(active.clone()));
+            result.id = in_progress_id();
         }
         // 4-5
         let items = match &local.value {
@@ -1394,10 +1470,11 @@ impl<'l> Processor<'l> {
                     result = ActiveContext::reset(result.original_base.clone());
                     if !propagate {
                         result.previous = previous;
+                        result.id = in_progress_id();
                     }
                 }
                 Value::String(s) => {
-                    let at = unquoted(item.span);
+                    let at = item.inner;
                     let url: Arc<str> = Arc::from(self.context_url(at, base_url, s)?);
                     if !options.validate_scoped_context && remote.contains(&url) {
                         continue;
@@ -1417,6 +1494,10 @@ impl<'l> Processor<'l> {
                         self.remote(&result, &url, at, &remote, options.validate_scoped_context)?;
                 }
                 Value::Object(o) => {
+                    // `result` is no longer the context it began as (and
+                    // not yet a finished one): it must not pass for
+                    // `active` when a remote context is applied to it.
+                    result.id = in_progress_id();
                     self.definition(&mut result, o, base_url, remote, options)?;
                 }
                 _ => {
@@ -1442,6 +1523,7 @@ impl<'l> Processor<'l> {
         remote: &[Arc<str>],
         validate: bool,
     ) -> Result<ActiveContext, ContextError> {
+        self.step(span)?;
         let (loaded, json) = self.load_json(span, url)?;
         let site_span = self
             .site
@@ -1507,6 +1589,10 @@ impl<'l> Processor<'l> {
         self.site = site;
         let used = self.used_base;
         self.used_base |= used_base;
+        // The work budget, not the context, ran out: another run may succeed.
+        if matches!(&r, Err(e) if e.code == ErrorCode::ContextOverflow) {
+            return r;
+        }
         let mut deps: Vec<Dep> = Vec::new();
         for d in &self.log[start..] {
             if !deps.contains(d) {
@@ -1545,7 +1631,7 @@ impl<'l> Processor<'l> {
                 "@import must be a string",
             ));
         };
-        let at = unquoted(m.value.span);
+        let at = m.value.inner;
         let url = self.context_url(at, base_url, s)?;
         let (loaded, json) = self.load_json(at, &url)?;
         let context = json
@@ -1619,7 +1705,7 @@ impl<'l> Processor<'l> {
                     Some(b) => Ok(Some(Arc::from(resolve_iri(b, s)))),
                     None => Err(self.err(
                         ErrorCode::InvalidBaseIri,
-                        unquoted(e.value.span),
+                        e.value.inner,
                         "a relative @base needs a base IRI to resolve against",
                     )),
                 },
@@ -1655,7 +1741,7 @@ impl<'l> Processor<'l> {
                         }
                         Ok(_) => Err(self.err(
                             ErrorCode::InvalidVocabMapping,
-                            unquoted(e.value.span),
+                            e.value.inner,
                             format!("@vocab \"{s}\" is not an IRI or a blank node identifier"),
                         )),
                         Err(e) => Err(e),
@@ -1779,7 +1865,7 @@ impl<'l> Processor<'l> {
             return Ok(());
         };
         let saved = self.enter(f.local, e);
-        let term_at = self.term_at.replace(unquoted(e.key_span));
+        let term_at = self.term_at.replace(e.key_inner);
         let r = self.define_entry(result, f, e, defined);
         self.term_at = term_at;
         self.site = saved;
@@ -1870,7 +1956,7 @@ impl<'l> Processor<'l> {
         let mut def = TermDefinition {
             protected: f.protected,
             source: self.doc(),
-            span: Some(unquoted(e.key_span)),
+            span: Some(e.key_inner),
             ..TermDefinition::default()
         };
         // 11
@@ -1930,7 +2016,7 @@ impl<'l> Processor<'l> {
             match self.expand(result, f, defined, r, false, true)? {
                 Some(iri) if is_absolute_iri(&iri) || is_blank_node(&iri) => {
                     def.iri = Some(Arc::from(iri));
-                    def.iri_span = Some(unquoted(m.value.span));
+                    def.iri_span = Some(m.value.inner);
                 }
                 _ => {
                     return Err(self.err(
@@ -2016,7 +2102,7 @@ impl<'l> Processor<'l> {
                         def.prefix = true;
                     }
                     def.iri = Some(Arc::from(iri));
-                    def.iri_span = Some(unquoted(id.span));
+                    def.iri_span = Some(id.inner);
                 }
                 _ => {
                     return Err(self.err(
@@ -2089,7 +2175,10 @@ impl<'l> Processor<'l> {
         self.index(result, f, defined, obj, &mut def)?;
         // 21
         if let Some(m) = member(obj, "@context") {
-            let checked = self.process_in(
+            // `result` is half built, and keeps changing after this: the
+            // check must not share an id with what it is later.
+            result.id = in_progress_id();
+            let checked = self.process_items(
                 result,
                 &m.value,
                 f.base_url,
@@ -2617,7 +2706,7 @@ mod tests {
         );
         assert_eq!(spanned(text, e.span), "bad");
         assert_eq!(
-            e.to_syntax_error().message,
+            e.to_syntax_error().message(),
             format!("invalid scoped context: {}", e.message)
         );
         // Scoped contexts may redefine protected terms and reset the context.
@@ -3005,7 +3094,7 @@ mod tests {
         let e = process(r#"{"@context": {"a": 5}}"#)
             .unwrap_err()
             .to_syntax_error();
-        assert!(e.message.starts_with("invalid term definition: "));
+        assert!(e.message().starts_with("invalid term definition: "));
         assert_eq!((e.code, e.severity), (DIAGNOSTIC_CODE, Severity::Error));
     }
 
@@ -3171,5 +3260,149 @@ mod tests {
         if cfg!(not(debug_assertions)) {
             assert!(warm * 20 < cold, "cold {cold:?}, warm {warm:?}");
         }
+    }
+
+    /// Process `@context` of `text` over a context that already defines
+    /// `base` (so it is not the pristine one), with `cache` shared with
+    /// other runs.
+    fn run_shared(
+        cache: &ContextCache,
+        loader: &NoNetwork,
+        text: &str,
+    ) -> Result<ActiveContext, ContextError> {
+        static OUTER: OnceLock<ActiveContext> = OnceLock::new();
+        let outer = OUTER.get_or_init(|| {
+            let doc = root(r#"{"@context": {"outer": "http://outer.org/"}}"#);
+            Processor::with_cache(&NoNetwork::default(), &ContextCache::new())
+                .process(
+                    &ActiveContext::new(Some(BASE)),
+                    context_of(&doc),
+                    Some(BASE),
+                    Options::default(),
+                )
+                .unwrap()
+        });
+        let doc = root(text);
+        Processor::with_cache(loader, cache).process(
+            outer,
+            context_of(&doc),
+            Some(BASE),
+            Options::default(),
+        )
+    }
+
+    fn credentials() -> NoNetwork {
+        NoNetwork::default().with(
+            "http://example.com/credentials",
+            r#"{"@context": {"@version": 1.1, "cred": "http://cred.org/"}}"#,
+        )
+    }
+
+    /// A remote context applied after an inline object is cached for that
+    /// result, not for the context the inline object started from.
+    #[test]
+    fn a_remote_context_after_an_inline_object_is_not_cached_for_the_original() {
+        let loader = credentials();
+        let inline = r#"{"@context": [{"zz": "http://evil/zz"}, "credentials"]}"#;
+        let plain = r#"{"@context": "credentials"}"#;
+        for order in [[inline, plain], [plain, inline]] {
+            let cache = ContextCache::new();
+            for text in order {
+                let c = run_shared(&cache, &loader, text).unwrap();
+                assert_eq!(iri(&c, "cred"), Some("http://cred.org/"), "{text}");
+                let wants_zz = text == inline;
+                assert_eq!(
+                    iri(&c, "zz"),
+                    wants_zz.then_some("http://evil/zz"),
+                    "{text} after {order:?}"
+                );
+            }
+        }
+    }
+
+    /// Two documents sharing one cache and one remote context each get
+    /// their own inline terms.
+    #[test]
+    fn documents_sharing_a_cache_keep_their_own_inline_terms() {
+        let loader = credentials();
+        let cache = ContextCache::new();
+        let a = run_shared(
+            &cache,
+            &loader,
+            r#"{"@context": [{"a": "http://a.org/a"}, "credentials"]}"#,
+        )
+        .unwrap();
+        let b = run_shared(
+            &cache,
+            &loader,
+            r#"{"@context": [{"b": "http://b.org/b"}, "credentials"]}"#,
+        )
+        .unwrap();
+        let c = run_shared(&cache, &loader, r#"{"@context": "credentials"}"#).unwrap();
+        assert_eq!((iri(&a, "a"), iri(&a, "b")), (Some("http://a.org/a"), None));
+        assert_eq!((iri(&b, "a"), iri(&b, "b")), (None, Some("http://b.org/b")));
+        assert_eq!((iri(&c, "a"), iri(&c, "b")), (None, None));
+        assert_ne!(a.content_id(), b.content_id());
+    }
+
+    /// A term's scoped context is checked against the context as it is at
+    /// that term, not as another document left it in the cache.
+    #[test]
+    fn scoped_context_validation_sees_its_own_context() {
+        let loader = NoNetwork::default()
+            .with(
+                "http://example.com/scoped",
+                r#"{"@context": {"t": {"@id": "http://t.org/t", "@context": {"@vocab": "http://v.org/"}}}}"#,
+            )
+            .with(
+                "http://example.com/other",
+                r#"{"@context": {"o": "http://o.org/"}}"#,
+            );
+        let cache = ContextCache::new();
+        let texts = [
+            r#"{"@context": [{"p": {"@id": "http://p.org/p", "@protected": true}}, "other", "scoped"]}"#,
+            r#"{"@context": ["other", "scoped"]}"#,
+            r#"{"@context": [{"zz": "http://z.org/"}, "scoped"]}"#,
+            r#"{"@context": "scoped"}"#,
+        ];
+        for text in texts.iter().chain(texts.iter().rev()) {
+            let c = run_shared(&cache, &loader, text).unwrap();
+            assert_eq!(iri(&c, "t"), Some("http://t.org/t"), "{text}");
+            assert_eq!(iri(&c, "zz").is_some(), text.contains("zz"), "{text}");
+            assert_eq!(iri(&c, "o").is_some(), text.contains("other"), "{text}");
+            assert_eq!(iri(&c, "p").is_some(), text.contains("\"p\""), "{text}");
+        }
+    }
+
+    /// Nested contexts that include the one below them twice would take
+    /// 2^depth steps: the work is capped, and the error is one.
+    #[test]
+    fn doubling_nested_contexts_overflow_quickly() {
+        let mut loader = NoNetwork::default().with(
+            "http://example.com/c0",
+            r#"{"@context": {"a": "http://a.org/"}}"#,
+        );
+        for i in 1..=20 {
+            loader = loader.with(
+                format!("http://example.com/c{i}"),
+                format!(
+                    r#"{{"@context": ["http://example.com/c{p}", "http://example.com/c{p}"]}}"#,
+                    p = i - 1
+                ),
+            );
+        }
+        let cache = ContextCache::new();
+        let start = std::time::Instant::now();
+        let e = run_shared(&cache, &loader, r#"{"@context": "c20"}"#).unwrap_err();
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(e.code, ErrorCode::ContextOverflow);
+        assert!(e.message.contains("too many"), "{e}");
+        // The overflow is not remembered: a small context still works,
+        // and so does the same run after a shallow one.
+        let c = run_shared(&cache, &loader, r#"{"@context": "c3"}"#).unwrap();
+        assert_eq!(iri(&c, "a"), Some("http://a.org/"));
+        // A realistic number of remote contexts stays well below the cap.
+        let many = format!(r#"{{"@context": [{}]}}"#, vec![r#""c1""#; 200].join(","));
+        run_shared(&cache, &loader, &many).unwrap();
     }
 }

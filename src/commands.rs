@@ -10,22 +10,28 @@ use serde_json::Value;
 
 /// Run the SPARQL query of a document over the workspace (the "▶ Run query"
 /// lens), with the document's URI.
-pub const RUN_QUERY: &str = "turtle.runQuery";
+pub(crate) const RUN_QUERY: &str = "turtle.runQuery";
+
+/// Stop the run of a document's query (the "■ Cancel query" lens), with the
+/// document's URI.
+pub(crate) const CANCEL_QUERY: &str = "turtle.cancelQuery";
 
 /// Every command name the server advertises.
-pub const COMMANDS: &[&str] = &[FETCH_COMMAND, RUN_QUERY];
+pub(crate) const COMMANDS: &[&str] = &[FETCH_COMMAND, RUN_QUERY, CANCEL_QUERY];
 
 /// A parsed `workspace/executeCommand` request.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Command {
+pub(crate) enum Command {
     /// Fetch one `owl:imports` target from the network.
     FetchImport { iri: String },
     /// Run the query of one SPARQL document.
     RunQuery { uri: String },
+    /// Stop the run of one SPARQL document's query.
+    CancelQuery { uri: String },
 }
 
 /// Parses `params`; bad arguments and unknown commands are `InvalidParams`.
-pub fn parse(params: ExecuteCommandParams) -> Result<Command, (ErrorCode, String)> {
+pub(crate) fn parse(params: ExecuteCommandParams) -> Result<Command, (ErrorCode, String)> {
     let ExecuteCommandParams {
         command,
         mut arguments,
@@ -39,7 +45,10 @@ pub fn parse(params: ExecuteCommandParams) -> Result<Command, (ErrorCode, String
         (RUN_QUERY, [Value::String(uri)]) => Ok(Command::RunQuery {
             uri: std::mem::take(uri),
         }),
-        (RUN_QUERY, _) => Err((
+        (CANCEL_QUERY, [Value::String(uri)]) => Ok(Command::CancelQuery {
+            uri: std::mem::take(uri),
+        }),
+        (RUN_QUERY | CANCEL_QUERY, _) => Err((
             ErrorCode::InvalidParams,
             format!("{command} takes one document URI"),
         )),
@@ -109,6 +118,17 @@ mod tests {
         assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
         assert_eq!(msg, "turtle.runQuery takes one document URI");
         assert!(COMMANDS.contains(&RUN_QUERY));
+        let Ok(command) = parse(params(CANCEL_QUERY, vec![json!("file:///w/q.rq")])) else {
+            panic!("rejected")
+        };
+        assert_eq!(
+            command,
+            Command::CancelQuery {
+                uri: "file:///w/q.rq".into()
+            }
+        );
+        assert!(parse(params(CANCEL_QUERY, vec![json!(1)])).is_err());
+        assert!(COMMANDS.contains(&CANCEL_QUERY));
     }
 
     #[test]

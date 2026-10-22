@@ -1,6 +1,6 @@
 # RDF Toolbox in the browser (iteration 1)
 
-Status: iteration 1 done, on branch `web-showcase` (not merged to main).
+Status: iteration 1 done; merged to main and published with the browser editor in 0.5.1.
 
 ## Problem Statement
 
@@ -27,10 +27,9 @@ loaded. Four tools share one input (a set of files):
 - **SPARQL**: the problems and the formatted text of the queries and updates
   in the input.
 
-The layout is layout A of the prototype (`web/prototype/toolbox-tools.html`,
-"Tool tabs"): a header, one tab per tool with a live count, and a split view
-with the input on the left and the selected tool on the right, stacked on a
-phone.
+The layout is layout A of the mock-ups, "Tool tabs": a header, one tab per
+tool with a live count, and a split view with the input on the left and the
+selected tool on the right, stacked on a phone.
 
 ## User Stories
 

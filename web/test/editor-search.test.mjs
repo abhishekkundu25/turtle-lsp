@@ -4,31 +4,19 @@
 // follow edits, and a bad regex. Run `npm run web:build` first.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import fs from "node:fs"
-import http from "node:http"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
-
-const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf" }
+import { listen } from "./static-server.mjs"
 
 let server, origin, browser
 before(async () => {
-  server = http.createServer((req, res) => {
-    const rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
-    const file = path.join(app, path.normalize(rel))
-    if (!file.startsWith(app) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end()
-    res.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" })
-    fs.createReadStream(file).pipe(res)
-  })
-  await new Promise((r) => server.listen(0, "127.0.0.1", r))
-  origin = `http://127.0.0.1:${server.address().port}`
+  server = await listen()
+  origin = server.origin
   browser = await chromium.launch({ channel: "chrome", headless: true })
 })
 after(async () => {
   await browser?.close()
-  await new Promise((r) => server.close(r))
+  await server?.close()
 })
 
 async function open() {

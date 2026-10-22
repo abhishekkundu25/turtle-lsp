@@ -23,10 +23,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{LazyLock, OnceLock};
 
 /// Rank tiers; lower sorts first. Candidates without a hit get [`NONE`].
-pub const REQUIRED: u8 = 0;
-pub const SHAPE: u8 = 1;
-pub const SCHEMA: u8 = 2;
-pub const NONE: u8 = 3;
+pub(crate) const REQUIRED: u8 = 0;
+pub(crate) const SHAPE: u8 = 1;
+pub(crate) const SCHEMA: u8 = 2;
+pub(crate) const NONE: u8 = 3;
 
 /// Depth limit for superclass / subclass / superproperty walks.
 const MAX_DEPTH: usize = 10;
@@ -35,26 +35,26 @@ const MAX_CLASSES: usize = 256;
 /// Enclosing subjects considered for sequence paths (the subject itself + 3).
 const MAX_LEVELS: usize = 4;
 /// Instances offered at most, and references looked at to find them.
-pub const MAX_INSTANCES: usize = 1000;
+pub(crate) const MAX_INSTANCES: usize = 1000;
 const MAX_REFS_SCANNED: usize = 20_000;
 /// Tokens looked at backwards to find the enclosing subject.
 const MAX_TOKENS_SCANNED: usize = 20_000;
 
-pub struct Hit {
-    pub tier: u8,
+pub(crate) struct Hit {
+    pub(crate) tier: u8,
     /// Replaces the candidate's usual detail.
-    pub detail: Option<String>,
+    pub(crate) detail: Option<String>,
     /// An `sh:in` value or the like, rather than a resource found by type.
-    pub enumerated: bool,
+    pub(crate) enumerated: bool,
 }
 
 #[derive(Default)]
-pub struct Ranking {
-    pub iris: FxHashMap<Iri, Hit>,
+pub(crate) struct Ranking {
+    pub(crate) iris: FxHashMap<Iri, Hit>,
     /// Literal `sh:in` values, written as Turtle, with their detail.
-    pub literals: Vec<(String, String)>,
+    pub(crate) literals: Vec<(String, String)>,
     /// Some instances were left out (caps reached).
-    pub truncated: bool,
+    pub(crate) truncated: bool,
 }
 
 impl Ranking {
@@ -126,9 +126,9 @@ struct Level {
 /// What the ranking needs to know of a subject around the cursor (the
 /// subject itself first, then those enclosing it): its types, and the
 /// predicates leading from it to the cursor's subject.
-pub struct Subject {
-    pub types: Vec<Iri>,
-    pub path: Vec<Iri>,
+pub(crate) struct Subject {
+    pub(crate) types: Vec<Iri>,
+    pub(crate) path: Vec<Iri>,
 }
 
 fn subjects(a: &Analysis, k: &Knowledge, levels: &[Level]) -> Vec<Subject> {
@@ -142,12 +142,17 @@ fn subjects(a: &Analysis, k: &Knowledge, levels: &[Level]) -> Vec<Subject> {
 }
 
 /// Ranking for the predicate written at `offset`.
-pub fn predicates(a: &Analysis, k: &Knowledge, offset: u32, prefixes: &PrefixMap) -> Ranking {
+pub(crate) fn predicates(
+    a: &Analysis,
+    k: &Knowledge,
+    offset: u32,
+    prefixes: &PrefixMap,
+) -> Ranking {
     predicates_for(k, &subjects(a, k, &levels(a, offset)), prefixes)
 }
 
 /// Ranking for a predicate of `subjects[0]` (the others enclose it).
-pub fn predicates_for(k: &Knowledge, subjects: &[Subject], prefixes: &PrefixMap) -> Ranking {
+pub(crate) fn predicates_for(k: &Knowledge, subjects: &[Subject], prefixes: &PrefixMap) -> Ranking {
     let mut r = Ranking::default();
     for (depth, level) in subjects.iter().enumerate() {
         let classes = superclasses(k, &level.types);
@@ -186,7 +191,7 @@ pub fn predicates_for(k: &Knowledge, subjects: &[Subject], prefixes: &PrefixMap)
 
 /// Ranking for the object written at `offset`. `keep` filters instances
 /// cheaply (by what the user typed) before they count against the caps.
-pub fn objects(
+pub(crate) fn objects(
     a: &Analysis,
     k: &Knowledge,
     offset: u32,
@@ -209,7 +214,7 @@ pub fn objects(
 
 /// Ranking for an object of `pred` whose subject is `subjects[0]` (the
 /// others enclose it); `subject` is that subject's IRI, never offered.
-pub fn objects_for(
+pub(crate) fn objects_for(
     k: &Knowledge,
     pred: Iri,
     subjects: &[Subject],
@@ -291,7 +296,7 @@ pub fn objects_for(
 // ---- the subject at the cursor ----
 
 fn tokens_before(a: &Analysis, offset: u32) -> &[Token] {
-    let toks = &a.parsed.tokens;
+    let toks = a.tokens();
     &toks[..toks.partition_point(|t| t.end <= offset)]
 }
 
@@ -533,46 +538,91 @@ fn is_datatype(k: &Knowledge, c: Iri) -> bool {
         || k.types(&c).contains(&preds().rdfs_datatype)
 }
 
-/// The predicate of an object reference: the closest predicate reference
-/// before it, past other objects of the same list.
-fn prev_predicate(a: &Analysis, i: usize) -> Option<Iri> {
-    a.parsed.refs[..i]
-        .iter()
-        .rev()
-        .take(64)
-        .find(|x| x.role != Role::Object)
-        .filter(|x| x.role == Role::Predicate)
-        .map(|x| x.iri)
+/// Where the references to one class are looked for in the document's
+/// triples: references come in document order, and so (mostly) do the
+/// triples, so the search for each continues where the last one ended.
+struct Cursor {
+    at: usize,
+    last: u32,
 }
 
-/// The top-level subject of the statement that contains `span`.
-fn statement_subject(a: &Analysis, span: Span) -> Option<Iri> {
-    let i = a.parsed.statement_at(span)?;
-    a.parsed.statements[i].subject.map(|s| s.0)
+/// The triple that has `r`, a reference to `class`, as its object. Each
+/// triple looked at past the first guess counts in `scanned`.
+fn triple_of_object<'a>(
+    a: &'a Analysis,
+    r: &crate::syntax::Ref,
+    class: Iri,
+    cursor: &mut Cursor,
+    scanned: &mut usize,
+) -> Option<&'a crate::syntax::Triple> {
+    let all = &a.parsed.triples;
+    let hit = |t: &crate::syntax::Triple| {
+        matches!(&t.o, Node::Iri(i) if *i == class)
+            && t.o_span.start <= r.span.start
+            && r.span.end <= t.o_span.end
+    };
+    // A triple that ends before the reference starts cannot be its triple,
+    // nor any later reference's.
+    if r.span.start < cursor.last {
+        cursor.at = 0;
+    }
+    cursor.last = r.span.start;
+    if cursor.at == 0 {
+        cursor.at = all.partition_point(|t| t.o_span.end <= r.span.start);
+    }
+    while all
+        .get(cursor.at)
+        .is_some_and(|t| t.o_span.end <= r.span.start)
+    {
+        cursor.at += 1;
+    }
+    if let Some(t) = all.get(cursor.at).filter(|t| hit(t)) {
+        return Some(t);
+    }
+    // Not where it is expected (a nested object written before the triples
+    // inside it): look through the statement.
+    for st in a.parsed.statements_around(r.span) {
+        for t in statement_triples(a, st as u32) {
+            *scanned += 1;
+            if *scanned > MAX_REFS_SCANNED {
+                return None;
+            }
+            if hit(t) {
+                return Some(t);
+            }
+        }
+    }
+    None
 }
 
-/// `class`'s object references whose predicate is one of `preds`. Each
-/// reference looked at counts in `scanned`; the walk stops at the cap.
+/// The triples of `a` that have `class` as object and one of `preds` as
+/// predicate. Each reference to `class` looked at counts in `scanned`, which
+/// the caller shares across documents; the walk stops at the cap.
 fn objects_of<'a>(
     a: &'a Analysis,
     class: Iri,
     preds: &'a [Iri],
     scanned: &'a mut usize,
-) -> impl Iterator<Item = &'a crate::syntax::Ref> + 'a {
+) -> impl Iterator<Item = &'a crate::syntax::Triple> + 'a {
+    let mut cursor = Cursor { at: 0, last: 0 };
     a.refs_by_iri
         .get(&class)
         .into_iter()
         .flatten()
         .map(|&i| i as usize)
-        .take_while(move |_| {
+        .map_while(move |i| {
             *scanned += 1;
-            *scanned <= MAX_REFS_SCANNED
+            if *scanned > MAX_REFS_SCANNED {
+                return None;
+            }
+            let r = &a.parsed.refs[i];
+            let found = (r.role == Role::Object)
+                .then(|| triple_of_object(a, r, class, &mut cursor, scanned))
+                .flatten()
+                .filter(|t| preds.contains(&t.p));
+            Some(found)
         })
-        .filter(move |&i| {
-            a.parsed.refs[i].role == Role::Object
-                && prev_predicate(a, i).is_some_and(|p| preds.contains(&p))
-        })
-        .map(|i| &a.parsed.refs[i])
+        .flatten()
 }
 
 /// Resources typed `class` (directly), in workspace order.
@@ -584,8 +634,8 @@ fn for_each_instance(
 ) {
     let rdf_type = [preds().rdf_type];
     for (_, _, a) in k.docs_referencing(&class) {
-        for r in objects_of(a, class, &rdf_type, scanned) {
-            let Some(s) = statement_subject(a, r.span) else {
+        for t in objects_of(a, class, &rdf_type, scanned) {
+            let Node::Iri(s) = t.s else {
                 continue;
             };
             if a.types.get(&s).is_some_and(|t| t.contains(&class)) && !f(s) {
@@ -603,17 +653,19 @@ fn for_each_instance(
 fn with_domain(k: &Knowledge, class: Iri) -> Vec<Iri> {
     let p = preds();
     let mut out: Vec<Iri> = Vec::new();
+    // One budget for all documents, as for the instances.
+    let mut scanned = 0;
     for (_, _, a) in k.docs_referencing(&class) {
-        // Capped per document: the domain is usually stated next to the
-        // class, whatever the data files hold.
-        let mut scanned = 0;
-        for r in objects_of(a, class, &p.domain, &mut scanned) {
-            if let Some(s) = statement_subject(a, r.span)
+        for t in objects_of(a, class, &p.domain, &mut scanned) {
+            if let Node::Iri(s) = t.s
                 && !out.contains(&s)
                 && k.domains(&s).contains(&class)
             {
                 out.push(s);
             }
+        }
+        if scanned >= MAX_REFS_SCANNED {
+            break;
         }
     }
     if let Some((v, terms)) = vocab_domains(&class) {
@@ -725,6 +777,7 @@ fn turtle_literal(n: &Node, prefixes: &PrefixMap) -> Option<String> {
         value,
         datatype,
         lang,
+        dir,
     } = n
     else {
         return None;
@@ -746,7 +799,10 @@ fn turtle_literal(n: &Node, prefixes: &PrefixMap) -> Option<String> {
         s
     };
     if let Some(l) = lang {
-        return Some(format!("{}@{}", quoted(), &**l));
+        return Some(match dir {
+            Some(d) => format!("{}@{}--{d}", quoted(), &**l),
+            None => format!("{}@{}", quoted(), &**l),
+        });
     }
     let local = datatype.strip_prefix(XSD).unwrap_or("");
     let bare = match local {
@@ -781,6 +837,7 @@ mod tests {
             value: value.into(),
             datatype: Iri::intern(dt),
             lang: lang.map(Iri::intern),
+            dir: None,
         }
     }
 
@@ -799,5 +856,88 @@ mod tests {
             turtle_literal(&lit("2026", &x("gYear"), None), &PrefixMap::default()).unwrap(),
             format!("\"2026\"^^<{XSD}gYear>")
         );
+    }
+
+    use crate::knowledge::Source;
+    use crate::syntax::PrefixMap as Prefixes;
+    use std::sync::Arc;
+
+    const HEAD: &str = "@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n";
+
+    fn knowledge_of(docs: &[(&str, String)]) -> Knowledge {
+        let mut k = Knowledge::default();
+        for (uri, text) in docs {
+            let a = Arc::new(Analysis::new(
+                uri.to_string(),
+                text,
+                Arc::new(Prefixes::default()),
+                true,
+            ));
+            k.set(uri, Source::Disk, a);
+        }
+        k
+    }
+
+    fn instances(k: &Knowledge, class: &str) -> (Vec<String>, usize) {
+        let mut found = Vec::new();
+        let mut scanned = 0;
+        for_each_instance(k, Iri::intern(class), &mut scanned, |i| {
+            found.push(i.to_string());
+            true
+        });
+        found.sort();
+        (found, scanned)
+    }
+
+    /// The predicate of an object was found by looking back over at most 64
+    /// references: past a long list of objects it was lost. It is the
+    /// triple's own.
+    #[test]
+    fn the_predicate_of_an_object_comes_from_its_triple() {
+        let mut text = format!("{HEAD}ex:early a ex:Target .\nex:late a ");
+        for i in 0..150 {
+            text.push_str(&format!("ex:Other{i} , "));
+        }
+        text.push_str("ex:Target .\nex:linked ex:uses ex:Target .\n");
+        text.push_str("ex:nested ex:has [ a ex:Target ] .\n");
+        let k = knowledge_of(&[("file:///w/a.ttl", text)]);
+        let (found, _) = instances(&k, "http://example.org/Target");
+        // Not `ex:linked` (ex:uses), and not `ex:nested` (its blank node is
+        // the instance, not the statement's subject).
+        assert_eq!(
+            found,
+            ["http://example.org/early", "http://example.org/late"]
+        );
+    }
+
+    /// The 20,000 references that may be looked at were counted again for each
+    /// document of `with_domain`, so no number of files was ever cut short.
+    #[test]
+    fn the_scan_budget_is_shared_across_documents() {
+        let docs: Vec<(String, String)> = (0..4)
+            .map(|d| {
+                let mut t = HEAD.to_string();
+                for i in 0..8000 {
+                    t.push_str(&format!("ex:s{d}_{i} rdfs:comment ex:C .\n"));
+                }
+                if d == 3 {
+                    t.push_str("ex:p rdfs:domain ex:C .\n");
+                }
+                (format!("file:///w/d{d}.ttl"), t)
+            })
+            .collect();
+        let refs: Vec<(&str, String)> = docs.iter().map(|(u, t)| (u.as_str(), t.clone())).collect();
+        let k = knowledge_of(&refs);
+        // 32,000 references to look at over four documents, 20,000 allowed: the
+        // domain stated in the last one is past the budget.
+        assert!(with_domain(&k, Iri::intern("http://example.org/C")).is_empty());
+        // Stated in the first, it is found.
+        let mut first = docs[0].1.clone();
+        first.push_str("ex:p rdfs:domain ex:C .\n");
+        let mut all: Vec<(&str, String)> = refs.clone();
+        all[0].1 = first;
+        let k = knowledge_of(&all);
+        let found = with_domain(&k, Iri::intern("http://example.org/C"));
+        assert_eq!(found, [Iri::intern("http://example.org/p")]);
     }
 }

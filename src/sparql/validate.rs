@@ -27,7 +27,7 @@ const PAD: &str = "                ";
 
 /// Where a syntax error is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ErrorAt {
+pub(crate) enum ErrorAt {
     /// The token the parser stopped at (byte range in the text).
     Token(Span),
     /// The text ends too early.
@@ -38,7 +38,7 @@ pub enum ErrorAt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ErrorKind {
+pub(crate) enum ErrorKind {
     Syntax,
     /// A prefixed name whose prefix the parser was not given (`name` without
     /// the colon); the span covers the prefixed name.
@@ -49,22 +49,22 @@ pub enum ErrorKind {
 
 /// A text `spargebra` rejects, located.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SyntaxError {
-    pub at: ErrorAt,
-    pub kind: ErrorKind,
+pub(crate) struct SyntaxError {
+    pub(crate) at: ErrorAt,
+    pub(crate) kind: ErrorKind,
     /// What the parser expected, as it says it (`one of "(", "{"`); empty
     /// when it did not say.
-    pub expected: String,
+    pub(crate) expected: String,
     /// The parser's whole message.
-    pub message: String,
+    pub(crate) message: String,
     /// The expected items name keywords (so the error is likely a misspelled
     /// one) or only "any character": a list not worth showing.
-    pub vague: bool,
+    pub(crate) vague: bool,
 }
 
 impl SyntaxError {
     /// The expected items, when worth showing (see [`SyntaxError::vague`]).
-    pub fn shown_expected(&self) -> Option<&str> {
+    pub(crate) fn shown_expected(&self) -> Option<&str> {
         (!self.vague).then_some(self.expected.as_str())
     }
 }
@@ -80,9 +80,18 @@ fn parse_error(parser: SparqlParser, text: &str, update: bool) -> Option<String>
 /// The text of token `t` as `spargebra` is given it: the dots of a prefixed
 /// name's local part escaped (`ec:1.1.1.353` becomes `ec:1\.1\.1\.353`, the
 /// same IRI). `spargebra` 0.4 rejects a local name with two dots or more,
-/// which the grammar allows (real queries use EC numbers so).
-pub fn token_for_spargebra<'a>(text: &'a str, t: &Token) -> Cow<'a, str> {
+/// which the grammar allows (real queries use EC numbers so). `TRUE` and
+/// `False` become `true` and `false`: the grammar matches them in any case,
+/// `spargebra` only in lower case.
+pub(crate) fn token_for_spargebra<'a>(text: &'a str, t: &Token) -> Cow<'a, str> {
     let written = &text[t.span.start as usize..t.span.end as usize];
+    if t.kind == TokenKind::Boolean {
+        return if written.bytes().all(|b| b.is_ascii_lowercase()) {
+            Cow::Borrowed(written)
+        } else {
+            Cow::Owned(written.to_ascii_lowercase())
+        };
+    }
     if t.kind != TokenKind::PName {
         return Cow::Borrowed(written);
     }
@@ -132,7 +141,7 @@ pub fn text_for_spargebra<'a>(text: &'a str, tokens: &[Token]) -> Cow<'a, str> {
 /// Parses `text` (tokenized as `tokens`) with `parser` as a query or an
 /// update; `None` when it parses, else the error located on the token where
 /// the text stops making sense.
-pub fn check_tokens(
+pub(crate) fn check_tokens(
     text: &str,
     tokens: &[Token],
     parser: SparqlParser,
@@ -170,7 +179,7 @@ pub fn check_tokens(
 
 /// Locates the error of a `text` that `parser` rejects (see the module
 /// documentation).
-pub fn locate(text: &str, parser: SparqlParser, update: bool) -> SyntaxError {
+pub(crate) fn locate(text: &str, parser: SparqlParser, update: bool) -> SyntaxError {
     let padded = format!("{text}{PAD}");
     let msg = parse_error(parser, &padded, update).unwrap_or_default();
     let unknown = |message: String| SyntaxError {

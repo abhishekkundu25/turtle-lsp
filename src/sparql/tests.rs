@@ -1,4 +1,5 @@
 use super::*;
+use structure::{ClauseKind, Position};
 
 const EX: &str = "PREFIX ex: <https://query.example.org/def/>\n";
 
@@ -883,4 +884,188 @@ fn local_names_with_several_dots_are_valid() {
         .filter_map(|r| r.iri.clone())
         .collect();
     assert!(iris.contains(&"http://e/1.1.1.353".to_string()), "{iris:?}");
+}
+
+/// The syntax diagnostics of `text`, read on a thread with the stack the
+/// limits were measured on (8 MiB, the main thread's).
+fn syntax_on_main_stack(text: String) -> Vec<String> {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(move || {
+            doc(&text)
+                .diagnostics()
+                .iter()
+                .filter(|d| d.code == "syntax")
+                .map(|d| d.message.clone())
+                .collect()
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+/// `n` more steps of a chain in a query that holds it.
+fn chain_query(kind: &str, n: usize) -> String {
+    match kind {
+        "||" | "&&" | "+" | "*" => format!(
+            "SELECT * {{ ?s ?p ?o FILTER(?o{} = 1) }}",
+            format!(" {kind} ?o").repeat(n)
+        ),
+        "/" | "|" => format!(
+            "PREFIX ex: <http://e/> SELECT * {{ ?s ex:p{} ?o }}",
+            format!("{kind}ex:p").repeat(n)
+        ),
+        "!" => format!("SELECT * {{ ?s ?p ?o FILTER({}?o) }}", "!".repeat(n)),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn a_long_chain_is_one_diagnostic_not_a_crash() {
+    for kind in ["||", "&&", "+", "*", "/", "|", "!"] {
+        let found = syntax_on_main_stack(chain_query(kind, 20_000));
+        assert_eq!(found.len(), 1, "{kind}: {found:?}");
+        assert!(found[0].contains("too large to check"), "{kind}: {found:?}");
+    }
+    // The three limits, named.
+    let messages = [
+        ("||", "operators in one expression"),
+        ("/", "steps in one property path"),
+        ("!", "unary operators in a row"),
+    ];
+    for (kind, what) in messages {
+        let found = syntax_on_main_stack(chain_query(kind, 20_000));
+        assert!(found[0].contains(what), "{kind}: {found:?}");
+    }
+}
+
+#[test]
+fn a_chain_at_its_limit_parses_cleanly() {
+    use super::diagnostics::{MAX_OPERATORS, MAX_PATH_STEPS, MAX_UNARY};
+    for (kind, max) in [
+        ("||", MAX_OPERATORS),
+        ("&&", MAX_OPERATORS),
+        ("+", MAX_OPERATORS),
+        ("*", MAX_OPERATORS),
+        ("/", MAX_PATH_STEPS),
+        ("|", MAX_PATH_STEPS),
+        ("!", MAX_UNARY),
+    ] {
+        let max = max as usize;
+        // Operators, steps or unary operators: the limit minus one, the limit.
+        for n in [max - 1, max] {
+            let found = syntax_on_main_stack(chain_query(kind, n));
+            assert!(found.is_empty(), "{kind} x {n}: {found:?}");
+        }
+        let found = syntax_on_main_stack(chain_query(kind, max + 1));
+        assert_eq!(found.len(), 1, "{kind} x {}: {found:?}", max + 1);
+    }
+}
+
+#[test]
+fn the_chains_in_brackets_count_with_the_chain_around_them() {
+    // 200 levels of brackets, each with 1,500 operators: 300,000 deep in all.
+    let mut expr = "?o".to_owned();
+    for _ in 0..200 {
+        expr = format!("(?o{} || {expr})", " || ?o".repeat(1_500));
+    }
+    let found = syntax_on_main_stack(format!("SELECT * {{ ?s ?p ?o FILTER({expr}) }}"));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("operators in one expression"),
+        "{found:?}"
+    );
+    // The same for a run of `!` before each bracket, and for path groups.
+    let mut expr = "?o".to_owned();
+    for _ in 0..200 {
+        expr = format!("{}({expr})", "!".repeat(1_500));
+    }
+    let found = syntax_on_main_stack(format!("SELECT * {{ ?s ?p ?o FILTER({expr}) }}"));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("unary operators in a row"), "{found:?}");
+    let mut path = "ex:p".to_owned();
+    for _ in 0..200 {
+        path = format!("({}/{path})", "ex:p/".repeat(1_500).trim_end_matches('/'));
+    }
+    let found = syntax_on_main_stack(format!(
+        "PREFIX ex: <http://e/> SELECT * {{ ?s {path} ?o }}"
+    ));
+    assert_eq!(found.len(), 1, "{found:?}");
+    // A `/` in brackets is also a division: the first limit it reaches.
+    assert!(found[0].contains("too large to check"), "{found:?}");
+    // Brackets left open count the same.
+    let open = format!(
+        "SELECT * {{ ?s ?p ?o FILTER({}",
+        format!("({}", "?o || ".repeat(20)).repeat(150)
+    );
+    let found = syntax_on_main_stack(open);
+    assert!(
+        found
+            .iter()
+            .any(|m| m.contains("operators in one expression")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn many_short_chains_are_no_long_chain() {
+    // Separate expressions and paths add up to no chain.
+    let filters = "FILTER(?o || ?o || ?o) ".repeat(5_000);
+    let triples = "?s ex:p/ex:q ?o . ".repeat(5_000);
+    let args = format!("FILTER(CONCAT(?o{}))", ", ?o || ?o".repeat(5_000));
+    let semis = format!("?s ex:p/ex:q ?o{}", " ; ex:p/ex:q ?o".repeat(5_000));
+    let groups = "{ ?s ex:p/ex:q ?o } ".repeat(5_000);
+    let blocks = "OPTIONAL { ?s ex:p/ex:q ?o } ".repeat(4_000);
+    for body in [filters, triples, args, semis, groups, blocks] {
+        let found = syntax_on_main_stack(format!(
+            "PREFIX ex: <http://e/> SELECT * {{ ?s ?p ?o . {body} }}"
+        ));
+        assert!(found.is_empty(), "{found:?}");
+    }
+    assert!(crate::sparql::too_complex("SELECT (COUNT(*) AS ?c) { ?s ?p ?o }").is_none());
+}
+
+#[test]
+fn too_complex_names_a_long_chain_for_callers_outside_documents() {
+    for kind in ["||", "/", "!"] {
+        let why = crate::sparql::too_complex(&chain_query(kind, 20_000));
+        assert!(
+            why.is_some_and(|w| w.contains("too large to check")),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn true_and_false_are_read_in_any_case() {
+    use TokenKind::*;
+    assert_eq!(
+        lex("TRUE False tRuE FALSE true"),
+        vec![
+            (Boolean, "TRUE"),
+            (Boolean, "False"),
+            (Boolean, "tRuE"),
+            (Boolean, "FALSE"),
+            (Boolean, "true"),
+        ]
+    );
+    for text in [
+        "SELECT * { ?s ?p ?o FILTER(TRUE && False) }",
+        "SELECT * { ?s ?p TRUE }",
+        "SELECT * { ?s ?p ?o FILTER(?o = FALSE) }",
+        "ASK { ?s ?p True }",
+        "SELECT ?x { BIND(TRUE AS ?x) }",
+    ] {
+        let d = doc(text);
+        assert!(d.diagnostics().is_empty(), "{text}: {:?}", d.diagnostics());
+        assert!(d.tokens().iter().all(|t| t.kind != TokenKind::Error));
+        let out = crate::sparql::format(text, &PrefixMap::default(), None, &Default::default())
+            .unwrap_or_else(|e| panic!("{text}: {e}"));
+        assert!(
+            out.to_ascii_lowercase().contains("true") || out.to_ascii_lowercase().contains("false"),
+            "{out}"
+        );
+    }
+    // A word that is no boolean still is an error.
+    assert!(codes("SELECT * { ?s ?p TRUEISH }").contains(&"syntax"));
 }

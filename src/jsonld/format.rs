@@ -2,10 +2,18 @@
 //! layout of `JSON.stringify(value, null, indent)`. Scalars and keys are
 //! copied from the source text (number spellings, escapes), key order is kept,
 //! and only whitespace changes.
+//!
+//! A leading byte order mark is kept: the parser skips it, and the formatter
+//! writes it back in front of the result, so formatting never changes the
+//! encoding signature of a file. Warnings (a repeated key, a lone surrogate)
+//! do not stop formatting: the text is valid JSON and is copied as written.
 
 use super::json::{self, Json, Value};
-use crate::features::format::Options;
+use crate::layout::Options;
 use crate::syntax::Span;
+
+/// The byte order mark, which the parser skips and the formatter keeps.
+const BOM: char = '\u{feff}';
 
 /// The formatted text, or `None` when the document has JSON syntax errors, is
 /// empty, or, as a safety net, when the result would not parse to the same
@@ -26,6 +34,9 @@ pub fn format(text: &str, opts: &Options) -> Option<String> {
         "\t".to_string()
     };
     let mut out = String::with_capacity(text.len() + text.len() / 4);
+    if text.starts_with(BOM) {
+        out.push(BOM);
+    }
     write(&mut out, text, root, 0, &unit, nl)?;
     out.push_str(nl);
 
@@ -112,5 +123,47 @@ fn same(a: &Json, b: &Json) -> bool {
         }
         (Value::Array(_) | Value::Object(_), _) | (_, Value::Array(_) | Value::Object(_)) => false,
         (x, y) => x == y,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fmt(text: &str) -> Option<String> {
+        let opts = Options {
+            tab_size: 2,
+            ..Options::default()
+        };
+        format(text, &opts)
+    }
+
+    #[test]
+    fn a_leading_byte_order_mark_is_kept() {
+        assert_eq!(
+            fmt("\u{feff}{\"a\":1}").as_deref(),
+            Some("\u{feff}{\n  \"a\": 1\n}\n")
+        );
+        assert_eq!(fmt("{\"a\":1}").as_deref(), Some("{\n  \"a\": 1\n}\n"));
+        // Formatted once, formatted again: unchanged, mark included.
+        let once = fmt("\u{feff}[1,2]").unwrap();
+        assert_eq!(fmt(&once).as_deref(), Some(once.as_str()));
+        assert!(once.starts_with('\u{feff}') && !once[3..].starts_with('\u{feff}'));
+    }
+
+    #[test]
+    fn warnings_do_not_stop_formatting() {
+        let text = r#"{"a":1,"a":2,"s":"\ud83d"}"#;
+        assert!(!json::parse(text).warnings.is_empty());
+        assert_eq!(
+            fmt(text).as_deref(),
+            Some("{\n  \"a\": 1,\n  \"a\": 2,\n  \"s\": \"\\ud83d\"\n}\n")
+        );
+    }
+
+    #[test]
+    fn text_with_errors_is_left_alone() {
+        assert_eq!(fmt("{\"a\":1,}"), None);
+        assert_eq!(fmt("\u{feff}"), None);
     }
 }

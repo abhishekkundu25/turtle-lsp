@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- This origin only; no inline script and no <style> (WebKit puts a style attribute on a <select>, which is all that style-src-attr lets through). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; worker-src 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>RDF Toolbox</title>
 <meta name="description" content="Format, validate, SHACL-check and tidy SPARQL in your browser. turtle-lsp runs in this tab; nothing is uploaded.">
@@ -25,6 +27,7 @@
       <button class="ibtn" id="paste">Paste</button>
       <button class="ibtn" id="open">Open files</button>
       <button class="ibtn" id="open-folder">Open folder</button>
+      <button class="ibtn" id="undo" disabled title="Take back the last fix or formatting">Undo</button>
       <button class="ibtn" id="download">Download</button>
       <input type="file" id="picker" class="hidden-input" multiple accept=".ttl,.turtle,.trig,.nt,.nq,.rq,.sparql,.ru,.jsonld" tabindex="-1">
       <input type="file" id="folder-picker" class="hidden-input" webkitdirectory multiple tabindex="-1">

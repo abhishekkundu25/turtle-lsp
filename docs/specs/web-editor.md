@@ -1,6 +1,6 @@
 # RDF Toolbox editor mode (iteration 2)
 
-Status: done, on branch `web-showcase` (not merged to main).
+Status: done; merged to main and published with the browser editor in 0.5.1.
 
 ## Problem Statement
 
@@ -14,7 +14,7 @@ and with the files of a whole folder.
 ## Solution
 
 An editor page (`editor.html`, linked from the toolbox) laid out like VS
-Code (layout A of `web/prototype/editor-mode.html`): an activity bar, an
+Code (the "Code" layout chosen from mock-ups): an activity bar, an
 explorer with a folder tree, editor tabs with breadcrumbs, the Monaco
 editor, a bottom panel with the problems, and a status bar. The full
 turtle-lsp language server runs in a Web Worker as WebAssembly and speaks
@@ -85,7 +85,16 @@ in place. The workspace is kept in the browser between visits.
   `file:///work/<path>`.
 - **Workspace model.** Files by path (folders are path prefixes, plus empty
   folders kept explicitly), each with text, saved text and an optional
-  file handle when opened in place. Kept in IndexedDB.
+  file handle when opened in place. Kept in IndexedDB as one record per
+  file (with a revision) and one for the layout (folders, tabs, settings);
+  only what changed is written, 300 ms after a change to a file or the
+  layout, and `body[data-saved]` says when that is done. One tab owns the
+  workspace (a Web Lock); a second tab shows it read-only with a notice,
+  and takes over when the first closes.
+- **Content Security Policy.** Both pages carry one in a `<meta>`: scripts
+  from the page's own origin (the two inline scripts of the editor page by
+  hash), workers from the origin, no objects, no base URL; the editor page
+  may fetch an import from any http(s) address (the quick fix).
 - **Export.** One file as a download; the workspace as a zip written in the
   page (stored, no compression).
 
@@ -107,7 +116,7 @@ in place. The workspace is kept in the browser between visits.
 ## Out of Scope
 
 - Running SPARQL, the SHACL grid and "why" view, the graph view, graph
-  diff and the health report from the prototype (iteration 3).
+  diff and the health report from the mock-ups (iteration 3).
 - Convert.
 - Shareable links (rejected).
 - Phone layout for the editor (the toolbox stays the phone page).

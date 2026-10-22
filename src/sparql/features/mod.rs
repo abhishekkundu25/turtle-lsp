@@ -24,17 +24,17 @@
 
 mod actions;
 mod completion;
-pub mod diagnostics;
+mod diagnostics;
 mod display;
-pub mod edits;
+mod edits;
 mod navigation;
 mod outline;
 mod rename;
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
-use crate::features::format::Options;
 use crate::features::semantic::Raw;
 use crate::knowledge::Knowledge;
+use crate::layout::Options;
 use crate::settings::InlayLabels;
 use lsp_types::*;
 use std::sync::Arc;
@@ -64,7 +64,7 @@ pub(crate) fn completion_at(
 }
 
 /// `completionItem/resolve` for items with `data.sparql = true`.
-pub fn resolve_completion(item: CompletionItem, k: &Knowledge) -> CompletionItem {
+pub(crate) fn resolve_completion(item: CompletionItem, k: &Knowledge) -> CompletionItem {
     completion::resolve_completion(item, k)
 }
 
@@ -173,7 +173,7 @@ pub fn inlay_hints(
 }
 
 /// `textDocument/codeAction`. The diagnostics in `params.context` are the
-/// ones [`diagnostics::diagnostics`] made (source `turtle`; an
+/// ones [`diagnostics()`] made (source `turtle`; an
 /// `undeclared-prefix` carries `data.prefix`, `data.namespace` and
 /// `data.candidates`, an `unknown-term` / `undescribed-term` fix
 /// `data.replace`). `resolve_edits`: the client resolves edits lazily
@@ -186,6 +186,17 @@ pub fn code_actions(
     resolve_edits: bool,
 ) -> Vec<CodeActionOrCommand> {
     actions::code_actions(q, k, enc, params, resolve_edits)
+}
+
+/// The diagnostics the server publishes for `q`: the document's own checks
+/// first, then the knowledge-based lints that `opts` turns on.
+pub fn diagnostics(
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    opts: &crate::features::diagnostics::Options,
+) -> Vec<Diagnostic> {
+    diagnostics::diagnostics(q, k, enc, opts)
 }
 
 /// `codeAction/resolve` for an action whose `data.uri` is this document.

@@ -3,7 +3,11 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { startServer, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
+import { spawn } from "node:child_process"
+import { createRequire } from "node:module"
+import { startServer, uriOf, fixtures, positionOf, serverPath, serverEnv, tempDir } from "./lsp-client.mjs"
+
+const rpc = createRequire(import.meta.url)("vscode-jsonrpc/node")
 
 const ws = path.join(fixtures, "workspace")
 const peoplePath = path.join(ws, "people.ttl")
@@ -35,9 +39,7 @@ test("server writes nothing to stdout except LSP messages", async () => {
   assert.deepEqual(s.stray, [])
 })
 
-test("initialize answers quickly", async () => {
-  assert.ok(s.initMs < 500, `initialize took ${s.initMs.toFixed(0)}ms`)
-})
+// How fast initialize answers is checked in latency.test.mjs.
 
 // ---------- diagnostics ----------
 
@@ -74,6 +76,33 @@ ex:t ex:p "unterminated .
   const errors = diags.filter((d) => d.severity === 1)
   assert.ok(errors.length > 0, "expected a syntax error")
   assert.ok(errors.some((d) => d.range.start.line === 2), fmt(errors))
+})
+
+// `n` lines, each a statement that parses and one that does not.
+const brokenLines = (n) =>
+  Array.from({ length: n }, (_, i) => `<http://e/s${i}> <http://e/p> <http://e/o${i}> . <http://e/t${i}> <http://e/p> .\n`).join("")
+
+test("the editor shows the first 1,000 syntax errors and one note", async () => {
+  const syntax = (diags) => diags.filter((d) => d.code === "syntax")
+  const many = await diagnose("many-errors", brokenLines(1500))
+  s.close(many.uri)
+  const shown = syntax(many.diags)
+  assert.equal(shown.length, 1001)
+  assert.deepEqual(
+    shown.slice(0, 1000).map((d) => d.range.start.line),
+    Array.from({ length: 1000 }, (_, i) => i),
+  )
+  assert.ok(shown.slice(0, 1000).every((d) => d.message === "Expected an object, found '.'"), fmt(shown.slice(0, 3)))
+  const note = shown[1000]
+  assert.equal(note.message, "More than 1000 syntax errors; the rest are not shown")
+  assert.equal(note.severity, 1)
+  assert.deepEqual(note.range, { start: shown[999].range.end, end: shown[999].range.end })
+
+  const atCap = await diagnose("cap-errors", brokenLines(1000))
+  s.close(atCap.uri)
+  const all = syntax(atCap.diags)
+  assert.equal(all.length, 1000)
+  assert.ok(all.every((d) => !d.message.startsWith("More than")))
 })
 
 test("undeclared prefix is warned once, on the use", async () => {
@@ -124,6 +153,78 @@ test("prefix declaration ranges point at the declaration", async () => {
   assert.ok(empty, JSON.stringify(syms))
   const range = empty.selectionRange ?? empty.location.range
   assert.equal(range.start.line, 1, JSON.stringify(empty))
+})
+
+// ---------- incremental sync ----------
+
+// `changes` applied to `text` as the server applies them: in order, each
+// range in UTF-16 code units (a JS string's units) of the text before it.
+function applyRanged(text, changes) {
+  for (const { range, text: insert } of changes) {
+    const offset = ({ line, character }) => {
+      let o = 0
+      for (let l = 0; l < line; l++) {
+        const nl = text.indexOf("\n", o)
+        if (nl < 0) return text.length
+        o = nl + 1
+      }
+      const end = text.indexOf("\n", o)
+      return Math.min(o + character, end < 0 ? text.length : end)
+    }
+    const [a, b] = [offset(range.start), offset(range.end)].sort((x, y) => x - y)
+    text = text.slice(0, a) + insert + text.slice(b)
+  }
+  return text
+}
+
+const range = (l0, c0, l1, c1) => ({ start: { line: l0, character: c0 }, end: { line: l1, character: c1 } })
+const shown = (diags) =>
+  diags.map((d) => `${d.range.start.line}:${d.range.start.character}-${d.range.end.line}:${d.range.end.character} ${d.code} ${d.message}`).sort()
+
+test("diagnostics after ranged edits are those of the same text sent whole", async () => {
+  // An astral character (two UTF-16 units) before the edited and reported
+  // columns, so positions count UTF-16 units.
+  let text = `@prefix ex: <http://example.org/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+ex:a foaf:name "\u{1F600} Alice" ; foaf:nmae "x" .
+`
+  const uri = scratch("incremental")
+  s.open(uri, text)
+  await s.diagnosticsFor(uri)
+  const batches = [
+    // After the astral character (UTF-16 columns 16-17): "Alice" -> "Bob",
+    // then, two columns to the left now, the typo "nmae" -> "naem".
+    [
+      { range: range(2, 19, 2, 24), text: "Bob" },
+      { range: range(2, 31, 2, 35), text: "naem" },
+    ],
+    // Two changes in one batch, the second on the first's result: a new
+    // line with an undeclared prefix, then a typo on it.
+    [
+      { range: range(3, 0, 3, 0), text: "ex:b skos:prefLabel \"y\" .\n" },
+      { range: range(3, 5, 3, 9), text: "skoss" },
+    ],
+    // A deletion across a line break: the foaf prefix goes.
+    [{ range: range(1, 0, 2, 0), text: "" }],
+    // An insertion past the end of the file is at its end.
+    [{ range: range(40, 0, 40, 0), text: "ex:c ex:p \"unterminated .\n" }],
+  ]
+  const seen = []
+  for (const changes of batches) {
+    text = applyRanged(text, changes)
+    s.changeRange(uri, changes)
+    const ranged = shown(await s.diagnosticsFor(uri))
+    s.change(uri, text)
+    const whole = shown(await s.diagnosticsFor(uri))
+    assert.deepEqual(ranged, whole, text)
+    seen.push(ranged.join("\n"))
+  }
+  // Each batch's reports are about the edited text.
+  assert.match(seen[0], /2:26-2:35 unknown-term 'naem'/)
+  assert.match(seen[1], /skoss/)
+  assert.match(seen[2], /Undeclared prefix 'foaf:'/)
+  assert.match(seen[3], /Unterminated string/)
+  assert.ok(text.includes('"\u{1F600} Bob" ; foaf:naem') && text.endsWith('"unterminated .\n'), text)
 })
 
 // ---------- completion ----------
@@ -332,5 +433,175 @@ test("diagnostics come back under the client's spelling of the URI", async () =>
   s.open(uri, "@prefix ex: <http://example.com/> .\nex:a ex:b ex:c ex:d .\n")
   const diags = await s.diagnosticsFor(uri)
   assert.ok(problems(diags).length > 0, fmt(diags))
+  s.close(uri)
+})
+
+// ---------- isolation and the disk index ----------
+
+// A server on a main thread with a 512 KB stack (`ulimit -s`), which a deep
+// document would overflow if the server parsed it there: the server runs on a
+// thread of its own with a large stack. Not on Windows, which has no ulimit.
+test(
+  "documents nested 255 levels deep are answered on a 512 KB process stack",
+  { skip: process.platform === "win32" && "no ulimit -s" },
+  async () => {
+    const proc = spawn("sh", ["-c", 'ulimit -s 512 && exec "$0"', serverPath], {
+      env: serverEnv(),
+      stdio: ["pipe", "pipe", "inherit"],
+    })
+    const exited = new Promise((r) => proc.once("exit", (code, signal) => r({ code, signal })))
+    proc.stdin.on("error", () => {})
+    const conn = rpc.createMessageConnection(
+      new rpc.StreamMessageReader(proc.stdout),
+      new rpc.StreamMessageWriter(proc.stdin),
+    )
+    conn.listen()
+    try {
+      await conn.sendRequest("initialize", { processId: process.pid, rootUri: null, capabilities: {} })
+      await conn.sendNotification("initialized", {})
+      const n = 255
+      const docs = {
+        "groups.rq": "SELECT * WHERE " + "{ ".repeat(n) + "?s ?p ?o" + " }".repeat(n),
+        "optional.rq": "SELECT * WHERE { " + "OPTIONAL { ".repeat(n) + "?s ?p ?o" + " }".repeat(n) + " }",
+        "parens.rq": "SELECT * WHERE { ?s ?p ?o FILTER " + "(".repeat(n) + "1" + ")".repeat(n) + " }",
+      }
+      for (const [name, text] of Object.entries(docs)) {
+        const uri = `file:///nowhere/${name}`
+        await conn.sendNotification("textDocument/didOpen", {
+          textDocument: { uri, languageId: "sparql", version: 1, text },
+        })
+        const symbols = await Promise.race([
+          conn.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }),
+          exited.then((e) => assert.fail(`the server died on ${name}: ${JSON.stringify(e)}`)),
+        ])
+        assert.ok(Array.isArray(symbols), `${name}: ${JSON.stringify(symbols)}`)
+      }
+      await conn.sendRequest("shutdown")
+      await conn.sendNotification("exit")
+      assert.deepEqual(await exited, { code: 0, signal: null })
+    } finally {
+      conn.dispose()
+      proc.kill()
+    }
+  },
+)
+
+describe("files changing on disk", () => {
+  let dir, w
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const ttl = (name) => `@prefix ex: <http://e.org/> .\nex:${name} a ex:Thing .\n`
+  const write = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+    fs.writeFileSync(path.join(dir, rel), text)
+    return uriOf(path.join(dir, rel))
+  }
+  // The files that workspace symbols name, sorted.
+  const indexed = async () => {
+    const symbols = await w.request("workspace/symbol", { query: "" })
+    return [...new Set(symbols.map((x) => path.basename(new URL(x.location.uri).pathname)))].sort()
+  }
+  before(async () => {
+    dir = tempDir("turtle-lsp-disk-")
+    write("keep/a.ttl", ttl("Alpha"))
+    write("gone/b.ttl", ttl("Beta"))
+    write("gone/deep/c.ttl", ttl("Gamma"))
+    w = await startServer({ cwd: dir })
+  })
+  after(async () => {
+    await w.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("the files of a deleted folder leave the index; a node_modules event is ignored", async () => {
+    // The first workspace request waits for the initial index.
+    assert.deepEqual(await indexed(), ["a.ttl", "b.ttl", "c.ttl"])
+    const ignored = write("node_modules/pkg/n.ttl", ttl("Node"))
+    const hidden = write(".cache/h.ttl", ttl("Hidden"))
+    w.notify("workspace/didChangeWatchedFiles", {
+      changes: [
+        { uri: ignored, type: 1 },
+        { uri: hidden, type: 2 },
+      ],
+    })
+    assert.deepEqual(await indexed(), ["a.ttl", "b.ttl", "c.ttl"])
+    fs.rmSync(path.join(dir, "gone"), { recursive: true })
+    w.notify("workspace/didChangeWatchedFiles", { changes: [{ uri: uriOf(path.join(dir, "gone")), type: 3 }] })
+    assert.deepEqual(await indexed(), ["a.ttl"])
+  })
+
+  test("a document closed outside the workspace is not indexed from disk", async () => {
+    const away = tempDir("turtle-lsp-away-")
+    try {
+      const file = path.join(away, "away.ttl")
+      fs.writeFileSync(file, ttl("Away"))
+      w.open(uriOf(file), ttl("Away"))
+      assert.deepEqual(await indexed(), ["a.ttl", "away.ttl"])
+      w.close(uriOf(file))
+      assert.deepEqual(await indexed(), ["a.ttl"])
+    } finally {
+      fs.rmSync(away, { recursive: true, force: true })
+    }
+  })
+
+  test("a changed prefixes.ttl re-parses its files off the main loop; requests are not held up", async () => {
+    write("p/prefixes.ttl", "@prefix ex: <http://one.org/> .\n")
+    const x = write("p/x.ttl", "ex:S a ex:T .\n")
+    const y = write("p/sub/y.ttl", "ex:S a ex:T .\n")
+    w.notify("workspace/didChangeWatchedFiles", {
+      changes: [x, y, uriOf(path.join(dir, "p/prefixes.ttl"))].map((uri) => ({ uri, type: 1 })),
+    })
+    const probe = uriOf(path.join(dir, "probe.ttl"))
+    const definesIn = async (iri) => {
+      w.open(probe, `<${iri}> <http://e.org/p> <http://e.org/o> .\n`)
+      const locs = await w.request("textDocument/definition", {
+        textDocument: { uri: probe },
+        position: { line: 0, character: 3 },
+      })
+      return locs.map((l) => path.basename(l.uri)).filter((f) => f !== "probe.ttl").sort()
+    }
+    assert.deepEqual(await definesIn("http://one.org/S"), ["x.ttl", "y.ttl"])
+    write("p/prefixes.ttl", "@prefix ex: <http://two.org/> .\n")
+    w.notify("workspace/didChangeWatchedFiles", {
+      changes: [{ uri: uriOf(path.join(dir, "p/prefixes.ttl")), type: 2 }],
+    })
+    // The re-parse runs on a thread; its result lands on the main loop soon.
+    const end = Date.now() + 10000
+    let at
+    while (JSON.stringify((at = await definesIn("http://two.org/S"))) !== JSON.stringify(["x.ttl", "y.ttl"])) {
+      assert.ok(Date.now() < end, `still ${JSON.stringify(at)}`)
+      await sleep(50)
+    }
+    assert.deepEqual(await definesIn("http://one.org/S"), [])
+    w.close(probe)
+  })
+})
+
+// ---------- relative IRIs resolve against the document's URI ----------
+
+test("a relative @base or BASE is no syntax error (the document's URI is the base)", async () => {
+  for (const [name, text] of [
+    ["base-turtle", "@base <rel/> .\n<x> <http://example.org/p> <y> .\n"],
+    ["base-sparql", "BASE <../up/>\n<x> <http://example.org/p> <y> .\n"],
+  ]) {
+    const { diags } = await diagnose(name, text)
+    assert.deepEqual(
+      diags.filter((d) => d.severity === 1),
+      [],
+      `${name}: ${fmt(diags)}`,
+    )
+  }
+})
+
+test("a TriG graph and a relative IRI inside it resolve against the file", async () => {
+  const uri = uriOf(path.join(ws, "__base.trig"))
+  const text = "<g> { <#me> <http://example.org/p> <o> }\n"
+  s.open(uri, text, "trig")
+  const diags = await s.diagnosticsFor(uri)
+  assert.deepEqual(problems(diags).filter((d) => d.severity === 1), [], fmt(diags))
+  const locs = await s.request("textDocument/definition", {
+    textDocument: { uri },
+    position: positionOf(text, "<g>", 2),
+  })
+  assert.equal(locs.length, 1, JSON.stringify(locs))
   s.close(uri)
 })

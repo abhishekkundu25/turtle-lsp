@@ -3,7 +3,11 @@
 //! going. The token set is the union of the three syntaxes; the parser decides
 //! what each one allows (`{`, `}` and `GRAPH` only mean something in TriG).
 
+// The tables live in `names`; other modules still reach them here.
+pub(crate) use super::names::{is_pn_chars, is_pn_chars_base, is_pn_chars_u};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Kind {
     Iri,
     PName,
@@ -41,47 +45,81 @@ pub enum Kind {
     Error,
 }
 
+/// A token: 12 bytes, because a document holds one per few bytes of text.
 #[derive(Clone, Copy, Debug)]
 pub struct Token {
     pub kind: Kind,
+    /// A [`Fault`] code for a malformed token, 0 for a well-formed one.
+    error: u8,
     pub start: u32,
     pub end: u32,
-    /// Set for malformed tokens (unterminated string, bad IRI, stray character).
-    pub error: Option<&'static str>,
 }
 
+const _: () = assert!(std::mem::size_of::<Token>() == 12);
+
 impl Token {
+    /// A well-formed token.
+    pub fn new(kind: Kind, start: u32, end: u32) -> Token {
+        Token {
+            kind,
+            error: 0,
+            start,
+            end,
+        }
+    }
+
+    /// What is wrong with a malformed token (unterminated string, bad IRI,
+    /// stray character), if anything.
+    pub fn error(&self) -> Option<&'static str> {
+        (self.error != 0).then(|| MESSAGES[self.error as usize])
+    }
+
+    /// The token as a stray word: `GRAPH` outside TriG.
+    pub(super) fn into_unexpected_word(self) -> Token {
+        Token {
+            kind: Kind::Error,
+            error: Fault::UnexpectedWord as u8,
+            ..self
+        }
+    }
+
     pub fn text<'a>(&self, src: &'a str) -> &'a str {
         &src[self.start as usize..self.end as usize]
     }
 }
 
-pub fn is_pn_chars_base(c: char) -> bool {
-    matches!(c,
-        'A'..='Z' | 'a'..='z' | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
-        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
-        | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
-        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
-}
-
-pub fn is_pn_chars_u(c: char) -> bool {
-    c == '_' || is_pn_chars_base(c)
-}
-
-pub fn is_pn_chars(c: char) -> bool {
-    is_pn_chars_u(c)
-        || c == '-'
-        || c.is_ascii_digit()
-        || c == '\u{B7}'
-        || ('\u{300}'..='\u{36F}').contains(&c)
-        || ('\u{203F}'..='\u{2040}').contains(&c)
-}
-
 /// The message for a bare word that is not a keyword.
-pub const UNEXPECTED_WORD: &str = "Unexpected word (did you forget a prefix, e.g. `ex:`?)";
+pub(crate) const UNEXPECTED_WORD: &str = "Unexpected word (did you forget a prefix, e.g. `ex:`?)";
 
-const BAD_STRING_ESCAPE: &str =
-    "Invalid escape: use \\t \\b \\n \\r \\f \\\" \\' \\\\, \\uXXXX or \\UXXXXXXXX (no surrogates)";
+/// What is wrong with a malformed token. A token keeps the code, and
+/// [`MESSAGES`] holds the text at that index (0 is no fault).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum Fault {
+    UnexpectedCharacter = 1,
+    UnexpectedWord,
+    UnexpectedAt,
+    UnterminatedString,
+    UnterminatedLongString,
+    BadStringEscape,
+    UnterminatedIri,
+    BadIriCharacter,
+    NoBlankNodeLabel,
+}
+
+/// The text of each [`Fault`], at its code.
+static MESSAGES: [&str; 10] = [
+    "",
+    "Unexpected character",
+    UNEXPECTED_WORD,
+    "Unexpected '@'",
+    "Unterminated string",
+    "Unterminated long string",
+    "Invalid escape: use \\t \\b \\n \\r \\f \\\" \\' \\\\, \\uXXXX or \\UXXXXXXXX (no surrogates)",
+    "Unterminated IRI: missing '>'",
+    "Invalid character in IRI",
+    "Blank node label expected after '_:'",
+];
 
 const LOCAL_ESC: &[u8] = b"_~.-!$&'()*+,;=/?#@%";
 
@@ -104,12 +142,12 @@ pub fn tokenize(src: &str) -> Vec<Token> {
 }
 
 impl<'a> Lexer<'a> {
-    fn push(&mut self, kind: Kind, end: usize, error: Option<&'static str>) {
+    fn push(&mut self, kind: Kind, end: usize, fault: Option<Fault>) {
         self.out.push(Token {
             kind,
+            error: fault.map_or(0, |f| f as u8),
             start: self.i as u32,
             end: end as u32,
-            error,
         });
         self.i = end;
     }
@@ -128,7 +166,10 @@ impl<'a> Lexer<'a> {
             match c {
                 b' ' | b'\t' | b'\r' | b'\n' => self.i += 1,
                 b'#' => {
-                    let end = memchr(b'\n', &self.b[self.i..]).map_or(self.b.len(), |p| self.i + p);
+                    let end = self.b[self.i..]
+                        .iter()
+                        .position(|&b| b == b'\n' || b == b'\r')
+                        .map_or(self.b.len(), |p| self.i + p);
                     self.push(Kind::Comment, end, None);
                 }
                 b'"' | b'\'' => self.string(c),
@@ -142,7 +183,7 @@ impl<'a> Lexer<'a> {
                     if let Some(end) = self.number() {
                         self.push(Kind::Number, end, None)
                     } else {
-                        self.push(Kind::Error, self.i + 1, Some("Unexpected character"))
+                        self.push(Kind::Error, self.i + 1, Some(Fault::UnexpectedCharacter))
                     }
                 }
                 b';' => self.push(Kind::Semicolon, self.i + 1, None),
@@ -168,11 +209,14 @@ impl<'a> Lexer<'a> {
         let long = self.b.len() >= self.i + 3 && self.b[self.i + 1] == q && self.b[self.i + 2] == q;
         let mut j = self.i + if long { 3 } else { 1 };
         let mut bad_escape = false;
-        let escape_error = |e: bool| e.then_some(BAD_STRING_ESCAPE);
+        let escape_error = |e: bool| e.then_some(Fault::BadStringEscape);
         while j < self.b.len() {
             let c = self.b[j];
             if c == b'\\' {
                 match self.b.get(j + 1) {
+                    Some(b'\n' | b'\r') if !long => {
+                        return self.push(Kind::String, j + 1, Some(Fault::UnterminatedString));
+                    }
                     Some(b't' | b'b' | b'n' | b'r' | b'f' | b'"' | b'\'' | b'\\') => j += 2,
                     Some(&u @ (b'u' | b'U')) => {
                         let n = if u == b'u' { 4 } else { 8 };
@@ -195,7 +239,7 @@ impl<'a> Lexer<'a> {
             } else if c == q {
                 return self.push(Kind::String, j + 1, escape_error(bad_escape));
             } else if c == b'\n' || c == b'\r' {
-                return self.push(Kind::String, j, Some("Unterminated string"));
+                return self.push(Kind::String, j, Some(Fault::UnterminatedString));
             }
             j += 1;
         }
@@ -204,9 +248,9 @@ impl<'a> Lexer<'a> {
             Kind::String,
             end,
             Some(if long {
-                "Unterminated long string"
+                Fault::UnterminatedLongString
             } else {
-                "Unterminated string"
+                Fault::UnterminatedString
             }),
         )
     }
@@ -223,7 +267,7 @@ impl<'a> Lexer<'a> {
         while j < self.b.len() {
             match self.b[j] {
                 b'>' => {
-                    return self.push(Kind::Iri, j + 1, bad.then_some("Invalid character in IRI"));
+                    return self.push(Kind::Iri, j + 1, bad.then_some(Fault::BadIriCharacter));
                 }
                 b' ' | b'\t' | b'\r' | b'\n' => break,
                 b'<' | b'"' | b'{' | b'}' | b'|' | b'^' | b'`' => bad = true,
@@ -243,7 +287,7 @@ impl<'a> Lexer<'a> {
             }
             j += 1;
         }
-        self.push(Kind::Error, j, Some("Unterminated IRI: missing '>'"))
+        self.push(Kind::Error, j, Some(Fault::UnterminatedIri))
     }
 
     /// The character `n` hex digits at `at` encode, if they do (surrogates
@@ -286,7 +330,7 @@ impl<'a> Lexer<'a> {
             j += 1;
         }
         if j == start {
-            return self.push(Kind::Error, self.i + 1, Some("Unexpected '@'"));
+            return self.push(Kind::Error, self.i + 1, Some(Fault::UnexpectedAt));
         }
         loop {
             if self.b.get(j) == Some(&b'-')
@@ -316,7 +360,7 @@ impl<'a> Lexer<'a> {
         let mut j = self.i + 2;
         match self.char_at(j) {
             Some(c) if is_pn_chars_u(c) || c.is_ascii_digit() => j += c.len_utf8(),
-            _ => return self.push(Kind::Error, j, Some("Blank node label expected after '_:'")),
+            _ => return self.push(Kind::Error, j, Some(Fault::NoBlankNodeLabel)),
         }
         let mut last_ok = j;
         while let Some(c) = self.char_at(j) {
@@ -439,7 +483,7 @@ impl<'a> Lexer<'a> {
         if j == start {
             // Not a name start: unknown character.
             let len = self.char_at(start).map_or(1, char::len_utf8);
-            return self.push(Kind::Error, start + len, Some("Unexpected character"));
+            return self.push(Kind::Error, start + len, Some(Fault::UnexpectedCharacter));
         }
         while self.b.get(j).is_some_and(u8::is_ascii_alphanumeric) {
             j += 1;
@@ -452,14 +496,10 @@ impl<'a> Lexer<'a> {
             _ if w.eq_ignore_ascii_case("BASE") => Kind::SparqlBase,
             _ if w.eq_ignore_ascii_case("VERSION") => Kind::SparqlVersion,
             _ if w.eq_ignore_ascii_case("GRAPH") => Kind::Graph,
-            _ => return self.push(Kind::Error, j, Some(UNEXPECTED_WORD)),
+            _ => return self.push(Kind::Error, j, Some(Fault::UnexpectedWord)),
         };
         self.push(kind, j, None)
     }
-}
-
-fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
-    hay.iter().position(|c| *c == needle)
 }
 
 #[cfg(test)]
@@ -499,13 +539,43 @@ mod tests {
     fn errors_do_not_stop_lexing() {
         let k = kinds("\"open\nex:a <bad iri> ex:b");
         assert_eq!(k[0].0, Kind::String);
-        assert!(tokenize("\"open\n")[0].error.is_some());
+        assert!(tokenize("\"open\n")[0].error().is_some());
         assert!(k.contains(&(Kind::PName, "ex:b")));
     }
 
     #[test]
+    fn backslash_newline_ends_a_short_string() {
+        for nl in ["\n", "\r", "\r\n"] {
+            let src = format!("ex:a ex:p \"x\\{nl}ex:b ex:p ex:o .");
+            let k = tokenize(&src);
+            let s = k.iter().find(|t| t.kind == Kind::String).unwrap();
+            assert_eq!(s.error(), Some("Unterminated string"));
+            assert_eq!(s.end as usize, src.find(nl).unwrap(), "{nl:?}");
+            assert!(
+                k.iter().any(|t| t.text(&src) == "ex:b"),
+                "the next statement survives for {nl:?}"
+            );
+        }
+        // A long string still runs across a backslash-newline.
+        let src = "\"\"\"a\\\nb\"\"\" .";
+        let k = tokenize(src);
+        assert_eq!(k[0].text(src), &src[..src.len() - 2]);
+    }
+
+    #[test]
+    fn comments_end_at_cr_or_lf() {
+        for nl in ["\n", "\r", "\r\n"] {
+            let src = format!("# c{nl}ex:a ex:p ex:o .");
+            let k = tokenize(&src);
+            assert_eq!(k[0].kind, Kind::Comment);
+            assert_eq!(k[0].text(&src), "# c", "{nl:?}");
+            assert_eq!(k[1].text(&src), "ex:a");
+        }
+    }
+
+    #[test]
     fn escapes_are_checked() {
-        let err = |s: &str| tokenize(s)[0].error.is_some();
+        let err = |s: &str| tokenize(s)[0].error().is_some();
         assert!(!err(r#""a\tb\u00e9\U0001F600\"\'\\""#));
         assert!(err(r#""a\zb""#));
         assert!(err(r#""\uD83C\uDCA1""#));
@@ -518,6 +588,59 @@ mod tests {
         let k = kinds(r#""""abc"""" ."#);
         assert_eq!(k[0], (Kind::String, r#""""abc""""#));
         assert_eq!(k[1].0, Kind::String);
+    }
+
+    #[test]
+    fn every_fault_code_reads_back_as_its_text() {
+        let cases = [
+            ("$", Fault::UnexpectedCharacter, "Unexpected character"),
+            ("+x", Fault::UnexpectedCharacter, "Unexpected character"),
+            ("foo", Fault::UnexpectedWord, UNEXPECTED_WORD),
+            ("@1", Fault::UnexpectedAt, "Unexpected '@'"),
+            ("\"open", Fault::UnterminatedString, "Unterminated string"),
+            (
+                "\"\"\"open",
+                Fault::UnterminatedLongString,
+                "Unterminated long string",
+            ),
+            (
+                r#""a\zb""#,
+                Fault::BadStringEscape,
+                r#"Invalid escape: use \t \b \n \r \f \" \' \\, \uXXXX or \UXXXXXXXX (no surrogates)"#,
+            ),
+            (
+                "<http://e/",
+                Fault::UnterminatedIri,
+                "Unterminated IRI: missing '>'",
+            ),
+            (
+                "<http://e/{>",
+                Fault::BadIriCharacter,
+                "Invalid character in IRI",
+            ),
+            (
+                "_: ",
+                Fault::NoBlankNodeLabel,
+                "Blank node label expected after '_:'",
+            ),
+        ];
+        let mut seen = [false; MESSAGES.len()];
+        for (src, fault, text) in cases {
+            let t = tokenize(src)[0];
+            assert_eq!(t.error, fault as u8, "{src}");
+            assert_eq!(t.error(), Some(text), "{src}");
+            seen[fault as usize] = true;
+        }
+        assert!(
+            seen[1..].iter().all(|&s| s),
+            "a code with no case: {seen:?}"
+        );
+        assert_eq!(Token::new(Kind::Iri, 0, 1).error(), None);
+        let word = Token::new(Kind::Graph, 0, 5).into_unexpected_word();
+        assert_eq!(
+            (word.kind, word.error()),
+            (Kind::Error, Some(UNEXPECTED_WORD))
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # RDF Editor: VS Code parity (iterations 3–5)
 
-Status: batches 1, 2 and 3 done. On branch `web-showcase` (not merged to main).
+Status: batches 1, 2 and 3 done; merged to main and published with the browser editor in 0.5.1.
 Builds on `docs/specs/web-editor.md`.
 
 ## Problem Statement

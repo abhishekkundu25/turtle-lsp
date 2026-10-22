@@ -23,7 +23,7 @@ use std::io::Write;
 const INLINE: &str = "-e";
 
 /// Runs the query; the exit code.
-pub fn run(a: QueryArgs) -> Result<i32, String> {
+pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
     let cwd = files::current_dir()?;
     let root = files::find_root(a.root.as_deref(), &cwd)?;
     let settings = files::settings(&root, &Value::Null);

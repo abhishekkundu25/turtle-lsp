@@ -21,16 +21,44 @@
 //! Nesting is limited to [`MAX_DEPTH`] (deeper values are skipped without
 //! recursion), and a document stops being checked after [`MAX_ERRORS`]
 //! errors. Spans are byte offsets, as everywhere in the crate.
+//!
+//! What is an error and what is only a warning:
+//! - **Errors** ([`JsonDoc::errors`], code `json-syntax`) are text that is
+//!   not JSON. Consumers that need valid JSON (a remote context, an
+//!   `rdf:JSON` literal) refuse a document with any.
+//! - **Warnings** ([`JsonDoc::warnings`]) are valid JSON that is almost
+//!   certainly not what its author meant, or that a reader may not take
+//!   as written. They never make a document invalid:
+//!   - `json-lone-surrogate`: a `\uD800`..`\uDFFF` escape with no partner.
+//!     RFC 8259 allows it and other JSON-LD processors accept it, but a Rust
+//!     string cannot hold it, so it is read as U+FFFD;
+//!   - `json-duplicate-key`, at the *earlier* key of each pair: JSON-LD
+//!     reads an object as a map, so only the last member of a key counts
+//!     (see [`Object::get`]). Every earlier one is reported, so a key
+//!     written three times has two warnings.
+//!
+//!   The number of warnings is capped at [`MAX_ERRORS`] too, without a
+//!   message.
+//! - A leading byte order mark is skipped by the parser and kept by the
+//!   formatter ([`super::format`]).
+//! - Past [`MAX_ERRORS`] errors, one more error says so. It is empty and
+//!   sits at the end of the reported range (after the last error and the
+//!   text read so far), so it sorts after every other error and points at
+//!   where the checking stopped.
 
 use crate::syntax::{Severity, Span, SyntaxError};
+use std::borrow::Cow;
 
 /// A parsed JSON document.
 #[derive(Clone, Debug, Default)]
 pub struct JsonDoc {
     /// The top-level value; `None` for an empty (or whitespace-only) text.
     pub root: Option<Json>,
-    /// `json-syntax` errors, in text order.
+    /// `json-syntax` errors, in text order. Text that is not JSON.
     pub errors: Vec<SyntaxError>,
+    /// Warnings about valid JSON (`json-lone-surrogate`,
+    /// `json-duplicate-key`), in text order; see the module doc.
+    pub(crate) warnings: Vec<SyntaxError>,
 }
 
 /// A JSON value and where it is written.
@@ -40,7 +68,10 @@ pub struct Json {
     /// The whole value: a string with its quotes, an object or array from
     /// its opening bracket to its closing one (or to its last member when
     /// unclosed).
-    pub span: Span,
+    pub(crate) span: Span,
+    /// A string's text without its quotes (an unclosed string has only the
+    /// opening one); any other value's span.
+    pub(crate) inner: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,9 +94,9 @@ pub enum Value {
 pub struct Array {
     pub items: Vec<Json>,
     /// The `[`.
-    pub open: Span,
+    pub(crate) open: Span,
     /// The `]`; `None` when the array is unclosed.
-    pub close: Option<Span>,
+    pub(crate) close: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -73,9 +104,9 @@ pub struct Object {
     /// Members in text order, duplicates included.
     pub members: Vec<Member>,
     /// The `{`.
-    pub open: Span,
+    pub(crate) open: Span,
     /// The `}`; `None` when the object is unclosed.
-    pub close: Option<Span>,
+    pub(crate) close: Option<Span>,
 }
 
 /// A `"key": value` pair.
@@ -84,34 +115,70 @@ pub struct Member {
     /// The key with its escapes decoded.
     pub key: Box<str>,
     /// The key with its quotes.
-    pub key_span: Span,
+    pub(crate) key_span: Span,
+    /// The key without its quotes, as [`Json::inner`].
+    pub(crate) key_inner: Span,
     pub value: Json,
 }
 
 impl Object {
     /// The member for `key`; with duplicate keys, the last one (JSON-LD
     /// processors read objects as maps).
-    pub fn get(&self, key: &str) -> Option<&Member> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Member> {
         self.members.iter().rev().find(|m| &*m.key == key)
+    }
+
+    /// The members as a map reads them, in text order: with duplicate keys,
+    /// only the last one. Linear in the member count.
+    pub(crate) fn entries(&self) -> Vec<&Member> {
+        let last = last_per_key(&self.members);
+        self.members
+            .iter()
+            .zip(last)
+            .filter_map(|(m, last)| last.then_some(m))
+            .collect()
     }
 }
 
+/// Per member of `members`, whether no later member has its key: the one a
+/// map keeps. [`Object::entries`] keeps those, and the parser warns at the
+/// others (`json-duplicate-key`). Linear in the member count.
+fn last_per_key(members: &[Member]) -> Vec<bool> {
+    if members.len() <= 16 {
+        return members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| !members[i + 1..].iter().any(|later| later.key == m.key))
+            .collect();
+    }
+    let mut last: rustc_hash::FxHashMap<&str, usize> = rustc_hash::FxHashMap::default();
+    for (i, m) in members.iter().enumerate() {
+        last.insert(&m.key, i);
+    }
+    members
+        .iter()
+        .enumerate()
+        .map(|(i, m)| last[&*m.key] == i)
+        .collect()
+}
+
 impl Json {
-    pub fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&str> {
         match &self.value {
             Value::String(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_object(&self) -> Option<&Object> {
+    pub(crate) fn as_object(&self) -> Option<&Object> {
         match &self.value {
             Value::Object(o) => Some(o),
             _ => None,
         }
     }
 
-    pub fn as_array(&self) -> Option<&Array> {
+    #[cfg(test)]
+    pub(crate) fn as_array(&self) -> Option<&Array> {
         match &self.value {
             Value::Array(a) => Some(a),
             _ => None,
@@ -121,14 +188,15 @@ impl Json {
 
 /// How deep objects and arrays may nest. A deeper value is reported and
 /// skipped, so no input can overflow the stack.
-pub const MAX_DEPTH: u32 = 256;
+pub(crate) const MAX_DEPTH: u32 = 256;
 
-/// After this many errors the rest of the document is not checked.
-pub const MAX_ERRORS: usize = 100;
+/// After this many errors the rest of the document is not checked (and no
+/// more warnings are kept).
+pub(crate) const MAX_ERRORS: usize = 100;
 
 /// What a [`Token`] is, for highlighting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenKind {
+pub(crate) enum TokenKind {
     LBrace,
     RBrace,
     LBracket,
@@ -148,14 +216,14 @@ pub enum TokenKind {
 
 /// A lexical token of a JSON text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub span: Span,
+pub(crate) struct Token {
+    pub(crate) kind: TokenKind,
+    pub(crate) span: Span,
 }
 
 /// The tokens of a JSON text, in order, without whitespace. Never fails:
 /// anything that is not JSON is a [`TokenKind::Invalid`] token.
-pub fn tokens(text: &str) -> Vec<Token> {
+pub(crate) fn tokens(text: &str) -> Vec<Token> {
     let mut p = Parser::new(text, true);
     let mut out = Vec::new();
     loop {
@@ -184,6 +252,8 @@ pub fn tokens(text: &str) -> Vec<Token> {
 /// Parse JSON text (RFC 8259) into a tree of spans, with `json-syntax`
 /// errors for whatever is not JSON. A leading byte order mark is skipped.
 pub fn parse(text: &str) -> JsonDoc {
+    #[cfg(test)]
+    parses::COUNT.with(|c| c.set(c.get() + 1));
     let mut p = Parser::new(text, false);
     let t = p.peek();
     let root = match t.kind {
@@ -197,6 +267,7 @@ pub fn parse(text: &str) -> JsonDoc {
             Some(Json {
                 value: Value::Invalid,
                 span,
+                inner: span,
             })
         }
         _ => {
@@ -211,7 +282,31 @@ pub fn parse(text: &str) -> JsonDoc {
     };
     let mut errors = p.errors;
     errors.sort_by_key(|e| e.span.start);
-    JsonDoc { root, errors }
+    let mut warnings = p.warnings;
+    warnings.sort_by_key(|e| e.span.start);
+    JsonDoc {
+        root,
+        errors,
+        warnings,
+    }
+}
+
+/// How many times [`parse`] ran on this thread, for tests that check a
+/// feature reads a text once.
+#[cfg(test)]
+pub(crate) mod parses {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(crate) static COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// The parses `f` makes.
+    pub(crate) fn during<R>(f: impl FnOnce() -> R) -> (R, usize) {
+        let before = COUNT.with(Cell::get);
+        let r = f();
+        (r, COUNT.with(Cell::get) - before)
+    }
 }
 
 /// The end of `text` without trailing JSON whitespace.
@@ -336,12 +431,78 @@ fn hex4(b: &[u8], at: usize, end: usize) -> Option<u32> {
     Some(v)
 }
 
+/// Where a string scanned by [`scan_string`] ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StringScan {
+    /// After the closing quote; unclosed, the end of the line (or text).
+    pub(crate) end: usize,
+    pub(crate) closed: bool,
+    /// Has a backslash.
+    pub(crate) escaped: bool,
+}
+
+/// Scans the string whose opening `"` is at `open` in `b`, the way the
+/// lexer does and the editor scans ([`string_end`]) must: a backslash takes
+/// the next byte with it, except a line break, which still ends an unclosed
+/// string. `control` is called with the offset of each raw control
+/// character before the end of the string.
+pub(crate) fn scan_string(b: &[u8], open: usize, mut control: impl FnMut(usize)) -> StringScan {
+    let mut i = open + 1;
+    let mut escaped = false;
+    loop {
+        while i < b.len() && !STRING_STOP[b[i] as usize] {
+            i += 1;
+        }
+        match b.get(i) {
+            Some(b'"') => {
+                return StringScan {
+                    end: i + 1,
+                    closed: true,
+                    escaped,
+                };
+            }
+            Some(b'\\') => {
+                escaped = true;
+                i += 1;
+                if i < b.len() && !matches!(b[i], b'\n' | b'\r') {
+                    i += 1;
+                }
+            }
+            Some(b'\n' | b'\r') | None => {
+                return StringScan {
+                    end: i,
+                    closed: false,
+                    escaped,
+                };
+            }
+            Some(_) => {
+                control(i);
+                i += 1;
+            }
+        }
+    }
+}
+
+/// For the closing quote of the string whose opening `"` is at `open`: its
+/// offset, or (unclosed) the end of its line or of the text. The flag says
+/// whether it closed. The same string [`tokens`] gives, for scans of text
+/// that may be half typed.
+pub(crate) fn string_end(b: &[u8], open: usize) -> (usize, bool) {
+    let s = scan_string(b, open, |_| {});
+    if s.closed {
+        (s.end - 1, true)
+    } else {
+        (s.end, false)
+    }
+}
+
 struct Parser<'a> {
     text: &'a str,
     b: &'a [u8],
     pos: usize,
     peeked: Option<Lexed>,
     errors: Vec<SyntaxError>,
+    warnings: Vec<SyntaxError>,
     /// Lexing for [`tokens`]: no errors.
     quiet: bool,
     /// [`MAX_ERRORS`] reached: the lexer reports the end of the text.
@@ -361,6 +522,7 @@ impl<'a> Parser<'a> {
             pos: if text.starts_with('\u{feff}') { 3 } else { 0 },
             peeked: None,
             errors: Vec::new(),
+            warnings: Vec::new(),
             quiet,
             stopped: false,
             depth: 0,
@@ -369,22 +531,47 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn error(&mut self, span: Span, message: impl Into<String>) {
+    fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
         if self.quiet || self.stopped {
             return;
         }
-        let message = if self.errors.len() >= MAX_ERRORS {
+        let (span, message) = if self.errors.len() >= MAX_ERRORS {
             self.stopped = true;
-            format!("More than {MAX_ERRORS} syntax errors; the rest of the file is not checked")
+            // At the end of the reported range: after every error so far and
+            // after the text read, where the checking stops.
+            let at = self
+                .errors
+                .iter()
+                .map(|e| e.span.end)
+                .chain([span.start, self.pos as u32])
+                .max()
+                .unwrap_or(span.start)
+                .min(self.b.len() as u32);
+            (
+                Span::new(at, at),
+                Cow::Owned(format!(
+                    "More than {MAX_ERRORS} syntax errors; the rest of the file is not checked"
+                )),
+            )
         } else {
-            message.into()
+            (span, message.into())
         };
-        self.errors.push(SyntaxError {
+        self.errors.push(SyntaxError::new(
             span,
             message,
-            severity: Severity::Error,
-            code: "json-syntax",
-        });
+            Severity::Error,
+            "json-syntax",
+        ));
+    }
+
+    /// A warning: valid JSON that deserves a second look (see the module
+    /// doc). Not counted with the errors; capped on its own.
+    fn warn(&mut self, span: Span, code: &'static str, message: impl Into<Cow<'static, str>>) {
+        if self.quiet || self.stopped || self.warnings.len() >= MAX_ERRORS {
+            return;
+        }
+        self.warnings
+            .push(SyntaxError::new(span, message, Severity::Warning, code));
     }
 
     fn eof(&self) -> Lexed {
@@ -489,58 +676,30 @@ impl<'a> Parser<'a> {
     /// A string from its opening quote. Unclosed, it ends at the end of its
     /// line.
     fn string(&mut self, start: usize) -> Lexed {
-        let b = self.b;
-        let mut i = start + 1;
-        let mut escaped = false;
-        loop {
-            while i < b.len() && !STRING_STOP[b[i] as usize] {
-                i += 1;
-            }
-            match b.get(i) {
-                Some(b'"') => {
-                    i += 1;
-                    break;
-                }
-                Some(b'\\') => {
-                    escaped = true;
-                    i += 1;
-                    if i < b.len() && !matches!(b[i], b'\n' | b'\r') {
-                        i += 1;
-                    }
-                }
-                Some(b'\n' | b'\r') | None => {
-                    self.pos = i;
-                    self.error(
-                        Span::new(start as u32, i as u32),
-                        "Unclosed string: expected '\"' before the end of the line",
-                    );
-                    return Lexed {
-                        kind: K::Str {
-                            escaped,
-                            closed: false,
-                        },
-                        start: start as u32,
-                        end: i as u32,
-                    };
-                }
-                Some(_) => {
-                    let at = Span::new(i as u32, i as u32 + 1);
-                    self.error(
-                        at,
-                        "Control character in a string: write it as an escape (\\t, \\u0001)",
-                    );
-                    i += 1;
-                }
-            }
+        let mut controls: Vec<usize> = Vec::new();
+        let s = scan_string(self.b, start, |i| controls.push(i));
+        for i in controls {
+            let at = Span::new(i as u32, i as u32 + 1);
+            self.pos = s.end;
+            self.error(
+                at,
+                "Control character in a string: write it as an escape (\\t, \\u0001)",
+            );
         }
-        self.pos = i;
+        self.pos = s.end;
+        if !s.closed {
+            self.error(
+                Span::new(start as u32, s.end as u32),
+                "Unclosed string: expected '\"' before the end of the line",
+            );
+        }
         Lexed {
             kind: K::Str {
-                escaped,
-                closed: true,
+                escaped: s.escaped,
+                closed: s.closed,
             },
             start: start as u32,
-            end: i as u32,
+            end: s.end as u32,
         }
     }
 
@@ -599,6 +758,15 @@ impl<'a> Parser<'a> {
         };
         self.error(t.span(), "JSON has no comments");
         t
+    }
+
+    /// `t`'s text without its quotes: a string loses the opening quote and,
+    /// when it closed, the closing one; anything else keeps its span.
+    fn inner(t: Lexed) -> Span {
+        match t.kind {
+            K::Str { closed, .. } => Span::new(t.start + 1, t.end - u32::from(closed)),
+            _ => t.span(),
+        }
     }
 
     /// The string `t` with its escapes decoded; invalid escapes are errors
@@ -688,7 +856,11 @@ impl<'a> Parser<'a> {
             Some(c) => out.push(c),
             None => {
                 let span = Span::new(at as u32, next as u32);
-                self.error(span, "Unpaired surrogate in a `\\u` escape");
+                self.warn(
+                    span,
+                    "json-lone-surrogate",
+                    "Unpaired surrogate in a `\\u` escape; it is read as U+FFFD",
+                );
                 out.push('\u{fffd}');
             }
         }
@@ -737,9 +909,11 @@ impl<'a> Parser<'a> {
                     t.span(),
                     format!("Expected a value, found {}", self.describe(t)),
                 );
+                let span = Span::new(t.start, t.start);
                 return Json {
                     value: Value::Invalid,
-                    span: Span::new(t.start, t.start),
+                    span,
+                    inner: span,
                 };
             }
         };
@@ -747,6 +921,7 @@ impl<'a> Parser<'a> {
         Json {
             value,
             span: t.span(),
+            inner: Self::inner(t),
         }
     }
 
@@ -771,6 +946,7 @@ impl<'a> Parser<'a> {
             K::RBrace | K::RBracket | K::Colon | K::Comma | K::Comment | K::Eof => Json {
                 value: Value::Invalid,
                 span: Span::new(key.end, key.end),
+                inner: Span::new(key.end, key.end),
             },
             _ => self.value(),
         }
@@ -798,9 +974,11 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        let span = Span::new(open.start, end);
         Json {
             value: Value::Invalid,
-            span: Span::new(open.start, end),
+            span,
+            inner: span,
         }
     }
 
@@ -849,13 +1027,13 @@ impl<'a> Parser<'a> {
                 }
                 K::Str { .. } => {
                     self.bump();
-                    Some((self.decode(t), t.span()))
+                    Some((self.decode(t), t.span(), Self::inner(t)))
                 }
                 // An unquoted key (`a`, `1`, `true`): read as the key.
                 K::Word | K::Num { .. } | K::True | K::False | K::Null => {
                     self.error(t.span(), "Object keys must be strings in double quotes");
                     self.bump();
-                    Some((self.slice(t).into(), t.span()))
+                    Some((self.slice(t).into(), t.span(), t.span()))
                 }
                 K::Colon => {
                     self.error(t.span(), "Expected a key before ':'");
@@ -879,12 +1057,13 @@ impl<'a> Parser<'a> {
                 }
             };
             comma = None;
-            if let Some((key, key_span)) = key {
+            if let Some((key, key_span, key_inner)) = key {
                 let value = self.member_value(key_span);
                 end = value.span.end.max(key_span.end);
                 members.push(Member {
                     key,
                     key_span,
+                    key_inner,
                     value,
                 });
             }
@@ -919,6 +1098,7 @@ impl<'a> Parser<'a> {
         }
         self.depth -= 1;
         self.open_objects -= 1;
+        self.duplicate_keys(&members);
         Json {
             value: Value::Object(Object {
                 members,
@@ -926,6 +1106,26 @@ impl<'a> Parser<'a> {
                 close,
             }),
             span: Span::new(open.start, end),
+            inner: Span::new(open.start, end),
+        }
+    }
+
+    /// Warns at each key of `members` that a later member repeats.
+    fn duplicate_keys(&mut self, members: &[Member]) {
+        if self.quiet || self.stopped || members.len() < 2 {
+            return;
+        }
+        for (m, last) in members.iter().zip(last_per_key(members)) {
+            if !last {
+                self.warn(
+                    m.key_span,
+                    "json-duplicate-key",
+                    format!(
+                        "Duplicate key \"{}\": only the last member with it counts",
+                        short(&m.key)
+                    ),
+                );
+            }
         }
     }
 
@@ -933,7 +1133,7 @@ impl<'a> Parser<'a> {
     /// token before a missing '.'; at `next` when that value has no text. Not
     /// at all when the value already has an error there (an unclosed string
     /// swallows the comma).
-    fn missing_separator(&mut self, prev: Option<Span>, next: Span, message: &str) {
+    fn missing_separator(&mut self, prev: Option<Span>, next: Span, message: &'static str) {
         let at = prev.filter(|s| s.end > s.start).unwrap_or(next);
         if self.errors.iter().rev().any(|e| e.span == at) {
             return;
@@ -1022,6 +1222,7 @@ impl<'a> Parser<'a> {
         Json {
             value: Value::Array(Array { items, open, close }),
             span: Span::new(open.start, end),
+            inner: Span::new(open.start, end),
         }
     }
 }
@@ -1039,13 +1240,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inner_spans_leave_out_only_the_quotes_written() {
+        let root = |t: &str| parse(t).root.unwrap();
+        assert_eq!(root("\"ab\"").inner, Span::new(1, 3));
+        // Unclosed at the end of the text: only the opening quote goes.
+        assert_eq!(root("\"ab").inner, Span::new(1, 3));
+        let o = root("{\"k\": \"wd:");
+        let m = &o.as_object().unwrap().members[0];
+        assert_eq!(
+            (m.key_inner, m.value.inner),
+            (Span::new(2, 3), Span::new(7, 10))
+        );
+        // A key without quotes keeps its whole span.
+        let o = root("{abc: 1}");
+        assert_eq!(o.as_object().unwrap().members[0].key_inner, Span::new(1, 4));
+    }
+
+    #[test]
     fn the_last_duplicate_key_wins() {
         let member = |key: &str, at: u32, v: bool| Member {
             key: key.into(),
             key_span: Span::new(at, at + 3),
+            key_inner: Span::new(at + 1, at + 2),
             value: Json {
                 value: Value::Bool(v),
                 span: Span::new(at + 5, at + 9),
+                inner: Span::new(at + 5, at + 9),
             },
         };
         let o = Object {
@@ -1066,7 +1286,7 @@ mod tests {
         parse(text)
             .errors
             .into_iter()
-            .map(|e| (e.span.start, e.span.end, e.message))
+            .map(|e| (e.span.start, e.span.end, e.message().to_string()))
             .collect()
     }
 
@@ -1074,6 +1294,18 @@ mod tests {
     fn at(text: &str, needle: &str, n: usize) -> (u32, u32) {
         let start = text.match_indices(needle).nth(n).expect(needle).0 as u32;
         (start, start + needle.len() as u32)
+    }
+
+    /// The warnings as `(start, end, code, message)`.
+    fn warnings(text: &str) -> Vec<(u32, u32, &'static str, String)> {
+        parse(text)
+            .warnings
+            .into_iter()
+            .map(|e| {
+                assert_eq!(e.severity, Severity::Warning);
+                (e.span.start, e.span.end, e.code, e.message().to_string())
+            })
+            .collect()
     }
 
     fn one_error(text: &str, needle: &str, n: usize, message: &str) {
@@ -1227,27 +1459,165 @@ mod tests {
             "Invalid `\\u` escape: expected 4 hex digits",
         );
 
+        let text = "[\"\\é\"]";
+        one_error(text, "\\é", 0, "Invalid escape `\\é`");
+    }
+
+    #[test]
+    fn a_lone_surrogate_escape_is_a_warning_read_as_the_replacement_character() {
+        // RFC 8259 allows it and other JSON-LD processors accept it: the
+        // text is JSON, so no error, and the value is U+FFFD.
         let text = r#"["a\ud83dz"]"#;
-        one_error(text, r"\ud83d", 0, "Unpaired surrogate in a `\\u` escape");
+        let (s, e) = at(text, r"\ud83d", 0);
+        let msg = "Unpaired surrogate in a `\\u` escape; it is read as U+FFFD";
+        assert!(errors(text).is_empty());
+        assert_eq!(
+            warnings(text),
+            vec![(s, e, "json-lone-surrogate", msg.to_string())]
+        );
         assert_eq!(
             root(text).as_array().unwrap().items[0].as_str(),
             Some("a\u{fffd}z")
         );
 
-        let text = r#"["\ude00", "\ud83d\u0041"]"#;
-        let (lo, hi) = (at(text, r"\ude00", 0), at(text, r"\ud83d", 0));
-        let msg = "Unpaired surrogate in a `\\u` escape".to_string();
+        // A low surrogate alone, a high one followed by another escape, and
+        // in a key; a valid pair is none.
+        let text = r#"["\ude00", "\ud83d\u0041", {"k\ud800": 1}, "\ud83d\ude00"]"#;
+        assert!(errors(text).is_empty());
+        let spans: Vec<_> = warnings(text)
+            .into_iter()
+            .map(|w| (w.0, w.1, w.2))
+            .collect();
+        let (lo, hi, key) = (
+            at(text, r"\ude00", 0),
+            at(text, r"\ud83d", 0),
+            at(text, r"\ud800", 0),
+        );
         assert_eq!(
-            errors(text),
-            vec![(lo.0, lo.1, msg.clone()), (hi.0, hi.1, msg)]
+            spans,
+            vec![
+                (lo.0, lo.1, "json-lone-surrogate"),
+                (hi.0, hi.1, "json-lone-surrogate"),
+                (key.0, key.1, "json-lone-surrogate"),
+            ]
         );
         assert_eq!(
             root(text).as_array().unwrap().items[1].as_str(),
             Some("\u{fffd}A")
         );
+        assert_eq!(
+            root(text).as_array().unwrap().items[3].as_str(),
+            Some("\u{1f600}")
+        );
+    }
 
-        let text = "[\"\\é\"]";
-        one_error(text, "\\é", 0, "Invalid escape `\\é`");
+    /// The members a map drops are the ones warned about, whatever the size
+    /// of the object (the small and the large way of finding them).
+    #[test]
+    fn the_members_entries_drops_are_the_duplicate_key_warnings() {
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |n: u64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+        // Under MAX_ERRORS members, so every warning is there.
+        for size in [0, 1, 2, 5, 16, 17, 40, 90] {
+            for _ in 0..20 {
+                let keys = 1 + next(size as u64 + 1);
+                let members: Vec<String> = (0..size)
+                    .map(|i| format!("\"k{}\": {i}", next(keys)))
+                    .collect();
+                let text = format!("{{{}}}", members.join(", "));
+                let doc = parse(&text);
+                let o = doc.root.as_ref().unwrap().as_object().unwrap();
+                let kept: Vec<Span> = o.entries().iter().map(|m| m.key_span).collect();
+                let mut dropped: Vec<Span> = o
+                    .members
+                    .iter()
+                    .map(|m| m.key_span)
+                    .filter(|s| !kept.contains(s))
+                    .collect();
+                let mut warned: Vec<Span> = doc
+                    .warnings
+                    .iter()
+                    .filter(|w| w.code == "json-duplicate-key")
+                    .map(|w| w.span)
+                    .collect();
+                dropped.sort_by_key(|s| s.start);
+                warned.sort_by_key(|s| s.start);
+                assert_eq!(dropped, warned, "{text}");
+                let mut distinct: Vec<&str> = o.members.iter().map(|m| &*m.key).collect();
+                distinct.sort_unstable();
+                distinct.dedup();
+                assert_eq!(kept.len(), distinct.len(), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_repeated_key_is_a_warning_at_each_earlier_member() {
+        let text = r#"{"a": 1, "b": 2, "a": 3, "a": 4, "c": {"x": 1, "x": 2}}"#;
+        assert!(errors(text).is_empty());
+        let got: Vec<_> = warnings(text)
+            .into_iter()
+            .map(|w| (w.0, w.1, w.2))
+            .collect();
+        let (a0, a1, x0) = (
+            at(text, "\"a\"", 0),
+            at(text, "\"a\"", 1),
+            at(text, "\"x\"", 0),
+        );
+        assert_eq!(
+            got,
+            vec![
+                (a0.0, a0.1, "json-duplicate-key"),
+                (a1.0, a1.1, "json-duplicate-key"),
+                (x0.0, x0.1, "json-duplicate-key"),
+            ]
+        );
+        // The last member still wins.
+        let o = root(text);
+        assert_eq!(
+            o.as_object().unwrap().get("a").unwrap().value.span.start,
+            at(text, "4", 0).0
+        );
+        // Keys that differ only by their escapes are the same key.
+        let text = r#"{"a": 1, "\u0061": 2}"#;
+        assert_eq!(warnings(text).len(), 1);
+        // Many members take the hashed path; distinct keys give none.
+        let many: String = (0..40)
+            .map(|i| format!("\"k{}\": 0", i % 20))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(warnings(&format!("{{{many}}}")).len(), 20);
+        let distinct: String = (0..40)
+            .map(|i| format!("\"k{i}\": 0"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(warnings(&format!("{{{distinct}}}")).is_empty());
+        // No warning without a repeated key, and none from `tokens`.
+        assert!(warnings(r#"{"a": {"a": 1}, "b": [{"a": 1}, {"a": 2}]}"#).is_empty());
+    }
+
+    #[test]
+    fn warnings_do_not_make_a_document_invalid() {
+        for text in [r#"{"a": 1, "a": 2}"#, r#""\ud83d""#] {
+            let doc = parse(text);
+            assert!(doc.errors.is_empty() && doc.root.is_some() && !doc.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn warnings_are_capped_without_a_message() {
+        let text = format!(
+            "[{}]",
+            "\"\\ud800\",".repeat(MAX_ERRORS + 50).trim_end_matches(',')
+        );
+        let doc = parse(&text);
+        assert!(doc.errors.is_empty());
+        assert_eq!(doc.warnings.len(), MAX_ERRORS);
     }
 
     #[test]
@@ -1550,9 +1920,82 @@ mod tests {
         assert_eq!(errs.len(), MAX_ERRORS + 1);
         assert!(
             errs[MAX_ERRORS]
-                .message
+                .message()
                 .starts_with("More than 100 syntax errors")
         );
+    }
+
+    #[test]
+    fn the_cap_message_sits_at_the_end_of_the_reported_range() {
+        // Errors that are reported at an earlier place than the text read
+        // (a trailing comma, an unclosed opener) must not pull the message
+        // into the middle of the list: it is empty, after every error, and
+        // not past the text.
+        let texts = [
+            format!("[{}1]", ",".repeat(500)),
+            // Each trailing comma is reported when its object closes.
+            format!("[{}{{}}]", "{\"a\": 1,},\n".repeat(300)),
+            format!("[{}]", "[1,],".repeat(300)),
+            "[".repeat(200) + &"1 2 ".repeat(300),
+            format!("[{}\"é", "x ".repeat(300)),
+        ];
+        for text in texts {
+            let errs = parse(&text).errors;
+            assert_eq!(
+                errs.len(),
+                MAX_ERRORS + 1,
+                "{}",
+                &text[..20.min(text.len())]
+            );
+            let cap = errs.last().unwrap();
+            assert!(cap.message().starts_with("More than 100 syntax errors"));
+            assert_eq!(cap.span.start, cap.span.end);
+            assert!(cap.span.end as usize <= text.len());
+            assert!(text.is_char_boundary(cap.span.end as usize));
+            let before = errs[..MAX_ERRORS].iter().map(|e| e.span.end).max().unwrap();
+            assert!(
+                cap.span.start >= before,
+                "{cap:?} before the error ending at {before}"
+            );
+            assert!(errs.windows(2).all(|w| w[0].span.start <= w[1].span.start));
+        }
+    }
+
+    #[test]
+    fn a_backslash_does_not_take_a_line_break_with_it() {
+        // The lexer ends an unclosed string at the break; the editor scans
+        // must see the same end.
+        for text in [
+            "\"a\\\nb\"",
+            "\"a\\\r\nb\"",
+            "\"a\\\"b",
+            "\"a\\",
+            "\"a\\\\\" c",
+            "\"é\\\n\"x\"",
+            "\"abc",
+            "\"\"",
+        ] {
+            let first = tokens(text).into_iter().next().unwrap();
+            assert_eq!(first.kind, TokenKind::String, "{text:?}");
+            let (end, closed) = string_end(text.as_bytes(), 0);
+            let want_end = first.span.end as usize;
+            assert_eq!(
+                if closed { end + 1 } else { end },
+                want_end,
+                "{text:?}: the string_end and the token disagree"
+            );
+            assert_eq!(
+                closed,
+                text[..want_end].len() > 1 && text[..want_end].ends_with('"') && {
+                    // Closed unless the quote is escaped away or is the opener.
+                    parse(text)
+                        .errors
+                        .iter()
+                        .all(|e| !e.message().starts_with("Unclosed string"))
+                },
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

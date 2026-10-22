@@ -75,3 +75,87 @@ test("a SPARQL constraint's violation appears on save, with its message filled i
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+const PLANT = `@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.com/plant#> .
+
+ex:prefixes sh:declare [ sh:prefix "ex" ; sh:namespace "http://example.com/plant#"^^xsd:anyURI ] .
+`
+const SIGNALS = `@prefix ex: <http://example.com/plant#> .
+ex:s1 a ex:Signal .
+ex:s2 a ex:Signal ; ex:retired true .
+`
+const failure = (d) => d.filter((x) => x.code === "shacl-failure")
+
+test("a shape with only a SPARQL target is validated, and its target may use MINUS", async () => {
+  const dir = tempDir("turtle-sparql-target-")
+  // No sh:targetClass, no sh:NodeShape: sh:target is all that marks it.
+  const shapes = `${PLANT}
+ex:Live sh:target [
+        a sh:SPARQLTarget ;
+        sh:prefixes ex:prefixes ;
+        sh:select """
+            SELECT ?this WHERE {
+                ?this a ex:Signal .
+                MINUS { ?this ex:retired true }
+            }
+        """
+    ] ;
+    sh:property [ sh:path ex:unit ; sh:minCount 1 ; sh:message "needs a unit" ] .
+`
+  fs.writeFileSync(path.join(dir, "shapes.ttl"), shapes)
+  fs.writeFileSync(path.join(dir, "data.ttl"), SIGNALS)
+  const s = await startServer({ cwd: dir, initializationOptions: { shacl: { onType: false } } })
+  const data = uriOf(path.join(dir, "data.ttl"))
+  const shapesUri = uriOf(path.join(dir, "shapes.ttl"))
+  try {
+    await s.request("workspace/symbol", { query: "" })
+    s.open(data, SIGNALS)
+    const found = sparql(await until(s, data, (d) => d.some((x) => x.message === "needs a unit")))
+    // ex:s1 only: ex:s2 is retired, so the MINUS leaves it out.
+    assert.equal(found.length, 1, JSON.stringify(found))
+    assert.equal(found[0].range.start.line, 1)
+    // The lint holds the target to no restriction either.
+    s.open(shapesUri, shapes)
+    const lint = await s.diagnosticsFor(shapesUri)
+    assert.deepEqual(lint.filter((x) => String(x.code).startsWith("shacl-sparql")), [])
+    assert.deepEqual(failure(lint), [])
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a solution that says ?failure true is a warning on its query", async () => {
+  const dir = tempDir("turtle-sparql-failure-")
+  const shapes = `${PLANT}
+ex:Checked a sh:NodeShape ;
+    sh:targetClass ex:Signal ;
+    sh:sparql [
+        sh:prefixes ex:prefixes ;
+        sh:select """
+            SELECT $this ?failure WHERE {
+                $this a ex:Signal .
+                BIND (true AS ?failure)
+            }
+        """
+    ] .
+`
+  fs.writeFileSync(path.join(dir, "shapes.ttl"), shapes)
+  fs.writeFileSync(path.join(dir, "data.ttl"), SIGNALS)
+  const s = await startServer({ cwd: dir, initializationOptions: { shacl: { onType: false } } })
+  const shapesUri = uriOf(path.join(dir, "shapes.ttl"))
+  try {
+    await s.request("workspace/symbol", { query: "" })
+    s.open(shapesUri, shapes)
+    const [d] = failure(await until(s, shapesUri, (d) => failure(d).length > 0))
+    assert.equal(d.severity, 2)
+    assert.match(d.message, /\?failure/)
+    // On the sh:select line.
+    assert.equal(shapes.split("\n")[d.range.start.line].trim().startsWith("sh:select"), true)
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

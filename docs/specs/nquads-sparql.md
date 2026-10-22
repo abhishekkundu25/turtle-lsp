@@ -1,6 +1,6 @@
 # N-Quads and SPARQL documents
 
-Status: done · 2026-10-19 · Branch: `nquads-sparql`
+Status: done in 0.5.0 · 2026-10-19 · Branch: `nquads-sparql`
 
 ## Problem Statement
 

@@ -1,9 +1,10 @@
 //! SHACL Core validation over a [`Graph`] that is both the data graph and
 //! the shapes graph.
 //!
-//! Shapes are compiled once from the graph (lazily, as targets and shape
-//! parameters reach them), then every shape with a target validates its
-//! focus nodes. Covered: all targets (including implicit class targets and
+//! The shape model ([`super::model`]) says which nodes are shapes, with
+//! their paths, targets and parameters; its shapes are compiled into
+//! constraints once (lazily, as targets and shape parameters reach them),
+//! then every shape with a target validates its focus nodes. Covered: all targets (including implicit class targets and
 //! the `rdfs:subClassOf` closure), all property paths, and every SHACL Core
 //! constraint component; `sh:deactivated`, `sh:severity` and `sh:message`.
 //! SHACL-SPARQL: SPARQL-based constraints (`sh:sparql`), SPARQL-based
@@ -13,9 +14,14 @@
 //!
 //! Choices where the spec leaves room:
 //! - a recursive shape reference (the same shape on the same focus node
-//!   while it is being checked) conforms, as do nestings deeper than 64;
-//! - a shape whose `sh:path` is ill-formed is skipped, as is a
+//!   while it is being checked) conforms; a nesting deeper than 64 shapes is
+//!   cut short and reported as a [`Failure`], and what it cut is never cached;
+//! - a shape whose `sh:path` is ill-formed (including one nested deeper than
+//!   64 levels) is skipped with a [`Failure`] that is an error, as is a
 //!   property-shape-only parameter on a node shape;
+//! - a validation has a [`Budget`]: past its result cap it stops with
+//!   [`Report::capped`] set, past its steps (of path evaluation, and one
+//!   per shape check) with a [`Failure`];
 //! - an implicit class target is also taken from `owl:Class` (common in
 //!   ontologies that type their shapes' classes with OWL);
 //! - `sh:pattern` uses the `regex` crate (linear time); XPath's `x` flag
@@ -23,12 +29,13 @@
 //!   a pattern that does not compile is ignored;
 //! - literal comparisons follow [`super::literal`].
 
-use super::Path;
 use super::literal;
-use super::sparql::{self, Answer, PreBound};
+use super::model::{self, Path, Shapes};
+use super::sparql::{self, Answer, Cancel, Fail, Role};
+use super::vocab::{self, Param};
 use crate::rdf::Index;
 use crate::rdf::graph::{Graph, Id, Term};
-use crate::syntax::{Iri, RDF, XSD};
+use crate::syntax::Iri;
 use regex::{Regex, RegexBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spareval::QuerySolution;
@@ -36,7 +43,7 @@ use spargebra::Query;
 use spargebra::term::{NamedNode, Term as RdfTerm, Variable};
 use std::cmp::Ordering;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 /// One `sh:ValidationResult`.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,7 +69,7 @@ pub struct ValidationResult {
     /// `sh:sourceConstraint`: the SPARQL constraint that produced the result.
     pub constraint: Option<Id>,
     /// The graph triple that states the constraint's parameter.
-    pub param: u32,
+    pub(crate) param: u32,
 }
 
 /// A query in the shapes that could not run: it does not parse, breaks the
@@ -71,11 +78,24 @@ pub struct ValidationResult {
 /// failure then; the other results are still reported.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Failure {
-    /// The node whose `sh:select` / `sh:ask` failed.
-    pub node: Id,
-    /// The graph triple that states the query.
-    pub triple: Option<u32>,
+    /// The node whose `sh:select` / `sh:ask` failed, or the shape that was
+    /// cut short or skipped.
+    pub(crate) node: Id,
+    /// The graph triple that states the query (or the `sh:path`).
+    pub(crate) triple: Option<u32>,
     pub message: String,
+    pub(crate) kind: FailureKind,
+}
+
+/// What a [`Failure`] is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailureKind {
+    /// A query that could not run to the end.
+    Query,
+    /// A shape cut short: nested too deep, or past the step budget.
+    Cut,
+    /// A shape skipped for its `sh:path`, which is not a well-formed path.
+    Path,
 }
 
 /// What a validation found.
@@ -83,177 +103,12 @@ pub struct Failure {
 pub struct Report {
     pub results: Vec<ValidationResult>,
     pub failures: Vec<Failure>,
+    /// Validation stopped at [`Budget::results`]: there are more results.
+    pub(crate) capped: bool,
 }
-
-struct V {
-    rdf_type: Iri,
-    sub_class_of: Iri,
-    rdfs_class: Iri,
-    owl_class: Iri,
-    node_shape: Iri,
-    property_shape: Iri,
-    target_class: Iri,
-    target_node: Iri,
-    target_subjects_of: Iri,
-    target_objects_of: Iri,
-    path: Iri,
-    inverse_path: Iri,
-    alternative_path: Iri,
-    zero_or_more_path: Iri,
-    one_or_more_path: Iri,
-    zero_or_one_path: Iri,
-    rdf_first: Iri,
-    rdf_nil: Iri,
-    deactivated: Iri,
-    severity: Iri,
-    violation: Iri,
-    message: Iri,
-    flags: Iri,
-    property: Iri,
-    qualified_value_shape: Iri,
-    qualified_min_count: Iri,
-    qualified_max_count: Iri,
-    qualified_disjoint: Iri,
-    ignored_properties: Iri,
-    xsd_boolean: Iri,
-    target: Iri,
-    sparql: Iri,
-    select: Iri,
-    ask: Iri,
-    prefixes: Iri,
-    declare: Iri,
-    prefix: Iri,
-    namespace: Iri,
-    owl_imports: Iri,
-    constraint_component: Iri,
-    parameter: Iri,
-    optional: Iri,
-    validator: Iri,
-    node_validator: Iri,
-    property_validator: Iri,
-    /// Parameter -> component, for the parameters that need no extra lookup.
-    params: FxHashMap<Iri, Param>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Param {
-    Class,
-    Datatype,
-    NodeKind,
-    MinCount,
-    MaxCount,
-    MinExclusive,
-    MinInclusive,
-    MaxExclusive,
-    MaxInclusive,
-    MinLength,
-    MaxLength,
-    Pattern,
-    LanguageIn,
-    UniqueLang,
-    Equals,
-    Disjoint,
-    LessThan,
-    LessThanOrEquals,
-    Not,
-    And,
-    Or,
-    Xone,
-    Node,
-    Property,
-    Closed,
-    HasValue,
-    In,
-}
-
-const PARAMS: [(&str, Param); 27] = [
-    ("class", Param::Class),
-    ("datatype", Param::Datatype),
-    ("nodeKind", Param::NodeKind),
-    ("minCount", Param::MinCount),
-    ("maxCount", Param::MaxCount),
-    ("minExclusive", Param::MinExclusive),
-    ("minInclusive", Param::MinInclusive),
-    ("maxExclusive", Param::MaxExclusive),
-    ("maxInclusive", Param::MaxInclusive),
-    ("minLength", Param::MinLength),
-    ("maxLength", Param::MaxLength),
-    ("pattern", Param::Pattern),
-    ("languageIn", Param::LanguageIn),
-    ("uniqueLang", Param::UniqueLang),
-    ("equals", Param::Equals),
-    ("disjoint", Param::Disjoint),
-    ("lessThan", Param::LessThan),
-    ("lessThanOrEquals", Param::LessThanOrEquals),
-    ("not", Param::Not),
-    ("and", Param::And),
-    ("or", Param::Or),
-    ("xone", Param::Xone),
-    ("node", Param::Node),
-    ("property", Param::Property),
-    ("closed", Param::Closed),
-    ("hasValue", Param::HasValue),
-    ("in", Param::In),
-];
 
 fn sh(local: &str) -> Iri {
     Iri::intern(&format!("{}{local}", super::SH))
-}
-
-fn v() -> &'static V {
-    static VOCAB: OnceLock<V> = OnceLock::new();
-    VOCAB.get_or_init(|| {
-        let rdfs = |l: &str| Iri::intern(&format!("http://www.w3.org/2000/01/rdf-schema#{l}"));
-        let rdf = |l: &str| Iri::intern(&format!("{RDF}{l}"));
-        V {
-            rdf_type: rdf("type"),
-            sub_class_of: rdfs("subClassOf"),
-            rdfs_class: rdfs("Class"),
-            owl_class: Iri::intern("http://www.w3.org/2002/07/owl#Class"),
-            node_shape: sh("NodeShape"),
-            property_shape: sh("PropertyShape"),
-            target_class: sh("targetClass"),
-            target_node: sh("targetNode"),
-            target_subjects_of: sh("targetSubjectsOf"),
-            target_objects_of: sh("targetObjectsOf"),
-            path: sh("path"),
-            inverse_path: sh("inversePath"),
-            alternative_path: sh("alternativePath"),
-            zero_or_more_path: sh("zeroOrMorePath"),
-            one_or_more_path: sh("oneOrMorePath"),
-            zero_or_one_path: sh("zeroOrOnePath"),
-            rdf_first: rdf("first"),
-            rdf_nil: rdf("nil"),
-            deactivated: sh("deactivated"),
-            severity: sh("severity"),
-            violation: sh("Violation"),
-            message: sh("message"),
-            flags: sh("flags"),
-            property: sh("property"),
-            qualified_value_shape: sh("qualifiedValueShape"),
-            qualified_min_count: sh("qualifiedMinCount"),
-            qualified_max_count: sh("qualifiedMaxCount"),
-            qualified_disjoint: sh("qualifiedValueShapesDisjoint"),
-            ignored_properties: sh("ignoredProperties"),
-            xsd_boolean: Iri::intern(&format!("{XSD}boolean")),
-            target: sh("target"),
-            sparql: sh("sparql"),
-            select: sh("select"),
-            ask: sh("ask"),
-            prefixes: sh("prefixes"),
-            declare: sh("declare"),
-            prefix: sh("prefix"),
-            namespace: sh("namespace"),
-            owl_imports: Iri::intern("http://www.w3.org/2002/07/owl#imports"),
-            constraint_component: sh("ConstraintComponent"),
-            parameter: sh("parameter"),
-            optional: sh("optional"),
-            validator: sh("validator"),
-            node_validator: sh("nodeValidator"),
-            property_validator: sh("propertyValidator"),
-            params: PARAMS.iter().map(|&(l, p)| (sh(l), p)).collect(),
-        }
-    })
 }
 
 /// The `sh:...ConstraintComponent` IRI of a component.
@@ -333,11 +188,6 @@ struct Component {
     validator: Option<Id>,
 }
 
-const SPARQL_CONSTRAINT: PreBound = PreBound {
-    names: &["this", "shapesGraph", "currentShape"],
-    required: &["this"],
-};
-
 /// The local name of `iri`: after its last `#`, `/` or `:`.
 fn local_name(iri: &str) -> &str {
     iri.rsplit(['#', '/', ':']).next().unwrap_or(iri)
@@ -346,7 +196,7 @@ fn local_name(iri: &str) -> &str {
 /// The prefixes `sh:prefixes` of `node` declares (`sh:declare`), following
 /// `owl:imports`.
 fn prefixes(g: &Graph, node: Id) -> Vec<(String, String)> {
-    let v = v();
+    let v = vocab::get();
     let mut out = Vec::new();
     let mut seen = FxHashSet::default();
     let mut todo: Vec<Id> = g.objects(node, v.prefixes).collect();
@@ -373,7 +223,7 @@ fn prefixes(g: &Graph, node: Id) -> Vec<(String, String)> {
 /// The `sh:select` (or, with `ask`, `sh:ask`) of `node`: (whether ASK, text,
 /// triple).
 fn query_text<'a>(g: &Graph<'a>, node: Id, ask: bool) -> Option<(bool, &'a str, u32)> {
-    let v = v();
+    let v = vocab::get();
     g.out(node).find_map(|(i, t)| {
         let is_ask = t.p == v.ask;
         if t.p != v.select && !(ask && is_ask) {
@@ -389,17 +239,18 @@ fn prepare(
     node: Id,
     ask: bool,
     path: Option<&Path>,
-    pre: &PreBound,
+    role: &Role,
     failures: &mut Vec<Failure>,
 ) -> Option<(Query, bool)> {
     let (is_ask, text, triple) = query_text(g, node, ask)?;
-    match sparql::prepare(text, &prefixes(g, node), path, pre) {
+    match sparql::prepare(text, &prefixes(g, node), path, role) {
         Ok(q) => Some((q, is_ask)),
         Err(message) => {
             failures.push(Failure {
                 node,
                 triple: Some(triple),
                 message,
+                kind: FailureKind::Query,
             });
             None
         }
@@ -409,7 +260,7 @@ fn prepare(
 /// The SPARQL-based constraint components declared in `g`: instances of
 /// `sh:ConstraintComponent` (or a subclass) with an IRI and parameters.
 fn components(g: &Graph) -> Vec<Component> {
-    let v = v();
+    let v = vocab::get();
     let Some(cc) = g.iri(v.constraint_component) else {
         return Vec::new();
     };
@@ -496,6 +347,20 @@ struct Shape {
     constraints: Vec<(C, u32)>,
 }
 
+impl Shape {
+    /// A node shape with nothing to check.
+    fn empty(node: Id, skip: bool) -> Shape {
+        Shape {
+            node,
+            path: None,
+            skip,
+            severity: vocab::get().violation,
+            messages: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+}
+
 const MAX_DEPTH: usize = 64;
 
 /// Shapes with fewer focus nodes run SPARQL checks one by one: a batched run
@@ -514,46 +379,55 @@ fn sparse(focus: usize, triples: usize) -> bool {
     focus.saturating_mul(TRIPLES_PER_BATCHED_FOCUS) < triples
 }
 
-/// The property path rooted at `node`.
-pub fn parse_path(g: &Graph, node: Id) -> Path {
-    path_at(g, node, 0)
+/// The property path rooted at `node`: the shape model's ([`model::path`]),
+/// with nested repetitions merged ([`merged`]).
+#[cfg(test)]
+pub(crate) fn parse_path(g: &Graph, node: Id) -> Path {
+    merged(model::path(g, node))
 }
 
-fn path_at(g: &Graph, node: Id, depth: usize) -> Path {
-    let v = v();
-    if depth > MAX_DEPTH {
-        return Path::Invalid;
+/// `p` with every repetition directly inside another merged into one (see
+/// [`repeated`]), from the innermost out.
+fn merged(p: Path) -> Path {
+    let each = |ps: Vec<Path>| -> Vec<Path> { ps.into_iter().map(merged).collect() };
+    match p {
+        Path::Inverse(q) => Path::Inverse(Box::new(merged(*q))),
+        Path::Sequence(ps) => Path::Sequence(each(ps)),
+        Path::Alternative(ps) => Path::Alternative(each(ps)),
+        Path::ZeroOrMore(q) => repeated(Repeat::Star, merged(*q)),
+        Path::OneOrMore(q) => repeated(Repeat::Plus, merged(*q)),
+        Path::ZeroOrOne(q) => repeated(Repeat::Optional, merged(*q)),
+        p @ (Path::Predicate(_) | Path::Invalid) => p,
     }
-    match g.term(node) {
-        Term::Iri(i) if i == v.rdf_nil => Path::Invalid,
-        Term::Iri(i) => Path::Predicate(i),
-        Term::Blank(_) => {
-            let members = |head: Id| -> Vec<Path> {
-                g.list(head)
-                    .into_iter()
-                    .map(|m| path_at(g, m, depth + 1))
-                    .collect()
-            };
-            if g.object(node, v.rdf_first).is_some() {
-                return Path::Sequence(members(node));
-            }
-            for (_, t) in g.out(node) {
-                let inner = || Box::new(path_at(g, t.o, depth + 1));
-                if t.p == v.inverse_path {
-                    return Path::Inverse(inner());
-                } else if t.p == v.alternative_path {
-                    return Path::Alternative(members(t.o));
-                } else if t.p == v.zero_or_more_path {
-                    return Path::ZeroOrMore(inner());
-                } else if t.p == v.one_or_more_path {
-                    return Path::OneOrMore(inner());
-                } else if t.p == v.zero_or_one_path {
-                    return Path::ZeroOrOne(inner());
-                }
-            }
-            Path::Invalid
-        }
-        Term::Value(_) => Path::Invalid,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Repeat {
+    Star,
+    Plus,
+    Optional,
+}
+
+/// `inner` repeated, with a repetition directly inside another merged into
+/// one: `(p*)*`, `(p+)*`, `(p?)*`, `(p*)+`, `(p?)+`, `(p+)?` and `(p*)?` are
+/// all `p*`, and doubled `+` or `?` is the same `+` or `?`. Nested closures
+/// would otherwise cost the size of the graph to the power of the nesting.
+fn repeated(outer: Repeat, inner: Path) -> Path {
+    let merge = |inner: Repeat| if inner == outer { inner } else { Repeat::Star };
+    match inner {
+        Path::ZeroOrMore(q) => wrap(Repeat::Star, *q),
+        Path::OneOrMore(q) => wrap(merge(Repeat::Plus), *q),
+        Path::ZeroOrOne(q) => wrap(merge(Repeat::Optional), *q),
+        other => wrap(outer, other),
+    }
+}
+
+fn wrap(kind: Repeat, p: Path) -> Path {
+    let p = Box::new(p);
+    match kind {
+        Repeat::Star => Path::ZeroOrMore(p),
+        Repeat::Plus => Path::OneOrMore(p),
+        Repeat::Optional => Path::ZeroOrOne(p),
     }
 }
 
@@ -605,8 +479,11 @@ fn number(g: &Graph, id: Id) -> Option<u64> {
     lex.parse().ok()
 }
 
+/// Compiles the shapes of a [`Shapes`] model into constraints, lazily: a
+/// shape is compiled once a root or a compiled shape refers to it.
 struct Compiler<'g, 'a> {
     g: &'g Graph<'a>,
+    model: &'g Shapes,
     shapes: Vec<Shape>,
     index: FxHashMap<Id, ShapeIx>,
     /// Shapes reserved but not built yet. Building one only reserves the
@@ -624,22 +501,21 @@ impl Compiler<'_, '_> {
         }
         let ix = self.shapes.len() as ShapeIx;
         self.index.insert(node, ix);
-        self.shapes.push(Shape {
-            node,
-            path: None,
-            skip: true,
-            severity: v().violation,
-            messages: Vec::new(),
-            constraints: Vec::new(),
-        });
+        self.shapes.push(Shape::empty(node, true));
         self.pending.push((node, ix));
         ix
     }
 
-    /// Build every reserved shape, including those found while building.
+    /// Build every reserved shape, including those found while building. A
+    /// node the model has no shape for (a literal, an IRI with no triples)
+    /// has nothing to check: every value conforms to it.
     fn build_pending(&mut self) {
+        let model = self.model;
         while let Some((node, ix)) = self.pending.pop() {
-            let built = self.build(node);
+            let built = match model.get(node) {
+                Some(s) => self.build(s),
+                None => Shape::empty(node, false),
+            };
             self.shapes[ix as usize] = built;
         }
     }
@@ -650,21 +526,43 @@ impl Compiler<'_, '_> {
 
     /// The literal `true` (the spec names only that one, not `"1"^^xsd:boolean`).
     fn is_true(&self, id: Id) -> bool {
-        matches!(self.g.term(id).literal(), Some(("true", dt, _)) if dt == v().xsd_boolean)
+        matches!(self.g.term(id).literal(), Some(("true", dt, _)) if dt == vocab::get().xsd_boolean)
     }
 
-    fn build(&mut self, node: Id) -> Shape {
+    /// The constraints of model shape `s`.
+    fn build(&mut self, s: &model::Shape) -> Shape {
         let g = self.g;
-        let v = v();
-        let own: Vec<(u32, Iri, Id)> = g.out(node).map(|(i, t)| (i, t.p, t.o)).collect();
+        let model = self.model;
+        let v = vocab::get();
+        let node = s.node;
+        // Its parameters (every SHACL triple it is the subject of), in order.
+        let own: Vec<(u32, Iri, Id)> = s
+            .params
+            .iter()
+            .map(|&i| {
+                let t = g.triple_at(i);
+                (i, t.p, t.o)
+            })
+            .collect();
         let first = |p: Iri| own.iter().find(|t| t.1 == p).map(|t| t.2);
-        let path = first(v.path).map(|p| parse_path(g, p));
+        let path = s.path.as_ref().map(|(p, _)| merged(p.clone()));
+        let deactivated = own
+            .iter()
+            .any(|t| t.1 == v.deactivated && self.is_true(t.2));
+        let ill_formed = path.as_ref().is_some_and(|p| !well_formed(p));
+        if ill_formed && !deactivated {
+            self.failures.push(Failure {
+                node,
+                triple: s.path.as_ref().map(|p| p.1),
+                message: format!(
+                    "sh:path is not a well-formed property path (empty, not a path, or nested deeper than {MAX_DEPTH} levels): this shape is not validated"
+                ),
+                kind: FailureKind::Path,
+            });
+        }
         let mut shape = Shape {
             node,
-            skip: path.as_ref().is_some_and(|p| !well_formed(p))
-                || own
-                    .iter()
-                    .any(|t| t.1 == v.deactivated && self.is_true(t.2)),
+            skip: ill_formed || deactivated,
             path,
             severity: first(v.severity)
                 .and_then(|s| g.as_iri(s))
@@ -685,7 +583,7 @@ impl Compiler<'_, '_> {
             .map_or("", |l| l.0);
         let mut qualified_done = false;
         for &(ti, p, o) in &own {
-            let Some(&param) = v.params.get(&p) else {
+            let Some(param) = v.param(p) else {
                 if (p == v.qualified_value_shape) && property_shape && !qualified_done {
                     qualified_done = true;
                     self.qualified(node, o, &own, &mut shape);
@@ -740,13 +638,12 @@ impl Compiler<'_, '_> {
                 Param::Node => Some(C::Node(self.shape(o))),
                 Param::Property => Some(C::Property(self.shape(o))),
                 Param::Closed => self.is_true(o).then(|| {
+                    // The property shapes' paths that are a single IRI.
                     let mut allowed: FxHashSet<Iri> = own
                         .iter()
                         .filter(|t| t.1 == v.property)
-                        .filter_map(|t| match g.object(t.2, v.path).map(|p| g.term(p)) {
-                            Some(Term::Iri(i)) => Some(i),
-                            _ => None,
-                        })
+                        .filter_map(|t| model.get(t.2)?.path.as_ref())
+                        .filter_map(|&(_, i)| g.as_iri(g.triple_at(i).o))
                         .collect();
                     for t in own.iter().filter(|t| t.1 == v.ignored_properties) {
                         allowed.extend(g.list(t.2).into_iter().filter_map(|m| g.as_iri(m)));
@@ -766,26 +663,32 @@ impl Compiler<'_, '_> {
                 self.sparql_constraint(&mut shape, ti, o);
             }
         }
-        self.component_uses(&mut shape, &own);
+        self.component_uses(&mut shape);
         shape
     }
 
     /// The SPARQL-based constraint `c` of `shape` (stated by triple `ti`).
     fn sparql_constraint(&mut self, shape: &mut Shape, ti: u32, c: Id) {
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
         if g.objects(c, v.deactivated).any(|d| self.is_true(d)) {
             return;
         }
         let path = shape.path.as_ref();
-        if let Some((query, _)) = prepare(g, c, false, path, &SPARQL_CONSTRAINT, &mut self.failures)
-        {
+        if let Some((query, _)) = prepare(
+            g,
+            c,
+            false,
+            path,
+            &sparql::constraint_role(),
+            &mut self.failures,
+        ) {
             let check = Check {
                 batch: sparql::batchable(&query),
                 query,
                 ask: false,
                 constraint: Some(c),
-                component: sh("SPARQLConstraintComponent"),
+                component: component("SPARQL"),
                 messages: g.objects(c, v.message).collect(),
                 bindings: Vec::new(),
                 source: c,
@@ -795,9 +698,15 @@ impl Compiler<'_, '_> {
     }
 
     /// The SPARQL-based components whose mandatory parameters `shape` has.
-    fn component_uses(&mut self, shape: &mut Shape, own: &[(u32, Iri, Id)]) {
+    /// Their parameters may be any predicate, so all of the shape's triples
+    /// are looked at.
+    fn component_uses(&mut self, shape: &mut Shape) {
+        if self.components.is_empty() {
+            return;
+        }
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
+        let own: Vec<(u32, Iri, Id)> = g.out(shape.node).map(|(i, t)| (i, t.p, t.o)).collect();
         for comp in &self.components {
             let mut bindings = Vec::new();
             let mut first = None;
@@ -829,26 +738,19 @@ impl Compiler<'_, '_> {
             else {
                 continue;
             };
-            let mut names = vec!["this", "shapesGraph", "currentShape"];
-            let mut required = vec!["this"];
+            let mut names: Vec<String> = ["this", "shapesGraph", "currentShape"]
+                .map(String::from)
+                .into();
             if ask {
-                names.push("value");
-                required.push("value");
+                names.push("value".into());
             }
-            for (_, name, _) in &comp.params {
-                names.push(name);
-                required.push(name);
-            }
-            let pre = PreBound {
-                names: &names,
-                required: &required,
-            };
+            names.extend(comp.params.iter().map(|(_, name, _)| name.clone()));
             let Some((query, is_ask)) = prepare(
                 g,
                 validator,
                 ask,
                 shape.path.as_ref(),
-                &pre,
+                &Role::PreBound(names),
                 &mut self.failures,
             ) else {
                 continue;
@@ -876,7 +778,7 @@ impl Compiler<'_, '_> {
     /// shapes its conforming values must not conform to.
     fn qualified(&mut self, node: Id, q: Id, own: &[(u32, Iri, Id)], shape: &mut Shape) {
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
         let disjoint = own
             .iter()
             .any(|t| t.1 == v.qualified_disjoint && self.is_true(t.2));
@@ -919,23 +821,78 @@ impl Compiler<'_, '_> {
     }
 }
 
+/// What one validation may spend before it stops: results kept, and steps:
+/// those of path evaluation (closure and sequence work, which a graph can
+/// make quadratic or worse) and one per shape check (shape-valued
+/// constraints past the depth limit, never cached, can make those
+/// exponential).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Budget {
+    pub(crate) results: usize,
+    pub(crate) steps: u64,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Budget {
+            results: 25_000,
+            steps: 40_000_000,
+        }
+    }
+}
+
+/// Steps between two polls of the cancel check.
+const POLL_EVERY: u64 = 4096;
+
+/// Ids kept in [`Run::memo`] at most; past that it starts over.
+const MEMO_IDS: usize = 8 << 20;
+
+/// The most focus nodes one SPARQL-based target may select.
+const MAX_TARGETS: usize = 1_000_000;
+
+#[cfg(test)]
+thread_local! {
+    /// Nodes looked at to find the instances of classes, to tell a run that
+    /// walks the whole graph from one among a few nodes.
+    pub(crate) static TARGETS_LOOKED_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// SPARQL checks run for one focus node, and run once for a batch.
+    static QUERIES_RUN: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 struct Run<'r, 'g, 'a> {
     g: &'g Graph<'a>,
     shapes: &'r [Shape],
     stack: Vec<(ShapeIx, Id)>,
     supers: FxHashMap<Id, Rc<FxHashSet<Id>>>,
     conforms: FxHashMap<(ShapeIx, Id), bool>,
+    /// The values along a path from a node, by path (the address of the
+    /// [`Path`] in its shape), node and direction. Closures and sequences
+    /// nested in other paths ask for the same ones over and over.
+    memo: FxHashMap<(usize, Id, bool), Rc<[Id]>>,
+    memo_ids: usize,
     /// The graph as a SPARQL dataset, when the shapes use SPARQL.
     ix: Option<&'r Index<'g>>,
     ev: sparql::Engine,
-    cancelled: &'r dyn Fn() -> bool,
-    /// `cancelled` said so between two queries.
+    cancel: Cancel,
+    /// `cancel` said so.
     stopped: bool,
+    budget: Budget,
+    steps: u64,
+    since_poll: u64,
+    /// The step budget ran out.
+    exhausted: bool,
+    /// The result budget ran out.
+    capped: bool,
+    /// Checks cut short by the depth limit so far.
+    cuts: u64,
     failures: Vec<Failure>,
     /// The focus nodes of the shape being validated: a SPARQL check that
     /// reaches one of them runs once for all of them, when there are at
     /// least `min_batch`.
     min_batch: usize,
+    /// Only these nodes (sorted) can be focus nodes; targets are looked for
+    /// among them rather than in the whole graph. See [`validate_report_among`].
+    among: Option<&'r [Id]>,
     batch: Vec<Id>,
     in_batch: FxHashSet<Id>,
     /// The solutions of such runs per focus node, by shape and check (`None`
@@ -964,23 +921,77 @@ fn lang_matches(tag: &str, range: &str) -> bool {
 }
 
 fn dedup(v: &mut Vec<Id>) {
+    if v.len() < 2 {
+        return;
+    }
     let mut seen = FxHashSet::default();
     v.retain(|x| seen.insert(*x));
 }
 
 impl Run<'_, '_, '_> {
-    /// The values reached from `x` along `path` (backwards when `inv`).
-    fn values(&self, path: &Path, x: Id, inv: bool) -> Vec<Id> {
-        let g = self.g;
-        let mut out = match path {
-            Path::Predicate(p) => {
-                if inv {
-                    g.subjects(*p, x).collect()
-                } else {
-                    g.objects(x, *p).collect()
-                }
+    /// Whether validation must stop: cancelled, out of steps or results.
+    fn halted(&self) -> bool {
+        self.stopped || self.exhausted || self.capped
+    }
+
+    /// Counts `n` steps of path evaluation, for the shape being checked.
+    fn charge(&mut self, n: usize) {
+        let at = self.stack.last().map(|&(si, _)| si);
+        self.spend(n as u64, at);
+    }
+
+    /// Counts `n` steps made for shape `at`: polls the cancel check every
+    /// few thousand, and stops everything once the budget is spent.
+    fn spend(&mut self, n: u64, at: Option<ShapeIx>) {
+        self.steps = self.steps.saturating_sub(n);
+        self.since_poll += n;
+        if self.since_poll >= POLL_EVERY {
+            self.since_poll = 0;
+            if (self.cancel)() {
+                self.stopped = true;
             }
-            Path::Inverse(q) => self.values(q, x, !inv),
+        }
+        if self.steps == 0 && !self.exhausted {
+            self.exhausted = true;
+            if let Some(si) = at {
+                let node = self.shapes[si as usize].node;
+                self.fail_with(
+                    node,
+                    None,
+                    format!(
+                        "validation took more than {} steps (of property paths and shape checks), the limit for one validation: this shape and the ones after it are not fully validated",
+                        self.budget.steps
+                    ),
+                    FailureKind::Cut,
+                );
+            }
+        }
+    }
+
+    /// The values reached from `x` along `path` (backwards when `inv`).
+    fn values(&mut self, path: &Path, x: Id, inv: bool) -> Rc<[Id]> {
+        match path {
+            Path::Predicate(p) => {
+                let mut out: Vec<Id> = if inv {
+                    self.g.subjects(*p, x).collect()
+                } else {
+                    self.g.objects(x, *p).collect()
+                };
+                dedup(&mut out);
+                return out.into();
+            }
+            Path::Inverse(q) => return self.values(q, x, !inv),
+            Path::Invalid => return Rc::from([]),
+            _ => {}
+        }
+        let key = (path as *const Path as usize, x, inv);
+        if let Some(v) = self.memo.get(&key) {
+            return v.clone();
+        }
+        if self.halted() {
+            return Rc::from([]);
+        }
+        let mut out = match path {
             Path::Sequence(ps) => {
                 let mut cur = vec![x];
                 let steps: Box<dyn Iterator<Item = &Path>> = if inv {
@@ -989,37 +1000,89 @@ impl Run<'_, '_, '_> {
                     Box::new(ps.iter())
                 };
                 for q in steps {
-                    let mut next: Vec<Id> =
-                        cur.iter().flat_map(|&y| self.values(q, y, inv)).collect();
+                    let mut next: Vec<Id> = Vec::new();
+                    for y in cur {
+                        let vs = self.values(q, y, inv);
+                        self.charge(vs.len() + 1);
+                        next.extend_from_slice(&vs);
+                    }
                     dedup(&mut next);
                     cur = next;
                 }
                 cur
             }
-            Path::Alternative(ps) => ps.iter().flat_map(|q| self.values(q, x, inv)).collect(),
-            Path::ZeroOrMore(q) => self.closure(q, x, inv, true),
-            Path::OneOrMore(q) => self.closure(q, x, inv, false),
-            Path::ZeroOrOne(q) => std::iter::once(x).chain(self.values(q, x, inv)).collect(),
-            Path::Invalid => Vec::new(),
+            Path::Alternative(ps) => {
+                let mut out = Vec::new();
+                for q in ps {
+                    out.extend_from_slice(&self.values(q, x, inv));
+                }
+                self.charge(out.len() + 1);
+                out
+            }
+            // Already without duplicates.
+            Path::ZeroOrMore(q) => {
+                let out = self.closure(q, x, inv, true);
+                return self.remember(key, out);
+            }
+            Path::OneOrMore(q) => {
+                let out = self.closure(q, x, inv, false);
+                return self.remember(key, out);
+            }
+            Path::ZeroOrOne(q) => {
+                let mut out = vec![x];
+                out.extend_from_slice(&self.values(q, x, inv));
+                self.charge(out.len());
+                out
+            }
+            Path::Predicate(_) | Path::Inverse(_) | Path::Invalid => unreachable!("handled above"),
         };
         dedup(&mut out);
+        self.remember(key, out)
+    }
+
+    /// `values` as the answer for `key`, kept for the next ask (unless a
+    /// stop cut it short: that is not the answer).
+    fn remember(&mut self, key: (usize, Id, bool), values: Vec<Id>) -> Rc<[Id]> {
+        let out: Rc<[Id]> = values.into();
+        if !self.halted() {
+            if self.memo_ids + out.len() > MEMO_IDS {
+                self.memo.clear();
+                self.memo_ids = 0;
+            }
+            self.memo_ids += out.len() + 1;
+            self.memo.insert(key, out.clone());
+        }
         out
     }
 
-    fn closure(&self, q: &Path, x: Id, inv: bool, with_self: bool) -> Vec<Id> {
+    /// The nodes one step of `q` from `x` reaches, added to `into`.
+    fn step(&mut self, q: &Path, x: Id, inv: bool, into: &mut Vec<Id>) {
+        match q {
+            Path::Predicate(p) if inv => into.extend(self.g.subjects(*p, x)),
+            Path::Predicate(p) => into.extend(self.g.objects(x, *p)),
+            _ => into.extend_from_slice(&self.values(q, x, inv)),
+        }
+    }
+
+    fn closure(&mut self, q: &Path, x: Id, inv: bool, with_self: bool) -> Vec<Id> {
         let mut seen = FxHashSet::default();
         let mut out = Vec::new();
         if with_self {
             seen.insert(x);
             out.push(x);
         }
-        let mut frontier = self.values(q, x, inv);
+        let mut frontier = Vec::new();
+        self.step(q, x, inv, &mut frontier);
         while !frontier.is_empty() {
             let mut next = Vec::new();
             for y in frontier {
+                self.charge(1);
+                if self.halted() {
+                    return out;
+                }
                 if seen.insert(y) {
                     out.push(y);
-                    next.extend(self.values(q, y, inv));
+                    self.step(q, y, inv, &mut next);
                 }
             }
             frontier = next;
@@ -1032,7 +1095,7 @@ impl Run<'_, '_, '_> {
         if let Some(s) = self.supers.get(&c) {
             return s.clone();
         }
-        let sub = v().sub_class_of;
+        let sub = vocab::get().sub_class_of;
         let mut seen = FxHashSet::default();
         let mut todo = vec![c];
         while let Some(x) = todo.pop() {
@@ -1047,7 +1110,7 @@ impl Run<'_, '_, '_> {
 
     /// Whether `x` is a SHACL instance of `class`.
     fn is_instance(&mut self, x: Id, class: Id) -> bool {
-        let types: Vec<Id> = self.g.objects(x, v().rdf_type).collect();
+        let types: Vec<Id> = self.g.objects(x, vocab::get().rdf_type).collect();
         types.into_iter().any(|t| self.supers(t).contains(&class))
     }
 
@@ -1070,35 +1133,70 @@ impl Run<'_, '_, '_> {
         }
         let mut tmp = Vec::new();
         let recursive = self.stack.contains(&(si, focus));
-        self.check(si, focus, &mut tmp, false);
+        let truncated = self.check(si, focus, &mut tmp, false);
         let ok = tmp.is_empty();
-        if !recursive {
+        // A check the depth limit or a stop cut short has not said whether
+        // the shape conforms; remembering its answer would make later
+        // checks depend on which one ran first.
+        if !recursive && !truncated && !self.halted() {
             self.conforms.insert((si, focus), ok);
         }
         ok
     }
 
     /// Validate `focus` against shape `si`, adding its results to `out`. When
-    /// `collect` is false, stop at the first result.
-    fn check(&mut self, si: ShapeIx, focus: Id, out: &mut Vec<ValidationResult>, collect: bool) {
+    /// `collect` is false, stop at the first result. Whether the depth limit
+    /// cut the check, or something it checks, short.
+    fn check(
+        &mut self,
+        si: ShapeIx,
+        focus: Id,
+        out: &mut Vec<ValidationResult>,
+        collect: bool,
+    ) -> bool {
         let shapes = self.shapes;
         let shape = &shapes[si as usize];
-        if shape.skip || self.stack.len() > MAX_DEPTH || self.stack.contains(&(si, focus)) {
-            return;
+        if self.halted() {
+            return false;
         }
+        // Checks the depth limit cut are never cached, so shape-valued
+        // constraints met again and again can make checks exponential
+        // without a path step: each check is a step.
+        self.spend(1, Some(si));
+        if self.halted() || shape.skip || self.stack.contains(&(si, focus)) {
+            return false;
+        }
+        if self.stack.len() > MAX_DEPTH {
+            self.cuts += 1;
+            self.fail_with(
+                shape.node,
+                None,
+                format!(
+                    "shapes are nested deeper than {MAX_DEPTH} levels here (sh:node, sh:property, sh:and ... through the data): results below this depth are missing"
+                ),
+                FailureKind::Cut,
+            );
+            return true;
+        }
+        let cuts = self.cuts;
         self.stack.push((si, focus));
         let values = match &shape.path {
-            None => vec![focus],
+            None => Rc::from([focus]),
             Some(p) => self.values(p, focus, false),
         };
         for (c, param) in &shape.constraints {
             let before = out.len();
             self.constraint(shape, c, *param, focus, &values, out, collect);
-            if !collect && out.len() > before {
+            if self.halted() || (!collect && out.len() > before) {
+                break;
+            }
+            if collect && out.len() > self.budget.results {
+                self.capped = true;
                 break;
             }
         }
         self.stack.pop();
+        self.cuts != cuts
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1199,10 +1297,12 @@ impl Run<'_, '_, '_> {
             }
             C::Equals(p) => {
                 let others: Vec<Id> = g.objects(focus, *p).collect();
-                for &x in values.iter().filter(|x| !others.contains(x)) {
+                let in_others: FxHashSet<Id> = others.iter().copied().collect();
+                let in_values: FxHashSet<Id> = values.iter().copied().collect();
+                for &x in values.iter().filter(|x| !in_others.contains(x)) {
                     emit(out, Some(x), None);
                 }
-                for &o in others.iter().filter(|o| !values.contains(o)) {
+                for &o in others.iter().filter(|o| !in_values.contains(o)) {
                     emit(out, Some(o), None);
                 }
             }
@@ -1223,9 +1323,15 @@ impl Run<'_, '_, '_> {
                     }
                 }
             }
+            // A shape checked after validation halted has not said whether
+            // it conforms: nothing follows from its answer.
             C::Not(s) => {
                 for &x in values {
-                    if self.conforms(*s, x) {
+                    let conforms = self.conforms(*s, x);
+                    if self.halted() {
+                        return;
+                    }
+                    if conforms {
                         emit(out, Some(x), None);
                     }
                 }
@@ -1243,6 +1349,9 @@ impl Run<'_, '_, '_> {
                             break;
                         }
                     }
+                    if self.halted() {
+                        return;
+                    }
                     let ok = match c {
                         C::And(_) => n == ss.len(),
                         C::Or(_) => n > 0,
@@ -1255,7 +1364,11 @@ impl Run<'_, '_, '_> {
             }
             C::Node(s) => {
                 for &x in values {
-                    if !self.conforms(*s, x) {
+                    let conforms = self.conforms(*s, x);
+                    if self.halted() {
+                        return;
+                    }
+                    if !conforms {
                         emit(out, Some(x), None);
                     }
                 }
@@ -1263,7 +1376,7 @@ impl Run<'_, '_, '_> {
             C::Property(s) => {
                 for &x in values {
                     self.check(*s, x, out, collect);
-                    if !collect && !out.is_empty() {
+                    if self.halted() || (!collect && !out.is_empty()) {
                         return;
                     }
                 }
@@ -1279,6 +1392,9 @@ impl Run<'_, '_, '_> {
                     if self.conforms(*q, x) && !siblings.iter().any(|&s| self.conforms(s, x)) {
                         n += 1;
                     }
+                }
+                if self.halted() {
+                    return;
                 }
                 if (*max && n > *count) || (!*max && n < *count) {
                     emit(out, None, None);
@@ -1299,23 +1415,38 @@ impl Run<'_, '_, '_> {
                 }
             }
             C::In(set) => each(out, &mut |x| !set.contains(&x)),
-            C::Sparql(check) => self.sparql(shape, check, param, focus, values, out),
+            C::Sparql(check) => self.sparql(shape, check, param, focus, values, out, collect),
         }
     }
 
     fn fail(&mut self, node: Id, message: String) {
+        self.fail_with(node, None, message, FailureKind::Query);
+    }
+
+    fn fail_with(&mut self, node: Id, triple: Option<u32>, message: String, kind: FailureKind) {
         let f = Failure {
             node,
-            triple: None,
+            triple,
             message,
+            kind,
         };
         if !self.failures.contains(&f) {
             self.failures.push(f);
         }
     }
 
+    /// What a query that gave no answer means for `node`'s validation.
+    fn query_failed(&mut self, node: Id, why: Fail) {
+        match why {
+            Fail::Cancelled => self.stopped = true,
+            Fail::TooMany => {}
+            Fail::Failed(message) => self.fail(node, message),
+        }
+    }
+
     /// Runs a SPARQL check on `focus`: a SELECT query once, an ASK query once
-    /// per value node.
+    /// per value node. Past the result budget it stops reading solutions.
+    #[allow(clippy::too_many_arguments)]
     fn sparql(
         &mut self,
         shape: &Shape,
@@ -1324,6 +1455,7 @@ impl Run<'_, '_, '_> {
         focus: Id,
         values: &[Id],
         out: &mut Vec<ValidationResult>,
+        collect: bool,
     ) {
         let Some(ix) = self.ix else { return };
         let g = self.g;
@@ -1368,10 +1500,20 @@ impl Run<'_, '_, '_> {
             vec![None]
         };
         for value in asks {
-            if (self.cancelled)() {
+            if self.halted() {
+                return;
+            }
+            if (self.cancel)() {
                 self.stopped = true;
                 return;
             }
+            // Room for one more result than the budget keeps, to tell
+            // that there are more; a nested check needs one to say no.
+            let room = if collect {
+                (self.budget.results + 1).saturating_sub(out.len())
+            } else {
+                1
+            };
             let mut bindings = base.clone();
             if let Some(x) = value {
                 bindings.push((var("value"), ix.term(x)));
@@ -1387,17 +1529,25 @@ impl Run<'_, '_, '_> {
                 Some(_) => None,
             };
             let answer = match answer {
-                Some(solutions) => Ok(Answer::Solutions(solutions)),
-                None => self.ev.run(ix, &check.query, bindings.clone()),
+                Some(rows) => Ok(Answer::Solutions {
+                    more: rows.len() > room,
+                    rows,
+                }),
+                None => {
+                    #[cfg(test)]
+                    QUERIES_RUN.with(|c| c.set((c.get().0 + 1, c.get().1)));
+                    self.ev.run(ix, &check.query, bindings.clone(), room)
+                }
             };
             match answer {
-                Err(e) => self.fail(check.source, e),
+                Err(why) => self.query_failed(check.source, why),
                 Ok(Answer::Boolean(true)) => {}
                 Ok(Answer::Boolean(false)) => {
                     out.push(result(value, shape.path.clone(), fill(&lookup_base)));
                 }
-                Ok(Answer::Solutions(solutions)) => {
-                    for sol in solutions {
+                Ok(Answer::Solutions { rows, more }) => {
+                    self.capped |= collect && more;
+                    for sol in rows.into_iter().take(room) {
                         if matches!(sol.get("failure"), Some(RdfTerm::Literal(l)) if l.value() == "true")
                         {
                             self.fail(check.source, "a solution bound ?failure to true".into());
@@ -1423,6 +1573,10 @@ impl Run<'_, '_, '_> {
                     }
                 }
             }
+            if collect && out.len() > self.budget.results {
+                self.capped = true;
+                return;
+            }
         }
     }
 
@@ -1435,7 +1589,10 @@ impl Run<'_, '_, '_> {
 
     /// The solutions of `check` for `focus` from one run for the whole
     /// batch (with `constants` pre-bound), when `focus` is in it and the
-    /// check can run that way.
+    /// check can run that way. The run is kept for the other focus nodes,
+    /// so it may give as many solutions as a collecting check keeps, whoever
+    /// asks first (a nested check needs only one, and would otherwise make
+    /// every batch of two or more too many).
     fn batched(
         &mut self,
         ix: &Index,
@@ -1452,9 +1609,21 @@ impl Run<'_, '_, '_> {
             return None;
         }
         let key = (shape.node, check as *const Check);
+        let max = self.budget.results + 1;
         let found = self.batched.entry(key).or_insert_with(|| {
-            match self.ev.run_batch(ix, &check.query, constants, &self.batch) {
+            #[cfg(test)]
+            QUERIES_RUN.with(|c| c.set((c.get().0, c.get().1 + 1)));
+            match self
+                .ev
+                .run_batch(ix, &check.query, constants, &self.batch, max)
+            {
                 Some(Ok(map)) => Some(map),
+                Some(Err(Fail::Cancelled)) => {
+                    self.stopped = true;
+                    None
+                }
+                // Too many solutions, a failure, or a query that cannot be
+                // batched: the focus nodes run one by one.
                 _ => None,
             }
         });
@@ -1467,16 +1636,13 @@ impl Run<'_, '_, '_> {
     fn sparql_target(&mut self, target: Id, out: &mut Vec<Id>) {
         let Some(ix) = self.ix else { return };
         let g = self.g;
-        if g.objects(target, v().deactivated)
+        if g.objects(target, vocab::get().deactivated)
             .any(|d| matches!(g.term(d).literal(), Some(("true", _, _))))
         {
             return;
         }
-        let pre = PreBound {
-            names: &["shapesGraph"],
-            required: &[],
-        };
-        let Some((query, _)) = prepare(g, target, false, None, &pre, &mut self.failures) else {
+        let Some((query, _)) = prepare(g, target, false, None, &Role::Target, &mut self.failures)
+        else {
             return;
         };
         let graph = NamedNode::new_unchecked(sparql::SHAPES_GRAPH);
@@ -1484,35 +1650,41 @@ impl Run<'_, '_, '_> {
             ix,
             &query,
             vec![(Variable::new_unchecked("shapesGraph"), graph.into())],
+            MAX_TARGETS,
         ) {
-            Ok(Answer::Solutions(sols)) => {
+            Ok(Answer::Solutions { rows, more }) => {
                 out.extend(
-                    sols.iter()
+                    rows.iter()
                         .filter_map(|s| s.get("this").and_then(|t| ix.id(t))),
                 );
+                if more {
+                    self.fail_with(
+                        target,
+                        None,
+                        format!(
+                            "the target selects more than {MAX_TARGETS} nodes: the rest are not validated"
+                        ),
+                        FailureKind::Cut,
+                    );
+                }
             }
             Ok(_) => {}
-            Err(e) => self.fail(target, e),
+            Err(why) => self.query_failed(target, why),
         }
     }
 
-    /// The focus nodes of shape `node`: its explicit targets, and itself as
-    /// a class when it is one.
-    fn focus_nodes(&mut self, node: Id) -> Vec<Id> {
+    /// The focus nodes of shape `s`: its explicit targets, and itself as a
+    /// class when it is one.
+    fn focus_nodes(&mut self, s: &model::Shape) -> Vec<Id> {
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
+        let node = s.node;
         let mut out = Vec::new();
-        let own: Vec<(Iri, Id)> = g.out(node).map(|(_, t)| (t.p, t.o)).collect();
-        let is_class = own.iter().any(|&(p, o)| {
-            p == v.rdf_type
-                && g.as_iri(o)
-                    .is_some_and(|c| c == v.rdfs_class || c == v.owl_class)
+        let types: Vec<Id> = g.objects(node, v.rdf_type).collect();
+        let is_class = types.iter().any(|&o| {
+            g.as_iri(o)
+                .is_some_and(|c| c == v.rdfs_class || c == v.owl_class)
         }) || {
-            let types: Vec<Id> = own
-                .iter()
-                .filter(|t| t.0 == v.rdf_type)
-                .map(|t| t.1)
-                .collect();
             let classes = [v.rdfs_class, v.owl_class].map(|c| g.iri(c));
             types.into_iter().any(|t| {
                 let s = self.supers(t);
@@ -1522,19 +1694,38 @@ impl Run<'_, '_, '_> {
         if is_class {
             out.extend(self.instances(node));
         }
-        for (p, o) in own {
+        // Its targets of every kind, in the order it states them.
+        for &i in &s.params {
+            let t = g.triple_at(i);
+            let (p, o) = (t.p, t.o);
             if p == v.target_node {
                 out.push(o);
             } else if p == v.target_class {
                 out.extend(self.instances(o));
             } else if p == v.target_subjects_of {
                 if let Some(pi) = g.as_iri(o) {
-                    out.extend(g.with_p(pi).map(|t| t.s));
+                    match self.among {
+                        None => out.extend(g.with_p(pi).map(|t| t.s)),
+                        Some(among) => out.extend(
+                            among
+                                .iter()
+                                .copied()
+                                .filter(|&n| g.out(n).any(|t| t.1.p == pi)),
+                        ),
+                    }
                 }
             } else if p == v.target_objects_of
                 && let Some(pi) = g.as_iri(o)
             {
-                out.extend(g.with_p(pi).map(|t| t.o));
+                match self.among {
+                    None => out.extend(g.with_p(pi).map(|t| t.o)),
+                    Some(among) => out.extend(
+                        among
+                            .iter()
+                            .copied()
+                            .filter(|&n| g.incoming(n).any(|t| t.1.p == pi)),
+                    ),
+                }
             } else if p == v.target {
                 self.sparql_target(o, &mut out);
             }
@@ -1545,103 +1736,170 @@ impl Run<'_, '_, '_> {
 
     /// SHACL instances of `class`: typed with it or one of its subclasses.
     fn instances(&self, class: Id) -> Vec<Id> {
-        let v = v();
+        let v = vocab::get();
         let mut classes = FxHashSet::default();
         let mut todo = vec![class];
         let mut out = Vec::new();
         while let Some(c) = todo.pop() {
             if classes.insert(c) {
                 todo.extend(self.g.subjects(v.sub_class_of, c));
-                out.extend(self.g.subjects(v.rdf_type, c));
+                if self.among.is_none() {
+                    out.extend(self.g.subjects(v.rdf_type, c));
+                }
             }
+        }
+        #[cfg(test)]
+        TARGETS_LOOKED_AT.with(|c| c.set(c.get() + self.among.map_or(out.len(), <[Id]>::len)));
+        if let Some(among) = self.among {
+            // Only those nodes can be focus nodes: which of them have the type.
+            out.extend(
+                among
+                    .iter()
+                    .copied()
+                    .filter(|&n| self.g.objects(n, v.rdf_type).any(|t| classes.contains(&t))),
+            );
         }
         out
     }
 }
 
-/// Whether the graph declares anything validation would act on: a target,
-/// or a shape that is also a class. Costs a few hash lookups.
-pub fn has_targets(g: &Graph) -> bool {
-    let v = v();
+/// What makes a shape one validation starts from, in the order it visits
+/// them: the target predicates, then the shape classes.
+fn root_kinds() -> [Iri; 7] {
+    let v = vocab::get();
     [
         v.target_class,
         v.target_node,
         v.target_subjects_of,
         v.target_objects_of,
         v.target,
+        v.node_shape,
+        v.property_shape,
     ]
-    .into_iter()
-    .any(|p| g.with_p(p).next().is_some())
-        || [v.node_shape, v.property_shape]
-            .into_iter()
-            .filter_map(|s| g.iri(s))
-            .any(|s| g.subjects(v.rdf_type, s).next().is_some())
+}
+
+/// The shapes validation starts from, those with a target or a shape type
+/// ([`root_kinds`]), in the order it visits them: by kind, and within a kind
+/// in the order the graph's indexes list the triples that say so (an
+/// overlay's own first, then the base's, each by number; see
+/// [`Graph::overlay`]).
+fn roots<'m>(g: &Graph, model: &'m Shapes) -> Vec<&'m model::Shape> {
+    let v = vocab::get();
+    let kinds = root_kinds();
+    let kind = |i: Iri| kinds.iter().position(|&k| k == i);
+    let own_from = g.added().next().map_or(g.len() as u32, |(t, _)| t);
+    // (kind, from the base, triple number, shape).
+    let mut keyed: Vec<(usize, bool, u32, usize)> = Vec::new();
+    for (si, s) in model.shapes.iter().enumerate() {
+        for &t in s.targets.iter().chain(&s.sparql_targets) {
+            if let Some(k) = kind(g.triple_at(t).p) {
+                keyed.push((k, t < own_from, t, si));
+            }
+        }
+        if s.typed_node_shape || s.typed_property_shape {
+            for (t, tr) in g.out(s.node) {
+                let shape_class = |c: &Iri| *c == v.node_shape || *c == v.property_shape;
+                if tr.p == v.rdf_type
+                    && let Some(k) = g.as_iri(tr.o).filter(shape_class).and_then(kind)
+                {
+                    keyed.push((k, t < own_from, t, si));
+                }
+            }
+        }
+    }
+    keyed.sort_unstable();
+    let mut seen = FxHashSet::default();
+    keyed
+        .into_iter()
+        .filter(|k| seen.insert(k.3))
+        .map(|k| &model.shapes[k.3])
+        .collect()
+}
+
+/// Whether anything validation acts on is declared: a target (`sh:targetClass`,
+/// `sh:targetNode`, `sh:targetSubjectsOf`, `sh:targetObjectsOf`, `sh:target`)
+/// or a typed shape, where `used` says whether an IRI occurs. The one answer
+/// for a graph ([`validate_report`], see [`roots`]) and for a document
+/// ([`crate::features::shacl_validate::has_shapes`]).
+pub(crate) fn acts_on(used: &dyn Fn(Iri) -> bool) -> bool {
+    root_kinds().into_iter().any(used)
 }
 
 /// Validate `g` against the shapes in it. `cancelled` is polled between
-/// focus nodes; a run it stops returns `None`.
-pub fn validate(g: &Graph, cancelled: &dyn Fn() -> bool) -> Option<Vec<ValidationResult>> {
-    validate_focus(g, cancelled, &|_| true)
+/// focus nodes, between SPARQL queries, every few thousand steps (of path
+/// evaluation and shape checks), and inside a running query; a run it
+/// stops returns `None`.
+/// The [`Failure`]s are the queries and shapes that could not be validated.
+pub fn validate_report<C>(g: &Graph, cancelled: &C, keep: &dyn Fn(Id) -> bool) -> Option<Report>
+where
+    C: Fn() -> bool + Send + Sync + Clone + 'static,
+{
+    report_with(
+        g,
+        Arc::new(cancelled.clone()),
+        keep,
+        MIN_BATCH,
+        Budget::default(),
+    )
 }
 
-/// Like [`validate`], for the focus nodes `keep` accepts only.
-pub fn validate_focus(
-    g: &Graph,
-    cancelled: &dyn Fn() -> bool,
-    keep: &dyn Fn(Id) -> bool,
-) -> Option<Vec<ValidationResult>> {
-    validate_report(g, cancelled, keep).map(|r| r.results)
+/// [`validate_report`] for the focus nodes `among` (sorted) only: the same
+/// report as `validate_report` with a `keep` that accepts exactly them, but
+/// the targets are found among those nodes, not by walking the whole graph,
+/// so a few nodes of a large graph cost in proportion to themselves (a SPARQL
+/// target is the exception: its query runs over the graph).
+pub(crate) fn validate_report_among<C>(g: &Graph, cancelled: &C, among: &[Id]) -> Option<Report>
+where
+    C: Fn() -> bool + Send + Sync + Clone + 'static,
+{
+    let keep = |id: Id| among.binary_search(&id).is_ok();
+    report_over(
+        g,
+        Arc::new(cancelled.clone()),
+        &keep,
+        Some(among),
+        MIN_BATCH,
+        Budget::default(),
+    )
 }
 
-/// Like [`validate_focus`], with the [`Failure`]s of SPARQL queries.
-/// `cancelled` is also polled between SPARQL queries.
-pub fn validate_report(
-    g: &Graph,
-    cancelled: &dyn Fn() -> bool,
-    keep: &dyn Fn(Id) -> bool,
-) -> Option<Report> {
-    report_with(g, cancelled, keep, MIN_BATCH)
-}
-
-/// [`validate_report`], batching SPARQL checks from `min_batch` focus nodes.
+/// [`validate_report`], batching SPARQL checks from `min_batch` focus nodes,
+/// within `budget`.
 fn report_with(
     g: &Graph,
-    cancelled: &dyn Fn() -> bool,
+    cancel: Cancel,
     keep: &dyn Fn(Id) -> bool,
     min_batch: usize,
+    budget: Budget,
 ) -> Option<Report> {
-    let v = v();
-    // Shapes with targets, in graph order; shape-typed nodes may be class targets.
-    let mut roots: Vec<Id> = Vec::new();
-    for p in [
-        v.target_class,
-        v.target_node,
-        v.target_subjects_of,
-        v.target_objects_of,
-        v.target,
-    ] {
-        roots.extend(g.with_p(p).map(|t| t.s));
-    }
-    for s in [v.node_shape, v.property_shape]
-        .into_iter()
-        .filter_map(|s| g.iri(s))
-    {
-        roots.extend(g.subjects(v.rdf_type, s));
-    }
-    dedup(&mut roots);
+    report_over(g, cancel, keep, None, min_batch, budget)
+}
 
+fn report_over(
+    g: &Graph,
+    cancel: Cancel,
+    keep: &dyn Fn(Id) -> bool,
+    among: Option<&[Id]>,
+    min_batch: usize,
+    budget: Budget,
+) -> Option<Report> {
+    let model = Shapes::new(g);
     let mut comp = Compiler {
         g,
+        model: &model,
         shapes: Vec::new(),
         index: FxHashMap::default(),
         pending: Vec::new(),
         components: components(g),
         failures: Vec::new(),
     };
-    let roots: Vec<ShapeIx> = roots.into_iter().map(|r| comp.shape(r)).collect();
+    let roots: Vec<(ShapeIx, &model::Shape)> = roots(g, &model)
+        .into_iter()
+        .map(|s| (comp.shape(s.node), s))
+        .collect();
     comp.build_pending();
     let shapes = comp.shapes;
-    let uses_sparql = g.with_p(v.target).next().is_some()
+    let uses_sparql = model.shapes.iter().any(|s| !s.sparql_targets.is_empty())
         || shapes
             .iter()
             .any(|s| s.constraints.iter().any(|c| matches!(c.0, C::Sparql(_))));
@@ -1652,42 +1910,66 @@ fn report_with(
         stack: Vec::new(),
         supers: FxHashMap::default(),
         conforms: FxHashMap::default(),
+        memo: FxHashMap::default(),
+        memo_ids: 0,
         ix: ix.as_ref(),
-        ev: sparql::Engine::default(),
-        cancelled,
+        ev: sparql::Engine::new(cancel.clone()),
+        cancel,
         stopped: false,
+        budget,
+        steps: budget.steps,
+        since_poll: 0,
+        exhausted: false,
+        capped: false,
+        cuts: 0,
         failures: comp.failures,
         min_batch,
+        among,
         batch: Vec::new(),
         in_batch: FxHashSet::default(),
         batched: FxHashMap::default(),
     };
     let mut out = Vec::new();
-    for si in roots {
-        let shape = &shapes[si as usize];
-        if shape.skip {
+    'shapes: for (si, root) in roots {
+        if shapes[si as usize].skip {
             continue;
         }
-        let focus_nodes = run.focus_nodes(shape.node);
+        let focus_nodes = run.focus_nodes(root);
         run.set_batch(focus_nodes.iter().copied().filter(|&f| keep(f)).collect());
         for focus in focus_nodes {
-            if cancelled() {
+            if (run.cancel)() {
                 return None;
             }
             if !keep(focus) {
                 continue;
             }
+            let before = out.len();
             run.check(si, focus, &mut out, true);
             if run.stopped {
                 return None;
             }
+            if run.exhausted {
+                // The check ran out of steps part way: its values and the
+                // shapes it asked about are partial, so what it found may be
+                // false. The Cut failure says the rest is not validated.
+                out.truncate(before);
+            }
+            if run.halted() {
+                break 'shapes;
+            }
         }
     }
+    if run.stopped {
+        return None;
+    }
+    let capped = run.capped || out.len() > budget.results;
+    out.truncate(budget.results);
     let mut failures = run.failures;
     failures.dedup();
     Some(Report {
         results: out,
         failures,
+        capped,
     })
 }
 
@@ -1695,6 +1977,7 @@ fn report_with(
 mod tests {
     use super::*;
     use crate::syntax::{PrefixMap, Syntax, parse};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn results(body: &str) -> usize {
         let p = parse(
@@ -1705,7 +1988,69 @@ mod tests {
             Syntax::Turtle,
         );
         let g = Graph::new(&[&p.triples]);
-        validate(&g, &|| false).unwrap().len()
+        validate_report(&g, &|| false, &|_| true)
+            .unwrap()
+            .results
+            .len()
+    }
+
+    /// Finding the targets among a few nodes is the same as finding them in
+    /// the whole graph and keeping those nodes: for class targets (with
+    /// subclasses), the two `sh:targetSubjectsOf`/`ObjectsOf` forms and a
+    /// node target, with the graph read as an overlay over a shared base.
+    #[test]
+    fn targets_among_some_nodes_are_those_of_the_whole_graph_that_are_among_them() {
+        let head = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n";
+        let mut shared = format!(
+            "{head}ex:S1 sh:targetClass ex:C ; sh:property [ sh:path ex:name ; sh:minCount 1 ] .\n\
+             ex:S2 sh:targetSubjectsOf ex:knows ; sh:property [ sh:path ex:age ; sh:minCount 1 ] .\n\
+             ex:S3 sh:targetObjectsOf ex:knows ; sh:property [ sh:path ex:age ; sh:minCount 1 ] .\n\
+             ex:S4 sh:targetNode ex:n0 , ex:n1 ; sh:property [ sh:path ex:id ; sh:minCount 1 ] .\n\
+             ex:D rdfs:subClassOf ex:C .\n"
+        );
+        for i in 0..200 {
+            let class = if i % 3 == 0 { "ex:D" } else { "ex:C" };
+            shared.push_str(&format!(
+                "ex:n{i} a {class} ; ex:knows ex:n{} .\n",
+                (i + 1) % 200
+            ));
+        }
+        let data = format!(
+            "{head}ex:n3 ex:note 1 .\nex:n4 ex:knows ex:new .\nex:n6 a ex:C .\nex:fresh a ex:D ; ex:knows ex:n9 .\nex:other ex:p ex:n0 .\n"
+        );
+        let shared = parse(&shared, &PrefixMap::default(), Syntax::Turtle);
+        let data = parse(&data, &PrefixMap::default(), Syntax::Turtle);
+        let base = Arc::new(Graph::new(&[&shared.triples]));
+        let over = Graph::overlay(&base, &data.triples);
+        let mut mine: Vec<Id> = over.added().flat_map(|(_, t)| [t.s, t.o]).collect();
+        mine.sort_unstable();
+        mine.dedup();
+        let describe = |g: &Graph, r: &Report| {
+            let mut v: Vec<String> = r
+                .results
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{:?} {:?} {:?} {}",
+                        g.term(r.focus),
+                        r.path,
+                        r.value.map(|v| g.term(v)),
+                        r.component
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let keep = |id: Id| mine.binary_search(&id).is_ok();
+        let whole = validate_report(&over, &|| false, &keep).unwrap();
+        let among = validate_report_among(&over, &|| false, &mine).unwrap();
+        assert!(!whole.results.is_empty());
+        assert_eq!(describe(&over, &whole), describe(&over, &among));
+        assert_eq!(among.failures.len(), whole.failures.len());
+        // More than the dataset's nodes: the shared ones are all of them.
+        let all = validate_report(&over, &|| false, &|_| true).unwrap();
+        assert!(all.results.len() > among.results.len());
     }
 
     #[test]
@@ -1746,13 +2091,68 @@ mod tests {
             Syntax::Turtle,
         );
         let g = Graph::new(&[&p.triples]);
-        assert!(validate(&g, &|| true).is_none());
+        assert!(validate_report(&g, &|| true, &|_| true).is_none());
     }
 
     const HEAD: &str =
         "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\n";
 
-    fn report(body: &str, cancelled: &dyn Fn() -> bool) -> Option<(usize, Vec<String>, usize)> {
+    /// The roots as the validator found them before it read the shape
+    /// model: the subjects of each target predicate, then of each shape
+    /// type, as the graph's lookups list them.
+    fn roots_by_lookup(g: &Graph) -> Vec<Id> {
+        let v = vocab::get();
+        let mut roots = Vec::new();
+        for k in root_kinds() {
+            if k == v.node_shape || k == v.property_shape {
+                roots.extend(g.iri(k).into_iter().flat_map(|c| g.subjects(v.rdf_type, c)));
+            } else {
+                roots.extend(g.with_p(k).map(|t| t.s));
+            }
+        }
+        dedup(&mut roots);
+        roots
+    }
+
+    /// Validation visits the shapes in the order it did when it looked
+    /// them up in the graph: by target kind, then by the index order of
+    /// the triples, an overlay's own before the base's.
+    #[test]
+    fn roots_come_in_the_order_the_graph_lists_them() {
+        let doc = |body: &str| {
+            parse(
+                &format!("{HEAD}{body}"),
+                &PrefixMap::default(),
+                Syntax::Turtle,
+            )
+        };
+        let base = doc("ex:B a sh:PropertyShape ; sh:path ex:p .\n\
+             ex:A sh:targetNode ex:x .\n\
+             ex:C a sh:NodeShape ; sh:targetClass ex:K .\n\
+             ex:D sh:target [ sh:select \"SELECT ?this {}\" ] ; sh:targetNode ex:y .\n\
+             ex:A sh:targetClass ex:L .\n\
+             ex:E sh:targetObjectsOf ex:p ; a sh:NodeShape .\n\
+             ex:H a sh:targetClass , sh:PropertyShape .\n");
+        let over = doc("ex:F sh:targetNode ex:z .\n\
+             ex:A sh:targetSubjectsOf ex:q .\n\
+             ex:G a sh:NodeShape .\n\
+             ex:B sh:targetNode ex:w .\n");
+        let order = |g: &Graph| {
+            let model = Shapes::new(g);
+            let found: Vec<Id> = roots(g, &model).iter().map(|s| s.node).collect();
+            assert_eq!(found, roots_by_lookup(g));
+            found.len()
+        };
+        assert_eq!(order(&Graph::new(&[&base.triples])), 6);
+        assert_eq!(order(&Graph::new(&[&base.triples, &over.triples])), 8);
+        let shared = Arc::new(Graph::new(&[&base.triples]));
+        assert_eq!(order(&Graph::overlay(&shared, &over.triples)), 8);
+    }
+
+    fn report(
+        body: &str,
+        cancelled: impl Fn() -> bool + Send + Sync + Clone + 'static,
+    ) -> Option<(usize, Vec<String>, usize)> {
         let p = parse(
             &format!("{HEAD}{body}"),
             &PrefixMap::default(),
@@ -1760,7 +2160,7 @@ mod tests {
         );
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         let g = Graph::new(&[&p.triples]);
-        let r = validate_report(&g, cancelled, &|_| true)?;
+        let r = validate_report(&g, &cancelled, &|_| true)?;
         let messages = r
             .results
             .iter()
@@ -1788,13 +2188,13 @@ mod tests {
     #[test]
     fn deactivated_sparql_constraint() {
         let body = "ex:S sh:targetNode ex:a ; sh:sparql [ sh:deactivated true ; sh:select \"SELECT $this WHERE { }\" ] .";
-        assert_eq!(report(body, &|| false).unwrap().0, 0);
+        assert_eq!(report(body, || false).unwrap().0, 0);
     }
 
     #[test]
     fn sparql_target() {
         let body = "ex:S sh:target [ a sh:SPARQLTarget ; sh:select \"SELECT ?this WHERE { ?this <http://example.com/p> 1 }\" ] ; sh:sparql [ sh:select \"SELECT $this WHERE { }\" ] .\nex:a ex:p 1 .\nex:b ex:p 2 .";
-        assert_eq!(report(body, &|| false).unwrap().0, 1);
+        assert_eq!(report(body, || false).unwrap().0, 1);
     }
 
     #[test]
@@ -1804,7 +2204,7 @@ mod tests {
             "SELECT $this WHERE { VALUES ?x { 1 } }",
         ] {
             let body = format!("ex:S sh:targetNode ex:a ; sh:sparql [ sh:select {q:?} ] .");
-            assert_eq!(report(&body, &|| false).unwrap().2, 1, "{q}");
+            assert_eq!(report(&body, || false).unwrap().2, 1, "{q}");
         }
     }
 
@@ -1844,7 +2244,7 @@ mod tests {
         for i in 0..400 {
             body.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
         }
-        let (n, _, failures) = report(&body, &|| false).unwrap();
+        let (n, _, failures) = report(&body, || false).unwrap();
         assert_eq!((n, failures), (1, 1));
     }
 
@@ -1859,21 +2259,19 @@ mod tests {
                 body.push_str(&format!("ex:c{i}x{j} ex:next ex:c{i}x{} .\n", j + 1));
             }
         }
-        let (n, _, failures) = report(&body, &|| false).unwrap();
+        let (n, _, failures) = report(&body, || false).unwrap();
         assert_eq!((n, failures), (40, 0));
     }
 
     #[test]
     fn cancelled_between_queries() {
         // Allow the poll before the focus node, stop at the one before the query.
-        let calls = std::cell::Cell::new(0);
-        let cancelled = || {
-            calls.set(calls.get() + 1);
-            calls.get() > 1
-        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let cancelled = move || counted.fetch_add(1, Ordering::Relaxed) >= 1;
         let body = format!("{RULE}ex:a a ex:C ; ex:p 2 .");
-        assert!(report(&body, &cancelled).is_none());
-        assert_eq!(calls.get(), 2);
+        assert!(report(&body, cancelled).is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     /// Blank focus nodes are pre-bound like IRIs: in triple patterns, in
@@ -1885,7 +2283,7 @@ mod tests {
                 "ex:S sh:targetClass ex:C ; sh:sparql [ sh:prefixes ex:P ; sh:select \"{sel}\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n[] a ex:C ; ex:p 2 .\n[] a ex:C ; ex:p 0 .\nex:i a ex:C ; ex:p 5 .\n"
             )
         };
-        let n = |sel: &str| report(&q(sel), &|| false).unwrap();
+        let n = |sel: &str| report(&q(sel), || false).unwrap();
         assert_eq!(
             n("SELECT $this ?value WHERE { $this ex:p ?value . FILTER (?value > 1) }").0,
             2
@@ -1914,7 +2312,7 @@ mod tests {
     #[test]
     fn sparql_not_exists_over_subclasses() {
         let body = "ex:S sh:targetClass ex:Thing ; sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this ?value WHERE { $this ex:kind ?value . FILTER NOT EXISTS { $this a/<http://www.w3.org/2000/01/rdf-schema#subClassOf>* ?value } }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\nex:B <http://www.w3.org/2000/01/rdf-schema#subClassOf> ex:A .\nex:x a ex:Thing , ex:B ; ex:kind ex:A .\nex:y a ex:Thing ; ex:kind ex:A .\n[] a ex:Thing , ex:B ; ex:kind ex:A , ex:B , ex:Thing , ex:Z .";
-        assert_eq!(report(body, &|| false).unwrap().0, 2);
+        assert_eq!(report(body, || false).unwrap().0, 2);
     }
 
     /// Queries cover the forms batching joins into (filters, OPTIONAL,
@@ -1957,7 +2355,14 @@ mod tests {
             assert!(p.errors.is_empty(), "{:?}", p.errors);
             let g = Graph::new(&[&p.triples]);
             let run = |min_batch| {
-                let r = report_with(&g, &|| false, &|_| true, min_batch).unwrap();
+                let r = report_with(
+                    &g,
+                    Arc::new(|| false),
+                    &|_| true,
+                    min_batch,
+                    Budget::default(),
+                )
+                .unwrap();
                 let mut out: Vec<String> = r.results.iter().map(|x| format!("{x:?}")).collect();
                 out.extend(r.failures.iter().map(|x| format!("{x:?}")));
                 out.sort();
@@ -1996,10 +2401,16 @@ mod tests {
         assert!(sparse(20, g.len()), "20 focus nodes in {} triples", g.len());
         assert!(!sparse(300, g.len()));
         let run = |min_batch| {
-            report_with(&g, &|| false, &|_| true, min_batch)
-                .unwrap()
-                .results
-                .len()
+            report_with(
+                &g,
+                Arc::new(|| false),
+                &|_| true,
+                min_batch,
+                Budget::default(),
+            )
+            .unwrap()
+            .results
+            .len()
         };
         assert_eq!(run(1), run(usize::MAX));
         assert_eq!(run(1), 400);
@@ -2014,7 +2425,7 @@ mod tests {
             body.push_str(&format!("ex:n{i} a ex:C ; ex:p {} .\n", i % 3));
         }
         let start = std::time::Instant::now();
-        let (n, _, failures) = report(&body, &|| false).unwrap();
+        let (n, _, failures) = report(&body, || false).unwrap();
         let took = start.elapsed();
         println!("10,000 focus nodes, one SPARQL constraint: {took:?}");
         assert_eq!((n, failures), (3333, 0));
@@ -2022,5 +2433,561 @@ mod tests {
             // About 30 ms when the query runs once for all focus nodes.
             assert!(took.as_secs_f64() < 0.5, "{took:?}");
         }
+    }
+
+    // Bounds and fail-closed validation.
+
+    /// A `Report` for `body` after `HEAD`, within `budget`, cancelled by `cancel`.
+    fn bounded(
+        body: &str,
+        budget: Budget,
+        cancel: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Option<Report> {
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let g = Graph::new(&[&p.triples]);
+        report_with(&g, Arc::new(cancel), &|_| true, MIN_BATCH, budget)
+    }
+
+    /// `ex:n0 ex:next ex:n1 ...` over `n` nodes, the first `typed` of them
+    /// (spread evenly) in `ex:C`.
+    fn chain(n: usize, typed: usize) -> String {
+        let mut data = String::new();
+        for i in 0..n {
+            data.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
+        }
+        for k in 0..typed {
+            data.push_str(&format!("ex:n{} a ex:C .\n", k * (n / typed)));
+        }
+        data
+    }
+
+    const STAR: &str = "ex:S sh:targetClass ex:C ; sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:maxCount 5 ] .\n";
+
+    #[test]
+    fn a_closure_over_a_20k_chain_is_fast() {
+        let start = std::time::Instant::now();
+        let r = bounded(
+            &format!("{STAR}{}", chain(20_000, 50)),
+            Budget::default(),
+            || false,
+        )
+        .unwrap();
+        assert_eq!((r.results.len(), r.failures.len()), (50, 0));
+        if !cfg!(debug_assertions) {
+            assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
+        }
+    }
+
+    /// Every node of a chain asks for its own closure: 200 million values
+    /// in all. The step budget ends that with a failure, quickly.
+    #[test]
+    fn a_closure_from_every_node_of_a_20k_chain_stops_at_the_step_budget() {
+        let start = std::time::Instant::now();
+        let r = bounded(
+            &format!("{STAR}{}", chain(20_000, 20_000)),
+            Budget::default(),
+            || false,
+        )
+        .unwrap();
+        let cut: Vec<&Failure> = r
+            .failures
+            .iter()
+            .filter(|f| f.kind == FailureKind::Cut)
+            .collect();
+        assert_eq!(cut.len(), 1, "{:?}", r.failures);
+        assert!(cut[0].message.contains("steps"), "{}", cut[0].message);
+        if !cfg!(debug_assertions) {
+            // Seconds without the budget ends (minutes without it) on a quiet
+            // machine well under one; tests run side by side.
+            assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
+        }
+    }
+
+    #[test]
+    fn nested_closures_merge() {
+        let path = |body: &str| {
+            let p = parse(
+                &format!("{HEAD}ex:S sh:path {body} ."),
+                &PrefixMap::default(),
+                Syntax::Turtle,
+            );
+            let g = Graph::new(&[&p.triples]);
+            let t = g.with_p(sh("path")).next().unwrap();
+            parse_path(&g, t.o)
+        };
+        let leaf = Path::Predicate(Iri::intern("http://example.com/p"));
+        let star = Path::ZeroOrMore(Box::new(leaf.clone()));
+        let plus = Path::OneOrMore(Box::new(leaf.clone()));
+        let opt = Path::ZeroOrOne(Box::new(leaf.clone()));
+        let nest = |outer: &str, inner: &str| path(&format!("[ sh:{outer} [ sh:{inner} ex:p ] ]"));
+        assert_eq!(nest("zeroOrMorePath", "zeroOrMorePath"), star);
+        assert_eq!(nest("zeroOrMorePath", "oneOrMorePath"), star);
+        assert_eq!(nest("zeroOrMorePath", "zeroOrOnePath"), star);
+        assert_eq!(nest("oneOrMorePath", "zeroOrMorePath"), star);
+        assert_eq!(nest("oneOrMorePath", "zeroOrOnePath"), star);
+        assert_eq!(nest("zeroOrOnePath", "oneOrMorePath"), star);
+        assert_eq!(nest("zeroOrOnePath", "zeroOrMorePath"), star);
+        assert_eq!(nest("oneOrMorePath", "oneOrMorePath"), plus);
+        assert_eq!(nest("zeroOrOnePath", "zeroOrOnePath"), opt);
+        // Not merged when something sits between.
+        assert_eq!(
+            path("[ sh:zeroOrMorePath ( [ sh:zeroOrMorePath ex:p ] ex:p ) ]"),
+            Path::ZeroOrMore(Box::new(Path::Sequence(vec![star, leaf])))
+        );
+    }
+
+    /// Closures nested through sequences cannot be merged; evaluated per
+    /// node each time they cost the graph's size to the nesting's power
+    /// (four levels over 300 triples took 17 s).
+    #[test]
+    fn four_nested_closures_over_300_triples_finish() {
+        let mut data = String::new();
+        for i in 0..100 {
+            data.push_str(&format!(
+                "ex:n{i} ex:a ex:n{} ; ex:b ex:n{} ; ex:c ex:n{} .\n",
+                (i + 1) % 100,
+                (i + 3) % 100,
+                (i + 7) % 100
+            ));
+        }
+        data.push_str("ex:n0 a ex:C .\nex:n1 a ex:C .\n");
+        let path = "[ sh:zeroOrMorePath ( [ sh:zeroOrMorePath ( [ sh:zeroOrMorePath ( [ sh:zeroOrMorePath ex:a ] ex:b ) ] ex:c ) ] ex:a ) ]";
+        let start = std::time::Instant::now();
+        let r = bounded(
+            &format!("ex:S sh:targetClass ex:C ; sh:property [ sh:path {path} ; sh:minCount 1 ] .\n{data}"),
+            Budget::default(),
+            || false,
+        )
+        .unwrap();
+        assert!(r.failures.is_empty(), "{:?}", r.failures);
+        assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn cancelling_stops_inside_one_focus_node() {
+        // One focus node, a 100,000-node chain: the only poll between focus
+        // nodes is the one before it.
+        let body = format!(
+            "ex:S sh:targetNode ex:n0 ; sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:maxCount 5 ] .\n{}",
+            chain(100_000, 0)
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let cancel = move || counted.fetch_add(1, Ordering::Relaxed) >= 2;
+        assert!(bounded(&body, Budget::default(), cancel).is_none());
+        // Stopped after a few polls, not after the 100,000 steps.
+        assert!(calls.load(Ordering::Relaxed) < 10);
+        // And finished when not cancelled.
+        let r = bounded(&body, Budget::default(), || false).unwrap();
+        assert_eq!(r.results.len(), 1);
+    }
+
+    #[test]
+    fn equals_over_large_value_sets_is_linear() {
+        let mut data = String::from(
+            "ex:S sh:targetNode ex:x ; sh:property [ sh:path ex:a ; sh:equals ex:b ] .\n",
+        );
+        for i in 0..30_000 {
+            data.push_str(&format!("ex:x ex:a {i} ; ex:b {} .\n", i + 1));
+        }
+        let start = std::time::Instant::now();
+        let r = bounded(&data, Budget::default(), || false).unwrap();
+        // 0 is only in a, 30000 only in b.
+        assert_eq!(r.results.len(), 2);
+        if !cfg!(debug_assertions) {
+            assert!(start.elapsed().as_secs_f64() < 1.0, "{:?}", start.elapsed());
+        }
+    }
+
+    /// A SELECT whose solutions are every pair of triples: 25 million over
+    /// 5,000. It used to collect them all (11.7 GB) before the cap.
+    #[test]
+    fn a_cartesian_select_stops_at_the_result_budget() {
+        let mut data = String::from(
+            "ex:S sh:targetNode ex:x ; sh:sparql [ sh:select \"SELECT $this ?value WHERE { ?a ?p ?o . ?value ?q ?r }\" ] .\n",
+        );
+        for i in 0..5_000 {
+            data.push_str(&format!("ex:s{i} ex:p {i} .\n"));
+        }
+        let start = std::time::Instant::now();
+        let r = bounded(&data, Budget::default(), || false).unwrap();
+        assert_eq!(r.results.len(), Budget::default().results);
+        assert!(r.capped);
+        assert!(r.failures.is_empty(), "{:?}", r.failures);
+        assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
+        // A smaller budget, kept exactly (the cap is not the batch size).
+        let budget = Budget {
+            results: 100,
+            ..Budget::default()
+        };
+        let r = bounded(&data, budget, || false).unwrap();
+        assert_eq!((r.results.len(), r.capped), (100, true));
+    }
+
+    #[test]
+    fn core_results_stop_at_the_budget_too() {
+        let mut data = String::from(
+            "ex:S sh:targetClass ex:C ; sh:property [ sh:path ex:p ; sh:minCount 1 ] .\n",
+        );
+        for i in 0..500 {
+            data.push_str(&format!("ex:n{i} a ex:C .\n"));
+        }
+        let budget = Budget {
+            results: 10,
+            ..Budget::default()
+        };
+        let r = bounded(&data, budget, || false).unwrap();
+        assert_eq!((r.results.len(), r.capped), (10, true));
+        // Exactly at the budget is not over it.
+        let r = bounded(
+            &data,
+            Budget {
+                results: 500,
+                ..budget
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!((r.results.len(), r.capped), (500, false));
+    }
+
+    /// A query running for good, stopped by the job being superseded rather
+    /// than by its time limit (200 ms in tests).
+    #[test]
+    fn a_superseded_run_stops_inside_one_long_query() {
+        let mut body = "ex:S sh:targetNode ex:n0 ; sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE { ?a ex:next* ?b . ?c ex:next* ?d . FILTER (STRLEN(CONCAT(STR(?a), STR(?d))) < 0) }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n".to_string();
+        body.push_str(&chain(400, 0));
+        let began = std::time::Instant::now();
+        let cancel = move || began.elapsed() > std::time::Duration::from_millis(20);
+        let r = bounded(&body, Budget::default(), cancel);
+        assert!(r.is_none());
+        assert!(
+            began.elapsed() < sparql::TIME_LIMIT,
+            "{:?} is not before the time limit",
+            began.elapsed()
+        );
+    }
+
+    /// What a sh:not over 100 values says with `steps` of path budget: each
+    /// value has three nodes along `ex:next*`, so none conforms to ex:T
+    /// (sh:maxCount 1) and none is a sh:not violation.
+    fn not_over_values(steps: u64) -> Report {
+        let mut data = String::from(
+            "ex:S sh:targetNode ex:x ; sh:property [ sh:path ex:p ; sh:not ex:T ] .\nex:T sh:path [ sh:zeroOrMorePath ex:next ] ; sh:maxCount 1 .\n",
+        );
+        for i in 0..100 {
+            data.push_str(&format!(
+                "ex:x ex:p ex:v{i} .\nex:v{i} ex:next ex:w{i} .\nex:w{i} ex:next ex:z{i} .\n"
+            ));
+        }
+        let budget = Budget {
+            steps,
+            ..Budget::default()
+        };
+        bounded(&data, budget, || false).unwrap()
+    }
+
+    fn cut_by_steps(r: &Report) -> bool {
+        r.failures
+            .iter()
+            .any(|f| f.kind == FailureKind::Cut && f.message.contains("steps"))
+    }
+
+    /// The values not checked once the step budget ran out conformed to
+    /// ex:T as far as sh:not could tell: a false violation for each.
+    #[test]
+    fn a_sh_not_cut_by_the_step_budget_reports_no_false_violation() {
+        let whole = not_over_values(Budget::default().steps);
+        assert_eq!((whole.results.len(), whole.failures.len()), (0, 0));
+        let cut = not_over_values(50);
+        assert!(cut.results.is_empty(), "{:?}", cut.results);
+        assert!(cut_by_steps(&cut), "{:?}", cut.failures);
+    }
+
+    /// A sequence path whose `ex:next*` the step budget cut short reached no
+    /// `ex:q`: a false sh:minCount violation.
+    #[test]
+    fn a_path_cut_by_the_step_budget_reports_no_false_min_count() {
+        let data = format!(
+            "ex:S sh:targetNode ex:x ; sh:property [ sh:path ( [ sh:zeroOrMorePath ex:next ] ex:q ) ; sh:minCount 1 ] .\nex:x ex:next ex:n0 .\nex:n200 ex:q 1 .\n{}",
+            chain(200, 0)
+        );
+        let run = |steps| {
+            let budget = Budget {
+                steps,
+                ..Budget::default()
+            };
+            bounded(&data, budget, || false).unwrap()
+        };
+        let whole = run(Budget::default().steps);
+        assert_eq!((whole.results.len(), whole.failures.len()), (0, 0));
+        let cut = run(50);
+        assert!(cut.results.is_empty(), "{:?}", cut.results);
+        assert!(cut_by_steps(&cut), "{:?}", cut.failures);
+    }
+
+    /// The results of focus nodes checked before the budget ran out stay.
+    #[test]
+    fn results_before_the_step_budget_ran_out_are_kept() {
+        let mut data = String::from(
+            "ex:S sh:targetClass ex:C ; sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:maxCount 1 ] .\n",
+        );
+        for i in 0..100 {
+            data.push_str(&format!(
+                "ex:v{i} a ex:C ; ex:next ex:w{i} .\nex:w{i} ex:next ex:z{i} .\n"
+            ));
+        }
+        let budget = Budget {
+            steps: 50,
+            ..Budget::default()
+        };
+        let r = bounded(&data, budget, || false).unwrap();
+        assert!(cut_by_steps(&r), "{:?}", r.failures);
+        // About two steps per focus node: some finished, each a true result.
+        assert!((5..100).contains(&r.results.len()), "{}", r.results.len());
+    }
+
+    /// A shape that checks itself through sh:node asks for its SPARQL check
+    /// first from inside another check, where one result is enough. That
+    /// ask used to size the batch for every focus node to one solution: too
+    /// many, so the check ran once per focus node.
+    #[test]
+    fn a_nested_check_runs_first_and_the_batch_still_serves_every_focus_node() {
+        let mut body = format!(
+            "{}ex:S sh:property [ sh:path ex:knows ; sh:node ex:S ] .\nex:n0 ex:knows ex:n1 .\n",
+            RULE
+        );
+        for i in 0..50 {
+            body.push_str(&format!("ex:n{i} a ex:C ; ex:p 2 .\n"));
+        }
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let g = Graph::new(&[&p.triples]);
+        QUERIES_RUN.with(|c| c.set((0, 0)));
+        let r = report_with(&g, Arc::new(|| false), &|_| true, 1, Budget::default()).unwrap();
+        // A result per focus node, and n0's sh:node one for n1.
+        assert_eq!((r.results.len(), r.failures.len()), (51, 0));
+        // One batch; n1 runs once on its own, its rows taken by the nested check.
+        assert_eq!(QUERIES_RUN.with(|c| c.get()), (1, 1));
+    }
+
+    /// 100 nodes in a chain, all in `ex:C`; every one but n50 has `ex:ok`.
+    fn deep_chain(targets: &str) -> String {
+        let mut data = format!(
+            "ex:S sh:targetNode {targets} ; sh:property [ sh:path ex:ok ; sh:minCount 1 ] ; sh:property [ sh:path ex:next ; sh:node ex:S ] .\n"
+        );
+        for i in 0..100 {
+            data.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
+            if i != 50 {
+                data.push_str(&format!("ex:n{i} ex:ok true .\n"));
+            }
+        }
+        data
+    }
+
+    /// Past 64 nested shapes a check is cut short. It used to count as
+    /// conforming, silently and for good: the answer for a node depended on
+    /// which nodes were checked before it.
+    #[test]
+    fn the_depth_limit_is_reported_and_never_cached() {
+        let run = |targets: &str| {
+            let p = parse(
+                &format!("{HEAD}{}", deep_chain(targets)),
+                &PrefixMap::default(),
+                Syntax::Turtle,
+            );
+            let g = Graph::new(&[&p.triples]);
+            let r = report_with(
+                &g,
+                Arc::new(|| false),
+                &|_| true,
+                MIN_BATCH,
+                Budget::default(),
+            )
+            .unwrap();
+            let name = |id: Id| match g.term(id) {
+                Term::Iri(i) => i
+                    .as_str()
+                    .trim_start_matches("http://example.com/")
+                    .to_string(),
+                _ => "_".into(),
+            };
+            let mut found: Vec<String> = r
+                .results
+                .iter()
+                .map(|x| {
+                    let component = x
+                        .component
+                        .as_str()
+                        .trim_start_matches(crate::shacl::SH)
+                        .to_string();
+                    format!("{} {:?} {component}", name(x.focus), x.value.map(name))
+                })
+                .collect();
+            found.sort();
+            (found, r.failures)
+        };
+        let at20 = |found: &[String]| -> Vec<String> {
+            found
+                .iter()
+                .filter(|f| f.starts_with("n20 "))
+                .cloned()
+                .collect()
+        };
+        // n20 reaches the missing ex:ok of n50 in 30 hops, within the limit:
+        // its sh:node violation is real.
+        let (alone, failures) = run("ex:n20");
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            alone.contains(&"n20 Some(\"n21\") NodeConstraintComponent".to_string()),
+            "{alone:?}"
+        );
+        // n0 is 50 hops away: cut, reported. What the cut left unfinished
+        // was not remembered, so n20 gets the same answer as alone.
+        let (forward, failures) = run("ex:n0 , ex:n20");
+        assert_eq!(at20(&forward), at20(&alone));
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.kind == FailureKind::Cut && f.message.contains("64")),
+            "{failures:?}"
+        );
+        assert!(!forward.iter().any(|f| f.starts_with("n0 ")), "{forward:?}");
+        // The other way round n0 reuses what n20 settled and sees further:
+        // a true result, never a false one.
+        let (backward, _) = run("ex:n20 , ex:n0");
+        assert!(forward.iter().all(|f| backward.contains(f)), "{backward:?}");
+    }
+
+    /// ex:x against `sh:not ex:S1`, where ex:S1 to ex:S2999 are a `sh:node`
+    /// chain, read as an overlay over itself: every shape has its sh:node
+    /// twice. Past 64 levels nothing is cached, so the checks double with
+    /// every level and no path step is ever taken.
+    fn doubled_node_chain(
+        budget: Budget,
+        cancel: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Option<Report> {
+        let mut body = String::from("ex:S0 sh:targetNode ex:x ; sh:not ex:S1 .\n");
+        for i in 1..3_000 {
+            body.push_str(&format!("ex:S{i} sh:node ex:S{} .\n", i + 1));
+        }
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let base = Arc::new(Graph::new(&[&p.triples]));
+        let g = Graph::overlay(&base, &p.triples);
+        report_with(&g, Arc::new(cancel), &|_| true, MIN_BATCH, budget)
+    }
+
+    #[test]
+    fn cancelling_stops_inside_shape_checks() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let counted = polls.clone();
+        // The poll before the focus node, two more, then the fourth stops.
+        let cancel = move || counted.fetch_add(1, Ordering::Relaxed) >= 3;
+        assert!(doubled_node_chain(Budget::default(), cancel).is_none());
+        assert_eq!(polls.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn shape_checks_stop_at_the_step_budget() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let counted = polls.clone();
+        let cancel = move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let budget = Budget {
+            steps: 100_000,
+            ..Budget::default()
+        };
+        let r = doubled_node_chain(budget, cancel).unwrap();
+        // sh:not over a check the budget cut short would say ex:x conforms
+        // to ex:S1: a false violation.
+        assert!(r.results.is_empty(), "{:?}", r.results);
+        assert!(cut_by_steps(&r), "{:?}", r.failures);
+        // The poll before the focus node, then one per POLL_EVERY steps up
+        // to the budget: no check ran past it.
+        assert_eq!(
+            polls.load(Ordering::Relaxed) as u64,
+            1 + budget.steps / POLL_EVERY
+        );
+    }
+
+    #[test]
+    fn a_target_may_use_minus() {
+        let body = "ex:S sh:target [ a sh:SPARQLTarget ; sh:select \"SELECT ?this WHERE { ?this <http://example.com/p> ?o MINUS { ?this <http://example.com/skip> ?x } }\" ] ; sh:property [ sh:path ex:q ; sh:minCount 1 ] .\nex:a ex:p 1 .\nex:b ex:p 1 ; ex:skip 1 .";
+        let (n, _, failures) = report(body, || false).unwrap();
+        assert_eq!((n, failures), (1, 0));
+        // A constraint may not.
+        let body = "ex:S sh:targetNode ex:a ; sh:sparql [ sh:select \"SELECT $this WHERE { $this ?p ?o MINUS { $this ?p 1 } }\" ] .";
+        assert_eq!(report(body, || false).unwrap().2, 1);
+    }
+
+    /// Chain of `n` nested `sh:inversePath` steps ending at `ex:p`, as flat
+    /// triples (a nested blank node syntax would be as deep as the path).
+    fn long_path(n: usize) -> String {
+        let mut body = String::from(
+            "ex:S sh:targetNode ex:a ; sh:property [ sh:path _:b0 ; sh:minCount 1 ] .\nex:b ex:p ex:a .\n",
+        );
+        for i in 0..n {
+            body.push_str(&format!("_:b{i} sh:inversePath _:b{} .\n", i + 1));
+        }
+        // n + 1 inverses in all.
+        body.push_str(&format!("_:b{n} sh:inversePath ex:p .\n"));
+        body
+    }
+
+    #[test]
+    fn a_path_too_deep_to_read_is_a_failure_not_a_skip() {
+        // 11 steps validate: an odd number of inverses reaches b, backwards
+        // along ex:p.
+        let r = bounded(&long_path(10), Budget::default(), || false).unwrap();
+        assert_eq!(
+            (r.results.len(), r.failures.len()),
+            (0, 0),
+            "{:?}",
+            r.failures
+        );
+        // The same with the value missing is a violation.
+        let missing = long_path(10).replace("ex:b ex:p ex:a .", "");
+        let r = bounded(&missing, Budget::default(), || false).unwrap();
+        assert_eq!((r.results.len(), r.failures.len()), (1, 0));
+        // 20,000 steps cannot be read: reported on the shape's sh:path.
+        let start = std::time::Instant::now();
+        let r = bounded(&long_path(20_000), Budget::default(), || false).unwrap();
+        assert_eq!(r.results.len(), 0);
+        assert_eq!(r.failures.len(), 1, "{:?}", r.failures);
+        assert_eq!(r.failures[0].kind, FailureKind::Path);
+        assert!(r.failures[0].triple.is_some());
+        assert!(start.elapsed().as_secs_f64() < 5.0);
+        // A path that is not a path at all is the same.
+        let r = bounded(
+            "ex:S sh:targetNode ex:a ; sh:property [ sh:path ( ) ; sh:minCount 1 ] .",
+            Budget::default(),
+            || false,
+        )
+        .unwrap();
+        assert_eq!(r.failures.len(), 1);
+        // Deactivated: skipped by choice.
+        let r = bounded(
+            "ex:S sh:targetNode ex:a ; sh:property [ sh:path ( ) ; sh:deactivated true ] .",
+            Budget::default(),
+            || false,
+        )
+        .unwrap();
+        assert!(r.failures.is_empty());
     }
 }

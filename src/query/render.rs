@@ -13,10 +13,14 @@
 //! table and Markdown also with the well-known vocabularies' prefixes, as
 //! hover does); JSON, CSV and TSV give full IRIs.
 
-use super::{Answer, Solutions};
-use crate::features::format::{Options, format};
+use super::Answer;
+#[cfg(not(target_arch = "wasm32"))]
+use super::Solutions;
+use crate::features::format::format;
 use crate::features::hover::short;
+use crate::layout::Options;
 use crate::syntax::{PrefixMap, Syntax, XSD, parse};
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Map, Value, json};
 use spargebra::term::{Literal, NamedOrBlankNode, Term, Triple};
 use std::fmt::Write;
@@ -115,19 +119,54 @@ fn cut<T>(items: &[T], total: usize, max: Option<usize>, what: &str) -> (usize, 
     (shown, note)
 }
 
+/// The most characters a cell of the table or the Markdown shows. A
+/// `GROUP_CONCAT` or a long literal can be megabytes; a table of them is
+/// unreadable and a Markdown document of them opens slowly.
+pub(crate) const MAX_CELL_CHARS: usize = 1000;
+
+/// `s` cut to [`MAX_CELL_CHARS`] characters, with `…` where it was cut and
+/// `cut` raised by one.
+fn clip(s: String, cut: &mut usize) -> String {
+    // Bytes are never fewer than characters: short strings need no count.
+    if s.len() <= MAX_CELL_CHARS {
+        return s;
+    }
+    match s.char_indices().nth(MAX_CELL_CHARS) {
+        Some((end, _)) => {
+            *cut += 1;
+            format!("{}…", &s[..end])
+        }
+        None => s,
+    }
+}
+
+/// "N cell(s) shortened to 1000 characters", for the note under a table.
+fn clipped_note(cut: usize) -> Option<String> {
+    (cut > 0).then(|| {
+        format!(
+            "{} shortened to {MAX_CELL_CHARS} characters",
+            count(cut, "cell")
+        )
+    })
+}
+
 /// An aligned text table: a header of `?variables`, a rule, one line per row
 /// (unbound cells empty), at most `max_rows` rows and then a line "showing N
-/// of M rows". Widths count characters.
-pub fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
+/// of M rows". Widths count characters. A cell longer than
+/// [`MAX_CELL_CHARS`] is cut with `…`, and a line says how many were.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
     let (shown, note) = cut(&s.rows, s.total(), max_rows, "row");
     let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
+    let mut cut = 0;
     let cells: Vec<Vec<String>> = s.rows[..shown]
         .iter()
         .map(|r| {
             r.iter()
                 .map(|t| {
-                    t.as_ref()
-                        .map_or_else(String::new, |t| one_line(&term(t, prefixes)))
+                    t.as_ref().map_or_else(String::new, |t| {
+                        clip(one_line(&term(t, prefixes)), &mut cut)
+                    })
                 })
                 .collect()
         })
@@ -159,7 +198,7 @@ pub fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> St
     for row in &cells {
         out.push_str(&line(row));
     }
-    if let Some(note) = note {
+    for note in note.into_iter().chain(clipped_note(cut)) {
         out.push_str(&note);
         out.push('\n');
     }
@@ -173,8 +212,9 @@ fn one_line(s: &str) -> String {
 
 /// The answer as Markdown: a table of solutions (terms as code, at most
 /// `max_rows` rows, then "showing N of M rows"), `true` or `false`, or the
-/// triples (at most `max_rows`) in a Turtle code block.
-pub fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
+/// triples (at most `max_rows`) in a Turtle code block. A table cell longer
+/// than [`MAX_CELL_CHARS`] is cut with `…`, and a line says how many were.
+pub(crate) fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
     match a {
         Answer::Boolean(b) => format!("**{b}**\n"),
         Answer::Solutions(s) => {
@@ -187,17 +227,18 @@ pub fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> St
             let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
             let _ = writeln!(out, "| {} |", header.join(" | "));
             let _ = writeln!(out, "|{}", "---|".repeat(header.len().max(1)));
+            let mut cut = 0;
             for r in &s.rows[..shown] {
                 let cells: Vec<String> = r
                     .iter()
                     .map(|t| {
                         t.as_ref()
-                            .map_or_else(String::new, |t| code(&term(t, prefixes)))
+                            .map_or_else(String::new, |t| code(&clip(term(t, prefixes), &mut cut)))
                     })
                     .collect();
                 let _ = writeln!(out, "| {} |", cells.join(" | "));
             }
-            if let Some(note) = note {
+            for note in note.into_iter().chain(clipped_note(cut)) {
                 let _ = write!(out, "\n_{}._\n", capitalize(&note));
             }
             out
@@ -254,7 +295,8 @@ fn fence_for(body: &str) -> String {
 /// triples (not a format for graphs). Literals carry `xml:lang` (and
 /// `its:dir` for a base direction) or a `datatype` other than `xsd:string`;
 /// triple terms are SPARQL 1.2 `"type": "triple"`.
-pub fn json(a: &Answer) -> Option<String> {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn json(a: &Answer) -> Option<String> {
     let v = match a {
         Answer::Boolean(b) => json!({ "head": {}, "boolean": b }),
         Answer::Solutions(s) => {
@@ -280,6 +322,7 @@ pub fn json(a: &Answer) -> Option<String> {
     Some(out)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn json_term(t: &Term) -> Value {
     match t {
         Term::NamedNode(n) => json!({ "type": "uri", "value": n.as_str() }),
@@ -313,7 +356,8 @@ fn json_term(t: &Term) -> Value {
 /// row, CRLF line ends. IRIs in full, literals as their lexical form, blank
 /// nodes as `_:label`; a field with `"`, `,`, CR or LF is quoted, its `"`
 /// doubled.
-pub fn csv(s: &Solutions) -> String {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn csv(s: &Solutions) -> String {
     let mut out = String::new();
     let field = |v: &str| {
         if v.contains(['"', ',', '\n', '\r']) {
@@ -346,7 +390,8 @@ pub fn csv(s: &Solutions) -> String {
 /// row, LF line ends. Terms in SPARQL syntax with full IRIs (`<iri>`,
 /// `"text"@en`, `"v"^^<datatype>`, `_:label`), integers and decimals bare;
 /// tabs and line breaks in strings escaped.
-pub fn tsv(s: &Solutions) -> String {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tsv(s: &Solutions) -> String {
     let mut out = String::new();
     let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
     out.push_str(&header.join("\t"));
@@ -363,6 +408,7 @@ pub fn tsv(s: &Solutions) -> String {
 }
 
 /// `t` in SPARQL syntax with full IRIs, numbers bare.
+#[cfg(not(target_arch = "wasm32"))]
 fn full_term(t: &Term) -> String {
     match t {
         Term::NamedNode(n) => format!("<{}>", n.as_str()),
@@ -469,14 +515,8 @@ fn turtle_term(t: &Term, iri: &mut dyn FnMut(&str) -> String) -> String {
 /// `iri` as a prefixed name with `prefixes` that Turtle reads back as `iri`:
 /// (prefix, namespace, name).
 fn turtle_name<'p>(iri: &str, prefixes: &'p PrefixMap) -> Option<(&'p str, &'p str, String)> {
-    let name = crate::features::completion::shorten(iri, prefixes)?;
-    let (p, local) = name.split_once(':')?;
-    let starts_ok = local.chars().next().is_none_or(
-        |c| !matches!(c, '-' | '.' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}'),
-    );
-    if !starts_ok {
-        return None;
-    }
+    let name = crate::syntax::names::shorten(iri, prefixes)?;
+    let (p, _) = name.split_once(':')?;
     let (p, ns) = prefixes.get_key_value(p)?;
     Some((p.as_str(), ns.as_str(), name))
 }

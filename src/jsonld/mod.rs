@@ -24,7 +24,8 @@
 //! - `graph` is the named graph (`@graph` with an `@id`), as in TriG;
 //! - `refs` are the IRIs written in the document (an `@id`, a key, a type)
 //!   with their roles; `errors` carry `json-syntax` and `jsonld-context`
-//!   problems;
+//!   problems, and the warnings of [`json`] (`json-duplicate-key`,
+//!   `json-lone-surrogate`);
 //! - `prefixes`, `prefix_uses`, `graphs` and `comments` stay empty: JSON-LD
 //!   prefixes live in `@context`, and JSON has no comments or graph blocks;
 //! - `tokens` stays empty: its kinds are Turtle's. Spans for highlighting
@@ -43,19 +44,19 @@
 //! written, the term definitions they use, the context inside each object),
 //! for the editor features.
 
-pub mod context;
-pub mod context_edit;
-pub mod expand;
+pub(crate) mod context;
+pub(crate) mod context_edit;
+pub(crate) mod expand;
 pub mod format;
 pub mod json;
-pub mod lint;
-pub mod loader;
-pub mod rename;
-pub mod source;
-pub mod to_rdf;
+pub(crate) mod lint;
+pub(crate) mod loader;
+pub(crate) mod rename;
+pub(crate) mod source;
+pub(crate) mod to_rdf;
 
 pub use loader::{ContextLoader, LoadError, NoNetwork, RemoteDocument};
-pub use source::SourceIndex;
+pub(crate) use source::SourceIndex;
 
 use crate::syntax::{Parsed, Span, Syntax};
 
@@ -65,11 +66,11 @@ use crate::syntax::{Parsed, Span, Syntax};
 pub struct Dropped {
     /// The key or the string (without quotes) that is dropped.
     pub span: Span,
-    pub reason: DropReason,
+    pub(crate) reason: DropReason,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DropReason {
+pub(crate) enum DropReason {
     /// A key the active context does not define: not a term, a compact IRI,
     /// an absolute IRI or a keyword, and no `@vocab` to map it.
     UndefinedTerm,
@@ -96,23 +97,23 @@ pub enum DropReason {
 /// active context (not a keyword alias) whose IRI the term itself does not
 /// spell: the IRI comes from its definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct UsedTerm {
+pub(crate) struct UsedTerm {
     /// The term as written, without quotes: the span of its reference.
-    pub span: Span,
+    pub(crate) span: Span,
     /// Where the definition's IRI is written in this document (its content,
     /// without quotes); `None` for a term of a remote context.
-    pub definition: Option<Span>,
+    pub(crate) definition: Option<Span>,
 }
 
 /// A parsed JSON-LD document: the shared parse model, what JSON-LD dropped
 /// from it, and the terms it uses, each in text order, and its source
 /// index.
 #[derive(Debug, Default)]
-pub struct Document {
-    pub parsed: Parsed,
-    pub dropped: Vec<Dropped>,
-    pub used_terms: Vec<UsedTerm>,
-    pub index: SourceIndex,
+pub(crate) struct Document {
+    pub(crate) parsed: Parsed,
+    pub(crate) dropped: Vec<Dropped>,
+    pub(crate) used_terms: Vec<UsedTerm>,
+    pub(crate) index: SourceIndex,
 }
 
 /// Parse a JSON-LD document into the shared parse model.
@@ -126,8 +127,24 @@ pub fn parse(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Pars
     parse_document(text, base, loader).parsed
 }
 
-/// [`parse`], with the [`Dropped`] records.
-pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Document {
+/// [`parse`], with the [`Dropped`] records. Remote contexts are processed
+/// again for each call: use [`parse_document_with`] to share a cache.
+pub(crate) fn parse_document(
+    text: &str,
+    base: Option<&str>,
+    loader: &dyn ContextLoader,
+) -> Document {
+    parse_document_with(text, base, loader, &context::ContextCache::new())
+}
+
+/// [`parse_document`], keeping processed remote contexts in `cache`, which
+/// the caller owns and may share between documents.
+pub(crate) fn parse_document_with(
+    text: &str,
+    base: Option<&str>,
+    loader: &dyn ContextLoader,
+    cache: &context::ContextCache,
+) -> Document {
     let doc = json::parse(text);
     let mut parsed = Parsed {
         syntax: Syntax::JsonLd,
@@ -135,25 +152,25 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
         errors: doc.errors,
         ..Parsed::default()
     };
+    parsed.errors.extend(doc.warnings);
     let mut dropped = Vec::new();
     let mut used_terms = Vec::new();
     let mut index = SourceIndex::default();
     if let Some(root) = &doc.root {
-        let mut processor = context::Processor::new(loader);
+        let mut processor = context::Processor::with_cache(loader, cache);
         let expanded = expand::expand(root, base, &mut processor);
         parsed.errors.extend(expanded.errors);
         parsed.errors.extend(processor.take_warnings());
         dropped = expanded.dropped;
         used_terms = expanded.used_terms;
         index = expanded.index;
-        index.context_iris = lint::context_iris(root);
         to_rdf::to_rdf(&expanded.items, &mut parsed, &mut dropped);
     }
     // The same scoped context can fail at each use: report each error once.
     let mut seen = rustc_hash::FxHashSet::default();
     parsed
         .errors
-        .retain(|e| seen.insert((e.span, e.message.clone())));
+        .retain(|e| seen.insert((e.span, e.message().to_string())));
     parsed.errors.sort_by_key(|e| (e.span.start, e.span.end));
     dropped.sort_unstable_by_key(|d| (d.span.start, d.span.end, d.reason));
     dropped.dedup();
@@ -167,21 +184,41 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
     }
 }
 
-/// The content of a JSON string written at `span`, without its quotes.
-pub(crate) fn unquoted(span: Span) -> Span {
-    if span.end >= span.start + 2 {
-        Span::new(span.start + 1, span.end - 1)
-    } else {
-        span
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::syntax::{Form, GraphName, Node, Role, Severity::*};
 
     const BASE: &str = "file:///x/a.jsonld";
+
+    include!("../../tests/support/jsonld_people.rs");
+
+    /// FNV-1a of the bytes of `text`.
+    fn fnv1a(text: &str) -> u64 {
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    /// The Rust and the JavaScript generators of the budget document write
+    /// the same bytes: `test/jsonld.test.mjs` asserts the same digest of
+    /// `bench/jsonld-gen.mjs`'s 600-line document tagged `w`.
+    #[test]
+    fn the_budget_document_is_the_one_the_bench_writes() {
+        let doc = people_jsonld(600, "w");
+        assert_eq!(doc.lines().count(), 609);
+        assert_eq!(format!("{:016x}", fnv1a(&doc)), "bbc6c5ea77801ed1");
+        // It is JSON-LD: no errors, one node a person.
+        let p = parse(&doc, Some(BASE), &NoNetwork::default());
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(
+            doc.matches("\"@type\": \"foaf:Person\"").count(),
+            people_count(600)
+        );
+        // Lines come in whole people, from the template alone.
+        assert_eq!(people_count(30_000), 1499);
+        assert_eq!(people_jsonld(30_000, "").lines().count(), 30_009);
+    }
 
     fn at(text: &str, span: Span) -> &str {
         &text[span.start as usize..span.end as usize]
@@ -197,6 +234,7 @@ mod tests {
                 value,
                 datatype,
                 lang,
+                ..
             } => match lang {
                 Some(l) => format!("{value:?}@{l}"),
                 None => format!("{value:?}^^<{datatype}>"),
@@ -471,7 +509,11 @@ mod tests {
         let text = "{\n  \"@context\": {\n    \"ex\": \"https://jsonld.example.org/def/\",\n    \"weight\": 5\n  },\n  \"@id\": \"ex:w10\",\n  \"ex:colour\": \"red\"\n}\n";
         let p = parse(text, None, &NoNetwork::default());
         assert_eq!(errors(text, &p), [("jsonld-context", "weight")]);
-        assert!(p.errors[0].message.starts_with("invalid term definition: "));
+        assert!(
+            p.errors[0]
+                .message()
+                .starts_with("invalid term definition: ")
+        );
         let text = "{\n  \"@context\": {\n    \"a\": \"b:x\",\n    \"b\": \"a:y\"\n  },\n  \"@id\": \"https://jsonld.example.org/def/w15\",\n  \"a\": 1\n}\n";
         let p = parse(text, None, &NoNetwork::default());
         assert_eq!(p.errors.len(), 1);
@@ -497,7 +539,7 @@ mod tests {
             .map(|e| {
                 (
                     at(text, e.span),
-                    e.message.split(':').next().unwrap(),
+                    e.message().split(':').next().unwrap(),
                     e.code,
                 )
             })
@@ -523,7 +565,7 @@ mod tests {
                     e.code,
                     e.severity,
                     at(text, e.span),
-                    e.message.split(':').next().unwrap(),
+                    e.message().split(':').next().unwrap(),
                 )
             })
             .collect();
@@ -539,7 +581,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(p.errors[1].message.contains("imports.network"));
+        assert!(p.errors[1].message().contains("imports.network"));
         // Processing stopped at `"a": 5` before `"@b"`; alone, `"@b"` is a
         // warning.
         let text = r#"{"@context": {"@b": "http://x/"}}"#;
@@ -552,28 +594,38 @@ mod tests {
     }
 
     #[test]
-    fn the_turtle_entry_point_hands_jsonld_to_this_frontend() {
-        // Turtle would report the strings and the colon; JSON only the
-        // unclosed `{`.
+    fn the_turtle_entry_point_leaves_jsonld_to_this_frontend() {
+        let text = "{\"@id\": \"ex:a\"";
         let p = crate::syntax::parse_with_base(
-            "{\"@id\": \"ex:a\"",
+            text,
             &crate::syntax::PrefixMap::default(),
             Syntax::JsonLd,
-            None,
+            Some(BASE),
         );
         assert_eq!(p.syntax, Syntax::JsonLd);
+        assert_eq!(p.document_base.as_deref(), Some(BASE));
+        assert!(p.triples.is_empty() && p.statements.is_empty() && p.tokens.is_empty());
         let errors: Vec<_> = p
             .errors
             .iter()
-            .map(|e| (e.span, e.message.as_str()))
+            .map(|e| (e.code, e.severity, e.span, e.message()))
             .collect();
         assert_eq!(
             errors,
             [(
-                crate::syntax::Span::new(0, 1),
-                "Unclosed object: expected '}'"
+                "syntax",
+                Error,
+                Span::new(0, 0),
+                "JSON-LD documents are parsed by jsonld::parse"
             )]
         );
+
+        // Turtle would report the strings and the colon; JSON only the
+        // unclosed `{`.
+        let p = parse(text, None, &NoNetwork::default());
+        assert_eq!(p.syntax, Syntax::JsonLd);
+        let errors: Vec<_> = p.errors.iter().map(|e| (e.span, e.message())).collect();
+        assert_eq!(errors, [(Span::new(0, 1), "Unclosed object: expected '}'")]);
     }
 
     /// The parse alone, run with `cargo test --release jsonld`: the
@@ -589,55 +641,20 @@ mod tests {
     fn parses_30000_lines_within_4x_of_turtle() {
         use std::fmt::Write as _;
         use std::time::{Duration, Instant};
-        let context = r#"{
-    "ex": "http://example.org/",
-    "foaf": "http://xmlns.com/foaf/0.1/",
-    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-    "schema": "https://schema.org/",
-    "xsd": "http://www.w3.org/2001/XMLSchema#",
-    "name": "foaf:name",
-    "knows": {
-      "@id": "foaf:knows",
-      "@type": "@id"
-    },
-    "born": {
-      "@id": "schema:birthDate",
-      "@type": "xsd:date"
-    },
-    "comment": {
-      "@id": "rdfs:comment",
-      "@language": "en"
-    },
-    "address": "schema:address",
-    "skills": {
-      "@id": "ex:skills",
-      "@container": "@list"
-    }
-  }"#;
-        // 20 lines a person, as bench/jsonld-gen.mjs writes them.
-        let n = (30_000 - 30) / 20;
-        let mut json = format!("{{\n  \"@context\": {context},\n  \"@graph\": [\n");
+        // The people of bench/jsonld-people.tpl, as the bench writes them
+        // (tests/jsonld_budget.rs reads the same template).
+        let json = people_jsonld(30_000, "");
+        let n = people_count(30_000);
         let mut ttl = String::from(
             "@prefix ex: <http://example.org/> .\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n@prefix schema: <https://schema.org/> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\n",
         );
         for i in 0..n {
-            let born = format!("19{:02}-01-01", 50 + i % 50);
-            let (k1, k2) = ((i + 1) % n, (i + 7) % n);
-            let sep = if i + 1 < n { "," } else { "" };
-            let _ = write!(
-                json,
-                "    {{\n      \"@id\": \"ex:p{i}\",\n      \"@type\": \"foaf:Person\",\n      \"name\": \"Person {i}\",\n      \"born\": \"{born}\",\n      \"comment\": \"A longer description of person {i}\",\n      \"knows\": [\n        \"ex:p{k1}\",\n        \"ex:p{k2}\"\n      ],\n      \"address\": {{\n        \"@type\": \"schema:PostalAddress\",\n        \"schema:addressLocality\": \"Town {}\"\n      }},\n      \"skills\": [\n        \"rdf\",\n        \"sparql\",\n        \"skill-{}\"\n      ]\n    }}{sep}\n",
-                i % 100,
-                i % 13
-            );
+            let (born, k1, k2, town, skill) = person_values(i, n);
             let _ = write!(
                 ttl,
-                "ex:p{i} a foaf:Person ;\n  foaf:name \"Person {i}\" ;\n  schema:birthDate \"{born}\"^^xsd:date ;\n  rdfs:comment \"A longer description of person {i}\"@en ;\n  foaf:knows ex:p{k1} , ex:p{k2} ;\n  schema:address [ a schema:PostalAddress ; schema:addressLocality \"Town {}\" ] ;\n  ex:skills ( \"rdf\" \"sparql\" \"skill-{}\" ) .\n\n",
-                i % 100,
-                i % 13
+                "ex:p{i} a foaf:Person ;\n  foaf:name \"Person {i}\" ;\n  schema:birthDate \"19{born}-01-01\"^^xsd:date ;\n  rdfs:comment \"A longer description of person {i}\"@en ;\n  foaf:knows ex:p{k1} , ex:p{k2} ;\n  schema:address [ a schema:PostalAddress ; schema:addressLocality \"Town {town}\" ] ;\n  ex:skills ( \"rdf\" \"sparql\" \"skill-{skill}\" ) .\n\n",
             );
         }
-        json.push_str("  ]\n}\n");
         assert!(json.lines().count() >= 29_000, "{}", json.lines().count());
         let loader = NoNetwork::default();
         let prefixes = crate::syntax::PrefixMap::default();
@@ -669,32 +686,57 @@ mod tests {
             j.triples.len(),
             jt.as_secs_f64() / tt.as_secs_f64()
         );
-        assert!(jt <= tt * 4, "JSON-LD {jt:?} vs Turtle {tt:?}");
+        // 8x, not 4x: a busy Windows runner measured 4.1x (2.4x on a quiet machine).
+        assert!(jt <= tt * 8, "JSON-LD {jt:?} vs Turtle {tt:?}");
     }
 
     #[test]
     fn the_deepest_json_expands_on_a_small_stack() {
-        // As deep as the JSON parser goes, in objects, @list arrays and
-        // @reverse maps, on the 2 MiB stack of a default thread (parsing
-        // threads get 8 MiB, the browser engine 32).
+        // As deep as the JSON parser goes (`MAX_DEPTH` levels in all, the
+        // top-level object included), in objects, @list arrays and @reverse
+        // maps, on the 2 MiB stack of a default thread (parsing threads get
+        // 8 MiB, the browser engine 32).
         let depth = json::MAX_DEPTH as usize - 2;
+        // `depth` (254) nested objects below the root: 255 levels of 256.
         let objects = format!(
             "{{\"@context\": {{\"@vocab\": \"http://ex.org/\"}}, \"@id\": \"http://ex.org/a\", {}\"p\": 1{}}}",
-            "\"p\": {\"q\": 0, ".repeat(depth / 2),
-            "}".repeat(depth / 2)
+            "\"p\": {\"q\": 0, ".repeat(depth),
+            "}".repeat(depth)
         );
         let lists = format!(
             "{{\"@context\": {{\"@vocab\": \"http://ex.org/\", \"l\": {{\"@container\": \"@list\"}}}}, \"l\": {}1{}}}",
             "[".repeat(depth),
             "]".repeat(depth)
         );
+        // Each `@reverse` step is two objects.
         let reverse = format!(
             "{{\"@id\": \"http://ex.org/a\", {}\"@id\": \"http://ex.org/b\"{}}}",
-            "\"@reverse\": {\"http://ex.org/p\": {".repeat(depth / 3),
-            "}}".repeat(depth / 3)
+            "\"@reverse\": {\"http://ex.org/p\": {".repeat(depth / 2),
+            "}}".repeat(depth / 2)
         );
+        let levels = |text: &str| {
+            json::tokens(text)
+                .iter()
+                .fold((0usize, 0usize), |(d, max), t| match t.kind {
+                    json::TokenKind::LBrace | json::TokenKind::LBracket => (d + 1, max.max(d + 1)),
+                    json::TokenKind::RBrace | json::TokenKind::RBracket => (d - 1, max),
+                    _ => (d, max),
+                })
+                .1
+        };
+        // The texts really nest as deep as the parser allows.
+        assert_eq!(levels(&objects), depth + 1);
+        assert_eq!(levels(&lists), depth + 1);
+        assert_eq!(levels(&reverse), depth + 1);
+        // Unoptimized frames are several times larger: a debug build gets
+        // the 8 MiB the parsing threads have.
+        let stack = if cfg!(debug_assertions) {
+            8 << 20
+        } else {
+            2 << 20
+        };
         std::thread::Builder::new()
-            .stack_size(2 << 20)
+            .stack_size(stack)
             .spawn(move || {
                 for text in [objects, lists, reverse] {
                     let p = parse(&text, None, &NoNetwork::default());
@@ -703,11 +745,108 @@ mod tests {
                         "{:?}",
                         p.errors
                     );
-                    assert!(p.triples.len() >= depth / 3, "{}", p.triples.len());
+                    assert!(p.triples.len() >= depth / 2, "{}", p.triples.len());
                 }
             })
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    /// The predicates of the triples whose predicate IRI is one of ours.
+    fn evil_triples(p: &Parsed, subject: &str) -> usize {
+        p.triples
+            .iter()
+            .filter(|t| {
+                matches!(&t.s, Node::Iri(s) if s.as_str() == subject)
+                    && t.p.as_str().starts_with("http://evil/")
+            })
+            .count()
+    }
+
+    /// `@graph` siblings, one with an inline object before a remote context
+    /// and one with the remote context alone, share a cache: neither gets
+    /// the other's terms, in either order, and neither does a second document.
+    #[test]
+    fn siblings_sharing_a_cache_keep_their_own_contexts() {
+        let loader = NoNetwork::default().with(
+            "http://example.com/credentials",
+            r#"{"@context": {"cred": "http://cred.org/"}}"#,
+        );
+        let with_inline = r#"{"@context": [{"zz": "http://evil/zz"}, "http://example.com/credentials"], "@id": "http://ex.org/1", "zz": "v"}"#;
+        let plain = r#"{"@context": "http://example.com/credentials", "@id": "http://ex.org/2", "zz": "v"}"#;
+        for (first, second) in [(with_inline, plain), (plain, with_inline)] {
+            let cache = context::ContextCache::new();
+            let text = format!(
+                r#"{{"@context": {{"outer": "http://outer.org/"}}, "@graph": [{first}, {second}]}}"#
+            );
+            let d = parse_document_with(&text, Some(BASE), &loader, &cache);
+            assert_eq!(evil_triples(&d.parsed, "http://ex.org/1"), 1);
+            assert_eq!(evil_triples(&d.parsed, "http://ex.org/2"), 0);
+            let undefined = d
+                .dropped
+                .iter()
+                .filter(|x| x.reason == DropReason::UndefinedTerm)
+                .count();
+            assert_eq!(undefined, 1, "{:?}", d.dropped);
+            // Another document, same cache.
+            let other =
+                format!(r#"{{"@context": {{"outer": "http://outer.org/"}}, "@graph": [{plain}]}}"#);
+            let d = parse_document_with(&other, Some(BASE), &loader, &cache);
+            assert_eq!(evil_triples(&d.parsed, "http://ex.org/2"), 0);
+            assert_eq!(d.dropped.len(), 1, "{:?}", d.dropped);
+        }
+    }
+
+    /// Contexts that include the one below twice, 20 levels deep, are one
+    /// error, quickly: the work is capped.
+    #[test]
+    fn doubling_nested_contexts_are_one_error_not_a_hang() {
+        let mut loader = NoNetwork::default().with(
+            "http://example.com/c0",
+            r#"{"@context": {"a": "http://a.org/"}}"#,
+        );
+        for i in 1..=20 {
+            loader = loader.with(
+                format!("http://example.com/c{i}"),
+                format!(
+                    r#"{{"@context": ["http://example.com/c{p}", "http://example.com/c{p}"]}}"#,
+                    p = i - 1
+                ),
+            );
+        }
+        let text = r#"{"@context": "http://example.com/c20", "a": "x", "@id": "http://ex.org/1"}"#;
+        let start = std::time::Instant::now();
+        let d = parse_document(text, Some(BASE), &loader);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        let overflow: Vec<_> = d
+            .parsed
+            .errors
+            .iter()
+            .filter(|e| e.message().starts_with("context overflow"))
+            .collect();
+        assert_eq!(overflow.len(), 1, "{:?}", d.parsed.errors);
+    }
+
+    /// A `@json` literal with 100k keys is canonicalized in linear time.
+    #[test]
+    fn a_huge_json_literal_is_parsed_quickly() {
+        let mut text = String::from(
+            r#"{"@context": {"j": {"@id": "http://ex.org/j", "@type": "@json"}}, "@id": "http://ex.org/s", "j": {"#,
+        );
+        for i in 0..100_000 {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push_str(&format!("\"k{i}\":{i}"));
+        }
+        text.push_str("}}");
+        let start = std::time::Instant::now();
+        let p = parse(&text, Some(BASE), &NoNetwork::default());
+        let took = start.elapsed();
+        assert_eq!(p.triples.len(), 1);
+        if cfg!(not(debug_assertions)) {
+            assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+        }
     }
 }

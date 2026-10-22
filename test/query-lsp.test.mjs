@@ -149,31 +149,29 @@ test("without showDocument support the summary is a message", async () => {
   }
 })
 
+// How soon a query stops and a hover is answered while it runs is a
+// latency, checked in latency.test.mjs; here, the order of the answers.
 test("a slow query stops at the time limit, and typing is answered meanwhile", async () => {
-  const s = await startServer({ cwd: ws, initializationOptions: { query: { timeoutSeconds: 1 } } })
+  const s = await startServer({ cwd: ws, initializationOptions: { query: { timeoutSeconds: 2 } } })
   try {
     s.open(at("people.ttl"), DATA)
     await s.diagnosticsFor(at("people.ttl"))
-    const t0 = performance.now()
-    const slow = run(s, at("slow.rq"))
+    let ended = false
+    const slow = run(s, at("slow.rq")).finally(() => (ended = true))
+    // Let the query start (no assertion rides on this pause).
     await new Promise((r) => setTimeout(r, 200))
     const pos = positionOf(DATA, "ex:alice", 4)
     for (let i = 0; i < 3; i++) {
-      const h0 = performance.now()
       const hover = await s.request("textDocument/hover", { textDocument: { uri: at("people.ttl") }, position: pos })
-      const ms = performance.now() - h0
       assert.ok(hover, "no hover")
-      assert.ok(ms < 200, `hover took ${ms.toFixed(0)} ms while the query ran`)
+      // Answered while the query runs, not after it.
+      assert.equal(ended, false, `hover ${i} was answered after the query ended`)
     }
     const summary = await slow
-    const total = performance.now() - t0
-    assert.equal(summary, "stopped at the time limit (1 s, query.timeoutSeconds)")
-    // The 1 s limit, and 1 s for a slow machine: the query stops within a
-    // millisecond of the limit, so more than that is an overrun.
-    assert.ok(total < 2000, `the query ran ${total.toFixed(0)} ms`)
+    assert.equal(summary, "stopped at the time limit (2 s, query.timeoutSeconds)")
     assert.equal(s.messages.at(-1).type, 2)
     const md = fs.readFileSync(path.join(s.cacheDir, "query-results", "slow.md"), "utf8")
-    assert.ok(md.includes("The query was stopped at the time limit (1 s, `query.timeoutSeconds`)."), md)
+    assert.ok(md.includes("The query was stopped at the time limit (2 s, `query.timeoutSeconds`)."), md)
   } finally {
     await s.stop()
   }
@@ -182,19 +180,73 @@ test("a slow query stops at the time limit, and typing is answered meanwhile", a
 test("a second run replaces the first; $/cancelRequest stops a run", async () => {
   const s = await startServer({ cwd: ws, initializationOptions: { query: { timeoutSeconds: 20 } } })
   try {
-    const t0 = performance.now()
+    // The runs are far from their 20 s limit: each answer says why it ended.
     const first = run(s, at("slow.rq"))
     await new Promise((r) => setTimeout(r, 100))
     const second = run(s, at("slow.rq"))
     assert.equal(await first, "cancelled: a newer run replaced it")
-    assert.ok(performance.now() - t0 < 2000)
+    // A client that cannot be asked for lenses again keeps "▶ Run query".
+    s.open(at("slow.rq"), SLOW, "sparql")
+    const [lens] = await s.request("textDocument/codeLens", { textDocument: { uri: at("slow.rq") } })
+    assert.equal(lens.command.title, "▶ Run query")
     s.sendRaw([{ id: "raw-q3", method: "workspace/executeCommand", params: { command: "turtle.runQuery", arguments: [at("slow.rq")] } }])
     assert.equal(await second, "cancelled: a newer run replaced it")
     await new Promise((r) => setTimeout(r, 100))
     s.sendRaw([{ method: "$/cancelRequest", params: { id: "raw-q3" } }])
-    const resp = await s.rawResponse("raw-q3", 3000)
+    // A run the cancel missed would answer at its time limit, with a result.
+    const resp = await s.rawResponse("raw-q3", 25000)
     assert.equal(resp.error?.code, -32800, JSON.stringify(resp))
-    assert.ok(performance.now() - t0 < 4000)
+    assert.ok(!fs.existsSync(path.join(s.cacheDir, "query-results", "slow.md")))
+  } finally {
+    await s.stop()
+  }
+})
+
+// Until `check()` holds, or fail after `ms`.
+async function until(check, ms, what) {
+  const end = Date.now() + ms
+  while (!check()) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
+test("a run shows cancellable progress and a Cancel lens; both stop it", async () => {
+  const s = await startServer({
+    cwd: ws,
+    capabilities: { window: { workDoneProgress: true }, workspace: { codeLens: { refreshSupport: true } } },
+    initializationOptions: { query: { timeoutSeconds: 20 } },
+  })
+  try {
+    const lens = async () => (await s.request("textDocument/codeLens", { textDocument: { uri: at("slow.rq") } }))[0].command
+    const values = (token) => s.progress.filter((p) => p.token === token).map((p) => p.value)
+    const refreshes = () => s.serverRequests.filter((r) => r.method === "workspace/codeLens/refresh").length
+
+    s.open(at("slow.rq"), SLOW, "sparql")
+    // Cancelled from the progress.
+    const first = run(s, at("slow.rq"))
+    await until(() => s.progress.some((p) => p.value.title === "Running slow.rq"), 5000, "the progress")
+    const token = s.progress.find((p) => p.value.title === "Running slow.rq").token
+    assert.equal(values(token)[0].cancellable, true)
+    assert.deepEqual(await lens(), { title: "■ Cancel query", command: "turtle.cancelQuery", arguments: [at("slow.rq")] })
+    assert.ok(s.init.capabilities.executeCommandProvider.commands.includes("turtle.cancelQuery"))
+    // The progress counts the seconds.
+    await until(() => values(token).some((v) => v.kind === "report"), 3000, "a report")
+    assert.match(values(token).find((v) => v.kind === "report").message, /^\d+ s$/)
+    const before = refreshes()
+    await s.conn.sendNotification("window/workDoneProgress/cancel", { token })
+    assert.equal(await first, "cancelled")
+    await until(() => values(token).some((v) => v.kind === "end"), 3000, "the end")
+    assert.equal(values(token).at(-1).message, "Cancelled")
+    await until(() => refreshes() > before, 3000, "a lens refresh")
+    assert.equal((await lens()).title, "▶ Run query")
+
+    // Cancelled from the lens's command.
+    const second = run(s, at("slow.rq"))
+    await until(() => s.progress.filter((p) => p.value.title === "Running slow.rq").length === 2, 5000, "the second progress")
+    assert.equal(await s.request("workspace/executeCommand", { command: "turtle.cancelQuery", arguments: [at("slow.rq")] }), null)
+    assert.equal(await second, "cancelled")
+    assert.equal((await lens()).title, "▶ Run query")
     assert.ok(!fs.existsSync(path.join(s.cacheDir, "query-results", "slow.md")))
   } finally {
     await s.stop()

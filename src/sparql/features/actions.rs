@@ -7,22 +7,23 @@
 use super::edits::add_prefix;
 use super::navigation::{prefix_of, scope_at};
 use crate::analysis::{Encoding, SparqlAnalysis};
-use crate::features::diagnostics::{SOURCE, candidate_title, prefix_candidates, removal};
+use crate::features::diagnostics::SOURCE;
+use crate::features::quickfix::{FixData, candidate_title, prefix_candidates, removal};
 use crate::features::refactor::{
-    Directive, expand_iri, line_content_end, organise_block, shorten, spaced, wanted,
-    workspace_edit,
+    Directive, expand_iri, line_content_end, organise_block, wanted, workspace_edit,
 };
 use crate::knowledge::Knowledge;
 use crate::sparql::{Form, Level, PrefixSource, TermRef};
 use crate::syntax::Span;
+use crate::syntax::names::{newline, shorten, spaced};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// `data.turtle` of a "Shorten all IRIs in file" offered without its edit.
 const SHORTEN_ALL: &str = "shorten-all";
 
-pub fn code_actions(
+pub(crate) fn code_actions(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -44,7 +45,7 @@ pub fn code_actions(
         };
 
     // ---- quick fixes ----
-    let mut missing: Vec<&str> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     for d in &params.context.diagnostics {
         if d.source.as_deref() != Some(SOURCE) {
             continue;
@@ -52,25 +53,25 @@ pub fn code_actions(
         let Some(NumberOrString::String(code)) = &d.code else {
             continue;
         };
-        let data = d.data.as_ref();
         match code.as_str() {
             "undeclared-prefix" => {
-                let Some(p) = data.and_then(|x| x["prefix"].as_str()) else {
+                let Some(FixData::UndeclaredPrefix {
+                    prefix: p,
+                    candidates,
+                    ..
+                }) = FixData::of(d)
+                else {
                     continue;
                 };
                 if missing.contains(&p) {
                     continue;
                 }
-                missing.push(p);
-                let Some(Value::Array(cands)) = data.map(|x| &x["candidates"]) else {
-                    continue;
-                };
-                for (i, c) in cands.iter().enumerate() {
-                    if let Some((title, ns)) = candidate_title(p, c, "PREFIX") {
-                        let fix = add_prefix(q, enc, p, &ns);
-                        out.push(quick(title, Some(d), vec![fix], Some(i == 0)));
-                    }
+                for (i, c) in candidates.iter().enumerate() {
+                    let title = candidate_title(&p, c, "PREFIX");
+                    let fix = in_document_style(q, add_prefix(q, enc, &p, &c.namespace));
+                    out.push(quick(title, Some(d), vec![fix], Some(i == 0)));
                 }
+                missing.push(p);
             }
             "unused-prefix" | "duplicate-prefix" => {
                 let (Some(start), Some(end)) =
@@ -83,20 +84,20 @@ pub fn code_actions(
                     range: q.range(enc, span),
                     new_text: String::new(),
                 };
-                out.push(quick(
-                    "Remove unused prefix".into(),
-                    Some(d),
-                    vec![fix],
-                    Some(true),
-                ));
+                let title = if code == "unused-prefix" {
+                    "Remove unused prefix"
+                } else {
+                    "Remove duplicate prefix"
+                };
+                out.push(quick(title.into(), Some(d), vec![fix], Some(true)));
             }
             "unknown-term" | crate::features::lint::CODE => {
-                let Some(rep) = data.and_then(|x| x["replace"].as_str()) else {
+                let Some(FixData::Replace { replace: rep }) = FixData::of(d) else {
                     continue;
                 };
                 let fix = TextEdit {
                     range: d.range,
-                    new_text: rep.to_string(),
+                    new_text: rep.clone(),
                 };
                 out.push(quick(
                     format!("Change to '{rep}'"),
@@ -181,7 +182,7 @@ pub fn code_actions(
         .collect()
 }
 
-pub fn resolve_code_action(
+pub(crate) fn resolve_code_action(
     q: &SparqlAnalysis,
     enc: Encoding,
     mut action: CodeAction,
@@ -220,6 +221,7 @@ fn add_all_missing(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> Option<C
     let mut fix = add_prefix(q, enc, all[0].0, &all[0].1);
     let lines: Vec<String> = all.iter().map(line).collect();
     fix.new_text = fix.new_text.replacen(&line(&all[0]), &lines.join("\n"), 1);
+    let fix = in_document_style(q, fix);
     Some(CodeAction {
         title: format!("Add all missing prefixes ({})", all.len()),
         kind: Some(CodeActionKind::QUICKFIX),
@@ -229,6 +231,15 @@ fn add_all_missing(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> Option<C
         )),
         ..Default::default()
     })
+}
+
+/// `edit` with the document's line ending in its text.
+fn in_document_style(q: &SparqlAnalysis, mut edit: TextEdit) -> TextEdit {
+    let nl = newline(q.text());
+    if nl != "\n" {
+        edit.new_text = edit.new_text.replace('\n', nl);
+    }
+    edit
 }
 
 /// The ref under the cursor, or the first one inside a selection.

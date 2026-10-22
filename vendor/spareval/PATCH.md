@@ -1,13 +1,15 @@
 # spareval 0.2.7, patched
 
 This folder holds spareval 0.2.7 as published on crates.io (oxigraph commit
-`0e81a29d`, `lib/spareval`), with one change to `src/eval.rs`. Both
-`Cargo.toml` files use it through `[patch.crates-io]`. spareval is licensed
+`0e81a29d`, `lib/spareval`), with two changes: one to `src/eval.rs` and one
+to `src/dataset.rs`. Both `Cargo.toml` files use it through
+`[patch.crates-io]`. spareval is licensed
 MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, from the same commit).
 
-## The change
+## Cancellation in joins
 
-`cancellation-in-joins.patch` is the full diff against the published crate.
+`cancellation-in-joins.patch` is the diff of `src/eval.rs` against the
+published crate.
 
 - Unpatched, the evaluation checks its `CancellationToken` only when it reads
   the dataset. A join combines rows it has already read without reading
@@ -32,12 +34,29 @@ MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, from the same commit).
 - ORDER BY returns the cancellation instead of sorting what it gathered once
   the token is canceled (sorting tens of millions of rows took seconds).
 
-## Removing the patch
+## Equality of directional language strings
 
-Once a spareval release has the same checks, delete this folder and the
+`dir-lang-string-equality.patch` is the diff of `src/dataset.rs` against the
+published crate.
+
+- An RDF 1.2 literal with a base direction (`"x"@en--ltr`) is an
+  `ExpressionTerm::DirLangStringLiteral`. Unpatched, `ExpressionTerm`'s
+  equality has no case for two of them and reaches `unreachable!()`, so
+  `FILTER(?o = "x"@en--ltr)` over such a literal panics.
+- The patched equality holds when the value, the language tag and the
+  direction are all equal, as for the other literals.
+- The test is `equality_of_directional_language_strings_is_answered` in
+  `src/query/tests.rs`.
+
+## Removing the patches
+
+Once a spareval release has both changes, delete this folder and the
 `[patch.crates-io]` entries in `Cargo.toml` and `web/engine/Cargo.toml`, then
-run `cargo update -p spareval` in both places. The tests that cover this are
-`a_join_in_memory_stops_*`, `a_hash_join_in_memory_stops_at_the_time_limit`
-and `a_query_that_keeps_too_many_rows_stops` in `src/query/tests.rs`,
-`tests/query_budget.rs`, `tests/query_cancel.rs`, and the in-memory join
-test in `web/test/engine.test.mjs`.
+run `cargo update -p spareval` in both places. The tests that cover the
+cancellation checks are
+`a_join_in_memory_stops_*`, `a_hash_join_in_memory_stops_at_the_time_limit`,
+`a_join_in_memory_checks_the_watch_as_it_combines_rows` and
+`a_query_that_keeps_too_many_rows_stops` in `src/query/tests.rs`,
+`tests/query_budget.rs`, `tests/query_cancel.rs`, the wall-clock bounds in
+`tests/query_latency.rs`, and the in-memory join test in
+`web/test/engine.test.mjs`.

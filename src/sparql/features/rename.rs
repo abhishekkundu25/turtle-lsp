@@ -9,15 +9,15 @@ use super::navigation::{
 };
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::navigation::{self as rdf, shown, uri};
-use crate::features::refactor::is_pn_prefix;
 use crate::knowledge::Knowledge;
 use crate::sparql::{Form, PrefixSource, VarOcc};
-use crate::syntax::lexer::is_pn_chars_u;
+use crate::syntax::names::shorten;
+use crate::syntax::names::{is_pn_chars_u, is_pn_prefix};
 use lsp_types::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub fn prepare_rename(
+pub(crate) fn prepare_rename(
     q: &SparqlAnalysis,
     enc: Encoding,
     pos: Position,
@@ -33,7 +33,7 @@ pub fn prepare_rename(
     Some(PrepareRenameResponse::Range(q.range(enc, span)))
 }
 
-pub fn rename(
+pub(crate) fn rename(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -72,7 +72,7 @@ pub fn rename(
     })
 }
 
-pub fn rdf_term_rename(
+pub(crate) fn rdf_term_rename(
     old: &str,
     new_iri: &str,
     docs: &[Arc<SparqlAnalysis>],
@@ -223,9 +223,7 @@ fn sparql_term_edits(
             .filter(|r| r.form != Form::A && r.iri.as_deref() == Some(old))
             .map(|r| {
                 let short = match r.form {
-                    Form::PName { .. } => {
-                        crate::features::completion::shorten(new_iri, &scope_at(d, r.span.start))
-                    }
+                    Form::PName { .. } => shorten(new_iri, &scope_at(d, r.span.start)),
                     _ => None,
                 };
                 TextEdit {
@@ -237,5 +235,50 @@ fn sparql_term_edits(
         if !edits.is_empty() {
             changes.entry(uri(&d.uri)).or_default().extend(edits);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::PrefixMap;
+
+    #[test]
+    fn a_renamed_term_is_never_written_as_an_unreadable_prefixed_name() {
+        let text = "PREFIX ex: <http://example.org/>\nSELECT * { ex:a ex:p ?o . ex:b ex:p ?o }\n";
+        let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
+        let renamed = |new_iri: &str| {
+            let mut changes = HashMap::new();
+            sparql_term_edits(
+                &[&q],
+                "http://example.org/a",
+                new_iri,
+                Encoding::Utf16,
+                &mut changes,
+            );
+            changes
+                .into_values()
+                .flatten()
+                .map(|e| e.new_text)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            renamed("http://example.org/-a"),
+            ["<http://example.org/-a>"]
+        );
+        assert_eq!(renamed("http://example.org/a-b"), ["ex:a-b"]);
+    }
+
+    #[test]
+    fn a_prefix_is_renamed_only_to_a_valid_prefix_name() {
+        let text = "PREFIX ex: <http://example.org/>\nSELECT * { ex:a ex:p ?o }\n";
+        let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
+        for bad in ["1x", "a.", "a b", "-a"] {
+            assert!(
+                rename_prefix(&q, Encoding::Utf16, "ex", bad, None).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(rename_prefix(&q, Encoding::Utf16, "ex", "eg:", None).is_ok());
     }
 }

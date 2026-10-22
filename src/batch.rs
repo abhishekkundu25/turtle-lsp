@@ -14,23 +14,29 @@
 //! `file:///work/` (the browser's convention); [`BatchFile::at_path`] opens a
 //! file on disk at its own `file:` URI.
 
-use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
-use crate::features::lint;
+use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
+use crate::diagnose::{self, DiagnosticInputs, Doc};
+use crate::features::quickfix::Fixer;
 use crate::features::shacl_validate;
-use crate::features::{diagnostics, format};
+use crate::features::{diagnostics, format, lint};
 use crate::imports;
-use crate::knowledge::{Knowledge, Source};
+use crate::knowledge::Source;
+use crate::layout;
 use crate::query::{self, Answer, Limits, QueryError};
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
 use crate::syntax::{PrefixMap, Severity, Syntax};
 use crate::workspace::{DocKind, Workspace};
+use line_index::{LineIndex, TextSize};
 use lsp_types::{
-    CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams, Diagnostic,
-    DiagnosticSeverity, Position, Range, TextDocumentIdentifier, TextEdit, Uri,
+    CodeAction, CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    Diagnostic, DiagnosticSeverity, Position, Range, TextDocumentIdentifier, TextEdit, Uri,
 };
+use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Rounds of [`fix_all`] before giving up on fixes that keep producing fixes.
@@ -46,11 +52,11 @@ pub struct BatchFile {
     /// What results and fix edits call the file. Unique within a batch.
     pub name: String,
     /// The URI the file is opened at.
-    pub uri: String,
+    pub(crate) uri: String,
     pub text: String,
     /// Context only: what the file says counts, but [`fix_all`] neither
     /// fixes it nor returns it.
-    pub context: bool,
+    pub(crate) context: bool,
 }
 
 impl BatchFile {
@@ -68,7 +74,13 @@ impl BatchFile {
     /// A file on disk, opened at the `file:` URI of `path` (absolute) and
     /// called `name` in the results. None when `path` has no `file:` URI
     /// (a relative path, or the browser build, which has no file system).
-    pub fn at_path(path: &Path, name: &str, text: String, context: bool) -> Option<BatchFile> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn at_path(
+        path: &Path,
+        name: &str,
+        text: String,
+        context: bool,
+    ) -> Option<BatchFile> {
         Some(BatchFile {
             name: name.to_string(),
             uri: crate::workspace::path_to_uri(path)?,
@@ -105,6 +117,10 @@ pub struct Options {
     /// Run SHACL validation (also subject to `Settings::shacl_enabled`).
     pub shacl: bool,
     pub columns: Columns,
+    /// Work out the quick fixes of each problem ([`Problem::fixes`]). Off,
+    /// they are empty: nothing is computed for them. [`fix_all`] finds its
+    /// own either way.
+    pub fixes: bool,
 }
 
 impl Default for Options {
@@ -112,18 +128,19 @@ impl Default for Options {
         Options {
             shacl: true,
             columns: Columns::Utf16,
+            fixes: true,
         }
     }
 }
 
 /// A workspace on disk (the command line), where the browser has none.
 #[derive(Clone, Debug, Default)]
-pub struct Disk {
+pub(crate) struct Disk {
     /// The workspace roots: a file's `prefixes.ttl` is looked for up to its
     /// root, and import catalogs under them.
-    pub roots: Vec<PathBuf>,
+    pub(crate) roots: Vec<PathBuf>,
     /// Fetch imports that are not in the import cache.
-    pub network: bool,
+    pub(crate) network: bool,
 }
 
 /// What [`analyse`] found.
@@ -150,7 +167,7 @@ pub struct FileReport {
 #[derive(Clone, Debug)]
 pub struct Problem {
     pub diagnostic: Diagnostic,
-    /// Preferred fixes first.
+    /// Preferred fixes first; empty unless [`Options::fixes`].
     pub fixes: Vec<Fix>,
 }
 
@@ -160,7 +177,7 @@ pub struct Fix {
     pub preferred: bool,
     /// Preferred and not a term rename ([`RENAME_CODES`]): applying it does
     /// not change what the data means.
-    pub safe: bool,
+    pub(crate) safe: bool,
     /// The edits, by file name, in input order of the files.
     pub edits: Vec<(String, Vec<TextEdit>)>,
 }
@@ -192,22 +209,25 @@ pub struct FixOutcome {
 }
 
 /// Analyse `files` as one workspace: per file its diagnostics with their
-/// fixes, and the formatter's verdict.
+/// fixes, and the formatter's verdict. A document shows at most 1,000
+/// syntax errors (`diagnostics::MAX_SYNTAX_ERRORS`), as in the editor.
 pub fn analyse(files: &[BatchFile], settings: &Settings, opts: &Options) -> Report {
-    analyse_in(files, settings, opts, None)
+    let max_syntax_errors = Some(diagnostics::MAX_SYNTAX_ERRORS);
+    analyse_in(files, settings, opts, None, max_syntax_errors)
 }
 
-/// [`analyse`] for files on disk: project prefixes come from `prefixes.ttl`
-/// up to the roots, and `owl:imports` are loaded as the editor loads them.
-/// A context file gets only its SHACL results, without fixes, and no
-/// formatter verdict.
-pub fn analyse_on_disk(
+/// [`analyse`] for files on disk (the command line): project prefixes come
+/// from `prefixes.ttl` up to the roots, and `owl:imports` are loaded as the
+/// editor loads them. Every syntax error is reported. A context file gets
+/// only its SHACL results, without fixes, and no formatter verdict.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn analyse_on_disk(
     files: &[BatchFile],
     settings: &Settings,
     opts: &Options,
     disk: &Disk,
 ) -> Report {
-    analyse_in(files, settings, opts, Some(disk))
+    analyse_in(files, settings, opts, Some(disk), None)
 }
 
 fn analyse_in(
@@ -215,9 +235,11 @@ fn analyse_in(
     settings: &Settings,
     opts: &Options,
     disk: Option<&Disk>,
+    max_syntax_errors: Option<usize>,
 ) -> Report {
     let enc = opts.columns.encoding();
     let mut input = Input::new(files, settings, enc, disk, None);
+    input.max_syntax_errors = max_syntax_errors;
     let (has_shapes, mut shacl) = input.shacl(opts.shacl);
     let mut out = Vec::with_capacity(files.len());
     for f in files {
@@ -238,17 +260,18 @@ fn analyse_in(
             });
             continue;
         }
-        let mut diags = input.diagnostics(uri);
-        diags.extend(shacl.remove(uri).unwrap_or_default());
+        let own_shacl = shacl.remove(uri).unwrap_or_default();
+        let diags = input.diagnostics(uri, &own_shacl);
+        let mut fixes = if opts.fixes {
+            input.fixes(uri, &diags)
+        } else {
+            Vec::new()
+        };
+        fixes.resize_with(diags.len(), Vec::new);
         let problems = diags
             .into_iter()
-            .map(|d| {
-                let fixes = input.fixes(uri, &d);
-                Problem {
-                    diagnostic: d,
-                    fixes,
-                }
-            })
+            .zip(fixes)
+            .map(|(diagnostic, fixes)| Problem { diagnostic, fixes })
             .collect();
         out.push(FileReport {
             name: f.name.clone(),
@@ -258,8 +281,9 @@ fn analyse_in(
         });
     }
     if opts.columns == Columns::CodePoints {
+        let lines = LineIndexes::new(files);
         for report in &mut out {
-            to_code_points(report, files);
+            to_code_points(report, files, &lines);
         }
     }
     Report {
@@ -293,7 +317,8 @@ pub fn query(
 
 /// [`query`] for files on disk: project prefixes come from `prefixes.ttl` up
 /// to the roots. Imports are not loaded: the data is the files given.
-pub fn query_on_disk(
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn query_on_disk(
     files: &[BatchFile],
     q: &BatchFile,
     settings: &Settings,
@@ -313,6 +338,8 @@ fn query_in(
     let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
     let mut ws = Workspace::new(roots, settings.prefixes.clone());
     ws.set_network(disk.is_some_and(|d| d.network));
+    // Each file is analyzed once: tokens are made only if a feature asks.
+    ws.set_keep_tokens(false);
     let data: Vec<&BatchFile> = files
         .iter()
         .filter(|f| f.uri != q.uri && DocKind::detect(None, &f.uri) != DocKind::Sparql)
@@ -350,7 +377,8 @@ pub fn fix_all(files: &[BatchFile], settings: &Settings, include_unsafe: bool) -
 
 /// [`fix_all`] for files on disk, as [`analyse_on_disk`] sees them. Imports
 /// are loaded once, before the first round.
-pub fn fix_all_on_disk(
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn fix_all_on_disk(
     files: &[BatchFile],
     settings: &Settings,
     include_unsafe: bool,
@@ -375,16 +403,17 @@ fn fix_all_in(
         loaded = input.imports.clone();
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
+        let lines = LineIndexes::new(&files);
         for f in files.iter().filter(|f| !f.context) {
-            for d in input.diagnostics(&f.uri) {
-                let Some(fix) = input
-                    .fixes(&f.uri, &d)
+            let diags = input.diagnostics(&f.uri, &[]);
+            for fixes in input.fixes(&f.uri, &diags) {
+                let Some(fix) = fixes
                     .into_iter()
                     .find(|x| x.preferred && (x.safe || include_unsafe))
                 else {
                     continue;
                 };
-                let Some(edits) = edits_of(&fix, &files, enc) else {
+                let Some(edits) = edits_of(&fix, &files, &lines, enc) else {
                     continue;
                 };
                 if edits.iter().any(|(i, ..)| files[*i].context) {
@@ -414,33 +443,6 @@ fn fix_all_in(
     FixOutcome { files, applied }
 }
 
-/// The diagnostics of one RDF file, SHACL results aside: what `check`
-/// reports for it, and what the server shows for a workspace file that is
-/// not open (`diagnostics.workspace`). `status` gives each import's status.
-pub fn rdf_diagnostics<'s>(
-    a: &Analysis,
-    k: &Knowledge,
-    enc: Encoding,
-    settings: &Settings,
-    status: impl Fn(&str) -> Option<&'s imports::Status>,
-) -> Vec<Diagnostic> {
-    let opts = diagnostics::Options::from_settings(settings);
-    let mut d = diagnostics::diagnostics_with(a, k, enc, &opts);
-    d.extend(imports::diagnostics_with(a, enc, status));
-    d
-}
-
-/// [`rdf_diagnostics`] for a SPARQL file.
-pub fn sparql_diagnostics(
-    q: &SparqlAnalysis,
-    k: &Knowledge,
-    enc: Encoding,
-    settings: &Settings,
-) -> Vec<Diagnostic> {
-    let opts = diagnostics::Options::from_settings(settings);
-    sparql_features::diagnostics::diagnostics(q, k, enc, &opts)
-}
-
 /// The imports the input does not declare itself: in the order
 /// [`imports::unresolved_without_loading`] gives them, and each with its status.
 struct Unresolved {
@@ -460,6 +462,9 @@ struct Input<'a> {
     unresolved: Option<Unresolved>,
     /// On disk: the imports, loaded into the knowledge index.
     imports: Option<Arc<imports::Resolved>>,
+    /// [`DiagnosticInputs::max_syntax_errors`]; the editor's by default.
+    /// Syntax errors have no fixes, so "fix all" keeps the default.
+    max_syntax_errors: Option<usize>,
 }
 
 impl<'a> Input<'a> {
@@ -475,6 +480,8 @@ impl<'a> Input<'a> {
         let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
         let mut ws = Workspace::new(roots, settings.prefixes.clone());
         ws.set_network(disk.is_some_and(|d| d.network));
+        // Each file is analyzed once: tokens are made only if a feature asks.
+        ws.set_keep_tokens(false);
         for f in files {
             ws.open_doc(f.uri.clone(), f.text.clone(), 1);
         }
@@ -498,6 +505,7 @@ impl<'a> Input<'a> {
             settings,
             enc,
             unresolved: None,
+            max_syntax_errors: Some(diagnostics::MAX_SYNTAX_ERRORS),
         }
     }
 
@@ -534,25 +542,38 @@ impl<'a> Input<'a> {
         })
     }
 
-    /// Diagnostics of `uri` as the server computes them once indexed,
-    /// without SHACL (see [`Input::shacl`]).
-    fn diagnostics(&mut self, uri: &str) -> Vec<Diagnostic> {
-        let enc = self.enc;
-        let settings = self.settings;
-        if self.ws.is_sparql(uri) {
-            let Some(q) = self.ws.sparql(uri) else {
-                return Vec::new();
-            };
-            return sparql_diagnostics(&q, self.ws.knowledge(), enc, settings);
+    /// Diagnostics of `uri` as the server computes them once indexed, with
+    /// its SHACL results `shacl` last (see [`Input::shacl`]). None for a
+    /// file that has no analysis.
+    fn diagnostics(&mut self, uri: &str, shacl: &[Diagnostic]) -> Vec<Diagnostic> {
+        self.try_diagnostics(uri, shacl).unwrap_or_default()
+    }
+
+    fn try_diagnostics(&mut self, uri: &str, shacl: &[Diagnostic]) -> Option<Vec<Diagnostic>> {
+        enum Opened {
+            Rdf(Arc<Analysis>),
+            Sparql(Arc<SparqlAnalysis>),
         }
-        let Some(a) = self.ws.analysis(uri) else {
-            return Vec::new();
+        let opened = if self.ws.is_sparql(uri) {
+            Opened::Sparql(self.ws.sparql(uri)?)
+        } else {
+            Opened::Rdf(self.ws.analysis(uri)?)
         };
         self.ws.knowledge();
         self.unresolved();
         let unresolved = &self.unresolved.as_ref().expect("computed above").status;
+        let status = |iri: &str| unresolved.get(iri);
+        let inputs = DiagnosticInputs {
+            import_status: &status,
+            shacl,
+            max_syntax_errors: self.max_syntax_errors,
+            ..DiagnosticInputs::new(self.settings)
+        };
         let k = self.ws.knowledge_mut();
-        rdf_diagnostics(&a, k, enc, settings, |iri| unresolved.get(iri))
+        Some(match &opened {
+            Opened::Rdf(a) => diagnose::document(Doc::Rdf(a), k, self.enc, &inputs),
+            Opened::Sparql(q) => diagnose::document(Doc::Sparql(q), k, self.enc, &inputs),
+        })
     }
 
     /// Whether some file declares shapes, and if so (and `run`, and SHACL is
@@ -585,52 +606,74 @@ impl<'a> Input<'a> {
         )
     }
 
-    /// The quick fixes for `d` in `uri`, preferred first.
-    fn fixes(&mut self, uri: &str, d: &Diagnostic) -> Vec<Fix> {
+    /// The quick fixes of each of `diags` in `uri`, preferred first, one
+    /// list per diagnostic. Empty for a file that has no analysis.
+    fn fixes(&mut self, uri: &str, diags: &[Diagnostic]) -> Vec<Vec<Fix>> {
         let enc = self.enc;
         let Ok(doc_uri) = uri.parse::<Uri>() else {
             return Vec::new();
         };
-        let params = CodeActionParams {
-            text_document: TextDocumentIdentifier { uri: doc_uri },
-            range: d.range,
-            context: CodeActionContext {
-                diagnostics: vec![d.clone()],
-                only: Some(vec![CodeActionKind::QUICKFIX]),
-                trigger_kind: None,
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-        let actions = if self.ws.is_sparql(uri) {
+        let mut out = Vec::with_capacity(diags.len());
+        if self.ws.is_sparql(uri) {
             let Some(q) = self.ws.sparql(uri) else {
                 return Vec::new();
             };
-            sparql_features::code_actions(&q, self.ws.knowledge(), enc, &params, false)
-        } else {
-            let Some(a) = self.ws.analysis(uri) else {
-                return Vec::new();
-            };
-            diagnostics::code_actions(&a, self.ws.knowledge(), &a.text, enc, &params)
+            for d in diags {
+                let params = CodeActionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: doc_uri.clone(),
+                    },
+                    range: d.range,
+                    context: CodeActionContext {
+                        diagnostics: vec![d.clone()],
+                        only: Some(vec![CodeActionKind::QUICKFIX]),
+                        trigger_kind: None,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                let actions =
+                    sparql_features::code_actions(&q, self.ws.knowledge(), enc, &params, false);
+                // A fix for this diagnostic, not "add all missing prefixes".
+                let mine = actions.into_iter().filter_map(|action| match action {
+                    CodeActionOrCommand::CodeAction(c)
+                        if c.diagnostics
+                            .as_ref()
+                            .is_some_and(|ds| ds.len() == 1 && ds[0] == *d) =>
+                    {
+                        Some(c)
+                    }
+                    _ => None,
+                });
+                out.push(self.as_fixes(d, mine));
+            }
+            return out;
+        }
+        let Some(a) = self.ws.analysis(uri) else {
+            return Vec::new();
         };
+        let k = self.ws.knowledge();
+        let fixer = Fixer::new(&a, k, enc, &doc_uri);
+        let fixes: Vec<Vec<CodeAction>> = diags.iter().map(|d| fixer.for_diagnostic(d)).collect();
+        for (d, actions) in diags.iter().zip(fixes) {
+            out.push(self.as_fixes(d, actions));
+        }
+        out
+    }
+
+    /// `actions`, the code actions for `d`, as fixes: the quick fixes that
+    /// edit files of the input, preferred first.
+    fn as_fixes(&self, d: &Diagnostic, actions: impl IntoIterator<Item = CodeAction>) -> Vec<Fix> {
         let rename = matches!(
             &d.code,
             Some(lsp_types::NumberOrString::String(c)) if RENAME_CODES.contains(&c.as_str())
         );
         let mut out: Vec<Fix> = Vec::new();
-        for action in actions {
-            let CodeActionOrCommand::CodeAction(c) = action else {
-                continue;
-            };
-            // A fix for this diagnostic, not "add all missing prefixes".
-            let mine = c
-                .diagnostics
-                .as_ref()
-                .is_some_and(|ds| ds.len() == 1 && ds[0] == *d);
+        for c in actions {
             let Some(changes) = c.edit.and_then(|e| e.changes) else {
                 continue;
             };
-            if !mine || c.kind != Some(CodeActionKind::QUICKFIX) {
+            if c.kind != Some(CodeActionKind::QUICKFIX) {
                 continue;
             }
             let mut edits: Vec<(usize, Vec<TextEdit>)> = changes
@@ -655,9 +698,9 @@ impl<'a> Input<'a> {
 
     /// The formatter's verdict on `uri`, or None when it has no analysis.
     fn format(&mut self, uri: &str) -> Option<Formatted> {
-        let opts = format::Options {
+        let opts = layout::Options {
             line_width: self.settings.format_line_width as usize,
-            ..format::Options::default()
+            ..layout::Options::default()
         };
         if self.ws.is_sparql(uri) {
             let q = self.ws.sparql(uri)?;
@@ -666,7 +709,7 @@ impl<'a> Input<'a> {
             // The formatter refuses a query with errors; say how many.
             if q.doc.has_errors() {
                 let errors = self
-                    .diagnostics(uri)
+                    .diagnostics(uri, &[])
                     .iter()
                     .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
                     .count()
@@ -689,7 +732,7 @@ impl<'a> Input<'a> {
         let jsonld = a.parsed.syntax == Syntax::JsonLd;
         let opts = if jsonld {
             // JSON convention; the editor passes its own indent.
-            format::Options {
+            layout::Options {
                 tab_size: 2,
                 ..opts
             }
@@ -716,7 +759,7 @@ impl<'a> Input<'a> {
                 it(errors)
             ))
         } else {
-            match format::format(&a.text, &a.parsed, &a.external, &opts) {
+            match format::format_analysis(&a, &opts) {
                 Some(t) if t == *a.text => FormatOutcome::Unchanged,
                 Some(t) => FormatOutcome::Changed(t),
                 None => FormatOutcome::Refused(
@@ -729,7 +772,7 @@ impl<'a> Input<'a> {
     }
 
     fn kind(&self, uri: &str) -> &'static str {
-        match self.ws.open.get(uri).map(|d| d.kind) {
+        match self.ws.doc_kind(uri) {
             Some(DocKind::Sparql) => "sparql",
             Some(DocKind::Rdf(Syntax::TriG)) => "trig",
             Some(DocKind::Rdf(Syntax::NTriples)) => "ntriples",
@@ -744,68 +787,84 @@ fn it(n: usize) -> &'static str {
     if n == 1 { "it" } else { "them" }
 }
 
+/// The line index of each input file, made when first asked for: the texts
+/// do not change while one is in use.
+struct LineIndexes<'a> {
+    files: &'a [BatchFile],
+    lines: Vec<OnceCell<LineIndex>>,
+}
+
+impl<'a> LineIndexes<'a> {
+    fn new(files: &'a [BatchFile]) -> LineIndexes<'a> {
+        LineIndexes {
+            files,
+            lines: files.iter().map(|_| OnceCell::new()).collect(),
+        }
+    }
+
+    fn of(&self, file: usize) -> &LineIndex {
+        self.lines[file].get_or_init(|| LineIndex::new(&self.files[file].text))
+    }
+
+    /// The byte offset of `pos` in file `file`, as [`offset_in`] clamps it.
+    fn offset(&self, file: usize, enc: Encoding, pos: Position) -> usize {
+        let text = &self.files[file].text;
+        offset_in(self.of(file), text, enc, pos).map_or(text.len(), |o| o as usize)
+    }
+
+    /// `pos`, whose column counts UTF-8 bytes, with the column in code points.
+    fn code_point_position(&self, file: usize, pos: Position) -> Position {
+        let text = &self.files[file].text;
+        let off = self.offset(file, Encoding::Utf8, pos);
+        let lc = self.of(file).line_col(TextSize::from(off as u32));
+        let line_start = off - lc.col as usize;
+        Position::new(lc.line, text[line_start..off].chars().count() as u32)
+    }
+}
+
 /// A fix's edits as (file index, start byte, end byte, new text), with
 /// positions in `enc`.
 fn edits_of(
     fix: &Fix,
     files: &[BatchFile],
+    lines: &LineIndexes,
     enc: Encoding,
 ) -> Option<Vec<(usize, usize, usize, String)>> {
     let mut out = Vec::new();
     for (name, list) in &fix.edits {
         let i = files.iter().position(|f| f.name == *name)?;
         for e in list {
-            let s = byte_offset(&files[i].text, e.range.start, enc)?;
-            let end = byte_offset(&files[i].text, e.range.end, enc)?;
+            let s = lines.offset(i, enc, e.range.start);
+            let end = lines.offset(i, enc, e.range.end);
             out.push((i, s, end.max(s), e.new_text.clone()));
         }
     }
     Some(out)
 }
 
-/// The byte offset of a position in `text`, clamped to the end of its line.
-fn byte_offset(text: &str, pos: Position, enc: Encoding) -> Option<usize> {
-    let mut start = 0;
-    for _ in 0..pos.line {
-        start += text[start..].find('\n')? + 1;
-    }
-    let line = &text[start..];
-    let line = &line[..line.find('\n').unwrap_or(line.len())];
-    let mut units = 0;
-    for (i, c) in line.char_indices() {
-        if units >= pos.character as usize {
-            return Some(start + i);
-        }
-        units += match enc {
-            Encoding::Utf8 => c.len_utf8(),
-            Encoding::Utf16 => c.len_utf16(),
-        };
-    }
-    Some(start + line.len())
-}
-
 /// Convert a report's UTF-8 columns to code points. Edits convert against
 /// the file they edit. Each file's line starts are found once: a large file
 /// can have thousands of problems.
-fn to_code_points(report: &mut FileReport, files: &[BatchFile]) {
-    let mut lines: HashMap<&str, Lines> = HashMap::new();
-    let mut convert = |name: &str, r: Range| -> Option<Range> {
-        if !lines.contains_key(name) {
-            let f = files.iter().find(|f| f.name == name)?;
-            lines.insert(&f.name, Lines::new(&f.text));
-        }
-        Some(lines[name].range(r))
+fn to_code_points(report: &mut FileReport, files: &[BatchFile], lines: &LineIndexes) {
+    let index_of = |name: &str| files.iter().position(|f| f.name == name);
+    let convert = |file: Option<usize>, r: Range| -> Option<Range> {
+        let i = file?;
+        Some(Range::new(
+            lines.code_point_position(i, r.start),
+            lines.code_point_position(i, r.end),
+        ))
     };
-    let own = report.name.clone();
+    let own = index_of(&report.name);
     for p in &mut report.problems {
-        let Some(r) = convert(&own, p.diagnostic.range) else {
+        let Some(r) = convert(own, p.diagnostic.range) else {
             return;
         };
         p.diagnostic.range = r;
         for fix in &mut p.fixes {
             for (name, list) in &mut fix.edits {
+                let file = index_of(name);
                 for e in list {
-                    if let Some(r) = convert(name, e.range) {
+                    if let Some(r) = convert(file, e.range) {
                         e.range = r;
                     }
                 }
@@ -814,49 +873,11 @@ fn to_code_points(report: &mut FileReport, files: &[BatchFile]) {
     }
 }
 
-/// A text and where each of its lines starts.
-struct Lines<'a> {
-    text: &'a str,
-    starts: Vec<usize>,
-}
-
-impl<'a> Lines<'a> {
-    fn new(text: &'a str) -> Lines<'a> {
-        let starts = std::iter::once(0)
-            .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
-        Lines { text, starts }
-    }
-
-    fn range(&self, r: Range) -> Range {
-        Range::new(self.position(r.start), self.position(r.end))
-    }
-
-    /// A position whose column counts UTF-8 bytes, with the column in code points.
-    fn position(&self, pos: Position) -> Position {
-        let line = match self.starts.get(pos.line as usize) {
-            Some(&start) => {
-                let end = self
-                    .starts
-                    .get(pos.line as usize + 1)
-                    .map_or(self.text.len(), |e| e - 1);
-                &self.text[start..end]
-            }
-            None => "",
-        };
-        let mut col = (pos.character as usize).min(line.len());
-        while !line.is_char_boundary(col) {
-            col -= 1;
-        }
-        Position::new(pos.line, line[..col].chars().count() as u32)
-    }
-}
-
 /// The URI a named file is opened at: its name as a path below
 /// `file:///work/`, each '/'-separated segment escaped as JavaScript's
 /// `encodeURIComponent` escapes it, so the browser editor (web/app/editor.js)
 /// opens a file at the same URI.
-pub fn work_uri(name: &str) -> String {
+pub(crate) fn work_uri(name: &str) -> String {
     let mut out = String::from("file:///work/");
     for (i, segment) in name.split('/').enumerate() {
         if i > 0 {
@@ -892,6 +913,31 @@ mod tests {
             Some(lsp_types::NumberOrString::String(s)) => Some(s),
             _ => None,
         }
+    }
+
+    #[test]
+    fn the_command_line_reports_every_syntax_error_and_the_browser_the_editors() {
+        let text: String = (0..1500)
+            .map(|i| format!("<http://e/s{i}> <http://e/p> .\n"))
+            .collect();
+        let files = [file("a.ttl", &text)];
+        let opts = Options {
+            shacl: false,
+            fixes: false,
+            ..Options::default()
+        };
+        let syntax = |r: &Report| {
+            r.files[0]
+                .problems
+                .iter()
+                .filter(|p| code(p) == Some("syntax"))
+                .count()
+        };
+        let editor = analyse(&files, &Settings::default(), &opts);
+        assert_eq!(syntax(&editor), diagnostics::MAX_SYNTAX_ERRORS + 1);
+        // What analyse_on_disk passes.
+        let cli = analyse_in(&files, &Settings::default(), &opts, None, None);
+        assert_eq!(syntax(&cli), 1500);
     }
 
     #[test]
@@ -960,8 +1006,8 @@ mod tests {
             let r = report(
                 &[file("a.ttl", &text)],
                 &Options {
-                    shacl: true,
                     columns,
+                    ..Options::default()
                 },
             );
             let p = r.files[0]
@@ -997,7 +1043,7 @@ mod tests {
                 &files,
                 &Options {
                     shacl: run,
-                    columns: Columns::Utf16,
+                    ..Options::default()
                 },
             );
             assert!(r.has_shapes);
@@ -1012,6 +1058,26 @@ mod tests {
     }
 
     #[test]
+    fn batch_analyses_keep_no_tokens() {
+        let text = format!("{RDFS}<http://x/a> rdfs:label \"a\" . # c\n");
+        let files = [file("a.ttl", &text)];
+        let settings = Settings::default();
+        let mut input = Input::new(&files, &settings, Encoding::Utf16, None, None);
+        let a = input.ws.analysis(&files[0].uri).unwrap();
+        assert!(!a.has_tokens());
+        // Made when a feature asks, the same as kept ones.
+        let kept = Analysis::new(files[0].uri.clone(), &text, Default::default(), true);
+        let key = |a: &Analysis| -> Vec<_> {
+            a.tokens()
+                .iter()
+                .map(|t| (t.kind, t.start, t.end))
+                .collect()
+        };
+        assert_eq!(key(&a), key(&kept));
+        assert!(a.has_tokens());
+    }
+
+    #[test]
     fn the_formatter_gives_its_verdict() {
         let text = format!("{RDFS}<http://x/a>   rdfs:label \"a\" .\n");
         let r = report(&[file("a.ttl", &text)], &Options::default());
@@ -1022,9 +1088,10 @@ mod tests {
 
     #[test]
     fn a_query_runs_over_the_rdf_files_with_the_project_prefixes() {
-        let settings = Settings::from_layers([&serde_json::json!({
-            "prefixes": {"ex": "http://example.org/"}
-        })]);
+        let settings = Settings::from_layers([(
+            crate::settings::Layer::Client,
+            &serde_json::json!({"prefixes": {"ex": "http://example.org/"}}),
+        )]);
         // A headerless data file, a SPARQL file (not data) and the query.
         let files = [
             file("a.ttl", "ex:a ex:p 1 .\n"),
@@ -1065,6 +1132,110 @@ mod tests {
         let q = file("u.rq", "INSERT DATA { <a:a> <a:b> <a:c> }\n");
         let out = query(&[], &q, &Settings::default(), &Limits::default());
         assert!(matches!(out.answer, Err(QueryError::Unsupported(_))));
+    }
+
+    #[test]
+    fn fixes_are_found_only_when_asked() {
+        let files = [file("a.ttl", "<http://x/a> rdfs:labl \"a\" .\n")];
+        let count = |fixes| {
+            let opts = Options {
+                fixes,
+                ..Options::default()
+            };
+            let r = report(&files, &opts);
+            assert!(!r.files[0].problems.is_empty());
+            r.files[0]
+                .problems
+                .iter()
+                .map(|p| p.fixes.len())
+                .sum::<usize>()
+        };
+        assert_eq!(count(false), 0);
+        assert!(count(true) > 0);
+        // "Fix all" finds its own whatever the options.
+        let out = fix_all(&files, &Settings::default(), true);
+        assert!(out.applied > 0);
+    }
+
+    #[test]
+    fn fix_all_on_crlf_text() {
+        let text = "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\r\n\
+            @prefix unused: <http://u/> .\r\n\
+            <http://x/a> rdfs:labl \"a\" ;\r\n  foaf:name \"b\" .\r\n";
+        let out = fix_all(&[file("a.ttl", text)], &Settings::default(), true);
+        let fixed = &out.files[0].text;
+        assert_eq!(
+            fixed.matches('\n').count(),
+            fixed.matches("\r\n").count(),
+            "{fixed:?}"
+        );
+        assert!(fixed.contains("rdfs:label \"a\""), "{fixed:?}");
+        assert!(fixed.contains("@prefix foaf: <http://xmlns.com/foaf/0.1/> .\r\n"));
+        assert!(!fixed.contains("unused:"), "{fixed:?}");
+    }
+
+    #[test]
+    fn an_edit_is_placed_by_the_documents_own_line_conversion() {
+        let fix = |edits: Vec<TextEdit>| Fix {
+            title: String::new(),
+            preferred: true,
+            safe: true,
+            edits: vec![("a.ttl".to_string(), edits)],
+        };
+        let insert = |line, character, new_text: &str| TextEdit {
+            range: Range::new(
+                Position::new(line, character),
+                Position::new(line, character),
+            ),
+            new_text: new_text.to_string(),
+        };
+        let files = [file("a.ttl", "ab\r\ncd\r\n")];
+        let lines = LineIndexes::new(&files);
+        let at = |edit| edits_of(&fix(vec![edit]), &files, &lines, Encoding::Utf16).unwrap()[0].1;
+        // A column past the end of a CRLF line stops before the line break.
+        assert_eq!(at(insert(0, 99, "x")), 2);
+        assert_eq!(at(insert(1, 1, "x")), 5);
+        // A line past the last one is the end of the text, not a dropped fix.
+        assert_eq!(at(insert(7, 0, "x")), 8);
+    }
+
+    #[test]
+    fn code_point_columns_follow_the_line_index() {
+        // CRLF, a column past the end of its line, and a line past the end.
+        let text = "é😀 rdfs:labl\r\nx\r\n";
+        let files = [file("a.ttl", text)];
+        let lines = LineIndexes::new(&files);
+        let pos = |l, c| lines.code_point_position(0, Position::new(l, c));
+        assert_eq!(pos(0, 0), Position::new(0, 0));
+        // 2 + 4 UTF-8 bytes are 2 code points.
+        assert_eq!(pos(0, 6), Position::new(0, 2));
+        assert_eq!(pos(0, 99), Position::new(0, 2 + 1 + 9));
+        assert_eq!(pos(1, 1), Position::new(1, 1));
+        assert_eq!(pos(9, 0), Position::new(2, 0));
+    }
+
+    /// 20,000 undeclared uses of one prefix: with no fixes asked for, `check`
+    /// reads them in a blink; with fixes the cost stays linear too.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn many_undeclared_uses_are_not_quadratic() {
+        let text: String = (0..20_000)
+            .map(|i| format!("<http://x/s{i}> foaf:name \"n{i}\" .\n"))
+            .collect();
+        let files = [file("a.ttl", &text)];
+        for (fixes, limit) in [(false, 1.0), (true, 2.0)] {
+            let opts = Options {
+                fixes,
+                columns: Columns::CodePoints,
+                ..Options::default()
+            };
+            let start = std::time::Instant::now();
+            let r = report(&files, &opts);
+            let took = start.elapsed().as_secs_f64();
+            assert_eq!(r.files[0].problems.len(), 20_000);
+            assert_eq!(r.files[0].problems[0].fixes.is_empty(), !fixes);
+            assert!(took < limit, "fixes={fixes}: {took:.2}s");
+        }
     }
 
     #[cfg(unix)]

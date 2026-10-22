@@ -1,0 +1,23 @@
+{
+  "@context": [
+    "http://example.com/contexts/missing.jsonld",
+    {
+      "@version": 1.1,
+      "@base": "http://example.com/base/",
+      "ex": "http://example.com/ns#",
+      "Thing": { "@id": "ex:Thing", "@context": { "name": "ex:thingName" } },
+      "name": "ex:name",
+      "value": { "@id": "ex:value", "@type": "@json" },
+      "id": "@id",
+      "type": "@type",
+      "graph": { "@id": "@graph", "@container": "@id" },
+      "propagate": null
+    }
+  ],
+  "id": "thing/1",
+  "type": "Thing",
+  "name": "scoped",
+  "value": { "any": ["json", 1, true, null] },
+  "graph": { "g1": { "id": "x", "name": "in g1" } },
+  "ex:odd": [[], {}, null, "", { "@list": [] }, { "@set": [] }, { "@value": null }]
+}

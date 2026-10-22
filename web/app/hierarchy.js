@@ -2,7 +2,8 @@
 // supertypes or subtypes (rdfs:subClassOf, rdfs:subPropertyOf), as VS Code's.
 // Children are asked from the language server when a row is first expanded.
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
+import { esc } from "./dom.js"
+
 const ICON = { 5: "symbol-class", 7: "symbol-property", 11: "symbol-interface" }
 const NOTHING = "No class or property at the cursor. Place the cursor on a class or property and run Show Type Hierarchy (Shift+Alt+H)."
 

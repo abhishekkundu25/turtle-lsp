@@ -3,6 +3,8 @@
 // its LSP request (connect). Positions match: LSP counts UTF-16 units from
 // 0, Monaco from 1.
 
+import { track } from "./lsp-host.js"
+
 export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 
 // The language of a path, as the server and Monaco know it. JSON-LD is
@@ -34,15 +36,64 @@ export function quietJson(monaco) {
   })
 }
 
+// The settings the page last sent the server (`workspace/didChangeConfiguration`),
+// for the operations that run apart from it: Run Query and Fix All.
+let lastSettings = {}
+export const currentSettings = () => lastSettings
+
+// What Monaco expects of a request it gave up on.
+const canceled = () => Object.assign(new Error("Canceled"), { name: "Canceled" })
+
 export class LspClient {
   constructor(url) {
-    this.worker = new Worker(url, { type: "module" })
+    this.url = url
     this.nextId = 0
     this.pending = new Map()
     this.inflight = 0
     this.timers = false
     this.handlers = { diagnostics() {}, serverRequest() {}, crash() {}, busy() {} }
-    this.worker.onmessage = ({ data }) => this.received(data)
+    // What a new worker needs to take over from a dead one.
+    this.initParams = null
+    this.config = null
+    this.open = new Map() // uri -> { languageId, version, text }
+    this.crashes = [] // when the worker died, the last minute
+    this.worker = null
+    this.start()
+  }
+
+  start() {
+    const w = (this.worker = new Worker(this.url, { type: "module" }))
+    w.onmessage = ({ data }) => this.worker === w && this.received(data)
+    w.onerror = w.onmessageerror = (e) => {
+      e.preventDefault?.()
+      this.died(w, e.message)
+    }
+  }
+
+  // A worker that failed to load or died answers nothing more: fail what
+  // waits on it, and start another with the documents (the third death within
+  // a minute leaves language features off until the page reloads).
+  died(w, cause) {
+    if (this.worker !== w) return
+    w.terminate()
+    this.worker = null
+    const message = "the language server stopped" + (cause ? `: ${cause}` : "")
+    for (const p of this.pending.values()) p.reject(new Error(message))
+    this.pending.clear()
+    this.inflight = 0
+    this.timers = false
+    this.handlers.busy(false)
+    const now = Date.now()
+    this.crashes = [...this.crashes.filter((t) => now - t < 60_000), now]
+    if (!this.initParams || this.crashes.length >= 3) {
+      this.handlers.crash(message, { state: "off", dropped: [...this.open.keys()] })
+      return
+    }
+    this.start()
+    this.post({ kind: "initialize", params: this.initParams }).catch(() => {})
+    if (this.config) this.send("workspace/didChangeConfiguration", this.config)
+    for (const [uri, d] of this.open) this.send("textDocument/didOpen", { textDocument: { uri, ...d } })
+    this.handlers.crash(message, { state: "restarted", dropped: [] })
   }
 
   on(name, f) {
@@ -54,30 +105,49 @@ export class LspClient {
   }
 
   initialize(params) {
+    this.initParams = params
     return this.post({ kind: "initialize", params })
   }
 
-  request(method, params) {
-    return this.post({ kind: "request", method, params })
+  // `token`: Monaco's cancellation token; once it is cancelled the request
+  // fails with "Canceled", and the worker skips it if it has not begun.
+  request(method, params, token) {
+    return this.post({ kind: "request", method, params }, token)
   }
 
-  // Texts after every preferred quick fix: [{ name, text }] -> same.
+  // Texts after every preferred quick fix: [{ name, text }] -> same, with the
+  // settings last sent to the server.
   fixAll(files) {
-    return this.post({ kind: "fixAll", params: { files } })
+    return this.post({ kind: "fixAll", params: { files, settings: lastSettings } })
   }
 
   notify(method, params) {
+    track(this, method, params)
+    if (method === "workspace/didChangeConfiguration") lastSettings = params?.settings ?? {}
+    this.send(method, params)
+  }
+
+  send(method, params) {
+    if (!this.worker) return
     this.inflight++
     this.handlers.busy(true)
     this.worker.postMessage({ kind: "notify", method, params })
   }
 
-  post(message) {
+  post(message, token) {
+    if (!this.worker) return Promise.reject(new Error("the language server is off"))
+    if (token?.isCancellationRequested) return Promise.reject(canceled())
     const id = ++this.nextId
     this.inflight++
     this.handlers.busy(true)
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      const watch = token?.onCancellationRequested?.(() => {
+        if (!this.pending.delete(id)) return
+        reject(canceled())
+        this.worker?.postMessage({ kind: "cancel", id })
+      })
+      const done = (f) => (v) => (watch?.dispose?.(), f(v))
+      this.pending.set(id, { resolve: done(resolve), reject: done(reject) })
       this.worker.postMessage({ ...message, id })
     })
   }
@@ -89,15 +159,15 @@ export class LspClient {
       if (m.error !== undefined) p?.reject(new Error(m.error))
       else p?.resolve(m.result)
     } else if (m.type === "idle") {
-      // One acknowledgement per message sent; a timer's end is not one.
-      if (m.ack) this.inflight = Math.max(0, this.inflight - 1)
+      // One acknowledgement per message sent (`ack`: how many this one is
+      // for); a timer's end is not one.
+      if (m.ack) this.inflight = Math.max(0, this.inflight - (m.ack === true ? 1 : m.ack))
       this.timers = m.busy
       this.handlers.busy(this.busy)
     } else if (m.type === "diagnostics") this.handlers.diagnostics(m.uri, m.list)
     else if (m.type === "serverRequest") this.handlers.serverRequest(m.method, m.params)
     else if (m.type === "crash") this.handlers.crash(m.message, m)
   }
-
 }
 
 // ---- conversions -------------------------------------------------------------------
@@ -159,8 +229,8 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   // only `.jsonld` files are ever opened in it).
   for (const lang of [...LANGUAGES, "json"]) {
     monaco.languages.registerHoverProvider(lang, {
-      async provideHover(model, position) {
-        const h = await client.request("textDocument/hover", at(model, position))
+      async provideHover(model, position, token) {
+        const h = await client.request("textDocument/hover", at(model, position), token)
         if (!h) return null
         return { contents: markdown(h.contents), range: h.range ? toRange(monaco, h.range) : undefined }
       },
@@ -168,11 +238,11 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
 
     monaco.languages.registerCompletionItemProvider(lang, {
       triggerCharacters: triggers,
-      async provideCompletionItems(model, position, context) {
+      async provideCompletionItems(model, position, context, token) {
         const r = await client.request("textDocument/completion", {
           ...at(model, position),
           context: context.triggerCharacter ? { triggerKind: 2, triggerCharacter: context.triggerCharacter } : { triggerKind: 1 },
-        })
+        }, token)
         const items = r == null ? [] : Array.isArray(r) ? r : r.items
         const word = model.getWordUntilPosition(position)
         const fallback = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, position.column)
@@ -193,8 +263,8 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
           })),
         }
       },
-      async resolveCompletionItem(item) {
-        const r = await client.request("completionItem/resolve", item.lsp)
+      async resolveCompletionItem(item, token) {
+        const r = await client.request("completionItem/resolve", item.lsp, token)
         if (r?.documentation) item.documentation = markdown(r.documentation)[0]
         if (r?.detail) item.detail = r.detail
         return item
@@ -202,47 +272,47 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
     })
 
     monaco.languages.registerDefinitionProvider(lang, {
-      provideDefinition: async (model, position) => locations(monaco, await client.request("textDocument/definition", at(model, position))),
+      provideDefinition: async (model, position, token) => locations(monaco, await client.request("textDocument/definition", at(model, position), token)),
     })
     monaco.languages.registerReferenceProvider(lang, {
-      provideReferences: async (model, position, context) =>
-        locations(monaco, await client.request("textDocument/references", { ...at(model, position), context: { includeDeclaration: context.includeDeclaration } })),
+      provideReferences: async (model, position, context, token) =>
+        locations(monaco, await client.request("textDocument/references", { ...at(model, position), context: { includeDeclaration: context.includeDeclaration } }, token)),
     })
     monaco.languages.registerDocumentHighlightProvider(lang, {
-      async provideDocumentHighlights(model, position) {
-        const r = await client.request("textDocument/documentHighlight", at(model, position))
+      async provideDocumentHighlights(model, position, token) {
+        const r = await client.request("textDocument/documentHighlight", at(model, position), token)
         return (r ?? []).map((h) => ({ range: toRange(monaco, h.range), kind: (h.kind ?? 1) - 1 }))
       },
     })
 
     monaco.languages.registerRenameProvider(lang, {
-      async resolveRenameLocation(model, position) {
-        const r = await client.request("textDocument/prepareRename", at(model, position))
+      async resolveRenameLocation(model, position, token) {
+        const r = await client.request("textDocument/prepareRename", at(model, position), token)
         if (!r) return { range: new monaco.Range(1, 1, 1, 1), text: "", rejectReason: "Nothing to rename here" }
         const range = toRange(monaco, r.range ?? r)
         return { range, text: r.placeholder ?? model.getValueInRange(range) }
       },
-      async provideRenameEdits(model, position, newName) {
-        return edits(monaco, await client.request("textDocument/rename", { ...at(model, position), newName }))
+      async provideRenameEdits(model, position, newName, token) {
+        return edits(monaco, await client.request("textDocument/rename", { ...at(model, position), newName }, token))
       },
     })
 
     monaco.languages.registerDocumentFormattingEditProvider(lang, {
-      async provideDocumentFormattingEdits(model, options) {
-        const r = await client.request("textDocument/formatting", { ...doc(model), options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces } })
+      async provideDocumentFormattingEdits(model, options, token) {
+        const r = await client.request("textDocument/formatting", { ...doc(model), options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces } }, token)
         return (r ?? []).map((e) => ({ range: toRange(monaco, e.range), text: e.newText }))
       },
     })
 
     monaco.languages.registerCodeActionProvider(lang, {
-      async provideCodeActions(model, range) {
+      async provideCodeActions(model, range, _context, token) {
         const wanted = fromRange(range)
         const touches = (d) =>
           !(d.range.end.line < wanted.start.line || d.range.start.line > wanted.end.line ||
             (d.range.end.line === wanted.start.line && d.range.end.character < wanted.start.character) ||
             (d.range.start.line === wanted.end.line && d.range.start.character > wanted.end.character))
         const diagnostics = diagnosticsOf(model.uri.toString()).filter(touches)
-        const r = await client.request("textDocument/codeAction", { ...doc(model), range: wanted, context: { diagnostics } })
+        const r = await client.request("textDocument/codeAction", { ...doc(model), range: wanted, context: { diagnostics } }, token)
         // Actions with an edit apply it; those with only a command (fetch an
         // import) run it in the page (registered with monaco.editor.registerCommand).
         const actions = (r ?? [])
@@ -260,11 +330,11 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
     })
 
     monaco.languages.registerDocumentSymbolProvider(lang, {
-      provideDocumentSymbols: async (model) => (await client.request("textDocument/documentSymbol", doc(model)) ?? []).map((s) => symbol(monaco, s)),
+      provideDocumentSymbols: async (model, token) => (await client.request("textDocument/documentSymbol", doc(model), token) ?? []).map((s) => symbol(monaco, s)),
     })
     monaco.languages.registerFoldingRangeProvider(lang, {
-      async provideFoldingRanges(model) {
-        const r = await client.request("textDocument/foldingRange", doc(model))
+      async provideFoldingRanges(model, _context, token) {
+        const r = await client.request("textDocument/foldingRange", doc(model), token)
         return (r ?? []).map((f) => ({ start: f.startLine + 1, end: f.endLine + 1 }))
       },
     })
@@ -272,8 +342,8 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
     monaco.languages.registerDocumentSemanticTokensProvider(lang, {
       onDidChange: semanticChanged.event,
       getLegend: () => legend,
-      async provideDocumentSemanticTokens(model) {
-        const r = await client.request("textDocument/semanticTokens/full", doc(model))
+      async provideDocumentSemanticTokens(model, _lastResultId, token) {
+        const r = await client.request("textDocument/semanticTokens/full", doc(model), token)
         return r ? { data: new Uint32Array(r.data), resultId: r.resultId } : null
       },
       releaseDocumentSemanticTokens() {},
@@ -282,13 +352,13 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
     // "N references" above each subject; a click opens the references view.
     // The query lens ("▶ Run query") is left out: the Run button does that.
     monaco.languages.registerCodeLensProvider(lang, {
-      async provideCodeLenses(model) {
-        const r = await client.request("textDocument/codeLens", doc(model))
+      async provideCodeLenses(model, token) {
+        const r = await client.request("textDocument/codeLens", doc(model), token)
         const lenses = (r ?? []).filter((l) => !l.command).map((l) => ({ range: toRange(monaco, l.range), lsp: l }))
         return { lenses, dispose() {} }
       },
-      async resolveCodeLens(model, lens) {
-        const r = await client.request("codeLens/resolve", lens.lsp)
+      async resolveCodeLens(model, lens, token) {
+        const r = await client.request("codeLens/resolve", lens.lsp, token)
         if (!r?.command) return lens
         const [, position, refs] = r.command.arguments
         const p = new monaco.Position(position.line + 1, position.character + 1)
@@ -298,8 +368,8 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
 
     monaco.languages.registerInlayHintsProvider(lang, {
       onDidChangeInlayHints: inlayChanged.event,
-      async provideInlayHints(model, range) {
-        const r = await client.request("textDocument/inlayHint", { ...doc(model), range: fromRange(range) })
+      async provideInlayHints(model, range, token) {
+        const r = await client.request("textDocument/inlayHint", { ...doc(model), range: fromRange(range) }, token)
         return {
           hints: (r ?? []).map((h) => ({
             label: typeof h.label === "string" ? h.label : h.label.map((p) => p.value).join(""),
