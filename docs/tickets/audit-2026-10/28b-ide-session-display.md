@@ -29,7 +29,7 @@ statement, the file-kind items above `WATCHED_FILES`, and `register_watchers`. T
 `use crate::settings` and `sparql_features` lines between the two `use` statements stay
 untouched by both, so the hunks do not touch.
 
-**Status:** ready-for-agent
+**Status:** done (type hierarchy prepare left on `doc!`; moved by 28c)
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests

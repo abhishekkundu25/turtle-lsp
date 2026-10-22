@@ -36,6 +36,9 @@ run `check --fix`. No performance benchmarks. No new dependencies. Leave the cha
 uncommitted.
 
 - [ ] `Server::request` has no `doc!`/`open!` macro and no match on the document kind.
+      Carried over from 28b: the type hierarchy prepare arm still uses `doc!` (its only
+      user); switch it to the existing, tested `Session::prepare_type_hierarchy`, and drop
+      `use crate::features::hierarchy;` from `src/server.rs`.
       `rg -n "sparql_features::|crate::features::(completion|quickfix|refactor|format|embedded)" src/server.rs`
       finds nothing. Report the line count of `request` before and after.
 - [ ] New in-process tests in `src/ide/edit.rs`: completion with trigger `?` outside a
