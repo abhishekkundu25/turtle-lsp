@@ -1,6 +1,7 @@
 //! The SHACL, RDF, RDFS and OWL IRIs that the SHACL code compares against,
 //! interned once: the shape model ([`super::model`]), the shape lint and its
-//! SHACL-SPARQL part, and the validator ([`super::validate`]), with the SHACL
+//! SHACL-SPARQL part, the validator ([`super::validate`]) and the completion
+//! index's shapes and schema links ([`crate::knowledge`]), with the SHACL
 //! Core constraint parameters the validator compiles ([`Param`]).
 
 use crate::syntax::{Iri, RDF, XSD};
@@ -15,6 +16,9 @@ pub struct Vocab {
     pub rdfs_class: Iri,
     pub rdfs_datatype: Iri,
     pub sub_class_of: Iri,
+    pub sub_property_of: Iri,
+    pub rdfs_domain: Iri,
+    pub rdfs_range: Iri,
     pub owl_class: Iri,
     pub owl_imports: Iri,
 
@@ -45,6 +49,7 @@ pub struct Vocab {
     pub qualified_disjoint: Iri,
     pub class: Iri,
     pub datatype: Iri,
+    pub in_list: Iri,
     pub unique_lang: Iri,
     pub less_than: Iri,
     pub less_than_or_equals: Iri,
@@ -159,6 +164,9 @@ pub fn get() -> &'static Vocab {
             rdfs_class: rdfs("Class"),
             rdfs_datatype: rdfs("Datatype"),
             sub_class_of: rdfs("subClassOf"),
+            sub_property_of: rdfs("subPropertyOf"),
+            rdfs_domain: rdfs("domain"),
+            rdfs_range: rdfs("range"),
             owl_class: owl("Class"),
             owl_imports: owl("imports"),
 
@@ -189,6 +197,7 @@ pub fn get() -> &'static Vocab {
             qualified_disjoint: sh("qualifiedValueShapesDisjoint"),
             class: sh("class"),
             datatype: sh("datatype"),
+            in_list: sh("in"),
             unique_lang: sh("uniqueLang"),
             less_than: sh("lessThan"),
             less_than_or_equals: sh("lessThanOrEquals"),

@@ -9,7 +9,8 @@
 //! about it; the facts themselves are read back from those sources' analyses
 //! and facts, so the index stays small.
 
-use crate::analysis::{Analysis, RDFS_SUBCLASS_OF, RDFS_SUBPROPERTY_OF};
+use crate::analysis::Analysis;
+use crate::shacl::vocab;
 use crate::syntax::{self, BlankId, Iri, IriKey, IriMap, Node, Role, Span};
 use crate::vocab::VOCABS;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -28,8 +29,22 @@ pub enum Source {
     External,
 }
 
-/// A SHACL node shape that targets classes (`sh:targetClass`, or implicitly a
-/// class that is also a `sh:NodeShape`).
+/// A SHACL shape that targets classes: what completion ranks a typed
+/// subject's properties by. It is a shape of the document's SHACL model
+/// ([`crate::shacl::model`], which the lint and the validator read) that
+/// names a target class: a shape with `sh:targetClass` IRIs, or an IRI shape
+/// typed both `sh:NodeShape` and `rdfs:Class` / `owl:Class` (an implicit
+/// class target). This is narrower than the model: the other targets
+/// (`sh:targetNode`, `sh:targetSubjectsOf`, `sh:targetObjectsOf`,
+/// SHACL-SPARQL `sh:target`) name no class, and a shape without a target,
+/// such as one reached only through `sh:node` or `sh:property`, applies to
+/// no class. The shape's kind is not checked: a property shape with
+/// `sh:targetClass` counts too.
+///
+/// [`DocFacts`] finds these shapes in one pass over the parse at each edit,
+/// not through the model: a graph of the document plus its model costs two
+/// to four times as much as that pass (owner decision 8 of the wave-3
+/// audit). A test checks that both find the same shapes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
     /// The shape's IRI; `None` for a blank-node shape.
@@ -40,10 +55,12 @@ pub struct Shape {
     pub properties: Vec<PropertyConstraint>,
 }
 
-/// One `sh:property` of a [`Shape`].
+/// One `sh:property` of a [`Shape`] whose value is an IRI or a blank node.
+/// `class` keeps every `sh:class`; each other parameter is the last value
+/// written for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropertyConstraint {
-    /// `sh:path` when it is a single predicate IRI.
+    /// `sh:path` when it is a single predicate IRI (the last such one).
     pub path: Option<Iri>,
     pub min_count: Option<u32>,
     pub max_count: Option<u32>,
@@ -171,63 +188,29 @@ const OWN_MIN_SHARE_PERCENT: u32 = 80;
 /// references, but still covers an ontology that is partly in the workspace.
 const PROJECT_MIN_SHARE_PERCENT: u32 = 20;
 
-struct Preds {
-    rdf_type: Iri,
-    sub_class_of: Iri,
-    sub_property_of: Iri,
+/// The predicates that state a property's domain or range: RDFS's, and
+/// schema.org's `domainIncludes` / `rangeIncludes` under both schemes.
+struct Links {
     domain: [Iri; 3],
     range: [Iri; 3],
-    rdf_first: Iri,
-    rdf_rest: Iri,
-    rdf_nil: Iri,
-    rdfs_class: Iri,
-    owl_class: Iri,
-    node_shape: Iri,
-    target_class: Iri,
-    property: Iri,
-    path: Iri,
-    min_count: Iri,
-    max_count: Iri,
-    class: Iri,
-    datatype: Iri,
-    in_list: Iri,
 }
 
-fn preds() -> &'static Preds {
-    static P: OnceLock<Preds> = OnceLock::new();
-    P.get_or_init(|| {
+fn links() -> &'static Links {
+    static L: OnceLock<Links> = OnceLock::new();
+    L.get_or_init(|| {
+        let v = vocab::get();
         let i = Iri::intern;
-        let rdfs = |l: &str| i(&format!("http://www.w3.org/2000/01/rdf-schema#{l}"));
-        let sh = |l: &str| i(&format!("http://www.w3.org/ns/shacl#{l}"));
-        let rdf = |l: &str| i(&format!("{}{l}", syntax::RDF));
-        Preds {
-            rdf_type: i(syntax::RDF_TYPE),
-            sub_class_of: i(RDFS_SUBCLASS_OF),
-            sub_property_of: i(RDFS_SUBPROPERTY_OF),
+        Links {
             domain: [
-                rdfs("domain"),
+                v.rdfs_domain,
                 i("https://schema.org/domainIncludes"),
                 i("http://schema.org/domainIncludes"),
             ],
             range: [
-                rdfs("range"),
+                v.rdfs_range,
                 i("https://schema.org/rangeIncludes"),
                 i("http://schema.org/rangeIncludes"),
             ],
-            rdf_first: rdf("first"),
-            rdf_rest: rdf("rest"),
-            rdf_nil: rdf("nil"),
-            rdfs_class: rdfs("Class"),
-            owl_class: i("http://www.w3.org/2002/07/owl#Class"),
-            node_shape: sh("NodeShape"),
-            target_class: sh("targetClass"),
-            property: sh("property"),
-            path: sh("path"),
-            min_count: sh("minCount"),
-            max_count: sh("maxCount"),
-            class: sh("class"),
-            datatype: sh("datatype"),
-            in_list: sh("in"),
         }
     })
 }
@@ -255,12 +238,13 @@ impl DocFacts {
     /// Everything [`Knowledge`] needs from one analysis beyond its own indexes.
     /// Pure, so callers may compute it in parallel.
     pub fn new(a: &Analysis) -> DocFacts {
-        let p = preds();
+        let v = vocab::get();
+        let l = links();
         let mut f = DocFacts::default();
         let triples = &a.parsed.triples;
         let mut shape_nodes: Vec<Subj> = Vec::new();
         for t in triples {
-            if t.p == p.target_class
+            if t.p == v.target_class
                 && let Some(s) = subj(&t.s)
             {
                 shape_nodes.push(s);
@@ -269,16 +253,16 @@ impl DocFacts {
                 continue;
             };
             let (s, o) = (*s, *o);
-            if t.p == p.rdf_type {
+            if t.p == v.rdf_type {
                 f.instances.entry(o).or_default().push(s);
-                if o == p.node_shape {
+                if o == v.node_shape {
                     shape_nodes.push(Subj::Iri(s));
                 }
-            } else if t.p == p.sub_class_of || t.p == p.sub_property_of {
+            } else if t.p == v.sub_class_of || t.p == v.sub_property_of {
                 f.subs.entry(o).or_default().push(s);
-            } else if p.domain.contains(&t.p) {
+            } else if l.domain.contains(&t.p) {
                 f.domain.entry(s).or_default().push(o);
-            } else if p.range.contains(&t.p) {
+            } else if l.range.contains(&t.p) {
                 f.range.entry(s).or_default().push(o);
             }
         }
@@ -336,8 +320,11 @@ impl DocFacts {
         f
     }
 
+    /// The [`Shape`]s among `nodes` (the subjects of `sh:targetClass` and
+    /// the IRIs typed `sh:NodeShape`, in text order), read straight from the
+    /// parse in one pass over its triples.
     fn shapes(&mut self, a: &Analysis, nodes: Vec<Subj>) {
-        let p = preds();
+        let v = vocab::get();
         let triples = &a.parsed.triples;
         let mut by_subject: FxHashMap<Subj, Vec<u32>> = FxHashMap::default();
         for (i, t) in triples.iter().enumerate() {
@@ -358,10 +345,10 @@ impl DocFacts {
             for &i in own {
                 let t = &triples[i as usize];
                 match &t.o {
-                    Node::Iri(o) if t.p == p.target_class => targets.push(*o),
-                    Node::Iri(o) if t.p == p.rdf_type => {
-                        is_shape |= *o == p.node_shape;
-                        is_class |= *o == p.rdfs_class || *o == p.owl_class;
+                    Node::Iri(o) if t.p == v.target_class => targets.push(*o),
+                    Node::Iri(o) if t.p == v.rdf_type => {
+                        is_shape |= *o == v.node_shape;
+                        is_class |= *o == v.rdfs_class || *o == v.owl_class;
                     }
                     _ => {}
                 }
@@ -375,7 +362,7 @@ impl DocFacts {
             let properties = own
                 .iter()
                 .map(|&i| &triples[i as usize])
-                .filter(|t| t.p == p.property)
+                .filter(|t| t.p == v.property)
                 .filter_map(|t| {
                     let ps = subj(&t.o)?;
                     let mut c = PropertyConstraint {
@@ -394,12 +381,12 @@ impl DocFacts {
                             _ => None,
                         };
                         match &pt.o {
-                            Node::Iri(o) if pt.p == p.path => c.path = Some(*o),
-                            Node::Iri(o) if pt.p == p.class => c.class.push(*o),
-                            Node::Iri(o) if pt.p == p.datatype => c.datatype = Some(*o),
-                            _ if pt.p == p.min_count => c.min_count = count(),
-                            _ if pt.p == p.max_count => c.max_count = count(),
-                            head if pt.p == p.in_list => {
+                            Node::Iri(o) if pt.p == v.path => c.path = Some(*o),
+                            Node::Iri(o) if pt.p == v.class => c.class.push(*o),
+                            Node::Iri(o) if pt.p == v.datatype => c.datatype = Some(*o),
+                            _ if pt.p == v.min_count => c.min_count = count(),
+                            _ if pt.p == v.max_count => c.max_count = count(),
+                            head if pt.p == v.in_list => {
                                 c.in_values = Some(list(head, &of, triples))
                             }
                             _ => {}
@@ -433,26 +420,29 @@ impl DocFacts {
             });
         }
 
-        /// The members of an RDF collection (cycle-safe).
+        /// The members of an RDF collection: every `rdf:first` of a cell,
+        /// the last `rdf:rest`, at most 10,000 cells (a cyclic list
+        /// repeats). Of a well-formed list, the members that
+        /// [`crate::shacl::model::list`] reads.
         fn list<'t>(
             head: &Node,
             of: &dyn Fn(Subj) -> &'t [u32],
             triples: &[syntax::Triple],
         ) -> Vec<Node> {
-            let p = preds();
+            let v = vocab::get();
             let mut out = Vec::new();
             let mut cur = head.clone();
             for _ in 0..10_000 {
                 let Some(s) = subj(&cur) else { break };
-                if cur == Node::Iri(p.rdf_nil) {
+                if cur == Node::Iri(v.rdf_nil) {
                     break;
                 }
                 let mut next = None;
                 for &i in of(s) {
                     let t = &triples[i as usize];
-                    if t.p == p.rdf_first {
+                    if t.p == v.rdf_first {
                         out.push(t.o.clone());
-                    } else if t.p == p.rdf_rest {
+                    } else if t.p == v.rdf_rest {
                         next = Some(t.o.clone());
                     }
                 }
@@ -1528,5 +1518,411 @@ mod tests {
         assert!(k.is_own_namespace("http://ex.org/"));
         k.remove("file:///a.ttl");
         assert!(k.described_generation() > g4);
+    }
+
+    /// A shape as lines of text: its node, statement and targets, then one
+    /// line per property constraint, with spans as the text they cover.
+    fn describe(text: &str, s: &Shape) -> Vec<String> {
+        let at = |sp: Span| &text[sp.start as usize..sp.end as usize];
+        let short = |i: &Iri| i.replace("http://example.com/", "ex:");
+        let mut out = vec![format!(
+            "{} {:?} targets={:?}",
+            s.node.as_ref().map_or("[]".into(), short),
+            at(s.span).lines().next().unwrap_or(""),
+            s.targets.iter().map(short).collect::<Vec<_>>(),
+        )];
+        for c in &s.properties {
+            out.push(format!(
+                "{:?} path={:?} min={:?} max={:?} class={:?} datatype={:?} in={:?}",
+                at(c.span),
+                c.path.as_ref().map(short),
+                c.min_count,
+                c.max_count,
+                c.class.iter().map(short).collect::<Vec<_>>(),
+                c.datatype.as_ref().map(short),
+                c.in_values,
+            ));
+        }
+        out
+    }
+
+    /// `sh:property [ ]` on a class-targeting node shape is an empty
+    /// constraint of it; a node shape without a target targets nothing, nor
+    /// do its property shapes. Pinned before 33c.
+    #[test]
+    fn property_shapes_of_targeting_and_untargeted_shapes() {
+        let none = Arc::new(PrefixMap::default());
+        let text = "@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/> .
+ex:C a rdfs:Class .
+ex:S a sh:NodeShape ; sh:targetClass ex:C ;
+  sh:property [ sh:path ex:p ; sh:minCount 1 ; sh:class ex:K ] , [ ] .
+ex:U a sh:NodeShape ;
+  sh:property [ sh:path ex:q ; sh:minCount 1 ] .
+ex:V sh:property [ sh:path ex:r ; sh:maxCount 2 ] .
+";
+        let mut k = Knowledge::default();
+        k.set("file:///s.ttl", Source::Open, analysis("s", text, &none));
+        let found: Vec<String> = k
+            .shapes_targeting("http://example.com/C")
+            .iter()
+            .flat_map(|(_, s)| describe(text, s))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                r#"ex:S "ex:S a sh:NodeShape ; sh:targetClass ex:C ;" targets=["ex:C"]"#,
+                r#""[ sh:path ex:p ; sh:minCount 1 ; sh:class ex:K ]" path=Some("ex:p") min=Some(1) max=None class=["ex:K"] datatype=None in=None"#,
+                r#""[ ]" path=None min=None max=None class=[] datatype=None in=None"#,
+            ]
+        );
+        for class in ["U", "V", "p", "q", "r", "K", "S"] {
+            let iri = format!("http://example.com/{class}");
+            assert!(k.shapes_targeting(&iri).is_empty(), "{class}");
+        }
+        assert_eq!(k.slot(0).facts.shapes.len(), 1);
+    }
+
+    /// The [`Shape`]s of `a` as the SHACL model has them: the shapes of
+    /// [`model::Shapes`] over a graph of the document's triples alone,
+    /// narrowed by the definition on [`Shape`], in the order the document
+    /// first names each one's target class or types it `sh:NodeShape`. The
+    /// builder must find exactly these; it reads the parse because this
+    /// costs more per edit (owner decision 8). Returns the shapes and the
+    /// shape indexes by target class.
+    fn shapes_from_the_model(a: &Analysis) -> (Vec<Shape>, IriMap<Vec<u32>>) {
+        use crate::rdf::graph::{Graph, Id, Term};
+        use crate::shacl::model;
+        use crate::shacl::vocab::Param;
+        use crate::syntax::Triple;
+        fn is_node(g: &Graph, id: Id) -> bool {
+            matches!(g.term(id), Term::Iri(_) | Term::Blank(_))
+        }
+        // Every rdf:first of a cell, the last rdf:rest, at most 10,000 cells.
+        fn in_list<'t>(g: &Graph, doc: &dyn Fn(u32) -> &'t Triple, head: Id) -> Vec<Node> {
+            let v = vocab::get();
+            let mut out = Vec::new();
+            let mut cur = head;
+            for _ in 0..10_000 {
+                if !is_node(g, cur) || g.as_iri(cur) == Some(v.rdf_nil) {
+                    break;
+                }
+                let mut next = None;
+                for (i, t) in g.out(cur) {
+                    if t.p == v.rdf_first {
+                        out.push(doc(i).o.clone());
+                    } else if t.p == v.rdf_rest {
+                        next = Some(t.o);
+                    }
+                }
+                match next {
+                    Some(n) => cur = n,
+                    None => break,
+                }
+            }
+            out
+        }
+        let v = vocab::get();
+        let triples = &a.parsed.triples;
+        // As the lint's model: a triple with an undeclared prefix counts.
+        let all: std::borrow::Cow<[Triple]> = if triples.iter().any(|t| t.unresolved) {
+            let cleared = |t: &Triple| Triple {
+                unresolved: false,
+                ..t.clone()
+            };
+            triples.iter().map(cleared).collect()
+        } else {
+            triples.into()
+        };
+        let g = Graph::new(&[&*all]);
+        let shapes = model::Shapes::new(&g);
+        let doc = |n: u32| &triples[g.origin(n).1 as usize];
+        let constraint = |shape: Id, span: Span| {
+            let mut c = PropertyConstraint {
+                path: None,
+                min_count: None,
+                max_count: None,
+                class: Vec::new(),
+                datatype: None,
+                in_values: None,
+                span,
+            };
+            for &i in shapes.get(shape).map_or(&[][..], |s| s.params.as_slice()) {
+                let t = doc(i);
+                let count = || match &t.o {
+                    Node::Literal { value, .. } => value.trim().parse::<u32>().ok(),
+                    _ => None,
+                };
+                if t.p == v.path {
+                    if let Node::Iri(o) = &t.o {
+                        c.path = Some(*o);
+                    }
+                    continue;
+                }
+                match (v.param(t.p), &t.o) {
+                    (Some(Param::Class), Node::Iri(o)) => c.class.push(*o),
+                    (Some(Param::Datatype), Node::Iri(o)) => c.datatype = Some(*o),
+                    (Some(Param::MinCount), _) => c.min_count = count(),
+                    (Some(Param::MaxCount), _) => c.max_count = count(),
+                    (Some(Param::In), _) => c.in_values = Some(in_list(&g, &doc, g.triple_at(i).o)),
+                    _ => {}
+                }
+            }
+            c
+        };
+        let mut kept: Vec<(u32, Shape)> = Vec::new();
+        for s in &shapes.shapes {
+            let iri = g.as_iri(s.node);
+            // The first triple that names a target class, or the type
+            // sh:NodeShape of an IRI.
+            let mut first = u32::MAX;
+            let mut targets = Vec::new();
+            for &i in &s.targets {
+                let t = g.triple_at(i);
+                if t.p == v.target_class {
+                    first = first.min(i);
+                    targets.extend(g.as_iri(t.o));
+                }
+            }
+            if let Some(iri) = iri
+                && s.typed_node_shape
+            {
+                let mut is_class = false;
+                for (i, t) in g.out(s.node).filter(|(_, t)| t.p == v.rdf_type) {
+                    match g.as_iri(t.o) {
+                        Some(o) if o == v.node_shape => first = first.min(i),
+                        Some(o) if o == v.rdfs_class || o == v.owl_class => is_class = true,
+                        _ => {}
+                    }
+                }
+                if is_class {
+                    targets.push(iri);
+                }
+            }
+            if targets.is_empty() {
+                continue;
+            }
+            targets.sort_unstable();
+            targets.dedup();
+            let properties = s
+                .params
+                .iter()
+                .map(|&i| (i, g.triple_at(i)))
+                .filter(|(_, t)| t.p == v.property && is_node(&g, t.o))
+                .map(|(i, t)| constraint(t.o, doc(i).o_span))
+                .collect();
+            let span = g
+                .out(s.node)
+                .next()
+                .and_then(|(i, _)| a.parsed.statements.get(doc(i).statement as usize))
+                .map_or_else(Span::default, |st| st.span);
+            let shape = Shape {
+                node: iri,
+                span,
+                targets,
+                properties,
+            };
+            kept.push((first, shape));
+        }
+        kept.sort_unstable_by_key(|k| k.0);
+        let mut by_target = IriMap::<Vec<u32>>::default();
+        for (index, (_, shape)) in kept.iter().enumerate() {
+            for &t in &shape.targets {
+                by_target.entry(t).or_default().push(index as u32);
+            }
+        }
+        (kept.into_iter().map(|k| k.1).collect(), by_target)
+    }
+
+    /// The builder's shapes of `text` are the model's.
+    fn same_shapes_as_the_model(name: &str, text: &str, external: &Arc<PrefixMap>) -> usize {
+        let a = Analysis::new(name.into(), text, external.clone(), false);
+        let f = DocFacts::new(&a);
+        let (shapes, by_target) = shapes_from_the_model(&a);
+        assert_eq!(f.shapes, shapes, "{name}");
+        assert_eq!(*f.shapes_by_target, *by_target, "{name}");
+        shapes.len()
+    }
+
+    /// Shapes the narrower definition keeps or drops, and the corners of
+    /// the builder's reading: blank and property shapes with `sh:targetClass`,
+    /// literal targets, implicit class targets, repeated parameters,
+    /// malformed and cyclic `sh:in` lists, an `sh:property` IRI with no
+    /// triples, an undeclared prefix, and shapes that the model finds
+    /// earlier than their target (by `sh:targetNode`, `sh:node`, `sh:path`).
+    const CORNERS: &str = "@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.com/> .
+ex:Late sh:targetNode ex:x .
+ex:Ref sh:node ex:Late2 .
+ex:Late2 sh:class ex:K .
+ex:PathFirst sh:path ex:p .
+ex:A a sh:NodeShape ; sh:targetClass ex:C , ex:C , ex:D , \"lit\" ;
+  sh:property [ sh:path ex:p ; sh:path ex:p2 ; sh:path ( ex:s1 ex:s2 ) ;
+                sh:minCount 1 ; sh:minCount \"x\" ; sh:maxCount \" 3 \" ;
+                sh:class ex:K1 , ex:K2 ; sh:datatype xsd:string ; sh:datatype \"no\" ;
+                sh:in ( ex:a \"b\" 1 ) ; sh:in ( ex:c ) ] ,
+              [ ] , ex:Empty , ex:Named , \"literal\" ;
+  sh:property [ sh:in _:cycle ] , [ sh:in _:forked ] , [ sh:in \"head\" ] , [ sh:in rdf:nil ] .
+_:cycle rdf:first ex:loop ; rdf:rest _:cycle .
+_:forked rdf:first ex:f1 , ex:f2 ; rdf:rest _:gap , rdf:nil .
+_:gap rdf:rest ( ex:after ) .
+ex:Named sh:path ex:named ; sh:maxCount 1 .
+ex:Implicit a sh:NodeShape , rdfs:Class ; sh:property [ sh:path ex:i ] .
+ex:OwlImplicit a owl:Class , sh:NodeShape .
+ex:NotAClass a sh:NodeShape ; sh:property [ sh:path ex:n ] .
+[ a sh:NodeShape , rdfs:Class ; sh:targetClass ex:B ; sh:property [ sh:path ex:b ] ] .
+[ a sh:NodeShape , rdfs:Class ] .
+[ sh:path ex:pp ; sh:targetClass ex:C ] .
+ex:LiteralOnly sh:targetClass \"C\" .
+ex:Late sh:targetClass ex:L ; sh:property ex:Named .
+ex:Late2 sh:targetClass ex:L .
+ex:PathFirst sh:targetClass ex:L .
+ex:Undeclared sh:targetClass nope:C ; sh:property [ sh:path nope:p ; sh:class nope:K ] .
+ex:Typed sh:targetClass ex:T .
+ex:Typed a sh:NodeShape .
+ex:Shared sh:targetClass ex:S1 ; sh:property _:shared .
+ex:Shared2 sh:targetClass ex:S2 ; sh:property _:shared .
+_:shared sh:path ex:sh ; sh:minCount 0 .
+";
+
+    #[test]
+    fn the_builder_finds_the_shapes_of_the_model_that_target_classes() {
+        let none = Arc::new(PrefixMap::default());
+        let project = project_prefixes();
+        assert_eq!(same_shapes_as_the_model("corners.ttl", CORNERS, &none), 12);
+        // Every fixture, cut short and renamed as the incremental test does.
+        let texts = fixtures();
+        let mut found = 0;
+        for (i, t) in texts.iter().enumerate() {
+            for ext in [&none, &project] {
+                found += same_shapes_as_the_model(&format!("f{i}.ttl"), t, ext);
+            }
+        }
+        assert!(found > 0);
+        let mut rng = Rng(0x5EED_33C0);
+        let mut corners = vec![CORNERS.to_string()];
+        corners.extend(texts.iter().cloned());
+        for i in 0..300 {
+            let t = variant(&mut rng, &corners);
+            same_shapes_as_the_model(&format!("v{i}.ttl"), &t, &project);
+        }
+        // The other shape fixtures, in Turtle and JSON-LD.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/fixtures");
+        for f in [
+            "shacl/vocab.ttl",
+            "nested-prefixes/shapes/person-shape.ttl",
+            "chaos/select-shapes.ttl",
+            "chaos/shapes.jsonld",
+        ] {
+            let text = std::fs::read_to_string(root.join(f)).unwrap();
+            same_shapes_as_the_model(f, &text, &none);
+        }
+        // The public corpus, when it is downloaded (tools/corpus/fetch.sh).
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus");
+        for f in ["brick.ttl", "dcat-ap-shacl.ttl", "w3c-shacl.ttl"] {
+            if let Ok(text) = std::fs::read_to_string(corpus.join(f)) {
+                same_shapes_as_the_model(f, &text, &none);
+            }
+        }
+    }
+
+    /// A shapes document of `n` node shapes with three property shapes each.
+    fn shapes_document(n: usize) -> String {
+        let mut text = String::from(
+            "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\n",
+        );
+        for i in 0..n {
+            text.push_str(&format!(
+                "ex:S{i} a sh:NodeShape ; sh:targetClass ex:C{i} ;\n\
+                 \x20 sh:property [ sh:path ex:p{i} ; sh:minCount 1 ; sh:datatype ex:d ] ,\n\
+                 \x20   [ sh:path ex:q{i} ; sh:class ex:C ; sh:maxCount 2 ] ,\n\
+                 \x20   [ sh:path ex:r{i} ; sh:in ( ex:a ex:b \"c\" ) ] .\n\
+                 ex:x{i} a ex:C{i} ; ex:p{i} \"v\" ; ex:q{i} ex:x0 .\n"
+            ));
+        }
+        text
+    }
+
+    /// Per edit, the shapes cost one pass over the parse and no graph; the
+    /// model indexes every triple of the document into one.
+    #[test]
+    fn the_shapes_build_no_graph_per_edit() {
+        use crate::rdf::graph::INDEXED;
+        let none = Arc::new(PrefixMap::default());
+        let a = Analysis::new("s.ttl".into(), &shapes_document(50), none, false);
+        let indexed = || INDEXED.with(|c| c.get());
+        let before = indexed();
+        assert_eq!(DocFacts::new(&a).shapes.len(), 50);
+        assert_eq!(indexed() - before, 0);
+        assert_eq!(shapes_from_the_model(&a).0.len(), 50);
+        assert_eq!(indexed() - before, a.parsed.triples.len() as u64);
+    }
+
+    /// The measurement behind owner decision 8, on demand
+    /// (`cargo test --release --lib -- --ignored shapes_cost`): the builder
+    /// against a graph of the document plus its model, the best of seven
+    /// tries each. At 33c the model cost 2.2 to 3.8 times the builder (a
+    /// 44,000-triple shapes document: 0.77 ms against 1.72 ms; Brick, 53,646
+    /// triples: 0.52 ms against 1.26 ms), so the builder stays.
+    #[test]
+    #[ignore = "a timing, printed"]
+    fn shapes_cost_against_the_model() {
+        use crate::rdf::graph::Graph;
+        let none = Arc::new(PrefixMap::default());
+        let mut texts = vec![("generated".to_string(), shapes_document(2_000))];
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus");
+        for f in ["brick.ttl", "dcat-ap-shacl.ttl"] {
+            if let Ok(text) = std::fs::read_to_string(corpus.join(f)) {
+                texts.push((f.to_string(), text));
+            }
+        }
+        let best = |f: &dyn Fn()| {
+            (0..7)
+                .map(|_| {
+                    let t0 = std::time::Instant::now();
+                    f();
+                    t0.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let v = vocab::get();
+        for (name, text) in &texts {
+            let a = Analysis::new(name.clone(), text, none.clone(), false);
+            let triples = &a.parsed.triples;
+            let nodes: Vec<Subj> = triples
+                .iter()
+                .filter_map(|t| match (&t.s, &t.o) {
+                    (s, _) if t.p == v.target_class => subj(s),
+                    (Node::Iri(s), Node::Iri(o)) if t.p == v.rdf_type && *o == v.node_shape => {
+                        Some(Subj::Iri(*s))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let builder = best(&|| {
+                let mut f = DocFacts::default();
+                f.shapes(&a, nodes.clone());
+                std::hint::black_box(f);
+            });
+            let graph = best(&|| {
+                std::hint::black_box(Graph::new(&[triples]));
+            });
+            let model = best(&|| {
+                std::hint::black_box(shapes_from_the_model(&a));
+            });
+            let analysis = best(&|| {
+                std::hint::black_box(Analysis::new(name.clone(), text, none.clone(), false));
+            });
+            eprintln!(
+                "{name}: {} triples; builder {builder:?}; model {model:?} (graph {graph:?}); Analysis::new {analysis:?}",
+                triples.len()
+            );
+        }
     }
 }
