@@ -50,7 +50,7 @@ scenarios.
 **Blocked by:** 34a. Also 27b and 31 (`src/workspace.rs` lock). Runs in the same wave
 as 28c, with disjoint files.
 
-**Status:** ready-for-agent
+**Status:** done. Peak 49.9 -> 35.4 B per input byte (format --check) and 35.5 (check --no-shacl), budget 40, three runs each under load; re-measured quietly in 36. Not done: handing the final line index to the analysis.
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
