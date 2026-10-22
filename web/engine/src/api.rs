@@ -14,7 +14,7 @@ use turtle_lsp::batch::{self, BatchFile, Columns, FormatOutcome};
 use turtle_lsp::clock::Instant;
 use turtle_lsp::query::{Answer, Limits, QueryError, render};
 use turtle_lsp::server::Embedded;
-use turtle_lsp::settings::Settings;
+use turtle_lsp::settings::{Layer, Settings};
 
 pub fn handle(request: &str) -> String {
     let req: Value = match serde_json::from_str(request) {
@@ -102,7 +102,7 @@ fn settings_of(req: &Value) -> Result<Settings, String> {
         _ => return Err("settings must be an object".into()),
     }
     check_timeouts(given, &mut Vec::new())?;
-    Ok(Settings::from_layers([given]))
+    Ok(Settings::from_layers([(Layer::Client, given)]))
 }
 
 /// `Settings::apply` panics on a `query.timeoutSeconds` too long for a
