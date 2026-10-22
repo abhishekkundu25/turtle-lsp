@@ -77,7 +77,8 @@
   IRIs. A prefixed name whose prefix is not declared is reported and no
   longer becomes a triple in queries or SHACL.
 - `"text"@en--rtl` is a directional literal in queries: `LANG()` is `en` and
-  `LANGDIR()` is `rtl`.
+  `LANGDIR()` is `rtl`, and `=` compares the text, the language and the
+  direction (the vendored query engine no longer panics on it).
 - **SHACL reports what it could not check**, instead of passing it: a query
   that failed and a check cut short (too deep, or over the step budget) are
   warnings (`shacl-failure`); a shape whose `sh:path` cannot be read is an

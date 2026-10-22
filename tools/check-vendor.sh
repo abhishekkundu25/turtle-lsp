@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks that vendor/spareval is spareval 0.2.7 as published on crates.io plus
-# cancellation-in-joins.patch, and nothing else. Run by CI (the audit job);
+# its two patches (cancellation-in-joins.patch, dir-lang-string-equality.patch),
+# and nothing else. Run by CI (the audit job);
 # locally: tools/check-vendor.sh. Needs curl, tar, patch and diff.
 #
 # When the vendored copy moves to another release, change VERSION and SHA256
@@ -32,17 +33,19 @@ fi
 tar -xzf "$work/spareval.crate" -C "$work"
 upstream="$work/spareval-$VERSION"
 
-# The patch is a diff of oxigraph's tree (a/lib/spareval/src/eval.rs); the
-# crate has src/eval.rs at its top.
-patch --quiet --strip=3 --directory="$upstream" --input="$vendor/cancellation-in-joins.patch"
+# The patches are diffs of oxigraph's tree (a/lib/spareval/src/...); the
+# crate has src/ at its top.
+for p in cancellation-in-joins.patch dir-lang-string-equality.patch; do
+  patch --quiet --strip=3 --directory="$upstream" --input="$vendor/$p"
+done
 
 # What the vendored copy adds to the crate: the licence file (from the same
 # oxigraph commit) and the notes on the patch. The crate's own Cargo.lock is
 # not vendored.
 if ! diff --recursive --unified \
-  --exclude=Cargo.lock --exclude=LICENSE-MIT --exclude=PATCH.md --exclude=cancellation-in-joins.patch \
+  --exclude=Cargo.lock --exclude=LICENSE-MIT --exclude=PATCH.md --exclude=cancellation-in-joins.patch --exclude=dir-lang-string-equality.patch \
   "$upstream" "$vendor"; then
-  echo "vendor/spareval differs from spareval $VERSION plus cancellation-in-joins.patch" >&2
+  echo "vendor/spareval differs from spareval $VERSION plus its patches" >&2
   exit 1
 fi
-echo "vendor/spareval is spareval $VERSION plus cancellation-in-joins.patch"
+echo "vendor/spareval is spareval $VERSION plus its patches"

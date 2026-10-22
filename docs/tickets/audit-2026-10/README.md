@@ -85,9 +85,10 @@ whole-branch code review. Departures from the plan:
   (ticket 15 as one commit; its step patches were kept outside the repo).
 - **Ticket 20:** 2,000 watched files take longer than the initial index (28.7 ms
   against 20.2 ms), short of the ticket's target.
-- **Ticket 21:** directional literals expose a panic in `vendor/spareval`
-  (`ExpressionTerm::eq` has no `DirLangStringLiteral` arm). The ignored test
-  `equality_of_directional_language_strings_is_answered` names it.
+- **Ticket 21:** directional literals exposed a panic in `vendor/spareval`
+  (`ExpressionTerm::eq` had no `DirLangStringLiteral` arm). It is fixed by a
+  second vendored patch, `dir-lang-string-equality.patch`, which
+  `tools/check-vendor.sh` applies with the first.
 - **Ticket 22:** `CHANGELOG.md` has an `## Unreleased` section, and
   `test/versions.test.mjs` allows it except in the release job.
 - **Review fixes:** a `turtle` configuration section now replaces the

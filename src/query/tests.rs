@@ -418,21 +418,22 @@ fn a_hash_join_in_memory_stops_at_the_time_limit() {
     }
 }
 
-/// A known open defect, kept as an ignored test until it is fixed: spareval
-/// 0.2.7 panics when `=` compares two directional language-tagged strings
-/// (`rdf:dirLangString`), and [`run`] passes the panic on (found in the
-/// review of ticket 21). `cargo test -- --ignored` runs it.
+/// Unpatched spareval 0.2.7 panics when `=` compares two directional
+/// language-tagged strings (`rdf:dirLangString`): see
+/// `vendor/spareval/PATCH.md`. They are equal when the value, the language
+/// and the direction all are.
 #[test]
-#[ignore = "known defect: spareval 0.2.7 panics on `=` between two rdf:dirLangString literals (ticket 21 report)"]
 fn equality_of_directional_language_strings_is_answered() {
     let d = doc(
         "file:///w/dir.ttl",
         &format!("{HEAD}ex:a ex:p \"x\"@en--ltr .\n"),
     );
-    assert_eq!(
-        run_on(&[&d], "ASK { ex:a ex:p ?o FILTER(?o = \"x\"@en--ltr) }"),
-        Ok(Answer::Boolean(true))
-    );
+    let ask = |filter: &str| run_on(&[&d], &format!("ASK {{ ex:a ex:p ?o FILTER({filter}) }}"));
+    assert_eq!(ask("?o = \"x\"@en--ltr"), Ok(Answer::Boolean(true)));
+    assert_eq!(ask("?o = \"x\"@en--rtl"), Ok(Answer::Boolean(false)));
+    assert_eq!(ask("?o = \"x\"@de--ltr"), Ok(Answer::Boolean(false)));
+    assert_eq!(ask("?o = \"y\"@en--ltr"), Ok(Answer::Boolean(false)));
+    assert_eq!(ask("?o != \"x\"@en--rtl"), Ok(Answer::Boolean(true)));
 }
 
 fn capped(docs: &[&Analysis], q: &str, max: usize) -> Answer {
