@@ -4,6 +4,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
+import crypto from "node:crypto"
 import http from "node:http"
 import fs from "node:fs"
 import path from "node:path"
@@ -235,12 +236,12 @@ test("check: --max-diagnostics, --statistics and --format json", (t) => {
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).version, 1)
 })
 
-// FNV-1a, as hash_name in src/imports.rs names cache files.
+// SHA-256 of the URL, as hash_name in src/fetch.rs names cache files; a cache
+// file starts with a line that names its URL.
 function cacheName(url) {
-  let h = 0xcbf29ce484222325n
-  for (const b of Buffer.from(url)) h = ((h ^ BigInt(b)) * 0x100000001b3n) & 0xffffffffffffffffn
-  return h.toString(16).padStart(16, "0")
+  return crypto.createHash("sha256").update(url).digest("hex")
 }
+const cacheText = (url, text) => `# turtle-lsp cache for ${url}\n${text}`
 
 test("check: owl:imports resolve from the import cache, offline", (t) => {
   const ws = workspace(t, {
@@ -254,7 +255,7 @@ test("check: owl:imports resolve from the import cache, offline", (t) => {
   fs.mkdirSync(cache, { recursive: true })
   fs.writeFileSync(
     path.join(cache, `${cacheName("http://ex.com/onto")}.ttl`),
-    "<http://ex.com/onto> a <http://www.w3.org/2002/07/owl#Ontology> .\n",
+    cacheText("http://ex.com/onto", "<http://ex.com/onto> a <http://www.w3.org/2002/07/owl#Ontology> .\n"),
   )
   const found = run(ws, ["check"])
   assert.equal(found.out, "")
@@ -341,7 +342,7 @@ function runAsync(ws, args) {
   return new Promise((resolve) => {
     const p = spawn(serverPath, args, {
       cwd: ws,
-      env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), NO_COLOR: "1", NO_PROXY: "127.0.0.1,localhost" },
+      env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), TURTLE_LSP_ALLOW_PRIVATE_HOSTS: "1", NO_COLOR: "1", NO_PROXY: "127.0.0.1,localhost" },
     })
     let out = ""
     let err = ""

@@ -226,13 +226,11 @@ impl<'a> DocContexts<'a> {
                 text: Arc::from(d.text.as_str()),
             });
         }
-        let path = uri_to_path(url).ok_or(LoadError::NotFound)?;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if !path.exists() {
-                return Err(LoadError::NotFound);
-            }
-            crate::imports::inside_workspace(&path, self.roots).map_err(LoadError::Failed)?;
+            // Nothing asks the file system about the file (a host, a share,
+            // a path outside the roots) before the roots have said yes.
+            let path = crate::imports::fs_policy(url, self.roots).map_err(LoadError::Failed)?;
             loader::read_context_file(&path).map(|text| RemoteDocument {
                 url: url.to_string(),
                 text: text.into(),
@@ -240,7 +238,7 @@ impl<'a> DocContexts<'a> {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (path, self.roots);
+            let _ = self.roots;
             Err(LoadError::NotFound)
         }
     }
@@ -1350,10 +1348,20 @@ pub fn find_prefix_file(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
         .iter()
         .filter(|r| dir.starts_with(r))
         .max_by_key(|r| r.as_os_str().len());
+    // A document on a network share is looked up there only if the workspace is.
+    if crate::imports::is_network_path(dir)
+        && !roots.iter().any(|r| crate::imports::is_network_path(r))
+    {
+        return None;
+    }
     let mut cur = Some(dir);
     while let Some(d) = cur {
         let candidate = d.join(PREFIX_FILE);
-        if candidate.is_file() {
+        // Inside the workspace the file must really be there: a link to a
+        // file outside is not read.
+        if candidate.is_file()
+            && (root.is_none() || crate::imports::fs_policy_path(&candidate, roots).is_ok())
+        {
             return Some(candidate);
         }
         if root.is_none_or(|r| d == r.as_path()) {

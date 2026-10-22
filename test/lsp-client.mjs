@@ -27,10 +27,15 @@ export function tempDir(prefix) {
 // exits or is stopped by SIGINT or SIGTERM (see `cleanup`).
 let cacheRoot
 let caches = 0
+//
+// The test servers listen on loopback, which the server does not fetch from
+// unless the environment says so (TURTLE_LSP_ALLOW_PRIVATE_HOSTS=1): the
+// suite says so, and a test of the refusal sets it to 0 for one server.
 export function serverEnv() {
-  if (process.env.TURTLE_LSP_CACHE_DIR) return process.env
+  const env = { TURTLE_LSP_ALLOW_PRIVATE_HOSTS: "1", ...process.env }
+  if (env.TURTLE_LSP_CACHE_DIR) return env
   cacheRoot ??= tempDir("turtle-lsp-caches-")
-  return { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(cacheRoot, String(++caches)) }
+  return { ...env, TURTLE_LSP_CACHE_DIR: path.join(cacheRoot, String(++caches)) }
 }
 
 // The cache directory the server uses when TURTLE_LSP_CACHE_DIR is not set
@@ -47,10 +52,11 @@ export function defaultCacheDir() {
   return base && path.join(base, "turtle-lsp")
 }
 
-// Files in a cache dir that are not a finished import (`imports/<16 hex>.ttl`),
-// JSON-LD context (`imports/<16 hex>.jsonld`, with the `.url` of a redirect
-// beside it) or query results (`query-results/<name>.md`), e.g. a temp file
-// left by an interrupted write. Paths relative to `dir`.
+// Files in a cache dir that are not a finished import (`imports/<64 hex>.<ext>`
+// for ttl, trig, nt, nq), JSON-LD document (`imports/<64 hex>.jsonld`, with the
+// `.url` file that names its URL beside it) or query results
+// (`query-results/<name>.md`), e.g. a temp file left by an interrupted write.
+// Paths relative to `dir`.
 export function strayCacheFiles(dir) {
   if (!fs.existsSync(dir)) return []
   const files = fs
@@ -59,11 +65,11 @@ export function strayCacheFiles(dir) {
     .map((e) => path.relative(dir, path.join(e.parentPath ?? e.path, e.name)))
   const kept = new Set(files)
   return files.filter((f) => {
-    if (/^imports[\\/][0-9a-f]{16}\.(ttl|jsonld)$/.test(f)) return false
+    if (/^imports[\\/][0-9a-f]{64}\.(ttl|trig|nt|nq|jsonld)$/.test(f)) return false
     // The results of "Run query", one per query file name.
     if (/^query-results[\\/][^\\/]+\.md$/.test(f)) return false
-    // A redirect's target, only beside the context it belongs to.
-    return !(/^imports[\\/][0-9a-f]{16}\.url$/.test(f) && kept.has(f.replace(/\.url$/, ".jsonld")))
+    // The URL file of a JSON-LD document, only beside the document it belongs to.
+    return !(/^imports[\\/][0-9a-f]{64}\.url$/.test(f) && kept.has(f.replace(/\.url$/, ".jsonld")))
   })
 }
 

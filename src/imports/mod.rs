@@ -7,14 +7,22 @@
 //!    roots, mapping the IRI to a file (relative to the catalog) or a URL;
 //! 3. the per-user import cache;
 //! 4. the network, when `turtle.imports.network` is on or the user asked to
-//!    fetch this import ([`Imports::fetch`]); then cached.
+//!    fetch this import ([`Imports::fetch`]); then cached. Web fetches obey
+//!    the rules of [`crate::fetch`]: public addresses only, redirects checked
+//!    hop by hop, and a budget of requests and bytes for each pass; what a
+//!    pass cannot fetch is reported as unresolved, with the reason.
+//!
+//! Files and mappings are read only through [`fs_policy`]: inside the
+//! workspace roots, on this machine.
 //!
 //! Loaded ontologies are resolved transitively (up to [`MAX_DEPTH`] levels
 //! below a workspace import, cycles stop) and join the knowledge index as
 //! read-only external sources: hover, completion and lints know their terms,
-//! but they are never diagnosed. Turtle and N-Triples are read with our parser;
-//! RDF/XML is converted to N-Triples text first, so every source is an
-//! [`Analysis`] like any other.
+//! but they are never diagnosed. Each is read in its own syntax (Turtle, TriG,
+//! N-Triples, N-Quads, JSON-LD) with our parser, chosen by the file's
+//! extension, else by what it starts with, never by the import IRI; RDF/XML is
+//! converted to N-Triples text first, so every source is an [`Analysis`] like
+//! any other.
 //!
 //! All file and network work happens on one background thread, started on the
 //! first import and blocked on its job channel when there is nothing to do.
@@ -46,8 +54,6 @@ const OWL_VERSION_IRI: &str = "http://www.w3.org/2002/07/owl#versionIRI";
 pub const CATALOG_FILE: &str = "catalog-v001.xml";
 /// Levels of imports followed below a workspace import.
 pub const MAX_DEPTH: u32 = 5;
-pub const MAX_FETCH_BYTES: u64 = 20 * 1024 * 1024;
-pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Prefix for external source keys in the knowledge index.
 const KEY_PREFIX: &str = "import:";
 /// Command that fetches one import (arguments: `[iri]`), offered as a quick fix
@@ -77,6 +83,9 @@ struct Request {
     network: bool,
     /// Imports the user asked to fetch, network or not (sorted, unique).
     fetch: Vec<String>,
+    /// Fetch from loopback, private and other internal addresses too (see
+    /// `fetch::ALLOW_PRIVATE_ENV`).
+    allow_private: bool,
 }
 
 struct Job {
@@ -210,6 +219,7 @@ pub fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Resolved 
             cache: import_cache_dir(),
             network,
             fetch: Vec::new(),
+            allow_private: allow_private_hosts(),
         },
         refetch: None,
     };
@@ -246,6 +256,8 @@ pub struct Imports {
     /// Workspace URI -> its analysis when [`DocOnto`] was computed.
     per_doc: FxHashMap<String, (Weak<Analysis>, DocOnto)>,
     cache: Option<PathBuf>,
+    /// See [`Request::allow_private`].
+    allow_private: bool,
     /// Imports the user asked to fetch this session.
     fetch: BTreeSet<String>,
     /// For the next job: see [`Job::refetch`].
@@ -272,6 +284,7 @@ impl Imports {
             registered: FxHashSet::default(),
             per_doc: FxHashMap::default(),
             cache: import_cache_dir(),
+            allow_private: allow_private_hosts(),
             fetch: BTreeSet::new(),
             refetch: None,
         }
@@ -374,6 +387,7 @@ impl Imports {
             cache: self.cache.clone(),
             network,
             fetch: self.fetch.iter().cloned().collect(),
+            allow_private: self.allow_private,
         };
         if self.last.as_ref() == Some(&req) {
             return None;
@@ -617,15 +631,23 @@ mod worker;
 
 use worker::{CRASHED, Memo, NO_THREAD, failed, resolve, worker};
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::fetch::{FETCH_TIMEOUT, MAX_FETCH_BYTES, hash_name};
 pub use catalog::{Catalog, Target, parse_catalog};
-#[cfg(not(target_arch = "wasm32"))]
-pub use load::hash_name;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use load::inside_workspace;
-pub use load::{Format, sniff};
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use load::{HttpResponse, cache_file_as, http_get, write_atomic};
+pub use load::{Format, format_of, fs_policy, fs_policy_path, is_network_path, sniff};
 pub use rdfxml::rdf_xml_to_ntriples;
+
+/// Whether web fetches may reach internal addresses: set by the environment
+/// (`fetch::ALLOW_PRIVATE_ENV`), never by a file of the workspace.
+#[cfg(not(target_arch = "wasm32"))]
+fn allow_private_hosts() -> bool {
+    crate::fetch::Policy::from_env().allow_private
+}
+
+#[cfg(target_arch = "wasm32")]
+fn allow_private_hosts() -> bool {
+    false
+}
 
 #[cfg(test)]
 mod testing {
@@ -643,6 +665,34 @@ mod testing {
     /// A local HTTP server: `/ok*` answers Turtle, anything else 404. Returns
     /// its base URL and the log of requested paths.
     pub fn serve() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        serve_with(|path| {
+            if path.starts_with("/ok") {
+                document(
+                    "text/turtle",
+                    "<#T> a <http://www.w3.org/2002/07/owl#Class> .\n",
+                )
+            } else {
+                NOT_FOUND.into()
+            }
+        })
+    }
+
+    pub const NOT_FOUND: &str =
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    /// A 200 response with `body` of `content_type`.
+    pub fn document(content_type: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// A local HTTP server; `route` turns a request path into the whole
+    /// response. Returns its base URL and the log of requested paths.
+    pub fn serve_with(
+        route: impl Fn(&str) -> String + Send + 'static,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -655,17 +705,7 @@ mod testing {
                 let head = String::from_utf8_lossy(&buf[..n]);
                 let path = head.split(' ').nth(1).unwrap_or("").to_string();
                 seen.lock().unwrap().push(path.clone());
-                let resp = if path.starts_with("/ok") {
-                    let body = "<#T> a <http://www.w3.org/2002/07/owl#Class> .\n";
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/turtle\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                } else {
-                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        .into()
-                };
-                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(route(&path).as_bytes());
             }
         });
         (base, log)

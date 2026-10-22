@@ -12,6 +12,7 @@ import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
+import crypto from "node:crypto"
 import path from "node:path"
 import { serverPath, startServer, tempDir, uriOf } from "./lsp-client.mjs"
 import * as F from "./jsonld-fixtures.mjs"
@@ -87,7 +88,7 @@ function workspace(t, files, { remove = true } = {}) {
   return ws
 }
 
-const cliEnv = (ws) => ({ ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), NO_COLOR: "1", NO_PROXY: "127.0.0.1,localhost" })
+const cliEnv = (ws) => ({ ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), TURTLE_LSP_ALLOW_PRIVATE_HOSTS: "1", NO_COLOR: "1", NO_PROXY: "127.0.0.1,localhost" })
 
 function run(ws, args) {
   const r = spawnSync(serverPath, args, { cwd: ws, encoding: "utf8", timeout: 60_000, env: cliEnv(ws) })
@@ -447,6 +448,78 @@ test("with imports.network on, a remote context is fetched once and then served 
     }
     assert.deepEqual(hits.slice(before), ["/ctx.jsonld"], "fetched once, then cached")
     assert.ok(fs.existsSync(cache) && fs.readdirSync(cache, { recursive: true }).length > 0, "cached in the imports cache directory")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// A server for `cwd` that is not told to fetch from loopback (the suite's
+// servers listen there, and are told to).
+async function startStrictWithCache(cwd, cache, initializationOptions) {
+  const prev = process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS
+  process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS = "0"
+  try {
+    return await startWithCache(cwd, cache, initializationOptions)
+  } finally {
+    if (prev === undefined) delete process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS
+    else process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS = prev
+  }
+}
+
+test("by default a remote context is not fetched from a loopback address, even with imports.network on", { timeout: 25_000 }, async () => {
+  const root = tempDir("turtle-jsonld-strict-")
+  const dir = path.join(root, "ws")
+  fs.mkdirSync(dir)
+  const url = `${webBase}/ctx.jsonld`
+  const text = F.remoteDoc(url)
+  fs.writeFileSync(path.join(dir, "remote.jsonld"), text)
+  const uri = uriOf(path.join(dir, "remote.jsonld"))
+  const before = hits.length
+  const server = await startStrictWithCache(dir, path.join(root, "cache"), { imports: { network: true } })
+  try {
+    server.open(uri, text, "jsonld")
+    const diags = await until(server, uri, (d) => withCode(d, "jsonld-context").length > 0, 4000)
+    assert.deepEqual(rangesOf(diags, "jsonld-context"), [F.remoteDocUrl(url)], show(diags))
+    assert.match(withCode(diags, "jsonld-context")[0].message, /loopback/)
+    await sleep(300)
+    assert.deepEqual(hits.slice(before), [], "no request reached the server")
+  } finally {
+    await server.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a cached context without the file that names its URL is not trusted, and is fetched again", { timeout: 25_000 }, async () => {
+  const root = tempDir("turtle-jsonld-cached-")
+  try {
+    const cache = path.join(root, "cache")
+    const dir = path.join(root, "ws")
+    fs.mkdirSync(dir)
+    const url = `${webBase}/ctx.jsonld`
+    const text = F.remoteDoc(url)
+    fs.writeFileSync(path.join(dir, "remote.jsonld"), text)
+    const uri = uriOf(path.join(dir, "remote.jsonld"))
+    // A context where this URL's cache entry would be, that nothing says is its own.
+    const imports = path.join(cache, "imports")
+    fs.mkdirSync(imports, { recursive: true })
+    const name = crypto.createHash("sha256").update(url).digest("hex")
+    fs.writeFileSync(path.join(imports, `${name}.jsonld`), `{ "@context": { "planted": "https://evil.example/" } }`)
+    const before = hits.length
+    const server = await startWithCache(dir, cache, { imports: { network: true } })
+    try {
+      server.open(uri, text, "jsonld")
+      const loaded = (d) => withCode(d, "jsonld-context").length === 0 && withCode(d, "jsonld-undefined-term").length > 0
+      const diags = await until(server, uri, loaded, 4000)
+      assert.deepEqual(rangesOf(diags, "jsonld-undefined-term"), [F.REMOTE_DOC_FLAVOUR], show(diags))
+    } finally {
+      await server.stop()
+    }
+    assert.deepEqual(hits.slice(before), ["/ctx.jsonld"])
+    assert.equal(
+      fs.readFileSync(path.join(imports, `${name}.url`), "utf8"),
+      `# turtle-lsp cache for ${url}\n`,
+    )
+    assert.ok(!fs.readFileSync(path.join(imports, `${name}.jsonld`), "utf8").includes("planted"))
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

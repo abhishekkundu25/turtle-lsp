@@ -1,5 +1,6 @@
 //! `catalog-v001.xml` (Protégé convention): IRI to file or URL mappings.
 
+use super::load::names_host;
 use super::*;
 
 // ---- catalogs ----
@@ -92,21 +93,35 @@ pub fn parse_catalog(text: &str, dir: &Path) -> Vec<(String, Target)> {
             continue;
         };
         let target = match url::Url::parse(&uri) {
-            Ok(u) if u.scheme() == "file" => crate::workspace::file_path_of(&u).map(Target::File),
+            Ok(u) if u.scheme() == "file" => file_target(&u, &uri),
             // A one-letter scheme is a Windows drive.
             Ok(u) if u.scheme().len() > 1 => Some(Target::Url(uri)),
-            _ => base
-                .as_ref()
-                .and_then(|b| b.join(&uri).ok())
-                .and_then(|u| crate::workspace::file_path_of(&u))
-                .or_else(|| Some(dir.join(&uri)))
-                .map(Target::File),
+            _ => match base.as_ref().and_then(|b| b.join(&uri).ok()) {
+                // `//server/share/x.ttl` is a reference to a host.
+                Some(u) if u.scheme() == "file" && names_host(&u).is_some() => {
+                    Some(Target::Url(u.to_string()))
+                }
+                joined => joined
+                    .and_then(|u| crate::workspace::file_path_of(&u))
+                    .or_else(|| Some(dir.join(&uri)))
+                    .map(Target::File),
+            },
         };
         if let Some(t) = target {
             out.push((name, t));
         }
     }
     out
+}
+
+/// The target of a `file:` URL: its file, or, when it names a host, the URL
+/// itself, which loading refuses (see `fs_policy`) with an answer rather
+/// than a mapping that silently goes nowhere, or, on Windows, to a share.
+fn file_target(u: &url::Url, uri: &str) -> Option<Target> {
+    if names_host(u).is_some() {
+        return Some(Target::Url(uri.to_string()));
+    }
+    crate::workspace::file_path_of(u).map(Target::File)
 }
 
 /// Length of a tag's content up to its closing `>` (quotes respected).
