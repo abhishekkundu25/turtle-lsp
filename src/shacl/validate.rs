@@ -1006,6 +1006,8 @@ thread_local! {
     /// Nodes looked at to find the instances of classes, to tell a run that
     /// walks the whole graph from one among a few nodes.
     pub(crate) static TARGETS_LOOKED_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// SPARQL checks run for one focus node, and run once for a batch.
+    static QUERIES_RUN: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 struct Run<'r, 'g, 'a> {
@@ -1460,9 +1462,15 @@ impl Run<'_, '_, '_> {
                     }
                 }
             }
+            // A shape checked after validation halted has not said whether
+            // it conforms: nothing follows from its answer.
             C::Not(s) => {
                 for &x in values {
-                    if self.conforms(*s, x) {
+                    let conforms = self.conforms(*s, x);
+                    if self.halted() {
+                        return;
+                    }
+                    if conforms {
                         emit(out, Some(x), None);
                     }
                 }
@@ -1480,6 +1488,9 @@ impl Run<'_, '_, '_> {
                             break;
                         }
                     }
+                    if self.halted() {
+                        return;
+                    }
                     let ok = match c {
                         C::And(_) => n == ss.len(),
                         C::Or(_) => n > 0,
@@ -1492,7 +1503,11 @@ impl Run<'_, '_, '_> {
             }
             C::Node(s) => {
                 for &x in values {
-                    if !self.conforms(*s, x) {
+                    let conforms = self.conforms(*s, x);
+                    if self.halted() {
+                        return;
+                    }
+                    if !conforms {
                         emit(out, Some(x), None);
                     }
                 }
@@ -1516,6 +1531,9 @@ impl Run<'_, '_, '_> {
                     if self.conforms(*q, x) && !siblings.iter().any(|&s| self.conforms(s, x)) {
                         n += 1;
                     }
+                }
+                if self.halted() {
+                    return;
                 }
                 if (*max && n > *count) || (!*max && n < *count) {
                     emit(out, None, None);
@@ -1646,7 +1664,7 @@ impl Run<'_, '_, '_> {
                     .map(|b| b.1.clone())
             };
             let answer = match value {
-                None => self.batched(ix, shape, check, focus, &base[1..], room),
+                None => self.batched(ix, shape, check, focus, &base[1..]),
                 Some(_) => None,
             };
             let answer = match answer {
@@ -1654,7 +1672,11 @@ impl Run<'_, '_, '_> {
                     more: rows.len() > room,
                     rows,
                 }),
-                None => self.ev.run(ix, &check.query, bindings.clone(), room),
+                None => {
+                    #[cfg(test)]
+                    QUERIES_RUN.with(|c| c.set((c.get().0 + 1, c.get().1)));
+                    self.ev.run(ix, &check.query, bindings.clone(), room)
+                }
             };
             match answer {
                 Err(why) => self.query_failed(check.source, why),
@@ -1706,7 +1728,10 @@ impl Run<'_, '_, '_> {
 
     /// The solutions of `check` for `focus` from one run for the whole
     /// batch (with `constants` pre-bound), when `focus` is in it and the
-    /// check can run that way.
+    /// check can run that way. The run is kept for the other focus nodes,
+    /// so it may give as many solutions as a collecting check keeps, whoever
+    /// asks first (a nested check needs only one, and would otherwise make
+    /// every batch of two or more too many).
     fn batched(
         &mut self,
         ix: &Index,
@@ -1714,7 +1739,6 @@ impl Run<'_, '_, '_> {
         check: &Check,
         focus: Id,
         constants: &[(Variable, RdfTerm)],
-        max: usize,
     ) -> Option<Vec<QuerySolution>> {
         if !check.batch
             || self.batch.len() < self.min_batch
@@ -1724,7 +1748,10 @@ impl Run<'_, '_, '_> {
             return None;
         }
         let key = (shape.node, check as *const Check);
+        let max = self.budget.results + 1;
         let found = self.batched.entry(key).or_insert_with(|| {
+            #[cfg(test)]
+            QUERIES_RUN.with(|c| c.set((c.get().0, c.get().1 + 1)));
             match self
                 .ev
                 .run_batch(ix, &check.query, constants, &self.batch, max)
@@ -2031,9 +2058,16 @@ fn report_over(
             if !keep(focus) {
                 continue;
             }
+            let before = out.len();
             run.check(si, focus, &mut out, true);
             if run.stopped {
                 return None;
+            }
+            if run.exhausted {
+                // The check ran out of steps part way: its values and the
+                // shapes it asked about are partial, so what it found may be
+                // false. The Cut failure says the rest is not validated.
+                out.truncate(before);
             }
             if run.halted() {
                 break 'shapes;
@@ -2700,6 +2734,113 @@ mod tests {
             "{:?} is not before the time limit",
             began.elapsed()
         );
+    }
+
+    /// What a sh:not over 100 values says with `steps` of path budget: each
+    /// value has three nodes along `ex:next*`, so none conforms to ex:T
+    /// (sh:maxCount 1) and none is a sh:not violation.
+    fn not_over_values(steps: u64) -> Report {
+        let mut data = String::from(
+            "ex:S sh:targetNode ex:x ; sh:property [ sh:path ex:p ; sh:not ex:T ] .\nex:T sh:path [ sh:zeroOrMorePath ex:next ] ; sh:maxCount 1 .\n",
+        );
+        for i in 0..100 {
+            data.push_str(&format!(
+                "ex:x ex:p ex:v{i} .\nex:v{i} ex:next ex:w{i} .\nex:w{i} ex:next ex:z{i} .\n"
+            ));
+        }
+        let budget = Budget {
+            steps,
+            ..Budget::default()
+        };
+        bounded(&data, budget, || false).unwrap()
+    }
+
+    fn cut_by_steps(r: &Report) -> bool {
+        r.failures
+            .iter()
+            .any(|f| f.kind == FailureKind::Cut && f.message.contains("steps"))
+    }
+
+    /// The values not checked once the step budget ran out conformed to
+    /// ex:T as far as sh:not could tell: a false violation for each.
+    #[test]
+    fn a_sh_not_cut_by_the_step_budget_reports_no_false_violation() {
+        let whole = not_over_values(Budget::default().steps);
+        assert_eq!((whole.results.len(), whole.failures.len()), (0, 0));
+        let cut = not_over_values(50);
+        assert!(cut.results.is_empty(), "{:?}", cut.results);
+        assert!(cut_by_steps(&cut), "{:?}", cut.failures);
+    }
+
+    /// A sequence path whose `ex:next*` the step budget cut short reached no
+    /// `ex:q`: a false sh:minCount violation.
+    #[test]
+    fn a_path_cut_by_the_step_budget_reports_no_false_min_count() {
+        let data = format!(
+            "ex:S sh:targetNode ex:x ; sh:property [ sh:path ( [ sh:zeroOrMorePath ex:next ] ex:q ) ; sh:minCount 1 ] .\nex:x ex:next ex:n0 .\nex:n200 ex:q 1 .\n{}",
+            chain(200, 0)
+        );
+        let run = |steps| {
+            let budget = Budget {
+                steps,
+                ..Budget::default()
+            };
+            bounded(&data, budget, || false).unwrap()
+        };
+        let whole = run(Budget::default().steps);
+        assert_eq!((whole.results.len(), whole.failures.len()), (0, 0));
+        let cut = run(50);
+        assert!(cut.results.is_empty(), "{:?}", cut.results);
+        assert!(cut_by_steps(&cut), "{:?}", cut.failures);
+    }
+
+    /// The results of focus nodes checked before the budget ran out stay.
+    #[test]
+    fn results_before_the_step_budget_ran_out_are_kept() {
+        let mut data = String::from(
+            "ex:S sh:targetClass ex:C ; sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:maxCount 1 ] .\n",
+        );
+        for i in 0..100 {
+            data.push_str(&format!(
+                "ex:v{i} a ex:C ; ex:next ex:w{i} .\nex:w{i} ex:next ex:z{i} .\n"
+            ));
+        }
+        let budget = Budget {
+            steps: 50,
+            ..Budget::default()
+        };
+        let r = bounded(&data, budget, || false).unwrap();
+        assert!(cut_by_steps(&r), "{:?}", r.failures);
+        // About two steps per focus node: some finished, each a true result.
+        assert!((5..100).contains(&r.results.len()), "{}", r.results.len());
+    }
+
+    /// A shape that checks itself through sh:node asks for its SPARQL check
+    /// first from inside another check, where one result is enough. That
+    /// ask used to size the batch for every focus node to one solution: too
+    /// many, so the check ran once per focus node.
+    #[test]
+    fn a_nested_check_runs_first_and_the_batch_still_serves_every_focus_node() {
+        let mut body = format!(
+            "{}ex:S sh:property [ sh:path ex:knows ; sh:node ex:S ] .\nex:n0 ex:knows ex:n1 .\n",
+            RULE
+        );
+        for i in 0..50 {
+            body.push_str(&format!("ex:n{i} a ex:C ; ex:p 2 .\n"));
+        }
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let g = Graph::new(&[&p.triples]);
+        QUERIES_RUN.with(|c| c.set((0, 0)));
+        let r = report_with(&g, Arc::new(|| false), &|_| true, 1, Budget::default()).unwrap();
+        // A result per focus node, and n0's sh:node one for n1.
+        assert_eq!((r.results.len(), r.failures.len()), (51, 0));
+        // One batch; n1 runs once on its own, its rows taken by the nested check.
+        assert_eq!(QUERIES_RUN.with(|c| c.get()), (1, 1));
     }
 
     /// 100 nodes in a chain, all in `ex:C`; every one but n50 has `ex:ok`.

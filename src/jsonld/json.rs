@@ -125,27 +125,35 @@ impl Object {
     /// The members as a map reads them, in text order: with duplicate keys,
     /// only the last one. Linear in the member count.
     pub fn entries(&self) -> Vec<&Member> {
-        let n = self.members.len();
-        if n <= 16 {
-            return self
-                .members
-                .iter()
-                .enumerate()
-                .filter(|(i, m)| !self.members[i + 1..].iter().any(|later| later.key == m.key))
-                .map(|(_, m)| m)
-                .collect();
-        }
-        let mut last: rustc_hash::FxHashMap<&str, usize> = rustc_hash::FxHashMap::default();
-        for (i, m) in self.members.iter().enumerate() {
-            last.insert(&m.key, i);
-        }
+        let last = last_per_key(&self.members);
         self.members
             .iter()
-            .enumerate()
-            .filter(|(i, m)| last[&*m.key] == *i)
-            .map(|(_, m)| m)
+            .zip(last)
+            .filter_map(|(m, last)| last.then_some(m))
             .collect()
     }
+}
+
+/// Per member of `members`, whether no later member has its key: the one a
+/// map keeps. [`Object::entries`] keeps those, and the parser warns at the
+/// others (`json-duplicate-key`). Linear in the member count.
+fn last_per_key(members: &[Member]) -> Vec<bool> {
+    if members.len() <= 16 {
+        return members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| !members[i + 1..].iter().any(|later| later.key == m.key))
+            .collect();
+    }
+    let mut last: rustc_hash::FxHashMap<&str, usize> = rustc_hash::FxHashMap::default();
+    for (i, m) in members.iter().enumerate() {
+        last.insert(&m.key, i);
+    }
+    members
+        .iter()
+        .enumerate()
+        .map(|(i, m)| last[&*m.key] == i)
+        .collect()
 }
 
 impl Json {
@@ -1086,31 +1094,16 @@ impl<'a> Parser<'a> {
         if self.quiet || self.stopped || members.len() < 2 {
             return;
         }
-        let repeated = |this: &mut Self, m: &Member| {
-            this.warn(
-                m.key_span,
-                "json-duplicate-key",
-                format!(
-                    "Duplicate key \"{}\": only the last member with it counts",
-                    short(&m.key)
-                ),
-            );
-        };
-        if members.len() <= 16 {
-            for (i, m) in members.iter().enumerate() {
-                if members[i + 1..].iter().any(|later| later.key == m.key) {
-                    repeated(self, m);
-                }
-            }
-            return;
-        }
-        let mut last: rustc_hash::FxHashMap<&str, usize> = rustc_hash::FxHashMap::default();
-        for (i, m) in members.iter().enumerate() {
-            last.insert(&m.key, i);
-        }
-        for (i, m) in members.iter().enumerate() {
-            if last[&*m.key] != i {
-                repeated(self, m);
+        for (m, last) in members.iter().zip(last_per_key(members)) {
+            if !last {
+                self.warn(
+                    m.key_span,
+                    "json-duplicate-key",
+                    format!(
+                        "Duplicate key \"{}\": only the last member with it counts",
+                        short(&m.key)
+                    ),
+                );
             }
         }
     }
@@ -1475,6 +1468,51 @@ mod tests {
             root(text).as_array().unwrap().items[3].as_str(),
             Some("\u{1f600}")
         );
+    }
+
+    /// The members a map drops are the ones warned about, whatever the size
+    /// of the object (the small and the large way of finding them).
+    #[test]
+    fn the_members_entries_drops_are_the_duplicate_key_warnings() {
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |n: u64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+        // Under MAX_ERRORS members, so every warning is there.
+        for size in [0, 1, 2, 5, 16, 17, 40, 90] {
+            for _ in 0..20 {
+                let keys = 1 + next(size as u64 + 1);
+                let members: Vec<String> = (0..size)
+                    .map(|i| format!("\"k{}\": {i}", next(keys)))
+                    .collect();
+                let text = format!("{{{}}}", members.join(", "));
+                let doc = parse(&text);
+                let o = doc.root.as_ref().unwrap().as_object().unwrap();
+                let kept: Vec<Span> = o.entries().iter().map(|m| m.key_span).collect();
+                let mut dropped: Vec<Span> = o
+                    .members
+                    .iter()
+                    .map(|m| m.key_span)
+                    .filter(|s| !kept.contains(s))
+                    .collect();
+                let mut warned: Vec<Span> = doc
+                    .warnings
+                    .iter()
+                    .filter(|w| w.code == "json-duplicate-key")
+                    .map(|w| w.span)
+                    .collect();
+                dropped.sort_by_key(|s| s.start);
+                warned.sort_by_key(|s| s.start);
+                assert_eq!(dropped, warned, "{text}");
+                let mut distinct: Vec<&str> = o.members.iter().map(|m| &*m.key).collect();
+                distinct.sort_unstable();
+                distinct.dedup();
+                assert_eq!(kept.len(), distinct.len(), "{text}");
+            }
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ use turtle_lsp::batch::{self, BatchFile, Columns, FormatOutcome};
 use turtle_lsp::clock::Instant;
 use turtle_lsp::query::{Answer, Limits, QueryError, render};
 use turtle_lsp::server::Embedded;
-use turtle_lsp::settings::{Layer, Settings};
+use turtle_lsp::settings::{self, Layer, Settings};
 
 pub fn handle(request: &str) -> String {
     let req: Value = match serde_json::from_str(request) {
@@ -92,8 +92,8 @@ pub fn error(message: &str) -> String {
 
 /// The user's settings: `req.settings`, an object read as the language server
 /// reads `turtle.*` (nested or dotted keys, a leading `turtle` optional), so
-/// the browser's operations behave as the editor does. Without it, the
-/// defaults.
+/// the browser's operations behave as the editor does: a value out of range
+/// is ignored there too. Without it, the defaults.
 fn settings_of(req: &Value) -> Result<Settings, String> {
     let given = &req["settings"];
     match given {
@@ -101,40 +101,7 @@ fn settings_of(req: &Value) -> Result<Settings, String> {
         Value::Object(_) => {}
         _ => return Err("settings must be an object".into()),
     }
-    check_timeouts(given, &mut Vec::new())?;
     Ok(Settings::from_layers([(Layer::Client, given)]))
-}
-
-/// `Settings::apply` panics on a `query.timeoutSeconds` too long for a
-/// `Duration`, and a panic ends the engine: refuse it here.
-fn check_timeouts(v: &Value, path: &mut Vec<String>) -> Result<(), String> {
-    match v {
-        Value::Object(map) => {
-            for (k, v) in map {
-                let depth = path.len();
-                path.extend(k.split('.').map(str::to_string));
-                check_timeouts(v, path)?;
-                path.truncate(depth);
-            }
-        }
-        Value::Number(n) => {
-            let names: Vec<&str> = path
-                .iter()
-                .map(String::as_str)
-                .skip_while(|p| *p == "turtle")
-                .collect();
-            if names == ["query", "timeoutSeconds"]
-                && let Some(f) = n.as_f64()
-                && f.is_finite()
-                && f >= 0.0
-                && Duration::try_from_secs_f64(f).is_err()
-            {
-                return Err(format!("settings: query.timeoutSeconds {n} is too large"));
-            }
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 /// Positions in UTF-16 units, as JavaScript strings count them.
@@ -294,18 +261,16 @@ fn query(files: &[BatchFile], req: &Value, settings: &Settings) -> Result<Value,
     Ok(out)
 }
 
-/// A request's `timeout`: seconds, none for 0.
+/// A request's `timeout`: seconds, none for 0, read as the settings read
+/// `query.timeoutSeconds` ([`settings::seconds`]) but refused, not ignored,
+/// when it is not one.
 fn seconds(v: &Value) -> Result<Option<Duration>, String> {
     let n = v
         .as_f64()
         .filter(|n| n.is_finite() && *n >= 0.0)
         .ok_or("timeout must be a number of seconds, 0 or more")?;
-    if n == 0.0 {
-        return Ok(None);
-    }
-    Duration::try_from_secs_f64(n)
-        .map(Some)
-        .map_err(|_| "timeout is too long".to_string())
+    let d = settings::seconds(n).ok_or("timeout is too long")?;
+    Ok((!d.is_zero()).then_some(d))
 }
 
 /// A request's `maxRows`: a whole number, none for 0. One beyond this

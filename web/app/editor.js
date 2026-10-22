@@ -1273,10 +1273,16 @@ function restoreWorkspace(kept) {
   }
 }
 
+// The settings the browser kept (or, from before there were settings, the
+// labels choice).
+const keptSettings = (kept) => kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {})
+
 // The tab that owned the workspace has gone and this one owns it now: show
-// what that tab kept, and let the editors write.
+// what that tab kept, settings included (the ones this tab started with are
+// out of date, and would be written back), and let the editors write.
 async function takeOver() {
   const kept = await ws.load()
+  if (kept) settings.replace(keptSettings(kept))
   if (kept?.files) restoreWorkspace(kept)
   W.readOnly = false
   ws.setReadOnly(false)
@@ -1347,7 +1353,7 @@ async function main() {
     status: $("status-vim"),
     commands: { save: () => save(), saveAll: () => saveAll(), close: () => W.active && closeTab(W.active), open: (path) => W.files.has(path) && (openTab(path), true) },
   })
-  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {}), onChange: () => changed({ status: true, layout: true }), onClose: () => editor?.focus(), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
+  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: keptSettings(kept), onChange: () => changed({ status: true, layout: true }), onClose: () => editor?.focus(), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
   diff = createDiff({ monaco, client, mount: document.querySelector(".center"), toast, options: editorOptions, setup: (ed) => settings.applyTo(ed), onClose: () => editor?.focus() })
 
   // Cross-file navigation (definition, references) opens the file in a tab.

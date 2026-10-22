@@ -295,3 +295,116 @@ pub fn term_rename(
     }
     Ok(out.by_uri)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::{Workspace, path_to_uri};
+    use std::path::PathBuf;
+
+    /// A fresh directory (canonical), removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let d =
+                std::env::temp_dir().join(format!("turtle-lsp-nav-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            TempDir(std::fs::canonicalize(&d).unwrap())
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `text` (one line) with `edits` applied.
+    fn apply(text: &str, edits: &[TextEdit]) -> String {
+        let mut edits = edits.to_vec();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.range.start.character));
+        let mut out = text.to_string();
+        for e in edits {
+            assert_eq!(e.range.start.line, 0);
+            let (s, t) = (
+                e.range.start.character as usize,
+                e.range.end.character as usize,
+            );
+            out.replace_range(s..t, &e.new_text);
+        }
+        out
+    }
+
+    /// A prefix of a workspace context file, renamed from a document: every
+    /// document using the file gets its uses renamed and what its own
+    /// context writes with the prefix, whether or not it uses the prefix
+    /// outside its context, so each expands as before.
+    #[test]
+    fn a_context_file_prefix_is_renamed_in_each_document_s_own_context_too() {
+        let dir = TempDir::new("prefix-rename");
+        let files = [
+            (
+                "ctx.jsonld",
+                r#"{"@context": {"old": "http://ex.org/", "name": "old:name"}}"#,
+            ),
+            (
+                "a.jsonld",
+                r#"{"@context": "ctx.jsonld", "@id": "http://ex.org/a", "old:p": 1}"#,
+            ),
+            (
+                "b.jsonld",
+                r#"{"@context": ["ctx.jsonld", {"x": "old:x"}], "@id": "http://ex.org/b", "x": 1, "old:q": 2}"#,
+            ),
+            (
+                "c.jsonld",
+                r#"{"@context": ["ctx.jsonld", {"y": {"@id": "old:y"}}], "@id": "http://ex.org/c", "y": 1}"#,
+            ),
+        ];
+        let mut ws = Workspace::new(vec![dir.0.clone()], PrefixMap::default());
+        let uri = |name: &str| path_to_uri(&dir.0.join(name)).unwrap();
+        for (name, text) in files {
+            std::fs::write(dir.0.join(name), text).unwrap();
+            ws.open_doc(uri(name), text.into(), 1);
+        }
+        let triples = |ws: &mut Workspace, name: &str| {
+            let a = ws.analysis(&uri(name)).unwrap();
+            assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+            let mut t: Vec<String> = a.parsed.triples.iter().map(|t| format!("{t:?}")).collect();
+            t.sort();
+            t
+        };
+        let before: Vec<Vec<String>> = files.iter().map(|f| triples(&mut ws, f.0)).collect();
+        let a = ws.analysis(&uri("a.jsonld")).unwrap();
+        let at = files[1].1.find("old:p").unwrap() as u32 + 1;
+        let t = term_at(&a, at).expect("the prefix of old:p");
+        let changes = term_rename(&a, ws.knowledge(), Encoding::Utf16, t, "neu").unwrap();
+        let renamed: Vec<(&str, String)> = files
+            .iter()
+            .map(|(name, text)| {
+                let edits = changes
+                    .iter()
+                    .find(|(u, _)| u.as_str() == uri(name))
+                    .map_or(&[][..], |(_, e)| &e[..]);
+                (*name, apply(text, edits))
+            })
+            .collect();
+        assert_eq!(
+            renamed[2].1,
+            r#"{"@context": ["ctx.jsonld", {"x": "neu:x"}], "@id": "http://ex.org/b", "x": 1, "neu:q": 2}"#
+        );
+        assert_eq!(
+            renamed[3].1,
+            r#"{"@context": ["ctx.jsonld", {"y": {"@id": "neu:y"}}], "@id": "http://ex.org/c", "y": 1}"#
+        );
+        // Each expands as before.
+        for (name, text) in &renamed {
+            ws.open_doc(uri(name), text.clone(), 2);
+        }
+        ws.context_changed(&uri("ctx.jsonld"), false);
+        for (i, (name, _)) in files.iter().enumerate() {
+            assert_eq!(triples(&mut ws, name), before[i], "{name}");
+        }
+    }
+}

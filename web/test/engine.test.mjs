@@ -150,7 +150,7 @@ test("query: the limits are the settings' unless the request has its own", () =>
   assert.match(ask(slow, { settings: { "query.timeoutSeconds": 0.05 } }).message, /time limit/)
 })
 
-test("query: a timeout too long for a duration is an error, not a crash of the engine", () => {
+test("query: a request timeout too long for a duration is an error, not a crash of the engine; in the settings it is ignored", () => {
   for (const timeout of [1e300, 1.8446744073709552e19]) {
     assert.throws(
       () => ask("ASK {}", { timeout }),
@@ -159,9 +159,10 @@ test("query: a timeout too long for a duration is an error, not a crash of the e
   }
   assert.throws(() => ask("ASK {}", { timeout: -1 }), (e) => !e.crashed && /timeout must be/.test(e.message))
   assert.throws(() => ask("ASK {}", { timeout: "soon" }), (e) => !e.crashed && /timeout must be/.test(e.message))
-  // The same in the settings, which the server's parser would have panicked on.
+  // In the settings such a value is ignored, as the server ignores it: the
+  // query runs (with the default limit).
   for (const settings of [{ "query.timeoutSeconds": 1e300 }, { turtle: { query: { timeoutSeconds: 1e300 } } }]) {
-    assert.throws(() => ask("ASK {}", { settings }), (e) => !e.crashed && /timeoutSeconds 1e\+?300 is too large/.test(e.message))
+    assert.equal(ask("ASK {}", { settings }).boolean, true)
   }
   assert.throws(() => ask("ASK {}", { settings: 3 }), (e) => !e.crashed && /settings must be an object/.test(e.message))
   assert.equal(ask("ASK {}").boolean, true)

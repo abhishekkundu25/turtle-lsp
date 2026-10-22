@@ -207,6 +207,13 @@ mod desktop {
     /// Documents and failures kept in memory; the least recently used go first.
     pub(super) const MEMO_ENTRIES: usize = 256;
 
+    #[cfg(test)]
+    thread_local! {
+        /// Cache files looked at to tell whether a remembered document is
+        /// current, and how many of those looks held the memo lock.
+        pub(super) static STATS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
     /// Loads web contexts on the desktop, in order: the imports cache
     /// (`<sha256>.jsonld` beside the cached imports, with the `.url` file that
     /// names the URL it came from); the bundled contexts; then, only when the
@@ -252,7 +259,7 @@ mod desktop {
     }
 
     /// Where a document came from, to notice when it changes.
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq)]
     struct Stamp {
         path: PathBuf,
         modified: Option<SystemTime>,
@@ -379,28 +386,49 @@ mod desktop {
     }
 
     impl Inner {
+        /// What the memo holds for `url`, if it still holds. A document read
+        /// from a cache file is checked against the file, with the memo lock
+        /// let go: a look at the disk must not hold up every other load.
         fn remembered(&self, url: &str) -> Option<Result<RemoteDocument, LoadError>> {
-            let mut memos = self.memo.lock().ok()?;
-            memos.tick += 1;
-            let tick = memos.tick;
-            let (used, memo) = memos.entries.get_mut(url)?;
-            let found = match memo {
-                // A cache file that changed or went away is read again.
-                Memo::Loaded(_, Some(stamp)) if !stamp.current() => None,
-                Memo::Loaded(doc, _) => Some(Ok(doc.clone())),
-                Memo::Failed(at, e) if at.elapsed() < RETRY_FETCH_AFTER => Some(Err(e.clone())),
-                Memo::Failed(..) => None,
+            let (doc, stamp) = {
+                let mut memos = self.memo.lock().ok()?;
+                memos.tick += 1;
+                let tick = memos.tick;
+                let (used, memo) = memos.entries.get_mut(url)?;
+                *used = tick;
+                match memo {
+                    Memo::Loaded(doc, Some(stamp)) => (doc.clone(), stamp.clone()),
+                    Memo::Loaded(doc, None) => return Some(Ok(doc.clone())),
+                    Memo::Failed(at, e) if at.elapsed() < RETRY_FETCH_AFTER => {
+                        return Some(Err(e.clone()));
+                    }
+                    Memo::Failed(..) => {
+                        memos.entries.remove(url);
+                        return None;
+                    }
+                }
             };
-            match found {
-                Some(r) => {
-                    *used = tick;
-                    Some(r)
-                }
-                None => {
-                    memos.entries.remove(url);
-                    None
-                }
+            if self.unchanged(&stamp) {
+                return Some(Ok(doc));
             }
+            // A cache file that changed or went away is read again. The
+            // entry goes unless another load replaced it meanwhile.
+            if let Ok(mut memos) = self.memo.lock()
+                && matches!(memos.entries.get(url), Some((_, Memo::Loaded(_, Some(s)))) if *s == stamp)
+            {
+                memos.entries.remove(url);
+            }
+            None
+        }
+
+        /// Whether the file of `stamp` is as it was (a look at the disk).
+        fn unchanged(&self, stamp: &Stamp) -> bool {
+            #[cfg(test)]
+            STATS.with(|s| {
+                let (n, locked) = s.get();
+                s.set((n + 1, locked + usize::from(self.memo.try_lock().is_err())));
+            });
+            stamp.current()
         }
 
         fn remember(
@@ -1058,6 +1086,36 @@ mod desktop_tests {
         // Removed: no longer served.
         std::fs::remove_file(cache_file_as(&cache.0, url, "jsonld")).unwrap();
         assert_eq!(l.load(url), Err(LoadError::NetworkNotAllowed));
+    }
+
+    /// Looking at a remembered document's cache file is a call to the disk:
+    /// other documents' loads must not wait on it for the memo.
+    #[test]
+    fn the_cache_file_of_a_remembered_document_is_looked_at_outside_the_memo_lock() {
+        let cache = TempDir::new("stat-unlocked");
+        let url = "https://example.org/stat.jsonld";
+        write_cached(
+            &cache.0,
+            url,
+            r#"{"@context": {"a": "http://ex.org/a"}}"#,
+            url,
+        );
+        let l = DesktopLoader::new(Some(cache.0.clone()), false);
+        assert!(l.load(url).is_ok());
+        super::desktop::STATS.with(|s| s.set((0, 0)));
+        assert!(l.load(url).unwrap().text.contains("ex.org/a"));
+        assert_eq!(super::desktop::STATS.with(|s| s.get()), (1, 0));
+        // Changed: read again, and remembered as the new one.
+        write_cached(
+            &cache.0,
+            url,
+            r#"{"@context": {"b": "http://ex.org/bee"}}"#,
+            url,
+        );
+        assert!(l.load(url).unwrap().text.contains("ex.org/bee"));
+        assert!(l.is_remembered(url));
+        assert!(l.load(url).unwrap().text.contains("ex.org/bee"));
+        assert_eq!(super::desktop::STATS.with(|s| s.get().1), 0);
     }
 
     #[test]

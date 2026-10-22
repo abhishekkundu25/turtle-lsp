@@ -31,13 +31,22 @@ export function lineAt(text, starts, line) {
   return s.endsWith("\r") ? s.slice(0, -1) : s
 }
 
-/** `text` with LSP text edits applied (all positions refer to the original). */
+/**
+ * `text` with LSP text edits applied (all positions refer to the original).
+ * Edits that start at one position apply in the order of the array, as LSP
+ * says: the result is built from the front, in (start, array index) order.
+ */
 export function applyEdits(text, edits) {
   const starts = lineStarts(text)
-  const spans = edits.map((e) => [offsetOf(starts, text, e.range.start), offsetOf(starts, text, e.range.end), e.newText])
-  spans.sort((a, b) => b[0] - a[0])
-  for (const [s, e, t] of spans) text = text.slice(0, s) + t + text.slice(e)
-  return text
+  const spans = edits.map((e, i) => [offsetOf(starts, text, e.range.start), offsetOf(starts, text, e.range.end), e.newText, i])
+  spans.sort((a, b) => a[0] - b[0] || a[3] - b[3])
+  let out = ""
+  let from = 0
+  for (const [s, e, t] of spans) {
+    out += text.slice(from, s) + t
+    from = Math.max(from, e)
+  }
+  return out + text.slice(from)
 }
 
 /** An LSP range as a Monaco range. */

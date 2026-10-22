@@ -9,11 +9,13 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request supersedes the run before it. Runs on main are
-# never canceled: the release and the site wait for the CI run of their commit
-# (release.yml, pages.yml), and a canceled run would leave them waiting.
+# A new push to a pull request supersedes the run before it (one group per
+# pull request, in progress canceled). A push to main gets a group of its own
+# commit: in a shared group GitHub cancels a *pending* run when a newer one
+# queues, whatever cancel-in-progress says, and the release waits for the CI
+# run of its tagged commit (release.yml, job "ci"), which a canceled run fails.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Actions are pinned to full commit SHAs (tags can be moved); Dependabot bumps them.

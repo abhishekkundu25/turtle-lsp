@@ -288,3 +288,37 @@ test("two tabs: the second shows the workspace read-only with a notice, writes n
     await ctx.close()
   }
 })
+
+test("a tab that takes over the workspace takes the settings the other tab kept, and writes them back as they are", async () => {
+  const ctx = await newContext()
+  try {
+    const first = await open(ctx)
+    await saved(first.page)
+    const second = await open(ctx)
+    assert.equal(await second.page.evaluate(() => document.body.dataset.saved), "readonly")
+
+    // The first tab changes a setting after the second one started.
+    await first.page.locator(".group .monaco-editor textarea").first().focus()
+    await first.page.keyboard.press("ControlOrMeta+Comma")
+    const settings = first.page.getByRole("region", { name: "Settings" })
+    await settings.getByLabel("Minimap: Enabled", { exact: true }).uncheck()
+    await first.page.keyboard.press("Escape")
+    await saved(first.page)
+    assert.deepEqual((await records(first.page)).layout.settings, { "editor.minimap.enabled": false })
+
+    await first.page.close()
+    await second.page.locator("body[data-saved='true']").waitFor({ timeout: 10_000 })
+    await second.page.locator("#toast", { hasText: "You can edit here now" }).waitFor()
+    const minimap = () => second.page.evaluate(() => window.monaco.editor.getEditors().map((e) => e.getOption(window.monaco.editor.EditorOption.minimap).enabled))
+    assert.ok((await minimap()).every((on) => on === false), String(await minimap()))
+    // A change to the layout writes it with the settings the first tab kept.
+    await openFile(second.page, "data/graphs.trig")
+    await saved(second.page)
+    const kept = await records(second.page)
+    assert.ok(kept.layout.groups.some((g) => g.tabs.includes("data/graphs.trig")))
+    assert.deepEqual(kept.layout.settings, { "editor.minimap.enabled": false })
+    assert.deepEqual(second.errors, [])
+  } finally {
+    await ctx.close()
+  }
+})

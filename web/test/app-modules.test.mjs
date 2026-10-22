@@ -48,6 +48,18 @@ test("text helpers: line starts, offsets and positions agree, and edits apply ag
   assert.equal(applyEdits(text, edits), "Xb\n\n\nefg!")
 })
 
+test("text helpers: edits at one position apply in the order of the array, as LSP says", () => {
+  const at = (character, end = character) => ({ start: { line: 0, character }, end: { line: 0, character: end } })
+  // Inserts at one offset: an import line, then a blank line, before the text.
+  assert.equal(applyEdits("body", [{ range: at(0), newText: "a\n" }, { range: at(0), newText: "\n" }]), "a\n\nbody")
+  assert.equal(applyEdits("ab", [{ range: at(1), newText: "1" }, { range: at(1), newText: "2" }, { range: at(1), newText: "3" }]), "a123b")
+  // An insert and a replacement starting where it is, either way round.
+  assert.equal(applyEdits("abcd", [{ range: at(1), newText: "X" }, { range: at(1, 3), newText: "Y" }]), "aXYd")
+  assert.equal(applyEdits("abcd", [{ range: at(1, 3), newText: "Y" }, { range: at(1), newText: "X" }]), "aYXd")
+  // Out of order in the array, apart in the text.
+  assert.equal(applyEdits("abcd", [{ range: at(3, 4), newText: "D" }, { range: at(0, 1), newText: "A" }]), "AbcD")
+})
+
 test("paths: parents, names, joins, containment and file URIs", () => {
   assert.equal(dirOf("a/b/c.ttl"), "a/b")
   assert.equal(dirOf("c.ttl"), "")
