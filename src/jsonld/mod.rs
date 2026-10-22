@@ -686,7 +686,8 @@ mod tests {
             j.triples.len(),
             jt.as_secs_f64() / tt.as_secs_f64()
         );
-        assert!(jt <= tt * 4, "JSON-LD {jt:?} vs Turtle {tt:?}");
+        // 8x, not 4x: a busy Windows runner measured 4.1x (2.4x on a quiet machine).
+        assert!(jt <= tt * 8, "JSON-LD {jt:?} vs Turtle {tt:?}");
     }
 
     #[test]
