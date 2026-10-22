@@ -40,7 +40,7 @@ use super::context::{
 };
 use super::json::{Json, Member, Object, Value};
 use super::source::{Builder, SourceIndex, Use, UseKind, UseRole};
-use super::{DropReason, Dropped, UsedTerm, unquoted};
+use super::{DropReason, Dropped, UsedTerm};
 use crate::syntax::{Form, Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -511,9 +511,9 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 match ctx.term(p.key).and_then(|d| d.context.clone()) {
                     Some(sc) => {
                         let c = self.scoped(ctx, &sc, p.span, true);
-                        Ex::One(self.value_expansion(&c, Some(p.key), lit, el.span))
+                        Ex::One(self.value_expansion(&c, Some(p.key), lit, el.span, el.inner))
                     }
-                    None => Ex::One(self.value_expansion(ctx, Some(p.key), lit, el.span)),
+                    None => Ex::One(self.value_expansion(ctx, Some(p.key), lit, el.span, el.inner)),
                 }
             }
             // 5
@@ -594,7 +594,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         for m in &type_keys {
             let mut terms: Vec<(&str, Span)> = items_of(&m.value)
                 .iter()
-                .filter_map(|t| Some((t.as_str()?, unquoted(t.span))))
+                .filter_map(|t| Some((t.as_str()?, t.inner)))
                 .collect();
             terms.sort_by(|a, b| a.0.cmp(b.0));
             for (t, span) in terms {
@@ -629,7 +629,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         let mut nests: Vec<&'a Member> = Vec::new();
         for &m in entries {
             let key: &'a str = &m.key;
-            let kspan = unquoted(m.key_span);
+            let kspan = m.key_inner;
             // 13.1
             if key == "@context" {
                 self.index.push_use(Use {
@@ -680,7 +680,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         for m in nests {
             let scoped = ctx.term(&m.key).and_then(|d| d.context.clone());
             let nctx = match &scoped {
-                Some(sc) => self.scoped(ctx, sc, unquoted(m.key_span), true),
+                Some(sc) => self.scoped(ctx, sc, m.key_inner, true),
                 None => ctx.clone(),
             };
             for nested in items_of(&m.value) {
@@ -702,7 +702,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 {
                     self.error(
                         "invalid @nest value",
-                        unquoted(v.key_span),
+                        v.key_inner,
                         "a @nest object cannot be a value object",
                     );
                     continue;
@@ -724,7 +724,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         input_json: bool,
         r: &mut Map<'a>,
     ) -> Result<(), Skip> {
-        let kspan = unquoted(m.key_span);
+        let kspan = m.key_inner;
         let v = &m.value;
         // 13.4.1
         if prop.is_some_and(|p| p.key == "@reverse") {
@@ -748,7 +748,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 let Some(s) = v.as_str() else {
                     return Err(self.error("invalid @id value", v.span, "@id must be a string"));
                 };
-                let span = unquoted(v.span);
+                let span = v.inner;
                 r.id = Some(self.id(ctx, s, span, false));
                 r.keys |= bit;
             }
@@ -767,7 +767,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 }
                 for t in items_of(v) {
                     let s = t.as_str().unwrap_or_default();
-                    let span = unquoted(t.span);
+                    let span = t.inner;
                     self.term_use(type_scoped, s, span);
                     match self.expand_use(type_scoped, s, span, UseRole::Type, true, true) {
                         Some((iri, form)) => r.types.push(TypeUse {
@@ -827,7 +827,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                         "@language must be a string",
                     ));
                 };
-                r.language = Some((s, unquoted(v.span)));
+                r.language = Some((s, v.inner));
                 r.keys |= bit;
             }
             "@direction" => {
@@ -917,7 +917,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         r: &mut Map<'a>,
     ) -> Result<(), Skip> {
         let key: &'a str = &m.key;
-        let kspan = unquoted(m.key_span);
+        let kspan = m.key_inner;
         let v = &m.value;
         let def = ctx.term(key);
         let container = def.map_or(Container::default(), |d| d.container);
@@ -953,7 +953,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 let lang: &'a str = &lm.key;
                 let none = lang == "@none"
                     || expand_iri(ctx, lang, false, true).as_deref() == Some("@none");
-                let language = (!none).then(|| (Arc::from(lang), Some(unquoted(lm.key_span))));
+                let language = (!none).then(|| (Arc::from(lang), Some(lm.key_inner)));
                 for item in items_of(&lm.value) {
                     match &item.value {
                         Value::Null | Value::Invalid => {}
@@ -1049,7 +1049,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
         let mut out = Vec::new();
         for im in map_entries(map) {
             let index: &'a str = &im.key;
-            let ispan = unquoted(im.key_span);
+            let ispan = im.key_inner;
             // 13.8.3.1 - 13.8.3.3
             let mut map_ctx = if by_id_or_type {
                 ctx.previous().unwrap_or(ctx).clone()
@@ -1083,6 +1083,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                         Some(&index_key),
                         Literal::String(index),
                         im.key_span,
+                        im.key_inner,
                     );
                     let Some(prop_iri) = expand_iri(ctx, &index_key, false, true) else {
                         continue;
@@ -1286,13 +1287,15 @@ impl<'a> Expander<'a, '_, '_, '_> {
         }
     }
 
-    /// Value Expansion (§5.3) of a scalar written at `span`.
+    /// Value Expansion (§5.3) of a scalar written at `span`; `inner` is its
+    /// text without quotes ([`Json::inner`]).
     fn value_expansion(
         &mut self,
         ctx: &ActiveContext,
         prop: Option<&str>,
         lit: Literal<'a>,
         span: Span,
+        inner: Span,
     ) -> Item<'a> {
         let def = prop.and_then(|p| ctx.term(p));
         let mapping = def.and_then(|d| d.type_mapping.clone());
@@ -1303,7 +1306,7 @@ impl<'a> Expander<'a, '_, '_, '_> {
                 _ => None,
             }
         {
-            let at = unquoted(span);
+            let at = inner;
             return Item::Node(Box::new(NodeObject {
                 span: at,
                 id: Some(self.id(ctx, s, at, vocab)),

@@ -25,7 +25,6 @@ use super::context::{
     ActiveContext, TermDefinition, has_keyword_form, is_absolute_iri, is_keyword,
 };
 use super::json::{Json, Member, Object, Value};
-use super::unquoted;
 use crate::syntax::Span;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -524,7 +523,7 @@ impl<'j> Frame<'j> {
             o.members
                 .iter()
                 .filter(|m| !m.key.starts_with('@'))
-                .map(|m| (&*m.key, unquoted(m.key_span).start))
+                .map(|m| (&*m.key, m.key_inner.start))
                 .collect()
         });
         Frame {
@@ -542,7 +541,7 @@ impl<'j> Frame<'j> {
                 .iter()
                 .rev()
                 .find(|m| &*m.key == word)
-                .map(|m| unquoted(m.key_span).start),
+                .map(|m| m.key_inner.start),
         }
     }
 }
@@ -626,7 +625,7 @@ impl<'j> Walk<'_, 'j> {
     fn key(&mut self, m: &'j Member, role: ContextRole) {
         let prefix = self.prefix(&m.key);
         self.builder.strings.push(Pending {
-            span: unquoted(m.key_span),
+            span: m.key_inner,
             role,
             term: Target::None,
             prefix,
@@ -643,7 +642,7 @@ impl<'j> Walk<'_, 'j> {
         };
         let prefix = self.prefix(s);
         self.builder.strings.push(Pending {
-            span: unquoted(v.span),
+            span: v.inner,
             role,
             term,
             prefix,

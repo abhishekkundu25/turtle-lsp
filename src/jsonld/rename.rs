@@ -29,7 +29,7 @@
 use super::context::{ActiveContext, ContextCache, Processor, TermDefinition, expand_iri};
 use super::json::{self, Json, Value};
 use super::source::{ContextString, DefId, Definition, Origin, SourceIndex, Use, UseKind, UseRole};
-use super::{NoNetwork, expand, unquoted};
+use super::{NoNetwork, expand};
 use crate::syntax::Span;
 use rustc_hash::FxHashMap;
 use std::cell::OnceCell;
@@ -170,7 +170,7 @@ fn check_duplicate_keys(text: &str, root: &Json, edits: &[(Span, &str)]) -> Resu
             Value::Object(o) => {
                 let mut keys: Vec<(&str, bool)> = Vec::with_capacity(o.members.len());
                 for m in &o.members {
-                    let span = unquoted(m.key_span);
+                    let span = m.key_inner;
                     keys.push(match edits.get(&span) {
                         Some(t) => (t, true),
                         None => (
@@ -430,7 +430,7 @@ fn own_id(text: &str, root: &Json, key: Span) -> Option<Span> {
     fn find(v: &Json, key: Span) -> Option<&Json> {
         match &v.value {
             Value::Object(o) => o.members.iter().find_map(|m| {
-                if unquoted(m.key_span) == key {
+                if m.key_inner == key {
                     Some(&m.value)
                 } else {
                     find(&m.value, key)
@@ -442,7 +442,7 @@ fn own_id(text: &str, root: &Json, key: Span) -> Option<Span> {
     }
     let id = find(root, key)?.as_object()?.get("@id")?;
     let term = text.get(key.start as usize..key.end as usize)?;
-    (id.value.as_str()? == term).then(|| unquoted(id.value.span))
+    (id.value.as_str()? == term).then_some(id.value.inner)
 }
 
 /// A term that must expand to its own IRI: one with a `/`, or a `:`

@@ -184,15 +184,6 @@ pub(crate) fn parse_document_with(
     }
 }
 
-/// The content of a JSON string written at `span`, without its quotes.
-pub(crate) fn unquoted(span: Span) -> Span {
-    if span.end >= span.start + 2 {
-        Span::new(span.start + 1, span.end - 1)
-    } else {
-        span
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -69,6 +69,9 @@ pub struct Json {
     /// its opening bracket to its closing one (or to its last member when
     /// unclosed).
     pub(crate) span: Span,
+    /// A string's text without its quotes (an unclosed string has only the
+    /// opening one); any other value's span.
+    pub(crate) inner: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,6 +116,8 @@ pub struct Member {
     pub key: Box<str>,
     /// The key with its quotes.
     pub(crate) key_span: Span,
+    /// The key without its quotes, as [`Json::inner`].
+    pub(crate) key_inner: Span,
     pub value: Json,
 }
 
@@ -262,6 +267,7 @@ pub fn parse(text: &str) -> JsonDoc {
             Some(Json {
                 value: Value::Invalid,
                 span,
+                inner: span,
             })
         }
         _ => {
@@ -754,6 +760,15 @@ impl<'a> Parser<'a> {
         t
     }
 
+    /// `t`'s text without its quotes: a string loses the opening quote and,
+    /// when it closed, the closing one; anything else keeps its span.
+    fn inner(t: Lexed) -> Span {
+        match t.kind {
+            K::Str { closed, .. } => Span::new(t.start + 1, t.end - u32::from(closed)),
+            _ => t.span(),
+        }
+    }
+
     /// The string `t` with its escapes decoded; invalid escapes are errors
     /// at the escape.
     fn decode(&mut self, t: Lexed) -> Box<str> {
@@ -894,9 +909,11 @@ impl<'a> Parser<'a> {
                     t.span(),
                     format!("Expected a value, found {}", self.describe(t)),
                 );
+                let span = Span::new(t.start, t.start);
                 return Json {
                     value: Value::Invalid,
-                    span: Span::new(t.start, t.start),
+                    span,
+                    inner: span,
                 };
             }
         };
@@ -904,6 +921,7 @@ impl<'a> Parser<'a> {
         Json {
             value,
             span: t.span(),
+            inner: Self::inner(t),
         }
     }
 
@@ -928,6 +946,7 @@ impl<'a> Parser<'a> {
             K::RBrace | K::RBracket | K::Colon | K::Comma | K::Comment | K::Eof => Json {
                 value: Value::Invalid,
                 span: Span::new(key.end, key.end),
+                inner: Span::new(key.end, key.end),
             },
             _ => self.value(),
         }
@@ -955,9 +974,11 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        let span = Span::new(open.start, end);
         Json {
             value: Value::Invalid,
-            span: Span::new(open.start, end),
+            span,
+            inner: span,
         }
     }
 
@@ -1006,13 +1027,13 @@ impl<'a> Parser<'a> {
                 }
                 K::Str { .. } => {
                     self.bump();
-                    Some((self.decode(t), t.span()))
+                    Some((self.decode(t), t.span(), Self::inner(t)))
                 }
                 // An unquoted key (`a`, `1`, `true`): read as the key.
                 K::Word | K::Num { .. } | K::True | K::False | K::Null => {
                     self.error(t.span(), "Object keys must be strings in double quotes");
                     self.bump();
-                    Some((self.slice(t).into(), t.span()))
+                    Some((self.slice(t).into(), t.span(), t.span()))
                 }
                 K::Colon => {
                     self.error(t.span(), "Expected a key before ':'");
@@ -1036,12 +1057,13 @@ impl<'a> Parser<'a> {
                 }
             };
             comma = None;
-            if let Some((key, key_span)) = key {
+            if let Some((key, key_span, key_inner)) = key {
                 let value = self.member_value(key_span);
                 end = value.span.end.max(key_span.end);
                 members.push(Member {
                     key,
                     key_span,
+                    key_inner,
                     value,
                 });
             }
@@ -1084,6 +1106,7 @@ impl<'a> Parser<'a> {
                 close,
             }),
             span: Span::new(open.start, end),
+            inner: Span::new(open.start, end),
         }
     }
 
@@ -1199,6 +1222,7 @@ impl<'a> Parser<'a> {
         Json {
             value: Value::Array(Array { items, open, close }),
             span: Span::new(open.start, end),
+            inner: Span::new(open.start, end),
         }
     }
 }
@@ -1216,13 +1240,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inner_spans_leave_out_only_the_quotes_written() {
+        let root = |t: &str| parse(t).root.unwrap();
+        assert_eq!(root("\"ab\"").inner, Span::new(1, 3));
+        // Unclosed at the end of the text: only the opening quote goes.
+        assert_eq!(root("\"ab").inner, Span::new(1, 3));
+        let o = root("{\"k\": \"wd:");
+        let m = &o.as_object().unwrap().members[0];
+        assert_eq!(
+            (m.key_inner, m.value.inner),
+            (Span::new(2, 3), Span::new(7, 10))
+        );
+        // A key without quotes keeps its whole span.
+        let o = root("{abc: 1}");
+        assert_eq!(o.as_object().unwrap().members[0].key_inner, Span::new(1, 4));
+    }
+
+    #[test]
     fn the_last_duplicate_key_wins() {
         let member = |key: &str, at: u32, v: bool| Member {
             key: key.into(),
             key_span: Span::new(at, at + 3),
+            key_inner: Span::new(at + 1, at + 2),
             value: Json {
                 value: Value::Bool(v),
                 span: Span::new(at + 5, at + 9),
+                inner: Span::new(at + 5, at + 9),
             },
         };
         let o = Object {

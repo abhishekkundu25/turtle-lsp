@@ -85,7 +85,6 @@
 
 use super::json::{Json, Object, Value};
 use super::loader::{ContextLoader, LoadError};
-use super::unquoted;
 use crate::syntax::{Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
 use std::fmt;
@@ -1104,6 +1103,7 @@ struct Local<'a> {
 struct Entry<'a> {
     key: &'a str,
     key_span: Span,
+    key_inner: Span,
     value: &'a Json,
     /// From the imported context.
     foreign: bool,
@@ -1129,6 +1129,7 @@ impl<'a> Local<'a> {
                 entries.push(Entry {
                     key: &m.key,
                     key_span: m.key_span,
+                    key_inner: m.key_inner,
                     value: &m.value,
                     foreign,
                 });
@@ -1473,7 +1474,7 @@ impl<'l> Processor<'l> {
                     }
                 }
                 Value::String(s) => {
-                    let at = unquoted(item.span);
+                    let at = item.inner;
                     let url: Arc<str> = Arc::from(self.context_url(at, base_url, s)?);
                     if !options.validate_scoped_context && remote.contains(&url) {
                         continue;
@@ -1630,7 +1631,7 @@ impl<'l> Processor<'l> {
                 "@import must be a string",
             ));
         };
-        let at = unquoted(m.value.span);
+        let at = m.value.inner;
         let url = self.context_url(at, base_url, s)?;
         let (loaded, json) = self.load_json(at, &url)?;
         let context = json
@@ -1704,7 +1705,7 @@ impl<'l> Processor<'l> {
                     Some(b) => Ok(Some(Arc::from(resolve_iri(b, s)))),
                     None => Err(self.err(
                         ErrorCode::InvalidBaseIri,
-                        unquoted(e.value.span),
+                        e.value.inner,
                         "a relative @base needs a base IRI to resolve against",
                     )),
                 },
@@ -1740,7 +1741,7 @@ impl<'l> Processor<'l> {
                         }
                         Ok(_) => Err(self.err(
                             ErrorCode::InvalidVocabMapping,
-                            unquoted(e.value.span),
+                            e.value.inner,
                             format!("@vocab \"{s}\" is not an IRI or a blank node identifier"),
                         )),
                         Err(e) => Err(e),
@@ -1864,7 +1865,7 @@ impl<'l> Processor<'l> {
             return Ok(());
         };
         let saved = self.enter(f.local, e);
-        let term_at = self.term_at.replace(unquoted(e.key_span));
+        let term_at = self.term_at.replace(e.key_inner);
         let r = self.define_entry(result, f, e, defined);
         self.term_at = term_at;
         self.site = saved;
@@ -1955,7 +1956,7 @@ impl<'l> Processor<'l> {
         let mut def = TermDefinition {
             protected: f.protected,
             source: self.doc(),
-            span: Some(unquoted(e.key_span)),
+            span: Some(e.key_inner),
             ..TermDefinition::default()
         };
         // 11
@@ -2015,7 +2016,7 @@ impl<'l> Processor<'l> {
             match self.expand(result, f, defined, r, false, true)? {
                 Some(iri) if is_absolute_iri(&iri) || is_blank_node(&iri) => {
                     def.iri = Some(Arc::from(iri));
-                    def.iri_span = Some(unquoted(m.value.span));
+                    def.iri_span = Some(m.value.inner);
                 }
                 _ => {
                     return Err(self.err(
@@ -2101,7 +2102,7 @@ impl<'l> Processor<'l> {
                         def.prefix = true;
                     }
                     def.iri = Some(Arc::from(iri));
-                    def.iri_span = Some(unquoted(id.span));
+                    def.iri_span = Some(id.inner);
                 }
                 _ => {
                     return Err(self.err(
