@@ -29,7 +29,7 @@ invalidation logic (27b), `src/features/**`, `src/ide/**`.
 **Blocked by:** nothing in wave 3. First holder of the `src/server.rs` and
 `src/workspace.rs` locks in wave 3.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
