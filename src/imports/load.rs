@@ -3,9 +3,10 @@
 //!
 //! A `file:` import is read only through [`fs_policy`]; a web import only
 //! through [`crate::fetch`], which holds the address, redirect and budget
-//! rules. Their format comes from the file's extension, else from what the
-//! document starts with, else (a web document) from its content type: never
-//! from the import IRI.
+//! rules. A file's format comes from its extension, else from what it starts
+//! with. A web document's format comes from its content type, else from the
+//! extension of the URL it was finally fetched from, else from what it starts
+//! with. The format never comes from the import IRI.
 
 use super::catalog::{Catalog, Target};
 use super::rdfxml::rdf_xml_to_ntriples;

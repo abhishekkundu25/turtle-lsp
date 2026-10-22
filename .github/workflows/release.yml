@@ -224,11 +224,13 @@ jobs:
           CARGO_TARGET: ${{ matrix.cargo }}
         run: |
           mkdir -p bin
+          # The licence and the third-party notices travel with the binary.
+          cp LICENSE THIRD_PARTY_NOTICES.md "target/$CARGO_TARGET/release/"
           cd "target/$CARGO_TARGET/release"
           if [ "$VSCE_TARGET" = win32-x64 ]; then
-            7z a "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.zip" turtle-lsp.exe
+            7z a "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.zip" turtle-lsp.exe LICENSE THIRD_PARTY_NOTICES.md
           else
-            tar -czf "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.tar.gz" turtle-lsp
+            tar -czf "$GITHUB_WORKSPACE/bin/turtle-lsp-$VSCE_TARGET.tar.gz" turtle-lsp LICENSE THIRD_PARTY_NOTICES.md
           fi
       - if: matrix.vsce != 'alpine-x64'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

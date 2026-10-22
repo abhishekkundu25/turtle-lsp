@@ -224,7 +224,7 @@
           "type": "integer",
           "default": 2000000,
           "minimum": 0,
-          "markdownDescription": "Skip SHACL validation when the workspace holds more triples than this.",
+          "markdownDescription": "The most triples one SHACL run validates: the shared Turtle triples plus every dataset (TriG, N-Triples, N-Quads, JSON-LD with named graphs) checked against them. A dataset that would pass the limit is skipped, with a note. `0` for no limit.",
           "scope": "resource"
         },
         "turtle.shacl.onType": {
@@ -242,7 +242,7 @@
         "turtle.imports.network": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Fetch `owl:imports` that are not in the workspace over the network. Ignored in untrusted workspaces.",
+          "markdownDescription": "Fetch `owl:imports` and remote JSON-LD contexts that are not in the workspace over the network. Private, loopback and link-local addresses are refused. `turtle-lsp.json` cannot turn this on. Ignored in untrusted workspaces.",
           "scope": "machine-overridable"
         },
         "turtle.imports.unresolved": {

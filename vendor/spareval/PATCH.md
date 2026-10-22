@@ -37,7 +37,9 @@ MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, from the same commit).
 Once a spareval release has the same checks, delete this folder and the
 `[patch.crates-io]` entries in `Cargo.toml` and `web/engine/Cargo.toml`, then
 run `cargo update -p spareval` in both places. The tests that cover this are
-`a_join_in_memory_stops_*`, `a_hash_join_in_memory_stops_at_the_time_limit`
-and `a_query_that_keeps_too_many_rows_stops` in `src/query/tests.rs`,
-`tests/query_budget.rs`, `tests/query_cancel.rs`, and the in-memory join
-test in `web/test/engine.test.mjs`.
+`a_join_in_memory_stops_*`, `a_hash_join_in_memory_stops_at_the_time_limit`,
+`a_join_in_memory_checks_the_watch_as_it_combines_rows` and
+`a_query_that_keeps_too_many_rows_stops` in `src/query/tests.rs`,
+`tests/query_budget.rs`, `tests/query_cancel.rs`, the wall-clock bounds in
+`tests/query_latency.rs`, and the in-memory join test in
+`web/test/engine.test.mjs`.
