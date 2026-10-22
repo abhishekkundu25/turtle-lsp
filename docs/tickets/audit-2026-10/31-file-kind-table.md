@@ -46,7 +46,7 @@ the `src/server.rs` lock in separate regions: 31 edits the top of the file, the
 and the `use crate::features` statements. With 34a it shares `src/workspace.rs`: 34a
 edits only `failed_analysis`, which 31 does not touch.
 
-**Status:** ready-for-agent
+**Status:** done. Departure: the table finds every extension one way, so three untested corner cases changed: a file named only `.owl`, `.rdf` or `.json` now counts as an import source or watched file (as `.ttl` and `.rq` already did); on Unix a name containing `\` such as `x\catalog-v001.xml` counts as a catalog; a path with a trailing separator (`/w/a.owl/`) no longer does.
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
