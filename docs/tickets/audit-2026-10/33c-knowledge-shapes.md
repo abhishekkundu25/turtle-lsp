@@ -26,7 +26,7 @@ the rest of `src/knowledge.rs`.
 
 **Blocked by:** 33b (`src/shacl/model.rs`).
 
-**Status:** ready-for-agent
+**Status:** done via the fallback in owner decision 8: the builder stays (building from the model costs 2.2-3.8x per edit); a test pins it to the model's shapes that target classes.
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
