@@ -230,7 +230,7 @@ mod tests {
                 std::env::temp_dir().join(format!("turtle-lsp-ide-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
-            Dir(d.canonicalize().unwrap())
+            Dir(crate::workspace::real(&d))
         }
 
         /// Write `name` with `text`; its URI.

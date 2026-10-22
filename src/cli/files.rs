@@ -95,21 +95,7 @@ pub(crate) fn current_dir() -> Result<PathBuf, String> {
     Ok(real(&cwd))
 }
 
-/// `path` without symbolic links (and on Windows without `\\?\`), or as it is
-/// when it cannot be resolved.
-pub(crate) fn real(path: &Path) -> PathBuf {
-    let p = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    #[cfg(windows)]
-    {
-        let s = p.to_string_lossy();
-        if let Some(rest) = s.strip_prefix(r"\\?\")
-            && !rest.starts_with("UNC")
-        {
-            return PathBuf::from(rest);
-        }
-    }
-    p
-}
+pub(crate) use crate::workspace::real;
 
 /// The workspace root: `flag` if given, else the nearest ancestor of `cwd`
 /// (itself included) with a `.git`, else `cwd`.

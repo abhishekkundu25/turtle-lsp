@@ -472,8 +472,16 @@ mod tests {
             r#"<catalog>
 <uri name="http://ex.com/a" uri="file://example.invalid/s/a.ttl"/>
 <uri name="http://ex.com/b" uri="//example.invalid/s/b.ttl"/>
-<uri name="http://ex.com/c" uri="file://localhost/nowhere/c.ttl"/>
-</catalog>"#,
+<uri name="http://ex.com/c" uri="file://localhost{NOWHERE}"/>
+</catalog>"#
+                .replace(
+                    "{NOWHERE}",
+                    if cfg!(windows) {
+                        "/C:/nowhere/c.ttl"
+                    } else {
+                        "/nowhere/c.ttl"
+                    },
+                ),
         )
         .unwrap();
         let direct = "file://example.invalid/s/x.ttl";

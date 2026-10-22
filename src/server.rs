@@ -1881,7 +1881,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("turtle-lsp-premerge-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("folder")).unwrap();
-        let dir = dir.canonicalize().unwrap();
+        let dir = crate::workspace::real(&dir);
         let (kept, gone, in_folder) = (
             dir.join("kept.ttl"),
             dir.join("gone.ttl"),
@@ -1926,7 +1926,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("turtle-lsp-batch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = dir.canonicalize().unwrap();
+        let dir = crate::workspace::real(&dir);
         let (here, _host) = wire::memory();
         let root = path_to_uri(&dir).unwrap();
         let (mut server, _, _) = Server::configure(
@@ -2212,7 +2212,7 @@ mod review_tests {
                 .join(format!("turtle-lsp-review-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
-            Dir(d.canonicalize().unwrap())
+            Dir(crate::workspace::real(&d))
         }
     }
 

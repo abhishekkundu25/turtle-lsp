@@ -454,10 +454,33 @@ pub(crate) fn path_to_uri(path: &Path) -> Option<String> {
     file_url_of(path, false).map(|u| u.to_string())
 }
 
+/// `path` without symbolic links (and on Windows without `\\?\`), or as it is
+/// when it cannot be resolved.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn real(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .map_or_else(|_| path.to_path_buf(), without_verbatim)
+}
+
+/// On Windows, `canonicalize` writes `\\?\C:\...`; paths from URIs are
+/// `C:\...`. A `\\?\UNC\` share keeps its form.
+fn without_verbatim(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\")
+            && !rest.starts_with("UNC")
+        {
+            return PathBuf::from(rest);
+        }
+    }
+    p
+}
+
 /// `path` with symlinks resolved, as far as it exists (`/var` vs `/private/var`).
-fn canonical(path: &Path) -> PathBuf {
+pub(crate) fn canonical(path: &Path) -> PathBuf {
     if let Ok(p) = path.canonicalize() {
-        return p;
+        return without_verbatim(p);
     }
     match (path.parent(), path.file_name()) {
         (Some(dir), Some(name)) => canonical(dir).join(name),
@@ -2242,7 +2265,7 @@ pub(crate) mod tests {
                     p.strip_prefix(&root.0)
                         .unwrap()
                         .to_string_lossy()
-                        .into_owned()
+                        .replace('\\', "/")
                 })
                 .collect()
         };
