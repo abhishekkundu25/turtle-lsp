@@ -202,3 +202,80 @@ jobs:
       - if: runner.os == 'Linux' && matrix.vscode == 'stable'
         working-directory: editors/vscode
         run: npm run package
+
+  # Performance (bench/perf.mjs). GitHub-hosted runners share hardware, so the
+  # timings are noisy: the gate is wide (1.5x on the p50 of the keystroke rows,
+  # which each have 20 or more samples) and the job never blocks a pull request.
+  # On main it compares with the artefact the last main run uploaded and fails
+  # over the ratio; the run's artefact is uploaded either way, so the next
+  # comparison is against this commit (a slow drift of under 1.5x per commit is
+  # not caught). Set the repository variable PERF_GATE to "off" to make main
+  # report only, for example while the runner image is changing.
+  perf:
+    name: Performance (ubuntu-latest, noisy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # `actions: read` lists and downloads the last main run's artefact.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PERF_GATE: ${{ vars.PERF_GATE }}
+      # The documented ratio: current p50 / main p50 of a keystroke row.
+      PERF_MAX_RATIO: "1.5"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: cargo build --release --locked
+        timeout-minutes: 20
+      # Instruction counts (perf stat) are steadier than times, where the runner
+      # lets a user read the counters; they cover the whole run (the bench and
+      # the servers it starts), are kept beside the results and are not gated.
+      - name: Benchmark
+        id: bench
+        timeout-minutes: 10
+        run: |
+          if command -v perf >/dev/null 2>&1 && perf stat -e instructions:u -- true >/dev/null 2>&1; then
+            perf stat -x, -e instructions:u -o perf-stat.csv -- node bench/perf.mjs --json bench-results.json
+            { echo '### Instructions (user mode, whole run)'; echo; echo '```'; cat perf-stat.csv; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "perf stat cannot read the counters on this runner: timings only."
+            node bench/perf.mjs --json bench-results.json
+          fi
+      # The newest unexpired bench-results artefact that a run on main uploaded.
+      - name: Download the last main results
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=bench-results&per_page=50" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")][0].workflow_run.id // empty')
+          if [ -z "$run_id" ]; then
+            echo "No earlier main results to compare with."
+          else
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name bench-results --dir base
+          fi
+      - name: Compare with the last main results
+        if: hashFiles('base/bench-results.json') != ''
+        run: |
+          gate=--report-only
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PERF_GATE" != off ]; then gate=; fi
+          node bench/perf.mjs --compare base/bench-results.json bench-results.json --max-ratio "$PERF_MAX_RATIO" $gate
+      - name: Keep the results (main)
+        if: always() && github.event_name == 'push' && steps.bench.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-results
+          path: |
+            bench-results.json
+            perf-stat.csv
+          if-no-files-found: error
+          retention-days: 90
