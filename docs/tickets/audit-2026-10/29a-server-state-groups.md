@@ -37,7 +37,7 @@ that move into the groups).
 **Blocked by:** 27b and 28c (the seams this builds on: `Effects` and `ide::Session`),
 and 31 (`src/server.rs` lock). Runs alone.
 
-**Status:** ready-for-agent
+**Status:** done. Departures: an extra `Index` group (needed to reach 20 fields); `described_seen` in `Refresh`; the SHACL glue (`validate_shacl`, `shacl_outcome`, `shacl_gone`) stays in `src/server.rs` so no group reaches into server state.
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
