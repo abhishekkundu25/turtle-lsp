@@ -24,7 +24,7 @@
 //!   one) instead of one between statements.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::layout::{Doc, Ix};
+use crate::layout::{Blank, Doc, Groups, Ix, Obj, Po, Printer, Semicolons, Style, Term};
 use crate::syntax::lexer::{Kind, Token, tokenize};
 use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple, parse_with_base};
 use lsp_types::{FormattingOptions, Position, Range, TextEdit};
@@ -86,7 +86,7 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
         quads: parsed.syntax == Syntax::NQuads,
     }
     .document()?;
-    let out = Printer::new(&doc, opts, parsed.syntax).document(&items);
+    let out = Formatter::new(&doc, opts, parsed.syntax).document(&items);
 
     // Same starting base as the original, or relative IRIs would not match.
     let again = parse_with_base(
@@ -129,39 +129,6 @@ fn same_triples(a: &[Triple], b: &[Triple]) -> bool {
 
 // ---- concrete syntax tree ----
 
-enum Term {
-    /// Tokens printed without spaces: an IRI, a literal with its language tag
-    /// or datatype, `[]`, `()`, `a`, `~`.
-    Atom(Ix, Ix),
-    /// `[ pol ]` or `{| pol |}`.
-    List { open: Ix, pol: Vec<Po>, close: Ix },
-    /// `( items )`.
-    Coll {
-        open: Ix,
-        items: Vec<Obj>,
-        close: Ix,
-    },
-    /// `<< s p o ~ r >>` or `<<( s p o )>>`: always on one line.
-    Quoted {
-        open: Ix,
-        parts: Vec<Term>,
-        close: Ix,
-    },
-}
-
-struct Obj {
-    term: Term,
-    /// `~`, a reifier, `{| ... |}` blocks.
-    annots: Vec<Term>,
-    comma: Option<Ix>,
-}
-
-struct Po {
-    verb: Term,
-    objs: Vec<Obj>,
-    semis: Vec<Ix>,
-}
-
 enum Item {
     Directive {
         kw: Ix,
@@ -186,50 +153,6 @@ enum Item {
         body: Vec<Item>,
         close: Ix,
     },
-}
-
-impl Term {
-    fn first(&self) -> Ix {
-        match self {
-            Term::Atom(a, _) => *a,
-            Term::List { open, .. } | Term::Coll { open, .. } | Term::Quoted { open, .. } => *open,
-        }
-    }
-    fn last(&self) -> Ix {
-        match self {
-            Term::Atom(_, b) => *b,
-            Term::List { close, .. } | Term::Coll { close, .. } | Term::Quoted { close, .. } => {
-                *close
-            }
-        }
-    }
-    fn is_group(&self) -> bool {
-        matches!(self, Term::List { .. } | Term::Coll { .. })
-    }
-    /// Prints the same on one line in any context.
-    fn simple(&self) -> bool {
-        !self.is_group()
-    }
-    /// A group with nothing nested in it, or a simple term.
-    fn flat(&self) -> bool {
-        match self {
-            Term::List { pol, .. } => pol.iter().all(|po| po.objs.iter().all(Obj::simple)),
-            Term::Coll { items, .. } => items.iter().all(Obj::simple),
-            _ => true,
-        }
-    }
-}
-
-impl Obj {
-    fn simple(&self) -> bool {
-        self.term.simple() && self.annots.iter().all(Term::simple)
-    }
-    fn flat(&self) -> bool {
-        self.term.flat() && self.annots.iter().all(Term::flat)
-    }
-    fn last(&self) -> Ix {
-        self.annots.last().unwrap_or(&self.term).last()
-    }
 }
 
 impl Item {
@@ -592,370 +515,24 @@ impl Cst<'_> {
 
 // ---- printing ----
 
-/// Width of something that cannot go on one line.
-const BIG: usize = 1 << 24;
-
-struct Printer<'a> {
+/// The Turtle-family layout of the items, written through the shared printer.
+struct Formatter<'a> {
+    p: Printer<'a, Token>,
     d: &'a Doc<'a, Token>,
-    out: String,
-    nl: &'static str,
-    unit: String,
-    unit_w: usize,
-    width: usize,
-    col: usize,
-    level: usize,
-    line_start: usize,
-    has_content: bool,
-    /// The trailing comment to write at the end of the current line.
-    pending: Vec<u32>,
-    /// A trailing comment was queued: the next space becomes a line break.
-    must_break: bool,
-    /// The first token of the current item, whose comments are already out.
-    skip_lead: Option<Ix>,
     /// N-Triples and N-Quads: no blank line forced between statements.
     line_based: bool,
 }
 
-impl<'a> Printer<'a> {
-    fn new(d: &'a Doc<'a, Token>, o: &Options, syntax: Syntax) -> Printer<'a> {
-        let nl = match d.src.find('\n') {
-            Some(i) if i > 0 && d.src.as_bytes()[i - 1] == b'\r' => "\r\n",
-            _ => "\n",
+impl<'a> Formatter<'a> {
+    fn new(d: &'a Doc<'a, Token>, o: &Options, syntax: Syntax) -> Formatter<'a> {
+        let style = Style {
+            groups: Groups::FromTerm,
+            semicolons: Semicolons::Needed,
         };
-        let (unit, unit_w) = if o.insert_spaces {
-            (" ".repeat(o.tab_size as usize), o.tab_size as usize)
-        } else {
-            ("\t".to_string(), o.tab_size as usize)
-        };
-        Printer {
+        Formatter {
+            p: Printer::new(d, o, style),
             d,
-            out: String::with_capacity(d.src.len() + d.src.len() / 8),
-            nl,
-            unit,
-            unit_w,
-            width: o.line_width,
-            col: 0,
-            level: 0,
-            line_start: 0,
-            has_content: false,
-            pending: Vec::new(),
-            must_break: false,
-            skip_lead: None,
             line_based: syntax.is_line_based(),
-        }
-    }
-
-    // ---- low level ----
-
-    fn write(&mut self, s: &str) {
-        self.out.push_str(s);
-        match s.rfind('\n') {
-            Some(i) => self.col = s[i + 1..].chars().count(),
-            None => self.col += s.chars().count(),
-        }
-        self.has_content = true;
-    }
-
-    fn indent(&mut self, level: usize) {
-        for _ in 0..level {
-            self.out.push_str(&self.unit);
-        }
-        self.level = level;
-        self.col = level * self.unit_w;
-    }
-
-    fn flush(&mut self) {
-        // At most one: `one_pending` breaks the line before a second.
-        if let Some(c) = self.pending.pop() {
-            if self.has_content {
-                self.out.push(' ');
-            }
-            self.write(self.d.comment(c));
-        }
-    }
-
-    /// Ends the current line (unless it is still empty) and indents the next.
-    fn line(&mut self, level: usize) {
-        self.flush();
-        if self.has_content {
-            self.out.push_str(self.nl);
-        } else {
-            self.out.truncate(self.line_start);
-        }
-        self.line_start = self.out.len();
-        self.has_content = false;
-        self.must_break = false;
-        self.indent(level);
-    }
-
-    /// Starts an item (a top-level one, or a statement in a graph block) at
-    /// `level`, after a blank line if asked.
-    fn top_line(&mut self, level: usize, blank: bool) {
-        self.line(0);
-        if blank && !self.out.is_empty() {
-            self.out.push_str(self.nl);
-            self.line_start = self.out.len();
-        }
-        self.indent(level);
-    }
-
-    fn space(&mut self, level: usize) {
-        if self.must_break {
-            self.line(level);
-        } else {
-            self.out.push(' ');
-            self.col += 1;
-        }
-    }
-
-    /// Own-line comments above token `i`, each on its own line at `level`.
-    fn leading(&mut self, i: Ix, level: usize) {
-        let (a, b) = self.d.leading(i);
-        if a == b || self.skip_lead == Some(i) {
-            return;
-        }
-        self.line(level);
-        for c in a..b {
-            self.write(self.d.comment(c));
-            self.line(level);
-        }
-    }
-
-    fn after(&mut self, i: Ix) {
-        if let Some(c) = self.d.trail[i as usize] {
-            self.pending.push(c);
-            self.must_break = true;
-        }
-    }
-
-    /// A token that starts on a new line at `level` if it cannot stay on this one.
-    fn tok(&mut self, i: Ix, level: usize) {
-        self.leading(i, level);
-        if self.must_break {
-            self.line(level);
-        }
-        self.write(self.d.text(i));
-        self.after(i);
-    }
-
-    /// ` ;`, ` ,` or ` .` glued to what precedes it.
-    fn punct(&mut self, i: Ix, level: usize) {
-        self.leading(i, level);
-        self.one_pending(i, level);
-        if self.has_content {
-            self.out.push(' ');
-            self.col += 1;
-        }
-        self.write(self.d.text(i));
-        self.after(i);
-    }
-
-    /// A redundant `;`: left out, unless a comment hangs on it (moving that
-    /// comment elsewhere would not survive a second pass).
-    fn extra_semi(&mut self, i: Ix, level: usize) {
-        let (a, b) = self.d.leading(i);
-        if a < b || self.d.trail[i as usize].is_some() {
-            self.punct(i, level);
-        }
-    }
-
-    /// Two trailing comments cannot share a line: if `i` brings a second one,
-    /// it goes on a new line.
-    fn one_pending(&mut self, i: Ix, level: usize) {
-        if !self.pending.is_empty() && self.d.trail[i as usize].is_some() {
-            self.line(level);
-        }
-    }
-
-    // ---- widths ----
-
-    fn tok_w(&self, i: Ix) -> usize {
-        let s = self.d.text(i);
-        if s.contains('\n') {
-            BIG
-        } else {
-            s.chars().count()
-        }
-    }
-
-    fn term_w(&self, t: &Term) -> usize {
-        match t {
-            Term::Atom(a, b) => (*a..=*b).fold(0, |acc, i| acc.saturating_add(self.tok_w(i))),
-            Term::List { open, pol, close } => self
-                .tok_w(*open)
-                .saturating_add(self.pol_w(pol))
-                .saturating_add(self.tok_w(*close) + 2),
-            Term::Coll { open, items, close } => {
-                let inner = items
-                    .iter()
-                    .fold(0usize, |acc, o| acc.saturating_add(self.obj_w(o) + 1));
-                self.tok_w(*open)
-                    .saturating_add(inner)
-                    .saturating_add(self.tok_w(*close) + 1)
-            }
-            Term::Quoted { open, parts, close } => {
-                let inner = parts
-                    .iter()
-                    .fold(0usize, |acc, p| acc.saturating_add(self.term_w(p) + 1));
-                self.tok_w(*open)
-                    .saturating_add(inner)
-                    .saturating_add(self.tok_w(*close) + 1)
-            }
-        }
-    }
-
-    fn obj_w(&self, o: &Obj) -> usize {
-        o.annots.iter().fold(self.term_w(&o.term), |acc, a| {
-            acc.saturating_add(self.term_w(a) + 1)
-        })
-    }
-
-    /// Objects separated by ` , `.
-    fn objs_w(&self, objs: &[Obj]) -> usize {
-        let sum = objs
-            .iter()
-            .fold(0usize, |acc, o| acc.saturating_add(self.obj_w(o)));
-        sum.saturating_add(3 * objs.len().saturating_sub(1))
-    }
-
-    /// Pairs separated by ` ; `.
-    fn pol_w(&self, pol: &[Po]) -> usize {
-        let sum = pol.iter().fold(0usize, |acc, po| {
-            acc.saturating_add(self.term_w(&po.verb) + 1)
-                .saturating_add(self.objs_w(&po.objs))
-        });
-        sum.saturating_add(3 * pol.len().saturating_sub(1))
-    }
-
-    fn fits(&self, w: usize) -> bool {
-        self.col.saturating_add(w).saturating_add(2) <= self.width
-    }
-
-    // ---- layout ----
-
-    fn term(&mut self, t: &Term, level: usize, flat: bool) {
-        match t {
-            Term::Atom(a, b) => {
-                self.tok(*a, level);
-                for i in a + 1..=*b {
-                    self.tok(i, level + 1);
-                }
-            }
-            Term::Quoted { open, parts, close } => {
-                self.tok(*open, level);
-                for p in parts {
-                    self.space(level + 1);
-                    self.term(p, level + 1, true);
-                }
-                self.space(level + 1);
-                self.tok(*close, level);
-            }
-            Term::List { open, pol, close } => {
-                let inline = flat
-                    || (!self.d.comments_inside(*open, *close)
-                        && t.flat()
-                        && self.fits(self.term_w(t)));
-                self.tok(*open, level);
-                if inline {
-                    self.space(level + 1);
-                    self.pol(pol, level + 1, true);
-                    self.space(level);
-                } else {
-                    self.pol(pol, level + 1, false);
-                    self.line(level);
-                }
-                self.tok(*close, level);
-            }
-            Term::Coll { open, items, close } => {
-                let inline = flat
-                    || (!self.d.comments_inside(*open, *close)
-                        && t.flat()
-                        && self.fits(self.term_w(t)));
-                self.tok(*open, level);
-                for o in items {
-                    if inline {
-                        self.space(level + 1);
-                    } else {
-                        self.line(level + 1);
-                    }
-                    self.obj(o, level + 1, inline);
-                }
-                if inline {
-                    self.space(level);
-                } else {
-                    self.line(level);
-                }
-                self.tok(*close, level);
-            }
-        }
-    }
-
-    fn obj(&mut self, o: &Obj, level: usize, flat: bool) {
-        self.term(&o.term, level, flat);
-        for a in &o.annots {
-            self.space(level + 1);
-            self.term(a, level, flat);
-        }
-    }
-
-    /// Predicate-object pairs. Broken: every pair on its own line at `level`;
-    /// inline: separated by ` ; `.
-    fn pol(&mut self, pol: &[Po], level: usize, flat: bool) {
-        self.pol_from(pol, level, flat, false);
-    }
-
-    /// As [`Self::pol`]; `first_inline` keeps the first pair on the current line.
-    fn pol_from(&mut self, pol: &[Po], level: usize, flat: bool, first_inline: bool) {
-        for (k, po) in pol.iter().enumerate() {
-            if flat {
-                if k > 0 {
-                    self.space(level);
-                }
-            } else if k > 0 || !first_inline {
-                self.line(level);
-            }
-            self.term(&po.verb, level, flat);
-            self.space(level + 1);
-            self.objects(&po.objs, level, flat);
-            let last = k + 1 == pol.len();
-            for (m, s) in po.semis.iter().enumerate() {
-                if m == 0 && !last {
-                    self.punct(*s, level);
-                } else {
-                    self.extra_semi(*s, level);
-                }
-            }
-        }
-    }
-
-    fn objects(&mut self, objs: &[Obj], level: usize, flat: bool) {
-        // A single object lays itself out; several go on one line only when
-        // each of them fits there flat.
-        let inline = flat
-            || (objs.len() > 1
-                && !self
-                    .d
-                    .comments_inside(objs[0].term.first(), objs[objs.len() - 1].last())
-                && objs.iter().all(Obj::flat)
-                && self.fits(self.objs_w(objs)));
-        // Groups in a broken list follow each other as `] , [`; anything else
-        // goes on its own line one level in.
-        let mut at = level;
-        for (k, o) in objs.iter().enumerate() {
-            if k > 0 {
-                let prev = &objs[k - 1];
-                let chained = prev.term.is_group() && prev.annots.is_empty() && o.term.is_group();
-                if inline || chained {
-                    self.space(at + 1);
-                } else {
-                    at = level + 1;
-                    self.line(at);
-                }
-            }
-            self.obj(o, at, inline);
-            if let Some(c) = o.comma {
-                self.punct(c, at);
-            }
         }
     }
 
@@ -966,7 +543,7 @@ impl<'a> Printer<'a> {
             .filter_map(|it| match it {
                 Item::Directive {
                     kw, name: Some(n), ..
-                } => Some(self.tok_w(*kw) + 1 + self.tok_w(*n) + 1),
+                } => Some(self.d.width(*kw) + 1 + self.d.width(*n) + 1),
                 _ => None,
             })
             .max()
@@ -974,20 +551,19 @@ impl<'a> Printer<'a> {
         let mut prev: Option<&Item> = None;
         for &k in &order {
             let it = &items[k];
-            let first = it.first();
-            if let Some(p) = prev {
-                let both_directives =
-                    matches!(p, Item::Directive { .. }) && matches!(it, Item::Directive { .. });
-                let (a, b) = self.d.leading(first);
-                let author_blank = if a < b {
-                    self.d.comments[a as usize].blank_before
-                } else {
-                    self.d.blank_before[first as usize]
-                };
-                self.top_line(0, (!both_directives && !self.line_based) || author_blank);
-            }
-            self.item_leading(first, 0);
-            self.skip_lead = Some(first);
+            let blank = match prev {
+                None => Blank::No,
+                Some(p) => {
+                    let both_directives =
+                        matches!(p, Item::Directive { .. }) && matches!(it, Item::Directive { .. });
+                    if both_directives || self.line_based {
+                        Blank::Author
+                    } else {
+                        Blank::Forced
+                    }
+                }
+            };
+            self.p.start(0, it.first(), blank);
             match it {
                 Item::Directive {
                     kw,
@@ -995,23 +571,15 @@ impl<'a> Printer<'a> {
                     value,
                     dot,
                 } => {
-                    self.tok(*kw, 0);
-                    self.space(1);
+                    self.p.tok(*kw, 0);
+                    self.p.space(1);
                     if let Some(n) = name {
-                        self.tok(*n, 1);
-                        if self.must_break {
-                            self.line(1);
-                        } else {
-                            let pad = align.saturating_sub(self.col).max(1);
-                            for _ in 0..pad {
-                                self.out.push(' ');
-                            }
-                            self.col += pad;
-                        }
+                        self.p.tok(*n, 1);
+                        self.p.pad_to(align, 1);
                     }
-                    self.tok(*value, 1);
+                    self.p.tok(*value, 1);
                     if let Some(d) = dot {
-                        self.punct(*d, 0);
+                        self.p.punct(*d, 0);
                     }
                 }
                 Item::Triples { .. } => self.statement(it, 0),
@@ -1025,34 +593,7 @@ impl<'a> Printer<'a> {
             }
             prev = Some(it);
         }
-        // Comments after the last token.
-        let n = self.d.toks.len() as Ix;
-        let (a, b) = self.d.leading(n);
-        for c in a..b {
-            if c > a || prev.is_some() {
-                self.top_line(0, self.d.comments[c as usize].blank_before);
-            }
-            self.write(self.d.comment(c));
-        }
-        self.line(0);
-        self.out.truncate(self.line_start);
-        // `line` left the document ending in exactly one newline (or empty).
-        self.out
-    }
-
-    /// Own-line comments above an item at `level`, keeping single blank lines
-    /// between them and before the item.
-    fn item_leading(&mut self, first: Ix, level: usize) {
-        let (a, b) = self.d.leading(first);
-        for c in a..b {
-            if c > a {
-                self.top_line(level, self.d.comments[c as usize].blank_before);
-            }
-            self.write(self.d.comment(c));
-        }
-        if a < b {
-            self.top_line(level, self.d.blank_before[first as usize]);
-        }
+        self.p.finish()
     }
 
     /// A statement whose subject starts at `level` on the current line.
@@ -1066,48 +607,38 @@ impl<'a> Printer<'a> {
         else {
             return;
         };
-        self.term(subject, level, false);
+        self.p.term(subject, level, false);
         if !pol.is_empty() {
-            self.space(level + 1);
-            self.pol_from(pol, level + 1, false, true);
+            self.p.space(level + 1);
+            self.p.pol_from(pol, level + 1, false, true);
         }
         if let Some(g) = graph {
-            self.space(level + 1);
-            self.tok(*g, level + 1);
+            self.p.space(level + 1);
+            self.p.tok(*g, level + 1);
         }
         if let Some(d) = dot {
-            self.punct(*d, level);
+            self.p.punct(*d, level);
         }
     }
 
     /// A graph block starting on the current (top-level) line.
     fn graph(&mut self, kw: Option<Ix>, name: Option<&Term>, open: Ix, body: &[Item], close: Ix) {
         if let Some(k) = kw {
-            self.tok(k, 0);
-            self.space(1);
+            self.p.tok(k, 0);
+            self.p.space(1);
         }
         if let Some(n) = name {
-            self.term(n, 0, true);
-            self.space(1);
+            self.p.term(n, 0, true);
+            self.p.space(1);
         }
-        self.tok(open, 0);
+        self.p.tok(open, 0);
         for (k, it) in body.iter().enumerate() {
-            let first = it.first();
-            self.top_line(1, k > 0);
-            self.item_leading(first, 1);
-            self.skip_lead = Some(first);
+            let blank = if k > 0 { Blank::Forced } else { Blank::No };
+            self.p.start(1, it.first(), blank);
             self.statement(it, 1);
         }
         // Comments after the last statement stay inside the block.
-        let (a, b) = self.d.leading(close);
-        for c in a..b {
-            let blank = (c > a || !body.is_empty()) && self.d.comments[c as usize].blank_before;
-            self.top_line(1, blank);
-            self.write(self.d.comment(c));
-        }
-        self.skip_lead = Some(close);
-        self.line(0);
-        self.tok(close, 0);
+        self.p.close_group(close, 0, body.is_empty());
     }
 }
 

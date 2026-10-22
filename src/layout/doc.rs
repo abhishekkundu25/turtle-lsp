@@ -9,12 +9,15 @@
 //! Generic over [`LayoutToken`], with adapters for the Turtle-family tokens
 //! (`syntax::lexer::Token`) and the SPARQL tokens (`sparql::Token`).
 
-use crate::sparql::{Token as SparqlToken, TokenKind};
+use crate::sparql::{Token as SparqlToken, TokenKind, lexer as sparql_lexer};
 use crate::syntax::Span;
 use crate::syntax::lexer::{Kind, Token as RdfToken};
 
 /// The index of a token in [`Doc::toks`].
 pub(crate) type Ix = u32;
+
+/// Width of something that cannot go on one line.
+pub(crate) const BIG: usize = 1 << 24;
 
 /// What the token document needs from a token.
 pub(crate) trait LayoutToken: Copy {
@@ -27,6 +30,17 @@ pub(crate) trait LayoutToken: Copy {
     fn span(&self) -> Span;
 
     fn is_comment(&self) -> bool;
+
+    /// The token's text as the formatter writes it: the source text, apart
+    /// from SPARQL keywords (upper case), built-in function names (their
+    /// grammar spelling) and comments (trailing whitespace left out).
+    fn shown<'s>(&self, src: &'s str) -> &'s str;
+
+    /// The width of token text `text` on its line, in characters. The
+    /// Turtle-family formatter makes a multi-line token (a long string)
+    /// [`BIG`], so nothing shares a line with it; the SPARQL one counts its
+    /// first line.
+    fn width(text: &str) -> usize;
 }
 
 impl LayoutToken for RdfToken {
@@ -39,6 +53,18 @@ impl LayoutToken for RdfToken {
     fn is_comment(&self) -> bool {
         self.kind == Kind::Comment
     }
+
+    fn shown<'s>(&self, src: &'s str) -> &'s str {
+        self.text(src)
+    }
+
+    fn width(text: &str) -> usize {
+        if text.contains(Self::LINE_BREAKS) {
+            BIG
+        } else {
+            text.chars().count()
+        }
+    }
 }
 
 impl LayoutToken for SparqlToken {
@@ -50,6 +76,24 @@ impl LayoutToken for SparqlToken {
 
     fn is_comment(&self) -> bool {
         self.kind == TokenKind::Comment
+    }
+
+    fn shown<'s>(&self, src: &'s str) -> &'s str {
+        let s = self.text(src);
+        match self.kind {
+            TokenKind::Keyword => sparql_lexer::keyword(s).unwrap_or(s),
+            TokenKind::Function => sparql_lexer::function(s).unwrap_or(s),
+            TokenKind::Comment => s.trim_end(),
+            _ => s,
+        }
+    }
+
+    fn width(text: &str) -> usize {
+        text.split(Self::LINE_BREAKS)
+            .next()
+            .unwrap_or("")
+            .chars()
+            .count()
     }
 }
 
@@ -150,6 +194,16 @@ impl<'a, T: LayoutToken> Doc<'a, T> {
     pub(crate) fn text(&self, i: Ix) -> &'a str {
         let s = self.toks[i as usize].span();
         &self.src[s.start as usize..s.end as usize]
+    }
+
+    /// Token `i` as the formatter writes it ([`LayoutToken::shown`]).
+    pub(crate) fn shown(&self, i: Ix) -> &'a str {
+        self.toks[i as usize].shown(self.src)
+    }
+
+    /// The width of token `i` on its line ([`LayoutToken::width`]).
+    pub(crate) fn width(&self, i: Ix) -> usize {
+        T::width(self.text(i))
     }
 
     /// The text of comment `c`, trailing whitespace left out.
