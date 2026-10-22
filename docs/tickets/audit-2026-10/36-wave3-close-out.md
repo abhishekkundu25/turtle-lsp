@@ -37,7 +37,7 @@ reported with a reproduction, not fixed.
 **Blocked by:** every wave-3 ticket: 26a, 26b, 27a, 27b, 28a, 28b, 28c, 29a, 29b, 30,
 31, 32a, 32b, 33a, 33b, 33c, 34a, 34b, 35. Runs alone, last.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
