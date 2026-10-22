@@ -146,6 +146,20 @@ test("files that are not open get the diagnostics check reports", async (t) => {
   assert.ok(s.publications.every((p) => p.version == null))
 })
 
+test("an open file shows what check reports for it (one composer for editor and check)", async (t) => {
+  const dir = workspace(t)
+  const expected = check(dir)
+  const s = await session(t, dir, ON)
+  for (const name of ["data/broken.ttl", "data/undeclared.ttl", "data/typo.ttl", "queries/q.rq"]) {
+    const u = uri(dir, name)
+    const text = fs.readFileSync(path.join(dir, name), "utf8")
+    s.open(u, text, name.endsWith(".rq") ? "sparql" : "turtle")
+    await until(s, u, (_, p) => p.version === 1)
+    assert.ok(expected[name].length > 0, name)
+    assert.deepEqual(fromServer(latest(s, u).diagnostics), expected[name], name)
+  }
+})
+
 test("opening a file switches it to live diagnostics; closing hands it back", async (t) => {
   const dir = workspace(t)
   const s = await session(t, dir, ON)

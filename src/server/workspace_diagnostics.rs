@@ -4,8 +4,8 @@
 //!
 //! A pass diagnoses the closed files on one thread of its own (never the
 //! rayon pool the main loop parses with), one file at a time, with the
-//! functions `turtle-lsp check` uses ([`batch::rdf_diagnostics`],
-//! [`batch::sparql_diagnostics`]) plus the server's latest SHACL results.
+//! composer `turtle-lsp check` uses ([`diagnose::document`]), with the
+//! server's latest SHACL results.
 //! The thread keeps a copy of the knowledge index, brought up to date from
 //! the server's at the start of each pass (unchanged sources cost nothing).
 //!
@@ -34,8 +34,8 @@
 
 use super::Server;
 use crate::analysis::{Encoding, SparqlAnalysis};
-use crate::batch;
 use crate::clock::Instant;
+use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::shacl_validate;
 use crate::imports::Status;
 use crate::knowledge::{Knowledge, Source};
@@ -274,17 +274,19 @@ fn run(
         })
         .map_err(|_| ())
     };
-    let shacl = |uri: &str| job.shacl.get(uri).cloned().unwrap_or_default();
     for uri in &job.targets {
         if cancelled() {
             return Ok(());
         }
         let d = guarded(|| {
             let a = k.get(uri)?;
-            let mut d =
-                batch::rdf_diagnostics(a, k, job.enc, &job.settings, |iri| job.imports.get(iri));
-            d.extend(shacl(uri));
-            Some(d)
+            let status = |iri: &str| job.imports.get(iri);
+            let inputs = DiagnosticInputs {
+                import_status: &status,
+                shacl: job.shacl.get(uri).map_or(&[], Vec::as_slice),
+                ..DiagnosticInputs::new(&job.settings)
+            };
+            Some(diagnose::document(Doc::Rdf(a), k, job.enc, &inputs))
         });
         if let Some(d) = d {
             chunk.push((uri.clone(), d));
@@ -330,7 +332,8 @@ fn sparql_file(
     let text = std::fs::read_to_string(path).ok()?;
     let external = prefixes.external_prefixes_for(uri);
     let q = SparqlAnalysis::new(uri.to_string(), &text, external);
-    Some(batch::sparql_diagnostics(&q, k, job.enc, &job.settings))
+    let inputs = DiagnosticInputs::new(&job.settings);
+    Some(diagnose::document(Doc::Sparql(&q), k, job.enc, &inputs))
 }
 
 /// `f`, with a panic turned into an internal-error diagnostic.
@@ -401,7 +404,8 @@ impl Server {
             text.map(|text| {
                 let external = self.ws.external_prefixes_for(uri);
                 let q = SparqlAnalysis::new(uri.to_string(), &text, external);
-                batch::sparql_diagnostics(&q, self.ws.knowledge(), self.enc, &self.settings)
+                let inputs = DiagnosticInputs::new(&self.settings);
+                diagnose::document(Doc::Sparql(&q), self.ws.knowledge(), self.enc, &inputs)
             })
         } else {
             None

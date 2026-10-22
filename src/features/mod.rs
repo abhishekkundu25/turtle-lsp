@@ -9,6 +9,7 @@ pub mod lens;
 pub mod lint;
 pub mod literals;
 pub mod navigation;
+pub mod quickfix;
 pub mod refactor;
 pub mod semantic;
 pub mod shacl_lint;

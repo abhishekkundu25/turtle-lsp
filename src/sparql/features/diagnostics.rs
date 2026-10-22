@@ -5,10 +5,9 @@
 //! (`features::diagnostics` and `features::lint`).
 
 use crate::analysis::{Encoding, SparqlAnalysis};
-use crate::features::diagnostics::{
-    Options, PrefixCandidate, SOURCE, TermUse, add_prefix_note, prefix_candidates, vocabulary_terms,
-};
+use crate::features::diagnostics::{Options, SOURCE, TermUse, vocabulary_terms};
 use crate::features::lint;
+use crate::features::quickfix::{PrefixCandidate, add_prefix_note, prefix_candidates};
 use crate::knowledge::Knowledge;
 use crate::sparql::{Form, Level};
 use crate::syntax::Span;

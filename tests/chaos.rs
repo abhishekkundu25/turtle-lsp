@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 use turtle_lsp::analysis::{Analysis, Encoding, SparqlAnalysis};
 use turtle_lsp::features::hierarchy;
 use turtle_lsp::features::{
-    completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, symbols,
+    completion, diagnostics, format, hover, inlay, navigation, quickfix, refactor, semantic,
+    symbols,
 };
 use turtle_lsp::imports;
 use turtle_lsp::knowledge::{Knowledge, Source};
@@ -517,14 +518,14 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         for d in imports::diagnostics_with(&a, enc, |_| Some(&unresolved)) {
             assert!(d.range.start <= d.range.end, "bad import diagnostic range");
         }
-        let _ = symbols::document_symbols(&a, text, enc);
+        let _ = symbols::document_symbols(&a, enc);
         let _ = symbols::folding_ranges(&a);
         let _ = symbols::workspace_symbols(docs, enc, "a");
         tokens_are_well_formed(text, enc, &semantic::full(&a, docs, enc).data);
         for _ in 0..4 {
             let off = pick_offset(rng, text);
             let pos: Position = a.position(enc, off);
-            let _ = completion::complete(&a, text, docs, enc, pos);
+            let _ = completion::complete(&a, docs, enc, pos);
             let _ = hover::hover(&a, docs, enc, pos);
             let _ = navigation::definition(&a, docs, enc, pos, None);
             let _ = navigation::type_definition(&a, docs, enc, pos);
@@ -548,7 +549,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
                 pos.line + rng.below(3) as u32,
                 pos.character + rng.below(200) as u32,
             );
-            let _ = completion::complete(&a, text, docs, enc, wild);
+            let _ = completion::complete(&a, docs, enc, wild);
             let _ = hover::hover(&a, docs, enc, wild);
             let (from, to) = if rng.below(2) == 0 {
                 (pos, wild)
@@ -665,10 +666,9 @@ fn code_actions_keep_the_graph(
         diagnostics: diagnostics::diagnostics(a, k, enc),
         ..Default::default()
     };
-    let _ = diagnostics::code_actions(
+    let _ = quickfix::code_actions(
         a,
         k,
-        text,
         enc,
         &CodeActionParams {
             context,

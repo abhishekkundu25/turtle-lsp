@@ -98,9 +98,14 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
         }
     }
 
+    let format = a.format.unwrap_or(Format::Concise);
+    // Only the machine-readable reports carry fixes; the others, and the
+    // statistics, never show them. `--fix` finds its own.
+    let shows_fixes = !a.statistics && matches!(format, Format::Json | Format::Sarif);
     let opts = Options {
         shacl: !a.no_shacl,
         columns: Columns::CodePoints,
+        fixes: shows_fixes,
     };
     let report = batch::analyse_on_disk(&batch, &settings, &opts, &disk);
 
@@ -197,7 +202,6 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
             .collect()
     };
 
-    let format = a.format.unwrap_or(Format::Concise);
     let write = |out: &mut dyn Write| -> std::io::Result<()> {
         if a.statistics {
             output::statistics(&view(true), out)?;

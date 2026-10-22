@@ -14,7 +14,7 @@
 //! | [`imports`] | `owl:imports` resolution and the import cache | [`server`], [`cli`] |
 //! | [`fetch`] | Network fetching and its limits (stub) | [`imports`], [`jsonld`] |
 //! | [`features`] | Completion, hover, diagnostics, formatting and the other editor features | [`server`], [`batch`] |
-//! | [`diagnose`] | The diagnostics composer (stub) | [`server`], [`batch`] |
+//! | [`diagnose`] | The diagnostics composer: one document's diagnostics, the same for the editor and `check` | [`server`], [`batch`] |
 //! | [`shacl`] | Shapes, SHACL Core and SHACL-SPARQL validation | [`features`] |
 //! | [`rdf`] | The union of documents' triples as a graph and a SPARQL dataset | [`query`], [`shacl`] |
 //! | [`query`] | Running SPARQL queries and rendering results | [`cli`], [`server`], the browser engine |

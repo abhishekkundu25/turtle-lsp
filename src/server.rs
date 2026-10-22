@@ -30,10 +30,11 @@
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::clock::Instant;
+use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::hierarchy;
 use crate::features::{
-    completion, diagnostics, embedded, format, hover, inlay, navigation, refactor, semantic,
-    shacl_validate, symbols,
+    completion, diagnostics, embedded, format, hover, inlay, navigation, quickfix, refactor,
+    semantic, shacl_validate, symbols,
 };
 use crate::settings::{Layer, SETTINGS_FILE, Settings, read_settings_file};
 use crate::sparql::features as sparql_features;
@@ -1489,43 +1490,29 @@ impl Server {
 
     /// Diagnostics for `uri`, or the panic message if computing them failed.
     fn diagnostics_for(&mut self, uri: &str) -> Result<Option<Vec<Diagnostic>>, String> {
-        // A cached copy of an import is read-only: nothing to fix there.
-        if self.ws.is_cached_import(uri) {
-            return Ok(Some(Vec::new()));
-        }
+        let cached_import = self.ws.is_cached_import(uri);
         let enc = self.enc;
-        let indexed = self.indexed;
-        let opts = diagnostics::Options::from_settings(&self.settings);
-        if self.ws.is_sparql(uri) {
-            return guard("diagnostics", || {
-                self.ws.sparql(uri).map(|q| {
-                    let mut d = sparql_features::diagnostics::diagnostics(
-                        &q,
-                        self.ws.knowledge(),
-                        enc,
-                        &opts,
-                    );
-                    if !indexed {
-                        d.retain(|d| !diagnostics::needs_index(d));
-                    }
-                    d
-                })
-            });
-        }
+        let sparql = self.ws.is_sparql(uri);
         guard("diagnostics", || {
-            self.ws.analysis(uri).map(|a| {
-                let mut d = diagnostics::diagnostics_with(&a, self.ws.knowledge(), enc, &opts);
-                // "Known nowhere" findings wait for the initial index.
-                if !indexed {
-                    d.retain(|d| !diagnostics::needs_index(d));
-                }
-                d.extend(self.imports.diagnostics(&a, enc));
-                if let Some(shacl) = self.shacl_diagnostics.get(uri) {
-                    d.extend(shacl.iter().cloned());
-                }
-                d
-            })
+            let status = |iri: &str| self.imports.statuses().get(iri);
+            let inputs = DiagnosticInputs {
+                import_status: &status,
+                shacl: self.shacl_diagnostics.get(uri).map_or(&[], Vec::as_slice),
+                indexed: self.indexed,
+                cached_import,
+                ..DiagnosticInputs::new(&self.settings)
+            };
+            if sparql {
+                let q = self.ws.sparql(uri);
+                return q.map(|q| {
+                    diagnose::document(Doc::Sparql(&q), self.ws.knowledge(), enc, &inputs)
+                });
+            }
+            let a = self.ws.analysis(uri);
+            a.map(|a| diagnose::document(Doc::Rdf(&a), self.ws.knowledge(), enc, &inputs))
         })
+        // A cached copy of an import is read-only: nothing to fix there.
+        .map(|d| d.or_else(|| cached_import.then(Vec::new)))
     }
 
     fn publish_dirty(&mut self) {
@@ -1703,10 +1690,8 @@ impl Server {
                 {
                     return ok(Value::Null);
                 }
-                let text = a.text.clone();
                 json(serde_json::to_value(completion::complete(
                     &a,
-                    &text,
                     self.ws.knowledge(),
                     enc,
                     p.text_document_position.position,
@@ -1889,7 +1874,7 @@ impl Server {
                 let p = params!(DocumentSymbolParams);
                 json(serde_json::to_value(DocumentSymbolResponse::Nested(
                     match open!(p.text_document.uri) {
-                        Open::Rdf(_, a) => symbols::document_symbols(&a, &a.text, enc),
+                        Open::Rdf(_, a) => symbols::document_symbols(&a, enc),
                         Open::Sparql(_, q) => sparql_features::document_symbols(&q, enc),
                     },
                 )))
@@ -1925,18 +1910,16 @@ impl Server {
                         )));
                     }
                 };
-                let text = a.text.clone();
                 let only = p.context.only.as_deref();
-                let mut actions: Vec<_> =
-                    diagnostics::code_actions(&a, self.ws.knowledge(), &text, enc, &p)
-                        .into_iter()
-                        .filter(|c| match c {
-                            CodeActionOrCommand::CodeAction(c) => {
-                                c.kind.as_ref().is_none_or(|k| refactor::wanted(only, k))
-                            }
-                            CodeActionOrCommand::Command(_) => true,
-                        })
-                        .collect();
+                let mut actions: Vec<_> = quickfix::code_actions(&a, self.ws.knowledge(), enc, &p)
+                    .into_iter()
+                    .filter(|c| match c {
+                        CodeActionOrCommand::CodeAction(c) => {
+                            c.kind.as_ref().is_none_or(|k| refactor::wanted(only, k))
+                        }
+                        CodeActionOrCommand::Command(_) => true,
+                    })
+                    .collect();
                 actions.extend(refactor::code_actions(&a, enc, &p, self.resolve_edits));
                 actions.extend(crate::imports::fetch_actions(&a, enc, &p));
                 json(serde_json::to_value(actions))

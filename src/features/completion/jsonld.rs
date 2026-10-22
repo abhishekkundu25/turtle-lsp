@@ -71,12 +71,12 @@ struct Cursor {
 
 pub(super) fn complete(
     a: &Analysis,
-    text: &str,
     k: &Knowledge,
     enc: Encoding,
     offset: usize,
 ) -> CompletionResponse {
     let empty = CompletionResponse::Array(vec![]);
+    let text: &str = &a.text;
     let index = &a.source_index;
     let scope = index.scope_at(offset as u32);
     let initial;

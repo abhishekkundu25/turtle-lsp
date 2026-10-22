@@ -33,7 +33,8 @@ fn written(text: &str, span: Span) -> &str {
 }
 
 #[allow(deprecated)]
-pub fn document_symbols(a: &Analysis, text: &str, enc: Encoding) -> Vec<DocumentSymbol> {
+pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
+    let text: &str = &a.text;
     let mut out = Vec::new();
     if !a.parsed.prefixes.is_empty() {
         let first = a.parsed.prefixes.first().unwrap().span;
@@ -437,7 +438,7 @@ mod tests {
         let a = analysis("file:///t/big.trig", &text);
         assert_eq!(a.parsed.graphs.len(), 20_000);
         let start = std::time::Instant::now();
-        let out = document_symbols(&a, &text, Encoding::Utf16);
+        let out = document_symbols(&a, Encoding::Utf16);
         let took = start.elapsed();
         assert_eq!(out.len(), 20_000);
         assert_eq!(out[7].children.as_ref().map(Vec::len), Some(1));

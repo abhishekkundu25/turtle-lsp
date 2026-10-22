@@ -21,6 +21,7 @@ pub fn run(a: FormatArgs) -> Result<i32, String> {
     let opts = Options {
         shacl: false,
         columns: Columns::CodePoints,
+        fixes: false,
     };
     let report = batch::analyse_on_disk(&batch, &settings, &opts, &disk);
 

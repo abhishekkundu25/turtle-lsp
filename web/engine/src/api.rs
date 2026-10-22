@@ -142,6 +142,7 @@ fn options() -> batch::Options {
     batch::Options {
         shacl: true,
         columns: Columns::Utf16,
+        fixes: true,
     }
 }
 

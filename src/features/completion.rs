@@ -83,13 +83,7 @@ impl Candidate {
 /// `@prefix` (Turtle, TriG) or `PREFIX` (SPARQL).
 pub(crate) type Directive = &'static str;
 
-pub fn complete(
-    a: &Analysis,
-    text: &str,
-    k: &Knowledge,
-    enc: Encoding,
-    pos: Position,
-) -> CompletionResponse {
+pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> CompletionResponse {
     // Everything offered here is a prefixed name or a keyword, none of which
     // N-Triples or N-Quads allows.
     if a.parsed.syntax.is_line_based() {
@@ -100,7 +94,7 @@ pub fn complete(
     };
     let offset = offset as usize;
     if a.parsed.syntax == Syntax::JsonLd {
-        return jsonld::complete(a, text, k, enc, offset);
+        return jsonld::complete(a, k, enc, offset);
     }
     if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {
         return r;
@@ -112,6 +106,7 @@ pub fn complete(
     if i > 0 && t[i - 1].kind == Kind::String && offset < t[i - 1].end as usize {
         return CompletionResponse::Array(vec![]);
     }
+    let text: &str = &a.text;
     let start = word_start(text, offset);
     let end = word_end(text, offset);
     let typed = &text[start..offset];
@@ -738,7 +733,7 @@ mod tests {
         k.set("file:///w/shapes.ttl", Source::Open, a.clone());
         let offset = (text.find(needle).unwrap() + needle.len()) as u32;
         let pos = a.position(Encoding::Utf16, offset);
-        let items = match complete(&a, text, &k, Encoding::Utf16, pos) {
+        let items = match complete(&a, &k, Encoding::Utf16, pos) {
             CompletionResponse::Array(items) => items,
             CompletionResponse::List(l) => l.items,
         };
@@ -765,7 +760,7 @@ mod tests {
         k.set("file:///w/doc.ttl", Source::Open, a.clone());
         let offset = (text.find(needle).unwrap() + needle.len()) as u32;
         let pos = a.position(Encoding::Utf16, offset);
-        match complete(&a, text, &k, Encoding::Utf16, pos) {
+        match complete(&a, &k, Encoding::Utf16, pos) {
             CompletionResponse::Array(items) => items,
             CompletionResponse::List(l) => l.items,
         }
@@ -852,8 +847,7 @@ mod tests {
         );
         let offset = (text.find("foaf:na").unwrap() + 7) as u32;
         let pos = a.position(Encoding::Utf16, offset);
-        let CompletionResponse::List(l) =
-            complete(&a, text, &Knowledge::default(), Encoding::Utf16, pos)
+        let CompletionResponse::List(l) = complete(&a, &Knowledge::default(), Encoding::Utf16, pos)
         else {
             panic!()
         };

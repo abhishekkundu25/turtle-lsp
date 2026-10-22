@@ -555,6 +555,37 @@ test("check --format sarif: URIs are percent-encoded; a file outside the root is
   assert.match(abs.uri, /out%20side%231\.ttl$/)
 })
 
+test("check: 20,000 undeclared uses are counted in under a second; --format json still carries their fixes", (t) => {
+  let text = ""
+  for (let i = 0; i < 20000; i++) text += `<http://x/s${i}> foaf:name "n${i}" .\n`
+  const ws = workspace(t, { "big.ttl": text })
+  const started = Date.now()
+  const stats = run(ws, ["check", "--statistics"])
+  const elapsed = Date.now() - started
+  assert.equal(stats.code, 1)
+  assert.deepEqual(stats.lines, ["  20000  undeclared-prefix", "  20000  total"])
+  assert.ok(elapsed < 1000, `took ${elapsed} ms`)
+
+  // Nine megabytes: past what the helper's pipe holds, so to a file.
+  run(ws, ["check", "--format", "json", "--output-file", "report.json"])
+  const report = JSON.parse(read(ws, "report.json"))
+  const problems = report.files[0].diagnostics
+  assert.equal(problems.length, 20000)
+  assert.match(problems[19999].fixes[0].title, /^Add @prefix foaf:/)
+  // The fix's edit is the one declaration, above the first use.
+  assert.deepEqual(problems[0].fixes[0].edits[0].range, { start: { line: 1, column: 1 }, end: { line: 1, column: 1 } })
+})
+
+test("check --fix: CRLF text with a fix after its last line break keeps every line ending", (t) => {
+  const ws = workspace(t, { "a.ttl": '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\r\n<http://x/a> rdfs:labl "a" ;\r\n  foaf:name "b" .\r\n' })
+  const r = run(ws, ["check", "--fix", "--unsafe-fixes"])
+  assert.equal(r.code, 0, r.err)
+  const fixed = read(ws, "a.ttl")
+  assert.equal(fixed.split("\n").length - 1, fixed.split("\r\n").length - 1, JSON.stringify(fixed))
+  assert.match(fixed, /rdfs:label "a"/)
+  assert.match(fixed, /@prefix foaf: <http:\/\/xmlns\.com\/foaf\/0\.1\/> \.\r\n/)
+})
+
 test("check: --select and --ignore accept only codes turtle-lsp reports", (t) => {
   const ws = workspace(t, { "a.ttl": BROKEN })
   for (const flag of ["--select", "--ignore"]) {

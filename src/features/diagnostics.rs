@@ -1,15 +1,16 @@
-//! Diagnostics and the quick fixes attached to them.
+//! The diagnostics of one RDF document. The quick fixes for them are in
+//! [`super::quickfix`], which also owns the data a diagnostic carries for its
+//! fix; [`crate::diagnose`] composes these with the other sources.
 
+use super::quickfix::{FixData, PrefixCandidate, add_prefix_note, prefix_candidates};
 use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
-use crate::syntax::names::{declaration_edit, declarations_edit, newline};
 use crate::syntax::{Form, Severity, Syntax};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
 use rustc_hash::FxHashMap;
-use serde_json::{Value, json};
 
 pub const SOURCE: &str = "turtle";
 
@@ -20,65 +21,6 @@ pub const NEEDS_INDEX: &[&str] = crate::features::shacl_lint::NEEDS_INDEX;
 pub fn needs_index(d: &Diagnostic) -> bool {
     matches!(&d.code, Some(NumberOrString::String(c))
         if NEEDS_INDEX.contains(&c.as_str()) || c == crate::features::lint::CODE)
-}
-
-/// A namespace to bind an undeclared prefix name to.
-pub struct PrefixCandidate {
-    pub namespace: String,
-    /// Workspace files that bind the name to it (0 for a well-known one the
-    /// project does not use).
-    pub files: u32,
-}
-
-/// Namespaces for prefix `name`, best first: the project's most common
-/// binding, then the well-known vocabulary's if different.
-pub fn prefix_candidates(name: &str, k: &Knowledge) -> Vec<PrefixCandidate> {
-    // The empty prefix is file-local by convention: no project binding for it.
-    let project = if name.is_empty() {
-        vec![]
-    } else {
-        k.bindings(name)
-    };
-    let mut out: Vec<PrefixCandidate> = project
-        .into_iter()
-        .take(1)
-        .map(|(ns, files)| PrefixCandidate {
-            namespace: ns.to_string(),
-            files,
-        })
-        .collect();
-    if let Some(v) = VOCABS.by_prefix(name)
-        && !out.iter().any(|c| c.namespace == v.namespace)
-    {
-        out.push(PrefixCandidate {
-            namespace: v.namespace.to_string(),
-            files: 0,
-        });
-    }
-    out
-}
-
-/// Completes an `undeclared-prefix` diagnostic for prefix `name`: names the
-/// best namespace in the message as a declaration in the document's syntax
-/// (`keyword` is `@prefix` or `PREFIX`), and keeps every candidate in its
-/// `data` (`prefix`, `namespace`, `candidates`) for the quick fixes; or
-/// says where to declare it when nothing is known.
-pub fn add_prefix_note(d: &mut Diagnostic, name: &str, cands: &[PrefixCandidate], keyword: &str) {
-    let Some(first) = cands.first() else {
-        d.message
-            .push_str(". Declare it, or add it to a prefixes.ttl in the project");
-        return;
-    };
-    d.message
-        .push_str(&format!(" (add {keyword} {name}: <{}>)", first.namespace));
-    d.data = Some(json!({
-        "prefix": name,
-        "namespace": first.namespace,
-        "candidates": cands
-            .iter()
-            .map(|c| json!({ "namespace": c.namespace, "files": c.files }))
-            .collect::<Vec<_>>(),
-    }));
 }
 
 /// One written occurrence of an IRI (never `a`), for the knowledge lints
@@ -151,7 +93,10 @@ pub fn vocabulary_terms<'a, K>(
                         (None, Some(written)) => bare_replacement(&u.iri, written, v.namespace, s),
                         (None, None) => format!("<{}{s}>", v.namespace),
                     };
-                    d.data = Some(json!({ "replace": replacement }));
+                    FixData::Replace {
+                        replace: replacement,
+                    }
+                    .attach(&mut d);
                 }
                 d.message = msg;
                 out.push(d);
@@ -169,21 +114,6 @@ fn bare_replacement(iri: &str, written: &str, namespace: &str, local: &str) -> S
         .and_then(|implied| target.strip_prefix(implied))
         .filter(|r| !r.is_empty())
         .map_or_else(|| target.clone(), str::to_string)
-}
-
-/// The title of the quick fix that adds candidate `c` (an `undeclared-prefix`
-/// `data.candidates` entry) for `prefix`, with `keyword` `@prefix` or
-/// `PREFIX`, and its namespace.
-pub fn candidate_title(prefix: &str, c: &Value, keyword: &str) -> Option<(String, String)> {
-    let ns = c["namespace"].as_str()?;
-    let files = c["files"].as_u64().unwrap_or(0);
-    let mut title = format!("Add {keyword} {prefix}: <{ns}>");
-    match files {
-        0 => {}
-        1 => title.push_str(" (used in 1 file)"),
-        n => title.push_str(&format!(" (used in {n} files)")),
-    }
-    Some((title, ns.to_string()))
 }
 
 /// Which optional diagnostics to compute (from the client's settings).
@@ -342,7 +272,11 @@ pub fn diagnostics_with(
                     "'{word}' is not defined in the @context, so '{written}' is an IRI with scheme '{word}:'"
                 ),
             );
-            d.data = Some(json!({ "prefix": word, "namespace": ns }));
+            FixData::UndefinedPrefix {
+                prefix: word.to_string(),
+                namespace: ns.clone(),
+            }
+            .attach(&mut d);
             out.push(d);
         }
         // A term of the context at its definition; anything else as written.
@@ -402,266 +336,6 @@ pub fn diagnostics_with(
         out.extend(crate::features::lint::undescribed_terms(a, k, enc));
     }
     out
-}
-
-/// Quick fixes for the diagnostics above, plus "add all missing prefixes".
-pub fn code_actions(
-    a: &Analysis,
-    k: &Knowledge,
-    text: &str,
-    enc: Encoding,
-    params: &CodeActionParams,
-) -> Vec<CodeActionOrCommand> {
-    let uri = params.text_document.uri.clone();
-    let mut actions = Vec::new();
-    let edit = |edits: Vec<TextEdit>| {
-        let mut changes = std::collections::HashMap::new();
-        changes.insert(uri.clone(), edits);
-        Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        })
-    };
-    let mut missing: Vec<String> = Vec::new();
-    for d in &params.context.diagnostics {
-        if d.source.as_deref() != Some(SOURCE) {
-            continue;
-        }
-        let code = match &d.code {
-            Some(NumberOrString::String(c)) => c.as_str(),
-            _ => continue,
-        };
-        let data = d.data.as_ref();
-        match code {
-            "undeclared-prefix" => {
-                let Some(p) = data.and_then(|x| x["prefix"].as_str()) else {
-                    continue;
-                };
-                if missing.iter().any(|q| q == p) {
-                    continue;
-                }
-                missing.push(p.to_string());
-                let at = a.offset(enc, d.range.start).unwrap_or(u32::MAX);
-                // Older diagnostics carry one namespace and no candidate list.
-                let single = data.map(|x| vec![json!({ "namespace": x["namespace"] })]);
-                let cands = match data.map(|x| &x["candidates"]) {
-                    Some(Value::Array(c)) => c.clone(),
-                    _ => single.unwrap_or_default(),
-                };
-                for (i, c) in cands.iter().enumerate() {
-                    let Some((title, ns)) = candidate_title(p, c, "@prefix") else {
-                        continue;
-                    };
-                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                        title,
-                        kind: Some(CodeActionKind::QUICKFIX),
-                        diagnostics: Some(vec![d.clone()]),
-                        edit: edit(vec![declaration_edit(a, enc, p, &ns, at)]),
-                        is_preferred: Some(i == 0),
-                        ..Default::default()
-                    }));
-                }
-                for c in &cands {
-                    let Some(ns) = c["namespace"].as_str() else {
-                        continue;
-                    };
-                    let Some((onto, insert)) = import_insertion(a, k, text, enc, ns) else {
-                        continue;
-                    };
-                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                        title: format!("Add prefix '{p}:' and import <{onto}>"),
-                        kind: Some(CodeActionKind::QUICKFIX),
-                        diagnostics: Some(vec![d.clone()]),
-                        edit: edit(vec![declaration_edit(a, enc, p, ns, at), insert]),
-                        is_preferred: Some(false),
-                        ..Default::default()
-                    }));
-                }
-            }
-            jsonld::lint::UNDEFINED_PREFIX => {
-                let (Some(p), Some(ns)) = (
-                    data.and_then(|x| x["prefix"].as_str()),
-                    data.and_then(|x| x["namespace"].as_str()),
-                ) else {
-                    continue;
-                };
-                let Some(offset) = a.offset(enc, d.range.start) else {
-                    continue;
-                };
-                if missing.iter().any(|q| q == p) {
-                    continue;
-                }
-                missing.push(p.to_string());
-                let member = format!("{}: {}", json!(p), json!(ns));
-                let (at, del, new_text) =
-                    jsonld::context_edit::add_member(text, offset as usize, &member);
-                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: format!("Add {member} to the @context"),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: Some(vec![d.clone()]),
-                    edit: edit(vec![TextEdit {
-                        range: a.range(enc, crate::syntax::Span::new(at as u32, (at + del) as u32)),
-                        new_text,
-                    }]),
-                    is_preferred: Some(true),
-                    ..Default::default()
-                }));
-            }
-            "unused-prefix" | "duplicate-prefix" => {
-                let title = if code == "unused-prefix" {
-                    "Remove unused prefix"
-                } else {
-                    "Remove duplicate prefix"
-                };
-                let start = a.offset(enc, d.range.start).unwrap_or(0);
-                let end = a.offset(enc, d.range.end).unwrap_or(0);
-                let span = removal(text, crate::syntax::Span::new(start, end));
-                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: title.to_string(),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: Some(vec![d.clone()]),
-                    edit: edit(vec![TextEdit {
-                        range: a.range(enc, span),
-                        new_text: String::new(),
-                    }]),
-                    is_preferred: Some(true),
-                    ..Default::default()
-                }));
-            }
-            "unknown-term" | crate::features::lint::CODE => {
-                let Some(rep) = data.and_then(|x| x["replace"].as_str()) else {
-                    continue;
-                };
-                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: format!("Change to '{rep}'"),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: Some(vec![d.clone()]),
-                    edit: edit(vec![TextEdit {
-                        range: d.range,
-                        new_text: rep.to_string(),
-                    }]),
-                    is_preferred: Some(true),
-                    ..Default::default()
-                }));
-            }
-            _ => {}
-        }
-    }
-    // Offer "add all" whenever the file has more than one fixable undeclared
-    // prefix; N-Triples and N-Quads have no prefixes to add.
-    if !a.parsed.syntax.has_prefixes() {
-        return actions;
-    }
-    let mut all: Vec<(String, String)> = Vec::new();
-    for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {
-        if !all.iter().any(|(p, _)| *p == u.name)
-            && let Some(c) = prefix_candidates(&u.name, k).into_iter().next()
-        {
-            all.push((u.name.to_string(), c.namespace));
-        }
-    }
-    if all.len() > 1 {
-        let decls: Vec<(&str, &str)> = all.iter().map(|(p, ns)| (&**p, &**ns)).collect();
-        let edits = vec![declarations_edit(a, enc, &decls, u32::MAX)];
-        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-            title: format!("Add all missing prefixes ({})", all.len()),
-            kind: Some(CodeActionKind::QUICKFIX),
-            edit: edit(edits),
-            ..Default::default()
-        }));
-    }
-    actions
-}
-
-/// What removing the directive at `span` deletes: its whole line(s) when it
-/// is alone on them, else just the directive.
-pub fn removal(text: &str, span: crate::syntax::Span) -> crate::syntax::Span {
-    let (start, end) = (span.start as usize, span.end as usize);
-    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
-    let line_end = text[end..].find('\n').map_or(text.len(), |i| end + i + 1);
-    let alone = text[line_start..start].trim().is_empty() && text[end..line_end].trim().is_empty();
-    if alone {
-        crate::syntax::Span::new(line_start as u32, line_end as u32)
-    } else {
-        span
-    }
-}
-
-const OWL: &str = "http://www.w3.org/2002/07/owl#";
-
-/// For a namespace described by an ontology in the workspace or an import
-/// (never a well-known vocabulary), the edit that makes this document's
-/// ontology import it: `<subject> owl:imports <ontology> .` after the
-/// ontology's statement. `None` when the document is no ontology, already
-/// imports it, or is that ontology's own source.
-fn import_insertion(
-    a: &Analysis,
-    k: &Knowledge,
-    text: &str,
-    enc: Encoding,
-    ns: &str,
-) -> Option<(String, TextEdit)> {
-    if VOCABS.by_namespace(ns).is_some() {
-        return None;
-    }
-    let ontology = crate::syntax::Iri::get(crate::knowledge::OWL_ONTOLOGY)?;
-    let imports = crate::syntax::Iri::get(crate::imports::OWL_IMPORTS);
-    // The document's ontology and its first statement ending in '.'.
-    let (subject, stmt) = a.parsed.statements.iter().find_map(|st| {
-        let (s, _) = st.subject.as_ref()?;
-        let typed = a.types.get(s).is_some_and(|t| t.contains(&ontology));
-        let closed = text[..st.span.end as usize].ends_with('.');
-        (typed && closed && st.span.end > st.span.start).then_some((*s, st))
-    })?;
-    let imported = |o: crate::syntax::Iri| {
-        a.parsed.triples.iter().any(|t| {
-            Some(t.p) == imports
-                && t.s == crate::syntax::Node::Iri(subject)
-                && t.o == crate::syntax::Node::Iri(o)
-        })
-    };
-    let (onto, _) = k
-        .ontologies_describing(ns)
-        .into_iter()
-        .find(|(o, uri)| *uri != a.uri && *o != subject)?;
-    if imported(onto) {
-        return None;
-    }
-    let predicate = owl_pname(a, stmt.span.start)
-        .map(|p| format!("{p}:imports"))
-        .unwrap_or_else(|| format!("<{OWL}imports>"));
-    let pos = a.position(enc, stmt.span.end);
-    Some((
-        onto.to_string(),
-        TextEdit {
-            range: Range::new(pos, pos),
-            new_text: format!("{}<{subject}> {predicate} <{onto}> .", newline(text)),
-        },
-    ))
-}
-
-/// A prefix name bound to the OWL namespace at offset `at` (declared before
-/// it in the document, else from the project's prefixes file).
-fn owl_pname(a: &Analysis, at: u32) -> Option<String> {
-    let mut bound: FxHashMap<&str, &str> = FxHashMap::default();
-    for p in a.parsed.prefixes.iter().filter(|p| p.span.end <= at) {
-        bound.insert(&p.name, &p.iri);
-    }
-    let mut names: Vec<&str> = bound
-        .iter()
-        .filter(|(_, iri)| **iri == OWL)
-        .map(|(n, _)| *n)
-        .collect();
-    if names.is_empty() {
-        names = a
-            .external
-            .iter()
-            .filter(|(n, iri)| *iri == OWL && !bound.contains_key(n.as_str()))
-            .map(|(n, _)| n.as_str())
-            .collect();
-    }
-    names.sort_by_key(|n| (*n != "owl", *n));
-    names.first().map(|n| n.to_string())
 }
 
 #[cfg(test)]
@@ -789,109 +463,6 @@ mod tests {
         );
     }
 
-    /// The quick fixes offered for every diagnostic of `text`.
-    fn fixes(uri: &str, text: &str) -> (Analysis, Vec<CodeAction>) {
-        let a = Analysis::new(uri.into(), text, Arc::default(), true);
-        let k = Knowledge::default();
-        let diagnostics = diagnostics(&a, &k, Encoding::Utf8);
-        let params = CodeActionParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.parse().unwrap(),
-            },
-            range: Range::default(),
-            context: CodeActionContext {
-                diagnostics,
-                ..Default::default()
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-        let actions = code_actions(&a, &k, text, Encoding::Utf8, &params)
-            .into_iter()
-            .filter_map(|c| match c {
-                CodeActionOrCommand::CodeAction(c) => Some(c),
-                _ => None,
-            })
-            .collect();
-        (a, actions)
-    }
-
-    /// The text after applying the edit of the action titled `title`.
-    fn applied(a: &Analysis, actions: &[CodeAction], title: &str) -> String {
-        let action = actions
-            .iter()
-            .find(|c| c.title.starts_with(title))
-            .unwrap_or_else(|| {
-                let titles: Vec<_> = actions.iter().map(|c| &c.title).collect();
-                panic!("no {title:?} in {titles:?}")
-            });
-        let edits: Vec<TextEdit> = action
-            .edit
-            .clone()
-            .unwrap()
-            .changes
-            .unwrap()
-            .into_values()
-            .flatten()
-            .collect();
-        crate::features::refactor::apply(a, Encoding::Utf8, &edits)
-    }
-
-    #[test]
-    fn the_prefix_fix_declares_above_the_first_use() {
-        let text = "@prefix a: <http://a/> .\nfoaf:x a:p a:o .\n@prefix b: <http://b/> .\nb:y a:p foaf:z .\n";
-        let (a, actions) = fixes("file:///t/doc.ttl", text);
-        assert_eq!(
-            applied(&a, &actions, "Add @prefix foaf:"),
-            "@prefix a: <http://a/> .\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\nfoaf:x a:p a:o .\n@prefix b: <http://b/> .\nb:y a:p foaf:z .\n"
-        );
-        // With no declaration above the use, the top of the file.
-        let text = "# header\nfoaf:x a:p a:o .\n@prefix a: <http://a/> .\n";
-        let (a, actions) = fixes("file:///t/doc.ttl", text);
-        assert_eq!(
-            applied(&a, &actions, "Add @prefix foaf:"),
-            "# header\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\nfoaf:x a:p a:o .\n@prefix a: <http://a/> .\n"
-        );
-    }
-
-    #[test]
-    fn inserted_prefix_lines_follow_the_files_line_ending() {
-        let text = "@prefix a: <http://a/> .\r\nfoaf:x a:p rdfs:z .\r\n";
-        let (a, actions) = fixes("file:///t/doc.ttl", text);
-        let one = applied(&a, &actions, "Add @prefix foaf:");
-        assert_eq!(
-            one,
-            "@prefix a: <http://a/> .\r\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\r\nfoaf:x a:p rdfs:z .\r\n"
-        );
-        let all = applied(&a, &actions, "Add all missing prefixes");
-        assert_eq!(
-            all.matches('\n').count(),
-            all.matches("\r\n").count(),
-            "{all:?}"
-        );
-        assert!(all.contains("@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\r\n"));
-    }
-
-    #[test]
-    fn add_all_writes_no_prefixes_into_line_based_syntaxes() {
-        let text = "foaf:x rdfs:label foaf:z .\n";
-        let (_, ttl) = fixes("file:///t/doc.ttl", text);
-        assert!(
-            ttl.iter()
-                .any(|c| c.title.starts_with("Add all missing prefixes (2)")),
-            "{:?}",
-            ttl.iter().map(|c| &c.title).collect::<Vec<_>>()
-        );
-        for uri in ["file:///t/doc.nt", "file:///t/doc.nq"] {
-            let (_, actions) = fixes(uri, text);
-            assert!(
-                actions.iter().all(|c| !c.title.contains("prefix")),
-                "{uri}: {:?}",
-                actions.iter().map(|c| &c.title).collect::<Vec<_>>()
-            );
-        }
-    }
-
     #[test]
     fn only_a_file_named_prefixes_ttl_may_leave_prefixes_unused() {
         let text = "@prefix a: <http://a/> .\n";
@@ -907,20 +478,6 @@ mod tests {
         };
         assert_eq!(codes("file:///t/myprefixes.ttl"), ["unused-prefix"]);
         assert_eq!(codes("file:///t/dir/prefixes.ttl"), Vec::<String>::new());
-    }
-
-    #[test]
-    fn the_duplicate_prefix_fix_is_not_titled_unused() {
-        let text = "@prefix a: <http://a/> .\n@prefix a: <http://a/> .\na:x a:p a:o .\n";
-        let (a, actions) = fixes("file:///t/doc.ttl", text);
-        assert!(actions.iter().all(|c| c.title != "Remove unused prefix"));
-        assert_eq!(
-            applied(&a, &actions, "Remove duplicate prefix"),
-            "@prefix a: <http://a/> .\na:x a:p a:o .\n"
-        );
-        let text = "@prefix a: <http://a/> .\n@prefix b: <http://b/> .\na:x a:p a:o .\n";
-        let (_, actions) = fixes("file:///t/doc.ttl", text);
-        assert!(actions.iter().any(|c| c.title == "Remove unused prefix"));
     }
 
     #[test]
