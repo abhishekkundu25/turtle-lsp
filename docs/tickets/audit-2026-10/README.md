@@ -203,6 +203,12 @@ every file.
 5. SHACL-SPARQL *target* queries are not held to the pre-binding restrictions.
 6. Publishing waits for CI on the tagged commit.
 
+### Added during wave 3
+
+| # | Ticket | Blocked by | Files |
+|---|---|---|---|
+| 37 | [SHACL checks honour cancellation and the step budget](37-shacl-cancel-in-checks.md) | 33b | `src/shacl/validate.rs` |
+
 ## Outcome (2026-10-22)
 
 All 25 tickets landed on `audit-2026-10`, followed by two rounds of fixes from a
