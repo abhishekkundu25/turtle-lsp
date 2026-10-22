@@ -3,11 +3,11 @@
 // editor: a table, true or false, or the constructed graph as Turtle. The
 // query runs in its own engine worker (worker.js), so typing is never slowed.
 
+import { esc } from "./dom.js"
 import { currentSettings } from "./editor-lsp.js"
 
 export const isQuery = (path) => /\.(rq|sparql)$/i.test(path ?? "")
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
 const plural = (n, what) => `${n.toLocaleString("en")} ${what}${n === 1 ? "" : "s"}`
 
 // `files()`: the workspace as [{ name, text }]; `reveal(path, line, column)`

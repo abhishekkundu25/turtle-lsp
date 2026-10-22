@@ -5,35 +5,24 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
-import http from "node:http"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { chromium, webkit, firefox } from "playwright-core"
+import { listen } from "./static-server.mjs"
 
 // BROWSER=webkit or BROWSER=firefox runs these in Playwright's builds of
 // those browsers; the default is the installed Google Chrome.
 const BROWSER = process.env.BROWSER ?? "chrome"
 const launch = () => (BROWSER === "chrome" ? chromium.launch({ channel: "chrome", headless: true }) : { webkit, firefox }[BROWSER].launch({ headless: true }))
 
-const app = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "app")
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm" }
-
 let server, origin, browser
 before(async () => {
-  server = http.createServer((req, res) => {
-    const rel = decodeURIComponent(new URL(req.url, "http://x").pathname).replace(/^\/$/, "/index.html")
-    const file = path.join(app, path.normalize(rel))
-    if (!file.startsWith(app) || !fs.existsSync(file)) return res.writeHead(404).end()
-    res.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" })
-    fs.createReadStream(file).pipe(res)
-  })
-  await new Promise((r) => server.listen(0, "127.0.0.1", r))
-  origin = `http://127.0.0.1:${server.address().port}`
+  server = await listen()
+  origin = server.origin
   browser = await launch()
 })
 after(async () => {
   await browser?.close()
-  await new Promise((r) => server.close(r))
+  await server?.close()
 })
 
 // A fresh page on the toolbox, ready (the first analysis shown), recording

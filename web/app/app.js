@@ -2,6 +2,9 @@
 // The engine (turtle-lsp as WebAssembly) runs in a worker; every change to
 // the input is analysed again, and only the answer to the latest input is shown.
 import { SETS } from "./samples.js"
+import { $, esc } from "./dom.js"
+import { lineStarts, offsetOf, lineAt, applyEdits } from "./text.js"
+import { KNOWN, picked, walkDropped, admit, limitsNote } from "./files.js"
 
 const TOOLS = [
   { id: "format", name: "Format", glyph: "¶", job: "Lays the file out again. The graph (or the query's algebra) is checked to be the same before anything is shown." },
@@ -10,15 +13,15 @@ const TOOLS = [
   { id: "sparql", name: "SPARQL", glyph: "?", job: "The query's problems and fixes, and the query formatted." },
 ]
 const DEBOUNCE_MS = 200
-// The files a folder contributes, by extension; anything else is skipped.
-const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/i
-// Limits for a folder, so a large tree cannot stall the tab.
-const MAX_FOLDER_FILES = 500
-const MAX_FILE_BYTES = 10 * 1024 * 1024
 const SEVERITY = { 1: "Error", 2: "Warning", 3: "Info", 4: "Hint" }
-
-const $ = (id) => document.getElementById(id)
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
+// Problems listed at first, and added by each "Show more": a file with
+// thousands would otherwise freeze the tab for seconds.
+const PAGE = 500
+// The input shows lines of this height; only the lines in view (and
+// OVERSCAN more each side) are coloured and drawn.
+const LINE_H = 19
+const OVERSCAN = 60
+const UNDO_STEPS = 20
 
 // ---- state -------------------------------------------------------------------
 
@@ -30,19 +33,38 @@ const S = {
   analysed: {}, // name -> the text the result is about
   currentLine: null, // { name, line } shown highlighted in the editor
   ms: null,
+  shown: { validate: PAGE, shacl: PAGE, sparql: PAGE }, // problems listed per tool
+  undo: [], // { before, after }: file texts before and after a fix or a formatting
 }
 const fileOf = (name) => S.files.find((f) => f.name === name)
 const resultOf = (name) => S.result?.files.find((f) => f.name === name)
 const isSparql = (name) => resultOf(name)?.kind === "sparql" || /\.(rq|ru|sparql)$/i.test(name)
 // Whether the result still describes `name` as it is now.
 const fresh = (name) => S.analysed[name] !== undefined && S.analysed[name] === fileOf(name)?.text
+// Where each line of the file starts, worked out once per text.
+function startsOf(f) {
+  if (f.startsFor !== f.text) {
+    f.starts = lineStarts(f.text)
+    f.startsFor = f.text
+  }
+  return f.starts
+}
 
 // ---- the worker ------------------------------------------------------------------
 
-const worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" })
+let worker = null
+let crashes = [] // when the worker died, the last minute
 const pending = new Map()
 let nextId = 0
-worker.onmessage = ({ data }) => {
+function startWorker() {
+  const w = (worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" }))
+  w.onmessage = ({ data }) => worker === w && received(data)
+  w.onerror = w.onmessageerror = (e) => {
+    e.preventDefault?.()
+    died(w, e.message)
+  }
+}
+function received(data) {
   const p = pending.get(data.id)
   pending.delete(data.id)
   if (!p) return
@@ -52,7 +74,29 @@ worker.onmessage = ({ data }) => {
     p.reject(new Error(data.error))
   }
 }
+// A worker that failed to load or died answers nothing more: fail what waits
+// on it and start another (the third death within a minute leaves the tools
+// off until the page reloads).
+function died(w, cause) {
+  if (worker !== w) return
+  w.terminate()
+  worker = null
+  // The page says so itself (below): what waited on the worker need not repeat it.
+  for (const p of pending.values()) p.reject(Object.assign(new Error("the engine stopped" + (cause ? `: ${cause}` : "")), { reported: true }))
+  pending.clear()
+  const now = Date.now()
+  crashes = [...crashes.filter((t) => now - t < 60_000), now]
+  if (crashes.length >= 3) {
+    notify(`The engine keeps stopping, so the tools are off. Reload the page to try again.${cause ? ` (${cause})` : ""}`)
+    setBusy(false)
+    return
+  }
+  notify(`The engine stopped${cause ? ` (${cause})` : ""} and was restarted.`)
+  startWorker()
+  schedule(true)
+}
 function ask(op, files) {
+  if (!worker) return Promise.reject(new Error("the engine is off"))
   const id = ++nextId
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
@@ -60,8 +104,9 @@ function ask(op, files) {
   })
 }
 
-let seq = 0
 let timer = null
+let analysing = false // one analysis runs at a time; the next one starts from the text of that moment
+let again = false
 function setBusy(busy) {
   document.body.dataset.busy = String(busy)
 }
@@ -69,24 +114,35 @@ function setBusy(busy) {
 function schedule(now = false) {
   setBusy(true)
   clearTimeout(timer)
-  timer = setTimeout(analyse, now ? 0 : DEBOUNCE_MS)
+  timer = setTimeout(() => ((timer = null), analyse()), now ? 0 : DEBOUNCE_MS)
 }
+// What each result describes is checked against the text now (`fresh`), so a
+// result for slightly older text is shown, and replaced when the next arrives.
 async function analyse() {
-  const mine = ++seq
-  const snapshot = S.files.map((f) => ({ name: f.name, text: f.text }))
+  if (analysing) {
+    again = true
+    return
+  }
+  analysing = true
   try {
-    const { ok, ms } = await ask("analyse", snapshot)
-    if (mine !== seq) return
-    S.result = ok
-    S.analysed = Object.fromEntries(snapshot.map((f) => [f.name, f.text]))
-    S.ms = ms
-    if (S.tool === "shacl" && !ok.hasShapes) S.tool = "validate"
-    render()
-    document.body.dataset.ready = "true"
-  } catch (e) {
-    if (mine === seq) notify(`Analysis failed: ${e.message}`)
+    do {
+      again = false
+      const snapshot = S.files.map((f) => ({ name: f.name, text: f.text }))
+      try {
+        const { ok, ms } = await ask("analyse", snapshot)
+        S.result = ok
+        S.analysed = Object.fromEntries(snapshot.map((f) => [f.name, f.text]))
+        S.ms = ms
+        if (S.tool === "shacl" && !ok.hasShapes) S.tool = "validate"
+        render()
+        document.body.dataset.ready = "true"
+      } catch (e) {
+        if (!e.reported) notify(`Analysis failed: ${e.message}`)
+      }
+    } while (again)
   } finally {
-    if (mine === seq) setBusy(false)
+    analysing = false
+    if (!timer && !again) setBusy(false)
   }
 }
 
@@ -122,6 +178,9 @@ function loadSample(key) {
   S.result = null
   S.analysed = {}
   S.currentLine = null
+  S.shown = { validate: PAGE, shacl: PAGE, sparql: PAGE }
+  S.undo = []
+  renderUndo()
   select(S.files[0]?.name)
   schedule(true)
 }
@@ -136,8 +195,8 @@ function select(name) {
   renderInput()
   renderTool()
 }
-// Replace file texts (a fix, a formatting); the editor follows its file.
-function setTexts(texts) {
+// Put `texts` ({ name: text }) into the files; the editor follows its file.
+function applyTexts(texts) {
   for (const [name, text] of Object.entries(texts)) {
     const f = fileOf(name)
     if (f) f.text = text
@@ -151,6 +210,34 @@ function setTexts(texts) {
   renderInput()
   schedule(true)
 }
+// A fix or a formatting: replace file texts, and keep the old ones to undo.
+function setTexts(texts) {
+  const before = {}
+  for (const [name, text] of Object.entries(texts)) if (fileOf(name) && fileOf(name).text !== text) before[name] = fileOf(name).text
+  if (Object.keys(before).length) {
+    S.undo.push({ before, after: Object.fromEntries(Object.keys(before).map((name) => [name, texts[name]])) })
+    if (S.undo.length > UNDO_STEPS) S.undo.shift()
+  }
+  applyTexts(texts)
+  renderUndo()
+}
+// Take back the last fix or formatting, in the files it left as it made them.
+function undo() {
+  const step = S.undo.pop()
+  if (!step) return
+  const texts = {}
+  let kept = 0
+  for (const [name, text] of Object.entries(step.before)) {
+    if (fileOf(name)?.text === step.after[name]) texts[name] = text
+    else kept++
+  }
+  applyTexts(texts)
+  renderUndo()
+  if (kept) notify(`${kept} file${kept === 1 ? " was" : "s were"} edited since and ${kept === 1 ? "was" : "were"} left as ${kept === 1 ? "it is" : "they are"}.`)
+}
+function renderUndo() {
+  $("undo").disabled = !S.undo.length
+}
 // The guess at a pasted text's syntax, for its name.
 function pastedName(text) {
   const body = text.replace(/^\s*(#[^\n]*\n|\s+)*/g, "").replace(/^(\s*(PREFIX|BASE)\b[^\n]*\n)*/gi, "")
@@ -162,22 +249,7 @@ function pastedName(text) {
   return "pasted.ttl"
 }
 
-// ---- text helpers -----------------------------------------------------------------
-
-function lineStarts(text) {
-  const starts = [0]
-  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) starts.push(i + 1)
-  return starts
-}
-const offsetOf = (starts, text, p) => Math.min(text.length, (starts[p.line] ?? text.length) + p.character)
-// Apply LSP text edits (UTF-16 positions, as JS strings count) to `text`.
-function applyEdits(text, edits) {
-  const starts = lineStarts(text)
-  const spans = edits.map((e) => [offsetOf(starts, text, e.range.start), offsetOf(starts, text, e.range.end), e.newText])
-  spans.sort((a, b) => b[0] - a[0])
-  for (const [s, e, t] of spans) text = text.slice(0, s) + t + text.slice(e)
-  return text
-}
+// ---- highlighting -----------------------------------------------------------------
 
 // Turtle, TriG, N-Triples, N-Quads and SPARQL tokens, enough to colour them.
 const TOKEN =
@@ -188,34 +260,44 @@ const KEYWORDS = new Set(
 const CLASSES = ["", "t-com", "t-str", "t-iri", "t-lang", "t-var", "t-num", "t-pn", "t-kw"]
 const MAX_COLOURED = 300_000
 
-function highlight(text, marks, current) {
-  const tok = new Uint8Array(text.length)
-  if (text.length <= MAX_COLOURED) {
-    for (const m of text.matchAll(TOKEN)) {
+// The HTML of lines `from` up to `to` of `text` (`starts`: its line starts),
+// with `marks` ({ start, end, sev } offsets into `text`) and line `current`.
+// Only these lines are coloured; empty gaps above and below keep the height
+// of the lines left out, so the scroll bar and the scroll position stay true.
+function highlight(text, starts, marks, current, from, to) {
+  const base = starts[from] ?? text.length
+  const stop = to < starts.length ? starts[to] : text.length
+  const part = text.slice(base, stop)
+  const tok = new Uint8Array(part.length)
+  if (part.length <= MAX_COLOURED) {
+    for (const m of part.matchAll(TOKEN)) {
       let k = m.slice(1).findIndex((g) => g !== undefined) + 1
       if (k === 4 && /^@(prefix|base)$/i.test(m[0])) k = 8
       if (k === 8 && !KEYWORDS.has(m[0]) && !KEYWORDS.has(m[0].toUpperCase())) k = 0
       tok.fill(k, m.index, m.index + m[0].length)
     }
   }
-  const sev = new Uint8Array(text.length)
-  for (const m of marks) sev.fill(m.sev, m.start, Math.max(m.end, m.start + 1))
-  const starts = lineStarts(text)
-  let html = ""
-  starts.forEach((s, i) => {
-    const e = i + 1 < starts.length ? starts[i + 1] - 1 : text.length
+  const sev = new Uint8Array(part.length)
+  for (const m of marks) {
+    const a = Math.max(0, m.start - base)
+    sev.fill(m.sev, a, Math.max(a, m.end - base, m.start - base + 1))
+  }
+  let html = `<div class="gap"></div>`
+  for (let i = from; i < to; i++) {
+    const s = starts[i] - base
+    const e = (i + 1 < starts.length ? starts[i + 1] - 1 : text.length) - base
     let line = ""
     for (let j = s; j < e; ) {
       let k = j + 1
       while (k < e && tok[k] === tok[j] && sev[k] === sev[j]) k++
       const cls = [CLASSES[tok[j]], sev[j] ? `mk s${sev[j]}` : ""].filter(Boolean).join(" ")
-      const piece = esc(text.slice(j, k))
+      const piece = esc(part.slice(j, k))
       line += cls ? `<span class="${cls}">${piece}</span>` : piece
       j = k
     }
     html += `<div class="line${current === i ? " current" : ""}" data-n="${i + 1}">${line || " "}</div>`
-  })
-  return html
+  }
+  return html + `<div class="gap"></div>`
 }
 
 // Line diff: the common head and tail kept, the middle compared line by line
@@ -285,10 +367,13 @@ function counts() {
 }
 
 function render() {
+  const t0 = performance.now()
   renderTabs()
   renderInput()
   renderTool()
   $("timing").textContent = S.ms == null ? "" : `analysed in ${Math.max(1, Math.round(S.ms))} ms`
+  // How long the page took to draw the latest result (the engine's time is in the footer).
+  document.body.dataset.renderMs = String(Math.round(performance.now() - t0))
 }
 
 function renderTabs() {
@@ -318,23 +403,54 @@ function renderInput() {
   renderEditor()
 }
 
+// The lines drawn in the input: those in view and OVERSCAN more each side.
+let drawn = null // { name, from, to }
+function viewLines(count) {
+  const ed = $("editor")
+  const top = Math.floor(ed.scrollTop / LINE_H)
+  const rows = Math.ceil((ed.clientHeight || 600) / LINE_H) + 1
+  return { top, rows, from: Math.max(0, top - OVERSCAN), to: Math.min(count, top + rows + OVERSCAN) }
+}
+
 function renderEditor() {
   const f = fileOf(S.current)
+  const hl = $("hl")
   if (!f) {
-    $("hl").innerHTML = ""
+    hl.innerHTML = ""
+    drawn = null
     return
   }
+  const starts = startsOf(f)
+  const { from, to } = viewLines(starts.length)
   const marks = []
   if (fresh(f.name)) {
-    const starts = lineStarts(f.text)
+    // The marks on the lines drawn only.
     for (const d of resultOf(f.name).diagnostics) {
+      if (d.range.end.line < from || d.range.start.line >= to) continue
       marks.push({ start: offsetOf(starts, f.text, d.range.start), end: offsetOf(starts, f.text, d.range.end), sev: d.severity ?? 1 })
     }
     marks.sort((a, b) => b.sev - a.sev)
   }
   const line = S.currentLine?.name === f.name ? S.currentLine.line : null
-  $("hl").innerHTML = highlight(f.text, marks, line)
+  hl.innerHTML = highlight(f.text, starts, marks, line, from, to)
+  hl.firstChild.style.height = `${from * LINE_H}px`
+  hl.lastChild.style.height = `${(starts.length - to) * LINE_H}px`
+  drawn = { name: f.name, from, to, count: starts.length }
   syncScroll()
+}
+// Scrolling far enough that the lines in view near the edge of what is drawn
+// draws the next lines.
+let scrollFrame = null
+function onScroll() {
+  syncScroll()
+  if (scrollFrame || !drawn) return
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = null
+    if (!drawn) return
+    const { top, rows } = viewLines(drawn.count)
+    const edge = OVERSCAN / 2
+    if ((drawn.from > 0 && top < drawn.from + edge) || (drawn.to < drawn.count && top + rows > drawn.to - edge)) renderEditor()
+  })
 }
 function syncScroll() {
   $("hl").scrollTop = $("editor").scrollTop
@@ -344,21 +460,31 @@ function syncScroll() {
 // A problem, with where it is, its source line and its fixes.
 function problemHtml(name, d, di, { message = true } = {}) {
   const f = fileOf(name)
-  const lineText = f ? f.text.split("\n")[d.range.start.line] ?? "" : ""
+  const lineText = f ? lineAt(f.text, startsOf(f), d.range.start.line) : ""
   const fixes = d.fixes
     .map((x, fi) => `<button class="ibtn sm${x.preferred ? " pri" : ""}" data-fix="${esc(name)}" data-d="${di}" data-f="${fi}">${esc(x.title)}</button>`)
     .join("")
   return `<div class="problem s${d.severity ?? 1}"><div class="meta"><button class="loc" data-loc="${esc(name)}" data-line="${d.range.start.line}" data-ch="${d.range.start.character}" data-eline="${d.range.end.line}" data-ech="${d.range.end.character}">${esc(name)}:${d.range.start.line + 1}</button><span>${SEVERITY[d.severity] ?? ""}</span><span class="code">${esc(d.code ?? "")}</span></div>${message ? `<p class="msg">${esc(d.message)}</p>` : ""}${lineText.trim() ? `<pre class="src">${esc(lineText.trim())}</pre>` : ""}${fixes ? `<div class="fixes">${fixes}</div>` : ""}</div>`
 }
-// The problems of `files` (results), each list under its file name.
-function problemList(files, filter) {
+// The button that lists more of a tool's problems.
+const moreButton = (tool, hidden) => (hidden ? `<p class="more"><button class="ibtn" data-more="${tool}">Show ${Math.min(PAGE, hidden)} more</button><span class="stat">${hidden} not shown</span></p>` : "")
+// The problems of `files` (results), each list under its file name, at most
+// `limit` of them; `hidden` is how many matching problems were left out.
+function problemList(files, filter, limit) {
   let html = ""
+  let shown = 0
+  let hidden = 0
   for (const f of files) {
-    const items = f.diagnostics.map((d, i) => [d, i]).filter(([d]) => filter(d))
-    if (!items.length) continue
-    html += `<h3 class="group mono">${esc(f.name)}</h3>` + items.map(([d, i]) => problemHtml(f.name, d, i)).join("")
+    let head = false
+    f.diagnostics.forEach((d, i) => {
+      if (!filter(d)) return
+      if (shown >= limit) return void hidden++
+      if (!head) (html += `<h3 class="group mono">${esc(f.name)}</h3>`), (head = true)
+      html += problemHtml(f.name, d, i)
+      shown++
+    })
   }
-  return html
+  return { html, hidden }
 }
 
 function formatHtml(name, { applyLabel = "Apply formatting" } = {}) {
@@ -398,12 +524,14 @@ function renderTool() {
     const n = files.reduce((k, f) => k + problemsOf(f).length, 0)
     const fixes = fixable(files)
     stat = "all RDF files"
+    const list = problemList(files, (d) => d.code !== "shacl-violation", S.shown.validate)
     html =
       `<div class="thd"><b>${n} problem${n === 1 ? "" : "s"}</b><span class="stat">in ${files.filter((f) => problemsOf(f).length).length} of ${files.length} files</span><span class="sp"></span>${fixes ? `<button class="ibtn pri" data-fix-all="rdf">Apply all ${fixes} fixes</button>` : ""}</div>` +
-      (problemList(files, (d) => d.code !== "shacl-violation") || `<p class="empty">No problems.</p>`)
+      (list.html || `<p class="empty">No problems.</p>`) +
+      moreButton("validate", list.hidden)
   } else if (S.tool === "shacl") {
     stat = "data × shapes"
-    const groups = new Map()
+    const groups = new Map() // message -> [[file name, diagnostic, its index]]
     for (const f of S.result.files) {
       f.diagnostics.forEach((d, i) => {
         if (d.code !== "shacl-violation") return
@@ -413,10 +541,14 @@ function renderTool() {
     }
     const n = [...groups.values()].reduce((k, g) => k + g.length, 0)
     html = `<div class="thd"><b>${n} violation${n === 1 ? "" : "s"}</b><span class="stat">of ${groups.size} constraint${groups.size === 1 ? "" : "s"}</span></div>`
+    let room = S.shown.shacl
     for (const [message, items] of groups) {
-      html += `<h3 class="group">${esc(message)}</h3>` + items.map(([name, d, i]) => problemHtml(name, d, i, { message: false })).join("")
+      if (room <= 0) break
+      html += `<h3 class="group">${esc(message)}</h3>` + items.slice(0, room).map(([name, d, i]) => problemHtml(name, d, i, { message: false })).join("")
+      room -= items.length
     }
     if (!n) html += `<p class="empty">The data conforms to the shapes.</p>`
+    html += moreButton("shacl", Math.max(0, n - S.shown.shacl))
   } else {
     const queries = sparqlFiles()
     const q = queries.find((f) => f.name === S.current) ?? queries[0]
@@ -425,9 +557,11 @@ function renderTool() {
     } else {
       stat = q.name
       const fixes = fixable(queries)
+      const list = problemList([q], () => true, S.shown.sparql)
       html =
         `<div class="thd"><b>${q.diagnostics.length} problem${q.diagnostics.length === 1 ? "" : "s"}</b><span class="stat">in ${esc(q.name)}${queries.length > 1 ? ` (${queries.length} queries in the input)` : ""}</span><span class="sp"></span>${fixes ? `<button class="ibtn" data-fix-all="sparql">Apply all ${fixes} fixes</button>` : ""}</div>` +
-        (problemList([q], () => true) || `<p class="empty">No problems.</p>`) +
+        (list.html || `<p class="empty">No problems.</p>`) +
+        moreButton("sparql", list.hidden) +
         `<h3 class="group">Formatted</h3>` +
         formatHtml(q.name)
     }
@@ -443,10 +577,10 @@ function showLocation(name, range) {
   if (S.current !== name) select(name)
   const ed = $("editor")
   const f = fileOf(name)
-  const starts = lineStarts(f.text)
+  const starts = startsOf(f)
   ed.focus({ preventScroll: true })
   ed.setSelectionRange(offsetOf(starts, f.text, range.start), offsetOf(starts, f.text, range.end))
-  ed.scrollTop = Math.max(0, range.start.line * 19 - ed.clientHeight / 3)
+  ed.scrollTop = Math.max(0, range.start.line * LINE_H - ed.clientHeight / 3)
   S.currentLine = { name, line: range.start.line }
   renderEditor()
   if (window.matchMedia("(max-width: 760px)").matches) $("editor-wrap").scrollIntoView({ block: "center" })
@@ -467,10 +601,20 @@ function applyFix(name, di, fi) {
 async function fixAll(which) {
   const names = new Set((which === "sparql" ? sparqlFiles() : rdfFiles()).map((f) => f.name))
   const files = S.files.map((f) => ({ name: f.name, text: f.text, context: !names.has(f.name) }))
+  const sent = Object.fromEntries(files.map((f) => [f.name, f.text]))
   setBusy(true)
   try {
     const { ok } = await ask("fix_all", files)
-    setTexts(Object.fromEntries(ok.files.map((f) => [f.name, f.text])))
+    // A result is about the text sent: a file edited meanwhile is left as it is.
+    const texts = {}
+    let stale = 0
+    for (const f of ok.files) {
+      if (f.text === sent[f.name]) continue
+      if (fileOf(f.name)?.text === sent[f.name]) texts[f.name] = f.text
+      else stale++
+    }
+    setTexts(texts)
+    if (stale) notify(`${stale} file${stale === 1 ? " was" : "s were"} edited while the fixes were computed and ${stale === 1 ? "was" : "were"} left as ${stale === 1 ? "it is" : "they are"}. Apply the fixes again.`)
   } catch (e) {
     notify(`Fixing failed: ${e.message}`)
     schedule(true)
@@ -496,39 +640,21 @@ function download() {
 }
 
 // Files chosen or dropped, each with its path in the folder it came from
-// (`path`, "" for a single file). From a folder only RDF and SPARQL files
+// (a bare name for a single file). From a folder only RDF and SPARQL files
 // are taken, named by their path below the folder.
-async function readFiles(entries) {
-  const take = []
-  let skipped = 0
-  for (const { file, path } of entries) {
-    const fromFolder = path.includes("/")
-    if ((fromFolder && !KNOWN.test(file.name)) || file.size > MAX_FILE_BYTES || take.length >= MAX_FOLDER_FILES) skipped++
-    else take.push({ file, name: fromFolder ? path.slice(path.indexOf("/") + 1) : file.name })
-  }
-  take.sort((a, b) => a.name.localeCompare(b.name))
-  addFiles(await Promise.all(take.map(async ({ file, name }) => ({ name, text: await file.text() }))))
-  if (skipped) notify(`${skipped} file${skipped === 1 ? "" : "s"} skipped: only Turtle, TriG, N-Triples, N-Quads and SPARQL files up to 10 MB are read, at most ${MAX_FOLDER_FILES}.`)
+async function readFiles(entries, skippedBefore = 0) {
+  const fromFolder = (e) => e.path.includes("/")
+  const wanted = entries.filter((e) => !fromFolder(e) || KNOWN.test(e.file.name))
+  const { take, skipped: refused } = admit(wanted, { have: 0, onlyKnown: false })
+  const skipped = skippedBefore + entries.length - wanted.length + refused
+  const named = take.map(({ file, path }) => ({ file, name: fromFolder({ path }) ? path.slice(path.indexOf("/") + 1) : file.name }))
+  named.sort((a, b) => a.name.localeCompare(b.name))
+  addFiles(await Promise.all(named.map(async ({ file, name }) => ({ name, text: await file.text() }))))
+  if (skipped) notify(`${skipped} file${skipped === 1 ? "" : "s"} skipped: ${limitsNote()}.`)
 }
-const picked = (list) => [...list].map((file) => ({ file, path: file.webkitRelativePath ?? "" }))
-// The files under dropped items, folders walked.
-async function dropped(items) {
-  const out = []
-  const walk = async (entry) => {
-    if (entry.isFile) {
-      const file = await new Promise((res, rej) => entry.file(res, rej))
-      out.push({ file, path: entry.fullPath.replace(/^\//, "") })
-    } else if (entry.isDirectory) {
-      const reader = entry.createReader()
-      for (;;) {
-        const batch = await new Promise((res, rej) => reader.readEntries(res, rej))
-        if (!batch.length) break
-        for (const e of batch) await walk(e)
-      }
-    }
-  }
-  for (const entry of [...items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean)) await walk(entry)
-  return out
+async function readDropped(items) {
+  const { entries, skipped } = await walkDropped(items)
+  return readFiles(entries, skipped)
 }
 
 // ---- wiring ---------------------------------------------------------------------------
@@ -576,7 +702,7 @@ function wire() {
     renderEditor()
     schedule()
   })
-  ed.addEventListener("scroll", syncScroll)
+  ed.addEventListener("scroll", onScroll)
 
   $("tool").addEventListener("click", (e) => {
     const b = e.target.closest("button")
@@ -584,6 +710,9 @@ function wire() {
     const d = b.dataset
     if (d.loc !== undefined) {
       showLocation(d.loc, { start: { line: +d.line, character: +d.ch }, end: { line: +d.eline, character: +d.ech } })
+    } else if (d.more !== undefined) {
+      S.shown[d.more] += PAGE
+      renderTool()
     } else if (d.fix !== undefined) applyFix(d.fix, +d.d, +d.f)
     else if (d.fixAll !== undefined) fixAll(d.fixAll)
     else if (d.format !== undefined) applyFormat([d.format])
@@ -612,6 +741,7 @@ function wire() {
     })
   }
   $("download")?.addEventListener("click", download)
+  $("undo").addEventListener("click", undo)
 
   const pane = document.querySelector(".pane.input")
   pane.addEventListener("dragover", (e) => {
@@ -623,11 +753,12 @@ function wire() {
     e.preventDefault()
     pane.classList.remove("drop")
     const items = e.dataTransfer?.items
-    if (items?.length && items[0].webkitGetAsEntry) dropped(items).then(readFiles)
+    if (items?.length && items[0].webkitGetAsEntry) readDropped(items)
     else if (e.dataTransfer?.files?.length) readFiles(picked(e.dataTransfer.files))
   })
 }
 
 wire()
+startWorker()
 ask("version").then(({ ok }) => ($("version").textContent = `turtle-lsp ${ok.version}`), () => {})
 loadSample("starter")

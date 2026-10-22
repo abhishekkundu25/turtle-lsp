@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Scripts: this origin and the two inline ones below, by hash (a test keeps the hashes
+     current). Styles may be inline: Monaco and the explorer set style attributes. Fetching an
+     unresolved import (the quick fix) is the one request to other sites. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pT1y721+jHFzFNhHZjomrOsspuITXSKnLzBn6QcfxJw=' 'sha256-rrelW4+9dkDCKzcEIAGJ3usw4WpEUGTEFCZ4oLzBb7I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; worker-src 'self'; connect-src 'self' http: https:; frame-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RDF Editor</title>
 <meta name="description" content="Edit Turtle, TriG, N-Triples, N-Quads, JSON-LD and SPARQL with turtle-lsp running in this tab. Nothing is uploaded.">

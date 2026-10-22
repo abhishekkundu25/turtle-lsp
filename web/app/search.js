@@ -3,13 +3,14 @@
 // whole word and regex behave as in the editor's find widget, and replaces
 // with undoable model edits, which the language server hears as typing.
 
+import { esc } from "./dom.js"
+
 const WORD_SEPARATORS = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?"
 const MAX_PER_FILE = 2000
 const MAX_TOTAL = 10000
 const DELAY_MS = 150
 const BEFORE = 28 // characters of the line shown before a match
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
 const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`
 
 // Expand $&, $0..$99, $$ and \n, \t in a regex replace string, as VS Code does.

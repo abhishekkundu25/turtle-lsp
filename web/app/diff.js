@@ -4,7 +4,9 @@
 // takes the right side). Side by side, inline when the area is narrow.
 // Temporary models live only while the view is open.
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
+import { esc } from "./dom.js"
+import { toMonacoRange } from "./text.js"
+
 const base = (path) => path.split("/").pop()
 
 /**
@@ -125,7 +127,7 @@ export function createDiff({ monaco, client, mount, toast, options, setup, onClo
     if (model.getVersionId() !== version) return toast("The file changed while formatting; try again")
     if (!edits?.length) return toast("Already formatted, or the file has syntax errors")
     const formatted = monaco.editor.createModel(model.getValue(), model.getLanguageId())
-    formatted.applyEdits(edits.map((e) => ({ range: new monaco.Range(e.range.start.line + 1, e.range.start.character + 1, e.range.end.line + 1, e.range.end.character + 1), text: e.newText })))
+    formatted.applyEdits(edits.map((e) => ({ range: toMonacoRange(monaco, e.range), text: e.newText })))
     if (formatted.getValue() === model.getValue()) {
       formatted.dispose()
       return toast("Already formatted, or the file has syntax errors")

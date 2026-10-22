@@ -4,7 +4,8 @@
 // model. Values are kept as { key: value } for the keys that differ from the
 // default; the caller stores that object with the workspace.
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
+import { esc } from "./dom.js"
+
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const LABELS = "turtle.inlayHints.labels"
 
