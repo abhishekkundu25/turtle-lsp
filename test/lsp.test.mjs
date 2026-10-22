@@ -78,6 +78,33 @@ ex:t ex:p "unterminated .
   assert.ok(errors.some((d) => d.range.start.line === 2), fmt(errors))
 })
 
+// `n` lines, each a statement that parses and one that does not.
+const brokenLines = (n) =>
+  Array.from({ length: n }, (_, i) => `<http://e/s${i}> <http://e/p> <http://e/o${i}> . <http://e/t${i}> <http://e/p> .\n`).join("")
+
+test("the editor shows the first 1,000 syntax errors and one note", async () => {
+  const syntax = (diags) => diags.filter((d) => d.code === "syntax")
+  const many = await diagnose("many-errors", brokenLines(1500))
+  s.close(many.uri)
+  const shown = syntax(many.diags)
+  assert.equal(shown.length, 1001)
+  assert.deepEqual(
+    shown.slice(0, 1000).map((d) => d.range.start.line),
+    Array.from({ length: 1000 }, (_, i) => i),
+  )
+  assert.ok(shown.slice(0, 1000).every((d) => d.message === "Expected an object, found '.'"), fmt(shown.slice(0, 3)))
+  const note = shown[1000]
+  assert.equal(note.message, "More than 1000 syntax errors; the rest are not shown")
+  assert.equal(note.severity, 1)
+  assert.deepEqual(note.range, { start: shown[999].range.end, end: shown[999].range.end })
+
+  const atCap = await diagnose("cap-errors", brokenLines(1000))
+  s.close(atCap.uri)
+  const all = syntax(atCap.diags)
+  assert.equal(all.length, 1000)
+  assert.ok(all.every((d) => !d.message.startsWith("More than")))
+})
+
 test("undeclared prefix is warned once, on the use", async () => {
   const text = `@prefix ex: <http://example.org/> .
 ex:s ex:p nope:o .

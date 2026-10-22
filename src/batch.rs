@@ -18,7 +18,7 @@ use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
 use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::quickfix::Fixer;
 use crate::features::shacl_validate;
-use crate::features::{format, lint};
+use crate::features::{diagnostics, format, lint};
 use crate::imports;
 use crate::knowledge::Source;
 use crate::layout;
@@ -209,15 +209,17 @@ pub struct FixOutcome {
 }
 
 /// Analyse `files` as one workspace: per file its diagnostics with their
-/// fixes, and the formatter's verdict.
+/// fixes, and the formatter's verdict. A document shows at most 1,000
+/// syntax errors (`diagnostics::MAX_SYNTAX_ERRORS`), as in the editor.
 pub fn analyse(files: &[BatchFile], settings: &Settings, opts: &Options) -> Report {
-    analyse_in(files, settings, opts, None)
+    let max_syntax_errors = Some(diagnostics::MAX_SYNTAX_ERRORS);
+    analyse_in(files, settings, opts, None, max_syntax_errors)
 }
 
-/// [`analyse`] for files on disk: project prefixes come from `prefixes.ttl`
-/// up to the roots, and `owl:imports` are loaded as the editor loads them.
-/// A context file gets only its SHACL results, without fixes, and no
-/// formatter verdict.
+/// [`analyse`] for files on disk (the command line): project prefixes come
+/// from `prefixes.ttl` up to the roots, and `owl:imports` are loaded as the
+/// editor loads them. Every syntax error is reported. A context file gets
+/// only its SHACL results, without fixes, and no formatter verdict.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn analyse_on_disk(
     files: &[BatchFile],
@@ -225,7 +227,7 @@ pub(crate) fn analyse_on_disk(
     opts: &Options,
     disk: &Disk,
 ) -> Report {
-    analyse_in(files, settings, opts, Some(disk))
+    analyse_in(files, settings, opts, Some(disk), None)
 }
 
 fn analyse_in(
@@ -233,9 +235,11 @@ fn analyse_in(
     settings: &Settings,
     opts: &Options,
     disk: Option<&Disk>,
+    max_syntax_errors: Option<usize>,
 ) -> Report {
     let enc = opts.columns.encoding();
     let mut input = Input::new(files, settings, enc, disk, None);
+    input.max_syntax_errors = max_syntax_errors;
     let (has_shapes, mut shacl) = input.shacl(opts.shacl);
     let mut out = Vec::with_capacity(files.len());
     for f in files {
@@ -458,6 +462,9 @@ struct Input<'a> {
     unresolved: Option<Unresolved>,
     /// On disk: the imports, loaded into the knowledge index.
     imports: Option<Arc<imports::Resolved>>,
+    /// [`DiagnosticInputs::max_syntax_errors`]; the editor's by default.
+    /// Syntax errors have no fixes, so "fix all" keeps the default.
+    max_syntax_errors: Option<usize>,
 }
 
 impl<'a> Input<'a> {
@@ -498,6 +505,7 @@ impl<'a> Input<'a> {
             settings,
             enc,
             unresolved: None,
+            max_syntax_errors: Some(diagnostics::MAX_SYNTAX_ERRORS),
         }
     }
 
@@ -558,6 +566,7 @@ impl<'a> Input<'a> {
         let inputs = DiagnosticInputs {
             import_status: &status,
             shacl,
+            max_syntax_errors: self.max_syntax_errors,
             ..DiagnosticInputs::new(self.settings)
         };
         let k = self.ws.knowledge_mut();
@@ -904,6 +913,31 @@ mod tests {
             Some(lsp_types::NumberOrString::String(s)) => Some(s),
             _ => None,
         }
+    }
+
+    #[test]
+    fn the_command_line_reports_every_syntax_error_and_the_browser_the_editors() {
+        let text: String = (0..1500)
+            .map(|i| format!("<http://e/s{i}> <http://e/p> .\n"))
+            .collect();
+        let files = [file("a.ttl", &text)];
+        let opts = Options {
+            shacl: false,
+            fixes: false,
+            ..Options::default()
+        };
+        let syntax = |r: &Report| {
+            r.files[0]
+                .problems
+                .iter()
+                .filter(|p| code(p) == Some("syntax"))
+                .count()
+        };
+        let editor = analyse(&files, &Settings::default(), &opts);
+        assert_eq!(syntax(&editor), diagnostics::MAX_SYNTAX_ERRORS + 1);
+        // What analyse_on_disk passes.
+        let cli = analyse_in(&files, &Settings::default(), &opts, None, None);
+        assert_eq!(syntax(&cli), 1500);
     }
 
     #[test]

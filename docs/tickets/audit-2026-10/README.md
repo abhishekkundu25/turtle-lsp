@@ -148,8 +148,11 @@ every file.
 8. **SHACL model:** `knowledge::Shape` is built from `shacl::model` with today's
    narrower definition. If that costs more per edit than the current builder, 33c
    keeps the builder and documents the narrower definition instead.
-9. **Error cap:** Turtle-family syntax errors are capped at 100 per document, as JSON's
-   are, with one final error saying so. Parsing goes on past the cap.
+9. **Error cap:** replaced by ticket 38 (owner decision). The editor shows at most
+   1,000 Turtle-family syntax errors per document, the first by position, with one
+   final error saying so; `turtle-lsp check`, `format` and `query` report every error,
+   as 0.7.1 did. The parser keeps every error. JSON-LD keeps its own cap of 100. (The
+   assumption was: capped at 100 per document inside the parser, as JSON's are.)
 10. **Memory budget:** D9's budget is measured on the command line (`format --check`,
     `check --no-shacl`) on the bench's big-file document; the server's RSS rows are
     reported, not gated.

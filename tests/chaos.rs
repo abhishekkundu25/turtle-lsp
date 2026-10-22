@@ -538,6 +538,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         let _ = diagnostics::diagnostics(&a, docs, enc);
         let lint_off = diagnostics::Options {
             lint_undescribed_terms: false,
+            ..diagnostics::Options::default()
         };
         let _ = diagnostics::diagnostics_with(&a, docs, enc, &lint_off);
         let unresolved = imports::Status::Unresolved("x".into());

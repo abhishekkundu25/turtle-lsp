@@ -6,7 +6,7 @@ use super::quickfix::{FixData, PrefixCandidate, add_prefix_note, prefix_candidat
 use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
-use crate::syntax::{Form, Severity, Syntax};
+use crate::syntax::{Form, Severity, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
@@ -116,16 +116,29 @@ fn bare_replacement(iri: &str, written: &str, namespace: &str, local: &str) -> S
         .map_or_else(|| target.clone(), str::to_string)
 }
 
+/// How many syntax errors and warnings of a Turtle, TriG, N-Triples or
+/// N-Quads document the editor shows. JSON-LD has its own cap
+/// ([`crate::jsonld::json::MAX_ERRORS`]).
+pub(crate) const MAX_SYNTAX_ERRORS: usize = 1000;
+
 /// Which optional diagnostics to compute (from the client's settings).
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub lint_undescribed_terms: bool,
+    /// At most this many syntax errors and warnings of a Turtle-family
+    /// document: past it, the ones that start first in the text (the first
+    /// found, on a tie), in the order found, and one error that says there
+    /// are more, empty and at the end of the last one shown. None shows them
+    /// all, as `turtle-lsp check` does. The editor's default is 1,000
+    /// (`MAX_SYNTAX_ERRORS`).
+    pub max_syntax_errors: Option<usize>,
 }
 
 impl Default for Options {
     fn default() -> Options {
         Options {
             lint_undescribed_terms: true,
+            max_syntax_errors: Some(MAX_SYNTAX_ERRORS),
         }
     }
 }
@@ -134,8 +147,24 @@ impl Options {
     pub(crate) fn from_settings(s: &crate::settings::Settings) -> Options {
         Options {
             lint_undescribed_terms: s.lint_undescribed_terms,
+            ..Options::default()
         }
     }
+}
+
+/// Which of `errors` to show when there are more than `max`: the `max` that
+/// start first in the text, the first found on a tie.
+fn first_in_text(errors: &[SyntaxError], max: usize) -> Vec<bool> {
+    let mut order: Vec<usize> = (0..errors.len()).collect();
+    let mut shown = vec![false; errors.len()];
+    if max < errors.len() {
+        order.select_nth_unstable_by_key(max, |&i| (errors[i].span.start, i));
+        order.truncate(max);
+    }
+    for i in order {
+        shown[i] = true;
+    }
+    shown
 }
 
 /// [`diagnostics_with`] with default options.
@@ -163,12 +192,30 @@ pub fn diagnostics_with(
         Severity::Error => DiagnosticSeverity::ERROR,
         Severity::Warning => DiagnosticSeverity::WARNING,
     };
-    for e in &a.parsed.errors {
+    let errors = &a.parsed.errors;
+    let cap = opts
+        .max_syntax_errors
+        .filter(|&max| errors.len() > max && a.parsed.syntax != Syntax::JsonLd);
+    let shown = cap.map(|max| first_in_text(errors, max));
+    let mut last_end = 0;
+    for (i, e) in errors.iter().enumerate() {
+        if shown.as_ref().is_some_and(|s| !s[i]) {
+            continue;
+        }
+        last_end = last_end.max(e.span.end);
         out.push(mk(
             e.span,
             severity(e.severity),
             e.code,
             e.message().to_string(),
+        ));
+    }
+    if let Some(max) = cap {
+        out.push(mk(
+            crate::syntax::Span::new(last_end, last_end),
+            DiagnosticSeverity::ERROR,
+            "syntax",
+            format!("More than {max} syntax errors; the rest are not shown"),
         ));
     }
 
@@ -483,6 +530,126 @@ mod tests {
         };
         assert_eq!(codes("file:///t/myprefixes.ttl"), ["unused-prefix"]);
         assert_eq!(codes("file:///t/dir/prefixes.ttl"), Vec::<String>::new());
+    }
+
+    /// `n` lines, each a statement that parses and one that does not.
+    fn broken_lines(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("<http://e/s{i}> <http://e/p> <http://e/o{i}> . <http://e/t{i}> <http://e/p> .\n"))
+            .collect()
+    }
+
+    /// The syntax diagnostics of `text` as a Turtle file, showing at most `max`.
+    fn syntax_diagnostics(text: &str, max: Option<usize>) -> (Arc<Analysis>, Vec<Diagnostic>) {
+        let a = Arc::new(Analysis::new(
+            "file:///x/a.ttl".into(),
+            text,
+            Arc::default(),
+            false,
+        ));
+        let opts = Options {
+            max_syntax_errors: max,
+            ..Options::default()
+        };
+        let d = diagnostics_with(&a, &Knowledge::default(), Encoding::Utf8, &opts)
+            .into_iter()
+            .filter(|d| d.code == Some(NumberOrString::String("syntax".into())))
+            .collect();
+        (a, d)
+    }
+
+    #[test]
+    fn the_editor_shows_the_first_syntax_errors_and_one_note() {
+        let text = broken_lines(1500);
+        let (a, d) = syntax_diagnostics(&text, Options::default().max_syntax_errors);
+        assert_eq!(a.parsed.errors.len(), 1500);
+        assert_eq!(d.len(), MAX_SYNTAX_ERRORS + 1);
+        for (i, e) in d[..MAX_SYNTAX_ERRORS].iter().enumerate() {
+            assert_eq!(e.range.start.line, i as u32, "{e:?}");
+            assert_eq!(e.message, "Expected an object, found '.'");
+        }
+        let note = &d[MAX_SYNTAX_ERRORS];
+        assert_eq!(
+            note.message,
+            "More than 1000 syntax errors; the rest are not shown"
+        );
+        assert_eq!(note.severity, Some(DiagnosticSeverity::ERROR));
+        let end = d[MAX_SYNTAX_ERRORS - 1].range.end;
+        assert_eq!(note.range, Range::new(end, end));
+    }
+
+    #[test]
+    fn up_to_the_cap_every_syntax_error_is_shown() {
+        let max = Some(MAX_SYNTAX_ERRORS);
+        let (_, d) = syntax_diagnostics(&broken_lines(MAX_SYNTAX_ERRORS), max);
+        assert_eq!(d.len(), MAX_SYNTAX_ERRORS);
+        assert!(d.iter().all(|e| e.message.starts_with("Expected")));
+        let (_, d) = syntax_diagnostics(&broken_lines(MAX_SYNTAX_ERRORS + 1), max);
+        assert_eq!(d.len(), MAX_SYNTAX_ERRORS + 1);
+        assert!(d[MAX_SYNTAX_ERRORS].message.starts_with("More than 1000"));
+    }
+
+    #[test]
+    fn without_a_cap_every_syntax_error_is_shown() {
+        let (_, d) = syntax_diagnostics(&broken_lines(1500), None);
+        assert_eq!(d.len(), 1500);
+        assert!(d.iter().all(|e| !e.message.starts_with("More than")));
+    }
+
+    #[test]
+    fn the_cap_keeps_the_errors_that_come_first_in_the_text() {
+        // The lexer's errors are found before the parser's; here they come
+        // last in the text, so the parser's are the ones shown.
+        let mut text = broken_lines(30);
+        for i in 0..30 {
+            text.push_str(&format!("<http://e/u{i}> <http://e/p> \"open\n"));
+        }
+        let (_, d) = syntax_diagnostics(&text, Some(10));
+        assert_eq!(d.len(), 11);
+        let lines: Vec<u32> = d[..10].iter().map(|e| e.range.start.line).collect();
+        assert_eq!(lines, (0..10).collect::<Vec<u32>>());
+        assert!(
+            d[..10]
+                .iter()
+                .all(|e| e.message == "Expected an object, found '.'")
+        );
+        assert_eq!(
+            d[10].message,
+            "More than 10 syntax errors; the rest are not shown"
+        );
+        // On a tie the first found: line 30's lexer error, not the parser's.
+        let mut tied = broken_lines(30);
+        tied.push_str("<http://e/u> <http://e/p> \"open\n");
+        let (_, d) = syntax_diagnostics(&tied, Some(31));
+        assert_eq!(d.len(), 32);
+        let on_30: Vec<&str> = d[..31]
+            .iter()
+            .filter(|e| e.range.start.line == 30)
+            .map(|e| e.message.as_str())
+            .collect();
+        assert_eq!(on_30, ["Unterminated string"]);
+    }
+
+    #[test]
+    fn json_ld_keeps_its_own_cap() {
+        let text = format!("[{}]", "1 ".repeat(50));
+        let shown = |max| {
+            let a = Analysis::with_syntax(
+                "file:///x/a.jsonld".to_string(),
+                &text,
+                Arc::default(),
+                false,
+                Syntax::JsonLd,
+            );
+            let opts = Options {
+                max_syntax_errors: max,
+                ..Options::default()
+            };
+            diagnostics_with(&a, &Knowledge::default(), Encoding::Utf8, &opts)
+        };
+        let all = shown(None);
+        assert!(all.len() > 5, "{all:?}");
+        assert_eq!(shown(Some(5)), all);
     }
 
     #[test]

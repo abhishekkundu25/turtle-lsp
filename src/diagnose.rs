@@ -35,6 +35,10 @@ pub(crate) struct DiagnosticInputs<'a> {
     /// The document is a cached copy of an import: read-only, nothing to fix
     /// there, so it has no diagnostics.
     pub(crate) cached_import: bool,
+    /// How many syntax errors of a Turtle-family document to show
+    /// ([`diagnostics::Options::max_syntax_errors`]): the editor's
+    /// [`diagnostics::MAX_SYNTAX_ERRORS`], or None (all) for the command line.
+    pub(crate) max_syntax_errors: Option<usize>,
 }
 
 impl<'a> DiagnosticInputs<'a> {
@@ -47,6 +51,7 @@ impl<'a> DiagnosticInputs<'a> {
             shacl: &[],
             indexed: true,
             cached_import: false,
+            max_syntax_errors: Some(diagnostics::MAX_SYNTAX_ERRORS),
         }
     }
 }
@@ -65,7 +70,10 @@ pub(crate) fn document(
     if inputs.cached_import {
         return Vec::new();
     }
-    let opts = diagnostics::Options::from_settings(inputs.settings);
+    let opts = diagnostics::Options {
+        max_syntax_errors: inputs.max_syntax_errors,
+        ..diagnostics::Options::from_settings(inputs.settings)
+    };
     let mut out = match doc {
         Doc::Rdf(a) => diagnostics::diagnostics_with(a, k, enc, &opts),
         Doc::Sparql(q) => sparql_features::diagnostics(q, k, enc, &opts),

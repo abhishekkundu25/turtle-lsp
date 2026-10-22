@@ -71,6 +71,22 @@ test("check: a syntax error exits 1 at its line and column, summary on stderr", 
   assert.equal(r.err.trim(), "1 error, 0 warnings in 1 file")
 })
 
+test("check: every syntax error is reported, past the editor's 1,000 (text, --format json and the summary)", (t) => {
+  let text = ""
+  for (let i = 0; i < 1500; i++) text += `<http://e/s${i}> <http://e/p> <http://e/o${i}> . <http://e/t${i}> <http://e/p> .\n`
+  const ws = workspace(t, { "broken.ttl": text })
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 1)
+  assert.equal(r.lines.length, 1500)
+  assert.ok(r.lines.every((l, i) => l.startsWith(`broken.ttl:${i + 1}:`) && l.endsWith("error[syntax] Expected an object, found '.'")), r.lines.slice(0, 3).join("\n"))
+  assert.equal(r.err.trim(), "1500 errors, 0 warnings in 1 file")
+  const json = JSON.parse(run(ws, ["check", "--format", "json"]).out)
+  const problems = json.files[0].diagnostics
+  assert.equal(problems.length, 1500)
+  assert.ok(problems.every((p) => p.code === "syntax" && !p.message.startsWith("More than")))
+  assert.deepEqual(problems[1499].range.start.line, 1500)
+})
+
 test("check: an undeclared prefix suggests its declaration", (t) => {
   const ws = workspace(t, { "a.ttl": "<http://x/a> foaf:name \"A\" .\n" })
   const r = run(ws, ["check"])

@@ -20,11 +20,11 @@
 //! graph. A literal graph label or a fifth term is an error; prefixed names
 //! and relative IRIs are reported as in N-Triples.
 //!
-//! A document reports at most [`MAX_ERRORS`] syntax errors and warnings: the
-//! ones that start first in the text, in the order they were found. One more
-//! error, empty and at the end of the last one shown, says that there are
-//! more. Parsing goes on past the cap, so the triples of every statement
-//! that parses are still there.
+//! Every syntax error and warning is kept, in the order found: the lexer's
+//! first, then the parser's, then the N-Triples restrictions. Each costs a
+//! span and, for a fixed message, a borrowed string. The editor shows the
+//! first [`crate::features::diagnostics::MAX_SYNTAX_ERRORS`] of a document;
+//! `turtle-lsp check` reports them all.
 
 use super::lexer::{Kind, Token, tokenize};
 use super::*;
@@ -37,15 +37,6 @@ type R<T> = Result<T, ()>;
 /// Real data rarely goes past a dozen; thousands only come from generated or
 /// hostile input, and would overflow a worker thread's stack.
 pub(crate) const MAX_NESTING: u32 = 256;
-
-/// How many syntax errors a document reports, as JSON's
-/// ([`crate::jsonld::json::MAX_ERRORS`]).
-pub(crate) const MAX_ERRORS: usize = 100;
-
-/// How many errors the parser holds before it drops all but the first
-/// [`MAX_ERRORS`]: a multiple of it, so that dropping is rare and a broken
-/// document never holds an error per token.
-const ERRORS_HELD: usize = 4 * MAX_ERRORS;
 
 const TT_HOLDS_NO_REIFIED_TRIPLE: &str =
     "A triple term <<( )>> cannot contain a reified triple << >>: write it as a triple term";
@@ -202,7 +193,6 @@ fn run(
         pname_cache: FxHashMap::default(),
         buf: String::new(),
         v: vocab(),
-        reported: 0,
     };
     let mut comments = 0;
     for i in 0..p.toks.len() {
@@ -222,7 +212,6 @@ fn run(
     if syntax.is_line_based() {
         p.ntriples_restrictions();
     }
-    p.cap_errors();
     if full {
         p.out.tokens = p.toks;
     }
@@ -279,8 +268,6 @@ struct P<'a> {
     /// Scratch space for building IRIs from prefixed names.
     buf: String,
     v: &'static Vocab,
-    /// Errors and warnings reported so far, the dropped ones too.
-    reported: usize,
 }
 
 fn is_starter(k: Kind) -> bool {
@@ -479,62 +466,12 @@ impl<'a> P<'a> {
     }
 
     fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
-        self.report(SyntaxError::new(span, message, Severity::Error, "syntax"));
+        let e = SyntaxError::new(span, message, Severity::Error, "syntax");
+        self.out.errors.push(e);
     }
     fn warning(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
-        self.report(SyntaxError::new(span, message, Severity::Warning, "syntax"));
-    }
-    fn report(&mut self, e: SyntaxError) {
-        self.reported += 1;
+        let e = SyntaxError::new(span, message, Severity::Warning, "syntax");
         self.out.errors.push(e);
-        if self.out.errors.len() >= ERRORS_HELD {
-            self.keep_first_errors();
-        }
-    }
-
-    /// Keep the [`MAX_ERRORS`] errors that start first in the text (the
-    /// first reported, on a tie), in the order they were reported. A later
-    /// error that starts before them all can still take a place.
-    fn keep_first_errors(&mut self) {
-        let errors = &mut self.out.errors;
-        if errors.len() <= MAX_ERRORS {
-            return;
-        }
-        let mut order: Vec<usize> = (0..errors.len()).collect();
-        order.select_nth_unstable_by_key(MAX_ERRORS, |&i| (errors[i].span.start, i));
-        let mut keep = vec![false; errors.len()];
-        for &i in &order[..MAX_ERRORS] {
-            keep[i] = true;
-        }
-        let mut i = 0;
-        errors.retain(|_| {
-            i += 1;
-            keep[i - 1]
-        });
-    }
-
-    /// Past [`MAX_ERRORS`], the first ones and one error that says so, at
-    /// the end of the last one shown.
-    fn cap_errors(&mut self) {
-        if self.reported <= MAX_ERRORS {
-            return;
-        }
-        self.keep_first_errors();
-        let at = self
-            .out
-            .errors
-            .iter()
-            .map(|e| e.span.end)
-            .max()
-            .unwrap_or(0);
-        self.out.errors.push(SyntaxError::new(
-            Span::new(at, at),
-            Cow::Owned(format!(
-                "More than {MAX_ERRORS} syntax errors; the rest are not shown"
-            )),
-            Severity::Error,
-            "syntax",
-        ));
     }
 
     /// Report "Expected X" at the current token (or after the last token at EOF).
@@ -1563,10 +1500,10 @@ impl<'a> P<'a> {
             let iri = match self.iri_cache.get(text) {
                 Some(&iri) => iri,
                 None => {
-                    let warnings = self.reported;
+                    let warnings = self.out.errors.len();
                     let iri = Iri::intern(&self.resolve_iri(t));
                     // Invalid IRIs are not cached, so each occurrence is reported.
-                    if self.reported == warnings {
+                    if self.out.errors.len() == warnings {
                         self.iri_cache.insert(text, iri);
                     }
                     iri
@@ -1806,63 +1743,45 @@ mod tests {
     }
 
     #[test]
-    fn errors_are_capped_and_parsing_goes_on() {
-        let src = broken_lines(1000);
+    fn every_error_is_kept_and_parsing_goes_on() {
+        let src = broken_lines(1500);
         let r = p(&src);
-        assert_eq!(r.errors.len(), MAX_ERRORS + 1);
+        assert_eq!(r.errors.len(), 1500);
         let line = |e: &SyntaxError| src[..e.span.start as usize].matches('\n').count();
-        for (i, e) in r.errors[..MAX_ERRORS].iter().enumerate() {
+        for (i, e) in r.errors.iter().enumerate() {
             assert_eq!(line(e), i, "{e:?}");
             assert_eq!(e.message(), "Expected an object, found '.'");
+            assert_eq!((e.severity, e.code), (Severity::Error, "syntax"));
         }
-        let cap = &r.errors[MAX_ERRORS];
-        assert_eq!(
-            cap.message(),
-            "More than 100 syntax errors; the rest are not shown"
-        );
-        assert_eq!((cap.severity, cap.code), (Severity::Error, "syntax"));
-        let last_shown = r.errors[MAX_ERRORS - 1].span.end;
-        assert_eq!(cap.span, Span::new(last_shown, last_shown));
         // Every valid statement still gives its triple, the last line's too.
-        assert_eq!(r.triples.len(), 1000);
-        assert_eq!(r.statements.len(), 2000);
+        assert_eq!(r.triples.len(), 1500);
+        assert_eq!(r.statements.len(), 3000);
         assert!(
             r.triples
                 .iter()
-                .any(|t| t.o == Node::Iri(Iri::intern("http://e/o999")))
+                .any(|t| t.o == Node::Iri(Iri::intern("http://e/o1499")))
         );
     }
 
     #[test]
-    fn up_to_the_cap_every_error_is_shown() {
-        let r = p(&broken_lines(MAX_ERRORS));
-        assert_eq!(r.errors.len(), MAX_ERRORS);
-        assert!(r.errors.iter().all(|e| e.message().starts_with("Expected")));
-        let r = p(&broken_lines(MAX_ERRORS + 1));
-        assert_eq!(r.errors.len(), MAX_ERRORS + 1);
-        assert!(r.errors[MAX_ERRORS].message().starts_with("More than 100"));
-    }
-
-    #[test]
-    fn the_cap_keeps_the_errors_that_come_first_in_the_text() {
+    fn errors_come_in_the_order_found_not_the_order_in_the_text() {
         // The lexer's errors are found before the parser's; here they come
-        // last in the text, so the parser's are the ones shown.
+        // last in the text.
         let mut src = broken_lines(300);
         for i in 0..300 {
             src.push_str(&format!("<http://e/u{i}> <http://e/p> \"open\n"));
         }
         let r = p(&src);
-        assert_eq!(r.errors.len(), MAX_ERRORS + 1);
-        let starts: Vec<u32> = r.errors[..MAX_ERRORS]
-            .iter()
-            .map(|e| e.span.start)
-            .collect();
-        assert!(starts.is_sorted(), "{starts:?}");
+        // A missing '.' after each unterminated string as well.
+        assert_eq!(r.errors.len(), 900);
+        let (lexer, parser) = r.errors.split_at(300);
+        assert!(lexer.iter().all(|e| e.message() == "Unterminated string"));
         assert!(
-            r.errors[..MAX_ERRORS]
+            parser[..300]
                 .iter()
                 .all(|e| e.message() == "Expected an object, found '.'")
         );
+        assert!(lexer[0].span.start > parser[299].span.start);
         assert_eq!(r.triples.len(), 600);
     }
 
