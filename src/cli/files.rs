@@ -2,7 +2,7 @@
 //! it loads and reports.
 
 use crate::batch::BatchFile;
-use crate::settings::{Settings, read_settings_file};
+use crate::settings::{Ignored, Layer, SETTINGS_FILE, Settings, read_settings_file};
 use crate::workspace::{is_sparql_path, is_turtle, scan_roots_matching};
 use rayon::prelude::*;
 use serde_json::Value;
@@ -84,8 +84,32 @@ pub fn find_root(flag: Option<&Path>, cwd: &Path) -> Result<PathBuf, String> {
 }
 
 /// Settings: defaults, then `turtle-lsp.json` at `root` (a bad file is
-/// reported on stderr and ignored), then `flags`.
+/// reported on stderr and ignored; so is what it may not set, see
+/// [`Layer::File`]), then `flags`.
 pub fn settings(root: &Path, flags: &Value) -> Settings {
+    let (settings, ignored) = layered(root, flags);
+    warn(&ignored);
+    settings
+}
+
+/// [`settings`], but a number of seconds in `turtle-lsp.json` that cannot be
+/// held is an error (the message for stderr), so a CI gate does not run on
+/// settings it was not given.
+pub fn settings_strict(root: &Path, flags: &Value) -> Result<Settings, String> {
+    let (settings, mut ignored) = layered(root, flags);
+    if !ignored.out_of_range.is_empty() {
+        let only = Ignored {
+            untrusted: Vec::new(),
+            out_of_range: std::mem::take(&mut ignored.out_of_range),
+        };
+        warn(&ignored);
+        return Err(only.message(SETTINGS_FILE).unwrap_or_default());
+    }
+    warn(&ignored);
+    Ok(settings)
+}
+
+fn layered(root: &Path, flags: &Value) -> (Settings, Ignored) {
     let file = match read_settings_file(root) {
         Ok(v) => v.unwrap_or(Value::Null),
         Err(e) => {
@@ -93,7 +117,13 @@ pub fn settings(root: &Path, flags: &Value) -> Settings {
             Value::Null
         }
     };
-    Settings::from_layers([&file, flags])
+    Settings::layered([(Layer::File, &file), (Layer::Client, flags)])
+}
+
+fn warn(ignored: &Ignored) {
+    if let Some(m) = ignored.message(SETTINGS_FILE) {
+        eprintln!("turtle-lsp: warning: {m}");
+    }
 }
 
 /// `path` relative to `base` with `/` separators, if it is under `base`.

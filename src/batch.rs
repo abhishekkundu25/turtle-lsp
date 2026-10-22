@@ -1022,9 +1022,10 @@ mod tests {
 
     #[test]
     fn a_query_runs_over_the_rdf_files_with_the_project_prefixes() {
-        let settings = Settings::from_layers([&serde_json::json!({
-            "prefixes": {"ex": "http://example.org/"}
-        })]);
+        let settings = Settings::from_layers([(
+            crate::settings::Layer::Client,
+            &serde_json::json!({"prefixes": {"ex": "http://example.org/"}}),
+        )]);
         // A headerless data file, a SPARQL file (not data) and the query.
         let files = [
             file("a.ttl", "ex:a ex:p 1 .\n"),

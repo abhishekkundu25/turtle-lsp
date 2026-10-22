@@ -298,12 +298,12 @@ pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
             }
             "--timeout" => {
                 let v = it.value(f)?;
-                let secs: f64 = v
-                    .parse()
+                let secs = v
+                    .parse::<f64>()
                     .ok()
-                    .filter(|s: &f64| s.is_finite() && *s >= 0.0)
+                    .and_then(crate::settings::seconds)
                     .ok_or_else(|| format!("{f} needs a number of seconds, not '{v}'"))?;
-                timeout = (secs > 0.0).then(|| std::time::Duration::from_secs_f64(secs));
+                timeout = (!secs.is_zero()).then_some(secs);
             }
             "--limit" => limit = Some(it.number(f)?),
             "--max-buffered-rows" => {
@@ -418,6 +418,11 @@ mod tests {
         assert!(query("").unwrap_err().contains("no query"));
         assert!(query("q.rq --format xml").is_err());
         assert!(query("q.rq --timeout -1").is_err());
+        // A number a Duration cannot hold is an error, not a panic.
+        for bad in ["1e300", "1.9e19", "inf", "NaN"] {
+            let e = query(&format!("q.rq --timeout {bad}")).unwrap_err();
+            assert!(e.contains("needs a number of seconds"), "{bad}: {e}");
+        }
         assert!(query("q.rq --max-buffered-rows -1").is_err());
         assert!(query("q.rq --max-buffered-rows lots").is_err());
         assert!(query("q.rq --limit 3 --format json").is_err());

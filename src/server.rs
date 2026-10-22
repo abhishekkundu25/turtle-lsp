@@ -25,7 +25,7 @@ use crate::features::{
     completion, diagnostics, embedded, format, hover, inlay, navigation, refactor, semantic,
     shacl_validate, symbols,
 };
-use crate::settings::{SETTINGS_FILE, Settings, read_settings_file};
+use crate::settings::{Layer, SETTINGS_FILE, Settings, read_settings_file};
 use crate::sparql::features as sparql_features;
 use crate::workspace::{
     DocKind, PREFIX_FILE, Workspace, is_turtle, normalize_uri, path_to_uri, uri_to_path,
@@ -86,7 +86,8 @@ pub struct Server {
     /// invalid), `initializationOptions` and the last `turtle` configuration
     /// section; `settings` is the defaults overridden by these, in that order.
     file_settings: Value,
-    /// Why `turtle-lsp.json` was not used at startup, shown once started.
+    /// The warning about `turtle-lsp.json` at startup (unusable, or keys it may
+    /// not set), shown once started.
     file_settings_error: Option<String>,
     init_options: Value,
     config: Value,
@@ -266,7 +267,10 @@ impl Server {
             read_file_settings(roots.first())
         };
         let init_options = params.initialization_options.clone().unwrap_or_default();
-        let settings = Settings::from_layers([&file_settings, &init_options]);
+        let settings = Settings::from_layers([
+            (Layer::File, &file_settings),
+            (Layer::Client, &init_options),
+        ]);
         // Embedded, every file is open.
         let wsdiag = workspace_diagnostics::State::new(settings.diagnostics_workspace && !inline);
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
@@ -356,12 +360,22 @@ fn use_network(ws: &mut Workspace, network: bool, inline: bool) -> Receiver<Stri
     never()
 }
 
-/// The settings layer from `turtle-lsp.json` at `root`, and why it was
-/// ignored if it was: Null when there is no root, no file, or a bad file.
+/// The settings layer from `turtle-lsp.json` at `root`, and the warning to
+/// show for it, if any: Null when there is no root, no file, or a bad file;
+/// the warning names the keys of a good file that it may not set.
 fn read_file_settings(root: Option<&PathBuf>) -> (Value, Option<String>) {
     match root.map(|r| read_settings_file(r)) {
-        Some(Ok(Some(v))) => (v, None),
-        Some(Err(e)) => (Value::Null, Some(e)),
+        Some(Ok(Some(v))) => {
+            let (_, ignored) = Settings::layered([(Layer::File, &v)]);
+            let warning = ignored
+                .message(SETTINGS_FILE)
+                .map(|m| format!("turtle-lsp: {m}"));
+            (v, warning)
+        }
+        Some(Err(e)) => (
+            Value::Null,
+            Some(format!("turtle-lsp: {e}; its settings are ignored")),
+        ),
         _ => (Value::Null, None),
     }
 }
@@ -1111,10 +1125,10 @@ impl Server {
         self.relayer_settings();
     }
 
-    fn warn_settings_file(&self, error: String) {
+    fn warn_settings_file(&self, message: String) {
         let params = ShowMessageParams {
             typ: MessageType::WARNING,
-            message: format!("turtle-lsp: {error}; its settings are ignored"),
+            message,
         };
         let n = Notification::new(lsp_types::notification::ShowMessage::METHOD.into(), params);
         let _ = self.conn.sender.send(n.into());
@@ -1122,7 +1136,11 @@ impl Server {
 
     /// Recompute the settings from their layers and act on any change.
     fn relayer_settings(&mut self) {
-        let new = Settings::from_layers([&self.file_settings, &self.init_options, &self.config]);
+        let new = Settings::from_layers([
+            (Layer::File, &self.file_settings),
+            (Layer::Client, &self.init_options),
+            (Layer::Client, &self.config),
+        ]);
         if new == self.settings {
             return;
         }

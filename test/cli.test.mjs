@@ -3,7 +3,8 @@
 // code and file contents are asserted.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
+import http from "node:http"
 import fs from "node:fs"
 import path from "node:path"
 import { serverPath, tempDir } from "./lsp-client.mjs"
@@ -331,4 +332,65 @@ test("format: a file with syntax errors is left alone and reported (exit 2)", (t
     assert.equal(read(ws, "b.ttl"), broken)
   }
   assert.notEqual(read(ws, "a.ttl"), UNFORMATTED, "the other files are formatted")
+})
+
+// ---- turtle-lsp.json is untrusted ----
+
+// Like `run`, for a test whose own process must answer requests meanwhile.
+function runAsync(ws, args) {
+  return new Promise((resolve) => {
+    const p = spawn(serverPath, args, {
+      cwd: ws,
+      env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), NO_COLOR: "1", NO_PROXY: "127.0.0.1,localhost" },
+    })
+    let out = ""
+    let err = ""
+    p.stdout.on("data", (d) => (out += d))
+    p.stderr.on("data", (d) => (err += d))
+    p.on("close", (code) => resolve({ code, out, err }))
+  })
+}
+
+test("check: turtle-lsp.json cannot turn on the network; --network can", async (t) => {
+  const hits = []
+  const web = http.createServer((req, res) => {
+    hits.push(req.url)
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise((r) => web.listen(0, "127.0.0.1", r))
+  t.after(() => web.close())
+  const ws = workspace(t, {
+    "turtle-lsp.json": JSON.stringify({ imports: { network: true } }),
+    "d.ttl": `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<http://ex.com/d> a owl:Ontology ; owl:imports <http://127.0.0.1:${web.address().port}/x> .
+`,
+  })
+  const off = await runAsync(ws, ["check", "--root", ws])
+  assert.deepEqual(hits, [])
+  assert.match(off.out, /info\[unresolved-import\]/)
+  assert.match(off.err, /warning: turtle-lsp\.json: ignored imports\.network/)
+  const on = await runAsync(ws, ["check", "--network"])
+  assert.equal(hits.length, 1, JSON.stringify(hits))
+  assert.equal(on.err.includes("ignored imports.network"), true, "the file still cannot do it; the flag did")
+})
+
+test("check: a timeout in turtle-lsp.json that no duration can hold exits 2 with a message, not a panic", (t) => {
+  const ws = workspace(t, { "a.ttl": "<http://x/a> <http://x/b> <http://x/c> .\n", "turtle-lsp.json": '{"query":{"timeoutSeconds":1e300}}' })
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 2, r.err)
+  assert.match(r.err, /^turtle-lsp: turtle-lsp\.json: query\.timeoutSeconds needs a number of seconds, not 1e\+300$/m)
+  // The other commands ignore the value, with a warning.
+  const f = run(ws, ["format", "--check"])
+  assert.notEqual(f.code, 101, f.err)
+  assert.match(f.err, /query\.timeoutSeconds needs a number of seconds/)
+})
+
+test("check: a limit in turtle-lsp.json above the defaults is ignored, with one warning naming the keys", (t) => {
+  const ws = workspace(t, { "a.ttl": "<http://x/a> <http://x/b> <http://x/c> .\n", "turtle-lsp.json": '{"query":{"maxRows":0,"timeoutSeconds":0},"shacl":{"maxTriples":999999999}}' })
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 0, r.err)
+  const warnings = r.err.split("\n").filter((l) => l.includes("warning"))
+  assert.equal(warnings.length, 1, r.err)
+  for (const k of ["query.maxRows", "query.timeoutSeconds", "shacl.maxTriples"]) assert.ok(warnings[0].includes(k), warnings[0])
 })

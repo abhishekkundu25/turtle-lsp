@@ -30,7 +30,7 @@ pub fn run(a: CheckArgs) -> Result<i32, String> {
     if a.network {
         flags.insert("imports.network".into(), json!(true));
     }
-    let settings = files::settings(&root, &flags.into());
+    let settings = files::settings_strict(&root, &flags.into())?;
     let ws = files::load(root, cwd, &a.paths, Context::Workspace)?;
     let disk = Disk {
         roots: vec![ws.root.clone()],

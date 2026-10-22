@@ -162,6 +162,11 @@ test("query: bad flags and help", (t) => {
   assert.equal(query(ws, []).code, 2)
   assert.equal(query(ws, ["names.rq", "--format", "xml"]).code, 2)
   assert.equal(query(ws, ["names.rq", "--timeout", "soon"]).code, 2)
+  for (const huge of ["1e300", "inf", "NaN", "-1"]) {
+    const r = query(ws, ["names.rq", "--timeout", huge])
+    assert.equal(r.code, 2, `${huge}: ${r.err}`)
+    assert.match(r.err, /--timeout needs a number of seconds/)
+  }
   const help = query(ws, ["--help"])
   assert.equal(help.code, 0)
   assert.match(help.out, /^Usage: turtle-lsp query/)
