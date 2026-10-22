@@ -24,30 +24,15 @@
 //!   one) instead of one between statements.
 
 use crate::analysis::{Analysis, Encoding};
+use crate::layout::{Doc, Ix};
 use crate::syntax::lexer::{Kind, Token, tokenize};
 use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple, parse_with_base};
 use lsp_types::{FormattingOptions, Position, Range, TextEdit};
 use rustc_hash::FxHashMap;
 
-pub const DEFAULT_LINE_WIDTH: usize = 100;
+pub use crate::layout::{DEFAULT_LINE_WIDTH, Options};
 
-#[derive(Clone, Debug)]
-pub struct Options {
-    pub tab_size: u32,
-    pub insert_spaces: bool,
-    pub line_width: usize,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options {
-            tab_size: 4,
-            insert_spaces: true,
-            line_width: DEFAULT_LINE_WIDTH,
-        }
-    }
-}
-
+/// The LSP adapter: the layout core does not depend on `lsp_types`.
 impl Options {
     pub fn from_lsp(o: &FormattingOptions, line_width: usize) -> Self {
         Options {
@@ -140,124 +125,6 @@ fn same_triples(a: &[Triple], b: &[Triple]) -> bool {
         && a.iter()
             .zip(b)
             .all(|(x, y)| x.s == y.s && x.p == y.p && x.o == y.o && x.graph == y.graph)
-}
-
-// ---- tokens and comment attachment ----
-
-type Ix = u32;
-
-struct Comment {
-    start: u32,
-    end: u32,
-    /// A blank line separates it from what comes before.
-    blank_before: bool,
-}
-
-struct Doc<'a> {
-    src: &'a str,
-    /// Non-comment tokens.
-    toks: Vec<Token>,
-    comments: Vec<Comment>,
-    /// Own-line comments above token `i` (index `toks.len()` = end of file),
-    /// as a range into `comments`.
-    lead: Vec<(u32, u32)>,
-    /// The comment after token `i` on the same line.
-    trail: Vec<Option<u32>>,
-    /// A blank line separates token `i` from what comes before.
-    blank_before: Vec<bool>,
-    /// Prefix counts of tokens with leading / trailing comments.
-    lead_pref: Vec<u32>,
-    trail_pref: Vec<u32>,
-}
-
-fn has_blank(gap: &str) -> bool {
-    let mut it = gap.split('\n');
-    it.next();
-    // Two newlines with only whitespace between them.
-    let n = it.count();
-    n >= 2
-}
-
-impl<'a> Doc<'a> {
-    fn new(src: &'a str, all: &[Token]) -> Doc<'a> {
-        let n = all.iter().filter(|t| t.kind != Kind::Comment).count();
-        let mut d = Doc {
-            src,
-            toks: Vec::with_capacity(n),
-            comments: Vec::new(),
-            lead: vec![(0, 0); n + 1],
-            trail: vec![None; n],
-            blank_before: Vec::with_capacity(n),
-            lead_pref: Vec::new(),
-            trail_pref: Vec::new(),
-        };
-        let mut prev_end = 0usize;
-        // Comments waiting for the next token.
-        let mut lead_from = 0u32;
-        for t in all {
-            let gap = &src[prev_end..t.start as usize];
-            let blank = prev_end > 0 && has_blank(gap);
-            if t.kind == Kind::Comment {
-                let text = src[t.start as usize..t.end as usize].trim_end();
-                let idx = d.comments.len() as u32;
-                d.comments.push(Comment {
-                    start: t.start,
-                    end: t.start + text.len() as u32,
-                    blank_before: blank,
-                });
-                let own_line = d.toks.is_empty() || gap.contains('\n') || prev_end == 0;
-                if own_line {
-                    // Stays in the pending run for the next token.
-                } else {
-                    let last = d.toks.len() - 1;
-                    if d.trail[last].is_none() && lead_from == idx {
-                        d.trail[last] = Some(idx);
-                        lead_from = idx + 1;
-                    }
-                }
-            } else {
-                let j = d.toks.len();
-                d.lead[j] = (lead_from, d.comments.len() as u32);
-                lead_from = d.comments.len() as u32;
-                d.blank_before.push(blank);
-                d.toks.push(*t);
-            }
-            prev_end = t.end as usize;
-        }
-        d.lead[n] = (lead_from, d.comments.len() as u32);
-        let mut acc = 0;
-        d.lead_pref.push(0);
-        for r in &d.lead {
-            acc += u32::from(r.0 < r.1);
-            d.lead_pref.push(acc);
-        }
-        acc = 0;
-        d.trail_pref.push(0);
-        for t in &d.trail {
-            acc += u32::from(t.is_some());
-            d.trail_pref.push(acc);
-        }
-        d
-    }
-
-    fn text(&self, i: Ix) -> &'a str {
-        self.toks[i as usize].text(self.src)
-    }
-
-    fn comment(&self, c: u32) -> &'a str {
-        let c = &self.comments[c as usize];
-        &self.src[c.start as usize..c.end as usize]
-    }
-
-    /// Any comment that would end up inside the tokens `a..=b`.
-    fn comments_inside(&self, a: Ix, b: Ix) -> bool {
-        let (a, b) = (a as usize, b as usize);
-        self.lead_pref[b + 1] > self.lead_pref[a + 1] || self.trail_pref[b] > self.trail_pref[a]
-    }
-
-    fn leading(&self, i: Ix) -> (u32, u32) {
-        self.lead[i as usize]
-    }
 }
 
 // ---- concrete syntax tree ----
@@ -729,7 +596,7 @@ impl Cst<'_> {
 const BIG: usize = 1 << 24;
 
 struct Printer<'a> {
-    d: &'a Doc<'a>,
+    d: &'a Doc<'a, Token>,
     out: String,
     nl: &'static str,
     unit: String,
@@ -750,7 +617,7 @@ struct Printer<'a> {
 }
 
 impl<'a> Printer<'a> {
-    fn new(d: &'a Doc<'a>, o: &Options, syntax: Syntax) -> Printer<'a> {
+    fn new(d: &'a Doc<'a, Token>, o: &Options, syntax: Syntax) -> Printer<'a> {
         let nl = match d.src.find('\n') {
             Some(i) if i > 0 && d.src.as_bytes()[i - 1] == b'\r' => "\r\n",
             _ => "\n",
@@ -1248,7 +1115,7 @@ impl<'a> Printer<'a> {
 /// later moved up behind it as long as that cannot change what any IRI means
 /// (no `BASE` moves, and no prefix moves above a use of its name), then the
 /// rest in original order.
-fn hoisted_order(d: &Doc, items: &[Item]) -> Vec<usize> {
+fn hoisted_order(d: &Doc<Token>, items: &[Item]) -> Vec<usize> {
     let first_stmt = items
         .iter()
         .position(|it| !matches!(it, Item::Directive { .. }))

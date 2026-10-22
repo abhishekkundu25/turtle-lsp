@@ -61,7 +61,7 @@
 //! Linear in the number of tokens, apart from the `spargebra` checks.
 
 use super::{Document, Token, TokenKind, lexer};
-use crate::features::format::Options;
+use crate::layout::{Doc, Ix, Options};
 use crate::syntax::PrefixMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 use spargebra::SparqlParser;
@@ -271,51 +271,20 @@ fn canonical(algebra: &str, own: &FxHashSet<&str>) -> String {
 /// The laid-out text, or `None` when the tokens do not make a construct the
 /// layout knows (which a document without errors always does).
 fn layout(doc: &Document, opts: &Options) -> Option<String> {
-    let d = Doc::new(doc.text(), doc.tokens())?;
-    let mut f = Printer::new(&d, opts);
+    let d = Doc::new(doc.text(), doc.tokens());
+    let close = brackets(&d)?;
+    let mut f = Printer::new(&d, close, opts);
     f.document(doc.is_update())?;
     Some(f.out)
 }
 
-// ---- tokens, brackets and comment attachment ----
-
-type Ix = u32;
+// ---- brackets ----
 
 /// Not a bracket.
 const NONE: Ix = Ix::MAX;
 
 /// Width of something that cannot go on one line.
 const BIG: usize = 1 << 24;
-
-struct Comment {
-    start: u32,
-    end: u32,
-    /// A blank line separates it from what comes before.
-    blank_before: bool,
-}
-
-struct Doc<'a> {
-    src: &'a str,
-    /// Non-comment tokens.
-    toks: Vec<Token>,
-    comments: Vec<Comment>,
-    /// Own-line comments above token `i` (index `toks.len()` = end of file),
-    /// as a range into `comments`.
-    lead: Vec<(u32, u32)>,
-    /// The comment after token `i` on the same line.
-    trail: Vec<Option<u32>>,
-    /// A blank line separates token `i` from what comes before.
-    blank_before: Vec<bool>,
-    /// Prefix counts of tokens with leading / trailing comments.
-    lead_pref: Vec<u32>,
-    trail_pref: Vec<u32>,
-    /// For an opening bracket, the index of its closing one.
-    close: Vec<Ix>,
-}
-
-fn has_blank(gap: &str) -> bool {
-    gap.split('\n').count() >= 3
-}
 
 fn closer(open: &str) -> Option<&'static str> {
     Some(match open {
@@ -329,98 +298,28 @@ fn closer(open: &str) -> Option<&'static str> {
     })
 }
 
-impl<'a> Doc<'a> {
-    /// `None` when the brackets do not match.
-    fn new(src: &'a str, all: &[Token]) -> Option<Doc<'a>> {
-        let n = all.iter().filter(|t| t.kind != TokenKind::Comment).count();
-        let mut d = Doc {
-            src,
-            toks: Vec::with_capacity(n),
-            comments: Vec::new(),
-            lead: vec![(0, 0); n + 1],
-            trail: vec![None; n],
-            blank_before: Vec::with_capacity(n),
-            lead_pref: Vec::with_capacity(n + 2),
-            trail_pref: Vec::with_capacity(n + 1),
-            close: vec![NONE; n],
-        };
-        let mut prev_end = 0usize;
-        // Comments waiting for the next token start here.
-        let mut lead_from = 0u32;
-        let mut open: Vec<Ix> = Vec::new();
-        for t in all {
-            let gap = &src[prev_end..t.span.start as usize];
-            let blank = prev_end > 0 && has_blank(gap);
-            if t.kind == TokenKind::Comment {
-                let text = t.text(src).trim_end();
-                let idx = d.comments.len() as u32;
-                d.comments.push(Comment {
-                    start: t.span.start,
-                    end: t.span.start + text.len() as u32,
-                    blank_before: blank,
-                });
-                let own_line = d.toks.is_empty() || gap.contains(['\n', '\r']);
-                if !own_line {
-                    let last = d.toks.len() - 1;
-                    if d.trail[last].is_none() && lead_from == idx {
-                        d.trail[last] = Some(idx);
-                        lead_from = idx + 1;
-                    }
-                }
-            } else {
-                let j = d.toks.len() as Ix;
-                d.lead[j as usize] = (lead_from, d.comments.len() as u32);
-                lead_from = d.comments.len() as u32;
-                d.blank_before.push(blank);
-                d.toks.push(*t);
-                if t.kind == TokenKind::Punct {
-                    let s = t.text(src);
-                    if closer(s).is_some() {
-                        open.push(j);
-                    } else if matches!(s, "}" | ")" | "]" | ">>" | ")>>" | "|}") {
-                        let o = open.pop()?;
-                        if closer(d.toks[o as usize].text(src)) != Some(s) {
-                            return None;
-                        }
-                        d.close[o as usize] = j;
-                    }
-                }
+/// The matching-bracket table beside the token document: for an opening
+/// bracket, the index of its closing one (`NONE` for any other token).
+/// `None` when the brackets do not match.
+fn brackets(d: &Doc<Token>) -> Option<Vec<Ix>> {
+    let mut close = vec![NONE; d.toks.len()];
+    let mut open: Vec<Ix> = Vec::new();
+    for (j, t) in d.toks.iter().enumerate() {
+        if t.kind != TokenKind::Punct {
+            continue;
+        }
+        let s = t.text(d.src);
+        if closer(s).is_some() {
+            open.push(j as Ix);
+        } else if matches!(s, "}" | ")" | "]" | ">>" | ")>>" | "|}") {
+            let o = open.pop()?;
+            if closer(d.toks[o as usize].text(d.src)) != Some(s) {
+                return None;
             }
-            prev_end = t.span.end as usize;
+            close[o as usize] = j as Ix;
         }
-        if !open.is_empty() {
-            return None;
-        }
-        d.lead[n] = (lead_from, d.comments.len() as u32);
-        let mut acc = 0;
-        d.lead_pref.push(0);
-        for r in &d.lead {
-            acc += u32::from(r.0 < r.1);
-            d.lead_pref.push(acc);
-        }
-        acc = 0;
-        d.trail_pref.push(0);
-        for t in &d.trail {
-            acc += u32::from(t.is_some());
-            d.trail_pref.push(acc);
-        }
-        Some(d)
     }
-
-    fn comment(&self, c: u32) -> &'a str {
-        let c = &self.comments[c as usize];
-        &self.src[c.start as usize..c.end as usize]
-    }
-
-    /// Any comment that would end up inside the tokens `a..=b`.
-    fn comments_inside(&self, a: Ix, b: Ix) -> bool {
-        let (a, b) = (a as usize, b as usize);
-        self.lead_pref[b + 1] > self.lead_pref[a + 1] || self.trail_pref[b] > self.trail_pref[a]
-    }
-
-    fn leading(&self, i: Ix) -> (u32, u32) {
-        self.lead[i as usize]
-    }
+    open.is_empty().then_some(close)
 }
 
 // ---- triples ----
@@ -517,7 +416,9 @@ enum Blank {
 // ---- printing ----
 
 struct Printer<'a> {
-    d: &'a Doc<'a>,
+    d: &'a Doc<'a, Token>,
+    /// The bracket table of `d`.
+    close: Vec<Ix>,
     /// The next token to lay out.
     pos: usize,
     out: String,
@@ -539,7 +440,7 @@ struct Printer<'a> {
 }
 
 impl<'a> Printer<'a> {
-    fn new(d: &'a Doc<'a>, o: &Options) -> Printer<'a> {
+    fn new(d: &'a Doc<'a, Token>, close: Vec<Ix>, o: &Options) -> Printer<'a> {
         let nl = match d.src.find('\n') {
             Some(i) if i > 0 && d.src.as_bytes()[i - 1] == b'\r' => "\r\n",
             _ => "\n",
@@ -551,6 +452,7 @@ impl<'a> Printer<'a> {
         };
         Printer {
             d,
+            close,
             pos: 0,
             out: String::with_capacity(d.src.len() + d.src.len() / 4),
             nl,
@@ -609,7 +511,7 @@ impl<'a> Printer<'a> {
     }
 
     fn close_of(&self, i: usize) -> Option<usize> {
-        let c = *self.d.close.get(i)?;
+        let c = *self.close.get(i)?;
         (c != NONE).then_some(c as usize)
     }
 

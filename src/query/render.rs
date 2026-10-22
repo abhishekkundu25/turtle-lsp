@@ -14,8 +14,9 @@
 //! hover does); JSON, CSV and TSV give full IRIs.
 
 use super::{Answer, Solutions};
-use crate::features::format::{Options, format};
+use crate::features::format::format;
 use crate::features::hover::short;
+use crate::layout::Options;
 use crate::syntax::{PrefixMap, Syntax, XSD, parse};
 use serde_json::{Map, Value, json};
 use spargebra::term::{Literal, NamedOrBlankNode, Term, Triple};

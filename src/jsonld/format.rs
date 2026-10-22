@@ -9,7 +9,7 @@
 //! do not stop formatting: the text is valid JSON and is copied as written.
 
 use super::json::{self, Json, Value};
-use crate::features::format::Options;
+use crate::layout::Options;
 use crate::syntax::Span;
 
 /// The byte order mark, which the parser skips and the formatter keeps.

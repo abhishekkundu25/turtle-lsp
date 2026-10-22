@@ -32,9 +32,9 @@ mod outline;
 mod rename;
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
-use crate::features::format::Options;
 use crate::features::semantic::Raw;
 use crate::knowledge::Knowledge;
+use crate::layout::Options;
 use crate::settings::InlayLabels;
 use lsp_types::*;
 use std::sync::Arc;

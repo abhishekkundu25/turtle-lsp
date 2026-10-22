@@ -79,7 +79,7 @@ pub use structure::{
     TermRef, TermRole, TriplePattern, VarId, VarOcc, VarRole, VersionDecl,
 };
 
-use crate::features::format::Options;
+use crate::layout::Options;
 use crate::syntax::{PrefixMap, Span};
 
 /// Why `text` must not be given to `spargebra`, if it must not: nesting or
