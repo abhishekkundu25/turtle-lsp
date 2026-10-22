@@ -520,13 +520,7 @@ pub fn jcs(v: &Json, out: &mut String) {
             out.push(']');
         }
         Value::Object(o) => {
-            let mut members: Vec<_> = o
-                .members
-                .iter()
-                .enumerate()
-                .filter(|(i, m)| !o.members[i + 1..].iter().any(|n| n.key == m.key))
-                .map(|(_, m)| m)
-                .collect();
+            let mut members = o.entries();
             members.sort_by(|a, b| a.key.encode_utf16().cmp(b.key.encode_utf16()));
             out.push('{');
             for (i, m) in members.into_iter().enumerate() {
@@ -622,5 +616,31 @@ mod tests {
         let mut s = String::new();
         jcs(&doc.root.unwrap(), &mut s);
         assert_eq!(s, r#"{"a":"y","b":[1,true,null]}"#);
+    }
+
+    /// Duplicate keys are dropped in linear time: 100k keys canonicalize
+    /// in well under a second (pairwise comparison took seconds).
+    #[test]
+    fn json_canonicalization_of_a_large_object_is_fast() {
+        let mut text = String::from("{");
+        for i in 0..100_000 {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push_str(&format!("\"k{}\":{i}", i % 99_990));
+        }
+        text.push('}');
+        let doc = crate::jsonld::json::parse(&text);
+        let root = doc.root.unwrap();
+        let start = std::time::Instant::now();
+        let mut s = String::new();
+        jcs(&root, &mut s);
+        let took = start.elapsed();
+        // The last of the ten repeated keys wins, and keys are sorted.
+        assert!(s.starts_with(r#"{"k0":99990,"k1":99991,"#), "{}", &s[..40]);
+        assert_eq!(s.matches(':').count(), 99_990);
+        if cfg!(not(debug_assertions)) {
+            assert!(took < std::time::Duration::from_millis(200), "{took:?}");
+        }
     }
 }

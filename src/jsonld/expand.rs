@@ -304,29 +304,9 @@ type Expansion = Option<(Arc<str>, Form)>;
 
 /// An object's entries as a map: with duplicate keys, the last one.
 fn map_entries(o: &Object) -> Vec<&Member> {
-    let usable = |m: &&Member| !matches!(m.value.value, Value::Invalid);
-    let n = o.members.len();
-    if n <= 16 {
-        return o
-            .members
-            .iter()
-            .enumerate()
-            .filter(|(i, m)| !o.members[i + 1..].iter().any(|later| later.key == m.key))
-            .map(|(_, m)| m)
-            .filter(usable)
-            .collect();
-    }
-    let mut last: FxHashMap<&str, usize> = FxHashMap::default();
-    for (i, m) in o.members.iter().enumerate() {
-        last.insert(&m.key, i);
-    }
-    o.members
-        .iter()
-        .enumerate()
-        .filter(|(i, m)| last[&*m.key] == *i)
-        .map(|(_, m)| m)
-        .filter(usable)
-        .collect()
+    let mut entries = o.entries();
+    entries.retain(|m| !matches!(m.value.value, Value::Invalid));
+    entries
 }
 
 /// A value, or each item of an array.

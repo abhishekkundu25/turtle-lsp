@@ -94,6 +94,31 @@ impl Object {
     pub fn get(&self, key: &str) -> Option<&Member> {
         self.members.iter().rev().find(|m| &*m.key == key)
     }
+
+    /// The members as a map reads them, in text order: with duplicate keys,
+    /// only the last one. Linear in the member count.
+    pub fn entries(&self) -> Vec<&Member> {
+        let n = self.members.len();
+        if n <= 16 {
+            return self
+                .members
+                .iter()
+                .enumerate()
+                .filter(|(i, m)| !self.members[i + 1..].iter().any(|later| later.key == m.key))
+                .map(|(_, m)| m)
+                .collect();
+        }
+        let mut last: rustc_hash::FxHashMap<&str, usize> = rustc_hash::FxHashMap::default();
+        for (i, m) in self.members.iter().enumerate() {
+            last.insert(&m.key, i);
+        }
+        self.members
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| last[&*m.key] == *i)
+            .map(|(_, m)| m)
+            .collect()
+    }
 }
 
 impl Json {

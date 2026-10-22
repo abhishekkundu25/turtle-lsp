@@ -126,8 +126,20 @@ pub fn parse(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Pars
     parse_document(text, base, loader).parsed
 }
 
-/// [`parse`], with the [`Dropped`] records.
+/// [`parse`], with the [`Dropped`] records. Remote contexts are processed
+/// again for each call: use [`parse_document_with`] to share a cache.
 pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Document {
+    parse_document_with(text, base, loader, &context::ContextCache::new())
+}
+
+/// [`parse_document`], keeping processed remote contexts in `cache`, which
+/// the caller owns and may share between documents.
+pub fn parse_document_with(
+    text: &str,
+    base: Option<&str>,
+    loader: &dyn ContextLoader,
+    cache: &context::ContextCache,
+) -> Document {
     let doc = json::parse(text);
     let mut parsed = Parsed {
         syntax: Syntax::JsonLd,
@@ -139,7 +151,7 @@ pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader
     let mut used_terms = Vec::new();
     let mut index = SourceIndex::default();
     if let Some(root) = &doc.root {
-        let mut processor = context::Processor::new(loader);
+        let mut processor = context::Processor::with_cache(loader, cache);
         let expanded = expand::expand(root, base, &mut processor);
         parsed.errors.extend(expanded.errors);
         parsed.errors.extend(processor.take_warnings());
@@ -709,5 +721,102 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    /// The predicates of the triples whose predicate IRI is one of ours.
+    fn evil_triples(p: &Parsed, subject: &str) -> usize {
+        p.triples
+            .iter()
+            .filter(|t| {
+                matches!(&t.s, Node::Iri(s) if s.as_str() == subject)
+                    && t.p.as_str().starts_with("http://evil/")
+            })
+            .count()
+    }
+
+    /// `@graph` siblings, one with an inline object before a remote context
+    /// and one with the remote context alone, share a cache: neither gets
+    /// the other's terms, in either order, and neither does a second document.
+    #[test]
+    fn siblings_sharing_a_cache_keep_their_own_contexts() {
+        let loader = NoNetwork::default().with(
+            "http://example.com/credentials",
+            r#"{"@context": {"cred": "http://cred.org/"}}"#,
+        );
+        let with_inline = r#"{"@context": [{"zz": "http://evil/zz"}, "http://example.com/credentials"], "@id": "http://ex.org/1", "zz": "v"}"#;
+        let plain = r#"{"@context": "http://example.com/credentials", "@id": "http://ex.org/2", "zz": "v"}"#;
+        for (first, second) in [(with_inline, plain), (plain, with_inline)] {
+            let cache = context::ContextCache::new();
+            let text = format!(
+                r#"{{"@context": {{"outer": "http://outer.org/"}}, "@graph": [{first}, {second}]}}"#
+            );
+            let d = parse_document_with(&text, Some(BASE), &loader, &cache);
+            assert_eq!(evil_triples(&d.parsed, "http://ex.org/1"), 1);
+            assert_eq!(evil_triples(&d.parsed, "http://ex.org/2"), 0);
+            let undefined = d
+                .dropped
+                .iter()
+                .filter(|x| x.reason == DropReason::UndefinedTerm)
+                .count();
+            assert_eq!(undefined, 1, "{:?}", d.dropped);
+            // Another document, same cache.
+            let other =
+                format!(r#"{{"@context": {{"outer": "http://outer.org/"}}, "@graph": [{plain}]}}"#);
+            let d = parse_document_with(&other, Some(BASE), &loader, &cache);
+            assert_eq!(evil_triples(&d.parsed, "http://ex.org/2"), 0);
+            assert_eq!(d.dropped.len(), 1, "{:?}", d.dropped);
+        }
+    }
+
+    /// Contexts that include the one below twice, 20 levels deep, are one
+    /// error, quickly: the work is capped.
+    #[test]
+    fn doubling_nested_contexts_are_one_error_not_a_hang() {
+        let mut loader = NoNetwork::default().with(
+            "http://example.com/c0",
+            r#"{"@context": {"a": "http://a.org/"}}"#,
+        );
+        for i in 1..=20 {
+            loader = loader.with(
+                format!("http://example.com/c{i}"),
+                format!(
+                    r#"{{"@context": ["http://example.com/c{p}", "http://example.com/c{p}"]}}"#,
+                    p = i - 1
+                ),
+            );
+        }
+        let text = r#"{"@context": "http://example.com/c20", "a": "x", "@id": "http://ex.org/1"}"#;
+        let start = std::time::Instant::now();
+        let d = parse_document(text, Some(BASE), &loader);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        let overflow: Vec<_> = d
+            .parsed
+            .errors
+            .iter()
+            .filter(|e| e.message.starts_with("context overflow"))
+            .collect();
+        assert_eq!(overflow.len(), 1, "{:?}", d.parsed.errors);
+    }
+
+    /// A `@json` literal with 100k keys is canonicalized in linear time.
+    #[test]
+    fn a_huge_json_literal_is_parsed_quickly() {
+        let mut text = String::from(
+            r#"{"@context": {"j": {"@id": "http://ex.org/j", "@type": "@json"}}, "@id": "http://ex.org/s", "j": {"#,
+        );
+        for i in 0..100_000 {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push_str(&format!("\"k{i}\":{i}"));
+        }
+        text.push_str("}}");
+        let start = std::time::Instant::now();
+        let p = parse(&text, Some(BASE), &NoNetwork::default());
+        let took = start.elapsed();
+        assert_eq!(p.triples.len(), 1);
+        if cfg!(not(debug_assertions)) {
+            assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+        }
     }
 }

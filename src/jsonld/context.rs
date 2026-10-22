@@ -66,13 +66,22 @@
 //!
 //! # Caching
 //!
-//! A [`ContextCache`] (by default [`ContextCache::global`], shared by every
-//! thread) keeps each remote document's parsed JSON and its processed
+//! A [`ContextCache`], passed to [`Processor::with_cache`] by whoever owns
+//! the processors ([`ContextCache::global`] is the one for a command-line
+//! run), keeps each remote document's parsed JSON and its processed
 //! results, keyed by URL and content. A result is reused when the context it
 //! was applied to is the same (an empty initial context, or the very result
 //! of an earlier cached step), and when every document it loaded on the way
-//! (nested contexts, imports) still has the same content. So re-checking a
+//! (nested contexts, imports) still has the same content. A context half
+//! built (an inline object applied, the rest of the array not yet) is never
+//! the same as another, so nothing is cached for it. So re-checking a
 //! document re-processes only its inline contexts.
+//!
+//! # Work limit
+//!
+//! Remote contexts nest at most [`MAX_REMOTE_CONTEXTS`] deep, and one
+//! `@context` takes at most [`MAX_CONTEXT_STEPS`] steps (remote contexts
+//! applied, contexts processed); one more is a `context overflow`.
 
 use super::json::{Json, Object, Value};
 use super::loader::{ContextLoader, LoadError};
@@ -89,6 +98,13 @@ pub const DIAGNOSTIC_CODE: &str = "jsonld-context";
 /// How many remote contexts may be nested (the spec's "processor defined
 /// limit"); one more is a `context overflow`.
 pub const MAX_REMOTE_CONTEXTS: usize = 32;
+
+/// How many remote contexts may be applied, and local contexts processed,
+/// for one `@context` (or one scoped context) before it is a `context
+/// overflow`. Contexts that include one another several times over (`["c",
+/// "c"]` at every level) would otherwise take 2^depth steps even though
+/// each level is small and the nesting is within [`MAX_REMOTE_CONTEXTS`].
+pub const MAX_CONTEXT_STEPS: usize = 4096;
 
 // ---- errors ----
 
@@ -658,6 +674,16 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Set in the id of a context that exists only in the middle of context
+/// processing (some of the local context applied, not all of it): nothing
+/// else will ever hold that exact context, so nothing is cached for it.
+const IN_PROGRESS: u64 = 1 << 63;
+
+/// A new id for a context being built by processing.
+fn in_progress_id() -> u64 {
+    next_id() | IN_PROGRESS
+}
+
 /// The active context (§4.1). Cheap to clone.
 #[derive(Clone, Debug)]
 pub struct ActiveContext {
@@ -840,12 +866,16 @@ enum Input {
     Pristine,
     /// The context with this id.
     Id(u64),
+    /// A context half built: no result is kept for it.
+    InProgress,
 }
 
 impl Input {
     fn of(active: &ActiveContext) -> Input {
         if active.is_pristine() {
             Input::Pristine
+        } else if active.id & IN_PROGRESS != 0 {
+            Input::InProgress
         } else {
             Input::Id(active.id)
         }
@@ -890,7 +920,8 @@ impl ContextCache {
         }
     }
 
-    /// The process-wide cache.
+    /// The process-wide cache, for a command-line run. A server keeps its
+    /// own and hands it to each [`Processor`].
     pub fn global() -> &'static ContextCache {
         static CACHE: OnceLock<ContextCache> = OnceLock::new();
         CACHE.get_or_init(ContextCache::new)
@@ -949,6 +980,9 @@ impl ContextCache {
         validate: bool,
     ) -> Vec<Processed> {
         let input = Input::of(active);
+        if input == Input::InProgress {
+            return Vec::new();
+        }
         let Ok(docs) = self.docs.lock() else {
             return Vec::new();
         };
@@ -974,6 +1008,9 @@ impl ContextCache {
     }
 
     fn store(&self, url: &str, text: &Arc<str>, p: Processed) {
+        if p.input == Input::InProgress {
+            return;
+        }
         if let Ok(mut docs) = self.docs.lock()
             && let Some(doc) = docs
                 .iter_mut()
@@ -1042,6 +1079,9 @@ pub struct Processor<'l> {
     /// Every load, in order, for the dependencies of cached results.
     log: Vec<Dep>,
     scoped: FxHashMap<ScopedKey, (Arc<Json>, ActiveContext)>,
+    /// Steps taken for the context being processed, against
+    /// [`MAX_CONTEXT_STEPS`].
+    steps: usize,
     /// The key of the term being defined, without its quotes: where errors
     /// inside its definition go.
     term_at: Option<Span>,
@@ -1127,11 +1167,8 @@ fn member<'a>(o: Option<&'a Object>, key: &str) -> Option<&'a super::json::Membe
 }
 
 impl<'l> Processor<'l> {
-    /// A processor using the process-wide [`ContextCache::global`].
-    pub fn new(loader: &'l dyn ContextLoader) -> Processor<'l> {
-        Processor::with_cache(loader, ContextCache::global())
-    }
-
+    /// A processor over `loader`, keeping processed remote contexts in
+    /// `cache`: whoever owns the processors owns the cache.
     pub fn with_cache(loader: &'l dyn ContextLoader, cache: &'l ContextCache) -> Processor<'l> {
         Processor {
             loader,
@@ -1143,6 +1180,7 @@ impl<'l> Processor<'l> {
             loads: FxHashMap::default(),
             log: Vec::new(),
             scoped: FxHashMap::default(),
+            steps: 0,
             term_at: None,
             written: Vec::new(),
         }
@@ -1179,6 +1217,7 @@ impl<'l> Processor<'l> {
     ) -> Result<ActiveContext, ContextError> {
         let site = self.site.take();
         self.log.clear();
+        self.steps = 0;
         let r = self.process_in(active, local, base_url, &[], options);
         self.site = site;
         r
@@ -1216,6 +1255,7 @@ impl<'l> Processor<'l> {
         );
         let quiet = std::mem::replace(&mut self.quiet, true);
         self.log.clear();
+        self.steps = 0;
         let r = self.process_in(
             active,
             &scoped.json,
@@ -1353,8 +1393,36 @@ impl<'l> Processor<'l> {
         }
     }
 
+    /// Take one step of the work budget.
+    fn step(&mut self, span: Span) -> Result<(), ContextError> {
+        self.steps += 1;
+        if self.steps > MAX_CONTEXT_STEPS {
+            return Err(self.err(
+                ErrorCode::ContextOverflow,
+                span,
+                format!(
+                    "too many contexts to process (more than {MAX_CONTEXT_STEPS}; do contexts include one another many times over?)"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// The Context Processing algorithm.
     fn process_in(
+        &mut self,
+        active: &ActiveContext,
+        local: &Json,
+        base_url: Option<&str>,
+        remote: &[Arc<str>],
+        options: Options,
+    ) -> Result<ActiveContext, ContextError> {
+        self.step(local.span)?;
+        self.process_items(active, local, base_url, remote, options)
+    }
+
+    /// Steps 1 to 5 of [`Processor::process_in`], without taking a step.
+    fn process_items(
         &mut self,
         active: &ActiveContext,
         local: &Json,
@@ -1372,6 +1440,7 @@ impl<'l> Processor<'l> {
         }
         if !propagate && result.previous.is_none() {
             result.previous = Some(Arc::new(active.clone()));
+            result.id = in_progress_id();
         }
         // 4-5
         let items = match &local.value {
@@ -1394,6 +1463,7 @@ impl<'l> Processor<'l> {
                     result = ActiveContext::reset(result.original_base.clone());
                     if !propagate {
                         result.previous = previous;
+                        result.id = in_progress_id();
                     }
                 }
                 Value::String(s) => {
@@ -1417,6 +1487,10 @@ impl<'l> Processor<'l> {
                         self.remote(&result, &url, at, &remote, options.validate_scoped_context)?;
                 }
                 Value::Object(o) => {
+                    // `result` is no longer the context it began as (and
+                    // not yet a finished one): it must not pass for
+                    // `active` when a remote context is applied to it.
+                    result.id = in_progress_id();
                     self.definition(&mut result, o, base_url, remote, options)?;
                 }
                 _ => {
@@ -1442,6 +1516,7 @@ impl<'l> Processor<'l> {
         remote: &[Arc<str>],
         validate: bool,
     ) -> Result<ActiveContext, ContextError> {
+        self.step(span)?;
         let (loaded, json) = self.load_json(span, url)?;
         let site_span = self
             .site
@@ -1507,6 +1582,10 @@ impl<'l> Processor<'l> {
         self.site = site;
         let used = self.used_base;
         self.used_base |= used_base;
+        // The work budget, not the context, ran out: another run may succeed.
+        if matches!(&r, Err(e) if e.code == ErrorCode::ContextOverflow) {
+            return r;
+        }
         let mut deps: Vec<Dep> = Vec::new();
         for d in &self.log[start..] {
             if !deps.contains(d) {
@@ -2089,7 +2168,10 @@ impl<'l> Processor<'l> {
         self.index(result, f, defined, obj, &mut def)?;
         // 21
         if let Some(m) = member(obj, "@context") {
-            let checked = self.process_in(
+            // `result` is half built, and keeps changing after this: the
+            // check must not share an id with what it is later.
+            result.id = in_progress_id();
+            let checked = self.process_items(
                 result,
                 &m.value,
                 f.base_url,
@@ -3171,5 +3253,149 @@ mod tests {
         if cfg!(not(debug_assertions)) {
             assert!(warm * 20 < cold, "cold {cold:?}, warm {warm:?}");
         }
+    }
+
+    /// Process `@context` of `text` over a context that already defines
+    /// `base` (so it is not the pristine one), with `cache` shared with
+    /// other runs.
+    fn run_shared(
+        cache: &ContextCache,
+        loader: &NoNetwork,
+        text: &str,
+    ) -> Result<ActiveContext, ContextError> {
+        static OUTER: OnceLock<ActiveContext> = OnceLock::new();
+        let outer = OUTER.get_or_init(|| {
+            let doc = root(r#"{"@context": {"outer": "http://outer.org/"}}"#);
+            Processor::with_cache(&NoNetwork::default(), &ContextCache::new())
+                .process(
+                    &ActiveContext::new(Some(BASE)),
+                    context_of(&doc),
+                    Some(BASE),
+                    Options::default(),
+                )
+                .unwrap()
+        });
+        let doc = root(text);
+        Processor::with_cache(loader, cache).process(
+            outer,
+            context_of(&doc),
+            Some(BASE),
+            Options::default(),
+        )
+    }
+
+    fn credentials() -> NoNetwork {
+        NoNetwork::default().with(
+            "http://example.com/credentials",
+            r#"{"@context": {"@version": 1.1, "cred": "http://cred.org/"}}"#,
+        )
+    }
+
+    /// A remote context applied after an inline object is cached for that
+    /// result, not for the context the inline object started from.
+    #[test]
+    fn a_remote_context_after_an_inline_object_is_not_cached_for_the_original() {
+        let loader = credentials();
+        let inline = r#"{"@context": [{"zz": "http://evil/zz"}, "credentials"]}"#;
+        let plain = r#"{"@context": "credentials"}"#;
+        for order in [[inline, plain], [plain, inline]] {
+            let cache = ContextCache::new();
+            for text in order {
+                let c = run_shared(&cache, &loader, text).unwrap();
+                assert_eq!(iri(&c, "cred"), Some("http://cred.org/"), "{text}");
+                let wants_zz = text == inline;
+                assert_eq!(
+                    iri(&c, "zz"),
+                    wants_zz.then_some("http://evil/zz"),
+                    "{text} after {order:?}"
+                );
+            }
+        }
+    }
+
+    /// Two documents sharing one cache and one remote context each get
+    /// their own inline terms.
+    #[test]
+    fn documents_sharing_a_cache_keep_their_own_inline_terms() {
+        let loader = credentials();
+        let cache = ContextCache::new();
+        let a = run_shared(
+            &cache,
+            &loader,
+            r#"{"@context": [{"a": "http://a.org/a"}, "credentials"]}"#,
+        )
+        .unwrap();
+        let b = run_shared(
+            &cache,
+            &loader,
+            r#"{"@context": [{"b": "http://b.org/b"}, "credentials"]}"#,
+        )
+        .unwrap();
+        let c = run_shared(&cache, &loader, r#"{"@context": "credentials"}"#).unwrap();
+        assert_eq!((iri(&a, "a"), iri(&a, "b")), (Some("http://a.org/a"), None));
+        assert_eq!((iri(&b, "a"), iri(&b, "b")), (None, Some("http://b.org/b")));
+        assert_eq!((iri(&c, "a"), iri(&c, "b")), (None, None));
+        assert_ne!(a.content_id(), b.content_id());
+    }
+
+    /// A term's scoped context is checked against the context as it is at
+    /// that term, not as another document left it in the cache.
+    #[test]
+    fn scoped_context_validation_sees_its_own_context() {
+        let loader = NoNetwork::default()
+            .with(
+                "http://example.com/scoped",
+                r#"{"@context": {"t": {"@id": "http://t.org/t", "@context": {"@vocab": "http://v.org/"}}}}"#,
+            )
+            .with(
+                "http://example.com/other",
+                r#"{"@context": {"o": "http://o.org/"}}"#,
+            );
+        let cache = ContextCache::new();
+        let texts = [
+            r#"{"@context": [{"p": {"@id": "http://p.org/p", "@protected": true}}, "other", "scoped"]}"#,
+            r#"{"@context": ["other", "scoped"]}"#,
+            r#"{"@context": [{"zz": "http://z.org/"}, "scoped"]}"#,
+            r#"{"@context": "scoped"}"#,
+        ];
+        for text in texts.iter().chain(texts.iter().rev()) {
+            let c = run_shared(&cache, &loader, text).unwrap();
+            assert_eq!(iri(&c, "t"), Some("http://t.org/t"), "{text}");
+            assert_eq!(iri(&c, "zz").is_some(), text.contains("zz"), "{text}");
+            assert_eq!(iri(&c, "o").is_some(), text.contains("other"), "{text}");
+            assert_eq!(iri(&c, "p").is_some(), text.contains("\"p\""), "{text}");
+        }
+    }
+
+    /// Nested contexts that include the one below them twice would take
+    /// 2^depth steps: the work is capped, and the error is one.
+    #[test]
+    fn doubling_nested_contexts_overflow_quickly() {
+        let mut loader = NoNetwork::default().with(
+            "http://example.com/c0",
+            r#"{"@context": {"a": "http://a.org/"}}"#,
+        );
+        for i in 1..=20 {
+            loader = loader.with(
+                format!("http://example.com/c{i}"),
+                format!(
+                    r#"{{"@context": ["http://example.com/c{p}", "http://example.com/c{p}"]}}"#,
+                    p = i - 1
+                ),
+            );
+        }
+        let cache = ContextCache::new();
+        let start = std::time::Instant::now();
+        let e = run_shared(&cache, &loader, r#"{"@context": "c20"}"#).unwrap_err();
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(e.code, ErrorCode::ContextOverflow);
+        assert!(e.message.contains("too many"), "{e}");
+        // The overflow is not remembered: a small context still works,
+        // and so does the same run after a shallow one.
+        let c = run_shared(&cache, &loader, r#"{"@context": "c3"}"#).unwrap();
+        assert_eq!(iri(&c, "a"), Some("http://a.org/"));
+        // A realistic number of remote contexts stays well below the cap.
+        let many = format!(r#"{{"@context": [{}]}}"#, vec![r#""c1""#; 200].join(","));
+        run_shared(&cache, &loader, &many).unwrap();
     }
 }

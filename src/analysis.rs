@@ -132,7 +132,12 @@ impl Analysis {
             index: source_index,
         } = match language {
             // Relative IRIs resolve against the document's URL.
-            Syntax::JsonLd => crate::jsonld::parse_document(text, Some(&uri), loader),
+            Syntax::JsonLd => crate::jsonld::parse_document_with(
+                text,
+                Some(&uri),
+                loader,
+                crate::jsonld::context::ContextCache::global(),
+            ),
             _ => crate::jsonld::Document {
                 parsed: syntax::parse(text, &external, language),
                 ..Default::default()
