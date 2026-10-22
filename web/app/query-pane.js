@@ -3,9 +3,7 @@
 // editor: a table, true or false, or the constructed graph as Turtle. The
 // query runs in its own engine worker (worker.js), so typing is never slowed.
 
-// The CLI's and the server's limits.
-const TIMEOUT_SECONDS = 30
-const MAX_ROWS = 1000
+import { currentSettings } from "./editor-lsp.js"
 
 export const isQuery = (path) => /\.(rq|sparql)$/i.test(path ?? "")
 
@@ -13,8 +11,12 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const plural = (n, what) => `${n.toLocaleString("en")} ${what}${n === 1 ? "" : "s"}`
 
 // `files()`: the workspace as [{ name, text }]; `reveal(path, line, column)`
-// puts the cursor at a 1-based place in `path`'s editor.
-export function createQueryPane({ files, reveal }) {
+// puts the cursor at a 1-based place in `path`'s editor; `settings()`: the
+// user's settings (the object Settings' `values()` gives, or the server's
+// configuration), by default what the page last sent the server. A query
+// runs under them: their prefixes, and `query.timeoutSeconds` and
+// `query.maxRows` (30 seconds and 1000 rows unless set).
+export function createQueryPane({ files, reveal, settings = currentSettings }) {
   let worker = null
   let seq = 0
   const pending = new Map()
@@ -103,7 +105,7 @@ export function createQueryPane({ files, reveal }) {
     update(g)
     let answer
     try {
-      answer = await call({ op: "query", files: files(), query: path, timeout: TIMEOUT_SECONDS, maxRows: MAX_ROWS })
+      answer = await call({ op: "query", files: files(), query: path, settings: settings() })
     } catch (e) {
       answer = { kind: "error", message: e.message, line: null, column: null }
     }

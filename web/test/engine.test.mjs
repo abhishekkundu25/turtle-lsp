@@ -123,6 +123,82 @@ test("query: the time limit stops a join that combines rows in memory, reading n
   assert.ok(ms < 1000, `the query ran ${ms.toFixed(0)} ms`)
 })
 
+// A prefix only the user's settings declare (Settings → Prefixes).
+const ZZ = { "turtle.prefixes": { zz: "https://toolbox.example.org/def/" } }
+const ZZ_QUERY = "SELECT ?p WHERE { ?p a zz:Person } ORDER BY ?p"
+
+test("query: a prefix only the settings declare is known, as it is to the editor", () => {
+  assert.match(ask(ZZ_QUERY).message, /Undeclared prefix 'zz:'/)
+  const r = ask(ZZ_QUERY, { settings: ZZ })
+  assert.equal(r.kind, "select")
+  assert.ok(r.total > 0)
+  // The same settings as the server reads them: nested, under turtle.
+  assert.equal(ask(ZZ_QUERY, { settings: { turtle: { prefixes: ZZ["turtle.prefixes"] } } }).kind, "select")
+})
+
+test("query: the limits are the settings' unless the request has its own", () => {
+  const all = "SELECT ?p WHERE { ?p a ex:Person } ORDER BY ?p"
+  const total = ask(all).total
+  assert.ok(total > 2)
+  assert.equal(ask(all).rows.length, total)
+  const set = ask(all, { settings: { "query.maxRows": 2 } })
+  assert.deepEqual([set.rows.length, set.total], [2, total])
+  assert.equal(ask(all, { settings: { "query.maxRows": 2 }, maxRows: 1 }).rows.length, 1)
+  // 0 is no limit, here as in the settings.
+  assert.equal(ask(all, { settings: { "query.maxRows": 2 }, maxRows: 0 }).rows.length, total)
+  const slow = "SELECT * WHERE { ?a ?b ?c . ?d ?e ?f . ?g ?h ?i . ?j ?k ?l }"
+  assert.match(ask(slow, { settings: { "query.timeoutSeconds": 0.05 } }).message, /time limit/)
+})
+
+test("query: a timeout too long for a duration is an error, not a crash of the engine", () => {
+  for (const timeout of [1e300, 1.8446744073709552e19]) {
+    assert.throws(
+      () => ask("ASK {}", { timeout }),
+      (e) => !e.crashed && /timeout is too long/.test(e.message),
+    )
+  }
+  assert.throws(() => ask("ASK {}", { timeout: -1 }), (e) => !e.crashed && /timeout must be/.test(e.message))
+  assert.throws(() => ask("ASK {}", { timeout: "soon" }), (e) => !e.crashed && /timeout must be/.test(e.message))
+  // The same in the settings, which the server's parser would have panicked on.
+  for (const settings of [{ "query.timeoutSeconds": 1e300 }, { turtle: { query: { timeoutSeconds: 1e300 } } }]) {
+    assert.throws(() => ask("ASK {}", { settings }), (e) => !e.crashed && /timeoutSeconds 1e\+?300 is too large/.test(e.message))
+  }
+  assert.throws(() => ask("ASK {}", { settings: 3 }), (e) => !e.crashed && /settings must be an object/.test(e.message))
+  assert.equal(ask("ASK {}").boolean, true)
+})
+
+test("query: a row limit past what the engine's memory can count is no limit, not zero rows", () => {
+  const all = "SELECT ?p WHERE { ?p a ex:Person } ORDER BY ?p"
+  const total = ask(all).total
+  const r = ask(all, { maxRows: 4294967296 })
+  assert.deepEqual([r.rows.length, r.total], [total, total])
+  const c = ask("CONSTRUCT { ?p ex:employer ?o } WHERE { ?p ex:worksFor ?o }", { maxRows: 2 ** 40 })
+  assert.equal(c.shown, c.total)
+  for (const maxRows of [-1, 1.5, "ten"]) assert.throws(() => ask(all, { maxRows }), (e) => !e.crashed && /maxRows must be/.test(e.message), String(maxRows))
+})
+
+test("analyse and fix all use the settings: a prefix they declare needs no fix", () => {
+  const files = [{ name: "a.ttl", text: "zz:a zz:b zz:c .\n" }]
+  const plain = engine.call("analyse", { files }).files[0]
+  assert.ok(withCode(plain, "undeclared-prefix").length > 0)
+  const set = engine.call("analyse", { files, settings: ZZ }).files[0]
+  assert.deepEqual(withCode(set, "undeclared-prefix"), [])
+  // `foaf:` is a known vocabulary, so Fix All declares it, unless the user's
+  // prefixes say what it is.
+  const foaf = [{ name: "b.ttl", text: "foaf:a foaf:b foaf:c .\n" }]
+  const declared = engine.call("fix_all", { files: foaf })
+  assert.equal(declared.applied, 1)
+  assert.match(declared.files[0].text, /^@prefix foaf: </)
+  const own = engine.call("fix_all", { files: foaf, settings: { "turtle.prefixes": { foaf: "https://e.org/foaf#" } } })
+  assert.equal(own.applied, 0)
+  assert.equal(own.files[0].text, foaf[0].text)
+  // The format verdict is at the user's line width.
+  const long = [{ name: "c.ttl", text: "@prefix ex: <https://e.org/> .\n\nex:a ex:b ex:c, ex:d, ex:e, ex:f, ex:g, ex:h, ex:i, ex:j .\n" }]
+  const wide = engine.call("analyse", { files: long, settings: { "turtle.format.lineWidth": 200 } }).files[0].format
+  const narrow = engine.call("analyse", { files: long, settings: { "turtle.format.lineWidth": 20 } }).files[0].format
+  assert.notEqual(wide.text, narrow.text)
+})
+
 // --- validate -------------------------------------------------------------------
 
 test("a misspelled vocabulary term is reported with its fix", () => {

@@ -36,9 +36,9 @@ pub fn handle(request: &str) -> String {
     };
     let answer = match req["op"].as_str().unwrap_or("") {
         "version" => Ok(json!({ "version": turtle_lsp::VERSION })),
-        "analyse" => files().map(|f| analyse(&f)),
-        "fix_all" => files().map(fix_all),
-        "query" => files().and_then(|f| query(&f, &req)),
+        "analyse" => settings_of(&req).and_then(|s| files().map(|f| analyse(&f, &s))),
+        "fix_all" => settings_of(&req).and_then(|s| files().map(|f| fix_all(f, &s))),
+        "query" => settings_of(&req).and_then(|s| files().and_then(|f| query(&f, &req, &s))),
         "lsp_start" => lsp_start(req["params"].clone()),
         "lsp" => lsp(&req["messages"]),
         "lsp_tick" => lsp_tick(),
@@ -90,6 +90,53 @@ pub fn error(message: &str) -> String {
     json!({ "error": message }).to_string()
 }
 
+/// The user's settings: `req.settings`, an object read as the language server
+/// reads `turtle.*` (nested or dotted keys, a leading `turtle` optional), so
+/// the browser's operations behave as the editor does. Without it, the
+/// defaults.
+fn settings_of(req: &Value) -> Result<Settings, String> {
+    let given = &req["settings"];
+    match given {
+        Value::Null => return Ok(Settings::default()),
+        Value::Object(_) => {}
+        _ => return Err("settings must be an object".into()),
+    }
+    check_timeouts(given, &mut Vec::new())?;
+    Ok(Settings::from_layers([given]))
+}
+
+/// `Settings::apply` panics on a `query.timeoutSeconds` too long for a
+/// `Duration`, and a panic ends the engine: refuse it here.
+fn check_timeouts(v: &Value, path: &mut Vec<String>) -> Result<(), String> {
+    match v {
+        Value::Object(map) => {
+            for (k, v) in map {
+                let depth = path.len();
+                path.extend(k.split('.').map(str::to_string));
+                check_timeouts(v, path)?;
+                path.truncate(depth);
+            }
+        }
+        Value::Number(n) => {
+            let names: Vec<&str> = path
+                .iter()
+                .map(String::as_str)
+                .skip_while(|p| *p == "turtle")
+                .collect();
+            if names == ["query", "timeoutSeconds"]
+                && let Some(f) = n.as_f64()
+                && f.is_finite()
+                && f >= 0.0
+                && Duration::try_from_secs_f64(f).is_err()
+            {
+                return Err(format!("settings: query.timeoutSeconds {n} is too large"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Positions in UTF-16 units, as JavaScript strings count them.
 fn options() -> batch::Options {
     batch::Options {
@@ -98,8 +145,8 @@ fn options() -> batch::Options {
     }
 }
 
-fn analyse(files: &[BatchFile]) -> Value {
-    let report = batch::analyse(files, &Settings::default(), &options());
+fn analyse(files: &[BatchFile], settings: &Settings) -> Value {
+    let report = batch::analyse(files, settings, &options());
     let out: Vec<Value> = report
         .files
         .iter()
@@ -158,8 +205,8 @@ fn format_json(f: &batch::Formatted) -> Value {
 }
 
 /// Apply every preferred fix (see [`batch::fix_all`]), term renames included.
-fn fix_all(files: Vec<BatchFile>) -> Value {
-    let outcome = batch::fix_all(&files, &Settings::default(), true);
+fn fix_all(files: Vec<BatchFile>, settings: &Settings) -> Value {
+    let outcome = batch::fix_all(&files, settings, true);
     let files: Vec<Value> = outcome
         .files
         .iter()
@@ -168,30 +215,41 @@ fn fix_all(files: Vec<BatchFile>) -> Value {
     json!({ "files": files, "applied": outcome.applied })
 }
 
-/// Run the file named `req.query` (one of `files`) over the others, at most
-/// `req.timeout` seconds (default 30) and showing at most `req.maxRows` rows
-/// or triples (default 1000). The answer is one of
+/// Run the file named `req.query` (one of `files`) over the others. The
+/// limits are the settings' `query.timeoutSeconds` (default 30) and
+/// `query.maxRows` (default 1000) unless the request has its own: `timeout`,
+/// in seconds, and `maxRows`, a whole number; 0 for either means no limit, as
+/// in the settings. A `timeout` that is not a finite number of seconds a
+/// duration can hold, or a `maxRows` that is not a whole number, is a request
+/// error. The answer is one of
 /// `{kind: "select", variables, rows, total}` (each row a list of display
 /// strings, null when unbound), `{kind: "ask", boolean}`,
 /// `{kind: "construct", turtle, shown, total}` (the first `shown` triples) or
 /// `{kind: "error", message, line, column}` (line and column 1-based, for a
 /// syntax error only, else null); each with `elapsedMs`.
-fn query(files: &[BatchFile], req: &Value) -> Result<Value, String> {
+fn query(files: &[BatchFile], req: &Value, settings: &Settings) -> Result<Value, String> {
     let name = req["query"].as_str().ok_or("the request has no query")?;
     let q = files
         .iter()
         .find(|f| f.name == name)
         .ok_or_else(|| format!("no file is named '{name}'"))?;
-    let seconds = req["timeout"].as_f64().unwrap_or(30.0);
-    let max_rows = req["maxRows"].as_u64().map_or(1000, |n| n as usize);
+    let timeout = match &req["timeout"] {
+        Value::Null => settings.query_timeout,
+        v => seconds(v)?,
+    };
+    let max_rows = match &req["maxRows"] {
+        Value::Null => settings.query_max_rows,
+        v => rows(v)?,
+    };
     let limits = Limits {
-        timeout: (seconds > 0.0).then(|| Duration::from_secs_f64(seconds)),
-        max_rows: Some(max_rows),
-        max_buffered_rows: Some(turtle_lsp::settings::QUERY_MAX_BUFFERED_ROWS),
+        timeout,
+        max_rows,
+        max_buffered_rows: settings.query_max_buffered_rows,
         ..Default::default()
     };
+    let max_rows = max_rows.unwrap_or(usize::MAX);
     let start = Instant::now();
-    let outcome = batch::query(files, q, &Settings::default(), &limits);
+    let outcome = batch::query(files, q, settings, &limits);
     let p = &outcome.prefixes;
     let mut out = match &outcome.answer {
         Ok(Answer::Solutions(s)) => {
@@ -233,4 +291,27 @@ fn query(files: &[BatchFile], req: &Value) -> Result<Value, String> {
         * 1000.0;
     out["elapsedMs"] = json!(ms);
     Ok(out)
+}
+
+/// A request's `timeout`: seconds, none for 0.
+fn seconds(v: &Value) -> Result<Option<Duration>, String> {
+    let n = v
+        .as_f64()
+        .filter(|n| n.is_finite() && *n >= 0.0)
+        .ok_or("timeout must be a number of seconds, 0 or more")?;
+    if n == 0.0 {
+        return Ok(None);
+    }
+    Duration::try_from_secs_f64(n)
+        .map(Some)
+        .map_err(|_| "timeout is too long".to_string())
+}
+
+/// A request's `maxRows`: a whole number, none for 0. One beyond this
+/// platform's `usize` (the browser's is 32 bits) is as good as no limit.
+fn rows(v: &Value) -> Result<Option<usize>, String> {
+    let n = v
+        .as_u64()
+        .ok_or("maxRows must be a whole number, 0 or more")?;
+    Ok((n > 0).then(|| usize::try_from(n).unwrap_or(usize::MAX)))
 }
