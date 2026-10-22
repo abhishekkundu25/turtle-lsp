@@ -30,17 +30,18 @@ fn main() {
 /// The process's exit code.
 fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
-        Some("check" | "format" | "query") => return turtle_lsp::cli::run(args),
-        Some("help" | "--help" | "-h") => {
+        Some("--help" | "-h") => {
             print!("{}", turtle_lsp::cli::USAGE);
             return 0;
         }
+        // A command, or a word that is none: that fails instead of starting
+        // the server and waiting on stdin. Flags (`--stdio`) start the server.
+        Some(word) if !word.starts_with('-') => return turtle_lsp::cli::run(args),
         _ => {}
     }
-    // As the language server, stdout carries the protocol; anything else must
-    // go to stderr.
+    // The server is not running yet, so stdout is free for the answer.
     if args.iter().any(|a| a == "--version") {
-        eprintln!("turtle-lsp {}", env!("CARGO_PKG_VERSION"));
+        println!("turtle-lsp {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
     match turtle_lsp::server::run() {

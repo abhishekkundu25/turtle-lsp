@@ -18,12 +18,14 @@ pub enum Format {
 }
 
 /// One checked file: its path as shown (relative to the current directory
-/// when under it, `/` separators), its path relative to the workspace root
-/// (for SARIF), and its problems with code-point columns, sorted by
-/// position then code.
+/// when under it, `/` separators), where SARIF finds it, and its problems
+/// with code-point columns, sorted by position then code.
 pub struct CheckedFile<'a> {
     pub path: &'a str,
-    pub root_relative: &'a str,
+    /// Relative to the workspace root (`/` separators); None outside it.
+    pub root_relative: Option<&'a str>,
+    /// The file's `file:` URI, for a file outside the root.
+    pub uri: &'a str,
     pub problems: &'a [Problem],
 }
 
@@ -83,7 +85,9 @@ pub const INFORMATION_URI: &str = "https://github.com/abhishekkundu25/turtle-lsp
 ///   counts every problem. An edit's `path` is the file name the analysis
 ///   gave it. Within version 1, keys are only added, never renamed or removed.
 /// - `sarif`: a SARIF 2.1.0 log with one run, a rule per code, the safe
-///   fixes, and artifact URIs relative to `%SRCROOT%` (the workspace root).
+///   fixes, and artifact URIs: percent-encoded paths relative to `%SRCROOT%`
+///   (the workspace root) for files under it, `file:` URIs without a base
+///   for the others.
 pub fn render(
     format: Format,
     files: &[CheckedFile],
@@ -306,29 +310,128 @@ fn json_report(files: &[CheckedFile], summary: &Summary) -> Value {
 /// The rule id of a problem without a code.
 const NO_CODE_RULE: &str = "diagnostic";
 
-/// One-line descriptions of the codes turtle-lsp reports; other codes are
-/// described by their name.
+/// The codes turtle-lsp reports, each with a one-line description: what
+/// `--select` and `--ignore` accept, and the SARIF rules.
+pub const CODES: &[(&str, &str)] = &[
+    ("syntax", "Syntax error"),
+    ("undeclared-prefix", "A prefix is used but not declared"),
+    ("unused-prefix", "A declared prefix is never used"),
+    ("duplicate-prefix", "A prefix is declared more than once"),
+    (
+        "redefined-prefix",
+        "A prefix is declared again with another namespace",
+    ),
+    (
+        "unknown-term",
+        "A term is not defined in its well-known vocabulary",
+    ),
+    ("deprecated-term", "A term is deprecated in its vocabulary"),
+    (
+        "undescribed-term",
+        "A term is not described anywhere in the workspace",
+    ),
+    ("invalid-literal", "A literal is not valid for its datatype"),
+    (
+        "unresolved-import",
+        "An owl:imports target could not be loaded",
+    ),
+    (
+        "unbound-projection",
+        "A projected SPARQL variable is never bound",
+    ),
+    ("json-syntax", "The JSON is malformed"),
+    ("json-lone-surrogate", "A JSON string has a lone surrogate"),
+    ("json-duplicate-key", "A JSON object repeats a key"),
+    (
+        "jsonld-context",
+        "A JSON-LD context is invalid or could not be loaded",
+    ),
+    (
+        "jsonld-undefined-term",
+        "A JSON-LD key is not defined in the context",
+    ),
+    (
+        "jsonld-undefined-prefix",
+        "A JSON-LD value uses a prefix the context does not define",
+    ),
+    ("invalid-iri", "A JSON-LD IRI is not valid"),
+    (
+        "invalid-language-tag",
+        "A JSON-LD language tag is not valid",
+    ),
+    (
+        "shacl-violation",
+        "The data does not conform to a SHACL shape",
+    ),
+    ("shacl-skipped", "SHACL validation was skipped"),
+    (
+        "shacl-sparql-timeout",
+        "A SHACL-SPARQL query ran out of time",
+    ),
+    (
+        "shacl-failure",
+        "A shape or query could not be validated to the end",
+    ),
+    ("shacl-invalid-path", "A shape was skipped for its sh:path"),
+    (
+        "shacl-missing-path",
+        "A SHACL property shape's sh:path is not described",
+    ),
+    (
+        "shacl-unknown-class",
+        "A SHACL shape names a class that is not described",
+    ),
+    (
+        "shacl-bad-datatype",
+        "A SHACL shape names an unknown datatype",
+    ),
+    (
+        "shacl-dangling-shape",
+        "A SHACL shape is referenced but not defined",
+    ),
+    (
+        "shacl-misplaced",
+        "A SHACL term is used where it does not belong",
+    ),
+    ("shacl-count-conflict", "SHACL cardinalities that conflict"),
+    (
+        "shacl-sparql-syntax",
+        "A SHACL-SPARQL query has a syntax error",
+    ),
+    (
+        "shacl-sparql-prefix",
+        "A SHACL-SPARQL query uses a prefix it does not declare",
+    ),
+    (
+        "shacl-sparql-unsupported",
+        "A SHACL-SPARQL feature is not supported",
+    ),
+    ("internal-error", "The analysis of the file failed"),
+    (IO_CODE, "The file could not be read"),
+    (ENCODING_CODE, "The file is not valid UTF-8"),
+];
+
+/// A file that could not be read (`check` reports it; exit 2).
+pub const IO_CODE: &str = "io";
+/// A file that is not UTF-8 (`check` reports it; exit 2).
+pub const ENCODING_CODE: &str = "encoding";
+
+/// Whether `code` is one turtle-lsp reports.
+pub fn is_known_code(code: &str) -> bool {
+    CODES.iter().any(|(c, _)| *c == code)
+}
+
+/// The known codes, comma separated, for a message.
+pub fn known_codes() -> String {
+    CODES.iter().map(|(c, _)| *c).collect::<Vec<_>>().join(", ")
+}
+
+/// The description of `code`; other codes are described by their name.
 fn rule_description(code: &str) -> String {
-    let text = match code {
-        "syntax" => "Syntax error",
-        "undeclared-prefix" => "A prefix is used but not declared",
-        "unused-prefix" => "A declared prefix is never used",
-        "duplicate-prefix" => "A prefix is declared more than once",
-        "redefined-prefix" => "A prefix is declared again with another namespace",
-        "unknown-term" => "A term is not defined in its well-known vocabulary",
-        "deprecated-term" => "A term is deprecated in its vocabulary",
-        "undescribed-term" => "A term is not described anywhere in the workspace",
-        "unresolved-import" => "An owl:imports target could not be loaded",
-        "unbound-projection" => "A projected SPARQL variable is never bound",
-        "shacl-violation" => "The data does not conform to a SHACL shape",
-        "shacl-skipped" => "SHACL validation was skipped",
-        "shacl-missing-path" => "A SHACL property shape's sh:path is not described",
-        "shacl-unknown-class" => "A SHACL shape names a class that is not described",
-        "shacl-bad-datatype" => "A SHACL shape names an unknown datatype",
-        "shacl-dangling-shape" => "A SHACL shape is referenced but not defined",
-        _ => return format!("turtle-lsp {code}"),
-    };
-    text.to_string()
+    CODES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map_or_else(|| format!("turtle-lsp {code}"), |(_, d)| (*d).to_string())
 }
 
 fn sarif_level(p: &Problem) -> &'static str {
@@ -350,18 +453,43 @@ fn sarif_region(r: Range) -> Value {
     })
 }
 
-fn sarif_location(uri: &str) -> Value {
-    json!({ "uri": uri, "uriBaseId": "%SRCROOT%" })
+/// `path` (`/` separators) as a relative URI reference: every character
+/// outside the unreserved set, `/` kept, percent-encoded as UTF-8.
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char);
+            }
+            _ => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
+/// Where SARIF finds a file: a path relative to `%SRCROOT%` under the root,
+/// else its absolute `file:` URI.
+fn sarif_location(f: &CheckedFile) -> Value {
+    match f.root_relative {
+        Some(rel) => json!({ "uri": percent_encode_path(rel), "uriBaseId": "%SRCROOT%" }),
+        None => json!({ "uri": f.uri }),
+    }
 }
 
 /// A safe fix as a SARIF fix. Edit file names that are the shown path of a
-/// checked file become its root-relative path; others are kept as given.
-fn sarif_fix(fix: &Fix, uris: &HashMap<&str, &str>) -> Value {
+/// checked file become its location; others are taken as paths below the root.
+fn sarif_fix(fix: &Fix, locations: &HashMap<&str, Value>) -> Value {
     let changes: Vec<Value> = fix
         .edits
         .iter()
         .map(|(name, edits)| {
-            let uri = uris.get(name.as_str()).copied().unwrap_or(name);
+            let location = locations.get(name.as_str()).cloned().unwrap_or_else(
+                || json!({ "uri": percent_encode_path(name), "uriBaseId": "%SRCROOT%" }),
+            );
             let replacements: Vec<Value> = edits
                 .iter()
                 .map(|e: &TextEdit| {
@@ -371,7 +499,7 @@ fn sarif_fix(fix: &Fix, uris: &HashMap<&str, &str>) -> Value {
                     })
                 })
                 .collect();
-            json!({ "artifactLocation": sarif_location(uri), "replacements": replacements })
+            json!({ "artifactLocation": location, "replacements": replacements })
         })
         .collect();
     json!({ "description": { "text": fix.title }, "artifactChanges": changes })
@@ -394,7 +522,8 @@ fn sarif_report(files: &[CheckedFile]) -> Value {
         .keys()
         .map(|id| json!({ "id": id, "shortDescription": { "text": rule_description(id) } }))
         .collect();
-    let uris: HashMap<&str, &str> = files.iter().map(|f| (f.path, f.root_relative)).collect();
+    let locations: HashMap<&str, Value> =
+        files.iter().map(|f| (f.path, sarif_location(f))).collect();
     let results: Vec<Value> = problems()
         .map(|(f, p)| {
             let id = rule_id(p);
@@ -407,7 +536,7 @@ fn sarif_report(files: &[CheckedFile]) -> Value {
                 "locations".into(),
                 json!([{
                     "physicalLocation": {
-                        "artifactLocation": sarif_location(f.root_relative),
+                        "artifactLocation": sarif_location(f),
                         "region": sarif_region(p.diagnostic.range),
                     }
                 }]),
@@ -416,7 +545,7 @@ fn sarif_report(files: &[CheckedFile]) -> Value {
                 .fixes
                 .iter()
                 .filter(|x| x.safe)
-                .map(|x| sarif_fix(x, &uris))
+                .map(|x| sarif_fix(x, &locations))
                 .collect();
             if !fixes.is_empty() {
                 result.insert("fixes".into(), Value::Array(fixes));
@@ -524,12 +653,14 @@ mod tests {
         vec![
             CheckedFile {
                 path: "data/people.ttl",
-                root_relative: "repo/data/people.ttl",
+                root_relative: Some("repo/data/people.ttl"),
+                uri: "file:///work/repo/data/people.ttl",
                 problems: people,
             },
             CheckedFile {
                 path: "data/pumps.ttl",
-                root_relative: "repo/data/pumps.ttl",
+                root_relative: Some("repo/data/pumps.ttl"),
+                uri: "file:///work/repo/data/pumps.ttl",
                 problems: pumps,
             },
         ]
@@ -569,7 +700,8 @@ mod tests {
         )];
         let files = [CheckedFile {
             path: "é/ü.ttl",
-            root_relative: "é/ü.ttl",
+            root_relative: Some("é/ü.ttl"),
+            uri: "file:///work/é/ü.ttl",
             problems: &p,
         }];
         let text = render_to_string(Format::Concise, &files, &Summary::default());
@@ -625,7 +757,8 @@ mod tests {
         )];
         let files = [CheckedFile {
             path: "dir,1/a:b%.ttl",
-            root_relative: "x",
+            root_relative: Some("x"),
+            uri: "file:///work/x",
             problems: &p,
         }];
         let text = render_to_string(Format::Github, &files, &Summary::default());
@@ -685,12 +818,14 @@ mod tests {
         let files = [
             CheckedFile {
                 path: "ä.ttl",
-                root_relative: "ä.ttl",
+                root_relative: Some("ä.ttl"),
+                uri: "file:///work/ä.ttl",
                 problems: &p,
             },
             CheckedFile {
                 path: "clean.ttl",
-                root_relative: "clean.ttl",
+                root_relative: Some("clean.ttl"),
+                uri: "file:///work/clean.ttl",
                 problems: &[],
             },
         ];
@@ -780,6 +915,62 @@ mod tests {
             })
         );
         assert!(results[1].get("fixes").is_none());
+    }
+
+    #[test]
+    fn sarif_uris_are_percent_encoded_and_outside_files_are_file_uris() {
+        let (a, b) = sample();
+        let files = vec![
+            CheckedFile {
+                path: "data/people.ttl",
+                root_relative: Some("my data/a#b %c.ttl"),
+                uri: "file:///work/my%20data/a%23b%20%25c.ttl",
+                problems: &a,
+            },
+            CheckedFile {
+                path: "/elsewhere/\u{e9}.ttl",
+                root_relative: None,
+                uri: "file:///elsewhere/%C3%A9.ttl",
+                problems: &b,
+            },
+        ];
+        let text = render_to_string(Format::Sarif, &files, &sample_summary());
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let results = v["runs"][0]["results"].as_array().unwrap();
+        let loc =
+            |i: usize| results[i]["locations"][0]["physicalLocation"]["artifactLocation"].clone();
+        assert_eq!(
+            loc(0),
+            json!({"uri": "my%20data/a%23b%20%25c.ttl", "uriBaseId": "%SRCROOT%"})
+        );
+        // Inside the root, a fix names the file as the result does.
+        let fix = &results[0]["fixes"][0]["artifactChanges"][0]["artifactLocation"];
+        assert_eq!(fix, &loc(0));
+        // Outside: an absolute file: URI, and no base.
+        for i in 1..results.len() {
+            assert_eq!(loc(i), json!({"uri": "file:///elsewhere/%C3%A9.ttl"}));
+        }
+    }
+
+    #[test]
+    fn percent_encoding_keeps_unreserved_characters_and_slashes() {
+        assert_eq!(percent_encode_path("a/b-c_d.e~f/G9"), "a/b-c_d.e~f/G9");
+        assert_eq!(percent_encode_path("a b/c#d?e%f"), "a%20b/c%23d%3Fe%25f");
+        assert_eq!(percent_encode_path("\u{e9}"), "%C3%A9");
+    }
+
+    #[test]
+    fn every_known_code_has_a_description_and_the_table_has_no_repeats() {
+        let mut seen = std::collections::HashSet::new();
+        for (c, d) in CODES {
+            assert!(seen.insert(*c), "{c} is listed twice");
+            assert!(!d.is_empty());
+            assert_eq!(&rule_description(c), d);
+        }
+        assert!(is_known_code("syntax") && is_known_code("shacl-violation"));
+        assert!(is_known_code(IO_CODE) && is_known_code(ENCODING_CODE));
+        assert!(!is_known_code("sintax"));
+        assert_eq!(rule_description("other"), "turtle-lsp other");
     }
 
     #[test]

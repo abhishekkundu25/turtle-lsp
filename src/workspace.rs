@@ -1000,7 +1000,7 @@ impl Workspace {
 
     /// The RDF files under `roots` (see [`scan_roots_matching`]).
     pub fn scan_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
-        scan_roots_matching(roots, is_turtle)
+        scan_roots_matching(roots, is_turtle).paths
     }
 
     /// Whether the file at `path` belongs in the disk index, as the scan
@@ -1309,36 +1309,93 @@ pub fn is_sparql_path(path: &Path) -> bool {
     is_sparql_name(&path.to_string_lossy())
 }
 
+/// What a scan of the roots found.
+#[derive(Debug, Default)]
+pub struct Scan {
+    /// The files `wanted` accepted, in path order.
+    pub paths: Vec<PathBuf>,
+    /// More matching files exist than the cap allows; the walk stopped at the
+    /// cap, so `paths` is the first part of the path order.
+    pub truncated: bool,
+    /// Matching files over [`MAX_FILE_BYTES`], left out. Not complete when
+    /// the scan was `truncated`.
+    pub too_large: Vec<PathBuf>,
+}
+
+impl IntoIterator for Scan {
+    type Item = PathBuf;
+    type IntoIter = std::vec::IntoIter<PathBuf>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.paths.into_iter()
+    }
+}
+
 /// The files under `roots` that `wanted` accepts, skipping hidden and
 /// [`SKIP_DIRS`] directories and files over [`MAX_FILE_BYTES`], at most
 /// [`MAX_FILES`] of them.
-pub fn scan_roots_matching(roots: &[PathBuf], wanted: fn(&Path) -> bool) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack: Vec<PathBuf> = roots.to_vec();
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            let Ok(ft) = e.file_type() else { continue };
-            if ft.is_dir() {
-                if !skipped_dir(&name) {
-                    stack.push(e.path());
+pub fn scan_roots_matching(roots: &[PathBuf], wanted: fn(&Path) -> bool) -> Scan {
+    scan_roots_capped(roots, wanted, MAX_FILES)
+}
+
+/// [`scan_roots_matching`] with a cap of `max_files`. One walk, in path order
+/// (the entries of each folder sorted by name, a folder visited in place), so
+/// what a cap leaves out does not depend on the file system's order.
+pub fn scan_roots_capped(roots: &[PathBuf], wanted: fn(&Path) -> bool, max_files: usize) -> Scan {
+    /// The files and folders in `dir` by name: (name, path, is a folder).
+    /// Links and what cannot be read are left out.
+    fn entries(dir: &Path) -> std::vec::IntoIter<(std::ffi::OsString, PathBuf, bool)> {
+        let mut out: Vec<_> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let ft = e.file_type().ok()?;
+                (ft.is_dir() || ft.is_file()).then(|| (e.file_name(), e.path(), ft.is_dir()))
+            })
+            .collect();
+        out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        out.into_iter()
+    }
+
+    let mut scan = Scan::default();
+    let mut roots = roots.to_vec();
+    roots.sort();
+    roots.dedup();
+    let mut seen: rustc_hash::FxHashSet<PathBuf> = rustc_hash::FxHashSet::default();
+    'roots: for root in roots {
+        let mut stack = vec![entries(&root)];
+        while let Some(top) = stack.last_mut() {
+            let Some((name, path, is_dir)) = top.next() else {
+                stack.pop();
+                continue;
+            };
+            if is_dir {
+                if !skipped_dir(&name.to_string_lossy()) {
+                    stack.push(entries(&path));
                 }
-            } else if ft.is_file()
-                && wanted(&e.path())
-                && e.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
-            {
-                out.push(e.path());
-                if out.len() >= MAX_FILES {
-                    return out;
+            } else if wanted(&path) {
+                let Ok(meta) = std::fs::metadata(&path) else {
+                    continue;
+                };
+                if meta.len() > MAX_FILE_BYTES {
+                    scan.too_large.push(path);
+                } else if seen.contains(&path) {
+                    // Found under another root too.
+                } else if scan.paths.len() >= max_files {
+                    scan.truncated = true;
+                    break 'roots;
+                } else {
+                    seen.insert(path.clone());
+                    scan.paths.push(path);
                 }
             }
         }
     }
-    out
+    scan.paths.sort();
+    scan.too_large.sort();
+    scan.too_large.dedup();
+    scan
 }
 
 /// The prefixes.ttl that supplies prefixes to files in `dir` (searching up to
@@ -1660,6 +1717,68 @@ mod tests {
         assert!(ws.watched_dir(&root.0.join("sub")));
         assert!(!ws.watched_dir(&root.0.join("node_modules")));
         assert!(!ws.watched(&root.0.join("node_modules").join("x.json")));
+    }
+
+    #[test]
+    fn a_capped_scan_keeps_the_first_files_in_path_order_and_says_it_stopped() {
+        let root = TempDir::new("scan-cap");
+        // Created in an order that is neither alphabetical nor reversed.
+        for name in ["z/1.ttl", "b/2.ttl", "a.ttl", "b/1.ttl", "m.ttl", "a/9.ttl"] {
+            write(&root.0, name, TTL);
+        }
+        write(&root.0, "node_modules/x.ttl", TTL);
+        write(&root.0, "notes.txt", "");
+        let names = |scan: &Scan| -> Vec<String> {
+            scan.paths
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(&root.0)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect()
+        };
+        let all = scan_roots_capped(std::slice::from_ref(&root.0), is_turtle, 6);
+        assert!(!all.truncated, "exactly at the cap is not truncated");
+        assert_eq!(
+            names(&all),
+            ["a/9.ttl", "a.ttl", "b/1.ttl", "b/2.ttl", "m.ttl", "z/1.ttl"]
+        );
+        let roots = [root.0.clone()];
+        let cut = scan_roots_capped(&roots, is_turtle, 4);
+        assert!(cut.truncated);
+        assert_eq!(names(&cut), ["a/9.ttl", "a.ttl", "b/1.ttl", "b/2.ttl"]);
+        // The same roots twice, or nested, list a file once.
+        let twice = scan_roots_capped(&[root.0.clone(), root.0.join("b")], is_turtle, 100);
+        assert_eq!(twice.paths.len(), 6);
+        // The server's scan is the capped scan at MAX_FILES.
+        assert_eq!(scan_roots_matching(&roots, is_turtle).paths, all.paths);
+    }
+
+    #[test]
+    fn a_scan_lists_the_files_it_left_out_for_size() {
+        let root = TempDir::new("scan-large");
+        let ok = write(&root.0, "ok.ttl", TTL);
+        let big = write(&root.0, "sub/big.ttl", "");
+        std::fs::File::options()
+            .write(true)
+            .open(&big)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        // Not wanted, so not named: only a wanted file can be too large.
+        let other = write(&root.0, "big.txt", "");
+        std::fs::File::options()
+            .write(true)
+            .open(&other)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        let scan = scan_roots_matching(std::slice::from_ref(&root.0), is_turtle);
+        assert_eq!(scan.paths, [ok]);
+        assert_eq!(scan.too_large, [big]);
+        assert!(!scan.truncated);
     }
 
     #[test]

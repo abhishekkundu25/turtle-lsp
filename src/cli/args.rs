@@ -1,6 +1,6 @@
 //! Command-line arguments of `check`, `format` and `query`, parsed by hand.
 
-use super::output::Format;
+use super::output::{self, Format};
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
@@ -155,11 +155,28 @@ impl<'a> Args<'a> {
     }
 }
 
-fn codes(v: &str) -> impl Iterator<Item = String> + '_ {
-    v.split(',')
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-        .map(str::to_string)
+/// The diagnostic codes in a `--select` or `--ignore` value; a code
+/// turtle-lsp never reports is an error, so a typo does not filter everything.
+fn codes(flag: &str, v: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for c in v.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+        if !output::is_known_code(c) {
+            return Err(format!(
+                "{flag}: unknown diagnostic code '{c}' (known codes: {})",
+                output::known_codes()
+            ));
+        }
+        out.push(c.to_string());
+    }
+    Ok(out)
+}
+
+/// `-` would be standard input, which no command reads.
+fn no_stdin(paths: &[PathBuf]) -> Result<(), String> {
+    if paths.iter().any(|p| p.as_os_str() == "-") {
+        return Err("'-' (standard input) is not supported; name a file or folder".to_string());
+    }
+    Ok(())
 }
 
 fn unknown(flag: &str, command: &str) -> String {
@@ -199,8 +216,8 @@ pub fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
             "--output-file" => out.output_file = Some(PathBuf::from(it.value(f)?)),
             "--max-warnings" => out.max_warnings = Some(it.number(f)?),
             "--max-diagnostics" => out.max_diagnostics = Some(it.number(f)?),
-            "--select" => out.select.extend(codes(&it.value(f)?)),
-            "--ignore" => out.ignore.extend(codes(&it.value(f)?)),
+            "--select" => out.select.extend(codes(f, &it.value(f)?)?),
+            "--ignore" => out.ignore.extend(codes(f, &it.value(f)?)?),
             _ => {
                 let slot = match f {
                     "--fix" => &mut out.fix,
@@ -219,6 +236,10 @@ pub fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
     if out.unsafe_fixes && !out.fix {
         return Err("--unsafe-fixes works only with --fix".to_string());
     }
+    if out.statistics && out.format.is_some() {
+        return Err("--statistics prints counts in its own layout; drop --format".to_string());
+    }
+    no_stdin(&out.paths)?;
     Ok(Parsed::Run(out))
 }
 
@@ -249,6 +270,7 @@ pub fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String> {
             _ => return Err(unknown(f, "format")),
         }
     }
+    no_stdin(&out.paths)?;
     Ok(Parsed::Run(out))
 }
 
@@ -313,6 +335,7 @@ pub fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> {
             _ => return Err(unknown(f, "query")),
         }
     }
+    no_stdin(&paths)?;
     if limit.is_some() && format.is_some_and(|f| f != QueryFormat::Table) {
         return Err("--limit works only with the table format".to_string());
     }
@@ -354,12 +377,14 @@ mod tests {
 
     #[test]
     fn cli_check_flags_and_paths() {
-        let a =
-            check("a.ttl --format=json --max-warnings 3 --select x,y --select z --fix b").unwrap();
+        let a = check(
+            "a.ttl --format=json --max-warnings 3 --select syntax,io --select encoding --fix b",
+        )
+        .unwrap();
         assert_eq!(a.paths, [PathBuf::from("a.ttl"), PathBuf::from("b")]);
         assert_eq!(a.format, Some(Format::Json));
         assert_eq!(a.max_warnings, Some(3));
-        assert_eq!(a.select, ["x", "y", "z"]);
+        assert_eq!(a.select, ["syntax", "io", "encoding"]);
         assert!(a.fix && !a.unsafe_fixes);
         let a = check("-- --fix").unwrap();
         assert_eq!(a.paths, [PathBuf::from("--fix")]);
@@ -375,6 +400,37 @@ mod tests {
         assert!(check("--fix=yes").is_err());
         assert!(check("--unsafe-fixes").is_err());
         assert_eq!(check("--help").unwrap_err(), "help");
+    }
+
+    #[test]
+    fn cli_check_rejects_unknown_codes_and_what_does_not_combine() {
+        for flag in ["--select", "--ignore"] {
+            let e = check(&format!("{flag} syntax,sintax")).unwrap_err();
+            assert!(
+                e.contains("'sintax'") && e.contains("undeclared-prefix"),
+                "{e}"
+            );
+        }
+        // Every code the output knows is accepted, and so are io and encoding.
+        assert!(check("--select io,encoding,shacl-violation --ignore unused-prefix").is_ok());
+        assert!(check("--statistics --format json").is_err());
+        assert!(check("--statistics").is_ok());
+    }
+
+    #[test]
+    fn cli_standard_input_is_rejected_by_every_command() {
+        for e in [
+            check("-").unwrap_err(),
+            match parse_format(&args("-")) {
+                Err(e) => e,
+                Ok(_) => panic!("accepted"),
+            },
+            query("q.rq -").unwrap_err(),
+        ] {
+            assert!(e.contains("standard input"), "{e}");
+        }
+        // Also after --.
+        assert!(check("-- -").is_err());
     }
 
     #[test]

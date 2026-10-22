@@ -173,3 +173,28 @@ test("query: bad flags and help", (t) => {
   const usage = spawnSync(serverPath, ["help"], { encoding: "utf8" })
   assert.match(usage.stdout, /turtle-lsp query \(FILE\.rq \| -e QUERY\)/)
 })
+
+test("query: a data file that is not UTF-8 fails the run and is named; '-' is rejected", (t) => {
+  const ws = workspace(t, FILES)
+  fs.writeFileSync(path.join(ws, "data", "bad.ttl"), Buffer.from([0x65, 0x78, 0x3a, 0xff, 0x0a]))
+  const r = query(ws, ["names.rq"])
+  assert.equal(r.code, 2)
+  assert.equal(r.out, "", "no answer from half of the data")
+  assert.match(r.err, /^turtle-lsp: data\/bad\.ttl: not valid UTF-8/)
+  const stdin = query(workspace(t, FILES), ["names.rq", "-"])
+  assert.equal(stdin.code, 2)
+  assert.match(stdin.err, /standard input/)
+})
+
+test("query: a scan that stops at its cap fails the run instead of answering from part of the data", (t) => {
+  const ws = workspace(t, FILES)
+  const r = spawnSync(serverPath, ["query", "names.rq"], {
+    cwd: ws,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), NO_COLOR: "1", TURTLE_LSP_MAX_FILES: "1" },
+  })
+  assert.equal(r.status, 2)
+  assert.equal(r.stdout, "")
+  assert.match(r.stderr, /more than 1 RDF and SPARQL files/)
+})
