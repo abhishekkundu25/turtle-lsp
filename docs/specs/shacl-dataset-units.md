@@ -1,6 +1,6 @@
 # SHACL: less repeated work for TriG and N-Quads datasets
 
-Status: spec, not scheduled.
+Status: steps 2 and 3 in part done after 0.7.1 (Unreleased; audit 2026-10, ticket 20): the shared graph is built once and each dataset is read as an overlay on it, with only the nodes the dataset mentions as focus nodes. Steps 1 and 4 (a measurement, parallel dataset units) are not done.
 
 ## Problem Statement
 

@@ -46,13 +46,18 @@ Options:
   --ignore CODE,...     do not report these codes
   --no-shacl            skip SHACL validation
   --network             fetch owl:imports and JSON-LD contexts not in the cache
+                        (public addresses only, unless
+                        TURTLE_LSP_ALLOW_PRIVATE_HOSTS=1); turtle-lsp.json
+                        cannot turn this on
   --max-diagnostics N   print at most N problems per file
   --statistics          print a count per code instead of the problems
                         (not with --format)
 
 A file that cannot be read or is not UTF-8 is reported as an error with the
 code io or encoding. A folder scan takes at most 20000 files; a file over
-50 MB is skipped. TURTLE_LSP_MAX_FILES=N changes the first limit.
+50 MB is skipped. TURTLE_LSP_MAX_FILES=N changes the first limit. --fix
+replaces a file through a temporary file in its folder, and only if it has
+not changed since it was read.
 
 Exit codes: 0 clean, 1 errors or too many warnings, 2 the tool failed or
 did not cover everything: a file could not be read or written (--fix), a
@@ -88,7 +93,8 @@ under PATHS (default: the workspace root). The default graph is the union of
 every triple of every file, named graphs included; GRAPH and FROM NAMED match
 nothing and FROM is ignored. SPARQL files are not data. prefixes.ttl and the
 'prefixes' setting apply to the query and to the data files, as in the
-editor. UPDATE is not run.
+editor. UPDATE is not run. A query that joins more than 200 patterns or
+path steps at once is refused before it runs.
 
 Options:
   -e, --execute QUERY   the query text, instead of a query file

@@ -7,7 +7,7 @@ N-Quads (`.nq`) and SPARQL (`.rq`, `.sparql`, `.ru`)**: ontologies (OWL, RDFS,
 SKOS), SHACL shapes, linked data, and the queries and updates you run on them. Powered
 by [turtle-lsp](https://github.com/abhishekkundu25/turtle-lsp), a language
 server written in Rust: a keystroke in a 30,000-line file gets fresh
-diagnostics in about 9 ms.
+diagnostics in about 5 ms.
 
 Try it first in your browser, with nothing to install: [RDF Editor](https://abhishekkundu25.github.io/turtle-lsp/).
 
@@ -75,19 +75,21 @@ query in that folder or below can then use those prefixes. Or set
 ## Settings
 
 - `turtle.prefixes`: prefixes available in every file, e.g. `{ "ex": "http://example.org/" }`.
-- `turtle.server.path`: use a different `turtle-lsp` binary (user settings only; ignored in untrusted workspaces).
+- `turtle.server.path`: use a different `turtle-lsp` binary: an absolute path to a file that exists (user settings only; in an untrusted workspace a binary inside the workspace is never run).
 - `turtle.trace.server`: log the language server traffic to the Output panel.
 - `turtle.inlayHints.labels`: show labels as inlay hints for `opaque` IRIs (default), `all` terms, or `off`.
-- `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation and the size above which it is skipped (default 2,000,000 triples).
+- `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation, and the most triples one run validates, the shared triples and every dataset together; above it validation is skipped (default 2,000,000 triples).
 - `turtle.shacl.onType`: also validate while typing, not only on save (default on).
 - `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
-- `turtle.imports.network`: fetch `owl:imports` and JSON-LD contexts over the network (default off; ignored in untrusted workspaces). With it off, the quick fix on an unresolved import fetches that one import and caches it.
+- `turtle.imports.network`: fetch `owl:imports` and JSON-LD contexts over the network (default off; off in untrusted workspaces). With it off, the quick fix on an unresolved import fetches that one import and caches it. Fetches go only to public addresses, follow at most 10 redirects (never from `https` to `http`), and one pass makes at most 100 requests; see [Network access](https://github.com/abhishekkundu25/turtle-lsp#network-access).
 - `turtle.imports.unresolved`: while an import can't be loaded, SHACL results it could change are warnings with a note (`soften`, the default); `ignore` keeps their full severity.
 - `turtle.format.lineWidth`: line width for formatting (default 100).
 - `turtle.codeLens.references`: show "N references" above each subject a file describes; click it to list them (default on).
 - `turtle.diagnostics.workspace`: also check the files that are not open, in the background, and show their problems (default off).
 - `turtle.query.timeoutSeconds`, `turtle.query.maxRows`: stop a query run with **▶ Run query** after this many seconds (default 30), and show at most this many rows of its results (default 1000); `0` for no limit.
 - `turtle.query.maxBufferedRows`: stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (default 10 000 000; `0` for no limit). It counts rows, not bytes: ordinary rows take about 100 bytes each, long text values take more.
+
+The extension sends the server only the settings you set. A setting you leave unset comes from the project's [`turtle-lsp.json`](https://github.com/abhishekkundu25/turtle-lsp#settings-file-turtle-lspjson), or takes its default. That file cannot turn on `turtle.imports.network` or raise the query and SHACL limits; only your own settings can. In an untrusted workspace, `turtle.server.path`, `turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples` and `turtle.diagnostics.workspace` take your user settings only.
 
 ## Also for Neovim and other editors
 

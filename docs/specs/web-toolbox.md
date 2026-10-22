@@ -1,6 +1,6 @@
 # RDF Toolbox in the browser (iteration 1)
 
-Status: iteration 1 done, on branch `web-showcase` (not merged to main).
+Status: iteration 1 done; merged to main and published with the browser editor in 0.5.1.
 
 ## Problem Statement
 

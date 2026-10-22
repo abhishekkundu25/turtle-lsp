@@ -1,4 +1,4 @@
-//! Turtle (RDF 1.2) language server.
+//! A language server and command-line checker for RDF 1.2 (Turtle, TriG, N-Triples, N-Quads, JSON-LD) and SPARQL, with SHACL validation.
 //!
 //! # Modules
 //!
@@ -12,7 +12,7 @@
 //! | [`knowledge`] | What the workspace says about each IRI | [`features`] |
 //! | [`vocab`] | Embedded well-known vocabularies | [`knowledge`], [`features`] |
 //! | [`imports`] | `owl:imports` resolution and the import cache | [`server`], [`cli`] |
-//! | [`fetch`] | Network fetching and its limits (stub) | [`imports`], [`jsonld`] |
+//! | [`fetch`] | Web requests: redirects, the address rule, size, time and request budgets, the cache file layout | [`imports`], [`jsonld`] |
 //! | [`features`] | Completion, hover, diagnostics, formatting and the other editor features | [`server`], [`batch`] |
 //! | [`diagnose`] | The diagnostics composer: one document's diagnostics, the same for the editor and `check` | [`server`], [`batch`] |
 //! | [`shacl`] | Shapes, SHACL Core and SHACL-SPARQL validation | [`features`] |

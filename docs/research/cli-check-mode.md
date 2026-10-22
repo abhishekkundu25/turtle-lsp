@@ -4,6 +4,11 @@ Date: 2026-10-20. Purpose: decide the shape of `turtle-lsp check` and
 `turtle-lsp format`, so coding agents and CI can validate RDF without an LSP
 client. Today `src/main.rs` either prints `--version` or runs the LSP server.
 
+> **Historical.** Written on 2026-10-20, this research describes the code and the
+> tools as they were then; file names, figures and decisions may have
+> changed since. README.md, ARCHITECTURE.md and the module docs describe
+> the code as it is now.
+
 Method: official docs, specs and source code, fetched on the date above. Claims
 about the behaviour of another tool's source are from its default branch on that
 date. Where only secondary sources were found, the text says so.

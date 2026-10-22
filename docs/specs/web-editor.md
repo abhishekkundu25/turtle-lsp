@@ -1,6 +1,6 @@
 # RDF Toolbox editor mode (iteration 2)
 
-Status: done, on branch `web-showcase` (not merged to main).
+Status: done; merged to main and published with the browser editor in 0.5.1.
 
 ## Problem Statement
 

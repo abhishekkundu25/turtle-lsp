@@ -1,6 +1,6 @@
 # Command-line check and format (for agents and CI)
 
-Status: spec, not scheduled. Research: docs/research/cli-check-mode.md.
+Status: done in 0.6.0. Research: docs/research/cli-check-mode.md.
 
 ## Problem Statement
 

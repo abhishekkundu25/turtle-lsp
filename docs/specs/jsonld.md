@@ -1,6 +1,6 @@
 # JSON-LD support
 
-Status: spec, not scheduled. Phase 1 only; tickets in `docs/tickets/jsonld/`.
+Status: done in 0.6.0 (phase 1). Tickets: `docs/tickets/jsonld/`.
 
 ## Problem Statement
 

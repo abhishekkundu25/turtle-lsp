@@ -1,5 +1,7 @@
 # Fix the corpus-validation findings
 
+Status: done in 0.3.0.
+
 ## Problem Statement
 
 The public-corpus run (`docs/research/corpus-validation.md`) found three things

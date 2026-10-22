@@ -8,7 +8,7 @@ edition = "2024"
 # rust-toolchain.toml. Lower this only after clippy passes on the lower number.
 rust-version = "1.91"
 license = "MIT"
-description = "Fast language server for RDF Turtle"
+description = "Fast language server and command-line checker for RDF (Turtle, TriG, N-Triples, N-Quads, JSON-LD) and SPARQL, with SHACL validation"
 repository = "https://github.com/abhishekkundu25/turtle-lsp"
 
 [dependencies]

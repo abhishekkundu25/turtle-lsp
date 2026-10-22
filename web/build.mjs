@@ -1,6 +1,8 @@
 // Builds the toolbox's engine (web/engine) for the browser and copies it
 // next to the page as web/app/engine.wasm, with the Monaco editor (from the
-// npm package) as web/app/vendor/monaco, and monaco-vim beside it.
+// npm package) as web/app/vendor/monaco, and monaco-vim beside it. The
+// project's LICENSE and THIRD_PARTY_NOTICES.md (the crates and data in the
+// engine) go to web/app/vendor/ too, so the site ships its notices.
 //
 //   node web/build.mjs                 build everything
 //   node web/build.mjs --skip-engine   copy the vendor files and check the
@@ -68,6 +70,9 @@ function build({ skipEngine }) {
   fs.copyFileSync(path.join(vim, "dist", "monaco-vim.umd.js"), path.join(web, "app", "vendor", "monaco-vim", "monaco-vim.js"))
   for (const f of ["LICENSE", "LICENSE.codemirror.txt"]) fs.copyFileSync(path.join(vim, f), path.join(web, "app", "vendor", "monaco-vim", f))
   console.log("web/app/vendor/monaco-vim: monaco-vim " + JSON.parse(fs.readFileSync(path.join(vim, "package.json"), "utf8")).version)
+
+  for (const f of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) fs.copyFileSync(path.join(web, "..", f), path.join(web, "app", "vendor", f))
+  console.log("web/app/vendor: LICENSE, THIRD_PARTY_NOTICES.md")
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

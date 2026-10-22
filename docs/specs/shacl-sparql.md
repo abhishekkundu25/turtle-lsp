@@ -1,5 +1,7 @@
 # SHACL-SPARQL constraints
 
+Status: done in 0.3.0.
+
 ## Problem Statement
 
 Shapes that express business rules as SPARQL (`sh:sparql` with

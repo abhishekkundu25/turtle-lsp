@@ -1,5 +1,10 @@
 # Corpus validation
 
+> **Historical results.** Each run below is dated and describes the code of
+> that release; later fixes may have changed the figures. The steps of
+> `npm run corpus` just below are current. The README's "Tested against the
+> real world" table has the current results.
+
 `npm run corpus` downloads public RDF files (`tools/corpus/sources.tsv`) into
 `test/corpus/` (not tracked), then:
 
