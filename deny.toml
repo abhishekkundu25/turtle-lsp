@@ -9,13 +9,21 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # quick-xml < 0.41 (through oxrdfxml 0.2.4, the latest release): quadratic
-    # attribute-duplicate check and namespace allocation, both proportional to
-    # the size of one start tag. src/imports.rs refuses RDF/XML with any start
-    # tag over 64 KiB before parsing, on a background thread, from inputs of at
-    # most 20 MB (network) / 50 MB (files). Drop these once oxrdfxml moves on.
-    { id = "RUSTSEC-2026-0194", reason = "start tags capped at 64 KiB before parsing (src/imports.rs)" },
-    { id = "RUSTSEC-2026-0195", reason = "start tags capped at 64 KiB before parsing (src/imports.rs)" },
+    # quick-xml < 0.41 (0.37.5 in the lock file): quadratic attribute-duplicate check
+    # and namespace allocation, both proportional to the size of one start tag. It is
+    # reached through two crates:
+    #   - oxrdfxml 0.2.4 (the latest release), which parses RDF/XML owl:imports.
+    #     src/imports/rdfxml.rs refuses any start tag over 64 KiB before parsing, on
+    #     inputs of at most 20 MB (network) / 50 MB (files). The language server runs
+    #     it on a background thread; `turtle-lsp check` runs it inline, where the
+    #     scan costs about 0.3 s per MB (audit measurement, 2026-10).
+    #   - sparesults 0.3.4, through spareval. Its XML reader runs only for the
+    #     results of a SERVICE call, and turtle-lsp registers no service handler
+    #     (src/ has none), so it never parses a document.
+    # Re-check by 2027-01-22: drop both entries once oxrdfxml and sparesults release
+    # a quick-xml >= 0.41, or when a new input path reaches either parser.
+    { id = "RUSTSEC-2026-0194", reason = "RDF/XML start tags capped at 64 KiB before parsing (src/imports/rdfxml.rs); no SERVICE handler, so sparesults never parses XML here; re-check 2027-01-22" },
+    { id = "RUSTSEC-2026-0195", reason = "RDF/XML start tags capped at 64 KiB before parsing (src/imports/rdfxml.rs); no SERVICE handler, so sparesults never parses XML here; re-check 2027-01-22" },
 ]
 
 [licenses]

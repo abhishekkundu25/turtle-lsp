@@ -24,6 +24,8 @@ lto = true
 panic = "abort"
 strip = true
 
-# As in the server's Cargo.toml: spareval with cancellation checks in its joins.
+# As in the server's Cargo.toml: spareval with cancellation checks in its joins. The
+# patch applies only while the registry release it replaces satisfies the requirement,
+# which turtle-lsp's Cargo.toml pins to "=0.2.7"; this build gets spareval through it.
 [patch.crates-io]
 spareval = { path = "../../vendor/spareval" }
