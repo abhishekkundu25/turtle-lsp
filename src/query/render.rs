@@ -115,19 +115,53 @@ fn cut<T>(items: &[T], total: usize, max: Option<usize>, what: &str) -> (usize, 
     (shown, note)
 }
 
+/// The most characters a cell of the table or the Markdown shows. A
+/// `GROUP_CONCAT` or a long literal can be megabytes; a table of them is
+/// unreadable and a Markdown document of them opens slowly.
+pub const MAX_CELL_CHARS: usize = 1000;
+
+/// `s` cut to [`MAX_CELL_CHARS`] characters, with `…` where it was cut and
+/// `cut` raised by one.
+fn clip(s: String, cut: &mut usize) -> String {
+    // Bytes are never fewer than characters: short strings need no count.
+    if s.len() <= MAX_CELL_CHARS {
+        return s;
+    }
+    match s.char_indices().nth(MAX_CELL_CHARS) {
+        Some((end, _)) => {
+            *cut += 1;
+            format!("{}…", &s[..end])
+        }
+        None => s,
+    }
+}
+
+/// "N cell(s) shortened to 1000 characters", for the note under a table.
+fn clipped_note(cut: usize) -> Option<String> {
+    (cut > 0).then(|| {
+        format!(
+            "{} shortened to {MAX_CELL_CHARS} characters",
+            count(cut, "cell")
+        )
+    })
+}
+
 /// An aligned text table: a header of `?variables`, a rule, one line per row
 /// (unbound cells empty), at most `max_rows` rows and then a line "showing N
-/// of M rows". Widths count characters.
+/// of M rows". Widths count characters. A cell longer than
+/// [`MAX_CELL_CHARS`] is cut with `…`, and a line says how many were.
 pub fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
     let (shown, note) = cut(&s.rows, s.total(), max_rows, "row");
     let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
+    let mut cut = 0;
     let cells: Vec<Vec<String>> = s.rows[..shown]
         .iter()
         .map(|r| {
             r.iter()
                 .map(|t| {
-                    t.as_ref()
-                        .map_or_else(String::new, |t| one_line(&term(t, prefixes)))
+                    t.as_ref().map_or_else(String::new, |t| {
+                        clip(one_line(&term(t, prefixes)), &mut cut)
+                    })
                 })
                 .collect()
         })
@@ -159,7 +193,7 @@ pub fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> St
     for row in &cells {
         out.push_str(&line(row));
     }
-    if let Some(note) = note {
+    for note in note.into_iter().chain(clipped_note(cut)) {
         out.push_str(&note);
         out.push('\n');
     }
@@ -173,7 +207,8 @@ fn one_line(s: &str) -> String {
 
 /// The answer as Markdown: a table of solutions (terms as code, at most
 /// `max_rows` rows, then "showing N of M rows"), `true` or `false`, or the
-/// triples (at most `max_rows`) in a Turtle code block.
+/// triples (at most `max_rows`) in a Turtle code block. A table cell longer
+/// than [`MAX_CELL_CHARS`] is cut with `…`, and a line says how many were.
 pub fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
     match a {
         Answer::Boolean(b) => format!("**{b}**\n"),
@@ -187,17 +222,18 @@ pub fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> St
             let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
             let _ = writeln!(out, "| {} |", header.join(" | "));
             let _ = writeln!(out, "|{}", "---|".repeat(header.len().max(1)));
+            let mut cut = 0;
             for r in &s.rows[..shown] {
                 let cells: Vec<String> = r
                     .iter()
                     .map(|t| {
                         t.as_ref()
-                            .map_or_else(String::new, |t| code(&term(t, prefixes)))
+                            .map_or_else(String::new, |t| code(&clip(term(t, prefixes), &mut cut)))
                     })
                     .collect();
                 let _ = writeln!(out, "| {} |", cells.join(" | "));
             }
-            if let Some(note) = note {
+            for note in note.into_iter().chain(clipped_note(cut)) {
                 let _ = write!(out, "\n_{}._\n", capitalize(&note));
             }
             out
