@@ -121,6 +121,19 @@
   each.
 - `npm run corpus` fails when a download fails; with `CORPUS_STRICT=1` a
   changed checksum fails it too.
+- **The editor shows at most 1,000 syntax errors per document.** In a
+  Turtle, TriG, N-Triples or N-Quads document with more, it shows the first
+  1,000 in the text and one more error at the end of the last one: "More
+  than 1000 syntax errors; the rest are not shown". Workspace diagnostics
+  and the browser toolbox's check show the same. `turtle-lsp check` still
+  reports every error, and `format` still counts them all. Before, the
+  editor showed every error. JSON-LD keeps its cap of 100 JSON errors.
+- **File kinds come from one table**, which changes three corner cases. A
+  file named only `.owl`, `.rdf` or `.json` is now an import source or a
+  watched file, as a file named only `.ttl` or `.rq` already was. On Linux
+  and macOS, a file whose name contains `\` is judged by the part after the
+  last `\`, so `x\catalog-v001.xml` is a catalog. A path that ends in a
+  separator (`/w/a.owl/`) is no longer an import source.
 
 ### Fixed
 
@@ -138,6 +151,16 @@
   never `exit` no longer keeps the server running (it ends after 30 s).
 - VS Code: "Turtle: Restart Language Server" works after a failed start.
 - "Fetch again" on an import that a catalog maps to a URL fetches it again.
+- A SHACL validation thread or a workspace-diagnostics thread that cannot
+  start is reported with a warning instead of ending the server. SHACL tries
+  again on the next validation; workspace diagnostics stay off until the
+  settings change.
+- **SHACL validation of a deep `sh:node` chain read twice no longer
+  hangs.** A chain of 3,000 shapes whose triples the validation reads twice
+  (for example, a TriG dataset that repeats the shared shapes) ran past 60
+  seconds, and a newer validation could not cancel it. Each shape check now
+  counts as one step of the validation's step budget (40 million), so the
+  run stops with a `shacl-failure` warning, and cancelling it stops it.
 
 ### Performance
 
@@ -155,6 +178,24 @@
 - The release binary is built with whole-program optimisation and stripped
   of symbols (12.2 MB instead of 18 MB), so a panic's backtrace shows no
   function names.
+- **Less memory, and faster large answers.** The server writes each answer as JSON text, without a
+  `serde_json::Value` tree in between: after 20 `documentSymbol` requests
+  on a 100,000-triple file it holds 113 MB instead of 366 MB, and each
+  request takes 38.7 ms instead of 49.5 ms. On a 30,000-line file,
+  `documentSymbol` takes 6.1 ms instead of 8.3 ms, and full semantic tokens
+  3.6 ms instead of 5.3 ms. Tokens are smaller, and `check` and `format` no
+  longer keep a file's tokens after parsing it: `format --check` on a
+  2.5 MB file peaks at 88 MB instead of about 154 MB (35 bytes per input
+  byte instead of 61). At the end of the benchmark's editing run the server
+  holds 157 MB instead of 210 MB.
+
+### Internal
+
+- The code is reorganised with no change to the protocol: one interface for
+  editor requests (`ide::Session`), workspace changes returned as `Effects`,
+  one layout engine for the Turtle and SPARQL formatters, one SHACL shape
+  model, one file-kind table, and a public Rust interface cut to what the
+  browser engine, the examples and the tests use.
 
 ## 0.7.1 — 2026-10-22
 

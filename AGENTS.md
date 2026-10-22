@@ -5,6 +5,32 @@ SPARQL, with a VS Code extension, a Neovim plugin and a browser build.
 [ARCHITECTURE.md](ARCHITECTURE.md) maps the modules and the rules between
 them; each file's `//!` doc says what it owns.
 
+## Where things live
+
+- An editor request: its routing by document kind is in `ide::Session`
+  (`src/ide/{navigation,display,edit}.rs`), its feature code in `features`
+  (RDF) or `sparql::features` (SPARQL). `src/server.rs` only decodes the
+  params and encodes the answer.
+- Formatting: what the Turtle and SPARQL formatters share (options, token
+  document, triple terms, printer) is in `src/layout/`; each formatter's
+  walk of its syntax stays in `features::format` or `sparql::format`.
+- File extensions and file names: the one table in
+  `src/workspace/kinds.rs`. The watcher glob `server::WATCHED_FILES` and
+  `Syntax::from_extension` must match it; tests check both.
+- A workspace change: the `Workspace` method returns `Effects`, and
+  `Server::apply` acts on them.
+- Server state: the groups in `src/server/{client,progress,shacl,refresh,layers,index}.rs`;
+  how jobs run (`Spawn::Thread`, `Spawn::Inline`) in `src/server/worker.rs`;
+  what goes out on stdio, written as JSON text, in `src/server/wire.rs`.
+- SHACL shapes and IRIs: `src/shacl/model.rs` and `src/shacl/vocab.rs`,
+  read by the shape lint and the validator.
+
+Make a new item `pub(crate)`. Make it `pub` only when a consumer uses it
+(`web/engine`, `examples/`, `tests/` or `src/main.rs`), and add its path to
+the "Public interface" doctest in the crate doc of `src/lib.rs`.
+`cargo test --release --locked --doc` fails when a listed path stops being
+public.
+
 ## Build and test
 
 Build and test in release mode only: timing tests and budgets mean nothing
@@ -23,6 +49,7 @@ file at a time when a whole suite takes longer. Compiling is not a test run.
 ```sh
 timeout 120 cargo test --release --locked --lib            # unit tests
 timeout 120 cargo test --release --locked --test chaos     # one integration test file
+timeout 120 cargo test --release --locked --doc            # the public-interface list in src/lib.rs
 timeout 120 node --test --test-timeout=30000 test/cli.test.mjs
 timeout 120 npm run test:latency                           # wall-clock checks, one at a time
 node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engine.test.mjs
@@ -48,6 +75,14 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
   no test writes the user's cache. Start servers through it.
 - A pending (`todo`) test that starts passing fails `npm run test:node`,
   which names it; promote it by removing its `todo`.
+- Run the benchmark (`node bench/perf.mjs`) only on a quiet machine (load
+  average under 1, nothing else building), never next to a test run.
+  `--only big-file-peak` measures the peak memory of `format --check` and
+  `check --no-shacl` on a 2.5 MB file and fails over 40 bytes per input
+  byte. `--only document-symbol-rss` reports the server's memory before and
+  after 20 `documentSymbol` requests on a 100,000-triple file. Its budget is
+  1.3 times the memory before; the bench prints both figures and does not
+  check the ratio. `--list` names every scenario.
 
 ## Release
 

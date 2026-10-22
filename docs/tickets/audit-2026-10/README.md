@@ -252,3 +252,73 @@ malformed input (ignored chaos test); an undecodable LSP message ends the sessio
 and a large `Content-Length` is allocated up front (todo protocol tests); the
 formatter is not idempotent on a dangling `;`; the undeclared-prefix message and
 prefix completion always say `@prefix`.
+
+## Wave 3 outcome (2026-10-22)
+
+Every wave-3 code ticket landed on `audit-2026-10-wave3`: 26a to 35, and 37 and 38,
+which were added during the wave. Ticket 36 updated `ARCHITECTURE.md`, `AGENTS.md`,
+`README.md` and `CHANGELOG.md`. Departures from the plan, from the tickets' status
+lines:
+
+- **Ticket 28b:** type hierarchy prepare stayed on the `doc!` macro; 28c moved it.
+- **Ticket 29a:** an extra state group, `Index`, brings the server to 20 fields (from
+  48). `described_seen` is in `Refresh`. The SHACL glue (`validate_shacl`,
+  `shacl_outcome`, `shacl_gone`) stays in `src/server.rs`, so no group reaches into
+  server state.
+- **Ticket 31:** the table finds every extension one way, which changes three
+  untested corner cases. A file named only `.owl`, `.rdf` or `.json` counts as an
+  import source or watched file; on Unix, `x\catalog-v001.xml` counts as a catalog; a
+  path with a trailing separator (`/w/a.owl/`) no longer counts.
+- **Tickets 32a and 32b:** 32a left the server modules that the browser build does
+  not use (`run_query`, `workspace_diagnostics`, `Workspace::is_indexed`,
+  `indexed_uris`) for 32b, which gated them out of that build (21 browser-build
+  warnings to 0). Public functions went from 646 at the start of 32b to 114, public
+  types from 244 to 78 (590 and 234 at 8e3f8d7).
+- **Ticket 33c:** owner decision 8's fallback. The completion index keeps its own
+  shape builder, because building from the model costs 2.2 to 3.8 times as much per
+  edit; a test pins the builder to the model's shapes that target classes.
+- **Ticket 34a:** its parser cap of 100 syntax errors is gone. Ticket 38 (owner
+  decision, replacing assumed decision 9) keeps every error in the parser, shows the
+  first 1,000 in the editor and the browser toolbox, and reports all of them in
+  `check`. A file with 32,000 errors peaks at about 42 bytes per input byte in `check`
+  and `format`; the error-free bench file stays at 35.4.
+- **Ticket 34b:** not done: handing the final line index to the analysis.
+- **Ticket 35:** no `mi_collect` hook was needed.
+- **Ticket 37:** added after 33b found that a deep `sh:node` chain read twice ran
+  without end and ignored cancellation. Shape checks now count toward the 40-million
+  step budget (one per check that misses the cache).
+- **Ticket 36:** `docs/specs/workspace-split.md` is an untracked draft that the owner
+  keeps outside the branch, so its "Further Notes" are not updated here.
+
+The server's request handler (`Server::request`) went from 430 to 201 lines.
+
+**Validation on the merged tree:** `cargo fmt --check`; clippy with `-D warnings`,
+and the browser-build clippy with 0 warnings; 782 Rust tests passed and 4 ignored;
+Node 796 passed, 0 failed, 5 todo, 1 skipped; `npm run test:latency` 9 of 9; VS Code
+66 of 66; all 18 `web/test` files (`editor-vim` among them); `tools/check-vendor.sh`
+and `test/versions.test.mjs` green.
+
+**Benchmark comparison:** `node bench/perf.mjs`, three runs at 15bd504 against three
+runs at 0e4b411 (the same code as 8e3f8d7), medians, on an Apple M6 (12 cores, macOS
+27.0) at a load average of 1.7 to 1.8 (1.2 to 1.6 for the base). No gated row is over
+1.5 times the base; the keystroke rows are at 0.96 to 1.00 times. Of the 39 time
+rows, 35 are within 0.94 to 1.03 times the base: the slowest are `check` on the
+workspace (82.5 to 85.2 ms) and opening the undeclared-prefix file (145.3 to
+148.9 ms). The other four are faster: the three below, and typed completion of an
+object (0.5 to 0.4 ms, at the bench's resolution of 0.1 ms). The rows that changed:
+
+| Row | 8e3f8d7 | 15bd504 |
+|---|---:|---:|
+| `documentSymbol` (30,005 lines), p50 | 8.3 ms | 6.1 ms |
+| `semanticTokens/full` (30,005 lines), p50 | 5.3 ms | 3.6 ms |
+| `documentSymbol` (100,000 triples), p50 | 49.5 ms | 38.7 ms |
+| RSS after 20 `documentSymbol` requests (100,000 triples) | 366 MB | 113 MB |
+| The same, over RSS before the first request (budget 1.3) | 2.73 | 1.07 |
+| Server RSS after indexing, opening and editing | 163 MB | 144 MB |
+| Server RSS at the end of the editing scenario | 210 MB | 157 MB |
+| Big file: server RSS after the edits | 182 MB | 140 MB |
+| Peak memory of `format --check` on the 2,492,901-byte big file (budget 40 B per byte) | 152.9 to 155.9 MB, 61 to 62.6 B per byte | 88.2 MB, 35.4 B per byte |
+| Peak memory of `check --no-shacl` on the same file | | 88.3 MB, 35.4 B per byte |
+
+Both budgets hold: 35.4 bytes per input byte against 40 (34b), and 1.07 times against
+1.3 (35).

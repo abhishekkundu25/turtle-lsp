@@ -21,7 +21,7 @@ the full W3C test suites and real public ontologies; see
 
 ## Features
 
-- **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags, and ill-typed literals (`"twelve"^^xsd:integer`, `"2021-02-29"^^xsd:date`: a value not valid for its XSD datatype or `rdf:JSON`). With `diagnostics.workspace` on, files that are not open are checked too, in the background, as `turtle-lsp check` checks them.
+- **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file; past 1,000 in one file, the editor shows the first 1,000 and one error that says there are more, and `turtle-lsp check` reports them all), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags, and ill-typed literals (`"twelve"^^xsd:integer`, `"2021-02-29"^^xsd:date`: a value not valid for its XSD datatype or `rdf:JSON`). With `diagnostics.workspace` on, files that are not open are checked too, in the background, as `turtle-lsp check` checks them.
 - **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Properties a SHACL shape requires for the subject's class come first ("required by …"), then properties whose `rdfs:domain` fits; after a property, instances of its range (or `sh:class`) come first and `sh:in` values are offered. Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
 - **Hover**: label, comment, types and where a term is described.
 - **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix. "N references" above each subject a file describes (code lenses; `codeLens.references` turns them off).
@@ -81,17 +81,17 @@ including JSON encoding and the pipe.
 
 | | Previous Node.js server | turtle-lsp (Rust) | Speedup |
 |---|---:|---:|---:|
-| Keystroke → diagnostics, median | 4,911 ms | **4.4 ms** | ~1,100× |
-| Keystroke → diagnostics, p95 | 8,341 ms | **5.0 ms** | ~1,700× |
-| Start-up (`initialize`) | 2,537 ms | **1.4 ms** | ~1,800× |
-| Open file → first diagnostics | 1,884 ms | **5.9 ms** | ~320× |
+| Keystroke → diagnostics, median | 4,911 ms | **4.3 ms** | ~1,100× |
+| Keystroke → diagnostics, p95 | 8,341 ms | **4.8 ms** | ~1,700× |
+| Start-up (`initialize`) | 2,537 ms | **1.3 ms** | ~2,000× |
+| Open file → first diagnostics | 1,884 ms | **5.7 ms** | ~330× |
 | Completion after `foaf:` | 21 ms | **0.2 ms** | ~100× |
 | Completion with nothing typed | 476 ms, 48,203 items, 9.5 MB | **0.1 ms**, 6 items, 1 KB | |
 | Go to definition | 0.1 ms, 7 locations (every use) | **0.1 ms**, 1 location (the definition) | |
-| Format the whole file | — | **4.8 ms** | |
-| Semantic tokens, whole file | — | **5.3 ms** | |
-| Save → SHACL results (~180k triples) | — | **9.7 ms** | |
-| Memory (resident, after indexing, opening and editing) | 959 MB | **164 MB** | ~6× less |
+| Format the whole file | — | **4.6 ms** | |
+| Semantic tokens, whole file | — | **3.6 ms** | |
+| Save → SHACL results (~180k triples) | — | **9.8 ms** | |
+| Memory (resident, after indexing, opening and editing) | 959 MB | **144 MB** | ~7× less |
 
 JSON-LD against Turtle of the same length (about 30,000 lines each; the
 JSON-LD file has 1,499 people under an inline `@context`), each opened alone
@@ -99,8 +99,8 @@ in an empty workspace:
 
 | | Turtle | JSON-LD |
 |---|---:|---:|
-| Open file → first diagnostics, median | 5.0 ms | **6.2 ms** (1.24×) |
-| Keystroke → diagnostics, median | 4.3 ms | **6.1 ms** |
+| Open file → first diagnostics, median | 4.9 ms | **6.2 ms** (1.27×) |
+| Keystroke → diagnostics, median | 4.2 ms | **6.1 ms** |
 | Hover | 0.1 ms | **0.1 ms** |
 
 The JSON-LD budgets are opening within 3× the Turtle time and a keystroke
@@ -108,8 +108,16 @@ under 10 ms; `npm run bench` reports both. `tests/jsonld_budget.rs` holds
 release builds to the first, and to a keystroke within 2× the Turtle opening
 time, which carries across machines.
 
-Measured with `npm run bench` at commit 8954f8b on an Apple M6 (12 cores)
-with macOS 27.0, load average 2.2. Results vary a little between runs. The
+Memory on large inputs: after 20 `documentSymbol` requests on a
+100,000-triple file (a 5.5 MB answer each), the server holds 113 MB, 1.07
+times what it held before the first request. `turtle-lsp format --check` on
+a 2.5 MB file peaks at 88 MB, 35 bytes per input byte, and so does
+`turtle-lsp check --no-shacl`. `npm run bench` fails when either goes over
+40 bytes per input byte.
+
+Measured with `npm run bench` at commit 15bd504 on an Apple M6 (12 cores)
+with macOS 27.0: the median of three runs, load average 1.7 to 1.8. Results
+vary a little between runs. The
 bench also has stress rows (near-miss IRIs, a 2.4 MB file, typed completion
 over 40,000 subjects, 200 TriG datasets, `check` on the workspace); CI runs
 it on every push to main and every pull request (see [Performance in CI](#performance-in-ci)).
