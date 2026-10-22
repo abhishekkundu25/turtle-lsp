@@ -461,3 +461,37 @@ test("progress: nothing is sent for a token the client refuses", async () => {
     await w.end()
   }
 })
+
+// A shape's path nested 20,000 steps deep (flat triples, so the file itself is
+// not nested) cannot be read: the shape is not validated, and says so.
+const nestedPath = (steps) => {
+  let text = `@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.com/> .
+ex:PathShape${steps} sh:targetNode ex:a${steps} ;
+    sh:property [ sh:path _:b0 ; sh:minCount 1 ] .
+ex:a${steps} ex:other 1 .
+`
+  for (let i = 0; i < steps; i++) text += `_:b${i} sh:inversePath _:b${i + 1} .\n`
+  return text + `_:b${steps} sh:inversePath ex:p .\n`
+}
+const invalidPath = (diags) => diags.filter((d) => d.code === "shacl-invalid-path")
+
+test("a path too deep to read is an error on its shape; a short one validates", async () => {
+  const deep = nestedPath(20000)
+  const short = nestedPath(10)
+  const w = await session({}, { "deep-shape.ttl": deep, "short-shape.ttl": short })
+  try {
+    const deepUri = uriOf(path.join(w.dir, "deep-shape.ttl"))
+    w.s.open(deepUri, deep)
+    const [d] = invalidPath(await until(w.s, deepUri, (d) => invalidPath(d).length > 0, 10000))
+    assert.equal(d.severity, 1)
+    assert.equal(deep.split("\n")[d.range.start.line].trim().startsWith("sh:property"), true, JSON.stringify(d.range))
+    // 11 steps are read: the missing value is a violation, not a path error.
+    const shortUri = uriOf(path.join(w.dir, "short-shape.ttl"))
+    w.s.open(shortUri, short)
+    const diags = await until(w.s, shortUri, (d) => shacl(d).length > 0, 10000)
+    assert.deepEqual(invalidPath(diags), [])
+  } finally {
+    await w.end()
+  }
+})

@@ -96,3 +96,19 @@ test("check reports a 20,000-step path in sh:select and exits 1, no abort", () =
     fs.rmSync(ws, { recursive: true, force: true })
   }
 })
+
+test("a SPARQL target may use MINUS, VALUES and SERVICE as the validator allows", async () => {
+  const uri = uriOf(path.join(dir, "targets.ttl"))
+  const text = `${head}ex:S a sh:NodeShape ;
+    sh:target [ a sh:SPARQLTarget ; sh:prefixes <http://example.com/ns> ;
+        sh:select "SELECT ?this WHERE { ?this a ex:C MINUS { ?this ex:gone true } VALUES ?x { 1 } }" ] .
+`
+  s.open(uri, text)
+  assert.deepEqual(sparql(await s.diagnosticsFor(uri)), [])
+  // A constraint may not.
+  s.change(uri, shapes("$this ex:p ?v MINUS { $this ex:q ?v }"))
+  const found = sparql(await s.diagnosticsFor(uri))
+  assert.equal(found.length, 1, JSON.stringify(found))
+  assert.equal(found[0].code, "shacl-sparql-unsupported")
+  s.close(uri)
+})

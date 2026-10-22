@@ -7,8 +7,16 @@
 //! TriG / N-Triples / N-Quads dataset (and JSON-LD one with named graphs)
 //! together with them, as data and shapes graph and sends back diagnostics per
 //! document. Each job carries a generation; a newer job makes the worker
-//! abandon the current one, and the server drops results whose generation is
-//! not the latest.
+//! abandon the current one (also inside one long path or query), and the
+//! server drops results whose generation is not the latest.
+//!
+//! What validation could not do is shown, not passed over: a query that
+//! failed or timed out, a shape cut short (nested too deep, or past the path
+//! step budget) is a warning (`shacl-failure`, `shacl-sparql-timeout`) on its
+//! `sh:select` / `sh:ask` or its shape; a shape whose `sh:path` cannot be
+//! read is an error (`shacl-invalid-path`). Past the result budget validation
+//! stops with one note; a file shows at most [`MAX_PER_DOC`] results, the most
+//! severe first.
 //!
 //! A result is shown on the triple (focus node, first path predicate, value)
 //! when the workspace has it, else on the focus node's first description,
@@ -24,8 +32,8 @@ use crate::features::hover::short;
 use crate::features::navigation;
 use crate::knowledge::Source;
 use crate::rdf::graph::{Graph, Id, Term};
-use crate::shacl::sparql::TIMED_OUT;
-use crate::shacl::{Path, SH, ValidationResult, validate_report};
+use crate::shacl::sparql::{Cancel, TIMED_OUT};
+use crate::shacl::{Failure, FailureKind, Path, SH, ValidationResult, validate_report};
 use crate::syntax::{Iri, PrefixMap, RDF, Role, Span, Syntax, XSD};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_types::*;
@@ -36,6 +44,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const CODE: &str = "shacl-violation";
 pub const SKIPPED_CODE: &str = "shacl-skipped";
 pub const TIMEOUT_CODE: &str = "shacl-sparql-timeout";
+/// A query or shape that could not be validated to the end.
+pub const FAILURE_CODE: &str = "shacl-failure";
+/// A shape skipped for its `sh:path`.
+pub const INVALID_PATH_CODE: &str = "shacl-invalid-path";
 /// Results shown per document; the rest are summarized in one diagnostic.
 const MAX_PER_DOC: usize = 1000;
 
@@ -147,7 +159,8 @@ impl Worker {
                         job = newer;
                     }
                     let generation = job.generation;
-                    let cancelled = || seen.load(Ordering::Relaxed) != generation;
+                    let latest = seen.clone();
+                    let cancelled = move || latest.load(Ordering::Relaxed) != generation;
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         run(&job, &cancelled)
                     }));
@@ -210,18 +223,9 @@ fn crashed(job: &Job, panic: &(dyn std::any::Any + Send)) -> ByUri {
 }
 
 /// Whether `a` declares shapes validation would act on (a target, or a
-/// typed shape). A few hash lookups.
+/// typed shape; see [`crate::shacl::validate::acts_on`]). A few hash lookups.
 pub fn has_shapes(a: &Analysis) -> bool {
-    [
-        "targetClass",
-        "targetNode",
-        "targetSubjectsOf",
-        "targetObjectsOf",
-        "NodeShape",
-        "PropertyShape",
-    ]
-    .iter()
-    .any(|l| Iri::get(&format!("{SH}{l}")).is_some_and(|i| a.refs_by_iri.contains_key(&i)))
+    crate::shacl::validate::acts_on(&|i| a.refs_by_iri.contains_key(&i))
 }
 
 /// Diagnostics for every workspace document, or `None` when cancelled.
@@ -233,7 +237,12 @@ pub fn has_shapes(a: &Analysis) -> bool {
 /// never merged with another dataset, which would turn two versions of a node
 /// into one node with two values. A dataset shows only the results its data
 /// changes: one the shared graph has on its own is shown there, once.
-pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
+pub fn run<C>(job: &Job, cancelled: &C) -> Option<ByUri>
+where
+    C: Fn() -> bool + Send + Sync + Clone + 'static,
+{
+    let cancelled: Cancel = Arc::new(cancelled.clone());
+    let cancelled = &cancelled;
     let mut docs: Vec<&(Source, Arc<Analysis>)> = job.docs.iter().collect();
     docs.sort_by(|a, b| (a.0, &a.1.uri).cmp(&(b.0, &b.1.uri)));
     let dataset = |d: &&(Source, Arc<Analysis>)| d.0 != Source::External && is_dataset(&d.1);
@@ -272,6 +281,9 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
         let mut seen = FxHashSet::default();
         list.retain(|d| seen.insert((d.range.start, d.range.end, d.message.clone())));
         if list.len() > MAX_PER_DOC {
+            // The most severe first, so an error is not what goes unshown;
+            // within a severity, in the order found.
+            list.sort_by_key(|d| severity_rank(d.severity));
             let hidden = list.len() - MAX_PER_DOC;
             list.truncate(MAX_PER_DOC);
             list.push(Diagnostic {
@@ -284,6 +296,27 @@ pub fn run(job: &Job, cancelled: &dyn Fn() -> bool) -> Option<ByUri> {
         }
     }
     Some(out)
+}
+
+/// Errors first.
+fn severity_rank(s: Option<DiagnosticSeverity>) -> u8 {
+    match s {
+        Some(DiagnosticSeverity::WARNING) => 1,
+        Some(DiagnosticSeverity::INFORMATION) => 2,
+        Some(DiagnosticSeverity::HINT) => 3,
+        _ => 0,
+    }
+}
+
+/// The note that validation stopped after `kept` results.
+fn capped_note(kept: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Some(DiagnosticSeverity::INFORMATION),
+        code: Some(NumberOrString::String(CODE.into())),
+        source: Some(SOURCE.into()),
+        message: format!("SHACL validation stopped after {kept} results; more are not shown"),
+        ..Default::default()
+    }
 }
 
 /// Whether `a` is validated as a dataset of its own rather than as part of
@@ -353,7 +386,7 @@ fn validate_unit<'j>(
     docs: &[&'j (Source, Arc<Analysis>)],
     dataset: Option<&Arc<Analysis>>,
     soften: Option<&Soften>,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &Cancel,
     shared_results: &mut FxHashSet<ResultKey<'j>>,
     out: &mut ByUri,
 ) -> Option<()> {
@@ -390,7 +423,7 @@ fn validate_unit<'j>(
             .collect()
     });
     let keep = |id: Id| mine.as_ref().is_none_or(|m| m.contains(&id));
-    let report = validate_report(&g, cancelled, &keep)?;
+    let report = validate_report(&g, &forward(cancelled), &keep)?;
     let mut place = Placer {
         g: &g,
         docs,
@@ -412,15 +445,35 @@ fn validate_unit<'j>(
             out.entry(uri).or_default().push(d);
         }
     }
-    for f in report.failures.iter().filter(|f| f.message == TIMED_OUT) {
-        if let Some((uri, d)) = place.timed_out(f.node) {
+    for f in &report.failures {
+        if let Some((uri, d)) = place.failure(f) {
             let list = out.entry(uri).or_default();
             if !list.contains(&d) {
                 list.push(d);
             }
         }
     }
+    if report.capped {
+        // Told once: on the dataset, else on a file with shapes.
+        let told = match dataset {
+            Some(a) => Some(a),
+            None => docs.iter().find(|d| shaped(d)).map(|d| &d.1),
+        };
+        if let Some(a) = told {
+            let list = out.entry(a.uri.clone()).or_default();
+            let note = capped_note(report.results.len());
+            if !list.contains(&note) {
+                list.push(note);
+            }
+        }
+    }
     Some(())
+}
+
+/// `cancel` as a closure of its own.
+fn forward(cancel: &Cancel) -> impl Fn() -> bool + Send + Sync + Clone + 'static + use<> {
+    let cancel = cancel.clone();
+    move || cancel()
 }
 
 fn skipped(a: &Analysis, enc: Encoding, total: u64, max: u64) -> Diagnostic {
@@ -480,31 +533,57 @@ impl Placer<'_, '_, '_> {
         (d, &self.doc(d).parsed.triples[i as usize])
     }
 
-    /// A warning on the `sh:select` or `sh:ask` of constraint `node`, whose
-    /// query hit the time limit.
-    fn timed_out(&self, node: Id) -> Option<(String, Diagnostic)> {
+    /// A diagnostic for a failure, on the `sh:select` or `sh:ask` of the
+    /// constraint it is about (or the triple that states it), else on the
+    /// shape: a warning, but an error when the shape was skipped.
+    fn failure(&self, f: &Failure) -> Option<(String, Diagnostic)> {
         let query = [
             Iri::intern(&format!("{SH}select")),
             Iri::intern(&format!("{SH}ask")),
         ];
-        let (t, _) = self.g.out(node).find(|(_, t)| query.contains(&t.p))?;
-        let (d, triple) = self.origin(t);
+        let triple = f.triple.or_else(|| {
+            let (t, _) = self.g.out(f.node).find(|(_, t)| query.contains(&t.p))?;
+            Some(t)
+        });
+        let (d, span) = match triple {
+            Some(t) => {
+                let (d, triple) = self.origin(t);
+                let span = Span::new(
+                    triple.p_span.start,
+                    triple.o_span.end.max(triple.p_span.end),
+                );
+                (d, span)
+            }
+            None => self.description(f.node)?,
+        };
         if !self.in_workspace(d) {
             return None;
         }
         let a = self.doc(d);
-        let span = Span::new(
-            triple.p_span.start,
-            triple.o_span.end.max(triple.p_span.end),
-        );
+        let (severity, code, message) = match f.kind {
+            FailureKind::Path => (
+                DiagnosticSeverity::ERROR,
+                INVALID_PATH_CODE,
+                f.message.clone(),
+            ),
+            _ if f.message == TIMED_OUT => {
+                (DiagnosticSeverity::WARNING, TIMEOUT_CODE, f.message.clone())
+            }
+            FailureKind::Query => (
+                DiagnosticSeverity::WARNING,
+                FAILURE_CODE,
+                format!("SHACL-SPARQL query failed: {}", f.message),
+            ),
+            FailureKind::Cut => (DiagnosticSeverity::WARNING, FAILURE_CODE, f.message.clone()),
+        };
         Some((
             a.uri.clone(),
             Diagnostic {
                 range: a.range(self.enc, span),
-                severity: Some(DiagnosticSeverity::WARNING),
-                code: Some(NumberOrString::String(TIMEOUT_CODE.into())),
+                severity: Some(severity),
+                code: Some(NumberOrString::String(code.into())),
                 source: Some(SOURCE.into()),
-                message: TIMED_OUT.into(),
+                message,
                 ..Default::default()
             },
         ))
@@ -853,6 +932,192 @@ mod tests {
         assert_eq!(d[0].code, Some(NumberOrString::String(TIMEOUT_CODE.into())));
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(d[0].range.start.line, 4, "on the sh:select line");
+    }
+
+    const SLOW: &str = "SELECT $this WHERE {{ ?a ex:next* ?b . ?c ex:next* ?d . FILTER (STRLEN(CONCAT(STR(?a), STR(?d))) < 0) }}";
+
+    fn chain(n: usize) -> String {
+        let mut chain = HEAD.to_string();
+        for i in 0..n {
+            chain.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
+        }
+        chain
+    }
+
+    /// A job superseded while its query runs ends there: the worker sends
+    /// nothing for it and is free for the next one (it used to finish the
+    /// query, to its time limit, and send the stale outcome first).
+    #[test]
+    fn a_superseded_job_stops_inside_its_query() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:S sh:targetNode ex:n0 ;\n  sh:sparql [ sh:prefixes ex:P ;\n    sh:select \"{SLOW}\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n"
+            ),
+        );
+        let data = analysis("file:///w/data.ttl", &chain(400));
+        let (worker, outcomes) = Worker::start();
+        let mut slow = job(vec![shapes.clone(), data.clone()], 100_000);
+        slow.generation = 1;
+        worker.submit(slow);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut next = job(
+            vec![analysis(
+                "file:///w/b.ttl",
+                &format!("{HEAD}ex:a ex:p 1 .\n"),
+            )],
+            100,
+        );
+        next.generation = 2;
+        worker.submit(next);
+        let first = outcomes
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(first.generation, 2);
+    }
+
+    #[test]
+    fn an_untyped_sparql_target_shape_is_validated() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:S sh:target [ a sh:SPARQLTarget ; sh:select \"SELECT ?this WHERE {{ ?this <http://example.com/p> 1 }}\" ] ;\n  sh:property [ sh:path ex:q ; sh:minCount 1 ] .\n"
+            ),
+        );
+        // Nothing else marks it: no sh:targetClass, no sh:NodeShape.
+        assert!(has_shapes(&shapes.1));
+        let data = analysis(
+            "file:///w/data.ttl",
+            &format!("{HEAD}ex:a ex:p 1 .\nex:b ex:p 2 .\n"),
+        );
+        let out = run(&job(vec![shapes, data], 1000), &|| false).unwrap();
+        let d = &out["file:///w/data.ttl"];
+        assert_eq!(d.len(), 1, "{d:#?}");
+        assert!(d[0].message.contains("ex:q of ex:a"), "{}", d[0].message);
+    }
+
+    /// Every failure is shown on its query: one that does not parse, and a
+    /// solution that says `?failure true`.
+    #[test]
+    fn a_failed_query_is_a_warning_on_its_select() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:A sh:targetNode ex:a ;\n  sh:sparql [\n    sh:select \"SELECT $this WHERE {{ $this undeclared:p ?o }}\" ] .\nex:B sh:targetNode ex:a ;\n  sh:sparql [\n    sh:select \"SELECT $this ?failure WHERE {{ $this <http://example.com/p> ?o . BIND (true AS ?failure) }}\" ] .\n"
+            ),
+        );
+        let data = analysis("file:///w/data.ttl", &format!("{HEAD}ex:a ex:p 1 .\n"));
+        let out = run(&job(vec![shapes, data], 1000), &|| false).unwrap();
+        let d = &out["file:///w/shapes.ttl"];
+        assert_eq!(d.len(), 2, "{d:#?}");
+        for (diag, line) in d.iter().zip([4, 7]) {
+            assert_eq!(diag.code, Some(NumberOrString::String(FAILURE_CODE.into())));
+            assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+            assert_eq!(diag.range.start.line, line, "{diag:?}");
+        }
+        assert!(d[0].message.contains("failed"), "{}", d[0].message);
+        assert!(d[1].message.contains("?failure"), "{}", d[1].message);
+        assert!(!out.contains_key("file:///w/data.ttl"));
+    }
+
+    #[test]
+    fn an_ill_formed_path_is_an_error_on_the_shape() {
+        // 20,000 nested inverse steps, as flat triples; the shape is skipped
+        // and says so (it used to be skipped without a word).
+        let mut text = format!(
+            "{HEAD}ex:S sh:targetNode ex:a ;\n  sh:property [ sh:path _:b0 ; sh:minCount 1 ] .\n"
+        );
+        for i in 0..20_000 {
+            text.push_str(&format!("_:b{i} sh:inversePath _:b{} .\n", i + 1));
+        }
+        text.push_str("_:b20000 sh:inversePath ex:p .\n");
+        let shapes = analysis("file:///w/shapes.ttl", &text);
+        let data = analysis("file:///w/data.ttl", &format!("{HEAD}ex:a ex:q 1 .\n"));
+        let out = run(&job(vec![shapes, data], 100_000), &|| false).unwrap();
+        let d = &out["file:///w/shapes.ttl"];
+        assert_eq!(d.len(), 1, "{d:#?}");
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(
+            d[0].code,
+            Some(NumberOrString::String(INVALID_PATH_CODE.into()))
+        );
+        assert_eq!(d[0].range.start.line, 3, "on the sh:path line");
+
+        // 10 steps are read and validated.
+        let mut text = format!(
+            "{HEAD}ex:S sh:targetNode ex:a ;\n  sh:property [ sh:path _:b0 ; sh:minCount 1 ] .\n"
+        );
+        for i in 0..10 {
+            text.push_str(&format!("_:b{i} sh:inversePath _:b{} .\n", i + 1));
+        }
+        text.push_str("_:b10 sh:inversePath ex:p .\n");
+        let shapes = analysis("file:///w/shapes.ttl", &text);
+        let data = analysis("file:///w/data.ttl", &format!("{HEAD}ex:a ex:q 1 .\n"));
+        let out = run(&job(vec![shapes, data], 100_000), &|| false).unwrap();
+        // The value is missing: a violation, not an error about the path.
+        let d = &out["file:///w/data.ttl"];
+        assert_eq!(d.len(), 1, "{d:#?}");
+        assert_eq!(d[0].code, Some(NumberOrString::String(CODE.into())));
+        assert!(!out.contains_key("file:///w/shapes.ttl"));
+    }
+
+    /// A cartesian SELECT over a few hundred triples has far more solutions
+    /// than the budget keeps: it stops, once, with a note.
+    #[test]
+    fn results_past_the_budget_are_one_note() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:S sh:targetNode ex:x ;\n  sh:sparql [ sh:select \"SELECT $this ?value WHERE {{ ?a ?p ?o . ?value ?q ?r }}\" ] .\n"
+            ),
+        );
+        let mut data = HEAD.to_string();
+        for i in 0..400 {
+            data.push_str(&format!("ex:s{i} ex:p {i} .\n"));
+        }
+        let data = analysis("file:///w/data.ttl", &data);
+        let start = std::time::Instant::now();
+        let out = run(&job(vec![shapes.clone(), data.clone()], 100_000), &|| false).unwrap();
+        assert!(start.elapsed().as_secs_f64() < 10.0);
+        let all: Vec<&Diagnostic> = out.values().flatten().collect();
+        let notes: Vec<&&Diagnostic> = all
+            .iter()
+            .filter(|d| d.message.starts_with("SHACL validation stopped after"))
+            .collect();
+        assert_eq!(notes.len(), 1, "{notes:#?}");
+        assert_eq!(notes[0].severity, Some(DiagnosticSeverity::INFORMATION));
+        assert!(all.len() <= 2 * (MAX_PER_DOC + 1), "{}", all.len());
+    }
+
+    /// The per-file limit keeps the most severe results, not the first.
+    #[test]
+    fn the_per_file_limit_keeps_errors_over_warnings() {
+        let shapes = analysis(
+            "file:///w/shapes.ttl",
+            &format!(
+                "{HEAD}ex:W sh:targetClass ex:W ; sh:property [ sh:path ex:p ; sh:minCount 1 ; sh:severity sh:Warning ] .\nex:E sh:targetClass ex:E ; sh:property [ sh:path ex:p ; sh:minCount 1 ] .\n"
+            ),
+        );
+        let mut data = HEAD.to_string();
+        for i in 0..1500 {
+            data.push_str(&format!("ex:w{i} a ex:W .\n"));
+        }
+        for i in 0..10 {
+            data.push_str(&format!("ex:e{i} a ex:E .\n"));
+        }
+        let data = analysis("file:///w/data.ttl", &data);
+        let out = run(&job(vec![shapes, data], 100_000), &|| false).unwrap();
+        let d = &out["file:///w/data.ttl"];
+        assert_eq!(d.len(), MAX_PER_DOC + 1);
+        let errors = d
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .count();
+        assert_eq!(errors, 10);
+        assert_eq!(
+            d.last().unwrap().message,
+            "510 more SHACL results in this file are not shown"
+        );
     }
 
     #[test]

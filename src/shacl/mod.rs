@@ -8,6 +8,6 @@ pub mod sparql;
 pub mod validate;
 
 pub use shapes::{Path, Shape, ShapeKind, Shapes};
-pub use validate::{Failure, Report, ValidationResult, validate, validate_focus, validate_report};
+pub use validate::{Failure, FailureKind, Report, ValidationResult, validate_report};
 
 pub const SH: &str = "http://www.w3.org/ns/shacl#";

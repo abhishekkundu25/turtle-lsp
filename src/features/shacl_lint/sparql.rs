@@ -13,10 +13,10 @@ use super::Finding;
 use crate::analysis::Analysis;
 use crate::features::embedded::{self, Lit, Queries};
 use crate::knowledge::Knowledge;
+use crate::shacl::sparql::{Role, restrictions};
 use crate::sparql::validate::{self, ErrorAt, ErrorKind};
 use crate::syntax::{Iri, Node, RDF_TYPE, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
-use spargebra::algebra::{AggregateExpression, Expression, GraphPattern, OrderExpression};
 use spargebra::{Query, SparqlParser};
 use std::sync::OnceLock;
 
@@ -56,14 +56,6 @@ fn v() -> &'static V {
             target_types: [sh("SPARQLTarget"), sh("SPARQLTargetType")],
         }
     })
-}
-
-/// What a query is, which decides its pre-bound variables.
-enum Role {
-    /// A SPARQL-based target: nothing pre-bound.
-    Target,
-    /// A constraint or validator: these variables are pre-bound.
-    PreBound(Vec<String>),
 }
 
 pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
@@ -149,9 +141,7 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
             }
             Role::PreBound(vars)
         };
-        if let Role::PreBound(vars) = role {
-            unsupported(&lit, &query, &vars, out);
-        }
+        unsupported(&lit, &query, &role, out);
     }
 }
 
@@ -198,28 +188,8 @@ fn syntax_error(lit: &Lit, parser: SparqlParser, out: &mut Vec<Finding>) {
     push(out, span, SYNTAX, format!("SPARQL syntax error{what}"));
 }
 
-/// What the walk over the algebra found.
-#[derive(Default)]
-struct Found {
-    minus: bool,
-    values: bool,
-    service: bool,
-    lateral: bool,
-    /// Pre-bound variables assigned with `AS`.
-    assigned: Vec<String>,
-    /// Subqueries so far.
-    subqueries: usize,
-    /// Subqueries (by number) that leave out a pre-bound variable.
-    dropped: Vec<(usize, String)>,
-}
-
-fn unsupported(lit: &Lit, q: &Query, vars: &[String], out: &mut Vec<Finding>) {
-    let mut f = Found::default();
-    let (Query::Select { pattern, .. }
-    | Query::Ask { pattern, .. }
-    | Query::Construct { pattern, .. }
-    | Query::Describe { pattern, .. }) = q;
-    walk(pattern, true, vars, &mut f);
+fn unsupported(lit: &Lit, q: &Query, role: &Role, out: &mut Vec<Finding>) {
+    let f = restrictions(q, role);
     let select = matches!(q, Query::Select { .. });
     let v = lit.value;
     let at_word =
@@ -267,133 +237,6 @@ fn unsupported(lit: &Lit, q: &Query, vars: &[String], out: &mut Vec<Finding>) {
             UNSUPPORTED,
             format!("A subquery must return the pre-bound variable ?{var}"),
         );
-    }
-}
-
-fn walk(p: &GraphPattern, top: bool, vars: &[String], f: &mut Found) {
-    match p {
-        GraphPattern::Bgp { .. } | GraphPattern::Path { .. } => {}
-        GraphPattern::Join { left, right } | GraphPattern::Union { left, right } => {
-            walk(left, false, vars, f);
-            walk(right, false, vars, f);
-        }
-        GraphPattern::Lateral { left, right } => {
-            f.lateral = true;
-            walk(left, false, vars, f);
-            walk(right, false, vars, f);
-        }
-        GraphPattern::LeftJoin {
-            left,
-            right,
-            expression,
-        } => {
-            walk(left, false, vars, f);
-            walk(right, false, vars, f);
-            if let Some(e) = expression {
-                expr(e, vars, f);
-            }
-        }
-        GraphPattern::Filter { expr: e, inner } => {
-            expr(e, vars, f);
-            walk(inner, false, vars, f);
-        }
-        GraphPattern::Graph { inner, .. } => walk(inner, false, vars, f),
-        GraphPattern::Extend {
-            inner,
-            variable,
-            expression,
-        } => {
-            if vars.iter().any(|v| v == variable.as_str())
-                && !f.assigned.iter().any(|v| v == variable.as_str())
-            {
-                f.assigned.push(variable.as_str().to_owned());
-            }
-            expr(expression, vars, f);
-            walk(inner, top, vars, f);
-        }
-        GraphPattern::Minus { left, right } => {
-            f.minus = true;
-            walk(left, false, vars, f);
-            walk(right, false, vars, f);
-        }
-        GraphPattern::Values { .. } => f.values = true,
-        GraphPattern::OrderBy { inner, expression } => {
-            for o in expression {
-                let (OrderExpression::Asc(e) | OrderExpression::Desc(e)) = o;
-                expr(e, vars, f);
-            }
-            walk(inner, top, vars, f);
-        }
-        GraphPattern::Project { inner, variables } => {
-            if !top {
-                if let Some(v) = vars
-                    .iter()
-                    .filter(|v| *v != "shapesGraph" && *v != "currentShape")
-                    .find(|v| !variables.iter().any(|x| x.as_str() == v.as_str()))
-                {
-                    f.dropped.push((f.subqueries, v.clone()));
-                }
-                f.subqueries += 1;
-            }
-            walk(inner, false, vars, f);
-        }
-        GraphPattern::Distinct { inner }
-        | GraphPattern::Reduced { inner }
-        | GraphPattern::Slice { inner, .. } => {
-            walk(inner, top, vars, f);
-        }
-        GraphPattern::Group {
-            inner, aggregates, ..
-        } => {
-            for (_, a) in aggregates {
-                if let AggregateExpression::FunctionCall { expr: e, .. } = a {
-                    expr(e, vars, f);
-                }
-            }
-            walk(inner, top, vars, f);
-        }
-        GraphPattern::Service { inner, .. } => {
-            f.service = true;
-            walk(inner, false, vars, f);
-        }
-    }
-}
-
-/// Graph patterns inside expressions (`EXISTS`, `NOT EXISTS`).
-fn expr(e: &Expression, vars: &[String], f: &mut Found) {
-    match e {
-        Expression::Exists(p) => walk(p, false, vars, f),
-        Expression::Or(a, b)
-        | Expression::And(a, b)
-        | Expression::Equal(a, b)
-        | Expression::SameTerm(a, b)
-        | Expression::Greater(a, b)
-        | Expression::GreaterOrEqual(a, b)
-        | Expression::Less(a, b)
-        | Expression::LessOrEqual(a, b)
-        | Expression::Add(a, b)
-        | Expression::Subtract(a, b)
-        | Expression::Multiply(a, b)
-        | Expression::Divide(a, b) => {
-            expr(a, vars, f);
-            expr(b, vars, f);
-        }
-        Expression::UnaryPlus(a) | Expression::UnaryMinus(a) | Expression::Not(a) => {
-            expr(a, vars, f);
-        }
-        Expression::In(a, list) => {
-            expr(a, vars, f);
-            list.iter().for_each(|x| expr(x, vars, f));
-        }
-        Expression::If(a, b, c) => {
-            expr(a, vars, f);
-            expr(b, vars, f);
-            expr(c, vars, f);
-        }
-        Expression::Coalesce(list) | Expression::FunctionCall(_, list) => {
-            list.iter().for_each(|x| expr(x, vars, f));
-        }
-        _ => {}
     }
 }
 

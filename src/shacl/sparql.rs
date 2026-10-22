@@ -30,7 +30,7 @@ use spargebra::term::{
 use spargebra::{Query, SparqlParser};
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 /// The IRI `$shapesGraph` is bound to.
@@ -47,13 +47,35 @@ pub const TIME_LIMIT: Duration = if cfg!(test) {
 /// The failure of a query stopped at [`TIME_LIMIT`].
 pub const TIMED_OUT: &str = "SHACL-SPARQL query stopped after 10 s, its time limit: the results of this constraint are missing";
 
-/// The variables a query may see pre-bound, and which of them a subquery
-/// must return.
-pub struct PreBound<'s> {
-    pub names: &'s [&'s str],
-    /// Must be projected by every subquery (all but `currentShape` and
-    /// `shapesGraph`).
-    pub required: &'s [&'s str],
+/// What a query is for, which decides its pre-bound variables and the
+/// restrictions on it.
+pub enum Role {
+    /// A SPARQL-based target: only `$shapesGraph` is pre-bound, as a constant,
+    /// so none of the restrictions that keep `$this` and the other
+    /// pre-bound variables meaningful apply.
+    Target,
+    /// A constraint or validator: these variables are pre-bound. A subquery
+    /// must return all but `currentShape` and `shapesGraph`.
+    PreBound(Vec<String>),
+}
+
+impl Role {
+    /// The variables pre-bound in a query of this role.
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            Role::Target => vec!["shapesGraph"],
+            Role::PreBound(names) => names.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+/// The pre-bound variables of a SPARQL constraint (`sh:sparql`).
+pub fn constraint_role() -> Role {
+    Role::PreBound(
+        ["this", "shapesGraph", "currentShape"]
+            .map(String::from)
+            .into(),
+    )
 }
 
 /// Parses `text` with `prefixes` and checks it against the SHACL-SPARQL
@@ -63,7 +85,7 @@ pub fn prepare(
     text: &str,
     prefixes: &[(String, String)],
     path: Option<&Path>,
-    pre: &PreBound,
+    role: &Role,
 ) -> Result<Query, String> {
     let text = match path {
         Some(p) => replace_path(text, &path_sparql(p)),
@@ -81,17 +103,17 @@ pub fn prepare(
     let text =
         crate::sparql::validate::text_for_spargebra(&text, &crate::sparql::lexer::tokenize(&text));
     let mut query = parser.parse_query(&text).map_err(|e| e.to_string())?;
-    let vars: Vec<Variable> = pre
-        .names
-        .iter()
-        .map(|n| Variable::new_unchecked(*n))
+    let vars: Vec<Variable> = role
+        .names()
+        .into_iter()
+        .map(Variable::new_unchecked)
         .collect();
+    if let Some(why) = restrictions(&query, role).first() {
+        return Err(why);
+    }
     match &mut query {
         // Both have the projection on top (ASK projects its in-scope variables).
-        Query::Select { pattern, .. } | Query::Ask { pattern, .. } => {
-            check(pattern, true, pre)?;
-            project(pattern, &vars);
-        }
+        Query::Select { pattern, .. } | Query::Ask { pattern, .. } => project(pattern, &vars),
         _ => return Err("only SELECT and ASK queries are supported here".into()),
     }
     Ok(query)
@@ -113,101 +135,185 @@ fn project(p: &mut GraphPattern, vars: &[Variable]) {
     }
 }
 
-/// The SHACL-SPARQL restrictions on queries with pre-bound variables.
-/// `top`: `p` is the query's own projection (or above it).
-fn check(p: &GraphPattern, top: bool, pre: &PreBound) -> Result<(), String> {
-    use GraphPattern as G;
-    match p {
-        G::Bgp { .. } | G::Path { .. } => Ok(()),
-        G::Join { left, right } | G::Union { left, right } => {
-            check(left, false, pre)?;
-            check(right, false, pre)
+/// What the restrictions on queries with pre-bound variables rule out in a
+/// query (see [`restrictions`]).
+#[derive(Default)]
+pub struct Found {
+    pub minus: bool,
+    pub values: bool,
+    pub service: bool,
+    pub lateral: bool,
+    /// Pre-bound variables assigned with `AS`.
+    pub assigned: Vec<String>,
+    /// Subqueries so far.
+    pub subqueries: usize,
+    /// Subqueries (by number) that leave out a pre-bound variable.
+    pub dropped: Vec<(usize, String)>,
+}
+
+impl Found {
+    /// The first problem, as a failure message.
+    pub fn first(&self) -> Option<String> {
+        let words = [
+            (self.minus, "MINUS"),
+            (self.values, "VALUES"),
+            (self.service, "SERVICE"),
+        ];
+        if let Some((_, w)) = words.iter().find(|w| w.0) {
+            return Some(format!("{w} is not allowed with pre-bound variables"));
         }
-        G::LeftJoin {
+        if self.lateral {
+            return Some("LATERAL is not standard SPARQL".into());
+        }
+        if let Some(v) = self.assigned.first() {
+            return Some(format!("AS ?{v} assigns a pre-bound variable"));
+        }
+        let (_, v) = self.dropped.first()?;
+        Some(format!("a subquery must return ${v}"))
+    }
+}
+
+/// The SHACL-SPARQL restrictions on queries with pre-bound variables, shared
+/// by validation and the lint: MINUS, VALUES, SERVICE and LATERAL, `AS ?var`
+/// for a pre-bound variable, and a subquery that does not return the
+/// pre-bound variables. A [`Role::Target`] has none.
+pub fn restrictions(q: &Query, role: &Role) -> Found {
+    let mut f = Found::default();
+    let Role::PreBound(vars) = role else {
+        return f;
+    };
+    let (Query::Select { pattern, .. }
+    | Query::Ask { pattern, .. }
+    | Query::Construct { pattern, .. }
+    | Query::Describe { pattern, .. }) = q;
+    walk(pattern, true, vars, &mut f);
+    f
+}
+
+fn walk(p: &GraphPattern, top: bool, vars: &[String], f: &mut Found) {
+    match p {
+        GraphPattern::Bgp { .. } | GraphPattern::Path { .. } => {}
+        GraphPattern::Join { left, right } | GraphPattern::Union { left, right } => {
+            walk(left, false, vars, f);
+            walk(right, false, vars, f);
+        }
+        GraphPattern::Lateral { left, right } => {
+            f.lateral = true;
+            walk(left, false, vars, f);
+            walk(right, false, vars, f);
+        }
+        GraphPattern::LeftJoin {
             left,
             right,
             expression,
         } => {
-            check(left, false, pre)?;
-            check(right, false, pre)?;
-            expression.as_ref().map_or(Ok(()), |e| check_expr(e, pre))
+            walk(left, false, vars, f);
+            walk(right, false, vars, f);
+            if let Some(e) = expression {
+                expr(e, vars, f);
+            }
         }
-        G::Filter { expr, inner } => {
-            check_expr(expr, pre)?;
-            check(inner, false, pre)
+        GraphPattern::Filter { expr: e, inner } => {
+            expr(e, vars, f);
+            walk(inner, false, vars, f);
         }
-        G::Graph { inner, .. } | G::Group { inner, .. } => check(inner, false, pre),
-        G::Extend {
+        GraphPattern::Graph { inner, .. } => walk(inner, false, vars, f),
+        GraphPattern::Extend {
             inner,
             variable,
             expression,
         } => {
-            if pre.names.contains(&variable.as_str()) {
-                return Err(format!(
-                    "AS ?{} assigns a pre-bound variable",
-                    variable.as_str()
-                ));
-            }
-            check_expr(expression, pre)?;
-            check(inner, false, pre)
-        }
-        G::Lateral { .. } => Err("LATERAL is not standard SPARQL".into()),
-        G::Minus { .. } => Err("MINUS is not allowed with pre-bound variables".into()),
-        G::Values { .. } => Err("VALUES is not allowed with pre-bound variables".into()),
-        G::Service { .. } => Err("SERVICE is not allowed with pre-bound variables".into()),
-        G::OrderBy { inner, .. } => check(inner, top, pre),
-        G::Distinct { inner } | G::Reduced { inner } | G::Slice { inner, .. } => {
-            check(inner, top, pre)
-        }
-        G::Project { inner, variables } => {
-            if !top
-                && let Some(missing) = pre
-                    .required
-                    .iter()
-                    .find(|r| !variables.iter().any(|v| v.as_str() == **r))
+            if vars.iter().any(|v| v == variable.as_str())
+                && !f.assigned.iter().any(|v| v == variable.as_str())
             {
-                return Err(format!("a subquery must return ${missing}"));
+                f.assigned.push(variable.as_str().to_owned());
             }
-            check(inner, false, pre)
+            expr(expression, vars, f);
+            walk(inner, top, vars, f);
         }
-        #[allow(unreachable_patterns)]
-        _ => Ok(()),
+        GraphPattern::Minus { left, right } => {
+            f.minus = true;
+            walk(left, false, vars, f);
+            walk(right, false, vars, f);
+        }
+        GraphPattern::Values { .. } => f.values = true,
+        GraphPattern::OrderBy { inner, expression } => {
+            for o in expression {
+                let (OrderExpression::Asc(e) | OrderExpression::Desc(e)) = o;
+                expr(e, vars, f);
+            }
+            walk(inner, top, vars, f);
+        }
+        GraphPattern::Project { inner, variables } => {
+            if !top {
+                if let Some(v) = vars
+                    .iter()
+                    .filter(|v| *v != "shapesGraph" && *v != "currentShape")
+                    .find(|v| !variables.iter().any(|x| x.as_str() == v.as_str()))
+                {
+                    f.dropped.push((f.subqueries, v.clone()));
+                }
+                f.subqueries += 1;
+            }
+            walk(inner, false, vars, f);
+        }
+        GraphPattern::Distinct { inner }
+        | GraphPattern::Reduced { inner }
+        | GraphPattern::Slice { inner, .. } => {
+            walk(inner, top, vars, f);
+        }
+        GraphPattern::Group {
+            inner, aggregates, ..
+        } => {
+            for (_, a) in aggregates {
+                if let AggregateExpression::FunctionCall { expr: e, .. } = a {
+                    expr(e, vars, f);
+                }
+            }
+            walk(inner, top, vars, f);
+        }
+        GraphPattern::Service { inner, .. } => {
+            f.service = true;
+            walk(inner, false, vars, f);
+        }
     }
 }
 
-fn check_expr(e: &Expression, pre: &PreBound) -> Result<(), String> {
-    use Expression as E;
+/// Graph patterns inside expressions (`EXISTS`, `NOT EXISTS`).
+fn expr(e: &Expression, vars: &[String], f: &mut Found) {
     match e {
-        E::Exists(p) => check(p, false, pre),
-        E::Or(a, b)
-        | E::And(a, b)
-        | E::Equal(a, b)
-        | E::SameTerm(a, b)
-        | E::Greater(a, b)
-        | E::GreaterOrEqual(a, b)
-        | E::Less(a, b)
-        | E::LessOrEqual(a, b)
-        | E::Add(a, b)
-        | E::Subtract(a, b)
-        | E::Multiply(a, b)
-        | E::Divide(a, b) => {
-            check_expr(a, pre)?;
-            check_expr(b, pre)
+        Expression::Exists(p) => walk(p, false, vars, f),
+        Expression::Or(a, b)
+        | Expression::And(a, b)
+        | Expression::Equal(a, b)
+        | Expression::SameTerm(a, b)
+        | Expression::Greater(a, b)
+        | Expression::GreaterOrEqual(a, b)
+        | Expression::Less(a, b)
+        | Expression::LessOrEqual(a, b)
+        | Expression::Add(a, b)
+        | Expression::Subtract(a, b)
+        | Expression::Multiply(a, b)
+        | Expression::Divide(a, b) => {
+            expr(a, vars, f);
+            expr(b, vars, f);
         }
-        E::UnaryPlus(a) | E::UnaryMinus(a) | E::Not(a) => check_expr(a, pre),
-        E::In(a, list) => {
-            check_expr(a, pre)?;
-            list.iter().try_for_each(|x| check_expr(x, pre))
+        Expression::UnaryPlus(a) | Expression::UnaryMinus(a) | Expression::Not(a) => {
+            expr(a, vars, f);
         }
-        E::If(a, b, c) => {
-            check_expr(a, pre)?;
-            check_expr(b, pre)?;
-            check_expr(c, pre)
+        Expression::In(a, list) => {
+            expr(a, vars, f);
+            list.iter().for_each(|x| expr(x, vars, f));
         }
-        E::Coalesce(list) | E::FunctionCall(_, list) => {
-            list.iter().try_for_each(|x| check_expr(x, pre))
+        Expression::If(a, b, c) => {
+            expr(a, vars, f);
+            expr(b, vars, f);
+            expr(c, vars, f);
         }
-        _ => Ok(()),
+        Expression::Coalesce(list) | Expression::FunctionCall(_, list) => {
+            list.iter().for_each(|x| expr(x, vars, f));
+        }
+        _ => {}
     }
 }
 
@@ -258,10 +364,27 @@ fn replace_path(text: &str, with: &str) -> String {
     out
 }
 
+/// The job's cancel check, polled while a query runs.
+pub type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// What a query returned.
 pub enum Answer {
-    Solutions(Vec<QuerySolution>),
+    /// At most the `max` solutions asked for; `more` when there were more.
+    Solutions {
+        rows: Vec<QuerySolution>,
+        more: bool,
+    },
     Boolean(bool),
+}
+
+/// Why a query gave no answer.
+pub enum Fail {
+    /// The job's cancel check said so.
+    Cancelled,
+    /// A batch has more solutions than were asked for.
+    TooMany,
+    /// A failure to report, [`TIMED_OUT`] among them.
+    Failed(String),
 }
 
 /// Runs queries with pre-bound variables. The pre-bound values are written
@@ -276,10 +399,19 @@ pub struct Engine {
     /// The queries that hit [`TIME_LIMIT`]: they fail at once from then on,
     /// so a check does not take the limit again for every focus node.
     timed_out: RefCell<FxHashSet<Query>>,
+    /// Stops a running query, beside the time limit.
+    cancel: Cancel,
 }
 
 impl Default for Engine {
     fn default() -> Self {
+        Engine::new(Arc::new(|| false))
+    }
+}
+
+impl Engine {
+    /// An engine whose queries also stop once `cancel` says so.
+    pub fn new(cancel: Cancel) -> Engine {
         Engine {
             optimized: QueryEvaluator::new().with_custom_function(
                 NamedNode::new_unchecked(BLANK),
@@ -290,42 +422,63 @@ impl Default for Engine {
             ),
             plain: QueryEvaluator::new().without_optimizations(),
             timed_out: RefCell::default(),
+            cancel,
         }
     }
 }
 
-/// `evaluator`, stopped at [`TIME_LIMIT`] from now (the clock every 64th check).
-fn limited(evaluator: &QueryEvaluator) -> QueryEvaluator {
-    let deadline = Instant::now() + TIME_LIMIT;
-    let checks = AtomicU32::new(0);
-    evaluator
-        .clone()
-        .with_cancellation_token(CancellationToken::with_check(move || {
-            checks.fetch_add(1, Ordering::Relaxed).is_multiple_of(64) && Instant::now() >= deadline
-        }))
+/// A query's stop: at [`TIME_LIMIT`], or when the job is cancelled.
+struct Limit {
+    /// Whether the cancel check, not the clock, stopped the query.
+    by_cancel: Arc<AtomicBool>,
 }
 
 impl Engine {
-    /// Runs `query` over `ix` with `bindings` pre-bound.
+    /// `evaluator`, stopped at [`TIME_LIMIT`] from now or when the job is
+    /// cancelled (each checked every 64th time the evaluation asks).
+    fn limited(&self, evaluator: &QueryEvaluator) -> (QueryEvaluator, Limit) {
+        let deadline = Instant::now() + TIME_LIMIT;
+        let checks = AtomicU32::new(0);
+        let cancel = self.cancel.clone();
+        let by_cancel = Arc::new(AtomicBool::new(false));
+        let flag = by_cancel.clone();
+        let limited = evaluator
+            .clone()
+            .with_cancellation_token(CancellationToken::with_check(move || {
+                if !checks.fetch_add(1, Ordering::Relaxed).is_multiple_of(64) {
+                    return false;
+                }
+                if cancel() {
+                    flag.store(true, Ordering::Relaxed);
+                    return true;
+                }
+                Instant::now() >= deadline
+            }));
+        (limited, Limit { by_cancel })
+    }
+
+    /// Runs `query` over `ix` with `bindings` pre-bound, keeping at most
+    /// `max` solutions (it stops reading at the one after).
     pub fn run(
         &self,
         ix: &Index,
         query: &Query,
         bindings: Vec<(Variable, Term)>,
-    ) -> Result<Answer, String> {
+        max: usize,
+    ) -> Result<Answer, Fail> {
         if self.timed_out(query) {
-            return Err(TIMED_OUT.into());
+            return Err(Fail::Failed(TIMED_OUT.into()));
         }
-        let fail = |e: QueryEvaluationError| self.error(Some(query), e);
         let substituted = substitute(query, &bindings, None);
         let evaluator;
+        let limit;
         let prepared = match &substituted {
             Some(q) => {
-                evaluator = limited(&self.optimized);
+                (evaluator, limit) = self.limited(&self.optimized);
                 evaluator.prepare(q)
             }
             None => {
-                evaluator = limited(&self.plain);
+                (evaluator, limit) = self.limited(&self.plain);
                 let mut prepared = evaluator.prepare(query);
                 for (v, t) in bindings {
                     prepared = prepared.substitute_variable(v, t);
@@ -333,13 +486,20 @@ impl Engine {
                 prepared
             }
         };
+        let fail = |e: QueryEvaluationError| self.error(Some(query), e, &limit);
         match prepared.execute(ix).map_err(fail)? {
-            QueryResults::Solutions(s) => s
-                .collect::<Result<Vec<_>, _>>()
-                .map(Answer::Solutions)
-                .map_err(fail),
+            QueryResults::Solutions(s) => {
+                let mut rows = Vec::new();
+                for sol in s {
+                    if rows.len() == max {
+                        return Ok(Answer::Solutions { rows, more: true });
+                    }
+                    rows.push(sol.map_err(fail)?);
+                }
+                Ok(Answer::Solutions { rows, more: false })
+            }
             QueryResults::Boolean(b) => Ok(Answer::Boolean(b)),
-            QueryResults::Graph(_) => Err("not a SELECT or ASK query".into()),
+            QueryResults::Graph(_) => Err(Fail::Failed("not a SELECT or ASK query".into())),
         }
     }
 
@@ -349,15 +509,17 @@ impl Engine {
     /// focus node gets the solutions [`Engine::run`] would give it, without
     /// `$this`. Focus nodes that cannot be passed this way (RDF-star triples)
     /// are left out of the map; `None` when `bindings` cannot be substituted.
+    /// More than `max` solutions in all is [`Fail::TooMany`].
     pub fn run_batch(
         &self,
         ix: &Index,
         query: &Query,
         bindings: &[(Variable, Term)],
         focus: &[Id],
-    ) -> Option<Result<ByFocus, String>> {
+        max: usize,
+    ) -> Option<Result<ByFocus, Fail>> {
         if self.timed_out(query) {
-            return Some(Err(TIMED_OUT.into()));
+            return Some(Err(Fail::Failed(TIMED_OUT.into())));
         }
         let this = Variable::new_unchecked("this");
         let mut out = ByFocus::default();
@@ -382,24 +544,29 @@ impl Engine {
             return Some(Ok(out));
         }
         let query = substitute(query, bindings, Some((&this, &rows)))?;
-        let evaluator = limited(&self.optimized);
+        let (evaluator, limit) = self.limited(&self.optimized);
         let solutions = match evaluator.prepare(&query).execute(ix) {
             Ok(QueryResults::Solutions(s)) => s,
-            Ok(_) => return Some(Err("not a SELECT query".into())),
-            Err(e) => return Some(Err(self.error(None, e))),
+            Ok(_) => return Some(Err(Fail::Failed("not a SELECT query".into()))),
+            Err(e) => return Some(Err(self.error(None, e, &limit))),
         };
         let mut vars: Option<Arc<[Variable]>> = None;
+        let mut count = 0;
         for sol in solutions {
             let sol = match sol {
                 Ok(s) => s,
-                Err(e) => return Some(Err(self.error(None, e))),
+                Err(e) => return Some(Err(self.error(None, e, &limit))),
             };
+            count += 1;
+            if count > max {
+                return Some(Err(Fail::TooMany));
+            }
             let Some(list) = sol
                 .get(&this)
                 .and_then(|t| ix.id(t))
                 .and_then(|f| out.get_mut(&f))
             else {
-                return Some(Err("a solution without a focus node".into()));
+                return Some(Err(Fail::Failed("a solution without a focus node".into())));
             };
             let vars = vars.get_or_insert_with(|| {
                 sol.variables()
@@ -427,17 +594,21 @@ impl Engine {
     }
 
     /// The failure `e` of `query`, or of a batch when `None`; a stop is the
-    /// time limit, the only thing that cancels these queries. A batch that
-    /// stops leaves its query unmarked: each focus node may be fast alone.
-    fn error(&self, query: Option<&Query>, e: QueryEvaluationError) -> String {
+    /// job's cancellation or the time limit, the only things that cancel
+    /// these queries. A batch that stops leaves its query unmarked: each
+    /// focus node may be fast alone.
+    fn error(&self, query: Option<&Query>, e: QueryEvaluationError, limit: &Limit) -> Fail {
         match e {
+            QueryEvaluationError::Cancelled if limit.by_cancel.load(Ordering::Relaxed) => {
+                Fail::Cancelled
+            }
             QueryEvaluationError::Cancelled => {
                 if let Some(q) = query {
                     self.timed_out.borrow_mut().insert(q.clone());
                 }
-                TIMED_OUT.into()
+                Fail::Failed(TIMED_OUT.into())
             }
-            e => e.to_string(),
+            e => Fail::Failed(e.to_string()),
         }
     }
 }
@@ -1268,21 +1439,17 @@ mod tests {
     use super::*;
     use crate::syntax::Iri;
 
-    const PRE: PreBound = PreBound {
-        names: &["this", "shapesGraph", "currentShape"],
-        required: &["this"],
-    };
-
     #[test]
-    fn restrictions() {
-        let bad = |q: &str| prepare(q, &[], None, &PRE).is_err();
+    fn restricted_queries() {
+        let pre = constraint_role();
+        let bad = |q: &str| prepare(q, &[], None, &pre).is_err();
         assert!(bad(
             "SELECT $this WHERE { $this ?p ?o MINUS { $this ?p 1 } }"
         ));
         assert!(bad("SELECT $this WHERE { VALUES ?x { 1 } }"));
         let lateral = "SELECT $this WHERE { $this ?p ?o LATERAL { SELECT $this ?o WHERE { $this ?q ?o } LIMIT 1 } }";
         assert_eq!(
-            prepare(lateral, &[], None, &PRE).err().as_deref(),
+            prepare(lateral, &[], None, &pre).err().as_deref(),
             Some("LATERAL is not standard SPARQL")
         );
         assert!(bad("SELECT $this WHERE { BIND (1 AS $this) }"));
@@ -1301,15 +1468,20 @@ mod tests {
                 "SELECT $this WHERE { $this ex:p ?o }",
                 &[("ex".into(), "http://e/".into())],
                 None,
-                &PRE
+                &pre
             )
             .is_ok()
         );
+        // A target is held to none of it.
+        let minus = "SELECT ?this WHERE { ?this ?p ?o MINUS { ?this ?p 1 } }";
+        assert!(prepare(minus, &[], None, &Role::Target).is_ok());
+        assert!(prepare(minus, &[], None, &pre).is_err());
     }
 
     #[test]
     fn batchable_queries() {
-        let ok = |q: &str| batchable(&prepare(q, &[], None, &PRE).unwrap());
+        let pre = constraint_role();
+        let ok = |q: &str| batchable(&prepare(q, &[], None, &pre).unwrap());
         assert!(ok("SELECT $this WHERE { $this <http://e/p> ?o }"));
         assert!(ok(
             "SELECT $this WHERE { FILTER NOT EXISTS { $this <http://e/p> ?o } }"
