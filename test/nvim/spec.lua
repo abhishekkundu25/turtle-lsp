@@ -441,7 +441,8 @@ end)
 
 check("the shipped root markers: turtle-lsp.json outranks .git, which outranks a nested prefixes.ttl", function()
   local markers = vim.lsp.config["turtle_lsp"].root_markers
-  local base = vim.fn.tempname()
+  -- Forward slashes, as vim.fs.root answers (tempname has backslashes on Windows).
+  local base = vim.fs.normalize(vim.fn.tempname())
   local function touch(rel)
     vim.fn.mkdir(vim.fs.dirname(base .. "/" .. rel), "p")
     vim.fn.writefile({}, base .. "/" .. rel)

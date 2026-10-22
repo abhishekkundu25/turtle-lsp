@@ -7,7 +7,7 @@ import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { serverPath, tempDir } from "./lsp-client.mjs"
 import { processesOf } from "./procs.mjs"
 
@@ -45,7 +45,8 @@ function nodeTest(args, extra) {
 const reporters = [
   "--test-reporter=spec",
   "--test-reporter-destination=stdout",
-  `--test-reporter=${path.join(here, "pending-reporter.mjs")}`,
+  // A URL: Node reads the value as a module specifier, and a Windows path (`D:\...`) is not one.
+  `--test-reporter=${pathToFileURL(path.join(here, "pending-reporter.mjs")).href}`,
   "--test-reporter-destination=stdout",
 ]
 
