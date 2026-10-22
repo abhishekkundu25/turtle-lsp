@@ -44,7 +44,7 @@ holds it in this wave), `src/syntax/mod.rs` above `SyntaxError` (the module doc 
 `src/workspace.rs` with 31 in separate hunks: 34a edits only `failed_analysis`
 (`:421-435`), and 31's nearest edit is `is_turtle` (`:456`).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
