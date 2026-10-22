@@ -152,8 +152,9 @@ function onPath(tool) {
 function toolbox(name, scripts = {}) {
   const dir = path.join(home, name)
   fs.mkdirSync(dir)
-  // (cp, basename, mkdir and sleep are for the fake scripts below.)
-  for (const tool of ["nvim", "curl", "tar", "shasum", "sha256sum", "cp", "basename", "mkdir", "sleep"]) {
+  // (cp, basename, mkdir and sleep are for the fake scripts below; gzip for GNU
+  // tar, which runs it to unpack a .tar.gz where bsdtar does not.)
+  for (const tool of ["nvim", "curl", "tar", "gzip", "shasum", "sha256sum", "cp", "basename", "mkdir", "sleep"]) {
     const file = onPath(tool)
     if (file && !scripts[tool]) fs.symlinkSync(fs.realpathSync(file), path.join(dir, tool))
   }
