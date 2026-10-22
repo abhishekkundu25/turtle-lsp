@@ -592,30 +592,39 @@ scenario("big-file", "a file over 2 MB: open and keystroke", async () => {
 })
 
 // The memory budget of the command line (docs/tickets/audit-2026-10/34b): the peak
-// resident memory of `format --check` and `check --no-shacl` on the big-file
-// scenario's document, at most 40 bytes per input byte. The peak comes from
-// /usr/bin/time (`-l` on macOS, in bytes; `-v` on Linux, in KiB), the median of
-// three runs, in MB of 10^6 bytes. Without /usr/bin/time (Windows) the rows are null.
-const PEAK_BUDGET = 40
-// Peak resident memory of one run of the command line, in bytes, or null.
-function peakRss(cwd, args) {
+// memory of `format --check` and `check --no-shacl` on the big-file scenario's
+// document, at most PEAK_BUDGET bytes per input byte, the median of three runs.
+// The peak is mimalloc's peak committed memory, which it prints at exit when
+// MIMALLOC_SHOW_STATS=1: the same figure on every system. The resident set from
+// /usr/bin/time (`-l` on macOS, `-v` on Linux) is reported beside it but not
+// checked, as Linux counts recently freed pages that macOS does not (about 40%
+// more for the same commit). On 2026-10-23: 56.9 B per byte; 0.7.1 committed 88.4.
+const PEAK_BUDGET = 64
+const MIB = { B: 1, KiB: 2 ** 10, MiB: 2 ** 20, GiB: 2 ** 30 }
+// Peak memory of one run of the command line, in bytes: { commit, rss }, each null
+// when it cannot be read (rss without /usr/bin/time, on Windows).
+function peakMemory(cwd, args) {
   const time = "/usr/bin/time"
   const flag = { darwin: "-l", linux: "-v" }[process.platform]
-  if (!flag || !fs.existsSync(time)) return null
-  const r = spawnSync(time, [flag, serverPath, ...args], {
+  const timed = flag && fs.existsSync(time)
+  const r = spawnSync(timed ? time : serverPath, timed ? [flag, serverPath, ...args] : args, {
     cwd,
-    env: serverEnv(),
+    env: { ...serverEnv(), MIMALLOC_SHOW_STATS: "1" },
     encoding: "utf8",
     maxBuffer: 1 << 30,
     timeout: 100000,
   })
   const err = r.stderr ?? ""
+  const c = /peak commit:\s*([\d.]+)\s*(GiB|MiB|KiB|B)\b/.exec(err)
   const m =
-    process.platform === "darwin"
+    timed &&
+    (process.platform === "darwin"
       ? /(\d+)\s+maximum resident set size/.exec(err)
-      : /Maximum resident set size \(kbytes\):\s*(\d+)/.exec(err)
-  if (!m) return null
-  return Number(m[1]) * (process.platform === "darwin" ? 1 : 1024)
+      : /Maximum resident set size \(kbytes\):\s*(\d+)/.exec(err))
+  return {
+    commit: c ? Number(c[1]) * MIB[c[2]] : null,
+    rss: m ? Number(m[1]) * (process.platform === "darwin" ? 1 : 1024) : null,
+  }
 }
 
 scenario("big-file-peak", "peak memory of format --check and check --no-shacl on the big file", async () => {
@@ -632,16 +641,20 @@ scenario("big-file-peak", "peak memory of format --check and check --no-shacl on
       ["peak-check-big", ["check", "--no-shacl", "huge.ttl"]],
     ]) {
       const name = `big file: peak memory of ${args.slice(0, -1).join(" ")} (${bytes} bytes)`
-      const runs = [0, 1, 2].map(() => peakRss(ws, args))
-      if (runs.some((r) => r == null)) {
-        recordRss(id, name, null, "no /usr/bin/time on this system")
+      const runs = [0, 1, 2].map(() => peakMemory(ws, args))
+      const mb = (b) => (b / 1e6).toFixed(1)
+      const rss = runs.every((r) => r.rss != null) ? rank(runs.map((r) => r.rss), 50) : null
+      if (runs.some((r) => r.commit == null)) {
+        problem(`${id}: mimalloc printed no peak commit (MIMALLOC_SHOW_STATS=1)`)
         continue
       }
-      const peak = rank(runs, 50)
+      const peak = rank(runs.map((r) => r.commit), 50)
       const perByte = peak / bytes
-      const notes = `${perByte.toFixed(1)} B per input byte (budget ${PEAK_BUDGET}); runs ${runs.map((r) => (r / 1e6).toFixed(1)).join(", ")} MB`
-      rows.push({ id, name, n: runs.length, p50: null, p95: null, max: null, rssMb: Math.round(peak / 1e5) / 10, gate: false, notes })
-      expect(perByte <= PEAK_BUDGET, `${id}: ${perByte.toFixed(1)} B per input byte, over the budget of ${PEAK_BUDGET}`)
+      const notes =
+        `${perByte.toFixed(1)} B committed per input byte (budget ${PEAK_BUDGET}); commit ${runs.map((r) => mb(r.commit)).join(", ")} MB` +
+        (rss == null ? "; no resident figure on this system" : `; resident ${mb(rss)} MB, ${(rss / bytes).toFixed(1)} B per byte`)
+      rows.push({ id, name, n: runs.length, p50: null, p95: null, max: null, rssMb: rss == null ? null : Math.round(rss / 1e5) / 10, gate: false, notes })
+      expect(perByte <= PEAK_BUDGET, `${id}: ${perByte.toFixed(1)} B committed per input byte, over the budget of ${PEAK_BUDGET}`)
     }
   })
 })

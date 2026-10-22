@@ -111,9 +111,11 @@ time, which carries across machines.
 Memory on large inputs: after 20 `documentSymbol` requests on a
 100,000-triple file (a 5.5 MB answer each), the server holds 113 MB, 1.07
 times what it held before the first request. `turtle-lsp format --check` on
-a 2.5 MB file peaks at 88 MB, 35 bytes per input byte, and so does
-`turtle-lsp check --no-shacl`. `npm run bench` fails when either goes over
-40 bytes per input byte.
+a 2.5 MB file peaks at 88 MB resident, 35 bytes per input byte (142 MB
+committed, 57 bytes per byte), and so does `turtle-lsp check --no-shacl`.
+`npm run bench` fails when either commits more than 64 bytes per input byte
+(0.7.1: 88). It checks the committed figure because the resident one depends
+on the system: Linux reports about 40% more for the same commit.
 
 Measured with `npm run bench` at commit 15bd504 on an Apple M6 (12 cores)
 with macOS 27.0: the median of three runs, load average 1.7 to 1.8. Results

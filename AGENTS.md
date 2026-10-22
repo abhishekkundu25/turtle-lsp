@@ -77,9 +77,10 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
   which names it; promote it by removing its `todo`.
 - Run the benchmark (`node bench/perf.mjs`) only on a quiet machine (load
   average under 1, nothing else building), never next to a test run.
-  `--only big-file-peak` measures the peak memory of `format --check` and
-  `check --no-shacl` on a 2.5 MB file and fails over 40 bytes per input
-  byte. `--only document-symbol-rss` reports the server's memory before and
+  `--only big-file-peak` measures the peak memory mimalloc commits for
+  `format --check` and `check --no-shacl` on a 2.5 MB file and fails over 64
+  bytes per input byte. The resident memory it prints beside it is not
+  checked: Linux counts about 40% more than macOS for the same commit. `--only document-symbol-rss` reports the server's memory before and
   after 20 `documentSymbol` requests on a 100,000-triple file. Its budget is
   1.3 times the memory before; the bench prints both figures and does not
   check the ratio. `--list` names every scenario.
