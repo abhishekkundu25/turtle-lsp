@@ -553,7 +553,7 @@ pub(crate) fn organise_block(
 /// The prefix directives before the first statement, if they form one run
 /// (no `@base` or `@version` between them) and all parsed cleanly.
 fn leading_block(a: &Analysis) -> Option<Vec<&PrefixDecl>> {
-    let toks = &a.parsed.tokens;
+    let toks = a.tokens();
     let decls = &a.parsed.prefixes;
     let mut block: Vec<&PrefixDecl> = Vec::new();
     let mut barrier_after_block = false;

@@ -101,7 +101,7 @@ pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Co
     }
     // In any other string (a label, a description) nothing: editors suggest
     // while typing in Turtle strings, for the queries.
-    let t = &a.parsed.tokens;
+    let t = a.tokens();
     let i = t.partition_point(|t| t.start < offset as u32);
     if i > 0 && t[i - 1].kind == Kind::String && offset < t[i - 1].end as usize {
         return CompletionResponse::Array(vec![]);
@@ -796,7 +796,7 @@ fn guess_kind(k: &Knowledge, iri: &crate::syntax::Iri) -> TermKind {
 
 /// What kind of term belongs at `offset`, from the tokens before it.
 fn slot_at(a: &Analysis, offset: u32) -> Slot {
-    let toks = &a.parsed.tokens;
+    let toks = a.tokens();
     let i = toks.partition_point(|t| t.end <= offset);
     let prev = toks[..i].iter().rev().find(|t| t.kind != Kind::Comment);
     let Some(prev) = prev else {

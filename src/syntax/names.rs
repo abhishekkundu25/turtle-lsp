@@ -221,8 +221,7 @@ pub fn newline(text: &str) -> &'static str {
 /// else `@prefix`.
 pub fn declaration_keyword(a: &Analysis) -> &'static str {
     let sparql = a.parsed.prefixes.last().is_some_and(|p: &PrefixDecl| {
-        a.parsed
-            .tokens
+        a.tokens()
             .iter()
             .any(|t| t.start == p.span.start && t.kind == super::lexer::Kind::SparqlPrefix)
     });

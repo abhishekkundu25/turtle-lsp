@@ -291,7 +291,7 @@ pub fn objects_for(
 // ---- the subject at the cursor ----
 
 fn tokens_before(a: &Analysis, offset: u32) -> &[Token] {
-    let toks = &a.parsed.tokens;
+    let toks = a.tokens();
     &toks[..toks.partition_point(|t| t.end <= offset)]
 }
 

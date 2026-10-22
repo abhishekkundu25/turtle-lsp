@@ -110,7 +110,7 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
         }
     };
 
-    for t in &p.tokens {
+    for t in a.tokens() {
         if matches!(
             t.kind,
             Kind::PrefixDirective

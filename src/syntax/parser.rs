@@ -104,8 +104,57 @@ pub fn parse_with_base(
     syntax: Syntax,
     base: Option<&str>,
 ) -> Parsed {
+    run(src, external, syntax, base, None).0
+}
+
+impl Parsed {
+    /// The graph of `src` and no more: [`parse_with_base`] without the
+    /// tokens, references, prefix uses and comment spans the editor features
+    /// read, for a check of what a text says (the formatter's). The second
+    /// value is how many comments the text has. Room for `triples` triples,
+    /// the number the text is expected to have, is made at the start.
+    pub fn graph_only(
+        src: &str,
+        external: &PrefixMap,
+        syntax: Syntax,
+        base: Option<&str>,
+        triples: usize,
+    ) -> (Parsed, usize) {
+        run(src, external, syntax, base, Some(triples))
+    }
+}
+
+impl Syntax {
+    /// The tokens [`parse_with_base`] reads `src` as, comments included:
+    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, which has its
+    /// own frontend.
+    pub fn tokens(self, src: &str) -> Vec<Token> {
+        if self == Syntax::JsonLd {
+            return Vec::new();
+        }
+        let mut all = tokenize(src);
+        if self != Syntax::TriG {
+            // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
+            for t in all.iter_mut().filter(|t| t.kind == Kind::Graph) {
+                *t = t.into_unexpected_word();
+            }
+        }
+        all
+    }
+}
+
+/// The parse of `src`, and how many comments it has. With `graph_only` (the
+/// number of triples expected), the tokens, references, prefix uses and
+/// comment spans are left out.
+fn run(
+    src: &str,
+    external: &PrefixMap,
+    syntax: Syntax,
+    base: Option<&str>,
+    graph_only: Option<usize>,
+) -> (Parsed, usize) {
     if syntax == Syntax::JsonLd {
-        return Parsed {
+        let refused = Parsed {
             syntax,
             document_base: base.map(str::to_string),
             errors: vec![SyntaxError::new(
@@ -116,22 +165,19 @@ pub fn parse_with_base(
             )],
             ..Parsed::default()
         };
-    }
-    let mut all = tokenize(src);
-    if syntax != Syntax::TriG {
-        // `GRAPH` is only a keyword in TriG; elsewhere it is a stray word.
-        for t in all.iter_mut().filter(|t| t.kind == Kind::Graph) {
-            *t = t.into_unexpected_word();
-        }
+        return (refused, 0);
     }
     let out = Parsed {
         syntax,
         document_base: base.map(str::to_string),
+        triples: Vec::with_capacity(graph_only.unwrap_or(0)),
         ..Parsed::default()
     };
+    let full = graph_only.is_none();
     let mut p = P {
         src,
-        toks: all,
+        toks: syntax.tokens(src),
+        full,
         pos: 0,
         prev: None,
         prefixes: external
@@ -158,10 +204,14 @@ pub fn parse_with_base(
         v: vocab(),
         reported: 0,
     };
+    let mut comments = 0;
     for i in 0..p.toks.len() {
         let t = p.toks[i];
         if t.kind == Kind::Comment {
-            p.out.comments.push(Span::new(t.start, t.end));
+            comments += 1;
+            if full {
+                p.out.comments.push(Span::new(t.start, t.end));
+            }
         }
         if let Some(msg) = t.error() {
             p.error(Span::new(t.start, t.end), msg);
@@ -173,8 +223,10 @@ pub fn parse_with_base(
         p.ntriples_restrictions();
     }
     p.cap_errors();
-    p.out.tokens = p.toks;
-    p.out
+    if full {
+        p.out.tokens = p.toks;
+    }
+    (p.out, comments)
 }
 
 /// A term, and whether it is a prefixed name with an undeclared prefix or a
@@ -188,6 +240,9 @@ struct P<'a> {
     /// Every token, comments too: they become [`Parsed::tokens`]. The parser
     /// steps over the comments.
     toks: Vec<Token>,
+    /// Keep the tokens, references, prefix uses and comment spans
+    /// ([`Parsed::graph_only`] does not).
+    full: bool,
     /// The current token, never a comment (`toks.len()` at the end).
     pos: usize,
     /// The token before `pos` that is not a comment.
@@ -409,6 +464,17 @@ impl<'a> P<'a> {
         match self.prev.map(|i| self.toks[i]) {
             Some(t) => Span::new(t.start, t.end),
             None => Span::new(0, 0),
+        }
+    }
+
+    fn add_ref(&mut self, r: Ref) {
+        if self.full {
+            self.out.refs.push(r);
+        }
+    }
+    fn add_prefix_use(&mut self, u: PrefixUse) {
+        if self.full {
+            self.out.prefix_uses.push(u);
         }
     }
 
@@ -1045,7 +1111,7 @@ impl<'a> P<'a> {
             Some(t) if t.kind == Kind::A => {
                 self.bump();
                 let span = Span::new(t.start, t.end);
-                self.out.refs.push(Ref {
+                self.add_ref(Ref {
                     span,
                     iri: self.v.rdf_type,
                     role,
@@ -1506,7 +1572,7 @@ impl<'a> P<'a> {
                     iri
                 }
             };
-            self.out.refs.push(Ref {
+            self.add_ref(Ref {
                 span,
                 iri,
                 role,
@@ -1533,13 +1599,13 @@ impl<'a> P<'a> {
                 entry
             }
         };
-        self.out.prefix_uses.push(PrefixUse {
+        self.add_prefix_use(PrefixUse {
             name,
             span,
             resolved,
         });
         if resolved {
-            self.out.refs.push(Ref {
+            self.add_ref(Ref {
                 span,
                 iri,
                 role,
@@ -2506,6 +2572,71 @@ mod tests {
             Some("file:///w/d.ttl"),
         );
         assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn a_graph_only_parse_has_the_same_graph_and_nothing_else() {
+        let cases = [
+            (
+                Syntax::Turtle,
+                "@prefix ex: <http://e/> . # c1\nex:a ex:p [ ex:q ( 1 2 ) ] ; a ex:C . # c2\n<< ex:a ex:p ex:b >> ex:r nope:x .\n",
+            ),
+            (
+                Syntax::TriG,
+                "@prefix ex: <http://e/> .\nGRAPH ex:g { ex:a ex:p ex:b } # c\n{ ex:c ex:p ex:d . }\nex:broken ex:p .\n",
+            ),
+            (
+                Syntax::NTriples,
+                "<http://e/a> <http://e/p> \"x\" . # c\n<a> <http://e/p> <http://e/b> .\n",
+            ),
+            (
+                Syntax::NQuads,
+                "<http://e/a> <http://e/p> <http://e/b> <http://e/g> .\n",
+            ),
+            (Syntax::JsonLd, "{}"),
+        ];
+        let ext: PrefixMap = [("ext".to_string(), "http://ext/".to_string())]
+            .into_iter()
+            .collect();
+        for (syntax, text) in cases {
+            let full = parse_with_base(text, &ext, syntax, Some("file:///w/a"));
+            let (graph, comments) = Parsed::graph_only(text, &ext, syntax, Some("file:///w/a"), 3);
+            let quads = |p: &Parsed| -> Vec<String> {
+                p.triples
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "{:?} {:?} {:?} {:?} {}",
+                            t.s, t.p, t.o, t.graph, t.unresolved
+                        )
+                    })
+                    .collect()
+            };
+            let errors = |p: &Parsed| -> Vec<String> {
+                p.errors
+                    .iter()
+                    .map(|e| format!("{:?} {}", e.span, e.message()))
+                    .collect()
+            };
+            assert_eq!(quads(&graph), quads(&full), "{syntax:?}");
+            assert_eq!(errors(&graph), errors(&full), "{syntax:?}");
+            let names = |p: &Parsed| -> Vec<_> { p.graphs.iter().map(|g| g.name).collect() };
+            assert_eq!(names(&graph), names(&full), "{syntax:?}");
+            assert_eq!(comments, full.comments.len(), "{syntax:?}");
+            assert!(
+                graph.tokens.is_empty()
+                    && graph.refs.is_empty()
+                    && graph.prefix_uses.is_empty()
+                    && graph.comments.is_empty(),
+                "{syntax:?}"
+            );
+            let keys = |ts: &[Token]| -> Vec<_> {
+                ts.iter()
+                    .map(|t| (t.kind, t.start, t.end, t.error()))
+                    .collect()
+            };
+            assert_eq!(keys(&syntax.tokens(text)), keys(&full.tokens), "{syntax:?}");
+        }
     }
 }
 

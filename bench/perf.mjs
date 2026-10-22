@@ -591,6 +591,61 @@ scenario("big-file", "a file over 2 MB: open and keystroke", async () => {
   })
 })
 
+// The memory budget of the command line (docs/tickets/audit-2026-10/34b): the peak
+// resident memory of `format --check` and `check --no-shacl` on the big-file
+// scenario's document, at most 40 bytes per input byte. The peak comes from
+// /usr/bin/time (`-l` on macOS, in bytes; `-v` on Linux, in KiB), the median of
+// three runs, in MB of 10^6 bytes. Without /usr/bin/time (Windows) the rows are null.
+const PEAK_BUDGET = 40
+// Peak resident memory of one run of the command line, in bytes, or null.
+function peakRss(cwd, args) {
+  const time = "/usr/bin/time"
+  const flag = { darwin: "-l", linux: "-v" }[process.platform]
+  if (!flag || !fs.existsSync(time)) return null
+  const r = spawnSync(time, [flag, serverPath, ...args], {
+    cwd,
+    env: serverEnv(),
+    encoding: "utf8",
+    maxBuffer: 1 << 30,
+    timeout: 100000,
+  })
+  const err = r.stderr ?? ""
+  const m =
+    process.platform === "darwin"
+      ? /(\d+)\s+maximum resident set size/.exec(err)
+      : /Maximum resident set size \(kbytes\):\s*(\d+)/.exec(err)
+  if (!m) return null
+  return Number(m[1]) * (process.platform === "darwin" ? 1 : 1024)
+}
+
+scenario("big-file-peak", "peak memory of format --check and check --no-shacl on the big file", async () => {
+  // The big-file scenario's document.
+  const target = scaled(2_400_000)
+  let n = Math.ceil(target / 140)
+  let doc = bigDoc(n)
+  while (doc.length < target) doc = bigDoc((n = Math.ceil(n * 1.05)))
+  const bytes = Buffer.byteLength(doc)
+  await withDir("turtle-bench-peak-", async (ws) => {
+    fs.writeFileSync(path.join(ws, "huge.ttl"), doc)
+    for (const [id, args] of [
+      ["peak-format-big", ["format", "--check", "huge.ttl"]],
+      ["peak-check-big", ["check", "--no-shacl", "huge.ttl"]],
+    ]) {
+      const name = `big file: peak memory of ${args.slice(0, -1).join(" ")} (${bytes} bytes)`
+      const runs = [0, 1, 2].map(() => peakRss(ws, args))
+      if (runs.some((r) => r == null)) {
+        recordRss(id, name, null, "no /usr/bin/time on this system")
+        continue
+      }
+      const peak = rank(runs, 50)
+      const perByte = peak / bytes
+      const notes = `${perByte.toFixed(1)} B per input byte (budget ${PEAK_BUDGET}); runs ${runs.map((r) => (r / 1e6).toFixed(1)).join(", ")} MB`
+      rows.push({ id, name, n: runs.length, p50: null, p95: null, max: null, rssMb: Math.round(peak / 1e5) / 10, gate: false, notes })
+      expect(perByte <= PEAK_BUDGET, `${id}: ${perByte.toFixed(1)} B per input byte, over the budget of ${PEAK_BUDGET}`)
+    }
+  })
+})
+
 // Completion where a lot is described: the candidates for an object are the typed
 // subjects of the workspace, for a predicate the properties of the subject's type.
 scenario("typed-completion", "typed completion over 40,000 described subjects", async () => {

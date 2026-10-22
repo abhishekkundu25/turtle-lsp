@@ -33,13 +33,12 @@
 //! indexed files to parse again. The workspace decides that; the caller (the
 //! server) only acts on it.
 
-use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
+use crate::analysis::{Analysis, Encoding, LineStarts, SparqlAnalysis};
 use crate::jsonld::loader::{self, Bundled};
 use crate::jsonld::{ContextLoader, LoadError, RemoteDocument};
 use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::server::worker::catch;
 use crate::syntax::{PrefixMap, Severity, Span, Syntax, SyntaxError};
-use line_index::LineIndex;
 use lsp_types::TextDocumentContentChangeEvent;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -230,6 +229,9 @@ pub struct Workspace {
     /// No one reports file changes (the client registered no file watchers):
     /// [`Workspace::sparql_documents`] lists the folders again on each call.
     rescan_sparql: bool,
+    /// Analyze open documents without keeping their tokens (see
+    /// [`Workspace::set_keep_tokens`]).
+    drop_tokens: bool,
 }
 
 /// A SPARQL file on disk, as read.
@@ -559,6 +561,14 @@ impl Workspace {
         self.rescan_sparql = rescan;
     }
 
+    /// Whether the analyses of open documents keep their tokens (the
+    /// default). Without them an analysis lexes its text again the first
+    /// time a feature asks for them ([`Analysis::tokens`]): the choice of a
+    /// caller that analyzes each document once, such as `batch`.
+    pub fn set_keep_tokens(&mut self, keep: bool) {
+        self.drop_tokens = !keep;
+    }
+
     // ---- state ----
 
     /// The workspace folders, in the order the client gave them.
@@ -785,20 +795,28 @@ impl Workspace {
         enc: Encoding,
     ) -> Effects {
         if let Some(doc) = self.open.get_mut(uri) {
+            // Each change's positions are in the text the changes before it
+            // left. The line starts are found once, when the first ranged
+            // change comes, and moved along with each change.
+            let mut lines: Option<LineStarts> = None;
             for ch in changes {
                 match ch.range {
-                    None => doc.text = ch.text,
+                    None => {
+                        doc.text = ch.text;
+                        lines = None;
+                    }
                     Some(r) => {
-                        let lines = LineIndex::new(&doc.text);
+                        let lines = lines.get_or_insert_with(|| LineStarts::new(&doc.text));
                         let (Some(s), Some(e)) = (
-                            offset_in(&lines, &doc.text, enc, r.start),
-                            offset_in(&lines, &doc.text, enc, r.end),
+                            lines.offset(&doc.text, enc, r.start),
+                            lines.offset(&doc.text, enc, r.end),
                         ) else {
                             continue;
                         };
                         let (s, e) = (s.min(e) as usize, e.max(s) as usize);
-                        doc.text
-                            .replace_range(s.min(doc.text.len())..e.min(doc.text.len()), &ch.text);
+                        let range = s.min(doc.text.len())..e.min(doc.text.len());
+                        doc.text.replace_range(range.clone(), &ch.text);
+                        lines.replace(range, &ch.text);
                     }
                 }
             }
@@ -923,13 +941,14 @@ impl Workspace {
             })
             .collect();
         let (open, roots, uses) = (&self.open, &self.roots, &self.context_uses);
+        let keep_tokens = !self.drop_tokens;
         let contexts = self.contexts();
         let done: Vec<(String, Arc<Analysis>, Option<DocFacts>)> = jobs
             .into_par_iter()
             .filter_map(|(uri, syntax, ext)| {
                 let doc = open.get(&uri)?;
                 let loader = DocContexts::new(open, roots, &*contexts);
-                let a = analyze(uri.clone(), &doc.text, ext, true, syntax, &loader);
+                let a = analyze(uri.clone(), &doc.text, ext, keep_tokens, syntax, &loader);
                 loader.record(uses, &uri, syntax);
                 if doc.cached_import {
                     return Some((uri, Arc::new(a), None));
@@ -975,7 +994,7 @@ impl Workspace {
             uri.to_string(),
             &self.open.get(uri)?.text,
             external,
-            true,
+            !self.drop_tokens,
             syntax,
             &loader,
         );
@@ -2996,6 +3015,55 @@ pub(crate) mod tests {
             }
         }
         assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn fifty_changes_in_one_notification_are_fifty_notifications_of_one() {
+        let start =
+            "@prefix ex: <http://e/> .\r\nex:a ex:p \"\u{e9}\u{1F600}\" .\n\nex:b ex:q ex:c .\n";
+        let pieces = [
+            "",
+            "x",
+            "\n",
+            "\u{e9}",
+            "\u{1F600}",
+            "ab\r\n",
+            "\n\n",
+            " ex:d",
+        ];
+        let mut seed = 7u32;
+        let mut next = |n: u32| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (seed >> 16) % n
+        };
+        for enc in [Encoding::Utf16, Encoding::Utf8] {
+            let changes: Vec<_> = (0..50)
+                .map(|_| {
+                    let a = (next(8), next(30));
+                    let b = (a.0 + next(2), next(30));
+                    ranged(a, b, pieces[next(pieces.len() as u32) as usize])
+                })
+                .collect();
+            let uri = "file:///w/a.ttl";
+            let mut one = Workspace::default();
+            one.open_doc(uri.into(), start.into(), 1);
+            one.change_doc(uri, 2, changes.clone(), enc);
+            let mut many = Workspace::default();
+            many.open_doc(uri.into(), start.into(), 1);
+            // And as a line index of the whole text per change converts them.
+            let mut indexed = start.to_string();
+            for (i, ch) in changes.into_iter().enumerate() {
+                let r = ch.range.unwrap();
+                let lines = line_index::LineIndex::new(&indexed);
+                let at = |p| crate::analysis::offset_in(&lines, &indexed, enc, p).unwrap() as usize;
+                let (s, e) = (at(r.start), at(r.end));
+                indexed.replace_range(s.min(e)..e.max(s), &ch.text);
+                many.change_doc(uri, 2 + i as i32, vec![ch], enc);
+            }
+            assert_eq!(one.text(uri), many.text(uri), "{enc:?}");
+            assert_eq!(one.text(uri), Some(indexed.as_str()), "{enc:?}");
+            assert_ne!(one.text(uri), Some(start), "{enc:?}");
+        }
     }
 
     #[test]

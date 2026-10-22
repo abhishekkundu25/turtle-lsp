@@ -323,6 +323,8 @@ fn query_in(
     let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
     let mut ws = Workspace::new(roots, settings.prefixes.clone());
     ws.set_network(disk.is_some_and(|d| d.network));
+    // Each file is analyzed once: tokens are made only if a feature asks.
+    ws.set_keep_tokens(false);
     let data: Vec<&BatchFile> = files
         .iter()
         .filter(|f| f.uri != q.uri && DocKind::detect(None, &f.uri) != DocKind::Sparql)
@@ -459,6 +461,8 @@ impl<'a> Input<'a> {
         let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
         let mut ws = Workspace::new(roots, settings.prefixes.clone());
         ws.set_network(disk.is_some_and(|d| d.network));
+        // Each file is analyzed once: tokens are made only if a feature asks.
+        ws.set_keep_tokens(false);
         for f in files {
             ws.open_doc(f.uri.clone(), f.text.clone(), 1);
         }
@@ -734,7 +738,7 @@ impl<'a> Input<'a> {
                 it(errors)
             ))
         } else {
-            match format::format(&a.text, &a.parsed, &a.external, &opts) {
+            match format::format_analysis(&a, &opts) {
                 Some(t) if t == *a.text => FormatOutcome::Unchanged,
                 Some(t) => FormatOutcome::Changed(t),
                 None => FormatOutcome::Refused(
@@ -1005,6 +1009,26 @@ mod tests {
         };
         assert_eq!(shacl(false), 0);
         assert!(shacl(true) > 0);
+    }
+
+    #[test]
+    fn batch_analyses_keep_no_tokens() {
+        let text = format!("{RDFS}<http://x/a> rdfs:label \"a\" . # c\n");
+        let files = [file("a.ttl", &text)];
+        let settings = Settings::default();
+        let mut input = Input::new(&files, &settings, Encoding::Utf16, None, None);
+        let a = input.ws.analysis(&files[0].uri).unwrap();
+        assert!(!a.has_tokens());
+        // Made when a feature asks, the same as kept ones.
+        let kept = Analysis::new(files[0].uri.clone(), &text, Default::default(), true);
+        let key = |a: &Analysis| -> Vec<_> {
+            a.tokens()
+                .iter()
+                .map(|t| (t.kind, t.start, t.end))
+                .collect()
+        };
+        assert_eq!(key(&a), key(&kept));
+        assert!(a.has_tokens());
     }
 
     #[test]

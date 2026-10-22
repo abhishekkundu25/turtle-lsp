@@ -4,11 +4,12 @@
 //! same position helpers.
 
 use crate::sparql;
+use crate::syntax::lexer::{Kind, Token};
 use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Span, Syntax};
 use line_index::{LineIndex, TextSize, WideEncoding};
 use lsp_types::{Position, Range};
 use rustc_hash::FxHashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
 const SKOS_PREF_LABEL: &str = "http://www.w3.org/2004/02/skos/core#prefLabel";
@@ -31,7 +32,11 @@ pub struct Analysis {
     pub origin: Option<String>,
     /// The text this analysis was computed from.
     pub text: Arc<str>,
+    /// The parse, without its tokens and comment spans: those are
+    /// [`Analysis::tokens`] and [`Analysis::comments`].
     pub parsed: Parsed,
+    /// The parse's tokens, when it kept them; else filled on first use.
+    tokens: OnceLock<Vec<Token>>,
     /// JSON-LD only: what processing dropped silently, and the references
     /// that are context terms, for the JSON-LD lints (empty otherwise).
     pub dropped: Vec<crate::jsonld::Dropped>,
@@ -51,7 +56,7 @@ pub struct Analysis {
     /// IRI -> index into `parsed.triples` of its label; see [`Analysis::label`].
     labels: IriMap<u32>,
     /// IRI -> index into `parsed.triples` of its comment; see [`Analysis::comment`].
-    comments: IriMap<u32>,
+    descriptions: IriMap<u32>,
     pub types: IriMap<Vec<Iri>>,
     /// IRI -> direct superclasses / superproperties (rdfs:subClassOf, rdfs:subPropertyOf).
     pub supers: IriMap<Vec<Iri>>,
@@ -173,9 +178,15 @@ impl Analysis {
                 ..Default::default()
             },
         };
-        if !keep_tokens {
-            parsed.tokens = Vec::new();
-            parsed.comments = Vec::new();
+        // The comment spans are the comment tokens.
+        parsed.comments = Vec::new();
+        let tokens = OnceLock::new();
+        let mut kept = std::mem::take(&mut parsed.tokens);
+        if keep_tokens {
+            kept.shrink_to_fit();
+            let _ = tokens.set(kept);
+        } else {
+            drop(kept);
         }
         // Analyses live until the next edit (or for the session, for files on
         // disk): drop the growth slack.
@@ -192,7 +203,7 @@ impl Analysis {
             refs_by_iri.entry(r.iri).or_default().push(i as u32);
         }
         let mut labels = IriMap::default();
-        let mut comments = IriMap::default();
+        let mut descriptions = IriMap::default();
         let mut types: IriMap<Vec<Iri>> = IriMap::default();
         let mut supers: IriMap<Vec<Iri>> = IriMap::default();
         let predicates = indexed_predicates();
@@ -208,7 +219,7 @@ impl Analysis {
                     prefer(&mut labels, &parsed.triples, s, i as u32)
                 }
                 (Index::Comment, Node::Literal { .. }) => {
-                    prefer(&mut comments, &parsed.triples, s, i as u32)
+                    prefer(&mut descriptions, &parsed.triples, s, i as u32)
                 }
                 _ => {}
             }
@@ -219,6 +230,7 @@ impl Analysis {
             text: Arc::from(text),
             lines: LineIndex::new(text),
             parsed,
+            tokens,
             dropped,
             used_terms,
             source_index,
@@ -226,11 +238,38 @@ impl Analysis {
             defs,
             refs_by_iri,
             labels,
-            comments,
+            descriptions,
             types,
             supers,
             embedded_queries: Mutex::default(),
         }
+    }
+
+    /// Every token of the text, comments included, as the parser read them
+    /// (none for JSON-LD). An analysis built without its tokens lexes the
+    /// text again on the first call, once.
+    pub fn tokens(&self) -> &[Token] {
+        self.tokens
+            .get_or_init(|| {
+                let mut all = self.parsed.syntax.tokens(&self.text);
+                all.shrink_to_fit();
+                all
+            })
+            .as_slice()
+    }
+
+    /// Whether the tokens are in memory: kept by the parse, or made since.
+    #[cfg(test)]
+    pub(crate) fn has_tokens(&self) -> bool {
+        self.tokens.get().is_some()
+    }
+
+    /// The comments, in text order (see [`Analysis::tokens`]).
+    pub fn comments(&self) -> impl Iterator<Item = Span> + '_ {
+        self.tokens()
+            .iter()
+            .filter(|t| t.kind == Kind::Comment)
+            .map(|t| Span::new(t.start, t.end))
     }
 
     fn literal(&self, i: u32) -> &str {
@@ -247,7 +286,7 @@ impl Analysis {
 
     /// The resource's comment (rdfs:comment, skos:definition, dcterms:description).
     pub fn comment<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
-        self.comments.get(iri).map(|&i| self.literal(i))
+        self.descriptions.get(iri).map(|&i| self.literal(i))
     }
 
     /// [`Analysis::label`] and whether it is English or untagged.
@@ -259,7 +298,7 @@ impl Analysis {
 
     /// [`Analysis::comment`] and whether it is English or untagged.
     pub fn comment_en<K: IriKey + ?Sized>(&self, iri: &K) -> Option<(&str, bool)> {
-        self.comments
+        self.descriptions
             .get(iri)
             .map(|&i| (self.literal(i), self.is_en(i)))
     }
@@ -420,30 +459,86 @@ pub fn offset_in(lines: &LineIndex, text: &str, enc: Encoding, pos: Position) ->
     let Some(line) = lines.line(pos.line) else {
         return Some(text.len() as u32);
     };
-    let (start, end) = (
-        u32::from(line.start()) as usize,
-        u32::from(line.end()) as usize,
-    );
-    // The line's content, without its line break.
-    let content_end = text[start..end].trim_end_matches(['\n', '\r']).len() + start;
-    let lc = match enc {
-        Encoding::Utf8 => line_index::LineCol {
-            line: pos.line,
-            col: pos.character,
-        },
-        Encoding::Utf16 => lines.to_utf8(
-            WideEncoding::Utf16,
-            line_index::WideLineCol {
+    let col = match enc {
+        Encoding::Utf8 => pos.character,
+        Encoding::Utf16 => {
+            let wide = line_index::WideLineCol {
                 line: pos.line,
                 col: pos.character,
-            },
-        )?,
+            };
+            lines.to_utf8(WideEncoding::Utf16, wide)?.col
+        }
     };
-    let mut off = (start + lc.col as usize).min(content_end);
+    let (start, end) = (u32::from(line.start()), u32::from(line.end()));
+    Some(clamped(text, start as usize, end as usize, col))
+}
+
+/// The offset `col` bytes into the line `start..end` of `text`, at most the
+/// end of the line's content (before its line break), moved back to a
+/// character boundary.
+fn clamped(text: &str, start: usize, end: usize, col: u32) -> u32 {
+    let content_end = text[start..end].trim_end_matches(['\n', '\r']).len() + start;
+    let mut off = (start + col as usize).min(content_end);
     while !text.is_char_boundary(off) {
         off -= 1;
     }
-    Some(off as u32)
+    off as u32
+}
+
+/// Where the lines of a text being edited start, kept current through each
+/// edit: a batch of edits converts its positions without indexing the text
+/// again per edit. Lines end at `\n`, as in [`LineIndex`].
+pub struct LineStarts(Vec<u32>);
+
+impl LineStarts {
+    pub fn new(text: &str) -> LineStarts {
+        let breaks = text.match_indices('\n').map(|(i, _)| i as u32 + 1);
+        LineStarts(std::iter::once(0).chain(breaks).collect())
+    }
+
+    /// [`offset_in`], for the text these are the line starts of.
+    pub fn offset(&self, text: &str, enc: Encoding, pos: Position) -> Option<u32> {
+        let line = pos.line as usize;
+        let Some(&start) = self.0.get(line) else {
+            return Some(text.len() as u32);
+        };
+        let start = start as usize;
+        let end = self.0.get(line + 1).map_or(text.len(), |&e| e as usize);
+        let col = match enc {
+            Encoding::Utf8 => pos.character,
+            // As `LineIndex::to_utf8`: each multi-byte character the column
+            // passes adds the bytes it has beyond its UTF-16 length.
+            Encoding::Utf16 => {
+                let mut col = pos.character;
+                for (at, c) in text[start..end].char_indices() {
+                    let bytes = c.len_utf8() as u32;
+                    if bytes == 1 {
+                        continue;
+                    }
+                    if col <= at as u32 {
+                        break;
+                    }
+                    col = col.checked_add(bytes - c.len_utf16() as u32)?;
+                }
+                col
+            }
+        };
+        Some(clamped(text, start, end, col))
+    }
+
+    /// The bytes `range` of the text were replaced by `new`.
+    pub fn replace(&mut self, range: std::ops::Range<usize>, new: &str) {
+        let (s, e) = (range.start as u32, range.end as u32);
+        // Lines that start after a removed `\n` are gone; those after the
+        // range move by the change in length.
+        let gone = self.0.partition_point(|&x| x <= s)..self.0.partition_point(|&x| x <= e);
+        let grown = new.len() as i64 - i64::from(e - s);
+        for x in &mut self.0[gone.end..] {
+            *x = (i64::from(*x) + grown) as u32;
+        }
+        let added = new.match_indices('\n').map(|(i, _)| s + i as u32 + 1);
+        self.0.splice(gone, added);
+    }
 }
 
 #[cfg(test)]
@@ -587,5 +682,94 @@ mod tests {
         assert!(!is_english(Some(Iri::intern("enm"))));
         assert!(is_english(Some(Iri::intern("en-us"))));
         assert!(is_english(None));
+    }
+
+    #[test]
+    fn tokens_made_on_demand_are_the_tokens_the_parse_kept() {
+        let texts = [
+            (
+                "file:///w/a.ttl",
+                "@prefix ex: <http://e/> . # one\nex:a ex:p \"x\" , ( 1 2 ) .\nGRAPH oops\n",
+            ),
+            ("file:///w/a.trig", "GRAPH <g> { <a> <p> <o> } # two\n"),
+            (
+                "file:///w/a.nt",
+                "<http://e/a> <http://e/p> <http://e/o> . # three\n",
+            ),
+            (
+                "file:///w/a.nq",
+                "<http://e/a> <http://e/p> <http://e/o> <http://e/g> .\n",
+            ),
+            ("file:///w/a.jsonld", "{\"@id\": \"http://e/a\"}"),
+            ("file:///w/a.ttl", ""),
+        ];
+        let key = |a: &Analysis| -> Vec<_> {
+            a.tokens()
+                .iter()
+                .map(|t| (t.kind, t.start, t.end, t.error()))
+                .collect()
+        };
+        for (uri, text) in texts {
+            let kept = Analysis::new(uri.into(), text, Arc::default(), true);
+            let dropped = Analysis::new(uri.into(), text, Arc::default(), false);
+            assert!(dropped.tokens.get().is_none(), "{uri}");
+            assert_eq!(key(&dropped), key(&kept), "{uri}");
+            assert_eq!(
+                dropped.comments().collect::<Vec<_>>(),
+                kept.comments().collect::<Vec<_>>(),
+                "{uri}"
+            );
+            let parsed = syntax::parse(text, &PrefixMap::default(), kept.parsed.syntax);
+            if kept.parsed.syntax != Syntax::JsonLd {
+                assert_eq!(
+                    kept.comments().collect::<Vec<_>>(),
+                    parsed.comments,
+                    "{uri}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn line_starts_convert_positions_as_the_line_index_does() {
+        let text = "ab\r\n\u{e9}\u{1F600}x\n\n\u{4e2d}\r\r\nend";
+        let starts = LineStarts::new(text);
+        let lines = LineIndex::new(text);
+        for line in 0..8 {
+            for col in (0..12).chain([u32::MAX - 1, u32::MAX]) {
+                for enc in [Encoding::Utf8, Encoding::Utf16] {
+                    let pos = Position::new(line, col);
+                    assert_eq!(
+                        starts.offset(text, enc, pos),
+                        offset_in(&lines, text, enc, pos),
+                        "{enc:?} {line}:{col}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn line_starts_follow_edits() {
+        let mut text = String::from("ab\ncd\nef\n");
+        let mut starts = LineStarts::new(&text);
+        let edits: [(usize, usize, &str); 6] = [
+            (0, 0, "1\n"),
+            (3, 6, ""),
+            (2, 2, "x\ny\n\u{e9}"),
+            (0, 4, "\n\n"),
+            (4, 9, "z"),
+            (0, 0, ""),
+        ];
+        for (s, e, new) in edits {
+            let e = e.min(text.len());
+            text.replace_range(s..e, new);
+            starts.replace(s..e, new);
+            assert_eq!(
+                starts.0,
+                LineStarts::new(&text).0,
+                "after {s}..{e} -> {new:?}: {text:?}"
+            );
+        }
     }
 }

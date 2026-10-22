@@ -474,6 +474,26 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     {
         panic!("{m}");
     }
+    // The analysis's tokens and comments are the parser's, whether kept or
+    // made on demand.
+    let key = |t: &turtle_lsp::syntax::lexer::Token| (t.kind, t.start, t.end, t.error());
+    let lean = Analysis::with_syntax(
+        doc_uri(syntax).into(),
+        text,
+        Arc::new(PrefixMap::default()),
+        false,
+        syntax,
+    );
+    for an in [&*a, &lean] {
+        assert!(
+            an.tokens().iter().map(key).eq(p.tokens.iter().map(key)),
+            "the analysis's tokens differ from the parser's"
+        );
+        assert!(
+            an.comments().eq(p.comments.iter().copied()),
+            "the analysis's comments differ from the parser's"
+        );
+    }
     // The document joins the index (and leaves it again below), as an edited
     // open document does.
     k.set(doc_uri(syntax), Source::Open, a.clone());

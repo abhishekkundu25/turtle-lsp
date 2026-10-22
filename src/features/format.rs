@@ -25,10 +25,11 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::layout::{Blank, Doc, Groups, Ix, Obj, Po, Printer, Semicolons, Style, Term};
-use crate::syntax::lexer::{Kind, Token, tokenize};
-use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple, parse_with_base};
+use crate::syntax::lexer::{Kind, Token};
+use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple};
 use lsp_types::{FormattingOptions, Position, Range, TextEdit};
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 
 pub use crate::layout::{DEFAULT_LINE_WIDTH, Options};
 
@@ -46,7 +47,7 @@ impl Options {
 /// `textDocument/formatting`: one edit replacing the whole document, or none
 /// when the document is already formatted or has syntax errors.
 pub fn formatting(a: &Analysis, enc: Encoding, opts: &Options) -> Vec<TextEdit> {
-    match format(&a.text, &a.parsed, &a.external, opts) {
+    match format_analysis(a, opts) {
         Some(new_text) if new_text != *a.text => vec![TextEdit {
             range: Range::new(Position::new(0, 0), a.position(enc, a.text.len() as u32)),
             new_text,
@@ -55,12 +56,33 @@ pub fn formatting(a: &Analysis, enc: Encoding, opts: &Options) -> Vec<TextEdit> 
     }
 }
 
+/// [`format`] of an analysis, laid out from [`Analysis::tokens`].
+pub fn format_analysis(a: &Analysis, opts: &Options) -> Option<String> {
+    format_with(&a.text, &a.parsed, &a.external, opts, || {
+        Cow::Borrowed(a.tokens())
+    })
+}
+
 /// The formatted text, or `None` when the document has syntax errors, or, as a
 /// safety net, when the result would not parse to the same triples (the same
 /// JSON value for JSON-LD).
-/// `parsed` is the parse of `text` with `external` prefixes; when its tokens
-/// were dropped the text is tokenized again.
+/// `parsed` is the parse of `text` with `external` prefixes. The text is
+/// tokenized again; [`format_analysis`] takes an analysis's tokens instead.
 pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options) -> Option<String> {
+    format_with(text, parsed, external, opts, || {
+        Cow::Owned(parsed.syntax.tokens(text))
+    })
+}
+
+/// [`format`], with the tokens of `text` from `tokens`, asked for only when
+/// there is something to lay out.
+fn format_with<'t>(
+    text: &str,
+    parsed: &Parsed,
+    external: &PrefixMap,
+    opts: &Options,
+    tokens: impl FnOnce() -> Cow<'t, [Token]>,
+) -> Option<String> {
     if parsed.syntax == Syntax::JsonLd {
         // Only JSON syntax errors stop it; context problems do not.
         if parsed.errors.iter().any(|e| e.code == "json-syntax") {
@@ -71,14 +93,7 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         return None;
     }
-    let local;
-    let tokens = if parsed.tokens.is_empty() && !text.trim().is_empty() {
-        local = tokenize(text);
-        &local
-    } else {
-        &parsed.tokens
-    };
-    let doc = Doc::new(text, tokens);
+    let doc = Doc::new(text, &tokens());
     let items = Cst {
         t: &doc.toks,
         pos: 0,
@@ -87,16 +102,38 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
     }
     .document()?;
     let out = Formatter::new(&doc, opts, parsed.syntax).document(&items);
+    #[cfg(test)]
+    let out = tests::injected(text, out);
+    let comments = doc.comments.len();
+    // The layout is written: its memory goes before the output is parsed.
+    drop(items);
+    drop(doc);
+    if let Err(bug) = same_graph(&out, parsed, comments, external) {
+        eprintln!("{bug}");
+        return None;
+    }
+    Some(out)
+}
 
+/// The safety net: `out` parses without errors to the triples and graphs of
+/// `parsed`, with `comments` comments. Otherwise the formatter has a bug,
+/// and this says what differs.
+fn same_graph(
+    out: &str,
+    parsed: &Parsed,
+    comments: usize,
+    external: &PrefixMap,
+) -> Result<(), String> {
     // Same starting base as the original, or relative IRIs would not match.
-    let again = parse_with_base(
-        &out,
+    let (again, again_comments) = Parsed::graph_only(
+        out,
         external,
         parsed.syntax,
         parsed.document_base.as_deref(),
+        parsed.triples.len(),
     );
     let same = !again.errors.iter().any(|e| e.severity == Severity::Error)
-        && again.comments.len() == doc.comments.len()
+        && again_comments == comments
         && same_triples(&again.triples, &parsed.triples)
         && again.graphs.len() == parsed.graphs.len()
         && again
@@ -104,18 +141,17 @@ pub fn format(text: &str, parsed: &Parsed, external: &PrefixMap, opts: &Options)
             .iter()
             .zip(&parsed.graphs)
             .all(|(x, y)| x.name == y.name);
-    if !same {
-        eprintln!(
-            "turtle-lsp: formatter bug: the formatted text does not match the original \
-             ({} vs {} triples, {} vs {} comments); no edits applied",
-            again.triples.len(),
-            parsed.triples.len(),
-            again.comments.len(),
-            doc.comments.len()
-        );
-        return None;
+    if same {
+        return Ok(());
     }
-    Some(out)
+    Err(format!(
+        "turtle-lsp: formatter bug: the formatted text does not match the original \
+         ({} vs {} triples, {} vs {} comments); no edits applied",
+        again.triples.len(),
+        parsed.triples.len(),
+        again_comments,
+        comments
+    ))
 }
 
 /// Token order is kept, so the quads (and generated blank node labels) come
@@ -167,6 +203,9 @@ impl Item {
     }
 }
 
+/// The tree of a document's tokens. Its lists are held at their length (a
+/// list of one object is the common case, and a growing list holds four):
+/// the tree of a large document is the larger part of the formatter's memory.
 struct Cst<'a> {
     t: &'a [Token],
     pos: usize,
@@ -201,6 +240,7 @@ impl Cst<'_> {
                 _ => self.triples(false)?,
             });
         }
+        items.shrink_to_fit();
         Some(items)
     }
 
@@ -349,13 +389,14 @@ impl Cst<'_> {
                 semis,
             });
             if !more {
+                out.shrink_to_fit();
                 return Some(out);
             }
         }
     }
 
     fn objects(&mut self) -> Option<Vec<Obj>> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(1);
         loop {
             let term = self.object()?;
             let annots = self.annotations()?;
@@ -366,6 +407,7 @@ impl Cst<'_> {
                 comma,
             });
             if comma.is_none() {
+                out.shrink_to_fit();
                 return Some(out);
             }
         }
@@ -685,4 +727,61 @@ fn hoisted_order(d: &Doc<Token>, items: &[Item]) -> Vec<usize> {
     }
     head.extend(rest);
     head
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::parse;
+
+    /// A document holding this has one triple too many in its formatted
+    /// text, as a formatter bug would give it.
+    const ADD_A_TRIPLE: &str = "# turtle-lsp-test: the formatter adds a triple";
+
+    /// The formatter's output, with the bug [`ADD_A_TRIPLE`] asks for.
+    pub(super) fn injected(text: &str, mut out: String) -> String {
+        if text.contains(ADD_A_TRIPLE) {
+            out.push_str("\n<urn:injected:s> <urn:injected:p> <urn:injected:o> .\n");
+        }
+        out
+    }
+
+    #[test]
+    fn a_formatter_that_changes_the_graph_is_refused() {
+        let opts = Options::default();
+        let good = "@prefix ex: <http://e/> .\nex:a   ex:p ex:b . # c\n";
+        let parsed = parse(good, &PrefixMap::default(), Syntax::Turtle);
+        let out = format(good, &parsed, &PrefixMap::default(), &opts).expect("formats");
+        assert!(same_graph(&out, &parsed, 1, &PrefixMap::default()).is_ok());
+
+        let bad = format!("{good}{ADD_A_TRIPLE}\n");
+        let parsed = parse(&bad, &PrefixMap::default(), Syntax::Turtle);
+        assert_eq!(format(&bad, &parsed, &PrefixMap::default(), &opts), None);
+        let out = injected(&bad, format!("{good}{ADD_A_TRIPLE}\n"));
+        let bug = same_graph(&out, &parsed, 2, &PrefixMap::default()).unwrap_err();
+        assert!(bug.contains("formatter bug"), "{bug}");
+        assert!(bug.contains("(2 vs 1 triples, 2 vs 2 comments)"), "{bug}");
+        // A comment lost is a bug too.
+        let bug = same_graph(
+            good,
+            &parse(good, &PrefixMap::default(), Syntax::Turtle),
+            2,
+            &PrefixMap::default(),
+        )
+        .unwrap_err();
+        assert!(bug.contains("1 vs 1 triples, 1 vs 2 comments"), "{bug}");
+    }
+
+    #[test]
+    fn an_analysis_is_formatted_from_its_tokens_kept_or_not() {
+        let text = "@prefix ex: <http://e/> .\nex:a ex:p ex:b ;  ex:q ( 1 2 ) . # c\n";
+        let opts = Options::default();
+        let parsed = parse(text, &PrefixMap::default(), Syntax::Turtle);
+        let expected = format(text, &parsed, &PrefixMap::default(), &opts);
+        assert!(expected.is_some());
+        for keep in [true, false] {
+            let a = Analysis::new("file:///w/a.ttl".into(), text, Default::default(), keep);
+            assert_eq!(format_analysis(&a, &opts), expected, "keep tokens: {keep}");
+        }
+    }
 }

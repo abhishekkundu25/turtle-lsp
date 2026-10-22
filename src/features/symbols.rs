@@ -335,7 +335,7 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
     let mut nested = Vec::new();
     let mut open: Vec<(Kind, u32)> = Vec::new();
     let mut prev_line = 0;
-    for t in a.parsed.tokens.iter().filter(|t| t.kind != Kind::Comment) {
+    for t in a.tokens().iter().filter(|t| t.kind != Kind::Comment) {
         let closes = match t.kind {
             Kind::LBracket
             | Kind::LParen
@@ -372,12 +372,7 @@ pub fn folding_ranges(a: &Analysis) -> Vec<FoldingRange> {
     }
     // Runs of consecutive comment lines; a comment after code is not one.
     let mut run: Option<(u32, u32, u32)> = None; // (start, end, last line)
-    for c in a
-        .parsed
-        .comments
-        .iter()
-        .filter(|c| on_own_line(&a.text, c.start))
-    {
+    for c in a.comments().filter(|c| on_own_line(&a.text, c.start)) {
         let l = line(c.start);
         run = match run {
             Some((s, _, last)) if l == last + 1 => Some((s, c.end, l)),
