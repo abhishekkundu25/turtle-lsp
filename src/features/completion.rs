@@ -5,6 +5,8 @@
 //!   is not declared yet gets its `@prefix` line added on accept.
 //! - Anything else: prefixes (declared, project, well-known), keywords, and
 //!   resources described in the workspace.
+//! - In the query literal of a SHACL shape: SPARQL completion
+//!   ([`super::embedded`]).
 //!
 //! Candidates are ranked by position: after `a` classes come first, in predicate
 //! position properties come first. Before that, [`ranking`] puts what the
@@ -94,6 +96,16 @@ pub fn complete(
     let offset = offset as usize;
     if a.parsed.syntax == Syntax::JsonLd {
         return jsonld::complete(a, text, k, enc, offset);
+    }
+    if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {
+        return r;
+    }
+    // In any other string (a label, a description) nothing: editors suggest
+    // while typing in Turtle strings, for the queries.
+    let t = &a.parsed.tokens;
+    let i = t.partition_point(|t| t.start < offset as u32);
+    if i > 0 && t[i - 1].kind == Kind::String && offset < t[i - 1].end as usize {
+        return CompletionResponse::Array(vec![]);
     }
     let start = word_start(text, offset);
     let end = word_end(text, offset);
@@ -704,4 +716,136 @@ pub fn shorten(iri: &str, prefixes: &PrefixMap) -> Option<String> {
         })
         .max_by_key(|(_, ns)| ns.len())
         .map(|(p, ns)| format!("{p}:{}", &iri[ns.len()..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::knowledge::Source;
+    use std::sync::Arc;
+
+    const SHAPES: &str = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n\
+                          @prefix ex: <http://example.com/> .\n\
+                          ex:P sh:declare [ sh:prefix \"my\" ; sh:namespace \"http://example.com/my#\" ] .\n\
+                          ex:S sh:sparql [ sh:prefixes ex:P ; sh:select \"\"\"\n\
+                          \x20 SELECT $this WHERE {\n\
+                          \x20   $this ex:next ?n .\n\
+                          \x20   \n\
+                          \x20 }\"\"\" ] .\n\
+                          ex:T a sh:NodeShape ; \n";
+
+    /// The completion at the end of the first `needle` of `text`, as
+    /// (label, edit range).
+    fn complete_at(text: &str, needle: &str) -> Vec<(String, Range)> {
+        let a = Arc::new(Analysis::new(
+            "file:///w/shapes.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/shapes.ttl", Source::Open, a.clone());
+        let offset = (text.find(needle).unwrap() + needle.len()) as u32;
+        let pos = a.position(Encoding::Utf16, offset);
+        let items = match complete(&a, text, &k, Encoding::Utf16, pos) {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(l) => l.items,
+        };
+        items
+            .into_iter()
+            .map(|i| {
+                let Some(CompletionTextEdit::Edit(e)) = i.text_edit else {
+                    panic!("{} has no edit", i.label)
+                };
+                (i.label, e.range)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_shacl_query_gets_sparql_completion() {
+        let got = complete_at(SHAPES, "?n .\n    ");
+        let labels: Vec<&str> = got.iter().map(|g| g.0.as_str()).collect();
+        for want in ["OPTIONAL", "FILTER", "MINUS", "my:"] {
+            assert!(labels.contains(&want), "{want} not in {labels:?}");
+        }
+        assert!(!labels.contains(&"@prefix"), "{labels:?}");
+        let line = SHAPES.lines().position(|l| l == "    ").unwrap() as u32;
+        let (_, r) = got.iter().find(|g| g.0 == "OPTIONAL").unwrap();
+        assert_eq!(
+            *r,
+            Range::new(Position::new(line, 4), Position::new(line, 4))
+        );
+
+        // The query's variables after `?`, with the range of what is typed.
+        let filter = SHAPES.replace("?n .\n    \n", "?n .\n    FILTER (?\n");
+        let got = complete_at(&filter, "FILTER (?");
+        let labels: Vec<&str> = got.iter().map(|g| g.0.as_str()).collect();
+        assert!(
+            labels.contains(&"?n") && labels.contains(&"?this"),
+            "{labels:?}"
+        );
+        let line = filter
+            .lines()
+            .position(|l| l.ends_with("FILTER (?"))
+            .unwrap() as u32;
+        let (_, r) = got.iter().find(|g| g.0 == "?n").unwrap();
+        assert_eq!(
+            *r,
+            Range::new(Position::new(line, 12), Position::new(line, 13))
+        );
+
+        // The terms of a prefix declared through sh:declare.
+        let terms = SHAPES.replace("?n .\n    \n", "?n .\n    ?n my:\n")
+            + "<http://example.com/my#knows> ex:p ex:o .\n";
+        let got = complete_at(&terms, "?n my:");
+        assert!(got.iter().any(|g| g.0 == "my:knows"), "{got:?}");
+    }
+
+    #[test]
+    fn a_prefix_line_added_to_a_short_string_escapes_its_line_breaks() {
+        let text = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n\
+                    ex:S sh:select \"SELECT $this WHERE { $this foaf:na }\" .\n";
+        let a = Analysis::new(
+            "file:///w/s.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        );
+        let offset = (text.find("foaf:na").unwrap() + 7) as u32;
+        let pos = a.position(Encoding::Utf16, offset);
+        let CompletionResponse::List(l) =
+            complete(&a, text, &Knowledge::default(), Encoding::Utf16, pos)
+        else {
+            panic!()
+        };
+        let item = l.items.iter().find(|i| i.label == "foaf:name").unwrap();
+        let add = &item.additional_text_edits.as_ref().unwrap()[0];
+        assert!(
+            add.new_text
+                .starts_with("PREFIX foaf: <http://xmlns.com/foaf/0.1/>\\n"),
+            "{:?}",
+            add.new_text
+        );
+        assert!(!add.new_text.contains('\n'), "{:?}", add.new_text);
+        let start = text.find("SELECT").unwrap() as u32;
+        assert_eq!(add.range.start, a.position(Encoding::Utf16, start));
+    }
+
+    #[test]
+    fn outside_queries_completion_is_turtle() {
+        let got = complete_at(SHAPES, "ex:T a sh:NodeShape ; ");
+        let labels: Vec<&str> = got.iter().map(|g| g.0.as_str()).collect();
+        assert!(
+            labels.contains(&"a") && labels.contains(&"sh:"),
+            "{labels:?}"
+        );
+        assert!(!labels.contains(&"OPTIONAL"), "{labels:?}");
+    }
+
+    #[test]
+    fn other_strings_get_no_completion() {
+        let text = format!("{SHAPES}rdfs:label \"Ali\" .\n");
+        assert_eq!(complete_at(&text, "\"Ali"), []);
+    }
 }

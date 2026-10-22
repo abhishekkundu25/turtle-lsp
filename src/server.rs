@@ -22,8 +22,8 @@ use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::clock::Instant;
 use crate::features::hierarchy;
 use crate::features::{
-    completion, diagnostics, format, hover, inlay, navigation, refactor, semantic, shacl_validate,
-    symbols,
+    completion, diagnostics, embedded, format, hover, inlay, navigation, refactor, semantic,
+    shacl_validate, symbols,
 };
 use crate::settings::{SETTINGS_FILE, Settings, read_settings_file};
 use crate::sparql::features as sparql_features;
@@ -1419,12 +1419,17 @@ impl Server {
                         )));
                     }
                 };
-                // `?` and `$` start variables, which RDF documents have none of.
+                // `?` and `$` start variables, which RDF documents have none
+                // of outside the SPARQL queries of SHACL shapes.
                 let trigger = p
                     .context
                     .as_ref()
                     .and_then(|c| c.trigger_character.as_deref());
-                if matches!(trigger, Some("?" | "$")) {
+                if matches!(trigger, Some("?" | "$"))
+                    && !a
+                        .offset(enc, p.text_document_position.position)
+                        .is_some_and(|o| embedded::in_query(&a, o))
+                {
                     return ok(Value::Null);
                 }
                 let text = a.text.clone();

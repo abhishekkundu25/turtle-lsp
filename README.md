@@ -34,7 +34,7 @@ the full W3C test suites and real public ontologies; see
 - **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, N-Triples or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
-- **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. See [SPARQL](#sparql).
+- **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. The SPARQL queries of SHACL shapes (`sh:select`, `sh:ask`, `sh:construct`, `sh:update`) get SPARQL highlighting, completion and hover inside the string. See [SPARQL](#sparql).
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
 - **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` and `turtle.shacl.onType` (validate while typing; on by default).
@@ -212,6 +212,37 @@ you ask, over the workspace's own files: the default graph is the union of
 every triple of every file, named graphs included; `GRAPH` and `FROM NAMED`
 match nothing, `FROM` is ignored, imports are not queried, updates are never
 run and no endpoint is contacted.
+
+### SPARQL in SHACL shapes
+
+The query in a `sh:select`, `sh:ask`, `sh:construct` or `sh:update` string
+of a Turtle or TriG file is a SPARQL query for the editor too:
+
+```turtle
+ex:S sh:sparql [ sh:prefixes ex:P ; sh:select """
+    SELECT $this WHERE { FILTER NOT EXISTS { $this ex:next ?n } }
+""" ] .
+```
+
+- **Semantic highlighting** as in a `.rq` file: keywords, variables,
+  functions, prefixes and terms.
+- **Completion** of SPARQL keywords, the query's variables after `?` or `$`,
+  prefixes and terms. The query's prefixes are the ones its `sh:prefixes`
+  declare with `sh:declare` (in this file, in the ontologies it
+  `owl:imports`, or wherever the workspace describes them), as for the
+  checks below; the file's own `@prefix` lines do not count, unless a
+  `sh:prefixes` value is declared nowhere.
+- **Hover** on prefixes and terms.
+- **Checks** of `sh:select` and `sh:ask` queries as you type: syntax errors
+  at the token, prefixes the query does not declare
+  (`shacl-sparql-syntax`, `shacl-sparql-prefix`), and the constructs
+  SHACL-SPARQL forbids with pre-bound variables (`shacl-sparql-unsupported`:
+  `MINUS`, `VALUES`, `SERVICE`, `AS $this`, a subquery that drops `$this`).
+
+VS Code and the browser editor show suggestions as you type in Turtle and
+TriG strings (`editor.quickSuggestions` with `"strings": "on"` for
+`[turtle]` and `[trig]`); other editors may need their own setting for
+completion inside strings.
 
 ## JSON-LD
 
@@ -419,7 +450,10 @@ untrusted workspaces), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
 default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
-`turtle.query.maxBufferedRows` (for ▶ Run query).
+`turtle.query.maxBufferedRows` (for ▶ Run query). Suggestions pop up while
+typing in Turtle and TriG strings, for the SPARQL queries of SHACL shapes
+(`editor.quickSuggestions` for `[turtle]` and `[trig]`; set it back in
+your settings to turn that off).
 
 Other editors pass the server settings without the `turtle.` prefix, as
 `init_options` or as the `turtle` section of `settings`:
@@ -636,9 +670,9 @@ does not depend on remote servers.
 
 ## Semantic highlighting and label hints
 
-The server sends semantic tokens for IRIs, and in SPARQL files also for
-variables, keywords and built-in functions. Literals, numbers and comments are
-left to the syntax grammar.
+The server sends semantic tokens for IRIs, and in SPARQL files (and the
+SPARQL queries of SHACL shapes) also for variables, keywords and built-in
+functions. Literals, numbers and comments are left to the syntax grammar.
 
 | Token type | Used for |
 |---|---|

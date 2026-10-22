@@ -73,8 +73,17 @@ pub fn completion(
     enc: Encoding,
     params: &CompletionParams,
 ) -> Option<CompletionResponse> {
+    completion_at(q, k, enc, params.text_document_position.position)
+}
+
+pub fn completion_at(
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+) -> Option<CompletionResponse> {
     let text = q.text();
-    let offset = q.offset(enc, params.text_document_position.position)? as usize;
+    let offset = q.offset(enc, pos)? as usize;
     let empty = || Some(CompletionResponse::Array(vec![]));
     let toks = q.doc.tokens();
     if in_literal(toks, text, offset) {

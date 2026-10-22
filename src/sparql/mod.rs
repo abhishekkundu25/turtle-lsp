@@ -178,6 +178,19 @@ impl Document {
         }
     }
 
+    /// [`Document::parse`] without the checks, for queries whose checks
+    /// live elsewhere (SHACL-SPARQL literals: `features::shacl_lint`).
+    pub fn parse_unchecked(text: &str, prefixes: &PrefixMap, base: Option<&str>) -> Document {
+        let tokens = lexer::tokenize(text);
+        let structure = structure::build(text, &tokens, prefixes, base);
+        Document {
+            text: text.to_owned(),
+            tokens,
+            structure,
+            diagnostics: Vec::new(),
+        }
+    }
+
     /// The text it was parsed from.
     pub fn text(&self) -> &str {
         &self.text

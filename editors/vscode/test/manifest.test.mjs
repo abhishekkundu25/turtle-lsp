@@ -63,3 +63,16 @@ test("JSON-LD files are served without taking over VS Code's JSON language", () 
   assert.match(source, /\{ scheme: "file", pattern: JSONLD_PATTERN \}/)
   assert.match(source, /const JSONLD_PATTERN = "\*\*\/\*\.jsonld"/)
 })
+
+test("suggestions pop up in Turtle and TriG strings, where SHACL queries are typed", () => {
+  const defaults = pkg.contributes.configurationDefaults
+  for (const lang of ["[turtle]", "[trig]"]) {
+    assert.deepEqual(defaults?.[lang]?.["editor.quickSuggestions"], { other: "on", comments: "off", strings: "on" }, lang)
+  }
+  // Other languages keep VS Code's defaults.
+  assert.ok(!("editor.quickSuggestions" in defaults))
+  assert.deepEqual(
+    Object.keys(defaults).filter((k) => defaults[k]["editor.quickSuggestions"]),
+    ["[turtle]", "[trig]"]
+  )
+})

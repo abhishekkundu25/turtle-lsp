@@ -125,6 +125,27 @@ test("hover and completion come from the language server", async () => {
   }
 })
 
+test("a SHACL query in a Turtle string gets SPARQL suggestions as you type; other languages keep Monaco's default", async () => {
+  const { page, close } = await open()
+  try {
+    const strings = () => page.evaluate(() => window.monaco.editor.getEditors()[0].getOption(window.monaco.editor.EditorOption.quickSuggestions).strings)
+    await openFile(page, "queries/people.rq")
+    assert.equal(await strings(), "off")
+    await openFile(page, "data/people.ttl")
+    assert.equal(await strings(), "on")
+    await page.evaluate(() => {
+      const m = window.monaco.editor.getEditors()[0].getModel()
+      m.setValue(m.getValue() + '\nex:S <http://www.w3.org/ns/shacl#select> """SELECT $this WHERE {  }""" .\n')
+    })
+    await settled(page)
+    await at(page, "WHERE { ", 8)
+    await page.keyboard.type("OPT")
+    await page.locator(".suggest-widget", { hasText: "OPTIONAL" }).waitFor()
+  } finally {
+    await close()
+  }
+})
+
 test("a .jsonld file opens with JSON colouring, and the language server checks and explains it", async () => {
   const { page, errors, close } = await open()
   try {

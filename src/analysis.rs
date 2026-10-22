@@ -319,6 +319,18 @@ impl SparqlAnalysis {
         }
     }
 
+    /// A query embedded in an RDF document (a SHACL query literal's value),
+    /// for the display and completion features: no checks are run.
+    pub fn embedded(uri: String, text: &str, external: Arc<PrefixMap>) -> SparqlAnalysis {
+        let doc = sparql::Document::parse_unchecked(text, &external, Some(&uri));
+        SparqlAnalysis {
+            uri,
+            doc,
+            lines: LineIndex::new(text),
+            external,
+        }
+    }
+
     /// The text it was parsed from.
     pub fn text(&self) -> &str {
         self.doc.text()

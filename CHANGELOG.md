@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **SPARQL in SHACL shapes.** The query in a `sh:select`, `sh:ask`,
+  `sh:construct` or `sh:update` string of a Turtle or TriG file gets the
+  SPARQL highlighting, completion (keywords, the query's variables, the
+  prefixes its `sh:prefixes` declare, terms) and hover of a `.rq` file, at
+  their place in the string, escapes included. VS Code and the browser
+  editor show suggestions as you type in Turtle and TriG strings
+  (`editor.quickSuggestions` `"strings": "on"` for `[turtle]` and
+  `[trig]`).
+
 ## 0.7.0 — 2026-10-22
 
 ### Features

@@ -9,6 +9,9 @@ use lsp_types::*;
 
 pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Option<Hover> {
     let offset = a.offset(enc, pos)?;
+    if let Some(h) = super::embedded::hover(a, k, enc, offset) {
+        return h;
+    }
 
     // On a prefix declaration's name: show the namespace.
     if let Some(p) = a
@@ -212,6 +215,37 @@ mod tests {
         assert!(
             md.contains("_Described in [my onto.ttl:2](file:///work/my%20onto.ttl#L2)_"),
             "{md}"
+        );
+    }
+
+    #[test]
+    fn hover_in_a_shacl_query() {
+        use crate::syntax::Span;
+        let text = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n\
+                    @prefix ex: <http://example.com/> .\n\
+                    ex:P sh:declare [ sh:prefix \"my\" ; sh:namespace \"http://example.com/my#\" ] .\n\
+                    ex:S sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE { $this ex:p \\\"a\\\" ; my:q ?v }\" ] .\n";
+        let a = Analysis::new(
+            "file:///w/shapes.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        );
+        let at = text.find("my:q").unwrap() as u32;
+        let h = hover(
+            &a,
+            &Knowledge::default(),
+            Encoding::Utf16,
+            a.position(Encoding::Utf16, at + 1),
+        )
+        .expect("a hover on the prefix");
+        let HoverContents::Markup(m) = &h.contents else {
+            panic!()
+        };
+        assert!(m.value.contains("<http://example.com/my#>"), "{}", m.value);
+        assert_eq!(
+            h.range,
+            Some(a.range(Encoding::Utf16, Span::new(at, at + 4)))
         );
     }
 }

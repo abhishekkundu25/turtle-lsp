@@ -431,6 +431,14 @@ function addGroup() {
   W.groups.push(g)
   ed.onDidFocusEditorText(() => focusGroup(W.groups.indexOf(g)))
   ed.onDidChangeCursorPosition(() => changed({ status: true }))
+  // Suggestions pop up in Turtle and TriG strings, where the SPARQL queries
+  // of SHACL shapes are typed; other languages keep Monaco's default.
+  const stringSuggestions = () => {
+    const on = ["turtle", "trig"].includes(ed.getModel()?.getLanguageId())
+    ed.updateOptions({ quickSuggestions: { other: "on", comments: "off", strings: on ? "on" : "off" } })
+  }
+  ed.onDidChangeModel(stringSuggestions)
+  ed.onDidChangeModelLanguage(stringSuggestions)
   g.isQuery = ed.createContextKey("rdf.isQuery", false)
   for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], precondition: c.when, contextMenuGroupId: c.menu, run: () => c.run() })
   queries.attach(g, () => (focusGroup(W.groups.indexOf(g)), queries.run(g)))

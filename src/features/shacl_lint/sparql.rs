@@ -11,6 +11,7 @@
 
 use super::Finding;
 use crate::analysis::Analysis;
+use crate::features::embedded::{self, Lit, Queries};
 use crate::knowledge::Knowledge;
 use crate::sparql::validate::{self, ErrorAt, ErrorKind};
 use crate::syntax::{Iri, Node, RDF_TYPE, Span};
@@ -25,13 +26,7 @@ pub const UNSUPPORTED: &str = "shacl-sparql-unsupported";
 
 struct V {
     rdf_type: Iri,
-    select: Iri,
     ask: Iri,
-    prefixes: Iri,
-    declare: Iri,
-    imports: Iri,
-    prefix: Iri,
-    namespace: Iri,
     validators: [Iri; 3],
     parameter: Iri,
     path: Iri,
@@ -47,13 +42,7 @@ fn v() -> &'static V {
         let sh = |l: &str| Iri::intern(&format!("{}{l}", crate::shacl::SH));
         V {
             rdf_type: Iri::intern(RDF_TYPE),
-            select: sh("select"),
             ask: sh("ask"),
-            prefixes: sh("prefixes"),
-            declare: sh("declare"),
-            imports: Iri::intern("http://www.w3.org/2002/07/owl#imports"),
-            prefix: sh("prefix"),
-            namespace: sh("namespace"),
             validators: [
                 sh("validator"),
                 sh("nodeValidator"),
@@ -69,104 +58,6 @@ fn v() -> &'static V {
     })
 }
 
-/// The document's triples by subject.
-struct Index<'a> {
-    triples: &'a [crate::syntax::Triple],
-    by_subject: FxHashMap<&'a Node, Vec<u32>>,
-}
-
-impl<'a> Index<'a> {
-    fn new(triples: &'a [crate::syntax::Triple]) -> Self {
-        let mut by_subject: FxHashMap<&Node, Vec<u32>> = FxHashMap::default();
-        for (i, t) in triples.iter().enumerate() {
-            by_subject.entry(&t.s).or_default().push(i as u32);
-        }
-        Index {
-            triples,
-            by_subject,
-        }
-    }
-    fn objects(&self, s: &Node, p: Iri) -> impl Iterator<Item = &'a Node> + '_ {
-        self.by_subject
-            .get(s)
-            .into_iter()
-            .flatten()
-            .map(|&i| &self.triples[i as usize])
-            .filter(move |t| t.p == p)
-            .map(|t| &t.o)
-    }
-}
-
-fn literal(n: &Node) -> Option<&str> {
-    match n {
-        Node::Literal { value, .. } => Some(value),
-        _ => None,
-    }
-}
-
-/// `sh:declare` entries of `node` in `triples`, and the nodes it
-/// `owl:imports`.
-fn declarations_in(
-    triples: &[crate::syntax::Triple],
-    node: &Node,
-    out: &mut Vec<(String, String)>,
-    imports: &mut Vec<Node>,
-) {
-    let v = v();
-    let mut decls: FxHashSet<&Node> = FxHashSet::default();
-    for t in triples.iter().filter(|t| t.s == *node) {
-        if t.p == v.declare {
-            decls.insert(&t.o);
-        } else if t.p == v.imports {
-            imports.push(t.o.clone());
-        }
-    }
-    if decls.is_empty() {
-        return;
-    }
-    let mut parts: FxHashMap<&Node, (Option<&str>, Option<&str>)> = FxHashMap::default();
-    for t in triples {
-        if decls.contains(&t.s) {
-            if t.p == v.prefix {
-                parts.entry(&t.s).or_default().0 = literal(&t.o);
-            } else if t.p == v.namespace {
-                parts.entry(&t.s).or_default().1 = literal(&t.o);
-            }
-        }
-    }
-    out.extend(
-        parts
-            .into_values()
-            .filter_map(|(p, n)| Some((p?.to_owned(), n?.to_owned()))),
-    );
-}
-
-/// The prefixes a `sh:prefixes` value declares: its own `sh:declare`
-/// entries and those of the ontologies it imports, from this document and
-/// wherever the workspace describes them.
-fn declarations(a: &Analysis, k: &Knowledge, node: &Node) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut seen: FxHashSet<Node> = FxHashSet::default();
-    let mut todo = vec![node.clone()];
-    while let Some(n) = todo.pop() {
-        if !seen.insert(n.clone()) {
-            continue;
-        }
-        let mut imports = Vec::new();
-        declarations_in(&a.parsed.triples, &n, &mut out, &mut imports);
-        if let Node::Iri(iri) = &n {
-            for desc in k.descriptions(iri) {
-                if !std::ptr::eq(desc.analysis, a) {
-                    declarations_in(&desc.analysis.parsed.triples, &n, &mut out, &mut imports);
-                }
-            }
-        }
-        // Blank nodes are local to their document: follow imported IRIs only.
-        todo.extend(imports.into_iter().filter(|i| matches!(i, Node::Iri(_))));
-    }
-    out
-}
-
 /// What a query is, which decides its pre-bound variables.
 enum Role {
     /// A SPARQL-based target: nothing pre-bound.
@@ -178,16 +69,18 @@ enum Role {
 pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
     let v = v();
     let triples = &a.parsed.triples;
-    let queries: Vec<usize> = (0..triples.len())
-        .filter(|&i| {
-            let t = &triples[i];
-            (t.p == v.select || t.p == v.ask) && matches!(t.o, Node::Literal { .. })
-        })
+    let Some(mut qs) = Queries::new(a, k) else {
+        return;
+    };
+    let queries: Vec<usize> = qs
+        .triples
+        .iter()
+        .copied()
+        .filter(|&i| embedded::is_select_or_ask(triples[i].p))
         .collect();
     if queries.is_empty() {
         return;
     }
-    let ix = Index::new(triples);
 
     // Nodes used as validators (with their components) and as targets.
     let mut components: FxHashMap<&Node, Vec<&Node>> = FxHashMap::default();
@@ -209,40 +102,18 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
         }
     }
 
-    let mut declared: FxHashMap<&Node, Vec<(String, String)>> = FxHashMap::default();
     for i in queries {
         let t = &triples[i];
-        let Node::Literal { value, .. } = &t.o else {
+        let Some(lit) = qs.lit(i) else {
             continue;
         };
+        let value = lit.value;
         let mut parser = SparqlParser::new();
-        let mut unresolved = false;
-        for p in ix.objects(&t.s, v.prefixes) {
-            let decls = declared.entry(p).or_insert_with(|| declarations(a, k, p));
-            unresolved |= decls.is_empty();
-            for (name, ns) in decls.iter() {
-                if let Ok(next) = parser.clone().with_prefix(name, ns) {
-                    parser = next;
-                }
+        for (name, ns) in qs.prefixes(&t.s) {
+            if let Ok(next) = parser.clone().with_prefix(&name, &ns) {
+                parser = next;
             }
         }
-        // `sh:prefixes` names a node the workspace never declares (projects
-        // that keep the declarations outside their Turtle files): check the
-        // query against the prefixes in scope here instead of reporting every
-        // prefixed name.
-        if unresolved {
-            let in_scope = a
-                .external
-                .iter()
-                .map(|(n, ns)| (n.as_str(), ns.as_str()))
-                .chain(a.parsed.prefixes.iter().map(|d| (d.name.as_str(), &*d.iri)));
-            for (name, ns) in in_scope {
-                if let Ok(next) = parser.clone().with_prefix(name, ns) {
-                    parser = next;
-                }
-            }
-        }
-        let lit = Lit::new(&a.text, t.o_span, value);
         if let Some(why) = crate::sparql::too_complex(value) {
             push(out, lit.span, SYNTAX, why);
             continue;
@@ -266,8 +137,8 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
                 vars.push("value".into());
             }
             for c in components.get(&t.s).into_iter().flatten() {
-                for p in ix.objects(c, v.parameter) {
-                    for path in ix.objects(p, v.path) {
+                for p in qs.ix.objects(c, v.parameter) {
+                    for path in qs.ix.objects(p, v.path) {
                         if let Node::Iri(path) = path {
                             vars.push(
                                 path[crate::knowledge::namespace_of(path).len()..].to_owned(),
@@ -280,73 +151,6 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
         };
         if let Role::PreBound(vars) = role {
             unsupported(&lit, &query, &vars, out);
-        }
-    }
-}
-
-/// A query literal: its text in the document and its value.
-struct Lit<'a> {
-    text: &'a str,
-    span: Span,
-    /// Length of the opening quotes.
-    quote: u32,
-    value: &'a str,
-}
-
-impl<'a> Lit<'a> {
-    fn new(text: &'a str, span: Span, value: &'a str) -> Self {
-        let src = &text[span.start as usize..span.end as usize];
-        let quote = if src.starts_with("\"\"\"") || src.starts_with("'''") {
-            3
-        } else {
-            1
-        };
-        Lit {
-            text,
-            span,
-            quote,
-            value,
-        }
-    }
-
-    /// The document offset of byte `off` of the value, walking the escapes.
-    fn offset(&self, off: usize) -> Option<u32> {
-        let start = (self.span.start + self.quote) as usize;
-        let raw = self.text.get(start..self.span.end as usize)?.as_bytes();
-        let val = self.value.as_bytes();
-        let (mut r, mut d) = (0, 0);
-        while d < off {
-            let &c = raw.get(r)?;
-            if c == b'\\' {
-                let (rl, dl) = match raw.get(r + 1)? {
-                    b'u' => (6, 4),
-                    b'U' => (10, 8),
-                    _ => (2, 1),
-                };
-                let dl = if rl > 2 {
-                    let hex = std::str::from_utf8(raw.get(r + 2..r + 2 + dl)?).ok()?;
-                    char::from_u32(u32::from_str_radix(hex, 16).ok()?)?.len_utf8()
-                } else {
-                    dl
-                };
-                r += rl;
-                d += dl;
-            } else {
-                if val.get(d) != Some(&c) {
-                    return None;
-                }
-                r += 1;
-                d += 1;
-            }
-        }
-        (d == off).then_some((start + r) as u32)
-    }
-
-    /// The span of value bytes `from..to`, or the whole literal.
-    fn span(&self, from: usize, to: usize) -> Span {
-        match (self.offset(from), self.offset(to)) {
-            (Some(s), Some(e)) if s < e => Span::new(s, e),
-            _ => self.span,
         }
     }
 }

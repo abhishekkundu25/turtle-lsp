@@ -33,6 +33,7 @@ mod rename;
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::format::Options;
+use crate::features::semantic::Raw;
 use crate::knowledge::Knowledge;
 use crate::settings::InlayLabels;
 use lsp_types::*;
@@ -49,6 +50,17 @@ pub fn completion(
     params: &CompletionParams,
 ) -> Option<CompletionResponse> {
     completion::completion(q, k, enc, params)
+}
+
+/// [`completion`] at `pos`, for a query embedded in an RDF document
+/// (`features::embedded`, which maps the positions).
+pub(crate) fn completion_at(
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+) -> Option<CompletionResponse> {
+    completion::completion_at(q, k, enc, pos)
 }
 
 /// `completionItem/resolve` for items with `data.sparql = true`.
@@ -131,6 +143,12 @@ pub fn folding_ranges(q: &SparqlAnalysis) -> Vec<FoldingRange> {
 /// token types).
 pub fn semantic_tokens_full(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> SemanticTokens {
     display::semantic_tokens_full(q, k, enc)
+}
+
+/// The semantic tokens of the whole query as byte spans of its text, for a
+/// query embedded in an RDF document (`features::embedded` maps them).
+pub(crate) fn semantic_tokens_raw(q: &SparqlAnalysis, k: &Knowledge) -> Vec<Raw> {
+    display::raw_tokens(q, k, 0, u32::MAX)
 }
 
 /// `textDocument/semanticTokens/range`: the tokens overlapping `range`.

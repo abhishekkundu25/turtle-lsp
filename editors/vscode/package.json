@@ -318,6 +318,22 @@
         "description": "A term in one of your own namespaces that no file in the workspace describes (often a typo)."
       }
     ],
+    "configurationDefaults": {
+      "[turtle]": {
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": "on"
+        }
+      },
+      "[trig]": {
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": "on"
+        }
+      }
+    },
     "semanticTokenScopes": [
       {
         "language": "turtle",

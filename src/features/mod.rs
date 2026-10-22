@@ -1,5 +1,6 @@
 pub mod completion;
 pub mod diagnostics;
+pub(crate) mod embedded;
 pub mod format;
 pub mod hierarchy;
 pub mod hover;

@@ -7,7 +7,9 @@
 //! class), and last the role it has where it is written (predicate ⇒
 //! property, object of `rdf:type` ⇒ class, datatype ⇒ type, else an
 //! individual). The prefix part of a prefixed name is a `namespace` token.
-//! Literals, numbers and comments are left to the grammar.
+//! Literals, numbers and comments are left to the grammar, except the SPARQL
+//! queries of SHACL shapes, which get the tokens of a SPARQL document
+//! ([`super::embedded`]).
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, namespace_of};
@@ -174,6 +176,7 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
         };
         push(local_start, end, ty, c.mods | decl);
     }
+    super::embedded::semantic_tokens(a, k, from, to, &mut out);
 
     sort_and_dedupe(&mut out);
     out
@@ -568,6 +571,94 @@ mod tests {
         assert_eq!(get("Email"), (CLASS, DEPRECATED | DEFAULT_LIBRARY));
         assert_eq!(get("ghost"), (INDIVIDUAL, UNDESCRIBED));
         assert_eq!(get("t1"), (INDIVIDUAL, DECLARATION));
+    }
+
+    /// (line, column, text, type) of each token.
+    fn placed(text: &str, enc: Encoding) -> Vec<(u32, u32, String, u32)> {
+        let a = Arc::new(Analysis::new(
+            "file:///t.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///t.ttl", Source::Open, a.clone());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let (mut line, mut col) = (0u32, 0u32);
+        full(&a, &k, enc)
+            .data
+            .iter()
+            .map(|t| {
+                if t.delta_line > 0 {
+                    col = 0;
+                }
+                line += t.delta_line;
+                col += t.delta_start;
+                let s = lines[line as usize][col as usize..(col + t.length) as usize].to_string();
+                (line, col, s, t.token_type)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shacl_queries_get_sparql_tokens() {
+        let head = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n\
+                    @prefix ex: <http://example.com/> .\n\
+                    ex:P sh:declare [ sh:prefix \"my\" ; sh:namespace \"http://example.com/my#\" ] .\n";
+        // An escape before the variable and the prefixed names. `my:` comes
+        // from sh:declare; `ex:` is not declared for the queries, so its
+        // local names stay plain.
+        let one = "ex:S sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE { $this ex:p \\\"a\\\" ; my:q ?v }\" ] .\n";
+        let three = "ex:T sh:sparql [ sh:prefixes ex:P ; sh:ask \"\"\"\n  ASK {\n    FILTER NOT EXISTS { $this ex:next ?n }\n  }\"\"\" ] .\n";
+        let text = format!("{head}{one}{three}");
+        let got = placed(&text, Encoding::Utf8);
+        let lines: Vec<&str> = text.split('\n').collect();
+        // `word` at `skip` bytes into the first `needle` of `line`.
+        let at = |line: u32, needle: &str, skip: usize, word: &str| {
+            let col = (lines[line as usize].find(needle).unwrap() + skip) as u32;
+            (line, col, word.to_string())
+        };
+        let inside = |l: u32, c: u32| {
+            (l == 3 && c > lines[3].find("select").unwrap() as u32)
+                || (l == 4 && c > lines[4].find("ask").unwrap() as u32)
+                || (5..=7).contains(&l)
+        };
+        let embedded: Vec<(u32, u32, String, u32)> =
+            got.iter().filter(|t| inside(t.0, t.1)).cloned().collect();
+        let want: Vec<((u32, u32, String), u32)> = vec![
+            (at(3, "SELECT", 0, "SELECT"), KEYWORD),
+            (at(3, "$this W", 0, "$this"), VARIABLE),
+            (at(3, "WHERE", 0, "WHERE"), KEYWORD),
+            (at(3, "$this ex", 0, "$this"), VARIABLE),
+            (at(3, "ex:p ", 0, "ex"), NAMESPACE),
+            (at(3, "my:q", 0, "my"), NAMESPACE),
+            (at(3, "my:q", 3, "q"), PROPERTY),
+            (at(3, "?v", 0, "?v"), VARIABLE),
+            (at(5, "ASK", 0, "ASK"), KEYWORD),
+            (at(6, "FILTER", 0, "FILTER"), KEYWORD),
+            (at(6, "NOT", 0, "NOT"), KEYWORD),
+            (at(6, "EXISTS", 0, "EXISTS"), KEYWORD),
+            (at(6, "$this", 0, "$this"), VARIABLE),
+            (at(6, "ex:next", 0, "ex"), NAMESPACE),
+            (at(6, "?n", 0, "?n"), VARIABLE),
+        ];
+        let want: Vec<(u32, u32, String, u32)> = want
+            .into_iter()
+            .map(|((l, c, s), t)| (l, c, s, t))
+            .collect();
+        assert_eq!(embedded, want);
+
+        // Everything else is what the document gets without the queries.
+        let plain = format!(
+            "{head}{}{}",
+            one.replace(
+                &one[one.find("\"SELECT").unwrap()..one.rfind(" ]").unwrap()],
+                "\"q\""
+            ),
+            "ex:T sh:sparql [ sh:prefixes ex:P ; sh:ask \"\"\"q\"\"\" ] .\n",
+        );
+        let rest: Vec<_> = got.into_iter().filter(|t| !inside(t.0, t.1)).collect();
+        assert_eq!(rest, placed(&plain, Encoding::Utf8));
     }
 
     #[test]

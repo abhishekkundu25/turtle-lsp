@@ -123,7 +123,7 @@ fn encode(q: &SparqlAnalysis, enc: Encoding, raw: &[Raw]) -> SemanticTokens {
 /// Sorted, non-overlapping tokens overlapping `from..to`: keywords,
 /// variables, functions, prefixes, and terms classified as in Turtle (what
 /// the workspace and the vocabularies say, else the role where written).
-fn raw_tokens(q: &SparqlAnalysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
+pub(super) fn raw_tokens(q: &SparqlAnalysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
     let st = q.doc.structure();
     let wanted = |s: u32, e: u32| e > from && s <= to && s < e;
     let mut out: Vec<Raw> = Vec::new();
