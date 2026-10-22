@@ -32,30 +32,30 @@ use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// The most bytes read from one document.
-pub const MAX_FETCH_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_FETCH_BYTES: u64 = 20 * 1024 * 1024;
 /// The most time spent on one document, redirects included.
-pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Redirects followed for one document.
-pub const MAX_REDIRECTS: u32 = 10;
+pub(crate) const MAX_REDIRECTS: u32 = 10;
 /// Requests one pass over the imports may make.
-pub const PASS_REQUESTS: u32 = 100;
+pub(crate) const PASS_REQUESTS: u32 = 100;
 /// Bytes one pass over the imports may read.
-pub const PASS_BYTES: u64 = 100 * 1024 * 1024;
+pub(crate) const PASS_BYTES: u64 = 100 * 1024 * 1024;
 /// Set to `1` to fetch from loopback, private, link-local and other internal
 /// addresses (a server on the intranet, a vocabulary on this machine).
-pub const ALLOW_PRIVATE_ENV: &str = "TURTLE_LSP_ALLOW_PRIVATE_HOSTS";
+pub(crate) const ALLOW_PRIVATE_ENV: &str = "TURTLE_LSP_ALLOW_PRIVATE_HOSTS";
 
 /// Which addresses may be fetched from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Policy {
+pub(crate) struct Policy {
     /// Loopback, private, link-local (cloud metadata) and other internal
     /// addresses are fetched from too.
-    pub allow_private: bool,
+    pub(crate) allow_private: bool,
 }
 
 impl Policy {
     /// Public addresses only, unless [`ALLOW_PRIVATE_ENV`] says otherwise.
-    pub fn from_env() -> Policy {
+    pub(crate) fn from_env() -> Policy {
         Policy::from_setting(std::env::var_os(ALLOW_PRIVATE_ENV).as_deref())
     }
 
@@ -70,7 +70,7 @@ impl Policy {
 
 /// What one pass (or one document) may still request and read.
 #[derive(Clone, Debug)]
-pub struct Budget {
+pub(crate) struct Budget {
     requests: u32,
     bytes: u64,
     max_requests: u32,
@@ -78,7 +78,7 @@ pub struct Budget {
 }
 
 impl Budget {
-    pub fn new(max_requests: u32, max_bytes: u64) -> Budget {
+    pub(crate) fn new(max_requests: u32, max_bytes: u64) -> Budget {
         Budget {
             requests: 0,
             bytes: 0,
@@ -88,12 +88,12 @@ impl Budget {
     }
 
     /// One pass over a workspace's imports.
-    pub fn pass() -> Budget {
+    pub(crate) fn pass() -> Budget {
         Budget::new(PASS_REQUESTS, PASS_BYTES)
     }
 
     /// One document with its redirects and the one document it links to.
-    pub fn document() -> Budget {
+    pub(crate) fn document() -> Budget {
         Budget::new(2 * (MAX_REDIRECTS + 1), 2 * MAX_FETCH_BYTES)
     }
 
@@ -126,24 +126,24 @@ impl Budget {
 
 /// A document read by [`get`].
 #[derive(Debug)]
-pub struct Response {
-    pub body: Vec<u8>,
-    pub content_type: Option<String>,
+pub(crate) struct Response {
+    pub(crate) body: Vec<u8>,
+    pub(crate) content_type: Option<String>,
     /// Where the body was finally read from, after redirects.
-    pub final_url: String,
+    pub(crate) final_url: String,
     /// The `Link` header, if any.
-    pub link: Option<String>,
+    pub(crate) link: Option<String>,
 }
 
 /// Why [`get`] failed.
 #[derive(Debug)]
-pub struct Error {
+pub(crate) struct Error {
     /// The HTTP status, if the server answered with an error.
-    pub status: Option<u16>,
-    pub message: String,
+    pub(crate) status: Option<u16>,
+    pub(crate) message: String,
     /// The [`Budget`] was spent: another pass may do better, so this failure
     /// is not remembered.
-    pub budget: bool,
+    pub(crate) budget: bool,
 }
 
 impl Error {
@@ -158,7 +158,7 @@ impl Error {
 
 /// GET `url` with `accept`: follow up to [`MAX_REDIRECTS`] redirects, each
 /// checked against `policy`, and count them in `budget`.
-pub fn get(
+pub(crate) fn get(
     url: &str,
     accept: &str,
     policy: Policy,
@@ -305,7 +305,7 @@ fn refused(what: &str, why: &str) -> Error {
 }
 
 /// What makes `ip` an address that is not fetched from, if anything.
-pub fn internal(ip: IpAddr) -> Option<&'static str> {
+pub(crate) fn internal(ip: IpAddr) -> Option<&'static str> {
     match ip {
         IpAddr::V4(ip) => internal_v4(ip),
         IpAddr::V6(ip) => internal_v6(ip),
@@ -527,7 +527,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 /// SHA-256 of `s` as 64 hex digits: the name of `s` in the cache.
-pub fn hash_name(s: &str) -> String {
+pub(crate) fn hash_name(s: &str) -> String {
     use std::fmt::Write;
     sha256(s.as_bytes())
         .iter()
@@ -538,27 +538,27 @@ pub fn hash_name(s: &str) -> String {
 }
 
 /// The cache file for `url` holding a document of kind `extension`.
-pub fn cache_file_as(dir: &Path, url: &str, extension: &str) -> PathBuf {
+pub(crate) fn cache_file_as(dir: &Path, url: &str, extension: &str) -> PathBuf {
     dir.join(format!("{}.{extension}", hash_name(url)))
 }
 
 /// Whether `url` can be written into a cache file's header line.
-pub fn cacheable(url: &str) -> bool {
+pub(crate) fn cacheable(url: &str) -> bool {
     !url.chars().any(char::is_control)
 }
 
 /// The line that starts a cached document, naming the URL it came from.
-pub fn header_line(url: &str) -> String {
+pub(crate) fn header_line(url: &str) -> String {
     format!("# turtle-lsp cache for {url}")
 }
 
 /// `text` as a cache file for `url`: the header line, then the text.
-pub fn with_header(url: &str, text: &str) -> String {
+pub(crate) fn with_header(url: &str, text: &str) -> String {
     format!("{}\n{text}", header_line(url))
 }
 
 /// Whether `bytes` start with the header line of `url`.
-pub fn header_matches(bytes: &[u8], url: &str) -> bool {
+pub(crate) fn header_matches(bytes: &[u8], url: &str) -> bool {
     let line = header_line(url);
     bytes
         .strip_prefix(line.as_bytes())
@@ -568,12 +568,12 @@ pub fn header_matches(bytes: &[u8], url: &str) -> bool {
 /// The file beside a cached JSON document, which cannot carry a header line:
 /// its first line is the header of the URL, its second (if the URL moved) the
 /// URL the document was finally read from.
-pub fn sidecar(path: &Path) -> PathBuf {
+pub(crate) fn sidecar(path: &Path) -> PathBuf {
     path.with_extension("url")
 }
 
 /// The text of the [`sidecar`] of a document read from `url` and finally from `final_url`.
-pub fn sidecar_text(url: &str, final_url: &str) -> String {
+pub(crate) fn sidecar_text(url: &str, final_url: &str) -> String {
     if final_url == url {
         format!("{}\n", header_line(url))
     } else {
@@ -583,7 +583,7 @@ pub fn sidecar_text(url: &str, final_url: &str) -> String {
 
 /// The URL a [`sidecar`] says the document was finally read from, if the
 /// sidecar belongs to `url`: `Some(None)` when it was not redirected.
-pub fn read_sidecar(text: &str, url: &str) -> Option<Option<String>> {
+pub(crate) fn read_sidecar(text: &str, url: &str) -> Option<Option<String>> {
     let mut lines = text.lines();
     if lines.next()? != header_line(url) {
         return None;
@@ -600,7 +600,7 @@ pub fn read_sidecar(text: &str, url: &str) -> Option<Option<String>> {
 /// Write `bytes` to `path` so that readers see the old file or the whole new
 /// one. The temporary file has a name of its own (process, counter), so two
 /// writers, in this process or another, never share it.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

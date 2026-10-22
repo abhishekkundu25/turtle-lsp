@@ -64,7 +64,7 @@ pub(crate) fn completion_at(
 }
 
 /// `completionItem/resolve` for items with `data.sparql = true`.
-pub fn resolve_completion(item: CompletionItem, k: &Knowledge) -> CompletionItem {
+pub(crate) fn resolve_completion(item: CompletionItem, k: &Knowledge) -> CompletionItem {
     completion::resolve_completion(item, k)
 }
 

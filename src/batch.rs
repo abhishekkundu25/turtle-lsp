@@ -21,6 +21,7 @@ use crate::features::shacl_validate;
 use crate::features::{format, lint};
 use crate::imports;
 use crate::knowledge::Source;
+use crate::layout;
 use crate::query::{self, Answer, Limits, QueryError};
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
@@ -33,7 +34,9 @@ use lsp_types::{
 };
 use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Rounds of [`fix_all`] before giving up on fixes that keep producing fixes.
@@ -49,11 +52,11 @@ pub struct BatchFile {
     /// What results and fix edits call the file. Unique within a batch.
     pub name: String,
     /// The URI the file is opened at.
-    pub uri: String,
+    pub(crate) uri: String,
     pub text: String,
     /// Context only: what the file says counts, but [`fix_all`] neither
     /// fixes it nor returns it.
-    pub context: bool,
+    pub(crate) context: bool,
 }
 
 impl BatchFile {
@@ -71,7 +74,13 @@ impl BatchFile {
     /// A file on disk, opened at the `file:` URI of `path` (absolute) and
     /// called `name` in the results. None when `path` has no `file:` URI
     /// (a relative path, or the browser build, which has no file system).
-    pub fn at_path(path: &Path, name: &str, text: String, context: bool) -> Option<BatchFile> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn at_path(
+        path: &Path,
+        name: &str,
+        text: String,
+        context: bool,
+    ) -> Option<BatchFile> {
         Some(BatchFile {
             name: name.to_string(),
             uri: crate::workspace::path_to_uri(path)?,
@@ -126,12 +135,12 @@ impl Default for Options {
 
 /// A workspace on disk (the command line), where the browser has none.
 #[derive(Clone, Debug, Default)]
-pub struct Disk {
+pub(crate) struct Disk {
     /// The workspace roots: a file's `prefixes.ttl` is looked for up to its
     /// root, and import catalogs under them.
-    pub roots: Vec<PathBuf>,
+    pub(crate) roots: Vec<PathBuf>,
     /// Fetch imports that are not in the import cache.
-    pub network: bool,
+    pub(crate) network: bool,
 }
 
 /// What [`analyse`] found.
@@ -168,7 +177,7 @@ pub struct Fix {
     pub preferred: bool,
     /// Preferred and not a term rename ([`RENAME_CODES`]): applying it does
     /// not change what the data means.
-    pub safe: bool,
+    pub(crate) safe: bool,
     /// The edits, by file name, in input order of the files.
     pub edits: Vec<(String, Vec<TextEdit>)>,
 }
@@ -209,7 +218,8 @@ pub fn analyse(files: &[BatchFile], settings: &Settings, opts: &Options) -> Repo
 /// up to the roots, and `owl:imports` are loaded as the editor loads them.
 /// A context file gets only its SHACL results, without fixes, and no
 /// formatter verdict.
-pub fn analyse_on_disk(
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn analyse_on_disk(
     files: &[BatchFile],
     settings: &Settings,
     opts: &Options,
@@ -303,7 +313,8 @@ pub fn query(
 
 /// [`query`] for files on disk: project prefixes come from `prefixes.ttl` up
 /// to the roots. Imports are not loaded: the data is the files given.
-pub fn query_on_disk(
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn query_on_disk(
     files: &[BatchFile],
     q: &BatchFile,
     settings: &Settings,
@@ -362,7 +373,8 @@ pub fn fix_all(files: &[BatchFile], settings: &Settings, include_unsafe: bool) -
 
 /// [`fix_all`] for files on disk, as [`analyse_on_disk`] sees them. Imports
 /// are loaded once, before the first round.
-pub fn fix_all_on_disk(
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn fix_all_on_disk(
     files: &[BatchFile],
     settings: &Settings,
     include_unsafe: bool,
@@ -677,9 +689,9 @@ impl<'a> Input<'a> {
 
     /// The formatter's verdict on `uri`, or None when it has no analysis.
     fn format(&mut self, uri: &str) -> Option<Formatted> {
-        let opts = format::Options {
+        let opts = layout::Options {
             line_width: self.settings.format_line_width as usize,
-            ..format::Options::default()
+            ..layout::Options::default()
         };
         if self.ws.is_sparql(uri) {
             let q = self.ws.sparql(uri)?;
@@ -711,7 +723,7 @@ impl<'a> Input<'a> {
         let jsonld = a.parsed.syntax == Syntax::JsonLd;
         let opts = if jsonld {
             // JSON convention; the editor passes its own indent.
-            format::Options {
+            layout::Options {
                 tab_size: 2,
                 ..opts
             }
@@ -856,7 +868,7 @@ fn to_code_points(report: &mut FileReport, files: &[BatchFile], lines: &LineInde
 /// `file:///work/`, each '/'-separated segment escaped as JavaScript's
 /// `encodeURIComponent` escapes it, so the browser editor (web/app/editor.js)
 /// opens a file at the same URI.
-pub fn work_uri(name: &str) -> String {
+pub(crate) fn work_uri(name: &str) -> String {
     let mut out = String::from("file:///work/");
     for (i, segment) in name.split('/').enumerate() {
         if i > 0 {

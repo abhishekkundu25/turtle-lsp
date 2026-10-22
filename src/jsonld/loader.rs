@@ -88,7 +88,7 @@ impl ContextLoader for NoNetwork {
 
 /// The loader for this build: [`DesktopLoader`] over the user's imports
 /// cache, fetching only when `network` is on; [`Bundled`] in the browser.
-pub fn for_platform(network: bool) -> Arc<dyn ContextLoader> {
+pub(crate) fn for_platform(network: bool) -> Arc<dyn ContextLoader> {
     #[cfg(not(target_arch = "wasm32"))]
     return Arc::new(DesktopLoader::new(
         crate::imports::import_cache_dir(),
@@ -150,7 +150,7 @@ static BUNDLED: &[BundledContext] = &[
 
 /// The bundled context served for `url`, if any. Its `url` is where the
 /// bundled copy was fetched from.
-pub fn bundled(url: &str) -> Option<RemoteDocument> {
+pub(crate) fn bundled(url: &str) -> Option<RemoteDocument> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
@@ -166,7 +166,7 @@ pub fn bundled(url: &str) -> Option<RemoteDocument> {
 /// A loader serving only the bundled contexts: the browser engine's, which
 /// has neither files nor network. Other URLs fail as with [`NoNetwork`].
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Bundled;
+pub(crate) struct Bundled;
 
 impl ContextLoader for Bundled {
     fn load(&self, url: &str) -> Result<RemoteDocument, LoadError> {
@@ -188,7 +188,7 @@ fn is_web(url: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use desktop::{DesktopLoader, read_context_file};
+pub(crate) use desktop::{DesktopLoader, read_context_file};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod desktop {
@@ -224,7 +224,7 @@ mod desktop {
     ///
     /// Clones share their state (memory, the queue of fetches).
     #[derive(Clone)]
-    pub struct DesktopLoader {
+    pub(crate) struct DesktopLoader {
         inner: Arc<Inner>,
     }
 
@@ -301,7 +301,7 @@ mod desktop {
         /// `cache` is the imports cache directory (None: no cache). With
         /// `network`, a context that is neither cached nor bundled is
         /// fetched while the document waits.
-        pub fn new(cache: Option<PathBuf>, network: bool) -> DesktopLoader {
+        pub(crate) fn new(cache: Option<PathBuf>, network: bool) -> DesktopLoader {
             let network = if network {
                 Network::Inline
             } else {
@@ -315,7 +315,7 @@ mod desktop {
         /// and its URL arrives on the receiver once it has been fetched (or
         /// failed); documents that use it are then parsed again. One thread
         /// fetches, one context after another.
-        pub fn in_background(cache: Option<PathBuf>) -> (DesktopLoader, Receiver<String>) {
+        pub(crate) fn in_background(cache: Option<PathBuf>) -> (DesktopLoader, Receiver<String>) {
             DesktopLoader::in_background_with(cache, Policy::from_env())
         }
 
@@ -610,7 +610,7 @@ mod desktop {
 
     /// The text of a context file on disk: at most [`MAX_FETCH_BYTES`],
     /// UTF-8, without a BOM.
-    pub fn read_context_file(path: &Path) -> Result<String, LoadError> {
+    pub(crate) fn read_context_file(path: &Path) -> Result<String, LoadError> {
         read_limited(path)
     }
 

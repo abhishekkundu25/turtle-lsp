@@ -21,7 +21,7 @@ use rustc_hash::FxHashMap;
 ///   and the candidates in `data` for the quick fixes;
 /// - `unknown-term` and `deprecated-term` for vocabulary terms;
 /// - `undescribed-term` when `opts.lint_undescribed_terms` is on.
-pub fn diagnostics(
+pub(crate) fn diagnostics(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,

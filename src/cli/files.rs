@@ -16,36 +16,36 @@ use std::time::SystemTime;
 
 /// The environment variable that raises (or lowers) the number of files a
 /// directory scan of the command line takes. The server's cap is fixed.
-pub const MAX_FILES_VAR: &str = "TURTLE_LSP_MAX_FILES";
+pub(crate) const MAX_FILES_VAR: &str = "TURTLE_LSP_MAX_FILES";
 
 /// The files of a run, read.
-pub struct Workspace {
-    pub root: PathBuf,
-    pub cwd: PathBuf,
+pub(crate) struct Workspace {
+    pub(crate) root: PathBuf,
+    pub(crate) cwd: PathBuf,
     /// Reported files first (sorted by path), then context files.
-    pub files: Vec<File>,
+    pub(crate) files: Vec<File>,
     /// Reported files that could not be read, sorted by path.
-    pub unread: Vec<Unread>,
+    pub(crate) unread: Vec<Unread>,
     /// A file or folder was left out of the run, and said so on stderr: the
     /// scan stopped at its cap, a file was too large, or a context file could
     /// not be read. The run is not complete: exit 2.
-    pub incomplete: bool,
+    pub(crate) incomplete: bool,
 }
 
 /// A reported file that could not be read or decoded.
-pub struct Unread {
-    pub shown: String,
+pub(crate) struct Unread {
+    pub(crate) shown: String,
     /// Relative to the workspace root (`/` separators); None outside it.
-    pub root_relative: Option<String>,
-    pub uri: String,
+    pub(crate) root_relative: Option<String>,
+    pub(crate) uri: String,
     /// `io` or `encoding`.
-    pub code: &'static str,
-    pub message: String,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
 /// What a file was like when it was read: written back only if it still is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Stamp {
+pub(crate) struct Stamp {
     len: u64,
     modified: Option<SystemTime>,
 }
@@ -59,21 +59,21 @@ impl Stamp {
     }
 }
 
-pub struct File {
-    pub path: PathBuf,
-    pub stamp: Stamp,
+pub(crate) struct File {
+    pub(crate) path: PathBuf,
+    pub(crate) stamp: Stamp,
     /// As shown: relative to the current directory when under it, `/` separators.
-    pub shown: String,
+    pub(crate) shown: String,
     /// Relative to the workspace root (`/` separators); None outside it.
-    pub root_relative: Option<String>,
+    pub(crate) root_relative: Option<String>,
     /// The file's `file:` URI.
-    pub uri: String,
-    pub text: String,
-    pub reported: bool,
+    pub(crate) uri: String,
+    pub(crate) text: String,
+    pub(crate) reported: bool,
 }
 
 impl File {
-    pub fn batch(&self) -> BatchFile {
+    pub(crate) fn batch(&self) -> BatchFile {
         BatchFile::at_path(&self.path, &self.shown, self.text.clone(), !self.reported)
             .expect("an absolute path has a file URI")
     }
@@ -81,7 +81,7 @@ impl File {
 
 /// What a run loads besides the files it reports.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Context {
+pub(crate) enum Context {
     /// Every RDF file under the root (`check`).
     Workspace,
     /// Nothing: prefixes.ttl files are read when needed (`format`).
@@ -89,7 +89,7 @@ pub enum Context {
 }
 
 /// The current directory, without symbolic links.
-pub fn current_dir() -> Result<PathBuf, String> {
+pub(crate) fn current_dir() -> Result<PathBuf, String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?;
     Ok(real(&cwd))
@@ -97,7 +97,7 @@ pub fn current_dir() -> Result<PathBuf, String> {
 
 /// `path` without symbolic links (and on Windows without `\\?\`), or as it is
 /// when it cannot be resolved.
-pub fn real(path: &Path) -> PathBuf {
+pub(crate) fn real(path: &Path) -> PathBuf {
     let p = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     #[cfg(windows)]
     {
@@ -113,7 +113,7 @@ pub fn real(path: &Path) -> PathBuf {
 
 /// The workspace root: `flag` if given, else the nearest ancestor of `cwd`
 /// (itself included) with a `.git`, else `cwd`.
-pub fn find_root(flag: Option<&Path>, cwd: &Path) -> Result<PathBuf, String> {
+pub(crate) fn find_root(flag: Option<&Path>, cwd: &Path) -> Result<PathBuf, String> {
     if let Some(dir) = flag {
         let dir = cwd.join(dir);
         if !dir.is_dir() {
@@ -131,7 +131,7 @@ pub fn find_root(flag: Option<&Path>, cwd: &Path) -> Result<PathBuf, String> {
 /// Settings: defaults, then `turtle-lsp.json` at `root` (a bad file is
 /// reported on stderr and ignored; so is what it may not set, see
 /// [`Layer::File`]), then `flags`.
-pub fn settings(root: &Path, flags: &Value) -> Settings {
+pub(crate) fn settings(root: &Path, flags: &Value) -> Settings {
     let (settings, ignored) = layered(root, flags);
     warn(&ignored);
     settings
@@ -140,7 +140,7 @@ pub fn settings(root: &Path, flags: &Value) -> Settings {
 /// [`settings`], but a number of seconds in `turtle-lsp.json` that cannot be
 /// held is an error (the message for stderr), so a CI gate does not run on
 /// settings it was not given.
-pub fn settings_strict(root: &Path, flags: &Value) -> Result<Settings, String> {
+pub(crate) fn settings_strict(root: &Path, flags: &Value) -> Result<Settings, String> {
     let (settings, mut ignored) = layered(root, flags);
     if !ignored.out_of_range.is_empty() {
         let only = Ignored {
@@ -207,7 +207,7 @@ fn max_files() -> Result<usize, String> {
 
 /// [`load_lenient`] for a run that needs all of its data (`query`): a file
 /// that cannot be read, or one left out, fails it.
-pub fn load(
+pub(crate) fn load(
     root: PathBuf,
     cwd: PathBuf,
     paths: &[PathBuf],
@@ -234,7 +234,7 @@ pub fn load(
 /// is in [`Workspace::unread`], and the run goes on; what a scan left out
 /// is warned about on stderr and makes the workspace
 /// [`incomplete`](Workspace::incomplete).
-pub fn load_lenient(
+pub(crate) fn load_lenient(
     root: PathBuf,
     cwd: PathBuf,
     paths: &[PathBuf],
@@ -418,7 +418,7 @@ fn read_text(path: &Path) -> Result<(String, Stamp), (&'static str, String)> {
 /// the new and a failed write leaves the file alone. A symbolic link is
 /// followed: the file it points at is replaced and the link stays. A file
 /// without write permission is not replaced.
-pub fn write_back(path: &Path, read: Stamp, new: &str) -> Result<(), String> {
+pub(crate) fn write_back(path: &Path, read: Stamp, new: &str) -> Result<(), String> {
     let target = path
         .canonicalize()
         .map_err(|e| format!("cannot resolve the path: {e}"))?;

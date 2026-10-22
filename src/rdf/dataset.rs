@@ -12,11 +12,11 @@ use std::convert::Infallible;
 
 /// Blank nodes have no constant syntax: a query can name one as this prefix
 /// followed by its label, an IRI [`Index`] maps back to the node.
-pub const BLANK: &str = "urn:x-shacl:blank:";
+pub(crate) const BLANK: &str = "urn:x-shacl:blank:";
 
 /// A term as the evaluator sees it: a graph term by id when the graph has it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum STerm {
+pub(crate) enum STerm {
     Id(Id),
     /// An IRI the graph uses as a predicate only.
     Iri(Iri),
@@ -28,7 +28,7 @@ pub enum STerm {
 
 /// A [`Graph`] as a SPARQL dataset: the graph is the default graph and, when
 /// the dataset is given one, also a named graph.
-pub struct Index<'a> {
+pub(crate) struct Index<'a> {
     g: &'a Graph<'a>,
     /// The IRI of the named graph that is the same graph.
     graph: Option<&'a str>,
@@ -38,11 +38,11 @@ impl<'a> Index<'a> {
     /// `graph` names the graph as a named graph too. Literals are found by
     /// value with [`Graph::literal`]: over an overlay, that walks the
     /// overlay's own terms, and the shared graph's once for all overlays.
-    pub fn new(g: &'a Graph<'a>, graph: Option<&'a str>) -> Index<'a> {
+    pub(crate) fn new(g: &'a Graph<'a>, graph: Option<&'a str>) -> Index<'a> {
         Index { g, graph }
     }
 
-    pub fn term(&self, id: Id) -> Term {
+    pub(crate) fn term(&self, id: Id) -> Term {
         match self.g.term(id) {
             GTerm::Iri(i) => NamedNode::new_unchecked(i.as_str()).into(),
             GTerm::Blank(b) => BlankNode::new_unchecked(format!("g{b}")).into(),
@@ -51,7 +51,7 @@ impl<'a> Index<'a> {
     }
 
     /// The graph id of `t`, if the graph has it.
-    pub fn id(&self, t: &Term) -> Option<Id> {
+    pub(crate) fn id(&self, t: &Term) -> Option<Id> {
         match self.internal(t) {
             STerm::Id(id) => Some(id),
             _ => None,
@@ -59,7 +59,7 @@ impl<'a> Index<'a> {
     }
 
     /// `t` as the evaluator sees it.
-    pub fn internal(&self, t: &Term) -> STerm {
+    pub(crate) fn internal(&self, t: &Term) -> STerm {
         let found = match t {
             Term::NamedNode(n) if Some(n.as_str()) == self.graph => return STerm::Graph,
             Term::NamedNode(n) if n.as_str().starts_with(BLANK) => n.as_str()[BLANK.len()..]

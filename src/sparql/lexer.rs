@@ -138,7 +138,7 @@ const FUNCTIONS: &[&str] = &[
 ];
 
 /// Aggregate function names in their grammar spelling.
-pub const AGGREGATES: &[&str] = &[
+pub(crate) const AGGREGATES: &[&str] = &[
     "AVG",
     "COUNT",
     "GROUP_CONCAT",
@@ -149,7 +149,7 @@ pub const AGGREGATES: &[&str] = &[
 ];
 
 /// The keyword `word` is, in upper case, if it is one.
-pub fn keyword(word: &str) -> Option<&'static str> {
+pub(crate) fn keyword(word: &str) -> Option<&'static str> {
     KEYWORDS
         .iter()
         .find(|k| k.eq_ignore_ascii_case(word))
@@ -158,7 +158,7 @@ pub fn keyword(word: &str) -> Option<&'static str> {
 
 /// The grammar spelling of built-in function or aggregate `word` (`STRLEN`,
 /// `isBLANK`, `langMatches`, `GROUP_CONCAT`), if it is one.
-pub fn function(word: &str) -> Option<&'static str> {
+pub(crate) fn function(word: &str) -> Option<&'static str> {
     FUNCTIONS
         .iter()
         .chain(AGGREGATES)
@@ -167,13 +167,13 @@ pub fn function(word: &str) -> Option<&'static str> {
 }
 
 /// Whether `word` names an aggregate (`COUNT`, `SUM`, ...).
-pub fn is_aggregate(word: &str) -> bool {
+pub(crate) fn is_aggregate(word: &str) -> bool {
     AGGREGATES.iter().any(|k| k.eq_ignore_ascii_case(word))
 }
 
 /// Every keyword (upper case) and every built-in function and aggregate (in
 /// its grammar spelling), for completion.
-pub fn words() -> impl Iterator<Item = (&'static str, TokenKind)> {
+pub(crate) fn words() -> impl Iterator<Item = (&'static str, TokenKind)> {
     KEYWORDS.iter().map(|k| (*k, TokenKind::Keyword)).chain(
         FUNCTIONS
             .iter()

@@ -17,7 +17,7 @@ use lsp_types::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub fn prepare_rename(
+pub(crate) fn prepare_rename(
     q: &SparqlAnalysis,
     enc: Encoding,
     pos: Position,
@@ -33,7 +33,7 @@ pub fn prepare_rename(
     Some(PrepareRenameResponse::Range(q.range(enc, span)))
 }
 
-pub fn rename(
+pub(crate) fn rename(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -72,7 +72,7 @@ pub fn rename(
     })
 }
 
-pub fn rdf_term_rename(
+pub(crate) fn rdf_term_rename(
     old: &str,
     new_iri: &str,
     docs: &[Arc<SparqlAnalysis>],

@@ -130,7 +130,7 @@ pub fn code_actions(
 }
 
 /// Fill in the edit of a file-wide action returned without one.
-pub fn resolve(a: &Analysis, enc: Encoding, mut action: CodeAction) -> CodeAction {
+pub(crate) fn resolve(a: &Analysis, enc: Encoding, mut action: CodeAction) -> CodeAction {
     let Some(data) = action.data.as_ref() else {
         return action;
     };
@@ -157,7 +157,7 @@ pub fn resolve(a: &Analysis, enc: Encoding, mut action: CodeAction) -> CodeActio
 
 /// Whether an action of `kind` passes the client's `context.only` filter
 /// (`refactor` admits `refactor.rewrite`).
-pub fn wanted(only: Option<&[CodeActionKind]>, kind: &CodeActionKind) -> bool {
+pub(crate) fn wanted(only: Option<&[CodeActionKind]>, kind: &CodeActionKind) -> bool {
     only.is_none_or(|only| {
         only.iter().any(|o| {
             let (o, k) = (o.as_str(), kind.as_str());
@@ -398,9 +398,9 @@ struct Unit<'a> {
 
 /// A prefix declaration of a block to organise.
 pub(crate) struct Directive<'a> {
-    pub name: &'a str,
+    pub(crate) name: &'a str,
     /// The whole declaration.
-    pub span: Span,
+    pub(crate) span: Span,
 }
 
 /// The edit that sorts the leading prefix block and drops duplicate and unused

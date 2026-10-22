@@ -34,6 +34,7 @@ pub(super) struct Ontology {
 const PANIC_IMPORT: &str = "turtle-lsp-test-panic";
 
 /// Why imports are unresolved when their thread ended in the middle of a pass.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) const CRASHED: &str = "the import resolver stopped after an internal error (see the server's log); change the imports or restart to try again";
 /// Why imports are unresolved when no thread could be started for them.
 pub(super) const NO_THREAD: &str = "the import resolver could not be started";
@@ -157,6 +158,8 @@ pub(super) fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fetch::hash_name;
+    use crate::imports::catalog::Target;
     use crate::imports::testing::*;
     use std::fs;
 

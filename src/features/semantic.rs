@@ -23,24 +23,24 @@ use lsp_types::{
 use rustc_hash::FxHashSet;
 
 // Token types, as indexes into the legend.
-pub const NAMESPACE: u32 = 0;
-pub const CLASS: u32 = 1;
-pub const PROPERTY: u32 = 2;
-pub const INDIVIDUAL: u32 = 3;
-pub const DATATYPE: u32 = 4;
-pub const KEYWORD: u32 = 5;
+pub(crate) const NAMESPACE: u32 = 0;
+pub(crate) const CLASS: u32 = 1;
+pub(crate) const PROPERTY: u32 = 2;
+pub(crate) const INDIVIDUAL: u32 = 3;
+pub(crate) const DATATYPE: u32 = 4;
+pub(crate) const KEYWORD: u32 = 5;
 /// SPARQL variables and built-in functions, after the RDF types so that
 /// their indexes stay put.
-pub const VARIABLE: u32 = 6;
-pub const FUNCTION: u32 = 7;
+pub(crate) const VARIABLE: u32 = 6;
+pub(crate) const FUNCTION: u32 = 7;
 
 // Token modifiers, as bits.
-pub const DECLARATION: u32 = 1 << 0;
-pub const DEPRECATED: u32 = 1 << 1;
-pub const DEFAULT_LIBRARY: u32 = 1 << 2;
-pub const UNDESCRIBED: u32 = 1 << 3;
+pub(crate) const DECLARATION: u32 = 1 << 0;
+pub(crate) const DEPRECATED: u32 = 1 << 1;
+pub(crate) const DEFAULT_LIBRARY: u32 = 1 << 2;
+pub(crate) const UNDESCRIBED: u32 = 1 << 3;
 
-pub fn legend() -> SemanticTokensLegend {
+pub(crate) fn legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
         token_types: vec![
             SemanticTokenType::NAMESPACE,
@@ -76,18 +76,18 @@ pub fn range(a: &Analysis, k: &Knowledge, enc: Encoding, range: Range) -> Semant
 /// One token as a byte span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Raw {
-    pub start: u32,
-    pub end: u32,
-    pub ty: u32,
-    pub mods: u32,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) ty: u32,
+    pub(crate) mods: u32,
 }
 
 /// What an IRI denotes regardless of where it is written: a token type when
 /// one is known, and its modifiers.
 #[derive(Clone, Copy)]
 pub(crate) struct Class {
-    pub ty: Option<u32>,
-    pub mods: u32,
+    pub(crate) ty: Option<u32>,
+    pub(crate) mods: u32,
 }
 
 /// Sorted, non-overlapping tokens overlapping `from..to` (a token that only

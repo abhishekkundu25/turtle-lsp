@@ -70,7 +70,7 @@ pub struct Solutions {
     /// [`Limits::max_rows`] of them.
     pub rows: Vec<Vec<Option<Term>>>,
     /// The rows counted past [`Limits::max_rows`] and not kept.
-    pub omitted: usize,
+    pub(crate) omitted: usize,
 }
 
 impl Solutions {
@@ -84,7 +84,7 @@ impl Solutions {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Triples {
     /// Each triple once, at most [`Limits::max_rows`] of them.
-    pub triples: Vec<Triple>,
+    pub(crate) triples: Vec<Triple>,
     /// The distinct triples counted past [`Limits::max_rows`] and not kept:
     /// approximately, as the count is of 64-bit hashes (two triples with one
     /// hash count once).
@@ -94,7 +94,7 @@ pub struct Triples {
 impl Triples {
     /// Every distinct triple the query returned, those not kept included
     /// (approximately: see [`Triples::omitted`]).
-    pub fn total(&self) -> usize {
+    pub(crate) fn total(&self) -> usize {
         self.triples.len() + self.omitted
     }
 }
@@ -217,7 +217,7 @@ pub fn run(
 /// (a 1 000-step path with `--timeout 1` ran 22 s). Unions and `OPTIONAL`
 /// chains plan in linear time and do not count. 200 plans in about 0.1 s,
 /// well below any real query: a hand-written one has tens of patterns.
-pub const MAX_JOIN_WIDTH: usize = 200;
+pub(crate) const MAX_JOIN_WIDTH: usize = 200;
 
 /// Refuses a query whose planning would run for seconds before the first
 /// clock check ([`MAX_JOIN_WIDTH`]).
@@ -345,7 +345,7 @@ fn expression_width(e: &Expression, widest: &mut usize) {
 
 /// The prefixes to show results with: `external` and the query's own
 /// `PREFIX` declarations (the later ones win).
-pub fn display_prefixes(query: &str, external: &PrefixMap) -> PrefixMap {
+pub(crate) fn display_prefixes(query: &str, external: &PrefixMap) -> PrefixMap {
     let doc = Document::parse(query, external, None);
     let mut out = external.clone();
     for p in &doc.structure().prefixes {

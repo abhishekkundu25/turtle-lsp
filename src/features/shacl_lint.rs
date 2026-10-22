@@ -25,7 +25,7 @@ use std::borrow::Cow;
 mod sparql;
 
 /// Codes that depend on the whole workspace (see [`super::diagnostics::needs_index`]).
-pub const NEEDS_INDEX: &[&str] = &[
+pub(crate) const NEEDS_INDEX: &[&str] = &[
     // An IRI shape's sh:path may live in a file the index has not read yet.
     "shacl-missing-path",
     "shacl-unknown-class",
@@ -35,11 +35,11 @@ pub const NEEDS_INDEX: &[&str] = &[
     sparql::PREFIX,
 ];
 
-pub struct Finding {
-    pub span: Span,
-    pub error: bool,
-    pub code: &'static str,
-    pub message: String,
+pub(crate) struct Finding {
+    pub(crate) span: Span,
+    pub(crate) error: bool,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
 const RDF_DATATYPES: [&str; 5] = ["langString", "HTML", "XMLLiteral", "JSON", "dirLangString"];
@@ -109,7 +109,7 @@ fn mentions_shacl(triples: &[Triple]) -> bool {
         .any(|t| shacl(&t.p) || matches!(&t.o, Node::Iri(o) if t.p == rdf_type && shacl(o)))
 }
 
-pub fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
+pub(crate) fn lint(a: &Analysis, k: &Knowledge) -> Vec<Finding> {
     let triples = &a.parsed.triples;
     if !mentions_shacl(triples) {
         return Vec::new();

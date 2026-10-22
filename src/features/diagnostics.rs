@@ -12,13 +12,13 @@ use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
 use rustc_hash::FxHashMap;
 
-pub const SOURCE: &str = "turtle";
+pub(crate) const SOURCE: &str = "turtle";
 
 /// Codes of diagnostics that claim something is known nowhere in the
 /// workspace, so are only reported once the initial index is in.
-pub const NEEDS_INDEX: &[&str] = crate::features::shacl_lint::NEEDS_INDEX;
+pub(crate) const NEEDS_INDEX: &[&str] = crate::features::shacl_lint::NEEDS_INDEX;
 
-pub fn needs_index(d: &Diagnostic) -> bool {
+pub(crate) fn needs_index(d: &Diagnostic) -> bool {
     matches!(&d.code, Some(NumberOrString::String(c))
         if NEEDS_INDEX.contains(&c.as_str()) || c == crate::features::lint::CODE)
 }
@@ -26,22 +26,22 @@ pub fn needs_index(d: &Diagnostic) -> bool {
 /// One written occurrence of an IRI (never `a`), for the knowledge lints
 /// RDF and SPARQL documents share. `K` is how the document holds IRIs: an
 /// interned [`crate::syntax::Iri`], or a `&str`.
-pub struct TermUse<'a, K> {
-    pub span: crate::syntax::Span,
-    pub iri: K,
+pub(crate) struct TermUse<'a, K> {
+    pub(crate) span: crate::syntax::Span,
+    pub(crate) iri: K,
     /// The prefix as written, for a prefixed name (`foaf` in `foaf:name`).
-    pub prefix: Option<&'a str>,
+    pub(crate) prefix: Option<&'a str>,
     /// JSON-LD: the IRI is written in full in a string, as this text (an
     /// absolute IRI, or a word `@vocab` or the base completes), so a fix
     /// keeps that spelling, without angle brackets.
-    pub bare: Option<&'a str>,
+    pub(crate) bare: Option<&'a str>,
 }
 
 /// `unknown-term` (warning, with a "did you mean" and `data.replace` in the
 /// document's own spelling) and `deprecated-term` (hint, deprecated tag) for
 /// terms of the well-known vocabularies, matched by namespace IRI. `mk`
 /// builds a diagnostic at a span.
-pub fn vocabulary_terms<'a, K>(
+pub(crate) fn vocabulary_terms<'a, K>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     k: &Knowledge,
     mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
@@ -131,7 +131,7 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn from_settings(s: &crate::settings::Settings) -> Options {
+    pub(crate) fn from_settings(s: &crate::settings::Settings) -> Options {
         Options {
             lint_undescribed_terms: s.lint_undescribed_terms,
         }

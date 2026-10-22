@@ -48,17 +48,17 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const CODE: &str = "shacl-violation";
-pub const SKIPPED_CODE: &str = "shacl-skipped";
-pub const TIMEOUT_CODE: &str = "shacl-sparql-timeout";
+pub(crate) const CODE: &str = "shacl-violation";
+pub(crate) const SKIPPED_CODE: &str = "shacl-skipped";
+pub(crate) const TIMEOUT_CODE: &str = "shacl-sparql-timeout";
 /// A query or shape that could not be validated to the end.
-pub const FAILURE_CODE: &str = "shacl-failure";
+pub(crate) const FAILURE_CODE: &str = "shacl-failure";
 /// A shape skipped for its `sh:path`.
-pub const INVALID_PATH_CODE: &str = "shacl-invalid-path";
+pub(crate) const INVALID_PATH_CODE: &str = "shacl-invalid-path";
 /// Results shown per document; the rest are summarized in one diagnostic.
 const MAX_PER_DOC: usize = 1000;
 
-pub type ByUri = FxHashMap<String, Vec<Diagnostic>>;
+pub(crate) type ByUri = FxHashMap<String, Vec<Diagnostic>>;
 
 pub struct Job {
     pub generation: u64,
@@ -137,21 +137,21 @@ impl Soften {
     }
 }
 
-pub struct Outcome {
-    pub generation: u64,
-    pub diagnostics: ByUri,
+pub(crate) struct Outcome {
+    pub(crate) generation: u64,
+    pub(crate) diagnostics: ByUri,
 }
 
 /// The validation thread. It blocks on its channel while idle and ends
 /// when the worker is dropped.
-pub struct Worker {
+pub(crate) struct Worker {
     jobs: Sender<Job>,
     latest: Arc<AtomicU64>,
 }
 
 impl Worker {
     /// Start the thread; Err when it cannot be started.
-    pub fn start() -> std::io::Result<(Worker, Receiver<Outcome>)> {
+    pub(crate) fn start() -> std::io::Result<(Worker, Receiver<Outcome>)> {
         let (jobs, job_rx) = unbounded::<Job>();
         let (out_tx, out_rx) = unbounded();
         let latest = Arc::new(AtomicU64::new(0));
@@ -200,11 +200,11 @@ impl Worker {
     }
 
     /// Abandon the running job, if any, in favour of `generation`.
-    pub fn cancel(&self, generation: u64) {
+    pub(crate) fn cancel(&self, generation: u64) {
         self.latest.store(generation, Ordering::Relaxed);
     }
 
-    pub fn submit(&self, job: Job) {
+    pub(crate) fn submit(&self, job: Job) {
         self.latest.store(job.generation, Ordering::Relaxed);
         let _ = self.jobs.send(job);
     }
@@ -237,7 +237,7 @@ fn crashed(job: &Job, panic: &(dyn std::any::Any + Send)) -> ByUri {
 
 /// Whether `a` declares shapes validation would act on (a target, or a
 /// typed shape; see [`crate::shacl::validate::acts_on`]). A few hash lookups.
-pub fn has_shapes(a: &Analysis) -> bool {
+pub(crate) fn has_shapes(a: &Analysis) -> bool {
     crate::shacl::validate::acts_on(&|i| a.refs_by_iri.contains_key(&i))
 }
 

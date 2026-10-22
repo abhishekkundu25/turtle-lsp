@@ -38,7 +38,7 @@ pub enum Path {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShapeKind {
+pub(crate) enum ShapeKind {
     Node,
     /// Has `sh:path`, is typed `sh:PropertyShape`, or is a value of `sh:property`.
     Property,
@@ -46,33 +46,33 @@ pub enum ShapeKind {
 
 /// One shape. Every `u32` is a graph triple number.
 #[derive(Clone, Debug)]
-pub struct Shape {
+pub(crate) struct Shape {
     /// An IRI or a blank node.
-    pub node: Id,
-    pub kind: ShapeKind,
-    pub typed_node_shape: bool,
-    pub typed_property_shape: bool,
+    pub(crate) node: Id,
+    pub(crate) kind: ShapeKind,
+    pub(crate) typed_node_shape: bool,
+    pub(crate) typed_property_shape: bool,
     /// The first `sh:property` triple with this shape as value.
-    pub via_property: Option<u32>,
+    pub(crate) via_property: Option<u32>,
     /// The value of some `sh:node` (so a node shape).
-    pub via_node: bool,
+    pub(crate) via_node: bool,
     /// The `sh:path` as written (the first, if there are several) and its
     /// triple.
-    pub path: Option<(Path, u32)>,
+    pub(crate) path: Option<(Path, u32)>,
     /// `sh:targetClass`, `sh:targetNode`, `sh:targetSubjectsOf` and
     /// `sh:targetObjectsOf` triples.
-    pub targets: Vec<u32>,
+    pub(crate) targets: Vec<u32>,
     /// `sh:target` triples (SHACL-SPARQL targets).
-    pub sparql_targets: Vec<u32>,
+    pub(crate) sparql_targets: Vec<u32>,
     /// Every triple with this shape as subject and a predicate in the SHACL
     /// namespace (constraint parameters, path, targets), in graph order.
-    pub params: Vec<u32>,
+    pub(crate) params: Vec<u32>,
 }
 
 #[derive(Default)]
-pub struct Shapes {
+pub(crate) struct Shapes {
     /// In the order the graph first makes each node a shape.
-    pub shapes: Vec<Shape>,
+    pub(crate) shapes: Vec<Shape>,
     index: FxHashMap<Id, u32>,
 }
 
@@ -87,7 +87,7 @@ impl Shapes {
     /// The shapes in `g`, in the order the graph's triples first make each
     /// node a shape (by triple number; members of one `sh:and` / `sh:or` /
     /// `sh:xone` list in list order).
-    pub fn new(g: &Graph) -> Shapes {
+    pub(crate) fn new(g: &Graph) -> Shapes {
         let v = vocab::get();
         // A value counts as a shape when it is a blank node or an IRI with
         // triples of its own.
@@ -211,7 +211,7 @@ impl Shapes {
         s
     }
 
-    pub fn get(&self, node: Id) -> Option<&Shape> {
+    pub(crate) fn get(&self, node: Id) -> Option<&Shape> {
         self.index.get(&node).map(|&i| &self.shapes[i as usize])
     }
 }
@@ -219,7 +219,7 @@ impl Shapes {
 /// The `rdf:first` triples of the RDF collection starting at `head`, in
 /// order (cycle-safe; stops at the first malformed cell). A cell with several
 /// `rdf:first` or `rdf:rest` triples follows the first of each.
-pub fn list(g: &Graph, head: Id) -> Vec<u32> {
+pub(crate) fn list(g: &Graph, head: Id) -> Vec<u32> {
     let v = vocab::get();
     let mut out = Vec::new();
     let mut visited = FxHashSet::default();
@@ -248,7 +248,7 @@ pub fn list(g: &Graph, head: Id) -> Vec<u32> {
 /// stay nested (the validator merges them, see
 /// [`super::validate::parse_path`]). Recursion stops past 64 levels with
 /// [`Path::Invalid`].
-pub fn path(g: &Graph, node: Id) -> Path {
+pub(crate) fn path(g: &Graph, node: Id) -> Path {
     path_at(g, node, 0)
 }
 

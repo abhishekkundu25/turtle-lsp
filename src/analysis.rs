@@ -17,8 +17,8 @@ const RDFS_COMMENT: &str = "http://www.w3.org/2000/01/rdf-schema#comment";
 const SKOS_DEFINITION: &str = "http://www.w3.org/2004/02/skos/core#definition";
 const SH_NAME: &str = "http://www.w3.org/ns/shacl#name";
 const DCT_DESCRIPTION: &str = "http://purl.org/dc/terms/description";
-pub const RDFS_SUBCLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
-pub const RDFS_SUBPROPERTY_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subPropertyOf";
+pub(crate) const RDFS_SUBCLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
+pub(crate) const RDFS_SUBPROPERTY_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subPropertyOf";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -27,11 +27,11 @@ pub enum Encoding {
 }
 
 pub struct Analysis {
-    pub uri: String,
+    pub(crate) uri: String,
     /// The URL an import's text came from, when `uri` names its cached copy.
-    pub origin: Option<String>,
+    pub(crate) origin: Option<String>,
     /// The text this analysis was computed from.
-    pub text: Arc<str>,
+    pub(crate) text: Arc<str>,
     /// The parse, without its tokens and comment spans: those are
     /// [`Analysis::tokens`] and [`Analysis::comments`].
     pub parsed: Parsed,
@@ -40,39 +40,39 @@ pub struct Analysis {
     /// JSON-LD only: what processing dropped silently, and the references
     /// that are context terms, for the JSON-LD lints (empty otherwise).
     pub dropped: Vec<crate::jsonld::Dropped>,
-    pub used_terms: Vec<crate::jsonld::UsedTerm>,
+    pub(crate) used_terms: Vec<crate::jsonld::UsedTerm>,
     /// JSON-LD only: the keys, types and `@id`s as written, the term
     /// definitions they use, and the context inside each object (empty
     /// otherwise).
-    pub source_index: crate::jsonld::SourceIndex,
-    pub lines: LineIndex,
+    pub(crate) source_index: crate::jsonld::SourceIndex,
+    pub(crate) lines: LineIndex,
     /// Prefixes supplied from outside the document (prefixes.ttl / settings).
     pub external: Arc<PrefixMap>,
     /// IRI -> spans where it is the subject of a top-level statement or the
     /// name of a TriG graph block.
-    pub defs: IriMap<Vec<Span>>,
+    pub(crate) defs: IriMap<Vec<Span>>,
     /// IRI -> indexes into `parsed.refs`.
-    pub refs_by_iri: IriMap<Vec<u32>>,
+    pub(crate) refs_by_iri: IriMap<Vec<u32>>,
     /// IRI -> index into `parsed.triples` of its label; see [`Analysis::label`].
     labels: IriMap<u32>,
-    /// IRI -> index into `parsed.triples` of its comment; see [`Analysis::comment`].
+    /// IRI -> index into `parsed.triples` of its comment; see [`Analysis::comment_en`].
     descriptions: IriMap<u32>,
-    pub types: IriMap<Vec<Iri>>,
+    pub(crate) types: IriMap<Vec<Iri>>,
     /// IRI -> direct superclasses / superproperties (rdfs:subClassOf, rdfs:subPropertyOf).
-    pub supers: IriMap<Vec<Iri>>,
+    pub(crate) supers: IriMap<Vec<Iri>>,
     /// The SHACL query literals parsed for the editor features, by the index
     /// of the triple whose object is the literal; filled by
     /// `features::embedded` as features ask, so a keystroke in a file with
     /// hundreds of queries does not parse them all again.
-    pub embedded_queries: Mutex<FxHashMap<u32, EmbeddedQuery>>,
+    pub(crate) embedded_queries: Mutex<FxHashMap<u32, EmbeddedQuery>>,
 }
 
 /// A query literal parsed as SPARQL, with the prefixes it was parsed with:
 /// what the workspace declares for the literal's node can change without the
 /// document changing, and then the query is parsed again.
-pub struct EmbeddedQuery {
-    pub prefixes: Vec<(String, String)>,
-    pub query: Arc<SparqlAnalysis>,
+pub(crate) struct EmbeddedQuery {
+    pub(crate) prefixes: Vec<(String, String)>,
+    pub(crate) query: Arc<SparqlAnalysis>,
 }
 
 /// Which predicate feeds which index.
@@ -106,7 +106,7 @@ fn indexed_predicates() -> &'static [(Iri, Index)] {
 
 /// Whether text in language `lang` is English for display: untagged, `en` or
 /// `en-*` (not `enm`, Middle English).
-pub fn is_english(lang: Option<Iri>) -> bool {
+pub(crate) fn is_english(lang: Option<Iri>) -> bool {
     lang.is_none_or(|l| &*l == "en" || l.starts_with("en-"))
 }
 
@@ -280,24 +280,20 @@ impl Analysis {
     }
 
     /// The resource's label (rdfs:label, skos:prefLabel, sh:name), English preferred.
-    pub fn label<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
+    pub(crate) fn label<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
         self.labels.get(iri).map(|&i| self.literal(i))
     }
 
-    /// The resource's comment (rdfs:comment, skos:definition, dcterms:description).
-    pub fn comment<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
-        self.descriptions.get(iri).map(|&i| self.literal(i))
-    }
-
     /// [`Analysis::label`] and whether it is English or untagged.
-    pub fn label_en<K: IriKey + ?Sized>(&self, iri: &K) -> Option<(&str, bool)> {
+    pub(crate) fn label_en<K: IriKey + ?Sized>(&self, iri: &K) -> Option<(&str, bool)> {
         self.labels
             .get(iri)
             .map(|&i| (self.literal(i), self.is_en(i)))
     }
 
-    /// [`Analysis::comment`] and whether it is English or untagged.
-    pub fn comment_en<K: IriKey + ?Sized>(&self, iri: &K) -> Option<(&str, bool)> {
+    /// The resource's comment (rdfs:comment, skos:definition,
+    /// dcterms:description) and whether it is English or untagged.
+    pub(crate) fn comment_en<K: IriKey + ?Sized>(&self, iri: &K) -> Option<(&str, bool)> {
         self.descriptions
             .get(iri)
             .map(|&i| (self.literal(i), self.is_en(i)))
@@ -311,7 +307,7 @@ impl Analysis {
     }
 
     /// All prefixes in scope at the end of the document: external, then declared.
-    pub fn prefix_map(&self) -> PrefixMap {
+    pub(crate) fn prefix_map(&self) -> PrefixMap {
         let mut m = (*self.external).clone();
         for p in &self.parsed.prefixes {
             m.insert(p.name.clone(), p.iri.to_string());
@@ -319,7 +315,7 @@ impl Analysis {
         m
     }
 
-    pub fn ref_at(&self, offset: u32) -> Option<&Ref> {
+    pub(crate) fn ref_at(&self, offset: u32) -> Option<&Ref> {
         let refs = &self.parsed.refs;
         // Refs are recorded in text order.
         let i = refs.partition_point(|r| r.span.end < offset);
@@ -329,7 +325,7 @@ impl Analysis {
             .find(|r| r.span.contains(offset))
     }
 
-    pub fn refs_of<'a, K: IriKey + ?Sized>(
+    pub(crate) fn refs_of<'a, K: IriKey + ?Sized>(
         &'a self,
         iri: &K,
     ) -> impl Iterator<Item = &'a Ref> + 'a {
@@ -344,7 +340,7 @@ impl Analysis {
         position_in(&self.lines, enc, offset)
     }
 
-    pub fn range(&self, enc: Encoding, span: Span) -> Range {
+    pub(crate) fn range(&self, enc: Encoding, span: Span) -> Range {
         Range::new(self.position(enc, span.start), self.position(enc, span.end))
     }
 
@@ -357,7 +353,7 @@ impl Analysis {
 ///
 /// An offset inside a multi-byte character (a stale or foreign span) moves back
 /// to the character's start.
-pub fn position_in(lines: &LineIndex, enc: Encoding, offset: u32) -> Position {
+pub(crate) fn position_in(lines: &LineIndex, enc: Encoding, offset: u32) -> Position {
     let mut at = offset.min(u32::from(lines.len()));
     let lc = loop {
         match lines.try_line_col(TextSize::from(at)) {
@@ -386,10 +382,10 @@ pub struct SparqlAnalysis {
     pub uri: String,
     /// Parsed with [`SparqlAnalysis::external`] and the document's URI as
     /// base (a `BASE` in the query wins).
-    pub doc: sparql::Document,
-    pub lines: LineIndex,
+    pub(crate) doc: sparql::Document,
+    pub(crate) lines: LineIndex,
     /// Prefixes supplied from outside the document (prefixes.ttl / settings).
-    pub external: Arc<PrefixMap>,
+    pub(crate) external: Arc<PrefixMap>,
 }
 
 impl SparqlAnalysis {
@@ -416,19 +412,19 @@ impl SparqlAnalysis {
     }
 
     /// The text it was parsed from.
-    pub fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         self.doc.text()
     }
 
     /// The base IRI the document is resolved against: its URI (a `BASE` in
     /// the query overrides it for the query's own IRIs).
-    pub fn base(&self) -> &str {
+    pub(crate) fn base(&self) -> &str {
         &self.uri
     }
 
     /// All prefixes in scope at the end of the document: external, then the
     /// `PREFIX` lines (a later line for the same name wins).
-    pub fn prefix_map(&self) -> PrefixMap {
+    pub(crate) fn prefix_map(&self) -> PrefixMap {
         let mut m = (*self.external).clone();
         for p in &self.doc.structure().prefixes {
             m.insert(
@@ -443,11 +439,11 @@ impl SparqlAnalysis {
         position_in(&self.lines, enc, offset)
     }
 
-    pub fn range(&self, enc: Encoding, span: Span) -> Range {
+    pub(crate) fn range(&self, enc: Encoding, span: Span) -> Range {
         Range::new(self.position(enc, span.start), self.position(enc, span.end))
     }
 
-    pub fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
+    pub(crate) fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
         offset_in(&self.lines, self.text(), enc, pos)
     }
 }
@@ -455,7 +451,12 @@ impl SparqlAnalysis {
 /// Byte offset of an LSP position. Clients send positions past the end of a
 /// line or of the file, and (in UTF-8 mode) columns inside a multi-byte
 /// character; all of these are clamped to a valid character boundary.
-pub fn offset_in(lines: &LineIndex, text: &str, enc: Encoding, pos: Position) -> Option<u32> {
+pub(crate) fn offset_in(
+    lines: &LineIndex,
+    text: &str,
+    enc: Encoding,
+    pos: Position,
+) -> Option<u32> {
     let Some(line) = lines.line(pos.line) else {
         return Some(text.len() as u32);
     };
@@ -488,16 +489,16 @@ fn clamped(text: &str, start: usize, end: usize, col: u32) -> u32 {
 /// Where the lines of a text being edited start, kept current through each
 /// edit: a batch of edits converts its positions without indexing the text
 /// again per edit. Lines end at `\n`, as in [`LineIndex`].
-pub struct LineStarts(Vec<u32>);
+pub(crate) struct LineStarts(Vec<u32>);
 
 impl LineStarts {
-    pub fn new(text: &str) -> LineStarts {
+    pub(crate) fn new(text: &str) -> LineStarts {
         let breaks = text.match_indices('\n').map(|(i, _)| i as u32 + 1);
         LineStarts(std::iter::once(0).chain(breaks).collect())
     }
 
     /// [`offset_in`], for the text these are the line starts of.
-    pub fn offset(&self, text: &str, enc: Encoding, pos: Position) -> Option<u32> {
+    pub(crate) fn offset(&self, text: &str, enc: Encoding, pos: Position) -> Option<u32> {
         let line = pos.line as usize;
         let Some(&start) = self.0.get(line) else {
             return Some(text.len() as u32);
@@ -527,7 +528,7 @@ impl LineStarts {
     }
 
     /// The bytes `range` of the text were replaced by `new`.
-    pub fn replace(&mut self, range: std::ops::Range<usize>, new: &str) {
+    pub(crate) fn replace(&mut self, range: std::ops::Range<usize>, new: &str) {
         let (s, e) = (range.start as u32, range.end as u32);
         // Lines that start after a removed `\n` are gone; those after the
         // range move by the change in length.

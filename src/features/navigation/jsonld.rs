@@ -18,19 +18,19 @@ use std::sync::Arc;
 
 /// The JSON-LD term under the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TermAt {
-    pub definition: DefId,
+pub(crate) struct TermAt {
+    pub(crate) definition: DefId,
     /// The text under the cursor: a use, a compact IRI's prefix part or a
     /// definition's key.
-    pub span: Span,
+    pub(crate) span: Span,
     /// The cursor is on the definition's key.
-    pub on_definition: bool,
+    pub(crate) on_definition: bool,
 }
 
 /// The term (or alias) used or defined at `offset`, or the prefix term of a
 /// compact IRI whose prefix part `offset` is on. `None` elsewhere, and in
 /// documents other than JSON-LD.
-pub fn term_at(a: &Analysis, offset: u32) -> Option<TermAt> {
+pub(crate) fn term_at(a: &Analysis, offset: u32) -> Option<TermAt> {
     let ix = &a.source_index;
     if let Some(id) = ix.definition_at(offset) {
         return Some(TermAt {
@@ -56,7 +56,7 @@ pub fn term_at(a: &Analysis, offset: u32) -> Option<TermAt> {
 
 /// The spans in `a` of the uses of definition `id`: the whole string of a
 /// term or alias, the prefix part of a compact IRI.
-pub fn use_spans(a: &Analysis, id: DefId) -> impl Iterator<Item = Span> + '_ {
+pub(crate) fn use_spans(a: &Analysis, id: DefId) -> impl Iterator<Item = Span> + '_ {
     a.source_index.uses_of(id).map(|u| match u.kind {
         UseKind::Compact { prefix_len, .. } => Span::new(u.span.start, u.span.start + prefix_len),
         _ => u.span,
@@ -67,7 +67,7 @@ pub fn use_spans(a: &Analysis, id: DefId) -> impl Iterator<Item = Span> + '_ {
 /// workspace context file (its analysis, else its text on disk). `None` for
 /// a bundled or remote context, or a file whose text no longer has the key
 /// there.
-pub fn definition_location(
+pub(crate) fn definition_location(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
@@ -98,7 +98,7 @@ pub fn definition_location(
 
 /// A workspace context file's URI and text, by its URL: its analysis's
 /// text, else its text on disk.
-pub fn context_file(k: &Knowledge, url: &str) -> Option<(String, Arc<str>)> {
+pub(crate) fn context_file(k: &Knowledge, url: &str) -> Option<(String, Arc<str>)> {
     let uri = normalize_uri(url);
     if let Some(f) = k.get(&uri) {
         let text = f.text.clone();
@@ -110,7 +110,7 @@ pub fn context_file(k: &Knowledge, url: &str) -> Option<(String, Arc<str>)> {
 
 /// The prefixes a new name typed at `offset` may use: the document's (and
 /// the settings'), and in JSON-LD the prefix terms of the active context.
-pub fn prefixes_at(a: &Analysis, offset: u32) -> PrefixMap {
+pub(crate) fn prefixes_at(a: &Analysis, offset: u32) -> PrefixMap {
     let mut m = a.prefix_map();
     if let Some(ctx) = a.source_index.context_at(offset) {
         for (t, d) in ctx.terms() {
@@ -124,12 +124,12 @@ pub fn prefixes_at(a: &Analysis, offset: u32) -> PrefixMap {
 
 /// Collects text edits by document URI, each range once.
 #[derive(Default)]
-pub struct Changes {
-    pub by_uri: HashMap<Uri, Vec<TextEdit>>,
+pub(crate) struct Changes {
+    pub(crate) by_uri: HashMap<Uri, Vec<TextEdit>>,
 }
 
 impl Changes {
-    pub fn push(&mut self, uri: &str, range: lsp_types::Range, new_text: String) {
+    pub(crate) fn push(&mut self, uri: &str, range: lsp_types::Range, new_text: String) {
         let edits = self.by_uri.entry(super::uri(uri)).or_default();
         if !edits.iter().any(|e| e.range == range) {
             edits.push(TextEdit { range, new_text });
@@ -159,7 +159,7 @@ impl Changes {
 /// Adds the edits renaming IRI `old` to `new` in JSON-LD document `a` (and
 /// in the workspace context files whose definitions it uses). `Err`, naming
 /// the document, when a use there cannot be rewritten.
-pub fn iri_rename(
+pub(crate) fn iri_rename(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
@@ -192,7 +192,7 @@ pub fn iri_rename(
 
 /// `Err` when term `t` of `a` is defined by a bundled or remote context,
 /// which can't be renamed.
-pub fn check_term_renamable(a: &Analysis, t: TermAt) -> Result<(), String> {
+pub(crate) fn check_term_renamable(a: &Analysis, t: TermAt) -> Result<(), String> {
     let d = a.source_index.definition(t.definition);
     match &d.origin {
         Origin::Remote(url) => Err(format!(
@@ -207,7 +207,7 @@ pub fn check_term_renamable(a: &Analysis, t: TermAt) -> Result<(), String> {
 /// definition's key and every use resolving to it, here and, for a term of
 /// a workspace context file, in that file and every workspace document
 /// using it. A term of a bundled or remote context is refused.
-pub fn term_rename(
+pub(crate) fn term_rename(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,

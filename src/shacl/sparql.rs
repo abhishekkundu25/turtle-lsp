@@ -34,22 +34,22 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 /// The IRI `$shapesGraph` is bound to.
-pub const SHAPES_GRAPH: &str = "urn:x-shacl:shapes-graph";
+pub(crate) const SHAPES_GRAPH: &str = "urn:x-shacl:shapes-graph";
 
 /// How long one SHACL-SPARQL query may run (in unit tests, long enough to
 /// tell a stop from a run of minutes).
-pub const TIME_LIMIT: Duration = if cfg!(test) {
+pub(crate) const TIME_LIMIT: Duration = if cfg!(test) {
     Duration::from_millis(200)
 } else {
     Duration::from_secs(10)
 };
 
 /// The failure of a query stopped at [`TIME_LIMIT`].
-pub const TIMED_OUT: &str = "SHACL-SPARQL query stopped after 10 s, its time limit: the results of this constraint are missing";
+pub(crate) const TIMED_OUT: &str = "SHACL-SPARQL query stopped after 10 s, its time limit: the results of this constraint are missing";
 
 /// What a query is for, which decides its pre-bound variables and the
 /// restrictions on it.
-pub enum Role {
+pub(crate) enum Role {
     /// A SPARQL-based target: only `$shapesGraph` is pre-bound, as a constant,
     /// so none of the restrictions that keep `$this` and the other
     /// pre-bound variables meaningful apply.
@@ -61,7 +61,7 @@ pub enum Role {
 
 impl Role {
     /// The variables pre-bound in a query of this role.
-    pub fn names(&self) -> Vec<&str> {
+    pub(crate) fn names(&self) -> Vec<&str> {
         match self {
             Role::Target => vec!["shapesGraph"],
             Role::PreBound(names) => names.iter().map(String::as_str).collect(),
@@ -70,7 +70,7 @@ impl Role {
 }
 
 /// The pre-bound variables of a SPARQL constraint (`sh:sparql`).
-pub fn constraint_role() -> Role {
+pub(crate) fn constraint_role() -> Role {
     Role::PreBound(
         ["this", "shapesGraph", "currentShape"]
             .map(String::from)
@@ -81,7 +81,7 @@ pub fn constraint_role() -> Role {
 /// Parses `text` with `prefixes` and checks it against the SHACL-SPARQL
 /// restrictions; `$PATH` becomes `path`. The top-level projection is extended
 /// with every pre-bound variable so the bindings reach the whole query.
-pub fn prepare(
+pub(crate) fn prepare(
     text: &str,
     prefixes: &[(String, String)],
     path: Option<&Path>,
@@ -138,22 +138,22 @@ fn project(p: &mut GraphPattern, vars: &[Variable]) {
 /// What the restrictions on queries with pre-bound variables rule out in a
 /// query (see [`restrictions`]).
 #[derive(Default)]
-pub struct Found {
-    pub minus: bool,
-    pub values: bool,
-    pub service: bool,
-    pub lateral: bool,
+pub(crate) struct Found {
+    pub(crate) minus: bool,
+    pub(crate) values: bool,
+    pub(crate) service: bool,
+    pub(crate) lateral: bool,
     /// Pre-bound variables assigned with `AS`.
-    pub assigned: Vec<String>,
+    pub(crate) assigned: Vec<String>,
     /// Subqueries so far.
-    pub subqueries: usize,
+    pub(crate) subqueries: usize,
     /// Subqueries (by number) that leave out a pre-bound variable.
-    pub dropped: Vec<(usize, String)>,
+    pub(crate) dropped: Vec<(usize, String)>,
 }
 
 impl Found {
     /// The first problem, as a failure message.
-    pub fn first(&self) -> Option<String> {
+    pub(crate) fn first(&self) -> Option<String> {
         let words = [
             (self.minus, "MINUS"),
             (self.values, "VALUES"),
@@ -177,7 +177,7 @@ impl Found {
 /// by validation and the lint: MINUS, VALUES, SERVICE and LATERAL, `AS ?var`
 /// for a pre-bound variable, and a subquery that does not return the
 /// pre-bound variables. A [`Role::Target`] has none.
-pub fn restrictions(q: &Query, role: &Role) -> Found {
+pub(crate) fn restrictions(q: &Query, role: &Role) -> Found {
     let mut f = Found::default();
     let Role::PreBound(vars) = role else {
         return f;
@@ -318,7 +318,7 @@ fn expr(e: &Expression, vars: &[String], f: &mut Found) {
 }
 
 /// `path` in SPARQL property path syntax.
-pub fn path_sparql(p: &Path) -> String {
+pub(crate) fn path_sparql(p: &Path) -> String {
     let join = |ps: &[Path], sep: &str| {
         let parts: Vec<String> = ps.iter().map(path_sparql).collect();
         format!("({})", parts.join(sep))
@@ -365,10 +365,10 @@ fn replace_path(text: &str, with: &str) -> String {
 }
 
 /// The job's cancel check, polled while a query runs.
-pub type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
+pub(crate) type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// What a query returned.
-pub enum Answer {
+pub(crate) enum Answer {
     /// At most the `max` solutions asked for; `more` when there were more.
     Solutions {
         rows: Vec<QuerySolution>,
@@ -378,7 +378,7 @@ pub enum Answer {
 }
 
 /// Why a query gave no answer.
-pub enum Fail {
+pub(crate) enum Fail {
     /// The job's cancel check said so.
     Cancelled,
     /// A batch has more solutions than were asked for.
@@ -393,7 +393,7 @@ pub enum Fail {
 /// triples) run unoptimized with the values as initial bindings. Planning
 /// costs more than running a typical check on one focus node, so
 /// [`Engine::run_batch`] plans a check once for many focus nodes.
-pub struct Engine {
+pub(crate) struct Engine {
     optimized: QueryEvaluator,
     plain: QueryEvaluator,
     /// The queries that hit [`TIME_LIMIT`]: they fail at once from then on,
@@ -411,7 +411,7 @@ impl Default for Engine {
 
 impl Engine {
     /// An engine whose queries also stop once `cancel` says so.
-    pub fn new(cancel: Cancel) -> Engine {
+    pub(crate) fn new(cancel: Cancel) -> Engine {
         Engine {
             optimized: QueryEvaluator::new().with_custom_function(
                 NamedNode::new_unchecked(BLANK),
@@ -459,7 +459,7 @@ impl Engine {
 
     /// Runs `query` over `ix` with `bindings` pre-bound, keeping at most
     /// `max` solutions (it stops reading at the one after).
-    pub fn run(
+    pub(crate) fn run(
         &self,
         ix: &Index,
         query: &Query,
@@ -510,7 +510,7 @@ impl Engine {
     /// `$this`. Focus nodes that cannot be passed this way (RDF-star triples)
     /// are left out of the map; `None` when `bindings` cannot be substituted.
     /// More than `max` solutions in all is [`Fail::TooMany`].
-    pub fn run_batch(
+    pub(crate) fn run_batch(
         &self,
         ix: &Index,
         query: &Query,
@@ -614,14 +614,14 @@ impl Engine {
 }
 
 /// Solutions by focus node.
-pub type ByFocus = FxHashMap<Id, Vec<QuerySolution>>;
+pub(crate) type ByFocus = FxHashMap<Id, Vec<QuerySolution>>;
 
 type Rows = Vec<Vec<Option<GroundTerm>>>;
 
 /// Whether `query` can run once for many focus nodes ([`Engine::run_batch`])
 /// with the same solutions per focus node as with `$this` pre-bound: the
 /// focus nodes, as a `VALUES` block, can be joined in ([`push`]).
-pub fn batchable(query: &Query) -> bool {
+pub(crate) fn batchable(query: &Query) -> bool {
     match query {
         Query::Select { pattern, .. } => {
             push(&mut pattern.clone(), &Variable::new_unchecked("this"), None)
@@ -1400,7 +1400,7 @@ impl Substitution<'_> {
 
 /// `template` with each `{?name}` / `{$name}` replaced by the value `lookup`
 /// gives (IRIs in full, literals by their lexical form).
-pub fn fill(template: &str, lookup: &dyn Fn(&str) -> Option<Term>) -> String {
+pub(crate) fn fill(template: &str, lookup: &dyn Fn(&str) -> Option<Term>) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(i) = rest.find('{') {

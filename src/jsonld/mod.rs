@@ -44,19 +44,19 @@
 //! written, the term definitions they use, the context inside each object),
 //! for the editor features.
 
-pub mod context;
-pub mod context_edit;
-pub mod expand;
+pub(crate) mod context;
+pub(crate) mod context_edit;
+pub(crate) mod expand;
 pub mod format;
 pub mod json;
-pub mod lint;
-pub mod loader;
-pub mod rename;
-pub mod source;
-pub mod to_rdf;
+pub(crate) mod lint;
+pub(crate) mod loader;
+pub(crate) mod rename;
+pub(crate) mod source;
+pub(crate) mod to_rdf;
 
 pub use loader::{ContextLoader, LoadError, NoNetwork, RemoteDocument};
-pub use source::SourceIndex;
+pub(crate) use source::SourceIndex;
 
 use crate::syntax::{Parsed, Span, Syntax};
 
@@ -66,11 +66,11 @@ use crate::syntax::{Parsed, Span, Syntax};
 pub struct Dropped {
     /// The key or the string (without quotes) that is dropped.
     pub span: Span,
-    pub reason: DropReason,
+    pub(crate) reason: DropReason,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DropReason {
+pub(crate) enum DropReason {
     /// A key the active context does not define: not a term, a compact IRI,
     /// an absolute IRI or a keyword, and no `@vocab` to map it.
     UndefinedTerm,
@@ -97,23 +97,23 @@ pub enum DropReason {
 /// active context (not a keyword alias) whose IRI the term itself does not
 /// spell: the IRI comes from its definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct UsedTerm {
+pub(crate) struct UsedTerm {
     /// The term as written, without quotes: the span of its reference.
-    pub span: Span,
+    pub(crate) span: Span,
     /// Where the definition's IRI is written in this document (its content,
     /// without quotes); `None` for a term of a remote context.
-    pub definition: Option<Span>,
+    pub(crate) definition: Option<Span>,
 }
 
 /// A parsed JSON-LD document: the shared parse model, what JSON-LD dropped
 /// from it, and the terms it uses, each in text order, and its source
 /// index.
 #[derive(Debug, Default)]
-pub struct Document {
-    pub parsed: Parsed,
-    pub dropped: Vec<Dropped>,
-    pub used_terms: Vec<UsedTerm>,
-    pub index: SourceIndex,
+pub(crate) struct Document {
+    pub(crate) parsed: Parsed,
+    pub(crate) dropped: Vec<Dropped>,
+    pub(crate) used_terms: Vec<UsedTerm>,
+    pub(crate) index: SourceIndex,
 }
 
 /// Parse a JSON-LD document into the shared parse model.
@@ -129,13 +129,17 @@ pub fn parse(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Pars
 
 /// [`parse`], with the [`Dropped`] records. Remote contexts are processed
 /// again for each call: use [`parse_document_with`] to share a cache.
-pub fn parse_document(text: &str, base: Option<&str>, loader: &dyn ContextLoader) -> Document {
+pub(crate) fn parse_document(
+    text: &str,
+    base: Option<&str>,
+    loader: &dyn ContextLoader,
+) -> Document {
     parse_document_with(text, base, loader, &context::ContextCache::new())
 }
 
 /// [`parse_document`], keeping processed remote contexts in `cache`, which
 /// the caller owns and may share between documents.
-pub fn parse_document_with(
+pub(crate) fn parse_document_with(
     text: &str,
     base: Option<&str>,
     loader: &dyn ContextLoader,

@@ -93,24 +93,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The diagnostic code of every context error.
-pub const DIAGNOSTIC_CODE: &str = "jsonld-context";
+pub(crate) const DIAGNOSTIC_CODE: &str = "jsonld-context";
 
 /// How many remote contexts may be nested (the spec's "processor defined
 /// limit"); one more is a `context overflow`.
-pub const MAX_REMOTE_CONTEXTS: usize = 32;
+pub(crate) const MAX_REMOTE_CONTEXTS: usize = 32;
 
 /// How many remote contexts may be applied, and local contexts processed,
 /// for one `@context` (or one scoped context) before it is a `context
 /// overflow`. Contexts that include one another several times over (`["c",
 /// "c"]` at every level) would otherwise take 2^depth steps even though
 /// each level is small and the nesting is within [`MAX_REMOTE_CONTEXTS`].
-pub const MAX_CONTEXT_STEPS: usize = 4096;
+pub(crate) const MAX_CONTEXT_STEPS: usize = 4096;
 
 // ---- errors ----
 
 /// The JSON-LD 1.1 error codes context processing raises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ErrorCode {
+pub(crate) enum ErrorCode {
     ContextOverflow,
     CyclicIriMapping,
     InvalidBaseDirection,
@@ -142,7 +142,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// The code as the spec writes it (`invalid term definition`).
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         use ErrorCode::*;
         match self {
             ContextOverflow => "context overflow",
@@ -184,18 +184,18 @@ impl fmt::Display for ErrorCode {
 
 /// A context processing error: the algorithm stops at the first one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContextError {
-    pub code: ErrorCode,
+pub(crate) struct ContextError {
+    pub(crate) code: ErrorCode,
     /// The offending key or value in the document (for a remote context,
     /// the string naming it).
-    pub span: Span,
+    pub(crate) span: Span,
     /// What is wrong, without the code.
-    pub message: String,
+    pub(crate) message: String,
 }
 
 impl ContextError {
     /// The `jsonld-context` diagnostic: "<W3C code>: <message>".
-    pub fn to_syntax_error(&self) -> SyntaxError {
+    pub(crate) fn to_syntax_error(&self) -> SyntaxError {
         SyntaxError::new(
             self.span,
             self.to_string(),
@@ -214,7 +214,7 @@ impl fmt::Display for ContextError {
 // ---- keywords and IRIs ----
 
 /// The JSON-LD 1.1 keywords.
-pub const KEYWORDS: &[&str] = &[
+pub(crate) const KEYWORDS: &[&str] = &[
     "@base",
     "@container",
     "@context",
@@ -267,20 +267,20 @@ const TERM_KEYWORDS: &[&str] = &[
     "@type",
 ];
 
-pub fn is_keyword(s: &str) -> bool {
+pub(crate) fn is_keyword(s: &str) -> bool {
     KEYWORDS.contains(&s)
 }
 
 /// `@` followed by one or more ASCII letters: reserved for future keywords.
 /// Such terms and IRIs are ignored (with a warning) unless they are
 /// keywords.
-pub fn has_keyword_form(s: &str) -> bool {
+pub(crate) fn has_keyword_form(s: &str) -> bool {
     s.strip_prefix('@')
         .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// Whether `s` has the form of an absolute IRI: a scheme and a colon.
-pub fn is_absolute_iri(s: &str) -> bool {
+pub(crate) fn is_absolute_iri(s: &str) -> bool {
     let Some(colon) = s.find(':') else {
         return false;
     };
@@ -291,13 +291,13 @@ pub fn is_absolute_iri(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
 }
 
-pub fn is_blank_node(s: &str) -> bool {
+pub(crate) fn is_blank_node(s: &str) -> bool {
     s.starts_with("_:")
 }
 
 /// Resolve `reference` against `base` (RFC 3986 §5.2, without
 /// normalization). Neither is checked for validity.
-pub fn resolve_iri(base: &str, reference: &str) -> String {
+pub(crate) fn resolve_iri(base: &str, reference: &str) -> String {
     let r = UriParts::parse(reference);
     if r.scheme.is_some() {
         return UriParts {
@@ -440,33 +440,33 @@ fn remove_dot_segments(path: &str) -> String {
 
 /// A base direction (`@direction`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Direction {
+pub(crate) enum Direction {
     Ltr,
     Rtl,
 }
 
 /// A container mapping, as a set of container keywords.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Container(u8);
+pub(crate) struct Container(u8);
 
 impl Container {
-    pub const LIST: Container = Container(1);
-    pub const SET: Container = Container(2);
-    pub const INDEX: Container = Container(4);
-    pub const LANGUAGE: Container = Container(8);
-    pub const GRAPH: Container = Container(16);
-    pub const ID: Container = Container(32);
-    pub const TYPE: Container = Container(64);
+    pub(crate) const LIST: Container = Container(1);
+    pub(crate) const SET: Container = Container(2);
+    pub(crate) const INDEX: Container = Container(4);
+    pub(crate) const LANGUAGE: Container = Container(8);
+    pub(crate) const GRAPH: Container = Container(16);
+    pub(crate) const ID: Container = Container(32);
+    pub(crate) const TYPE: Container = Container(64);
 
-    pub fn contains(self, other: Container) -> bool {
+    pub(crate) fn contains(self, other: Container) -> bool {
         self.0 & other.0 == other.0
     }
 
-    pub fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         self.0 == 0
     }
 
-    pub fn with(self, other: Container) -> Container {
+    pub(crate) fn with(self, other: Container) -> Container {
         Container(self.0 | other.0)
     }
 
@@ -491,56 +491,56 @@ impl Container {
 /// A term's scoped context, kept unprocessed as the spec does: expansion
 /// applies it with [`Processor::process_scoped`].
 #[derive(Clone, Debug)]
-pub struct ScopedContext {
+pub(crate) struct ScopedContext {
     /// The `@context` value of the term definition. Its spans are in the
     /// document named by `source` (`None`: the document being checked).
-    pub json: Arc<Json>,
+    pub(crate) json: Arc<Json>,
     /// The base URL relative context references in it resolve against.
-    pub base_url: Option<Arc<str>>,
+    pub(crate) base_url: Option<Arc<str>>,
     /// The remote document that names it, for error messages, if any.
-    pub source: Option<Arc<str>>,
+    pub(crate) source: Option<Arc<str>>,
     /// The document its JSON is written in, if not the one being checked:
     /// `source`, or a context that document `@import`s.
-    pub doc: Option<Arc<str>>,
+    pub(crate) doc: Option<Arc<str>>,
 }
 
 /// A term definition (§4.2).
 #[derive(Clone, Debug, Default)]
-pub struct TermDefinition {
+pub(crate) struct TermDefinition {
     /// The IRI mapping: an IRI, a blank node identifier or a keyword (for an
     /// alias). `None` for a term mapped to `null`, kept so a later
     /// definition can be checked against a protected one.
-    pub iri: Option<Arc<str>>,
-    pub reverse: bool,
+    pub(crate) iri: Option<Arc<str>>,
+    pub(crate) reverse: bool,
     /// `@id`, `@vocab`, `@json`, `@none` or an IRI.
-    pub type_mapping: Option<Arc<str>>,
+    pub(crate) type_mapping: Option<Arc<str>>,
     /// `Some(None)`: `"@language": null`.
-    pub language: Option<Option<Arc<str>>>,
+    pub(crate) language: Option<Option<Arc<str>>>,
     /// `Some(None)`: `"@direction": null`.
-    pub direction: Option<Option<Direction>>,
-    pub container: Container,
-    pub context: Option<ScopedContext>,
+    pub(crate) direction: Option<Option<Direction>>,
+    pub(crate) container: Container,
+    pub(crate) context: Option<ScopedContext>,
     /// Usable as the prefix of a compact IRI.
-    pub prefix: bool,
-    pub protected: bool,
-    pub nest: Option<Arc<str>>,
-    pub index: Option<Arc<str>>,
+    pub(crate) prefix: bool,
+    pub(crate) protected: bool,
+    pub(crate) nest: Option<Arc<str>>,
+    pub(crate) index: Option<Arc<str>>,
     /// The document the definition is written in: `None` for the document
     /// being checked, else the URL of the remote (or `@import`ed) context.
-    pub source: Option<Arc<str>>,
+    pub(crate) source: Option<Arc<str>>,
     /// The key that defined the term, without the quotes, in the text of
     /// the document `source` names.
-    pub span: Option<Span>,
+    pub(crate) span: Option<Span>,
     /// Where the IRI mapping is written, when it is a string (`@id`,
     /// `@reverse` or the whole definition), in the same text: its content,
     /// without the quotes. `None` when the term's key spells its IRI (a
     /// compact IRI, an IRI or a `@vocab` word).
-    pub iri_span: Option<Span>,
+    pub(crate) iri_span: Option<Span>,
 }
 
 impl TermDefinition {
     /// Written in the document being checked.
-    pub fn is_local(&self) -> bool {
+    pub(crate) fn is_local(&self) -> bool {
         self.source.is_none()
     }
 }
@@ -686,7 +686,7 @@ fn in_progress_id() -> u64 {
 
 /// The active context (§4.1). Cheap to clone.
 #[derive(Clone, Debug)]
-pub struct ActiveContext {
+pub(crate) struct ActiveContext {
     terms: Terms,
     base: Option<Arc<str>>,
     original_base: Option<Arc<str>>,
@@ -702,7 +702,7 @@ pub struct ActiveContext {
 impl ActiveContext {
     /// The initial context of a document at `base` (its base IRI and
     /// original base URL).
-    pub fn new(base: Option<&str>) -> ActiveContext {
+    pub(crate) fn new(base: Option<&str>) -> ActiveContext {
         ActiveContext::reset(base.map(Arc::from))
     }
 
@@ -719,33 +719,34 @@ impl ActiveContext {
         }
     }
 
-    pub fn term(&self, term: &str) -> Option<&TermDefinition> {
+    pub(crate) fn term(&self, term: &str) -> Option<&TermDefinition> {
         self.terms.get(term).map(|d| &**d)
     }
 
     /// Every term definition, in no particular order.
-    pub fn terms(&self) -> impl Iterator<Item = (&str, &TermDefinition)> {
+    pub(crate) fn terms(&self) -> impl Iterator<Item = (&str, &TermDefinition)> {
         self.terms.iter()
     }
 
     /// The base IRI relative IRIs resolve against.
-    pub fn base(&self) -> Option<&str> {
+    pub(crate) fn base(&self) -> Option<&str> {
         self.base.as_deref()
     }
 
-    pub fn original_base(&self) -> Option<&str> {
+    #[cfg(test)]
+    pub(crate) fn original_base(&self) -> Option<&str> {
         self.original_base.as_deref()
     }
 
-    pub fn vocab(&self) -> Option<&str> {
+    pub(crate) fn vocab(&self) -> Option<&str> {
         self.vocab.as_deref()
     }
 
-    pub fn default_language(&self) -> Option<&str> {
+    pub(crate) fn default_language(&self) -> Option<&str> {
         self.language.as_deref()
     }
 
-    pub fn default_direction(&self) -> Option<Direction> {
+    pub(crate) fn default_direction(&self) -> Option<Direction> {
         self.direction
     }
 
@@ -753,16 +754,16 @@ impl ActiveContext {
     /// `@vocab`, default language and direction, previous context): clones
     /// share it, and each processing result gets a new one. Expansion caches
     /// IRI expansions by it.
-    pub fn content_id(&self) -> u64 {
+    pub(crate) fn content_id(&self) -> u64 {
         self.id
     }
 
     /// The context before a non-propagated context was applied.
-    pub fn previous(&self) -> Option<&ActiveContext> {
+    pub(crate) fn previous(&self) -> Option<&ActiveContext> {
         self.previous.as_deref()
     }
 
-    pub fn has_protected(&self) -> bool {
+    pub(crate) fn has_protected(&self) -> bool {
         self.terms.iter().any(|(_, d)| d.protected)
     }
 
@@ -779,7 +780,7 @@ impl ActiveContext {
 }
 
 /// IRI Expansion (§4.3) outside context processing. `None` is `null`.
-pub fn expand_iri(
+pub(crate) fn expand_iri(
     active: &ActiveContext,
     value: &str,
     document_relative: bool,
@@ -836,7 +837,7 @@ fn expand_from_step_4(
 // ---- the cache ----
 
 /// Processed remote contexts by URL and content, shared across threads.
-pub struct ContextCache {
+pub(crate) struct ContextCache {
     docs: Mutex<Vec<CachedDoc>>,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -844,9 +845,10 @@ pub struct ContextCache {
 
 /// How often a remote context was taken from the cache, or processed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CacheStats {
-    pub hits: u64,
-    pub misses: u64,
+#[cfg(test)]
+pub(crate) struct CacheStats {
+    pub(crate) hits: u64,
+    pub(crate) misses: u64,
 }
 
 const MAX_CACHED_DOCS: usize = 64;
@@ -912,7 +914,7 @@ impl Default for ContextCache {
 }
 
 impl ContextCache {
-    pub fn new() -> ContextCache {
+    pub(crate) fn new() -> ContextCache {
         ContextCache {
             docs: Mutex::new(Vec::new()),
             hits: AtomicU64::new(0),
@@ -922,12 +924,13 @@ impl ContextCache {
 
     /// The process-wide cache, for a command-line run. A server keeps its
     /// own and hands it to each [`Processor`].
-    pub fn global() -> &'static ContextCache {
+    pub(crate) fn global() -> &'static ContextCache {
         static CACHE: OnceLock<ContextCache> = OnceLock::new();
         CACHE.get_or_init(ContextCache::new)
     }
 
-    pub fn stats(&self) -> CacheStats {
+    #[cfg(test)]
+    pub(crate) fn stats(&self) -> CacheStats {
         CacheStats {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
@@ -1026,10 +1029,10 @@ impl ContextCache {
 
 /// The flags of the Context Processing algorithm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Options {
-    pub override_protected: bool,
-    pub propagate: bool,
-    pub validate_scoped_context: bool,
+pub(crate) struct Options {
+    pub(crate) override_protected: bool,
+    pub(crate) propagate: bool,
+    pub(crate) validate_scoped_context: bool,
 }
 
 impl Default for Options {
@@ -1066,7 +1069,7 @@ type ScopedKey = (u64, usize, bool, bool, Option<Arc<str>>);
 
 /// Runs context processing for one document: remote contexts come from its
 /// loader (each URL loaded once per processor) and the shared cache.
-pub struct Processor<'l> {
+pub(crate) struct Processor<'l> {
     loader: &'l dyn ContextLoader,
     cache: &'l ContextCache,
     warnings: Vec<SyntaxError>,
@@ -1169,7 +1172,10 @@ fn member<'a>(o: Option<&'a Object>, key: &str) -> Option<&'a super::json::Membe
 impl<'l> Processor<'l> {
     /// A processor over `loader`, keeping processed remote contexts in
     /// `cache`: whoever owns the processors owns the cache.
-    pub fn with_cache(loader: &'l dyn ContextLoader, cache: &'l ContextCache) -> Processor<'l> {
+    pub(crate) fn with_cache(
+        loader: &'l dyn ContextLoader,
+        cache: &'l ContextCache,
+    ) -> Processor<'l> {
         Processor {
             loader,
             cache,
@@ -1190,7 +1196,7 @@ impl<'l> Processor<'l> {
     /// processing has made so far (in its contexts, and in the scoped
     /// contexts of its terms, applied or only validated), with its term.
     /// The same definition can be listed more than once.
-    pub fn take_written(&mut self) -> Vec<(Arc<str>, Arc<TermDefinition>)> {
+    pub(crate) fn take_written(&mut self) -> Vec<(Arc<str>, Arc<TermDefinition>)> {
         std::mem::take(&mut self.written)
     }
 
@@ -1201,14 +1207,14 @@ impl<'l> Processor<'l> {
     }
 
     /// The warnings so far (`jsonld-context`, severity warning).
-    pub fn take_warnings(&mut self) -> Vec<SyntaxError> {
+    pub(crate) fn take_warnings(&mut self) -> Vec<SyntaxError> {
         std::mem::take(&mut self.warnings)
     }
 
     /// Context Processing (§4.1.2) of `local`, an `@context` value in the
     /// document, over `active`. `base_url` resolves relative context
     /// references (the document's URL).
-    pub fn process(
+    pub(crate) fn process(
         &mut self,
         active: &ActiveContext,
         local: &Json,
@@ -1227,7 +1233,7 @@ impl<'l> Processor<'l> {
     /// context overrides protected terms and propagates; a type-scoped one
     /// does neither (`propagate` and `override_protected` false). Errors in
     /// a scoped context from a remote document are reported at `at`.
-    pub fn process_scoped(
+    pub(crate) fn process_scoped(
         &mut self,
         active: &ActiveContext,
         scoped: &ScopedContext,

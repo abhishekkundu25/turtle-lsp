@@ -20,7 +20,7 @@ mod navigation;
 /// The workspace, as one client sees it: the position encoding it
 /// negotiated, its settings, and whether it resolves code actions' edits
 /// lazily (`codeAction/resolve`).
-pub struct Session<'w> {
+pub(crate) struct Session<'w> {
     ws: &'w mut Workspace,
     enc: Encoding,
     settings: &'w Settings,
@@ -28,13 +28,13 @@ pub struct Session<'w> {
 }
 
 /// A document, by kind.
-pub enum Doc {
+pub(crate) enum Doc {
     Rdf(Arc<Analysis>),
     Sparql(Arc<SparqlAnalysis>),
 }
 
 impl<'w> Session<'w> {
-    pub fn new(
+    pub(crate) fn new(
         ws: &'w mut Workspace,
         enc: Encoding,
         settings: &'w Settings,
@@ -51,7 +51,7 @@ impl<'w> Session<'w> {
     /// The document at `uri` (in any spelling the client uses): an open
     /// SPARQL document's parse, else the RDF analysis of the open or indexed
     /// document. `None` when the workspace has no such document.
-    pub fn doc(&mut self, uri: &str) -> Option<Doc> {
+    pub(crate) fn doc(&mut self, uri: &str) -> Option<Doc> {
         self.find(uri).map(|(_, doc)| doc)
     }
 

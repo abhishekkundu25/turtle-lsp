@@ -27,7 +27,12 @@ fn ref_at(q: &SparqlAnalysis, offset: u32) -> Option<&TermRef> {
 /// `textDocument/hover`: a `PREFIX` name or a prefixed name's prefix shows
 /// its namespace; a term what the workspace and the vocabularies say of it,
 /// exactly as in Turtle.
-pub fn hover(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding, pos: Position) -> Option<Hover> {
+pub(crate) fn hover(
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+) -> Option<Hover> {
     let offset = q.offset(enc, pos)?;
     let st = q.doc.structure();
     if let Some(p) = st.prefixes.iter().find(|p| p.name_span.contains(offset)) {
@@ -61,7 +66,7 @@ pub fn hover(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding, pos: Position) ->
 }
 
 /// `textDocument/inlayHint`: label hints after terms in `range`, as in Turtle.
-pub fn inlay_hints(
+pub(crate) fn inlay_hints(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -101,11 +106,15 @@ pub fn inlay_hints(
     out
 }
 
-pub fn semantic_tokens_full(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> SemanticTokens {
+pub(crate) fn semantic_tokens_full(
+    q: &SparqlAnalysis,
+    k: &Knowledge,
+    enc: Encoding,
+) -> SemanticTokens {
     encode(q, enc, &raw_tokens(q, k, 0, u32::MAX))
 }
 
-pub fn semantic_tokens_range(
+pub(crate) fn semantic_tokens_range(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,

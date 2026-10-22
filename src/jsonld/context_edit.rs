@@ -16,7 +16,7 @@ use super::source::SourceIndex;
 pub(crate) use super::json::string_end;
 
 /// Stands for the `"prefix": "namespace"` member in [`context_edit`]'s text.
-pub const MEMBER: &str = "\u{0}member\u{0}";
+pub(crate) const MEMBER: &str = "\u{0}member\u{0}";
 
 /// The tokens of a text (comments left out) with the scans over them.
 struct Tokens<'t> {
@@ -166,7 +166,7 @@ impl<'t> Tokens<'t> {
 /// the innermost object of `objects` (the `{` of each object around the
 /// cursor, outermost first) that has one, else a new `@context` in the
 /// outermost object.
-pub fn context_edit(text: &str, objects: &[usize], offset: usize) -> (usize, usize, String) {
+pub(crate) fn context_edit(text: &str, objects: &[usize], offset: usize) -> (usize, usize, String) {
     Tokens::new(text).context_edit(objects, offset)
 }
 
@@ -192,7 +192,7 @@ fn has_element(b: &[u8], open: usize, close: usize) -> bool {
 /// The `{` of each object around `offset` found by reading the text, outermost
 /// first. For text with no [`SourceIndex`] scopes; [`objects_in`] asks the
 /// index first.
-pub fn objects_around(text: &str, offset: usize) -> Vec<usize> {
+pub(crate) fn objects_around(text: &str, offset: usize) -> Vec<usize> {
     Tokens::new(text).objects_around(offset)
 }
 
@@ -201,7 +201,7 @@ pub fn objects_around(text: &str, offset: usize) -> Vec<usize> {
 /// never include the inside of a `@json` literal. When expansion read no
 /// object at all (text that is only half typed), the objects the text's
 /// tokens show.
-pub fn objects_in(index: &SourceIndex, text: &str, offset: usize) -> Vec<usize> {
+pub(crate) fn objects_in(index: &SourceIndex, text: &str, offset: usize) -> Vec<usize> {
     if index.scopes().is_empty() {
         return objects_around(text, offset);
     }
@@ -219,7 +219,8 @@ pub fn objects_in(index: &SourceIndex, text: &str, offset: usize) -> Vec<usize> 
 /// value`), as (offset, length replaced, new text), from the objects the
 /// text's tokens show around it. Prefer [`add_member_in`] where the
 /// document's index is at hand.
-pub fn add_member(text: &str, offset: usize, member: &str) -> (usize, usize, String) {
+#[cfg(test)]
+pub(crate) fn add_member(text: &str, offset: usize, member: &str) -> (usize, usize, String) {
     let toks = Tokens::new(text);
     let (at, del, new_text) = toks.context_edit(&toks.objects_around(offset), offset);
     (at, del, new_text.replace(MEMBER, member))
@@ -227,7 +228,7 @@ pub fn add_member(text: &str, offset: usize, member: &str) -> (usize, usize, Str
 
 /// [`add_member`] with the objects around `offset` from `index`, the
 /// [`SourceIndex`] of `text`.
-pub fn add_member_in(
+pub(crate) fn add_member_in(
     index: &SourceIndex,
     text: &str,
     offset: usize,

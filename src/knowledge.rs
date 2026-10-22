@@ -17,7 +17,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, OnceLock};
 
 /// A source in the index. Ids are reused after removal.
-pub type DocId = u32;
+pub(crate) type DocId = u32;
 
 /// Where a source comes from. Open documents win over their disk copy (the
 /// workspace registers one or the other per URI); external sources contribute
@@ -46,44 +46,44 @@ pub enum Source {
 /// to four times as much as that pass (owner decision 8 of the wave-3
 /// audit). A test checks that both find the same shapes.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Shape {
+pub(crate) struct Shape {
     /// The shape's IRI; `None` for a blank-node shape.
-    pub node: Option<Iri>,
+    pub(crate) node: Option<Iri>,
     /// The statement that describes the shape.
-    pub span: Span,
-    pub targets: Vec<Iri>,
-    pub properties: Vec<PropertyConstraint>,
+    pub(crate) span: Span,
+    pub(crate) targets: Vec<Iri>,
+    pub(crate) properties: Vec<PropertyConstraint>,
 }
 
 /// One `sh:property` of a [`Shape`] whose value is an IRI or a blank node.
 /// `class` keeps every `sh:class`; each other parameter is the last value
 /// written for it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PropertyConstraint {
+pub(crate) struct PropertyConstraint {
     /// `sh:path` when it is a single predicate IRI (the last such one).
-    pub path: Option<Iri>,
-    pub min_count: Option<u32>,
-    pub max_count: Option<u32>,
-    pub class: Vec<Iri>,
-    pub datatype: Option<Iri>,
+    pub(crate) path: Option<Iri>,
+    pub(crate) min_count: Option<u32>,
+    pub(crate) max_count: Option<u32>,
+    pub(crate) class: Vec<Iri>,
+    pub(crate) datatype: Option<Iri>,
     /// The `sh:in` list, if any.
-    pub in_values: Option<Vec<Node>>,
+    pub(crate) in_values: Option<Vec<Node>>,
     /// The property shape (the object of `sh:property`).
-    pub span: Span,
+    pub(crate) span: Span,
 }
 
 /// One source's description of an IRI.
-pub struct Description<'a> {
-    pub doc: DocId,
-    pub source: Source,
-    pub analysis: &'a Analysis,
+pub(crate) struct Description<'a> {
+    pub(crate) doc: DocId,
+    pub(crate) source: Source,
+    pub(crate) analysis: &'a Analysis,
     /// Top-level statements with the IRI as subject, in text order.
-    pub spans: &'a [Span],
+    pub(crate) spans: &'a [Span],
 }
 
 /// What one source contributes beyond its analysis' own indexes.
 #[derive(Default, Debug)]
-pub struct DocFacts {
+pub(crate) struct DocFacts {
     domain: IriMap<Vec<Iri>>,
     range: IriMap<Vec<Iri>>,
     /// Super term -> direct sub terms stated here.
@@ -167,12 +167,12 @@ pub struct Knowledge {
     own_before: FxHashMap<Iri, bool>,
 }
 
-pub const OWL_ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
+pub(crate) const OWL_ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
 
 /// The namespace part of an IRI: up to and including its last `#`, `/` or `:`,
 /// or the longer-named well-known vocabulary namespace it starts with (see
 /// [`crate::vocab::split_namespace`]).
-pub fn namespace_of(iri: &str) -> &str {
+pub(crate) fn namespace_of(iri: &str) -> &str {
     crate::vocab::split_namespace(iri).0
 }
 
@@ -237,7 +237,7 @@ fn unique(v: impl IntoIterator<Item = Iri>) -> Vec<Iri> {
 impl DocFacts {
     /// Everything [`Knowledge`] needs from one analysis beyond its own indexes.
     /// Pure, so callers may compute it in parallel.
-    pub fn new(a: &Analysis) -> DocFacts {
+    pub(crate) fn new(a: &Analysis) -> DocFacts {
         let v = vocab::get();
         let l = links();
         let mut f = DocFacts::default();
@@ -511,7 +511,7 @@ fn ns_step(
 
 impl Knowledge {
     /// Bumped on every change; lets callers tell whether cached results are stale.
-    pub fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 
@@ -519,7 +519,7 @@ impl Knowledge {
     /// an IRI becomes described or stops being described, a namespace becomes
     /// or stops being an own namespace, or a prefix binding appears or goes.
     /// Ordinary keystrokes leave it alone.
-    pub fn described_generation(&self) -> u64 {
+    pub(crate) fn described_generation(&self) -> u64 {
         self.described_generation
     }
 
@@ -548,7 +548,13 @@ impl Knowledge {
     }
 
     /// [`Knowledge::set`] with facts computed beforehand (e.g. in parallel).
-    pub fn set_prepared(&mut self, uri: &str, source: Source, a: Arc<Analysis>, facts: DocFacts) {
+    pub(crate) fn set_prepared(
+        &mut self,
+        uri: &str,
+        source: Source,
+        a: Arc<Analysis>,
+        facts: DocFacts,
+    ) {
         debug_assert!(source != Source::External, "use add_external");
         self.put(Key::Workspace(uri.to_string()), uri, source, a, facts);
     }
@@ -560,7 +566,7 @@ impl Knowledge {
     /// Add or replace a read-only source (e.g. an imported ontology) under
     /// `key`. Its facts count; it is never diagnosed, renamed or listed as a
     /// workspace symbol.
-    pub fn add_external(&mut self, key: &str, a: Arc<Analysis>) {
+    pub(crate) fn add_external(&mut self, key: &str, a: Arc<Analysis>) {
         let k = Key::External(key.to_string());
         if self.is_current(&k, Source::External, &a) {
             return;
@@ -571,7 +577,7 @@ impl Knowledge {
 
     /// [`Knowledge::add_external`] with facts computed beforehand (e.g. on a
     /// background thread).
-    pub fn add_external_prepared(&mut self, key: &str, a: Arc<Analysis>, facts: DocFacts) {
+    pub(crate) fn add_external_prepared(&mut self, key: &str, a: Arc<Analysis>, facts: DocFacts) {
         let k = Key::External(key.to_string());
         if self.is_current(&k, Source::External, &a) {
             return;
@@ -580,26 +586,22 @@ impl Knowledge {
     }
 
     /// Whether `key` is registered with exactly this analysis.
-    pub fn has_external(&self, key: &str, a: &Arc<Analysis>) -> bool {
+    pub(crate) fn has_external(&self, key: &str, a: &Arc<Analysis>) -> bool {
         self.is_current(&Key::External(key.to_string()), Source::External, a)
     }
 
-    pub fn remove_external(&mut self, key: &str) {
+    pub(crate) fn remove_external(&mut self, key: &str) {
         self.take(&Key::External(key.to_string()));
     }
 
     /// The analysis registered for workspace document `uri`.
-    pub fn get(&self, uri: &str) -> Option<&Arc<Analysis>> {
+    pub(crate) fn get(&self, uri: &str) -> Option<&Arc<Analysis>> {
         let id = self.by_key.get(&Key::Workspace(uri.to_string()))?;
         Some(&self.slot(*id).analysis)
     }
 
-    pub fn doc(&self, id: DocId) -> &Analysis {
+    pub(crate) fn doc(&self, id: DocId) -> &Analysis {
         &self.slot(id).analysis
-    }
-
-    pub fn source(&self, id: DocId) -> Source {
-        self.slot(id).source
     }
 
     /// Every source, in no particular order.
@@ -612,7 +614,7 @@ impl Knowledge {
 
     /// Every source with the key it was registered under (the URI of a
     /// workspace document, the key of an external one), in no particular order.
-    pub fn sources(&self) -> impl Iterator<Item = (&str, Source, &Arc<Analysis>)> {
+    pub(crate) fn sources(&self) -> impl Iterator<Item = (&str, Source, &Arc<Analysis>)> {
         self.slots
             .iter()
             .flatten()
@@ -778,7 +780,7 @@ impl Knowledge {
     }
 
     /// Where the IRI is described (is the subject of a top-level statement).
-    pub fn descriptions<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Description<'_>> {
+    pub(crate) fn descriptions<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Description<'_>> {
         let Some(key) = iri.iri_key() else {
             return vec![];
         };
@@ -797,38 +799,38 @@ impl Knowledge {
     }
 
     /// Described in the workspace or an external source.
-    pub fn is_described<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
+    pub(crate) fn is_described<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
         self.entries
             .get(iri)
             .is_some_and(|e| e.described_ws + e.described_ext > 0)
     }
 
     /// Union over sources, each source's types in its own order.
-    pub fn types<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
+    pub(crate) fn types<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
         self.collect(iri, |s, k| s.analysis.types.get(&k).map(Vec::as_slice))
     }
 
     /// Direct super classes / properties stated in the workspace, then from
     /// well-known vocabularies.
-    pub fn supers<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
+    pub(crate) fn supers<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
         let mut v = self.collect(iri, |s, k| s.analysis.supers.get(&k).map(Vec::as_slice));
         with_vocab(&mut v, iri, |t| &t.supers);
         v
     }
 
     /// Direct sub classes / properties (workspace only).
-    pub fn subs<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
+    pub(crate) fn subs<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
         self.collect_objects(iri, |f, k| f.subs.get(&k).map(Vec::as_slice))
     }
 
     /// Resources typed with this class (workspace only).
-    pub fn instances<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
+    pub(crate) fn instances<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
         self.collect_objects(iri, |f, k| f.instances.get(&k).map(Vec::as_slice))
     }
 
     /// Sources in which `iri` is the object of a type or sub-class/property
     /// link, with the subjects linked to it there.
-    pub fn related_by_doc<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<(DocId, Vec<Iri>)> {
+    pub(crate) fn related_by_doc<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<(DocId, Vec<Iri>)> {
         let Some(key) = iri.iri_key() else {
             return vec![];
         };
@@ -857,14 +859,14 @@ impl Knowledge {
     }
 
     /// rdfs:domain from the workspace, then from well-known vocabularies.
-    pub fn domains<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
+    pub(crate) fn domains<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
         let mut v = self.collect_subject_facts(iri, |f, k| f.domain.get(&k).map(Vec::as_slice));
         with_vocab(&mut v, iri, |t| &t.domain);
         v
     }
 
     /// rdfs:range from the workspace, then from well-known vocabularies.
-    pub fn ranges<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
+    pub(crate) fn ranges<K: IriKey + ?Sized>(&self, iri: &K) -> Vec<Iri> {
         let mut v = self.collect_subject_facts(iri, |f, k| f.range.get(&k).map(Vec::as_slice));
         with_vocab(&mut v, iri, |t| &t.range);
         v
@@ -872,22 +874,22 @@ impl Knowledge {
 
     /// The label from the workspace: English or untagged preferred, then open
     /// documents, then by URI.
-    pub fn label<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
+    pub(crate) fn label<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
         self.pick(iri, |a, k| a.label_en(&k))
     }
 
     /// The comment from the workspace, chosen like [`Knowledge::label`].
-    pub fn comment<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
+    pub(crate) fn comment<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
         self.pick(iri, |a, k| a.comment_en(&k))
     }
 
     /// Used in predicate position anywhere.
-    pub fn used_as_predicate<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
+    pub(crate) fn used_as_predicate<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
         self.entries.get(iri).is_some_and(|e| e.predicate > 0)
     }
 
     /// SHACL shapes that target this class, with the source they are in.
-    pub fn shapes_targeting<K: IriKey + ?Sized>(&self, class: &K) -> Vec<(DocId, &Shape)> {
+    pub(crate) fn shapes_targeting<K: IriKey + ?Sized>(&self, class: &K) -> Vec<(DocId, &Shape)> {
         let Some(key) = class.iri_key() else {
             return vec![];
         };
@@ -905,7 +907,7 @@ impl Knowledge {
     }
 
     /// Sources that mention the IRI anywhere, in stable order.
-    pub fn docs_referencing<K: IriKey + ?Sized>(
+    pub(crate) fn docs_referencing<K: IriKey + ?Sized>(
         &self,
         iri: &K,
     ) -> impl Iterator<Item = (DocId, Source, &Analysis)> {
@@ -924,7 +926,7 @@ impl Knowledge {
 
     /// Every IRI some source mentions in namespace `ns`. For a namespace that
     /// does not end in `#`, `/` or `:`, every IRI starting with it.
-    pub fn terms_in(&self, ns: &str) -> Vec<Iri> {
+    pub(crate) fn terms_in(&self, ns: &str) -> Vec<Iri> {
         if ns.is_empty() || ns.ends_with(['#', '/', ':']) {
             return Iri::get(ns)
                 .and_then(|k| self.namespaces.get(&k))
@@ -940,7 +942,7 @@ impl Knowledge {
     }
 
     /// Every IRI described by some source.
-    pub fn described_terms(&self) -> impl Iterator<Item = Iri> + '_ {
+    pub(crate) fn described_terms(&self) -> impl Iterator<Item = Iri> + '_ {
         self.entries
             .iter()
             .filter(|(_, e)| e.described_ws + e.described_ext > 0)
@@ -951,7 +953,7 @@ impl Knowledge {
     /// or external, also describes terms in namespace `ns`, with the URI of
     /// that source; most such terms first. Well-known vocabularies are not
     /// sources, so never appear.
-    pub fn ontologies_describing(&self, ns: &str) -> Vec<(Iri, &str)> {
+    pub(crate) fn ontologies_describing(&self, ns: &str) -> Vec<(Iri, &str)> {
         if ns.is_empty() {
             return vec![];
         }
@@ -974,7 +976,7 @@ impl Knowledge {
     }
 
     /// Namespaces bound to prefix `name` across workspace files, most files first.
-    pub fn bindings(&self, name: &str) -> Vec<(Iri, u32)> {
+    pub(crate) fn bindings(&self, name: &str) -> Vec<(Iri, u32)> {
         let Some(by_ns) = Iri::get(name).and_then(|n| self.bindings.get(&n)) else {
             return vec![];
         };
@@ -986,7 +988,7 @@ impl Knowledge {
     /// An "own" namespace: not a well-known vocabulary, at least 3 terms in
     /// it described in the workspace, and at least 80% of the distinct terms
     /// the workspace references in it described.
-    pub fn is_own_namespace(&self, ns: &str) -> bool {
+    pub(crate) fn is_own_namespace(&self, ns: &str) -> bool {
         if VOCABS.by_namespace(ns).is_some() {
             return false;
         }
@@ -998,25 +1000,13 @@ impl Knowledge {
     /// Whether the project defines terms in `ns` (a looser test than
     /// [`Knowledge::is_own_namespace`]): not a well-known vocabulary, at least
     /// three terms described and at least 20% of those referenced.
-    pub fn is_project_namespace(&self, ns: &str) -> bool {
+    pub(crate) fn is_project_namespace(&self, ns: &str) -> bool {
         if VOCABS.by_namespace(ns).is_some() {
             return false;
         }
         Iri::get(ns)
             .and_then(|k| self.namespaces.get(&k))
             .is_some_and(Namespace::is_project)
-    }
-
-    /// Every own namespace (see [`Knowledge::is_own_namespace`]), sorted.
-    pub fn own_namespaces(&self) -> Vec<Iri> {
-        let mut v: Vec<Iri> = self
-            .namespaces
-            .keys()
-            .filter(|ns| self.is_own_namespace(ns))
-            .copied()
-            .collect();
-        v.sort();
-        v
     }
 
     // ---- helpers ----

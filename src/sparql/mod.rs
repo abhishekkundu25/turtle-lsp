@@ -66,17 +66,16 @@
 //! appends the namespace to add (`(add PREFIX foaf: <ns>)`) from the
 //! project's bindings and the vocabularies, as for Turtle.
 
-pub mod diagnostics;
+pub(crate) mod diagnostics;
 pub mod features;
 mod format;
 pub mod lexer;
-pub mod structure;
+pub(crate) mod structure;
 pub mod validate;
 
-pub use structure::{
-    BaseDecl, Clause, ClauseKind, Form, Group, GroupId, GroupKind, Operation, OperationKind,
-    Position, PrefixDecl, PrefixSource, Projected, Scope, ScopeId, Select, SelectId, Structure,
-    TermRef, TermRole, TriplePattern, VarId, VarOcc, VarRole, VersionDecl,
+pub(crate) use structure::{
+    Form, GroupId, GroupKind, Operation, OperationKind, PrefixDecl, PrefixSource, Structure,
+    TermRef, TermRole, TriplePattern, VarOcc, VarRole,
 };
 
 use crate::layout::Options;
@@ -85,7 +84,7 @@ use crate::syntax::{PrefixMap, Span};
 /// Why `text` must not be given to `spargebra`, if it must not: nesting or
 /// `OPTIONAL` / `MINUS` clauses deep enough to overflow its recursion. For
 /// callers outside documents (SHACL-SPARQL queries).
-pub fn too_complex(text: &str) -> Option<String> {
+pub(crate) fn too_complex(text: &str) -> Option<String> {
     diagnostics::too_complex(text, &lexer::tokenize(text)).map(|(_, message)| message)
 }
 
@@ -180,7 +179,11 @@ impl Document {
 
     /// [`Document::parse`] without the checks, for queries whose checks
     /// live elsewhere (SHACL-SPARQL literals: `features::shacl_lint`).
-    pub fn parse_unchecked(text: &str, prefixes: &PrefixMap, base: Option<&str>) -> Document {
+    pub(crate) fn parse_unchecked(
+        text: &str,
+        prefixes: &PrefixMap,
+        base: Option<&str>,
+    ) -> Document {
         let tokens = lexer::tokenize(text);
         let structure = structure::build(text, &tokens, prefixes, base);
         Document {
@@ -192,7 +195,7 @@ impl Document {
     }
 
     /// The text it was parsed from.
-    pub fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         &self.text
     }
 
@@ -202,7 +205,7 @@ impl Document {
     }
 
     /// The prologue, operations, groups, scopes, variables and IRIs.
-    pub fn structure(&self) -> &Structure {
+    pub(crate) fn structure(&self) -> &Structure {
         &self.structure
     }
 
@@ -218,7 +221,7 @@ impl Document {
     }
 
     /// Whether any diagnostic is an error (the formatter refuses then).
-    pub fn has_errors(&self) -> bool {
+    pub(crate) fn has_errors(&self) -> bool {
         self.diagnostics.iter().any(|d| d.level == Level::Error)
     }
 }

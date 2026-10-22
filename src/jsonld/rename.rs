@@ -62,14 +62,14 @@ impl<'t> Tree<'t> {
 /// workspace context file's) becomes `text`, already escaped for a JSON
 /// string.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Edit {
-    pub origin: Origin,
-    pub span: Span,
-    pub text: String,
+pub(crate) struct Edit {
+    pub(crate) origin: Origin,
+    pub(crate) span: Span,
+    pub(crate) text: String,
 }
 
 /// `s` escaped for the inside of a JSON string.
-pub fn json_escape(s: &str) -> String {
+pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -100,7 +100,7 @@ fn raw(text: &str, span: Span) -> Option<&str> {
 /// context, a datatype coerced by a term's `@type`, a context file's term
 /// whose key is its IRI, a term also used as a prefix; or when the rename
 /// would give an object two equal keys.
-pub fn iri_edits(
+pub(crate) fn iri_edits(
     text: &str,
     ix: &SourceIndex,
     old: &str,
@@ -473,7 +473,7 @@ fn definition_forms(ctx: &ActiveContext, written: &str, new: &str) -> Vec<String
 // ---- terms ----
 
 /// Why `name` cannot be a term's new name, if it cannot.
-pub fn check_term_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_term_name(name: &str) -> Result<(), String> {
     let bad = name.is_empty()
         || name.starts_with('@')
         || name.contains(|c: char| {
@@ -490,7 +490,7 @@ pub fn check_term_name(name: &str) -> Result<(), String> {
 
 /// Why definition `d` cannot be renamed as a term, if it cannot: its key is
 /// its IRI (it has no `@id`), so another key would be another IRI.
-pub fn check_renamable(d: &Definition) -> Result<(), String> {
+pub(crate) fn check_renamable(d: &Definition) -> Result<(), String> {
     match d.iri_span {
         Some(_) => Ok(()),
         None => Err(format!(
@@ -502,15 +502,18 @@ pub fn check_renamable(d: &Definition) -> Result<(), String> {
 
 /// A term (or keyword alias) being renamed.
 #[derive(Clone, Copy, Debug)]
-pub struct TermRename<'a> {
-    pub term: &'a str,
-    pub new: &'a str,
+pub(crate) struct TermRename<'a> {
+    pub(crate) term: &'a str,
+    pub(crate) new: &'a str,
     /// The term is a prefix: compact IRIs written with it are renamed too.
-    pub prefix: bool,
+    pub(crate) prefix: bool,
 }
 
 /// The term definition `d` of `ix` is, as the active contexts hold it.
-pub fn term_definition<'i>(ix: &'i SourceIndex, d: &Definition) -> Option<&'i TermDefinition> {
+pub(crate) fn term_definition<'i>(
+    ix: &'i SourceIndex,
+    d: &Definition,
+) -> Option<&'i TermDefinition> {
     ix.scopes().iter().find_map(|s| {
         let t = ix.context(s).term(&d.term)?;
         let same_origin = match &d.origin {
@@ -529,7 +532,7 @@ pub fn term_definition<'i>(ix: &'i SourceIndex, d: &Definition) -> Option<&'i Te
 /// rename would change the meaning of the text: the new name is already a
 /// term or used, or the contexts write the term where another definition of
 /// it may be meant.
-pub fn term_edits(
+pub(crate) fn term_edits(
     r: &TermRename,
     text: &str,
     ix: Option<&SourceIndex>,

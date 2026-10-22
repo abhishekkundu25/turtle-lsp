@@ -5,16 +5,18 @@
 
 mod iri;
 pub mod lexer;
-pub mod names;
+pub(crate) mod names;
 mod parser;
 
-pub use iri::{Iri, IriKey, IriMap};
-pub use parser::{has_scheme, parse, parse_with_base};
+pub use iri::Iri;
+pub(crate) use iri::{IriKey, IriMap};
+pub(crate) use parser::has_scheme;
+pub use parser::{parse, parse_with_base};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 
 pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+pub(crate) const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 
 /// The language a document is written in. One parser reads the first four:
@@ -36,7 +38,7 @@ pub enum Syntax {
 impl Syntax {
     /// From an LSP language id (`turtle`, `trig`, `ntriples` / `n-triples`,
     /// `nquads` / `n-quads`, `jsonld`).
-    pub fn from_language_id(id: &str) -> Option<Syntax> {
+    pub(crate) fn from_language_id(id: &str) -> Option<Syntax> {
         match id.to_ascii_lowercase().as_str() {
             "turtle" => Some(Syntax::Turtle),
             "trig" => Some(Syntax::TriG),
@@ -65,7 +67,7 @@ impl Syntax {
     /// A `trig`, `ntriples`, `nquads` or `jsonld` language id wins; otherwise
     /// (no id, an unknown one such as `json`, or the generic `turtle`) the
     /// extension decides; else Turtle.
-    pub fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
+    pub(crate) fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
         match language_id.and_then(Syntax::from_language_id) {
             // `turtle` is what editors send when they lump RDF files together:
             // a `.trig`, `.nt`, `.nq` or `.jsonld` name is the better witness then.
@@ -83,7 +85,7 @@ impl Syntax {
     /// Whether the document can use `@prefix` / `PREFIX` prefixes and gets
     /// the project's (`prefixes.ttl`): Turtle and TriG. The line-based
     /// syntaxes have none, and JSON-LD defines its own in `@context`.
-    pub fn has_prefixes(self) -> bool {
+    pub(crate) fn has_prefixes(self) -> bool {
         matches!(self, Syntax::Turtle | Syntax::TriG)
     }
 }
@@ -99,7 +101,7 @@ impl Span {
     pub fn new(start: u32, end: u32) -> Self {
         Span { start, end }
     }
-    pub fn contains(&self, offset: u32) -> bool {
+    pub(crate) fn contains(&self, offset: u32) -> bool {
         self.start <= offset && offset <= self.end
     }
 }
@@ -121,7 +123,7 @@ pub enum Role {
 impl Role {
     /// Where a resource is introduced: a top-level subject, or a graph name
     /// (the block holds the graph's triples). Definition goes here.
-    pub fn is_definition(self) -> bool {
+    pub(crate) fn is_definition(self) -> bool {
         matches!(self, Role::Subject | Role::Graph)
     }
 }
@@ -181,7 +183,7 @@ pub enum Direction {
 
 impl Direction {
     /// `ltr` or `rtl`, as written after `--`.
-    pub fn parse(s: &str) -> Option<Direction> {
+    pub(crate) fn parse(s: &str) -> Option<Direction> {
         match s {
             "ltr" => Some(Direction::Ltr),
             "rtl" => Some(Direction::Rtl),
@@ -189,7 +191,7 @@ impl Direction {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Direction::Ltr => "ltr",
             Direction::Rtl => "rtl",
@@ -292,7 +294,7 @@ pub enum Severity {
 pub struct SyntaxError {
     pub span: Span,
     /// Borrowed when the text is fixed, as most are.
-    pub message: Cow<'static, str>,
+    pub(crate) message: Cow<'static, str>,
     pub severity: Severity,
     /// The diagnostic code: `syntax` for Turtle and its relatives,
     /// `json-syntax` and `jsonld-context` for JSON-LD.
@@ -324,7 +326,7 @@ impl SyntaxError {
 pub struct Parsed {
     pub syntax: Syntax,
     pub prefixes: Vec<PrefixDecl>,
-    pub base: Option<String>,
+    pub(crate) base: Option<String>,
     /// The base the parse started from (the document's URL), if any; `base`
     /// is the last `@base` directive.
     pub document_base: Option<String>,
@@ -345,7 +347,7 @@ impl Parsed {
     /// `span`. The other syntaxes' statements never overlap: the last one
     /// starting at or before `span`, which contains it when any does (an
     /// unfinished statement may end before it).
-    pub fn statements_around(&self, span: Span) -> impl Iterator<Item = usize> + '_ {
+    pub(crate) fn statements_around(&self, span: Span) -> impl Iterator<Item = usize> + '_ {
         let st = &self.statements;
         let i = st.partition_point(|s| s.span.start <= span.start);
         let nested = self.syntax == Syntax::JsonLd;
@@ -357,7 +359,7 @@ impl Parsed {
 
     /// The innermost statement around `span` (see
     /// [`Parsed::statements_around`]).
-    pub fn statement_at(&self, span: Span) -> Option<usize> {
+    pub(crate) fn statement_at(&self, span: Span) -> Option<usize> {
         self.statements_around(span).next()
     }
 }

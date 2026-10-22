@@ -15,32 +15,32 @@ use lsp_types::Diagnostic;
 
 /// A document to diagnose.
 #[derive(Clone, Copy)]
-pub enum Doc<'a> {
+pub(crate) enum Doc<'a> {
     Rdf(&'a Analysis),
     Sparql(&'a SparqlAnalysis),
 }
 
 /// What the diagnostics of a document depend on besides the document and the
 /// knowledge.
-pub struct DiagnosticInputs<'a> {
-    pub settings: &'a Settings,
+pub(crate) struct DiagnosticInputs<'a> {
+    pub(crate) settings: &'a Settings,
     /// The status of each `owl:imports` target by IRI; an import without one
     /// is not reported.
-    pub import_status: &'a dyn Fn(&str) -> Option<&'a Status>,
+    pub(crate) import_status: &'a dyn Fn(&str) -> Option<&'a Status>,
     /// The SHACL results for the document, which come last.
-    pub shacl: &'a [Diagnostic],
+    pub(crate) shacl: &'a [Diagnostic],
     /// Whether the workspace is indexed. Until it is, findings that say a
     /// term is known nowhere are left out ([`needs_index`]).
-    pub indexed: bool,
+    pub(crate) indexed: bool,
     /// The document is a cached copy of an import: read-only, nothing to fix
     /// there, so it has no diagnostics.
-    pub cached_import: bool,
+    pub(crate) cached_import: bool,
 }
 
 impl<'a> DiagnosticInputs<'a> {
     /// A workspace that is indexed, with no import status and no SHACL
     /// results.
-    pub fn new(settings: &'a Settings) -> DiagnosticInputs<'a> {
+    pub(crate) fn new(settings: &'a Settings) -> DiagnosticInputs<'a> {
         DiagnosticInputs {
             settings,
             import_status: &no_status,
@@ -56,7 +56,7 @@ fn no_status<'s>(_: &str) -> Option<&'s Status> {
 }
 
 /// The diagnostics of `doc` as the editor shows them, in `enc` columns.
-pub fn document(
+pub(crate) fn document(
     doc: Doc,
     k: &Knowledge,
     enc: Encoding,

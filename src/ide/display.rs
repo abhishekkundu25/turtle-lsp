@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 impl Session<'_> {
     /// `textDocument/hover`.
-    pub fn hover(&mut self, uri: &str, pos: Position) -> Option<Hover> {
+    pub(crate) fn hover(&mut self, uri: &str, pos: Position) -> Option<Hover> {
         let doc = self.doc(uri)?;
         let k = self.ws.knowledge();
         match doc {
@@ -30,7 +30,7 @@ impl Session<'_> {
     }
 
     /// `textDocument/documentSymbol`, nested.
-    pub fn document_symbols(&mut self, uri: &str) -> Option<Vec<DocumentSymbol>> {
+    pub(crate) fn document_symbols(&mut self, uri: &str) -> Option<Vec<DocumentSymbol>> {
         Some(match self.doc(uri)? {
             Doc::Rdf(a) => symbols::document_symbols(&a, self.enc),
             Doc::Sparql(q) => sparql_features::document_symbols(&q, self.enc),
@@ -38,12 +38,12 @@ impl Session<'_> {
     }
 
     /// `workspace/symbol`: the workspace's terms that match `query`.
-    pub fn workspace_symbols(&mut self, query: &str) -> Vec<SymbolInformation> {
+    pub(crate) fn workspace_symbols(&mut self, query: &str) -> Vec<SymbolInformation> {
         symbols::workspace_symbols(self.ws.knowledge(), self.enc, query)
     }
 
     /// `textDocument/foldingRange`.
-    pub fn folding_ranges(&mut self, uri: &str) -> Option<Vec<FoldingRange>> {
+    pub(crate) fn folding_ranges(&mut self, uri: &str) -> Option<Vec<FoldingRange>> {
         Some(match self.doc(uri)? {
             Doc::Rdf(a) => symbols::folding_ranges(&a),
             Doc::Sparql(q) => sparql_features::folding_ranges(&q),
@@ -52,7 +52,7 @@ impl Session<'_> {
 
     /// `textDocument/prepareTypeHierarchy`: the class or property at `pos`
     /// of an RDF document.
-    pub fn prepare_type_hierarchy(
+    pub(crate) fn prepare_type_hierarchy(
         &mut self,
         uri: &str,
         pos: Position,
@@ -65,13 +65,13 @@ impl Session<'_> {
 
     /// `typeHierarchy/supertypes`, named with the prefixes of the document
     /// the item was asked from (its `data.uri`).
-    pub fn supertypes(&mut self, item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
+    pub(crate) fn supertypes(&mut self, item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
         let asking = self.asking(item);
         hierarchy::supertypes(item, self.ws.knowledge(), self.enc, asking.as_deref())
     }
 
     /// `typeHierarchy/subtypes`, named as [`Session::supertypes`] names them.
-    pub fn subtypes(&mut self, item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
+    pub(crate) fn subtypes(&mut self, item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
         let asking = self.asking(item);
         hierarchy::subtypes(item, self.ws.knowledge(), self.enc, asking.as_deref())
     }
@@ -84,12 +84,12 @@ impl Session<'_> {
     /// The legend of the tokens [`Session::semantic_tokens_full`] and
     /// [`Session::semantic_tokens_range`] give, for the server's
     /// capabilities.
-    pub fn semantic_tokens_legend() -> SemanticTokensLegend {
+    pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
         semantic::legend()
     }
 
     /// `textDocument/semanticTokens/full`.
-    pub fn semantic_tokens_full(&mut self, uri: &str) -> Option<SemanticTokens> {
+    pub(crate) fn semantic_tokens_full(&mut self, uri: &str) -> Option<SemanticTokens> {
         let doc = self.doc(uri)?;
         let k = self.ws.knowledge();
         Some(match doc {
@@ -99,7 +99,11 @@ impl Session<'_> {
     }
 
     /// `textDocument/semanticTokens/range`.
-    pub fn semantic_tokens_range(&mut self, uri: &str, range: Range) -> Option<SemanticTokens> {
+    pub(crate) fn semantic_tokens_range(
+        &mut self,
+        uri: &str,
+        range: Range,
+    ) -> Option<SemanticTokens> {
         let doc = self.doc(uri)?;
         let k = self.ws.knowledge();
         Some(match doc {
@@ -110,7 +114,7 @@ impl Session<'_> {
 
     /// `textDocument/inlayHint`: label hints in `range`, in the
     /// `inlayHints.labels` mode (none when it is `off`).
-    pub fn inlay_hints(&mut self, uri: &str, range: Range) -> Option<Vec<InlayHint>> {
+    pub(crate) fn inlay_hints(&mut self, uri: &str, range: Range) -> Option<Vec<InlayHint>> {
         let mode = self.settings.inlay_hint_labels;
         let doc = self.doc(uri)?;
         let k = self.ws.knowledge();
@@ -123,7 +127,7 @@ impl Session<'_> {
     /// `textDocument/codeLens`: an RDF document's reference lenses,
     /// unresolved (none with `codeLens.references` off); a SPARQL query's
     /// "▶ Run query" lens, whatever that setting.
-    pub fn code_lenses(&mut self, uri: &str) -> Option<Vec<CodeLens>> {
+    pub(crate) fn code_lenses(&mut self, uri: &str) -> Option<Vec<CodeLens>> {
         Some(match self.doc(uri)? {
             Doc::Rdf(a) => lens::code_lenses(&a, self.enc, self.settings.code_lens_references),
             Doc::Sparql(q) => lens::query_lenses(&q, self.enc),
@@ -132,7 +136,7 @@ impl Session<'_> {
 
     /// `codeLens/resolve`: a reference lens with its count; any other lens
     /// as it is.
-    pub fn resolve_code_lens(&mut self, lens: CodeLens) -> CodeLens {
+    pub(crate) fn resolve_code_lens(&mut self, lens: CodeLens) -> CodeLens {
         lens::resolve(lens, self.ws.knowledge(), self.enc)
     }
 }

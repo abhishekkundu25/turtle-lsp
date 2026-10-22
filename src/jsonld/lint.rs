@@ -29,27 +29,27 @@ use super::source::{ContextRole, SourceIndex, UseKind};
 use super::{DropReason, Dropped, UsedTerm};
 use crate::syntax::{Form, Iri, Ref, Severity, Span};
 
-pub const UNDEFINED_TERM: &str = "jsonld-undefined-term";
-pub const INVALID_IRI: &str = "invalid-iri";
-pub const INVALID_LANGUAGE_TAG: &str = "invalid-language-tag";
-pub const UNDEFINED_PREFIX: &str = "jsonld-undefined-prefix";
+pub(crate) const UNDEFINED_TERM: &str = "jsonld-undefined-term";
+pub(crate) const INVALID_IRI: &str = "invalid-iri";
+pub(crate) const INVALID_LANGUAGE_TAG: &str = "invalid-language-tag";
+pub(crate) const UNDEFINED_PREFIX: &str = "jsonld-undefined-prefix";
 
 /// URI schemes `jsonld-undefined-prefix` never takes for a forgotten
 /// prefix, even where a vocabulary prefix has the same name (`http`,
 /// `geo`): the IANA-registered schemes JSON-LD data writes in `@id` values
 /// and keys, and `did` (W3C DIDs) and `doi`.
-pub const URI_SCHEMES: &[&str] = &[
+pub(crate) const URI_SCHEMES: &[&str] = &[
     "http", "https", "urn", "mailto", "did", "tag", "file", "data", "ftp", "tel", "ws", "wss",
     "geo", "ni", "info", "doi",
 ];
 
 /// One lint result.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Finding {
-    pub span: Span,
-    pub severity: Severity,
-    pub code: &'static str,
-    pub message: String,
+pub(crate) struct Finding {
+    pub(crate) span: Span,
+    pub(crate) severity: Severity,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
 fn at(text: &str, span: Span) -> &str {
@@ -58,7 +58,7 @@ fn at(text: &str, span: Span) -> &str {
 }
 
 /// The lints for what JSON-LD dropped from `text`.
-pub fn dropped(text: &str, dropped: &[Dropped]) -> Vec<Finding> {
+pub(crate) fn dropped(text: &str, dropped: &[Dropped]) -> Vec<Finding> {
     dropped
         .iter()
         .filter_map(|d| {
@@ -125,7 +125,7 @@ fn scheme_word(s: &str) -> Option<&str> {
 /// `@type`, `@vocab`, a term key with no IRI of its own), where the
 /// contexts before the string define no `word`. Whether `word` is a known
 /// prefix is the caller's check.
-pub fn undefined_prefixes<'t>(text: &'t str, index: &SourceIndex) -> Vec<(Span, &'t str)> {
+pub(crate) fn undefined_prefixes<'t>(text: &'t str, index: &SourceIndex) -> Vec<(Span, &'t str)> {
     // The span, and whether the contexts already say `word` is defined
     // (`None`: look it up in the active context at the span).
     let mut spans: Vec<(Span, Option<bool>)> = index
@@ -169,12 +169,12 @@ pub fn undefined_prefixes<'t>(text: &'t str, index: &SourceIndex) -> Vec<(Span, 
 /// A vocabulary IRI where it is written: a reference, or a term
 /// definition's IRI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WrittenIri {
-    pub span: Span,
-    pub iri: Iri,
+pub(crate) struct WrittenIri {
+    pub(crate) span: Span,
+    pub(crate) iri: Iri,
     /// A compact IRI with a defined prefix, or anything else written in
     /// full (an absolute IRI, a `@vocab` word, a relative IRI); never `a`.
-    pub form: Form,
+    pub(crate) form: Form,
 }
 
 /// The IRIs of `refs` for the vocabulary lints, in text order: each
@@ -182,7 +182,7 @@ pub struct WrittenIri {
 /// the context (`used`, sorted by span), the IRI their definition writes,
 /// once. A term of a remote context is left out: its definition is not in
 /// the document.
-pub fn vocabulary_iris(text: &str, refs: &[Ref], used: &[UsedTerm]) -> Vec<WrittenIri> {
+pub(crate) fn vocabulary_iris(text: &str, refs: &[Ref], used: &[UsedTerm]) -> Vec<WrittenIri> {
     let mut out = Vec::new();
     let mut definitions = rustc_hash::FxHashSet::default();
     let key = |s: Span| (s.start, s.end);

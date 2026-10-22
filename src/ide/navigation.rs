@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 impl Session<'_> {
     /// `textDocument/definition`; `None` when there is no document at `uri`.
-    pub fn definition(&mut self, uri: &str, pos: Position) -> Option<Vec<Location>> {
+    pub(crate) fn definition(&mut self, uri: &str, pos: Position) -> Option<Vec<Location>> {
         let (u, doc) = self.find(uri)?;
         let prefix_file = self.prefix_file_for(&u);
         let k = self.ws.knowledge();
@@ -31,7 +31,7 @@ impl Session<'_> {
     }
 
     /// `textDocument/typeDefinition`: none in a SPARQL document.
-    pub fn type_definition(&mut self, uri: &str, pos: Position) -> Option<Vec<Location>> {
+    pub(crate) fn type_definition(&mut self, uri: &str, pos: Position) -> Option<Vec<Location>> {
         Some(match self.doc(uri)? {
             Doc::Rdf(a) => navigation::type_definition(&a, self.ws.knowledge(), self.enc, pos),
             Doc::Sparql(_) => Vec::new(),
@@ -39,7 +39,7 @@ impl Session<'_> {
     }
 
     /// `textDocument/implementation`: none in a SPARQL document.
-    pub fn implementations(&mut self, uri: &str, pos: Position) -> Option<Vec<Location>> {
+    pub(crate) fn implementations(&mut self, uri: &str, pos: Position) -> Option<Vec<Location>> {
         Some(match self.doc(uri)? {
             Doc::Rdf(a) => navigation::implementations(&a, self.ws.knowledge(), self.enc, pos),
             Doc::Sparql(_) => Vec::new(),
@@ -48,7 +48,7 @@ impl Session<'_> {
 
     /// `textDocument/references`. An RDF term's references include its uses
     /// in the workspace's SPARQL documents, open or not.
-    pub fn references(
+    pub(crate) fn references(
         &mut self,
         uri: &str,
         pos: Position,
@@ -79,7 +79,11 @@ impl Session<'_> {
     }
 
     /// `textDocument/documentHighlight`.
-    pub fn highlights(&mut self, uri: &str, pos: Position) -> Option<Vec<DocumentHighlight>> {
+    pub(crate) fn highlights(
+        &mut self,
+        uri: &str,
+        pos: Position,
+    ) -> Option<Vec<DocumentHighlight>> {
         Some(match self.doc(uri)? {
             Doc::Rdf(a) => navigation::highlights(&a, self.enc, pos),
             Doc::Sparql(q) => sparql_features::highlights(&q, self.enc, pos),
@@ -89,7 +93,7 @@ impl Session<'_> {
     /// `textDocument/prepareRename`: `Err` refuses with its message (a
     /// JSON-LD term of a bundled or remote context), `Ok(None)` is nothing
     /// to rename at `pos` or no document at `uri`.
-    pub fn prepare_rename(
+    pub(crate) fn prepare_rename(
         &mut self,
         uri: &str,
         pos: Position,
@@ -105,7 +109,7 @@ impl Session<'_> {
     /// no document at `uri`. Renaming an RDF term renames it in the
     /// workspace's SPARQL documents too; a JSON-LD term is renamed as a
     /// term, not as its IRI.
-    pub fn rename(
+    pub(crate) fn rename(
         &mut self,
         uri: &str,
         pos: Position,

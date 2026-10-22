@@ -22,11 +22,11 @@ use std::cell::{OnceCell, RefCell};
 
 /// A namespace to bind an undeclared prefix name to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct PrefixCandidate {
-    pub namespace: String,
+pub(crate) struct PrefixCandidate {
+    pub(crate) namespace: String,
     /// Workspace files that bind the name to it (0 for a well-known one the
     /// project does not use).
-    pub files: u32,
+    pub(crate) files: u32,
 }
 
 /// What a diagnostic tells the quick fix for it, kept in `Diagnostic.data`.
@@ -35,7 +35,7 @@ pub struct PrefixCandidate {
 /// of the diagnostic tells which variant it is ([`FixData::of`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
-pub enum FixData {
+pub(crate) enum FixData {
     /// `undeclared-prefix`: the namespaces `prefix` could be bound to, best
     /// first (`namespace` repeats the first).
     UndeclaredPrefix {
@@ -53,17 +53,17 @@ pub enum FixData {
 
 impl FixData {
     /// The `data` of a diagnostic.
-    pub fn to_value(&self) -> Value {
+    pub(crate) fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("fix data serialises")
     }
 
     /// Set `d.data` to this.
-    pub fn attach(&self, d: &mut Diagnostic) {
+    pub(crate) fn attach(&self, d: &mut Diagnostic) {
         d.data = Some(self.to_value());
     }
 
     /// The fix data of `d`, if it is a diagnostic of ours that carries some.
-    pub fn of(d: &Diagnostic) -> Option<FixData> {
+    pub(crate) fn of(d: &Diagnostic) -> Option<FixData> {
         if d.source.as_deref() != Some(SOURCE) {
             return None;
         }
@@ -113,7 +113,7 @@ impl FixData {
     }
 
     /// The prefix this fix declares: fixes of one prefix are offered once.
-    pub fn prefix(&self) -> Option<&str> {
+    pub(crate) fn prefix(&self) -> Option<&str> {
         match self {
             FixData::UndeclaredPrefix { prefix, .. } | FixData::UndefinedPrefix { prefix, .. } => {
                 Some(prefix)
@@ -125,7 +125,7 @@ impl FixData {
 
 /// Namespaces for prefix `name`, best first: the project's most common
 /// binding, then the well-known vocabulary's if different.
-pub fn prefix_candidates(name: &str, k: &Knowledge) -> Vec<PrefixCandidate> {
+pub(crate) fn prefix_candidates(name: &str, k: &Knowledge) -> Vec<PrefixCandidate> {
     // The empty prefix is file-local by convention: no project binding for it.
     let project = if name.is_empty() {
         vec![]
@@ -156,7 +156,12 @@ pub fn prefix_candidates(name: &str, k: &Knowledge) -> Vec<PrefixCandidate> {
 /// (`keyword` is `@prefix` or `PREFIX`), and keeps every candidate in its
 /// [`FixData`] for the quick fixes; or says where to declare it when nothing
 /// is known.
-pub fn add_prefix_note(d: &mut Diagnostic, name: &str, cands: &[PrefixCandidate], keyword: &str) {
+pub(crate) fn add_prefix_note(
+    d: &mut Diagnostic,
+    name: &str,
+    cands: &[PrefixCandidate],
+    keyword: &str,
+) {
     let Some(first) = cands.first() else {
         d.message
             .push_str(". Declare it, or add it to a prefixes.ttl in the project");
@@ -174,7 +179,7 @@ pub fn add_prefix_note(d: &mut Diagnostic, name: &str, cands: &[PrefixCandidate]
 
 /// The title of the quick fix that adds candidate `c` for `prefix`, with
 /// `keyword` `@prefix` or `PREFIX`.
-pub fn candidate_title(prefix: &str, c: &PrefixCandidate, keyword: &str) -> String {
+pub(crate) fn candidate_title(prefix: &str, c: &PrefixCandidate, keyword: &str) -> String {
     let mut title = format!("Add {keyword} {prefix}: <{}>", c.namespace);
     match c.files {
         0 => {}
@@ -186,7 +191,7 @@ pub fn candidate_title(prefix: &str, c: &PrefixCandidate, keyword: &str) -> Stri
 
 /// What removing the directive at `span` deletes: its whole line(s) when it
 /// is alone on them, else just the directive.
-pub fn removal(text: &str, span: Span) -> Span {
+pub(crate) fn removal(text: &str, span: Span) -> Span {
     let (start, end) = (span.start as usize, span.end as usize);
     let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
     let line_end = text[end..].find('\n').map_or(text.len(), |i| end + i + 1);
@@ -201,7 +206,7 @@ pub fn removal(text: &str, span: Span) -> Span {
 /// The quick fixes of one RDF document. What it works out about the document
 /// (its ontology, the imports a namespace could come from) it keeps, so the
 /// fixes of thousands of diagnostics cost no more than one each.
-pub struct Fixer<'a> {
+pub(crate) struct Fixer<'a> {
     a: &'a Analysis,
     k: &'a Knowledge,
     enc: Encoding,
@@ -218,7 +223,7 @@ pub struct Fixer<'a> {
 
 impl<'a> Fixer<'a> {
     /// A fixer for `a`, whose edits go to `uri`.
-    pub fn new(a: &'a Analysis, k: &'a Knowledge, enc: Encoding, uri: &'a Uri) -> Fixer<'a> {
+    pub(crate) fn new(a: &'a Analysis, k: &'a Knowledge, enc: Encoding, uri: &'a Uri) -> Fixer<'a> {
         Fixer {
             a,
             k,
@@ -282,7 +287,7 @@ impl<'a> Fixer<'a> {
     /// The quick fixes for `d` alone, preferred first among them as the
     /// diagnostic's kind lists them. Nothing here looks at the other
     /// diagnostics or at the file as a whole.
-    pub fn for_diagnostic(&self, d: &Diagnostic) -> Vec<CodeAction> {
+    pub(crate) fn for_diagnostic(&self, d: &Diagnostic) -> Vec<CodeAction> {
         if d.source.as_deref() != Some(SOURCE) {
             return Vec::new();
         }
@@ -378,7 +383,7 @@ impl<'a> Fixer<'a> {
     /// undeclared prefix with a namespace to add; none for N-Triples and
     /// N-Quads, which have no prefixes to add. It reads the whole file, so
     /// it is made once per request, not once per diagnostic.
-    pub fn add_all_missing(&self) -> Option<CodeAction> {
+    pub(crate) fn add_all_missing(&self) -> Option<CodeAction> {
         let a = self.a;
         if !a.parsed.syntax.has_prefixes() {
             return None;

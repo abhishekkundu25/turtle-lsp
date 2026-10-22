@@ -20,9 +20,9 @@ use crate::syntax::{Node, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spargebra::{Query, SparqlParser};
 
-pub const SYNTAX: &str = "shacl-sparql-syntax";
-pub const PREFIX: &str = "shacl-sparql-prefix";
-pub const UNSUPPORTED: &str = "shacl-sparql-unsupported";
+pub(crate) const SYNTAX: &str = "shacl-sparql-syntax";
+pub(crate) const PREFIX: &str = "shacl-sparql-prefix";
+pub(crate) const UNSUPPORTED: &str = "shacl-sparql-unsupported";
 
 pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
     let v = vocab::get();

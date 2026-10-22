@@ -16,7 +16,7 @@ use crate::vocab::{EditBuf, NameTable};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-pub const CODE: &str = "undescribed-term";
+pub(crate) const CODE: &str = "undescribed-term";
 
 /// Whether `candidate` could be what the author meant by `local`: same case
 /// of the first letter (`ex:Signal` the class and `ex:signal` the property are
@@ -154,7 +154,7 @@ fn ontology_objects(a: &Analysis) -> FxHashSet<u32> {
 
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
 
-pub fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic> {
+pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic> {
     let mut ontologies: Option<FxHashSet<u32>> = None;
     let mut prefixes = None;
     let uses = a
@@ -258,7 +258,7 @@ fn jsonld_iri(written: &str, used: &str, suggestion: &str) -> String {
 /// `skip` leaves out a flagged use by its span, `namespace` resolves a
 /// written prefix name, `range` maps a span. Shared by RDF and SPARQL
 /// documents.
-pub fn undescribed<'a, K>(
+pub(crate) fn undescribed<'a, K>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     text: &str,
     k: &Knowledge,

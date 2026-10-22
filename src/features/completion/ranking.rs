@@ -23,10 +23,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{LazyLock, OnceLock};
 
 /// Rank tiers; lower sorts first. Candidates without a hit get [`NONE`].
-pub const REQUIRED: u8 = 0;
-pub const SHAPE: u8 = 1;
-pub const SCHEMA: u8 = 2;
-pub const NONE: u8 = 3;
+pub(crate) const REQUIRED: u8 = 0;
+pub(crate) const SHAPE: u8 = 1;
+pub(crate) const SCHEMA: u8 = 2;
+pub(crate) const NONE: u8 = 3;
 
 /// Depth limit for superclass / subclass / superproperty walks.
 const MAX_DEPTH: usize = 10;
@@ -35,26 +35,26 @@ const MAX_CLASSES: usize = 256;
 /// Enclosing subjects considered for sequence paths (the subject itself + 3).
 const MAX_LEVELS: usize = 4;
 /// Instances offered at most, and references looked at to find them.
-pub const MAX_INSTANCES: usize = 1000;
+pub(crate) const MAX_INSTANCES: usize = 1000;
 const MAX_REFS_SCANNED: usize = 20_000;
 /// Tokens looked at backwards to find the enclosing subject.
 const MAX_TOKENS_SCANNED: usize = 20_000;
 
-pub struct Hit {
-    pub tier: u8,
+pub(crate) struct Hit {
+    pub(crate) tier: u8,
     /// Replaces the candidate's usual detail.
-    pub detail: Option<String>,
+    pub(crate) detail: Option<String>,
     /// An `sh:in` value or the like, rather than a resource found by type.
-    pub enumerated: bool,
+    pub(crate) enumerated: bool,
 }
 
 #[derive(Default)]
-pub struct Ranking {
-    pub iris: FxHashMap<Iri, Hit>,
+pub(crate) struct Ranking {
+    pub(crate) iris: FxHashMap<Iri, Hit>,
     /// Literal `sh:in` values, written as Turtle, with their detail.
-    pub literals: Vec<(String, String)>,
+    pub(crate) literals: Vec<(String, String)>,
     /// Some instances were left out (caps reached).
-    pub truncated: bool,
+    pub(crate) truncated: bool,
 }
 
 impl Ranking {
@@ -126,9 +126,9 @@ struct Level {
 /// What the ranking needs to know of a subject around the cursor (the
 /// subject itself first, then those enclosing it): its types, and the
 /// predicates leading from it to the cursor's subject.
-pub struct Subject {
-    pub types: Vec<Iri>,
-    pub path: Vec<Iri>,
+pub(crate) struct Subject {
+    pub(crate) types: Vec<Iri>,
+    pub(crate) path: Vec<Iri>,
 }
 
 fn subjects(a: &Analysis, k: &Knowledge, levels: &[Level]) -> Vec<Subject> {
@@ -142,12 +142,17 @@ fn subjects(a: &Analysis, k: &Knowledge, levels: &[Level]) -> Vec<Subject> {
 }
 
 /// Ranking for the predicate written at `offset`.
-pub fn predicates(a: &Analysis, k: &Knowledge, offset: u32, prefixes: &PrefixMap) -> Ranking {
+pub(crate) fn predicates(
+    a: &Analysis,
+    k: &Knowledge,
+    offset: u32,
+    prefixes: &PrefixMap,
+) -> Ranking {
     predicates_for(k, &subjects(a, k, &levels(a, offset)), prefixes)
 }
 
 /// Ranking for a predicate of `subjects[0]` (the others enclose it).
-pub fn predicates_for(k: &Knowledge, subjects: &[Subject], prefixes: &PrefixMap) -> Ranking {
+pub(crate) fn predicates_for(k: &Knowledge, subjects: &[Subject], prefixes: &PrefixMap) -> Ranking {
     let mut r = Ranking::default();
     for (depth, level) in subjects.iter().enumerate() {
         let classes = superclasses(k, &level.types);
@@ -186,7 +191,7 @@ pub fn predicates_for(k: &Knowledge, subjects: &[Subject], prefixes: &PrefixMap)
 
 /// Ranking for the object written at `offset`. `keep` filters instances
 /// cheaply (by what the user typed) before they count against the caps.
-pub fn objects(
+pub(crate) fn objects(
     a: &Analysis,
     k: &Knowledge,
     offset: u32,
@@ -209,7 +214,7 @@ pub fn objects(
 
 /// Ranking for an object of `pred` whose subject is `subjects[0]` (the
 /// others enclose it); `subject` is that subject's IRI, never offered.
-pub fn objects_for(
+pub(crate) fn objects_for(
     k: &Knowledge,
     pred: Iri,
     subjects: &[Subject],

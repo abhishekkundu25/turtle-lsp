@@ -90,7 +90,7 @@ use worker::{Fed, Feed, Spawn};
 /// queries, JSON-LD context files (`.json` too), imports sources and the
 /// settings file (a `.json` file). It is the glob of every row of the
 /// file-kind table ([`crate::workspace::kinds::ROWS`]), which a test checks.
-pub const WATCHED_FILES: &str = "**/{*.ttl,*.turtle,*.trig,*.nt,*.nq,*.jsonld,*.json,*.rdf,*.owl,*.rq,*.sparql,*.ru,catalog-v001.xml}";
+pub(crate) const WATCHED_FILES: &str = "**/{*.ttl,*.turtle,*.trig,*.nt,*.nq,*.jsonld,*.json,*.rdf,*.owl,*.rq,*.sparql,*.ru,catalog-v001.xml}";
 
 /// Pause after a described-set change before other documents are refreshed.
 const DESCRIBED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
@@ -135,7 +135,7 @@ const SHACL_TYPING_DEBOUNCE: Duration = Duration::from_secs(1);
 /// A SHACL run shows progress only once it has lasted this long.
 const SHACL_PROGRESS_DELAY: Duration = Duration::from_millis(200);
 
-pub struct Server {
+pub(crate) struct Server {
     client: Client,
     /// Every message read so far, queued as the reader reads them, so that
     /// a batch holds every message that has arrived.

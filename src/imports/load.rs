@@ -31,7 +31,7 @@ const NETWORK_PATH: &str =
 /// Local imports and contexts are read only from inside the workspace: a
 /// cloned repository must not make the editor read arbitrary files of the
 /// user's, or, on Windows, open a connection to a share it names.
-pub fn fs_policy(url: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+pub(crate) fn fs_policy(url: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     let path = file_url_path(url)?;
     fs_policy_path(&path, roots)
 }
@@ -60,7 +60,7 @@ pub(super) fn names_host(u: &url::Url) -> Option<&str> {
 /// [`fs_policy`] for a path: refuse a network path unless a root is one,
 /// compare with the roots lexically (`..` resolved, no file system), and only
 /// then resolve links and compare again. The path is returned as given.
-pub fn fs_policy_path(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
+pub(crate) fn fs_policy_path(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
     if is_network_path(path) && !roots.iter().any(|r| is_network_path(r)) {
         return Err(NETWORK_PATH.into());
     }
@@ -96,7 +96,7 @@ fn normalized(path: &Path) -> PathBuf {
 
 /// Whether `path` is on a network share: a Windows UNC (`\\server\share`) or
 /// device (`\\.\`) path. Other systems have no such spelling.
-pub fn is_network_path(path: &Path) -> bool {
+pub(crate) fn is_network_path(path: &Path) -> bool {
     if !cfg!(windows) {
         return false;
     }
@@ -504,7 +504,7 @@ impl Format {
 
     /// The syntax the analysis reads it in. RDF/XML is converted to
     /// N-Triples text first, which is read as Turtle.
-    pub fn syntax(self) -> Syntax {
+    pub(crate) fn syntax(self) -> Syntax {
         match self {
             Format::Turtle | Format::RdfXml => Syntax::Turtle,
             Format::TriG => Syntax::TriG,
@@ -529,7 +529,7 @@ impl Format {
 
 /// The format of the document called `name` (a path or URL path) whose bytes
 /// are `bytes`: by the extension if it is one of ours, else by [`sniff`].
-pub fn format_of(name: &str, bytes: &[u8]) -> Format {
+pub(crate) fn format_of(name: &str, bytes: &[u8]) -> Format {
     match Syntax::from_extension(name) {
         Some(syntax) => Format::of_syntax(syntax),
         None => sniff(bytes),

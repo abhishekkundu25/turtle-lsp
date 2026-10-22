@@ -1,4 +1,5 @@
 use super::*;
+use structure::{ClauseKind, Position};
 
 const EX: &str = "PREFIX ex: <https://query.example.org/def/>\n";
 

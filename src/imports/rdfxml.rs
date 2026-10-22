@@ -138,7 +138,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::imports::Format;
+    use crate::imports::load::Format;
     use crate::imports::load::parse;
 
     #[test]

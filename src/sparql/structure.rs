@@ -13,46 +13,46 @@ use super::{Token, TokenKind};
 use crate::syntax::{PrefixMap, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-pub type GroupId = u32;
-pub type ScopeId = u32;
-pub type SelectId = u32;
-pub type VarId = u32;
+pub(crate) type GroupId = u32;
+pub(crate) type ScopeId = u32;
+pub(crate) type SelectId = u32;
+pub(crate) type VarId = u32;
 
 /// `PREFIX name: <iri>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrefixDecl {
+pub(crate) struct PrefixDecl {
     /// The prefix name without the colon (`""` for `PREFIX : <...>`).
-    pub name: String,
+    pub(crate) name: String,
     /// The IRI as written between `<` and `>`.
-    pub iri: String,
+    pub(crate) iri: String,
     /// The IRI resolved against the base in effect, if it resolves.
-    pub resolved: Option<String>,
+    pub(crate) resolved: Option<String>,
     /// From `PREFIX` to `>`.
-    pub span: Span,
+    pub(crate) span: Span,
     /// `name:`, colon included.
-    pub name_span: Span,
+    pub(crate) name_span: Span,
     /// `<iri>`, brackets included.
-    pub iri_span: Span,
+    pub(crate) iri_span: Span,
 }
 
 /// `BASE <iri>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BaseDecl {
-    pub iri: String,
-    pub span: Span,
-    pub iri_span: Span,
+pub(crate) struct BaseDecl {
+    pub(crate) iri: String,
+    pub(crate) span: Span,
+    pub(crate) iri_span: Span,
 }
 
 /// `VERSION "1.2"`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VersionDecl {
-    pub span: Span,
+pub(crate) struct VersionDecl {
+    pub(crate) span: Span,
     /// The string token, quotes included.
-    pub value_span: Span,
+    pub(crate) value_span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OperationKind {
+pub(crate) enum OperationKind {
     Select,
     Construct,
     Describe,
@@ -73,20 +73,20 @@ pub enum OperationKind {
 
 /// A query (a document holds one) or one update operation.
 #[derive(Clone, Debug)]
-pub struct Operation {
-    pub kind: OperationKind,
+pub(crate) struct Operation {
+    pub(crate) kind: OperationKind,
     /// The first keyword (`SELECT`, `INSERT` of `INSERT DATA`, `WITH`, ...).
-    pub keyword: Span,
+    pub(crate) keyword: Span,
     /// From the keyword to the last token before the `;` that ends it (or the
     /// end of the document).
-    pub span: Span,
-    pub clauses: Vec<Clause>,
+    pub(crate) span: Span,
+    pub(crate) clauses: Vec<Clause>,
     /// The operation's top scope.
-    pub scope: ScopeId,
+    pub(crate) scope: ScopeId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClauseKind {
+pub(crate) enum ClauseKind {
     /// `SELECT ...`, `CONSTRUCT { }`, `DESCRIBE ...`, `ASK`: the form and its
     /// projection or template.
     Form,
@@ -107,16 +107,16 @@ pub enum ClauseKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Clause {
-    pub kind: ClauseKind,
+pub(crate) struct Clause {
+    pub(crate) kind: ClauseKind,
     /// The first keyword of the clause (`GROUP` of `GROUP BY`).
-    pub keyword: Span,
+    pub(crate) keyword: Span,
     /// From the keyword to the last token of the clause.
-    pub span: Span,
+    pub(crate) span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GroupKind {
+pub(crate) enum GroupKind {
     /// The `WHERE` clause's group (also `DELETE WHERE { }`, and the group of
     /// a query that leaves out the `WHERE` keyword).
     Where,
@@ -143,73 +143,73 @@ pub enum GroupKind {
 
 /// A `{ }` pair. `{| |}` annotation blocks are not groups.
 #[derive(Clone, Debug)]
-pub struct Group {
-    pub kind: GroupKind,
+pub(crate) struct Group {
+    pub(crate) kind: GroupKind,
     /// The keyword that introduced it (`OPTIONAL`, `GRAPH`, `WHERE`, `UNION`,
     /// `VALUES`, `DATA`, ...), if any.
-    pub keyword: Option<Span>,
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the tests read it"))]
+    pub(crate) keyword: Option<Span>,
     /// The `{` token.
-    pub open: Span,
+    pub(crate) open: Span,
     /// The `}` token; `None` when the group is not closed.
-    pub close: Option<Span>,
+    pub(crate) close: Option<Span>,
     /// From `{` to `}` (or to the last token inside when unclosed).
-    pub span: Span,
+    pub(crate) span: Span,
     /// The innermost group around it.
-    pub parent: Option<GroupId>,
+    pub(crate) parent: Option<GroupId>,
     /// Number of groups around it (0 for an outermost group).
-    pub depth: u32,
+    pub(crate) depth: u32,
     /// The scope of what it holds directly (a subquery's group is in the
     /// subquery's own scope).
-    pub scope: ScopeId,
+    pub(crate) scope: ScopeId,
 }
 
 /// A variable scope: an operation's top scope or a subquery's. Scope 0 is
 /// the first operation's, and also holds what is written before it.
 #[derive(Clone, Debug)]
-pub struct Scope {
+pub(crate) struct Scope {
     /// The enclosing scope of a subquery; `None` for an operation's.
-    pub parent: Option<ScopeId>,
+    pub(crate) parent: Option<ScopeId>,
     /// The `SELECT` that makes it (top-level or subquery), if any.
-    pub select: Option<SelectId>,
+    pub(crate) select: Option<SelectId>,
 }
 
 /// A projected variable: `?v`, or `(expression AS ?v)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Projected {
+pub(crate) struct Projected {
     /// The variable (in [`Structure::vars`]).
-    pub var: VarId,
+    pub(crate) var: VarId,
     /// The whole `( ... AS ?v )` when projected through an expression.
-    pub expr: Option<Span>,
+    pub(crate) expr: Option<Span>,
 }
 
 /// A `SELECT`: the query's or a subquery's.
 #[derive(Clone, Debug)]
-pub struct Select {
-    pub keyword: Span,
+pub(crate) struct Select {
     /// `DISTINCT` / `REDUCED`.
-    pub modifier: Option<Span>,
+    pub(crate) modifier: Option<Span>,
     /// `*`.
-    pub star: Option<Span>,
-    pub items: Vec<Projected>,
+    pub(crate) star: Option<Span>,
+    pub(crate) items: Vec<Projected>,
     /// From `SELECT` to the end of the projection.
-    pub span: Span,
+    pub(crate) span: Span,
     /// The scope it makes.
-    pub scope: ScopeId,
+    pub(crate) scope: ScopeId,
     /// Its `WHERE` group.
-    pub where_group: Option<GroupId>,
+    pub(crate) where_group: Option<GroupId>,
     /// The `{ }` of a subquery; `None` for the query's own `SELECT`.
-    pub group: Option<GroupId>,
+    pub(crate) group: Option<GroupId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Position {
+pub(crate) enum Position {
     Subject,
     Predicate,
     Object,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VarRole {
+pub(crate) enum VarRole {
     /// In a triple pattern or template (subject, predicate incl. a reifier's
     /// annotations, object; a reifier `~ ?r` is a subject).
     Pattern(Position),
@@ -229,7 +229,7 @@ pub enum VarRole {
 
 impl VarRole {
     /// Whether the occurrence binds the variable when it is in a `WHERE`.
-    pub fn binds(self) -> bool {
+    pub(crate) fn binds(self) -> bool {
         matches!(
             self,
             VarRole::Pattern(_) | VarRole::Graph | VarRole::Assigned | VarRole::Values
@@ -239,28 +239,26 @@ impl VarRole {
 
 /// One occurrence of a variable.
 #[derive(Clone, Debug)]
-pub struct VarOcc {
+pub(crate) struct VarOcc {
     /// Sigil (`?` or `$`) included.
-    pub span: Span,
+    pub(crate) span: Span,
     /// The name without its sigil.
-    pub name: String,
+    pub(crate) name: String,
     /// The scope the variable belongs to: the innermost subquery (or the
     /// operation) it is in, moved out to the enclosing scope for each
     /// subquery that projects it. Two occurrences with the same name and
     /// scope are the same variable.
-    pub scope: ScopeId,
-    pub role: VarRole,
+    pub(crate) scope: ScopeId,
+    pub(crate) role: VarRole,
     /// The innermost group it is in.
-    pub group: Option<GroupId>,
-    /// For a predicate or object: the span of its triple's subject term.
-    pub subject: Option<Span>,
+    pub(crate) group: Option<GroupId>,
     /// The innermost subquery (or operation) scope it is written in, before
     /// projection moves it out.
     pub(crate) raw_scope: ScopeId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Form {
+pub(crate) enum Form {
     /// `<...>`.
     Iri,
     /// `prefix:local`; `prefix_len` is the byte length of `prefix` (the
@@ -272,7 +270,7 @@ pub enum Form {
 
 /// Where a prefixed name's prefix comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrefixSource {
+pub(crate) enum PrefixSource {
     /// A `PREFIX` line of the document (index in [`Structure::prefixes`]).
     Declared(u32),
     /// The `prefixes` given to [`Document::parse`](super::Document::parse)
@@ -283,7 +281,7 @@ pub enum PrefixSource {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TermRole {
+pub(crate) enum TermRole {
     Subject,
     /// A predicate, or any IRI inside a property path.
     Predicate,
@@ -303,26 +301,26 @@ pub enum TermRole {
 
 /// One occurrence of an IRI: `<...>`, a prefixed name or `a`.
 #[derive(Clone, Debug)]
-pub struct TermRef {
-    pub span: Span,
-    pub form: Form,
+pub(crate) struct TermRef {
+    pub(crate) span: Span,
+    pub(crate) form: Form,
     /// The IRI it stands for (resolved against the base, escapes undone), or
     /// `None` when its prefix is undeclared or a relative IRI has no base.
-    pub iri: Option<String>,
-    pub role: TermRole,
+    pub(crate) iri: Option<String>,
+    pub(crate) role: TermRole,
     /// Inside a triple term `<<( )>>` or a reified triple `<< >>`.
-    pub quoted: bool,
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the tests read it"))]
+    pub(crate) quoted: bool,
     /// For a prefixed name: where its prefix is declared.
-    pub prefix: Option<PrefixSource>,
-    /// The innermost group it is in.
-    pub group: Option<GroupId>,
+    pub(crate) prefix: Option<PrefixSource>,
     /// For a predicate or object: the span of its triple's subject term.
-    pub subject: Option<Span>,
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the tests read it"))]
+    pub(crate) subject: Option<Span>,
 }
 
 impl TermRef {
     /// `prefix:` of a prefixed name, colon included.
-    pub fn prefix_span(&self) -> Option<Span> {
+    pub(crate) fn prefix_span(&self) -> Option<Span> {
         match self.form {
             Form::PName { prefix_len } => {
                 Some(Span::new(self.span.start, self.span.start + prefix_len + 1))
@@ -334,33 +332,33 @@ impl TermRef {
 
 /// One triple of a pattern or template, as far as it is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TriplePattern {
+pub(crate) struct TriplePattern {
     /// The subject term (a whole `[ ]`, `( )` or `<< >>` included).
-    pub subject: Span,
+    pub(crate) subject: Span,
     /// The verb (a whole property path), if written.
-    pub predicate: Option<Span>,
+    pub(crate) predicate: Option<Span>,
     /// The object term, if written.
-    pub object: Option<Span>,
-    pub group: Option<GroupId>,
+    pub(crate) object: Option<Span>,
+    pub(crate) group: Option<GroupId>,
     /// Inside a triple term or reified triple.
-    pub quoted: bool,
+    pub(crate) quoted: bool,
 }
 
 /// What [`build`] finds. See the module documentation.
 #[derive(Clone, Debug, Default)]
-pub struct Structure {
+pub(crate) struct Structure {
     /// An update (by the first query or update keyword), else a query.
-    pub is_update: bool,
-    pub prefixes: Vec<PrefixDecl>,
-    pub bases: Vec<BaseDecl>,
-    pub versions: Vec<VersionDecl>,
-    pub operations: Vec<Operation>,
-    pub groups: Vec<Group>,
-    pub scopes: Vec<Scope>,
-    pub selects: Vec<Select>,
-    pub vars: Vec<VarOcc>,
-    pub refs: Vec<TermRef>,
-    pub triples: Vec<TriplePattern>,
+    pub(crate) is_update: bool,
+    pub(crate) prefixes: Vec<PrefixDecl>,
+    pub(crate) bases: Vec<BaseDecl>,
+    pub(crate) versions: Vec<VersionDecl>,
+    pub(crate) operations: Vec<Operation>,
+    pub(crate) groups: Vec<Group>,
+    pub(crate) scopes: Vec<Scope>,
+    pub(crate) selects: Vec<Select>,
+    pub(crate) vars: Vec<VarOcc>,
+    pub(crate) refs: Vec<TermRef>,
+    pub(crate) triples: Vec<TriplePattern>,
     /// Errors the grammar catches but `spargebra` does not (a triple term or
     /// literal as a triple term's subject, an aggregate in an aggregate).
     pub(crate) errors: Vec<(Span, String)>,
@@ -368,7 +366,8 @@ pub struct Structure {
 
 impl Structure {
     /// The innermost group whose span contains `offset`.
-    pub fn group_at(&self, offset: u32) -> Option<GroupId> {
+    #[cfg(test)]
+    pub(crate) fn group_at(&self, offset: u32) -> Option<GroupId> {
         // Groups are in order of their `{`; an inner group comes after its
         // parent, so the last containing one is the innermost.
         let end = self.groups.partition_point(|g| g.open.start <= offset);
@@ -381,21 +380,9 @@ impl Structure {
             .map(|i| i as GroupId)
     }
 
-    /// The scope at `offset`: that of the innermost group there, else the
-    /// operation's.
-    pub fn scope_at(&self, offset: u32) -> Option<ScopeId> {
-        if let Some(g) = self.group_at(offset) {
-            return Some(self.groups[g as usize].scope);
-        }
-        self.operations
-            .iter()
-            .find(|o| o.span.start <= offset && offset <= o.span.end)
-            .map(|o| o.scope)
-    }
-
     /// The occurrences of the variable at `offset` (the one whose span
     /// contains it) in its scope, in text order.
-    pub fn var_occurrences(&self, offset: u32) -> Vec<&VarOcc> {
+    pub(crate) fn var_occurrences(&self, offset: u32) -> Vec<&VarOcc> {
         let Some(v) = self.vars.iter().find(|v| v.span.contains(offset)) else {
             return Vec::new();
         };
@@ -406,7 +393,7 @@ impl Structure {
     }
 
     /// Whether `select` projects variable `name` (`*` projects every one).
-    pub fn projects(&self, select: SelectId, name: &str) -> bool {
+    pub(crate) fn projects(&self, select: SelectId, name: &str) -> bool {
         let s = &self.selects[select as usize];
         s.star.is_some()
             || s.items
@@ -457,7 +444,12 @@ struct B<'a> {
 
 /// Builds the structure of `src` from its `tokens`, with the `prefixes` it
 /// does not declare and the base it is resolved against.
-pub fn build(src: &str, tokens: &[Token], prefixes: &PrefixMap, base: Option<&str>) -> Structure {
+pub(crate) fn build(
+    src: &str,
+    tokens: &[Token],
+    prefixes: &PrefixMap,
+    base: Option<&str>,
+) -> Structure {
     let sig = tokens
         .iter()
         .enumerate()
@@ -580,7 +572,7 @@ impl<'a> B<'a> {
             }
             TokenKind::Var => {
                 self.bump();
-                self.add_var(t, VarRole::Expression, None);
+                self.add_var(t, VarRole::Expression);
             }
             _ => {
                 self.bump();
@@ -590,7 +582,7 @@ impl<'a> B<'a> {
 
     // --- recording -----------------------------------------------------------
 
-    fn add_var(&mut self, t: &Token, role: VarRole, subject: Option<Span>) -> VarId {
+    fn add_var(&mut self, t: &Token, role: VarRole) -> VarId {
         let role = if self.in_expr > 0 && matches!(role, VarRole::Pattern(_)) {
             VarRole::Expression
         } else {
@@ -603,7 +595,6 @@ impl<'a> B<'a> {
             scope: self.scope,
             role,
             group: self.group,
-            subject,
             raw_scope: self.scope,
         });
         (self.s.vars.len() - 1) as VarId
@@ -641,7 +632,6 @@ impl<'a> B<'a> {
             role,
             quoted: self.quoted > 0,
             prefix,
-            group: self.group,
             subject,
         });
     }
@@ -845,7 +835,7 @@ impl<'a> B<'a> {
                     match self.kind() {
                         Some(TokenKind::Var) => {
                             let t = self.bump().unwrap();
-                            self.add_var(t, VarRole::Projected, None);
+                            self.add_var(t, VarRole::Projected);
                         }
                         Some(TokenKind::Iri | TokenKind::PName) => {
                             let t = self.bump().unwrap();
@@ -878,7 +868,6 @@ impl<'a> B<'a> {
         let id = self.s.selects.len() as SelectId;
         self.s.scopes[scope as usize].select = Some(id);
         self.s.selects.push(Select {
-            keyword,
             modifier: None,
             star: None,
             items: Vec::new(),
@@ -896,7 +885,7 @@ impl<'a> B<'a> {
                 star = Some(s);
             } else if self.kind() == Some(TokenKind::Var) {
                 let t = self.bump().unwrap();
-                let var = self.add_var(t, VarRole::Projected, None);
+                let var = self.add_var(t, VarRole::Projected);
                 items.push(Projected { var, expr: None });
             } else if self.is_punct("(") {
                 let start = self.peek().unwrap().span.start;
@@ -1020,7 +1009,7 @@ impl<'a> B<'a> {
             match self.kind() {
                 Some(TokenKind::Var) => {
                     let t = self.bump().unwrap();
-                    self.add_var(t, VarRole::Expression, None);
+                    self.add_var(t, VarRole::Expression);
                 }
                 Some(TokenKind::Punct) if self.is_punct("(") => {
                     self.paren_expr();
@@ -1277,7 +1266,7 @@ impl<'a> B<'a> {
                     match self.kind() {
                         Some(TokenKind::Var) => {
                             let v = self.bump().unwrap();
-                            self.add_var(v, VarRole::Graph, None);
+                            self.add_var(v, VarRole::Graph);
                         }
                         Some(TokenKind::Iri | TokenKind::PName) => self.graph_iri(),
                         _ => {}
@@ -1369,11 +1358,11 @@ impl<'a> B<'a> {
     fn data_block(&mut self, keyword: Span) {
         if self.kind() == Some(TokenKind::Var) {
             let t = self.bump().unwrap();
-            self.add_var(t, VarRole::Values, None);
+            self.add_var(t, VarRole::Values);
         } else if self.eat("(").is_some() {
             while self.kind() == Some(TokenKind::Var) {
                 let t = self.bump().unwrap();
-                self.add_var(t, VarRole::Values, None);
+                self.add_var(t, VarRole::Values);
             }
             self.eat(")");
         }
@@ -1434,7 +1423,7 @@ impl<'a> B<'a> {
                 self.bump();
                 if self.kind() == Some(TokenKind::Var) {
                     let v = self.bump().unwrap();
-                    assigned = Some(self.add_var(v, VarRole::Assigned, None));
+                    assigned = Some(self.add_var(v, VarRole::Assigned));
                 }
                 continue;
             }
@@ -1445,7 +1434,7 @@ impl<'a> B<'a> {
             match t.kind {
                 TokenKind::Var => {
                     self.bump();
-                    self.add_var(t, VarRole::Expression, None);
+                    self.add_var(t, VarRole::Expression);
                 }
                 TokenKind::Function | TokenKind::Iri | TokenKind::PName => self.call(),
                 TokenKind::Keyword if self.is_kw("EXISTS") || self.is_kw("NOT") => self.call(),
@@ -1601,7 +1590,7 @@ impl<'a> B<'a> {
         let start = self.peek().unwrap().span.start;
         if self.kind() == Some(TokenKind::Var) {
             let t = self.bump().unwrap();
-            self.add_var(t, VarRole::Pattern(Position::Predicate), Some(subject));
+            self.add_var(t, VarRole::Pattern(Position::Predicate));
         } else {
             self.path(subject);
         }
@@ -1630,7 +1619,7 @@ impl<'a> B<'a> {
             }
             TokenKind::Var => {
                 self.bump();
-                self.add_var(t, VarRole::Pattern(Position::Predicate), Some(subject));
+                self.add_var(t, VarRole::Pattern(Position::Predicate));
             }
             TokenKind::Punct if self.is_punct("!") => {
                 self.bump();
@@ -1745,7 +1734,7 @@ impl<'a> B<'a> {
         match t.kind {
             TokenKind::Var => {
                 self.bump();
-                self.add_var(t, var_role, subject);
+                self.add_var(t, var_role);
             }
             TokenKind::Iri | TokenKind::PName => {
                 self.bump();

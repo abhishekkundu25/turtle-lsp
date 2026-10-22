@@ -28,16 +28,16 @@ use serde_json::{Value, json};
 /// The client-side command a resolved lens runs, with arguments
 /// `[uri, position, locations]`: the document, the lens's position and the
 /// references. The server does not offer it as an `executeCommand`.
-pub const SHOW_REFERENCES: &str = "turtle.showReferences";
+pub(crate) const SHOW_REFERENCES: &str = "turtle.showReferences";
 
 /// Documents larger than this get no lenses: a lens per subject of a huge
 /// generated file is noise, and the list is rebuilt on every edit.
-pub const MAX_LENS_BYTES: usize = 5 * 1024 * 1024;
+pub(crate) const MAX_LENS_BYTES: usize = 5 * 1024 * 1024;
 
 /// The document's lenses, in text order, each with `data`
 /// `{"uri": <document>, "iri": <subject IRI>}` for [`resolve`]. None when
 /// `enabled` is false or the document is over [`MAX_LENS_BYTES`].
-pub fn code_lenses(a: &Analysis, enc: Encoding, enabled: bool) -> Vec<CodeLens> {
+pub(crate) fn code_lenses(a: &Analysis, enc: Encoding, enabled: bool) -> Vec<CodeLens> {
     if !enabled || a.text.len() > MAX_LENS_BYTES {
         return vec![];
     }
@@ -58,12 +58,12 @@ pub fn code_lenses(a: &Analysis, enc: Encoding, enabled: bool) -> Vec<CodeLens> 
 }
 
 /// The title of the lens that runs a query.
-pub const RUN_QUERY_TITLE: &str = "▶ Run query";
+pub(crate) const RUN_QUERY_TITLE: &str = "▶ Run query";
 
 /// The "▶ Run query" lens of a SPARQL document: one, at the first `SELECT`,
 /// `CONSTRUCT`, `DESCRIBE` or `ASK` keyword after the prologue, when the
 /// document is a query; none for an update or a document with no query form.
-pub fn query_lenses(q: &SparqlAnalysis, enc: Encoding) -> Vec<CodeLens> {
+pub(crate) fn query_lenses(q: &SparqlAnalysis, enc: Encoding) -> Vec<CodeLens> {
     if q.doc.is_update() {
         return vec![];
     }
@@ -93,7 +93,7 @@ pub fn query_lenses(q: &SparqlAnalysis, enc: Encoding) -> Vec<CodeLens> {
 
 /// `lens` with its title and [`SHOW_REFERENCES`] command; unchanged when its
 /// `data` is not one [`code_lenses`] made.
-pub fn resolve(mut lens: CodeLens, k: &Knowledge, enc: Encoding) -> CodeLens {
+pub(crate) fn resolve(mut lens: CodeLens, k: &Knowledge, enc: Encoding) -> CodeLens {
     let Some(data) = &lens.data else {
         return lens;
     };

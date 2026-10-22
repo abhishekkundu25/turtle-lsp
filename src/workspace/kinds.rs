@@ -16,7 +16,7 @@ use std::path::Path;
 
 /// What a file is to this server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileKind {
+pub(crate) enum FileKind {
     /// An RDF document in this syntax.
     Rdf(Syntax),
     /// A SPARQL query or update.
@@ -31,7 +31,7 @@ pub enum FileKind {
 
 /// What a row matches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pattern {
+pub(crate) enum Pattern {
     /// The text after the last `.` of the file name.
     Extension(&'static str),
     /// The whole file name.
@@ -40,7 +40,7 @@ pub enum Pattern {
 
 /// How a row's text is compared with a path's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Case {
+pub(crate) enum Case {
     /// In any letter case.
     Any,
     /// As written (every row is written in lower case).
@@ -49,10 +49,10 @@ pub enum Case {
 
 /// One row of the table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Row {
-    pub pattern: Pattern,
-    pub kind: FileKind,
-    pub case: Case,
+pub(crate) struct Row {
+    pub(crate) pattern: Pattern,
+    pub(crate) kind: FileKind,
+    pub(crate) case: Case,
 }
 
 const fn ext(ext: &'static str, kind: FileKind, case: Case) -> Row {
@@ -64,7 +64,7 @@ const fn ext(ext: &'static str, kind: FileKind, case: Case) -> Row {
 }
 
 /// Every kind of file the server reads, in the order of `WATCHED_FILES`.
-pub const ROWS: &[Row] = &[
+pub(crate) const ROWS: &[Row] = &[
     ext("ttl", FileKind::Rdf(Syntax::Turtle), Case::Any),
     ext("turtle", FileKind::Rdf(Syntax::Turtle), Case::Any),
     ext("trig", FileKind::Rdf(Syntax::TriG), Case::Any),
@@ -86,7 +86,7 @@ pub const ROWS: &[Row] = &[
 
 impl FileKind {
     /// The kind of file a path or URI names, by the first row that matches.
-    pub fn of(path: &str) -> Option<FileKind> {
+    pub(crate) fn of(path: &str) -> Option<FileKind> {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
         let ext = name.rsplit_once('.').map(|(_, ext)| ext);
         ROWS.iter()
@@ -101,7 +101,7 @@ impl FileKind {
     }
 
     /// [`FileKind::of`] a path on disk.
-    pub fn of_path(path: &Path) -> Option<FileKind> {
+    pub(crate) fn of_path(path: &Path) -> Option<FileKind> {
         FileKind::of(&path.to_string_lossy())
     }
 }
@@ -118,24 +118,24 @@ impl Row {
 
 /// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`
 /// or `.jsonld`, in any letter case.
-pub fn is_rdf_file(path: &Path) -> bool {
+pub(crate) fn is_rdf_file(path: &Path) -> bool {
     matches!(FileKind::of_path(path), Some(FileKind::Rdf(_)))
 }
 
 /// Whether a path or URI names a SPARQL file: `.rq`, `.sparql` or `.ru`, in
 /// lower case.
-pub fn is_sparql_name(path: &str) -> bool {
+pub(crate) fn is_sparql_name(path: &str) -> bool {
     FileKind::of(path) == Some(FileKind::Sparql)
 }
 
 /// A SPARQL file: `.rq`, `.sparql` or `.ru`, in lower case.
-pub fn is_sparql_path(path: &Path) -> bool {
+pub(crate) fn is_sparql_path(path: &Path) -> bool {
     FileKind::of_path(path) == Some(FileKind::Sparql)
 }
 
 /// Files that feed `owl:imports` without being documents themselves: a
 /// catalog, an `.rdf` or `.owl` ontology.
-pub fn is_import_source(path: &Path) -> bool {
+pub(crate) fn is_import_source(path: &Path) -> bool {
     matches!(
         FileKind::of_path(path),
         Some(FileKind::ImportSource | FileKind::Catalog)
@@ -160,24 +160,24 @@ mod tests {
         use crate::syntax::Syntax;
         use std::path::Path;
 
-        pub fn is_sparql_name(path: &str) -> bool {
+        pub(crate) fn is_sparql_name(path: &str) -> bool {
             let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
             name.rsplit_once('.')
                 .is_some_and(|(_, ext)| matches!(ext, "rq" | "sparql" | "ru"))
         }
 
-        pub fn is_rdf_file(path: &Path) -> bool {
+        pub(crate) fn is_rdf_file(path: &Path) -> bool {
             Syntax::from_extension(&path.to_string_lossy()).is_some()
         }
 
-        pub fn is_import_source(path: &Path) -> bool {
+        pub(crate) fn is_import_source(path: &Path) -> bool {
             path.file_name().is_some_and(|f| f == "catalog-v001.xml")
                 || path
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("rdf") || e.eq_ignore_ascii_case("owl"))
         }
 
-        pub fn is_watched_file(path: &Path) -> bool {
+        pub(crate) fn is_watched_file(path: &Path) -> bool {
             is_rdf_file(path)
                 || is_import_source(path)
                 || is_sparql_name(&path.to_string_lossy())

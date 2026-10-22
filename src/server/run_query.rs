@@ -35,6 +35,7 @@ use crate::knowledge::Source;
 use crate::query::{self, Answer, Limits, QueryError};
 use crate::syntax::PrefixMap;
 use crate::workspace::{is_sparql_path, path_to_uri, uri_to_path};
+#[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_server::{ErrorCode, RequestId, Response};
 use lsp_types::request::Request as _;
@@ -48,11 +49,16 @@ use std::time::Duration;
 
 /// The runs going on, by document URI, and the channel their results come
 /// back on.
-pub struct State {
+pub(crate) struct State {
     /// The client declared `window.showDocument.support`.
     show_document: bool,
+    // Runs on a thread of their own hand their results back on this
+    // channel; the browser build runs every query inline.
+    #[cfg(not(target_arch = "wasm32"))]
     done_tx: Sender<Done>,
+    #[cfg(not(target_arch = "wasm32"))]
     done_rx: Receiver<Done>,
+    #[cfg(not(target_arch = "wasm32"))]
     next_id: u64,
     running: FxHashMap<String, Running>,
     /// The results file stem of each document run so far.
@@ -60,13 +66,15 @@ pub struct State {
 }
 
 struct Running {
+    #[cfg(not(target_arch = "wasm32"))]
     id: u64,
     cancel: Arc<AtomicBool>,
     request: RequestId,
 }
 
 /// A finished run, for the main loop.
-pub struct Done {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct Done {
     id: u64,
     uri: String,
     report: Report,
@@ -98,12 +106,16 @@ struct Job {
 
 impl State {
     /// Runs for a client that can show a document (`show_document`) or not.
-    pub fn new(show_document: bool) -> State {
+    pub(crate) fn new(show_document: bool) -> State {
+        #[cfg(not(target_arch = "wasm32"))]
         let (done_tx, done_rx) = unbounded();
         State {
             show_document,
+            #[cfg(not(target_arch = "wasm32"))]
             done_tx,
+            #[cfg(not(target_arch = "wasm32"))]
             done_rx,
+            #[cfg(not(target_arch = "wasm32"))]
             next_id: 0,
             running: FxHashMap::default(),
             stems: FxHashMap::default(),
@@ -111,7 +123,8 @@ impl State {
     }
 
     /// Finished runs, for the main loop.
-    pub fn results(&self) -> Receiver<Done> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn results(&self) -> Receiver<Done> {
         self.done_rx.clone()
     }
 
@@ -136,7 +149,7 @@ impl State {
     }
 
     /// Stop every run (the server is going away).
-    pub fn cancel_all(&self) {
+    pub(crate) fn cancel_all(&self) {
         for r in self.running.values() {
             r.cancel.store(true, Ordering::Relaxed);
         }
@@ -159,7 +172,7 @@ impl Server {
     /// answered now, None when the answer comes with the result.
     pub(super) fn run_query(
         &mut self,
-        id: RequestId,
+        #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] id: RequestId,
         uri: &str,
     ) -> Result<Option<Value>, (ErrorCode, String)> {
         let uri = crate::workspace::normalize_uri(uri);
@@ -202,14 +215,28 @@ impl Server {
                 Spawn::Inline => None,
             },
         };
-        if self.spawn == Spawn::Inline {
-            let report = execute(&job, &self.queries.stem_for(&uri));
-            return Ok(Some(self.queries.deliver(
-                &mut self.client,
-                &job.name,
-                report,
-            )));
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.spawn == Spawn::Thread {
+            return self.start_query(id, uri, job, cancel);
         }
+        let report = execute(&job, &self.queries.stem_for(&uri));
+        Ok(Some(self.queries.deliver(
+            &mut self.client,
+            &job.name,
+            report,
+        )))
+    }
+
+    /// The rest of [`Server::run_query`] on a thread: start the run; its
+    /// answer comes with the result.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_query(
+        &mut self,
+        id: RequestId,
+        uri: String,
+        job: Job,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Option<Value>, (ErrorCode, String)> {
         // A newer run of the same document replaces the one going on.
         if let Some(old) = self.queries.running.remove(&uri) {
             old.cancel.store(true, Ordering::Relaxed);
@@ -253,6 +280,7 @@ impl Server {
 
     /// A run finished: show it and answer its request (unless it was
     /// replaced or cancelled meanwhile).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn query_done(&mut self, done: Done) {
         if self.queries.running.get(&done.uri).map(|r| r.id) != Some(done.id) {
             return;

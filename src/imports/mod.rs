@@ -33,10 +33,14 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::SOURCE;
 use crate::knowledge::{DocFacts, Knowledge, Source};
-use crate::server::worker::{Fed, Feed, Spawn};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::server::worker::Fed;
+use crate::server::worker::{Feed, Spawn};
 use crate::syntax::{self, Iri, Node, PrefixMap};
 use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, path_to_uri};
-use crossbeam_channel::{Receiver, RecvError, Sender, unbounded};
+#[cfg(not(target_arch = "wasm32"))]
+use crossbeam_channel::RecvError;
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, Command, Diagnostic,
     DiagnosticSeverity, NumberOrString,
@@ -47,18 +51,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
-pub const OWL_IMPORTS: &str = "http://www.w3.org/2002/07/owl#imports";
+pub(crate) const OWL_IMPORTS: &str = "http://www.w3.org/2002/07/owl#imports";
 const OWL_ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
 const OWL_VERSION_IRI: &str = "http://www.w3.org/2002/07/owl#versionIRI";
 
-pub const CATALOG_FILE: &str = "catalog-v001.xml";
+pub(crate) const CATALOG_FILE: &str = "catalog-v001.xml";
 /// Levels of imports followed below a workspace import.
-pub const MAX_DEPTH: u32 = 5;
+pub(crate) const MAX_DEPTH: u32 = 5;
 /// Prefix for external source keys in the knowledge index.
 const KEY_PREFIX: &str = "import:";
 /// Command that fetches one import (arguments: `[iri]`), offered as a quick fix
 /// on its unresolved-import diagnostic.
-pub const FETCH_COMMAND: &str = "turtle.fetchImport";
+pub(crate) const FETCH_COMMAND: &str = "turtle.fetchImport";
 
 /// How an import was resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,7 +100,7 @@ struct Job {
 }
 
 /// One loaded ontology.
-pub struct Loaded {
+pub(crate) struct Loaded {
     key: String,
     analysis: Arc<Analysis>,
     /// Computed on the worker when the ontology was parsed for this job.
@@ -104,7 +108,7 @@ pub struct Loaded {
 }
 
 /// The answer to one job.
-pub struct Done {
+pub(crate) struct Done {
     generation: u64,
     status: Vec<(String, Status)>,
     loaded: Vec<Loaded>,
@@ -151,7 +155,7 @@ fn doc_onto(a: &Analysis) -> DocOnto {
 }
 
 /// Why an import is not loaded where nothing can be (the browser build).
-pub fn unloaded_note(iri: &str) -> String {
+pub(crate) fn unloaded_note(iri: &str) -> String {
     format!(
         "Import <{iri}> is not loaded: imports are not followed in the browser. Add the imported ontology's file to the workspace to use it."
     )
@@ -161,7 +165,7 @@ pub fn unloaded_note(iri: &str) -> String {
 /// (the browser build): every `owl:imports` no workspace document declares
 /// as its ontology or version IRI, sorted. What [`Imports::unresolved`]
 /// reports when every load fails.
-pub fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
+pub(crate) fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
     let (mut imports, mut local) = (BTreeSet::new(), FxHashSet::default());
     for (_, _, a) in k.docs().filter(|(_, src, _)| *src != Source::External) {
         let d = doc_onto(a);
@@ -178,14 +182,14 @@ pub fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
 /// line): their status, and the ontologies loaded, keyed as the server keys
 /// them in the knowledge index.
 #[derive(Clone, Default)]
-pub struct Resolved {
-    pub status: FxHashMap<String, Status>,
-    pub loaded: Vec<(String, Arc<Analysis>)>,
+pub(crate) struct Resolved {
+    pub(crate) status: FxHashMap<String, Status>,
+    pub(crate) loaded: Vec<(String, Arc<Analysis>)>,
 }
 
 impl Resolved {
     /// The imports that are not loaded, sorted.
-    pub fn unresolved(&self) -> Vec<String> {
+    pub(crate) fn unresolved(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .status
             .iter()
@@ -200,7 +204,7 @@ impl Resolved {
 /// Resolve the imports of the workspace documents in `k` as the server's
 /// background thread does (workspace, catalogs under `roots`, the import
 /// cache, then the network if `network`), but now and on this thread.
-pub fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Resolved {
+pub(crate) fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Resolved {
     let (mut imports, mut local) = (BTreeSet::new(), BTreeSet::new());
     for (_, _, a) in k.docs().filter(|(_, src, _)| *src != Source::External) {
         let d = doc_onto(a);
@@ -244,7 +248,7 @@ thread_local! {
 }
 
 /// `owl:imports` state of the server: what was asked, what came back.
-pub struct Imports {
+pub(crate) struct Imports {
     /// On a thread, or resolved without loading (see [`Imports::with_spawn`]).
     spawn: Spawn,
     jobs: Option<Sender<Job>>,
@@ -279,7 +283,7 @@ impl Default for Imports {
 
 impl Imports {
     /// Imports resolved on a thread of their own.
-    pub fn new() -> Imports {
+    pub(crate) fn new() -> Imports {
         Imports::with_spawn(Spawn::Thread)
     }
 
@@ -311,7 +315,8 @@ impl Imports {
 
     /// Answers from the background thread, for the main loop to select on
     /// (a channel that never fires while there is no thread).
-    pub fn results(&self) -> Receiver<Done> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn results(&self) -> Receiver<Done> {
         self.results.rx()
     }
 
@@ -320,7 +325,8 @@ impl Imports {
     /// the pass it died in (if one was running): every import that pass was
     /// to resolve is unresolved, with the reason. The next change to the
     /// imports starts a new thread.
-    pub fn received(&mut self, got: Result<Done, RecvError>) -> Option<Done> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn received(&mut self, got: Result<Done, RecvError>) -> Option<Done> {
         match self.results.take(got) {
             Fed::Got(done) => Some(done),
             Fed::Gone => {
@@ -332,16 +338,17 @@ impl Imports {
     }
 
     /// A resolution pass is running: its answer has not been taken yet.
-    pub fn busy(&self) -> bool {
+    pub(crate) fn busy(&self) -> bool {
         self.answered != self.generation
     }
 
-    pub fn status(&self, iri: &str) -> Option<&Status> {
+    #[cfg(test)]
+    pub(crate) fn status(&self, iri: &str) -> Option<&Status> {
         self.status.get(iri)
     }
 
     /// The workspace's imports that are not loaded, sorted.
-    pub fn unresolved(&self) -> Vec<String> {
+    pub(crate) fn unresolved(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .status
             .iter()
@@ -355,7 +362,7 @@ impl Imports {
     /// Look at the workspace's imports and start resolving them if they (or
     /// the setting) changed. Cheap when nothing did. With no imports at all
     /// the answer is immediate and returned.
-    pub fn sync(&mut self, k: &Knowledge, roots: &[PathBuf], network: bool) -> Option<Done> {
+    pub(crate) fn sync(&mut self, k: &Knowledge, roots: &[PathBuf], network: bool) -> Option<Done> {
         let seen = Some((k.generation(), network));
         if self.seen == seen {
             return None;
@@ -459,7 +466,7 @@ impl Imports {
 
     /// Something on disk may have changed (a file was saved): resolve the
     /// imports again on the next [`Imports::sync`].
-    pub fn retry(&mut self) {
+    pub(crate) fn retry(&mut self) {
         #[cfg(test)]
         RETRIES.with(|c| c.set(c.get() + 1));
         // Loaded files may have changed too; unchanged ones come from the memo.
@@ -470,7 +477,7 @@ impl Imports {
     /// The user asked to fetch `iri` (with [`FETCH_COMMAND`]): allow fetching
     /// it for the rest of the session, and try it on the next
     /// [`Imports::sync`] even if it failed a moment ago.
-    pub fn fetch(&mut self, iri: &str) {
+    pub(crate) fn fetch(&mut self, iri: &str) {
         self.fetch.insert(iri.to_string());
         self.refetch = Some(iri.to_string());
         self.last = None;
@@ -479,7 +486,7 @@ impl Imports {
 
     /// Take a job's answer: register loaded ontologies with the knowledge
     /// index. Returns whether anything visible changed.
-    pub fn apply(&mut self, done: Done, k: &mut Knowledge) -> bool {
+    pub(crate) fn apply(&mut self, done: Done, k: &mut Knowledge) -> bool {
         if done.generation != self.generation {
             return false;
         }
@@ -510,17 +517,13 @@ impl Imports {
     }
 
     /// The status of every import asked for so far, by IRI.
-    pub fn statuses(&self) -> &FxHashMap<String, Status> {
+    pub(crate) fn statuses(&self) -> &FxHashMap<String, Status> {
         &self.status
-    }
-
-    /// Information diagnostics on the unresolved imports of `a`.
-    pub fn diagnostics(&self, a: &Analysis, enc: Encoding) -> Vec<Diagnostic> {
-        diagnostics_with(a, enc, |iri| self.status.get(iri))
     }
 }
 
-/// [`Imports::diagnostics`] with the status looked up by `status`.
+/// Information diagnostics on the unresolved imports of `a`, with the
+/// status of each import looked up by `status`.
 pub fn diagnostics_with<'s>(
     a: &Analysis,
     enc: Encoding,
@@ -553,7 +556,7 @@ pub fn diagnostics_with<'s>(
 
 /// "Fetch <iri> and cache it" quick fixes for the unresolved web imports among
 /// the diagnostics of `params`; each runs [`FETCH_COMMAND`].
-pub fn fetch_actions(
+pub(crate) fn fetch_actions(
     a: &Analysis,
     enc: Encoding,
     params: &CodeActionParams,
@@ -599,7 +602,7 @@ pub fn fetch_actions(
 /// The per-user cache directory of turtle-lsp: `$TURTLE_LSP_CACHE_DIR`, else
 /// `~/Library/Caches/turtle-lsp` (macOS), `%LOCALAPPDATA%\turtle-lsp`
 /// (Windows), `$XDG_CACHE_HOME/turtle-lsp` or `~/.cache/turtle-lsp`.
-pub fn cache_dir() -> Option<PathBuf> {
+pub(crate) fn cache_dir() -> Option<PathBuf> {
     let var = |k: &str| {
         std::env::var_os(k)
             .map(PathBuf::from)
@@ -620,7 +623,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 }
 
 /// The import cache: [`cache_dir`]`/imports`.
-pub fn import_cache_dir() -> Option<PathBuf> {
+pub(crate) fn import_cache_dir() -> Option<PathBuf> {
     cache_dir().map(|d| d.join("imports"))
 }
 
@@ -639,12 +642,15 @@ mod load;
 mod rdfxml;
 mod worker;
 
-use worker::{CRASHED, Memo, NO_THREAD, failed, resolve, worker};
-
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::fetch::{FETCH_TIMEOUT, MAX_FETCH_BYTES, hash_name};
-pub use catalog::{Catalog, Target, parse_catalog};
-pub use load::{Format, format_of, fs_policy, fs_policy_path, is_network_path, sniff};
+use worker::CRASHED;
+use worker::{Memo, NO_THREAD, failed, resolve, worker};
+
+pub use catalog::parse_catalog;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use load::fs_policy;
+pub use load::sniff;
+pub(crate) use load::{fs_policy_path, is_network_path};
 pub use rdfxml::rdf_xml_to_ntriples;
 
 /// Whether web fetches may reach internal addresses: set by the environment
@@ -665,7 +671,7 @@ mod testing {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    pub fn tmp(name: &str) -> PathBuf {
+    pub(crate) fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("turtle-imports-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
@@ -674,7 +680,7 @@ mod testing {
 
     /// A local HTTP server: `/ok*` answers Turtle, anything else 404. Returns
     /// its base URL and the log of requested paths.
-    pub fn serve() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    pub(crate) fn serve() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
         serve_with(|path| {
             if path.starts_with("/ok") {
                 document(
@@ -687,11 +693,11 @@ mod testing {
         })
     }
 
-    pub const NOT_FOUND: &str =
+    pub(crate) const NOT_FOUND: &str =
         "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
     /// A 200 response with `body` of `content_type`.
-    pub fn document(content_type: &str, body: &str) -> String {
+    pub(crate) fn document(content_type: &str, body: &str) -> String {
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -700,7 +706,7 @@ mod testing {
 
     /// A local HTTP server; `route` turns a request path into the whole
     /// response. Returns its base URL and the log of requested paths.
-    pub fn serve_with(
+    pub(crate) fn serve_with(
         route: impl Fn(&str) -> String + Send + 'static,
     ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{Read, Write};

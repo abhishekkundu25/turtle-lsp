@@ -6,7 +6,7 @@ mod check;
 mod diff;
 mod files;
 mod format;
-pub mod output;
+pub(crate) mod output;
 mod query;
 
 use args::Parsed;

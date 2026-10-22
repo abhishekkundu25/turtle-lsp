@@ -36,11 +36,11 @@ type R<T> = Result<T, ()>;
 /// Deepest nesting of `[ ]`, `( )`, `<< >>`, `<<( )>>` and `{| |}` the parser follows.
 /// Real data rarely goes past a dozen; thousands only come from generated or
 /// hostile input, and would overflow a worker thread's stack.
-pub const MAX_NESTING: u32 = 256;
+pub(crate) const MAX_NESTING: u32 = 256;
 
 /// How many syntax errors a document reports, as JSON's
 /// ([`crate::jsonld::json::MAX_ERRORS`]).
-pub const MAX_ERRORS: usize = 100;
+pub(crate) const MAX_ERRORS: usize = 100;
 
 /// How many errors the parser holds before it drops all but the first
 /// [`MAX_ERRORS`]: a multiple of it, so that dropping is rare and a broken
@@ -113,7 +113,7 @@ impl Parsed {
     /// read, for a check of what a text says (the formatter's). The second
     /// value is how many comments the text has. Room for `triples` triples,
     /// the number the text is expected to have, is made at the start.
-    pub fn graph_only(
+    pub(crate) fn graph_only(
         src: &str,
         external: &PrefixMap,
         syntax: Syntax,
@@ -128,7 +128,7 @@ impl Syntax {
     /// The tokens [`parse_with_base`] reads `src` as, comments included:
     /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, which has its
     /// own frontend.
-    pub fn tokens(self, src: &str) -> Vec<Token> {
+    pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
         if self == Syntax::JsonLd {
             return Vec::new();
         }
@@ -1658,7 +1658,7 @@ impl<'a> P<'a> {
 
 /// Whether `s` starts with a URI scheme and `:`: an absolute IRI, not a
 /// relative reference.
-pub fn has_scheme(s: &str) -> bool {
+pub(crate) fn has_scheme(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && s.find(':').is_some_and(|i| {
@@ -1717,7 +1717,7 @@ fn unescape_iri(raw: &str) -> String {
 }
 
 /// Lexical value of a string token (quotes stripped, escapes decoded).
-pub fn string_value(tok: &str) -> String {
+pub(crate) fn string_value(tok: &str) -> String {
     let q = &tok[..1];
     let long = tok.len() >= 6 && tok.starts_with(&q.repeat(3));
     let inner = if long {

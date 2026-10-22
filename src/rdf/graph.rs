@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 pub type Id = u32;
 
 /// A literal's lexical form, datatype, language tag and base direction.
-pub type LiteralKey<'a> = (&'a str, Iri, Option<Iri>, Option<Direction>);
+pub(crate) type LiteralKey<'a> = (&'a str, Iri, Option<Iri>, Option<Direction>);
 
 /// A graph's own literals, found by value: by the hash of the value, then
 /// compared with the term. It borrows nothing (a map keyed by the borrowed
@@ -79,7 +79,7 @@ impl<'a> Term<'a> {
     }
 
     /// The base direction of a directional language-tagged string.
-    pub fn direction(&self) -> Option<Direction> {
+    pub(crate) fn direction(&self) -> Option<Direction> {
         match self {
             Term::Value(Node::Literal { dir, .. }) => *dir,
             _ => None,
@@ -89,8 +89,8 @@ impl<'a> Term<'a> {
 
 #[derive(Clone, Copy, Debug)]
 pub struct GTriple {
-    pub s: Id,
-    pub p: Iri,
+    pub(crate) s: Id,
+    pub(crate) p: Iri,
     pub o: Id,
 }
 
@@ -210,9 +210,9 @@ pub struct Graph<'a> {
 #[cfg(test)]
 thread_local! {
     /// Triples this thread has indexed into a graph, to tell what a run costs.
-    pub static INDEXED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static INDEXED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Terms this thread has looked at to find literals by value.
-    pub static TERMS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static TERMS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 impl<'a> Graph<'a> {
@@ -234,7 +234,7 @@ impl<'a> Graph<'a> {
     /// `base` with one more document, `triples`, which is document number
     /// [`Graph::documents`] of `base` in [`Graph::origin`] and the blank nodes.
     /// Its blank nodes are its own. Costs in proportion to `triples`.
-    pub fn overlay(base: &Arc<Graph<'a>>, triples: &'a [Triple]) -> Graph<'a> {
+    pub(crate) fn overlay(base: &Arc<Graph<'a>>, triples: &'a [Triple]) -> Graph<'a> {
         debug_assert!(base.base.is_none(), "an overlay of an overlay");
         let mut g = Graph::empty(Some(base.clone()), triples.len(), 1);
         g.add_document::<true>(triples);
@@ -342,19 +342,20 @@ impl<'a> Graph<'a> {
     }
 
     /// The number of triples.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.tri_off as usize + self.triples.len()
     }
 
     /// The number of documents (of the base and the overlay).
-    pub fn documents(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) fn documents(&self) -> u32 {
         self.blank_base.len() as u32
     }
 
     /// The id of the literal `key`, if the graph has it. The first look
     /// walks the terms this graph added, once: an overlay walks its own, and
     /// the shared base walks its terms once for all its overlays.
-    pub fn literal(&self, key: &LiteralKey) -> Option<Id> {
+    pub(crate) fn literal(&self, key: &LiteralKey) -> Option<Id> {
         self.own_literal(key)
             .or_else(|| self.base.as_ref()?.own_literal(key))
     }
@@ -392,7 +393,8 @@ impl<'a> Graph<'a> {
     }
 
     /// Every term with its id, the overlay's first.
-    pub fn terms(&self) -> impl Iterator<Item = (Id, Term<'a>)> + '_ {
+    #[cfg(test)]
+    pub(crate) fn terms(&self) -> impl Iterator<Item = (Id, Term<'a>)> + '_ {
         let base: &[Term<'a>] = self.base.as_deref().map_or(&[], |b| &b.terms);
         self.terms
             .iter()
@@ -401,12 +403,8 @@ impl<'a> Graph<'a> {
             .chain(base.iter().enumerate().map(|(i, t)| (i as Id, *t)))
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Triple number `t`.
-    pub fn triple_at(&self, t: u32) -> &GTriple {
+    pub(crate) fn triple_at(&self, t: u32) -> &GTriple {
         match t.checked_sub(self.tri_off) {
             Some(i) => &self.triples[i as usize],
             None => &self.base.as_ref().expect("a base triple").triples[t as usize],
@@ -414,7 +412,7 @@ impl<'a> Graph<'a> {
     }
 
     /// The (document, index into that document's triples) of triple `t`.
-    pub fn origin(&self, t: u32) -> (u32, u32) {
+    pub(crate) fn origin(&self, t: u32) -> (u32, u32) {
         match t.checked_sub(self.tri_off) {
             Some(i) => self.origin[i as usize],
             None => self.base.as_ref().expect("a base triple").origin[t as usize],
@@ -422,7 +420,7 @@ impl<'a> Graph<'a> {
     }
 
     /// Every triple, the overlay's first.
-    pub fn all(&self) -> impl Iterator<Item = &GTriple> {
+    pub(crate) fn all(&self) -> impl Iterator<Item = &GTriple> {
         self.triples
             .iter()
             .chain(self.base.iter().flat_map(|b| b.triples.iter()))
@@ -430,14 +428,14 @@ impl<'a> Graph<'a> {
 
     /// The triples the overlay added (all of a graph built whole), with their
     /// numbers.
-    pub fn added(&self) -> impl Iterator<Item = (u32, &GTriple)> {
+    pub(crate) fn added(&self) -> impl Iterator<Item = (u32, &GTriple)> {
         self.triples
             .iter()
             .enumerate()
             .map(|(i, t)| (self.tri_off + i as u32, t))
     }
 
-    pub fn id(&self, t: Term<'a>) -> Option<Id> {
+    pub(crate) fn id(&self, t: Term<'a>) -> Option<Id> {
         // Lookups by content: triple terms with blank nodes are per document.
         let key = (t, u32::MAX);
         self.ids
@@ -446,12 +444,12 @@ impl<'a> Graph<'a> {
             .copied()
     }
 
-    pub fn iri(&self, i: Iri) -> Option<Id> {
+    pub(crate) fn iri(&self, i: Iri) -> Option<Id> {
         self.id(Term::Iri(i))
     }
 
     /// The term for node `n` of document `doc`, if the graph has it.
-    pub fn node(&self, doc: u32, n: &'a Node) -> Option<Id> {
+    pub(crate) fn node(&self, doc: u32, n: &'a Node) -> Option<Id> {
         match n {
             Node::Iri(i) => self.iri(*i),
             Node::Blank(BlankId(b)) => {
@@ -464,7 +462,7 @@ impl<'a> Graph<'a> {
 
     /// The number added to the blank nodes inside triple term `id` to get
     /// their numbers in the graph (0 for a term without blank nodes).
-    pub fn term_blank_base(&self, id: Id) -> u32 {
+    pub(crate) fn term_blank_base(&self, id: Id) -> u32 {
         self.term_base
             .get(&id)
             .or_else(|| self.base.as_ref()?.term_base.get(&id))
@@ -473,7 +471,7 @@ impl<'a> Graph<'a> {
     }
 
     /// The (document, number in that document) of blank node `Term::Blank(b)`.
-    pub fn blank_origin(&self, b: u32) -> (u32, u32) {
+    pub(crate) fn blank_origin(&self, b: u32) -> (u32, u32) {
         // A document without blank nodes shares its base with the next one.
         let d = self.blank_base.partition_point(|&base| base <= b).max(1) - 1;
         (d as u32, b - self.blank_base.get(d).copied().unwrap_or(0))
@@ -499,13 +497,13 @@ impl<'a> Graph<'a> {
     }
 
     /// Triples with subject `s`.
-    pub fn out(&self, s: Id) -> impl Iterator<Item = (u32, &GTriple)> {
+    pub(crate) fn out(&self, s: Id) -> impl Iterator<Item = (u32, &GTriple)> {
         let base = self.base.as_deref().map_or(&[][..], |b| b.by_s.get(s));
         self.adjacent(self.by_s.get(s), base)
     }
 
     /// Triples with object `o`.
-    pub fn incoming(&self, o: Id) -> impl Iterator<Item = (u32, &GTriple)> {
+    pub(crate) fn incoming(&self, o: Id) -> impl Iterator<Item = (u32, &GTriple)> {
         let base = self.base.as_deref().map_or(&[][..], |b| b.by_o.get(o));
         self.adjacent(self.by_o.get(o), base)
     }
@@ -525,17 +523,12 @@ impl<'a> Graph<'a> {
         self.out(s).filter(move |t| t.1.p == p).map(|t| t.1.o)
     }
 
-    pub fn subjects(&self, p: Iri, o: Id) -> impl Iterator<Item = Id> {
+    pub(crate) fn subjects(&self, p: Iri, o: Id) -> impl Iterator<Item = Id> {
         self.incoming(o).filter(move |t| t.1.p == p).map(|t| t.1.s)
     }
 
     pub fn object(&self, s: Id, p: Iri) -> Option<Id> {
         self.objects(s, p).next()
-    }
-
-    /// The first triple `(s, p, ?)`.
-    pub fn triple(&self, s: Id, p: Iri) -> Option<u32> {
-        self.out(s).find(|t| t.1.p == p).map(|t| t.0)
     }
 
     /// The members of the RDF collection starting at `head`, in order

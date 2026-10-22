@@ -117,7 +117,7 @@ fn prefix_decls<'a>(q: &'a SparqlAnalysis, name: &'a str) -> impl Iterator<Item 
         .map(move |p| name_only(p.name_span.start, name))
 }
 
-pub fn definition(
+pub(crate) fn definition(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -187,7 +187,7 @@ pub(super) fn with_others<'a>(
         .collect()
 }
 
-pub fn references(
+pub(crate) fn references(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -224,7 +224,11 @@ pub fn references(
     }
 }
 
-pub fn highlights(q: &SparqlAnalysis, enc: Encoding, pos: Position) -> Vec<DocumentHighlight> {
+pub(crate) fn highlights(
+    q: &SparqlAnalysis,
+    enc: Encoding,
+    pos: Position,
+) -> Vec<DocumentHighlight> {
     let Some(offset) = q.offset(enc, pos) else {
         return vec![];
     };
@@ -260,7 +264,7 @@ pub fn highlights(q: &SparqlAnalysis, enc: Encoding, pos: Position) -> Vec<Docum
     }
 }
 
-pub fn term_references(
+pub(crate) fn term_references(
     iri: &str,
     _include_declaration: bool,
     docs: &[Arc<SparqlAnalysis>],

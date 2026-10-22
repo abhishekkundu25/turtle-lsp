@@ -67,7 +67,7 @@ enum Context {
     Expression { aggregates: bool },
 }
 
-pub fn completion(
+pub(crate) fn completion(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -76,7 +76,7 @@ pub fn completion(
     completion_at(q, k, enc, params.text_document_position.position)
 }
 
-pub fn completion_at(
+pub(crate) fn completion_at(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -158,7 +158,7 @@ pub fn completion_at(
 }
 
 /// Term items are resolved by the Turtle resolver (they carry `data.iri`).
-pub fn resolve_completion(item: CompletionItem, k: &Knowledge) -> CompletionItem {
+pub(crate) fn resolve_completion(item: CompletionItem, k: &Knowledge) -> CompletionItem {
     rdf::resolve(item, k)
 }
 

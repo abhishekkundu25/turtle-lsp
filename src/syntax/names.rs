@@ -9,7 +9,7 @@ use std::ops::{Deref, DerefMut};
 
 // ---- PN_CHARS tables (Turtle and SPARQL share them) ----
 
-pub fn is_pn_chars_base(c: char) -> bool {
+pub(crate) fn is_pn_chars_base(c: char) -> bool {
     matches!(c,
         'A'..='Z' | 'a'..='z' | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
         | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
@@ -17,11 +17,11 @@ pub fn is_pn_chars_base(c: char) -> bool {
         | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
 }
 
-pub fn is_pn_chars_u(c: char) -> bool {
+pub(crate) fn is_pn_chars_u(c: char) -> bool {
     c == '_' || is_pn_chars_base(c)
 }
 
-pub fn is_pn_chars(c: char) -> bool {
+pub(crate) fn is_pn_chars(c: char) -> bool {
     is_pn_chars_u(c)
         || c == '-'
         || c.is_ascii_digit()
@@ -33,7 +33,7 @@ pub fn is_pn_chars(c: char) -> bool {
 // ---- prefix and local names ----
 
 /// PN_PREFIX (the empty prefix included).
-pub fn is_pn_prefix(name: &str) -> bool {
+pub(crate) fn is_pn_prefix(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         None => true,
@@ -44,7 +44,7 @@ pub fn is_pn_prefix(name: &str) -> bool {
 }
 
 /// A PN_LOCAL that needs no backslash escapes; `%` only as a `%XX` escape.
-pub fn is_pn_local(local: &str) -> bool {
+pub(crate) fn is_pn_local(local: &str) -> bool {
     let b = local.as_bytes();
     let mut first = true;
     for (i, c) in local.char_indices() {
@@ -71,7 +71,7 @@ pub fn is_pn_local(local: &str) -> bool {
 /// namespace a new prefix declaration would bind. For the namespace a
 /// vocabulary lookup or the project's namespace index uses, see
 /// [`vocabulary_namespace`].
-pub fn declarable_namespace(iri: &str) -> Option<&str> {
+pub(crate) fn declarable_namespace(iri: &str) -> Option<&str> {
     let scheme_end = iri.find(':')?;
     let rest = &iri[scheme_end + 1..];
     let path_start = match rest.strip_prefix("//") {
@@ -84,7 +84,7 @@ pub fn declarable_namespace(iri: &str) -> Option<&str> {
 
 /// The namespace the bundled vocabularies and the knowledge index file `iri`
 /// under (see [`crate::vocab::split_namespace`]); `""` with no delimiter.
-pub fn vocabulary_namespace(iri: &str) -> &str {
+pub(crate) fn vocabulary_namespace(iri: &str) -> &str {
     crate::vocab::split_namespace(iri).0
 }
 
@@ -93,7 +93,7 @@ pub fn vocabulary_namespace(iri: &str) -> &str {
 /// `prefix:local` for `iri` using the longest namespace in `scope` whose local
 /// part is a PN_LOCAL as is (no backslash escapes needed) and whose prefix
 /// name is a PN_PREFIX. Ties go to the shorter prefix name, then the smaller.
-pub fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
+pub(crate) fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
     scope
         .iter()
         .filter(|(name, ns)| {
@@ -114,7 +114,7 @@ pub fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
 
 /// A prefixed name replacing the IRI at `span`, with a space added where it
 /// would otherwise run into the neighbouring token (`a<x>`, `<x>ex:y`).
-pub fn spaced(text: &str, span: Span, pname: String) -> String {
+pub(crate) fn spaced(text: &str, span: Span, pname: String) -> String {
     let joins = |c: char| is_pn_chars(c) || matches!(c, ':' | '%' | '\\');
     let before = text[..span.start as usize].chars().next_back();
     let mut after = text[span.end as usize..].chars();
@@ -139,18 +139,18 @@ pub fn spaced(text: &str, span: Span, pname: String) -> String {
 
 /// The prefixes in scope at a position of a document.
 #[derive(Clone, Debug, Default)]
-pub struct Scope(PrefixMap);
+pub(crate) struct Scope(PrefixMap);
 
 impl Scope {
     /// The external prefixes (prefixes.ttl and settings) alone, before any
     /// declaration of the document.
-    pub fn outside(a: &Analysis) -> Scope {
+    pub(crate) fn outside(a: &Analysis) -> Scope {
         Scope((*a.external).clone())
     }
 
     /// Prefixes in scope at `offset`: external ones, then the declarations
     /// that end before it.
-    pub fn at(a: &Analysis, offset: u32) -> Scope {
+    pub(crate) fn at(a: &Analysis, offset: u32) -> Scope {
         let mut scope = Scope::outside(a);
         for p in a
             .parsed
@@ -164,13 +164,13 @@ impl Scope {
     }
 
     /// Every prefix of the document: the scope at its end.
-    pub fn whole(a: &Analysis) -> Scope {
+    pub(crate) fn whole(a: &Analysis) -> Scope {
         Scope::at(a, u32::MAX)
     }
 
     /// `iri` as a prefixed name of this scope, else `<iri>`. Does not escape:
     /// callers hold valid IRIs.
-    pub fn write(&self, iri: &str) -> String {
+    pub(crate) fn write(&self, iri: &str) -> String {
         shorten(iri, &self.0).unwrap_or_else(|| format!("<{iri}>"))
     }
 }
@@ -184,7 +184,11 @@ impl From<PrefixMap> for Scope {
 /// The declaration of prefix `name` in scope at `offset`: the last one ending
 /// before it. `None` when the prefix comes from outside the document, or is
 /// not declared yet there.
-pub fn declaration_at<'a>(a: &'a Analysis, name: &str, offset: u32) -> Option<&'a PrefixDecl> {
+pub(crate) fn declaration_at<'a>(
+    a: &'a Analysis,
+    name: &str,
+    offset: u32,
+) -> Option<&'a PrefixDecl> {
     a.parsed
         .prefixes
         .iter()
@@ -209,7 +213,7 @@ impl DerefMut for Scope {
 
 /// The line ending the text uses: that of its first line break (`\n` for a
 /// text without one).
-pub fn newline(text: &str) -> &'static str {
+pub(crate) fn newline(text: &str) -> &'static str {
     match text.find('\n') {
         Some(i) if text[..i].ends_with('\r') => "\r\n",
         _ => "\n",
@@ -219,7 +223,7 @@ pub fn newline(text: &str) -> &'static str {
 /// The keyword a declaration added to `a` starts with, in the style the
 /// document already uses: `PREFIX` when its last declaration is SPARQL-style,
 /// else `@prefix`.
-pub fn declaration_keyword(a: &Analysis) -> &'static str {
+pub(crate) fn declaration_keyword(a: &Analysis) -> &'static str {
     let sparql = a.parsed.prefixes.last().is_some_and(|p: &PrefixDecl| {
         a.tokens()
             .iter()
@@ -230,7 +234,7 @@ pub fn declaration_keyword(a: &Analysis) -> &'static str {
 
 /// One declaration line in the style the document already uses (see
 /// [`declaration_keyword`]), ended by the document's line ending.
-pub fn declaration_line(a: &Analysis, prefix: &str, ns: &str) -> String {
+pub(crate) fn declaration_line(a: &Analysis, prefix: &str, ns: &str) -> String {
     let nl = newline(&a.text);
     if declaration_keyword(a) == "PREFIX" {
         format!("PREFIX {prefix}: <{ns}>{nl}")
@@ -244,7 +248,7 @@ pub fn declaration_line(a: &Analysis, prefix: &str, ns: &str) -> String {
 /// a leading comment block. The flag says the line must start with a line
 /// break (the point is the end of text that has none, or of a declaration a
 /// use follows on the same line).
-pub fn declaration_point(a: &Analysis, before: u32) -> (usize, bool) {
+pub(crate) fn declaration_point(a: &Analysis, before: u32) -> (usize, bool) {
     let text: &str = &a.text;
     match a
         .parsed
@@ -279,7 +283,7 @@ pub fn declaration_point(a: &Analysis, before: u32) -> (usize, bool) {
 }
 
 /// The edit that declares `prefix` as `ns`: see [`declarations_edit`].
-pub fn declaration_edit(
+pub(crate) fn declaration_edit(
     a: &Analysis,
     enc: Encoding,
     prefix: &str,
@@ -293,7 +297,7 @@ pub fn declaration_edit(
 /// each, for text from `before` on, at [`declaration_point`]. A prefix that
 /// is used before `before` without a declaration there moves the point back
 /// to that first use, so the declaration precedes every use it serves.
-pub fn declarations_edit(
+pub(crate) fn declarations_edit(
     a: &Analysis,
     enc: Encoding,
     decls: &[(&str, &str)],

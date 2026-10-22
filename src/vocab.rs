@@ -10,30 +10,30 @@ use std::sync::{LazyLock, OnceLock};
 static DATA: &str = include_str!("../data/vocab.tsv");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TermKind {
+pub(crate) enum TermKind {
     Class,
     Property,
     Individual,
 }
 
 #[derive(Debug)]
-pub struct Term {
-    pub local: String,
-    pub kind: TermKind,
-    pub deprecated: bool,
-    pub label: String,
-    pub comment: String,
+pub(crate) struct Term {
+    pub(crate) local: String,
+    pub(crate) kind: TermKind,
+    pub(crate) deprecated: bool,
+    pub(crate) label: String,
+    pub(crate) comment: String,
     /// Direct super terms (rdfs:subClassOf / rdfs:subPropertyOf), as full IRIs.
-    pub supers: Box<[String]>,
+    pub(crate) supers: Box<[String]>,
     /// rdfs:domain (schema:domainIncludes for schema.org), as full IRIs.
-    pub domain: Box<[String]>,
+    pub(crate) domain: Box<[String]>,
     /// rdfs:range (schema:rangeIncludes for schema.org), as full IRIs.
-    pub range: Box<[String]>,
+    pub(crate) range: Box<[String]>,
 }
 
-pub struct Vocabulary {
-    pub prefix: &'static str,
-    pub namespace: &'static str,
+pub(crate) struct Vocabulary {
+    pub(crate) prefix: &'static str,
+    pub(crate) namespace: &'static str,
     body: &'static str,
     terms: OnceLock<Vec<Term>>,
     index: OnceLock<FxHashMap<String, usize>>,
@@ -42,7 +42,7 @@ pub struct Vocabulary {
 }
 
 impl Vocabulary {
-    pub fn terms(&self) -> &[Term] {
+    pub(crate) fn terms(&self) -> &[Term] {
         self.terms.get_or_init(|| {
             self.body
                 .lines()
@@ -51,7 +51,7 @@ impl Vocabulary {
         })
     }
 
-    pub fn term(&self, local: &str) -> Option<&Term> {
+    pub(crate) fn term(&self, local: &str) -> Option<&Term> {
         let index = self.index.get_or_init(|| {
             self.terms()
                 .iter()
@@ -64,7 +64,7 @@ impl Vocabulary {
 
     /// Closest defined term by edit distance, for "did you mean" fixes.
     /// Ties go to the shorter name, then to the earlier term.
-    pub fn suggest(&self, local: &str) -> Option<&Term> {
+    pub(crate) fn suggest(&self, local: &str) -> Option<&Term> {
         let max = (local.chars().count() / 3).clamp(1, 3);
         let table = self
             .names
@@ -81,26 +81,26 @@ impl Vocabulary {
     }
 }
 
-pub struct Vocabularies {
-    pub all: Vec<Vocabulary>,
+pub(crate) struct Vocabularies {
+    pub(crate) all: Vec<Vocabulary>,
     by_prefix: FxHashMap<&'static str, usize>,
     by_namespace: FxHashMap<&'static str, usize>,
 }
 
-pub static VOCABS: LazyLock<Vocabularies> = LazyLock::new(load);
+pub(crate) static VOCABS: LazyLock<Vocabularies> = LazyLock::new(load);
 
 impl Vocabularies {
-    pub fn by_prefix(&self, prefix: &str) -> Option<&Vocabulary> {
+    pub(crate) fn by_prefix(&self, prefix: &str) -> Option<&Vocabulary> {
         self.by_prefix.get(prefix).map(|i| &self.all[*i])
     }
 
-    pub fn by_namespace(&self, ns: &str) -> Option<&Vocabulary> {
+    pub(crate) fn by_namespace(&self, ns: &str) -> Option<&Vocabulary> {
         self.by_namespace.get(ns).map(|i| &self.all[*i])
     }
 
     /// Split an IRI into (vocabulary, local name) if it falls in a known
     /// namespace (the longest one, see [`split_namespace`]).
-    pub fn lookup<'a>(&self, iri: &'a str) -> Option<(&Vocabulary, &'a str)> {
+    pub(crate) fn lookup<'a>(&self, iri: &'a str) -> Option<(&Vocabulary, &'a str)> {
         let (ns, local) = split_namespace(iri);
         self.by_namespace(ns).map(|v| (v, local))
     }
@@ -116,7 +116,7 @@ const SPLIT_TRIES: usize = 4;
 /// but `http://purl.org/dc/terms/language:` and `https://schema.org/docs/collab/X`
 /// are not terms of their vocabularies. Else everything up to the last
 /// delimiter. Both parts are empty and whole when the IRI has no delimiter.
-pub fn split_namespace(iri: &str) -> (&str, &str) {
+pub(crate) fn split_namespace(iri: &str) -> (&str, &str) {
     let mut end = iri.len();
     let mut last = None;
     for _ in 0..SPLIT_TRIES {
@@ -274,7 +274,7 @@ pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
 /// The rows of the edit-distance table, kept between calls so a search over
 /// many names allocates once.
 #[derive(Default)]
-pub struct EditBuf {
+pub(crate) struct EditBuf {
     before: Vec<usize>,
     prev: Vec<usize>,
     cur: Vec<usize>,
@@ -286,7 +286,7 @@ impl EditBuf {
     /// distance allows adjacent transpositions (optimal string alignment):
     /// insertions, deletions, substitutions and swapping two neighbouring
     /// characters each cost 1, so `lable` is 1 from `label`.
-    pub fn within(&mut self, a: &[char], b: &[char], max: usize) -> Option<usize> {
+    pub(crate) fn within(&mut self, a: &[char], b: &[char], max: usize) -> Option<usize> {
         // Edit distance is at least the difference in length.
         if a.len().abs_diff(b.len()) > max {
             return None;
@@ -328,7 +328,7 @@ impl EditBuf {
 /// Lowercased names, bucketed by length, to search for the ones near a
 /// query. Built once from a set of names; each search then skips every name
 /// whose length or letters rule it out before any distance is computed.
-pub struct NameTable {
+pub(crate) struct NameTable {
     chars: Vec<char>,
     /// Per name: start in `chars`, length, and a letter signature.
     spans: Vec<(u32, u32, u64)>,
@@ -352,7 +352,7 @@ fn lowered(s: &str, out: &mut Vec<char>) {
 
 impl NameTable {
     /// The table of `names`; a name's number is its position here.
-    pub fn new<'a>(names: impl Iterator<Item = &'a str>) -> Self {
+    pub(crate) fn new<'a>(names: impl Iterator<Item = &'a str>) -> Self {
         let mut table = NameTable {
             chars: Vec::new(),
             spans: Vec::new(),
@@ -371,7 +371,7 @@ impl NameTable {
 
     /// Calls `found(name number, distance)` for every name at edit distance
     /// at most `max` from `query` (compared in lowercase), in no set order.
-    pub fn search(
+    pub(crate) fn search(
         &self,
         query: &str,
         max: usize,

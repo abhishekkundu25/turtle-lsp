@@ -10,14 +10,14 @@ use serde_json::Value;
 
 /// Run the SPARQL query of a document over the workspace (the "▶ Run query"
 /// lens), with the document's URI.
-pub const RUN_QUERY: &str = "turtle.runQuery";
+pub(crate) const RUN_QUERY: &str = "turtle.runQuery";
 
 /// Every command name the server advertises.
-pub const COMMANDS: &[&str] = &[FETCH_COMMAND, RUN_QUERY];
+pub(crate) const COMMANDS: &[&str] = &[FETCH_COMMAND, RUN_QUERY];
 
 /// A parsed `workspace/executeCommand` request.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Command {
+pub(crate) enum Command {
     /// Fetch one `owl:imports` target from the network.
     FetchImport { iri: String },
     /// Run the query of one SPARQL document.
@@ -25,7 +25,7 @@ pub enum Command {
 }
 
 /// Parses `params`; bad arguments and unknown commands are `InvalidParams`.
-pub fn parse(params: ExecuteCommandParams) -> Result<Command, (ErrorCode, String)> {
+pub(crate) fn parse(params: ExecuteCommandParams) -> Result<Command, (ErrorCode, String)> {
     let ExecuteCommandParams {
         command,
         mut arguments,

@@ -258,7 +258,7 @@ fn instant(k: Kind, s: &str) -> Option<(i128, bool)> {
 
 /// Whether `lexical` is in the lexical space of `datatype`. Datatypes this
 /// module does not know are taken as valid.
-pub fn well_formed(datatype: &str, lexical: &str) -> bool {
+pub(crate) fn well_formed(datatype: &str, lexical: &str) -> bool {
     match kind(datatype) {
         Kind::Integer { min, max } => match integer(lexical) {
             Some(n) => min.is_none_or(|m| n >= m) && max.is_none_or(|m| n <= m),
@@ -449,7 +449,7 @@ fn value<'a>(datatype: &str, lexical: &'a str) -> Option<Value<'a>> {
 }
 
 /// The order of two literals, `None` when they are not comparable.
-pub fn compare(a: (&str, &str), b: (&str, &str)) -> Option<Ordering> {
+pub(crate) fn compare(a: (&str, &str), b: (&str, &str)) -> Option<Ordering> {
     use Value::*;
     match (value(a.0, a.1)?, value(b.0, b.1)?) {
         (Int(x), Int(y)) => Some(x.cmp(&y)),

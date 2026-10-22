@@ -84,7 +84,7 @@ fn vocab() -> &'static Vocab {
 
 /// Add the triples, statements and references of `items` (an expanded
 /// document) to `out`, and what is dropped to `dropped`.
-pub fn to_rdf<'e>(items: &'e [Item<'e>], out: &mut Parsed, dropped: &mut Vec<Dropped>) {
+pub(crate) fn to_rdf<'e>(items: &'e [Item<'e>], out: &mut Parsed, dropped: &mut Vec<Dropped>) {
     let mut r = Rdf {
         out,
         dropped,
@@ -473,7 +473,7 @@ impl<'e> Rdf<'e, '_> {
 }
 
 /// The canonical `xsd:double` form JSON-LD uses: `5.3E0`, `1.0E21`.
-pub fn canonical_double(f: f64) -> String {
+pub(crate) fn canonical_double(f: f64) -> String {
     if f.is_nan() {
         return "NaN".into();
     }
@@ -505,7 +505,7 @@ fn canonical_integer(written: &str, f: f64) -> String {
 }
 
 /// RFC 8785 (JCS) serialization, for `@json` literals.
-pub fn jcs(v: &Json, out: &mut String) {
+pub(crate) fn jcs(v: &Json, out: &mut String) {
     match &v.value {
         Value::Null | Value::Invalid => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),

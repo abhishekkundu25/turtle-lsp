@@ -51,7 +51,7 @@ fn heading(q: &SparqlAnalysis, from: u32, stop: u32) -> String {
 /// projection, e.g. `SELECT ?person ?name`) or each update operation (named
 /// by its first words), with its clauses as children.
 #[allow(deprecated)]
-pub fn document_symbols(q: &SparqlAnalysis, enc: Encoding) -> Vec<DocumentSymbol> {
+pub(crate) fn document_symbols(q: &SparqlAnalysis, enc: Encoding) -> Vec<DocumentSymbol> {
     let st = q.doc.structure();
     st.operations
         .iter()
@@ -99,7 +99,7 @@ pub fn document_symbols(q: &SparqlAnalysis, enc: Encoding) -> Vec<DocumentSymbol
 /// `textDocument/foldingRange`: groups (ending the line before a `}` that
 /// starts its own line, as in Turtle), runs of prologue declarations (the
 /// `PREFIX` block) and runs of comment lines.
-pub fn folding_ranges(q: &SparqlAnalysis) -> Vec<FoldingRange> {
+pub(crate) fn folding_ranges(q: &SparqlAnalysis) -> Vec<FoldingRange> {
     let st = q.doc.structure();
     let toks = q.doc.tokens();
     let line = |off: u32| q.position(Encoding::Utf8, off).line;

@@ -29,7 +29,7 @@ struct Checked<'a> {
 }
 
 /// Runs the check; the exit code.
-pub fn run(a: CheckArgs) -> Result<i32, String> {
+pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     let cwd = files::current_dir()?;
     let root = files::find_root(a.root.as_deref(), &cwd)?;
     let mut flags = serde_json::Map::new();

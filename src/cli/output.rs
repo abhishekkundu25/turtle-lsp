@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
+pub(crate) enum Format {
     Concise,
     Json,
     Github,
@@ -20,33 +20,33 @@ pub enum Format {
 /// One checked file: its path as shown (relative to the current directory
 /// when under it, `/` separators), where SARIF finds it, and its problems
 /// with code-point columns, sorted by position then code.
-pub struct CheckedFile<'a> {
-    pub path: &'a str,
+pub(crate) struct CheckedFile<'a> {
+    pub(crate) path: &'a str,
     /// Relative to the workspace root (`/` separators); None outside it.
-    pub root_relative: Option<&'a str>,
+    pub(crate) root_relative: Option<&'a str>,
     /// The file's `file:` URI, for a file outside the root.
-    pub uri: &'a str,
-    pub problems: &'a [Problem],
+    pub(crate) uri: &'a str,
+    pub(crate) problems: &'a [Problem],
 }
 
 /// Counts over every problem found, before `--max-diagnostics` trimmed the
 /// output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Summary {
-    pub errors: usize,
-    pub warnings: usize,
-    pub infos: usize,
-    pub hints: usize,
-    pub files_with_problems: usize,
-    pub files_checked: usize,
+pub(crate) struct Summary {
+    pub(crate) errors: usize,
+    pub(crate) warnings: usize,
+    pub(crate) infos: usize,
+    pub(crate) hints: usize,
+    pub(crate) files_with_problems: usize,
+    pub(crate) files_checked: usize,
 }
 
 /// The SARIF 2.1.0 schema the `sarif` format declares.
-pub const SARIF_SCHEMA: &str =
+pub(crate) const SARIF_SCHEMA: &str =
     "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json";
 
 /// The repository, as the SARIF tool's `informationUri`.
-pub const INFORMATION_URI: &str = "https://github.com/abhishekkundu25/turtle-lsp";
+pub(crate) const INFORMATION_URI: &str = "https://github.com/abhishekkundu25/turtle-lsp";
 
 /// Writes the report for `files` in `format` to `out`.
 ///
@@ -88,7 +88,7 @@ pub const INFORMATION_URI: &str = "https://github.com/abhishekkundu25/turtle-lsp
 ///   fixes, and artifact URIs: percent-encoded paths relative to `%SRCROOT%`
 ///   (the workspace root) for files under it, `file:` URIs without a base
 ///   for the others.
-pub fn render(
+pub(crate) fn render(
     format: Format,
     files: &[CheckedFile],
     summary: &Summary,
@@ -115,7 +115,7 @@ pub fn render(
 ///    3  syntax
 ///   15  total
 /// ```
-pub fn statistics(files: &[CheckedFile], out: &mut dyn Write) -> io::Result<()> {
+pub(crate) fn statistics(files: &[CheckedFile], out: &mut dyn Write) -> io::Result<()> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for p in files.iter().flat_map(|f| f.problems) {
         *counts.entry(code(p).unwrap_or("(no code)")).or_default() += 1;
@@ -132,7 +132,7 @@ pub fn statistics(files: &[CheckedFile], out: &mut dyn Write) -> io::Result<()> 
 
 /// The one-line summary for stderr, e.g. "3 errors, 1 warning in 2 files".
 /// Infos and hints appear only when there are some.
-pub fn summary_line(summary: &Summary) -> String {
+pub(crate) fn summary_line(summary: &Summary) -> String {
     if summary.errors + summary.warnings + summary.infos + summary.hints == 0 {
         return format!("No problems in {}", plural(summary.files_checked, "file"));
     }
@@ -312,7 +312,7 @@ const NO_CODE_RULE: &str = "diagnostic";
 
 /// The codes turtle-lsp reports, each with a one-line description: what
 /// `--select` and `--ignore` accept, and the SARIF rules.
-pub const CODES: &[(&str, &str)] = &[
+pub(crate) const CODES: &[(&str, &str)] = &[
     ("syntax", "Syntax error"),
     ("undeclared-prefix", "A prefix is used but not declared"),
     ("unused-prefix", "A declared prefix is never used"),
@@ -412,17 +412,17 @@ pub const CODES: &[(&str, &str)] = &[
 ];
 
 /// A file that could not be read (`check` reports it; exit 2).
-pub const IO_CODE: &str = "io";
+pub(crate) const IO_CODE: &str = "io";
 /// A file that is not UTF-8 (`check` reports it; exit 2).
-pub const ENCODING_CODE: &str = "encoding";
+pub(crate) const ENCODING_CODE: &str = "encoding";
 
 /// Whether `code` is one turtle-lsp reports.
-pub fn is_known_code(code: &str) -> bool {
+pub(crate) fn is_known_code(code: &str) -> bool {
     CODES.iter().any(|(c, _)| *c == code)
 }
 
 /// The known codes, comma separated, for a message.
-pub fn known_codes() -> String {
+pub(crate) fn known_codes() -> String {
     CODES.iter().map(|(c, _)| *c).collect::<Vec<_>>().join(", ")
 }
 

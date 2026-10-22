@@ -179,7 +179,7 @@ pub fn prepare(
 }
 
 /// The document a hierarchy item was asked from (its `data.uri`).
-pub fn asking_uri(item: &TypeHierarchyItem) -> Option<&str> {
+pub(crate) fn asking_uri(item: &TypeHierarchyItem) -> Option<&str> {
     item.data.as_ref()?.get("uri")?.as_str()
 }
 

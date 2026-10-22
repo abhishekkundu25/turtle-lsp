@@ -69,7 +69,7 @@ pub struct ValidationResult {
     /// `sh:sourceConstraint`: the SPARQL constraint that produced the result.
     pub constraint: Option<Id>,
     /// The graph triple that states the constraint's parameter.
-    pub param: u32,
+    pub(crate) param: u32,
 }
 
 /// A query in the shapes that could not run: it does not parse, breaks the
@@ -80,16 +80,16 @@ pub struct ValidationResult {
 pub struct Failure {
     /// The node whose `sh:select` / `sh:ask` failed, or the shape that was
     /// cut short or skipped.
-    pub node: Id,
+    pub(crate) node: Id,
     /// The graph triple that states the query (or the `sh:path`).
-    pub triple: Option<u32>,
+    pub(crate) triple: Option<u32>,
     pub message: String,
-    pub kind: FailureKind,
+    pub(crate) kind: FailureKind,
 }
 
 /// What a [`Failure`] is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FailureKind {
+pub(crate) enum FailureKind {
     /// A query that could not run to the end.
     Query,
     /// A shape cut short: nested too deep, or past the step budget.
@@ -104,7 +104,7 @@ pub struct Report {
     pub results: Vec<ValidationResult>,
     pub failures: Vec<Failure>,
     /// Validation stopped at [`Budget::results`]: there are more results.
-    pub capped: bool,
+    pub(crate) capped: bool,
 }
 
 fn sh(local: &str) -> Iri {
@@ -381,7 +381,8 @@ fn sparse(focus: usize, triples: usize) -> bool {
 
 /// The property path rooted at `node`: the shape model's ([`model::path`]),
 /// with nested repetitions merged ([`merged`]).
-pub fn parse_path(g: &Graph, node: Id) -> Path {
+#[cfg(test)]
+pub(crate) fn parse_path(g: &Graph, node: Id) -> Path {
     merged(model::path(g, node))
 }
 
@@ -827,8 +828,8 @@ impl Compiler<'_, '_> {
 /// exponential).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Budget {
-    pub results: usize,
-    pub steps: u64,
+    pub(crate) results: usize,
+    pub(crate) steps: u64,
 }
 
 impl Default for Budget {
@@ -1847,7 +1848,7 @@ where
 /// the targets are found among those nodes, not by walking the whole graph,
 /// so a few nodes of a large graph cost in proportion to themselves (a SPARQL
 /// target is the exception: its query runs over the graph).
-pub fn validate_report_among<C>(g: &Graph, cancelled: &C, among: &[Id]) -> Option<Report>
+pub(crate) fn validate_report_among<C>(g: &Graph, cancelled: &C, among: &[Id]) -> Option<Report>
 where
     C: Fn() -> bool + Send + Sync + Clone + 'static,
 {

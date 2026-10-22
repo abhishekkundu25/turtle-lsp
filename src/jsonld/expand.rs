@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 /// An expanded element.
 #[derive(Clone, Debug)]
-pub enum Item<'a> {
+pub(crate) enum Item<'a> {
     Node(Box<NodeObject<'a>>),
     Value(ValueObject<'a>),
     List(ListObject<'a>),
@@ -58,7 +58,7 @@ impl Item<'_> {
     /// Where the item is written: a node object's JSON object (or the
     /// `@id` of one written only as a reference), a value's JSON, a list's
     /// array or `@list` object.
-    pub fn span(&self) -> Span {
+    pub(crate) fn span(&self) -> Span {
         match self {
             Item::Node(n) => n.reference_span(),
             Item::Value(v) => v.span,
@@ -69,56 +69,56 @@ impl Item<'_> {
 
 /// An IRI (or blank node identifier) as written in the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IriUse {
+pub(crate) struct IriUse {
     /// The expanded value: an absolute IRI, a blank node identifier, or a
     /// relative IRI when no base resolved it.
-    pub iri: Arc<str>,
+    pub(crate) iri: Arc<str>,
     /// The string it is written in, without quotes.
-    pub span: Span,
-    pub form: Form,
+    pub(crate) span: Span,
+    pub(crate) form: Form,
 }
 
 /// A `@type` of a node object.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypeUse {
-    pub iri: IriUse,
+pub(crate) struct TypeUse {
+    pub(crate) iri: IriUse,
     /// The key that gave it: `@type` (or an alias), or the property of a
     /// `@type` map.
-    pub key: Span,
+    pub(crate) key: Span,
 }
 
 /// A property and its values, as one key gives them.
 #[derive(Clone, Debug)]
-pub struct Property<'a> {
-    pub iri: Arc<str>,
+pub(crate) struct Property<'a> {
+    pub(crate) iri: Arc<str>,
     /// The key, without quotes.
-    pub key: Span,
-    pub form: Form,
-    pub items: Vec<Item<'a>>,
+    pub(crate) key: Span,
+    pub(crate) form: Form,
+    pub(crate) items: Vec<Item<'a>>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct NodeObject<'a> {
+pub(crate) struct NodeObject<'a> {
     /// The JSON object, or the string a value coerced to `@id` is written
     /// in (without quotes).
-    pub span: Span,
-    pub id: Option<IriUse>,
-    pub types: Vec<TypeUse>,
-    pub props: Vec<Property<'a>>,
+    pub(crate) span: Span,
+    pub(crate) id: Option<IriUse>,
+    pub(crate) types: Vec<TypeUse>,
+    pub(crate) props: Vec<Property<'a>>,
     /// `@reverse` properties: each item is a node object whose property
     /// points at this node.
-    pub reverse: Vec<Property<'a>>,
+    pub(crate) reverse: Vec<Property<'a>>,
     /// `@graph`: this node names a graph holding these items.
-    pub graph: Option<Vec<Item<'a>>>,
-    pub included: Vec<Item<'a>>,
+    pub(crate) graph: Option<Vec<Item<'a>>>,
+    pub(crate) included: Vec<Item<'a>>,
     /// Written as an object with entries besides `@id` (and `@index`): it
     /// describes the node, rather than only referring to it.
-    pub described: bool,
+    pub(crate) described: bool,
 }
 
 impl NodeObject<'_> {
     /// The node's `@id` when it is only referred to, else its span.
-    pub fn reference_span(&self) -> Span {
+    pub(crate) fn reference_span(&self) -> Span {
         match &self.id {
             Some(id) if !self.described => id.span,
             _ => self.span,
@@ -126,7 +126,7 @@ impl NodeObject<'_> {
     }
 
     /// A graph object: `@graph`, and nothing but `@id` and `@index` beside it.
-    pub fn is_graph_object(&self) -> bool {
+    pub(crate) fn is_graph_object(&self) -> bool {
         self.graph.is_some()
             && self.types.is_empty()
             && self.props.is_empty()
@@ -137,7 +137,7 @@ impl NodeObject<'_> {
 
 /// The value of a value object, borrowed from the document.
 #[derive(Clone, Copy, Debug)]
-pub enum Literal<'a> {
+pub(crate) enum Literal<'a> {
     String(&'a str),
     /// A JSON number as written.
     Number(&'a str),
@@ -147,43 +147,47 @@ pub enum Literal<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ValueObject<'a> {
+pub(crate) struct ValueObject<'a> {
     /// The JSON scalar, or the `{"@value": ...}` object.
-    pub span: Span,
-    pub value: Literal<'a>,
+    pub(crate) span: Span,
+    pub(crate) value: Literal<'a>,
     /// The datatype IRI, where it is written (`None`: from a term's type
     /// mapping in the context) and how.
-    pub datatype: Option<(Arc<str>, Option<Span>, Form)>,
+    pub(crate) datatype: Option<(Arc<str>, Option<Span>, Form)>,
     /// The language tag, and where it is written (`None`: from the context).
-    pub language: Option<(Arc<str>, Option<Span>)>,
-    pub direction: Option<Direction>,
+    pub(crate) language: Option<(Arc<str>, Option<Span>)>,
+    pub(crate) direction: Option<Direction>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ListObject<'a> {
+pub(crate) struct ListObject<'a> {
     /// The array or `{"@list": ...}` object.
-    pub span: Span,
-    pub items: Vec<Item<'a>>,
+    pub(crate) span: Span,
+    pub(crate) items: Vec<Item<'a>>,
 }
 
 /// An expanded document.
 #[derive(Debug, Default)]
-pub struct Expanded<'a> {
+pub(crate) struct Expanded<'a> {
     /// The top-level node objects (the content of a top-level object that
     /// has only `@graph`).
-    pub items: Vec<Item<'a>>,
+    pub(crate) items: Vec<Item<'a>>,
     /// `jsonld-context` errors.
-    pub errors: Vec<SyntaxError>,
-    pub dropped: Vec<Dropped>,
+    pub(crate) errors: Vec<SyntaxError>,
+    pub(crate) dropped: Vec<Dropped>,
     /// Keys, types and `@vocab`-coerced values that are terms of the
     /// active context, in the order they are read.
-    pub used_terms: Vec<UsedTerm>,
-    pub index: SourceIndex,
+    pub(crate) used_terms: Vec<UsedTerm>,
+    pub(crate) index: SourceIndex,
 }
 
 /// Expand the document `root`, whose URL is `base`, with contexts from
 /// `processor`.
-pub fn expand<'a>(root: &'a Json, base: Option<&str>, processor: &mut Processor) -> Expanded<'a> {
+pub(crate) fn expand<'a>(
+    root: &'a Json,
+    base: Option<&str>,
+    processor: &mut Processor,
+) -> Expanded<'a> {
     let mut x = Expander {
         processor,
         base,

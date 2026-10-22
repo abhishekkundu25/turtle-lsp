@@ -14,12 +14,12 @@ pub enum Target {
 /// `<uri name=... uri=...>` entries of every catalog-v001.xml under the roots;
 /// the first catalog (by path) that maps an IRI wins.
 #[derive(Default)]
-pub struct Catalog {
+pub(crate) struct Catalog {
     map: FxHashMap<String, (Target, PathBuf)>,
 }
 
 impl Catalog {
-    pub fn scan(roots: &[PathBuf]) -> Catalog {
+    pub(crate) fn scan(roots: &[PathBuf]) -> Catalog {
         let mut files = Vec::new();
         let mut stack: Vec<PathBuf> = roots.to_vec();
         let mut seen = 0usize;

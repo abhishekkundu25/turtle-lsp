@@ -8,79 +8,79 @@ use crate::syntax::{Iri, RDF, XSD};
 use rustc_hash::FxHashMap;
 use std::sync::OnceLock;
 
-pub struct Vocab {
-    pub rdf_type: Iri,
-    pub rdf_first: Iri,
-    pub rdf_rest: Iri,
-    pub rdf_nil: Iri,
-    pub rdfs_class: Iri,
-    pub rdfs_datatype: Iri,
-    pub sub_class_of: Iri,
-    pub sub_property_of: Iri,
-    pub rdfs_domain: Iri,
-    pub rdfs_range: Iri,
-    pub owl_class: Iri,
-    pub owl_imports: Iri,
+pub(crate) struct Vocab {
+    pub(crate) rdf_type: Iri,
+    pub(crate) rdf_first: Iri,
+    pub(crate) rdf_rest: Iri,
+    pub(crate) rdf_nil: Iri,
+    pub(crate) rdfs_class: Iri,
+    pub(crate) rdfs_datatype: Iri,
+    pub(crate) sub_class_of: Iri,
+    pub(crate) sub_property_of: Iri,
+    pub(crate) rdfs_domain: Iri,
+    pub(crate) rdfs_range: Iri,
+    pub(crate) owl_class: Iri,
+    pub(crate) owl_imports: Iri,
 
-    pub node_shape: Iri,
-    pub property_shape: Iri,
-    pub target_class: Iri,
-    pub target_node: Iri,
-    pub target_subjects_of: Iri,
-    pub target_objects_of: Iri,
-    pub path: Iri,
-    pub inverse_path: Iri,
-    pub alternative_path: Iri,
-    pub zero_or_more_path: Iri,
-    pub one_or_more_path: Iri,
-    pub zero_or_one_path: Iri,
+    pub(crate) node_shape: Iri,
+    pub(crate) property_shape: Iri,
+    pub(crate) target_class: Iri,
+    pub(crate) target_node: Iri,
+    pub(crate) target_subjects_of: Iri,
+    pub(crate) target_objects_of: Iri,
+    pub(crate) path: Iri,
+    pub(crate) inverse_path: Iri,
+    pub(crate) alternative_path: Iri,
+    pub(crate) zero_or_more_path: Iri,
+    pub(crate) one_or_more_path: Iri,
+    pub(crate) zero_or_one_path: Iri,
 
-    pub property: Iri,
-    pub node: Iri,
-    pub qualified_value_shape: Iri,
-    pub not: Iri,
-    pub and: Iri,
-    pub or: Iri,
-    pub xone: Iri,
-    pub min_count: Iri,
-    pub max_count: Iri,
-    pub qualified_min_count: Iri,
-    pub qualified_max_count: Iri,
-    pub qualified_disjoint: Iri,
-    pub class: Iri,
-    pub datatype: Iri,
-    pub in_list: Iri,
-    pub unique_lang: Iri,
-    pub less_than: Iri,
-    pub less_than_or_equals: Iri,
-    pub flags: Iri,
-    pub ignored_properties: Iri,
+    pub(crate) property: Iri,
+    pub(crate) node: Iri,
+    pub(crate) qualified_value_shape: Iri,
+    pub(crate) not: Iri,
+    pub(crate) and: Iri,
+    pub(crate) or: Iri,
+    pub(crate) xone: Iri,
+    pub(crate) min_count: Iri,
+    pub(crate) max_count: Iri,
+    pub(crate) qualified_min_count: Iri,
+    pub(crate) qualified_max_count: Iri,
+    pub(crate) qualified_disjoint: Iri,
+    pub(crate) class: Iri,
+    pub(crate) datatype: Iri,
+    pub(crate) in_list: Iri,
+    pub(crate) unique_lang: Iri,
+    pub(crate) less_than: Iri,
+    pub(crate) less_than_or_equals: Iri,
+    pub(crate) flags: Iri,
+    pub(crate) ignored_properties: Iri,
 
-    pub deactivated: Iri,
-    pub severity: Iri,
-    pub violation: Iri,
-    pub message: Iri,
+    pub(crate) deactivated: Iri,
+    pub(crate) severity: Iri,
+    pub(crate) violation: Iri,
+    pub(crate) message: Iri,
 
-    pub target: Iri,
-    pub sparql: Iri,
-    pub select: Iri,
-    pub ask: Iri,
-    pub prefixes: Iri,
-    pub declare: Iri,
-    pub prefix: Iri,
-    pub namespace: Iri,
-    pub constraint_component: Iri,
-    pub parameter: Iri,
-    pub optional: Iri,
-    pub validator: Iri,
-    pub node_validator: Iri,
-    pub property_validator: Iri,
-    pub ask_validator: Iri,
-    pub select_validator: Iri,
-    pub sparql_target: Iri,
-    pub sparql_target_type: Iri,
+    pub(crate) target: Iri,
+    pub(crate) sparql: Iri,
+    pub(crate) select: Iri,
+    pub(crate) ask: Iri,
+    pub(crate) prefixes: Iri,
+    pub(crate) declare: Iri,
+    pub(crate) prefix: Iri,
+    pub(crate) namespace: Iri,
+    pub(crate) constraint_component: Iri,
+    pub(crate) parameter: Iri,
+    pub(crate) optional: Iri,
+    pub(crate) validator: Iri,
+    pub(crate) node_validator: Iri,
+    pub(crate) property_validator: Iri,
+    pub(crate) ask_validator: Iri,
+    pub(crate) select_validator: Iri,
+    pub(crate) sparql_target: Iri,
+    pub(crate) sparql_target_type: Iri,
 
-    pub xsd_boolean: Iri,
+    pub(crate) xsd_boolean: Iri,
 
     params: FxHashMap<Iri, Param>,
 }
@@ -88,7 +88,7 @@ pub struct Vocab {
 /// A SHACL Core constraint parameter that makes a constraint on its own
 /// (`sh:qualifiedValueShape` and its counts go together, and are left out).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Param {
+pub(crate) enum Param {
     Class,
     Datatype,
     NodeKind,
@@ -149,7 +149,7 @@ const PARAMS: [(&str, Param); 27] = [
 ];
 
 /// The table, interned on first use.
-pub fn get() -> &'static Vocab {
+pub(crate) fn get() -> &'static Vocab {
     static V: OnceLock<Vocab> = OnceLock::new();
     V.get_or_init(|| {
         let sh = |l: &str| Iri::intern(&format!("{}{l}", super::SH));
@@ -237,13 +237,13 @@ pub fn get() -> &'static Vocab {
 
 impl Vocab {
     /// The Core constraint parameter `p` is, if any.
-    pub fn param(&self, p: Iri) -> Option<Param> {
+    pub(crate) fn param(&self, p: Iri) -> Option<Param> {
         self.params.get(&p).copied()
     }
 
     /// `sh:targetClass`, `sh:targetNode`, `sh:targetSubjectsOf` or
     /// `sh:targetObjectsOf`.
-    pub fn is_target(&self, p: Iri) -> bool {
+    pub(crate) fn is_target(&self, p: Iri) -> bool {
         p == self.target_class
             || p == self.target_node
             || p == self.target_subjects_of
@@ -251,7 +251,7 @@ impl Vocab {
     }
 
     /// `sh:validator`, `sh:nodeValidator` or `sh:propertyValidator`.
-    pub fn is_validator(&self, p: Iri) -> bool {
+    pub(crate) fn is_validator(&self, p: Iri) -> bool {
         p == self.validator || p == self.node_validator || p == self.property_validator
     }
 }

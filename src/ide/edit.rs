@@ -10,6 +10,7 @@
 use super::{Doc, Session};
 use crate::diagnose::{self, DiagnosticInputs};
 use crate::features::{completion, embedded, format, quickfix, refactor};
+use crate::layout;
 use crate::sparql::features as sparql_features;
 use lsp_types::{
     CodeAction, CodeActionOrCommand, CodeActionParams, CompletionItem, CompletionParams,
@@ -20,7 +21,7 @@ impl Session<'_> {
     /// `textDocument/completion`. In an RDF document, `?` and `$` start
     /// variables, which it has only inside the SPARQL queries of SHACL
     /// shapes: typed anywhere else they offer nothing (`None`).
-    pub fn completion(&mut self, p: &CompletionParams) -> Option<CompletionResponse> {
+    pub(crate) fn completion(&mut self, p: &CompletionParams) -> Option<CompletionResponse> {
         let at = &p.text_document_position;
         let doc = self.doc(at.text_document.uri.as_str())?;
         let k = self.ws.knowledge();
@@ -44,7 +45,7 @@ impl Session<'_> {
 
     /// `completionItem/resolve`: by the SPARQL resolver when the item's data
     /// says `"sparql": true`, else by the RDF one.
-    pub fn resolve_completion(&mut self, item: CompletionItem) -> CompletionItem {
+    pub(crate) fn resolve_completion(&mut self, item: CompletionItem) -> CompletionItem {
         let sparql = item.data.as_ref().is_some_and(|d| d["sparql"] == true);
         let k = self.ws.knowledge();
         if sparql {
@@ -57,7 +58,10 @@ impl Session<'_> {
     /// `textDocument/codeAction`. An RDF document's actions are its quick
     /// fixes of the kinds `context.only` asks for, then its refactorings,
     /// then "Fetch and cache" for its unresolved web imports.
-    pub fn code_actions(&mut self, p: &CodeActionParams) -> Option<Vec<CodeActionOrCommand>> {
+    pub(crate) fn code_actions(
+        &mut self,
+        p: &CodeActionParams,
+    ) -> Option<Vec<CodeActionOrCommand>> {
         let doc = self.doc(p.text_document.uri.as_str())?;
         let (enc, lazy) = (self.enc, self.resolve_edits);
         let k = self.ws.knowledge();
@@ -83,7 +87,7 @@ impl Session<'_> {
     /// `codeAction/resolve`: the edit of an action that came without one,
     /// computed in the document its `data.uri` names. An action with no such
     /// document comes back as it is.
-    pub fn resolve_code_action(&mut self, action: CodeAction) -> CodeAction {
+    pub(crate) fn resolve_code_action(&mut self, action: CodeAction) -> CodeAction {
         let Some(uri) = action.data.as_ref().and_then(|d| d["uri"].as_str()) else {
             return action;
         };
@@ -95,9 +99,13 @@ impl Session<'_> {
     }
 
     /// `textDocument/formatting`, with the client's `format.lineWidth`.
-    pub fn formatting(&mut self, uri: &str, options: &FormattingOptions) -> Option<Vec<TextEdit>> {
+    pub(crate) fn formatting(
+        &mut self,
+        uri: &str,
+        options: &FormattingOptions,
+    ) -> Option<Vec<TextEdit>> {
         let width = self.settings.format_line_width as usize;
-        let opts = format::Options::from_lsp(options, width);
+        let opts = layout::Options::from_lsp(options, width);
         Some(match self.doc(uri)? {
             Doc::Rdf(a) => format::formatting(&a, self.enc, &opts),
             Doc::Sparql(q) => sparql_features::formatting(&q, self.enc, &opts),
@@ -106,7 +114,11 @@ impl Session<'_> {
 
     /// The diagnostics the document at `uri` shows, from what `inputs` says
     /// besides the document and the knowledge ([`diagnose::document`]).
-    pub fn diagnostics(&mut self, uri: &str, inputs: &DiagnosticInputs) -> Option<Vec<Diagnostic>> {
+    pub(crate) fn diagnostics(
+        &mut self,
+        uri: &str,
+        inputs: &DiagnosticInputs,
+    ) -> Option<Vec<Diagnostic>> {
         let doc = self.doc(uri)?;
         let k = self.ws.knowledge();
         Some(match doc {

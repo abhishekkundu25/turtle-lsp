@@ -54,19 +54,24 @@ pub(crate) enum Slot {
 
 pub(crate) struct Candidate {
     /// Ranking tier (see [`ranking`]); sorts before everything else.
-    pub tier: u8,
-    pub label: String,
-    pub kind: CompletionItemKind,
-    pub detail: String,
-    pub iri: Option<String>,
-    pub rank: u8,
+    pub(crate) tier: u8,
+    pub(crate) label: String,
+    pub(crate) kind: CompletionItemKind,
+    pub(crate) detail: String,
+    pub(crate) iri: Option<String>,
+    pub(crate) rank: u8,
     /// A prefix to declare on accept: (name, namespace).
-    pub import: Option<(String, String)>,
+    pub(crate) import: Option<(String, String)>,
 }
 
 impl Candidate {
     /// A candidate that is no term (a keyword, a variable, a function).
-    pub fn plain(label: String, kind: CompletionItemKind, detail: String, rank: u8) -> Candidate {
+    pub(crate) fn plain(
+        label: String,
+        kind: CompletionItemKind,
+        detail: String,
+        rank: u8,
+    ) -> Candidate {
         Candidate {
             tier: ranking::NONE,
             label,
@@ -211,8 +216,8 @@ pub(crate) fn prefixed_terms(
 /// move up, which that order does not know. `typed` is what was typed.
 #[derive(Clone, Copy)]
 pub(crate) struct Best<'a> {
-    pub typed: &'a str,
-    pub promoted: &'a dyn Fn(Iri) -> bool,
+    pub(crate) typed: &'a str,
+    pub(crate) promoted: &'a dyn Fn(Iri) -> bool,
 }
 
 /// [`prefixed_terms`], building candidates only for the `best` ones when
@@ -637,7 +642,7 @@ pub(crate) fn items(
 }
 
 /// Fill in documentation lazily so the list itself stays small.
-pub fn resolve(mut item: CompletionItem, k: &Knowledge) -> CompletionItem {
+pub(crate) fn resolve(mut item: CompletionItem, k: &Knowledge) -> CompletionItem {
     let Some(iri) = item
         .data
         .as_ref()

@@ -13,11 +13,14 @@
 //! table and Markdown also with the well-known vocabularies' prefixes, as
 //! hover does); JSON, CSV and TSV give full IRIs.
 
-use super::{Answer, Solutions};
+use super::Answer;
+#[cfg(not(target_arch = "wasm32"))]
+use super::Solutions;
 use crate::features::format::format;
 use crate::features::hover::short;
 use crate::layout::Options;
 use crate::syntax::{PrefixMap, Syntax, XSD, parse};
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Map, Value, json};
 use spargebra::term::{Literal, NamedOrBlankNode, Term, Triple};
 use std::fmt::Write;
@@ -119,7 +122,7 @@ fn cut<T>(items: &[T], total: usize, max: Option<usize>, what: &str) -> (usize, 
 /// The most characters a cell of the table or the Markdown shows. A
 /// `GROUP_CONCAT` or a long literal can be megabytes; a table of them is
 /// unreadable and a Markdown document of them opens slowly.
-pub const MAX_CELL_CHARS: usize = 1000;
+pub(crate) const MAX_CELL_CHARS: usize = 1000;
 
 /// `s` cut to [`MAX_CELL_CHARS`] characters, with `…` where it was cut and
 /// `cut` raised by one.
@@ -151,7 +154,8 @@ fn clipped_note(cut: usize) -> Option<String> {
 /// (unbound cells empty), at most `max_rows` rows and then a line "showing N
 /// of M rows". Widths count characters. A cell longer than
 /// [`MAX_CELL_CHARS`] is cut with `…`, and a line says how many were.
-pub fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn table(s: &Solutions, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
     let (shown, note) = cut(&s.rows, s.total(), max_rows, "row");
     let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
     let mut cut = 0;
@@ -210,7 +214,7 @@ fn one_line(s: &str) -> String {
 /// `max_rows` rows, then "showing N of M rows"), `true` or `false`, or the
 /// triples (at most `max_rows`) in a Turtle code block. A table cell longer
 /// than [`MAX_CELL_CHARS`] is cut with `…`, and a line says how many were.
-pub fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
+pub(crate) fn markdown(a: &Answer, prefixes: &PrefixMap, max_rows: Option<usize>) -> String {
     match a {
         Answer::Boolean(b) => format!("**{b}**\n"),
         Answer::Solutions(s) => {
@@ -291,7 +295,8 @@ fn fence_for(body: &str) -> String {
 /// triples (not a format for graphs). Literals carry `xml:lang` (and
 /// `its:dir` for a base direction) or a `datatype` other than `xsd:string`;
 /// triple terms are SPARQL 1.2 `"type": "triple"`.
-pub fn json(a: &Answer) -> Option<String> {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn json(a: &Answer) -> Option<String> {
     let v = match a {
         Answer::Boolean(b) => json!({ "head": {}, "boolean": b }),
         Answer::Solutions(s) => {
@@ -317,6 +322,7 @@ pub fn json(a: &Answer) -> Option<String> {
     Some(out)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn json_term(t: &Term) -> Value {
     match t {
         Term::NamedNode(n) => json!({ "type": "uri", "value": n.as_str() }),
@@ -350,7 +356,8 @@ fn json_term(t: &Term) -> Value {
 /// row, CRLF line ends. IRIs in full, literals as their lexical form, blank
 /// nodes as `_:label`; a field with `"`, `,`, CR or LF is quoted, its `"`
 /// doubled.
-pub fn csv(s: &Solutions) -> String {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn csv(s: &Solutions) -> String {
     let mut out = String::new();
     let field = |v: &str| {
         if v.contains(['"', ',', '\n', '\r']) {
@@ -383,7 +390,8 @@ pub fn csv(s: &Solutions) -> String {
 /// row, LF line ends. Terms in SPARQL syntax with full IRIs (`<iri>`,
 /// `"text"@en`, `"v"^^<datatype>`, `_:label`), integers and decimals bare;
 /// tabs and line breaks in strings escaped.
-pub fn tsv(s: &Solutions) -> String {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tsv(s: &Solutions) -> String {
     let mut out = String::new();
     let header: Vec<String> = s.variables.iter().map(|v| format!("?{v}")).collect();
     out.push_str(&header.join("\t"));
@@ -400,6 +408,7 @@ pub fn tsv(s: &Solutions) -> String {
 }
 
 /// `t` in SPARQL syntax with full IRIs, numbers bare.
+#[cfg(not(target_arch = "wasm32"))]
 fn full_term(t: &Term) -> String {
     match t {
         Term::NamedNode(n) => format!("<{}>", n.as_str()),

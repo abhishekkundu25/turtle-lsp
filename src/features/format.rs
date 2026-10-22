@@ -31,11 +31,11 @@ use lsp_types::{FormattingOptions, Position, Range, TextEdit};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 
-pub use crate::layout::{DEFAULT_LINE_WIDTH, Options};
+pub use crate::layout::Options;
 
 /// The LSP adapter: the layout core does not depend on `lsp_types`.
 impl Options {
-    pub fn from_lsp(o: &FormattingOptions, line_width: usize) -> Self {
+    pub(crate) fn from_lsp(o: &FormattingOptions, line_width: usize) -> Self {
         Options {
             tab_size: o.tab_size.clamp(1, 16),
             insert_spaces: o.insert_spaces,
@@ -57,7 +57,7 @@ pub fn formatting(a: &Analysis, enc: Encoding, opts: &Options) -> Vec<TextEdit> 
 }
 
 /// [`format`] of an analysis, laid out from [`Analysis::tokens`].
-pub fn format_analysis(a: &Analysis, opts: &Options) -> Option<String> {
+pub(crate) fn format_analysis(a: &Analysis, opts: &Options) -> Option<String> {
     format_with(&a.text, &a.parsed, &a.external, opts, || {
         Cow::Borrowed(a.tokens())
     })

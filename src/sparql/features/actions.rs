@@ -23,7 +23,7 @@ use serde_json::json;
 /// `data.turtle` of a "Shorten all IRIs in file" offered without its edit.
 const SHORTEN_ALL: &str = "shorten-all";
 
-pub fn code_actions(
+pub(crate) fn code_actions(
     q: &SparqlAnalysis,
     k: &Knowledge,
     enc: Encoding,
@@ -182,7 +182,7 @@ pub fn code_actions(
         .collect()
 }
 
-pub fn resolve_code_action(
+pub(crate) fn resolve_code_action(
     q: &SparqlAnalysis,
     enc: Encoding,
     mut action: CodeAction,

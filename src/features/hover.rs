@@ -65,7 +65,7 @@ pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Optio
 
 /// `iri` as `prefix:local` with the document's prefixes, else with the
 /// well-known vocabulary's prefix, else `<iri>`.
-pub fn short(iri: &str, prefixes: &PrefixMap) -> String {
+pub(crate) fn short(iri: &str, prefixes: &PrefixMap) -> String {
     shorten(iri, prefixes)
         .or_else(|| {
             let (v, local) = VOCABS.lookup(iri)?;
@@ -86,7 +86,12 @@ fn shorts(iris: &[Iri], prefixes: &PrefixMap) -> String {
 }
 
 /// Markdown description of an IRI from the workspace and bundled vocabularies.
-pub fn describe_iri(iri: &str, label: &str, k: &Knowledge, prefixes: &PrefixMap) -> Option<String> {
+pub(crate) fn describe_iri(
+    iri: &str,
+    label: &str,
+    k: &Knowledge,
+    prefixes: &PrefixMap,
+) -> Option<String> {
     let mut out = format!("**{label}**");
     let mut kind = None;
     let mut text_label = None;

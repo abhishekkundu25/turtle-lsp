@@ -6,22 +6,22 @@ use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::names::{Scope, declaration_at, is_pn_prefix};
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
-use crate::workspace::{PREFIX_FILE, path_to_uri, uri_to_path};
+use crate::workspace::{PREFIX_FILE, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-pub mod jsonld;
+pub(crate) mod jsonld;
 
-pub enum Target {
+pub(crate) enum Target {
     Iri(Iri),
     /// A prefix name, as used or declared in this document.
     Prefix(String),
 }
 
-pub fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
+pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     if let Some(p) = a
         .parsed
         .prefixes
@@ -49,7 +49,7 @@ pub fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     Some((Target::Iri(r.iri), r.span))
 }
 
-pub fn uri(s: &str) -> Uri {
+pub(crate) fn uri(s: &str) -> Uri {
     #[cfg(test)]
     URIS_PARSED.with(|c| c.set(c.get() + 1));
     Uri::from_str(s).expect("valid uri")
@@ -62,7 +62,7 @@ thread_local! {
 }
 
 /// A document's path for a message, else its URI.
-pub fn shown(uri: &str) -> String {
+pub(crate) fn shown(uri: &str) -> String {
     uri_to_path(uri).map_or_else(|| uri.to_string(), |p| p.display().to_string())
 }
 
@@ -141,7 +141,7 @@ pub fn definition(
 
 /// Where the workspace describes `iri`: the document `here` first, then by
 /// URI and line.
-pub fn descriptions<K: IriKey + ?Sized>(
+pub(crate) fn descriptions<K: IriKey + ?Sized>(
     k: &Knowledge,
     enc: Encoding,
     iri: &K,
@@ -286,7 +286,7 @@ fn jsonld_references(
 
 /// Where the workspace's RDF documents (imports left out) use `iri`; its
 /// descriptions too with `include_decl`.
-pub fn term_references<K: IriKey + ?Sized>(
+pub(crate) fn term_references<K: IriKey + ?Sized>(
     k: &Knowledge,
     enc: Encoding,
     iri: &K,
@@ -520,7 +520,7 @@ pub fn rename(
 /// [`renamed_iri`] for a rename started at `offset` of `a`: in JSON-LD,
 /// with the prefix terms of the context there, and `new_name` may also be
 /// an absolute IRI written as JSON-LD writes it (`http://...`).
-pub fn renamed_iri_at(
+pub(crate) fn renamed_iri_at(
     a: &Analysis,
     offset: u32,
     old: &str,
@@ -541,7 +541,11 @@ pub fn renamed_iri_at(
 /// `<full IRI>`, `prefix:local` (with `prefixes`), or a local name that
 /// replaces `old`'s after its last `#`, `/` or `:`. `Err` when the result is
 /// no valid absolute IRI (`foo bar`), which no document could hold.
-pub fn renamed_iri(old: &str, new_name: &str, prefixes: &PrefixMap) -> Result<String, String> {
+pub(crate) fn renamed_iri(
+    old: &str,
+    new_name: &str,
+    prefixes: &PrefixMap,
+) -> Result<String, String> {
     let iri = if let Some(i) = new_name.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
         i.to_string()
     } else if let Some((p, l)) = new_name.split_once(':') {
@@ -569,7 +573,7 @@ fn checked_iri(iri: String) -> Result<String, String> {
 /// JSON-LD document writes each use in its own form, never in angle
 /// brackets ([`jsonld::iri_rename`]). `Err` (the whole rename refused) when
 /// a JSON-LD use cannot be rewritten.
-pub fn rename_term(
+pub(crate) fn rename_term(
     k: &Knowledge,
     enc: Encoding,
     old: &str,
@@ -612,14 +616,6 @@ pub fn rename_term(
         }
     }
     Ok(())
-}
-
-pub fn prefix_file_uri(path: &std::path::Path) -> Option<String> {
-    if path.file_name().is_some_and(|n| n == PREFIX_FILE) {
-        path_to_uri(path)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

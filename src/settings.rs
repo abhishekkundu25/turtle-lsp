@@ -17,17 +17,17 @@ use std::path::Path;
 use std::time::Duration;
 
 /// The workspace settings file, read from the workspace root.
-pub const SETTINGS_FILE: &str = "turtle-lsp.json";
+pub(crate) const SETTINGS_FILE: &str = "turtle-lsp.json";
 
 /// The largest `turtle-lsp.json` that is read.
-pub const SETTINGS_FILE_MAX_BYTES: u64 = 1 << 20;
+pub(crate) const SETTINGS_FILE_MAX_BYTES: u64 = 1 << 20;
 
 /// The settings in `<root>/turtle-lsp.json`: a JSON object with the keys of the
 /// editor's `turtle` section, nested or dotted, optionally wrapped in a
 /// top-level `"turtle"` object. `Ok(None)` when there is no such file; `Err`
 /// with a message for the user when it cannot be read, is larger than 1 MB, is
 /// not JSON, or is not an object.
-pub fn read_settings_file(root: &Path) -> Result<Option<Value>, String> {
+pub(crate) fn read_settings_file(root: &Path) -> Result<Option<Value>, String> {
     let path = root.join(SETTINGS_FILE);
     let file = match std::fs::File::open(&path) {
         Ok(f) => f,
@@ -76,22 +76,23 @@ pub enum Layer {
 
 /// What the layers asked for and did not get.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Ignored {
+pub(crate) struct Ignored {
     /// Keys the settings file may not set that way.
-    pub untrusted: Vec<&'static str>,
+    pub(crate) untrusted: Vec<&'static str>,
     /// Keys whose number of seconds is negative or too large to hold, with
     /// the value as written.
-    pub out_of_range: Vec<(&'static str, String)>,
+    pub(crate) out_of_range: Vec<(&'static str, String)>,
 }
 
 impl Ignored {
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.untrusted.is_empty() && self.out_of_range.is_empty()
     }
 
     /// One sentence for the user, naming the keys; `None` when nothing was
     /// ignored. `source` is the file name.
-    pub fn message(&self, source: &str) -> Option<String> {
+    pub(crate) fn message(&self, source: &str) -> Option<String> {
         let mut parts = Vec::new();
         if !self.untrusted.is_empty() {
             parts.push(format!(
@@ -136,7 +137,7 @@ pub enum InlayLabels {
 
 /// How SHACL results treat `owl:imports` that are not loaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum UnresolvedImports {
+pub(crate) enum UnresolvedImports {
     /// Results the missing data could change are lowered to warnings and
     /// say so.
     #[default]
@@ -148,22 +149,22 @@ pub enum UnresolvedImports {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Prefixes available in every file (on top of any `prefixes.ttl`).
-    pub prefixes: PrefixMap,
-    pub inlay_hint_labels: InlayLabels,
-    pub shacl_enabled: bool,
+    pub(crate) prefixes: PrefixMap,
+    pub(crate) inlay_hint_labels: InlayLabels,
+    pub(crate) shacl_enabled: bool,
     /// SHACL validation is skipped when the data has more triples than this.
-    pub shacl_max_triples: u64,
+    pub(crate) shacl_max_triples: u64,
     /// Validate about a second after typing stops, not only on save.
-    pub shacl_on_type: bool,
-    pub lint_undescribed_terms: bool,
+    pub(crate) shacl_on_type: bool,
+    pub(crate) lint_undescribed_terms: bool,
     /// Fetch `owl:imports` over the network.
-    pub imports_network: bool,
-    pub imports_unresolved: UnresolvedImports,
-    pub format_line_width: u32,
+    pub(crate) imports_network: bool,
+    pub(crate) imports_unresolved: UnresolvedImports,
+    pub(crate) format_line_width: u32,
     /// "N references" lenses above the subjects a document describes.
-    pub code_lens_references: bool,
+    pub(crate) code_lens_references: bool,
     /// Diagnose the workspace files that are not open, in the background.
-    pub diagnostics_workspace: bool,
+    pub(crate) diagnostics_workspace: bool,
     /// "Run query" stops a query after this long; `None` (0) for no limit.
     pub query_timeout: Option<Duration>,
     /// "Run query" keeps at most this many rows (or triples) of an answer;
@@ -177,7 +178,7 @@ pub struct Settings {
 
 /// The default `query.maxBufferedRows`: about 1 GB of ordinary rows (about 100
 /// bytes each). The limit counts rows, so rows with long text take more.
-pub const QUERY_MAX_BUFFERED_ROWS: usize = 10_000_000;
+pub(crate) const QUERY_MAX_BUFFERED_ROWS: usize = 10_000_000;
 /// The default `query.timeoutSeconds`.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// The default `query.maxRows`.
@@ -215,7 +216,7 @@ impl Settings {
     }
 
     /// [`Settings::from_layers`], and what the layers asked for and did not get.
-    pub fn layered<'a>(
+    pub(crate) fn layered<'a>(
         layers: impl IntoIterator<Item = (Layer, &'a Value)>,
     ) -> (Settings, Ignored) {
         let mut s = Settings::default();
@@ -224,12 +225,6 @@ impl Settings {
             s.apply_layer(layer, v, &mut ignored);
         }
         (s, ignored)
-    }
-
-    /// Override the settings present in `v`, as the editor would; the rest
-    /// keep their value.
-    pub fn apply(&mut self, v: &Value) {
-        self.apply_layer(Layer::Client, v, &mut Ignored::default());
     }
 
     fn apply_layer(&mut self, layer: Layer, v: &Value, ignored: &mut Ignored) {

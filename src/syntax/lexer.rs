@@ -4,7 +4,7 @@
 //! what each one allows (`{`, `}` and `GRAPH` only mean something in TriG).
 
 // The tables live in `names`; other modules still reach them here.
-pub use super::names::{is_pn_chars, is_pn_chars_base, is_pn_chars_u};
+pub(crate) use super::names::{is_pn_chars, is_pn_chars_base, is_pn_chars_u};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -89,7 +89,7 @@ impl Token {
 }
 
 /// The message for a bare word that is not a keyword.
-pub const UNEXPECTED_WORD: &str = "Unexpected word (did you forget a prefix, e.g. `ex:`?)";
+pub(crate) const UNEXPECTED_WORD: &str = "Unexpected word (did you forget a prefix, e.g. `ex:`?)";
 
 /// What is wrong with a malformed token. A token keeps the code, and
 /// [`MESSAGES`] holds the text at that index (0 is no fault).

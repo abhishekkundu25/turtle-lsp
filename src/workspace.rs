@@ -45,13 +45,13 @@ use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub mod kinds;
+pub(crate) mod kinds;
 
 use kinds::is_watched_file;
-pub use kinds::{is_import_source, is_rdf_file, is_sparql_name, is_sparql_path};
+pub(crate) use kinds::{is_import_source, is_rdf_file, is_sparql_name, is_sparql_path};
 
-pub const PREFIX_FILE: &str = "prefixes.ttl";
-pub const SKIP_DIRS: &[&str] = &[
+pub(crate) const PREFIX_FILE: &str = "prefixes.ttl";
+pub(crate) const SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
     "target",
@@ -61,13 +61,13 @@ pub const SKIP_DIRS: &[&str] = &[
     "venv",
     "__pycache__",
 ];
-pub const MAX_FILES: usize = 20_000;
+pub(crate) const MAX_FILES: usize = 20_000;
 /// Files larger than this are not indexed (an open file is still analyzed).
-pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 /// What an open document is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DocKind {
+pub(crate) enum DocKind {
     /// Turtle, TriG, N-Triples, N-Quads or JSON-LD.
     Rdf(Syntax),
     /// A SPARQL query or update.
@@ -85,7 +85,7 @@ impl DocKind {
     /// one this server does not know, or the generic `turtle`, and the name
     /// is a SPARQL file's ([`is_sparql_name`]). Otherwise RDF, as
     /// [`Syntax::detect`] decides.
-    pub fn detect(language_id: Option<&str>, uri: &str) -> DocKind {
+    pub(crate) fn detect(language_id: Option<&str>, uri: &str) -> DocKind {
         if language_id.is_some_and(|id| id.eq_ignore_ascii_case("sparql")) {
             return DocKind::Sparql;
         }
@@ -101,7 +101,7 @@ impl DocKind {
 
 /// Which open documents a change makes due for diagnostics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Dirty {
+pub(crate) enum Dirty {
     #[default]
     None,
     /// This document (the one edited).
@@ -112,7 +112,7 @@ pub enum Dirty {
 
 /// How a file on disk changed, as the client's watchers report it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Change {
+pub(crate) enum Change {
     Created,
     Changed,
     Deleted,
@@ -122,30 +122,30 @@ pub enum Change {
 /// on (see the module doc). A plain value: a caller with nothing to act on
 /// (`batch`, tests) drops it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Effects {
+pub(crate) struct Effects {
     /// The open documents whose diagnostics are due again.
-    pub dirty: Dirty,
+    pub(crate) dirty: Dirty,
     /// Knowledge outside any one document changed (prefixes, the disk index,
     /// a context): every open document is due again, whatever `dirty` says,
     /// and so is every closed file shown by workspace diagnostics.
-    pub knowledge: bool,
+    pub(crate) knowledge: bool,
     /// The data SHACL validates changed: validate again.
-    pub shacl: bool,
+    pub(crate) shacl: bool,
     /// Indexed files whose prefixes changed, to parse again (off the main
     /// loop if the caller can) with [`Workspace::prefix_jobs`].
-    pub reparse: Vec<PathBuf>,
+    pub(crate) reparse: Vec<PathBuf>,
     /// RDF files that changed on disk and are not open, in the order
     /// reported: workspace diagnostics take them first, or forget them when
     /// they are gone.
-    pub on_disk: Vec<PathBuf>,
+    pub(crate) on_disk: Vec<PathBuf>,
     /// SPARQL files changed on disk: the closed files' diagnostics are due
     /// again, though knowledge did not change.
-    pub closed_files: bool,
+    pub(crate) closed_files: bool,
 }
 
 impl Effects {
     /// Knowledge outside any one document changed: every open document is due.
-    pub fn knowledge() -> Effects {
+    pub(crate) fn knowledge() -> Effects {
         Effects {
             dirty: Dirty::AllOpen,
             knowledge: true,
@@ -161,7 +161,7 @@ impl Effects {
     }
 
     /// Add what `other` says. Two different documents are every open one.
-    pub fn add(&mut self, other: Effects) {
+    pub(crate) fn add(&mut self, other: Effects) {
         self.dirty = match (std::mem::take(&mut self.dirty), other.dirty) {
             (Dirty::None, d) | (d, Dirty::None) => d,
             (Dirty::One(a), Dirty::One(b)) if a == b => Dirty::One(a),
@@ -180,10 +180,10 @@ fn is_prefix_uri(uri: &str) -> bool {
     uri.ends_with(&format!("/{PREFIX_FILE}"))
 }
 
-pub struct Doc {
-    pub text: String,
-    pub version: i32,
-    pub kind: DocKind,
+pub(crate) struct Doc {
+    pub(crate) text: String,
+    pub(crate) version: i32,
+    pub(crate) kind: DocKind,
     analysis: Option<Arc<Analysis>>,
     /// For a SPARQL document: its parse, until the next edit.
     query: Option<Arc<SparqlAnalysis>>,
@@ -192,7 +192,7 @@ pub struct Doc {
 }
 
 #[derive(Default)]
-pub struct Workspace {
+pub(crate) struct Workspace {
     roots: Vec<PathBuf>,
     open: FxHashMap<String, Doc>,
     disk: FxHashMap<String, Arc<Analysis>>,
@@ -291,7 +291,7 @@ fn record_contexts(uses: &ContextUses, uri: &str, asked: Vec<String>) {
 /// which documents use which contexts.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
-pub struct SharedContexts {
+pub(crate) struct SharedContexts {
     loader: Option<Arc<dyn ContextLoader>>,
     uses: ContextUses,
 }
@@ -369,7 +369,7 @@ impl ContextLoader for DocContexts<'_> {
 }
 
 /// The file a `file:` URL names. None in the browser build, which has no files.
-pub fn file_path_of(u: &url::Url) -> Option<PathBuf> {
+pub(crate) fn file_path_of(u: &url::Url) -> Option<PathBuf> {
     #[cfg(not(target_arch = "wasm32"))]
     return u.to_file_path().ok();
     #[cfg(target_arch = "wasm32")]
@@ -381,7 +381,7 @@ pub fn file_path_of(u: &url::Url) -> Option<PathBuf> {
 
 /// The `file:` URL of `path` (of the directory `path` when `dir`). None in
 /// the browser build.
-pub fn file_url_of(path: &Path, dir: bool) -> Option<url::Url> {
+pub(crate) fn file_url_of(path: &Path, dir: bool) -> Option<url::Url> {
     #[cfg(not(target_arch = "wasm32"))]
     return if dir {
         url::Url::from_directory_path(path).ok()
@@ -397,7 +397,7 @@ pub fn file_url_of(path: &Path, dir: bool) -> Option<url::Url> {
 
 /// The file name a `file:` URI ends in, decoded, without reading any file
 /// system (the browser build has none).
-pub fn file_uri_name(uri: &str) -> Option<String> {
+pub(crate) fn file_uri_name(uri: &str) -> Option<String> {
     let u = url::Url::parse(uri).ok().filter(|u| u.scheme() == "file")?;
     let last = u.path_segments()?.next_back().filter(|s| !s.is_empty())?;
     let bytes = last.as_bytes();
@@ -422,7 +422,7 @@ pub fn file_uri_name(uri: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
+pub(crate) fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let path = file_path_of(&url::Url::parse(uri).ok()?)?;
     Some(normalize_drive(path))
 }
@@ -441,7 +441,7 @@ fn normalize_drive(path: PathBuf) -> PathBuf {
 
 /// One spelling per file. Clients differ (`file:///c%3A/x` from VS Code on
 /// Windows, `file:///C:/x` elsewhere); every document is keyed by this form.
-pub fn normalize_uri(uri: &str) -> String {
+pub(crate) fn normalize_uri(uri: &str) -> String {
     if !uri.starts_with("file:") {
         return uri.to_string();
     }
@@ -450,7 +450,7 @@ pub fn normalize_uri(uri: &str) -> String {
         .unwrap_or_else(|| uri.to_string())
 }
 
-pub fn path_to_uri(path: &Path) -> Option<String> {
+pub(crate) fn path_to_uri(path: &Path) -> Option<String> {
     file_url_of(path, false).map(|u| u.to_string())
 }
 
@@ -545,7 +545,7 @@ fn prepared(a: Analysis) -> (Analysis, DocFacts) {
 }
 
 impl Workspace {
-    pub fn new(roots: Vec<PathBuf>, settings_prefixes: PrefixMap) -> Workspace {
+    pub(crate) fn new(roots: Vec<PathBuf>, settings_prefixes: PrefixMap) -> Workspace {
         Workspace {
             roots,
             settings_prefixes,
@@ -558,7 +558,7 @@ impl Workspace {
     /// Settle the one choice the server makes when it starts: with
     /// `rescan`, [`Workspace::sparql_documents`] lists the folders again on
     /// each call, because no one reports file changes.
-    pub fn set_rescan_sparql(&mut self, rescan: bool) {
+    pub(crate) fn set_rescan_sparql(&mut self, rescan: bool) {
         self.rescan_sparql = rescan;
     }
 
@@ -566,27 +566,27 @@ impl Workspace {
     /// default). Without them an analysis lexes its text again the first
     /// time a feature asks for them ([`Analysis::tokens`]): the choice of a
     /// caller that analyzes each document once, such as `batch`.
-    pub fn set_keep_tokens(&mut self, keep: bool) {
+    pub(crate) fn set_keep_tokens(&mut self, keep: bool) {
         self.drop_tokens = !keep;
     }
 
     // ---- state ----
 
     /// The workspace folders, in the order the client gave them.
-    pub fn roots(&self) -> &[PathBuf] {
+    pub(crate) fn roots(&self) -> &[PathBuf] {
         &self.roots
     }
 
     /// The prefixes the settings declare (`turtle.prefixes`).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn settings_prefixes(&self) -> &PrefixMap {
+    pub(crate) fn settings_prefixes(&self) -> &PrefixMap {
         &self.settings_prefixes
     }
 
     /// Replace the settings prefixes: every open document is analyzed again,
     /// and the indexed files whose prefixes differ now are to be parsed
     /// again.
-    pub fn set_settings_prefixes(&mut self, prefixes: PrefixMap) -> Effects {
+    pub(crate) fn set_settings_prefixes(&mut self, prefixes: PrefixMap) -> Effects {
         self.settings_prefixes = prefixes;
         Effects {
             shacl: true,
@@ -596,34 +596,36 @@ impl Workspace {
     }
 
     /// Whether `uri` is an open document.
-    pub fn is_open(&self, uri: &str) -> bool {
+    pub(crate) fn is_open(&self, uri: &str) -> bool {
         self.open.contains_key(uri)
     }
 
     /// The open documents' URIs, in no particular order.
-    pub fn open_uris(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn open_uris(&self) -> impl Iterator<Item = &str> {
         self.open.keys().map(String::as_str)
     }
 
     /// The version the client gave the open document `uri`.
-    pub fn version(&self, uri: &str) -> Option<i32> {
+    pub(crate) fn version(&self, uri: &str) -> Option<i32> {
         self.open.get(uri).map(|d| d.version)
     }
 
     /// What the open document `uri` is.
-    pub fn doc_kind(&self, uri: &str) -> Option<DocKind> {
+    pub(crate) fn doc_kind(&self, uri: &str) -> Option<DocKind> {
         self.open.get(uri).map(|d| d.kind)
     }
 
     /// Whether `uri` has an indexed copy from disk. An open RDF document
     /// that is not a cached import has none: its open text replaces the
     /// copy until it is closed ([`Workspace::open_doc_as`]).
-    pub fn is_indexed(&self, uri: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn is_indexed(&self, uri: &str) -> bool {
         self.disk.contains_key(uri)
     }
 
     /// The URIs of the indexed copies from disk, in no particular order.
-    pub fn indexed_uris(&self) -> impl Iterator<Item = &str> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn indexed_uris(&self) -> impl Iterator<Item = &str> {
         self.disk.keys().map(String::as_str)
     }
 
@@ -641,14 +643,14 @@ impl Workspace {
 
     /// Load JSON-LD contexts with [`loader::for_platform`]: the network is
     /// used only when `network` (`imports.network`, `--network`) is on.
-    pub fn set_network(&mut self, network: bool) {
+    pub(crate) fn set_network(&mut self, network: bool) {
         self.set_context_loader(loader::for_platform(network));
     }
 
     /// Load JSON-LD contexts with `loader` from now on: open JSON-LD
     /// documents are analyzed again, and indexed ones that use a web
     /// context are parsed again.
-    pub fn set_context_loader(&mut self, loader: Arc<dyn ContextLoader>) {
+    pub(crate) fn set_context_loader(&mut self, loader: Arc<dyn ContextLoader>) {
         self.contexts = Some(loader);
         for d in self.open.values_mut() {
             if d.kind == DocKind::Rdf(Syntax::JsonLd) {
@@ -673,7 +675,7 @@ impl Workspace {
     /// The context loader and the record of context uses, for a workspace
     /// that parses files for this one ([`Workspace::use_shared_contexts`]).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn shared_contexts(&self) -> SharedContexts {
+    pub(crate) fn shared_contexts(&self) -> SharedContexts {
         SharedContexts {
             loader: self.contexts.clone(),
             uses: self.context_uses.clone(),
@@ -683,7 +685,7 @@ impl Workspace {
     /// Load contexts as the workspace that shared them does, and record
     /// which documents use which in its record.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn use_shared_contexts(&mut self, shared: SharedContexts) {
+    pub(crate) fn use_shared_contexts(&mut self, shared: SharedContexts) {
         self.contexts = shared.loader;
         self.context_uses = shared.uses;
     }
@@ -704,7 +706,7 @@ impl Workspace {
     /// fetch failed): the documents that use it are analyzed or parsed
     /// again.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn context_fetched(&mut self, url: &str) -> Effects {
+    pub(crate) fn context_fetched(&mut self, url: &str) -> Effects {
         if self.context_changed(url, true) {
             Effects {
                 shacl: true,
@@ -719,7 +721,7 @@ impl Workspace {
     /// saved or closed, a file changed on disk, a fetch arrived): the open
     /// documents that use it are analyzed again, and, with `disk`, the
     /// indexed ones are parsed again. Whether any document uses it.
-    pub fn context_changed(&mut self, url: &str, disk: bool) -> bool {
+    pub(crate) fn context_changed(&mut self, url: &str, disk: bool) -> bool {
         let key = normalize_uri(url);
         let users =
             self.context_users(|u| u == url || (u.starts_with("file:") && normalize_uri(u) == key));
@@ -739,21 +741,21 @@ impl Workspace {
 
     /// An open document that is a cached copy of an import: analyzed, but
     /// neither registered with the knowledge index nor diagnosed.
-    pub fn is_cached_import(&self, uri: &str) -> bool {
+    pub(crate) fn is_cached_import(&self, uri: &str) -> bool {
         self.open.get(uri).is_some_and(|d| d.cached_import)
     }
 
     // ---- documents ----
 
     /// The kind comes from the URI's extension.
-    pub fn open_doc(&mut self, uri: String, text: String, version: i32) -> Effects {
+    pub(crate) fn open_doc(&mut self, uri: String, text: String, version: i32) -> Effects {
         let kind = DocKind::detect(None, &uri);
         self.open_doc_as(uri, text, version, kind)
     }
 
     /// Open a document. The document is due for diagnostics; opening a
     /// prefixes.ttl or a context file is an edit of it ([`Workspace::change_doc`]).
-    pub fn open_doc_as(
+    pub(crate) fn open_doc_as(
         &mut self,
         uri: String,
         text: String,
@@ -792,7 +794,7 @@ impl Workspace {
     /// follow when it is saved or closed (re-reading the workspace per
     /// keystroke stalls). An edit to a context file analyzes the open
     /// documents that use it again.
-    pub fn change_doc(
+    pub(crate) fn change_doc(
         &mut self,
         uri: &str,
         version: i32,
@@ -859,7 +861,7 @@ impl Workspace {
     /// The open document `uri` was saved: a saved prefixes.ttl lists the
     /// indexed files it serves whose prefixes differ now, a saved context
     /// file parses the indexed files that use it again, and SHACL is due.
-    pub fn save_doc(&mut self, uri: &str) -> Effects {
+    pub(crate) fn save_doc(&mut self, uri: &str) -> Effects {
         let mut fx = Effects {
             shacl: true,
             ..Effects::default()
@@ -880,7 +882,7 @@ impl Workspace {
     /// ([`Workspace::reindex_disk_file`]). Closing a SPARQL document leaves
     /// the index untouched. Unsaved edits to a context file or a prefixes.ttl
     /// are gone with the buffer: what they changed changes back.
-    pub fn close_doc(&mut self, uri: &str) -> Effects {
+    pub(crate) fn close_doc(&mut self, uri: &str) -> Effects {
         let gone = self.open.remove(uri);
         if !gone.is_some_and(|d| d.cached_import || d.kind == DocKind::Sparql) {
             // Only what the scan would index goes back to the index: an RDF file
@@ -923,7 +925,7 @@ impl Workspace {
 
     /// The knowledge index, after analyzing open documents edited since the
     /// last call. Several are analyzed in parallel.
-    pub fn knowledge(&mut self) -> &Knowledge {
+    pub(crate) fn knowledge(&mut self) -> &Knowledge {
         let stale: Vec<(String, Syntax)> = self
             .open
             .iter()
@@ -976,13 +978,13 @@ impl Workspace {
 
     /// Read-only sources (e.g. imported ontologies): they add facts to the
     /// knowledge index but are never diagnosed.
-    pub fn knowledge_mut(&mut self) -> &mut Knowledge {
+    pub(crate) fn knowledge_mut(&mut self) -> &mut Knowledge {
         &mut self.knowledge
     }
 
     /// The RDF analysis of `uri`: the open document's, else the indexed
     /// copy's. `None` for a SPARQL document (see [`Workspace::sparql`]).
-    pub fn analysis(&mut self, uri: &str) -> Option<Arc<Analysis>> {
+    pub(crate) fn analysis(&mut self, uri: &str) -> Option<Arc<Analysis>> {
         let syntax = match self.open.get(uri) {
             Some(d) if d.analysis.is_some() => return d.analysis.clone(),
             Some(Doc {
@@ -1019,7 +1021,7 @@ impl Workspace {
     }
 
     /// Whether `uri` is an open SPARQL document.
-    pub fn is_sparql(&self, uri: &str) -> bool {
+    pub(crate) fn is_sparql(&self, uri: &str) -> bool {
         self.open
             .get(uri)
             .is_some_and(|d| d.kind == DocKind::Sparql)
@@ -1027,7 +1029,7 @@ impl Workspace {
 
     /// The parse of the open SPARQL document `uri` (one parse per version),
     /// or `None` when `uri` is no open SPARQL document.
-    pub fn sparql(&mut self, uri: &str) -> Option<Arc<SparqlAnalysis>> {
+    pub(crate) fn sparql(&mut self, uri: &str) -> Option<Arc<SparqlAnalysis>> {
         match self.open.get(uri) {
             Some(d) if d.kind != DocKind::Sparql => return None,
             Some(d) if d.query.is_some() => return d.query.clone(),
@@ -1057,7 +1059,7 @@ impl Workspace {
     /// saying so is not found until the prefixes change; without it
     /// ([`Workspace::rescan_sparql`]), each call lists the folders again to
     /// find new files, and parses only those and the ones written since.
-    pub fn sparql_documents(&mut self) -> Vec<Arc<SparqlAnalysis>> {
+    pub(crate) fn sparql_documents(&mut self) -> Vec<Arc<SparqlAnalysis>> {
         let open: Vec<String> = self
             .open
             .iter()
@@ -1139,7 +1141,7 @@ impl Workspace {
     /// ones that are SPARQL files the scan would take, drop the others. All
     /// in one parallel pass. Nothing is read before the first
     /// [`Workspace::sparql_documents`].
-    pub fn sparql_files_changed(&mut self, paths: &[PathBuf]) {
+    pub(crate) fn sparql_files_changed(&mut self, paths: &[PathBuf]) {
         let Some(mut files) = self.sparql_files.take() else {
             return;
         };
@@ -1187,7 +1189,7 @@ impl Workspace {
 
     // ---- prefixes ----
 
-    pub fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
+    pub(crate) fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
         self.external_prefixes_as(uri, Syntax::detect(None, uri))
     }
 
@@ -1296,7 +1298,7 @@ impl Workspace {
     }
 
     /// The prefixes.ttl that supplies prefixes to files in `dir`, if any.
-    pub fn find_prefix_file(&self, dir: &Path) -> Option<PathBuf> {
+    pub(crate) fn find_prefix_file(&self, dir: &Path) -> Option<PathBuf> {
         find_prefix_file(&self.roots, dir)
     }
 
@@ -1398,7 +1400,7 @@ impl Workspace {
 
     /// The RDF files under `roots` (see [`scan_roots_matching`]).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn scan_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    pub(crate) fn scan_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         scan_roots_matching(roots, is_rdf_file).paths
     }
 
@@ -1416,13 +1418,13 @@ impl Workspace {
     /// Whether `path` is somewhere the index looks: below a root, in no
     /// hidden or skipped directory. Changes elsewhere (`node_modules`, a
     /// file outside the workspace) are no concern of the server's.
-    pub fn watched(&self, path: &Path) -> bool {
+    pub(crate) fn watched(&self, path: &Path) -> bool {
         self.in_area(path, false)
     }
 
     /// [`Workspace::watched`] for a directory: the directory itself counts
     /// too.
-    pub fn watched_dir(&self, path: &Path) -> bool {
+    pub(crate) fn watched_dir(&self, path: &Path) -> bool {
         self.in_area(path, true)
     }
 
@@ -1447,7 +1449,7 @@ impl Workspace {
     }
 
     /// Parse files in parallel and add them to the disk index.
-    pub fn index_paths(&mut self, paths: Vec<PathBuf>) {
+    pub(crate) fn index_paths(&mut self, paths: Vec<PathBuf>) {
         #[cfg(test)]
         INDEX_PASSES.with(|c| c.set(c.get() + 1));
         let parsed = self.parse_paths(paths);
@@ -1456,7 +1458,7 @@ impl Workspace {
 
     /// Add analyses parsed elsewhere (the initial index, built on another
     /// thread). With `replace` false, files indexed meanwhile are kept.
-    pub fn add_disk(&mut self, files: Vec<(String, Analysis)>, replace: bool) {
+    pub(crate) fn add_disk(&mut self, files: Vec<(String, Analysis)>, replace: bool) {
         let files: Vec<(String, Arc<Analysis>, DocFacts)> = files
             .into_par_iter()
             .filter(|(uri, _)| !self.open.contains_key(uri))
@@ -1477,14 +1479,14 @@ impl Workspace {
     /// disk meanwhile, so that [`Workspace::merge_initial_index`] does not
     /// undo it with what the index read before.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn expect_initial_index(&mut self) {
+    pub(crate) fn expect_initial_index(&mut self) {
         self.touched = Some(Touched::default());
     }
 
     /// Add the initial index, built elsewhere, without the files and
     /// folders that changed on disk since [`Workspace::expect_initial_index`]
     /// (those are as the changes left them), and files indexed meanwhile.
-    pub fn merge_initial_index(&mut self, files: Vec<(String, Analysis)>) {
+    pub(crate) fn merge_initial_index(&mut self, files: Vec<(String, Analysis)>) {
         let touched = self.touched.take().unwrap_or_default();
         let files = files
             .into_iter()
@@ -1504,7 +1506,7 @@ impl Workspace {
     }
 
     /// The prefixes to parse each of `paths` with.
-    pub fn prefix_jobs(&mut self, paths: Vec<PathBuf>) -> Vec<ParseJob> {
+    pub(crate) fn prefix_jobs(&mut self, paths: Vec<PathBuf>) -> Vec<ParseJob> {
         paths
             .into_iter()
             .filter_map(|path| {
@@ -1522,7 +1524,7 @@ impl Workspace {
     }
 
     /// What parsing files needs of the workspace, to do it on another thread.
-    pub fn reader(&self) -> Reader {
+    pub(crate) fn reader(&self) -> Reader {
         Reader {
             roots: self.roots.clone(),
             contexts: self.contexts(),
@@ -1531,7 +1533,7 @@ impl Workspace {
     }
 
     /// Parse files in parallel, without adding them to anything.
-    pub fn parse_paths(&mut self, paths: Vec<PathBuf>) -> Vec<(String, Analysis)> {
+    pub(crate) fn parse_paths(&mut self, paths: Vec<PathBuf>) -> Vec<(String, Analysis)> {
         let jobs = self.prefix_jobs(paths);
         let contexts = self.contexts();
         parse_files(
@@ -1550,7 +1552,7 @@ impl Workspace {
     /// ([`Reader::parse`]), but only those still closed, still indexed as
     /// they were when the parse began, and parsed with the prefixes they
     /// have now. How many were replaced.
-    pub fn add_reparsed(&mut self, files: Vec<Reparsed>) -> usize {
+    pub(crate) fn add_reparsed(&mut self, files: Vec<Reparsed>) -> usize {
         let mut current = Vec::new();
         for Reparsed { uri, analysis, was } in files {
             let unchanged = match (self.disk.get(&uri), &was) {
@@ -1574,7 +1576,7 @@ impl Workspace {
     /// disk (it is not open): parse it again, or drop it when it is gone or
     /// no longer belongs in it (`Workspace::fits`). Whether the index
     /// changed.
-    pub fn reindex_disk_file(&mut self, path: &Path) -> bool {
+    pub(crate) fn reindex_disk_file(&mut self, path: &Path) -> bool {
         self.reindex_disk_files(&[path.to_path_buf()])
     }
 
@@ -1583,7 +1585,7 @@ impl Workspace {
     /// the others dropped. What is read is the files as they are now, so a
     /// path listed twice is one file, and the limit of [`MAX_FILES`] counts the
     /// files this adds. Whether the index changed.
-    pub fn reindex_disk_files(&mut self, paths: &[PathBuf]) -> bool {
+    pub(crate) fn reindex_disk_files(&mut self, paths: &[PathBuf]) -> bool {
         let mut seen = rustc_hash::FxHashSet::default();
         let mut room = MAX_FILES.saturating_sub(self.disk.len());
         let mut read = Vec::new();
@@ -1626,7 +1628,7 @@ impl Workspace {
 
     /// The directories `dirs` were deleted or renamed: drop the files indexed
     /// below them, in one pass over the index. Whether there were any.
-    pub fn remove_under_any(&mut self, dirs: &[PathBuf]) -> bool {
+    pub(crate) fn remove_under_any(&mut self, dirs: &[PathBuf]) -> bool {
         if dirs.is_empty() {
             return false;
         }
@@ -1661,7 +1663,7 @@ impl Workspace {
     /// A changed prefixes.ttl is taken first, so the files of the same
     /// change are parsed once, with the new prefixes; the indexed files it
     /// serves and that did not change are left to parse again.
-    pub fn files_changed(&mut self, changes: &[(PathBuf, Change)]) -> Effects {
+    pub(crate) fn files_changed(&mut self, changes: &[(PathBuf, Change)]) -> Effects {
         let mut fx = Effects::default();
         let mut prefix_files: Vec<PathBuf> = Vec::new();
         let mut gone_dirs: Vec<PathBuf> = Vec::new();
@@ -1736,7 +1738,7 @@ impl Workspace {
 
 /// A file to parse, with the prefixes to parse it with, and the indexed copy
 /// it replaces, if any.
-pub struct ParseJob {
+pub(crate) struct ParseJob {
     uri: String,
     path: PathBuf,
     external: Arc<PrefixMap>,
@@ -1744,7 +1746,7 @@ pub struct ParseJob {
 }
 
 /// A file parsed again, and the indexed copy it was meant to replace.
-pub struct Reparsed {
+pub(crate) struct Reparsed {
     uri: String,
     analysis: Analysis,
     was: Option<Arc<Analysis>>,
@@ -1752,7 +1754,7 @@ pub struct Reparsed {
 
 /// What parsing files needs of a workspace, apart from the workspace: it can
 /// be handed to another thread ([`Workspace::reader`]).
-pub struct Reader {
+pub(crate) struct Reader {
     roots: Vec<PathBuf>,
     contexts: Arc<dyn ContextLoader>,
     uses: ContextUses,
@@ -1761,7 +1763,7 @@ pub struct Reader {
 impl Reader {
     /// Parse files in parallel, without adding them to anything. Open
     /// documents are not seen: JSON-LD contexts come from the files.
-    pub fn parse(&self, jobs: Vec<ParseJob>) -> Vec<Reparsed> {
+    pub(crate) fn parse(&self, jobs: Vec<ParseJob>) -> Vec<Reparsed> {
         parse_files(
             &FxHashMap::default(),
             &self.roots,
@@ -1812,15 +1814,15 @@ fn skipped_dir(name: &str) -> bool {
 
 /// What a scan of the roots found.
 #[derive(Debug, Default)]
-pub struct Scan {
+pub(crate) struct Scan {
     /// The files `wanted` accepted, in path order.
-    pub paths: Vec<PathBuf>,
+    pub(crate) paths: Vec<PathBuf>,
     /// More matching files exist than the cap allows; the walk stopped at the
     /// cap, so `paths` is the first part of the path order.
-    pub truncated: bool,
+    pub(crate) truncated: bool,
     /// Matching files over [`MAX_FILE_BYTES`], left out. Not complete when
     /// the scan was `truncated`.
-    pub too_large: Vec<PathBuf>,
+    pub(crate) too_large: Vec<PathBuf>,
 }
 
 impl IntoIterator for Scan {
@@ -1835,14 +1837,18 @@ impl IntoIterator for Scan {
 /// The files under `roots` that `wanted` accepts, skipping hidden and
 /// [`SKIP_DIRS`] directories and files over [`MAX_FILE_BYTES`], at most
 /// [`MAX_FILES`] of them.
-pub fn scan_roots_matching(roots: &[PathBuf], wanted: fn(&Path) -> bool) -> Scan {
+pub(crate) fn scan_roots_matching(roots: &[PathBuf], wanted: fn(&Path) -> bool) -> Scan {
     scan_roots_capped(roots, wanted, MAX_FILES)
 }
 
 /// [`scan_roots_matching`] with a cap of `max_files`. One walk, in path order
 /// (the entries of each folder sorted by name, a folder visited in place), so
 /// what a cap leaves out does not depend on the file system's order.
-pub fn scan_roots_capped(roots: &[PathBuf], wanted: fn(&Path) -> bool, max_files: usize) -> Scan {
+pub(crate) fn scan_roots_capped(
+    roots: &[PathBuf],
+    wanted: fn(&Path) -> bool,
+    max_files: usize,
+) -> Scan {
     /// The files and folders in `dir` by name: (name, path, is a folder).
     /// Links and what cannot be read are left out.
     fn entries(dir: &Path) -> std::vec::IntoIter<(std::ffi::OsString, PathBuf, bool)> {
@@ -1901,7 +1907,7 @@ pub fn scan_roots_capped(roots: &[PathBuf], wanted: fn(&Path) -> bool, max_files
 
 /// The prefixes.ttl that supplies prefixes to files in `dir` (searching up to
 /// the innermost workspace root), if any.
-pub fn find_prefix_file(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
+pub(crate) fn find_prefix_file(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
     let root = roots
         .iter()
         .filter(|r| dir.starts_with(r))

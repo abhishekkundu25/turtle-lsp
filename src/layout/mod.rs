@@ -18,7 +18,7 @@ pub(crate) use printer::{Blank, Groups, Printer, Semicolons, Style};
 pub(crate) use terms::{Obj, Po, Term};
 
 /// The line width the formatters fill when the client gives none.
-pub const DEFAULT_LINE_WIDTH: usize = 100;
+pub(crate) const DEFAULT_LINE_WIDTH: usize = 100;
 
 /// How a formatter indents and how wide it fills a line.
 #[derive(Clone, Debug)]

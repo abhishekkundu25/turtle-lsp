@@ -58,7 +58,7 @@ pub struct JsonDoc {
     pub errors: Vec<SyntaxError>,
     /// Warnings about valid JSON (`json-lone-surrogate`,
     /// `json-duplicate-key`), in text order; see the module doc.
-    pub warnings: Vec<SyntaxError>,
+    pub(crate) warnings: Vec<SyntaxError>,
 }
 
 /// A JSON value and where it is written.
@@ -68,7 +68,7 @@ pub struct Json {
     /// The whole value: a string with its quotes, an object or array from
     /// its opening bracket to its closing one (or to its last member when
     /// unclosed).
-    pub span: Span,
+    pub(crate) span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,9 +91,9 @@ pub enum Value {
 pub struct Array {
     pub items: Vec<Json>,
     /// The `[`.
-    pub open: Span,
+    pub(crate) open: Span,
     /// The `]`; `None` when the array is unclosed.
-    pub close: Option<Span>,
+    pub(crate) close: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,9 +101,9 @@ pub struct Object {
     /// Members in text order, duplicates included.
     pub members: Vec<Member>,
     /// The `{`.
-    pub open: Span,
+    pub(crate) open: Span,
     /// The `}`; `None` when the object is unclosed.
-    pub close: Option<Span>,
+    pub(crate) close: Option<Span>,
 }
 
 /// A `"key": value` pair.
@@ -112,20 +112,20 @@ pub struct Member {
     /// The key with its escapes decoded.
     pub key: Box<str>,
     /// The key with its quotes.
-    pub key_span: Span,
+    pub(crate) key_span: Span,
     pub value: Json,
 }
 
 impl Object {
     /// The member for `key`; with duplicate keys, the last one (JSON-LD
     /// processors read objects as maps).
-    pub fn get(&self, key: &str) -> Option<&Member> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Member> {
         self.members.iter().rev().find(|m| &*m.key == key)
     }
 
     /// The members as a map reads them, in text order: with duplicate keys,
     /// only the last one. Linear in the member count.
-    pub fn entries(&self) -> Vec<&Member> {
+    pub(crate) fn entries(&self) -> Vec<&Member> {
         let last = last_per_key(&self.members);
         self.members
             .iter()
@@ -158,21 +158,22 @@ fn last_per_key(members: &[Member]) -> Vec<bool> {
 }
 
 impl Json {
-    pub fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&str> {
         match &self.value {
             Value::String(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_object(&self) -> Option<&Object> {
+    pub(crate) fn as_object(&self) -> Option<&Object> {
         match &self.value {
             Value::Object(o) => Some(o),
             _ => None,
         }
     }
 
-    pub fn as_array(&self) -> Option<&Array> {
+    #[cfg(test)]
+    pub(crate) fn as_array(&self) -> Option<&Array> {
         match &self.value {
             Value::Array(a) => Some(a),
             _ => None,
@@ -182,15 +183,15 @@ impl Json {
 
 /// How deep objects and arrays may nest. A deeper value is reported and
 /// skipped, so no input can overflow the stack.
-pub const MAX_DEPTH: u32 = 256;
+pub(crate) const MAX_DEPTH: u32 = 256;
 
 /// After this many errors the rest of the document is not checked (and no
 /// more warnings are kept).
-pub const MAX_ERRORS: usize = 100;
+pub(crate) const MAX_ERRORS: usize = 100;
 
 /// What a [`Token`] is, for highlighting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenKind {
+pub(crate) enum TokenKind {
     LBrace,
     RBrace,
     LBracket,
@@ -210,14 +211,14 @@ pub enum TokenKind {
 
 /// A lexical token of a JSON text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub span: Span,
+pub(crate) struct Token {
+    pub(crate) kind: TokenKind,
+    pub(crate) span: Span,
 }
 
 /// The tokens of a JSON text, in order, without whitespace. Never fails:
 /// anything that is not JSON is a [`TokenKind::Invalid`] token.
-pub fn tokens(text: &str) -> Vec<Token> {
+pub(crate) fn tokens(text: &str) -> Vec<Token> {
     let mut p = Parser::new(text, true);
     let mut out = Vec::new();
     loop {
@@ -428,10 +429,10 @@ fn hex4(b: &[u8], at: usize, end: usize) -> Option<u32> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StringScan {
     /// After the closing quote; unclosed, the end of the line (or text).
-    pub end: usize,
-    pub closed: bool,
+    pub(crate) end: usize,
+    pub(crate) closed: bool,
     /// Has a backslash.
-    pub escaped: bool,
+    pub(crate) escaped: bool,
 }
 
 /// Scans the string whose opening `"` is at `open` in `b`, the way the
@@ -480,7 +481,7 @@ pub(crate) fn scan_string(b: &[u8], open: usize, mut control: impl FnMut(usize))
 /// offset, or (unclosed) the end of its line or of the text. The flag says
 /// whether it closed. The same string [`tokens`] gives, for scans of text
 /// that may be half typed.
-pub fn string_end(b: &[u8], open: usize) -> (usize, bool) {
+pub(crate) fn string_end(b: &[u8], open: usize) -> (usize, bool) {
     let s = scan_string(b, open, |_| {});
     if s.closed {
         (s.end - 1, true)

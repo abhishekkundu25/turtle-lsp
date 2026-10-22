@@ -32,11 +32,11 @@ use std::sync::Arc;
 
 /// A term definition in [`SourceIndex::definitions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DefId(pub u32);
+pub(crate) struct DefId(pub u32);
 
 /// Where a term definition is written.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Origin {
+pub(crate) enum Origin {
     /// In this document.
     Document,
     /// In a workspace context file (a `file:` URL).
@@ -56,7 +56,8 @@ impl Origin {
     }
 
     /// The context document's URL; `None` for this document.
-    pub fn url(&self) -> Option<&str> {
+    #[cfg(test)]
+    pub(crate) fn url(&self) -> Option<&str> {
         match self {
             Origin::Document => None,
             Origin::File(u) | Origin::Remote(u) => Some(u),
@@ -66,23 +67,23 @@ impl Origin {
 
 /// A term definition and where it is written.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Definition {
-    pub term: Arc<str>,
-    pub origin: Origin,
+pub(crate) struct Definition {
+    pub(crate) term: Arc<str>,
+    pub(crate) origin: Origin,
     /// The term's key, without quotes, in the origin's text.
-    pub key: Span,
+    pub(crate) key: Span,
     /// The IRI mapping's string (`@id`, `@reverse` or the whole
     /// definition), without quotes, in the origin's text; `None` when the
     /// key spells the IRI.
-    pub iri_span: Option<Span>,
+    pub(crate) iri_span: Option<Span>,
     /// What the term maps to: an IRI, a blank node identifier or a keyword
     /// (an alias); `None` for a term mapped to `null`.
-    pub iri: Option<Arc<str>>,
+    pub(crate) iri: Option<Arc<str>>,
 }
 
 /// What a use is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum UseRole {
+pub(crate) enum UseRole {
     /// A key of a JSON object.
     Key,
     /// A `@type` value, or a key of a `@type` map.
@@ -95,7 +96,7 @@ pub enum UseRole {
 /// How a use is written: the steps of IRI Expansion (JSON-LD 1.1
 /// Processing Algorithms §4.3) that gave its IRI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum UseKind {
+pub(crate) enum UseKind {
     /// A keyword (the use's `iri`).
     Keyword,
     /// A term aliasing a keyword (the use's `iri`).
@@ -119,20 +120,20 @@ pub enum UseKind {
 /// A key or value expansion read, in text order in
 /// [`SourceIndex::uses`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Use {
+pub(crate) struct Use {
     /// The string, without quotes.
-    pub span: Span,
-    pub role: UseRole,
+    pub(crate) span: Span,
+    pub(crate) role: UseRole,
     /// What it expands to: an IRI (relative when no base resolved it), a
     /// blank node identifier or a keyword; `None` for a term mapped to
     /// `null`.
-    pub iri: Option<Arc<str>>,
-    pub kind: UseKind,
+    pub(crate) iri: Option<Arc<str>>,
+    pub(crate) kind: UseKind,
 }
 
 impl Use {
     /// The definition of the term (or alias) this use is.
-    pub fn definition(&self) -> Option<DefId> {
+    pub(crate) fn definition(&self) -> Option<DefId> {
         match self.kind {
             UseKind::Term { definition } | UseKind::Alias { definition } => Some(definition),
             _ => None,
@@ -142,7 +143,7 @@ impl Use {
 
 /// What a [`ContextString`] is in its context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContextRole {
+pub(crate) enum ContextRole {
     /// The key of a term defined by an object with no `@id` or `@reverse`:
     /// the key is the term's IRI (or compact IRI).
     KeyIsIri,
@@ -165,7 +166,7 @@ pub enum ContextRole {
 impl ContextRole {
     /// The string may be a term as a whole (a key is only ever read for the
     /// prefix of its compact IRI).
-    pub fn names_a_term(self) -> bool {
+    pub(crate) fn names_a_term(self) -> bool {
         !matches!(self, ContextRole::Key | ContextRole::KeyIsIri)
     }
 }
@@ -174,27 +175,27 @@ impl ContextRole {
 /// names where it is written. Only strings that are read as IRIs or terms
 /// are here, not `@container` or `@language` values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContextString {
+pub(crate) struct ContextString {
     /// The string, without quotes.
-    pub span: Span,
-    pub role: ContextRole,
+    pub(crate) span: Span,
+    pub(crate) role: ContextRole,
     /// The definition of the term this whole string is, in the contexts in
     /// force at the string (`None` for a key, a keyword, and a string that
     /// is no term there).
-    pub term: Option<DefId>,
+    pub(crate) term: Option<DefId>,
     /// The definition of the prefix before the first colon of the string
     /// (`ex` for `ex:name`), when the string is `prefix:suffix` and the
     /// prefix is a term there.
-    pub prefix: Option<DefId>,
+    pub(crate) prefix: Option<DefId>,
 }
 
 /// A JSON object expansion read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Scope {
+pub(crate) struct Scope {
     /// From the `{` to the `}`, or to the last member when unclosed.
-    pub span: Span,
+    pub(crate) span: Span,
     /// Has its `}`.
-    pub closed: bool,
+    pub(crate) closed: bool,
     context: u32,
     /// The enclosing scope (`NONE` for a top-level one).
     parent: u32,
@@ -207,32 +208,32 @@ const NONE: u32 = u32::MAX;
 
 /// What expansion records about the text of a JSON-LD document.
 #[derive(Clone, Debug, Default)]
-pub struct SourceIndex {
+pub(crate) struct SourceIndex {
     /// Sorted by span.
-    pub uses: Vec<Use>,
+    pub(crate) uses: Vec<Use>,
     /// Indexed by [`DefId`].
-    pub definitions: Vec<Definition>,
+    pub(crate) definitions: Vec<Definition>,
     /// The strings of the contexts expansion processed, in text order.
-    pub context_strings: Vec<ContextString>,
+    pub(crate) context_strings: Vec<ContextString>,
     /// Sorted by start, outer before inner.
     scopes: Vec<Scope>,
     contexts: Vec<ActiveContext>,
 }
 
 impl SourceIndex {
-    pub fn definition(&self, id: DefId) -> &Definition {
+    pub(crate) fn definition(&self, id: DefId) -> &Definition {
         &self.definitions[id.0 as usize]
     }
 
     /// The use whose string contains `offset` (its end included).
-    pub fn use_at(&self, offset: u32) -> Option<&Use> {
+    pub(crate) fn use_at(&self, offset: u32) -> Option<&Use> {
         let i = self.uses.partition_point(|u| u.span.start <= offset);
         self.uses[..i].last().filter(|u| u.span.contains(offset))
     }
 
     /// The uses of the term (or alias) `id`, and the compact IRIs whose
     /// prefix it is.
-    pub fn uses_of(&self, id: DefId) -> impl Iterator<Item = &Use> {
+    pub(crate) fn uses_of(&self, id: DefId) -> impl Iterator<Item = &Use> {
         self.uses.iter().filter(move |u| match u.kind {
             UseKind::Term { definition } | UseKind::Alias { definition } => definition == id,
             UseKind::Compact { prefix, .. } => prefix == id,
@@ -241,7 +242,7 @@ impl SourceIndex {
     }
 
     /// The definition written in this document whose key contains `offset`.
-    pub fn definition_at(&self, offset: u32) -> Option<DefId> {
+    pub(crate) fn definition_at(&self, offset: u32) -> Option<DefId> {
         self.definitions
             .iter()
             .position(|d| d.origin == Origin::Document && d.key.contains(offset))
@@ -249,7 +250,7 @@ impl SourceIndex {
     }
 
     /// Every scope, sorted by start, outer before inner.
-    pub fn scopes(&self) -> &[Scope] {
+    pub(crate) fn scopes(&self) -> &[Scope] {
         &self.scopes
     }
 
@@ -257,7 +258,7 @@ impl SourceIndex {
     /// before its `}`). An unclosed object reaches as far as the object
     /// around it, so a cursor after a syntax error still finds the context
     /// it is typing in.
-    pub fn scope_at(&self, offset: u32) -> Option<&Scope> {
+    pub(crate) fn scope_at(&self, offset: u32) -> Option<&Scope> {
         let mut i = self.scopes.partition_point(|s| s.span.start < offset);
         while i > 0 {
             let s = &self.scopes[i - 1];
@@ -273,17 +274,17 @@ impl SourceIndex {
     }
 
     /// The scope around `scope`.
-    pub fn parent(&self, scope: &Scope) -> Option<&Scope> {
+    pub(crate) fn parent(&self, scope: &Scope) -> Option<&Scope> {
         self.scopes.get(scope.parent as usize)
     }
 
     /// The active context inside `scope`.
-    pub fn context(&self, scope: &Scope) -> &ActiveContext {
+    pub(crate) fn context(&self, scope: &Scope) -> &ActiveContext {
         &self.contexts[scope.context as usize]
     }
 
     /// The active context at `offset`: [`SourceIndex::scope_at`]'s.
-    pub fn context_at(&self, offset: u32) -> Option<&ActiveContext> {
+    pub(crate) fn context_at(&self, offset: u32) -> Option<&ActiveContext> {
         self.scope_at(offset).map(|s| self.context(s))
     }
 }
@@ -319,7 +320,7 @@ enum Target {
 
 impl Builder {
     /// The id of `term`'s definition `d`.
-    pub fn define(&mut self, term: &str, d: &TermDefinition) -> DefId {
+    pub(crate) fn define(&mut self, term: &str, d: &TermDefinition) -> DefId {
         let key = d.span.unwrap_or_default();
         let next = DefId(self.index.definitions.len() as u32);
         let id = *self
@@ -341,7 +342,12 @@ impl Builder {
     /// How `s` is written, expanded in `ctx` (`vocab`: relative to
     /// `@vocab`, as keys and types are); `None` for a keyword-like string,
     /// which expands to nothing.
-    pub fn classify(&mut self, ctx: &ActiveContext, s: &str, vocab: bool) -> Option<UseKind> {
+    pub(crate) fn classify(
+        &mut self,
+        ctx: &ActiveContext,
+        s: &str,
+        vocab: bool,
+    ) -> Option<UseKind> {
         if is_keyword(s) {
             return Some(UseKind::Keyword);
         }
@@ -385,13 +391,13 @@ impl Builder {
         Some(UseKind::Relative)
     }
 
-    pub fn push_use(&mut self, u: Use) {
+    pub(crate) fn push_use(&mut self, u: Use) {
         self.index.uses.push(u);
     }
 
     /// The JSON object at `span` (`closed`: it has its `}`) is read with
     /// `ctx`.
-    pub fn scope(&mut self, span: Span, closed: bool, ctx: &ActiveContext) {
+    pub(crate) fn scope(&mut self, span: Span, closed: bool, ctx: &ActiveContext) {
         let id = ctx.content_id();
         let contexts = &mut self.index.contexts;
         let same = |i: u32, contexts: &[ActiveContext]| {
@@ -422,7 +428,12 @@ impl Builder {
     /// Records the strings of the context `value` (an object, a URL, an
     /// array of them, or `null`), which expansion processed in `before` to
     /// get `after`.
-    pub fn context_strings(&mut self, value: &Json, before: &ActiveContext, after: &ActiveContext) {
+    pub(crate) fn context_strings(
+        &mut self,
+        value: &Json,
+        before: &ActiveContext,
+        after: &ActiveContext,
+    ) {
         let mut walk = Walk {
             builder: self,
             before,
@@ -434,7 +445,7 @@ impl Builder {
     }
 
     /// The index, with the definitions `written` in the document.
-    pub fn finish(mut self, written: Vec<(Arc<str>, Arc<TermDefinition>)>) -> SourceIndex {
+    pub(crate) fn finish(mut self, written: Vec<(Arc<str>, Arc<TermDefinition>)>) -> SourceIndex {
         for (term, d) in written {
             self.define(&term, &d);
         }
