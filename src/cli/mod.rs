@@ -86,7 +86,7 @@ Options:
   --limit ROWS          print at most ROWS rows of a table
   --max-buffered-rows N stop the query once it keeps more than N rows in
                         memory to sort, group or join them (default
-                        10000000, about 1 GB; 0: never)
+                        10000000; counts rows, not bytes; 0: never)
 
 Formats:
   SELECT                table (default), json, csv or tsv

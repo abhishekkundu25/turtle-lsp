@@ -203,7 +203,9 @@ not by its extension.
   a row limit (`query.timeoutSeconds`, default 30; `query.maxRows`, default
   1000), so typing never waits for it. A query that keeps more than
   `query.maxBufferedRows` rows in memory to sort, group, deduplicate or join
-  them (default 10 000 000, about 1 GB; `0` for no limit) is stopped too.
+  them (default 10 000 000; `0` for no limit) is stopped too. The limit counts rows, not bytes:
+  ordinary rows take about 100 bytes each, but a row with long text (a
+  `GROUP_CONCAT` result, say) takes more, so memory use can pass 1 GB.
 
 Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
 queries too. SPARQL files add nothing to the workspace's knowledge, so a

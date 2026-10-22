@@ -291,7 +291,7 @@
           "type": "integer",
           "default": 10000000,
           "minimum": 0,
-          "markdownDescription": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (about 100 bytes each). `0` for no limit.",
+          "markdownDescription": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (ordinary rows take about 100 bytes each; long text values take more). `0` for no limit.",
           "scope": "window"
         },
         "turtle.trace.server": {
