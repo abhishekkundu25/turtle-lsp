@@ -1,7 +1,7 @@
 //! Turtle 1.2, TriG 1.2, N-Triples 1.2 and N-Quads 1.2 syntax: a lexer and a resilient
 //! recursive-descent parser that records the span of every term, so every
-//! editor feature reads one parse. JSON-LD documents produce the same
-//! [`Parsed`] through [`crate::jsonld`].
+//! editor feature reads one parse. JSON-LD has its own frontend, which builds
+//! the same [`Parsed`]; this module does not call it.
 
 mod iri;
 pub mod lexer;
@@ -20,7 +20,7 @@ pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 /// TriG adds graph blocks to Turtle, N-Triples is read as Turtle with every
 /// construct N-Triples forbids reported as an error, and N-Quads is N-Triples
 /// with an optional graph label before each line's `.`. JSON-LD has its own
-/// frontend ([`crate::jsonld`]) producing the same [`Parsed`].
+/// frontend, which builds the same [`Parsed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Syntax {
     #[default]

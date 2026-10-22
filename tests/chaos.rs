@@ -31,6 +31,7 @@ use turtle_lsp::features::{
     symbols,
 };
 use turtle_lsp::imports;
+use turtle_lsp::jsonld;
 use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::settings::InlayLabels;
 use turtle_lsp::sparql::{self, Document, Level, features as sparql_features};
@@ -425,9 +426,19 @@ fn pick_offset(rng: &mut Rng, text: &str) -> u32 {
     char_boundary(text, rng.below(text.len() + 1)) as u32
 }
 
+/// `text` parsed with its own frontend: JSON-LD with no remote contexts, the
+/// Turtle family with no external prefixes.
+fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>) -> Parsed {
+    if syntax == Syntax::JsonLd {
+        jsonld::parse(text, base, &jsonld::NoNetwork::default())
+    } else {
+        parse_with_base(text, &PrefixMap::default(), syntax, base)
+    }
+}
+
 fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // The parser alone: every span must be inside the text and on char boundaries.
-    let p = parse(text, &PrefixMap::default(), syntax);
+    let p = parse_doc(text, syntax, None);
     spans_are_inside(text, &p);
 
     // Import sources: catalogs and RDF/XML come from outside too.
@@ -487,12 +498,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         );
     } else {
         let out = formatted.expect("formatter refused a document without syntax errors");
-        let again = format::format(
-            &out,
-            &parse(&out, &PrefixMap::default(), syntax),
-            &a.external,
-            &opts,
-        );
+        let again = format::format(&out, &parse_doc(&out, syntax, None), &a.external, &opts);
         // Known defect (see `format_drops_a_dangling_semicolon_once`): a `;`
         // before a comment and the closing `.` is kept the first time and
         // dropped the second. Only that difference is let through.
@@ -682,7 +688,7 @@ fn code_actions_keep_the_graph(
     let syntax = a.parsed.syntax;
     let triples = |t: &str| {
         let base = a.parsed.document_base.as_deref();
-        let mut v: Vec<String> = parse_with_base(t, &PrefixMap::default(), syntax, base)
+        let mut v: Vec<String> = parse_doc(t, syntax, base)
             .triples
             .iter()
             .map(|t| format!("{:?} {:?} {:?} {:?}", t.s, t.p, t.o, t.graph))
@@ -696,12 +702,7 @@ fn code_actions_keep_the_graph(
             continue;
         };
         let after = refactor::apply(a, enc, &refactor::edits_of(a, enc, &c));
-        let reparsed = parse_with_base(
-            &after,
-            &PrefixMap::default(),
-            syntax,
-            a.parsed.document_base.as_deref(),
-        );
+        let reparsed = parse_doc(&after, syntax, a.parsed.document_base.as_deref());
         assert!(
             reparsed.errors.is_empty() && triples(&after) == before,
             "'{}' changed the graph:\n{after}",

@@ -595,28 +595,42 @@ mod tests {
     }
 
     #[test]
-    fn the_turtle_entry_point_hands_jsonld_to_this_frontend() {
-        // Turtle would report the strings and the colon; JSON only the
-        // unclosed `{`.
+    fn the_turtle_entry_point_leaves_jsonld_to_this_frontend() {
+        let text = "{\"@id\": \"ex:a\"";
         let p = crate::syntax::parse_with_base(
-            "{\"@id\": \"ex:a\"",
+            text,
             &crate::syntax::PrefixMap::default(),
             Syntax::JsonLd,
-            None,
+            Some(BASE),
         );
+        assert_eq!(p.syntax, Syntax::JsonLd);
+        assert_eq!(p.document_base.as_deref(), Some(BASE));
+        assert!(p.triples.is_empty() && p.statements.is_empty() && p.tokens.is_empty());
+        let errors: Vec<_> = p
+            .errors
+            .iter()
+            .map(|e| (e.code, e.severity, e.span, e.message.as_str()))
+            .collect();
+        assert_eq!(
+            errors,
+            [(
+                "syntax",
+                Error,
+                Span::new(0, 0),
+                "JSON-LD documents are parsed by jsonld::parse"
+            )]
+        );
+
+        // Turtle would report the strings and the colon; JSON only the
+        // unclosed `{`.
+        let p = parse(text, None, &NoNetwork::default());
         assert_eq!(p.syntax, Syntax::JsonLd);
         let errors: Vec<_> = p
             .errors
             .iter()
             .map(|e| (e.span, e.message.as_str()))
             .collect();
-        assert_eq!(
-            errors,
-            [(
-                crate::syntax::Span::new(0, 1),
-                "Unclosed object: expected '}'"
-            )]
-        );
+        assert_eq!(errors, [(Span::new(0, 1), "Unclosed object: expected '}'")]);
     }
 
     /// The parse alone, run with `cargo test --release jsonld`: the

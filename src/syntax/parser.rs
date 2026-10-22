@@ -80,9 +80,9 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
 /// [`parse`], with relative IRIs resolved against `base` (the document's own
 /// URL) until an `@base` replaces it. An invalid `base` is ignored.
 ///
-/// JSON-LD goes to [`crate::jsonld::parse`] with no remote contexts
-/// ([`crate::jsonld::NoNetwork`]); `external` does not apply to it. Callers
-/// with a context loader call [`crate::jsonld::parse`] themselves.
+/// For the Turtle family only. It never fails, but it does not read JSON-LD,
+/// which has its own frontend: given [`Syntax::JsonLd`] it returns no triples
+/// and one `syntax` error at offset 0.
 pub fn parse_with_base(
     src: &str,
     external: &PrefixMap,
@@ -90,7 +90,17 @@ pub fn parse_with_base(
     base: Option<&str>,
 ) -> Parsed {
     if syntax == Syntax::JsonLd {
-        return crate::jsonld::parse(src, base, &crate::jsonld::NoNetwork::default());
+        return Parsed {
+            syntax,
+            document_base: base.map(str::to_string),
+            errors: vec![SyntaxError {
+                span: Span::new(0, 0),
+                message: "JSON-LD documents are parsed by jsonld::parse".to_string(),
+                severity: Severity::Error,
+                code: "syntax",
+            }],
+            ..Parsed::default()
+        };
     }
     let mut all = tokenize(src);
     if syntax != Syntax::TriG {
