@@ -61,3 +61,42 @@ serialisation) is planned in the local audit folder and ticketed once wave 2 lan
 4. Turtle, TriG and N-Quads are parsed against the document URI as base (as JSON-LD is).
 5. SHACL-SPARQL *target* queries are not held to the pre-binding restrictions.
 6. Publishing waits for CI on the tagged commit.
+
+## Outcome (2026-10-22)
+
+All 25 tickets landed on `audit-2026-10`, followed by two rounds of fixes from a
+whole-branch code review. Departures from the plan:
+
+- **Order:** ticket 21 ran after ticket 15, not alongside it, because both edit
+  `src/features/*` call sites. Ticket 23 ran alone after ticket 20 so its benchmark
+  numbers were taken on an idle machine.
+- **Ticket 04:** `GROUP_CONCAT` memory is not capped (the fix is in `vendor/spareval`).
+  The README no longer promises "about 1 GB"; the limit counts rows.
+- **Ticket 06:** a SHACL check cut short by the depth limit or the step budget is a
+  warning (`shacl-failure`), so `check` exits 0 for it. An ill-formed `sh:path` is an
+  error.
+- **Ticket 07:** `geof` and `geor` have no terms, so they are no longer registered and
+  no longer offered in prefix completion.
+- **Ticket 13:** a folder created or renamed into the workspace is not indexed until
+  restart.
+- **Ticket 14:** private hosts are allowed by the environment variable
+  `TURTLE_LSP_ALLOW_PRIVATE_HOSTS`, not a setting (`src/settings.rs` was not owned).
+- **Ticket 15 and 14:** each landed as a move commit followed by a change commit
+  (ticket 15 as one commit; its step patches were kept outside the repo).
+- **Ticket 20:** 2,000 watched files take longer than the initial index (28.7 ms
+  against 20.2 ms), short of the ticket's target.
+- **Ticket 21:** directional literals expose a panic in `vendor/spareval`
+  (`ExpressionTerm::eq` has no `DirLangStringLiteral` arm). The ignored test
+  `equality_of_directional_language_strings_is_answered` names it.
+- **Ticket 22:** `CHANGELOG.md` has an `## Unreleased` section, and
+  `test/versions.test.mjs` allows it except in the release job.
+- **Review fixes:** a `turtle` configuration section now replaces the
+  `initializationOptions` layer. Results produced after the SHACL step budget runs out
+  are dropped.
+
+Known defects with no ticket: repeated `UNION` (~4,500) and `FILTER` (~8,000) still
+overflow the query evaluator; a JSON-LD span can split a multi-byte character in
+malformed input (ignored chaos test); an undecodable LSP message ends the session,
+and a large `Content-Length` is allocated up front (todo protocol tests); the
+formatter is not idempotent on a dangling `;`; the undeclared-prefix message and
+prefix completion always say `@prefix`.
