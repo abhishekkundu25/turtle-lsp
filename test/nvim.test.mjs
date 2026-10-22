@@ -33,6 +33,17 @@ const run =
     : null
 const output = run ? `${run.stdout}\n${run.stderr}` : ""
 const lines = output.split(/\r?\n/).filter((l) => /^(not )?ok - /.test(l))
+// The checks the run must report: the plan line (`1..N`) spec.lua prints, else
+// the checks written in spec.lua (those indented sit under `if` and need the
+// local-only `real` fixtures).
+const spec = path.join(fixtures, "..", "nvim", "spec.lua")
+const plan = /^1\.\.(\d+)$/m.exec(output)
+const expected = plan
+  ? Number(plan[1])
+  : fs
+      .readFileSync(spec, "utf8")
+      .split("\n")
+      .filter((l) => (fs.existsSync(path.join(fixtures, "real")) ? /^\s*check\(/ : /^check\(/).test(l)).length
 const log = path.join(home, "nvim", "lsp.log")
 
 after(() => fs.rmSync(home, { recursive: true, force: true }))
@@ -49,6 +60,15 @@ if (!run) {
 } else {
   test("nvim spec ran", () => {
     assert.ok(lines.length > 0, `no results from nvim:\n${output}`)
+  })
+  // A crash, a timeout or an early quit can still have printed "ok" lines.
+  test("nvim exits 0, not by a signal", () => {
+    assert.equal(run.error, undefined, `nvim did not run to its end: ${run.error}`)
+    assert.equal(run.signal, null, `nvim was killed by ${run.signal}:\n${output}`)
+    assert.equal(run.status, lines.some((l) => l.startsWith("not ok")) ? 1 : 0, `nvim exited ${run.status}:\n${output}`)
+  })
+  test("nvim reports every check", () => {
+    assert.equal(lines.length, expected, `${lines.length} results for ${expected} checks:\n${output}`)
   })
   for (const line of lines) {
     const m = /^(not )?ok - (.+?) ::\s*(.*)$/.exec(line)
