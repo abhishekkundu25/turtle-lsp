@@ -175,7 +175,8 @@ pub struct Settings {
     pub query_max_buffered_rows: Option<usize>,
 }
 
-/// The default `query.maxBufferedRows`: about 1 GB, at about 100 bytes a row.
+/// The default `query.maxBufferedRows`: about 1 GB of ordinary rows (about 100
+/// bytes each). The limit counts rows, so rows with long text take more.
 pub const QUERY_MAX_BUFFERED_ROWS: usize = 10_000_000;
 /// The default `query.timeoutSeconds`.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
