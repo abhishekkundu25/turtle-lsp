@@ -41,7 +41,7 @@ use crate::imports::Status;
 use crate::knowledge::{Knowledge, Source};
 use crate::settings::Settings;
 use crate::workspace::{
-    Workspace, is_sparql_path, is_turtle, path_to_uri, scan_roots_matching, uri_to_path,
+    Workspace, is_rdf_file, is_sparql_path, path_to_uri, scan_roots_matching, uri_to_path,
 };
 use crossbeam_channel::{Receiver, Sender, never, unbounded};
 use lsp_types::Diagnostic;
@@ -394,7 +394,7 @@ impl Server {
         let Some(path) = uri_to_path(uri) else {
             return false;
         };
-        let d = if is_turtle(&path) {
+        let d = if is_rdf_file(&path) {
             match self.diagnostics_for(uri) {
                 Ok(d) => d,
                 Err(msg) => Some(vec![super::internal_error_diagnostic(&msg)]),

@@ -5,7 +5,7 @@ use super::output::{ENCODING_CODE, IO_CODE};
 use crate::batch::BatchFile;
 use crate::settings::{Ignored, Layer, SETTINGS_FILE, Settings, read_settings_file};
 use crate::workspace::{
-    MAX_FILE_BYTES, MAX_FILES, Scan, is_sparql_path, is_turtle, path_to_uri, scan_roots_capped,
+    MAX_FILE_BYTES, MAX_FILES, Scan, is_rdf_file, is_sparql_path, path_to_uri, scan_roots_capped,
 };
 use rayon::prelude::*;
 use serde_json::Value;
@@ -275,7 +275,7 @@ pub fn load_lenient(
                 if root_is_target {
                     is_rdf_or_sparql
                 } else {
-                    is_turtle
+                    is_rdf_file
                 },
             )
         });
@@ -286,7 +286,7 @@ pub fn load_lenient(
                 Some(found) if *t == root => reported.extend(found.iter().cloned()),
                 _ => reported.extend(scan(t, is_rdf_or_sparql)),
             }
-        } else if is_turtle(t) || is_sparql_path(t) {
+        } else if is_rdf_or_sparql(t) {
             reported.insert(t.clone());
         } else {
             eprintln!(
@@ -298,7 +298,7 @@ pub fn load_lenient(
     let mut context_paths: Vec<PathBuf> = match (context, root_files) {
         (Context::Workspace, Some(found)) => found
             .into_iter()
-            .filter(|p| is_turtle(p) && !reported.contains(p))
+            .filter(|p| is_rdf_file(p) && !reported.contains(p))
             .collect(),
         _ => Vec::new(),
     };
@@ -379,7 +379,7 @@ pub fn load_lenient(
 }
 
 fn is_rdf_or_sparql(path: &Path) -> bool {
-    is_turtle(path) || is_sparql_path(path)
+    is_rdf_file(path) || is_sparql_path(path)
 }
 
 /// The text of the file at `path` and its [`Stamp`], or the code

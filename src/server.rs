@@ -66,7 +66,8 @@ use worker::{Fed, Feed};
 
 /// The files the client is asked to report changes of: RDF documents, SPARQL
 /// queries, JSON-LD context files (`.json` too), imports sources and the
-/// settings file (a `.json` file).
+/// settings file (a `.json` file). It is the glob of every row of the
+/// file-kind table ([`crate::workspace::kinds::ROWS`]), which a test checks.
 pub const WATCHED_FILES: &str = "**/{*.ttl,*.turtle,*.trig,*.nt,*.nq,*.jsonld,*.json,*.rdf,*.owl,*.rq,*.sparql,*.ru,catalog-v001.xml}";
 
 /// Pause after a described-set change before other documents are refreshed.

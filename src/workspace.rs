@@ -22,6 +22,9 @@
 //! save, a fetch that arrived) analyzes the documents that use it again
 //! ([`Workspace::context_changed`]).
 //!
+//! File kinds: which paths are RDF, SPARQL, imports sources or JSON is one
+//! table, in [`kinds`].
+//!
 //! Effects: every method that changes what the workspace holds from outside
 //! (a document opened, edited, saved or closed, files changed on disk, the
 //! settings prefixes, a context fetched) returns [`Effects`], what the change
@@ -42,6 +45,11 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+pub mod kinds;
+
+use kinds::is_watched_file;
+pub use kinds::{is_import_source, is_rdf_file, is_sparql_name, is_sparql_path};
 
 pub const PREFIX_FILE: &str = "prefixes.ttl";
 pub const SKIP_DIRS: &[&str] = &[
@@ -73,17 +81,10 @@ impl From<Syntax> for DocKind {
     }
 }
 
-/// Whether a path or URI names a SPARQL file: `.rq`, `.sparql` or `.ru`.
-pub fn is_sparql_name(path: &str) -> bool {
-    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    name.rsplit_once('.')
-        .is_some_and(|(_, ext)| matches!(ext, "rq" | "sparql" | "ru"))
-}
-
 impl DocKind {
     /// SPARQL when the client says `sparql`, or when it sends no language id,
     /// one this server does not know, or the generic `turtle`, and the name
-    /// ends in `.rq`, `.sparql` or `.ru`. Otherwise RDF, as
+    /// is a SPARQL file's ([`is_sparql_name`]). Otherwise RDF, as
     /// [`Syntax::detect`] decides.
     pub fn detect(language_id: Option<&str>, uri: &str) -> DocKind {
         if language_id.is_some_and(|id| id.eq_ignore_ascii_case("sparql")) {
@@ -540,31 +541,6 @@ fn prepared(a: Analysis) -> (Analysis, DocFacts) {
     }
 }
 
-/// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`
-/// or `.jsonld`.
-pub fn is_turtle(path: &Path) -> bool {
-    Syntax::from_extension(&path.to_string_lossy()).is_some()
-}
-
-/// Files that feed `owl:imports` without being Turtle documents themselves.
-pub fn is_import_source(path: &Path) -> bool {
-    path.file_name().is_some_and(|f| f == "catalog-v001.xml")
-        || path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("rdf") || e.eq_ignore_ascii_case("owl"))
-}
-
-/// Whether `path` names a kind of file the server watches: if it was deleted,
-/// it was a file, not a folder.
-fn is_watched_file(path: &Path) -> bool {
-    is_turtle(path)
-        || is_import_source(path)
-        || is_sparql_path(path)
-        || path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-}
-
 impl Workspace {
     pub fn new(roots: Vec<PathBuf>, settings_prefixes: PrefixMap) -> Workspace {
         Workspace {
@@ -886,7 +862,7 @@ impl Workspace {
         if !gone.is_some_and(|d| d.cached_import || d.kind == DocKind::Sparql) {
             // Only what the scan would index goes back to the index: an RDF file
             // below a root (a .txt opened as Turtle, or a file elsewhere, does not).
-            if let Some(path) = uri_to_path(uri).filter(|p| is_turtle(p)) {
+            if let Some(path) = uri_to_path(uri).filter(|p| is_rdf_file(p)) {
                 self.reindex_disk_file(&path);
             }
             self.sync(uri);
@@ -1396,7 +1372,7 @@ impl Workspace {
 
     /// The RDF files under `roots` (see [`scan_roots_matching`]).
     pub fn scan_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
-        scan_roots_matching(roots, is_turtle).paths
+        scan_roots_matching(roots, is_rdf_file).paths
     }
 
     /// Whether the file at `path` belongs in the disk index, as the scan
@@ -1412,7 +1388,7 @@ impl Workspace {
 
     /// [`Workspace::indexable`] but for the limit on the number of files.
     fn fits(&self, path: &Path) -> bool {
-        is_turtle(path)
+        is_rdf_file(path)
             && self.in_area(path, false)
             && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
     }
@@ -1703,7 +1679,7 @@ impl Workspace {
                 sparql_paths.push(path.clone());
                 continue;
             }
-            if !is_turtle(path) || open {
+            if !is_rdf_file(path) || open {
                 // An open prefixes.ttl was handled on save.
                 continue;
             }
@@ -1817,11 +1793,6 @@ fn parse_files(
 /// A directory the index does not look into: hidden, or one of [`SKIP_DIRS`].
 fn skipped_dir(name: &str) -> bool {
     name.starts_with('.') || SKIP_DIRS.contains(&name)
-}
-
-/// A SPARQL file: `.rq`, `.sparql` or `.ru`.
-pub fn is_sparql_path(path: &Path) -> bool {
-    is_sparql_name(&path.to_string_lossy())
 }
 
 /// What a scan of the roots found.
@@ -2008,7 +1979,7 @@ pub(crate) mod tests {
             DocKind::detect(Some("json"), "file:///w/a.jsonld"),
             DocKind::Rdf(Syntax::JsonLd)
         );
-        assert!(is_turtle(Path::new("/w/a.jsonld")) && !is_turtle(Path::new("/w/a.json")));
+        assert!(is_rdf_file(Path::new("/w/a.jsonld")) && !is_rdf_file(Path::new("/w/a.json")));
         let mut ws = Workspace::default();
         let uri = "file:///w/a.jsonld".to_string();
         ws.open_doc(uri.clone(), r#"{"@id": "ex:a", "ex:p": 1}"#.into(), 1);
@@ -2254,21 +2225,21 @@ pub(crate) mod tests {
                 })
                 .collect()
         };
-        let all = scan_roots_capped(std::slice::from_ref(&root.0), is_turtle, 6);
+        let all = scan_roots_capped(std::slice::from_ref(&root.0), is_rdf_file, 6);
         assert!(!all.truncated, "exactly at the cap is not truncated");
         assert_eq!(
             names(&all),
             ["a/9.ttl", "a.ttl", "b/1.ttl", "b/2.ttl", "m.ttl", "z/1.ttl"]
         );
         let roots = [root.0.clone()];
-        let cut = scan_roots_capped(&roots, is_turtle, 4);
+        let cut = scan_roots_capped(&roots, is_rdf_file, 4);
         assert!(cut.truncated);
         assert_eq!(names(&cut), ["a/9.ttl", "a.ttl", "b/1.ttl", "b/2.ttl"]);
         // The same roots twice, or nested, list a file once.
-        let twice = scan_roots_capped(&[root.0.clone(), root.0.join("b")], is_turtle, 100);
+        let twice = scan_roots_capped(&[root.0.clone(), root.0.join("b")], is_rdf_file, 100);
         assert_eq!(twice.paths.len(), 6);
         // The server's scan is the capped scan at MAX_FILES.
-        assert_eq!(scan_roots_matching(&roots, is_turtle).paths, all.paths);
+        assert_eq!(scan_roots_matching(&roots, is_rdf_file).paths, all.paths);
     }
 
     #[test]
@@ -2290,7 +2261,7 @@ pub(crate) mod tests {
             .unwrap()
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
-        let scan = scan_roots_matching(std::slice::from_ref(&root.0), is_turtle);
+        let scan = scan_roots_matching(std::slice::from_ref(&root.0), is_rdf_file);
         assert_eq!(scan.paths, [ok]);
         assert_eq!(scan.too_large, [big]);
         assert!(!scan.truncated);
