@@ -252,14 +252,14 @@ mod tests {
 
     #[test]
     fn the_configuration_request_is_sent_only_to_a_client_that_answers_it() {
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = crate::server::wire::memory();
         let mut client = Client::new(tx);
         let mut l = Layers::new((Value::Null, None), Value::Null, false);
         l.request_config(&mut client);
-        assert!(rx.try_recv().is_err());
+        assert!(rx.try_iter().next().is_none());
         let mut l = Layers::new((Value::Null, None), Value::Null, true);
         l.request_config(&mut client);
-        let id = match rx.try_recv().unwrap() {
+        let id = match rx.try_iter().next().unwrap() {
             lsp_server::Message::Request(r) => {
                 assert_eq!(r.method, "workspace/configuration");
                 r.id

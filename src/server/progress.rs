@@ -151,12 +151,12 @@ fn send(client: &Client, token: &str, value: WorkDoneProgress) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossbeam_channel::{Receiver, unbounded};
+    use crate::server::wire::{Outbox, memory};
     use lsp_server::Message;
 
     /// What the client was sent: "request <method>", or "<kind> <message>"
     /// for a progress notification.
-    fn sent(rx: &Receiver<Message>) -> Vec<String> {
+    fn sent(rx: &Outbox) -> Vec<String> {
         rx.try_iter()
             .map(|m| match m {
                 Message::Request(r) => format!("request {}", r.method),
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn an_end_before_the_token_is_accepted_goes_out_after_the_begin() {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = memory();
         let mut client = Client::new(tx);
         let mut p = Progress::new(true);
         p.begin(&mut client, Work::Index, "Indexing workspace");
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn a_refused_token_sends_nothing() {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = memory();
         let mut client = Client::new(tx);
         let mut p = Progress::new(true);
         p.begin(&mut client, Work::Imports, "Resolving owl:imports");

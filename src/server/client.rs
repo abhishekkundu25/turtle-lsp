@@ -2,25 +2,32 @@
 //! the requests it sends. The state groups send through it, never through
 //! the server.
 
+use super::wire::Out;
 use crossbeam_channel::{SendError, Sender};
 use lsp_server::{Message, Notification, Request, RequestId};
 use lsp_types::notification::Notification as _;
 use lsp_types::{MessageType, ShowMessageParams};
 
 pub(super) struct Client {
-    sender: Sender<Message>,
+    sender: Sender<Out>,
     /// The number of the last request sent.
     next_id: i32,
 }
 
 impl Client {
-    pub(super) fn new(sender: Sender<Message>) -> Client {
+    pub(super) fn new(sender: Sender<Out>) -> Client {
         Client { sender, next_id: 0 }
     }
 
     /// Send `msg`; Err when the connection is gone.
-    pub(super) fn send(&self, msg: impl Into<Message>) -> Result<(), SendError<Message>> {
-        self.sender.send(msg.into())
+    pub(super) fn send(&self, msg: impl Into<Message>) -> Result<(), SendError<Out>> {
+        self.sender.send(Out::Message(msg.into()))
+    }
+
+    /// Answer request `id` with `json`, its result as JSON text
+    /// (`wire::encode`); Err when the connection is gone.
+    pub(super) fn respond(&self, id: RequestId, json: String) -> Result<(), SendError<Out>> {
+        self.sender.send(Out::Result { id, json })
     }
 
     /// Send a notification (a closed connection drops it).

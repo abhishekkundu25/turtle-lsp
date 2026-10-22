@@ -36,6 +36,11 @@
 //! requests), `layers` (the settings and their layers) and `index` (the
 //! workspace index as it arrives). They send to the client through
 //! `client::Client`, the connection's sender and request ids.
+//!
+//! The connection is `wire`'s: a request's result goes out as JSON text,
+//! never as a `serde_json::Value`, through one ordered channel to a writer
+//! thread, with the bytes lsp-server would write. Embedded, the host gets
+//! `lsp_server::Message`s as before.
 
 use crate::analysis::Encoding;
 use crate::clock::Instant;
@@ -47,7 +52,7 @@ use crate::workspace::{
     Change, Dirty, DocKind, Effects, Workspace, is_import_source, normalize_uri, uri_to_path,
 };
 use crossbeam_channel::{Receiver, Sender, never, unbounded};
-use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
+use lsp_server::{ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
 use lsp_types::*;
@@ -67,6 +72,7 @@ mod refresh;
 mod run_query;
 mod shacl;
 mod timers;
+mod wire;
 pub(crate) mod worker;
 mod workspace_diagnostics;
 
@@ -77,6 +83,7 @@ use progress::{Progress, Work};
 use refresh::Refresh;
 use shacl::Shacl;
 use timers::{Timer, Timers};
+use wire::Out;
 use worker::{Fed, Feed, Spawn};
 
 /// The files the client is asked to report changes of: RDF documents, SPARQL
@@ -130,9 +137,8 @@ const SHACL_PROGRESS_DELAY: Duration = Duration::from_millis(200);
 
 pub struct Server {
     client: Client,
-    /// Every message read so far. lsp-server hands over messages through a
-    /// rendezvous channel, so without this queue a batch would never hold
-    /// more than one message.
+    /// Every message read so far, queued as the reader reads them, so that
+    /// a batch holds every message that has arrived.
     inbox: Receiver<Message>,
     ws: Workspace,
     enc: Encoding,
@@ -171,15 +177,15 @@ pub struct Server {
 
 impl Server {
     /// A server for the client's `initialize` params (`raw`), sending on
-    /// `sender`, not started, with the initialize result to answer and the
-    /// workspace roots. It reads no messages and indexes nothing: the caller
-    /// wires both.
+    /// `sender`, not started, with the initialize result to answer (JSON
+    /// text) and the workspace roots. It reads no messages and indexes
+    /// nothing: the caller wires both.
     #[allow(clippy::type_complexity)]
     fn configure(
-        sender: Sender<Message>,
+        sender: Sender<Out>,
         raw: Value,
         spawn: Spawn,
-    ) -> Result<(Server, Value, Vec<PathBuf>), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(Server, String, Vec<PathBuf>), Box<dyn std::error::Error + Send + Sync>> {
         let params: InitializeParams = serde_json::from_value(raw.clone())?;
         let utf8 = params
             .capabilities
@@ -287,16 +293,7 @@ impl Server {
         ws.set_rescan_sparql(!watch_dynamic);
         let contexts = use_network(&mut ws, settings.imports_network, spawn);
 
-        let result = InitializeResult {
-            capabilities: capabilities(enc, pull),
-            server_info: Some(ServerInfo {
-                name: "turtle-lsp".into(),
-                version: Some(crate::VERSION.into()),
-            }),
-        };
-        let mut result = serde_json::to_value(result)?;
-        // lsp-types 0.97 has no field for it.
-        result["capabilities"]["typeHierarchyProvider"] = Value::Bool(true);
+        let result = wire::encode(&Initialized::new(capabilities(enc, pull)))?;
 
         let server = Server {
             client: Client::new(sender),
@@ -351,11 +348,13 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let _ = rayon::ThreadPoolBuilder::new()
         .stack_size(8 << 20)
         .build_global();
-    let (conn, io) = Connection::stdio();
-    let (id, raw) = conn.initialize_start()?;
+    let (out, inbox, io) = wire::stdio()?;
+    let (id, raw) = wire::initialize_start(&out, &inbox)?;
 
-    let (mut server, result, roots) = Server::configure(conn.sender.clone(), raw, Spawn::Thread)?;
-    conn.initialize_finish(id, result)?;
+    let (mut server, result, roots) = Server::configure(out.clone(), raw, Spawn::Thread)?;
+    wire::initialize_finish(&out, &inbox, id, result)?;
+    // The server holds the only sender from here: the writer ends with it.
+    drop(out);
 
     // Index the workspace in the background. What changes on disk meanwhile
     // is remembered, so that the index does not undo it when it lands.
@@ -385,23 +384,13 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     }
     server.index.expect(index_rx);
 
-    let (inbox_tx, inbox) = unbounded();
-    let incoming = conn.receiver.clone();
-    std::thread::spawn(move || {
-        for msg in incoming {
-            if inbox_tx.send(msg).is_err() {
-                break;
-            }
-        }
-    });
     server.inbox = inbox;
 
     let ended = server.main_loop()?;
     // The writer thread ends only when every sender is gone; joining while the
-    // server (or the connection) still holds one would keep the process alive
-    // forever after the editor disappears (stdin closed without shutdown/exit).
+    // server still holds one would keep the process alive forever after the
+    // editor disappears (stdin closed without shutdown/exit).
     drop(server);
-    drop(conn);
     end_session(ended, || io.join())
 }
 
@@ -508,6 +497,43 @@ fn internal_error_diagnostic(msg: &str) -> Diagnostic {
             "{msg}. The rest of the server keeps working; please report this file at https://github.com/abhishekkundu25/turtle-lsp/issues"
         ),
         ..Default::default()
+    }
+}
+
+/// `result` as JSON text, for the answer to a request.
+fn json(result: &impl serde::Serialize) -> Result<String, (ErrorCode, String)> {
+    wire::encode(result).map_err(|e| (ErrorCode::InternalError, e.to_string()))
+}
+
+/// The `initialize` result: lsp-types 0.97 has no field for
+/// `typeHierarchyProvider`, so the capabilities carry it beside theirs.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Initialized {
+    capabilities: InitializedCapabilities,
+    server_info: ServerInfo,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializedCapabilities {
+    #[serde(flatten)]
+    lsp: ServerCapabilities,
+    type_hierarchy_provider: bool,
+}
+
+impl Initialized {
+    fn new(capabilities: ServerCapabilities) -> Initialized {
+        Initialized {
+            capabilities: InitializedCapabilities {
+                lsp: capabilities,
+                type_hierarchy_provider: true,
+            },
+            server_info: ServerInfo {
+                name: "turtle-lsp".into(),
+                version: Some(crate::VERSION.into()),
+            },
+        }
     }
 }
 
@@ -784,13 +810,15 @@ impl Server {
                 // A bug in one feature must not take the server down for the session.
                 let result = guard(&method, || self.request(req))
                     .unwrap_or_else(|msg| Err((ErrorCode::InternalError, msg)));
-                let resp = match result {
+                match result {
                     // Answered later (a query run).
-                    Ok(None) => return Ok(()),
-                    Ok(Some(v)) => Response::new_ok(id, v),
-                    Err((code, message)) => Response::new_err(id, code as i32, message),
-                };
-                self.client.send(resp)?;
+                    Ok(None) => {}
+                    Ok(Some(json)) => self.client.respond(id, json)?,
+                    Err((code, message)) => {
+                        self.client
+                            .send(Response::new_err(id, code as i32, message))?;
+                    }
+                }
             }
             Message::Notification(n) => {
                 let method = n.method.clone();
@@ -1297,37 +1325,34 @@ impl Server {
         )
     }
 
-    /// The answer to `req`: None when it is answered later (a query run).
-    fn request(&mut self, req: Request) -> Result<Option<Value>, (ErrorCode, String)> {
+    /// The answer to `req`, its result as JSON text: None when it is
+    /// answered later (a query run).
+    fn request(&mut self, req: Request) -> Result<Option<String>, (ErrorCode, String)> {
         use lsp_types::request::*;
         let bad = |e: serde_json::Error| (ErrorCode::InvalidParams, e.to_string());
-        let ok = |v: Value| Ok(v);
         macro_rules! params {
             ($t:ty) => {
                 serde_json::from_value::<$t>(req.params.clone()).map_err(bad)?
             };
         }
-        let json =
-            |v: serde_json::Result<Value>| v.map_err(|e| (ErrorCode::InternalError, e.to_string()));
 
         let answer = match req.method.as_str() {
             Completion::METHOD => {
                 let p = params!(CompletionParams);
-                json(serde_json::to_value(self.session().completion(&p)))
+                json(&self.session().completion(&p))
             }
             ResolveCompletionItem::METHOD => {
                 let item = params!(CompletionItem);
-                json(serde_json::to_value(
-                    self.session().resolve_completion(item),
-                ))
+                json(&self.session().resolve_completion(item))
             }
             HoverRequest::METHOD => {
                 let p = params!(HoverParams);
                 let at = p.text_document_position_params;
-                json(serde_json::to_value(
-                    self.session()
+                json(
+                    &self
+                        .session()
                         .hover(at.text_document.uri.as_str(), at.position),
-                ))
+                )
             }
             GotoDefinition::METHOD => {
                 let p = params!(GotoDefinitionParams);
@@ -1335,9 +1360,7 @@ impl Server {
                 let locs = self
                     .session()
                     .definition(at.text_document.uri.as_str(), at.position);
-                json(serde_json::to_value(
-                    locs.map(GotoDefinitionResponse::Array),
-                ))
+                json(&locs.map(GotoDefinitionResponse::Array))
             }
             GotoTypeDefinition::METHOD => {
                 let p = params!(GotoDefinitionParams);
@@ -1345,9 +1368,7 @@ impl Server {
                 let locs = self
                     .session()
                     .type_definition(at.text_document.uri.as_str(), at.position);
-                json(serde_json::to_value(
-                    locs.map(GotoDefinitionResponse::Array),
-                ))
+                json(&locs.map(GotoDefinitionResponse::Array))
             }
             GotoImplementation::METHOD => {
                 let p = params!(GotoDefinitionParams);
@@ -1355,26 +1376,25 @@ impl Server {
                 let locs = self
                     .session()
                     .implementations(at.text_document.uri.as_str(), at.position);
-                json(serde_json::to_value(
-                    locs.map(GotoDefinitionResponse::Array),
-                ))
+                json(&locs.map(GotoDefinitionResponse::Array))
             }
             References::METHOD => {
                 let p = params!(ReferenceParams);
                 let at = p.text_document_position;
-                json(serde_json::to_value(self.session().references(
+                json(&self.session().references(
                     at.text_document.uri.as_str(),
                     at.position,
                     p.context.include_declaration,
-                )))
+                ))
             }
             DocumentHighlightRequest::METHOD => {
                 let p = params!(DocumentHighlightParams);
                 let at = p.text_document_position_params;
-                json(serde_json::to_value(
-                    self.session()
+                json(
+                    &self
+                        .session()
                         .highlights(at.text_document.uri.as_str(), at.position),
-                ))
+                )
             }
             PrepareRenameRequest::METHOD => {
                 let p = params!(TextDocumentPositionParams);
@@ -1382,7 +1402,7 @@ impl Server {
                     .session()
                     .prepare_rename(p.text_document.uri.as_str(), p.position)
                 {
-                    Ok(r) => json(serde_json::to_value(r)),
+                    Ok(r) => json(&r),
                     Err(msg) => Err((ErrorCode::InvalidParams, msg)),
                 }
             }
@@ -1393,7 +1413,7 @@ impl Server {
                     .session()
                     .rename(at.text_document.uri.as_str(), at.position, &p.new_name)
                 {
-                    Ok(edit) => json(serde_json::to_value(edit)),
+                    Ok(edit) => json(&edit),
                     Err(msg) => Err((ErrorCode::InvalidParams, msg)),
                 }
             }
@@ -1402,29 +1422,25 @@ impl Server {
                 let syms = self
                     .session()
                     .document_symbols(p.text_document.uri.as_str());
-                json(serde_json::to_value(
-                    syms.map(DocumentSymbolResponse::Nested),
-                ))
+                json(&syms.map(DocumentSymbolResponse::Nested))
             }
             WorkspaceSymbolRequest::METHOD => {
                 let p = params!(WorkspaceSymbolParams);
-                json(serde_json::to_value(WorkspaceSymbolResponse::Flat(
+                json(&WorkspaceSymbolResponse::Flat(
                     self.session().workspace_symbols(&p.query),
-                )))
+                ))
             }
             FoldingRangeRequest::METHOD => {
                 let p = params!(FoldingRangeParams);
-                json(serde_json::to_value(
-                    self.session().folding_ranges(p.text_document.uri.as_str()),
-                ))
+                json(&self.session().folding_ranges(p.text_document.uri.as_str()))
             }
             DocumentDiagnosticRequest::METHOD => {
                 let p = params!(DocumentDiagnosticParams);
-                json(serde_json::to_value(self.pull_diagnostics(p)))
+                json(&self.pull_diagnostics(p))
             }
             CodeActionRequest::METHOD => {
                 let p = params!(CodeActionParams);
-                json(serde_json::to_value(self.session().code_actions(&p)))
+                json(&self.session().code_actions(&p))
             }
             ExecuteCommand::METHOD => {
                 match crate::commands::parse(params!(ExecuteCommandParams))? {
@@ -1432,12 +1448,12 @@ impl Server {
                     // republishes diagnostics like any other resolution pass.
                     crate::commands::Command::FetchImport { iri } => {
                         self.imports.fetch(&iri);
-                        ok(Value::Null)
+                        json(&Value::Null)
                     }
                     // Answered when the query is done (see `run_query`).
                     crate::commands::Command::RunQuery { uri } => {
                         match self.run_query(req.id.clone(), &uri)? {
-                            Some(v) => ok(v),
+                            Some(v) => json(&v),
                             None => return Ok(None),
                         }
                     }
@@ -1445,66 +1461,65 @@ impl Server {
             }
             CodeActionResolveRequest::METHOD => {
                 let action = params!(CodeAction);
-                json(serde_json::to_value(
-                    self.session().resolve_code_action(action),
-                ))
+                json(&self.session().resolve_code_action(action))
             }
             Formatting::METHOD => {
                 let p = params!(DocumentFormattingParams);
-                json(serde_json::to_value(
-                    self.session()
+                json(
+                    &self
+                        .session()
                         .formatting(p.text_document.uri.as_str(), &p.options),
-                ))
+                )
             }
             TypeHierarchyPrepare::METHOD => {
                 let p = params!(TypeHierarchyPrepareParams);
                 let at = p.text_document_position_params;
-                json(serde_json::to_value(self.session().prepare_type_hierarchy(
-                    at.text_document.uri.as_str(),
-                    at.position,
-                )))
+                json(
+                    &self
+                        .session()
+                        .prepare_type_hierarchy(at.text_document.uri.as_str(), at.position),
+                )
             }
             TypeHierarchySupertypes::METHOD | TypeHierarchySubtypes::METHOD => {
                 let item = params!(TypeHierarchySupertypesParams).item;
                 let mut s = self.session();
-                json(serde_json::to_value(
-                    if req.method == TypeHierarchySupertypes::METHOD {
-                        s.supertypes(&item)
-                    } else {
-                        s.subtypes(&item)
-                    },
-                ))
+                json(&if req.method == TypeHierarchySupertypes::METHOD {
+                    s.supertypes(&item)
+                } else {
+                    s.subtypes(&item)
+                })
             }
             SemanticTokensFullRequest::METHOD => {
                 let p = params!(SemanticTokensParams);
-                json(serde_json::to_value(
-                    self.session()
+                json(
+                    &self
+                        .session()
                         .semantic_tokens_full(p.text_document.uri.as_str()),
-                ))
+                )
             }
             SemanticTokensRangeRequest::METHOD => {
                 let p = params!(SemanticTokensRangeParams);
-                json(serde_json::to_value(self.session().semantic_tokens_range(
-                    p.text_document.uri.as_str(),
-                    p.range,
-                )))
+                json(
+                    &self
+                        .session()
+                        .semantic_tokens_range(p.text_document.uri.as_str(), p.range),
+                )
             }
             InlayHintRequest::METHOD => {
                 let p = params!(InlayHintParams);
-                json(serde_json::to_value(
-                    self.session()
+                json(
+                    &self
+                        .session()
                         .inlay_hints(p.text_document.uri.as_str(), p.range),
-                ))
+                )
             }
             CodeLensRequest::METHOD => {
                 let p = params!(CodeLensParams);
-                json(serde_json::to_value(
-                    self.session().code_lenses(p.text_document.uri.as_str()),
-                ))
+                json(&self.session().code_lenses(p.text_document.uri.as_str()))
             }
             CodeLensResolve::METHOD => {
                 let lens = params!(CodeLens);
-                json(serde_json::to_value(self.session().resolve_code_lens(lens)))
+                json(&self.session().resolve_code_lens(lens))
             }
             _ => Err((
                 ErrorCode::MethodNotFound,
@@ -1586,7 +1601,7 @@ impl Server {
 pub struct Embedded {
     server: Server,
     inbox: crossbeam_channel::Sender<Message>,
-    outbox: Receiver<Message>,
+    outbox: wire::Outbox,
     ended: bool,
 }
 
@@ -1594,19 +1609,21 @@ impl Embedded {
     /// A server for `initialize` params `params`, with what it sent: the
     /// initialize response first (to request id 0).
     pub fn start(params: Value) -> Result<(Embedded, Vec<Message>), String> {
-        let (here, host) = Connection::memory();
+        let (sender, outbox) = wire::memory();
         let (mut server, result, _roots) =
-            Server::configure(here.sender, params, Spawn::Inline).map_err(|e| e.to_string())?;
+            Server::configure(sender, params, Spawn::Inline).map_err(|e| e.to_string())?;
         let (inbox, inbox_rx) = unbounded();
         server.inbox = inbox_rx;
-        let init = Response::new_ok(RequestId::from(0), result);
-        server.client.send(init).map_err(|e| e.to_string())?;
+        server
+            .client
+            .respond(RequestId::from(0), result)
+            .map_err(|e| e.to_string())?;
         server.start();
         server.merge_index(Ok(Vec::new()));
         let mut embedded = Embedded {
             server,
             inbox,
-            outbox: host.receiver,
+            outbox,
             ended: false,
         };
         let sent = embedded.sent();
@@ -1809,9 +1826,9 @@ mod tests {
 
     #[test]
     fn a_failed_initial_index_is_reported_and_the_server_works_without_it() {
-        let (here, host) = Connection::memory();
+        let (here, host) = wire::memory();
         let (mut server, _, _) = Server::configure(
-            here.sender,
+            here,
             json!({"capabilities": {"window": {"workDoneProgress": true}}}),
             Spawn::Thread,
         )
@@ -1821,7 +1838,7 @@ mod tests {
             "turtle-lsp internal error in index: boom".into()
         )));
         assert!(server.index.merged());
-        let sent: Vec<Message> = host.receiver.try_iter().collect();
+        let sent: Vec<Message> = host.try_iter().collect();
         let warned = sent.iter().any(|m| {
             matches!(m,
             Message::Notification(n) if n.method == "window/showMessage"
@@ -1830,12 +1847,12 @@ mod tests {
         });
         assert!(warned, "{sent:?}");
         // A thread that ended without a word is a failure too, not 0 files.
-        let (here, host) = Connection::memory();
+        let (here, host) = wire::memory();
         let (mut server, _, _) =
-            Server::configure(here.sender, json!({"capabilities": {}}), Spawn::Thread).unwrap();
+            Server::configure(here, json!({"capabilities": {}}), Spawn::Thread).unwrap();
         server.index_arrived(Fed::Gone);
         assert!(server.index.merged());
-        let sent: Vec<Message> = host.receiver.try_iter().collect();
+        let sent: Vec<Message> = host.try_iter().collect();
         assert!(
             sent.iter()
                 .any(|m| matches!(m, Message::Notification(n) if n.method == "window/showMessage"))
@@ -1856,10 +1873,10 @@ mod tests {
         for f in [&kept, &gone, &in_folder] {
             std::fs::write(f, TTL).unwrap();
         }
-        let (here, _host) = Connection::memory();
+        let (here, _host) = wire::memory();
         let root = path_to_uri(&dir).unwrap();
         let (mut server, _, roots) = Server::configure(
-            here.sender,
+            here,
             json!({"capabilities": {}, "workspaceFolders": [{"uri": root, "name": "w"}]}),
             Spawn::Thread,
         )
@@ -1893,10 +1910,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
-        let (here, _host) = Connection::memory();
+        let (here, _host) = wire::memory();
         let root = path_to_uri(&dir).unwrap();
         let (mut server, _, _) = Server::configure(
-            here.sender,
+            here,
             json!({"capabilities": {}, "workspaceFolders": [{"uri": root, "name": "w"}]}),
             Spawn::Thread,
         )
@@ -1936,9 +1953,9 @@ mod tests {
     #[test]
     fn shutdown_waits_for_exit_and_says_how_it_ended() {
         let ended = |messages: Vec<Message>, wait_ms: u64, drop_inbox: bool| {
-            let (here, _host) = Connection::memory();
+            let (here, _host) = wire::memory();
             let (mut server, _, _) =
-                Server::configure(here.sender, json!({"capabilities": {}}), Spawn::Thread).unwrap();
+                Server::configure(here, json!({"capabilities": {}}), Spawn::Thread).unwrap();
             let (tx, rx) = unbounded();
             server.inbox = rx;
             for m in messages {
@@ -2000,9 +2017,9 @@ mod tests {
     /// validation starts one.
     #[test]
     fn a_shacl_thread_that_cannot_start_stops_the_validation_and_says_why() {
-        let (here, host) = Connection::memory();
+        let (here, host) = wire::memory();
         let (mut server, _, _) = Server::configure(
-            here.sender,
+            here,
             json!({"capabilities": {"window": {"workDoneProgress": true}}}),
             Spawn::Thread,
         )
@@ -2017,7 +2034,6 @@ mod tests {
             .progress
             .begin(&mut server.client, Work::Shacl, "Validating");
         let token = host
-            .receiver
             .try_iter()
             .find_map(|m| match m {
                 Message::Request(r) if r.method == "window/workDoneProgress/create" => Some(r.id),
@@ -2025,10 +2041,10 @@ mod tests {
             })
             .expect("a progress token asked for");
         server.progress.accepted(&server.client, &token, true);
-        let _ = host.receiver.try_iter().count();
+        let _ = host.try_iter().count();
 
         worker::failing_starts(|| server.validate_shacl());
-        let sent: Vec<Message> = host.receiver.try_iter().collect();
+        let sent: Vec<Message> = host.try_iter().collect();
         let warned = sent.iter().any(|m| {
             matches!(m, Message::Notification(n) if n.method == "window/showMessage"
                 && n.params["message"].as_str().unwrap().contains("could not start its SHACL validation thread"))
@@ -2051,6 +2067,108 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .expect("an outcome from the thread");
         assert!(server.shacl.is_current(&outcome));
+    }
+
+    /// Each answer is the text of the `Value` the same result makes (what
+    /// lsp-server wrote): the result itself, not wrapped or reordered.
+    #[test]
+    fn an_answer_is_the_text_of_its_result_as_a_value() {
+        let mut e = embedded();
+        let uri = "file:///w/a.ttl";
+        let text = "@prefix ex: <http://e.org/> .\nex:A a ex:B ;\n  ex:p \"x\u{e9}\" .\nex:B ex:q ex:A .\n";
+        open(&mut e, uri, text);
+        let doc = json!({"textDocument": {"uri": uri}});
+        let pos = Position::new(1, 1);
+        let at = json!({"textDocument": {"uri": uri}, "position": pos});
+        let options = FormattingOptions {
+            tab_size: 2,
+            insert_spaces: true,
+            ..Default::default()
+        };
+        let range = Range::new(Position::new(0, 0), Position::new(9, 0));
+        let completion: CompletionParams = serde_json::from_value(
+            json!({"textDocument": {"uri": uri}, "position": {"line": 3, "character": 4}}),
+        )
+        .unwrap();
+        let value = |v: serde_json::Result<Value>| v.unwrap().to_string();
+        let mut s = e.server.session();
+        let cases = [
+            (
+                "textDocument/documentSymbol",
+                doc.clone(),
+                value(serde_json::to_value(
+                    s.document_symbols(uri).map(DocumentSymbolResponse::Nested),
+                )),
+            ),
+            (
+                "textDocument/hover",
+                at.clone(),
+                value(serde_json::to_value(s.hover(uri, pos))),
+            ),
+            (
+                "textDocument/definition",
+                at.clone(),
+                value(serde_json::to_value(
+                    s.definition(uri, pos).map(GotoDefinitionResponse::Array),
+                )),
+            ),
+            (
+                "textDocument/references",
+                json!({"textDocument": {"uri": uri}, "position": pos, "context": {"includeDeclaration": true}}),
+                value(serde_json::to_value(s.references(uri, pos, true))),
+            ),
+            (
+                "textDocument/foldingRange",
+                doc.clone(),
+                value(serde_json::to_value(s.folding_ranges(uri))),
+            ),
+            (
+                "textDocument/semanticTokens/full",
+                doc.clone(),
+                value(serde_json::to_value(s.semantic_tokens_full(uri))),
+            ),
+            (
+                "textDocument/formatting",
+                json!({"textDocument": {"uri": uri}, "options": options}),
+                value(serde_json::to_value(s.formatting(uri, &options))),
+            ),
+            (
+                "textDocument/inlayHint",
+                json!({"textDocument": {"uri": uri}, "range": range}),
+                value(serde_json::to_value(s.inlay_hints(uri, range))),
+            ),
+            (
+                "textDocument/completion",
+                serde_json::to_value(&completion).unwrap(),
+                value(serde_json::to_value(s.completion(&completion))),
+            ),
+        ];
+        for (method, params, expected) in cases {
+            let req = Request::new(1.into(), method.into(), params);
+            let got = e.server.request(req).unwrap().unwrap();
+            assert_eq!(got, expected, "{method}");
+        }
+    }
+
+    /// The `initialize` result is the text the `Value` it was built as
+    /// gave: lsp-types' result with `typeHierarchyProvider` set in it.
+    #[test]
+    fn the_initialize_result_is_the_text_its_value_gave() {
+        for enc in [Encoding::Utf8, Encoding::Utf16] {
+            for pull in [false, true] {
+                let result = InitializeResult {
+                    capabilities: capabilities(enc, pull),
+                    server_info: Some(ServerInfo {
+                        name: "turtle-lsp".into(),
+                        version: Some(crate::VERSION.into()),
+                    }),
+                };
+                let mut value = serde_json::to_value(result).unwrap();
+                value["capabilities"]["typeHierarchyProvider"] = Value::Bool(true);
+                let ours = wire::encode(&Initialized::new(capabilities(enc, pull))).unwrap();
+                assert_eq!(ours, value.to_string());
+            }
+        }
     }
 
     #[test]
@@ -2089,11 +2207,11 @@ mod review_tests {
 
     /// A server (not started) for the workspace folder `root`, with the
     /// client's connection end, which must outlive it.
-    fn server_at(root: &std::path::Path, init: Value) -> (Server, Connection) {
-        let (here, host) = Connection::memory();
+    fn server_at(root: &std::path::Path, init: Value) -> (Server, wire::Outbox) {
+        let (here, host) = wire::memory();
         let root = path_to_uri(root).unwrap();
         let (server, _, _) = Server::configure(
-            here.sender,
+            here,
             json!({
                 "capabilities": {},
                 "workspaceFolders": [{"uri": root, "name": "w"}],
@@ -2221,10 +2339,10 @@ mod review_tests {
             .parse_paths(Workspace::scan_roots(&roots));
         s.merge_index(Ok(files));
         assert!(s.wsdiag.due().is_some(), "a pass is due");
-        let _ = host.receiver.try_iter().count();
+        let _ = host.try_iter().count();
 
         worker::failing_starts(|| s.wsdiag_start());
-        let sent: Vec<Message> = host.receiver.try_iter().collect();
+        let sent: Vec<Message> = host.try_iter().collect();
         let warned = sent.iter().any(|m| {
             matches!(m, Message::Notification(n) if n.method == "window/showMessage"
                 && n.params["message"].as_str().unwrap().contains("could not start its workspace diagnostics thread"))
@@ -2246,10 +2364,10 @@ mod review_tests {
             .results()
             .recv_timeout(Duration::from_secs(10))
             .expect("a pass's results");
-        let _ = host.receiver.try_iter().count();
+        let _ = host.try_iter().count();
         s.wsdiag_chunk(Some(chunk));
         let uri = path_to_uri(&file).unwrap();
-        let published = host.receiver.try_iter().any(|m| {
+        let published = host.try_iter().any(|m| {
             matches!(m, Message::Notification(n) if n.method == "textDocument/publishDiagnostics"
                 && n.params["uri"] == uri.as_str())
         });

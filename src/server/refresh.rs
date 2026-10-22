@@ -109,10 +109,10 @@ impl Refresh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossbeam_channel::{Receiver, unbounded};
+    use crate::server::wire::{Outbox, memory};
     use lsp_server::Message;
 
-    fn requests(rx: &Receiver<Message>) -> Vec<String> {
+    fn requests(rx: &Outbox) -> Vec<String> {
         rx.try_iter()
             .map(|m| match m {
                 Message::Request(r) => r.method,
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn a_generation_bump_asks_for_a_refresh_only_after_a_report_went_out() {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = memory();
         let mut client = Client::new(tx);
         let mut r = Refresh::new(true, true, vec![]);
         r.knowledge_changed();
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn display_refreshes_go_out_once_per_knowledge_change() {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = memory();
         let mut client = Client::new(tx);
         let mut r = Refresh::new(false, false, vec!["workspace/inlayHint/refresh"]);
         r.send(&mut client);
