@@ -111,10 +111,11 @@ const SPLIT_TRIES: usize = 4;
 
 /// Split an IRI into (namespace, local name). The namespace is the longest
 /// registered vocabulary namespace that ends in `#`, `/` or `:` and starts
-/// the IRI (only the last few delimiters are tried, so a local name may hold
-/// one: Open Graph's `og:audio:album` is `http://ogp.me/ns#audio:album`);
-/// else everything up to the last delimiter. Both parts are empty and whole
-/// when the IRI has no delimiter.
+/// the IRI, where the local name may hold colons but no `#` or `/`, and does
+/// not end in one: Open Graph's `og:audio:album` is `http://ogp.me/ns#audio:album`,
+/// but `http://purl.org/dc/terms/language:` and `https://schema.org/docs/collab/X`
+/// are not terms of their vocabularies. Else everything up to the last
+/// delimiter. Both parts are empty and whole when the IRI has no delimiter.
 pub fn split_namespace(iri: &str) -> (&str, &str) {
     let mut end = iri.len();
     let mut last = None;
@@ -123,10 +124,15 @@ pub fn split_namespace(iri: &str) -> (&str, &str) {
             break;
         };
         let (ns, local) = iri.split_at(i + 1);
-        if VOCABS.by_namespace(ns).is_some() {
+        // The first try is the last delimiter, whatever follows it.
+        if (last.is_none() || !local.ends_with(':')) && VOCABS.by_namespace(ns).is_some() {
             return (ns, local);
         }
         last.get_or_insert(i + 1);
+        // Further left, a `#` or `/` would be inside the local name.
+        if iri.as_bytes()[i] != b':' {
+            break;
+        }
         end = i;
     }
     match last {
@@ -511,6 +517,19 @@ mod tests {
             ("http://example.org/ns#a:", "b")
         );
         assert_eq!(split_namespace("urn:x"), ("urn:", "x"));
+        // A trailing colon does not make a local name, nor does a path.
+        assert!(
+            VOCABS
+                .lookup("http://purl.org/dc/terms/language:")
+                .is_none()
+        );
+        assert!(VOCABS.lookup("http://ogp.me/ns#audio:").is_none());
+        assert!(
+            VOCABS
+                .lookup("https://schema.org/docs/collab/MBZ")
+                .is_none()
+        );
+        assert!(VOCABS.lookup("http://xmlns.com/foaf/0.1/a/b").is_none());
         assert_eq!(split_namespace("nodelimiter"), ("", "nodelimiter"));
         assert_eq!(
             split_namespace("http://xmlns.com/foaf/0.1/"),

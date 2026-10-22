@@ -186,6 +186,36 @@ const EXPECTED: &[(&str, &str, &str, &str)] = &[
         PROV_LABEL,
     ),
     (
+        "croissant/huggingface-data_provenance_initiative.jsonld",
+        UNKNOWN,
+        "equivalentProperty",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-squad_v2.jsonld",
+        UNKNOWN,
+        "type",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-squad_v2.jsonld",
+        UNKNOWN,
+        "usage",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-wildchat.jsonld",
+        UNKNOWN,
+        "wasAssociatedWith",
+        SCHEMA_VOCAB,
+    ),
+    (
+        "croissant/huggingface-wildchat.jsonld",
+        UNKNOWN,
+        "id",
+        SCHEMA_VOCAB,
+    ),
+    (
         "dcat-us/document.jsonld",
         UNKNOWN,
         "dcterms:mediaType",
@@ -288,6 +318,7 @@ const INVALID_IRI: &str = "invalid-iri";
 const UNKNOWN: &str = "unknown-term";
 const DCAT_US_SCOPED: &str = "the DCAT-US 3.0 context defines it only in the type-scoped contexts of other types than the node's";
 const PROV_LABEL: &str = "not a PROV-O term (rdfs:label, dcterms:description)";
+const SCHEMA_VOCAB: &str = "a word the context's @vocab https://schema.org/ expands that schema.org does not define (true positive; https://schema.org/ is the schema vocabulary since the alias)";
 const DCTERMS: &str = "a dcterms term, not a DCAT one";
 
 /// `text` matches `pattern`, which may end in `*`.
