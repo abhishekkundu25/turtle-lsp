@@ -5,6 +5,7 @@
 
 mod iri;
 pub mod lexer;
+pub mod names;
 mod parser;
 
 pub use iri::{Iri, IriKey, IriMap};
