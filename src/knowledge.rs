@@ -152,9 +152,11 @@ pub struct Knowledge {
 
 pub const OWL_ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
 
-/// The namespace part of an IRI: up to and including its last `#`, `/` or `:`.
+/// The namespace part of an IRI: up to and including its last `#`, `/` or `:`,
+/// or the longer-named well-known vocabulary namespace it starts with (see
+/// [`crate::vocab::split_namespace`]).
 pub fn namespace_of(iri: &str) -> &str {
-    iri.rfind(['#', '/', ':']).map_or("", |i| &iri[..=i])
+    crate::vocab::split_namespace(iri).0
 }
 
 /// The own-namespace rule: at least this many described terms...
@@ -933,7 +935,7 @@ impl Knowledge {
     /// Every IRI some source mentions in namespace `ns`. For a namespace that
     /// does not end in `#`, `/` or `:`, every IRI starting with it.
     pub fn terms_in(&self, ns: &str) -> Vec<Iri> {
-        if namespace_of(ns).len() == ns.len() {
+        if ns.is_empty() || ns.ends_with(['#', '/', ':']) {
             return Iri::get(ns)
                 .and_then(|k| self.namespaces.get(&k))
                 .map(|n| n.terms.iter().copied().collect())
@@ -1171,6 +1173,22 @@ mod tests {
     use super::*;
     use crate::syntax::PrefixMap;
     use std::path::Path;
+
+    #[test]
+    fn a_namespace_ends_at_the_last_delimiter_unless_a_vocabulary_owns_more() {
+        assert_eq!(
+            namespace_of("http://example.org/ns#a"),
+            "http://example.org/ns#"
+        );
+        assert_eq!(namespace_of("urn:x:y"), "urn:x:");
+        assert_eq!(namespace_of("plain"), "");
+        // Open Graph's local names hold a colon.
+        assert_eq!(
+            namespace_of("http://ogp.me/ns#audio:album"),
+            "http://ogp.me/ns#"
+        );
+        assert_eq!(namespace_of("http://ogp.me/ns#title"), "http://ogp.me/ns#");
+    }
 
     fn analysis(uri: &str, text: &str, external: &Arc<PrefixMap>) -> Arc<Analysis> {
         Arc::new(Analysis::new(uri.into(), text, external.clone(), false))

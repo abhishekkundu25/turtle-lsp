@@ -79,3 +79,39 @@ ex:alice a foaf:Gadget ;
   assert.ok(fix, JSON.stringify(actions))
   assert.equal(fix.edit.changes[uri][0].newText, "foaf:name")
 })
+
+test("GeoSPARQL functions are not unknown terms, in Turtle or SPARQL", async () => {
+  const geof = "http://www.opengis.net/def/function/geosparql/"
+  const ttl = uriOf(path.join(ws, "geo.ttl"))
+  s.open(ttl, `@prefix geof: <${geof}> .\n@prefix ex: <http://example.org/> .\nex:q ex:uses geof:sfWithin , geof:distance .\n`)
+  assert.deepEqual(unknown(await s.diagnosticsFor(ttl)), [])
+  const rq = uriOf(path.join(ws, "geo.rq"))
+  s.open(rq, `PREFIX geof: <${geof}>\nSELECT * WHERE { ?a ?p ?b FILTER(geof:sfWithin(?a, ?b) && geof:distance(?a, ?b) > 1) }\n`, "sparql")
+  assert.deepEqual(unknown(await s.diagnosticsFor(rq)), [])
+})
+
+test("a local name with a colon is found: og:audio:album is known, og:audio:albm is not", async () => {
+  const text = `@prefix og: <http://ogp.me/ns#> .\n@prefix ex: <http://example.org/> .\nex:s ex:p og:audio:type , og:audio:album , og:audio:albm .\n`
+  const uri = uriOf(path.join(ws, "og.ttl"))
+  s.open(uri, text)
+  const w = unknown(await s.diagnosticsFor(uri))
+  assert.deepEqual(
+    w.map((d) => d.message),
+    ["'audio:albm' is not defined in the og vocabulary <http://ogp.me/ns#>. Did you mean 'audio:album'?"],
+  )
+  assert.deepEqual(w[0].data, { replace: "og:audio:album" })
+})
+
+test("https://schema.org/ is the schema vocabulary", async () => {
+  const text = `@prefix s: <https://schema.org/> .\n@prefix ex: <http://example.org/> .\nex:a a s:Person ; s:nme "x" .\nex:b a <https://schema.org/Persn> .\n`
+  const uri = uriOf(path.join(ws, "schema-https.ttl"))
+  s.open(uri, text)
+  const w = unknown(await s.diagnosticsFor(uri))
+  assert.deepEqual(
+    w.map((d) => [d.range.start.line, d.message]),
+    [
+      [2, "'nme' is not defined in the schema vocabulary <http://schema.org/>. Did you mean 'name'?"],
+      [3, "'Persn' is not defined in the schema vocabulary <http://schema.org/>. Did you mean 'Person'?"],
+    ],
+  )
+})
