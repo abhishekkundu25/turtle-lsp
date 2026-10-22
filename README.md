@@ -223,7 +223,10 @@ not by its extension.
   counts rows, not bytes: ordinary rows take about 100 bytes each, but a row
   with long text (a `GROUP_CONCAT` result, say) takes more, so memory use can
   pass 1 GB. A query that joins more than 200 patterns or path steps at once
-  is refused before it runs.
+  is refused before it runs. While it runs, an editor that shows progress
+  shows "Running <file>" with the seconds so far and a cancel button, and
+  an editor that can refresh code lenses shows the lens as
+  "■ Cancel query" (the `turtle.cancelQuery` command). Either one stops it.
 
 Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
 queries too. SPARQL files add nothing to the workspace's knowledge, so a

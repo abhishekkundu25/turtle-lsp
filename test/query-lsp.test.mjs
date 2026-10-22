@@ -185,6 +185,10 @@ test("a second run replaces the first; $/cancelRequest stops a run", async () =>
     await new Promise((r) => setTimeout(r, 100))
     const second = run(s, at("slow.rq"))
     assert.equal(await first, "cancelled: a newer run replaced it")
+    // A client that cannot be asked for lenses again keeps "▶ Run query".
+    s.open(at("slow.rq"), SLOW, "sparql")
+    const [lens] = await s.request("textDocument/codeLens", { textDocument: { uri: at("slow.rq") } })
+    assert.equal(lens.command.title, "▶ Run query")
     s.sendRaw([{ id: "raw-q3", method: "workspace/executeCommand", params: { command: "turtle.runQuery", arguments: [at("slow.rq")] } }])
     assert.equal(await second, "cancelled: a newer run replaced it")
     await new Promise((r) => setTimeout(r, 100))
@@ -192,6 +196,57 @@ test("a second run replaces the first; $/cancelRequest stops a run", async () =>
     // A run the cancel missed would answer at its time limit, with a result.
     const resp = await s.rawResponse("raw-q3", 25000)
     assert.equal(resp.error?.code, -32800, JSON.stringify(resp))
+    assert.ok(!fs.existsSync(path.join(s.cacheDir, "query-results", "slow.md")))
+  } finally {
+    await s.stop()
+  }
+})
+
+// Until `check()` holds, or fail after `ms`.
+async function until(check, ms, what) {
+  const end = Date.now() + ms
+  while (!check()) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
+test("a run shows cancellable progress and a Cancel lens; both stop it", async () => {
+  const s = await startServer({
+    cwd: ws,
+    capabilities: { window: { workDoneProgress: true }, workspace: { codeLens: { refreshSupport: true } } },
+    initializationOptions: { query: { timeoutSeconds: 20 } },
+  })
+  try {
+    const lens = async () => (await s.request("textDocument/codeLens", { textDocument: { uri: at("slow.rq") } }))[0].command
+    const values = (token) => s.progress.filter((p) => p.token === token).map((p) => p.value)
+    const refreshes = () => s.serverRequests.filter((r) => r.method === "workspace/codeLens/refresh").length
+
+    s.open(at("slow.rq"), SLOW, "sparql")
+    // Cancelled from the progress.
+    const first = run(s, at("slow.rq"))
+    await until(() => s.progress.some((p) => p.value.title === "Running slow.rq"), 5000, "the progress")
+    const token = s.progress.find((p) => p.value.title === "Running slow.rq").token
+    assert.equal(values(token)[0].cancellable, true)
+    assert.deepEqual(await lens(), { title: "■ Cancel query", command: "turtle.cancelQuery", arguments: [at("slow.rq")] })
+    assert.ok(s.init.capabilities.executeCommandProvider.commands.includes("turtle.cancelQuery"))
+    // The progress counts the seconds.
+    await until(() => values(token).some((v) => v.kind === "report"), 3000, "a report")
+    assert.match(values(token).find((v) => v.kind === "report").message, /^\d+ s$/)
+    const before = refreshes()
+    await s.conn.sendNotification("window/workDoneProgress/cancel", { token })
+    assert.equal(await first, "cancelled")
+    await until(() => values(token).some((v) => v.kind === "end"), 3000, "the end")
+    assert.equal(values(token).at(-1).message, "Cancelled")
+    await until(() => refreshes() > before, 3000, "a lens refresh")
+    assert.equal((await lens()).title, "▶ Run query")
+
+    // Cancelled from the lens's command.
+    const second = run(s, at("slow.rq"))
+    await until(() => s.progress.filter((p) => p.value.title === "Running slow.rq").length === 2, 5000, "the second progress")
+    assert.equal(await s.request("workspace/executeCommand", { command: "turtle.cancelQuery", arguments: [at("slow.rq")] }), null)
+    assert.equal(await second, "cancelled")
+    assert.equal((await lens()).title, "▶ Run query")
     assert.ok(!fs.existsSync(path.join(s.cacheDir, "query-results", "slow.md")))
   } finally {
     await s.stop()

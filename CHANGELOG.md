@@ -43,6 +43,12 @@
 
 ### Changed behaviour
 
+- **A running query shows that it runs, and can be stopped.** ▶ Run query
+  shows the cancellable progress "Running <file>" with the seconds so far,
+  in editors that show progress. Where code lenses can be refreshed, the
+  lens reads "■ Cancel query" until the run ends; it runs the new
+  `turtle.cancelQuery` command. Both use only the protocol
+  (`window/workDoneProgress`, `workspace/codeLens/refresh`).
 - **`check` exits 2 when it did not cover everything**: a file that cannot be
   read or is not UTF-8 (reported as an `io` or `encoding` error, and the run
   goes on), a folder scan that stopped at 20,000 files

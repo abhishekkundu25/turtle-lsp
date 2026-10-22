@@ -25,12 +25,22 @@
 //! answered at once with "cancelled"; a `$/cancelRequest` for the pending
 //! request cancels the run and answers `RequestCanceled`. Embedded (no
 //! threads), the query runs inline and the summary is shown as a message.
+//!
+//! While a run goes on, a client that can show progress shows a cancellable
+//! "Running <file>" with the seconds so far; cancelling it
+//! (`window/workDoneProgress/cancel`) stops the run. A client that can be
+//! asked for code lenses again sees the document's "▶ Run query" lens as
+//! "■ Cancel query", which runs `turtle.cancelQuery`. Either way the run's
+//! request is answered "cancelled".
 
 use super::Server;
 use super::client::Client;
+use super::timers::Timer;
 use super::worker::Spawn;
 use crate::analysis::Analysis;
 use crate::clock::Instant;
+use crate::commands::{CANCEL_QUERY, RUN_QUERY};
+use crate::features::lens::CANCEL_QUERY_TITLE;
 use crate::knowledge::Source;
 use crate::query::{self, Answer, Limits, QueryError};
 use crate::syntax::PrefixMap;
@@ -39,7 +49,7 @@ use crate::workspace::{is_sparql_path, path_to_uri, uri_to_path};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_server::{ErrorCode, RequestId, Response};
 use lsp_types::request::Request as _;
-use lsp_types::{MessageType, ShowDocumentParams, Uri};
+use lsp_types::{CodeLens, MessageType, ShowDocumentParams, Uri};
 use rustc_hash::FxHashMap;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -70,7 +80,13 @@ struct Running {
     id: u64,
     cancel: Arc<AtomicBool>,
     request: RequestId,
+    /// The token of its progress, when the client shows progress.
+    progress: Option<String>,
+    started: Instant,
 }
+
+/// How often a run's progress says how long it has run.
+const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 
 /// A finished run, for the main loop.
 #[cfg(not(target_arch = "wasm32"))]
@@ -238,21 +254,30 @@ impl Server {
         cancel: Arc<AtomicBool>,
     ) -> Result<Option<Value>, (ErrorCode, String)> {
         // A newer run of the same document replaces the one going on.
-        if let Some(old) = self.queries.running.remove(&uri) {
-            old.cancel.store(true, Ordering::Relaxed);
+        if let Some(old) = self.stop_query(&uri, "Replaced by a newer run") {
             let resp = Response::new_ok(old.request, "cancelled: a newer run replaced it");
             let _ = self.client.send(resp);
         }
         self.queries.next_id += 1;
         let run_id = self.queries.next_id;
+        let progress = self
+            .progress
+            .begin_cancellable(&mut self.client, &format!("Running {}", job.name));
+        if progress.is_some() && !self.timers.is_set(Timer::QueryProgress) {
+            self.timers
+                .set(Timer::QueryProgress, Instant::now() + PROGRESS_EVERY);
+        }
         self.queries.running.insert(
             uri.clone(),
             Running {
                 id: run_id,
                 cancel,
                 request: id,
+                progress,
+                started: Instant::now(),
             },
         );
+        self.refresh.refresh_lenses(&mut self.client);
         let out = self.queries.done_tx.clone();
         let stem = self.queries.stem_for(&uri);
         self.spawn
@@ -285,12 +310,81 @@ impl Server {
         if self.queries.running.get(&done.uri).map(|r| r.id) != Some(done.id) {
             return;
         }
-        let Some(run) = self.queries.running.remove(&done.uri) else {
-            return;
-        };
         let name = file_name(&done.uri);
         let summary = self.queries.deliver(&mut self.client, &name, done.report);
-        let _ = self.client.send(Response::new_ok(run.request, summary));
+        let end = summary.as_str().unwrap_or_default().to_owned();
+        if let Some(run) = self.stop_query(&done.uri, &end) {
+            let _ = self.client.send(Response::new_ok(run.request, summary));
+        }
+    }
+
+    /// Stop the run of `uri`, if one goes on: end its progress with
+    /// `message` and show the lens that runs it again. The caller answers
+    /// its request.
+    fn stop_query(&mut self, uri: &str, message: &str) -> Option<Running> {
+        let run = self.queries.running.remove(uri)?;
+        run.cancel.store(true, Ordering::Relaxed);
+        if let Some(token) = &run.progress {
+            self.progress.end_token(&self.client, token, message.into());
+        }
+        self.refresh.refresh_lenses(&mut self.client);
+        Some(run)
+    }
+
+    /// `turtle.cancelQuery` for `uri`: stop its run, answered "cancelled".
+    pub(super) fn cancel_query(&mut self, uri: &str) {
+        let uri = crate::workspace::normalize_uri(uri);
+        if let Some(run) = self.stop_query(&uri, "Cancelled") {
+            let _ = self.client.send(Response::new_ok(run.request, "cancelled"));
+        }
+    }
+
+    /// The client cancelled the progress `token`: when it is a run's, stop
+    /// the run.
+    pub(super) fn query_progress_cancelled(&mut self, token: &str) {
+        let uri = self
+            .queries
+            .running
+            .iter()
+            .find(|(_, r)| r.progress.as_deref() == Some(token))
+            .map(|(u, _)| u.clone());
+        if let Some(uri) = uri {
+            self.cancel_query(&uri);
+        }
+    }
+
+    /// [`Timer::QueryProgress`]: each run's progress says how long it has
+    /// run, again in a second while any shows progress.
+    pub(super) fn query_progress_tick(&mut self) {
+        let now = Instant::now();
+        let mut any = false;
+        for run in self.queries.running.values() {
+            if let Some(token) = &run.progress {
+                let secs = now.saturating_duration_since(run.started).as_secs();
+                self.progress
+                    .report(&self.client, token, format!("{secs} s"));
+                any = true;
+            }
+        }
+        if any {
+            self.timers.set(Timer::QueryProgress, now + PROGRESS_EVERY);
+        }
+    }
+
+    /// While `uri`'s query runs, its "▶ Run query" lens cancels the run
+    /// instead: only for a client that is asked for the lenses again when
+    /// the run ends, as one that is not would keep showing "■ Cancel query".
+    pub(super) fn query_lenses(&self, uri: &str, lenses: &mut [CodeLens]) {
+        let uri = crate::workspace::normalize_uri(uri);
+        if !self.refresh.lenses_refresh() || !self.queries.running.contains_key(&uri) {
+            return;
+        }
+        for c in lenses.iter_mut().filter_map(|l| l.command.as_mut()) {
+            if c.command == RUN_QUERY {
+                c.title = CANCEL_QUERY_TITLE.into();
+                c.command = CANCEL_QUERY.into();
+            }
+        }
     }
 
     /// A `$/cancelRequest` for `id`: when it is a pending run, stop it and
@@ -305,8 +399,7 @@ impl Server {
         else {
             return;
         };
-        if let Some(run) = self.queries.running.remove(&uri) {
-            run.cancel.store(true, Ordering::Relaxed);
+        if let Some(run) = self.stop_query(&uri, "Cancelled") {
             let resp = Response::new_err(
                 run.request,
                 ErrorCode::RequestCanceled as i32,

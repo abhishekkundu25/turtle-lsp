@@ -60,6 +60,9 @@ pub(crate) fn code_lenses(a: &Analysis, enc: Encoding, enabled: bool) -> Vec<Cod
 /// The title of the lens that runs a query.
 pub(crate) const RUN_QUERY_TITLE: &str = "▶ Run query";
 
+/// The title the lens has while the query runs (see `server::run_query`).
+pub(crate) const CANCEL_QUERY_TITLE: &str = "■ Cancel query";
+
 /// The "▶ Run query" lens of a SPARQL document: one, at the first `SELECT`,
 /// `CONSTRUCT`, `DESCRIBE` or `ASK` keyword after the prologue, when the
 /// document is a query; none for an update or a document with no query form.

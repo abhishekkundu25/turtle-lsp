@@ -14,10 +14,17 @@ pub(crate) enum Timer {
     ShaclTyping,
     /// A SHACL run has lasted long enough to show progress.
     ShaclProgress,
+    /// Tell the progress of each query run how long it has run.
+    QueryProgress,
 }
 
 /// Every kind of timer, in the order due ones fire.
-const ALL: [Timer; 3] = [Timer::Described, Timer::ShaclTyping, Timer::ShaclProgress];
+const ALL: [Timer; 4] = [
+    Timer::Described,
+    Timer::ShaclTyping,
+    Timer::ShaclProgress,
+    Timer::QueryProgress,
+];
 
 impl Timer {
     fn slot(self) -> usize {

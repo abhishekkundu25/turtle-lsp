@@ -730,6 +730,7 @@ impl Server {
                     s.progress
                         .begin(&mut s.client, Work::Shacl, "Validating SHACL shapes");
                 }
+                Timer::QueryProgress => s.query_progress_tick(),
             });
         }
     }
@@ -916,6 +917,13 @@ impl Server {
                         NumberOrString::String(s) => RequestId::from(s),
                     };
                     self.query_cancel_request(&id);
+                }
+            }
+            WorkDoneProgressCancel::METHOD => {
+                if let Some(p) = parse::<WorkDoneProgressCancelParams>(n.params)
+                    && let NumberOrString::String(token) = p.token
+                {
+                    self.query_progress_cancelled(&token);
                 }
             }
             _ => {}
@@ -1457,6 +1465,10 @@ impl Server {
                             None => return Ok(None),
                         }
                     }
+                    crate::commands::Command::CancelQuery { uri } => {
+                        self.cancel_query(&uri);
+                        json(&Value::Null)
+                    }
                 }
             }
             CodeActionResolveRequest::METHOD => {
@@ -1515,7 +1527,12 @@ impl Server {
             }
             CodeLensRequest::METHOD => {
                 let p = params!(CodeLensParams);
-                json(&self.session().code_lenses(p.text_document.uri.as_str()))
+                let uri = p.text_document.uri.as_str();
+                let mut lenses = self.session().code_lenses(uri);
+                if let Some(l) = &mut lenses {
+                    self.query_lenses(uri, l);
+                }
+                json(&lenses)
             }
             CodeLensResolve::METHOD => {
                 let lens = params!(CodeLens);

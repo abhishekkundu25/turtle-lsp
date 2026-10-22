@@ -1,5 +1,6 @@
 //! Work-done progress (`window/workDoneProgress`): one progress per kind of
-//! work, shown only when the client declared it can show them.
+//! work, and one per query run (cancellable), shown only when the client
+//! declared it can show them.
 //!
 //! The server asks the client for a token and goes on: `begin` goes out once
 //! the client accepts it, and an `end` that comes first waits for that. A
@@ -11,7 +12,7 @@ use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
 use lsp_types::{
     NumberOrString, ProgressParams, ProgressParamsValue, WorkDoneProgress, WorkDoneProgressBegin,
-    WorkDoneProgressCreateParams, WorkDoneProgressEnd,
+    WorkDoneProgressCreateParams, WorkDoneProgressEnd, WorkDoneProgressReport,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -38,6 +39,7 @@ pub(super) struct Progress {
 struct Pending {
     token: String,
     title: String,
+    cancellable: bool,
     /// The end message, when the work ended before the client answered.
     ended: Option<String>,
 }
@@ -66,10 +68,18 @@ impl Progress {
     /// progress: ask for a token now, `begin` once the client accepts it (see
     /// [`Progress::accepted`]). The main loop never waits for that.
     pub(super) fn begin(&mut self, client: &mut Client, work: Work, title: &str) {
-        self.shown[work as usize] = self.create(client, title);
+        self.shown[work as usize] = self.create(client, title, false);
     }
 
-    fn create(&mut self, client: &mut Client, title: &str) -> Option<String> {
+    /// Show a cancellable progress titled `title`, apart from the kinds of
+    /// [`Work`]: its token, None when the client cannot show progress. The
+    /// client cancels it with `window/workDoneProgress/cancel`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn begin_cancellable(&mut self, client: &mut Client, title: &str) -> Option<String> {
+        self.create(client, title, true)
+    }
+
+    fn create(&mut self, client: &mut Client, title: &str, cancellable: bool) -> Option<String> {
         if !self.supported {
             return None;
         }
@@ -85,6 +95,7 @@ impl Progress {
             Pending {
                 token: token.clone(),
                 title: title.into(),
+                cancellable,
                 ended: None,
             },
         );
@@ -105,7 +116,7 @@ impl Progress {
             &p.token,
             WorkDoneProgress::Begin(WorkDoneProgressBegin {
                 title: p.title,
-                cancellable: Some(false),
+                cancellable: Some(p.cancellable),
                 ..Default::default()
             }),
         );
@@ -119,13 +130,28 @@ impl Progress {
 
     /// The progress of `work` ends with `message` (once begun, if it has not).
     pub(super) fn end(&mut self, client: &Client, work: Work, message: String) {
-        let Some(token) = self.shown[work as usize].take() else {
-            return;
-        };
-        if self.live.remove(&token) {
-            send_end(client, &token, message);
+        if let Some(token) = self.shown[work as usize].take() {
+            self.end_token(client, &token, message);
+        }
+    }
+
+    /// The progress of `token` ends with `message` (once begun, if it has not).
+    pub(super) fn end_token(&mut self, client: &Client, token: &str, message: String) {
+        if self.live.remove(token) {
+            send_end(client, token, message);
         } else if let Some(p) = self.pending.values_mut().find(|p| p.token == token) {
             p.ended = Some(message);
+        }
+    }
+
+    /// The progress of `token` now says `message`; nothing before it begins.
+    pub(super) fn report(&self, client: &Client, token: &str, message: String) {
+        if self.live.contains(token) {
+            let report = WorkDoneProgressReport {
+                message: Some(message),
+                ..Default::default()
+            };
+            send(client, token, WorkDoneProgress::Report(report));
         }
     }
 }
@@ -153,6 +179,7 @@ mod tests {
     use super::*;
     use crate::server::wire::{Outbox, memory};
     use lsp_server::Message;
+    use serde_json::{Value, json};
 
     /// What the client was sent: "request <method>", or "<kind> <message>"
     /// for a progress notification.
@@ -193,6 +220,35 @@ mod tests {
                 "request window/workDoneProgress/create",
                 "begin Validating SHACL shapes",
                 "end No problems"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cancellable_progress_reports_only_once_begun() {
+        let (tx, rx) = memory();
+        let mut client = Client::new(tx);
+        let mut p = Progress::new(true);
+        let token = p.begin_cancellable(&mut client, "Running q.rq").unwrap();
+        p.report(&client, &token, "1 s".into());
+        assert_eq!(sent(&rx), ["request window/workDoneProgress/create"]);
+        p.accepted(&client, &RequestId::from("turtle-1".to_string()), true);
+        p.report(&client, &token, "2 s".into());
+        p.end_token(&client, &token, "Cancelled".into());
+        p.report(&client, &token, "3 s".into());
+        let values: Vec<Value> = rx
+            .try_iter()
+            .map(|m| match m {
+                Message::Notification(n) => n.params["value"].clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [
+                json!({"kind": "begin", "title": "Running q.rq", "cancellable": true}),
+                json!({"kind": "report", "message": "2 s"}),
+                json!({"kind": "end", "message": "Cancelled"}),
             ]
         );
     }

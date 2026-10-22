@@ -89,6 +89,19 @@ impl Refresh {
         true
     }
 
+    /// The client can be asked for the code lenses again.
+    pub(super) fn lenses_refresh(&self) -> bool {
+        self.display_refresh
+            .contains(&lsp_types::request::CodeLensRefresh::METHOD)
+    }
+
+    /// Ask the client for the code lenses again, when it can be asked.
+    pub(super) fn refresh_lenses(&self, client: &mut Client) {
+        if self.lenses_refresh() {
+            client.request(lsp_types::request::CodeLensRefresh::METHOD, ());
+        }
+    }
+
     /// End of a batch: ask the client for the refreshes due.
     pub(super) fn send(&mut self, client: &mut Client) {
         if std::mem::take(&mut self.display_stale) {
