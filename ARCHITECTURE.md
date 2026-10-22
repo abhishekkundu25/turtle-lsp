@@ -15,7 +15,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `sparql` | SPARQL documents: tokens, structure, checks, formatting; the SPARQL language features in `sparql::features` | `ide`, `analysis`, `query`, `shacl` |
 | `jsonld` | JSON-LD 1.1: a fault-tolerant JSON parser, context processing, expansion and conversion to the same parse as Turtle | `analysis` |
 | `analysis` | One document's parse, positions and per-IRI indexes | `features`, `ide`, `server` |
-| `workspace` | Open documents, indexed files and project prefixes; the file-kind table | `server`, `ide`, `batch`, `cli` |
+| `workspace` | Open documents, indexed files and project prefixes; the file-kind table | `server`, `ide`, `batch`, `cli`, `features`, `diagnose`, `imports`, `jsonld` |
 | `knowledge` | What the workspace says about each IRI | `features` |
 | `vocab` | The embedded well-known vocabularies (`data/vocab.tsv`) | `knowledge`, `features` |
 | `imports` | `owl:imports` resolution, catalogs, RDF/XML conversion and the import cache | `workspace`, `server`, `batch` |
@@ -32,7 +32,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `cli` | `check`, `format` and `query` (not in the browser build) | `main` |
 | `clock` | The time the server's timers read | `server`, `query`, `shacl` |
 | `ide` | `ide::Session`: every editor request over one workspace, routed by document kind | `server` |
-| `layout` | What the Turtle and SPARQL formatters share: the layout options, the token document, the triple terms and the printer | `features`, `sparql`; `jsonld` and `query` take its options |
+| `layout` | What the Turtle and SPARQL formatters share: the layout options, the token document, the triple terms and the printer | `features`, `sparql`, `ide`, `batch`; `jsonld` and `query` take its options |
 
 Seven modules are private to the crate: `commands`, `diagnose`, `fetch`,
 `ide`, `layout`, `vocab` and `workspace`. The others are public because a
