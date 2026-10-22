@@ -23,7 +23,7 @@ ill-formed `sh:path` as an error, the step and result budgets).
 
 **Blocked by:** 33a.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
