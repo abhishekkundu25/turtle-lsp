@@ -11,27 +11,26 @@ local datasets = fixtures .. "/datasets"
 local query = fixtures .. "/query"
 local TIMEOUT = 10000
 
+-- The repository is the plugin under test: its plugin/ (file types, modelines,
+-- the reference-lens command) and lsp/turtle_lsp.lua (filetypes, root markers)
+-- are the shipped files, not a copy. Only the server's command is replaced.
+local repo = vim.fs.dirname(vim.fs.dirname(fixtures))
+vim.opt.runtimepath:prepend(repo)
 vim.cmd("filetype on")
--- .nq and .jsonld have no filetype and .ru is Ruby (Rack) by default; see README "Neovim setup".
+vim.cmd("runtime plugin/turtle_lsp.lua")
+-- .ru is Ruby (Rack) by default; see README "Neovim setup".
 vim.filetype.add({
-  extension = { ttl = "turtle", nq = "nquads", jsonld = "jsonld", ru = "sparql" },
+  extension = { ru = "sparql" },
   filename = { ["config.ru"] = "ruby" },
 })
--- "@prefix ex: <...>" looks like a Vim modeline (" ex:") and raises E518 on open.
--- Turtle buffers need modelines off; see README "Neovim setup".
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = { "*.ttl", "*.trig", "*.rq", "*.sparql", "*.ru" },
+  pattern = { "*.ru" },
   callback = function()
     vim.opt_local.modeline = false
   end,
 })
-vim.lsp.config("turtle", {
-  cmd = { server },
-  -- Neovim's own filetypes for .trig, .nt, .rq and .sparql files.
-  filetypes = { "turtle", "trig", "ntriples", "nquads", "jsonld", "sparql" },
-  root_markers = { "prefixes.ttl", ".git" },
-})
-vim.lsp.enable("turtle")
+vim.lsp.config("turtle_lsp", { cmd = { server } })
+vim.lsp.enable("turtle_lsp")
 
 local failed = 0
 local function check(name, fn)
@@ -63,11 +62,11 @@ local function open(path)
   vim.cmd.edit(vim.fn.fnameescape(path))
   local buf = vim.api.nvim_get_current_buf()
   local attached = vim.wait(TIMEOUT, function()
-    return #vim.lsp.get_clients({ bufnr = buf, name = "turtle" }) > 0
-      and vim.lsp.get_clients({ bufnr = buf, name = "turtle" })[1].initialized
+    return #vim.lsp.get_clients({ bufnr = buf, name = "turtle_lsp" }) > 0
+      and vim.lsp.get_clients({ bufnr = buf, name = "turtle_lsp" })[1].initialized
   end, 20)
   assert(attached, "client did not attach/initialize within timeout")
-  return buf, vim.lsp.get_clients({ bufnr = buf, name = "turtle" })[1]
+  return buf, vim.lsp.get_clients({ bufnr = buf, name = "turtle_lsp" })[1]
 end
 
 local function wait_diagnostics(buf)
@@ -398,7 +397,6 @@ end)
 
 check("running a reference lens fills the quickfix list", function()
   -- The plugin registers the lens command (vim.lsp.commands["turtle.showReferences"]).
-  dofile(fixtures .. "/../../plugin/turtle_lsp.lua")
   local b, c = open(people)
   wait_diagnostics(b)
   local lenses = request(b, "textDocument/codeLens", { textDocument = vim.lsp.util.make_text_document_params(b) })
@@ -418,6 +416,56 @@ check("running a reference lens fills the quickfix list", function()
   assert(#items == #lens.command.arguments[3] and #items > 0, "quickfix: " .. vim.inspect(items))
   assert(vim.fn.getqflist({ winid = 0 }).winid ~= 0, "quickfix window not open")
   vim.cmd("cclose")
+end)
+
+check("a file in data/ and one in shapes/ share one client; the nested prefixes.ttl is not a root", function()
+  local nested = vim.fs.normalize(fixtures .. "/nested-prefixes")
+  local a, ca = open(nested .. "/data/people.ttl")
+  local _, cb = open(nested .. "/shapes/person-shape.ttl")
+  assert(ca.id == cb.id, "two clients: " .. ca.id .. " and " .. cb.id)
+  assert(vim.fs.normalize(ca.root_dir) == nested, "root " .. tostring(ca.root_dir))
+  local same = vim.tbl_filter(function(c)
+    return c.root_dir and vim.fs.normalize(c.root_dir) == nested
+  end, vim.lsp.get_clients({ name = "turtle_lsp" }))
+  assert(#same == 1, #same .. " clients for the project")
+  -- The client sees the shapes from the data file: alice has no ex:name.
+  local seen = {}
+  local ok = vim.wait(TIMEOUT, function()
+    seen = vim.tbl_filter(function(d)
+      return d.code == "shacl-violation"
+    end, vim.diagnostic.get(a))
+    return #seen > 0
+  end, 20)
+  assert(ok, "no SHACL violation in data/people.ttl: " .. fmt(vim.diagnostic.get(a)))
+end)
+
+check("the shipped root markers: turtle-lsp.json outranks .git, which outranks a nested prefixes.ttl", function()
+  local markers = vim.lsp.config["turtle_lsp"].root_markers
+  local base = vim.fn.tempname()
+  local function touch(rel)
+    vim.fn.mkdir(vim.fs.dirname(base .. "/" .. rel), "p")
+    vim.fn.writefile({}, base .. "/" .. rel)
+  end
+  local ok, err = pcall(function()
+    -- A repository with a prefixes.ttl in a subfolder: the repository is the root.
+    vim.fn.mkdir(base .. "/repo/.git", "p")
+    touch("repo/data/prefixes.ttl")
+    touch("repo/data/a.ttl")
+    touch("repo/shapes/s.ttl")
+    assert(vim.fs.root(base .. "/repo/data/a.ttl", markers) == base .. "/repo", "data/ file")
+    assert(vim.fs.root(base .. "/repo/shapes/s.ttl", markers) == base .. "/repo", "shapes/ file")
+    -- turtle-lsp.json marks a project inside a repository.
+    touch("repo/proj/turtle-lsp.json")
+    touch("repo/proj/data/prefixes.ttl")
+    touch("repo/proj/data/b.ttl")
+    assert(vim.fs.root(base .. "/repo/proj/data/b.ttl", markers) == base .. "/repo/proj", "turtle-lsp.json")
+  end)
+  vim.fn.delete(base, "rf")
+  assert(ok, err)
+end)
+
+check(".turtle files are Turtle", function()
+  assert(vim.filetype.match({ filename = "x.turtle" }) == "turtle")
 end)
 
 check("no LSP errors surfaced to the user", function()

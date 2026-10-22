@@ -361,6 +361,62 @@ check("saving a file that violates the project shapes shows a SHACL violation", 
   }
 })
 
+// These two restart the server, so they run last.
+async function running(api) {
+  await api.idle()
+  for (let i = 0; i < 200 && !api.client()?.isRunning(); i++) await sleep(50)
+  return api.client()?.isRunning() === true
+}
+
+check("a bad turtle.server.path, then a good one, ends with the server running", async () => {
+  const api = await vscode.extensions.getExtension("abhishekkundu25.turtle-language-server").activate()
+  const config = vscode.workspace.getConfiguration("turtle")
+  const was = config.inspect("server.path")?.globalValue
+  const Global = vscode.ConfigurationTarget.Global
+  try {
+    await config.update("server.path", path.join(fixtures, "no-such-dir", "turtle-lsp"), Global)
+    await vscode.commands.executeCommand("turtle.restartServer")
+    await api.idle()
+    assert.ok(!api.client()?.isRunning(), "a server started from a path that does not exist")
+    await config.update("server.path", was, Global)
+    await vscode.commands.executeCommand("turtle.restartServer")
+    assert.ok(await running(api), "the server is not running after the path was fixed")
+  } finally {
+    await config.update("server.path", was, Global)
+    await vscode.commands.executeCommand("turtle.restartServer")
+    await running(api)
+  }
+})
+
+check("turtle-lsp.json decides a setting the user did not set (format.lineWidth)", async () => {
+  const api = await vscode.extensions.getExtension("abhishekkundu25.turtle-language-server").activate()
+  const file = path.join(fixtures, "turtle-lsp.json")
+  const content =
+    '@prefix ex: <http://e/> .\nex:a ex:p "aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd", "eeeeeeeeee" .\n'
+  const format = async () => {
+    const doc = await vscode.workspace.openTextDocument({ language: "turtle", content })
+    await vscode.window.showTextDocument(doc)
+    const edits = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", doc.uri, { tabSize: 2, insertSpaces: true })
+    const edit = new vscode.WorkspaceEdit()
+    edit.set(doc.uri, edits ?? [])
+    await vscode.workspace.applyEdit(edit)
+    const text = doc.getText()
+    await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor")
+    return text
+  }
+  try {
+    assert.ok(!/,\n/.test(await format()), "the default width wraps the list")
+    fs.writeFileSync(file, JSON.stringify({ format: { lineWidth: 30 } }))
+    await vscode.commands.executeCommand("turtle.restartServer")
+    assert.ok(await running(api))
+    assert.match(await format(), /,\n/, "turtle-lsp.json's width 30 did not reach the formatter")
+  } finally {
+    fs.rmSync(file, { force: true })
+    await vscode.commands.executeCommand("turtle.restartServer")
+    await running(api)
+  }
+})
+
 exports.run = async function run() {
   let failed = 0
   for (const { name, fn } of checks) {

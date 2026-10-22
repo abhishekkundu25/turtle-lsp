@@ -8,5 +8,8 @@ local bundled = root .. "/bin/turtle-lsp" .. (vim.fn.has("win32") == 1 and ".exe
 return {
   cmd = { vim.fn.executable(bundled) == 1 and bundled or "turtle-lsp" },
   filetypes = { "turtle", "trig", "ntriples", "nquads", "jsonld", "sparql" },
-  root_markers = { "prefixes.ttl", ".git" },
+  -- In priority order: the nearest turtle-lsp.json, else the repository
+  -- root, else the nearest prefixes.ttl. A prefixes.ttl in a subfolder is
+  -- part of the project, not a project of its own.
+  root_markers = { "turtle-lsp.json", ".git", "prefixes.ttl" },
 }

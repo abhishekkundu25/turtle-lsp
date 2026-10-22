@@ -4,8 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node"
-
-let client: LanguageClient | undefined
+import { findServer, ServerHandle, settingsFrom } from "./server"
 
 const RDF_LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 
@@ -21,46 +20,49 @@ function isServed(doc: vscode.TextDocument): boolean {
 
 const exe = process.platform === "win32" ? "turtle-lsp.exe" : "turtle-lsp"
 
-function findServer(context: vscode.ExtensionContext): string | undefined {
-  const configured = vscode.workspace.getConfiguration("turtle").get<string>("server.path")
-  if (configured) return configured
-  const candidates = [
-    // Bundled in the .vsix by scripts/package.mjs.
-    context.asAbsolutePath(path.join("server", exe)),
-    // Running from a checkout of the repository.
-    context.asAbsolutePath(path.join("..", "..", "target", "release", exe)),
-  ]
-  const found = candidates.find((p) => fs.existsSync(p))
-  if (found) return found
-  const onPath = (process.env.PATH ?? "").split(path.delimiter).map((d) => path.join(d, exe))
-  return onPath.find((p) => fs.existsSync(p))
+/** Where this extension finds the server: bundled in the .vsix, or built in a checkout. */
+function findCommand(context: vscode.ExtensionContext): string | undefined {
+  const found = findServer({
+    configured: vscode.workspace.getConfiguration("turtle").get<string>("server.path"),
+    exe,
+    candidates: [
+      // Bundled in the .vsix by scripts/package.mjs.
+      context.asAbsolutePath(path.join("server", exe)),
+      // Running from a checkout of the repository.
+      context.asAbsolutePath(path.join("..", "..", "target", "release", exe)),
+    ],
+    pathEnv: process.env.PATH,
+    trusted: vscode.workspace.isTrusted,
+    workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+    fs,
+  })
+  if ("error" in found) {
+    void vscode.window.showErrorMessage(found.error)
+    return undefined
+  }
+  return found.command
 }
 
-/** The `turtle.*` settings the server reads, as nested objects. */
-function serverSettings(): Record<string, unknown> {
-  const c = vscode.workspace.getConfiguration("turtle")
-  return {
-    prefixes: c.get<Record<string, string>>("prefixes") ?? {},
-    inlayHints: { labels: c.get<string>("inlayHints.labels") },
-    shacl: { enabled: c.get<boolean>("shacl.enabled"), maxTriples: c.get<number>("shacl.maxTriples"), onType: c.get<boolean>("shacl.onType") },
-    lint: { undescribedTerms: c.get<boolean>("lint.undescribedTerms") },
-    // A restricted setting: in an untrusted workspace VS Code returns only the user's value.
-    imports: { network: c.get<boolean>("imports.network"), unresolved: c.get<string>("imports.unresolved") },
-    format: { lineWidth: c.get<number>("format.lineWidth") },
-    codeLens: { references: c.get<boolean>("codeLens.references") },
-    diagnostics: { workspace: c.get<boolean>("diagnostics.workspace") },
-    query: { timeoutSeconds: c.get<number>("query.timeoutSeconds"), maxRows: c.get<number>("query.maxRows") },
-  }
+/**
+ * The `turtle.*` settings the server reads, as nested objects: the ones the
+ * user set (not the defaults the manifest contributes, which would override
+ * `turtle-lsp.json`), with network imports off in an untrusted workspace.
+ */
+function settingsFor(context: vscode.ExtensionContext, trusted: boolean): Record<string, unknown> {
+  const manifest = context.extension.packageJSON
+  const config = vscode.workspace.getConfiguration("turtle")
+  return settingsFrom({
+    properties: manifest.contributes.configuration.properties,
+    restricted: manifest.capabilities.untrustedWorkspaces.restrictedConfigurations,
+    inspect: (key) => config.inspect(key),
+    trusted,
+  })
 }
 
-async function start(context: vscode.ExtensionContext): Promise<void> {
-  const command = findServer(context)
-  if (!command) {
-    void vscode.window.showErrorMessage(
-      "turtle-lsp binary not found. Set `turtle.server.path`, or build it with `cargo build --release`.",
-    )
-    return
-  }
+function createClient(context: vscode.ExtensionContext): LanguageClient | undefined {
+  let created: LanguageClient | undefined
+  const command = findCommand(context)
+  if (!command) return undefined
   const serverOptions: ServerOptions = { command, args: [] }
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
@@ -76,11 +78,20 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
       { scheme: "untitled", language: "sparql" },
       { scheme: "file", pattern: JSONLD_PATTERN },
     ],
-    initializationOptions: serverSettings(),
+    initializationOptions: settingsFor(context, vscode.workspace.isTrusted),
     // Later changes reach the server as workspace/didChangeConfiguration.
     synchronize: { configurationSection: "turtle" },
     outputChannelName: "Turtle",
     middleware: {
+      workspace: {
+        // The client would send the whole section, defaults included, which
+        // beats turtle-lsp.json at the server. Send the user's settings instead.
+        didChangeConfiguration: async () => {
+          await created?.sendNotification("workspace/didChangeConfiguration", {
+            settings: settingsFor(context, vscode.workspace.isTrusted),
+          })
+        },
+      },
       window: {
         // Query results open beside the query, which keeps the focus.
         showDocument: async (params, token, next) => {
@@ -95,8 +106,8 @@ async function start(context: vscode.ExtensionContext): Promise<void> {
       },
     },
   }
-  client = new LanguageClient("turtle", "Turtle", serverOptions, clientOptions)
-  await client.start()
+  created = new LanguageClient("turtle", "Turtle", serverOptions, clientOptions)
+  return created
 }
 
 interface LspPosition {
@@ -129,6 +140,8 @@ async function showReferences(uri: string, position: LspPosition, locations: Lsp
 /** Exposed for the integration tests. */
 export interface TurtleApi {
   client(): LanguageClient | undefined
+  /** Settles when every start, restart and stop asked so far has finished. */
+  idle(): Promise<void>
 }
 
 /**
@@ -142,11 +155,27 @@ async function wanted(): Promise<boolean> {
   return files.length > 0
 }
 
+let serverHandle: ServerHandle<LanguageClient> | undefined
+
 export async function activate(context: vscode.ExtensionContext): Promise<TurtleApi> {
+  const handle = (serverHandle = new ServerHandle<LanguageClient>(() => createClient(context)))
+  let wantedServer = false
+  /** Runs a start or restart; a failure is shown, not thrown, so the restart command still works. */
+  const run = async (step: () => Promise<unknown>): Promise<void> => {
+    try {
+      await step()
+    } catch (err) {
+      void vscode.window.showErrorMessage(`The Turtle language server did not start: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  const start = (): Promise<void> => {
+    wantedServer = true
+    return run(() => handle.ensureStarted())
+  }
   context.subscriptions.push(
-    vscode.commands.registerCommand("turtle.restartServer", async () => {
-      await client?.stop()
-      await start(context)
+    vscode.commands.registerCommand("turtle.restartServer", () => {
+      wantedServer = true
+      return run(() => handle.restart())
     }),
     vscode.commands.registerCommand("turtle.showReferences", showReferences),
     vscode.workspace.onDidChangeConfiguration(async (e) => {
@@ -154,20 +183,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<Turtle
         await vscode.commands.executeCommand("turtle.restartServer")
       }
     }),
+    // Trust decides which binary may run and what the server may fetch.
+    vscode.workspace.onDidGrantWorkspaceTrust(async () => {
+      if (wantedServer) await vscode.commands.executeCommand("turtle.restartServer")
+    }),
   )
   if (await wanted()) {
-    await start(context)
+    await start()
   } else {
     const waiting = vscode.workspace.onDidOpenTextDocument(async (doc) => {
-      if (client || !isServed(doc)) return
+      if (wantedServer || !isServed(doc)) return
       waiting.dispose()
-      await start(context)
+      await start()
     })
     context.subscriptions.push(waiting)
   }
-  return { client: () => client }
+  return { client: () => handle.client(), idle: () => handle.idle() }
 }
 
 export async function deactivate(): Promise<void> {
-  await client?.stop()
+  await serverHandle?.dispose()
 }

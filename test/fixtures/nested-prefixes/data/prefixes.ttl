@@ -1,0 +1,4 @@
+# Prefixes for the files in data/. This folder is part of the project, not a
+# project of its own: the root is the folder with turtle-lsp.json.
+@prefix ex: <http://example.org/nested#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .

@@ -61,10 +61,15 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces turtle.server.path and turtle.imports.network are ignored: the bundled server is used and nothing is fetched over the network.",
+      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, turtle.query.*, turtle.shacl.maxTriples and turtle.diagnostics.workspace, and nothing is fetched over the network. A server inside the workspace is never run.",
       "restrictedConfigurations": [
         "turtle.server.path",
-        "turtle.imports.network"
+        "turtle.imports.network",
+        "turtle.query.timeoutSeconds",
+        "turtle.query.maxRows",
+        "turtle.query.maxBufferedRows",
+        "turtle.shacl.maxTriples",
+        "turtle.diagnostics.workspace"
       ]
     },
     "virtualWorkspaces": {
