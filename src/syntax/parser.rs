@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 
 type R<T> = Result<T, ()>;
 
-/// Deepest nesting of `[ ]`, `( )`, `<< >>` and `<<( )>>` the parser follows.
+/// Deepest nesting of `[ ]`, `( )`, `<< >>`, `<<( )>>` and `{| |}` the parser follows.
 /// Real data rarely goes past a dozen; thousands only come from generated or
 /// hostile input, and would overflow a worker thread's stack.
 pub const MAX_NESTING: u32 = 256;
@@ -319,7 +319,7 @@ impl<'a> P<'a> {
     /// Where a new statement can start, for recovery: column 0, or inside a
     /// graph block, first on its line and no deeper than the block's statements.
     fn at_line_start(&self, t: Token) -> bool {
-        if t.start == 0 || self.src.as_bytes()[t.start as usize - 1] == b'\n' {
+        if t.start == 0 || matches!(self.src.as_bytes()[t.start as usize - 1], b'\n' | b'\r') {
             return true;
         }
         match self.graph_indent {
@@ -1094,7 +1094,7 @@ impl<'a> P<'a> {
     /// Run `f` one nesting level deeper. Past [`MAX_NESTING`] the statement
     /// is abandoned with an error: unbounded recursion would overflow the
     /// stack, which no panic guard can catch.
-    fn nested(&mut self, f: impl FnOnce(&mut Self) -> R<Node>) -> R<Node> {
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         if self.depth >= MAX_NESTING {
             let span = self
                 .peek()
@@ -1300,7 +1300,7 @@ impl<'a> P<'a> {
                             r
                         }
                     };
-                    self.predicate_object_list(&r)?;
+                    self.nested(|this| this.predicate_object_list(&r))?;
                     if !self.eat(Kind::RAnnotation) {
                         return self.expected("'|}'");
                     }
@@ -1983,6 +1983,81 @@ mod tests {
             Syntax::Turtle
         );
         assert!(!Syntax::JsonLd.is_line_based() && !Syntax::JsonLd.has_prefixes());
+    }
+
+    /// Parse on a 2 MiB stack, the smallest any host thread gets: a missing
+    /// depth guard aborts the process here instead of failing an assertion.
+    fn parse_small_stack(src: String) -> Vec<String> {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || messages(&p(&src)).into_iter().map(str::to_owned).collect())
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn deep_nesting_is_one_error_not_an_abort() {
+        let n = 100_000;
+        let cases = [
+            ("{|", format!("<a> <p> <o> {}", "{| <p> <o> ".repeat(n))),
+            ("[", format!("<a> <p> {}", "[ <p> ".repeat(n))),
+            ("(", format!("<a> <p> {}", "( ".repeat(n))),
+            ("<<", format!("{} <p> <o> .", "<< ".repeat(n))),
+            ("<<(", format!("<a> <p> {}", "<<( <a> <p> ".repeat(n))),
+        ];
+        for (open, src) in cases {
+            let errors = parse_small_stack(src);
+            let deep: Vec<_> = errors
+                .iter()
+                .filter(|m| m.contains("Nested more than 256 levels deep"))
+                .collect();
+            assert_eq!(deep.len(), 1, "{open}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn annotation_nesting_up_to_the_limit_parses() {
+        let n = MAX_NESTING as usize;
+        let src = format!(
+            "<a> <p> <o> {}{}.",
+            "{| <p> <o> ".repeat(n),
+            "|} ".repeat(n)
+        );
+        let errors = parse_small_stack(src);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn backslash_newline_in_a_short_string_keeps_the_next_statement() {
+        for nl in ["\n", "\r", "\r\n"] {
+            let src = format!("<a> <p> \"x\\{nl}<b> <p> <o> .{nl}<c> <p> <o> .{nl}");
+            let r = p(&src);
+            assert!(
+                r.errors.iter().any(|e| e.message == "Unterminated string"),
+                "{nl:?}: {:?}",
+                r.errors
+            );
+            let subjects: Vec<_> = r
+                .statements
+                .iter()
+                .filter_map(|s| s.subject.map(|x| x.0.as_str()))
+                .collect();
+            assert!(subjects.contains(&"b"), "{nl:?}: {subjects:?}");
+            assert!(subjects.contains(&"c"), "{nl:?}: {subjects:?}");
+        }
+    }
+
+    #[test]
+    fn cr_only_file_keeps_its_triples_after_a_comment() {
+        let src = "# header\r<a> <p> <o> .\r# mid\r<b> <p> <o> .\r";
+        let r = p(src);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.triples.len(), 2);
+        assert_eq!(r.comments.len(), 2);
+        // A statement missing its dot is still recovered at a CR line start.
+        let r = p("<a> <p> <o>\r<b> <p> <o> .\r");
+        assert_eq!(r.triples.len(), 2, "{:?}", r.errors);
     }
 
     #[test]

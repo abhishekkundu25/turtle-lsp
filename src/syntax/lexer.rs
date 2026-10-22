@@ -128,7 +128,10 @@ impl<'a> Lexer<'a> {
             match c {
                 b' ' | b'\t' | b'\r' | b'\n' => self.i += 1,
                 b'#' => {
-                    let end = memchr(b'\n', &self.b[self.i..]).map_or(self.b.len(), |p| self.i + p);
+                    let end = self.b[self.i..]
+                        .iter()
+                        .position(|&b| b == b'\n' || b == b'\r')
+                        .map_or(self.b.len(), |p| self.i + p);
                     self.push(Kind::Comment, end, None);
                 }
                 b'"' | b'\'' => self.string(c),
@@ -173,6 +176,9 @@ impl<'a> Lexer<'a> {
             let c = self.b[j];
             if c == b'\\' {
                 match self.b.get(j + 1) {
+                    Some(b'\n' | b'\r') if !long => {
+                        return self.push(Kind::String, j + 1, Some("Unterminated string"));
+                    }
                     Some(b't' | b'b' | b'n' | b'r' | b'f' | b'"' | b'\'' | b'\\') => j += 2,
                     Some(&u @ (b'u' | b'U')) => {
                         let n = if u == b'u' { 4 } else { 8 };
@@ -458,10 +464,6 @@ impl<'a> Lexer<'a> {
     }
 }
 
-fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
-    hay.iter().position(|c| *c == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +503,36 @@ mod tests {
         assert_eq!(k[0].0, Kind::String);
         assert!(tokenize("\"open\n")[0].error.is_some());
         assert!(k.contains(&(Kind::PName, "ex:b")));
+    }
+
+    #[test]
+    fn backslash_newline_ends_a_short_string() {
+        for nl in ["\n", "\r", "\r\n"] {
+            let src = format!("ex:a ex:p \"x\\{nl}ex:b ex:p ex:o .");
+            let k = tokenize(&src);
+            let s = k.iter().find(|t| t.kind == Kind::String).unwrap();
+            assert_eq!(s.error, Some("Unterminated string"));
+            assert_eq!(s.end as usize, src.find(nl).unwrap(), "{nl:?}");
+            assert!(
+                k.iter().any(|t| t.text(&src) == "ex:b"),
+                "the next statement survives for {nl:?}"
+            );
+        }
+        // A long string still runs across a backslash-newline.
+        let src = "\"\"\"a\\\nb\"\"\" .";
+        let k = tokenize(src);
+        assert_eq!(k[0].text(src), &src[..src.len() - 2]);
+    }
+
+    #[test]
+    fn comments_end_at_cr_or_lf() {
+        for nl in ["\n", "\r", "\r\n"] {
+            let src = format!("# c{nl}ex:a ex:p ex:o .");
+            let k = tokenize(&src);
+            assert_eq!(k[0].kind, Kind::Comment);
+            assert_eq!(k[0].text(&src), "# c", "{nl:?}");
+            assert_eq!(k[1].text(&src), "ex:a");
+        }
     }
 
     #[test]
