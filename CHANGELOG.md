@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-10-23
 
 ### Security
 
@@ -143,6 +143,13 @@
 
 ### Fixed
 
+- **"Organise prefixes" no longer empties a file whose lines end in a bare
+  carriage return.** It read such a file as one line, so with every prefix
+  unused it removed everything after the declarations too. A bare `\r` now
+  ends a line there, as in the Turtle and SPARQL grammars.
+- **A JSON-LD string cut off at the end of the file no longer crashes inlay
+  hints.** Its span lost its last character, one byte shorter than the name
+  it holds; a key written without quotes lost its first and last.
 - A backslash before a line break in a short string, and a comment ended by
   a lone carriage return, no longer swallow the next statement.
 - A JSON-LD document could get triples from a context it never used, when
@@ -202,6 +209,10 @@
   one layout engine for the Turtle and SPARQL formatters, one SHACL shape
   model, one file-kind table, and a public Rust interface cut to what the
   browser engine, the examples and the tests use.
+- CI runs on Linux, macOS and Windows with the JSON-LD corpus, VS Code 1.91.0
+  next to the stable one, the browser engine and the benchmark. The bench's
+  memory budget checks mimalloc's peak commit (at most 64 bytes per input
+  byte), the same figure on every system; 0.7.1 commits 88.
 
 ## 0.7.1 — 2026-10-22
 

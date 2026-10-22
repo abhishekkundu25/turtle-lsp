@@ -1,6 +1,6 @@
 [package]
 name = "turtle-lsp"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 # 1.91: `str::floor_char_boundary` (src/query/mod.rs) is the newest std item in use,
 # found by `cargo clippy` (clippy::incompatible_msrv); let chains need 1.88 and the
