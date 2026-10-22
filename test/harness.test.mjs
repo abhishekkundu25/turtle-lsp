@@ -120,7 +120,11 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 // nvim.test.mjs against a stand-in `nvim` whose run is scripted.
 const spec = path.join(here, "nvim", "spec.lua")
-const checksInSpec = () => fs.readFileSync(spec, "utf8").split("\n").filter((l) => /^check\(/.test(l)).length
+// The count nvim.test.mjs expects: indented checks sit under `if` and run only
+// with the local-only `real` fixtures.
+const hasReal = fs.existsSync(path.join(here, "fixtures", "real"))
+const checksInSpec = () =>
+  fs.readFileSync(spec, "utf8").split("\n").filter((l) => (hasReal ? /^\s*check\(/ : /^check\(/).test(l)).length
 function fakeNvim(mode) {
   const dir = path.join(work, `nvim-${mode}`)
   fs.mkdirSync(dir, { recursive: true })
