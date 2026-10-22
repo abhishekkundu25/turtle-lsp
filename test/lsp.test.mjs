@@ -3,7 +3,11 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { startServer, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
+import { spawn } from "node:child_process"
+import { createRequire } from "node:module"
+import { startServer, uriOf, fixtures, positionOf, serverPath, serverEnv, tempDir } from "./lsp-client.mjs"
+
+const rpc = createRequire(import.meta.url)("vscode-jsonrpc/node")
 
 const ws = path.join(fixtures, "workspace")
 const peoplePath = path.join(ws, "people.ttl")
@@ -333,4 +337,144 @@ test("diagnostics come back under the client's spelling of the URI", async () =>
   const diags = await s.diagnosticsFor(uri)
   assert.ok(problems(diags).length > 0, fmt(diags))
   s.close(uri)
+})
+
+// ---------- isolation and the disk index ----------
+
+// A server on a main thread with a 512 KB stack (`ulimit -s`), which a deep
+// document would overflow if the server parsed it there: the server runs on a
+// thread of its own with a large stack. Not on Windows, which has no ulimit.
+test(
+  "documents nested 255 levels deep are answered on a 512 KB process stack",
+  { skip: process.platform === "win32" && "no ulimit -s" },
+  async () => {
+    const proc = spawn("sh", ["-c", 'ulimit -s 512 && exec "$0"', serverPath], {
+      env: serverEnv(),
+      stdio: ["pipe", "pipe", "inherit"],
+    })
+    const exited = new Promise((r) => proc.once("exit", (code, signal) => r({ code, signal })))
+    proc.stdin.on("error", () => {})
+    const conn = rpc.createMessageConnection(
+      new rpc.StreamMessageReader(proc.stdout),
+      new rpc.StreamMessageWriter(proc.stdin),
+    )
+    conn.listen()
+    try {
+      await conn.sendRequest("initialize", { processId: process.pid, rootUri: null, capabilities: {} })
+      await conn.sendNotification("initialized", {})
+      const n = 255
+      const docs = {
+        "groups.rq": "SELECT * WHERE " + "{ ".repeat(n) + "?s ?p ?o" + " }".repeat(n),
+        "optional.rq": "SELECT * WHERE { " + "OPTIONAL { ".repeat(n) + "?s ?p ?o" + " }".repeat(n) + " }",
+        "parens.rq": "SELECT * WHERE { ?s ?p ?o FILTER " + "(".repeat(n) + "1" + ")".repeat(n) + " }",
+      }
+      for (const [name, text] of Object.entries(docs)) {
+        const uri = `file:///nowhere/${name}`
+        await conn.sendNotification("textDocument/didOpen", {
+          textDocument: { uri, languageId: "sparql", version: 1, text },
+        })
+        const symbols = await Promise.race([
+          conn.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }),
+          exited.then((e) => assert.fail(`the server died on ${name}: ${JSON.stringify(e)}`)),
+        ])
+        assert.ok(Array.isArray(symbols), `${name}: ${JSON.stringify(symbols)}`)
+      }
+      await conn.sendRequest("shutdown")
+      await conn.sendNotification("exit")
+      assert.deepEqual(await exited, { code: 0, signal: null })
+    } finally {
+      conn.dispose()
+      proc.kill()
+    }
+  },
+)
+
+describe("files changing on disk", () => {
+  let dir, w
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const ttl = (name) => `@prefix ex: <http://e.org/> .\nex:${name} a ex:Thing .\n`
+  const write = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+    fs.writeFileSync(path.join(dir, rel), text)
+    return uriOf(path.join(dir, rel))
+  }
+  // The files that workspace symbols name, sorted.
+  const indexed = async () => {
+    const symbols = await w.request("workspace/symbol", { query: "" })
+    return [...new Set(symbols.map((x) => path.basename(new URL(x.location.uri).pathname)))].sort()
+  }
+  before(async () => {
+    dir = tempDir("turtle-lsp-disk-")
+    write("keep/a.ttl", ttl("Alpha"))
+    write("gone/b.ttl", ttl("Beta"))
+    write("gone/deep/c.ttl", ttl("Gamma"))
+    w = await startServer({ cwd: dir })
+  })
+  after(async () => {
+    await w.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("the files of a deleted folder leave the index; a node_modules event is ignored", async () => {
+    // The first workspace request waits for the initial index.
+    assert.deepEqual(await indexed(), ["a.ttl", "b.ttl", "c.ttl"])
+    const ignored = write("node_modules/pkg/n.ttl", ttl("Node"))
+    const hidden = write(".cache/h.ttl", ttl("Hidden"))
+    w.notify("workspace/didChangeWatchedFiles", {
+      changes: [
+        { uri: ignored, type: 1 },
+        { uri: hidden, type: 2 },
+      ],
+    })
+    assert.deepEqual(await indexed(), ["a.ttl", "b.ttl", "c.ttl"])
+    fs.rmSync(path.join(dir, "gone"), { recursive: true })
+    w.notify("workspace/didChangeWatchedFiles", { changes: [{ uri: uriOf(path.join(dir, "gone")), type: 3 }] })
+    assert.deepEqual(await indexed(), ["a.ttl"])
+  })
+
+  test("a document closed outside the workspace is not indexed from disk", async () => {
+    const away = tempDir("turtle-lsp-away-")
+    try {
+      const file = path.join(away, "away.ttl")
+      fs.writeFileSync(file, ttl("Away"))
+      w.open(uriOf(file), ttl("Away"))
+      assert.deepEqual(await indexed(), ["a.ttl", "away.ttl"])
+      w.close(uriOf(file))
+      assert.deepEqual(await indexed(), ["a.ttl"])
+    } finally {
+      fs.rmSync(away, { recursive: true, force: true })
+    }
+  })
+
+  test("a changed prefixes.ttl re-parses its files off the main loop; requests are not held up", async () => {
+    write("p/prefixes.ttl", "@prefix ex: <http://one.org/> .\n")
+    const x = write("p/x.ttl", "ex:S a ex:T .\n")
+    const y = write("p/sub/y.ttl", "ex:S a ex:T .\n")
+    w.notify("workspace/didChangeWatchedFiles", {
+      changes: [x, y, uriOf(path.join(dir, "p/prefixes.ttl"))].map((uri) => ({ uri, type: 1 })),
+    })
+    const probe = uriOf(path.join(dir, "probe.ttl"))
+    const definesIn = async (iri) => {
+      w.open(probe, `<${iri}> <http://e.org/p> <http://e.org/o> .\n`)
+      const locs = await w.request("textDocument/definition", {
+        textDocument: { uri: probe },
+        position: { line: 0, character: 3 },
+      })
+      return locs.map((l) => path.basename(l.uri)).filter((f) => f !== "probe.ttl").sort()
+    }
+    assert.deepEqual(await definesIn("http://one.org/S"), ["x.ttl", "y.ttl"])
+    write("p/prefixes.ttl", "@prefix ex: <http://two.org/> .\n")
+    w.notify("workspace/didChangeWatchedFiles", {
+      changes: [{ uri: uriOf(path.join(dir, "p/prefixes.ttl")), type: 2 }],
+    })
+    // The re-parse runs on a thread; its result lands on the main loop soon.
+    const end = Date.now() + 10000
+    let at
+    while (JSON.stringify((at = await definesIn("http://two.org/S"))) !== JSON.stringify(["x.ttl", "y.ttl"])) {
+      assert.ok(Date.now() < end, `still ${JSON.stringify(at)}`)
+      await sleep(50)
+    }
+    assert.deepEqual(await definesIn("http://one.org/S"), [])
+    w.close(probe)
+  })
 })

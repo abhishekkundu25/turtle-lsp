@@ -300,6 +300,21 @@ mod desktop {
             }
         }
 
+        /// The background fetch of `url` ended, with `crashed` the reason
+        /// when it did not complete: the fetch is no longer queued, and
+        /// whoever waits for the context is told.
+        fn fetched(&self, url: &str, crashed: Option<String>) {
+            if let Some(why) = crashed {
+                self.remember(url, &Err(LoadError::Failed(why)));
+            }
+            if let Network::Background { queued, done } = &self.network {
+                if let Ok(mut q) = queued.lock() {
+                    q.remove(url);
+                }
+                let _ = done.send(url.to_string());
+            }
+        }
+
         /// The cached copy of `url`; its final URL is in a `.url` file
         /// beside it when a redirect changed it.
         fn cached(&self, url: &str) -> Option<RemoteDocument> {
@@ -333,6 +348,10 @@ mod desktop {
 
         fn fetch(&self, url: &str) -> Result<RemoteDocument, LoadError> {
             let _one_at_a_time = self.fetching.lock();
+            #[cfg(test)]
+            if url.contains("turtle-lsp-test-panic") {
+                panic!("injected fetch panic");
+            }
             if let Some(r) = self.remembered(url) {
                 return r;
             }
@@ -367,17 +386,25 @@ mod desktop {
                         .map(|mut q| q.insert(url.to_string()))
                         .unwrap_or(false);
                     if first {
-                        let inner = inner.clone();
-                        let url = url.to_string();
-                        std::thread::spawn(move || {
-                            let _ = inner.fetch(&url);
-                            if let Network::Background { queued, done } = &inner.network {
-                                if let Ok(mut q) = queued.lock() {
-                                    q.remove(&url);
-                                }
-                                let _ = done.send(url);
-                            }
-                        });
+                        let (work, finish) = (inner.clone(), inner.clone());
+                        let (fetch_url, done_url) = (url.to_string(), url.to_string());
+                        // However the thread ends, the document waiting for
+                        // the context is told: a panic is a failed fetch.
+                        let started = crate::server::worker::spawn_guarded(
+                            "jsonld-context",
+                            4 << 20,
+                            move || {
+                                let _ = work.fetch(&fetch_url);
+                            },
+                            {
+                                let done_url = done_url.clone();
+                                let finish = finish.clone();
+                                move |ended| finish.fetched(&done_url, ended.err())
+                            },
+                        );
+                        if let Err(e) = started {
+                            finish.fetched(&done_url, Some(e.to_string()));
+                        }
                     }
                     Err(LoadError::Pending)
                 }
@@ -649,6 +676,23 @@ mod desktop_tests {
             }
         });
         (base, log)
+    }
+
+    #[test]
+    fn a_panic_in_a_background_fetch_is_a_failed_context_and_the_waiting_document_is_told() {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let (l, done) = DesktopLoader::in_background(None);
+        let url = "https://example.org/turtle-lsp-test-panic.jsonld";
+        assert_eq!(l.load(url), Err(LoadError::Pending));
+        let told = done.recv_timeout(std::time::Duration::from_secs(10));
+        std::panic::set_hook(hook);
+        assert_eq!(told.as_deref(), Ok(url), "the document would wait for ever");
+        // The failure is remembered, not retried per document, and says why.
+        match l.load(url) {
+            Err(LoadError::Failed(why)) => assert!(why.contains("internal error"), "{why}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

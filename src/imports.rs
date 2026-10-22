@@ -25,9 +25,10 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::SOURCE;
 use crate::knowledge::{DocFacts, Knowledge, Source};
+use crate::server::worker::{Fed, Feed};
 use crate::syntax::{self, Iri, Node, PrefixMap};
 use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, path_to_uri};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, RecvError, Sender, unbounded};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, Command, Diagnostic,
     DiagnosticSeverity, NumberOrString,
@@ -236,8 +237,9 @@ pub struct Imports {
     /// Resolve without loading or threads (see [`Imports::new_inline`]).
     inline: bool,
     jobs: Option<Sender<Job>>,
-    results_tx: Sender<Done>,
-    results: Receiver<Done>,
+    /// The answers of the worker thread. The worker holds the only sender,
+    /// so the channel disconnects when it ends.
+    results: Feed<Done>,
     generation: u64,
     /// The generation of the last answer taken (see [`Imports::busy`]).
     answered: u64,
@@ -264,12 +266,10 @@ impl Default for Imports {
 
 impl Imports {
     pub fn new() -> Imports {
-        let (results_tx, results) = unbounded();
         Imports {
             inline: false,
             jobs: None,
-            results_tx,
-            results,
+            results: Feed::default(),
             generation: 0,
             answered: 0,
             last: None,
@@ -294,9 +294,26 @@ impl Imports {
         }
     }
 
-    /// Answers from the background thread, for the main loop to select on.
-    pub fn results(&self) -> &Receiver<Done> {
-        &self.results
+    /// Answers from the background thread, for the main loop to select on
+    /// (a channel that never fires while there is no thread).
+    pub fn results(&self) -> Receiver<Done> {
+        self.results.rx()
+    }
+
+    /// What a receive on [`Imports::results`] returned: the answer to
+    /// [`Imports::apply`], or, when the thread is gone, the answer that ends
+    /// the pass it died in (if one was running): every import that pass was
+    /// to resolve is unresolved, with the reason. The next change to the
+    /// imports starts a new thread.
+    pub fn received(&mut self, got: Result<Done, RecvError>) -> Option<Done> {
+        match self.results.take(got) {
+            Fed::Got(done) => Some(done),
+            Fed::Gone => {
+                self.jobs = None;
+                let req = self.last.as_ref().filter(|_| self.busy())?;
+                Some(failed(self.generation, &req.imports, CRASHED))
+            }
+        }
     }
 
     /// A resolution pass is running: its answer has not been taken yet.
@@ -402,16 +419,25 @@ impl Imports {
             req,
             refetch: self.refetch.take(),
         };
-        let jobs = self.jobs.get_or_insert_with(|| {
+        if self.jobs.is_none() {
             let (tx, rx) = unbounded();
-            let out = self.results_tx.clone();
-            let _ = std::thread::Builder::new()
-                .name("turtle-lsp-imports".into())
-                .stack_size(16 << 20)
-                .spawn(move || worker(rx, out));
-            tx
-        });
-        let _ = jobs.send(job);
+            let (out, results) = unbounded();
+            let started = crate::server::worker::spawn_guarded(
+                "turtle-lsp-imports",
+                16 << 20,
+                move || worker(rx, out),
+                |_| {},
+            );
+            if started.is_err() {
+                // No thread: the pass ends at once, unresolved.
+                return Some(failed(self.generation, &job.req.imports, NO_THREAD));
+            }
+            self.jobs = Some(tx);
+            self.results = Feed::open(results);
+        }
+        if let Some(jobs) = &self.jobs {
+            let _ = jobs.send(job);
+        }
         None
     }
 
@@ -572,6 +598,27 @@ struct Ontology {
     imports: Vec<String>,
 }
 
+/// An import IRI containing this makes the resolver panic, in tests.
+#[cfg(test)]
+const PANIC_IMPORT: &str = "turtle-lsp-test-panic";
+
+/// Why imports are unresolved when their thread ended in the middle of a pass.
+const CRASHED: &str = "the import resolver stopped after an internal error (see the server's log); change the imports or restart to try again";
+/// Why imports are unresolved when no thread could be started for them.
+const NO_THREAD: &str = "the import resolver could not be started";
+
+/// The answer of pass `generation` that resolved none of `imports`.
+fn failed(generation: u64, imports: &[String], why: &str) -> Done {
+    Done {
+        generation,
+        status: imports
+            .iter()
+            .map(|i| (i.clone(), Status::Unresolved(why.to_string())))
+            .collect(),
+        loaded: vec![],
+    }
+}
+
 fn worker(jobs: Receiver<Job>, out: Sender<Done>) {
     let mut memo = Memo::default();
     while let Ok(mut job) = jobs.recv() {
@@ -593,8 +640,23 @@ fn worker(jobs: Receiver<Job>, out: Sender<Done>) {
             }
         }
         let superseded = || !jobs.is_empty();
-        let Some(done) = resolve(&job, &mut memo, &superseded) else {
-            continue;
+        // A bug on one pass must not leave the main loop waiting for its
+        // answer: that pass is unresolved, with the reason, and the thread
+        // goes on with a memo that starts over.
+        let attempt = crate::server::worker::catch("resolving imports", || {
+            #[cfg(test)]
+            if job.req.imports.iter().any(|i| i.contains(PANIC_IMPORT)) {
+                panic!("injected resolver panic");
+            }
+            resolve(&job, &mut memo, &superseded)
+        });
+        let done = match attempt {
+            Ok(Some(done)) => done,
+            Ok(None) => continue,
+            Err(msg) => {
+                memo = Memo::default();
+                failed(job.generation, &job.req.imports, &msg)
+            }
         };
         if out.send(done).is_err() {
             break;
@@ -1848,6 +1910,101 @@ mod tests {
         imports.fetch("http://ex.com/other");
         imports.sync(&k, &[], false);
         assert_eq!(imports.generation, g + 2);
+    }
+
+    /// Knowledge with one document importing each of `iris`.
+    fn importing(iris: &[&str]) -> Knowledge {
+        let mut k = Knowledge::default();
+        let text: String = iris
+            .iter()
+            .map(|i| format!("<http://ex.com/me> <{OWL_IMPORTS}> <{i}> .\n"))
+            .collect();
+        k.set(
+            "file:///a.ttl",
+            Source::Disk,
+            Arc::new(Analysis::new(
+                "file:///a.ttl".into(),
+                &text,
+                Arc::default(),
+                false,
+            )),
+        );
+        k
+    }
+
+    fn unresolved_with(imports: &Imports, iri: &str, what: &str) -> bool {
+        matches!(imports.status(iri), Some(Status::Unresolved(why)) if why.contains(what))
+    }
+
+    #[test]
+    fn a_panic_resolving_imports_ends_that_pass_unresolved_and_the_worker_goes_on() {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let mut k = importing(&["http://ex.com/turtle-lsp-test-panic"]);
+        let mut imports = Imports::new();
+        imports.cache = None;
+        assert!(imports.sync(&k, &[], false).is_none());
+        assert!(imports.busy());
+        let done = imports
+            .results()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        std::panic::set_hook(hook);
+        assert!(imports.apply(done, &mut k));
+        // Not busy: the progress shown for it can end.
+        assert!(!imports.busy());
+        assert!(unresolved_with(
+            &imports,
+            "http://ex.com/turtle-lsp-test-panic",
+            "internal error"
+        ));
+        // The same worker answers the next pass.
+        let k = importing(&["http://ex.com/other"]);
+        imports.retry();
+        assert!(imports.sync(&k, &[], false).is_none());
+        let done = imports
+            .results()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(done.generation, imports.generation);
+        assert!(
+            done.status.iter().all(
+                |(_, s)| !matches!(s, Status::Unresolved(why) if why.contains("internal error"))
+            )
+        );
+    }
+
+    #[test]
+    fn a_dead_worker_ends_the_pass_it_died_in_and_the_next_change_starts_another() {
+        let mut k = importing(&["http://ex.com/lost"]);
+        let mut imports = Imports::new();
+        imports.cache = None;
+        // Nothing runs yet: a disconnected channel answers nothing.
+        assert!(imports.received(Err(RecvError)).is_none());
+        assert!(imports.sync(&k, &[], false).is_none());
+        assert!(imports.busy());
+        // The worker is gone before it answered (here: we stop listening).
+        let done = imports.received(Err(RecvError)).expect("the pass ends");
+        assert!(imports.apply(done, &mut k));
+        assert!(!imports.busy(), "progress would never end");
+        assert!(unresolved_with(&imports, "http://ex.com/lost", "stopped"));
+        // Its channel is closed: the main loop is not woken again.
+        assert!(imports.results().try_recv().is_err());
+        assert!(matches!(
+            imports.results().recv_timeout(Duration::from_millis(20)),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        ));
+        // A worker that ends while idle changes nothing.
+        assert!(imports.received(Err(RecvError)).is_none());
+        // A change of the imports starts a new worker, which answers.
+        let k = importing(&["http://ex.com/lost", "http://ex.com/new"]);
+        imports.retry();
+        assert!(imports.sync(&k, &[], false).is_none());
+        let done = imports
+            .results()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(done.generation, imports.generation);
     }
 
     #[test]

@@ -25,7 +25,8 @@ use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
 use crate::jsonld::loader::{self, Bundled};
 use crate::jsonld::{ContextLoader, LoadError, RemoteDocument};
 use crate::knowledge::{DocFacts, Knowledge, Source};
-use crate::syntax::{PrefixMap, Syntax};
+use crate::server::worker::catch;
+use crate::syntax::{PrefixMap, Severity, Span, Syntax, SyntaxError};
 use line_index::LineIndex;
 use lsp_types::TextDocumentContentChangeEvent;
 use rayon::prelude::*;
@@ -109,8 +110,14 @@ pub struct Workspace {
     /// Facts from every analysis: the open document's when it is open, else
     /// the disk copy's. Kept current by every method that changes either.
     knowledge: Knowledge,
-    /// Directory -> prefixes from the nearest prefixes.ttl (None = no file found).
-    prefix_cache: FxHashMap<PathBuf, Arc<PrefixMap>>,
+    /// Directory -> the prefixes.ttl that serves it (None = no file found).
+    prefix_dirs: FxHashMap<PathBuf, Option<PathBuf>>,
+    /// A prefixes.ttl -> its prefixes over the settings prefixes, with the
+    /// file's stamp when they were read. Every directory the file serves
+    /// shares the one map.
+    prefix_files: FxHashMap<PathBuf, PrefixEntry>,
+    /// The settings prefixes alone: the map of a file no prefixes.ttl serves.
+    settings_map: Option<Arc<PrefixMap>>,
     /// The same for documents without a file path (the browser build): URI
     /// directory -> prefixes from the nearest open prefixes.ttl.
     uri_prefix_cache: FxHashMap<String, Arc<PrefixMap>>,
@@ -122,6 +129,41 @@ pub struct Workspace {
     /// Document URI -> the context URLs its last JSON-LD analysis asked
     /// for. Shared with the thread that builds the initial index.
     context_uses: ContextUses,
+    /// What changed on disk since the workspace was created, kept until the
+    /// initial index is merged (see [`Workspace::expect_initial_index`]).
+    touched: Option<Touched>,
+}
+
+/// A prefixes.ttl's prefixes, as read.
+struct PrefixEntry {
+    stamp: Option<Stamp>,
+    /// Read from the open document, not from the file.
+    from_open: bool,
+    map: Arc<PrefixMap>,
+}
+
+/// A file's modification time and size: equal stamps mean it was not written
+/// since.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Stamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+fn stamp_of(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some(Stamp {
+        modified: m.modified().ok(),
+        len: m.len(),
+    })
+}
+
+/// The files and folders that changed on disk while the initial index was
+/// being built: what that index read may be out of date for them.
+#[derive(Default)]
+struct Touched {
+    uris: rustc_hash::FxHashSet<String>,
+    dirs: Vec<PathBuf>,
 }
 
 type ContextUses = Arc<Mutex<FxHashMap<String, Vec<String>>>>;
@@ -316,6 +358,78 @@ fn canonical(path: &Path) -> PathBuf {
     }
 }
 
+/// Text of a document that makes analysis panic, in tests (see
+/// [`analyze`]).
+#[cfg(test)]
+pub(crate) const PANIC_IN_ANALYSIS: &str = "turtle-lsp-test: panic in analysis";
+/// Text of a document whose facts cannot be computed, in tests (see
+/// [`prepared`]).
+#[cfg(test)]
+pub(crate) const PANIC_IN_FACTS: &str = "turtle-lsp-test: panic in facts";
+
+/// [`Analysis::with_loader`], but a panic in it is the analysis of a document
+/// that failed ([`failed_analysis`]) rather than the end of the server: one
+/// document's bug must not take every other document down.
+fn analyze(
+    uri: String,
+    text: &str,
+    external: Arc<PrefixMap>,
+    keep_tokens: bool,
+    syntax: Syntax,
+    loader: &dyn ContextLoader,
+) -> Analysis {
+    let attempt = catch("analysis", || {
+        #[cfg(test)]
+        if text.contains(PANIC_IN_ANALYSIS) {
+            panic!("injected analysis panic");
+        }
+        Analysis::with_loader(
+            uri.clone(),
+            text,
+            external.clone(),
+            keep_tokens,
+            syntax,
+            loader,
+        )
+    });
+    attempt.unwrap_or_else(|msg| failed_analysis(uri, syntax, external, &msg))
+}
+
+/// What a document whose analysis panicked is analyzed as: empty, with the
+/// failure as its one error, so it shows as a diagnostic.
+fn failed_analysis(uri: String, syntax: Syntax, external: Arc<PrefixMap>, msg: &str) -> Analysis {
+    let mut a = Analysis::with_loader(uri, "", external, true, syntax, &Bundled);
+    a.parsed.errors.push(SyntaxError {
+        span: Span::default(),
+        message: format!(
+            "{msg}. The rest of the server keeps working; please report this file at https://github.com/abhishekkundu25/turtle-lsp/issues"
+        ),
+        severity: Severity::Error,
+        code: "internal-error",
+    });
+    a
+}
+
+/// `a` with its facts for the knowledge index. When the facts cannot be
+/// computed, a [`failed_analysis`] stands in for it.
+fn prepared(a: Analysis) -> (Analysis, DocFacts) {
+    let attempt = catch("indexing", || {
+        #[cfg(test)]
+        if a.text.contains(PANIC_IN_FACTS) {
+            panic!("injected facts panic");
+        }
+        DocFacts::new(&a)
+    });
+    match attempt {
+        Ok(facts) => (a, facts),
+        Err(msg) => {
+            let failed = failed_analysis(a.uri.clone(), a.parsed.syntax, a.external.clone(), &msg);
+            let facts = DocFacts::new(&failed);
+            (failed, facts)
+        }
+    }
+}
+
 /// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`
 /// or `.jsonld`.
 pub fn is_turtle(path: &Path) -> bool {
@@ -492,8 +606,9 @@ impl Workspace {
         doc.query = None;
     }
 
-    /// Closing a file keeps it indexed from disk.
-    /// Closing a SPARQL document leaves the index untouched.
+    /// Closing a file indexes it from disk again, when the scan would have
+    /// ([`Workspace::indexable`]). Closing a SPARQL document leaves the index
+    /// untouched.
     pub fn close_doc(&mut self, uri: &str) {
         if self
             .open
@@ -502,7 +617,8 @@ impl Workspace {
         {
             return;
         }
-        // Only RDF files belong in the index (a .txt opened as Turtle does not).
+        // Only what the scan would index goes back to the index: an RDF file
+        // below a root (a .txt opened as Turtle, or a file elsewhere, does not).
         if let Some(path) = uri_to_path(uri).filter(|p| is_turtle(p)) {
             self.reindex_disk_file(&path);
         }
@@ -558,17 +674,13 @@ impl Workspace {
             .filter_map(|(uri, syntax, ext)| {
                 let doc = open.get(&uri)?;
                 let loader = DocContexts::new(open, roots, &*contexts);
-                let a = Arc::new(Analysis::with_loader(
-                    uri.clone(),
-                    &doc.text,
-                    ext,
-                    true,
-                    syntax,
-                    &loader,
-                ));
+                let a = analyze(uri.clone(), &doc.text, ext, true, syntax, &loader);
                 loader.record(uses, &uri, syntax);
-                let facts = (!doc.cached_import).then(|| DocFacts::new(&a));
-                Some((uri, a, facts))
+                if doc.cached_import {
+                    return Some((uri, Arc::new(a), None));
+                }
+                let (a, facts) = prepared(a);
+                Some((uri, Arc::new(a), Some(facts)))
             })
             .collect();
         for (uri, a, facts) in done {
@@ -604,20 +716,26 @@ impl Workspace {
         let external = self.external_prefixes_as(uri, syntax);
         let contexts = self.contexts();
         let loader = DocContexts::new(&self.open, &self.roots, &*contexts);
-        let a = Arc::new(Analysis::with_loader(
+        let a = analyze(
             uri.to_string(),
             &self.open.get(uri)?.text,
             external,
             true,
             syntax,
             &loader,
-        ));
+        );
         loader.record(&self.context_uses, uri, syntax);
         let doc = self.open.get_mut(uri)?;
-        doc.analysis = Some(a.clone());
-        if !doc.cached_import {
-            self.knowledge.set(uri, Source::Open, a.clone());
+        if doc.cached_import {
+            let a = Arc::new(a);
+            doc.analysis = Some(a.clone());
+            return Some(a);
         }
+        let (a, facts) = prepared(a);
+        let a = Arc::new(a);
+        doc.analysis = Some(a.clone());
+        self.knowledge
+            .set_prepared(uri, Source::Open, a.clone(), facts);
         Some(a)
     }
 
@@ -698,29 +816,61 @@ impl Workspace {
             return self.open_prefixes_by_uri(uri);
         };
         if path.file_name().is_some_and(|n| n == PREFIX_FILE) {
-            return Arc::new(self.settings_prefixes.clone());
+            return self.settings_only();
         }
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        if let Some(m) = self.prefix_cache.get(&dir) {
-            return m.clone();
+        let file = match self.prefix_dirs.get(&dir) {
+            Some(file) => file.clone(),
+            None => {
+                let file = self.find_prefix_file(&dir);
+                self.prefix_dirs.insert(dir, file.clone());
+                file
+            }
+        };
+        match file {
+            Some(file) => self.prefix_file_map(&file),
+            None => self.settings_only(),
         }
+    }
+
+    /// The settings prefixes alone.
+    fn settings_only(&mut self) -> Arc<PrefixMap> {
+        let settings = &self.settings_prefixes;
+        self.settings_map
+            .get_or_insert_with(|| Arc::new(settings.clone()))
+            .clone()
+    }
+
+    /// The prefixes `file` (a prefixes.ttl) declares over the settings
+    /// prefixes, read once: the open document's text when it is open, else
+    /// the file's.
+    fn prefix_file_map(&mut self, file: &Path) -> Arc<PrefixMap> {
+        if let Some(e) = self.prefix_files.get(file) {
+            return e.map.clone();
+        }
+        let file_uri = path_to_uri(file).unwrap_or_default();
+        let from_open = self.open.contains_key(&file_uri);
+        let text = self
+            .open
+            .get(&file_uri)
+            .map(|d| d.text.clone())
+            .or_else(|| std::fs::read_to_string(file).ok());
         let mut map = self.settings_prefixes.clone();
-        if let Some(file) = self.find_prefix_file(&dir) {
-            let file_uri = path_to_uri(&file).unwrap_or_default();
-            let text = self
-                .open
-                .get(&file_uri)
-                .map(|d| d.text.clone())
-                .or_else(|| std::fs::read_to_string(&file).ok());
-            if let Some(text) = text {
-                let parsed = crate::syntax::parse(&text, &PrefixMap::default(), Syntax::Turtle);
-                for p in parsed.prefixes {
-                    map.insert(p.name, p.iri.to_string());
-                }
+        if let Some(text) = text {
+            let parsed = crate::syntax::parse(&text, &PrefixMap::default(), Syntax::Turtle);
+            for p in parsed.prefixes {
+                map.insert(p.name, p.iri.to_string());
             }
         }
         let map = Arc::new(map);
-        self.prefix_cache.insert(dir, map.clone());
+        self.prefix_files.insert(
+            file.to_path_buf(),
+            PrefixEntry {
+                stamp: stamp_of(file),
+                from_open,
+                map: map.clone(),
+            },
+        );
         map
     }
 
@@ -767,21 +917,85 @@ impl Workspace {
         find_prefix_file(&self.roots, dir)
     }
 
-    /// An open prefixes.ttl is being edited: open documents re-resolve.
-    pub fn invalidate_open_prefixes(&mut self) {
-        self.prefix_cache.clear();
+    /// The open prefixes.ttl at `file` is being edited: the open documents
+    /// below it re-resolve. Indexed files follow when it is saved (see
+    /// [`Workspace::prefixes_changed`]).
+    pub fn invalidate_open_prefixes(&mut self, file: &Path) {
+        self.prefix_files.remove(file);
         self.uri_prefix_cache.clear();
-        for d in self.open.values_mut() {
-            d.analysis = None;
-            d.query = None;
+        self.reset_open_below(file.parent());
+    }
+
+    /// Analyze the open documents below `dir` again (all of them for `None`,
+    /// and those that have no file path).
+    fn reset_open_below(&mut self, dir: Option<&Path>) {
+        for (uri, d) in self.open.iter_mut() {
+            let below = match (dir, uri_to_path(uri)) {
+                (Some(dir), Some(p)) => p.starts_with(dir),
+                _ => true,
+            };
+            if below {
+                d.analysis = None;
+                d.query = None;
+            }
         }
     }
 
-    /// A prefixes.ttl changed: every analysis may resolve differently now.
-    pub fn invalidate_prefixes(&mut self) {
-        self.invalidate_open_prefixes();
-        let paths: Vec<PathBuf> = self.disk.keys().filter_map(|u| uri_to_path(u)).collect();
-        self.index_paths(paths);
+    /// A prefixes.ttl at `file` was created, changed, deleted or closed with
+    /// unsaved edits, or (`None`) the settings prefixes changed: the open
+    /// documents it serves are analyzed again, and the paths of the indexed
+    /// files whose prefixes differ now are returned, for the caller to parse
+    /// again ([`Workspace::prefix_jobs`], off the main loop if it can). A
+    /// file the change leaves with the same prefixes is not among them.
+    pub fn prefixes_changed(&mut self, file: Option<&Path>) -> Vec<PathBuf> {
+        let scope = file.and_then(Path::parent).map(Path::to_path_buf);
+        match file {
+            Some(file) => {
+                let unchanged = self.prefix_files.get(file).is_some_and(|e| {
+                    e.stamp.is_some()
+                        && e.stamp == stamp_of(file)
+                        && !e.from_open
+                        && !self.is_open_path(file)
+                });
+                if unchanged {
+                    return Vec::new();
+                }
+                self.prefix_files.remove(file);
+            }
+            None => {
+                self.prefix_files.clear();
+                self.settings_map = None;
+            }
+        }
+        // Which file serves a directory may have changed with it.
+        self.prefix_dirs.clear();
+        self.uri_prefix_cache.clear();
+        self.reset_open_below(scope.as_deref());
+        let indexed: Vec<(String, Arc<Analysis>)> = self
+            .disk
+            .iter()
+            .filter(|(uri, _)| {
+                scope
+                    .as_ref()
+                    .is_none_or(|dir| uri_to_path(uri).is_some_and(|p| p.starts_with(dir)))
+            })
+            .map(|(uri, a)| (uri.clone(), a.clone()))
+            .collect();
+        let mut stale = Vec::new();
+        for (uri, a) in indexed {
+            let now = self.external_prefixes_for(&uri);
+            if !Arc::ptr_eq(&now, &a.external)
+                && *now != *a.external
+                && let Some(path) = uri_to_path(&uri)
+            {
+                stale.push(path);
+            }
+        }
+        stale
+    }
+
+    fn is_open_path(&self, path: &Path) -> bool {
+        path_to_uri(path).is_some_and(|u| self.open.contains_key(&u))
     }
 
     // ---- disk index ----
@@ -789,6 +1003,52 @@ impl Workspace {
     /// The RDF files under `roots` (see [`scan_roots_matching`]).
     pub fn scan_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         scan_roots_matching(roots, is_turtle)
+    }
+
+    /// Whether the file at `path` belongs in the disk index, as the scan
+    /// reads the roots: an RDF file below a root, in no hidden or skipped
+    /// ([`SKIP_DIRS`]) directory, of at most [`MAX_FILE_BYTES`], and
+    /// within [`MAX_FILES`] of them. The scan, a file that changed on disk
+    /// and a document that was closed all ask this.
+    pub fn indexable(&self, path: &Path) -> bool {
+        is_turtle(path)
+            && self.in_area(path, false)
+            && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
+            && (self.disk.len() < MAX_FILES
+                || path_to_uri(path).is_some_and(|u| self.disk.contains_key(&u)))
+    }
+
+    /// Whether `path` is somewhere the index looks: below a root, in no
+    /// hidden or skipped directory. Changes elsewhere (`node_modules`, a
+    /// file outside the workspace) are no concern of the server's.
+    pub fn watched(&self, path: &Path) -> bool {
+        self.in_area(path, false)
+    }
+
+    /// [`Workspace::watched`] for a directory: the directory itself counts
+    /// too.
+    pub fn watched_dir(&self, path: &Path) -> bool {
+        self.in_area(path, true)
+    }
+
+    fn in_area(&self, path: &Path, include_last: bool) -> bool {
+        use std::path::Component;
+        self.roots.iter().any(|root| {
+            let Ok(rel) = path.strip_prefix(root) else {
+                return false;
+            };
+            let parts: Vec<Component> = rel.components().collect();
+            let dirs = if include_last {
+                &parts[..]
+            } else {
+                &parts[..parts.len().saturating_sub(1)]
+            };
+            dirs.iter().all(|c| match c {
+                Component::Normal(name) => !skipped_dir(&name.to_string_lossy()),
+                Component::CurDir => true,
+                _ => false,
+            })
+        })
     }
 
     /// Parse files in parallel and add them to the disk index.
@@ -805,7 +1065,7 @@ impl Workspace {
             .filter(|(uri, _)| !self.open.contains_key(uri))
             .filter(|(uri, _)| replace || !self.disk.contains_key(uri))
             .map(|(uri, a)| {
-                let facts = DocFacts::new(&a);
+                let (a, facts) = prepared(a);
                 (uri, Arc::new(a), facts)
             })
             .collect();
@@ -816,45 +1076,234 @@ impl Workspace {
         }
     }
 
-    /// Parse files in parallel, without adding them to anything.
-    pub fn parse_paths(&mut self, paths: Vec<PathBuf>) -> Vec<(String, Analysis)> {
-        let jobs: Vec<(String, PathBuf, Arc<PrefixMap>)> = paths
+    /// The initial index is being built elsewhere: remember what changes on
+    /// disk meanwhile, so that [`Workspace::merge_initial_index`] does not
+    /// undo it with what the index read before.
+    pub fn expect_initial_index(&mut self) {
+        self.touched = Some(Touched::default());
+    }
+
+    /// Add the initial index, built elsewhere, without the files and
+    /// folders that changed on disk since [`Workspace::expect_initial_index`]
+    /// (those are as the changes left them), and files indexed meanwhile.
+    pub fn merge_initial_index(&mut self, files: Vec<(String, Analysis)>) {
+        let touched = self.touched.take().unwrap_or_default();
+        let files = files
             .into_iter()
-            .filter_map(|p| {
-                let uri = path_to_uri(&p)?;
-                let ext = self.external_prefixes_for(&uri);
-                Some((uri, p, ext))
+            .filter(|(uri, _)| {
+                !touched.uris.contains(uri)
+                    && !uri_to_path(uri)
+                        .is_some_and(|p| touched.dirs.iter().any(|d| p.starts_with(d)))
             })
             .collect();
+        self.add_disk(files, false);
+    }
+
+    fn touch(&mut self, uri: &str) {
+        if let Some(t) = &mut self.touched {
+            t.uris.insert(uri.to_string());
+        }
+    }
+
+    /// The prefixes to parse each of `paths` with.
+    pub fn prefix_jobs(&mut self, paths: Vec<PathBuf>) -> Vec<ParseJob> {
+        paths
+            .into_iter()
+            .filter_map(|path| {
+                let uri = path_to_uri(&path)?;
+                let external = self.external_prefixes_for(&uri);
+                let was = self.disk.get(&uri).cloned();
+                Some(ParseJob {
+                    uri,
+                    path,
+                    external,
+                    was,
+                })
+            })
+            .collect()
+    }
+
+    /// What parsing files needs of the workspace, to do it on another thread.
+    pub fn reader(&self) -> Reader {
+        Reader {
+            roots: self.roots.clone(),
+            contexts: self.contexts(),
+            uses: self.context_uses.clone(),
+        }
+    }
+
+    /// Parse files in parallel, without adding them to anything.
+    pub fn parse_paths(&mut self, paths: Vec<PathBuf>) -> Vec<(String, Analysis)> {
+        let jobs = self.prefix_jobs(paths);
         let contexts = self.contexts();
-        let (open, roots, uses) = (&self.open, &self.roots, &self.context_uses);
-        jobs.into_par_iter()
-            .filter_map(|(uri, path, ext)| {
+        parse_files(
+            &self.open,
+            &self.roots,
+            &*contexts,
+            &self.context_uses,
+            jobs,
+        )
+        .into_iter()
+        .map(|r| (r.uri, r.analysis))
+        .collect()
+    }
+
+    /// Replace indexed files with their analyses parsed again elsewhere
+    /// ([`Reader::parse`]), but only those still closed, still indexed as
+    /// they were when the parse began, and parsed with the prefixes they
+    /// have now. How many were replaced.
+    pub fn add_reparsed(&mut self, files: Vec<Reparsed>) -> usize {
+        let mut current = Vec::new();
+        for Reparsed { uri, analysis, was } in files {
+            let unchanged = match (self.disk.get(&uri), &was) {
+                (Some(now), Some(was)) => Arc::ptr_eq(now, was),
+                _ => false,
+            };
+            if self.open.contains_key(&uri)
+                || !unchanged
+                || *self.external_prefixes_for(&uri) != *analysis.external
+            {
+                continue;
+            }
+            current.push((uri, analysis));
+        }
+        let n = current.len();
+        self.add_disk(current, true);
+        n
+    }
+
+    /// Bring the index up to date with the file at `path`, which changed on
+    /// disk (it is not open): parse it again, or drop it when it is gone or
+    /// no longer [`indexable`](Workspace::indexable). Whether the index
+    /// changed.
+    pub fn reindex_disk_file(&mut self, path: &Path) -> bool {
+        let Some(uri) = path_to_uri(path) else {
+            return false;
+        };
+        self.touch(&uri);
+        if self.indexable(path) {
+            self.index_paths(vec![path.to_path_buf()]);
+            true
+        } else {
+            self.forget_disk(&uri)
+        }
+    }
+
+    /// Drop the indexed copy of `uri`. Whether there was one.
+    fn forget_disk(&mut self, uri: &str) -> bool {
+        let had = self.disk.remove(uri).is_some();
+        if !self.open.contains_key(uri) {
+            record_contexts(&self.context_uses, uri, Vec::new());
+        }
+        self.sync(uri);
+        had
+    }
+
+    /// The directory `dir` was deleted or renamed: drop the files indexed
+    /// below it. Whether there were any.
+    pub fn remove_under(&mut self, dir: &Path) -> bool {
+        self.remove_under_any(&[dir.to_path_buf()])
+    }
+
+    /// [`Workspace::remove_under`] for several directories, in one pass over
+    /// the index.
+    pub fn remove_under_any(&mut self, dirs: &[PathBuf]) -> bool {
+        if dirs.is_empty() {
+            return false;
+        }
+        if let Some(t) = &mut self.touched {
+            t.dirs.extend(dirs.iter().cloned());
+        }
+        let dirs: rustc_hash::FxHashSet<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+        let gone: Vec<String> = self
+            .disk
+            .keys()
+            .filter(|uri| {
+                uri_to_path(uri).is_some_and(|p| p.ancestors().skip(1).any(|a| dirs.contains(a)))
+            })
+            .cloned()
+            .collect();
+        for uri in &gone {
+            self.forget_disk(uri);
+        }
+        !gone.is_empty()
+    }
+}
+
+/// A file to parse, with the prefixes to parse it with, and the indexed copy
+/// it replaces, if any.
+pub struct ParseJob {
+    uri: String,
+    path: PathBuf,
+    external: Arc<PrefixMap>,
+    was: Option<Arc<Analysis>>,
+}
+
+/// A file parsed again, and the indexed copy it was meant to replace.
+pub struct Reparsed {
+    uri: String,
+    analysis: Analysis,
+    was: Option<Arc<Analysis>>,
+}
+
+/// What parsing files needs of a workspace, apart from the workspace: it can
+/// be handed to another thread ([`Workspace::reader`]).
+pub struct Reader {
+    roots: Vec<PathBuf>,
+    contexts: Arc<dyn ContextLoader>,
+    uses: ContextUses,
+}
+
+impl Reader {
+    /// Parse files in parallel, without adding them to anything. Open
+    /// documents are not seen: JSON-LD contexts come from the files.
+    pub fn parse(&self, jobs: Vec<ParseJob>) -> Vec<Reparsed> {
+        parse_files(
+            &FxHashMap::default(),
+            &self.roots,
+            &*self.contexts,
+            &self.uses,
+            jobs,
+        )
+    }
+}
+
+fn parse_files(
+    open: &FxHashMap<String, Doc>,
+    roots: &[PathBuf],
+    contexts: &dyn ContextLoader,
+    uses: &ContextUses,
+    jobs: Vec<ParseJob>,
+) -> Vec<Reparsed> {
+    jobs.into_par_iter()
+        .filter_map(
+            |ParseJob {
+                 uri,
+                 path,
+                 external,
+                 was,
+             }| {
                 if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
                     return None;
                 }
                 let text = std::fs::read_to_string(&path).ok()?;
                 let syntax = Syntax::from_extension(&uri).unwrap_or_default();
-                let loader = DocContexts::new(open, roots, &*contexts);
-                let a = Analysis::with_loader(uri.clone(), &text, ext, false, syntax, &loader);
+                let loader = DocContexts::new(open, roots, contexts);
+                let a = analyze(uri.clone(), &text, external, false, syntax, &loader);
                 loader.record(uses, &uri, syntax);
-                Some((uri, a))
-            })
-            .collect()
-    }
+                Some(Reparsed {
+                    uri,
+                    analysis: a,
+                    was,
+                })
+            },
+        )
+        .collect()
+}
 
-    pub fn reindex_disk_file(&mut self, path: &Path) {
-        let Some(uri) = path_to_uri(path) else { return };
-        if path.is_file() {
-            self.index_paths(vec![path.to_path_buf()]);
-        } else {
-            self.disk.remove(&uri);
-            if !self.open.contains_key(&uri) {
-                record_contexts(&self.context_uses, &uri, Vec::new());
-            }
-            self.sync(&uri);
-        }
-    }
+/// A directory the index does not look into: hidden, or one of [`SKIP_DIRS`].
+fn skipped_dir(name: &str) -> bool {
+    name.starts_with('.') || SKIP_DIRS.contains(&name)
 }
 
 /// A SPARQL file: `.rq`, `.sparql` or `.ru`.
@@ -877,7 +1326,7 @@ pub fn scan_roots_matching(roots: &[PathBuf], wanted: fn(&Path) -> bool) -> Vec<
             let name = name.to_string_lossy();
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_ref()) {
+                if !skipped_dir(&name) {
                     stack.push(e.path());
                 }
             } else if ft.is_file()
@@ -1151,6 +1600,317 @@ mod tests {
         ws.close_doc(&rq);
         assert_eq!(ws.knowledge().docs().count(), 1);
         assert!(ws.sparql_documents().is_empty());
+    }
+
+    const TTL: &str = "@prefix ex: <http://e.org/> .\nex:A a ex:B .\n";
+
+    fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn uri(path: &Path) -> String {
+        path_to_uri(path).unwrap()
+    }
+
+    #[test]
+    fn indexable_is_what_the_scan_would_index() {
+        let root = TempDir::new("indexable");
+        let outside = TempDir::new("indexable-outside");
+        let ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let ok = write(&root.0, "sub/a.ttl", TTL);
+        assert!(ws.indexable(&ok));
+        // Not RDF, outside the roots, in hidden and skipped directories.
+        assert!(!ws.indexable(&write(&root.0, "sub/a.txt", TTL)));
+        assert!(!ws.indexable(&write(&outside.0, "a.ttl", TTL)));
+        for dir in [".git", ".hidden/deep", "node_modules", "a/target", "dist/x"] {
+            let f = write(&root.0, &format!("{dir}/b.ttl"), TTL);
+            assert!(!ws.indexable(&f), "{dir}");
+        }
+        // A hidden file name is indexed, as the scan does.
+        assert!(ws.indexable(&write(&root.0, ".dotfile.ttl", TTL)));
+        // Gone, or not a file.
+        assert!(!ws.indexable(&root.0.join("missing.ttl")));
+        assert!(!ws.indexable(&root.0.join("sub")));
+        // Too large.
+        let big = write(&root.0, "big.ttl", "");
+        std::fs::File::options()
+            .write(true)
+            .open(&big)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        assert!(!ws.indexable(&big));
+        // The scan and the check agree.
+        let scanned = Workspace::scan_roots(&ws.roots);
+        assert!(scanned.contains(&ok) && scanned.iter().all(|p| ws.indexable(p)));
+        // `..` does not climb out of a root.
+        assert!(!ws.indexable(&root.0.join("..").join("x.ttl")));
+        // Folders: the folder's own name counts.
+        assert!(ws.watched_dir(&root.0.join("sub")));
+        assert!(!ws.watched_dir(&root.0.join("node_modules")));
+        assert!(!ws.watched(&root.0.join("node_modules").join("x.json")));
+    }
+
+    #[test]
+    fn a_file_changed_on_disk_is_indexed_only_where_the_scan_would() {
+        let root = TempDir::new("reindex");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let a = write(&root.0, "a.ttl", TTL);
+        let skipped = write(&root.0, "node_modules/b.ttl", TTL);
+        assert!(ws.reindex_disk_file(&a));
+        assert!(!ws.reindex_disk_file(&skipped));
+        assert!(ws.disk.contains_key(&uri(&a)) && !ws.disk.contains_key(&uri(&skipped)));
+        assert!(ws.knowledge().get(&uri(&a)).is_some());
+        // Gone from disk: gone from the index.
+        std::fs::remove_file(&a).unwrap();
+        assert!(ws.reindex_disk_file(&a));
+        assert!(ws.disk.is_empty() && ws.knowledge().get(&uri(&a)).is_none());
+    }
+
+    #[test]
+    fn removing_a_folder_drops_the_files_below_it_and_only_those() {
+        let root = TempDir::new("remove-under");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let files: Vec<PathBuf> = [
+            "gone/a.ttl",
+            "gone/deep/b.ttl",
+            "gone2/c.ttl",
+            "kept/d.ttl",
+            "gonex.ttl",
+        ]
+        .iter()
+        .map(|f| write(&root.0, f, TTL))
+        .collect();
+        ws.index_paths(files.clone());
+        assert_eq!(ws.disk.len(), 5);
+        assert!(ws.remove_under(&root.0.join("gone")));
+        let left: Vec<&str> = [
+            "gone/a.ttl",
+            "gone/deep/b.ttl",
+            "gone2/c.ttl",
+            "kept/d.ttl",
+            "gonex.ttl",
+        ]
+        .into_iter()
+        .filter(|f| ws.disk.contains_key(&uri(&root.0.join(f))))
+        .collect();
+        assert_eq!(left, ["gone2/c.ttl", "kept/d.ttl", "gonex.ttl"]);
+        for gone in &files[..2] {
+            assert!(ws.knowledge().get(&uri(gone)).is_none());
+        }
+        assert!(ws.knowledge().get(&uri(&files[3])).is_some());
+        assert!(
+            !ws.remove_under(&root.0.join("gone")),
+            "nothing is left to remove"
+        );
+        assert!(!ws.remove_under_any(&[]));
+        // Several at once, in one pass.
+        assert!(ws.remove_under_any(&[root.0.join("gone2"), root.0.join("kept")]));
+        assert_eq!(ws.disk.len(), 1);
+    }
+
+    #[test]
+    fn closing_a_file_outside_the_roots_leaves_no_entry() {
+        let root = TempDir::new("close-root");
+        let outside = TempDir::new("close-outside");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let inside = write(&root.0, "in.ttl", TTL);
+        let away = write(&outside.0, "out.ttl", TTL);
+        for f in [&inside, &away] {
+            ws.open_doc(uri(f), TTL.into(), 1);
+            assert!(ws.analysis(&uri(f)).is_some());
+        }
+        ws.close_doc(&uri(&inside));
+        ws.close_doc(&uri(&away));
+        assert!(ws.disk.contains_key(&uri(&inside)));
+        assert!(!ws.disk.contains_key(&uri(&away)));
+        assert!(ws.knowledge().get(&uri(&inside)).is_some());
+        assert!(ws.knowledge().get(&uri(&away)).is_none());
+        // Nor does a file in a skipped directory come back.
+        let skipped = write(&root.0, "node_modules/x.ttl", TTL);
+        ws.open_doc(uri(&skipped), TTL.into(), 1);
+        ws.analysis(&uri(&skipped));
+        ws.close_doc(&uri(&skipped));
+        assert!(!ws.disk.contains_key(&uri(&skipped)));
+        assert!(ws.knowledge().get(&uri(&skipped)).is_none());
+    }
+
+    #[test]
+    fn what_changed_before_the_initial_index_landed_is_not_undone_by_it() {
+        let root = TempDir::new("pre-merge");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.expect_initial_index();
+        let deleted = write(&root.0, "deleted.ttl", TTL);
+        let changed = write(&root.0, "changed.ttl", TTL);
+        let in_folder = write(&root.0, "folder/f.ttl", TTL);
+        let kept = write(&root.0, "kept.ttl", TTL);
+        // The index reads the disk as it is now ...
+        let mut reader = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let files = reader.parse_paths(Workspace::scan_roots(std::slice::from_ref(&root.0)));
+        assert_eq!(files.len(), 4);
+        // ... and the disk changes before it lands.
+        std::fs::remove_file(&deleted).unwrap();
+        ws.reindex_disk_file(&deleted);
+        std::fs::write(&changed, "@prefix ex: <http://e.org/> .\nex:New a ex:B .\n").unwrap();
+        ws.reindex_disk_file(&changed);
+        std::fs::remove_dir_all(root.0.join("folder")).unwrap();
+        ws.remove_under(&root.0.join("folder"));
+        ws.merge_initial_index(files);
+        assert!(
+            !ws.disk.contains_key(&uri(&deleted)),
+            "a deleted file came back"
+        );
+        assert!(
+            !ws.disk.contains_key(&uri(&in_folder)),
+            "a deleted folder's file came back"
+        );
+        assert!(ws.disk.contains_key(&uri(&kept)));
+        assert!(ws.knowledge().is_described("http://e.org/New"));
+        assert!(
+            !ws.knowledge().is_described("http://e.org/A") || ws.disk.contains_key(&uri(&kept))
+        );
+        assert!(ws.knowledge().get(&uri(&deleted)).is_none());
+        // After the merge nothing is remembered any more.
+        assert!(ws.touched.is_none());
+    }
+
+    #[test]
+    fn a_panic_in_analysis_is_that_document_s_error_not_the_end_of_the_server() {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let mut ws = Workspace::default();
+        let (bad, good, facts) = (
+            "file:///w/bad.ttl",
+            "file:///w/good.ttl",
+            "file:///w/facts.ttl",
+        );
+        ws.open_doc(bad.into(), format!("# {PANIC_IN_ANALYSIS}\n{TTL}"), 1);
+        ws.open_doc(good.into(), TTL.into(), 1);
+        ws.open_doc(facts.into(), format!("# {PANIC_IN_FACTS}\n{TTL}"), 1);
+        // The analyses of several documents at once, as the batch does.
+        assert_eq!(ws.knowledge().docs().count(), 3);
+        for u in [bad, facts] {
+            let a = ws.analysis(u).unwrap();
+            let e: Vec<_> = a
+                .parsed
+                .errors
+                .iter()
+                .filter(|e| e.code == "internal-error")
+                .collect();
+            assert_eq!(e.len(), 1, "{u}");
+            assert!(
+                e[0].message.contains("internal error") && e[0].message.contains("report"),
+                "{}",
+                e[0].message
+            );
+        }
+        assert!(ws.analysis(good).unwrap().parsed.errors.is_empty());
+        // One at a time, as a request does.
+        ws.change_doc(
+            good,
+            2,
+            vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: format!("# {PANIC_IN_ANALYSIS}\n"),
+            }],
+            Encoding::Utf16,
+        );
+        assert!(
+            ws.analysis(good)
+                .unwrap()
+                .parsed
+                .errors
+                .iter()
+                .any(|e| e.code == "internal-error")
+        );
+        // Indexed files too.
+        let root = TempDir::new("panic-disk");
+        let f = write(&root.0, "bad.ttl", &format!("# {PANIC_IN_ANALYSIS}\n{TTL}"));
+        let g = write(&root.0, "ok.ttl", TTL);
+        let mut disk = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        disk.index_paths(vec![f.clone(), g.clone()]);
+        std::panic::set_hook(hook);
+        assert_eq!(disk.disk.len(), 2);
+        assert!(
+            disk.disk[&uri(&f)]
+                .parsed
+                .errors
+                .iter()
+                .any(|e| e.code == "internal-error")
+        );
+        assert!(disk.disk[&uri(&g)].parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn prefixes_are_cached_by_file_and_a_change_reaches_only_the_files_it_serves() {
+        let root = TempDir::new("prefix-scope");
+        let ns = |n: &str| format!("@prefix {n}: <http://{n}.org/> .\n");
+        let pf = write(&root.0, "a/prefixes.ttl", &ns("one"));
+        let nested = write(&root.0, "a/sub/prefixes.ttl", &ns("two"));
+        let files: Vec<PathBuf> = [
+            write(&root.0, "a/x.ttl", "ex:s ex:p ex:o .\n"),
+            write(&root.0, "a/deeper/y.ttl", "ex:s ex:p ex:o .\n"),
+            write(&root.0, "a/sub/z.ttl", "ex:s ex:p ex:o .\n"),
+            write(&root.0, "b/w.ttl", "ex:s ex:p ex:o .\n"),
+        ]
+        .into();
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(files.clone());
+        let ext = |ws: &mut Workspace, f: &Path| ws.external_prefixes_for(&uri(f));
+        // One map per prefixes.ttl, shared by every directory it serves.
+        assert!(Arc::ptr_eq(
+            &ext(&mut ws, &files[0]),
+            &ext(&mut ws, &files[1])
+        ));
+        assert!(!Arc::ptr_eq(
+            &ext(&mut ws, &files[0]),
+            &ext(&mut ws, &files[2])
+        ));
+        assert!(ext(&mut ws, &files[0]).contains_key("one"));
+        assert!(
+            ext(&mut ws, &files[2]).contains_key("two")
+                && !ext(&mut ws, &files[2]).contains_key("one")
+        );
+        assert!(ext(&mut ws, &files[3]).is_empty());
+
+        // Saving a prefixes.ttl without a change to what it declares re-parses nothing.
+        assert!(ws.prefixes_changed(Some(&pf)).is_empty());
+        // Changing it re-parses the files it serves, not the nested folder's, not b/'s.
+        std::fs::write(&pf, format!("{}{}", ns("one"), ns("three"))).unwrap();
+        let mut stale = ws.prefixes_changed(Some(&pf));
+        stale.sort();
+        let mut served = vec![files[0].clone(), files[1].clone()];
+        served.sort();
+        assert_eq!(stale, served);
+        assert!(ext(&mut ws, &files[0]).contains_key("three"));
+        // The reparse lands only for files still as they were and with today's prefixes.
+        let jobs = ws.prefix_jobs(stale);
+        let parsed = ws.reader().parse(jobs);
+        assert_eq!(ws.add_reparsed(parsed), 2);
+        assert!(ws.disk[&uri(&files[0])].external.contains_key("three"));
+
+        // A prefixes.ttl created later takes over the files below it.
+        let made = write(&root.0, "b/prefixes.ttl", &ns("four"));
+        assert_eq!(ws.prefixes_changed(Some(&made)), [files[3].clone()]);
+        // A deleted one gives its files back to the nearest above (here, none).
+        std::fs::remove_file(&nested).unwrap();
+        assert_eq!(ws.prefixes_changed(Some(&nested)), [files[2].clone()]);
+        assert!(!ext(&mut ws, &files[2]).contains_key("two"));
+        // A settings change reaches every file whose prefixes it changes.
+        ws.settings_prefixes
+            .insert("set".into(), "http://set.org/".into());
+        assert_eq!(ws.prefixes_changed(None).len(), 4);
+        // A reparse made before another change is dropped.
+        let jobs = ws.prefix_jobs(vec![files[0].clone()]);
+        let parsed = ws.reader().parse(jobs);
+        ws.settings_prefixes
+            .insert("later".into(), "http://later.org/".into());
+        ws.prefixes_changed(None);
+        assert_eq!(ws.add_reparsed(parsed), 0);
     }
 
     #[cfg(windows)]
