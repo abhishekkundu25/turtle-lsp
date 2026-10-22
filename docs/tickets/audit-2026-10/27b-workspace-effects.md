@@ -43,7 +43,7 @@ its move leaves unused (`PREFIX_FILE`, and `is_turtle`, `is_sparql_path` if they
 and 28a removes `path_to_uri`. Whichever lands second resolves that one-statement
 conflict by keeping both removals, then reruns clippy.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
