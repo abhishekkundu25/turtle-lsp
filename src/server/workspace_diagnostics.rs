@@ -33,6 +33,7 @@
 //! file right away (from the file on disk), not an empty list.
 
 use super::Server;
+use super::worker::Spawn;
 use crate::analysis::{Encoding, SparqlAnalysis};
 use crate::clock::Instant;
 use crate::diagnose::{self, DiagnosticInputs, Doc};
@@ -195,15 +196,18 @@ impl State {
 }
 
 impl Worker {
-    fn start() -> (Worker, Receiver<Chunk>) {
+    /// Start the thread; Err when it cannot be started.
+    fn start() -> std::io::Result<(Worker, Receiver<Chunk>)> {
         let (jobs, job_rx) = unbounded::<Job>();
         let (out, out_rx) = unbounded();
         let latest = Arc::new(AtomicU64::new(0));
         let seen = latest.clone();
-        std::thread::Builder::new()
-            .name("workspace-diagnostics".into())
-            .stack_size(16 << 20)
-            .spawn(move || {
+        // Always a thread: the loop waits for passes. Embedded, workspace
+        // diagnostics are off and never start one.
+        Spawn::Thread.run(
+            "workspace-diagnostics",
+            16 << 20,
+            move || {
                 let mut k = Mirror::default();
                 while let Ok(mut job) = job_rx.recv() {
                     // Only the newest queued job matters.
@@ -219,9 +223,12 @@ impl Worker {
                         break;
                     }
                 }
-            })
-            .expect("spawn the workspace diagnostics thread");
-        (Worker { jobs, latest }, out_rx)
+            },
+            // A file's panic is caught where it is diagnosed; the loop's own
+            // reaches the main loop as the channel's end.
+            |_| {},
+        )?;
+        Ok((Worker { jobs, latest }, out_rx))
     }
 }
 
@@ -348,9 +355,10 @@ fn under(roots: &[PathBuf], uri: &str) -> bool {
 }
 
 impl Server {
-    /// `diagnostics.workspace` may have changed: start or stop.
+    /// `diagnostics.workspace` may have changed: start or stop. Embedded,
+    /// every file is open: they are off.
     pub(super) fn wsdiag_setting(&mut self) {
-        let on = self.layers.settings().diagnostics_workspace && !self.inline;
+        let on = self.layers.settings().diagnostics_workspace && self.spawn == Spawn::Thread;
         if on == self.wsdiag.enabled {
             return;
         }
@@ -359,7 +367,12 @@ impl Server {
             self.wsdiag.invalidate_all();
             return;
         }
-        // Off: clear every closed file shown; the thread ends with its channel.
+        self.wsdiag_off();
+    }
+
+    /// Turn workspace diagnostics off: clear every closed file shown; the
+    /// thread ends with its channel.
+    fn wsdiag_off(&mut self) {
         let old = std::mem::take(&mut self.wsdiag);
         if let Some(w) = &old.worker {
             w.latest.store(old.generation + 1, Ordering::Relaxed);
@@ -486,9 +499,20 @@ impl Server {
             .map(|(u, d)| (u.clone(), d.clone()))
             .collect();
         if self.wsdiag.worker.is_none() {
-            let (w, rx) = Worker::start();
-            self.wsdiag.worker = Some(w);
-            self.wsdiag.results = Some(rx);
+            match Worker::start() {
+                Ok((w, rx)) => {
+                    self.wsdiag.worker = Some(w);
+                    self.wsdiag.results = Some(rx);
+                }
+                Err(e) => {
+                    // Off until the settings change again.
+                    self.client.warn(format!(
+                        "turtle-lsp could not start its workspace diagnostics thread: {e}. Workspace diagnostics are off."
+                    ));
+                    self.wsdiag_off();
+                    return;
+                }
+            }
         }
         self.wsdiag.generation += 1;
         let generation = self.wsdiag.generation;

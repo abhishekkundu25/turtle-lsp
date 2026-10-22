@@ -33,7 +33,7 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::SOURCE;
 use crate::knowledge::{DocFacts, Knowledge, Source};
-use crate::server::worker::{Fed, Feed};
+use crate::server::worker::{Fed, Feed, Spawn};
 use crate::syntax::{self, Iri, Node, PrefixMap};
 use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, path_to_uri};
 use crossbeam_channel::{Receiver, RecvError, Sender, unbounded};
@@ -245,8 +245,8 @@ thread_local! {
 
 /// `owl:imports` state of the server: what was asked, what came back.
 pub struct Imports {
-    /// Resolve without loading or threads (see [`Imports::new_inline`]).
-    inline: bool,
+    /// On a thread, or resolved without loading (see [`Imports::with_spawn`]).
+    spawn: Spawn,
     jobs: Option<Sender<Job>>,
     /// The answers of the worker thread. The worker holds the only sender,
     /// so the channel disconnects when it ends.
@@ -278,9 +278,18 @@ impl Default for Imports {
 }
 
 impl Imports {
+    /// Imports resolved on a thread of their own.
     pub fn new() -> Imports {
+        Imports::with_spawn(Spawn::Thread)
+    }
+
+    /// Imports resolved on a thread of their own ([`Spawn::Thread`]), or
+    /// ([`Spawn::Inline`], the browser build) at once and without loading
+    /// anything: one the workspace declares is present, any other
+    /// unresolved, with [`unloaded_note`].
+    pub(crate) fn with_spawn(spawn: Spawn) -> Imports {
         Imports {
-            inline: false,
+            spawn,
             jobs: None,
             results: Feed::default(),
             generation: 0,
@@ -290,21 +299,13 @@ impl Imports {
             status: FxHashMap::default(),
             registered: FxHashSet::default(),
             per_doc: FxHashMap::default(),
-            cache: import_cache_dir(),
+            cache: match spawn {
+                Spawn::Thread => import_cache_dir(),
+                Spawn::Inline => None,
+            },
             allow_private: allow_private_hosts(),
             fetch: BTreeSet::new(),
             refetch: None,
-        }
-    }
-
-    /// Imports resolved at once and without loading anything (the browser
-    /// build): one the workspace declares is present, any other unresolved,
-    /// with [`unloaded_note`].
-    pub fn new_inline() -> Imports {
-        Imports {
-            inline: true,
-            cache: None,
-            ..Imports::new()
         }
     }
 
@@ -409,7 +410,7 @@ impl Imports {
                 loaded: vec![],
             });
         }
-        if self.inline {
+        if self.spawn == Spawn::Inline {
             let local: FxHashSet<&str> = req.local.iter().map(String::as_str).collect();
             let status = req
                 .imports
@@ -437,7 +438,7 @@ impl Imports {
         if self.jobs.is_none() {
             let (tx, rx) = unbounded();
             let (out, results) = unbounded();
-            let started = crate::server::worker::spawn_guarded(
+            let started = self.spawn.run(
                 "turtle-lsp-imports",
                 16 << 20,
                 move || worker(rx, out),

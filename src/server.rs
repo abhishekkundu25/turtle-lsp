@@ -13,8 +13,9 @@
 //! [`guard`]: a bug in one is reported on stderr and the session goes on. The
 //! documents themselves are analyzed under a guard too (`Workspace`): a
 //! document whose analysis panics shows an internal-error diagnostic. Threads
-//! start through `worker::spawn_guarded` and their answers come back through
-//! `worker::Feed`; the timers are keyed in `timers::Timers`.
+//! start through `worker::Spawn` (inline when embedded, where there are no
+//! threads) and their answers come back through `worker::Feed`; the timers
+//! are keyed in `timers::Timers`.
 //!
 //! The queue is drained as one batch before anything is answered, so a request
 //! whose `$/cancelRequest` is already queued is never computed.
@@ -76,7 +77,7 @@ use progress::{Progress, Work};
 use refresh::Refresh;
 use shacl::Shacl;
 use timers::{Timer, Timers};
-use worker::{Fed, Feed};
+use worker::{Fed, Feed, Spawn};
 
 /// The files the client is asked to report changes of: RDF documents, SPARQL
 /// queries, JSON-LD context files (`.json` too), imports sources and the
@@ -156,9 +157,9 @@ pub struct Server {
     contexts: Feed<String>,
     shacl: Shacl,
     progress: Progress,
-    /// Embedded in a host without threads (see [`Embedded`]): SHACL and
-    /// imports run inline, and the host drives the timers.
-    inline: bool,
+    /// How the jobs run: on threads, or inline when embedded in a host
+    /// without threads (see [`Embedded`]), where the host drives the timers.
+    spawn: Spawn,
     /// Diagnostics of the files that are not open (`diagnostics.workspace`).
     wsdiag: workspace_diagnostics::State,
     /// The "Run query" runs going on.
@@ -177,7 +178,7 @@ impl Server {
     fn configure(
         sender: Sender<Message>,
         raw: Value,
-        inline: bool,
+        spawn: Spawn,
     ) -> Result<(Server, Value, Vec<PathBuf>), Box<dyn std::error::Error + Send + Sync>> {
         let params: InitializeParams = serde_json::from_value(raw.clone())?;
         let utf8 = params
@@ -270,20 +271,21 @@ impl Server {
         {
             roots.push(r);
         }
-        let file_settings = if inline {
-            (Value::Null, None)
-        } else {
-            layers::read_file(roots.first())
+        let file_settings = match spawn {
+            Spawn::Thread => layers::read_file(roots.first()),
+            Spawn::Inline => (Value::Null, None),
         };
         let init_options = params.initialization_options.clone().unwrap_or_default();
         let layers = Layers::new(file_settings, init_options, config_pull);
         let settings = layers.settings();
         // Embedded, every file is open.
-        let wsdiag = workspace_diagnostics::State::new(settings.diagnostics_workspace && !inline);
+        let wsdiag = workspace_diagnostics::State::new(
+            settings.diagnostics_workspace && spawn == Spawn::Thread,
+        );
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
         // Without watchers (see `register_watchers`), nothing reports new files.
         ws.set_rescan_sparql(!watch_dynamic);
-        let contexts = use_network(&mut ws, settings.imports_network, inline);
+        let contexts = use_network(&mut ws, settings.imports_network, spawn);
 
         let result = InitializeResult {
             capabilities: capabilities(enc, pull),
@@ -309,17 +311,13 @@ impl Server {
             layers,
             refresh: Refresh::new(pull, refresh_support, display_refresh),
             timers: Timers::default(),
-            imports: if inline {
-                crate::imports::Imports::new_inline()
-            } else {
-                crate::imports::Imports::new()
-            },
+            imports: crate::imports::Imports::with_spawn(spawn),
             contexts,
             shacl: Shacl::default(),
             progress: Progress::new(work_done_progress),
             wsdiag,
             queries: run_query::State::new(show_document),
-            inline,
+            spawn,
             #[cfg(test)]
             fault: false,
         };
@@ -331,15 +329,15 @@ impl Server {
 /// background, so the main loop never waits for a fetch (inline when
 /// embedded, where there are no threads). The receiver names each context
 /// fetched.
-fn use_network(ws: &mut Workspace, network: bool, inline: bool) -> Feed<String> {
+fn use_network(ws: &mut Workspace, network: bool, spawn: Spawn) -> Feed<String> {
     #[cfg(not(target_arch = "wasm32"))]
-    if network && !inline {
+    if network && spawn == Spawn::Thread {
         let (loader, fetched) =
             crate::jsonld::loader::DesktopLoader::in_background(crate::imports::import_cache_dir());
         ws.set_context_loader(Arc::new(loader));
         return Feed::open(fetched);
     }
-    let _ = inline;
+    let _ = spawn;
     ws.set_network(network);
     Feed::default()
 }
@@ -356,7 +354,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let (conn, io) = Connection::stdio();
     let (id, raw) = conn.initialize_start()?;
 
-    let (mut server, result, roots) = Server::configure(conn.sender.clone(), raw, false)?;
+    let (mut server, result, roots) = Server::configure(conn.sender.clone(), raw, Spawn::Thread)?;
     conn.initialize_finish(id, result)?;
 
     // Index the workspace in the background. What changes on disk meanwhile
@@ -367,7 +365,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     // The same context loader: a context is fetched once, in the background.
     let contexts = server.ws.shared_contexts();
     let failed = tx.clone();
-    let started = worker::spawn_guarded(
+    let started = server.spawn.run(
         "index",
         WORKER_STACK,
         move || {
@@ -609,8 +607,7 @@ impl Server {
         });
     }
 
-    /// The validation thread is gone.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The validation thread is gone, or could not start.
     fn shacl_gone(&mut self) {
         self.shacl.gone();
         self.timers.clear(Timer::ShaclProgress);
@@ -654,7 +651,7 @@ impl Server {
             }
             match msg {
                 Message::Request(req) if req.method == lsp_types::request::Shutdown::METHOD => {
-                    if self.inline {
+                    if self.spawn == Spawn::Inline {
                         // The host ends the session; nothing waits for `exit`.
                         self.client.send(Response::new_ok(req.id, ()))?;
                         return Ok(Some(Ended::Exit));
@@ -901,7 +898,7 @@ impl Server {
     /// disk to index): opening or closing one changes the data SHACL
     /// validates, so validate once the host pauses, as after typing.
     fn workspace_changed_inline(&mut self) {
-        if self.inline {
+        if self.spawn == Spawn::Inline {
             self.timers
                 .set(Timer::ShaclTyping, Instant::now() + SHACL_TYPING_DEBOUNCE);
         }
@@ -947,9 +944,9 @@ impl Server {
         let jobs = self.ws.prefix_jobs(paths);
         let reader = self.ws.reader();
         #[cfg(not(target_arch = "wasm32"))]
-        if !self.inline {
+        if self.spawn == Spawn::Thread {
             let (tx, failed) = (self.index.reparsed_sender(), self.index.reparsed_sender());
-            let started = worker::spawn_guarded(
+            let started = self.spawn.run(
                 "reindex",
                 WORKER_STACK,
                 move || reader.parse(jobs),
@@ -1080,7 +1077,7 @@ impl Server {
             // Indexed JSON-LD files are parsed again with the new loader.
             self.ensure_indexed();
             let network = change.settings().imports_network;
-            self.contexts = use_network(&mut self.ws, network, self.inline);
+            self.contexts = use_network(&mut self.ws, network, self.spawn);
         }
         self.layers.commit(change);
         self.wsdiag_setting();
@@ -1543,7 +1540,7 @@ impl Server {
             }
             return;
         };
-        if self.inline {
+        if self.spawn == Spawn::Inline {
             let outcome = shacl::run_inline(&job);
             self.shacl_outcome(outcome);
             return;
@@ -1556,7 +1553,12 @@ impl Server {
             self.timers
                 .set(Timer::ShaclProgress, Instant::now() + SHACL_PROGRESS_DELAY);
         }
-        self.shacl.submit(job);
+        if let Err(e) = self.shacl.submit(job) {
+            self.client.warn(format!(
+                "turtle-lsp could not start its SHACL validation thread: {e}"
+            ));
+            self.shacl_gone();
+        }
     }
 
     fn shacl_outcome(&mut self, o: shacl_validate::Outcome) {
@@ -1594,7 +1596,7 @@ impl Embedded {
     pub fn start(params: Value) -> Result<(Embedded, Vec<Message>), String> {
         let (here, host) = Connection::memory();
         let (mut server, result, _roots) =
-            Server::configure(here.sender, params, true).map_err(|e| e.to_string())?;
+            Server::configure(here.sender, params, Spawn::Inline).map_err(|e| e.to_string())?;
         let (inbox, inbox_rx) = unbounded();
         server.inbox = inbox_rx;
         let init = Response::new_ok(RequestId::from(0), result);
@@ -1811,7 +1813,7 @@ mod tests {
         let (mut server, _, _) = Server::configure(
             here.sender,
             json!({"capabilities": {"window": {"workDoneProgress": true}}}),
-            false,
+            Spawn::Thread,
         )
         .unwrap();
         assert!(!server.index.merged());
@@ -1830,7 +1832,7 @@ mod tests {
         // A thread that ended without a word is a failure too, not 0 files.
         let (here, host) = Connection::memory();
         let (mut server, _, _) =
-            Server::configure(here.sender, json!({"capabilities": {}}), false).unwrap();
+            Server::configure(here.sender, json!({"capabilities": {}}), Spawn::Thread).unwrap();
         server.index_arrived(Fed::Gone);
         assert!(server.index.merged());
         let sent: Vec<Message> = host.receiver.try_iter().collect();
@@ -1859,7 +1861,7 @@ mod tests {
         let (mut server, _, roots) = Server::configure(
             here.sender,
             json!({"capabilities": {}, "workspaceFolders": [{"uri": root, "name": "w"}]}),
-            false,
+            Spawn::Thread,
         )
         .unwrap();
         server.ws.expect_initial_index();
@@ -1896,7 +1898,7 @@ mod tests {
         let (mut server, _, _) = Server::configure(
             here.sender,
             json!({"capabilities": {}, "workspaceFolders": [{"uri": root, "name": "w"}]}),
-            false,
+            Spawn::Thread,
         )
         .unwrap();
         let event = |p: &std::path::Path, typ| FileEvent {
@@ -1936,7 +1938,7 @@ mod tests {
         let ended = |messages: Vec<Message>, wait_ms: u64, drop_inbox: bool| {
             let (here, _host) = Connection::memory();
             let (mut server, _, _) =
-                Server::configure(here.sender, json!({"capabilities": {}}), false).unwrap();
+                Server::configure(here.sender, json!({"capabilities": {}}), Spawn::Thread).unwrap();
             let (tx, rx) = unbounded();
             server.inbox = rx;
             for m in messages {
@@ -1993,6 +1995,64 @@ mod tests {
         assert_eq!(join(Ended::ClientGone), (true, false));
     }
 
+    /// A SHACL thread that cannot start ends the validation going on with
+    /// "Validation stopped" and says why, instead of panicking; the next
+    /// validation starts one.
+    #[test]
+    fn a_shacl_thread_that_cannot_start_stops_the_validation_and_says_why() {
+        let (here, host) = Connection::memory();
+        let (mut server, _, _) = Server::configure(
+            here.sender,
+            json!({"capabilities": {"window": {"workDoneProgress": true}}}),
+            Spawn::Thread,
+        )
+        .unwrap();
+        server.merge_index(Ok(Vec::new()));
+        let shapes = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://e.org/> .\nex:S a sh:NodeShape ; sh:targetNode ex:n ; sh:property [ sh:path ex:p ; sh:minCount 1 ] .\n";
+        let _ = server
+            .ws
+            .open_doc("file:///w/shapes.ttl".into(), shapes.into(), 1);
+        // A validation going on, its progress shown.
+        server
+            .progress
+            .begin(&mut server.client, Work::Shacl, "Validating");
+        let token = host
+            .receiver
+            .try_iter()
+            .find_map(|m| match m {
+                Message::Request(r) if r.method == "window/workDoneProgress/create" => Some(r.id),
+                _ => None,
+            })
+            .expect("a progress token asked for");
+        server.progress.accepted(&server.client, &token, true);
+        let _ = host.receiver.try_iter().count();
+
+        worker::failing_starts(|| server.validate_shacl());
+        let sent: Vec<Message> = host.receiver.try_iter().collect();
+        let warned = sent.iter().any(|m| {
+            matches!(m, Message::Notification(n) if n.method == "window/showMessage"
+                && n.params["message"].as_str().unwrap().contains("could not start its SHACL validation thread"))
+        });
+        assert!(warned, "{sent:?}");
+        let stopped = sent.iter().any(|m| {
+            matches!(m, Message::Notification(n) if n.method == "$/progress"
+                && n.params["value"]["kind"] == "end"
+                && n.params["value"]["message"] == "Validation stopped")
+        });
+        assert!(stopped, "{sent:?}");
+        assert!(!server.progress.is_shown(Work::Shacl));
+        assert!(!server.timers.is_set(Timer::ShaclProgress));
+
+        // The next validation starts the thread and gets its answer.
+        server.validate_shacl();
+        let outcome = server
+            .shacl
+            .rx()
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an outcome from the thread");
+        assert!(server.shacl.is_current(&outcome));
+    }
+
     #[test]
     fn guard_turns_a_panic_into_an_error() {
         let r: Result<(), String> = quietly(|| guard("hover", || panic!("boom")));
@@ -2039,7 +2099,7 @@ mod review_tests {
                 "workspaceFolders": [{"uri": root, "name": "w"}],
                 "initializationOptions": init,
             }),
-            false,
+            Spawn::Thread,
         )
         .unwrap();
         (server, host)
@@ -2146,6 +2206,54 @@ mod review_tests {
                 .recv_timeout(Duration::from_millis(500))
                 .is_err()
         );
+    }
+
+    /// A workspace-diagnostics thread that cannot start turns them off with
+    /// a warning, instead of panicking; a settings change turns them on again.
+    #[test]
+    fn a_workspace_diagnostics_thread_that_cannot_start_turns_them_off_with_a_warning() {
+        let dir = Dir::new("wsdiag-start");
+        let file = dir.0.join("a.ttl");
+        std::fs::write(&file, "ex:a ex:p ex:o .\n").unwrap();
+        let (mut s, host) = server_at(&dir.0, json!({"diagnostics": {"workspace": true}}));
+        let roots = s.ws.roots().to_vec();
+        let files = Workspace::new(roots.clone(), Default::default())
+            .parse_paths(Workspace::scan_roots(&roots));
+        s.merge_index(Ok(files));
+        assert!(s.wsdiag.due().is_some(), "a pass is due");
+        let _ = host.receiver.try_iter().count();
+
+        worker::failing_starts(|| s.wsdiag_start());
+        let sent: Vec<Message> = host.receiver.try_iter().collect();
+        let warned = sent.iter().any(|m| {
+            matches!(m, Message::Notification(n) if n.method == "window/showMessage"
+                && n.params["message"].as_str().unwrap().contains("could not start its workspace diagnostics thread"))
+        });
+        assert!(warned, "{sent:?}");
+        assert!(s.wsdiag.due().is_none(), "nothing is due any more");
+        s.wsdiag.invalidate_all();
+        assert!(s.wsdiag.due().is_none(), "they are off");
+
+        // A settings change turns them on again, and the pass runs.
+        s.notification(configuration(json!({"turtle": {
+            "diagnostics": {"workspace": true},
+            "format": {"lineWidth": 80},
+        }})));
+        assert!(s.wsdiag.due().is_some());
+        s.wsdiag_start();
+        let chunk = s
+            .wsdiag
+            .results()
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a pass's results");
+        let _ = host.receiver.try_iter().count();
+        s.wsdiag_chunk(Some(chunk));
+        let uri = path_to_uri(&file).unwrap();
+        let published = host.receiver.try_iter().any(|m| {
+            matches!(m, Message::Notification(n) if n.method == "textDocument/publishDiagnostics"
+                && n.params["uri"] == uri.as_str())
+        });
+        assert!(published, "the closed file's diagnostics went out");
     }
 
     /// Catalogs, imported RDF/XML files and JSON-LD context files count

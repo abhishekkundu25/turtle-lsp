@@ -150,16 +150,19 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn start() -> (Worker, Receiver<Outcome>) {
+    /// Start the thread; Err when it cannot be started.
+    pub fn start() -> std::io::Result<(Worker, Receiver<Outcome>)> {
         let (jobs, job_rx) = unbounded::<Job>();
         let (out_tx, out_rx) = unbounded();
         let latest = Arc::new(AtomicU64::new(0));
         let seen = latest.clone();
-        std::thread::Builder::new()
-            .name("shacl".into())
+        // Always a thread: the loop waits for jobs. Embedded, the server
+        // validates inline instead and never starts one.
+        crate::server::worker::Spawn::Thread.run(
+            "shacl",
             // Defence in depth: recursion is bounded, but generously.
-            .stack_size(16 << 20)
-            .spawn(move || {
+            16 << 20,
+            move || {
                 while let Ok(mut job) = job_rx.recv() {
                     // Only the newest queued job matters.
                     while let Ok(newer) = job_rx.try_recv() {
@@ -188,9 +191,12 @@ impl Worker {
                         break;
                     }
                 }
-            })
-            .expect("spawn the SHACL thread");
-        (Worker { jobs, latest }, out_rx)
+            },
+            // A job's panic is caught above; the loop's own cannot reach
+            // the main loop but as the channel's end.
+            |_| {},
+        )?;
+        Ok((Worker { jobs, latest }, out_rx))
     }
 
     /// Abandon the running job, if any, in favour of `generation`.
@@ -1022,7 +1028,7 @@ mod tests {
             ),
         );
         let data = analysis("file:///w/data.ttl", &chain(400));
-        let (worker, outcomes) = Worker::start();
+        let (worker, outcomes) = Worker::start().unwrap();
         let mut slow = job(vec![shapes.clone(), data.clone()], 100_000);
         slow.generation = 1;
         worker.submit(slow);

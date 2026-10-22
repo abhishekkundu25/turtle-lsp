@@ -88,13 +88,18 @@ impl Shacl {
     }
 
     /// Validate `job` on the thread, started first if it is not running.
-    pub(super) fn submit(&mut self, job: shacl_validate::Job) {
-        let worker = self.worker.get_or_insert_with(|| {
-            let (worker, rx) = shacl_validate::Worker::start();
+    /// Err when the thread cannot be started: the job is dropped, and the
+    /// next one tries again.
+    pub(super) fn submit(&mut self, job: shacl_validate::Job) -> std::io::Result<()> {
+        if self.worker.is_none() {
+            let (worker, rx) = shacl_validate::Worker::start()?;
+            self.worker = Some(worker);
             self.feed = Feed::open(rx);
-            worker
-        });
-        worker.submit(job);
+        }
+        if let Some(worker) = &self.worker {
+            worker.submit(job);
+        }
+        Ok(())
     }
 
     /// `o` is the outcome of the latest job, not of a superseded one.
@@ -121,8 +126,8 @@ impl Shacl {
         true
     }
 
-    /// The validation thread is gone; the next job starts another.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The validation thread is gone, or could not start; the next job
+    /// starts another.
     pub(super) fn gone(&mut self) {
         self.worker = None;
     }

@@ -28,6 +28,7 @@
 
 use super::Server;
 use super::client::Client;
+use super::worker::Spawn;
 use crate::analysis::Analysis;
 use crate::clock::Instant;
 use crate::knowledge::Source;
@@ -196,9 +197,12 @@ impl Server {
             max_rows: self.layers.settings().query_max_rows,
             max_buffered_rows: self.layers.settings().query_max_buffered_rows,
             cancel: cancel.clone(),
-            out: if self.inline { None } else { results_dir() },
+            out: match self.spawn {
+                Spawn::Thread => results_dir(),
+                Spawn::Inline => None,
+            },
         };
-        if self.inline {
+        if self.spawn == Spawn::Inline {
             let report = execute(&job, &self.queries.stem_for(&uri));
             return Ok(Some(self.queries.deliver(
                 &mut self.client,
@@ -224,24 +228,25 @@ impl Server {
         );
         let out = self.queries.done_tx.clone();
         let stem = self.queries.stem_for(&uri);
-        std::thread::Builder::new()
-            .name("run-query".into())
-            .stack_size(16 << 20)
-            .spawn(move || {
-                let report =
-                    super::guard("run query", || execute(&job, &stem)).unwrap_or_else(|msg| {
-                        Report {
-                            summary: msg,
-                            failed: true,
-                            file: Err("not written".into()),
-                        }
+        self.spawn
+            .run(
+                // Also the name a panic's message gives the run.
+                "run query",
+                16 << 20,
+                move || execute(&job, &stem),
+                move |report| {
+                    let report = report.unwrap_or_else(|msg| Report {
+                        summary: msg,
+                        failed: true,
+                        file: Err("not written".into()),
                     });
-                let _ = out.send(Done {
-                    id: run_id,
-                    uri,
-                    report,
-                });
-            })
+                    let _ = out.send(Done {
+                        id: run_id,
+                        uri,
+                        report,
+                    });
+                },
+            )
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         Ok(None)
     }
