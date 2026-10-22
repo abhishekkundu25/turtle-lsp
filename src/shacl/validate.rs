@@ -20,7 +20,8 @@
 //!   64 levels) is skipped with a [`Failure`] that is an error, as is a
 //!   property-shape-only parameter on a node shape;
 //! - a validation has a [`Budget`]: past its result cap it stops with
-//!   [`Report::capped`] set, past its path steps with a [`Failure`];
+//!   [`Report::capped`] set, past its steps (of path evaluation, and one
+//!   per shape check) with a [`Failure`];
 //! - an implicit class target is also taken from `owl:Class` (common in
 //!   ontologies that type their shapes' classes with OWL);
 //! - `sh:pattern` uses the `regex` crate (linear time); XPath's `x` flag
@@ -819,9 +820,11 @@ impl Compiler<'_, '_> {
     }
 }
 
-/// What one validation may spend before it stops: results kept, and steps
-/// of path evaluation (closure and sequence work, which a graph can make
-/// quadratic or worse).
+/// What one validation may spend before it stops: results kept, and steps:
+/// those of path evaluation (closure and sequence work, which a graph can
+/// make quadratic or worse) and one per shape check (shape-valued
+/// constraints past the depth limit, never cached, can make those
+/// exponential).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Budget {
     pub results: usize,
@@ -837,7 +840,7 @@ impl Default for Budget {
     }
 }
 
-/// Path steps between two polls of the cancel check.
+/// Steps between two polls of the cancel check.
 const POLL_EVERY: u64 = 4096;
 
 /// Ids kept in [`Run::memo`] at most; past that it starts over.
@@ -930,10 +933,15 @@ impl Run<'_, '_, '_> {
         self.stopped || self.exhausted || self.capped
     }
 
-    /// Counts `n` steps of path evaluation: polls the cancel check every
-    /// few thousand, and stops everything once the budget is spent.
+    /// Counts `n` steps of path evaluation, for the shape being checked.
     fn charge(&mut self, n: usize) {
-        let n = n as u64;
+        let at = self.stack.last().map(|&(si, _)| si);
+        self.spend(n as u64, at);
+    }
+
+    /// Counts `n` steps made for shape `at`: polls the cancel check every
+    /// few thousand, and stops everything once the budget is spent.
+    fn spend(&mut self, n: u64, at: Option<ShapeIx>) {
         self.steps = self.steps.saturating_sub(n);
         self.since_poll += n;
         if self.since_poll >= POLL_EVERY {
@@ -944,13 +952,13 @@ impl Run<'_, '_, '_> {
         }
         if self.steps == 0 && !self.exhausted {
             self.exhausted = true;
-            if let Some(&(si, _)) = self.stack.last() {
+            if let Some(si) = at {
                 let node = self.shapes[si as usize].node;
                 self.fail_with(
                     node,
                     None,
                     format!(
-                        "evaluating property paths took more than {} steps, the limit for one validation: this shape and the ones after it are not fully validated",
+                        "validation took more than {} steps (of property paths and shape checks), the limit for one validation: this shape and the ones after it are not fully validated",
                         self.budget.steps
                     ),
                     FailureKind::Cut,
@@ -1147,7 +1155,14 @@ impl Run<'_, '_, '_> {
     ) -> bool {
         let shapes = self.shapes;
         let shape = &shapes[si as usize];
-        if shape.skip || self.halted() || self.stack.contains(&(si, focus)) {
+        if self.halted() {
+            return false;
+        }
+        // Checks the depth limit cut are never cached, so shape-valued
+        // constraints met again and again can make checks exponential
+        // without a path step: each check is a step.
+        self.spend(1, Some(si));
+        if self.halted() || shape.skip || self.stack.contains(&(si, focus)) {
             return false;
         }
         if self.stack.len() > MAX_DEPTH {
@@ -1810,8 +1825,9 @@ pub(crate) fn acts_on(used: &dyn Fn(Iri) -> bool) -> bool {
 }
 
 /// Validate `g` against the shapes in it. `cancelled` is polled between
-/// focus nodes, between SPARQL queries, every few thousand steps of path
-/// evaluation, and inside a running query; a run it stops returns `None`.
+/// focus nodes, between SPARQL queries, every few thousand steps (of path
+/// evaluation and shape checks), and inside a running query; a run it
+/// stops returns `None`.
 /// The [`Failure`]s are the queries and shapes that could not be validated.
 pub fn validate_report<C>(g: &Graph, cancelled: &C, keep: &dyn Fn(Id) -> bool) -> Option<Report>
 where
@@ -2849,6 +2865,64 @@ mod tests {
         // a true result, never a false one.
         let (backward, _) = run("ex:n20 , ex:n0");
         assert!(forward.iter().all(|f| backward.contains(f)), "{backward:?}");
+    }
+
+    /// ex:x against `sh:not ex:S1`, where ex:S1 to ex:S2999 are a `sh:node`
+    /// chain, read as an overlay over itself: every shape has its sh:node
+    /// twice. Past 64 levels nothing is cached, so the checks double with
+    /// every level and no path step is ever taken.
+    fn doubled_node_chain(
+        budget: Budget,
+        cancel: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Option<Report> {
+        let mut body = String::from("ex:S0 sh:targetNode ex:x ; sh:not ex:S1 .\n");
+        for i in 1..3_000 {
+            body.push_str(&format!("ex:S{i} sh:node ex:S{} .\n", i + 1));
+        }
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let base = Arc::new(Graph::new(&[&p.triples]));
+        let g = Graph::overlay(&base, &p.triples);
+        report_with(&g, Arc::new(cancel), &|_| true, MIN_BATCH, budget)
+    }
+
+    #[test]
+    fn cancelling_stops_inside_shape_checks() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let counted = polls.clone();
+        // The poll before the focus node, two more, then the fourth stops.
+        let cancel = move || counted.fetch_add(1, Ordering::Relaxed) >= 3;
+        assert!(doubled_node_chain(Budget::default(), cancel).is_none());
+        assert_eq!(polls.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn shape_checks_stop_at_the_step_budget() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let counted = polls.clone();
+        let cancel = move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let budget = Budget {
+            steps: 100_000,
+            ..Budget::default()
+        };
+        let r = doubled_node_chain(budget, cancel).unwrap();
+        // sh:not over a check the budget cut short would say ex:x conforms
+        // to ex:S1: a false violation.
+        assert!(r.results.is_empty(), "{:?}", r.results);
+        assert!(cut_by_steps(&r), "{:?}", r.failures);
+        // The poll before the focus node, then one per POLL_EVERY steps up
+        // to the budget: no check ran past it.
+        assert_eq!(
+            polls.load(Ordering::Relaxed) as u64,
+            1 + budget.steps / POLL_EVERY
+        );
     }
 
     #[test]
