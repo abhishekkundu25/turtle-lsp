@@ -68,7 +68,7 @@ pub fn document(
     let opts = diagnostics::Options::from_settings(inputs.settings);
     let mut out = match doc {
         Doc::Rdf(a) => diagnostics::diagnostics_with(a, k, enc, &opts),
-        Doc::Sparql(q) => sparql_features::diagnostics::diagnostics(q, k, enc, &opts),
+        Doc::Sparql(q) => sparql_features::diagnostics(q, k, enc, &opts),
     };
     // "Known nowhere" findings wait for the initial index.
     if !inputs.indexed {

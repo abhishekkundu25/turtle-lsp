@@ -48,16 +48,6 @@ impl<'w> Session<'w> {
         }
     }
 
-    /// The client's settings.
-    pub fn settings(&self) -> &Settings {
-        self.settings
-    }
-
-    /// The client resolves code actions' edits lazily.
-    pub fn resolve_edits(&self) -> bool {
-        self.resolve_edits
-    }
-
     /// The document at `uri` (in any spelling the client uses): an open
     /// SPARQL document's parse, else the RDF analysis of the open or indexed
     /// document. `None` when the workspace has no such document.

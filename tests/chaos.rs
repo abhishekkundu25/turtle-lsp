@@ -1208,12 +1208,7 @@ fn sparql_features_at_random(
             text_document: TextDocumentIdentifier::new(q.uri.parse().unwrap()),
             range,
             context: lsp_types::CodeActionContext {
-                diagnostics: sparql_features::diagnostics::diagnostics(
-                    q,
-                    k,
-                    enc,
-                    &Default::default(),
-                ),
+                diagnostics: sparql_features::diagnostics(q, k, enc, &Default::default()),
                 ..Default::default()
             },
             work_done_progress_params: Default::default(),

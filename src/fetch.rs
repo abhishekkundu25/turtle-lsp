@@ -97,14 +97,6 @@ impl Budget {
         Budget::new(2 * (MAX_REDIRECTS + 1), 2 * MAX_FETCH_BYTES)
     }
 
-    pub fn requests(&self) -> u32 {
-        self.requests
-    }
-
-    pub fn bytes(&self) -> u64 {
-        self.bytes
-    }
-
     fn spent(&self) -> Error {
         Error {
             status: None,
@@ -771,7 +763,7 @@ mod tests {
             let mut budget = Budget::pass();
             let e = get(url, "*/*", strict, &mut budget).unwrap_err();
             assert!(!e.budget, "{url}");
-            assert_eq!(budget.requests(), 0, "{url}: {e:?}");
+            assert_eq!(budget.requests, 0, "{url}: {e:?}");
         }
         let m = message(get(
             "http://127.0.0.1:1/x",
@@ -822,7 +814,7 @@ mod tests {
         assert_eq!(r.body, b"<a> <b> <c> .");
         assert_eq!(r.content_type.as_deref(), Some("text/turtle"));
         assert_eq!(r.final_url, format!("{base}/a"));
-        assert_eq!((budget.requests(), budget.bytes()), (1, 13));
+        assert_eq!((budget.requests, budget.bytes), (1, 13));
         let e = get(&format!("{base}/b"), "*/*", loopback(), &mut budget).unwrap_err();
         assert_eq!(e.status, Some(404));
         assert_eq!(*log.lock().unwrap(), ["/a", "/b"]);
@@ -839,7 +831,7 @@ mod tests {
         let mut budget = Budget::pass();
         let r = get(&format!("{base}/one"), "*/*", loopback(), &mut budget).unwrap();
         assert_eq!(r.final_url, format!("{base}/three"));
-        assert_eq!(budget.requests(), 3);
+        assert_eq!(budget.requests, 3);
         assert_eq!(*log.lock().unwrap(), ["/one", "/two", "/three"]);
         // A loop stops at MAX_REDIRECTS.
         log.lock().unwrap().clear();
@@ -877,7 +869,7 @@ mod tests {
             ));
             assert!(m.contains("not fetched from"), "{path}: {m}");
             // Only the first hop was requested.
-            assert_eq!(budget.requests(), 1, "{path}");
+            assert_eq!(budget.requests, 1, "{path}");
         }
         let m = message(get_from(
             &format!("{base}/ftp"),

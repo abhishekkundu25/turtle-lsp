@@ -263,10 +263,9 @@ fn unescape(s: &str) -> String {
     out
 }
 
-/// Edit distance with adjacent transpositions (optimal string alignment):
-/// insertions, deletions, substitutions and swapping two neighbouring
-/// characters each cost 1, so `lable` is 1 from `label`.
-pub fn edit_distance(a: &str, b: &str) -> usize {
+/// [`EditBuf::within`] with no bound, for the tests.
+#[cfg(test)]
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     EditBuf::default().within(&a, &b, usize::MAX).unwrap_or(0)
@@ -282,8 +281,11 @@ pub struct EditBuf {
 }
 
 impl EditBuf {
-    /// [`edit_distance`] of `a` and `b` if it is at most `max`, else `None`,
-    /// giving up as soon as two rows in a row are all above `max`.
+    /// The edit distance of `a` and `b` if it is at most `max`, else `None`,
+    /// giving up as soon as two rows in a row are all above `max`. The
+    /// distance allows adjacent transpositions (optimal string alignment):
+    /// insertions, deletions, substitutions and swapping two neighbouring
+    /// characters each cost 1, so `lable` is 1 from `label`.
     pub fn within(&mut self, a: &[char], b: &[char], max: usize) -> Option<usize> {
         // Edit distance is at least the difference in length.
         if a.len().abs_diff(b.len()) > max {

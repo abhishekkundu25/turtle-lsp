@@ -289,6 +289,7 @@ fn record_contexts(uses: &ContextUses, uri: &str, asked: Vec<String>) {
 /// What a workspace hands to another one parsing files for it (the initial
 /// index, built on another thread): its context loader, and the record of
 /// which documents use which contexts.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct SharedContexts {
     loader: Option<Arc<dyn ContextLoader>>,
@@ -577,6 +578,7 @@ impl Workspace {
     }
 
     /// The prefixes the settings declare (`turtle.prefixes`).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn settings_prefixes(&self) -> &PrefixMap {
         &self.settings_prefixes
     }
@@ -670,6 +672,7 @@ impl Workspace {
 
     /// The context loader and the record of context uses, for a workspace
     /// that parses files for this one ([`Workspace::use_shared_contexts`]).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn shared_contexts(&self) -> SharedContexts {
         SharedContexts {
             loader: self.contexts.clone(),
@@ -679,6 +682,7 @@ impl Workspace {
 
     /// Load contexts as the workspace that shared them does, and record
     /// which documents use which in its record.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn use_shared_contexts(&mut self, shared: SharedContexts) {
         self.contexts = shared.loader;
         self.context_uses = shared.uses;
@@ -699,6 +703,7 @@ impl Workspace {
     /// The JSON-LD context at `url` was fetched in the background (or the
     /// fetch failed): the documents that use it are analyzed or parsed
     /// again.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn context_fetched(&mut self, url: &str) -> Effects {
         if self.context_changed(url, true) {
             Effects {
@@ -872,9 +877,9 @@ impl Workspace {
     }
 
     /// Closing a file indexes it from disk again, when the scan would have
-    /// ([`Workspace::indexable`]). Closing a SPARQL document leaves the index
-    /// untouched. Unsaved edits to a context file or a prefixes.ttl are gone
-    /// with the buffer: what they changed changes back.
+    /// ([`Workspace::reindex_disk_file`]). Closing a SPARQL document leaves
+    /// the index untouched. Unsaved edits to a context file or a prefixes.ttl
+    /// are gone with the buffer: what they changed changes back.
     pub fn close_doc(&mut self, uri: &str) -> Effects {
         let gone = self.open.remove(uri);
         if !gone.is_some_and(|d| d.cached_import || d.kind == DocKind::Sparql) {
@@ -1174,7 +1179,9 @@ impl Workspace {
         self.sparql_files = Some(files);
     }
 
-    pub fn text(&self, uri: &str) -> Option<&str> {
+    /// The text of the open document `uri`.
+    #[cfg(test)]
+    pub(crate) fn text(&self, uri: &str) -> Option<&str> {
         self.open.get(uri).map(|d| d.text.as_str())
     }
 
@@ -1390,22 +1397,16 @@ impl Workspace {
     // ---- disk index ----
 
     /// The RDF files under `roots` (see [`scan_roots_matching`]).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn scan_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         scan_roots_matching(roots, is_rdf_file).paths
     }
 
     /// Whether the file at `path` belongs in the disk index, as the scan
     /// reads the roots: an RDF file below a root, in no hidden or skipped
-    /// ([`SKIP_DIRS`]) directory, of at most [`MAX_FILE_BYTES`], and
-    /// within [`MAX_FILES`] of them. The scan, a file that changed on disk
-    /// and a document that was closed all ask this.
-    pub fn indexable(&self, path: &Path) -> bool {
-        self.fits(path)
-            && (self.disk.len() < MAX_FILES
-                || path_to_uri(path).is_some_and(|u| self.disk.contains_key(&u)))
-    }
-
-    /// [`Workspace::indexable`] but for the limit on the number of files.
+    /// ([`SKIP_DIRS`]) directory, of at most [`MAX_FILE_BYTES`]. The caller
+    /// keeps the index within [`MAX_FILES`] files. The scan, a file that
+    /// changed on disk and a document that was closed all ask this.
     fn fits(&self, path: &Path) -> bool {
         is_rdf_file(path)
             && self.in_area(path, false)
@@ -1475,6 +1476,7 @@ impl Workspace {
     /// The initial index is being built elsewhere: remember what changes on
     /// disk meanwhile, so that [`Workspace::merge_initial_index`] does not
     /// undo it with what the index read before.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn expect_initial_index(&mut self) {
         self.touched = Some(Touched::default());
     }
@@ -1570,7 +1572,7 @@ impl Workspace {
 
     /// Bring the index up to date with the file at `path`, which changed on
     /// disk (it is not open): parse it again, or drop it when it is gone or
-    /// no longer [`indexable`](Workspace::indexable). Whether the index
+    /// no longer belongs in it (`Workspace::fits`). Whether the index
     /// changed.
     pub fn reindex_disk_file(&mut self, path: &Path) -> bool {
         self.reindex_disk_files(&[path.to_path_buf()])
@@ -1622,14 +1624,8 @@ impl Workspace {
         had
     }
 
-    /// The directory `dir` was deleted or renamed: drop the files indexed
-    /// below it. Whether there were any.
-    pub fn remove_under(&mut self, dir: &Path) -> bool {
-        self.remove_under_any(&[dir.to_path_buf()])
-    }
-
-    /// [`Workspace::remove_under`] for several directories, in one pass over
-    /// the index.
+    /// The directories `dirs` were deleted or renamed: drop the files indexed
+    /// below them, in one pass over the index. Whether there were any.
     pub fn remove_under_any(&mut self, dirs: &[PathBuf]) -> bool {
         if dirs.is_empty() {
             return false;
@@ -2186,24 +2182,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn indexable_is_what_the_scan_would_index() {
+    fn fits_is_what_the_scan_would_index() {
         let root = TempDir::new("indexable");
         let outside = TempDir::new("indexable-outside");
         let ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
         let ok = write(&root.0, "sub/a.ttl", TTL);
-        assert!(ws.indexable(&ok));
+        assert!(ws.fits(&ok));
         // Not RDF, outside the roots, in hidden and skipped directories.
-        assert!(!ws.indexable(&write(&root.0, "sub/a.txt", TTL)));
-        assert!(!ws.indexable(&write(&outside.0, "a.ttl", TTL)));
+        assert!(!ws.fits(&write(&root.0, "sub/a.txt", TTL)));
+        assert!(!ws.fits(&write(&outside.0, "a.ttl", TTL)));
         for dir in [".git", ".hidden/deep", "node_modules", "a/target", "dist/x"] {
             let f = write(&root.0, &format!("{dir}/b.ttl"), TTL);
-            assert!(!ws.indexable(&f), "{dir}");
+            assert!(!ws.fits(&f), "{dir}");
         }
         // A hidden file name is indexed, as the scan does.
-        assert!(ws.indexable(&write(&root.0, ".dotfile.ttl", TTL)));
+        assert!(ws.fits(&write(&root.0, ".dotfile.ttl", TTL)));
         // Gone, or not a file.
-        assert!(!ws.indexable(&root.0.join("missing.ttl")));
-        assert!(!ws.indexable(&root.0.join("sub")));
+        assert!(!ws.fits(&root.0.join("missing.ttl")));
+        assert!(!ws.fits(&root.0.join("sub")));
         // Too large.
         let big = write(&root.0, "big.ttl", "");
         std::fs::File::options()
@@ -2212,12 +2208,12 @@ pub(crate) mod tests {
             .unwrap()
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
-        assert!(!ws.indexable(&big));
+        assert!(!ws.fits(&big));
         // The scan and the check agree.
         let scanned = Workspace::scan_roots(&ws.roots);
-        assert!(scanned.contains(&ok) && scanned.iter().all(|p| ws.indexable(p)));
+        assert!(scanned.contains(&ok) && scanned.iter().all(|p| ws.fits(p)));
         // `..` does not climb out of a root.
-        assert!(!ws.indexable(&root.0.join("..").join("x.ttl")));
+        assert!(!ws.fits(&root.0.join("..").join("x.ttl")));
         // Folders: the folder's own name counts.
         assert!(ws.watched_dir(&root.0.join("sub")));
         assert!(!ws.watched_dir(&root.0.join("node_modules")));
@@ -2318,7 +2314,7 @@ pub(crate) mod tests {
         .collect();
         ws.index_paths(files.clone());
         assert_eq!(ws.disk.len(), 5);
-        assert!(ws.remove_under(&root.0.join("gone")));
+        assert!(ws.remove_under_any(&[root.0.join("gone")]));
         let left: Vec<&str> = [
             "gone/a.ttl",
             "gone/deep/b.ttl",
@@ -2335,7 +2331,7 @@ pub(crate) mod tests {
         }
         assert!(ws.knowledge().get(&uri(&files[3])).is_some());
         assert!(
-            !ws.remove_under(&root.0.join("gone")),
+            !ws.remove_under_any(&[root.0.join("gone")]),
             "nothing is left to remove"
         );
         assert!(!ws.remove_under_any(&[]));
@@ -2465,7 +2461,7 @@ pub(crate) mod tests {
         std::fs::write(&changed, "@prefix ex: <http://e.org/> .\nex:New a ex:B .\n").unwrap();
         ws.reindex_disk_file(&changed);
         std::fs::remove_dir_all(root.0.join("folder")).unwrap();
-        ws.remove_under(&root.0.join("folder"));
+        ws.remove_under_any(&[root.0.join("folder")]);
         ws.merge_initial_index(files);
         assert!(
             !ws.disk.contains_key(&uri(&deleted)),
@@ -2726,7 +2722,7 @@ pub(crate) mod tests {
         ws.sparql_files_changed(&[root.0.join("d/e/f.rq")]);
         assert_eq!(ws.sparql_documents().len(), 3);
         std::fs::remove_dir_all(root.0.join("d")).unwrap();
-        ws.remove_under(&root.0.join("d"));
+        ws.remove_under_any(&[root.0.join("d")]);
         assert_eq!(ws.sparql_documents().len(), 2);
         // A changed prefixes.ttl parses them again with the new prefixes.
         let was = ws
