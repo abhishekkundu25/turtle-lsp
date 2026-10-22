@@ -36,7 +36,7 @@ this wave), the `pub` items of the 16 consumer modules (32b), `web/engine/**`,
 `src/sparql/features/mod.rs`. If landing both leaves a `dead_code` warning that
 neither saw alone, the second to land deletes that item.
 
-**Status:** ready-for-agent
+**Status:** done. Left for 32b: gate the server modules dead in the wasm build (`run_query`, `workspace_diagnostics`) and with them `Workspace::is_indexed` and `indexed_uris`.
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
