@@ -31,7 +31,7 @@ moves.
 
 **Blocked by:** nothing in wave 3 (the wave-1 SHACL bounds work, ticket 06, has landed).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
