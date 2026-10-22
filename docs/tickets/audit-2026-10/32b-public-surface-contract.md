@@ -20,7 +20,7 @@ report it instead.
 
 **Blocked by:** 32a and 35. Runs alone, the last code ticket of wave 3.
 
-**Status:** ready-for-agent
+**Status:** done. pub fn 646 -> 114, pub types 244 -> 78, pub fields 588 -> 123; browser-build warnings 21 -> 0.
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
