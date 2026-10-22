@@ -484,7 +484,7 @@ pub(crate) fn organise_block(
                 let between = &text[line_content_end(text, pe)..ls];
                 comments.extend(
                     between
-                        .lines()
+                        .split(['\n', '\r'])
                         .map(str::trim)
                         .filter(|l| l.starts_with('#'))
                         .map(str::to_string),
@@ -595,18 +595,14 @@ fn leading_block(a: &Analysis) -> Option<Vec<&PrefixDecl>> {
     (!block.is_empty()).then_some(block)
 }
 
+// A bare `\r` ends a line too, as in the Turtle and SPARQL grammars.
 fn line_start(text: &str, at: usize) -> usize {
-    text[..at].rfind('\n').map_or(0, |i| i + 1)
+    text[..at].rfind(['\n', '\r']).map_or(0, |i| i + 1)
 }
 
-/// End of the line's content (before `\r\n` or `\n`).
+/// End of the line's content: before its `\n`, `\r\n` or bare `\r`.
 pub(crate) fn line_content_end(text: &str, at: usize) -> usize {
-    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-    if end > at && text.as_bytes()[end - 1] == b'\r' {
-        end - 1
-    } else {
-        end
-    }
+    text[at..].find(['\n', '\r']).map_or(text.len(), |i| at + i)
 }
 
 /// Text after applying `edits` (positions in `enc`), for tests.
@@ -712,6 +708,22 @@ mod tests {
         assert_eq!(unique("core", &taken), "core2");
         let taken: FxHashSet<String> = ["abcdefghijkl".into()].into_iter().collect();
         assert_eq!(unique("abcdefghijkl", &taken), "abcdefghijk1");
+    }
+
+    #[test]
+    fn organise_keeps_the_graph_of_a_file_with_bare_cr_line_breaks() {
+        // A bare `\r` ends a line, and a comment, as `\n` does.
+        let text = "@prefix z: <http://z/> .\r# about e\r@prefix e: <http://e/> .\r\r# data\re:a e:p z:b .\r";
+        let organised = run(text, "e:a", "Organise prefixes", false).unwrap();
+        assert_eq!(
+            organised,
+            "# about e\r@prefix e: <http://e/> .\r@prefix z: <http://z/> .\r\r# data\re:a e:p z:b .\r"
+        );
+        // Every prefix unused: the declarations go, and only they (it once
+        // removed the whole file, read as one line).
+        let text = "@prefix z: <http://z/> .\r@prefix e: <http://e/> .\r<http://e/a> <http://e/p> <http://z/b> .\r";
+        let organised = run(text, "http://e/a", "Organise prefixes", false).unwrap();
+        assert_eq!(organised, "\r<http://e/a> <http://e/p> <http://z/b> .\r");
     }
 
     #[test]

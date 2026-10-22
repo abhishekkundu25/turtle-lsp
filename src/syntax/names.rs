@@ -211,11 +211,12 @@ impl DerefMut for Scope {
 
 // ---- line endings and prefix declarations ----
 
-/// The line ending the text uses: that of its first line break (`\n` for a
-/// text without one).
+/// The line ending the text uses: that of its first line break (`\n`,
+/// `\r\n` or a bare `\r`; `\n` for a text without one).
 pub(crate) fn newline(text: &str) -> &'static str {
-    match text.find('\n') {
-        Some(i) if text[..i].ends_with('\r') => "\r\n",
+    match text.find(['\n', '\r']).map(|i| &text[i..]) {
+        Some(rest) if rest.starts_with("\r\n") => "\r\n",
+        Some(rest) if rest.starts_with('\r') => "\r",
         _ => "\n",
     }
 }
@@ -444,6 +445,7 @@ mod tests {
         assert_eq!(newline("a"), "\n");
         assert_eq!(newline("a\nb\r\n"), "\n");
         assert_eq!(newline("a\r\nb\n"), "\r\n");
+        assert_eq!(newline("a\rb\n"), "\r");
     }
 
     #[test]
