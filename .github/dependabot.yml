@@ -6,6 +6,12 @@ updates:
     schedule: { interval: weekly }
     groups:
       cargo: { patterns: ["*"] }
+  # The browser engine has its own Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /web/engine
+    schedule: { interval: weekly }
+    groups:
+      cargo-web: { patterns: ["*"] }
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }

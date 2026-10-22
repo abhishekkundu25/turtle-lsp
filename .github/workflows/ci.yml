@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run before it. Runs on main are
+# never canceled: the release and the site wait for the CI run of their commit
+# (release.yml, pages.yml), and a canceled run would leave them waiting.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Actions are pinned to full commit SHAs (tags can be moved); Dependabot bumps them.
 jobs:
   test:
@@ -31,6 +38,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
       - name: Install Neovim (for the editor checks)
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
         with:
@@ -48,13 +57,25 @@ jobs:
       - run: npm run test:node
         timeout-minutes: 5
       - name: Chaos test, longer run
+        timeout-minutes: 5
         env:
           CHAOS_ITERS: "30000"
         run: cargo test --release --locked --test chaos
+      # What the integration tests left under target/tmp, to read a failure that
+      # does not reproduce locally.
+      - name: Keep the test folders of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-tmp-${{ matrix.os }}
+          path: target/tmp
+          if-no-files-found: ignore
+          retention-days: 7
 
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,20 +84,98 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
+      # The browser engine has its own lock file (web/engine/Cargo.lock) and the
+      # same rules. It depends on the server by path, which deny.toml's
+      # `wildcards = "deny"` rejects unless path dependencies are allowed: the
+      # copy below adds that one line (not needed once deny.toml has it).
+      - name: deny.toml for web/engine
+        run: |
+          if grep -q '^allow-wildcard-paths' deny.toml; then
+            cp deny.toml deny-web.toml
+          else
+            awk '{ print } /^\[bans\]$/ { print "allow-wildcard-paths = true" }' deny.toml > deny-web.toml
+          fi
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          manifest-path: web/engine/Cargo.toml
+          arguments: --all-features --config deny-web.toml
+      # spareval is vendored with a patch; the copy must be the release plus
+      # that patch and nothing else (and spareval = "0.2" must not resolve to a
+      # newer release unnoticed).
+      - name: vendor/spareval is spareval 0.2.7 plus its patch
+        run: tools/check-vendor.sh
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            editors/vscode/package-lock.json
       # The extension ships only its runtime dependencies; dev tools stay local.
       - working-directory: editors/vscode
         run: npm audit --omit=dev --audit-level=moderate
+      # The site ships Monaco and monaco-vim from the root tree, where they are
+      # devDependencies: --omit=dev would audit nothing here.
+      - run: npm audit --audit-level=moderate
+
+  web:
+    name: Browser build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The compiler pinned in rust-toolchain.toml, with the browser target.
+      - run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            .
+            web/engine
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      # The engine for wasm32 (web/app/engine.wasm), then Monaco beside the pages.
+      - run: node web/build.mjs
+        timeout-minutes: 15
+      - run: cargo clippy --locked -- -D warnings
+        working-directory: web/engine
+      # The engine tests compare it with the native server, so build that too.
+      - run: cargo build --release --locked
+        timeout-minutes: 15
+      - name: Engine tests (no browser)
+        timeout-minutes: 5
+        run: >-
+          node --test --test-force-exit --test-timeout=60000
+          web/test/engine.test.mjs web/test/host.test.mjs
+          web/test/jsonld-engine.test.mjs web/test/lsp.test.mjs
+      # The page in a real browser. The test drives Google Chrome (Playwright's
+      # "chrome" channel), so install that one rather than rely on the runner image.
+      - run: npx playwright-core install chrome
+        timeout-minutes: 5
+      - name: Toolbox page in Chrome
+        timeout-minutes: 5
+        run: node --test --test-force-exit --test-timeout=60000 web/test/browser.test.mjs
 
   vscode:
-    name: VS Code extension (${{ matrix.os }})
+    name: VS Code extension (${{ matrix.os }}, ${{ matrix.vscode }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        vscode: [stable]
+        include:
+          # The oldest VS Code the extension claims (engines.vscode).
+          - { os: ubuntu-latest, vscode: "1.91.0" }
+    env:
+      VSCODE_VERSION: ${{ matrix.vscode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,6 +185,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
       - run: cargo build --release --locked
       - working-directory: editors/vscode
         run: npm ci && npm run typecheck
@@ -98,6 +199,6 @@ jobs:
         run: npm test
       # Catches packaging errors (e.g. @types/vscode newer than engines.vscode)
       # before a release does.
-      - if: runner.os == 'Linux'
+      - if: runner.os == 'Linux' && matrix.vscode == 'stable'
         working-directory: editors/vscode
         run: npm run package
