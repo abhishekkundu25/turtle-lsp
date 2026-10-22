@@ -147,12 +147,11 @@ test("built-in functions and aggregates are offered in expressions", async () =>
   has(projection, "COUNT", "SUM", "MIN", "MAX", "AVG", "GROUP_CONCAT", "SAMPLE")
 })
 
-test("completion stays bounded and fast in a long query", async () => {
+// How long this takes: latency.test.mjs.
+test("completion stays bounded in a long query", async () => {
   const body = Array.from({ length: 300 }, (_, i) => `  ?s${i} ex:name ?n${i} .`).join("\n")
   const text = `${EX}SELECT * WHERE {\n${body}\n  ?x ex:\n}\n`
-  const t0 = performance.now()
   const res = await q.complete(text, "?x ex:")
-  assert.ok(performance.now() - t0 < 2000)
   assert.ok(itemsOf(res).length <= 1000)
   has(res, "ex:name")
 })

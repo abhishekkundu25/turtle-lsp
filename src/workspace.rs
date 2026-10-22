@@ -1584,7 +1584,7 @@ pub fn find_prefix_file(roots: &[PathBuf], dir: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     fn file_uri_name_is_the_decoded_last_segment() {
         assert_eq!(
@@ -2060,8 +2060,7 @@ mod tests {
 
     #[test]
     fn a_panic_in_analysis_is_that_document_s_error_not_the_end_of_the_server() {
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
+        let quiet = QuietPanics::new();
         let mut ws = Workspace::default();
         let (bad, good, facts) = (
             "file:///w/bad.ttl",
@@ -2114,7 +2113,7 @@ mod tests {
         let g = write(&root.0, "ok.ttl", TTL);
         let mut disk = Workspace::new(vec![root.0.clone()], PrefixMap::default());
         disk.index_paths(vec![f.clone(), g.clone()]);
-        std::panic::set_hook(hook);
+        drop(quiet);
         assert_eq!(disk.disk.len(), 2);
         assert!(
             disk.disk[&uri(&f)]
@@ -2375,5 +2374,243 @@ mod tests {
         // Nothing to do, nothing changed.
         assert!(!ws.reindex_disk_files(&[root.0.join("nope.ttl")]));
         assert!(!ws.reindex_disk_files(&[]));
+    }
+
+    /// Silences panic messages while it lives, for tests whose panics are
+    /// the point. The panic hook is global to the test binary, where tests
+    /// run in parallel: a hook taken and set back by two tests at once can
+    /// end up silent for good. So the hook is replaced once, by one that
+    /// prints as the previous one did unless a `QuietPanics` is alive, and
+    /// the guards hold a lock, so one is alive at a time. Dropping the guard
+    /// (also when its test panics) makes the hook print again.
+    pub(crate) struct QuietPanics {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    static QUIET_LOCK: Mutex<()> = Mutex::new(());
+    static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static QUIET_HOOK: std::sync::Once = std::sync::Once::new();
+
+    impl QuietPanics {
+        pub(crate) fn new() -> QuietPanics {
+            // A test that failed while holding the lock poisoned it; the
+            // guard it held was dropped all the same.
+            let lock = QUIET_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            QUIET_HOOK.call_once(|| {
+                let previous = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    if !QUIET.load(std::sync::atomic::Ordering::SeqCst) {
+                        previous(info);
+                    }
+                }));
+            });
+            QUIET.store(true, std::sync::atomic::Ordering::SeqCst);
+            QuietPanics { _lock: lock }
+        }
+    }
+
+    impl Drop for QuietPanics {
+        fn drop(&mut self) {
+            QUIET.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn quiet_panics_silence_only_while_alive() {
+        // Under the lock no other test's guard is alive.
+        let quiet_now = || {
+            let _lock = QUIET_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            QUIET.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        let quiet = QuietPanics::new();
+        assert!(QUIET.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(std::panic::catch_unwind(|| panic!("silenced")).is_err());
+        drop(quiet);
+        assert!(!quiet_now());
+        // A guard dropped while its test panics makes the hook print again.
+        let _ = std::panic::catch_unwind(|| {
+            let _quiet = QuietPanics::new();
+            panic!("silenced too");
+        });
+        assert!(!quiet_now());
+    }
+
+    // ---- incremental sync (textDocument/didChange with ranges) ----
+
+    fn pos(line: u32, character: u32) -> lsp_types::Position {
+        lsp_types::Position { line, character }
+    }
+
+    /// A ranged change from `(l0, c0)` to `(l1, c1)`.
+    fn ranged(
+        (l0, c0): (u32, u32),
+        (l1, c1): (u32, u32),
+        text: &str,
+    ) -> TextDocumentContentChangeEvent {
+        TextDocumentContentChangeEvent {
+            range: Some(lsp_types::Range::new(pos(l0, c0), pos(l1, c1))),
+            range_length: None,
+            text: text.into(),
+        }
+    }
+
+    fn full(text: &str) -> TextDocumentContentChangeEvent {
+        TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn change_doc_applies_ranged_changes_in_order() {
+        let ab = "ab\ncd\n";
+        // (what, encoding, text before, the changes in one batch, text after)
+        let cases: Vec<(
+            &str,
+            Encoding,
+            &str,
+            Vec<TextDocumentContentChangeEvent>,
+            &str,
+        )> = vec![
+            (
+                "insert",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((0, 1), (0, 1), "X")],
+                "aXb\ncd\n",
+            ),
+            (
+                "delete",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((0, 0), (0, 2), "")],
+                "\ncd\n",
+            ),
+            (
+                "delete a line break",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((0, 2), (1, 0), "")],
+                "abcd\n",
+            ),
+            (
+                "replace",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((1, 0), (1, 2), "ZZZ")],
+                "ab\nZZZ\n",
+            ),
+            (
+                "a batch in order: the second change's positions are in the first's result",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((0, 0), (0, 0), "1\n"), ranged((1, 0), (1, 1), "2")],
+                "1\n2b\ncd\n",
+            ),
+            (
+                "a full-text change in a batch, then a ranged one on its text",
+                Encoding::Utf16,
+                ab,
+                vec![full("xyz\n"), ranged((0, 1), (0, 2), "Y")],
+                "xYz\n",
+            ),
+            // U+1F600 is two UTF-16 code units and four UTF-8 bytes.
+            (
+                "UTF-16 after an astral character",
+                Encoding::Utf16,
+                "\u{1F600}x\n",
+                vec![ranged((0, 2), (0, 3), "y")],
+                "\u{1F600}y\n",
+            ),
+            (
+                "UTF-8 after an astral character",
+                Encoding::Utf8,
+                "\u{1F600}x\n",
+                vec![ranged((0, 4), (0, 5), "y")],
+                "\u{1F600}y\n",
+            ),
+            (
+                "a UTF-16 column inside the astral character goes to its start",
+                Encoding::Utf16,
+                "\u{1F600}x\n",
+                vec![ranged((0, 1), (0, 1), "Z")],
+                "Z\u{1F600}x\n",
+            ),
+            (
+                "a column past the end of its line is the line's end",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((0, 99), (0, 99), "X")],
+                "abX\ncd\n",
+            ),
+            (
+                "a line past the end of the file is the file's end",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((7, 0), (9, 9), "!")],
+                "ab\ncd\n!",
+            ),
+            (
+                "a range ending past the end of the file",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((1, 1), (9, 0), "")],
+                "ab\nc",
+            ),
+            (
+                "a reversed range is the same range",
+                Encoding::Utf16,
+                ab,
+                vec![ranged((1, 1), (0, 1), "-")],
+                "a-d\n",
+            ),
+            (
+                "an empty document",
+                Encoding::Utf16,
+                "",
+                vec![ranged((0, 0), (0, 0), "a")],
+                "a",
+            ),
+        ];
+        let mut failed = Vec::new();
+        for (what, enc, before, changes, after) in cases {
+            let mut ws = Workspace::default();
+            let uri = "file:///w/a.ttl";
+            ws.open_doc(uri.into(), before.into(), 1);
+            ws.change_doc(uri, 2, changes, enc);
+            if ws.text(uri) != Some(after) {
+                failed.push(format!("{what}: {:?}, expected {after:?}", ws.text(uri)));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn change_doc_reanalyzes_and_ignores_documents_that_are_not_open() {
+        let mut ws = Workspace::default();
+        let uri = "file:///w/a.ttl";
+        let text = "@prefix ex: <http://e.org/> .\nex:a ex:p ex:b .\n";
+        ws.open_doc(uri.into(), text.into(), 1);
+        assert_eq!(ws.analysis(uri).unwrap().parsed.triples.len(), 1);
+        // Turn `ex:b .` into `ex:b , ex:c .`: two triples.
+        ws.change_doc(
+            uri,
+            2,
+            vec![ranged((1, 14), (1, 14), " , ex:c")],
+            Encoding::Utf16,
+        );
+        assert_eq!(
+            ws.text(uri),
+            Some("@prefix ex: <http://e.org/> .\nex:a ex:p ex:b , ex:c .\n")
+        );
+        assert_eq!(ws.analysis(uri).unwrap().parsed.triples.len(), 2);
+        assert_eq!(ws.open[uri].version, 2);
+        ws.change_doc("file:///w/closed.ttl", 3, vec![full("x")], Encoding::Utf16);
+        assert!(ws.text("file:///w/closed.ttl").is_none());
     }
 }

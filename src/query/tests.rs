@@ -243,10 +243,14 @@ fn big() -> Analysis {
     doc("file:///w/big.ttl", &text)
 }
 
+// The time-limit tests check the error only: how soon a query stops is a
+// latency, checked by tests/query_latency.rs in a test binary of its own.
+// The cancellations are ordered, not timed: the flag is set once the
+// evaluation has made a number of checks ([`cancelled_after`]).
+
 #[test]
 fn a_runaway_query_stops_at_the_time_limit() {
     let d = big();
-    let start = std::time::Instant::now();
     let r = run(
         &[&d],
         RUNAWAY,
@@ -258,39 +262,55 @@ fn a_runaway_query_stops_at_the_time_limit() {
         },
     );
     assert_eq!(r, Err(QueryError::Timeout));
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
-    );
+}
+
+/// The watch a test evaluates `q` over `d` with, and the dataset: what
+/// [`run`] builds, so a test can read the watch's count of checks.
+fn evaluate_with(d: &Analysis, q: &str, limits: &Limits) -> (Result<Answer, QueryError>, u32) {
+    let watch = Arc::new(Watch::new(limits));
+    let parsed = parse(q, None, &ex_prefixes()).unwrap();
+    let triples = [d.parsed.triples.as_slice()];
+    let graph = Graph::new(&triples);
+    let index = Index::new(&graph, None);
+    let r = evaluate(&index, &parsed, &watch, limits);
+    (r, watch.checks.load(Ordering::Relaxed))
+}
+
+/// Evaluates `q` over `d` with a cancel flag that another thread sets once
+/// the evaluation has made `after` checks, so the flag lands while the query
+/// runs however loaded the machine is. The watch counts its checks only with
+/// a time limit: an hour, never reached.
+fn cancelled_after(d: &Analysis, q: &str, after: u32) -> Result<Answer, QueryError> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let limits = Limits {
+        timeout: Some(Duration::from_secs(3600)),
+        cancel: Some(flag.clone()),
+        ..Limits::default()
+    };
+    let watch = Arc::new(Watch::new(&limits));
+    let parsed = parse(q, None, &ex_prefixes()).unwrap();
+    let triples = [d.parsed.triples.as_slice()];
+    let graph = Graph::new(&triples);
+    let index = Index::new(&graph, None);
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            while watch.checks.load(Ordering::Relaxed) < after && !done.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            flag.store(true, Ordering::Relaxed);
+        });
+        let r = evaluate(&index, &parsed, &watch, &limits);
+        done.store(true, Ordering::Relaxed);
+        r
+    })
 }
 
 #[test]
 fn a_cancelled_query_stops() {
-    let d = big();
-    let flag = Arc::new(AtomicBool::new(false));
-    let start = std::time::Instant::now();
-    let r = std::thread::scope(|s| {
-        s.spawn(|| {
-            std::thread::sleep(Duration::from_millis(20));
-            flag.store(true, Ordering::Relaxed);
-        });
-        run(
-            &[&d],
-            RUNAWAY,
-            None,
-            &ex_prefixes(),
-            &Limits {
-                cancel: Some(flag.clone()),
-                ..Limits::default()
-            },
-        )
-    });
-    assert_eq!(r, Err(QueryError::Cancelled));
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
+    assert_eq!(
+        cancelled_after(&big(), RUNAWAY, 100),
+        Err(QueryError::Cancelled)
     );
 }
 
@@ -315,7 +335,6 @@ const IN_MEMORY: [&str; 2] = [
 fn a_join_in_memory_stops_at_the_time_limit() {
     let d = chain(400);
     for q in IN_MEMORY {
-        let start = std::time::Instant::now();
         let limits = Limits {
             timeout: Some(Duration::from_millis(20)),
             ..Limits::default()
@@ -325,11 +344,6 @@ fn a_join_in_memory_stops_at_the_time_limit() {
             Err(QueryError::Timeout),
             "{q}"
         );
-        assert!(
-            start.elapsed() < Duration::from_millis(500),
-            "{q}: {:?}",
-            start.elapsed()
-        );
     }
 }
 
@@ -337,26 +351,49 @@ fn a_join_in_memory_stops_at_the_time_limit() {
 fn a_join_in_memory_stops_when_cancelled() {
     let d = chain(400);
     for q in IN_MEMORY {
-        let flag = Arc::new(AtomicBool::new(false));
-        let start = std::time::Instant::now();
-        let r = std::thread::scope(|s| {
-            s.spawn(|| {
-                std::thread::sleep(Duration::from_millis(20));
-                flag.store(true, Ordering::Relaxed);
-            });
-            let limits = Limits {
-                cancel: Some(flag.clone()),
-                ..Limits::default()
-            };
-            run(&[&d], q, None, &ex_prefixes(), &limits)
-        });
-        assert_eq!(r, Err(QueryError::Cancelled), "{q}");
-        assert!(
-            start.elapsed() < Duration::from_millis(500),
-            "{q}: {:?}",
-            start.elapsed()
+        // Past the reads of the data (a few thousand checks), in the join.
+        assert_eq!(
+            cancelled_after(&d, q, 20_000),
+            Err(QueryError::Cancelled),
+            "{q}"
         );
     }
+}
+
+/// Counted, not timed: a cross product combined in memory checks the watch
+/// every 1024 rows it combines (the spareval patch, vendor/spareval), so the
+/// checks of the whole evaluation are at least the rows / 1024. Reading the
+/// data alone checks far less often (one check a triple), so a join that
+/// stopped checking fails here at once instead of running for minutes in
+/// the tests above. (The paths of `IN_MEMORY[1]` read about as often as
+/// their join combines rows: no use for a count.)
+#[test]
+fn a_join_in_memory_checks_the_watch_as_it_combines_rows() {
+    let limits = Limits {
+        timeout: Some(Duration::from_secs(3600)),
+        ..Limits::default()
+    };
+    let d = chain(30);
+    let (r, checks) = evaluate_with(&d, IN_MEMORY[0], &limits);
+    let rows = match r {
+        Ok(Answer::Solutions(s)) => match &s.rows[0][0] {
+            Some(Term::Literal(l)) => l.value().parse::<u32>().unwrap(),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(rows, 30 * 30 * 30 * 30);
+    // The four patterns' reads.
+    let (_, one_pattern) = evaluate_with(&d, "SELECT * WHERE { ?a ?b ?c }", &limits);
+    let reads = 4 * one_pattern;
+    assert!(
+        reads * 2 < rows / 1024,
+        "the reads alone ({reads} checks) would pass for {rows} rows"
+    );
+    assert!(
+        checks >= rows / 1024,
+        "{checks} checks for {rows} rows combined"
+    );
 }
 
 /// A hash join and a left join that combine rows in memory: the sorted
@@ -369,8 +406,6 @@ fn a_hash_join_in_memory_stops_at_the_time_limit() {
         "SELECT (COUNT(*) AS ?n) WHERE { ?a ex:next* ?x . { SELECT ?b ?x WHERE { ?b ex:next* ?x } ORDER BY ?b } }",
         "SELECT (COUNT(*) AS ?n) WHERE { { SELECT ?a ?x WHERE { ?a ex:next* ?x } ORDER BY ?a } OPTIONAL { SELECT ?b ?x WHERE { ?b ex:next* ?x } ORDER BY ?b } }",
     ] {
-        let start = std::time::Instant::now();
-        // Past the paths and the sort (about 0.2 s), so the limit falls in the join.
         let limits = Limits {
             timeout: Some(Duration::from_millis(300)),
             ..Limits::default()
@@ -380,12 +415,24 @@ fn a_hash_join_in_memory_stops_at_the_time_limit() {
             Err(QueryError::Timeout),
             "{q}"
         );
-        assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "{q}: {:?}",
-            start.elapsed()
-        );
     }
+}
+
+/// A known open defect, kept as an ignored test until it is fixed: spareval
+/// 0.2.7 panics when `=` compares two directional language-tagged strings
+/// (`rdf:dirLangString`), and [`run`] passes the panic on (found in the
+/// review of ticket 21). `cargo test -- --ignored` runs it.
+#[test]
+#[ignore = "known defect: spareval 0.2.7 panics on `=` between two rdf:dirLangString literals (ticket 21 report)"]
+fn equality_of_directional_language_strings_is_answered() {
+    let d = doc(
+        "file:///w/dir.ttl",
+        &format!("{HEAD}ex:a ex:p \"x\"@en--ltr .\n"),
+    );
+    assert_eq!(
+        run_on(&[&d], "ASK { ex:a ex:p ?o FILTER(?o = \"x\"@en--ltr) }"),
+        Ok(Answer::Boolean(true))
+    );
 }
 
 fn capped(docs: &[&Analysis], q: &str, max: usize) -> Answer {
@@ -782,16 +829,10 @@ fn a_minus_cut_short_by_the_time_limit_is_an_error_in_every_form() {
         ..Limits::default()
     };
     for q in MINUS_CROSS {
-        let start = std::time::Instant::now();
         assert_eq!(
             run(&[&d], q, None, &ex_prefixes(), &limits),
             Err(QueryError::Timeout),
             "{q}"
-        );
-        assert!(
-            start.elapsed() < Duration::from_secs(3),
-            "{q}: {:?}",
-            start.elapsed()
         );
     }
 }
@@ -800,19 +841,11 @@ fn a_minus_cut_short_by_the_time_limit_is_an_error_in_every_form() {
 fn a_minus_cut_short_by_a_cancel_flag_is_an_error_in_every_form() {
     let d = wide(3000);
     for q in MINUS_CROSS {
-        let flag = Arc::new(AtomicBool::new(false));
-        let r = std::thread::scope(|s| {
-            s.spawn(|| {
-                std::thread::sleep(Duration::from_millis(100));
-                flag.store(true, Ordering::Relaxed);
-            });
-            let limits = Limits {
-                cancel: Some(flag.clone()),
-                ..Limits::default()
-            };
-            run(&[&d], q, None, &ex_prefixes(), &limits)
-        });
-        assert_eq!(r, Err(QueryError::Cancelled), "{q}");
+        assert_eq!(
+            cancelled_after(&d, q, 1_000),
+            Err(QueryError::Cancelled),
+            "{q}"
+        );
     }
 }
 
@@ -895,20 +928,15 @@ fn complexity(q: &str) -> Result<(), QueryError> {
 #[test]
 fn a_long_path_is_refused_at_once() {
     // Planning is about cubic in the steps: 22 s for 1 000 of them, with no
-    // clock check on the way.
+    // clock check on the way. Refused before the evaluation starts: a cancel
+    // flag set beforehand, which the first check would report, is never seen.
     let d = chain(3);
     let limits = Limits {
-        timeout: Some(Duration::from_secs(1)),
+        cancel: Some(Arc::new(AtomicBool::new(true))),
         ..Limits::default()
     };
-    let start = std::time::Instant::now();
     let r = run(&[&d], &path_query(1000), None, &ex_prefixes(), &limits);
     assert!(matches!(r, Err(QueryError::TooComplex(_))), "{r:?}");
-    assert!(
-        start.elapsed() < Duration::from_millis(1500),
-        "{:?}",
-        start.elapsed()
-    );
 }
 
 #[test]

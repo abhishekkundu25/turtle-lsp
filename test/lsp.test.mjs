@@ -39,9 +39,7 @@ test("server writes nothing to stdout except LSP messages", async () => {
   assert.deepEqual(s.stray, [])
 })
 
-test("initialize answers quickly", async () => {
-  assert.ok(s.initMs < 500, `initialize took ${s.initMs.toFixed(0)}ms`)
-})
+// How fast initialize answers is checked in latency.test.mjs.
 
 // ---------- diagnostics ----------
 
@@ -128,6 +126,78 @@ test("prefix declaration ranges point at the declaration", async () => {
   assert.ok(empty, JSON.stringify(syms))
   const range = empty.selectionRange ?? empty.location.range
   assert.equal(range.start.line, 1, JSON.stringify(empty))
+})
+
+// ---------- incremental sync ----------
+
+// `changes` applied to `text` as the server applies them: in order, each
+// range in UTF-16 code units (a JS string's units) of the text before it.
+function applyRanged(text, changes) {
+  for (const { range, text: insert } of changes) {
+    const offset = ({ line, character }) => {
+      let o = 0
+      for (let l = 0; l < line; l++) {
+        const nl = text.indexOf("\n", o)
+        if (nl < 0) return text.length
+        o = nl + 1
+      }
+      const end = text.indexOf("\n", o)
+      return Math.min(o + character, end < 0 ? text.length : end)
+    }
+    const [a, b] = [offset(range.start), offset(range.end)].sort((x, y) => x - y)
+    text = text.slice(0, a) + insert + text.slice(b)
+  }
+  return text
+}
+
+const range = (l0, c0, l1, c1) => ({ start: { line: l0, character: c0 }, end: { line: l1, character: c1 } })
+const shown = (diags) =>
+  diags.map((d) => `${d.range.start.line}:${d.range.start.character}-${d.range.end.line}:${d.range.end.character} ${d.code} ${d.message}`).sort()
+
+test("diagnostics after ranged edits are those of the same text sent whole", async () => {
+  // An astral character (two UTF-16 units) before the edited and reported
+  // columns, so positions count UTF-16 units.
+  let text = `@prefix ex: <http://example.org/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+ex:a foaf:name "\u{1F600} Alice" ; foaf:nmae "x" .
+`
+  const uri = scratch("incremental")
+  s.open(uri, text)
+  await s.diagnosticsFor(uri)
+  const batches = [
+    // After the astral character (UTF-16 columns 16-17): "Alice" -> "Bob",
+    // then, two columns to the left now, the typo "nmae" -> "naem".
+    [
+      { range: range(2, 19, 2, 24), text: "Bob" },
+      { range: range(2, 31, 2, 35), text: "naem" },
+    ],
+    // Two changes in one batch, the second on the first's result: a new
+    // line with an undeclared prefix, then a typo on it.
+    [
+      { range: range(3, 0, 3, 0), text: "ex:b skos:prefLabel \"y\" .\n" },
+      { range: range(3, 5, 3, 9), text: "skoss" },
+    ],
+    // A deletion across a line break: the foaf prefix goes.
+    [{ range: range(1, 0, 2, 0), text: "" }],
+    // An insertion past the end of the file is at its end.
+    [{ range: range(40, 0, 40, 0), text: "ex:c ex:p \"unterminated .\n" }],
+  ]
+  const seen = []
+  for (const changes of batches) {
+    text = applyRanged(text, changes)
+    s.changeRange(uri, changes)
+    const ranged = shown(await s.diagnosticsFor(uri))
+    s.change(uri, text)
+    const whole = shown(await s.diagnosticsFor(uri))
+    assert.deepEqual(ranged, whole, text)
+    seen.push(ranged.join("\n"))
+  }
+  // Each batch's reports are about the edited text.
+  assert.match(seen[0], /2:26-2:35 unknown-term 'naem'/)
+  assert.match(seen[1], /skoss/)
+  assert.match(seen[2], /Undeclared prefix 'foaf:'/)
+  assert.match(seen[3], /Unterminated string/)
+  assert.ok(text.includes('"\u{1F600} Bob" ; foaf:naem') && text.endsWith('"unterminated .\n'), text)
 })
 
 // ---------- completion ----------

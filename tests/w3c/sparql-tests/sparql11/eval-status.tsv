@@ -1,0 +1,207 @@
+# W3C SPARQL 1.1 query evaluation tests through query::run (tests/w3c_sparql_eval.rs).
+# test IRI	status (pass, known-fail, out-of-scope)	reason
+# Rewrite from the actual results: SPARQL_W3C_WRITE=1 cargo test --release --test w3c_sparql_eval
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg04	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg05	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg06	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg07	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg08b	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-groupconcat-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-groupconcat-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-groupconcat-03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-groupconcat-04	known-fail	GROUP_CONCAT of literals with one language tag keeps the tag (spareval 0.2.7); the test (Proposed) expects a simple literal
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-groupconcat-05	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-groupconcat-06	known-fail	GROUP_CONCAT of literals with one language tag keeps the tag (spareval 0.2.7); the test (Proposed) expects a simple literal
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-sum-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-sum-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-avg-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-avg-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-avg-03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-min-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-min-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-max-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-max-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-sample-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-err-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-err-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-empty-group-max-1	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-empty-group-max-2	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-empty-group-count-1	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-empty-group-count-2	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-empty-group-count-graph	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-multiple-having	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-group-fn	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-group-builtin	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-avg-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-count-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-count-rows-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-groupconcat-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-max-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-min-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-sample-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest#agg-sum-distinct	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind04	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind05	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind06	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind07	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind08	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind10	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind11	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/construct/manifest#constructwhere01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/construct/manifest#constructwhere02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/construct/manifest#constructwhere03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/construct/manifest#constructwhere04	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/construct/manifest#constructlist	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/exists/manifest#exists01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/exists/manifest#exists02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/exists/manifest#exists03	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/exists/manifest#exists04	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/exists/manifest#exists05	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/exists/manifest#exists-graph-variable	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strdt01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strdt02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strdt03-rdf11	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strlang01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strlang02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strlang03-rdf11	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strlang04	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#isnumeric01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#abs01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#ceil01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#floor01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#round01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#concat01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#concat02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#concat-empty	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#concat-single	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#substring01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#substring01-non-bmp	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#substring02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#substring02-non-bmp	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#length01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#length01-non-bmp	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#ucase01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#ucase01-non-bmp	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#lcase01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#lcase01-non-bmp	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#encode01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#encode01-non-bmp	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#contains01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#starts01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#ends01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#plus-1-corrected	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#plus-2-corrected	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#md5-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#md5-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha1-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha1-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha256-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha256-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha384-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha384-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha512-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#sha512-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#minutes	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#seconds	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#hours	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#month	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#year	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#day	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#timezone	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#tz	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#bnode01	known-fail	BNODE(str) gives the same blank node for a string in different solutions (spareval 0.2.7); each solution must get its own
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#bnode02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#in01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#in02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#notin01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#notin02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#now01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#rand01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#iri01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#iri02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#if01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#if02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#coalesce01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#coalesce-empty	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strbefore01a	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strbefore02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strafter01a	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#strafter02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#replace01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#replace02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#replace03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#replace-case-insensitive	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#uuid01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#uuid02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/functions/manifest#struuid01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/grouping/manifest#group01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/grouping/manifest#group03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/grouping/manifest#group04	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/grouping/manifest#group05	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#subset-by-exclusion-nex-1	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#subset-by-exclusion-minus-1	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#temporal-proximity-by-exclusion-nex-1	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#subset-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#subset-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#set-equals-1	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#subset-03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#exists-01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#exists-02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#full-minuend	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#partial-minuend	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/negation/manifest#graph-minus	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp01	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp02	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp03	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp06	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp07	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp08	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp09	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp10	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp11	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp12	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp14	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp16	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp21	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp23	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp25	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp28a	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp30	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp31	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp32	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp33	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp34	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp35	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp36	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#pp37	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#values_and_path	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#nps_inverse	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#nps_direct_and_inverse	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#nps_a	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#nps_a_inverse	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#zero_or_more_set_start	known-fail	a zero-length path from a constant that is not in the data matches nothing (spareval 0.2.7); it must match the constant
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#zero_or_more_set_end	known-fail	a zero-length path to a constant that is not in the data matches nothing (spareval 0.2.7); it must match the constant
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#zero_or_one_set_start	known-fail	a zero-length path from a constant that is not in the data matches nothing (spareval 0.2.7); it must match the constant
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/property-path/manifest#zero_or_one_set_end	known-fail	a zero-length path to a constant that is not in the data matches nothing (spareval 0.2.7); it must match the constant
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery01	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery02	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery03	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery04	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery05	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery06	out-of-scope	RDF/XML data (not vendored: query::run takes Turtle, TriG, N-Triples, N-Quads and JSON-LD documents)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery07	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery08	out-of-scope	RDF/XML data (not vendored: query::run takes Turtle, TriG, N-Triples, N-Quads and JSON-LD documents)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery09	out-of-scope	RDF/XML data (not vendored: query::run takes Turtle, TriG, N-Triples, N-Quads and JSON-LD documents)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery10	out-of-scope	RDF/XML data (not vendored: query::run takes Turtle, TriG, N-Triples, N-Quads and JSON-LD documents)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery11	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery12	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery13	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery14	pass	
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery15	out-of-scope	named graphs (qt:graphData)
+http://www.w3.org/2009/sparql/docs/tests/data-sparql11/subquery/manifest#subquery16	out-of-scope	named graphs (qt:graphData)

@@ -1,20 +1,29 @@
 //! Runs the vendored W3C Turtle, TriG, N-Triples and N-Quads suites (RDF 1.1
 //! and 1.2)
-//! against the parser. Positive syntax tests must parse without errors,
-//! negative ones must report at least one error, and evaluation tests must
-//! give a dataset isomorphic to the expected N-Triples / N-Quads.
+//! against the parser. Each test file is analyzed as the server analyzes an
+//! open document and diagnosed by the server's own composer
+//! ([`diagnostics::diagnostics`]): positive syntax tests must get no error
+//! diagnostic, negative ones at least one, and evaluation tests must give a
+//! dataset isomorphic to the expected N-Triples / N-Quads.
 //!
 //! Every manifest is read on its own (its `mf:entries`, not its
 //! `mf:include`s, which are manifests of their own), so no test runs twice.
 
-use oxrdf::dataset::CanonicalizationAlgorithm;
+use lsp_types::DiagnosticSeverity;
 use oxrdf::vocab::rdf;
-use oxrdf::{BlankNode, Dataset, Graph, Literal, NamedNode, NamedOrBlankNode, Quad, Term, TermRef};
+use oxrdf::{Dataset, Graph, NamedNode, NamedOrBlankNode, Term, TermRef};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use turtle_lsp::syntax::{self, GraphName, Node, PrefixMap, Severity, Syntax, parse_with_base};
+use std::sync::Arc;
+use turtle_lsp::analysis::{Analysis, Encoding};
+use turtle_lsp::features::diagnostics;
+use turtle_lsp::knowledge::Knowledge;
+use turtle_lsp::syntax::Syntax;
+
+#[path = "support/oracle.rs"]
+mod oracle;
 
 const BASE: &str = "https://w3c.github.io/rdf-tests/rdf/";
 const MF: &str = "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#";
@@ -146,111 +155,9 @@ fn read_manifest(path: &Path) -> Vec<Test> {
     tests
 }
 
-/// Language tags compare case-insensitively.
-fn norm_term(t: Term) -> Term {
-    match t {
-        Term::Literal(l) => match (l.language(), l.direction()) {
-            (Some(lang), Some(dir)) => Literal::new_directional_language_tagged_literal_unchecked(
-                l.value(),
-                lang.to_ascii_lowercase(),
-                dir,
-            )
-            .into(),
-            (Some(lang), None) => {
-                Literal::new_language_tagged_literal_unchecked(l.value(), lang.to_ascii_lowercase())
-                    .into()
-            }
-            _ => Term::Literal(l),
-        },
-        Term::Triple(t) => {
-            let t = *t;
-            Term::Triple(Box::new(oxrdf::Triple::new(
-                t.subject,
-                t.predicate,
-                norm_term(t.object),
-            )))
-        }
-        t => t,
-    }
-}
-
-fn subject(n: &Node) -> Result<NamedOrBlankNode, String> {
-    match term(n) {
-        Term::NamedNode(n) => Ok(n.into()),
-        Term::BlankNode(b) => Ok(b.into()),
-        t => Err(format!("{t} as a subject")),
-    }
-}
-
-fn blank(b: syntax::BlankId) -> BlankNode {
-    BlankNode::new_unchecked(format!("b{}", b.0))
-}
-
-fn term(n: &Node) -> Term {
-    match n {
-        Node::Iri(i) => nn(i).into(),
-        Node::Blank(b) => blank(*b).into(),
-        Node::Literal {
-            value,
-            datatype,
-            lang,
-            dir,
-        } => match (lang, dir) {
-            (Some(l), Some(d)) => Literal::new_directional_language_tagged_literal_unchecked(
-                &**value,
-                &**l,
-                match d {
-                    syntax::Direction::Rtl => oxrdf::BaseDirection::Rtl,
-                    syntax::Direction::Ltr => oxrdf::BaseDirection::Ltr,
-                },
-            )
-            .into(),
-            (Some(l), None) => {
-                Literal::new_language_tagged_literal_unchecked(&**value, &**l).into()
-            }
-            _ => Literal::new_typed_literal(&**value, nn(datatype)).into(),
-        },
-        Node::Triple(t) => {
-            let (s, p, o) = &**t;
-            match subject(s) {
-                Ok(s) => Term::Triple(Box::new(oxrdf::Triple::new(s, nn(p), term(o)))),
-                // Surfaces as a mismatch.
-                Err(_) => nn("urn:invalid-triple-term").into(),
-            }
-        }
-    }
-}
-
-fn canonical(quads: impl IntoIterator<Item = Quad>) -> Dataset {
-    let mut d = Dataset::new();
-    for q in quads {
-        d.insert(&Quad::new(
-            q.subject,
-            q.predicate,
-            norm_term(q.object),
-            q.graph_name,
-        ));
-    }
-    d.canonicalize(CanonicalizationAlgorithm::Unstable);
-    d
-}
-
-fn ours(parsed: &syntax::Parsed) -> Result<Dataset, String> {
-    let mut quads = Vec::new();
-    for t in &parsed.triples {
-        let g = match t.graph {
-            None => oxrdf::GraphName::DefaultGraph,
-            Some(GraphName::Iri(i)) => nn(&i).into(),
-            Some(GraphName::Blank(b)) => blank(b).into(),
-        };
-        quads.push(Quad::new(subject(&t.s)?, nn(&t.p), term(&t.o), g));
-    }
-    Ok(canonical(quads))
-}
-
 fn expected(path: &Path) -> Dataset {
     let src = fs::read(path).unwrap();
-    canonical(
+    oracle::canonical(
         oxttl::NQuadsParser::new()
             .for_slice(&src)
             .map(|q| q.unwrap_or_else(|e| panic!("{}: {e}", path.display()))),
@@ -268,20 +175,13 @@ fn first_lines(d: &Dataset) -> String {
 fn run(t: &Test) -> Result<(), String> {
     let path = local(&t.action);
     let src = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let parsed = parse_with_base(&src, &PrefixMap::default(), t.syntax, Some(&t.action));
-    // An undeclared prefix is not a parse error (a workspace `prefixes.ttl`
-    // may declare it), but diagnostics report it as an error.
-    let undeclared = parsed
-        .prefix_uses
-        .iter()
-        .filter(|u| !u.resolved)
-        .map(|u| (u.span, format!("Undeclared prefix '{}:'", &*u.name)));
-    let errors: Vec<_> = parsed
-        .errors
-        .iter()
-        .filter(|e| e.severity == Severity::Error)
-        .map(|e| (e.span, e.message.clone()))
-        .chain(undeclared)
+    // Parsed against the test's URL, as an open document is against its URI.
+    let analysis = Analysis::with_syntax(t.action.clone(), &src, Arc::default(), false, t.syntax);
+    let parsed = &analysis.parsed;
+    let errors: Vec<_> = diagnostics::diagnostics(&analysis, &Knowledge::default(), Encoding::Utf8)
+        .into_iter()
+        .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+        .map(|d| (d.range, d.message))
         .collect();
     match t.kind {
         Kind::Negative => {
@@ -290,15 +190,19 @@ fn run(t: &Test) -> Result<(), String> {
             }
         }
         Kind::Positive | Kind::Eval => {
-            if let Some((span, message)) = errors.first() {
-                return Err(format!("error at {}..{}: {message}", span.start, span.end));
+            if let Some((range, message)) = errors.first() {
+                return Err(format!(
+                    "error at {}:{}: {message}",
+                    range.start.line + 1,
+                    range.start.character + 1
+                ));
             }
         }
     }
     if t.kind == Kind::Eval {
         let result = t.result.as_ref().ok_or("eval test without mf:result")?;
         let want = expected(&local(result));
-        let got = ours(&parsed)?;
+        let got = oracle::ours(&parsed.triples);
         if got != want {
             return Err(format!(
                 "{} quads, expected {}\n  got:\n{}  want:\n{}",

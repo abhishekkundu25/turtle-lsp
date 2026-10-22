@@ -263,6 +263,17 @@ export async function startServer({
         contentChanges: [{ text }],
       })
     },
+    // Incremental sync: `changes` ({ range, text }, UTF-16 positions) in one
+    // didChange, applied in order, each to the text the one before left.
+    changeRange(uri, changes) {
+      const v = (versions.get(uri) ?? 1) + 1
+      versions.set(uri, v)
+      diagnostics.delete(uri)
+      conn.sendNotification("textDocument/didChange", {
+        textDocument: { uri, version: v },
+        contentChanges: changes.map(({ range, text }) => ({ range, text })),
+      })
+    },
     close(uri) {
       conn.sendNotification("textDocument/didClose", { textDocument: { uri } })
     },

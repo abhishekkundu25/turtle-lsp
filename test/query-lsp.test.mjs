@@ -149,31 +149,29 @@ test("without showDocument support the summary is a message", async () => {
   }
 })
 
+// How soon a query stops and a hover is answered while it runs is a
+// latency, checked in latency.test.mjs; here, the order of the answers.
 test("a slow query stops at the time limit, and typing is answered meanwhile", async () => {
-  const s = await startServer({ cwd: ws, initializationOptions: { query: { timeoutSeconds: 1 } } })
+  const s = await startServer({ cwd: ws, initializationOptions: { query: { timeoutSeconds: 2 } } })
   try {
     s.open(at("people.ttl"), DATA)
     await s.diagnosticsFor(at("people.ttl"))
-    const t0 = performance.now()
-    const slow = run(s, at("slow.rq"))
+    let ended = false
+    const slow = run(s, at("slow.rq")).finally(() => (ended = true))
+    // Let the query start (no assertion rides on this pause).
     await new Promise((r) => setTimeout(r, 200))
     const pos = positionOf(DATA, "ex:alice", 4)
     for (let i = 0; i < 3; i++) {
-      const h0 = performance.now()
       const hover = await s.request("textDocument/hover", { textDocument: { uri: at("people.ttl") }, position: pos })
-      const ms = performance.now() - h0
       assert.ok(hover, "no hover")
-      assert.ok(ms < 200, `hover took ${ms.toFixed(0)} ms while the query ran`)
+      // Answered while the query runs, not after it.
+      assert.equal(ended, false, `hover ${i} was answered after the query ended`)
     }
     const summary = await slow
-    const total = performance.now() - t0
-    assert.equal(summary, "stopped at the time limit (1 s, query.timeoutSeconds)")
-    // The 1 s limit, and 1 s for a slow machine: the query stops within a
-    // millisecond of the limit, so more than that is an overrun.
-    assert.ok(total < 2000, `the query ran ${total.toFixed(0)} ms`)
+    assert.equal(summary, "stopped at the time limit (2 s, query.timeoutSeconds)")
     assert.equal(s.messages.at(-1).type, 2)
     const md = fs.readFileSync(path.join(s.cacheDir, "query-results", "slow.md"), "utf8")
-    assert.ok(md.includes("The query was stopped at the time limit (1 s, `query.timeoutSeconds`)."), md)
+    assert.ok(md.includes("The query was stopped at the time limit (2 s, `query.timeoutSeconds`)."), md)
   } finally {
     await s.stop()
   }
@@ -182,19 +180,18 @@ test("a slow query stops at the time limit, and typing is answered meanwhile", a
 test("a second run replaces the first; $/cancelRequest stops a run", async () => {
   const s = await startServer({ cwd: ws, initializationOptions: { query: { timeoutSeconds: 20 } } })
   try {
-    const t0 = performance.now()
+    // The runs are far from their 20 s limit: each answer says why it ended.
     const first = run(s, at("slow.rq"))
     await new Promise((r) => setTimeout(r, 100))
     const second = run(s, at("slow.rq"))
     assert.equal(await first, "cancelled: a newer run replaced it")
-    assert.ok(performance.now() - t0 < 2000)
     s.sendRaw([{ id: "raw-q3", method: "workspace/executeCommand", params: { command: "turtle.runQuery", arguments: [at("slow.rq")] } }])
     assert.equal(await second, "cancelled: a newer run replaced it")
     await new Promise((r) => setTimeout(r, 100))
     s.sendRaw([{ method: "$/cancelRequest", params: { id: "raw-q3" } }])
-    const resp = await s.rawResponse("raw-q3", 3000)
+    // A run the cancel missed would answer at its time limit, with a result.
+    const resp = await s.rawResponse("raw-q3", 25000)
     assert.equal(resp.error?.code, -32800, JSON.stringify(resp))
-    assert.ok(performance.now() - t0 < 4000)
     assert.ok(!fs.existsSync(path.join(s.cacheDir, "query-results", "slow.md")))
   } finally {
     await s.stop()

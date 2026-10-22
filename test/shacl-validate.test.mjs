@@ -186,19 +186,16 @@ ex:ChainShape sh:targetSubjectsOf ex:next ;
     w.s.open(w.pump, BAD)
     await w.s.diagnosticsFor(w.pump)
     // The run after the initial index may still be going; start a new one.
-    const t0 = performance.now()
+    const before = w.s.publications.length
+    const validated = () => w.s.publications.slice(before).some((p) => p.uri === w.pump && shacl(p.diagnostics).length > 0)
     save(w.s, w.pump, file, BAD)
-    const answered = []
+    // Ordered, not timed (how fast: latency.test.mjs): every hover is
+    // answered before the validation's results are published.
     for (let i = 0; i < 5; i++) {
-      const t = performance.now()
       await w.s.request("textDocument/hover", { textDocument: { uri: w.pump }, position: { line: 1, character: 3 } })
-      answered.push(performance.now() - t)
+      assert.equal(validated(), false, `the validation ended before hover ${i} was answered`)
     }
-    const lastAnswer = performance.now() - t0
     await until(w.s, w.pump, (d) => shacl(d).length > 0, 20000)
-    const validated = performance.now() - t0
-    assert.ok(Math.max(...answered) < 200, `hover took ${answered.map((x) => x.toFixed(0))} ms`)
-    assert.ok(validated > lastAnswer, `validation (${validated.toFixed(0)} ms) ended before the requests (${lastAnswer.toFixed(0)} ms)`)
   } finally {
     await w.end()
   }

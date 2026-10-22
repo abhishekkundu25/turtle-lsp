@@ -1,5 +1,7 @@
 // Downloads VS Code (cached in .vscode-test/) and runs test/suite.cjs inside it
-// with this extension loaded and test/fixtures as the workspace.
+// with this extension loaded and a temporary copy of test/fixtures as the
+// workspace: the suite writes files into its workspace, and the Node tests
+// and the chaos test read the real fixtures, which must stay as they are.
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -9,11 +11,20 @@ import { processesOf, leftRunning } from "../../../test/procs.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const extensionDevelopmentPath = path.resolve(here, "..")
-const fixtures = path.resolve(here, "../../../test/fixtures")
+const sourceFixtures = path.resolve(here, "../../../test/fixtures")
 
 // VS Code puts its IPC socket under the user data dir; a deep checkout path
 // makes it longer than macOS allows (listen EINVAL). Use a short temp dir.
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "tvsc-"))
+
+// The copy, under its long name (a Windows temp path can be an 8.3 short
+// name, which VS Code and the server spell differently). Not the private,
+// gitignored fragments of test/fixtures/real, which the suite does not use.
+const fixtures = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "tvsc-fixtures-")))
+fs.cpSync(sourceFixtures, fixtures, {
+  recursive: true,
+  filter: (src) => path.relative(sourceFixtures, src).split(path.sep)[0] !== "real",
+})
 
 // The extension runs a private copy of the freshly built server (set through
 // the user's turtle.server.path), so the test never picks up a stale bundled
@@ -43,4 +54,5 @@ try {
   process.exitCode = 1
 } finally {
   fs.rmSync(userData, { recursive: true, force: true })
+  fs.rmSync(fixtures, { recursive: true, force: true })
 }

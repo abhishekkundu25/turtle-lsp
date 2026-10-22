@@ -26,7 +26,8 @@ after(async () => {
   }
 })
 
-test("10,000 uses of 2,000 distinct unknown terms are checked fast", async () => {
+// How long this takes: latency.test.mjs.
+test("10,000 uses of 2,000 distinct unknown terms are each reported", async () => {
   // Locals shaped like real foaf names (6-12 letters), so most candidates are
   // within the length window and the suggestion search does real work.
   const letters = "abcdefghijklmnopqrstuvwxyz"
@@ -39,13 +40,11 @@ test("10,000 uses of 2,000 distinct unknown terms are checked fast", async () =>
   for (let i = 0; i < 10_000; i++) lines.push(`ex:s${i % 50} foaf:${local(i % 2000)} "v" .`)
   const text = header + lines.join("\n") + "\n"
   const uri = uriOf(path.join(ws, "big.ttl"))
-  const t0 = performance.now()
   s.open(uri, text)
   const diags = await s.diagnosticsFor(uri, 30_000)
-  const ms = performance.now() - t0
-  console.log(`# unknown-term: 10,000 uses / 2,000 locals diagnosed in ${ms.toFixed(0)} ms`)
   assert.equal(unknown(diags).length, 10_000)
-  assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms`)
+  // One per use, on the use: 2,000 distinct terms, each on 5 lines.
+  assert.equal(new Set(unknown(diags).map((d) => d.range.start.line)).size, 10_000)
 })
 
 test("terms the document describes are known; a typo keeps its warning and fix", async () => {

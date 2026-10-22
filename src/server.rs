@@ -2371,13 +2371,12 @@ mod tests {
 
     const TTL: &str = "@prefix ex: <http://e.org/> .\nex:A a ex:B .\n";
 
-    /// Silence the default panic hook while `f` runs: the panics are the point.
+    /// Silence panic messages while `f` runs: the panics are the point. The
+    /// guard is shared with the other tests that silence panics, and
+    /// restores the hook even when `f` panics.
     fn quietly<T>(f: impl FnOnce() -> T) -> T {
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let out = f();
-        std::panic::set_hook(hook);
-        out
+        let _quiet = crate::workspace::tests::QuietPanics::new();
+        f()
     }
 
     fn embedded() -> Embedded {
@@ -2738,10 +2737,7 @@ mod tests {
 
     #[test]
     fn guard_turns_a_panic_into_an_error() {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let r: Result<(), String> = guard("hover", || panic!("boom"));
-        std::panic::set_hook(prev);
+        let r: Result<(), String> = quietly(|| guard("hover", || panic!("boom")));
         let msg = r.unwrap_err();
         assert!(msg.contains("hover") && msg.contains("boom"), "{msg}");
         assert_eq!(guard("x", || 7), Ok(7));
