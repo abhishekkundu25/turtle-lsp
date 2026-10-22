@@ -45,8 +45,10 @@ local function run(cmd, limit, opts)
   return r.stdout
 end
 
+-- Files are read whole with vim.fn.readfile, which closes them: on Windows a
+-- file left open cannot be deleted (the scratch folder) or replaced.
 local function version()
-  for line in io.lines(root .. "/Cargo.toml") do
+  for _, line in ipairs(vim.fn.readfile(root .. "/Cargo.toml")) do
     local v = line:match('^version%s*=%s*"([^"]+)"')
     if v then
       return v
@@ -160,7 +162,7 @@ local function download()
     if not fetch(base, "SHA256SUMS", tmp .. "/SHA256SUMS") then
       return false, "there is no SHA256SUMS at " .. base .. " (HTTP 404)"
     end
-    local sums = io.open(tmp .. "/SHA256SUMS"):read("*a")
+    local sums = table.concat(vim.fn.readfile(tmp .. "/SHA256SUMS"), "\n")
     local want = (sums .. "\n"):match("(%x+)%s+%*?" .. vim.pesc(name) .. "%s")
     local got = sha256(archive)
     if not want or got ~= want then

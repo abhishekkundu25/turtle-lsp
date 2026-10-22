@@ -4,7 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node"
-import { findServer, ServerHandle, settingsFrom } from "./server"
+import { configurationChange, findServer, ServerHandle, settingsFrom } from "./server"
 
 const RDF_LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 
@@ -87,9 +87,10 @@ function createClient(context: vscode.ExtensionContext): LanguageClient | undefi
         // The client would send the whole section, defaults included, which
         // beats turtle-lsp.json at the server. Send the user's settings instead.
         didChangeConfiguration: async () => {
-          await created?.sendNotification("workspace/didChangeConfiguration", {
-            settings: settingsFor(context, vscode.workspace.isTrusted),
-          })
+          await created?.sendNotification(
+            "workspace/didChangeConfiguration",
+            configurationChange(settingsFor(context, vscode.workspace.isTrusted)),
+          )
         },
       },
       window: {

@@ -142,6 +142,15 @@ export function settingsFrom(src: SettingsSource): Record<string, unknown> {
   return out
 }
 
+/**
+ * The `workspace/didChangeConfiguration` params for `settings` (what
+ * `settingsFrom` returns): the server reads them as the `turtle` section, and
+ * that section replaces the settings it was started with.
+ */
+export function configurationChange(settings: Record<string, unknown>): { settings: { turtle: Record<string, unknown> } } {
+  return { settings: { turtle: settings } }
+}
+
 function put(target: Record<string, unknown>, path: string[], value: unknown): void {
   let at = target
   for (const step of path.slice(0, -1)) {

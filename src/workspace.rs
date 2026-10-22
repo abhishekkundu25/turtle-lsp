@@ -137,6 +137,9 @@ pub struct Workspace {
     /// (see [`Workspace::sparql_documents`]). `None` until then, and after
     /// anything that changes how they are parsed.
     sparql_files: Option<std::collections::BTreeMap<PathBuf, SparqlFile>>,
+    /// No one reports file changes (the client registered no file watchers):
+    /// [`Workspace::sparql_documents`] lists the folders again on each call.
+    pub rescan_sparql: bool,
 }
 
 /// A SPARQL file on disk, as read.
@@ -787,13 +790,15 @@ impl Workspace {
     /// [`MAX_FILES`] files, [`MAX_FILE_BYTES`] per file), parsed with their
     /// folder's prefixes. A file open as another kind is left out.
     ///
-    /// The files are found and parsed on the first call and kept: a later call
-    /// reads no directory. They are kept current by
-    /// [`Workspace::sparql_files_changed`] and
+    /// The files are found and parsed on the first call and kept. They are
+    /// kept current by [`Workspace::sparql_files_changed`] and
     /// [`Workspace::remove_under_any`] (the watcher's events), and a file
     /// written since (its stamp differs) is read again here, so an answer
-    /// reflects the files' content as it is now; a file created without
-    /// the watcher saying so is not found until the prefixes change.
+    /// reflects the files' content as it is now. With file watching, a later
+    /// call reads no directory, and a file created without the watcher
+    /// saying so is not found until the prefixes change; without it
+    /// ([`Workspace::rescan_sparql`]), each call lists the folders again to
+    /// find new files, and parses only those and the ones written since.
     pub fn sparql_documents(&mut self) -> Vec<Arc<SparqlAnalysis>> {
         let open: Vec<String> = self
             .open
@@ -816,7 +821,8 @@ impl Workspace {
     }
 
     /// Read the SPARQL files if that was not done yet; else read again those
-    /// written since.
+    /// written since (and, with [`Workspace::rescan_sparql`], those created
+    /// since).
     fn refresh_sparql_files(&mut self) {
         match &self.sparql_files {
             None => {
@@ -825,12 +831,17 @@ impl Workspace {
                 self.sparql_files = Some(files);
             }
             Some(files) => {
-                let written: Vec<PathBuf> = files
+                let mut changed: Vec<PathBuf> = files
                     .iter()
                     .filter(|(path, f)| stamp_of(path) != f.stamp)
                     .map(|(path, _)| path.clone())
                     .collect();
-                self.sparql_files_changed(&written);
+                if self.rescan_sparql {
+                    // Deleted files have no stamp: they are among the changed.
+                    let listed = scan_roots_matching(&self.roots, is_sparql_path).paths;
+                    changed.extend(listed.into_iter().filter(|p| !files.contains_key(p)));
+                }
+                self.sparql_files_changed(&changed);
             }
         }
     }
@@ -2612,5 +2623,95 @@ pub(crate) mod tests {
         assert_eq!(ws.open[uri].version, 2);
         ws.change_doc("file:///w/closed.ttl", 3, vec![full("x")], Encoding::Utf16);
         assert!(ws.text("file:///w/closed.ttl").is_none());
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    const QUERY: &str = "SELECT * WHERE { ?s ?p ?o }\n";
+
+    /// A fresh folder below the temp dir (canonical), removed when dropped.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(name: &str) -> Dir {
+            let d = std::env::temp_dir().join(format!(
+                "turtle-lsp-review-ws-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            Dir(canonical(&d))
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn uris(ws: &mut Workspace) -> Vec<String> {
+        let mut v: Vec<String> = ws
+            .sparql_documents()
+            .iter()
+            .map(|q| q.uri.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn query(ws: &mut Workspace, path: &Path) -> Arc<SparqlAnalysis> {
+        let uri = path_to_uri(path).unwrap();
+        ws.sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri)
+            .unwrap()
+    }
+
+    /// Without file watching, nothing reports a query file created later: the
+    /// folders are listed again on each call, and the files that did not
+    /// change are not parsed again.
+    #[test]
+    fn without_file_watching_new_query_files_are_found_on_the_next_call() {
+        let root = Dir::new("rescan");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.rescan_sparql = true;
+        let a = root.0.join("a.rq");
+        std::fs::write(&a, QUERY).unwrap();
+        assert_eq!(uris(&mut ws), [path_to_uri(&a).unwrap()]);
+        let kept = query(&mut ws, &a);
+
+        let b = root.0.join("q").join("b.sparql");
+        std::fs::create_dir_all(b.parent().unwrap()).unwrap();
+        std::fs::write(&b, QUERY).unwrap();
+        std::fs::create_dir_all(root.0.join("node_modules")).unwrap();
+        std::fs::write(root.0.join("node_modules").join("x.rq"), QUERY).unwrap();
+        let mut both = vec![path_to_uri(&a).unwrap(), path_to_uri(&b).unwrap()];
+        both.sort();
+        assert_eq!(uris(&mut ws), both);
+        assert!(Arc::ptr_eq(&kept, &query(&mut ws, &a)), "a.rq parsed again");
+
+        std::fs::remove_file(&b).unwrap();
+        assert_eq!(uris(&mut ws), [path_to_uri(&a).unwrap()]);
+    }
+
+    /// With file watching, the index follows the watcher's events and reads
+    /// no folder again.
+    #[test]
+    fn with_file_watching_new_query_files_come_from_the_events() {
+        let root = Dir::new("watched");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        assert!(!ws.rescan_sparql);
+        let a = root.0.join("a.rq");
+        std::fs::write(&a, QUERY).unwrap();
+        assert_eq!(uris(&mut ws).len(), 1);
+        let b = root.0.join("b.rq");
+        std::fs::write(&b, QUERY).unwrap();
+        assert_eq!(uris(&mut ws).len(), 1);
+        ws.sparql_files_changed(std::slice::from_ref(&b));
+        assert_eq!(uris(&mut ws).len(), 2);
     }
 }

@@ -6,7 +6,6 @@
 
 use super::graph::{GTriple, Graph, Id, Term as GTerm};
 use crate::syntax::{Direction, Iri, Node};
-use rustc_hash::FxHashMap;
 use spareval::{InternalQuad, QueryableDataset};
 use spargebra::term::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple};
 use std::convert::Infallible;
@@ -27,27 +26,20 @@ pub enum STerm {
     Other(Box<Term>),
 }
 
-/// A literal's lexical form, datatype, language tag and base direction.
-type LiteralKey<'a> = (&'a str, Iri, Option<Iri>, Option<Direction>);
-
 /// A [`Graph`] as a SPARQL dataset: the graph is the default graph and, when
 /// the dataset is given one, also a named graph.
 pub struct Index<'a> {
     g: &'a Graph<'a>,
-    literals: FxHashMap<LiteralKey<'a>, Id>,
     /// The IRI of the named graph that is the same graph.
     graph: Option<&'a str>,
 }
 
 impl<'a> Index<'a> {
-    /// One pass over the graph's terms, to find literals by value. `graph`
-    /// names the graph as a named graph too.
+    /// `graph` names the graph as a named graph too. Literals are found by
+    /// value with [`Graph::literal`]: over an overlay, that walks the
+    /// overlay's own terms, and the shared graph's once for all overlays.
     pub fn new(g: &'a Graph<'a>, graph: Option<&'a str>) -> Index<'a> {
-        let literals = g
-            .terms()
-            .filter_map(|(id, t)| t.literal().map(|(v, d, l)| ((v, d, l, t.direction()), id)))
-            .collect();
-        Index { g, literals, graph }
+        Index { g, graph }
     }
 
     pub fn term(&self, id: Id) -> Term {
@@ -96,9 +88,7 @@ impl<'a> Index<'a> {
                     }
                 });
                 match (Iri::get(l.datatype().as_str()), lang) {
-                    (Some(dt), Some(lang)) => {
-                        self.literals.get(&(l.value(), dt, lang, dir)).copied()
-                    }
+                    (Some(dt), Some(lang)) => self.g.literal(&(l.value(), dt, lang, dir)),
                     _ => None,
                 }
             }
@@ -421,5 +411,58 @@ mod tests {
             &[&d],
             "ASK { ?s ?p ?o FILTER (STRSTARTS(STR(?o), \"nope:\")) }"
         ));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::syntax::{PrefixMap, Syntax, parse};
+    use std::sync::Arc;
+
+    /// Each SHACL-SPARQL dataset run builds an [`Index`] over an overlay of
+    /// the shared graph. Finding literals by value must cost in proportion
+    /// to the dataset, not walk the shared graph's terms each time.
+    #[test]
+    fn an_index_over_an_overlay_walks_only_the_overlays_terms() {
+        let mut shared = String::from("@prefix ex: <http://e.org/> .\n");
+        for i in 0..2000 {
+            shared.push_str(&format!("ex:s{i} ex:name \"n{i}\" .\n"));
+        }
+        let shared = parse(&shared, &PrefixMap::default(), Syntax::Turtle);
+        let base = Arc::new(Graph::new(&[&shared.triples]));
+        let base_terms = base.terms().count() as u64;
+        let datasets: Vec<_> = (0..5)
+            .map(|d| {
+                parse(
+                    &format!(
+                        "@prefix ex: <http://e.org/> .\nex:d{d} ex:name \"own{d}\" , \"n7\" .\n"
+                    ),
+                    &PrefixMap::default(),
+                    Syntax::Turtle,
+                )
+            })
+            .collect();
+        let walked = || crate::rdf::graph::TERMS_WALKED.with(|c| c.get());
+        let before = walked();
+        for (d, data) in datasets.iter().enumerate() {
+            let over = Graph::overlay(&base, &data.triples);
+            let ix = Index::new(&over, None);
+            let own = Literal::new_simple_literal(format!("own{d}"));
+            let shared = Literal::new_simple_literal("n7");
+            assert!(ix.id(&own.into()).is_some(), "the dataset's literal");
+            assert!(
+                ix.id(&shared.into()).is_some(),
+                "the shared graph's literal"
+            );
+            let missing = Literal::new_simple_literal("nowhere");
+            assert!(ix.id(&missing.into()).is_none());
+        }
+        let walked = walked() - before;
+        // The shared graph's terms once, then a few per dataset.
+        assert!(
+            walked <= base_terms + 5 * 10,
+            "{walked} terms walked, {base_terms} shared"
+        );
     }
 }

@@ -315,16 +315,23 @@ fn settings_layer_in_order_and_the_client_section_has_the_last_word() {
     );
     let wide = lines(&mut client);
     assert!(wide < narrow, "{wide} lines at 400 columns, {narrow} at 30");
-    // Each section is the whole configuration: one without that key leaves
-    // the layer below (initializationOptions) to answer.
+    // Each section is the whole configuration, and it replaces
+    // initializationOptions too (the client's latest view supersedes its
+    // start-up snapshot): one without that key leaves it to the default.
     client.notify(
         "workspace/didChangeConfiguration",
         json!({"settings": {"turtle": {"lint": {"undescribedTerms": false}}}}),
     );
-    assert_eq!(lines(&mut client), narrow);
+    let unset = lines(&mut client);
+    assert_ne!(unset, narrow, "initializationOptions still count");
+    client.notify(
+        "workspace/didChangeConfiguration",
+        json!({"settings": {"turtle": {"format": {"lineWidth": 100}}}}),
+    );
+    assert_eq!(lines(&mut client), unset, "the default width");
     // A notification without the section leaves the settings as they are.
     client.notify("workspace/didChangeConfiguration", json!({"settings": {}}));
-    assert_eq!(lines(&mut client), narrow);
+    assert_eq!(lines(&mut client), unset);
 }
 
 #[test]

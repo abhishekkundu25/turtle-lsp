@@ -208,7 +208,8 @@ impl Default for Settings {
 
 impl Settings {
     /// Defaults, overridden by each layer in turn (the settings file, then
-    /// initializationOptions, then the configuration section).
+    /// initializationOptions, then the configuration section; the server
+    /// drops initializationOptions once a configuration section arrives).
     pub fn from_layers<'a>(layers: impl IntoIterator<Item = (Layer, &'a Value)>) -> Settings {
         Settings::layered(layers).0
     }

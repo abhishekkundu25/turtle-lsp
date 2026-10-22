@@ -5,12 +5,31 @@
 //! (compressed rows) and by predicate.
 
 use crate::syntax::{BlankId, Direction, Iri, Node, Triple};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// A term of the graph, numbered densely from 0.
 pub type Id = u32;
+
+/// A literal's lexical form, datatype, language tag and base direction.
+pub type LiteralKey<'a> = (&'a str, Iri, Option<Iri>, Option<Direction>);
+
+/// A graph's own literals, found by value: by the hash of the value, then
+/// compared with the term. It borrows nothing (a map keyed by the borrowed
+/// text would make [`Graph`] invariant in its lifetime).
+#[derive(Default)]
+struct LiteralIds {
+    by_hash: FxHashMap<u64, Id>,
+    /// Literals whose hash another one has already.
+    collided: Vec<Id>,
+}
+
+fn literal_hash(key: &LiteralKey) -> u64 {
+    let mut h = FxHasher::default();
+    key.hash(&mut h);
+    h.finish()
+}
 
 /// What an [`Id`] stands for.
 #[derive(Clone, Copy, Debug)]
@@ -183,12 +202,17 @@ pub struct Graph<'a> {
     /// Per triple term with blank nodes: the offset of its document, so the
     /// blank nodes inside carry the numbers the same nodes have outside.
     term_base: FxHashMap<Id, u32>,
+    /// The literals among `terms`, by value, once one is looked for
+    /// ([`Graph::literal`]).
+    literals: OnceLock<LiteralIds>,
 }
 
 #[cfg(test)]
 thread_local! {
     /// Triples this thread has indexed into a graph, to tell what a run costs.
     pub static INDEXED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Terms this thread has looked at to find literals by value.
+    pub static TERMS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 impl<'a> Graph<'a> {
@@ -241,6 +265,7 @@ impl<'a> Graph<'a> {
             blank_base,
             blank_end,
             term_base: FxHashMap::default(),
+            literals: OnceLock::new(),
         }
     }
 
@@ -324,6 +349,46 @@ impl<'a> Graph<'a> {
     /// The number of documents (of the base and the overlay).
     pub fn documents(&self) -> u32 {
         self.blank_base.len() as u32
+    }
+
+    /// The id of the literal `key`, if the graph has it. The first look
+    /// walks the terms this graph added, once: an overlay walks its own, and
+    /// the shared base walks its terms once for all its overlays.
+    pub fn literal(&self, key: &LiteralKey) -> Option<Id> {
+        self.own_literal(key)
+            .or_else(|| self.base.as_ref()?.own_literal(key))
+    }
+
+    fn own_literal(&self, key: &LiteralKey) -> Option<Id> {
+        let ids = self.literals.get_or_init(|| {
+            let mut ids = LiteralIds::default();
+            for (i, t) in self.terms.iter().enumerate() {
+                #[cfg(test)]
+                TERMS_WALKED.with(|c| c.set(c.get() + 1));
+                let Some((v, d, l)) = t.literal() else {
+                    continue;
+                };
+                let id = self.term_off + i as Id;
+                // Terms are distinct: a hash already taken is a collision.
+                match ids.by_hash.entry(literal_hash(&(v, d, l, t.direction()))) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(id);
+                    }
+                    std::collections::hash_map::Entry::Occupied(_) => ids.collided.push(id),
+                }
+            }
+            ids
+        });
+        let is = |id: &Id| {
+            let t = self.term(*id);
+            t.literal()
+                .is_some_and(|(v, d, l)| (v, d, l, t.direction()) == *key)
+        };
+        ids.by_hash
+            .get(&literal_hash(key))
+            .filter(|id| is(id))
+            .or_else(|| ids.collided.iter().find(|id| is(id)))
+            .copied()
     }
 
     /// Every term with its id, the overlay's first.

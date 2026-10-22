@@ -216,18 +216,24 @@ pub fn newline(text: &str) -> &'static str {
     }
 }
 
-/// One declaration line in the style the document already uses: `PREFIX`
-/// when its last declaration is SPARQL-style, else `@prefix`; ended by the
-/// document's line ending.
-pub fn declaration_line(a: &Analysis, prefix: &str, ns: &str) -> String {
+/// The keyword a declaration added to `a` starts with, in the style the
+/// document already uses: `PREFIX` when its last declaration is SPARQL-style,
+/// else `@prefix`.
+pub fn declaration_keyword(a: &Analysis) -> &'static str {
     let sparql = a.parsed.prefixes.last().is_some_and(|p: &PrefixDecl| {
         a.parsed
             .tokens
             .iter()
             .any(|t| t.start == p.span.start && t.kind == super::lexer::Kind::SparqlPrefix)
     });
+    if sparql { "PREFIX" } else { "@prefix" }
+}
+
+/// One declaration line in the style the document already uses (see
+/// [`declaration_keyword`]), ended by the document's line ending.
+pub fn declaration_line(a: &Analysis, prefix: &str, ns: &str) -> String {
     let nl = newline(&a.text);
-    if sparql {
+    if declaration_keyword(a) == "PREFIX" {
         format!("PREFIX {prefix}: <{ns}>{nl}")
     } else {
         format!("@prefix {prefix}: <{ns}> .{nl}")

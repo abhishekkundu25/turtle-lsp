@@ -22,7 +22,6 @@
 
 use super::lexer::{Kind, Token, tokenize};
 use super::*;
-use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
@@ -149,7 +148,6 @@ pub fn parse_with_base(
         graph_indent: None,
         iri_cache: FxHashMap::default(),
         pname_cache: FxHashMap::default(),
-        unresolved: FxHashSet::default(),
         buf: String::new(),
         v: vocab(),
     };
@@ -159,6 +157,12 @@ pub fn parse_with_base(
     }
     p.out
 }
+
+/// A term, and whether it is a prefixed name with an undeclared prefix or a
+/// triple term holding one ([`Triple::unresolved`]). Kept per occurrence, not
+/// per IRI: an undeclared `urn:x` stands in as the IRI `urn:x`, which
+/// `<urn:x>` also is.
+type Flagged = (Node, bool);
 
 struct P<'a> {
     src: &'a str,
@@ -193,9 +197,6 @@ struct P<'a> {
     /// `prefix:local` token text -> (prefix name, IRI or the text if unresolved, resolved).
     /// Cleared when a prefix is declared. Spares the global interner's locks.
     pname_cache: FxHashMap<&'a str, (Iri, Iri, bool)>,
-    /// The text of every prefixed name met with an undeclared prefix, which
-    /// stands in as an IRI ([`Triple::unresolved`]).
-    unresolved: FxHashSet<Iri>,
     /// Scratch space for building IRIs from prefixed names.
     buf: String,
     v: &'static Vocab,
@@ -418,9 +419,9 @@ impl<'a> P<'a> {
         Node::Blank(BlankId(id))
     }
 
-    fn emit(&mut self, s: &Node, p: Iri, o: Node, p_span: Span, o_span: Span) {
-        let unresolved = !self.unresolved.is_empty()
-            && (self.unresolved.contains(&p) || self.has_unresolved(s) || self.has_unresolved(&o));
+    /// Add a triple; `unresolved` says one of its terms is, or holds, an
+    /// undeclared-prefix name.
+    fn emit(&mut self, s: &Node, p: Iri, o: Node, p_span: Span, o_span: Span, unresolved: bool) {
         self.out.triples.push(Triple {
             s: s.clone(),
             p,
@@ -431,19 +432,6 @@ impl<'a> P<'a> {
             graph: self.graph,
             unresolved,
         });
-    }
-
-    /// Whether `n`, or a term inside it, is an undeclared-prefix name.
-    fn has_unresolved(&self, n: &Node) -> bool {
-        match n {
-            Node::Iri(i) => self.unresolved.contains(i),
-            Node::Triple(t) => {
-                self.unresolved.contains(&t.1)
-                    || self.has_unresolved(&t.0)
-                    || self.has_unresolved(&t.2)
-            }
-            _ => false,
-        }
     }
 
     /// The span from token `from` to the last consumed token.
@@ -891,18 +879,18 @@ impl<'a> P<'a> {
             {
                 let s = self.blank_node_property_list()?;
                 if !self.at_statement_end() {
-                    self.predicate_object_list(&s)?;
+                    self.predicate_object_list(&s, false)?;
                 }
             }
             Some(Kind::LTriple) => {
-                let s = self.reified_triple()?;
+                let (s, bad) = self.reified_triple()?;
                 if !self.at_statement_end() {
-                    self.predicate_object_list(&s)?;
+                    self.predicate_object_list(&s, bad)?;
                 }
             }
             _ => {
-                let s = self.subject()?;
-                self.predicate_object_list(&s)?;
+                let (s, bad) = self.subject()?;
+                self.predicate_object_list(&s, bad)?;
             }
         }
         if self.quads {
@@ -919,7 +907,7 @@ impl<'a> P<'a> {
         }
     }
 
-    fn subject(&mut self) -> R<Node> {
+    fn subject(&mut self) -> R<Flagged> {
         match self.peek_kind() {
             Some(Kind::Iri | Kind::PName) => {
                 let t = self.peek().unwrap();
@@ -928,29 +916,30 @@ impl<'a> P<'a> {
                 } else {
                     Role::Subject
                 };
-                let iri = self.iri(role)?;
+                let (iri, bad) = self.flagged_iri(role)?;
                 if role == Role::Subject && self.subject.is_none() {
                     self.subject = Some((iri, Span::new(t.start, t.end)));
                 }
-                Ok(Node::Iri(iri))
+                Ok((Node::Iri(iri), bad))
             }
-            Some(Kind::BNode) => Ok(self.labelled_bnode()),
+            Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
             Some(Kind::LBracket)
                 if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
             {
                 self.pos += 2;
-                Ok(self.fresh_bnode())
+                Ok((self.fresh_bnode(), false))
             }
-            Some(Kind::LParen) => self.collection(),
+            Some(Kind::LParen) => Ok((self.collection()?, false)),
             Some(Kind::LTriple) => self.reified_triple(),
             _ => self.expected("a subject"),
         }
     }
 
-    fn predicate_object_list(&mut self, s: &Node) -> R<()> {
+    /// `s_bad`: the subject is an undeclared-prefix name.
+    fn predicate_object_list(&mut self, s: &Node, s_bad: bool) -> R<()> {
         loop {
-            let (p, p_span) = self.verb()?;
-            self.object_list(s, p, p_span)?;
+            let (p, p_span, p_bad) = self.verb()?;
+            self.object_list(s, p, p_span, s_bad || p_bad)?;
             if self.peek_kind() != Some(Kind::Semicolon) {
                 return Ok(());
             }
@@ -961,8 +950,8 @@ impl<'a> P<'a> {
         }
     }
 
-    /// The predicate and its span.
-    fn verb(&mut self) -> R<(Iri, Span)> {
+    /// The predicate, its span and whether it is an undeclared-prefix name.
+    fn verb(&mut self) -> R<(Iri, Span, bool)> {
         let role = if self.quoted > 0 {
             Role::Quoted
         } else {
@@ -978,36 +967,53 @@ impl<'a> P<'a> {
                     role,
                     form: Form::A,
                 });
-                Ok((self.v.rdf_type, span))
+                Ok((self.v.rdf_type, span, false))
             }
             Some(t) if matches!(t.kind, Kind::Iri | Kind::PName) => {
-                Ok((self.iri(role)?, Span::new(t.start, t.end)))
+                let (iri, bad) = self.flagged_iri(role)?;
+                Ok((iri, Span::new(t.start, t.end), bad))
             }
             _ => self.expected("a predicate"),
         }
     }
 
-    fn object_list(&mut self, s: &Node, p: Iri, p_span: Span) -> R<()> {
+    /// `sp_bad`: the subject or the predicate is an undeclared-prefix name.
+    fn object_list(&mut self, s: &Node, p: Iri, p_span: Span, sp_bad: bool) -> R<()> {
         loop {
             let start = self.start();
-            let o = self.object()?;
+            let (o, o_bad) = self.object()?;
             let o_span = self.span_from(start);
-            self.emit(s, p, o.clone(), p_span, o_span);
-            self.annotation(s, p, p_span, &o, o_span)?;
+            let bad = sp_bad || o_bad;
+            self.emit(s, p, o.clone(), p_span, o_span, bad);
+            self.annotation(s, p, p_span, &o, o_span, bad)?;
             if !self.eat(Kind::Comma) {
                 return Ok(());
             }
         }
     }
 
-    fn object(&mut self) -> R<Node> {
+    fn object(&mut self) -> R<Flagged> {
         let role = if self.quoted > 0 {
             Role::Quoted
         } else {
             Role::Object
         };
+        let node = match self.peek_kind() {
+            Some(Kind::Iri | Kind::PName) => {
+                let (iri, bad) = self.flagged_iri(role)?;
+                return Ok((Node::Iri(iri), bad));
+            }
+            Some(Kind::LTripleTerm) => return self.triple_term(),
+            Some(Kind::LTriple) => return self.reified_triple(),
+            _ => self.plain_object()?,
+        };
+        Ok((node, false))
+    }
+
+    /// An object that is no IRI and holds none that counts for
+    /// [`Triple::unresolved`]: a blank node, a collection or a literal.
+    fn plain_object(&mut self) -> R<Node> {
         match self.peek_kind() {
-            Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(role)?)),
             Some(Kind::BNode) => Ok(self.labelled_bnode()),
             Some(Kind::LBracket) => {
                 if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) {
@@ -1045,8 +1051,6 @@ impl<'a> P<'a> {
                     dir: None,
                 })
             }
-            Some(Kind::LTripleTerm) => self.triple_term(),
-            Some(Kind::LTriple) => self.reified_triple(),
             _ => self.expected("an object"),
         }
     }
@@ -1156,7 +1160,7 @@ impl<'a> P<'a> {
     fn blank_node_property_list_inner(&mut self) -> R<Node> {
         let open = self.bump();
         let b = self.fresh_bnode();
-        self.predicate_object_list(&b)?;
+        self.predicate_object_list(&b, false)?;
         if !self.eat(Kind::RBracket) {
             if self.peek().is_none() {
                 self.error(Span::new(open.start, open.end), "Unclosed '['");
@@ -1186,8 +1190,8 @@ impl<'a> P<'a> {
                 }
                 _ => {
                     let start = self.start();
-                    let item = self.object()?;
-                    items.push((item, self.span_from(start)));
+                    let (item, bad) = self.object()?;
+                    items.push((item, bad, self.span_from(start)));
                 }
             }
         }
@@ -1199,42 +1203,42 @@ impl<'a> P<'a> {
         let mut cur = head.clone();
         let n = items.len();
         let (first, rest) = (self.v.first, self.v.rest);
-        for (i, (item, span)) in items.into_iter().enumerate() {
-            self.emit(&cur, first, item, span, span);
+        for (i, (item, bad, span)) in items.into_iter().enumerate() {
+            self.emit(&cur, first, item, span, span, bad);
             let next = if i + 1 == n {
                 nil.clone()
             } else {
                 self.fresh_bnode()
             };
-            self.emit(&cur, rest, next.clone(), span, span);
+            self.emit(&cur, rest, next.clone(), span, span, false);
             cur = next;
         }
         Ok(head)
     }
 
-    /// `<<( s p o )>>`
-    fn triple_term(&mut self) -> R<Node> {
+    /// `<<( s p o )>>`: unresolved when one of its terms is.
+    fn triple_term(&mut self) -> R<Flagged> {
         self.nested(Self::triple_term_inner)
     }
 
-    fn triple_term_inner(&mut self) -> R<Node> {
+    fn triple_term_inner(&mut self) -> R<Flagged> {
         self.bump();
         self.quoted += 1;
         let r = (|| {
-            let s = self.tt_subject()?;
-            let (p, _) = self.verb()?;
-            let o = self.tt_object()?;
+            let (s, s_bad) = self.tt_subject()?;
+            let (p, _, p_bad) = self.verb()?;
+            let (o, o_bad) = self.tt_object()?;
             if !self.eat(Kind::RTripleTerm) {
                 return self.expected("')>>'");
             }
-            Ok(Node::Triple(Box::new((s, p, o))))
+            Ok((Node::Triple(Box::new((s, p, o))), s_bad || p_bad || o_bad))
         })();
         self.quoted -= 1;
         r
     }
 
     /// `ttSubject ::= iri | BlankNode`: a triple term holds no reified triple.
-    fn tt_subject(&mut self) -> R<Node> {
+    fn tt_subject(&mut self) -> R<Flagged> {
         let (start, reified) = (self.start(), self.peek_kind() == Some(Kind::LTriple));
         let s = self.rt_subject()?;
         if reified {
@@ -1244,7 +1248,7 @@ impl<'a> P<'a> {
     }
 
     /// `ttObject ::= iri | BlankNode | literal | tripleTerm`.
-    fn tt_object(&mut self) -> R<Node> {
+    fn tt_object(&mut self) -> R<Flagged> {
         let (start, reified) = (self.start(), self.peek_kind() == Some(Kind::LTriple));
         let o = self.rt_object()?;
         if reified {
@@ -1254,15 +1258,18 @@ impl<'a> P<'a> {
     }
 
     /// `rtSubject ::= iri | BlankNode | reifiedTriple`.
-    fn rt_subject(&mut self) -> R<Node> {
+    fn rt_subject(&mut self) -> R<Flagged> {
         match self.peek_kind() {
-            Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(Role::Quoted)?)),
-            Some(Kind::BNode) => Ok(self.labelled_bnode()),
+            Some(Kind::Iri | Kind::PName) => {
+                let (iri, bad) = self.flagged_iri(Role::Quoted)?;
+                Ok((Node::Iri(iri), bad))
+            }
+            Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
             Some(Kind::LBracket)
                 if self.toks.get(self.pos + 1).map(|t| t.kind) == Some(Kind::RBracket) =>
             {
                 self.pos += 2;
-                Ok(self.fresh_bnode())
+                Ok((self.fresh_bnode(), false))
             }
             Some(Kind::LTriple) => self.reified_triple(),
             _ => self.expected("a subject"),
@@ -1271,7 +1278,7 @@ impl<'a> P<'a> {
 
     /// The object of a triple term or reified triple: no collections and no
     /// `[ ... ]` with content. Those are reported and parsed anyway.
-    fn rt_object(&mut self) -> R<Node> {
+    fn rt_object(&mut self) -> R<Flagged> {
         let nested = match self.peek_kind() {
             Some(Kind::LParen) => true,
             Some(Kind::LBracket) => {
@@ -1290,65 +1297,80 @@ impl<'a> P<'a> {
         Ok(o)
     }
 
-    /// `<< s p o ~ r >>`: returns the reifier.
-    fn reified_triple(&mut self) -> R<Node> {
+    /// `<< s p o ~ r >>`: returns the reifier, flagged when it is an
+    /// undeclared-prefix name.
+    fn reified_triple(&mut self) -> R<Flagged> {
         self.nested(Self::reified_triple_inner)
     }
 
-    fn reified_triple_inner(&mut self) -> R<Node> {
+    fn reified_triple_inner(&mut self) -> R<Flagged> {
         let open = self.bump();
         self.quoted += 1;
         let r = (|| {
-            let s = self.rt_subject()?;
-            let (p, _) = self.verb()?;
-            let o = self.rt_object()?;
+            let (s, s_bad) = self.rt_subject()?;
+            let (p, _, p_bad) = self.verb()?;
+            let (o, o_bad) = self.rt_object()?;
             let reifier = if self.eat(Kind::Tilde) {
                 self.reifier()?
             } else {
-                self.fresh_bnode()
+                (self.fresh_bnode(), false)
             };
             if !self.eat(Kind::RTriple) {
                 return self.expected("'>>'");
             }
-            Ok((reifier, Node::Triple(Box::new((s, p, o)))))
+            let triple = Node::Triple(Box::new((s, p, o)));
+            Ok((reifier, triple, s_bad || p_bad || o_bad))
         })();
         self.quoted -= 1;
-        let (reifier, triple) = r?;
+        let ((reifier, r_bad), triple, t_bad) = r?;
         let span = self.span_from(open.start);
-        self.emit(&reifier, self.v.reifies, triple, span, span);
-        Ok(reifier)
+        self.emit(&reifier, self.v.reifies, triple, span, span, r_bad || t_bad);
+        Ok((reifier, r_bad))
     }
 
-    fn reifier(&mut self) -> R<Node> {
+    fn reifier(&mut self) -> R<Flagged> {
         match self.peek_kind() {
-            Some(Kind::Iri | Kind::PName) => Ok(Node::Iri(self.iri(Role::Object)?)),
-            Some(Kind::BNode) => Ok(self.labelled_bnode()),
-            _ => Ok(self.fresh_bnode()),
+            Some(Kind::Iri | Kind::PName) => {
+                let (iri, bad) = self.flagged_iri(Role::Object)?;
+                Ok((Node::Iri(iri), bad))
+            }
+            Some(Kind::BNode) => Ok((self.labelled_bnode(), false)),
+            _ => Ok((self.fresh_bnode(), false)),
         }
     }
 
     /// `~ reifier` and `{| ... |}` after an object. The `rdf:reifies` triples
-    /// point at the annotated predicate and object.
-    fn annotation(&mut self, s: &Node, p: Iri, p_span: Span, o: &Node, o_span: Span) -> R<()> {
-        let mut last: Option<Node> = None;
+    /// point at the annotated predicate and object; `spo_bad` says one of
+    /// those three is an undeclared-prefix name.
+    fn annotation(
+        &mut self,
+        s: &Node,
+        p: Iri,
+        p_span: Span,
+        o: &Node,
+        o_span: Span,
+        spo_bad: bool,
+    ) -> R<()> {
+        let mut last: Option<Flagged> = None;
         let reifies = self.v.reifies;
         loop {
             match self.peek_kind() {
                 Some(Kind::Tilde) => {
                     self.bump();
-                    let r = self.reifier()?;
+                    let (r, r_bad) = self.reifier()?;
                     self.emit(
                         &r,
                         reifies,
                         Node::Triple(Box::new((s.clone(), p, o.clone()))),
                         p_span,
                         o_span,
+                        r_bad || spo_bad,
                     );
-                    last = Some(r);
+                    last = Some((r, r_bad));
                 }
                 Some(Kind::LAnnotation) => {
                     self.bump();
-                    let r = match last.take() {
+                    let (r, r_bad) = match last.take() {
                         Some(r) => r,
                         None => {
                             let r = self.fresh_bnode();
@@ -1358,11 +1380,12 @@ impl<'a> P<'a> {
                                 Node::Triple(Box::new((s.clone(), p, o.clone()))),
                                 p_span,
                                 o_span,
+                                spo_bad,
                             );
-                            r
+                            (r, false)
                         }
                     };
-                    self.nested(|this| this.predicate_object_list(&r))?;
+                    self.nested(|this| this.predicate_object_list(&r, r_bad))?;
                     if !self.eat(Kind::RAnnotation) {
                         return self.expected("'|}'");
                     }
@@ -1378,6 +1401,13 @@ impl<'a> P<'a> {
     /// An undeclared prefix is not a parse failure: it is recorded in
     /// `prefix_uses` and reported by the diagnostics layer.
     fn iri(&mut self, role: Role) -> R<Iri> {
+        self.flagged_iri(role).map(|(iri, _)| iri)
+    }
+
+    /// [`P::iri`], and whether it is a prefixed name with an undeclared
+    /// prefix, which stands in as an IRI of its own text
+    /// ([`Triple::unresolved`]).
+    fn flagged_iri(&mut self, role: Role) -> R<(Iri, bool)> {
         let t = self.bump();
         let span = Span::new(t.start, t.end);
         if t.kind == Kind::Iri {
@@ -1400,7 +1430,7 @@ impl<'a> P<'a> {
                 role,
                 form: Form::Iri,
             });
-            return Ok(iri);
+            return Ok((iri, false));
         }
         let text = self.text(t);
         let colon = text.find(':').unwrap_or(text.len());
@@ -1426,9 +1456,6 @@ impl<'a> P<'a> {
             span,
             resolved,
         });
-        if !resolved {
-            self.unresolved.insert(iri);
-        }
         if resolved {
             self.out.refs.push(Ref {
                 span,
@@ -1439,7 +1466,7 @@ impl<'a> P<'a> {
                 },
             });
         }
-        Ok(iri)
+        Ok((iri, !resolved))
     }
 
     fn resolve_iri(&mut self, t: Token) -> Cow<'a, str> {
@@ -2306,5 +2333,60 @@ mod tests {
             Some("file:///w/d.ttl"),
         );
         assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use crate::syntax::{PrefixMap, Syntax, parse};
+
+    fn flags(text: &str) -> Vec<bool> {
+        parse(text, &PrefixMap::default(), Syntax::Turtle)
+            .triples
+            .iter()
+            .map(|t| t.unresolved)
+            .collect()
+    }
+
+    /// `urn:isbn:1` with no `urn:` prefix declared is a mistake; `<urn:isbn:1>`
+    /// is an absolute IRI with the same text. Only the first is unresolved,
+    /// in either order, in every position.
+    #[test]
+    fn an_absolute_iri_spelled_like_an_undeclared_name_is_resolved() {
+        let p = "<http://e.org/p>";
+        assert_eq!(
+            flags(&format!("<urn:isbn:1> {p} 1 .\nurn:isbn:1 {p} 2 .\n")),
+            [false, true]
+        );
+        assert_eq!(
+            flags(&format!("urn:isbn:1 {p} 2 .\n<urn:isbn:1> {p} 1 .\n")),
+            [true, false]
+        );
+        assert_eq!(
+            flags(
+                "<http://e.org/s> urn:x:p <urn:x:o> .\n<http://e.org/s> <urn:x:p> urn:x:o .\n<http://e.org/s> <urn:x:p> <urn:x:o> .\n"
+            ),
+            [true, true, false]
+        );
+        // Inside a triple term, and as a reifier.
+        assert_eq!(
+            flags(&format!(
+                "<http://e.org/s> {p} <<( <urn:x:a> {p} <urn:x:b> )>> .\n<http://e.org/s> {p} <<( urn:x:a {p} <urn:x:b> )>> .\n"
+            )),
+            [false, true]
+        );
+        assert_eq!(
+            flags(&format!(
+                "<http://e.org/s> {p} <urn:x:o> ~ <urn:x:r> .\n<http://e.org/s> {p} <urn:x:o> ~ urn:x:r .\n"
+            )),
+            [false, false, false, true]
+        );
+        // The graph keeps the absolute IRI's triple.
+        let parsed = parse(
+            &format!("urn:isbn:1 {p} 2 .\n<urn:isbn:1> {p} 1 .\n"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert_eq!(crate::rdf::Graph::new(&[&parsed.triples]).len(), 1);
     }
 }

@@ -166,6 +166,11 @@ pub struct Server {
     /// `turtle-lsp.json` at the first workspace root (Null when absent or
     /// invalid), `initializationOptions` and the last `turtle` configuration
     /// section; `settings` is the defaults overridden by these, in that order.
+    /// The first configuration section the client sends (in
+    /// `didChangeConfiguration` or a `workspace/configuration` answer)
+    /// replaces `initializationOptions`: the client's latest view of its
+    /// settings supersedes its start-up snapshot, so a key the user removed
+    /// falls back to `turtle-lsp.json` or the default.
     file_settings: Value,
     /// The warning about `turtle-lsp.json` at startup (unusable, or keys it may
     /// not set), shown once started.
@@ -356,6 +361,8 @@ impl Server {
         // Embedded, every file is open.
         let wsdiag = workspace_diagnostics::State::new(settings.diagnostics_workspace && !inline);
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
+        // Without watchers (see `register_watchers`), nothing reports new files.
+        ws.rescan_sparql = !watch_dynamic;
         let contexts = use_network(&mut ws, settings.imports_network, inline);
         #[cfg(not(target_arch = "wasm32"))]
         let (reindex_tx, reindex_rx) = unbounded();
@@ -1035,9 +1042,14 @@ impl Server {
         }
     }
 
-    /// Files changed on disk, as the client's watchers report. Only what the
-    /// scan would have looked at is of concern: nothing in a skipped or
-    /// hidden directory, nothing outside the roots.
+    /// Files changed on disk, as the client's watchers report. Catalogs,
+    /// imported RDF/XML files and JSON-LD context files count wherever they
+    /// are (an import or a context may name a skipped or hidden folder);
+    /// for the index, only what the scan would have looked at is of concern:
+    /// nothing in a skipped or hidden directory, nothing outside the roots.
+    ///
+    /// A changed prefixes.ttl is taken first, so the files of the same
+    /// notification are parsed once, with the new prefixes.
     fn watched_files_changed(&mut self, changes: Vec<FileEvent>) {
         let mut prefix_files: Vec<PathBuf> = Vec::new();
         let mut gone_dirs: Vec<PathBuf> = Vec::new();
@@ -1061,9 +1073,6 @@ impl Server {
                 }
                 continue;
             }
-            if !self.ws.watched(&path) {
-                continue;
-            }
             if is_import_source(&path) {
                 // A catalog or an imported RDF/XML ontology changed.
                 self.imports.retry();
@@ -1074,6 +1083,9 @@ impl Server {
             // A JSON-LD context file on disk (the open copy wins).
             if !open && self.ws.context_changed(&key, true) {
                 disk_changed = true;
+            }
+            if !self.ws.watched(&path) {
+                continue;
             }
             if is_sparql_path(&path) {
                 // Read on demand, never indexed; but a closed query is diagnosed.
@@ -1093,6 +1105,16 @@ impl Server {
             self.wsdiag_disk_changed(&path);
             reindex.push(path);
         }
+        // The new prefixes first: the files changed with them are parsed
+        // below with those, and only the others are left to parse again.
+        let prefixes_changed = !prefix_files.is_empty();
+        let mut stale = Vec::new();
+        for file in &prefix_files {
+            stale.extend(self.ws.prefixes_changed(Some(file)));
+        }
+        if prefixes_changed {
+            self.dirty.extend(self.ws.open.keys().cloned());
+        }
         // The files of one notification are parsed together.
         if self.ws.reindex_disk_files(&reindex) {
             disk_changed = true;
@@ -1106,14 +1128,8 @@ impl Server {
             self.ws.sparql_files_changed(&sparql_paths);
             self.wsdiag.invalidate_all();
         }
-        let prefixes_changed = !prefix_files.is_empty();
-        let mut stale = Vec::new();
-        for file in &prefix_files {
-            stale.extend(self.ws.prefixes_changed(Some(file)));
-        }
-        if prefixes_changed {
-            self.dirty.extend(self.ws.open.keys().cloned());
-        }
+        let parsed: FxHashSet<&PathBuf> = reindex.iter().collect();
+        stale.retain(|p| !parsed.contains(p));
         stale.sort();
         stale.dedup();
         self.reindex_in_background(stale);
@@ -1333,11 +1349,14 @@ impl Server {
         self.config_request = Some(id);
     }
 
-    /// The client's `turtle` configuration section changed.
+    /// The client's `turtle` configuration section changed. It replaces
+    /// `initializationOptions` as well as the previous section (see
+    /// [`Server::file_settings`]).
     fn set_config(&mut self, section: Value) {
         if section.is_null() {
             return;
         }
+        self.init_options = Value::Null;
         self.config = section;
         self.relayer_settings();
     }
@@ -2741,5 +2760,181 @@ mod tests {
         let msg = r.unwrap_err();
         assert!(msg.contains("hover") && msg.contains("boom"), "{msg}");
         assert_eq!(guard("x", || 7), Ok(7));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A fresh folder below the temp dir (canonical), removed when dropped.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(name: &str) -> Dir {
+            let d = std::env::temp_dir()
+                .join(format!("turtle-lsp-review-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            Dir(d.canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A server (not started) for the workspace folder `root`, with the
+    /// client's connection end, which must outlive it.
+    fn server_at(root: &std::path::Path, init: Value) -> (Server, Connection) {
+        let (here, host) = Connection::memory();
+        let root = path_to_uri(root).unwrap();
+        let (server, _, _) = Server::configure(
+            here,
+            json!({
+                "capabilities": {},
+                "workspaceFolders": [{"uri": root, "name": "w"}],
+                "initializationOptions": init,
+            }),
+            false,
+        )
+        .unwrap();
+        (server, host)
+    }
+
+    fn configuration(settings: Value) -> Notification {
+        Notification::new(
+            "workspace/didChangeConfiguration".into(),
+            json!({ "settings": settings }),
+        )
+    }
+
+    fn event(p: &std::path::Path, typ: FileChangeType) -> FileEvent {
+        FileEvent {
+            uri: path_to_uri(p).unwrap().parse().unwrap(),
+            typ,
+        }
+    }
+
+    fn first_subject(server: &Server, path: &std::path::Path) -> String {
+        let uri = path_to_uri(path).unwrap();
+        match &server.ws.disk[&uri].parsed.triples[0].s {
+            crate::syntax::Node::Iri(i) => i.as_str().to_string(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The settings are the `turtle` section of the notification's
+    /// `settings`: the shape the VS Code extension sends.
+    #[test]
+    fn a_configuration_change_is_read_from_its_turtle_section() {
+        let dir = Dir::new("shape");
+        let (mut s, _client) = server_at(&dir.0, Value::Null);
+        s.notification(configuration(json!({"format": {"lineWidth": 80}})));
+        assert_eq!(s.settings.format_line_width, 100, "no turtle section");
+        s.notification(configuration(
+            json!({"turtle": {"format": {"lineWidth": 80}}}),
+        ));
+        assert_eq!(s.settings.format_line_width, 80);
+    }
+
+    /// A key the user removed is not kept from `initializationOptions`: the
+    /// client's latest section replaces its start-up snapshot, and the key
+    /// comes from turtle-lsp.json again (or the default).
+    #[test]
+    fn a_configuration_section_replaces_the_initialization_options() {
+        let dir = Dir::new("layers");
+        let (mut s, _client) = server_at(&dir.0, json!({"format": {"lineWidth": 80}}));
+        assert_eq!(s.settings.format_line_width, 80);
+        s.notification(configuration(
+            json!({"turtle": {"codeLens": {"references": false}}}),
+        ));
+        assert_eq!(s.settings.format_line_width, 100);
+        assert!(!s.settings.code_lens_references);
+
+        let dir = Dir::new("layers-file");
+        std::fs::write(
+            dir.0.join(SETTINGS_FILE),
+            r#"{"format": {"lineWidth": 90}}"#,
+        )
+        .unwrap();
+        let (mut s, _client) = server_at(&dir.0, json!({"format": {"lineWidth": 80}}));
+        assert_eq!(s.settings.format_line_width, 80);
+        s.notification(configuration(json!({"turtle": {}})));
+        assert_eq!(s.settings.format_line_width, 90);
+        // A client that only says "something changed" keeps what it sent.
+        let (mut s, _client) = server_at(&dir.0, json!({"format": {"lineWidth": 80}}));
+        s.notification(configuration(Value::Null));
+        assert_eq!(s.settings.format_line_width, 80);
+    }
+
+    /// A notification that changes a prefixes.ttl and a data file it
+    /// serves parses the data file once, with the new prefixes: not with the
+    /// old ones and then again in the background.
+    #[test]
+    fn prefixes_and_a_data_file_changed_together_parse_the_data_once_with_the_new_prefixes() {
+        let dir = Dir::new("prefixes");
+        let prefixes = dir.0.join(PREFIX_FILE);
+        let data = dir.0.join("data.ttl");
+        std::fs::write(&prefixes, "@prefix ex: <http://old.example/> .\n").unwrap();
+        std::fs::write(&data, "ex:a ex:p ex:o .\n").unwrap();
+        let (mut s, _client) = server_at(&dir.0, Value::Null);
+        s.watched_files_changed(vec![
+            event(&data, FileChangeType::CREATED),
+            event(&prefixes, FileChangeType::CREATED),
+        ]);
+        assert_eq!(first_subject(&s, &data), "http://old.example/a");
+
+        std::fs::write(&prefixes, "@prefix ex: <http://newer.example/> .\n").unwrap();
+        std::fs::write(&data, "ex:b ex:p ex:o .\n").unwrap();
+        s.watched_files_changed(vec![
+            event(&data, FileChangeType::CHANGED),
+            event(&prefixes, FileChangeType::CHANGED),
+        ]);
+        assert_eq!(first_subject(&s, &data), "http://newer.example/b");
+        // Nothing was left to parse again in the background.
+        assert!(
+            s.reindex_rx
+                .recv_timeout(Duration::from_millis(500))
+                .is_err()
+        );
+    }
+
+    /// Catalogs, imported RDF/XML files and JSON-LD context files count
+    /// wherever the client reports them, also in folders the index skips.
+    #[test]
+    fn import_sources_and_context_files_in_skipped_folders_are_acted_on() {
+        let dir = Dir::new("skipped");
+        std::fs::create_dir_all(dir.0.join(".ctx")).unwrap();
+        let ctx = dir.0.join(".ctx").join("ctx.jsonld");
+        std::fs::write(&ctx, r#"{"@context": {"name": "http://ex.org/name"}}"#).unwrap();
+        let (mut s, _client) = server_at(&dir.0, Value::Null);
+        let doc = path_to_uri(&dir.0.join("a.jsonld")).unwrap();
+        s.ws.open_doc(
+            doc.clone(),
+            r#"{"@context": ".ctx/ctx.jsonld", "@id": "http://ex.org/a", "name": "A"}"#.into(),
+            1,
+        );
+        assert_eq!(s.ws.analysis(&doc).unwrap().parsed.triples.len(), 1);
+        std::fs::write(&ctx, r#"{"@context": {"name": null}}"#).unwrap();
+        s.watched_files_changed(vec![event(&ctx, FileChangeType::CHANGED)]);
+        assert_eq!(s.ws.analysis(&doc).unwrap().parsed.triples.len(), 0);
+
+        for source in [
+            dir.0.join(".ontologies").join("catalog-v001.xml"),
+            dir.0.join("venv").join("onto.owl"),
+            dir.0.join("node_modules").join("x.rdf"),
+        ] {
+            let before = crate::imports::RETRIES.with(|c| c.get());
+            s.watched_files_changed(vec![event(&source, FileChangeType::CHANGED)]);
+            assert_eq!(
+                crate::imports::RETRIES.with(|c| c.get()) - before,
+                1,
+                "{source:?}"
+            );
+        }
     }
 }

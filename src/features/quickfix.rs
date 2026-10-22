@@ -11,7 +11,7 @@ use super::diagnostics::SOURCE;
 use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
-use crate::syntax::names::{declaration_edit, declarations_edit, newline};
+use crate::syntax::names::{declaration_edit, declaration_keyword, declarations_edit, newline};
 use crate::syntax::{Iri, Node, Span};
 use crate::vocab::VOCABS;
 use lsp_types::*;
@@ -299,11 +299,13 @@ impl<'a> Fixer<'a> {
                     return Vec::new();
                 };
                 let at = a.offset(enc, d.range.start).unwrap_or(u32::MAX);
+                // The title names what the edit inserts.
+                let keyword = declaration_keyword(a);
                 let mut out = Vec::new();
                 for (i, c) in candidates.iter().enumerate() {
                     let edit = self.declaration(&prefix, &c.namespace, at);
                     out.push(self.quick(
-                        candidate_title(&prefix, c, "@prefix"),
+                        candidate_title(&prefix, c, keyword),
                         d,
                         vec![edit],
                         i == 0,
@@ -769,5 +771,52 @@ mod tests {
             );
         }
         assert!(fixer.add_all_missing().is_some());
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::features::diagnostics::diagnostics;
+    use std::sync::Arc;
+
+    /// The fix's title names the keyword the edit inserts: `PREFIX` in a
+    /// document whose declarations are SPARQL-style.
+    #[test]
+    fn the_prefix_fix_is_titled_with_the_keyword_it_inserts() {
+        for (text, keyword) in [
+            ("PREFIX a: <http://a/>\nfoaf:x a:p a:o .\n", "PREFIX"),
+            ("@prefix a: <http://a/> .\nfoaf:x a:p a:o .\n", "@prefix"),
+        ] {
+            let uri: Uri = "file:///t/doc.ttl".parse().unwrap();
+            let a = Analysis::new(uri.to_string(), text, Arc::default(), true);
+            let k = Knowledge::default();
+            let fixer = Fixer::new(&a, &k, Encoding::Utf8, &uri);
+            let found = diagnostics(&a, &k, Encoding::Utf8);
+            let d = found
+                .iter()
+                .find(|d| d.code == Some(NumberOrString::String("undeclared-prefix".into())))
+                .unwrap();
+            let fix = &fixer.for_diagnostic(d)[0];
+            let inserted: Vec<String> = fix
+                .edit
+                .clone()
+                .unwrap()
+                .changes
+                .unwrap()
+                .into_values()
+                .flatten()
+                .map(|e| e.new_text)
+                .collect();
+            assert!(
+                inserted[0].starts_with(&format!("{keyword} foaf:")),
+                "{inserted:?}"
+            );
+            assert!(
+                fix.title.starts_with(&format!("Add {keyword} foaf: <")),
+                "{}",
+                fix.title
+            );
+        }
     }
 }

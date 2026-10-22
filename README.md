@@ -485,6 +485,9 @@ is also accepted.
   `init_options`, then its `turtle` settings section. A later layer wins key by
   key. An editor `prefixes` object replaces the file's prefixes; a dotted key
   (`"prefixes.ex"`) adds one.
+- **Once the editor sends its `turtle` settings section,** that section replaces
+  `init_options`: a key you remove from the editor's settings comes from
+  `turtle-lsp.json` again, or takes its default.
 - **On the command line,** flags win over the file.
 - **In the editor,** the server reads the file in the first workspace folder,
   and again when it changes (if the editor reports file changes to the server).

@@ -236,6 +236,13 @@ pub fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Resolved 
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread asked for the imports to be resolved again
+    /// ([`Imports::retry`]).
+    pub(crate) static RETRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `owl:imports` state of the server: what was asked, what came back.
 pub struct Imports {
     /// Resolve without loading or threads (see [`Imports::new_inline`]).
@@ -452,6 +459,8 @@ impl Imports {
     /// Something on disk may have changed (a file was saved): resolve the
     /// imports again on the next [`Imports::sync`].
     pub fn retry(&mut self) {
+        #[cfg(test)]
+        RETRIES.with(|c| c.set(c.get() + 1));
         // Loaded files may have changed too; unchanged ones come from the memo.
         self.last = None;
         self.seen = None;
