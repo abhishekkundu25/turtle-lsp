@@ -26,7 +26,7 @@ through it, `test/cli.test.mjs` (new cases), `test/lsp.test.mjs` (new case).
 
 **Blocked by:** 34a, 32b.
 
-**Status:** ready-for-agent
+**Status:** done. The browser toolbox check (batch::analyse) keeps the editor cap. A file with 32,000 errors now peaks at about 42 B per input byte in check and format (was 34-35 with the parser cap); the error-free bench file is unchanged at 35.4.
 
 - [ ] Parser: a document with 1,500 broken statements gives 1,500 errors from
       `syntax::parse`, in today's order; no note.
