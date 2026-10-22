@@ -32,7 +32,7 @@ everything else.
 
 **Blocked by:** nothing in wave 3. First of the two layout slices; 26b follows.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
