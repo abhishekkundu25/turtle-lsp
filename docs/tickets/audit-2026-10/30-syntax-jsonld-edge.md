@@ -31,7 +31,7 @@ the rest of the parser, `src/analysis.rs`, `src/features/**`.
 
 **Blocked by:** nothing in wave 3.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Rules:** each test run stays under 2 minutes (`timeout 120`, one test binary or Node
 file at a time). Leave `TMPDIR` at its default, outside the repository: the CLI tests
