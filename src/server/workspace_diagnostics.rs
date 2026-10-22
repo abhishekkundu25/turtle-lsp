@@ -365,7 +365,7 @@ impl Server {
             w.latest.store(old.generation + 1, Ordering::Relaxed);
         }
         for uri in old.shown.into_keys() {
-            if !self.ws.open.contains_key(&uri) {
+            if !self.ws.is_open(&uri) {
                 self.send_diagnostics(&uri, Vec::new(), None);
             }
         }
@@ -387,7 +387,7 @@ impl Server {
     /// pass would. False when it is not a workspace file (or the setting is
     /// off), and the caller clears them as usual.
     pub(super) fn wsdiag_closed(&mut self, uri: &str) -> bool {
-        if !self.wsdiag.enabled || !self.indexed || !under(&self.ws.roots, uri) {
+        if !self.wsdiag.enabled || !self.indexed || !under(self.ws.roots(), uri) {
             return false;
         }
         self.wsdiag.yield_to_edit();
@@ -443,15 +443,14 @@ impl Server {
         let Some(todo) = self.wsdiag.todo.take() else {
             return;
         };
-        let roots = self.ws.roots.clone();
+        let roots = self.ws.roots().to_vec();
         let k = self.ws.knowledge();
         let sources = k
             .sources()
             .map(|(key, s, a)| (key.to_string(), s, a.clone()))
             .collect();
-        let open = &self.ws.open;
-        let closed =
-            |u: &String| !open.contains_key(u) && self.ws.disk.contains_key(u) && under(&roots, u);
+        let ws = &self.ws;
+        let closed = |u: &str| !ws.is_open(u) && ws.is_indexed(u) && under(&roots, u);
         let mut seen = FxHashSet::default();
         let mut targets: Vec<String> = todo
             .first
@@ -459,19 +458,17 @@ impl Server {
             .filter(|u| closed(u) && seen.insert(u.clone()))
             .collect();
         if todo.all {
-            let mut rest: Vec<String> = self
-                .ws
-                .disk
-                .keys()
+            let mut rest: Vec<String> = ws
+                .indexed_uris()
                 .filter(|u| closed(u) && !seen.contains(*u))
-                .cloned()
+                .map(str::to_owned)
                 .collect();
             rest.sort();
             targets.extend(rest);
         }
         let sparql = todo.sparql.then(|| SparqlScan {
             roots: roots.clone(),
-            open: open.keys().cloned().collect(),
+            open: ws.open_uris().map(str::to_owned).collect(),
         });
         if targets.is_empty() && sparql.is_none() {
             return;
@@ -479,7 +476,7 @@ impl Server {
         let shacl = self
             .shacl_diagnostics
             .iter()
-            .filter(|(u, _)| !open.contains_key(*u))
+            .filter(|(u, _)| !ws.is_open(u))
             .map(|(u, d)| (u.clone(), d.clone()))
             .collect();
         if self.wsdiag.worker.is_none() {
@@ -532,7 +529,7 @@ impl Server {
         let mut seen = Vec::with_capacity(chunk.results.len());
         for (uri, d) in chunk.results {
             seen.push(uri.clone());
-            if self.ws.open.contains_key(&uri) {
+            if self.ws.is_open(&uri) {
                 continue;
             }
             let before = self.wsdiag.shown.get(&uri);
@@ -560,7 +557,7 @@ impl Server {
                 .wsdiag
                 .shown
                 .keys()
-                .filter(|u| !r.received.contains(*u) && !self.ws.open.contains_key(*u))
+                .filter(|u| !r.received.contains(*u) && !self.ws.is_open(u))
                 .cloned()
                 .collect();
             for uri in gone {

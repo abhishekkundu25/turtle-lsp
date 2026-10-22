@@ -747,7 +747,7 @@ impl<'a> Input<'a> {
     }
 
     fn kind(&self, uri: &str) -> &'static str {
-        match self.ws.open.get(uri).map(|d| d.kind) {
+        match self.ws.doc_kind(uri) {
             Some(DocKind::Sparql) => "sparql",
             Some(DocKind::Rdf(Syntax::TriG)) => "trig",
             Some(DocKind::Rdf(Syntax::NTriples)) => "ntriples",

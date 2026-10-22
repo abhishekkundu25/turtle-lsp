@@ -164,7 +164,7 @@ impl Server {
             Some(q) => (q.text().to_owned(), q.base().to_owned(), q.external.clone()),
             None => {
                 let path = uri_to_path(&uri)
-                    .filter(|p| is_sparql_path(p) && !self.ws.open.contains_key(&uri))
+                    .filter(|p| is_sparql_path(p) && !self.ws.is_open(&uri))
                     .ok_or_else(|| {
                         (
                             ErrorCode::InvalidParams,

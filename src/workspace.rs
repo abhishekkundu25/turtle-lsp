@@ -104,10 +104,10 @@ pub struct Doc {
 
 #[derive(Default)]
 pub struct Workspace {
-    pub roots: Vec<PathBuf>,
-    pub open: FxHashMap<String, Doc>,
-    pub disk: FxHashMap<String, Arc<Analysis>>,
-    pub settings_prefixes: PrefixMap,
+    roots: Vec<PathBuf>,
+    open: FxHashMap<String, Doc>,
+    disk: FxHashMap<String, Arc<Analysis>>,
+    settings_prefixes: PrefixMap,
     /// Facts from every analysis: the open document's when it is open, else
     /// the disk copy's. Kept current by every method that changes either.
     knowledge: Knowledge,
@@ -139,7 +139,7 @@ pub struct Workspace {
     sparql_files: Option<std::collections::BTreeMap<PathBuf, SparqlFile>>,
     /// No one reports file changes (the client registered no file watchers):
     /// [`Workspace::sparql_documents`] lists the folders again on each call.
-    pub rescan_sparql: bool,
+    rescan_sparql: bool,
 }
 
 /// A SPARQL file on disk, as read.
@@ -466,6 +466,75 @@ impl Workspace {
             contexts: Some(loader::for_platform(false)),
             ..Default::default()
         }
+    }
+
+    /// Settle the one choice the server makes when it starts: with
+    /// `rescan`, [`Workspace::sparql_documents`] lists the folders again on
+    /// each call, because no one reports file changes.
+    pub fn set_rescan_sparql(&mut self, rescan: bool) {
+        self.rescan_sparql = rescan;
+    }
+
+    // ---- state ----
+
+    /// The workspace folders, in the order the client gave them.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    /// The prefixes the settings declare (`turtle.prefixes`).
+    pub fn settings_prefixes(&self) -> &PrefixMap {
+        &self.settings_prefixes
+    }
+
+    /// Replace the settings prefixes. Nothing else: the caller tells the
+    /// workspace what to read again ([`Workspace::prefixes_changed`]).
+    pub fn set_settings_prefixes(&mut self, prefixes: PrefixMap) {
+        self.settings_prefixes = prefixes;
+    }
+
+    /// Whether `uri` is an open document.
+    pub fn is_open(&self, uri: &str) -> bool {
+        self.open.contains_key(uri)
+    }
+
+    /// The open documents' URIs, in no particular order.
+    pub fn open_uris(&self) -> impl Iterator<Item = &str> {
+        self.open.keys().map(String::as_str)
+    }
+
+    /// The version the client gave the open document `uri`.
+    pub fn version(&self, uri: &str) -> Option<i32> {
+        self.open.get(uri).map(|d| d.version)
+    }
+
+    /// What the open document `uri` is.
+    pub fn doc_kind(&self, uri: &str) -> Option<DocKind> {
+        self.open.get(uri).map(|d| d.kind)
+    }
+
+    /// Whether `uri` has an indexed copy from disk. An open RDF document
+    /// that is not a cached import has none: its open text replaces the
+    /// copy until it is closed ([`Workspace::open_doc_as`]).
+    pub fn is_indexed(&self, uri: &str) -> bool {
+        self.disk.contains_key(uri)
+    }
+
+    /// The URIs of the indexed copies from disk, in no particular order.
+    pub fn indexed_uris(&self) -> impl Iterator<Item = &str> {
+        self.disk.keys().map(String::as_str)
+    }
+
+    /// How many files have an indexed copy from disk.
+    #[cfg(test)]
+    pub(crate) fn indexed_count(&self) -> usize {
+        self.disk.len()
+    }
+
+    /// The indexed copy of `uri` from disk.
+    #[cfg(test)]
+    pub(crate) fn indexed_analysis(&self, uri: &str) -> Option<&Arc<Analysis>> {
+        self.disk.get(uri)
     }
 
     /// Load JSON-LD contexts with [`loader::for_platform`]: the network is
@@ -2028,6 +2097,82 @@ pub(crate) mod tests {
         ws.close_doc(&uri(&skipped));
         assert!(!ws.disk.contains_key(&uri(&skipped)));
         assert!(ws.knowledge().get(&uri(&skipped)).is_none());
+    }
+
+    #[test]
+    fn the_read_accessors_agree_with_the_documents_and_the_index() {
+        let root = TempDir::new("accessors");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        assert_eq!(ws.roots(), std::slice::from_ref(&root.0));
+        ws.set_rescan_sparql(true);
+        assert!(ws.rescan_sparql);
+        let prefixes = PrefixMap::from_iter([("ex".to_string(), "http://e.org/".to_string())]);
+        ws.set_settings_prefixes(prefixes.clone());
+        assert_eq!(ws.settings_prefixes(), &prefixes);
+
+        let paths = [
+            write(&root.0, "a.ttl", TTL),
+            write(&root.0, "b.trig", TTL),
+            write(&root.0, "q.rq", "SELECT * WHERE { ?s ?p ?o }\n"),
+        ];
+        let [a, b, q] = paths.each_ref().map(|p| uri(p));
+        let agree = |ws: &Workspace| {
+            fn sorted(mut v: Vec<&str>) -> Vec<&str> {
+                v.sort_unstable();
+                v
+            }
+            assert_eq!(
+                sorted(ws.open_uris().collect()),
+                sorted(ws.open.keys().map(String::as_str).collect())
+            );
+            assert_eq!(
+                sorted(ws.indexed_uris().collect()),
+                sorted(ws.disk.keys().map(String::as_str).collect())
+            );
+            assert_eq!(ws.indexed_count(), ws.disk.len());
+            for u in [&a, &b, &q] {
+                assert_eq!(ws.is_open(u), ws.open.contains_key(u));
+                assert_eq!(ws.version(u), ws.open.get(u).map(|d| d.version));
+                assert_eq!(ws.doc_kind(u), ws.open.get(u).map(|d| d.kind));
+                assert_eq!(ws.is_indexed(u), ws.disk.contains_key(u));
+                assert_eq!(
+                    ws.indexed_analysis(u).map(Arc::as_ptr),
+                    ws.disk.get(u).map(Arc::as_ptr)
+                );
+            }
+        };
+
+        let parsed = ws.parse_paths(paths[..2].to_vec());
+        ws.add_disk(parsed, true);
+        agree(&ws);
+        assert!(ws.is_indexed(&a) && ws.is_indexed(&b) && !ws.is_indexed(&q));
+        assert_eq!(ws.open_uris().count(), 0);
+        assert_eq!(ws.version(&a), None);
+
+        // An open RDF document that is also on disk is open, not indexed.
+        ws.open_doc(a.clone(), TTL.into(), 3);
+        ws.open_doc(q.clone(), "SELECT * WHERE { ?s ?p ?o }\n".into(), 1);
+        agree(&ws);
+        assert!(ws.is_open(&a) && !ws.is_indexed(&a));
+        assert_eq!(ws.version(&a), Some(3));
+        assert_eq!(ws.doc_kind(&a), Some(DocKind::Rdf(Syntax::Turtle)));
+        assert_eq!(ws.doc_kind(&q), Some(DocKind::Sparql));
+        assert_eq!(ws.doc_kind(&b), None);
+        assert_eq!(ws.indexed_uris().collect::<Vec<_>>(), [b.as_str()]);
+
+        // The index does not take back a file while it is open.
+        let parsed = ws.parse_paths(vec![paths[0].clone()]);
+        ws.add_disk(parsed, true);
+        agree(&ws);
+        assert!(!ws.is_indexed(&a));
+
+        // Closing it indexes it from disk again.
+        ws.close_doc(&a);
+        ws.close_doc(&q);
+        agree(&ws);
+        assert!(!ws.is_open(&a) && ws.is_indexed(&a));
+        assert_eq!((ws.version(&a), ws.doc_kind(&a)), (None, None));
+        assert_eq!(ws.indexed_count(), 2);
     }
 
     #[test]

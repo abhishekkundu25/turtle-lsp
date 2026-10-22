@@ -362,7 +362,7 @@ impl Server {
         let wsdiag = workspace_diagnostics::State::new(settings.diagnostics_workspace && !inline);
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
         // Without watchers (see `register_watchers`), nothing reports new files.
-        ws.rescan_sparql = !watch_dynamic;
+        ws.set_rescan_sparql(!watch_dynamic);
         let contexts = use_network(&mut ws, settings.imports_network, inline);
         #[cfg(not(target_arch = "wasm32"))]
         let (reindex_tx, reindex_rx) = unbounded();
@@ -495,7 +495,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     // is remembered, so that the index does not undo it when it lands.
     server.ws.expect_initial_index();
     let (tx, index_rx) = unbounded();
-    let prefixes = server.ws.settings_prefixes.clone();
+    let prefixes = server.ws.settings_prefixes().clone();
     // The same context loader: a context is fetched once, in the background.
     let contexts = server.ws.shared_contexts();
     let failed = tx.clone();
@@ -1056,7 +1056,7 @@ impl Server {
         let mut disk_changed = false;
         let mut sparql_paths: Vec<PathBuf> = Vec::new();
         let mut reindex: Vec<PathBuf> = Vec::new();
-        let settings_file = self.ws.roots.first().map(|r| r.join(SETTINGS_FILE));
+        let settings_file = self.ws.roots().first().map(|r| r.join(SETTINGS_FILE));
         for ch in changes {
             let Some(path) = uri_to_path(ch.uri.as_str()) else {
                 continue;
@@ -1079,7 +1079,7 @@ impl Server {
                 continue;
             }
             let key = normalize_uri(ch.uri.as_str());
-            let open = self.ws.open.contains_key(&key);
+            let open = self.ws.is_open(&key);
             // A JSON-LD context file on disk (the open copy wins).
             if !open && self.ws.context_changed(&key, true) {
                 disk_changed = true;
@@ -1113,7 +1113,7 @@ impl Server {
             stale.extend(self.ws.prefixes_changed(Some(file)));
         }
         if prefixes_changed {
-            self.dirty.extend(self.ws.open.keys().cloned());
+            self.dirty.extend(self.ws.open_uris().map(str::to_owned));
         }
         // The files of one notification are parsed together.
         if self.ws.reindex_disk_files(&reindex) {
@@ -1211,7 +1211,7 @@ impl Server {
         if !self.indexed {
             return;
         }
-        let roots = self.ws.roots.clone();
+        let roots = self.ws.roots().to_vec();
         let network = self.settings.imports_network;
         let k = self.ws.knowledge();
         if let Some(done) = self.imports.sync(k, &roots, network) {
@@ -1364,7 +1364,7 @@ impl Server {
     /// `turtle-lsp.json` changed on disk: read it again. An invalid file
     /// warns and counts as absent.
     fn reload_settings_file(&mut self) {
-        let (file, error) = read_file_settings(self.ws.roots.first());
+        let (file, error) = read_file_settings(self.ws.roots().first());
         self.file_settings = file;
         if let Some(e) = error {
             self.show_warning(e);
@@ -1394,7 +1394,7 @@ impl Server {
         if new.prefixes != self.settings.prefixes {
             // The background index was built with the old prefixes.
             self.ensure_indexed();
-            self.ws.settings_prefixes = new.prefixes.clone();
+            self.ws.set_settings_prefixes(new.prefixes.clone());
             let stale = self.ws.prefixes_changed(None);
             self.reindex_in_background(stale);
         }
@@ -1405,7 +1405,7 @@ impl Server {
         }
         self.settings = new;
         self.wsdiag_setting();
-        self.dirty.extend(self.ws.open.keys().cloned());
+        self.dirty.extend(self.ws.open_uris().map(str::to_owned));
         self.knowledge_changed();
         self.validate_shacl();
     }
@@ -1416,7 +1416,7 @@ impl Server {
         self.generation += 1;
         // Diagnostics read the knowledge index (add-prefix candidates, lints),
         // so every open document is due again.
-        self.dirty.extend(self.ws.open.keys().cloned());
+        self.dirty.extend(self.ws.open_uris().map(str::to_owned));
         if self.reported {
             self.refresh_needed = true;
         }
@@ -1499,7 +1499,7 @@ impl Server {
                     self.ws.prefixes_changed(None);
                 }
             }
-            self.dirty.extend(self.ws.open.keys().cloned());
+            self.dirty.extend(self.ws.open_uris().map(str::to_owned));
             self.knowledge_changed();
         }
         // A context file being edited: the open documents using it follow;
@@ -1544,7 +1544,7 @@ impl Server {
             return;
         }
         for uri in dirty {
-            let version = self.ws.open.get(&uri).map(|d| d.version);
+            let version = self.ws.version(&uri);
             match self.diagnostics_for(&uri) {
                 Ok(Some(d)) => self.send_diagnostics(&uri, d, version),
                 Ok(None) => {}
@@ -1562,9 +1562,8 @@ impl Server {
         let uri = normalize_uri(p.text_document.uri.as_str());
         let version = self
             .ws
-            .open
-            .get(&uri)
-            .map_or_else(|| "disk".to_string(), |d| d.version.to_string());
+            .version(&uri)
+            .map_or_else(|| "disk".to_string(), |v| v.to_string());
         // The described set is part of the id: other documents' edits that
         // change it may not have bumped the generation yet (debounced).
         let described = self.ws.knowledge().described_generation();
@@ -1865,7 +1864,7 @@ impl Server {
                     })
                     .transpose();
                 let file = self.prefix_file_for(&u);
-                let roots = self.ws.roots.clone();
+                let roots = self.ws.roots().to_vec();
                 let mut dirs: FxHashMap<PathBuf, Option<PathBuf>> = FxHashMap::default();
                 let mut file_of = |uri: &str| {
                     let dir = uri_to_path(uri)?.parent()?.to_path_buf();
@@ -2606,7 +2605,7 @@ mod tests {
         };
         server.watched_files_changed(vec![event(&gone), event(&dir.join("folder"))]);
         server.index_arrived(Fed::Got(Ok(files)));
-        let indexed = |p: &std::path::Path| server.ws.disk.contains_key(&path_to_uri(p).unwrap());
+        let indexed = |p: &std::path::Path| server.ws.is_indexed(&path_to_uri(p).unwrap());
         assert!(indexed(&kept));
         assert!(!indexed(&gone), "a deleted file came back");
         assert!(!indexed(&in_folder), "a file of a deleted folder came back");
@@ -2655,7 +2654,7 @@ mod tests {
         let before = crate::workspace::INDEX_PASSES.with(|c| c.get());
         server.watched_files_changed(changes);
         assert_eq!(crate::workspace::INDEX_PASSES.with(|c| c.get()) - before, 1);
-        assert_eq!(server.ws.disk.len(), 120);
+        assert_eq!(server.ws.indexed_count(), 120);
         let queries = server.ws.sparql_documents();
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0].uri, path_to_uri(&second).unwrap());
@@ -2821,7 +2820,7 @@ mod review_tests {
 
     fn first_subject(server: &Server, path: &std::path::Path) -> String {
         let uri = path_to_uri(path).unwrap();
-        match &server.ws.disk[&uri].parsed.triples[0].s {
+        match &server.ws.indexed_analysis(&uri).unwrap().parsed.triples[0].s {
             crate::syntax::Node::Iri(i) => i.as_str().to_string(),
             other => panic!("{other:?}"),
         }
