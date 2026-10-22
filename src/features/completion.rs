@@ -21,10 +21,15 @@
 mod jsonld;
 pub(crate) mod ranking;
 
+// `ranking` and the other modules of this directory write IRIs through here.
+pub(crate) use crate::syntax::names::shorten;
+
 use crate::analysis::{Analysis, Encoding};
-use crate::features::diagnostics::prefix_insertion;
-use crate::knowledge::{Knowledge, namespace_of};
-use crate::syntax::lexer::{Kind, is_pn_chars};
+use crate::knowledge::Knowledge;
+use crate::syntax::lexer::Kind;
+use crate::syntax::names::{
+    Scope, declaration_edit, is_pn_chars, is_pn_local, vocabulary_namespace,
+};
 use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span, Syntax};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;
@@ -112,7 +117,8 @@ pub fn complete(
     let typed = &text[start..offset];
     let replace = a.range(enc, Span::new(start as u32, end as u32));
     let slot = slot_at(a, start as u32);
-    let prefixes = a.prefix_map();
+    // Only what is declared above the cursor can be written there.
+    let prefixes = Scope::at(a, start as u32);
 
     let ranked = match slot {
         Slot::Predicate => ranking::predicates(a, k, start as u32, &prefixes),
@@ -161,7 +167,7 @@ pub fn complete(
 
     incomplete |= finish(&mut cands, ranked, slot, typed, k, &prefixes);
     let items = items(cands, replace, &prefixes, "@prefix", |p, ns| {
-        prefix_insertion(a, text, enc, p, ns)
+        declaration_edit(a, enc, p, ns, start as u32)
     });
     CompletionResponse::List(CompletionList {
         is_incomplete: incomplete,
@@ -247,7 +253,7 @@ pub(crate) fn namespace_terms(
         let Some(l) = iri.strip_prefix(ns) else {
             continue;
         };
-        if l.is_empty() || seen.contains(l) || !is_local_name(l) || !fuzzy(local, l) {
+        if l.is_empty() || seen.contains(l) || !is_pn_local(l) || !fuzzy(local, l) {
             continue;
         }
         let kind = guess_kind(k, &iri);
@@ -574,7 +580,7 @@ fn written(iri: &str, prefixes: &PrefixMap) -> (String, Option<(String, String)>
     }
     if let Some((v, local)) = VOCABS.lookup(iri)
         && !prefixes.contains_key(v.prefix)
-        && is_local_name(local)
+        && is_pn_local(local)
     {
         return (
             format!("{}:{local}", v.prefix),
@@ -590,7 +596,7 @@ pub(crate) fn may_match(iri: &str, typed: &str, prefixes: &PrefixMap) -> bool {
         Some((p, local)) => prefixes
             .get(p)
             .is_some_and(|ns| iri.starts_with(ns.as_str()) && fuzzy(local, &iri[ns.len()..])),
-        None => fuzzy(typed, &iri[namespace_of(iri).len()..]),
+        None => fuzzy(typed, &iri[vocabulary_namespace(iri).len()..]),
     }
 }
 
@@ -694,10 +700,6 @@ fn word_end(text: &str, offset: usize) -> usize {
     e
 }
 
-pub(crate) fn is_local_name(l: &str) -> bool {
-    l.chars().all(|c| is_pn_chars(c) || c == '.') && !l.ends_with('.')
-}
-
 /// Case-insensitive subsequence match; empty query matches everything.
 pub(crate) fn fuzzy(query: &str, cand: &str) -> bool {
     let mut it = cand.chars().flat_map(char::to_lowercase);
@@ -705,17 +707,6 @@ pub(crate) fn fuzzy(query: &str, cand: &str) -> bool {
         .chars()
         .flat_map(char::to_lowercase)
         .all(|q| it.any(|c| c == q))
-}
-
-/// `iri` as `prefix:local` using the longest matching namespace.
-pub fn shorten(iri: &str, prefixes: &PrefixMap) -> Option<String> {
-    prefixes
-        .iter()
-        .filter(|(_, ns)| {
-            !ns.is_empty() && iri.starts_with(ns.as_str()) && is_local_name(&iri[ns.len()..])
-        })
-        .max_by_key(|(_, ns)| ns.len())
-        .map(|(p, ns)| format!("{p}:{}", &iri[ns.len()..]))
 }
 
 #[cfg(test)]
@@ -760,6 +751,53 @@ mod tests {
                 (i.label, e.range)
             })
             .collect()
+    }
+
+    /// The items offered at the end of the first `needle` of `text`.
+    fn items_at(text: &str, needle: &str) -> Vec<CompletionItem> {
+        let a = Arc::new(Analysis::new(
+            "file:///w/doc.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/doc.ttl", Source::Open, a.clone());
+        let offset = (text.find(needle).unwrap() + needle.len()) as u32;
+        let pos = a.position(Encoding::Utf16, offset);
+        match complete(&a, text, &k, Encoding::Utf16, pos) {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(l) => l.items,
+        }
+    }
+
+    #[test]
+    fn a_prefix_declared_only_further_down_is_added_at_the_cursor() {
+        let foaf = "@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n";
+        let below = format!("<http://e/a> <http://e/p> foaf:Pers\n{foaf}");
+        let items = items_at(&below, "foaf:Pers");
+        let person = items.iter().find(|i| i.label == "foaf:Person").unwrap();
+        let added = person
+            .additional_text_edits
+            .as_ref()
+            .expect("a declaration");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].new_text, foaf);
+        assert_eq!(added[0].range.start, Position::new(0, 0));
+        // Declared above the cursor: nothing to add.
+        let above = format!("{foaf}<http://e/a> <http://e/p> foaf:Pers\n");
+        let items = items_at(&above, "foaf:Pers");
+        let person = items.iter().find(|i| i.label == "foaf:Person").unwrap();
+        assert!(person.additional_text_edits.is_none());
+    }
+
+    #[test]
+    fn completion_never_writes_a_name_turtle_cannot_read() {
+        let text = "@prefix ex: <http://example.org/> .\n<http://example.org/-x> a ex:Thing .\nex:s ex:p ex:";
+        let items = items_at(text, "ex:s ex:p ex:");
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"ex:Thing"), "{labels:?}");
+        assert!(!labels.contains(&"ex:-x"), "{labels:?}");
     }
 
     #[test]

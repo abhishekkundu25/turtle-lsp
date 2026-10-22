@@ -505,14 +505,8 @@ fn turtle_term(t: &Term, iri: &mut dyn FnMut(&str) -> String) -> String {
 /// `iri` as a prefixed name with `prefixes` that Turtle reads back as `iri`:
 /// (prefix, namespace, name).
 fn turtle_name<'p>(iri: &str, prefixes: &'p PrefixMap) -> Option<(&'p str, &'p str, String)> {
-    let name = crate::features::completion::shorten(iri, prefixes)?;
-    let (p, local) = name.split_once(':')?;
-    let starts_ok = local.chars().next().is_none_or(
-        |c| !matches!(c, '-' | '.' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}'),
-    );
-    if !starts_ok {
-        return None;
-    }
+    let name = crate::syntax::names::shorten(iri, prefixes)?;
+    let (p, _) = name.split_once(':')?;
     let (p, ns) = prefixes.get_key_value(p)?;
     Some((p.as_str(), ns.as_str(), name))
 }

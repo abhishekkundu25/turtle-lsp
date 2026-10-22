@@ -4,6 +4,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, Source};
+use crate::syntax::names::{Scope, declaration_at, is_pn_prefix};
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
 use crate::workspace::{PREFIX_FILE, path_to_uri, uri_to_path};
 use lsp_types::*;
@@ -83,7 +84,14 @@ pub fn definition(
     }
     match target_at(a, offset) {
         Some((Target::Prefix(name), _)) => {
-            if let Some(p) = a.parsed.prefixes.iter().find(|p| p.name == name) {
+            // The declaration under the cursor, else the one in scope there.
+            if let Some(p) = a
+                .parsed
+                .prefixes
+                .iter()
+                .find(|p| p.name_span.contains(offset))
+                .or_else(|| declaration_at(a, &name, offset))
+            {
                 return vec![loc(a, enc, p.name_span)];
             }
             prefix_file
@@ -380,7 +388,7 @@ pub fn rename(
     match target {
         Target::Prefix(old) => {
             let new = new_name.trim_end_matches(':');
-            if new.contains(':') || new.contains(char::is_whitespace) {
+            if !is_pn_prefix(new) {
                 return Err(format!("'{new_name}' is not a valid prefix name"));
             }
             let declares =
@@ -490,25 +498,34 @@ pub fn renamed_iri_at(
         && !prefixes.contains_key(p)
         && rest.starts_with("//")
     {
-        return Ok(new_name.to_string());
+        return checked_iri(new_name.to_string());
     }
     renamed_iri(old, new_name, &prefixes)
 }
 
 /// The IRI term `old` is renamed to, from `new_name` as the user typed it:
 /// `<full IRI>`, `prefix:local` (with `prefixes`), or a local name that
-/// replaces `old`'s after its last `#`, `/` or `:`.
+/// replaces `old`'s after its last `#`, `/` or `:`. `Err` when the result is
+/// no valid absolute IRI (`foo bar`), which no document could hold.
 pub fn renamed_iri(old: &str, new_name: &str, prefixes: &PrefixMap) -> Result<String, String> {
-    if let Some(i) = new_name.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
-        Ok(i.to_string())
+    let iri = if let Some(i) = new_name.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
+        i.to_string()
     } else if let Some((p, l)) = new_name.split_once(':') {
         let ns = prefixes
             .get(p)
             .ok_or(format!("prefix '{p}:' is not declared"))?;
-        Ok(format!("{ns}{l}"))
+        format!("{ns}{l}")
     } else {
         let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
-        Ok(format!("{}{new_name}", &old[..cut]))
+        format!("{}{new_name}", &old[..cut])
+    };
+    checked_iri(iri)
+}
+
+fn checked_iri(iri: String) -> Result<String, String> {
+    match oxiri::Iri::parse(iri.as_str()) {
+        Ok(_) => Ok(iri),
+        Err(e) => Err(format!("'{iri}' is not a valid IRI: {e}")),
     }
 }
 
@@ -540,16 +557,16 @@ pub fn rename_term(
         .docs_referencing(old)
         .filter(|(_, src, other)| *src != Source::External && other.parsed.syntax != Syntax::JsonLd)
     {
-        let prefixes = other.prefix_map();
+        let scope = Scope::whole(other);
         let mut seen = FxHashSet::default();
         let mut edits = Vec::new();
         for r in other.refs_of(old) {
             if r.form == Form::A || !seen.insert(r.span) {
                 continue;
             }
-            let text = match crate::features::completion::shorten(new_iri, &prefixes) {
-                Some(s) if !matches!(r.form, Form::Iri) => s,
-                _ => format!("<{new_iri}>"),
+            let text = match r.form {
+                Form::Iri => format!("<{new_iri}>"),
+                _ => scope.write(new_iri),
             };
             edits.push(TextEdit {
                 range: other.range(enc, r.span),
@@ -568,5 +585,47 @@ pub fn prefix_file_uri(path: &std::path::Path) -> Option<String> {
         path_to_uri(path)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_renamed_iri_must_be_a_valid_iri() {
+        let prefixes: PrefixMap =
+            PrefixMap::from_iter([("ex".to_string(), "http://example.org/".to_string())]);
+        let old = "http://example.org/a";
+        assert_eq!(
+            renamed_iri(old, "b", &prefixes).unwrap(),
+            "http://example.org/b"
+        );
+        assert_eq!(
+            renamed_iri(old, "ex:c", &prefixes).unwrap(),
+            "http://example.org/c"
+        );
+        assert_eq!(
+            renamed_iri(old, "<http://example.org/-a>", &prefixes).unwrap(),
+            "http://example.org/-a"
+        );
+        for bad in [
+            "foo bar",
+            "ex:foo bar",
+            "<http://example.org/a b>",
+            "<not an iri>",
+            "<rel/ative>",
+            "a<b",
+            "a\"b",
+            "a{b}",
+        ] {
+            let err = renamed_iri(old, bad, &prefixes).unwrap_err();
+            assert!(err.contains("not a valid IRI"), "{bad}: {err}");
+        }
+        assert!(
+            renamed_iri(old, "nope:x", &prefixes)
+                .unwrap_err()
+                .contains("not declared")
+        );
     }
 }

@@ -2,10 +2,14 @@
 //! extract a prefix for a namespace. Every edit keeps the graph the same.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::features::diagnostics::prefix_insertion;
-use crate::syntax::lexer::{Kind, is_pn_chars, is_pn_chars_base, is_pn_chars_u};
-use crate::syntax::{Form, PrefixDecl, PrefixMap, Ref, Span};
+use crate::syntax::lexer::Kind;
+use crate::syntax::names::{
+    Scope, declarable_namespace, declaration_edit, declaration_point, is_pn_local, is_pn_prefix,
+    newline, shorten, spaced,
+};
+use crate::syntax::{Form, PrefixDecl, Ref, Span};
 use crate::vocab::VOCABS;
+use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
 use serde_json::json;
@@ -57,7 +61,7 @@ pub fn code_actions(
     if let Some(r) = ref_in(a, start, end) {
         match r.form {
             Form::Iri => {
-                let scope = scope_at(a, r.span.start);
+                let scope = Scope::at(a, r.span.start);
                 if let Some(pname) = shorten(&r.iri, &scope) {
                     let new_text = spaced(&a.text, r.span, pname);
                     push(
@@ -69,7 +73,7 @@ pub fn code_actions(
                         }]),
                         None,
                     );
-                } else if let Some((ns, name)) = extractable(a, enc, r) {
+                } else if let Some((ns, name)) = extractable(a, r) {
                     let title = format!("Extract prefix {name}: for <{ns}>");
                     let data = json!({ "uri": uri, "turtle": EXTRACT, "ns": ns, "name": name });
                     let edits = (!lazy).then(|| extract_edits(a, enc, &ns, &name));
@@ -179,45 +183,10 @@ fn ref_in(a: &Analysis, start: u32, end: u32) -> Option<&Ref> {
 
 // ---- shorten / expand ----
 
-/// Prefixes in scope at `offset`: external ones, then the declarations before it.
-fn scope_at(a: &Analysis, offset: u32) -> PrefixMap {
-    let mut m = (*a.external).clone();
-    for p in a
-        .parsed
-        .prefixes
-        .iter()
-        .take_while(|p| p.span.end <= offset)
-    {
-        m.insert(p.name.clone(), p.iri.to_string());
-    }
-    m
-}
-
-/// `prefix:local` for `iri` using the longest namespace in `scope` whose local
-/// part is a PN_LOCAL as is (no backslash escapes needed).
-pub(crate) fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
-    scope
-        .iter()
-        .filter(|(name, ns)| {
-            let (name, ns): (&str, &str) = (name, ns);
-            !ns.is_empty()
-                && iri.starts_with(ns)
-                && is_pn_prefix(name)
-                && is_plain_local(&iri[ns.len()..])
-        })
-        .min_by(|(n1, ns1), (n2, ns2)| {
-            ns2.len()
-                .cmp(&ns1.len())
-                .then(n1.len().cmp(&n2.len()))
-                .then(n1.cmp(n2))
-        })
-        .map(|(name, ns)| format!("{name}:{}", &iri[ns.len()..]))
-}
-
 /// Calls `f` with every `<...>` ref that a prefix in scope at its position
 /// shortens, and its prefixed name, until `f` returns false.
 fn each_shortenable(a: &Analysis, mut f: impl FnMut(&Ref, String) -> bool) {
-    let mut scope = (*a.external).clone();
+    let mut scope = Scope::outside(a);
     let mut decls = a.parsed.prefixes.iter().peekable();
     for r in a.parsed.refs.iter().filter(|r| r.form == Form::Iri) {
         while let Some(p) = decls.next_if(|p| p.span.end <= r.span.start) {
@@ -241,29 +210,6 @@ fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
         true
     });
     edits
-}
-
-/// A prefixed name replacing the IRI at `span`, with a space added where it
-/// would otherwise run into the neighbouring token (`a<x>`, `<x>ex:y`).
-pub(crate) fn spaced(text: &str, span: Span, pname: String) -> String {
-    let joins = |c: char| is_pn_chars(c) || matches!(c, ':' | '%' | '\\');
-    let before = text[..span.start as usize].chars().next_back();
-    let mut after = text[span.end as usize..].chars();
-    let next = after.next();
-    let space_before = before.is_some_and(joins);
-    let space_after = match next {
-        Some('.') => after.next().is_some_and(joins),
-        Some(c) => joins(c),
-        None => false,
-    };
-    match (space_before, space_after) {
-        (false, false) => pname,
-        (b, s) => format!(
-            "{}{pname}{}",
-            if b { " " } else { "" },
-            if s { " " } else { "" }
-        ),
-    }
 }
 
 /// `<iri>` for a prefixed name, escaping what an IRIREF cannot hold. Only for
@@ -295,53 +241,20 @@ pub(crate) fn expand_iri(iri: &str, resolved: bool) -> Option<String> {
     Some(out)
 }
 
-/// PN_PREFIX (the empty prefix included).
-pub(crate) fn is_pn_prefix(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        None => true,
-        Some(c) => {
-            is_pn_chars_base(c) && chars.all(|c| is_pn_chars(c) || c == '.') && !name.ends_with('.')
-        }
-    }
-}
-
-/// A PN_LOCAL that needs no backslash escapes; `%` only as a `%XX` escape.
-fn is_plain_local(local: &str) -> bool {
-    let b = local.as_bytes();
-    let mut first = true;
-    for (i, c) in local.char_indices() {
-        let ok = match c {
-            '%' => b
-                .get(i + 1..i + 3)
-                .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit)),
-            ':' => true,
-            '.' => !first,
-            c if first => is_pn_chars_u(c) || c.is_ascii_digit(),
-            c => is_pn_chars(c),
-        };
-        if !ok {
-            return false;
-        }
-        first = false;
-    }
-    !local.ends_with('.')
-}
-
 // ---- extract prefix ----
 
 /// Namespace and new prefix name for the IRI at `r`, when no prefix covers it.
-fn extractable(a: &Analysis, enc: Encoding, r: &Ref) -> Option<(String, String)> {
+fn extractable(a: &Analysis, r: &Ref) -> Option<(String, String)> {
     let iri: &str = &r.iri;
-    let ns = namespace_of(iri)?;
-    if iri.len() == ns.len() || !is_plain_local(&iri[ns.len()..]) {
+    let ns = declarable_namespace(iri)?;
+    if iri.len() == ns.len() || !is_pn_local(&iri[ns.len()..]) {
         return None;
     }
     if bound_namespaces(a).contains(ns) {
         return None;
     }
     // The declaration goes after the last one; IRIs before it cannot use it.
-    if insertion_offset(a, enc) > r.span.start {
+    if insertion_offset(a) > r.span.start {
         return None;
     }
     let taken = taken_names(a);
@@ -355,12 +268,12 @@ fn extractable(a: &Analysis, enc: Encoding, r: &Ref) -> Option<(String, String)>
 
 fn extract_edits(a: &Analysis, enc: Encoding, ns: &str, name: &str) -> Vec<TextEdit> {
     let text: &str = &a.text;
-    let insert = prefix_insertion(a, text, enc, name, ns);
-    let from = insertion_offset(a, enc);
+    let insert = declaration_edit(a, enc, name, ns, u32::MAX);
+    let from = insertion_offset(a);
     let mut edits = vec![insert];
     for r in a.parsed.refs.iter().filter(|r| r.form == Form::Iri) {
         let iri: &str = &r.iri;
-        if r.span.start >= from && iri.starts_with(ns) && is_plain_local(&iri[ns.len()..]) {
+        if r.span.start >= from && iri.starts_with(ns) && is_pn_local(&iri[ns.len()..]) {
             edits.push(TextEdit {
                 range: a.range(enc, r.span),
                 new_text: spaced(text, r.span, format!("{name}:{}", &iri[ns.len()..])),
@@ -370,21 +283,8 @@ fn extract_edits(a: &Analysis, enc: Encoding, ns: &str, name: &str) -> Vec<TextE
     edits
 }
 
-fn insertion_offset(a: &Analysis, enc: Encoding) -> u32 {
-    let at = prefix_insertion(a, &a.text, enc, "", "").range.start;
-    a.offset(enc, at).unwrap_or(0)
-}
-
-/// `iri` up to its last `#` or `/`, when that is past the authority.
-fn namespace_of(iri: &str) -> Option<&str> {
-    let scheme_end = iri.find(':')?;
-    let rest = &iri[scheme_end + 1..];
-    let path_start = match rest.strip_prefix("//") {
-        Some(auth) => scheme_end + 3 + auth.find(['/', '#', '?'])?,
-        None => scheme_end + 1,
-    };
-    let cut = iri.rfind(['#', '/'])?;
-    (cut >= path_start && !iri[..cut].contains('?')).then(|| &iri[..=cut])
+fn insertion_offset(a: &Analysis) -> u32 {
+    declaration_point(a, u32::MAX).0 as u32
 }
 
 fn taken_names(a: &Analysis) -> FxHashSet<String> {
@@ -516,7 +416,7 @@ fn organise(a: &Analysis, enc: Encoding) -> Option<TextEdit> {
         })
         .collect();
     let used: FxHashSet<&str> = a.parsed.prefix_uses.iter().map(|u| &*u.name).collect();
-    let keep_unused = a.uri.ends_with(crate::workspace::PREFIX_FILE);
+    let keep_unused = file_uri_name(&a.uri).as_deref() == Some(PREFIX_FILE);
     let (span, new_text) = organise_block(
         text,
         &block,
@@ -620,14 +520,11 @@ pub(crate) fn organise_block(
     if kept.len() == units.len() && kept.iter().enumerate().all(|(n, (i, _))| n == *i) {
         return None;
     }
-    let nl = if text[region_start..region_end].contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
+    let nl = newline(text);
+    // A multi-line directive keeps its own breaks, in the document's style.
     let new_text = kept
         .iter()
-        .map(|(_, u)| u.text.replace('\n', nl))
+        .map(|(_, u)| u.text.replace("\r\n", "\n").replace('\n', nl))
         .collect::<Vec<_>>()
         .join(nl);
     Some((Span::new(region_start as u32, region_end as u32), new_text))
@@ -730,6 +627,7 @@ pub fn edits_of(a: &Analysis, enc: Encoding, action: &CodeAction) -> Vec<TextEdi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::PrefixMap;
     use std::sync::Arc;
 
     fn analysis(uri: &str, text: &str) -> Analysis {
@@ -775,32 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn plain_local_names() {
-        for ok in ["", "a", "a.b", "1a", "_x", "a:b", "a%20b", "a-b", "é"] {
-            assert!(is_plain_local(ok), "{ok}");
-        }
-        for bad in ["a.", ".a", "-a", "a/b", "a#b", "a%2", "a?b", "a b", "a~"] {
-            assert!(!is_plain_local(bad), "{bad}");
-        }
-    }
-
-    #[test]
-    fn spacing_keeps_tokens_apart() {
-        let t = "_:b<http://e/p>.<http://e/x>";
-        let s = Span::new(3, 15);
-        assert_eq!(spaced(t, s, "e:p".into()), " e:p");
-        let t = "<http://e/p>.ex:a";
-        assert_eq!(spaced(t, Span::new(0, 12), "e:p".into()), "e:p ");
-    }
-
-    #[test]
     fn names_are_derived_from_the_namespace() {
         assert_eq!(
-            namespace_of("http://xmlns.com/foaf/0.1/Person"),
+            declarable_namespace("http://xmlns.com/foaf/0.1/Person"),
             Some("http://xmlns.com/foaf/0.1/")
         );
-        assert_eq!(namespace_of("http://example.org"), None);
-        assert_eq!(namespace_of("http://example.org/a?x=/y"), None);
+        assert_eq!(declarable_namespace("http://example.org"), None);
+        assert_eq!(declarable_namespace("http://example.org/a?x=/y"), None);
         assert_eq!(derive_name("http://xmlns.com/foaf/0.1/"), "foaf");
         assert_eq!(derive_name("https://w3id.org/sd/vocab/"), "sd");
         assert_eq!(derive_name("http://example.org/"), "example");
@@ -866,6 +745,34 @@ mod tests {
             format!(
                 "@prefix a: <http://a/> .\n@prefix b: <http://b/> . # bee\nPREFIX c: <http://c/>\n{use_all}"
             )
+        );
+    }
+
+    #[test]
+    fn organising_a_crlf_file_keeps_every_line_break_a_crlf() {
+        // The second directive spans two lines.
+        let text = "@prefix b: <http://b/> .\r\n@prefix a:\r\n  <http://a/> .\r\nb:x a:y a:z .\r\n";
+        let a = analysis("file:///t/doc.ttl", text);
+        let edit = organise(&a, Encoding::Utf16).unwrap();
+        assert_eq!(
+            edit.new_text,
+            "@prefix a:\r\n  <http://a/> .\r\n@prefix b: <http://b/> ."
+        );
+        assert!(!edit.new_text.contains("\r\r"));
+    }
+
+    #[test]
+    fn only_a_file_named_prefixes_ttl_keeps_unused_prefixes() {
+        let text = "@prefix b: <http://b/> .\n@prefix a: <http://a/> .\n";
+        for uri in ["file:///t/myprefixes.ttl", "file:///t/prefixes.ttl.bak.ttl"] {
+            let a = analysis(uri, text);
+            let edit = organise(&a, Encoding::Utf16).unwrap();
+            assert_eq!(edit.new_text, "", "{uri}");
+        }
+        let a = analysis("file:///t/sub%20dir/prefixes.ttl", text);
+        assert_eq!(
+            organise(&a, Encoding::Utf16).unwrap().new_text,
+            "@prefix a: <http://a/> .\n@prefix b: <http://b/> ."
         );
     }
 

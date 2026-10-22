@@ -13,6 +13,7 @@
 
 use super::{Token, TokenKind};
 use crate::syntax::Span;
+use crate::syntax::names::{is_pn_chars, is_pn_chars_base, is_pn_chars_u};
 
 /// Keywords, upper case. Matched case-insensitively.
 const KEYWORDS: &[&str] = &[
@@ -179,27 +180,6 @@ pub fn words() -> impl Iterator<Item = (&'static str, TokenKind)> {
             .chain(AGGREGATES)
             .map(|f| (*f, TokenKind::Function)),
     )
-}
-
-pub(crate) fn is_pn_chars_base(c: char) -> bool {
-    matches!(c,
-        'A'..='Z' | 'a'..='z' | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
-        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
-        | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
-        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
-}
-
-pub(crate) fn is_pn_chars_u(c: char) -> bool {
-    c == '_' || is_pn_chars_base(c)
-}
-
-pub(crate) fn is_pn_chars(c: char) -> bool {
-    is_pn_chars_u(c)
-        || c == '-'
-        || c.is_ascii_digit()
-        || c == '\u{B7}'
-        || ('\u{300}'..='\u{36F}').contains(&c)
-        || ('\u{203F}'..='\u{2040}').contains(&c)
 }
 
 fn is_varname_rest(c: char) -> bool {

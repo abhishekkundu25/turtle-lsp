@@ -10,10 +10,10 @@
 //! super or sub term.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::features::completion::shorten;
 use crate::features::hover::short;
 use crate::features::navigation::uri;
 use crate::knowledge::{Knowledge, Source};
+use crate::syntax::names::shorten;
 use crate::syntax::{Iri, PrefixMap, Span};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;

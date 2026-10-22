@@ -113,6 +113,26 @@ test("N-Quads gets no prefix help: no undeclared-prefix, no completions, no add-
   }
 })
 
+for (const [name, languageId] of [["__nt-two.nt", "ntriples"], ["__nq-two.nq", "nquads"]]) {
+  test(`${name}: two undeclared prefixes do not get an "Add all missing prefixes" @prefix block`, async () => {
+    const text = '<http://e.org/s> foaf:name "A" .\n<http://e.org/s> rdfs:label "B" .\n'
+    const uri = scratch(name)
+    const { diags } = await openAs(uri, text, languageId)
+    try {
+      const actions = await s.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range: { start: { line: 0, character: 0 }, end: { line: 2, character: 0 } },
+        context: { diagnostics: diags },
+      })
+      const edits = (actions ?? []).flatMap((a) => Object.values(a.edit?.changes ?? {}).flat())
+      assert.deepEqual(edits.filter((e) => /@prefix|PREFIX/.test(e.newText)), [], JSON.stringify(actions))
+      assert.deepEqual((actions ?? []).filter((a) => /prefix/i.test(a.title)), [])
+    } finally {
+      close(uri)
+    }
+  })
+}
+
 test("outline groups statements under their graph", async () => {
   const { uri } = await openData()
   try {
