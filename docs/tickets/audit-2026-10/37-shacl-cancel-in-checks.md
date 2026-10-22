@@ -16,7 +16,7 @@ its tests).
 
 **Blocked by:** 33b.
 
-**Status:** ready-for-agent
+**Status:** done. Departure: the 40M step budget now also counts shape checks (one per check that misses the cache).
 
 - [ ] Every `check()` (and `conforms()` that does not hit the cache) charges one step
       against `Budget.steps` and polls `cancelled` on the same cadence as the closure
