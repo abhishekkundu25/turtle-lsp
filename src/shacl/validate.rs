@@ -1,9 +1,10 @@
 //! SHACL Core validation over a [`Graph`] that is both the data graph and
 //! the shapes graph.
 //!
-//! Shapes are compiled once from the graph (lazily, as targets and shape
-//! parameters reach them), then every shape with a target validates its
-//! focus nodes. Covered: all targets (including implicit class targets and
+//! The shape model ([`super::model`]) says which nodes are shapes, with
+//! their paths, targets and parameters; its shapes are compiled into
+//! constraints once (lazily, as targets and shape parameters reach them),
+//! then every shape with a target validates its focus nodes. Covered: all targets (including implicit class targets and
 //! the `rdfs:subClassOf` closure), all property paths, and every SHACL Core
 //! constraint component; `sh:deactivated`, `sh:severity` and `sh:message`.
 //! SHACL-SPARQL: SPARQL-based constraints (`sh:sparql`), SPARQL-based
@@ -28,11 +29,12 @@
 //! - literal comparisons follow [`super::literal`].
 
 use super::literal;
-use super::model::Path;
+use super::model::{self, Path, Shapes};
 use super::sparql::{self, Answer, Cancel, Fail, Role};
+use super::vocab::{self, Param};
 use crate::rdf::Index;
 use crate::rdf::graph::{Graph, Id, Term};
-use crate::syntax::{Iri, RDF, XSD};
+use crate::syntax::Iri;
 use regex::{Regex, RegexBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spareval::QuerySolution;
@@ -40,7 +42,7 @@ use spargebra::Query;
 use spargebra::term::{NamedNode, Term as RdfTerm, Variable};
 use std::cmp::Ordering;
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// One `sh:ValidationResult`.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,175 +106,8 @@ pub struct Report {
     pub capped: bool,
 }
 
-struct V {
-    rdf_type: Iri,
-    sub_class_of: Iri,
-    rdfs_class: Iri,
-    owl_class: Iri,
-    node_shape: Iri,
-    property_shape: Iri,
-    target_class: Iri,
-    target_node: Iri,
-    target_subjects_of: Iri,
-    target_objects_of: Iri,
-    path: Iri,
-    inverse_path: Iri,
-    alternative_path: Iri,
-    zero_or_more_path: Iri,
-    one_or_more_path: Iri,
-    zero_or_one_path: Iri,
-    rdf_first: Iri,
-    rdf_nil: Iri,
-    deactivated: Iri,
-    severity: Iri,
-    violation: Iri,
-    message: Iri,
-    flags: Iri,
-    property: Iri,
-    qualified_value_shape: Iri,
-    qualified_min_count: Iri,
-    qualified_max_count: Iri,
-    qualified_disjoint: Iri,
-    ignored_properties: Iri,
-    xsd_boolean: Iri,
-    target: Iri,
-    sparql: Iri,
-    select: Iri,
-    ask: Iri,
-    prefixes: Iri,
-    declare: Iri,
-    prefix: Iri,
-    namespace: Iri,
-    owl_imports: Iri,
-    constraint_component: Iri,
-    parameter: Iri,
-    optional: Iri,
-    validator: Iri,
-    node_validator: Iri,
-    property_validator: Iri,
-    /// Parameter -> component, for the parameters that need no extra lookup.
-    params: FxHashMap<Iri, Param>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Param {
-    Class,
-    Datatype,
-    NodeKind,
-    MinCount,
-    MaxCount,
-    MinExclusive,
-    MinInclusive,
-    MaxExclusive,
-    MaxInclusive,
-    MinLength,
-    MaxLength,
-    Pattern,
-    LanguageIn,
-    UniqueLang,
-    Equals,
-    Disjoint,
-    LessThan,
-    LessThanOrEquals,
-    Not,
-    And,
-    Or,
-    Xone,
-    Node,
-    Property,
-    Closed,
-    HasValue,
-    In,
-}
-
-const PARAMS: [(&str, Param); 27] = [
-    ("class", Param::Class),
-    ("datatype", Param::Datatype),
-    ("nodeKind", Param::NodeKind),
-    ("minCount", Param::MinCount),
-    ("maxCount", Param::MaxCount),
-    ("minExclusive", Param::MinExclusive),
-    ("minInclusive", Param::MinInclusive),
-    ("maxExclusive", Param::MaxExclusive),
-    ("maxInclusive", Param::MaxInclusive),
-    ("minLength", Param::MinLength),
-    ("maxLength", Param::MaxLength),
-    ("pattern", Param::Pattern),
-    ("languageIn", Param::LanguageIn),
-    ("uniqueLang", Param::UniqueLang),
-    ("equals", Param::Equals),
-    ("disjoint", Param::Disjoint),
-    ("lessThan", Param::LessThan),
-    ("lessThanOrEquals", Param::LessThanOrEquals),
-    ("not", Param::Not),
-    ("and", Param::And),
-    ("or", Param::Or),
-    ("xone", Param::Xone),
-    ("node", Param::Node),
-    ("property", Param::Property),
-    ("closed", Param::Closed),
-    ("hasValue", Param::HasValue),
-    ("in", Param::In),
-];
-
 fn sh(local: &str) -> Iri {
     Iri::intern(&format!("{}{local}", super::SH))
-}
-
-fn v() -> &'static V {
-    static VOCAB: OnceLock<V> = OnceLock::new();
-    VOCAB.get_or_init(|| {
-        let rdfs = |l: &str| Iri::intern(&format!("http://www.w3.org/2000/01/rdf-schema#{l}"));
-        let rdf = |l: &str| Iri::intern(&format!("{RDF}{l}"));
-        V {
-            rdf_type: rdf("type"),
-            sub_class_of: rdfs("subClassOf"),
-            rdfs_class: rdfs("Class"),
-            owl_class: Iri::intern("http://www.w3.org/2002/07/owl#Class"),
-            node_shape: sh("NodeShape"),
-            property_shape: sh("PropertyShape"),
-            target_class: sh("targetClass"),
-            target_node: sh("targetNode"),
-            target_subjects_of: sh("targetSubjectsOf"),
-            target_objects_of: sh("targetObjectsOf"),
-            path: sh("path"),
-            inverse_path: sh("inversePath"),
-            alternative_path: sh("alternativePath"),
-            zero_or_more_path: sh("zeroOrMorePath"),
-            one_or_more_path: sh("oneOrMorePath"),
-            zero_or_one_path: sh("zeroOrOnePath"),
-            rdf_first: rdf("first"),
-            rdf_nil: rdf("nil"),
-            deactivated: sh("deactivated"),
-            severity: sh("severity"),
-            violation: sh("Violation"),
-            message: sh("message"),
-            flags: sh("flags"),
-            property: sh("property"),
-            qualified_value_shape: sh("qualifiedValueShape"),
-            qualified_min_count: sh("qualifiedMinCount"),
-            qualified_max_count: sh("qualifiedMaxCount"),
-            qualified_disjoint: sh("qualifiedValueShapesDisjoint"),
-            ignored_properties: sh("ignoredProperties"),
-            xsd_boolean: Iri::intern(&format!("{XSD}boolean")),
-            target: sh("target"),
-            sparql: sh("sparql"),
-            select: sh("select"),
-            ask: sh("ask"),
-            prefixes: sh("prefixes"),
-            declare: sh("declare"),
-            prefix: sh("prefix"),
-            namespace: sh("namespace"),
-            owl_imports: Iri::intern("http://www.w3.org/2002/07/owl#imports"),
-            constraint_component: sh("ConstraintComponent"),
-            parameter: sh("parameter"),
-            optional: sh("optional"),
-            validator: sh("validator"),
-            node_validator: sh("nodeValidator"),
-            property_validator: sh("propertyValidator"),
-            params: PARAMS.iter().map(|&(l, p)| (sh(l), p)).collect(),
-        }
-    })
 }
 
 /// The `sh:...ConstraintComponent` IRI of a component.
@@ -360,7 +195,7 @@ fn local_name(iri: &str) -> &str {
 /// The prefixes `sh:prefixes` of `node` declares (`sh:declare`), following
 /// `owl:imports`.
 fn prefixes(g: &Graph, node: Id) -> Vec<(String, String)> {
-    let v = v();
+    let v = vocab::get();
     let mut out = Vec::new();
     let mut seen = FxHashSet::default();
     let mut todo: Vec<Id> = g.objects(node, v.prefixes).collect();
@@ -387,7 +222,7 @@ fn prefixes(g: &Graph, node: Id) -> Vec<(String, String)> {
 /// The `sh:select` (or, with `ask`, `sh:ask`) of `node`: (whether ASK, text,
 /// triple).
 fn query_text<'a>(g: &Graph<'a>, node: Id, ask: bool) -> Option<(bool, &'a str, u32)> {
-    let v = v();
+    let v = vocab::get();
     g.out(node).find_map(|(i, t)| {
         let is_ask = t.p == v.ask;
         if t.p != v.select && !(ask && is_ask) {
@@ -424,7 +259,7 @@ fn prepare(
 /// The SPARQL-based constraint components declared in `g`: instances of
 /// `sh:ConstraintComponent` (or a subclass) with an IRI and parameters.
 fn components(g: &Graph) -> Vec<Component> {
-    let v = v();
+    let v = vocab::get();
     let Some(cc) = g.iri(v.constraint_component) else {
         return Vec::new();
     };
@@ -511,6 +346,20 @@ struct Shape {
     constraints: Vec<(C, u32)>,
 }
 
+impl Shape {
+    /// A node shape with nothing to check.
+    fn empty(node: Id, skip: bool) -> Shape {
+        Shape {
+            node,
+            path: None,
+            skip,
+            severity: vocab::get().violation,
+            messages: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+}
+
 const MAX_DEPTH: usize = 64;
 
 /// Shapes with fewer focus nodes run SPARQL checks one by one: a batched run
@@ -529,46 +378,24 @@ fn sparse(focus: usize, triples: usize) -> bool {
     focus.saturating_mul(TRIPLES_PER_BATCHED_FOCUS) < triples
 }
 
-/// The property path rooted at `node`.
+/// The property path rooted at `node`: the shape model's ([`model::path`]),
+/// with nested repetitions merged ([`merged`]).
 pub fn parse_path(g: &Graph, node: Id) -> Path {
-    path_at(g, node, 0)
+    merged(model::path(g, node))
 }
 
-fn path_at(g: &Graph, node: Id, depth: usize) -> Path {
-    let v = v();
-    if depth > MAX_DEPTH {
-        return Path::Invalid;
-    }
-    match g.term(node) {
-        Term::Iri(i) if i == v.rdf_nil => Path::Invalid,
-        Term::Iri(i) => Path::Predicate(i),
-        Term::Blank(_) => {
-            let members = |head: Id| -> Vec<Path> {
-                g.list(head)
-                    .into_iter()
-                    .map(|m| path_at(g, m, depth + 1))
-                    .collect()
-            };
-            if g.object(node, v.rdf_first).is_some() {
-                return Path::Sequence(members(node));
-            }
-            for (_, t) in g.out(node) {
-                let inner = || path_at(g, t.o, depth + 1);
-                if t.p == v.inverse_path {
-                    return Path::Inverse(Box::new(inner()));
-                } else if t.p == v.alternative_path {
-                    return Path::Alternative(members(t.o));
-                } else if t.p == v.zero_or_more_path {
-                    return repeated(Repeat::Star, inner());
-                } else if t.p == v.one_or_more_path {
-                    return repeated(Repeat::Plus, inner());
-                } else if t.p == v.zero_or_one_path {
-                    return repeated(Repeat::Optional, inner());
-                }
-            }
-            Path::Invalid
-        }
-        Term::Value(_) => Path::Invalid,
+/// `p` with every repetition directly inside another merged into one (see
+/// [`repeated`]), from the innermost out.
+fn merged(p: Path) -> Path {
+    let each = |ps: Vec<Path>| -> Vec<Path> { ps.into_iter().map(merged).collect() };
+    match p {
+        Path::Inverse(q) => Path::Inverse(Box::new(merged(*q))),
+        Path::Sequence(ps) => Path::Sequence(each(ps)),
+        Path::Alternative(ps) => Path::Alternative(each(ps)),
+        Path::ZeroOrMore(q) => repeated(Repeat::Star, merged(*q)),
+        Path::OneOrMore(q) => repeated(Repeat::Plus, merged(*q)),
+        Path::ZeroOrOne(q) => repeated(Repeat::Optional, merged(*q)),
+        p @ (Path::Predicate(_) | Path::Invalid) => p,
     }
 }
 
@@ -650,8 +477,11 @@ fn number(g: &Graph, id: Id) -> Option<u64> {
     lex.parse().ok()
 }
 
+/// Compiles the shapes of a [`Shapes`] model into constraints, lazily: a
+/// shape is compiled once a root or a compiled shape refers to it.
 struct Compiler<'g, 'a> {
     g: &'g Graph<'a>,
+    model: &'g Shapes,
     shapes: Vec<Shape>,
     index: FxHashMap<Id, ShapeIx>,
     /// Shapes reserved but not built yet. Building one only reserves the
@@ -669,22 +499,21 @@ impl Compiler<'_, '_> {
         }
         let ix = self.shapes.len() as ShapeIx;
         self.index.insert(node, ix);
-        self.shapes.push(Shape {
-            node,
-            path: None,
-            skip: true,
-            severity: v().violation,
-            messages: Vec::new(),
-            constraints: Vec::new(),
-        });
+        self.shapes.push(Shape::empty(node, true));
         self.pending.push((node, ix));
         ix
     }
 
-    /// Build every reserved shape, including those found while building.
+    /// Build every reserved shape, including those found while building. A
+    /// node the model has no shape for (a literal, an IRI with no triples)
+    /// has nothing to check: every value conforms to it.
     fn build_pending(&mut self) {
+        let model = self.model;
         while let Some((node, ix)) = self.pending.pop() {
-            let built = self.build(node);
+            let built = match model.get(node) {
+                Some(s) => self.build(s),
+                None => Shape::empty(node, false),
+            };
             self.shapes[ix as usize] = built;
         }
     }
@@ -695,15 +524,26 @@ impl Compiler<'_, '_> {
 
     /// The literal `true` (the spec names only that one, not `"1"^^xsd:boolean`).
     fn is_true(&self, id: Id) -> bool {
-        matches!(self.g.term(id).literal(), Some(("true", dt, _)) if dt == v().xsd_boolean)
+        matches!(self.g.term(id).literal(), Some(("true", dt, _)) if dt == vocab::get().xsd_boolean)
     }
 
-    fn build(&mut self, node: Id) -> Shape {
+    /// The constraints of model shape `s`.
+    fn build(&mut self, s: &model::Shape) -> Shape {
         let g = self.g;
-        let v = v();
-        let own: Vec<(u32, Iri, Id)> = g.out(node).map(|(i, t)| (i, t.p, t.o)).collect();
+        let model = self.model;
+        let v = vocab::get();
+        let node = s.node;
+        // Its parameters (every SHACL triple it is the subject of), in order.
+        let own: Vec<(u32, Iri, Id)> = s
+            .params
+            .iter()
+            .map(|&i| {
+                let t = g.triple_at(i);
+                (i, t.p, t.o)
+            })
+            .collect();
         let first = |p: Iri| own.iter().find(|t| t.1 == p).map(|t| t.2);
-        let path = first(v.path).map(|p| parse_path(g, p));
+        let path = s.path.as_ref().map(|(p, _)| merged(p.clone()));
         let deactivated = own
             .iter()
             .any(|t| t.1 == v.deactivated && self.is_true(t.2));
@@ -711,7 +551,7 @@ impl Compiler<'_, '_> {
         if ill_formed && !deactivated {
             self.failures.push(Failure {
                 node,
-                triple: own.iter().find(|t| t.1 == v.path).map(|t| t.0),
+                triple: s.path.as_ref().map(|p| p.1),
                 message: format!(
                     "sh:path is not a well-formed property path (empty, not a path, or nested deeper than {MAX_DEPTH} levels): this shape is not validated"
                 ),
@@ -741,7 +581,7 @@ impl Compiler<'_, '_> {
             .map_or("", |l| l.0);
         let mut qualified_done = false;
         for &(ti, p, o) in &own {
-            let Some(&param) = v.params.get(&p) else {
+            let Some(param) = v.param(p) else {
                 if (p == v.qualified_value_shape) && property_shape && !qualified_done {
                     qualified_done = true;
                     self.qualified(node, o, &own, &mut shape);
@@ -796,13 +636,12 @@ impl Compiler<'_, '_> {
                 Param::Node => Some(C::Node(self.shape(o))),
                 Param::Property => Some(C::Property(self.shape(o))),
                 Param::Closed => self.is_true(o).then(|| {
+                    // The property shapes' paths that are a single IRI.
                     let mut allowed: FxHashSet<Iri> = own
                         .iter()
                         .filter(|t| t.1 == v.property)
-                        .filter_map(|t| match g.object(t.2, v.path).map(|p| g.term(p)) {
-                            Some(Term::Iri(i)) => Some(i),
-                            _ => None,
-                        })
+                        .filter_map(|t| model.get(t.2)?.path.as_ref())
+                        .filter_map(|&(_, i)| g.as_iri(g.triple_at(i).o))
                         .collect();
                     for t in own.iter().filter(|t| t.1 == v.ignored_properties) {
                         allowed.extend(g.list(t.2).into_iter().filter_map(|m| g.as_iri(m)));
@@ -822,14 +661,14 @@ impl Compiler<'_, '_> {
                 self.sparql_constraint(&mut shape, ti, o);
             }
         }
-        self.component_uses(&mut shape, &own);
+        self.component_uses(&mut shape);
         shape
     }
 
     /// The SPARQL-based constraint `c` of `shape` (stated by triple `ti`).
     fn sparql_constraint(&mut self, shape: &mut Shape, ti: u32, c: Id) {
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
         if g.objects(c, v.deactivated).any(|d| self.is_true(d)) {
             return;
         }
@@ -847,7 +686,7 @@ impl Compiler<'_, '_> {
                 query,
                 ask: false,
                 constraint: Some(c),
-                component: sh("SPARQLConstraintComponent"),
+                component: component("SPARQL"),
                 messages: g.objects(c, v.message).collect(),
                 bindings: Vec::new(),
                 source: c,
@@ -857,9 +696,15 @@ impl Compiler<'_, '_> {
     }
 
     /// The SPARQL-based components whose mandatory parameters `shape` has.
-    fn component_uses(&mut self, shape: &mut Shape, own: &[(u32, Iri, Id)]) {
+    /// Their parameters may be any predicate, so all of the shape's triples
+    /// are looked at.
+    fn component_uses(&mut self, shape: &mut Shape) {
+        if self.components.is_empty() {
+            return;
+        }
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
+        let own: Vec<(u32, Iri, Id)> = g.out(shape.node).map(|(i, t)| (i, t.p, t.o)).collect();
         for comp in &self.components {
             let mut bindings = Vec::new();
             let mut first = None;
@@ -931,7 +776,7 @@ impl Compiler<'_, '_> {
     /// shapes its conforming values must not conform to.
     fn qualified(&mut self, node: Id, q: Id, own: &[(u32, Iri, Id)], shape: &mut Shape) {
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
         let disjoint = own
             .iter()
             .any(|t| t.1 == v.qualified_disjoint && self.is_true(t.2));
@@ -1241,7 +1086,7 @@ impl Run<'_, '_, '_> {
         if let Some(s) = self.supers.get(&c) {
             return s.clone();
         }
-        let sub = v().sub_class_of;
+        let sub = vocab::get().sub_class_of;
         let mut seen = FxHashSet::default();
         let mut todo = vec![c];
         while let Some(x) = todo.pop() {
@@ -1256,7 +1101,7 @@ impl Run<'_, '_, '_> {
 
     /// Whether `x` is a SHACL instance of `class`.
     fn is_instance(&mut self, x: Id, class: Id) -> bool {
-        let types: Vec<Id> = self.g.objects(x, v().rdf_type).collect();
+        let types: Vec<Id> = self.g.objects(x, vocab::get().rdf_type).collect();
         types.into_iter().any(|t| self.supers(t).contains(&class))
     }
 
@@ -1775,7 +1620,7 @@ impl Run<'_, '_, '_> {
     fn sparql_target(&mut self, target: Id, out: &mut Vec<Id>) {
         let Some(ix) = self.ix else { return };
         let g = self.g;
-        if g.objects(target, v().deactivated)
+        if g.objects(target, vocab::get().deactivated)
             .any(|d| matches!(g.term(d).literal(), Some(("true", _, _))))
         {
             return;
@@ -1812,23 +1657,18 @@ impl Run<'_, '_, '_> {
         }
     }
 
-    /// The focus nodes of shape `node`: its explicit targets, and itself as
-    /// a class when it is one.
-    fn focus_nodes(&mut self, node: Id) -> Vec<Id> {
+    /// The focus nodes of shape `s`: its explicit targets, and itself as a
+    /// class when it is one.
+    fn focus_nodes(&mut self, s: &model::Shape) -> Vec<Id> {
         let g = self.g;
-        let v = v();
+        let v = vocab::get();
+        let node = s.node;
         let mut out = Vec::new();
-        let own: Vec<(Iri, Id)> = g.out(node).map(|(_, t)| (t.p, t.o)).collect();
-        let is_class = own.iter().any(|&(p, o)| {
-            p == v.rdf_type
-                && g.as_iri(o)
-                    .is_some_and(|c| c == v.rdfs_class || c == v.owl_class)
+        let types: Vec<Id> = g.objects(node, v.rdf_type).collect();
+        let is_class = types.iter().any(|&o| {
+            g.as_iri(o)
+                .is_some_and(|c| c == v.rdfs_class || c == v.owl_class)
         }) || {
-            let types: Vec<Id> = own
-                .iter()
-                .filter(|t| t.0 == v.rdf_type)
-                .map(|t| t.1)
-                .collect();
             let classes = [v.rdfs_class, v.owl_class].map(|c| g.iri(c));
             types.into_iter().any(|t| {
                 let s = self.supers(t);
@@ -1838,7 +1678,10 @@ impl Run<'_, '_, '_> {
         if is_class {
             out.extend(self.instances(node));
         }
-        for (p, o) in own {
+        // Its targets of every kind, in the order it states them.
+        for &i in &s.params {
+            let t = g.triple_at(i);
+            let (p, o) = (t.p, t.o);
             if p == v.target_node {
                 out.push(o);
             } else if p == v.target_class {
@@ -1877,7 +1720,7 @@ impl Run<'_, '_, '_> {
 
     /// SHACL instances of `class`: typed with it or one of its subclasses.
     fn instances(&self, class: Id) -> Vec<Id> {
-        let v = v();
+        let v = vocab::get();
         let mut classes = FxHashSet::default();
         let mut todo = vec![class];
         let mut out = Vec::new();
@@ -1904,34 +1747,66 @@ impl Run<'_, '_, '_> {
     }
 }
 
-/// The predicates that declare a target.
-fn target_predicates() -> [Iri; 5] {
-    let v = v();
+/// What makes a shape one validation starts from, in the order it visits
+/// them: the target predicates, then the shape classes.
+fn root_kinds() -> [Iri; 7] {
+    let v = vocab::get();
     [
         v.target_class,
         v.target_node,
         v.target_subjects_of,
         v.target_objects_of,
         v.target,
+        v.node_shape,
+        v.property_shape,
     ]
 }
 
-/// The classes that make a node a shape.
-fn shape_classes() -> [Iri; 2] {
-    let v = v();
-    [v.node_shape, v.property_shape]
+/// The shapes validation starts from, those with a target or a shape type
+/// ([`root_kinds`]), in the order it visits them: by kind, and within a kind
+/// in the order the graph's indexes list the triples that say so (an
+/// overlay's own first, then the base's, each by number; see
+/// [`Graph::overlay`]).
+fn roots<'m>(g: &Graph, model: &'m Shapes) -> Vec<&'m model::Shape> {
+    let v = vocab::get();
+    let kinds = root_kinds();
+    let kind = |i: Iri| kinds.iter().position(|&k| k == i);
+    let own_from = g.added().next().map_or(g.len() as u32, |(t, _)| t);
+    // (kind, from the base, triple number, shape).
+    let mut keyed: Vec<(usize, bool, u32, usize)> = Vec::new();
+    for (si, s) in model.shapes.iter().enumerate() {
+        for &t in s.targets.iter().chain(&s.sparql_targets) {
+            if let Some(k) = kind(g.triple_at(t).p) {
+                keyed.push((k, t < own_from, t, si));
+            }
+        }
+        if s.typed_node_shape || s.typed_property_shape {
+            for (t, tr) in g.out(s.node) {
+                let shape_class = |c: &Iri| *c == v.node_shape || *c == v.property_shape;
+                if tr.p == v.rdf_type
+                    && let Some(k) = g.as_iri(tr.o).filter(shape_class).and_then(kind)
+                {
+                    keyed.push((k, t < own_from, t, si));
+                }
+            }
+        }
+    }
+    keyed.sort_unstable();
+    let mut seen = FxHashSet::default();
+    keyed
+        .into_iter()
+        .filter(|k| seen.insert(k.3))
+        .map(|k| &model.shapes[k.3])
+        .collect()
 }
 
 /// Whether anything validation acts on is declared: a target (`sh:targetClass`,
 /// `sh:targetNode`, `sh:targetSubjectsOf`, `sh:targetObjectsOf`, `sh:target`)
 /// or a typed shape, where `used` says whether an IRI occurs. The one answer
-/// for a graph ([`validate_report`]) and for a document
+/// for a graph ([`validate_report`], see [`roots`]) and for a document
 /// ([`crate::features::shacl_validate::has_shapes`]).
 pub(crate) fn acts_on(used: &dyn Fn(Iri) -> bool) -> bool {
-    target_predicates()
-        .into_iter()
-        .chain(shape_classes())
-        .any(used)
+    root_kinds().into_iter().any(used)
 }
 
 /// Validate `g` against the shapes in it. `cancelled` is polled between
@@ -1991,29 +1866,23 @@ fn report_over(
     min_batch: usize,
     budget: Budget,
 ) -> Option<Report> {
-    let v = v();
-    // Shapes with targets, in graph order; shape-typed nodes may be class targets.
-    let mut roots: Vec<Id> = Vec::new();
-    for p in target_predicates() {
-        roots.extend(g.with_p(p).map(|t| t.s));
-    }
-    for s in shape_classes().into_iter().filter_map(|s| g.iri(s)) {
-        roots.extend(g.subjects(v.rdf_type, s));
-    }
-    dedup(&mut roots);
-
+    let model = Shapes::new(g);
     let mut comp = Compiler {
         g,
+        model: &model,
         shapes: Vec::new(),
         index: FxHashMap::default(),
         pending: Vec::new(),
         components: components(g),
         failures: Vec::new(),
     };
-    let roots: Vec<ShapeIx> = roots.into_iter().map(|r| comp.shape(r)).collect();
+    let roots: Vec<(ShapeIx, &model::Shape)> = roots(g, &model)
+        .into_iter()
+        .map(|s| (comp.shape(s.node), s))
+        .collect();
     comp.build_pending();
     let shapes = comp.shapes;
-    let uses_sparql = g.with_p(v.target).next().is_some()
+    let uses_sparql = model.shapes.iter().any(|s| !s.sparql_targets.is_empty())
         || shapes
             .iter()
             .any(|s| s.constraints.iter().any(|c| matches!(c.0, C::Sparql(_))));
@@ -2044,12 +1913,11 @@ fn report_over(
         batched: FxHashMap::default(),
     };
     let mut out = Vec::new();
-    'shapes: for si in roots {
-        let shape = &shapes[si as usize];
-        if shape.skip {
+    'shapes: for (si, root) in roots {
+        if shapes[si as usize].skip {
             continue;
         }
-        let focus_nodes = run.focus_nodes(shape.node);
+        let focus_nodes = run.focus_nodes(root);
         run.set_batch(focus_nodes.iter().copied().filter(|&f| keep(f)).collect());
         for focus in focus_nodes {
             if (run.cancel)() {
@@ -2211,6 +2079,58 @@ mod tests {
 
     const HEAD: &str =
         "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\n";
+
+    /// The roots as the validator found them before it read the shape
+    /// model: the subjects of each target predicate, then of each shape
+    /// type, as the graph's lookups list them.
+    fn roots_by_lookup(g: &Graph) -> Vec<Id> {
+        let v = vocab::get();
+        let mut roots = Vec::new();
+        for k in root_kinds() {
+            if k == v.node_shape || k == v.property_shape {
+                roots.extend(g.iri(k).into_iter().flat_map(|c| g.subjects(v.rdf_type, c)));
+            } else {
+                roots.extend(g.with_p(k).map(|t| t.s));
+            }
+        }
+        dedup(&mut roots);
+        roots
+    }
+
+    /// Validation visits the shapes in the order it did when it looked
+    /// them up in the graph: by target kind, then by the index order of
+    /// the triples, an overlay's own before the base's.
+    #[test]
+    fn roots_come_in_the_order_the_graph_lists_them() {
+        let doc = |body: &str| {
+            parse(
+                &format!("{HEAD}{body}"),
+                &PrefixMap::default(),
+                Syntax::Turtle,
+            )
+        };
+        let base = doc("ex:B a sh:PropertyShape ; sh:path ex:p .\n\
+             ex:A sh:targetNode ex:x .\n\
+             ex:C a sh:NodeShape ; sh:targetClass ex:K .\n\
+             ex:D sh:target [ sh:select \"SELECT ?this {}\" ] ; sh:targetNode ex:y .\n\
+             ex:A sh:targetClass ex:L .\n\
+             ex:E sh:targetObjectsOf ex:p ; a sh:NodeShape .\n\
+             ex:H a sh:targetClass , sh:PropertyShape .\n");
+        let over = doc("ex:F sh:targetNode ex:z .\n\
+             ex:A sh:targetSubjectsOf ex:q .\n\
+             ex:G a sh:NodeShape .\n\
+             ex:B sh:targetNode ex:w .\n");
+        let order = |g: &Graph| {
+            let model = Shapes::new(g);
+            let found: Vec<Id> = roots(g, &model).iter().map(|s| s.node).collect();
+            assert_eq!(found, roots_by_lookup(g));
+            found.len()
+        };
+        assert_eq!(order(&Graph::new(&[&base.triples])), 6);
+        assert_eq!(order(&Graph::new(&[&base.triples, &over.triples])), 8);
+        let shared = Arc::new(Graph::new(&[&base.triples]));
+        assert_eq!(order(&Graph::overlay(&shared, &over.triples)), 8);
+    }
 
     fn report(
         body: &str,

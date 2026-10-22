@@ -1,8 +1,10 @@
 //! The SHACL, RDF, RDFS and OWL IRIs that the SHACL code compares against,
 //! interned once: the shape model ([`super::model`]), the shape lint and its
-//! SHACL-SPARQL part, and the validator.
+//! SHACL-SPARQL part, and the validator ([`super::validate`]), with the SHACL
+//! Core constraint parameters the validator compiles ([`Param`]).
 
-use crate::syntax::{Iri, RDF};
+use crate::syntax::{Iri, RDF, XSD};
+use rustc_hash::FxHashMap;
 use std::sync::OnceLock;
 
 pub struct Vocab {
@@ -72,7 +74,74 @@ pub struct Vocab {
     pub select_validator: Iri,
     pub sparql_target: Iri,
     pub sparql_target_type: Iri,
+
+    pub xsd_boolean: Iri,
+
+    params: FxHashMap<Iri, Param>,
 }
+
+/// A SHACL Core constraint parameter that makes a constraint on its own
+/// (`sh:qualifiedValueShape` and its counts go together, and are left out).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Param {
+    Class,
+    Datatype,
+    NodeKind,
+    MinCount,
+    MaxCount,
+    MinExclusive,
+    MinInclusive,
+    MaxExclusive,
+    MaxInclusive,
+    MinLength,
+    MaxLength,
+    Pattern,
+    LanguageIn,
+    UniqueLang,
+    Equals,
+    Disjoint,
+    LessThan,
+    LessThanOrEquals,
+    Not,
+    And,
+    Or,
+    Xone,
+    Node,
+    Property,
+    Closed,
+    HasValue,
+    In,
+}
+
+const PARAMS: [(&str, Param); 27] = [
+    ("class", Param::Class),
+    ("datatype", Param::Datatype),
+    ("nodeKind", Param::NodeKind),
+    ("minCount", Param::MinCount),
+    ("maxCount", Param::MaxCount),
+    ("minExclusive", Param::MinExclusive),
+    ("minInclusive", Param::MinInclusive),
+    ("maxExclusive", Param::MaxExclusive),
+    ("maxInclusive", Param::MaxInclusive),
+    ("minLength", Param::MinLength),
+    ("maxLength", Param::MaxLength),
+    ("pattern", Param::Pattern),
+    ("languageIn", Param::LanguageIn),
+    ("uniqueLang", Param::UniqueLang),
+    ("equals", Param::Equals),
+    ("disjoint", Param::Disjoint),
+    ("lessThan", Param::LessThan),
+    ("lessThanOrEquals", Param::LessThanOrEquals),
+    ("not", Param::Not),
+    ("and", Param::And),
+    ("or", Param::Or),
+    ("xone", Param::Xone),
+    ("node", Param::Node),
+    ("property", Param::Property),
+    ("closed", Param::Closed),
+    ("hasValue", Param::HasValue),
+    ("in", Param::In),
+];
 
 /// The table, interned on first use.
 pub fn get() -> &'static Vocab {
@@ -149,11 +218,20 @@ pub fn get() -> &'static Vocab {
             select_validator: sh("SPARQLSelectValidator"),
             sparql_target: sh("SPARQLTarget"),
             sparql_target_type: sh("SPARQLTargetType"),
+
+            xsd_boolean: Iri::intern(&format!("{XSD}boolean")),
+
+            params: PARAMS.iter().map(|&(l, p)| (sh(l), p)).collect(),
         }
     })
 }
 
 impl Vocab {
+    /// The Core constraint parameter `p` is, if any.
+    pub fn param(&self, p: Iri) -> Option<Param> {
+        self.params.get(&p).copied()
+    }
+
     /// `sh:targetClass`, `sh:targetNode`, `sh:targetSubjectsOf` or
     /// `sh:targetObjectsOf`.
     pub fn is_target(&self, p: Iri) -> bool {

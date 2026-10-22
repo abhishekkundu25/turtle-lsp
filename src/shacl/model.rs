@@ -6,11 +6,17 @@
 //! the parser recorded.
 //!
 //! A node counts as a shape when it is typed `sh:NodeShape` /
-//! `sh:PropertyShape`, has a target or `sh:path`, or is the value of a
-//! shape-expecting parameter (`sh:property`, `sh:node`,
-//! `sh:qualifiedValueShape`, `sh:not`, members of `sh:and` / `sh:or` /
-//! `sh:xone`). IRIs count only when these triples describe them; blank nodes
-//! always (`sh:property [ ]` is an empty property shape).
+//! `sh:PropertyShape`, has a target (a Core one or a SHACL-SPARQL
+//! `sh:target`) or `sh:path`, or is the value of a shape-expecting parameter
+//! (`sh:property`, `sh:node`, `sh:qualifiedValueShape`, `sh:not`, members of
+//! `sh:and` / `sh:or` / `sh:xone`). IRIs count only when these triples
+//! describe them; blank nodes always (`sh:property [ ]` is an empty property
+//! shape).
+//!
+//! Building the model costs the SHACL triples and the shapes' own, found
+//! through the graph's indexes, not a pass over every triple: the validator
+//! builds it once per run, and a run over an overlay must cost in proportion
+//! to the overlay and the shapes ([`Graph::overlay`]).
 
 use super::vocab;
 use crate::rdf::graph::{Graph, Id, Term};
@@ -53,8 +59,11 @@ pub struct Shape {
     /// The `sh:path` as written (the first, if there are several) and its
     /// triple.
     pub path: Option<(Path, u32)>,
-    /// `sh:target*` triples.
+    /// `sh:targetClass`, `sh:targetNode`, `sh:targetSubjectsOf` and
+    /// `sh:targetObjectsOf` triples.
     pub targets: Vec<u32>,
+    /// `sh:target` triples (SHACL-SPARQL targets).
+    pub sparql_targets: Vec<u32>,
     /// Every triple with this shape as subject and a predicate in the SHACL
     /// namespace (constraint parameters, path, targets), in graph order.
     pub params: Vec<u32>,
@@ -75,11 +84,11 @@ fn is_node(g: &Graph, id: Id) -> bool {
 }
 
 impl Shapes {
-    /// The shapes in `g`, in one pass over its triples and one over each
-    /// shape's own.
+    /// The shapes in `g`, in the order the graph's triples first make each
+    /// node a shape (by triple number; members of one `sh:and` / `sh:or` /
+    /// `sh:xone` list in list order).
     pub fn new(g: &Graph) -> Shapes {
         let v = vocab::get();
-        let shacl = |i: &Iri| i.starts_with(super::SH);
         // A value counts as a shape when it is a blank node or an IRI with
         // triples of its own.
         let described = |o: Id| match g.term(o) {
@@ -87,56 +96,78 @@ impl Shapes {
             Term::Iri(_) => g.out(o).next().is_some(),
             Term::Value(_) => false,
         };
+        let makes_subject = |p: Iri| v.is_target(p) || p == v.target || p == v.path;
+        let makes_object =
+            |p: Iri| p == v.property || p == v.node || p == v.qualified_value_shape || p == v.not;
+        let makes_members = |p: Iri| p == v.and || p == v.or || p == v.xone;
 
-        // Candidates in graph order, with what made them shapes.
-        let mut order: Vec<Id> = Vec::new();
-        let mut seen: FxHashSet<Id> = FxHashSet::default();
+        // Each time a triple makes a node a shape: (triple number, position
+        // in its list, node).
+        let mut made: Vec<(u32, u32, Id)> = Vec::new();
         let mut via_property: FxHashMap<Id, u32> = FxHashMap::default();
         let mut via_node: FxHashSet<Id> = FxHashSet::default();
-        let mut add = |n: Id, order: &mut Vec<Id>| {
-            if seen.insert(n) {
-                order.push(n);
-            }
-        };
-        for i in 0..g.len() as u32 {
-            let t = g.triple_at(i);
-            if !is_node(g, t.s) {
-                continue;
-            }
-            let p = t.p;
-            if p == v.rdf_type {
-                if g.as_iri(t.o)
-                    .is_some_and(|o| o == v.node_shape || o == v.property_shape)
-                {
-                    add(t.s, &mut order);
+        for class in [v.node_shape, v.property_shape] {
+            for (i, t) in g.iri(class).into_iter().flat_map(|c| g.incoming(c)) {
+                if t.p == v.rdf_type && is_node(g, t.s) {
+                    made.push((i, 0, t.s));
                 }
+            }
+        }
+        // The subjects of those predicates, whose own triples carry the
+        // triple numbers.
+        let mut subjects: Vec<Id> = [
+            v.target_class,
+            v.target_node,
+            v.target_subjects_of,
+            v.target_objects_of,
+            v.target,
+            v.path,
+            v.property,
+            v.node,
+            v.qualified_value_shape,
+            v.not,
+            v.and,
+            v.or,
+            v.xone,
+        ]
+        .into_iter()
+        .flat_map(|p| g.with_p(p).map(|t| t.s))
+        .collect();
+        subjects.sort_unstable();
+        subjects.dedup();
+        for s in subjects {
+            if !is_node(g, s) {
                 continue;
             }
-            if !shacl(&p) {
-                continue;
-            }
-            if v.is_target(p) || p == v.path {
-                add(t.s, &mut order);
-            }
-            if p == v.property || p == v.node || p == v.qualified_value_shape || p == v.not {
-                if described(t.o) {
-                    add(t.o, &mut order);
-                    if p == v.property {
-                        via_property.entry(t.o).or_insert(i);
-                    } else if p == v.node {
-                        via_node.insert(t.o);
+            for (i, t) in g.out(s) {
+                let p = t.p;
+                if makes_subject(p) {
+                    made.push((i, 0, s));
+                } else if makes_object(p) {
+                    if described(t.o) {
+                        made.push((i, 0, t.o));
+                        if p == v.property {
+                            let first = via_property.entry(t.o).or_insert(i);
+                            *first = (*first).min(i);
+                        } else if p == v.node {
+                            via_node.insert(t.o);
+                        }
                     }
-                }
-            } else if p == v.and || p == v.or || p == v.xone {
-                for m in list(g, t.o) {
-                    let o = g.triple_at(m).o;
-                    if described(o) {
-                        add(o, &mut order);
+                } else if makes_members(p) {
+                    for (k, m) in list(g, t.o).into_iter().enumerate() {
+                        let o = g.triple_at(m).o;
+                        if described(o) {
+                            made.push((i, k as u32, o));
+                        }
                     }
                 }
             }
         }
+        made.sort_unstable();
+        let mut seen: FxHashSet<Id> = FxHashSet::default();
+        let order = made.into_iter().map(|m| m.2).filter(|&n| seen.insert(n));
 
+        let shacl = |i: &Iri| i.starts_with(super::SH);
         let mut s = Shapes::default();
         for node in order {
             let mut shape = Shape {
@@ -148,6 +179,7 @@ impl Shapes {
                 via_node: via_node.contains(&node),
                 path: None,
                 targets: Vec::new(),
+                sparql_targets: Vec::new(),
                 params: Vec::new(),
             };
             for (i, t) in g.out(node) {
@@ -166,6 +198,8 @@ impl Shapes {
                     shape.path = Some((path(g, t.o), i));
                 } else if v.is_target(t.p) {
                     shape.targets.push(i);
+                } else if t.p == v.target {
+                    shape.sparql_targets.push(i);
                 }
             }
             if shape.path.is_some() || shape.typed_property_shape || shape.via_property.is_some() {
@@ -212,7 +246,8 @@ pub fn list(g: &Graph, head: Id) -> Vec<u32> {
 
 /// The property path whose root is `node`, as written: nested repetitions
 /// stay nested (the validator merges them, see
-/// [`super::validate::parse_path`]).
+/// [`super::validate::parse_path`]). Recursion stops past 64 levels with
+/// [`Path::Invalid`].
 pub fn path(g: &Graph, node: Id) -> Path {
     path_at(g, node, 0)
 }
@@ -322,6 +357,103 @@ mod tests {
                 OneOrMore(b(Predicate(ex("e")))),
                 ZeroOrOne(b(Predicate(ex("f")))),
             ])
+        );
+    }
+
+    /// The shapes, `via_property` and `via_node` that one pass over every
+    /// triple in number order finds: how the model was built before it read
+    /// the graph's indexes (with `sh:target` added).
+    fn by_scan(g: &Graph) -> (Vec<Id>, FxHashMap<Id, u32>, FxHashSet<Id>) {
+        let v = vocab::get();
+        let described = |o: Id| match g.term(o) {
+            Term::Blank(_) => true,
+            Term::Iri(_) => g.out(o).next().is_some(),
+            Term::Value(_) => false,
+        };
+        let mut order = Vec::new();
+        let mut seen = FxHashSet::default();
+        let mut via_property = FxHashMap::default();
+        let mut via_node = FxHashSet::default();
+        let mut add = |n: Id, order: &mut Vec<Id>| {
+            if seen.insert(n) {
+                order.push(n);
+            }
+        };
+        for i in 0..g.len() as u32 {
+            let t = g.triple_at(i);
+            let p = t.p;
+            if p == v.rdf_type {
+                if g.as_iri(t.o)
+                    .is_some_and(|o| o == v.node_shape || o == v.property_shape)
+                {
+                    add(t.s, &mut order);
+                }
+            } else if v.is_target(p) || p == v.target || p == v.path {
+                add(t.s, &mut order);
+            } else if p == v.property || p == v.node || p == v.qualified_value_shape || p == v.not {
+                if described(t.o) {
+                    add(t.o, &mut order);
+                    if p == v.property {
+                        via_property.entry(t.o).or_insert(i);
+                    } else if p == v.node {
+                        via_node.insert(t.o);
+                    }
+                }
+            } else if p == v.and || p == v.or || p == v.xone {
+                for m in list(g, t.o) {
+                    let o = g.triple_at(m).o;
+                    if described(o) {
+                        add(o, &mut order);
+                    }
+                }
+            }
+        }
+        (order, via_property, via_node)
+    }
+
+    fn same_as_by_scan(g: &Graph) {
+        let s = Shapes::new(g);
+        let (order, via_property, via_node) = by_scan(g);
+        assert_eq!(s.shapes.iter().map(|x| x.node).collect::<Vec<_>>(), order);
+        for x in &s.shapes {
+            assert_eq!(x.via_property, via_property.get(&x.node).copied());
+            assert_eq!(x.via_node, via_node.contains(&x.node));
+        }
+    }
+
+    /// Read through the indexes, the shapes come in the order a pass over
+    /// every triple finds them, also over an overlay (whose lookups list its
+    /// own triples before the base's).
+    #[test]
+    fn the_indexes_find_the_shapes_a_scan_finds_in_the_same_order() {
+        let base = parsed(
+            "ex:Q sh:path ex:q ; sh:not [ sh:class ex:C ] .
+             ex:T sh:target [ sh:select \"SELECT ?this {}\" ] .
+             ex:S a sh:NodeShape ; sh:targetClass ex:C ;
+               sh:property [ sh:path ex:p ] , ex:Q ;
+               sh:and ( ex:A [ sh:minCount 1 ] ex:Undescribed ) ;
+               sh:xone ( ex:Q ex:S ) .
+             ex:A sh:datatype ex:d .
+             ex:P a sh:PropertyShape ; sh:node ex:A ; sh:property ex:Q .
+             ex:S sh:targetNode ex:x .
+",
+        );
+        let g = Graph::new(&[&base.triples]);
+        same_as_by_scan(&g);
+        let over = parsed(
+            "ex:O sh:targetSubjectsOf ex:p ; sh:property ex:Q , [ sh:path ex:r ] .
+             ex:A sh:or ( ex:O [ sh:maxCount 2 ] ) .
+             ex:N a sh:NodeShape .
+",
+        );
+        let shared = std::sync::Arc::new(Graph::new(&[&base.triples]));
+        let g = Graph::overlay(&shared, &over.triples);
+        same_as_by_scan(&g);
+        let t = Shapes::new(&g);
+        let t = t.get(g.iri(ex("T")).unwrap()).unwrap();
+        assert_eq!(
+            (t.kind, t.targets.len(), t.sparql_targets.len()),
+            (ShapeKind::Node, 0, 1)
         );
     }
 
