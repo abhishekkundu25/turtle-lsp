@@ -1001,6 +1001,13 @@ const MEMO_IDS: usize = 8 << 20;
 /// The most focus nodes one SPARQL-based target may select.
 const MAX_TARGETS: usize = 1_000_000;
 
+#[cfg(test)]
+thread_local! {
+    /// Nodes looked at to find the instances of classes, to tell a run that
+    /// walks the whole graph from one among a few nodes.
+    pub(crate) static TARGETS_LOOKED_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Run<'r, 'g, 'a> {
     g: &'g Graph<'a>,
     shapes: &'r [Shape],
@@ -1032,6 +1039,9 @@ struct Run<'r, 'g, 'a> {
     /// reaches one of them runs once for all of them, when there are at
     /// least `min_batch`.
     min_batch: usize,
+    /// Only these nodes (sorted) can be focus nodes; targets are looked for
+    /// among them rather than in the whole graph. See [`validate_report_among`].
+    among: Option<&'r [Id]>,
     batch: Vec<Id>,
     in_batch: FxHashSet<Id>,
     /// The solutions of such runs per focus node, by shape and check (`None`
@@ -1808,12 +1818,28 @@ impl Run<'_, '_, '_> {
                 out.extend(self.instances(o));
             } else if p == v.target_subjects_of {
                 if let Some(pi) = g.as_iri(o) {
-                    out.extend(g.with_p(pi).map(|t| t.s));
+                    match self.among {
+                        None => out.extend(g.with_p(pi).map(|t| t.s)),
+                        Some(among) => out.extend(
+                            among
+                                .iter()
+                                .copied()
+                                .filter(|&n| g.out(n).any(|t| t.1.p == pi)),
+                        ),
+                    }
                 }
             } else if p == v.target_objects_of
                 && let Some(pi) = g.as_iri(o)
             {
-                out.extend(g.with_p(pi).map(|t| t.o));
+                match self.among {
+                    None => out.extend(g.with_p(pi).map(|t| t.o)),
+                    Some(among) => out.extend(
+                        among
+                            .iter()
+                            .copied()
+                            .filter(|&n| g.incoming(n).any(|t| t.1.p == pi)),
+                    ),
+                }
             } else if p == v.target {
                 self.sparql_target(o, &mut out);
             }
@@ -1831,8 +1857,21 @@ impl Run<'_, '_, '_> {
         while let Some(c) = todo.pop() {
             if classes.insert(c) {
                 todo.extend(self.g.subjects(v.sub_class_of, c));
-                out.extend(self.g.subjects(v.rdf_type, c));
+                if self.among.is_none() {
+                    out.extend(self.g.subjects(v.rdf_type, c));
+                }
             }
+        }
+        #[cfg(test)]
+        TARGETS_LOOKED_AT.with(|c| c.set(c.get() + self.among.map_or(out.len(), <[Id]>::len)));
+        if let Some(among) = self.among {
+            // Only those nodes can be focus nodes: which of them have the type.
+            out.extend(
+                among
+                    .iter()
+                    .copied()
+                    .filter(|&n| self.g.objects(n, v.rdf_type).any(|t| classes.contains(&t))),
+            );
         }
         out
     }
@@ -1885,12 +1924,43 @@ where
     )
 }
 
+/// [`validate_report`] for the focus nodes `among` (sorted) only: the same
+/// report as `validate_report` with a `keep` that accepts exactly them, but
+/// the targets are found among those nodes, not by walking the whole graph,
+/// so a few nodes of a large graph cost in proportion to themselves (a SPARQL
+/// target is the exception: its query runs over the graph).
+pub fn validate_report_among<C>(g: &Graph, cancelled: &C, among: &[Id]) -> Option<Report>
+where
+    C: Fn() -> bool + Send + Sync + Clone + 'static,
+{
+    let keep = |id: Id| among.binary_search(&id).is_ok();
+    report_over(
+        g,
+        Arc::new(cancelled.clone()),
+        &keep,
+        Some(among),
+        MIN_BATCH,
+        Budget::default(),
+    )
+}
+
 /// [`validate_report`], batching SPARQL checks from `min_batch` focus nodes,
 /// within `budget`.
 fn report_with(
     g: &Graph,
     cancel: Cancel,
     keep: &dyn Fn(Id) -> bool,
+    min_batch: usize,
+    budget: Budget,
+) -> Option<Report> {
+    report_over(g, cancel, keep, None, min_batch, budget)
+}
+
+fn report_over(
+    g: &Graph,
+    cancel: Cancel,
+    keep: &dyn Fn(Id) -> bool,
+    among: Option<&[Id]>,
     min_batch: usize,
     budget: Budget,
 ) -> Option<Report> {
@@ -1941,6 +2011,7 @@ fn report_with(
         cuts: 0,
         failures: comp.failures,
         min_batch,
+        among,
         batch: Vec::new(),
         in_batch: FxHashSet::default(),
         batched: FxHashMap::default(),
@@ -2002,6 +2073,65 @@ mod tests {
             .unwrap()
             .results
             .len()
+    }
+
+    /// Finding the targets among a few nodes is the same as finding them in
+    /// the whole graph and keeping those nodes: for class targets (with
+    /// subclasses), the two `sh:targetSubjectsOf`/`ObjectsOf` forms and a
+    /// node target, with the graph read as an overlay over a shared base.
+    #[test]
+    fn targets_among_some_nodes_are_those_of_the_whole_graph_that_are_among_them() {
+        let head = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n";
+        let mut shared = format!(
+            "{head}ex:S1 sh:targetClass ex:C ; sh:property [ sh:path ex:name ; sh:minCount 1 ] .\n\
+             ex:S2 sh:targetSubjectsOf ex:knows ; sh:property [ sh:path ex:age ; sh:minCount 1 ] .\n\
+             ex:S3 sh:targetObjectsOf ex:knows ; sh:property [ sh:path ex:age ; sh:minCount 1 ] .\n\
+             ex:S4 sh:targetNode ex:n0 , ex:n1 ; sh:property [ sh:path ex:id ; sh:minCount 1 ] .\n\
+             ex:D rdfs:subClassOf ex:C .\n"
+        );
+        for i in 0..200 {
+            let class = if i % 3 == 0 { "ex:D" } else { "ex:C" };
+            shared.push_str(&format!(
+                "ex:n{i} a {class} ; ex:knows ex:n{} .\n",
+                (i + 1) % 200
+            ));
+        }
+        let data = format!(
+            "{head}ex:n3 ex:note 1 .\nex:n4 ex:knows ex:new .\nex:n6 a ex:C .\nex:fresh a ex:D ; ex:knows ex:n9 .\nex:other ex:p ex:n0 .\n"
+        );
+        let shared = parse(&shared, &PrefixMap::default(), Syntax::Turtle);
+        let data = parse(&data, &PrefixMap::default(), Syntax::Turtle);
+        let base = Arc::new(Graph::new(&[&shared.triples]));
+        let over = Graph::overlay(&base, &data.triples);
+        let mut mine: Vec<Id> = over.added().flat_map(|(_, t)| [t.s, t.o]).collect();
+        mine.sort_unstable();
+        mine.dedup();
+        let describe = |g: &Graph, r: &Report| {
+            let mut v: Vec<String> = r
+                .results
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{:?} {:?} {:?} {}",
+                        g.term(r.focus),
+                        r.path,
+                        r.value.map(|v| g.term(v)),
+                        r.component
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let keep = |id: Id| mine.binary_search(&id).is_ok();
+        let whole = validate_report(&over, &|| false, &keep).unwrap();
+        let among = validate_report_among(&over, &|| false, &mine).unwrap();
+        assert!(!whole.results.is_empty());
+        assert_eq!(describe(&over, &whole), describe(&over, &among));
+        assert_eq!(among.failures.len(), whole.failures.len());
+        // More than the dataset's nodes: the shared ones are all of them.
+        let all = validate_report(&over, &|| false, &|_| true).unwrap();
+        assert!(all.results.len() > among.results.len());
     }
 
     #[test]

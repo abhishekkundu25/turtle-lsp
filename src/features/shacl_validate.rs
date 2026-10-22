@@ -6,7 +6,12 @@
 //! documents' triples (and of JSON-LD ones without named graphs), and each
 //! TriG / N-Triples / N-Quads dataset (and JSON-LD one with named graphs)
 //! together with them, as data and shapes graph and sends back diagnostics per
-//! document. Each job carries a generation; a newer job makes the worker
+//! document. The shared graph is built once and each dataset is read as an
+//! overlay on it ([`Graph::overlay`]), with only the nodes the dataset mentions
+//! as focus nodes, so a run costs the shared triples plus each dataset's own;
+//! `shacl.maxTriples` bounds that total (the shared triples and every dataset
+//! validated), not each dataset together with the shared ones. Each job carries
+//! a generation; a newer job makes the worker
 //! abandon the current one (also inside one long path or query), and the
 //! server drops results whose generation is not the latest.
 //!
@@ -33,7 +38,9 @@ use crate::features::navigation;
 use crate::knowledge::Source;
 use crate::rdf::graph::{Graph, Id, Term};
 use crate::shacl::sparql::{Cancel, TIMED_OUT};
-use crate::shacl::{Failure, FailureKind, Path, SH, ValidationResult, validate_report};
+use crate::shacl::{
+    Failure, FailureKind, Path, SH, ValidationResult, validate_report, validate_report_among,
+};
 use crate::syntax::{Iri, PrefixMap, RDF, Role, Span, Syntax, XSD};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_types::*;
@@ -246,31 +253,31 @@ where
     let mut docs: Vec<&(Source, Arc<Analysis>)> = job.docs.iter().collect();
     docs.sort_by(|a, b| (a.0, &a.1.uri).cmp(&(b.0, &b.1.uri)));
     let dataset = |d: &&(Source, Arc<Analysis>)| d.0 != Source::External && is_dataset(&d.1);
-    let shared: Vec<&(Source, Arc<Analysis>)> =
-        docs.iter().copied().filter(|d| !dataset(d)).collect();
+    let shared = Shared::new(docs.iter().copied().filter(|d| !dataset(d)).collect());
     let mut out = ByUri::default();
     let soften = Soften::new(job);
     let soften = soften.as_ref();
     // The shared graph, its results placed in the Turtle documents.
     let mut shared_results = FxHashSet::default();
+    let mut spent = 0;
     validate_unit(
         job,
         &shared,
         None,
+        &mut spent,
         soften,
         cancelled,
         &mut shared_results,
         &mut out,
     )?;
     for d in docs.iter().copied().filter(dataset) {
-        // The dataset first, so results it causes are placed in it; only its
+        // Read with the shared graph, not merged into it; only the dataset's
         // own nodes are focus nodes (the shared ones were validated above).
-        let mut unit = vec![d];
-        unit.extend(shared.iter().copied());
         validate_unit(
             job,
-            &unit,
-            Some(&d.1),
+            &shared,
+            Some(d),
+            &mut spent,
             soften,
             cancelled,
             &mut shared_results,
@@ -366,7 +373,7 @@ fn result_key<'j>(
         }
         Term::Value(n) => TermKey::Value(n.clone()),
     };
-    let (d, i) = g.origin[r.param as usize];
+    let (d, i) = g.origin(r.param);
     ResultKey {
         param: (uri(d), i),
         focus: term(r.focus),
@@ -377,14 +384,50 @@ fn result_key<'j>(
     }
 }
 
-/// Validate one data graph (`docs` merged). With `dataset` (then `docs[0]`),
-/// only nodes that dataset mentions are focus nodes, results in
-/// `shared_results` are dropped and the rest are placed in the dataset;
-/// without, results are added to `shared_results`. `None` when cancelled.
+/// The Turtle (and JSON-LD fragment) documents of a run, whose graph is built
+/// once, when a unit needs it, and read by every unit.
+struct Shared<'j> {
+    docs: Vec<&'j (Source, Arc<Analysis>)>,
+    /// Their triples.
+    total: u64,
+    graph: std::cell::OnceCell<Arc<Graph<'j>>>,
+}
+
+impl<'j> Shared<'j> {
+    fn new(docs: Vec<&'j (Source, Arc<Analysis>)>) -> Shared<'j> {
+        let total = docs.iter().map(|d| d.1.parsed.triples.len() as u64).sum();
+        Shared {
+            docs,
+            total,
+            graph: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn graph(&self) -> &Arc<Graph<'j>> {
+        self.graph.get_or_init(|| {
+            let triples: Vec<&[crate::syntax::Triple]> = self
+                .docs
+                .iter()
+                .map(|d| d.1.parsed.triples.as_slice())
+                .collect();
+            Arc::new(Graph::new(&triples))
+        })
+    }
+}
+
+/// Validate the shared graph, or with a `dataset` that dataset read together
+/// with it (an overlay: the shared graph is not rebuilt). With a dataset,
+/// only nodes it mentions are focus nodes, results in `shared_results` are
+/// dropped and the rest are placed in the dataset; without, results are added
+/// to `shared_results`. The run reads at most [`Job::max_triples`] triples in
+/// all: the shared ones, and each dataset validated, counted in `spent`.
+/// `None` when cancelled.
+#[allow(clippy::too_many_arguments)]
 fn validate_unit<'j>(
     job: &Job,
-    docs: &[&'j (Source, Arc<Analysis>)],
-    dataset: Option<&Arc<Analysis>>,
+    shared: &Shared<'j>,
+    dataset: Option<&'j (Source, Arc<Analysis>)>,
+    spent: &mut u64,
     soften: Option<&Soften>,
     cancelled: &Cancel,
     shared_results: &mut FxHashSet<ResultKey<'j>>,
@@ -392,15 +435,19 @@ fn validate_unit<'j>(
 ) -> Option<()> {
     let workspace = |s: Source| s != Source::External;
     let shaped = |(s, a): &&&(Source, Arc<Analysis>)| workspace(*s) && has_shapes(a);
+    // The dataset is the last document, as in the graph.
+    let mut docs = shared.docs.clone();
+    docs.extend(dataset);
     if !docs.iter().any(|d| shaped(&d)) {
         return Some(());
     }
-    let total: u64 = docs.iter().map(|d| d.1.parsed.triples.len() as u64).sum();
+    let own = dataset.map_or(0, |d| d.1.parsed.triples.len() as u64);
+    let total = shared.total + *spent + own;
     if total > job.max_triples {
         let skip = NumberOrString::String(SKIPPED_CODE.into());
         // A dataset over the limit is the one to tell; else the shape files.
         let told: Vec<&Arc<Analysis>> = match dataset {
-            Some(a) => vec![a],
+            Some(a) => vec![&a.1],
             None => docs.iter().filter(|d| shaped(d)).map(|d| &d.1).collect(),
         };
         for a in told {
@@ -411,29 +458,35 @@ fn validate_unit<'j>(
         }
         return Some(());
     }
-    let triples: Vec<&[crate::syntax::Triple]> =
-        docs.iter().map(|d| d.1.parsed.triples.as_slice()).collect();
-    let g = Graph::new(&triples);
-    let mine: Option<FxHashSet<Id>> = dataset.map(|_| {
-        g.triples
-            .iter()
-            .zip(&g.origin)
-            .filter(|(_, o)| o.0 == 0)
-            .flat_map(|(t, _)| [t.s, t.o])
-            .collect()
-    });
-    let keep = |id: Id| mine.as_ref().is_none_or(|m| m.contains(&id));
-    let report = validate_report(&g, &forward(cancelled), &keep)?;
+    *spent += own;
+    let overlay;
+    let g: &Graph = match dataset {
+        Some(d) => {
+            overlay = Graph::overlay(shared.graph(), d.1.parsed.triples.as_slice());
+            &overlay
+        }
+        None => shared.graph(),
+    };
+    // Only the nodes a dataset mentions are focus nodes.
+    let report = match dataset {
+        Some(_) => {
+            let mut mine: Vec<Id> = g.added().flat_map(|(_, t)| [t.s, t.o]).collect();
+            mine.sort_unstable();
+            mine.dedup();
+            validate_report_among(g, &forward(cancelled), &mine)?
+        }
+        None => validate_report(g, &forward(cancelled), &|_| true)?,
+    };
     let mut place = Placer {
-        g: &g,
-        docs,
+        g,
+        docs: &docs,
         enc: job.enc,
         prefixes: FxHashMap::default(),
         soften,
-        in_dataset: dataset.is_some(),
+        dataset: dataset.map(|_| docs.len() as u32 - 1),
     };
     for r in &report.results {
-        let key = result_key(&g, docs, r);
+        let key = result_key(g, &docs, r);
         if dataset.is_some() {
             if shared_results.contains(&key) {
                 continue;
@@ -456,7 +509,7 @@ fn validate_unit<'j>(
     if report.capped {
         // Told once: on the dataset, else on a file with shapes.
         let told = match dataset {
-            Some(a) => Some(a),
+            Some(a) => Some(&a.1),
             None => docs.iter().find(|d| shaped(d)).map(|d| &d.1),
         };
         if let Some(a) = told {
@@ -501,8 +554,8 @@ struct Placer<'p, 'g, 'a> {
     enc: Encoding,
     prefixes: FxHashMap<u32, PrefixMap>,
     soften: Option<&'p Soften>,
-    /// Whether `docs[0]` is a dataset whose results all go in it.
-    in_dataset: bool,
+    /// The number of the dataset (the last of `docs`) whose results all go in it.
+    dataset: Option<u32>,
 }
 
 /// The first predicate a path follows, and whether it is followed backwards.
@@ -523,13 +576,23 @@ impl Placer<'_, '_, '_> {
         &self.docs[d as usize].1
     }
 
+    /// The documents in the order a description is looked for: the dataset
+    /// first, then the shared ones.
+    fn order(&self) -> impl Iterator<Item = u32> + use<> {
+        let n = self.docs.len() as u32;
+        let first = self.dataset;
+        first
+            .into_iter()
+            .chain((0..n).filter(move |&d| Some(d) != first))
+    }
+
     fn in_workspace(&self, d: u32) -> bool {
         self.docs[d as usize].0 != Source::External
     }
 
     /// The (document, triple) behind graph triple `t`.
     fn origin(&self, t: u32) -> (u32, &crate::syntax::Triple) {
-        let (d, i) = self.g.origin[t as usize];
+        let (d, i) = self.g.origin(t);
         (d, &self.doc(d).parsed.triples[i as usize])
     }
 
@@ -593,8 +656,10 @@ impl Placer<'_, '_, '_> {
     /// its data, goes in the dataset (which mentions every focus node).
     fn location(&self, r: &ValidationResult) -> Option<(u32, Span)> {
         let at = self.anywhere(r);
-        if self.in_dataset && at.is_none_or(|(d, _)| d != 0) {
-            return self.description_in(0, r.focus).or(at);
+        if let Some(own) = self.dataset
+            && at.is_none_or(|(d, _)| d != own)
+        {
+            return self.description_in(own, r.focus).or(at);
         }
         at
     }
@@ -616,7 +681,7 @@ impl Placer<'_, '_, '_> {
                     .map(|t| (t.0, single && Some(t.1.o) == r.value))
                     .collect()
             };
-            let ws = |&&(t, _): &&(u32, bool)| self.in_workspace(self.g.origin[t as usize].0);
+            let ws = |&&(t, _): &&(u32, bool)| self.in_workspace(self.g.origin(t).0);
             let exact = candidates.iter().filter(ws).find(|c| c.1);
             if let Some(&(t, _)) = exact {
                 let (d, tr) = self.origin(t);
@@ -648,22 +713,20 @@ impl Placer<'_, '_, '_> {
     /// The first place a document `docs` accepts describes `node`.
     fn described(&self, node: Id, docs: &dyn Fn(u32) -> bool) -> Option<(u32, Span)> {
         match self.g.term(node) {
-            Term::Iri(i) => (0..self.docs.len() as u32)
+            Term::Iri(i) => self
+                .order()
                 .filter(|&d| docs(d))
                 .find_map(|d| Some((d, *self.doc(d).defs.get(&i)?.first()?)))
                 .or_else(|| {
                     // Only referenced: its first occurrence.
-                    (0..self.docs.len() as u32)
-                        .filter(|&d| docs(d))
-                        .find_map(|d| {
-                            let a = self.doc(d);
-                            let r = a.refs_of(&i).find(|r| r.role != Role::Predicate)?;
-                            Some((d, r.span))
-                        })
+                    self.order().filter(|&d| docs(d)).find_map(|d| {
+                        let a = self.doc(d);
+                        let r = a.refs_of(&i).find(|r| r.role != Role::Predicate)?;
+                        Some((d, r.span))
+                    })
                 }),
             Term::Blank(b) => {
-                let ws =
-                    |t: &(u32, &crate::rdf::graph::GTriple)| docs(self.g.origin[t.0 as usize].0);
+                let ws = |t: &(u32, &crate::rdf::graph::GTriple)| docs(self.g.origin(t.0).0);
                 // A JSON-LD node object without an `@id`: its opening brace,
                 // that of its own object even when it is nested. List nodes
                 // have none (their triples are the enclosing object's).
@@ -759,7 +822,7 @@ impl Placer<'_, '_, '_> {
     /// A readable message for a result without `sh:message`.
     fn component_message(&mut self, d: u32, r: &ValidationResult) -> String {
         let g = self.g;
-        let param = g.triples[r.param as usize].o;
+        let param = g.triple_at(r.param).o;
         let p = self.name(d, param);
         let value = r.value.map(|v| self.name(d, v)).unwrap_or_default();
         let focus = self.name(d, r.focus);
@@ -1498,5 +1561,125 @@ mod tests {
         let mut lines: Vec<u32> = d.iter().map(|d| d.range.start.line).collect();
         lines.sort();
         assert_eq!(lines, (3..43).step_by(2).collect::<Vec<u32>>());
+    }
+
+    /// A shape over `persons` shared people, and `datasets` TriG datasets of
+    /// three people each, one of them wrong.
+    fn many_datasets(persons: usize, datasets: usize) -> Vec<(Source, Arc<Analysis>)> {
+        let mut shared = format!(
+            "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:P ;\n  sh:property [ sh:path ex:name ; sh:minCount 1 ] .\n"
+        );
+        for i in 0..persons {
+            shared.push_str(&format!("ex:s{i} a ex:P ; ex:name \"S{i}\" .\n"));
+        }
+        let mut docs = vec![analysis("file:///w/shared.ttl", &shared)];
+        for d in 0..datasets {
+            let text = format!(
+                "{HEAD}ex:g{d} {{ ex:d{d}a a ex:P ; ex:name \"A\" . ex:d{d}b a ex:P ; ex:name \"B\" . ex:d{d}c a ex:P . }}\n"
+            );
+            docs.push(analysis(&format!("file:///w/d{d:03}.trig"), &text));
+        }
+        docs
+    }
+
+    /// Every dataset used to rebuild a graph of all the shared triples and
+    /// itself (200 datasets over 75,000 shared triples cost four times the run
+    /// with none). The shared graph is built once and each dataset is read
+    /// over it: the triples indexed are the shared ones and each dataset's,
+    /// once.
+    #[test]
+    fn datasets_are_read_over_one_shared_graph() {
+        let datasets = 60;
+        let docs = many_datasets(500, datasets);
+        let triples: u64 = docs.iter().map(|d| d.1.parsed.triples.len() as u64).sum();
+        let before = crate::rdf::graph::INDEXED.with(|c| c.get());
+        let out = run(&job(docs.clone(), 1_000_000), &|| false).unwrap();
+        let indexed = crate::rdf::graph::INDEXED.with(|c| c.get()) - before;
+        assert_eq!(indexed, triples, "triples indexed in the run");
+        // The same results as one dataset at a time: the one wrong node of
+        // each, in its dataset; none for the shared people.
+        assert!(!out.contains_key("file:///w/shared.ttl"));
+        for d in 0..datasets {
+            let list = &out[&format!("file:///w/d{d:03}.trig")];
+            assert_eq!(list.len(), 1, "{list:#?}");
+            assert_eq!(
+                list[0].message,
+                format!("ex:name of ex:d{d}c: expected at least 1 value(s)")
+            );
+        }
+    }
+
+    /// 200 datasets over the shared graph cost about as much as none, in the
+    /// work counted (a wall-time bound would be noise on a loaded machine).
+    #[test]
+    fn two_hundred_datasets_index_no_more_than_their_own_triples() {
+        let docs = many_datasets(2000, 200);
+        let shared: u64 = docs[0].1.parsed.triples.len() as u64;
+        let own: u64 = docs[1..]
+            .iter()
+            .map(|d| d.1.parsed.triples.len() as u64)
+            .sum();
+        let before = crate::rdf::graph::INDEXED.with(|c| c.get());
+        let out = run(&job(docs, 10_000_000), &|| false).unwrap();
+        let indexed = crate::rdf::graph::INDEXED.with(|c| c.get()) - before;
+        assert_eq!(indexed, shared + own);
+        assert!(indexed <= 2 * shared, "{indexed} vs {shared}");
+        assert_eq!(out.len(), 200);
+    }
+
+    /// A dataset's focus nodes are found among the nodes it mentions, not by
+    /// walking the shared graph's (25,000 instances for each of 200 datasets).
+    #[test]
+    fn a_dataset_looks_for_its_targets_among_its_own_nodes() {
+        let docs = many_datasets(2000, 200);
+        let before = crate::shacl::validate::TARGETS_LOOKED_AT.with(|c| c.get());
+        let out = run(&job(docs, 10_000_000), &|| false).unwrap();
+        let looked = crate::shacl::validate::TARGETS_LOOKED_AT.with(|c| c.get()) - before;
+        // The shared run walks its 2,000 people; each dataset its few nodes.
+        assert!(looked <= 2000 + 200 * 20, "{looked} nodes looked at");
+        assert_eq!(out.len(), 200);
+    }
+
+    fn validated_in(out: &ByUri, uri: &str) -> bool {
+        out.get(uri)
+            .into_iter()
+            .flatten()
+            .any(|d| d.code == Some(NumberOrString::String(CODE.into())))
+    }
+
+    /// `shacl.maxTriples` bounds the whole run: the shared triples and every
+    /// dataset validated, not each dataset alone with the shared ones.
+    #[test]
+    fn max_triples_bounds_the_whole_run() {
+        let docs = many_datasets(10, 6);
+        let shared: u64 = docs[0].1.parsed.triples.len() as u64;
+        let each: u64 = docs[1].1.parsed.triples.len() as u64;
+        // Room for the shared triples and two datasets.
+        let out = run(&job(docs.clone(), shared + 2 * each), &|| false).unwrap();
+        let skipped = |uri: &str| {
+            out.get(uri).into_iter().flatten().any(|d| {
+                d.code == Some(NumberOrString::String(SKIPPED_CODE.into()))
+                    && d.message.contains(&format!("{}", shared + 3 * each))
+            })
+        };
+        let validated = |uri: &str| validated_in(&out, uri);
+        for d in 0..2 {
+            assert!(
+                validated(&format!("file:///w/d{d:03}.trig")),
+                "{d}: {out:#?}"
+            );
+        }
+        for d in 2..6 {
+            let uri = format!("file:///w/d{d:03}.trig");
+            assert!(skipped(&uri), "{d}: {out:#?}");
+            assert!(!validated(&uri));
+        }
+        // Each dataset alone would have fit: the limit is on the run.
+        let alone = run(
+            &job(vec![docs[0].clone(), docs[3].clone()], shared + each),
+            &|| false,
+        )
+        .unwrap();
+        assert!(validated_in(&alone, "file:///w/d002.trig"), "{alone:#?}");
     }
 }

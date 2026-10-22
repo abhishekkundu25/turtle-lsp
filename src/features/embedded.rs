@@ -8,7 +8,7 @@
 //! each query's value ([`SparqlAnalysis::embedded`]) and their positions are
 //! mapped back: semantic tokens, completion and hover inside the literal.
 
-use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
+use crate::analysis::{Analysis, EmbeddedQuery, Encoding, SparqlAnalysis};
 use crate::features::semantic::Raw;
 use crate::knowledge::Knowledge;
 use crate::sparql::features as sparql;
@@ -16,6 +16,12 @@ use crate::syntax::{Iri, Node, PrefixMap, Span, Syntax, Triple};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, OnceLock};
+
+#[cfg(test)]
+thread_local! {
+    /// Queries this thread has parsed for the features, to tell a cached one.
+    static PARSED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 struct V {
     select: Iri,
@@ -217,8 +223,36 @@ impl<'a> Queries<'a> {
     fn embed(&mut self, i: usize) -> Option<Embedded<'a>> {
         let lit = self.lit(i)?;
         let s = &self.a.parsed.triples[i].s;
-        let prefixes: PrefixMap = self.prefixes(s).into_iter().collect();
-        let q = SparqlAnalysis::embedded(self.a.uri.clone(), lit.value, Arc::new(prefixes));
+        let prefixes = self.prefixes(s);
+        let key = i as u32;
+        let cached = self.a.embedded_queries.lock().ok().and_then(|m| {
+            m.get(&key)
+                .filter(|e| e.prefixes == prefixes)
+                .map(|e| e.query.clone())
+        });
+        let q = match cached {
+            Some(q) => q,
+            None => {
+                #[cfg(test)]
+                PARSED.with(|c| c.set(c.get() + 1));
+                let map: PrefixMap = prefixes.iter().cloned().collect();
+                let q = Arc::new(SparqlAnalysis::embedded(
+                    self.a.uri.clone(),
+                    lit.value,
+                    Arc::new(map),
+                ));
+                if let Ok(mut m) = self.a.embedded_queries.lock() {
+                    m.insert(
+                        key,
+                        EmbeddedQuery {
+                            prefixes,
+                            query: q.clone(),
+                        },
+                    );
+                }
+                q
+            }
+        };
         Some(Embedded { lit, q })
     }
 }
@@ -338,7 +372,7 @@ impl<'a> Lit<'a> {
 /// A query literal parsed as SPARQL.
 struct Embedded<'a> {
     lit: Lit<'a>,
-    q: SparqlAnalysis,
+    q: Arc<SparqlAnalysis>,
 }
 
 impl Embedded<'_> {
@@ -484,4 +518,97 @@ pub(crate) fn hover(
         h.range = h.range.and_then(|r| e.range(a, enc, r));
     }
     Some(h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::knowledge::Source;
+
+    const HEAD: &str = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n";
+
+    fn shapes(queries: usize) -> String {
+        let mut text = HEAD.to_string();
+        for i in 0..queries {
+            text.push_str(&format!(
+                "ex:S{i} sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE {{ $this ex:p{i} ?o }}\" ] .\n"
+            ));
+        }
+        text
+    }
+
+    fn analysis(text: &str) -> Arc<Analysis> {
+        Arc::new(Analysis::new(
+            "file:///w/shapes.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ))
+    }
+
+    fn parsed() -> usize {
+        PARSED.with(|c| c.get())
+    }
+
+    /// Each feature call parsed every query it touched again (500 queries:
+    /// a keystroke went from 1.1 to 2.9 ms). A query is parsed once per
+    /// document, and again only when its prefixes change.
+    #[test]
+    fn a_query_literal_is_parsed_once_per_document() {
+        let text = shapes(40);
+        let a = analysis(&text);
+        let mut k = Knowledge::default();
+        k.set("file:///w/shapes.ttl", Source::Open, a.clone());
+        let before = parsed();
+        let mut first = Vec::new();
+        semantic_tokens(&a, &k, 0, text.len() as u32, &mut first);
+        assert_eq!(parsed() - before, 40);
+        assert!(!first.is_empty());
+        let mut again = Vec::new();
+        semantic_tokens(&a, &k, 0, text.len() as u32, &mut again);
+        assert_eq!(parsed() - before, 40, "the second call parsed nothing");
+        assert_eq!(first.len(), again.len());
+        // Completion and hover at a query take the cached parse too, with
+        // the same answer as the first time.
+        let at = (text.find("$this ex:p7").unwrap() + "$this ex:p".len()) as u32;
+        let a_items = completion(&a, &k, Encoding::Utf16, at).is_some();
+        hover(&a, &k, Encoding::Utf16, at);
+        assert!(a_items);
+        assert_eq!(parsed() - before, 40);
+        // Other documents have their own.
+        let b = analysis(&text);
+        let mut other = Vec::new();
+        semantic_tokens(&b, &k, 0, text.len() as u32, &mut other);
+        assert_eq!(parsed() - before, 80);
+    }
+
+    /// What the workspace declares for a query's `sh:prefixes` node can change
+    /// without the document changing; then the query is parsed again.
+    #[test]
+    fn a_query_is_parsed_again_when_its_prefixes_change() {
+        let shape = |ns: &str| {
+            format!(
+                "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\nex:S sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE {{ $this my:p ?o }}\" ] .\n{ns}"
+            )
+        };
+        let a = analysis(&shape(""));
+        let declarations = Arc::new(Analysis::new(
+            "file:///w/decls.ttl".into(),
+            "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\nex:P sh:declare [ sh:prefix \"my\" ; sh:namespace \"http://my.org/\" ] .\n",
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/shapes.ttl", Source::Open, a.clone());
+        let before = parsed();
+        let mut out = Vec::new();
+        semantic_tokens(&a, &k, 0, u32::MAX, &mut out);
+        semantic_tokens(&a, &k, 0, u32::MAX, &mut out);
+        assert_eq!(parsed() - before, 1);
+        k.set("file:///w/decls.ttl", Source::Disk, declarations);
+        semantic_tokens(&a, &k, 0, u32::MAX, &mut out);
+        assert_eq!(parsed() - before, 2, "parsed again with the new prefix");
+        semantic_tokens(&a, &k, 0, u32::MAX, &mut out);
+        assert_eq!(parsed() - before, 2);
+    }
 }

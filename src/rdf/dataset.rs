@@ -140,7 +140,7 @@ impl<'a> Index<'a> {
             (Some(s), _, _) => Box::new(g.out(s).map(|t| t.1)),
             (None, Some(o), _) => Box::new(g.incoming(o).map(|t| t.1)),
             (None, None, Some(p)) => Box::new(g.with_p(p)),
-            (None, None, None) => Box::new(g.triples.iter()),
+            (None, None, None) => Box::new(g.all()),
         };
         Some(Box::new(
             triples

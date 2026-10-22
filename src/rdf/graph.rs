@@ -7,6 +7,7 @@
 use crate::syntax::{BlankId, Direction, Iri, Node, Triple};
 use rustc_hash::FxHashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// A term of the graph, numbered densely from 0.
 pub type Id = u32;
@@ -74,11 +75,14 @@ pub struct GTriple {
     pub o: Id,
 }
 
-/// Triple indexes grouped by one position: rows of `items`, `offsets[id]..offsets[id + 1]`.
+/// Triple indexes grouped by one position: dense rows of `items`,
+/// `offsets[id]..offsets[id + 1]`, for a graph built whole; a sparse map for an
+/// overlay, whose few triples mention terms spread over the whole base.
 #[derive(Default)]
 struct Rows {
     offsets: Vec<u32>,
     items: Vec<u32>,
+    sparse: FxHashMap<Id, Vec<u32>>,
 }
 
 impl Rows {
@@ -97,10 +101,19 @@ impl Rows {
             items[*slot as usize] = t as u32;
             *slot += 1;
         }
-        Rows { offsets, items }
+        Rows {
+            offsets,
+            items,
+            sparse: FxHashMap::default(),
+        }
     }
 
     fn get(&self, id: Id) -> &[u32] {
+        if !self.sparse.is_empty()
+            && let Some(v) = self.sparse.get(&id)
+        {
+            return v;
+        }
         let i = id as usize;
         match (self.offsets.get(i), self.offsets.get(i + 1)) {
             (Some(&a), Some(&b)) => &self.items[a as usize..b as usize],
@@ -109,22 +122,73 @@ impl Rows {
     }
 }
 
+/// The triples one row of an index names: the overlay's, then the base's.
+struct Adjacent<'g> {
+    own: std::slice::Iter<'g, u32>,
+    base: std::slice::Iter<'g, u32>,
+    own_triples: &'g [GTriple],
+    /// The number of the overlay's first triple.
+    own_from: u32,
+    base_triples: &'g [GTriple],
+}
+
+impl<'g> Iterator for Adjacent<'g> {
+    type Item = (u32, &'g GTriple);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(&i) = self.own.next() {
+            return Some((i, &self.own_triples[(i - self.own_from) as usize]));
+        }
+        let &i = self.base.next()?;
+        Some((i, &self.base_triples[i as usize]))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.own.len() + self.base.len();
+        (n, Some(n))
+    }
+}
+
+/// A graph. [`Graph::new`] builds one whole; [`Graph::overlay`] adds one
+/// document's triples to a finished graph (the base, shared) without copying
+/// or re-indexing it, so many small datasets can each be read together with
+/// the same large graph at a cost in proportion to their own size.
+///
+/// Term and triple numbers continue the base's: an overlay's own start where
+/// the base's end. What a lookup yields from the overlay comes before what it
+/// yields from the base.
 pub struct Graph<'a> {
+    /// The finished graph this one adds to; never itself an overlay.
+    base: Option<Arc<Graph<'a>>>,
+    /// The number of terms and of triples in the base.
+    term_off: u32,
+    tri_off: u32,
+    /// Terms this graph added, numbered from `term_off`.
     terms: Vec<Term<'a>>,
-    /// Term -> id. The `u32` scopes triple terms that contain blank nodes to
-    /// their document (u32::MAX otherwise), as blank nodes themselves are.
+    /// Term -> id, for the terms in `terms`. The `u32` scopes triple terms
+    /// that contain blank nodes to their document (u32::MAX otherwise), as
+    /// blank nodes themselves are.
     ids: FxHashMap<(Term<'a>, u32), Id>,
-    pub triples: Vec<GTriple>,
-    /// Per triple: (document, index into that document's triples).
-    pub origin: Vec<(u32, u32)>,
+    /// Triples this graph added, numbered from `tri_off`.
+    triples: Vec<GTriple>,
+    /// Per triple added: (document, index into that document's triples).
+    origin: Vec<(u32, u32)>,
     by_s: Rows,
     by_o: Rows,
     by_p: FxHashMap<Iri, Vec<u32>>,
-    /// Per document: the number its blank nodes are offset by.
+    /// Per document (the base's first): the number its blank nodes are offset by.
     blank_base: Vec<u32>,
+    /// The number the next document's blank nodes would be offset by.
+    blank_end: u32,
     /// Per triple term with blank nodes: the offset of its document, so the
     /// blank nodes inside carry the numbers the same nodes have outside.
     term_base: FxHashMap<Id, u32>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Triples this thread has indexed into a graph, to tell what a run costs.
+    pub static INDEXED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 impl<'a> Graph<'a> {
@@ -133,32 +197,9 @@ impl<'a> Graph<'a> {
     /// undeclared prefix ([`Triple::unresolved`]) are left out.
     pub fn new(docs: &[&'a [Triple]]) -> Graph<'a> {
         let total: usize = docs.iter().map(|d| d.len()).sum();
-        let mut g = Graph {
-            terms: Vec::new(),
-            ids: FxHashMap::default(),
-            triples: Vec::with_capacity(total),
-            origin: Vec::with_capacity(total),
-            by_s: Rows::default(),
-            by_o: Rows::default(),
-            by_p: FxHashMap::default(),
-            blank_base: Vec::with_capacity(docs.len()),
-            term_base: FxHashMap::default(),
-        };
-        let mut base = 0u32;
-        for (d, triples) in docs.iter().enumerate() {
-            g.blank_base.push(base);
-            let mut max = 0u32;
-            for (i, t) in triples.iter().enumerate() {
-                if t.unresolved {
-                    continue;
-                }
-                let s = g.add(base, &t.s, &mut max);
-                let o = g.add(base, &t.o, &mut max);
-                g.by_p.entry(t.p).or_default().push(g.triples.len() as u32);
-                g.triples.push(GTriple { s, p: t.p, o });
-                g.origin.push((d as u32, i as u32));
-            }
-            base = base.saturating_add(max);
+        let mut g = Graph::empty(None, total, docs.len());
+        for triples in docs {
+            g.add_document::<false>(triples);
         }
         let n = g.terms.len();
         g.by_s = Rows::build(n, g.triples.iter().map(|t| t.s));
@@ -166,7 +207,71 @@ impl<'a> Graph<'a> {
         g
     }
 
-    fn add(&mut self, base: u32, n: &'a Node, max: &mut u32) -> Id {
+    /// `base` with one more document, `triples`, which is document number
+    /// [`Graph::documents`] of `base` in [`Graph::origin`] and the blank nodes.
+    /// Its blank nodes are its own. Costs in proportion to `triples`.
+    pub fn overlay(base: &Arc<Graph<'a>>, triples: &'a [Triple]) -> Graph<'a> {
+        debug_assert!(base.base.is_none(), "an overlay of an overlay");
+        let mut g = Graph::empty(Some(base.clone()), triples.len(), 1);
+        g.add_document::<true>(triples);
+        g
+    }
+
+    fn empty(base: Option<Arc<Graph<'a>>>, triples: usize, docs: usize) -> Graph<'a> {
+        let (term_off, tri_off, blank_base, blank_end) = match &base {
+            Some(b) => (
+                b.term_off + b.terms.len() as u32,
+                b.tri_off + b.triples.len() as u32,
+                b.blank_base.clone(),
+                b.blank_end,
+            ),
+            None => (0, 0, Vec::with_capacity(docs), 0),
+        };
+        Graph {
+            base,
+            term_off,
+            tri_off,
+            terms: Vec::new(),
+            ids: FxHashMap::default(),
+            triples: Vec::with_capacity(triples),
+            origin: Vec::with_capacity(triples),
+            by_s: Rows::default(),
+            by_o: Rows::default(),
+            by_p: FxHashMap::default(),
+            blank_base,
+            blank_end,
+            term_base: FxHashMap::default(),
+        }
+    }
+
+    /// `OVERLAY`: the graph has a base (a separate path, so that building a
+    /// graph whole does not pay for it).
+    fn add_document<const OVERLAY: bool>(&mut self, triples: &'a [Triple]) {
+        let base = self.blank_end;
+        let d = self.blank_base.len() as u32;
+        self.blank_base.push(base);
+        let mut max = 0u32;
+        for (i, t) in triples.iter().enumerate() {
+            if t.unresolved {
+                continue;
+            }
+            let s = self.add::<OVERLAY>(base, &t.s, &mut max);
+            let o = self.add::<OVERLAY>(base, &t.o, &mut max);
+            let at = self.tri_off + self.triples.len() as u32;
+            self.by_p.entry(t.p).or_default().push(at);
+            if OVERLAY {
+                self.by_s.sparse.entry(s).or_default().push(at);
+                self.by_o.sparse.entry(o).or_default().push(at);
+            }
+            self.triples.push(GTriple { s, p: t.p, o });
+            self.origin.push((d, i as u32));
+            #[cfg(test)]
+            INDEXED.with(|c| c.set(c.get() + 1));
+        }
+        self.blank_end = base.saturating_add(max);
+    }
+
+    fn add<const OVERLAY: bool>(&mut self, base: u32, n: &'a Node, max: &mut u32) -> Id {
         let term = match n {
             Node::Iri(i) => Term::Iri(*i),
             Node::Blank(BlankId(b)) => {
@@ -184,43 +289,96 @@ impl<'a> Graph<'a> {
         } else {
             u32::MAX
         };
-        let id = self.intern(term, scope);
+        let id = self.intern::<OVERLAY>(term, scope);
         if scope != u32::MAX {
             self.term_base.entry(id).or_insert(base);
         }
         id
     }
 
-    fn intern(&mut self, t: Term<'a>, scope: u32) -> Id {
+    fn intern<const OVERLAY: bool>(&mut self, t: Term<'a>, scope: u32) -> Id {
+        if OVERLAY && let Some(&id) = self.base.as_ref().and_then(|b| b.ids.get(&(t, scope))) {
+            return id;
+        }
         if let Some(&id) = self.ids.get(&(t, scope)) {
             return id;
         }
-        let id = self.terms.len() as Id;
+        let id = self.term_off + self.terms.len() as Id;
         self.terms.push(t);
         self.ids.insert((t, scope), id);
         id
     }
 
     pub fn term(&self, id: Id) -> Term<'a> {
-        self.terms[id as usize]
+        match id.checked_sub(self.term_off) {
+            Some(i) => self.terms[i as usize],
+            None => self.base.as_ref().expect("a base term").terms[id as usize],
+        }
     }
 
+    /// The number of triples.
     pub fn len(&self) -> usize {
-        self.triples.len()
+        self.tri_off as usize + self.triples.len()
     }
 
-    /// Every term with its id.
+    /// The number of documents (of the base and the overlay).
+    pub fn documents(&self) -> u32 {
+        self.blank_base.len() as u32
+    }
+
+    /// Every term with its id, the overlay's first.
     pub fn terms(&self) -> impl Iterator<Item = (Id, Term<'a>)> + '_ {
-        self.terms.iter().enumerate().map(|(i, t)| (i as Id, *t))
+        let base: &[Term<'a>] = self.base.as_deref().map_or(&[], |b| &b.terms);
+        self.terms
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (self.term_off + i as Id, *t))
+            .chain(base.iter().enumerate().map(|(i, t)| (i as Id, *t)))
     }
 
     pub fn is_empty(&self) -> bool {
-        self.triples.is_empty()
+        self.len() == 0
+    }
+
+    /// Triple number `t`.
+    pub fn triple_at(&self, t: u32) -> &GTriple {
+        match t.checked_sub(self.tri_off) {
+            Some(i) => &self.triples[i as usize],
+            None => &self.base.as_ref().expect("a base triple").triples[t as usize],
+        }
+    }
+
+    /// The (document, index into that document's triples) of triple `t`.
+    pub fn origin(&self, t: u32) -> (u32, u32) {
+        match t.checked_sub(self.tri_off) {
+            Some(i) => self.origin[i as usize],
+            None => self.base.as_ref().expect("a base triple").origin[t as usize],
+        }
+    }
+
+    /// Every triple, the overlay's first.
+    pub fn all(&self) -> impl Iterator<Item = &GTriple> {
+        self.triples
+            .iter()
+            .chain(self.base.iter().flat_map(|b| b.triples.iter()))
+    }
+
+    /// The triples the overlay added (all of a graph built whole), with their
+    /// numbers.
+    pub fn added(&self) -> impl Iterator<Item = (u32, &GTriple)> {
+        self.triples
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (self.tri_off + i as u32, t))
     }
 
     pub fn id(&self, t: Term<'a>) -> Option<Id> {
         // Lookups by content: triple terms with blank nodes are per document.
-        self.ids.get(&(t, u32::MAX)).copied()
+        let key = (t, u32::MAX);
+        self.ids
+            .get(&key)
+            .or_else(|| self.base.as_ref()?.ids.get(&key))
+            .copied()
     }
 
     pub fn iri(&self, i: Iri) -> Option<Id> {
@@ -242,7 +400,11 @@ impl<'a> Graph<'a> {
     /// The number added to the blank nodes inside triple term `id` to get
     /// their numbers in the graph (0 for a term without blank nodes).
     pub fn term_blank_base(&self, id: Id) -> u32 {
-        self.term_base.get(&id).copied().unwrap_or(0)
+        self.term_base
+            .get(&id)
+            .or_else(|| self.base.as_ref()?.term_base.get(&id))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The (document, number in that document) of blank node `Term::Blank(b)`.
@@ -259,30 +421,39 @@ impl<'a> Graph<'a> {
         }
     }
 
+    /// The triples in `own` (the overlay's rows) and `base` (the base's),
+    /// the overlay's first, each with its number.
+    fn adjacent<'g>(&'g self, own: &'g [u32], base: &'g [u32]) -> Adjacent<'g> {
+        Adjacent {
+            own: own.iter(),
+            base: base.iter(),
+            own_triples: &self.triples,
+            own_from: self.tri_off,
+            base_triples: self.base.as_deref().map_or(&[], |b| &b.triples),
+        }
+    }
+
     /// Triples with subject `s`.
     pub fn out(&self, s: Id) -> impl Iterator<Item = (u32, &GTriple)> {
-        self.by_s
-            .get(s)
-            .iter()
-            .map(|&i| (i, &self.triples[i as usize]))
+        let base = self.base.as_deref().map_or(&[][..], |b| b.by_s.get(s));
+        self.adjacent(self.by_s.get(s), base)
     }
 
     /// Triples with object `o`.
     pub fn incoming(&self, o: Id) -> impl Iterator<Item = (u32, &GTriple)> {
-        self.by_o
-            .get(o)
-            .iter()
-            .map(|&i| (i, &self.triples[i as usize]))
+        let base = self.base.as_deref().map_or(&[][..], |b| b.by_o.get(o));
+        self.adjacent(self.by_o.get(o), base)
     }
 
     /// Triples with predicate `p`.
     pub fn with_p(&self, p: Iri) -> impl Iterator<Item = &GTriple> {
-        self.by_p
-            .get(&p)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-            .iter()
-            .map(|&i| &self.triples[i as usize])
+        let own = self.by_p.get(&p).map_or(&[][..], Vec::as_slice);
+        let base = self
+            .base
+            .as_ref()
+            .and_then(|b| b.by_p.get(&p))
+            .map_or(&[][..], Vec::as_slice);
+        self.adjacent(own, base).map(|t| t.1)
     }
 
     pub fn objects(&self, s: Id, p: Iri) -> impl Iterator<Item = Id> {
@@ -443,5 +614,106 @@ mod tests {
                 (ar, None)
             ]
         );
+    }
+
+    /// A term as text, with blank nodes named by their document.
+    fn show(g: &Graph, id: Id) -> String {
+        match g.term(id) {
+            Term::Iri(i) => i.to_string(),
+            Term::Blank(b) => {
+                let (d, n) = g.blank_origin(b);
+                format!("_:{d}.{n}")
+            }
+            Term::Value(n) => format!("{n:?}"),
+        }
+    }
+
+    fn shown(g: &Graph, t: &GTriple) -> String {
+        format!("{} {} {}", show(g, t.s), t.p, show(g, t.o))
+    }
+
+    /// Reading an overlay is reading the graph of all its documents built
+    /// whole, with blank nodes still apart per document; the overlay's own
+    /// triples come first.
+    #[test]
+    fn an_overlay_reads_as_the_union_of_its_documents() {
+        let parse = |t: &str| parse(t, &PrefixMap::default(), Syntax::Turtle);
+        let a = parse("<http://e/a> <http://e/p> _:b , \"x\" .\n_:b <http://e/q> ( 1 2 ) .");
+        let b = parse(
+            "<http://e/a> <http://e/p> _:b , \"y\" .\n_:b <http://e/q> \"x\" .\n<http://e/c> <http://e/r> <http://e/a> .",
+        );
+        let c = parse(
+            "_:b <http://e/q> <http://e/c> , \"x\" .\n<http://e/a> <http://e/p> \"y\" , _:b .\nnope:s <http://e/p> \"x\" .",
+        );
+        let base = Arc::new(Graph::new(&[&a.triples, &b.triples]));
+        let base_len = base.len();
+        let over = Graph::overlay(&base, &c.triples);
+        let whole = Graph::new(&[&a.triples, &b.triples, &c.triples]);
+        assert_eq!(over.len(), whole.len());
+        assert_eq!(over.documents(), 3);
+        assert_eq!(base.len(), base_len, "the base is not changed");
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        let all = |g: &Graph| sorted(g.all().map(|t| shown(g, t)).collect());
+        assert_eq!(all(&over), all(&whole));
+        assert_eq!(over.all().count(), over.len());
+        // By subject, object and predicate.
+        for (id, _) in whole.terms() {
+            let name = show(&whole, id);
+            let find =
+                |g: &Graph| -> Option<Id> { g.terms().map(|t| t.0).find(|&i| show(g, i) == name) };
+            let o = find(&over).unwrap_or_else(|| panic!("{name} is in the overlay"));
+            let out = |g: &Graph, id| sorted(g.out(id).map(|t| shown(g, t.1)).collect());
+            let inc = |g: &Graph, id| sorted(g.incoming(id).map(|t| shown(g, t.1)).collect());
+            assert_eq!(out(&over, o), out(&whole, id), "out of {name}");
+            assert_eq!(inc(&over, o), inc(&whole, id), "incoming of {name}");
+        }
+        let p = Iri::intern("http://e/p");
+        let with_p = |g: &Graph| sorted(g.with_p(p).map(|t| shown(g, t)).collect());
+        assert_eq!(with_p(&over), with_p(&whole));
+        // Triple numbers lead to the same triple and place in a document.
+        for (t, gt) in over.added() {
+            assert_eq!(over.origin(t).0, 2);
+            assert_eq!(shown(&over, over.triple_at(t)), shown(&over, gt));
+        }
+        for t in 0..over.len() as u32 {
+            let (d, i) = over.origin(t);
+            let doc = [&a, &b, &c][d as usize];
+            assert_eq!(doc.triples[i as usize].p, over.triple_at(t).p);
+        }
+        // The overlay's triples come first.
+        let first = over
+            .out(over.iri(Iri::intern("http://e/a")).unwrap())
+            .next()
+            .unwrap()
+            .0;
+        assert_eq!(over.origin(first).0, 2);
+        // Blank nodes of the three documents are three nodes.
+        let blanks = over
+            .terms()
+            .filter(|t| matches!(t.1, Term::Blank(_)))
+            .count();
+        assert_eq!(
+            blanks,
+            whole
+                .terms()
+                .filter(|t| matches!(t.1, Term::Blank(_)))
+                .count()
+        );
+        // Nodes resolve by document, the overlay's included.
+        let nb = &c.triples[0].s;
+        let id = over.node(2, nb).unwrap();
+        assert_eq!(
+            over.blank_origin(match over.term(id) {
+                Term::Blank(b) => b,
+                _ => unreachable!(),
+            })
+            .0,
+            2
+        );
+        // An undeclared prefix stays out here as well.
+        assert!(over.all().all(|t| shown(&over, t) != "nope:s"));
     }
 }

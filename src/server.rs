@@ -1042,7 +1042,8 @@ impl Server {
         let mut prefix_files: Vec<PathBuf> = Vec::new();
         let mut gone_dirs: Vec<PathBuf> = Vec::new();
         let mut disk_changed = false;
-        let mut sparql_changed = false;
+        let mut sparql_paths: Vec<PathBuf> = Vec::new();
+        let mut reindex: Vec<PathBuf> = Vec::new();
         let settings_file = self.ws.roots.first().map(|r| r.join(SETTINGS_FILE));
         for ch in changes {
             let Some(path) = uri_to_path(ch.uri.as_str()) else {
@@ -1076,7 +1077,7 @@ impl Server {
             }
             if is_sparql_path(&path) {
                 // Read on demand, never indexed; but a closed query is diagnosed.
-                sparql_changed = true;
+                sparql_paths.push(path);
                 continue;
             }
             if !is_turtle(&path) {
@@ -1089,17 +1090,20 @@ impl Server {
             if path.file_name().is_some_and(|f| f == PREFIX_FILE) {
                 prefix_files.push(path.clone());
             }
-            if self.ws.reindex_disk_file(&path) {
-                disk_changed = true;
-            }
             self.wsdiag_disk_changed(&path);
+            reindex.push(path);
+        }
+        // The files of one notification are parsed together.
+        if self.ws.reindex_disk_files(&reindex) {
+            disk_changed = true;
         }
         if self.ws.remove_under_any(&gone_dirs) {
             disk_changed = true;
             // The files below a deleted folder are no longer shown.
             self.wsdiag.invalidate_all();
         }
-        if sparql_changed {
+        if !sparql_paths.is_empty() {
+            self.ws.sparql_files_changed(&sparql_paths);
             self.wsdiag.invalidate_all();
         }
         let prefixes_changed = !prefix_files.is_empty();
@@ -2588,6 +2592,55 @@ mod tests {
         assert!(indexed(&kept));
         assert!(!indexed(&gone), "a deleted file came back");
         assert!(!indexed(&in_folder), "a file of a deleted folder came back");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A notification of many changed files indexes them in one parallel pass
+    /// (it parsed them one at a time, a pass each), and tells the SPARQL
+    /// index of the queries among them.
+    #[test]
+    fn a_notification_of_many_changes_is_indexed_in_one_pass() {
+        let dir = std::env::temp_dir().join(format!("turtle-lsp-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let (here, _host) = Connection::memory();
+        let root = path_to_uri(&dir).unwrap();
+        let (mut server, _, _) = Server::configure(
+            here,
+            json!({"capabilities": {}, "workspaceFolders": [{"uri": root, "name": "w"}]}),
+            false,
+        )
+        .unwrap();
+        let event = |p: &std::path::Path, typ| FileEvent {
+            uri: path_to_uri(p).unwrap().parse().unwrap(),
+            typ,
+        };
+        let first = dir.join("first.rq");
+        std::fs::write(&first, "SELECT * WHERE { ?s ?p ?o }\n").unwrap();
+        assert_eq!(server.ws.sparql_documents().len(), 1);
+        let files: Vec<std::path::PathBuf> =
+            (0..120).map(|i| dir.join(format!("f{i}.ttl"))).collect();
+        for f in &files {
+            std::fs::write(f, TTL).unwrap();
+        }
+        let second = dir.join("second.rq");
+        std::fs::write(&second, "SELECT * WHERE { ?s ?p ?o }\n").unwrap();
+        std::fs::remove_file(&first).unwrap();
+        let mut changes: Vec<FileEvent> = files
+            .iter()
+            .map(|f| event(f, FileChangeType::CHANGED))
+            .collect();
+        changes.push(event(&files[0], FileChangeType::CHANGED));
+        changes.push(event(&second, FileChangeType::CREATED));
+        changes.push(event(&first, FileChangeType::DELETED));
+        let before = crate::workspace::INDEX_PASSES.with(|c| c.get());
+        server.watched_files_changed(changes);
+        assert_eq!(crate::workspace::INDEX_PASSES.with(|c| c.get()) - before, 1);
+        assert_eq!(server.ws.disk.len(), 120);
+        let queries = server.ws.sparql_documents();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].uri, path_to_uri(&second).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

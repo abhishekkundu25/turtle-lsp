@@ -7,7 +7,8 @@ use crate::sparql;
 use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Span, Syntax};
 use line_index::{LineIndex, TextSize, WideEncoding};
 use lsp_types::{Position, Range};
-use std::sync::Arc;
+use rustc_hash::FxHashMap;
+use std::sync::{Arc, Mutex};
 
 const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
 const SKOS_PREF_LABEL: &str = "http://www.w3.org/2004/02/skos/core#prefLabel";
@@ -54,6 +55,19 @@ pub struct Analysis {
     pub types: IriMap<Vec<Iri>>,
     /// IRI -> direct superclasses / superproperties (rdfs:subClassOf, rdfs:subPropertyOf).
     pub supers: IriMap<Vec<Iri>>,
+    /// The SHACL query literals parsed for the editor features, by the index
+    /// of the triple whose object is the literal; filled by
+    /// `features::embedded` as features ask, so a keystroke in a file with
+    /// hundreds of queries does not parse them all again.
+    pub embedded_queries: Mutex<FxHashMap<u32, EmbeddedQuery>>,
+}
+
+/// A query literal parsed as SPARQL, with the prefixes it was parsed with:
+/// what the workspace declares for the literal's node can change without the
+/// document changing, and then the query is parsed again.
+pub struct EmbeddedQuery {
+    pub prefixes: Vec<(String, String)>,
+    pub query: Arc<SparqlAnalysis>,
 }
 
 /// Which predicate feeds which index.
@@ -215,6 +229,7 @@ impl Analysis {
             comments,
             types,
             supers,
+            embedded_queries: Mutex::default(),
         }
     }
 

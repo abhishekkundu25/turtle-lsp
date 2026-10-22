@@ -9,12 +9,12 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::{SOURCE, TermUse};
+use crate::features::quickfix::FixData;
 use crate::knowledge::{Knowledge, namespace_of};
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Role, Span, Syntax};
 use crate::vocab::{EditBuf, NameTable};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde_json::json;
 
 pub const CODE: &str = "undescribed-term";
 
@@ -327,7 +327,10 @@ where
             d.severity = Some(DiagnosticSeverity::WARNING);
             d.message
                 .push_str(&format!(". Did you mean '{replacement}'?"));
-            d.data = Some(json!({ "replace": replacement }));
+            FixData::Replace {
+                replace: replacement,
+            }
+            .attach(&mut d);
         }
         out.push(d);
     }

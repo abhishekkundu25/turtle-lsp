@@ -50,7 +50,15 @@ pub fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
 }
 
 pub fn uri(s: &str) -> Uri {
+    #[cfg(test)]
+    URIS_PARSED.with(|c| c.set(c.get() + 1));
     Uri::from_str(s).expect("valid uri")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// URIs this thread has parsed with [`uri`].
+    static URIS_PARSED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A document's path for a message, else its URI.
@@ -59,9 +67,30 @@ pub fn shown(uri: &str) -> String {
 }
 
 fn loc(a: &Analysis, enc: Encoding, span: Span) -> Location {
-    Location {
-        uri: uri(&a.uri),
-        range: a.range(enc, span),
+    DocLocs::new(a).at(enc, span)
+}
+
+/// Locations in one document, its URI parsed once: a result with tens of
+/// thousands of them (references on `foaf:Person` in a big file) parsed the
+/// same URI for each.
+struct DocLocs<'a> {
+    a: &'a Analysis,
+    uri: Uri,
+}
+
+impl<'a> DocLocs<'a> {
+    fn new(a: &'a Analysis) -> Self {
+        DocLocs {
+            a,
+            uri: uri(&a.uri),
+        }
+    }
+
+    fn at(&self, enc: Encoding, span: Span) -> Location {
+        Location {
+            uri: self.uri.clone(),
+            range: self.a.range(enc, span),
+        }
     }
 }
 
@@ -120,8 +149,9 @@ pub fn descriptions<K: IriKey + ?Sized>(
 ) -> Vec<Location> {
     let mut out = Vec::new();
     for d in k.descriptions(iri) {
+        let here = DocLocs::new(d.analysis);
         for span in d.spans {
-            out.push(loc(d.analysis, enc, *span));
+            out.push(here.at(enc, *span));
         }
     }
     out.sort_by(|x, y| {
@@ -145,8 +175,9 @@ pub fn type_definition(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position
     let mut out = Vec::new();
     for ty in k.types(&iri) {
         for d in k.descriptions(&ty) {
+            let here = DocLocs::new(d.analysis);
             for span in d.spans {
-                out.push(loc(d.analysis, enc, *span));
+                out.push(here.at(enc, *span));
             }
         }
     }
@@ -165,9 +196,10 @@ pub fn implementations(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position
     let mut out = Vec::new();
     for (doc, related) in k.related_by_doc(&iri) {
         let other = k.doc(doc);
+        let here = DocLocs::new(other);
         for s in related {
             for span in other.defs.get(&s).into_iter().flatten() {
-                out.push(loc(other, enc, *span));
+                out.push(here.at(enc, *span));
             }
         }
     }
@@ -190,13 +222,14 @@ pub fn references(
     let mut out = Vec::new();
     match target_at(a, offset) {
         Some((Target::Prefix(name), _)) => {
+            let here = DocLocs::new(a);
             if include_decl {
                 out.extend(
                     a.parsed
                         .prefixes
                         .iter()
                         .filter(|p| p.name == name)
-                        .map(|p| loc(a, enc, p.name_span)),
+                        .map(|p| here.at(enc, p.name_span)),
                 );
             }
             out.extend(
@@ -205,8 +238,7 @@ pub fn references(
                     .iter()
                     .filter(|u| u.name == name)
                     .map(|u| {
-                        loc(
-                            a,
+                        here.at(
                             enc,
                             Span::new(u.span.start, u.span.start + name.len() as u32),
                         )
@@ -233,7 +265,8 @@ fn jsonld_references(
     if include_decl {
         out.extend(jsonld::definition_location(a, k, enc, d));
     }
-    out.extend(jsonld::use_spans(a, t.definition).map(|s| loc(a, enc, s)));
+    let here = DocLocs::new(a);
+    out.extend(jsonld::use_spans(a, t.definition).map(|s| here.at(enc, s)));
     if let Some(iri) = d.iri.as_deref() {
         out.extend(term_references(k, enc, iri, include_decl));
     }
@@ -264,10 +297,11 @@ pub fn term_references<K: IriKey + ?Sized>(
         .docs_referencing(iri)
         .filter(|(_, src, _)| *src != Source::External)
     {
+        let here = DocLocs::new(other);
         let mut seen = FxHashSet::default();
         for r in other.refs_of(iri) {
             if (include_decl || !r.role.is_definition()) && seen.insert(r.span) {
-                out.push(loc(other, enc, r.span));
+                out.push(here.at(enc, r.span));
             }
         }
     }
@@ -627,5 +661,43 @@ mod tests {
                 .unwrap_err()
                 .contains("not declared")
         );
+    }
+
+    /// A result with a location per use parsed the document's URI for each
+    /// (75,000 locations: 349 ms). It is parsed once per document.
+    #[test]
+    fn a_document_s_uri_is_parsed_once_for_all_its_locations() {
+        let mut text = String::from("@prefix ex: <http://example.org/> .\n");
+        for i in 0..300 {
+            text.push_str(&format!("ex:s{i} a ex:C ; ex:p ex:C .\n"));
+        }
+        let other = text.replace("ex:s", "ex:t");
+        let doc = |uri: &str, text: &str| {
+            Arc::new(Analysis::new(
+                uri.into(),
+                text,
+                Arc::new(PrefixMap::default()),
+                true,
+            ))
+        };
+        let (a, b) = (
+            doc("file:///w/a.ttl", &text),
+            doc("file:///w/b.ttl", &other),
+        );
+        let mut k = Knowledge::default();
+        k.set("file:///w/a.ttl", Source::Open, a.clone());
+        k.set("file:///w/b.ttl", Source::Open, b.clone());
+        let at = a.position(Encoding::Utf16, text.find("ex:C ;").unwrap() as u32 + 3);
+        let before = URIS_PARSED.with(|c| c.get());
+        let refs = references(&a, &k, Encoding::Utf16, at, true);
+        assert_eq!(refs.len(), 1200, "600 uses of ex:C in each file");
+        assert_eq!(
+            URIS_PARSED.with(|c| c.get()) - before,
+            2,
+            "one per document"
+        );
+        let found = definition(&a, &k, Encoding::Utf16, at, None);
+        assert!(found.len() <= 1);
+        assert!(refs.iter().all(|l| l.uri.as_str().ends_with(".ttl")));
     }
 }

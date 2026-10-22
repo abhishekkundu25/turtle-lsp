@@ -107,3 +107,41 @@ test("no ranking for an untyped subject keeps the old order", async () => {
   const res = await complete(p, path.join(project, "data"), "obj:q ")
   assert.equal(labels(res)[0], "a", show(res))
 })
+
+test("instances typed in a long list of classes are offered for a range", async () => {
+  // `ex:late` is typed with 150 classes before ex:Target; the predicate of that
+  // object used to be looked for in the 64 references before it.
+  const classes = Array.from({ length: 150 }, (_, i) => `ex:Other${i}`).join(" , ")
+  const head = "@prefix ex: <http://example.org/long/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+  const data = `${head}ex:knows rdfs:range ex:Target .\nex:early a ex:Target .\nex:late a ${classes} , ex:Target .\nex:untyped ex:uses ex:Target .\n`
+  const uri = uriOf(path.join(workspace, `__ranking-long-${n++}.ttl`))
+  w.open(uri, data)
+  await w.diagnosticsFor(uri)
+  const text = `${head}ex:s ex:knows ex:`
+  const res = await complete(w, workspace, text)
+  assert.deepEqual(new Set(labels(res).slice(0, 2)), new Set(["ex:early", "ex:late"]), show(res))
+  assert.ok(!labels(res).slice(0, 2).includes("ex:untyped"))
+})
+
+test("a long list is cut to the 200 first, in the order of the full list", async () => {
+  // 600 terms of one namespace, so the list is cut; the order is by how well
+  // the name starts with what was typed, then length, then name.
+  const head = "@prefix long: <http://example.org/many/> .\n"
+  const names = [
+    ...Array.from({ length: 300 }, (_, i) => `px${i}`),
+    ...Array.from({ length: 150 }, (_, i) => `xp${i}`),
+    ...Array.from({ length: 150 }, (_, i) => `Pq${i}`),
+  ]
+  const uri = uriOf(path.join(workspace, `__ranking-many-${n++}.ttl`))
+  w.open(uri, head + names.map((x) => `long:${x} a long:K .\n`).join(""))
+  await w.diagnosticsFor(uri)
+  const res = await complete(w, workspace, `${head}long:s long:rel long:p`)
+  const got = labels(res).filter((l) => l.startsWith("long:"))
+  assert.equal(got.length, 200)
+  assert.ok(res.isIncomplete)
+  // Names that start with p (any case) come first: by length, then by name.
+  // (The word being typed is a term of the document being edited too.)
+  const starts = [...names, "p"].filter((x) => x.toLowerCase().startsWith("p")).map((x) => `long:${x}`)
+  const expected = starts.sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0)).slice(0, 200)
+  assert.deepEqual(got, expected)
+})

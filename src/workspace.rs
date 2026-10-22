@@ -11,7 +11,8 @@
 //! do, are never validated against SHACL shapes, and closing one leaves the
 //! index as it was. SPARQL files on disk are not read at startup: features
 //! that look across the workspace's queries (references and rename of a
-//! term) ask for them with [`Workspace::sparql_documents`].
+//! term) ask for them with [`Workspace::sparql_documents`], which reads them
+//! on the first ask and keeps them current from the watcher's events.
 //!
 //! JSON-LD contexts: a `file:` context URL is served from the open document
 //! at that URL, else read from disk, but only inside the workspace roots (as
@@ -132,6 +133,18 @@ pub struct Workspace {
     /// What changed on disk since the workspace was created, kept until the
     /// initial index is merged (see [`Workspace::expect_initial_index`]).
     touched: Option<Touched>,
+    /// The SPARQL files under the roots, read on first use and kept current
+    /// (see [`Workspace::sparql_documents`]). `None` until then, and after
+    /// anything that changes how they are parsed.
+    sparql_files: Option<std::collections::BTreeMap<PathBuf, SparqlFile>>,
+}
+
+/// A SPARQL file on disk, as read.
+struct SparqlFile {
+    uri: String,
+    /// The file's stamp when it was read.
+    stamp: Option<Stamp>,
+    analysis: Arc<SparqlAnalysis>,
 }
 
 /// A prefixes.ttl's prefixes, as read.
@@ -354,6 +367,13 @@ fn canonical(path: &Path) -> PathBuf {
         (Some(dir), Some(name)) => canonical(dir).join(name),
         _ => path.to_path_buf(),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread has parsed files into the disk index
+    /// ([`Workspace::index_paths`]), to tell a batch from one by one.
+    pub(crate) static INDEX_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Text of a document that makes analysis panic, in tests (see
@@ -763,11 +783,17 @@ impl Workspace {
     /// Every SPARQL document of the workspace, read on demand (never at
     /// startup, never per keystroke): the open SPARQL documents from memory,
     /// then the `.rq`, `.sparql` and `.ru` files under the roots that are not
-    /// open, read from disk and parsed in parallel with their folder's
-    /// prefixes (the indexing limits apply: the skipped directories,
-    /// [`MAX_FILES`] files, [`MAX_FILE_BYTES`] per file). A file open as
-    /// another kind is left out. Nothing is cached: each call reads the
-    /// files again, so the answer reflects the disk as it is now.
+    /// open (the indexing limits apply: the skipped directories,
+    /// [`MAX_FILES`] files, [`MAX_FILE_BYTES`] per file), parsed with their
+    /// folder's prefixes. A file open as another kind is left out.
+    ///
+    /// The files are found and parsed on the first call and kept: a later call
+    /// reads no directory. They are kept current by
+    /// [`Workspace::sparql_files_changed`] and
+    /// [`Workspace::remove_under_any`] (the watcher's events), and a file
+    /// written since (its stamp differs) is read again here, so an answer
+    /// reflects the files' content as it is now; a file created without
+    /// the watcher saying so is not found until the prefixes change.
     pub fn sparql_documents(&mut self) -> Vec<Arc<SparqlAnalysis>> {
         let open: Vec<String> = self
             .open
@@ -777,23 +803,111 @@ impl Workspace {
             .collect();
         let mut out: Vec<Arc<SparqlAnalysis>> =
             open.iter().filter_map(|u| self.sparql(u)).collect();
-        let jobs: Vec<(String, PathBuf, Arc<PrefixMap>)> =
-            scan_roots_matching(&self.roots, is_sparql_path)
-                .into_iter()
-                .filter_map(|p| {
-                    let uri = path_to_uri(&p)?;
-                    if self.open.contains_key(&uri) {
-                        return None;
-                    }
-                    let ext = self.external_prefixes_as(&uri, Syntax::Turtle);
-                    Some((uri, p, ext))
-                })
-                .collect();
-        out.par_extend(jobs.into_par_iter().filter_map(|(uri, path, ext)| {
-            let text = std::fs::read_to_string(&path).ok()?;
-            Some(Arc::new(SparqlAnalysis::new(uri, &text, ext)))
-        }));
+        self.refresh_sparql_files();
+        if let Some(files) = &self.sparql_files {
+            out.extend(
+                files
+                    .values()
+                    .filter(|f| !self.open.contains_key(&f.uri))
+                    .map(|f| f.analysis.clone()),
+            );
+        }
         out
+    }
+
+    /// Read the SPARQL files if that was not done yet; else read again those
+    /// written since.
+    fn refresh_sparql_files(&mut self) {
+        match &self.sparql_files {
+            None => {
+                let paths = scan_roots_matching(&self.roots, is_sparql_path).paths;
+                let files = self.read_sparql_files(paths).into_iter().collect();
+                self.sparql_files = Some(files);
+            }
+            Some(files) => {
+                let written: Vec<PathBuf> = files
+                    .iter()
+                    .filter(|(path, f)| stamp_of(path) != f.stamp)
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                self.sparql_files_changed(&written);
+            }
+        }
+    }
+
+    /// Parse SPARQL files in parallel, with their folders' prefixes. A file
+    /// that cannot be read or is over [`MAX_FILE_BYTES`] is left out.
+    fn read_sparql_files(&mut self, paths: Vec<PathBuf>) -> Vec<(PathBuf, SparqlFile)> {
+        let jobs: Vec<(String, PathBuf, Arc<PrefixMap>)> = paths
+            .into_iter()
+            .filter_map(|p| {
+                let uri = path_to_uri(&p)?;
+                let ext = self.external_prefixes_as(&uri, Syntax::Turtle);
+                Some((uri, p, ext))
+            })
+            .collect();
+        jobs.into_par_iter()
+            .filter_map(|(uri, path, ext)| {
+                let stamp = stamp_of(&path);
+                if stamp.is_some_and(|s| s.len > MAX_FILE_BYTES) {
+                    return None;
+                }
+                let text = std::fs::read_to_string(&path).ok()?;
+                let analysis = Arc::new(SparqlAnalysis::new(uri.clone(), &text, ext));
+                Some((
+                    path,
+                    SparqlFile {
+                        uri,
+                        stamp,
+                        analysis,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// The SPARQL files at `paths` were created, changed or deleted: read the
+    /// ones that are SPARQL files the scan would take, drop the others. All
+    /// in one parallel pass. Nothing is read before the first
+    /// [`Workspace::sparql_documents`].
+    pub fn sparql_files_changed(&mut self, paths: &[PathBuf]) {
+        let Some(mut files) = self.sparql_files.take() else {
+            return;
+        };
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut room = MAX_FILES.saturating_sub(files.len());
+        let mut read = Vec::new();
+        for path in paths {
+            if !seen.insert(path) {
+                continue;
+            }
+            let takes = is_sparql_path(path)
+                && self.in_area(path, false)
+                && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES);
+            if takes && (files.contains_key(path) || room > 0) {
+                if !files.contains_key(path) {
+                    room -= 1;
+                }
+                read.push(path.clone());
+            } else {
+                files.remove(path);
+            }
+        }
+        let read_paths: Vec<PathBuf> = read.clone();
+        let mut fresh: FxHashMap<PathBuf, SparqlFile> =
+            self.read_sparql_files(read).into_iter().collect();
+        for path in read_paths {
+            match fresh.remove(&path) {
+                Some(f) => {
+                    files.insert(path, f);
+                }
+                // Unreadable now.
+                None => {
+                    files.remove(&path);
+                }
+            }
+        }
+        self.sparql_files = Some(files);
     }
 
     pub fn text(&self, uri: &str) -> Option<&str> {
@@ -919,6 +1033,7 @@ impl Workspace {
     /// below it re-resolve. Indexed files follow when it is saved (see
     /// [`Workspace::prefixes_changed`]).
     pub fn invalidate_open_prefixes(&mut self, file: &Path) {
+        self.sparql_files = None;
         self.prefix_files.remove(file);
         self.uri_prefix_cache.clear();
         self.reset_open_below(file.parent());
@@ -965,7 +1080,9 @@ impl Workspace {
                 self.settings_map = None;
             }
         }
-        // Which file serves a directory may have changed with it.
+        // Which file serves a directory may have changed with it, and the
+        // queries are parsed with the prefixes.
+        self.sparql_files = None;
         self.prefix_dirs.clear();
         self.uri_prefix_cache.clear();
         self.reset_open_below(scope.as_deref());
@@ -1009,11 +1126,16 @@ impl Workspace {
     /// within [`MAX_FILES`] of them. The scan, a file that changed on disk
     /// and a document that was closed all ask this.
     pub fn indexable(&self, path: &Path) -> bool {
+        self.fits(path)
+            && (self.disk.len() < MAX_FILES
+                || path_to_uri(path).is_some_and(|u| self.disk.contains_key(&u)))
+    }
+
+    /// [`Workspace::indexable`] but for the limit on the number of files.
+    fn fits(&self, path: &Path) -> bool {
         is_turtle(path)
             && self.in_area(path, false)
             && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
-            && (self.disk.len() < MAX_FILES
-                || path_to_uri(path).is_some_and(|u| self.disk.contains_key(&u)))
     }
 
     /// Whether `path` is somewhere the index looks: below a root, in no
@@ -1051,6 +1173,8 @@ impl Workspace {
 
     /// Parse files in parallel and add them to the disk index.
     pub fn index_paths(&mut self, paths: Vec<PathBuf>) {
+        #[cfg(test)]
+        INDEX_PASSES.with(|c| c.set(c.get() + 1));
         let parsed = self.parse_paths(paths);
         self.add_disk(parsed, true);
     }
@@ -1175,16 +1299,43 @@ impl Workspace {
     /// no longer [`indexable`](Workspace::indexable). Whether the index
     /// changed.
     pub fn reindex_disk_file(&mut self, path: &Path) -> bool {
-        let Some(uri) = path_to_uri(path) else {
-            return false;
-        };
-        self.touch(&uri);
-        if self.indexable(path) {
-            self.index_paths(vec![path.to_path_buf()]);
-            true
-        } else {
-            self.forget_disk(&uri)
+        self.reindex_disk_files(&[path.to_path_buf()])
+    }
+
+    /// [`Workspace::reindex_disk_file`] for the files of one change: those
+    /// that are indexable are parsed together, in one parallel pass, and
+    /// the others dropped. What is read is the files as they are now, so a
+    /// path listed twice is one file, and the limit of [`MAX_FILES`] counts the
+    /// files this adds. Whether the index changed.
+    pub fn reindex_disk_files(&mut self, paths: &[PathBuf]) -> bool {
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut room = MAX_FILES.saturating_sub(self.disk.len());
+        let mut read = Vec::new();
+        let mut gone = Vec::new();
+        for path in paths {
+            let Some(uri) = path_to_uri(path) else {
+                continue;
+            };
+            if !seen.insert(uri.clone()) {
+                continue;
+            }
+            self.touch(&uri);
+            let new = !self.disk.contains_key(&uri);
+            if self.fits(path) && (!new || room > 0) {
+                room -= usize::from(new);
+                read.push(path.clone());
+            } else {
+                gone.push(uri);
+            }
         }
+        let mut changed = !read.is_empty();
+        if changed {
+            self.index_paths(read);
+        }
+        for uri in gone {
+            changed |= self.forget_disk(&uri);
+        }
+        changed
     }
 
     /// Drop the indexed copy of `uri`. Whether there was one.
@@ -1213,6 +1364,9 @@ impl Workspace {
             t.dirs.extend(dirs.iter().cloned());
         }
         let dirs: rustc_hash::FxHashSet<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+        if let Some(files) = &mut self.sparql_files {
+            files.retain(|p, _| !p.ancestors().skip(1).any(|a| dirs.contains(a)));
+        }
         let gone: Vec<String> = self
             .disk
             .keys()
@@ -2051,5 +2205,175 @@ mod tests {
             normalize_uri("file:///c:/Users/x/a.ttl"),
             "file:///C:/Users/x/a.ttl"
         );
+    }
+
+    const QUERY: &str = "PREFIX ex: <http://e.org/>\nSELECT * WHERE { ?s a ex:B }\n";
+
+    /// Every call used to walk the roots and read every query file again (9.6
+    /// ms for a tree of 20,000 entries with no hit). The files are found once
+    /// and kept; the watcher's events keep them current.
+    #[test]
+    fn sparql_files_are_found_once_and_kept_current() {
+        let root = TempDir::new("sparql-kept");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let a = write(&root.0, "q/a.rq", QUERY);
+        let b = write(&root.0, "b.sparql", QUERY);
+        write(&root.0, "node_modules/x.rq", QUERY);
+        let uris = |ws: &mut Workspace| {
+            let mut v: Vec<String> = ws
+                .sparql_documents()
+                .iter()
+                .map(|q| q.uri.clone())
+                .collect();
+            v.sort();
+            v
+        };
+        let mut both = vec![uri(&a), uri(&b)];
+        both.sort();
+        assert_eq!(uris(&mut ws), both);
+
+        // No directory is read again: a file nobody reported is not found...
+        let c = write(&root.0, "c.ru", "CLEAR ALL\n");
+        assert_eq!(uris(&mut ws), both);
+        // ...and one the watcher reported is, with the ones that were deleted
+        // and the one that changed, read together.
+        let before = ws
+            .sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri(&b))
+            .unwrap();
+        let untouched = ws
+            .sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri(&a))
+            .unwrap();
+        std::fs::remove_file(&a).unwrap();
+        write(
+            &root.0,
+            "b.sparql",
+            "SELECT * WHERE { ?s ?p ?o . ?o ?p ?s }\n",
+        );
+        write(&root.0, "node_modules/y.rq", QUERY);
+        ws.sparql_files_changed(&[
+            a.clone(),
+            b.clone(),
+            c.clone(),
+            c.clone(),
+            root.0.join("node_modules/y.rq"),
+            root.0.join("gone.rq"),
+        ]);
+        let mut now = vec![uri(&b), uri(&c)];
+        now.sort();
+        assert_eq!(uris(&mut ws), now);
+        let after = ws
+            .sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri(&b))
+            .unwrap();
+        assert!(!Arc::ptr_eq(&before, &after));
+        drop(untouched);
+
+        // A file written without the watcher saying so is read again when asked.
+        write(
+            &root.0,
+            "b.sparql",
+            "SELECT * WHERE { ?s ?p ?o }  # longer than before\n",
+        );
+        let again = ws
+            .sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri(&b))
+            .unwrap();
+        assert!(!Arc::ptr_eq(&after, &again));
+        let kept = ws
+            .sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri(&b))
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&again, &kept),
+            "an unchanged file is not parsed again"
+        );
+
+        // A deleted folder takes its queries with it.
+        write(&root.0, "d/e/f.rq", QUERY);
+        ws.sparql_files_changed(&[root.0.join("d/e/f.rq")]);
+        assert_eq!(ws.sparql_documents().len(), 3);
+        std::fs::remove_dir_all(root.0.join("d")).unwrap();
+        ws.remove_under(&root.0.join("d"));
+        assert_eq!(ws.sparql_documents().len(), 2);
+        // A changed prefixes.ttl parses them again with the new prefixes.
+        let was = ws
+            .sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri(&c))
+            .unwrap();
+        let prefixes = write(&root.0, "prefixes.ttl", "@prefix p: <http://p.org/> .\n");
+        ws.prefixes_changed(Some(&prefixes));
+        let now = ws
+            .sparql_documents()
+            .into_iter()
+            .find(|q| q.uri == uri(&c))
+            .unwrap();
+        assert!(!Arc::ptr_eq(&was, &now));
+        assert!(now.external.contains_key("p"));
+    }
+
+    /// An open query is the open text, not the file; a closed one is the file
+    /// again. The index of files is not asked before the first call.
+    #[test]
+    fn open_queries_win_over_their_files_in_the_sparql_documents() {
+        let root = TempDir::new("sparql-open");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let a = write(&root.0, "a.rq", QUERY);
+        // Before the first call, an event reads nothing.
+        ws.sparql_files_changed(std::slice::from_ref(&a));
+        assert!(ws.sparql_files.is_none());
+        let open = "SELECT * WHERE { ?x ?y ?z }\n";
+        ws.open_doc(uri(&a), open.into(), 1);
+        let docs = ws.sparql_documents();
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].doc.text().contains("?x ?y ?z"));
+        ws.close_doc(&uri(&a));
+        let docs = ws.sparql_documents();
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].doc.text().contains("ex:B"));
+    }
+
+    /// One notification's changed files were parsed one at a time, each with a
+    /// pass of its own (2,000 files: 108 ms against 73 ms for the parallel
+    /// initial index). They are parsed in one pass.
+    #[test]
+    fn changed_files_are_indexed_in_one_pass() {
+        let root = TempDir::new("batch");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let mut paths: Vec<PathBuf> = (0..50)
+            .map(|i| write(&root.0, &format!("d{}/f{i}.ttl", i % 5), TTL))
+            .collect();
+        let before = INDEX_PASSES.with(|c| c.get());
+        // Twice listed, not RDF, outside, in a skipped folder, and missing.
+        let junk = [
+            write(&root.0, "a.txt", TTL),
+            write(&root.0, "node_modules/n.ttl", TTL),
+            root.0.join("missing.ttl"),
+            paths[0].clone(),
+        ];
+        let mut all = paths.clone();
+        all.extend(junk);
+        assert!(ws.reindex_disk_files(&all));
+        assert_eq!(INDEX_PASSES.with(|c| c.get()) - before, 1);
+        assert_eq!(ws.disk.len(), 50);
+        // Deletions are dropped in the same call as the changes.
+        std::fs::remove_file(&paths[1]).unwrap();
+        let fresh = write(&root.0, "fresh.ttl", TTL);
+        let before = INDEX_PASSES.with(|c| c.get());
+        assert!(ws.reindex_disk_files(&[paths[1].clone(), fresh.clone()]));
+        assert_eq!(INDEX_PASSES.with(|c| c.get()) - before, 1);
+        assert!(ws.disk.contains_key(&uri(&fresh)) && !ws.disk.contains_key(&uri(&paths[1])));
+        paths.push(fresh);
+        assert_eq!(ws.disk.len(), 50);
+        // Nothing to do, nothing changed.
+        assert!(!ws.reindex_disk_files(&[root.0.join("nope.ttl")]));
+        assert!(!ws.reindex_disk_files(&[]));
     }
 }
