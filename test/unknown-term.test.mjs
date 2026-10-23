@@ -5,6 +5,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { startServer, tempDir, uriOf } from "./lsp-client.mjs"
+import { apply } from "./query-client.mjs"
 
 const header = `@prefix foaf: <http://xmlns.com/foaf/0.1/> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
@@ -76,7 +77,7 @@ ex:alice a foaf:Gadget ;
   })
   const fix = actions.find((a) => a.title === "Change to 'foaf:name'")
   assert.ok(fix, JSON.stringify(actions))
-  assert.equal(fix.edit.changes[uri][0].newText, "foaf:name")
+  assert.equal(apply(text, fix.edit.changes[uri]).split("\n")[9], '  foaf:name "Alice" ;')
 })
 
 test("GeoSPARQL functions are not unknown terms, in Turtle or SPARQL", async () => {

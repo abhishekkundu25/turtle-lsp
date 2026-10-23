@@ -258,6 +258,15 @@ impl Analysis {
             .as_slice()
     }
 
+    /// [`Analysis::tokens`] when they are in memory, else lexed into a
+    /// temporary: an edit to a document built without them leaves it so.
+    pub(crate) fn tokens_or_lexed(&self) -> std::borrow::Cow<'_, [Token]> {
+        match self.tokens.get() {
+            Some(all) => all.as_slice().into(),
+            None => self.parsed.syntax.tokens(&self.text).into(),
+        }
+    }
+
     /// Whether the tokens are in memory: kept by the parse, or made since.
     #[cfg(test)]
     pub(crate) fn has_tokens(&self) -> bool {

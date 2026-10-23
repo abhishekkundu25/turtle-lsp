@@ -80,29 +80,28 @@ pub(crate) fn code_actions(
                     continue;
                 };
                 let span = removal(q.text(), Span::new(start, end));
-                let fix = TextEdit {
-                    range: q.range(enc, span),
-                    new_text: String::new(),
-                };
+                let fix = text_edits(q, enc, vec![(span, String::new())]);
                 let title = if code == "unused-prefix" {
                     "Remove unused prefix"
                 } else {
                     "Remove duplicate prefix"
                 };
-                out.push(quick(title.into(), Some(d), vec![fix], Some(true)));
+                out.push(quick(title.into(), Some(d), fix, Some(true)));
             }
             "unknown-term" | crate::features::lint::CODE => {
                 let Some(FixData::Replace { replace: rep }) = FixData::of(d) else {
                     continue;
                 };
-                let fix = TextEdit {
-                    range: d.range,
-                    new_text: rep.clone(),
+                let (Some(start), Some(end)) =
+                    (q.offset(enc, d.range.start), q.offset(enc, d.range.end))
+                else {
+                    continue;
                 };
+                let fix = text_edits(q, enc, vec![(Span::new(start, end), rep.clone())]);
                 out.push(quick(
                     format!("Change to '{rep}'"),
                     Some(d),
-                    vec![fix],
+                    fix,
                     Some(true),
                 ));
             }
@@ -266,7 +265,11 @@ fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Vec<TextEdit> {
 /// Edits replacing whole tokens, through [`token_edits`] on the operations
 /// that hold them: how `<` lexes depends on the brackets open before it, and
 /// none are open where an operation starts.
-fn text_edits(q: &SparqlAnalysis, enc: Encoding, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
+pub(super) fn text_edits(
+    q: &SparqlAnalysis,
+    enc: Encoding,
+    reps: Vec<(Span, String)>,
+) -> Vec<TextEdit> {
     let ops = &q.doc.structure().operations;
     let op = |at: u32| {
         ops.iter()

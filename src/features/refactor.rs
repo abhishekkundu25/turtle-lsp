@@ -216,8 +216,8 @@ fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
 }
 
 /// Edits replacing whole tokens, through [`turtle_token_edits`].
-fn text_edits(a: &Analysis, enc: Encoding, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
-    turtle_token_edits(&a.text, a.tokens(), reps)
+pub(crate) fn text_edits(a: &Analysis, enc: Encoding, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
+    turtle_token_edits(&a.text, &a.tokens_or_lexed(), reps)
         .into_iter()
         .map(|(span, new_text)| TextEdit {
             range: a.range(enc, span),

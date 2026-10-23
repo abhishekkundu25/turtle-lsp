@@ -3,6 +3,7 @@
 //! prefix instead.
 
 use crate::analysis::{Analysis, Encoding};
+use crate::features::refactor::text_edits;
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::names::{Scope, declaration_at, is_pn_prefix};
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
@@ -478,29 +479,29 @@ pub fn rename(
                 }
             }
             for d in docs {
-                let mut edits: Vec<TextEdit> = d
+                // Whole tokens: the `old:` of each declaration, each `old:local`.
+                let mut reps: Vec<(Span, String)> = d
                     .parsed
                     .prefixes
                     .iter()
                     .filter(|p| p.name == old)
-                    .map(|p| TextEdit {
-                        range: d.range(enc, p.name_span),
-                        new_text: new.to_string(),
+                    .map(|p| {
+                        let colon = Span::new(p.name_span.start, p.name_span.end + 1);
+                        (colon, format!("{new}:"))
                     })
                     .collect();
-                edits.extend(
+                reps.extend(
                     d.parsed
                         .prefix_uses
                         .iter()
                         .filter(|u| u.name == old)
-                        .map(|u| TextEdit {
-                            range: d.range(
-                                enc,
-                                Span::new(u.span.start, u.span.start + old.len() as u32),
-                            ),
-                            new_text: new.to_string(),
+                        .map(|u| {
+                            let local = &d.text
+                                [(u.span.start as usize + old.len() + 1)..u.span.end as usize];
+                            (u.span, format!("{new}:{local}"))
                         }),
                 );
+                let edits = text_edits(d, enc, reps);
                 if !edits.is_empty() || std::ptr::eq(d, a) {
                     changes.insert(uri(&d.uri), edits);
                 }
@@ -595,24 +596,29 @@ pub(crate) fn rename_term(
         .docs_referencing(old)
         .filter(|(_, src, other)| *src != Source::External && other.parsed.syntax != Syntax::JsonLd)
     {
-        let scope = Scope::whole(other);
-        let mut seen = FxHashSet::default();
-        let mut edits = Vec::new();
-        for r in other.refs_of(old) {
-            if r.form == Form::A || !seen.insert(r.span) {
-                continue;
+        let mut uses: Vec<(Span, Form)> = other
+            .refs_of(old)
+            .filter(|r| r.form != Form::A)
+            .map(|r| (r.span, r.form))
+            .collect();
+        uses.sort_by_key(|(s, _)| s.start);
+        uses.dedup_by_key(|(s, _)| *s);
+        // Each prefixed name is written with the prefixes in scope at it.
+        let mut scope = Scope::outside(other);
+        let mut decls = other.parsed.prefixes.iter().peekable();
+        let mut reps = Vec::new();
+        for (span, form) in uses {
+            while let Some(p) = decls.next_if(|p| p.span.end <= span.start) {
+                scope.insert(p.name.clone(), p.iri.to_string());
             }
-            let text = match r.form {
+            let text = match form {
                 Form::Iri => format!("<{new_iri}>"),
                 _ => scope.write(new_iri),
             };
-            edits.push(TextEdit {
-                range: other.range(enc, r.span),
-                new_text: text,
-            });
+            reps.push((span, text));
         }
-        if !edits.is_empty() {
-            changes.insert(uri(&other.uri), edits);
+        if !reps.is_empty() {
+            changes.insert(uri(&other.uri), text_edits(other, enc, reps));
         }
     }
     Ok(())
@@ -695,5 +701,100 @@ mod tests {
         let found = definition(&a, &k, Encoding::Utf16, at, None);
         assert!(found.len() <= 1);
         assert!(refs.iter().all(|l| l.uri.as_str().ends_with(".ttl")));
+    }
+
+    /// The triples of `text`, sorted, for comparing graphs.
+    fn graph(text: &str) -> Vec<String> {
+        let p = crate::syntax::parse(text, &PrefixMap::default(), Default::default());
+        assert!(p.errors.is_empty(), "{text}: {:?}", p.errors);
+        let mut t: Vec<String> = p
+            .triples
+            .iter()
+            .map(|t| format!("{:?} {:?} {:?}", t.s, t.p, t.o))
+            .collect();
+        t.sort();
+        t
+    }
+
+    /// `text` (as file:///w/a.ttl) after a rename to `new_name` at the
+    /// first `needle`, or of the term `old` to `new` when `needle` is empty.
+    fn renamed(text: &str, needle: &str, new_name: &str, terms: (&str, &str)) -> String {
+        let a = Arc::new(Analysis::new(
+            "file:///w/a.ttl".into(),
+            text,
+            Arc::default(),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/a.ttl", Source::Open, a.clone());
+        let edits = if needle.is_empty() {
+            let mut changes = HashMap::new();
+            rename_term(&k, Encoding::Utf8, terms.0, terms.1, &mut changes).unwrap();
+            changes.into_values().flatten().collect::<Vec<_>>()
+        } else {
+            let at = a.position(Encoding::Utf8, text.find(needle).unwrap() as u32);
+            let scope = PrefixScope {
+                file: None,
+                file_of: &mut |_| None,
+            };
+            let edit = rename(&a, &k, Encoding::Utf8, at, new_name, scope).unwrap();
+            edit.changes.unwrap().into_values().flatten().collect()
+        };
+        crate::features::refactor::apply(&a, Encoding::Utf8, &edits)
+    }
+
+    /// Each rename keeps every triple but the renamed term: the names it
+    /// writes stay apart from their neighbours.
+    #[test]
+    fn a_rename_keeps_every_other_token() {
+        let cases = [
+            (
+                "@prefix:<http://e/> . :s :p :o .",
+                (":s", "ex", ("", "")),
+                "@prefix ex:<http://e/> . ex:s ex:p ex:o .",
+            ),
+            (
+                "@prefix ex: <http://e/> .\nex:s ex:p (1ex:b) .",
+                ("ex:s", "e5", ("", "")),
+                "@prefix e5: <http://e/> .\ne5:s e5:p (1 e5:b) .",
+            ),
+            (
+                "@prefix ex: <http://e/> .\nex:s ex:p ( ex:-1 ) .",
+                ("", "", ("http://e/", "http://e/a")),
+                "@prefix ex: <http://e/> .\nex:s ex:p ( ex:a -1 ) .",
+            ),
+            // `e:` would be shorter, but it is declared only after the use.
+            (
+                "@prefix ex: <http://e/> .\nex:x ex:p 1 .\n@prefix e: <http://e/> .\ne:x ex:p 2 .",
+                ("", "", ("http://e/x", "http://e/z")),
+                "@prefix ex: <http://e/> .\nex:z ex:p 1 .\n@prefix e: <http://e/> .\ne:z ex:p 2 .",
+            ),
+        ];
+        for (text, (needle, new_name, terms), want) in cases {
+            let out = renamed(text, needle, new_name, terms);
+            assert_eq!(out, want);
+            assert_eq!(graph(&out), graph(want));
+        }
+    }
+
+    /// A rename lexes a document built without its tokens into a temporary,
+    /// so they do not stay in memory after it.
+    #[test]
+    fn a_rename_keeps_no_tokens_of_a_document_built_without_them() {
+        let text = "@prefix ex: <http://e/> .\nex:s ex:p ex:o .\n";
+        let doc = |uri: &str, keep| Arc::new(Analysis::new(uri.into(), text, Arc::default(), keep));
+        let (open, closed) = (doc("file:///w/a.ttl", true), doc("file:///w/b.ttl", false));
+        assert!(!closed.has_tokens());
+        let mut k = Knowledge::default();
+        k.set("file:///w/a.ttl", Source::Open, open.clone());
+        k.set("file:///w/b.ttl", Source::Disk, closed.clone());
+        let at = open.position(Encoding::Utf8, text.find("ex:s").unwrap() as u32 + 3);
+        let scope = PrefixScope {
+            file: None,
+            file_of: &mut |_| None,
+        };
+        let edit = rename(&open, &k, Encoding::Utf8, at, "t", scope).unwrap();
+        assert_eq!(edit.changes.unwrap().len(), 2);
+        assert!(!closed.has_tokens());
     }
 }

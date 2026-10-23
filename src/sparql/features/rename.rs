@@ -4,13 +4,13 @@
 //! Turtle rename does, and every SPARQL document); and the SPARQL half of a
 //! term rename started in an RDF document.
 
-use super::navigation::{
-    Target, name_only, occurrences, prefix_of, scope_at, target_at, with_others,
-};
+use super::actions::text_edits;
+use super::navigation::{Target, occurrences, prefix_of, scope_at, target_at, with_others};
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::navigation::{self as rdf, shown, uri};
 use crate::knowledge::Knowledge;
 use crate::sparql::{Form, PrefixSource, VarOcc};
+use crate::syntax::Span;
 use crate::syntax::names::shorten;
 use crate::syntax::names::{is_pn_chars_u, is_pn_prefix};
 use lsp_types::*;
@@ -132,13 +132,16 @@ fn rename_var(
         return Err(format!("?{new} is already used in this scope"));
     }
     let text = q.text();
-    Ok(occs
+    let reps = occs
         .iter()
-        .map(|o| TextEdit {
-            range: q.range(enc, o.span),
-            new_text: format!("{}{new}", &text[o.span.start as usize..][..1]),
+        .map(|o| {
+            (
+                o.span,
+                format!("{}{new}", &text[o.span.start as usize..][..1]),
+            )
         })
-        .collect())
+        .collect();
+    Ok(text_edits(q, enc, reps))
 }
 
 fn rename_prefix(
@@ -182,26 +185,27 @@ fn rename_prefix(
             shown(&q.uri)
         ));
     }
-    let edit = |span| TextEdit {
-        range: q.range(enc, span),
-        new_text: new.to_string(),
+    // Whole tokens: the `old:` of each declaration, each `old:local`.
+    let with_new = |span: Span| {
+        let local = &q.text()[(span.start as usize + old.len() + 1)..span.end as usize];
+        (span, format!("{new}:{local}"))
     };
-    let mut edits: Vec<TextEdit> = st
+    let mut reps: Vec<(Span, String)> = st
         .prefixes
         .iter()
         .filter(|p| p.name == old)
-        .map(|p| edit(name_only(p.name_span.start, old)))
+        .map(|p| with_new(p.name_span))
         .collect();
-    edits.extend(
+    reps.extend(
         st.refs
             .iter()
             .filter(|r| {
                 prefix_of(q, r) == Some(old)
                     && (declared || r.prefix != Some(PrefixSource::External))
             })
-            .map(|r| edit(name_only(r.span.start, old))),
+            .map(|r| with_new(r.span)),
     );
-    Ok(edits)
+    Ok(text_edits(q, enc, reps))
 }
 
 /// Adds the edits renaming IRI `old` to `new_iri` in SPARQL documents
@@ -215,7 +219,7 @@ fn sparql_term_edits(
     changes: &mut HashMap<Uri, Vec<TextEdit>>,
 ) {
     for d in docs {
-        let edits: Vec<TextEdit> = d
+        let reps: Vec<(Span, String)> = d
             .doc
             .structure()
             .refs
@@ -226,13 +230,11 @@ fn sparql_term_edits(
                     Form::PName { .. } => shorten(new_iri, &scope_at(d, r.span.start)),
                     _ => None,
                 };
-                TextEdit {
-                    range: d.range(enc, r.span),
-                    new_text: short.unwrap_or_else(|| format!("<{new_iri}>")),
-                }
+                (r.span, short.unwrap_or_else(|| format!("<{new_iri}>")))
             })
             .collect();
-        if !edits.is_empty() {
+        if !reps.is_empty() {
+            let edits = text_edits(d, enc, reps);
             changes.entry(uri(&d.uri)).or_default().extend(edits);
         }
     }
@@ -256,17 +258,17 @@ mod tests {
                 Encoding::Utf16,
                 &mut changes,
             );
-            changes
-                .into_values()
-                .flatten()
-                .map(|e| e.new_text)
-                .collect::<Vec<_>>()
+            let edits: Vec<TextEdit> = changes.into_values().flatten().collect();
+            applied(&q, &edits)
         };
         assert_eq!(
             renamed("http://example.org/-a"),
-            ["<http://example.org/-a>"]
+            text.replacen("ex:a", "<http://example.org/-a>", 1)
         );
-        assert_eq!(renamed("http://example.org/a-b"), ["ex:a-b"]);
+        assert_eq!(
+            renamed("http://example.org/a-b"),
+            text.replacen("ex:a", "ex:a-b", 1)
+        );
     }
 
     #[test]
@@ -280,5 +282,55 @@ mod tests {
             );
         }
         assert!(rename_prefix(&q, Encoding::Utf16, "ex", "eg:", None).is_ok());
+    }
+
+    /// `text` with `edits` applied.
+    fn applied(q: &SparqlAnalysis, edits: &[TextEdit]) -> String {
+        let mut spans: Vec<(u32, u32, &str)> = edits
+            .iter()
+            .map(|e| {
+                let at = |p| q.offset(Encoding::Utf8, p).unwrap();
+                (at(e.range.start), at(e.range.end), e.new_text.as_str())
+            })
+            .collect();
+        spans.sort_by_key(|s| std::cmp::Reverse(s.0));
+        let mut out = q.text().to_string();
+        for (s, e, t) in spans {
+            out.replace_range(s as usize..e as usize, t);
+        }
+        out
+    }
+
+    /// The renamed names stay apart from their neighbours.
+    #[test]
+    fn a_rename_keeps_every_other_token() {
+        let query = |text: &str| {
+            SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()))
+        };
+        let q = query("PREFIX:<http://e/>\nSELECT * { :s :p ?o }\n");
+        let edits = rename_prefix(&q, Encoding::Utf8, "", "ex", None).unwrap();
+        assert_eq!(
+            applied(&q, &edits),
+            "PREFIX ex:<http://e/>\nSELECT * { ex:s ex:p ?o }\n"
+        );
+        let q = query("PREFIX ex: <http://e/>\nSELECT * { ?a ex:p ?o FILTER(?a<ex:b) }\n");
+        let mut changes = HashMap::new();
+        sparql_term_edits(
+            &[&q],
+            "http://e/b",
+            "http://f/b",
+            Encoding::Utf8,
+            &mut changes,
+        );
+        let edits: Vec<TextEdit> = changes.into_values().flatten().collect();
+        let out = applied(&q, &edits);
+        assert_eq!(
+            out,
+            "PREFIX ex: <http://e/>\nSELECT * { ?a ex:p ?o FILTER(?a<<http://f/b>) }\n"
+        );
+        assert!(
+            spargebra::SparqlParser::new().parse_query(&out).is_ok(),
+            "{out}"
+        );
     }
 }
