@@ -1136,7 +1136,7 @@ mod tests {
     /// A cartesian SELECT over a few hundred triples has far more solutions
     /// than the budget keeps: it stops, once, with a note.
     #[test]
-    fn results_past_the_budget_are_one_note() {
+    fn timing_results_past_the_budget_are_one_note() {
         let shapes = analysis(
             "file:///w/shapes.ttl",
             &format!(

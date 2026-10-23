@@ -1436,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn long_query_is_fast() {
+    fn timing_long_query_is_fast() {
         let body: Vec<String> = (0..2000)
             .map(|i| format!("?s{i} <https://e.org/p> ?o{i} ."))
             .collect();

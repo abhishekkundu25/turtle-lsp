@@ -687,7 +687,7 @@ fn diagnostics_stay_on_character_boundaries() {
 }
 
 #[test]
-fn a_long_query_is_checked_fast() {
+fn timing_a_long_query_is_checked_fast() {
     let mut text = String::from(EX);
     text.push_str("PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nSELECT ?s ?label (COUNT(?o) AS ?n) WHERE {\n");
     for i in 0..300 {

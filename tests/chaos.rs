@@ -53,6 +53,35 @@ impl Rng {
             (self.next() % n as u64) as usize
         }
     }
+    /// The generator of iteration `i` of a run seeded `seed`: each iteration
+    /// gets its own, so a shard starts anywhere in the range. The state goes
+    /// through splitmix64, as neighbouring seeds give xorshift similar first
+    /// outputs, and is never 0, where xorshift stays.
+    fn at(seed: u64, i: usize) -> Rng {
+        let mut z = seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        Rng((z ^ (z >> 31)) | 1)
+    }
+}
+
+/// Each mutation loop runs as this many tests, which the harness runs in
+/// parallel: at CHAOS_ITERS=30000 one unsplit loop set the time of the step.
+const SHARDS: usize = 4;
+
+/// The iterations shard `k` (0-based) runs: `k`/`SHARDS` of the way through
+/// `0..iters` up to the start of the next shard, so the shards cover the range
+/// once with no gap and no overlap.
+fn shard(iters: usize, k: usize) -> std::ops::Range<usize> {
+    iters * k / SHARDS..iters * (k + 1) / SHARDS
+}
+
+#[test]
+fn the_shards_cover_every_iteration_once() {
+    for iters in [0, 1, 3, 4, 5, 1199, 1200, 2000, 30_001] {
+        let all: Vec<usize> = (0..SHARDS).flat_map(|k| shard(iters, k)).collect();
+        assert_eq!(all, (0..iters).collect::<Vec<_>>(), "{iters} iterations");
+    }
 }
 
 const SNIPPETS: &[&str] = &[
@@ -793,13 +822,32 @@ fn extension(syntax: Syntax) -> &'static str {
 }
 
 #[test]
-fn mutated_turtle_never_panics() {
+fn mutated_turtle_never_panics_1() {
+    mutated_turtle(0);
+}
+
+#[test]
+fn mutated_turtle_never_panics_2() {
+    mutated_turtle(1);
+}
+
+#[test]
+fn mutated_turtle_never_panics_3() {
+    mutated_turtle(2);
+}
+
+#[test]
+fn mutated_turtle_never_panics_4() {
+    mutated_turtle(3);
+}
+
+fn mutated_turtle(k: usize) {
     let seed = env_or("CHAOS_SEED", 0x5EED_0007_u64);
     let iters = env_or("CHAOS_ITERS", 2000usize);
     let corpus = corpus();
     let mut base = knowledge_of(&corpus);
-    let mut rng = Rng(seed);
-    for i in 0..iters {
+    for i in shard(iters, k) {
+        let mut rng = Rng::at(seed, i);
         let pick = rng.below(corpus.len());
         let (source, syntax) = &corpus[pick];
         let mut syntax = *syntax;
@@ -886,7 +934,26 @@ const JSON_SNIPPETS: &[&str] = &[
 ];
 
 #[test]
-fn mutated_jsonld_never_panics() {
+fn mutated_jsonld_never_panics_1() {
+    mutated_jsonld(0);
+}
+
+#[test]
+fn mutated_jsonld_never_panics_2() {
+    mutated_jsonld(1);
+}
+
+#[test]
+fn mutated_jsonld_never_panics_3() {
+    mutated_jsonld(2);
+}
+
+#[test]
+fn mutated_jsonld_never_panics_4() {
+    mutated_jsonld(3);
+}
+
+fn mutated_jsonld(k: usize) {
     let seed = env_or("CHAOS_SEED", 0x5EED_0013_u64);
     let iters = env_or("CHAOS_ITERS", 1200usize);
     // ASCII only, until the multi-byte defects listed below are fixed: in
@@ -910,8 +977,8 @@ fn mutated_jsonld_never_panics() {
             .map(|p| (fs::read_to_string(p).unwrap(), Syntax::JsonLd)),
     );
     let mut base = knowledge_of(&docs);
-    let mut rng = Rng(seed);
-    for i in 0..iters {
+    for i in shard(iters, k) {
+        let mut rng = Rng::at(seed, i);
         let source = &seeds[rng.below(seeds.len())];
         let text = mutate_with(&mut rng, source, JSON_SNIPPETS, false);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1225,15 +1292,34 @@ fn sparql_features_at_random(
 }
 
 #[test]
-fn mutated_sparql_never_panics() {
+fn mutated_sparql_never_panics_1() {
+    mutated_sparql(0);
+}
+
+#[test]
+fn mutated_sparql_never_panics_2() {
+    mutated_sparql(1);
+}
+
+#[test]
+fn mutated_sparql_never_panics_3() {
+    mutated_sparql(2);
+}
+
+#[test]
+fn mutated_sparql_never_panics_4() {
+    mutated_sparql(3);
+}
+
+fn mutated_sparql(k: usize) {
     let seed = env_or("CHAOS_SEED", 0x5EED_0011_u64);
     let iters = env_or("CHAOS_ITERS", 2000usize);
     let corpus = sparql_corpus();
     // Names the queries can resolve: the Turtle fixtures.
     let docs: Vec<(String, Syntax)> = self::corpus().into_iter().step_by(2).collect();
     let known = knowledge_of(&docs);
-    let mut rng = Rng(seed);
-    for i in 0..iters {
+    for i in shard(iters, k) {
+        let mut rng = Rng::at(seed, i);
         let pick = rng.below(corpus.len());
         let text = sparql_mutate(&mut rng, &corpus[pick]);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

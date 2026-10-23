@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn the_outline_of_a_20000_graph_trig_file_is_quick() {
+    fn timing_the_outline_of_a_20000_graph_trig_file_is_quick() {
         let mut text = String::new();
         for i in 0..20_000 {
             text.push_str(&format!(
@@ -437,10 +437,11 @@ mod tests {
         let took = start.elapsed();
         assert_eq!(out.len(), 20_000);
         assert_eq!(out[7].children.as_ref().map(Vec::len), Some(1));
-        // The 100 ms bound holds for the optimised build the tests run in, on
-        // a shared CI runner too (50 ms was missed there at 60 ms).
+        // The 60 ms bound holds for the optimised build the tests run in. CI
+        // runs this alone (the `timing_` step); a busy runner once took 60 ms
+        // when other tests ran beside it.
         if !cfg!(debug_assertions) {
-            assert!(took.as_millis() < 100, "took {took:?}");
+            assert!(took.as_millis() < 60, "took {took:?}");
         }
     }
 }

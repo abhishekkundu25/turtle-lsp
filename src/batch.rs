@@ -1218,7 +1218,7 @@ mod tests {
     /// reads them in a blink; with fixes the cost stays linear too.
     #[cfg(not(debug_assertions))]
     #[test]
-    fn many_undeclared_uses_are_not_quadratic() {
+    fn timing_many_undeclared_uses_are_not_quadratic() {
         let text: String = (0..20_000)
             .map(|i| format!("<http://x/s{i}> foaf:name \"n{i}\" .\n"))
             .collect();

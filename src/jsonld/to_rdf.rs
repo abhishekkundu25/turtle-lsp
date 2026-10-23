@@ -623,7 +623,7 @@ mod tests {
     /// Duplicate keys are dropped in linear time: 100k keys canonicalize
     /// in well under a second (pairwise comparison took seconds).
     #[test]
-    fn json_canonicalization_of_a_large_object_is_fast() {
+    fn timing_json_canonicalization_of_a_large_object_is_fast() {
         let mut text = String::from("{");
         for i in 0..100_000 {
             if i > 0 {

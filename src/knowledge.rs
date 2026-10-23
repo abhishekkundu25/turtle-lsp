@@ -1812,11 +1812,21 @@ _:shared sh:path ex:sh ; sh:minCount 0 .
             let text = std::fs::read_to_string(root.join(f)).unwrap();
             same_shapes_as_the_model(f, &text, &none);
         }
-        // The public corpus, when it is downloaded (tools/corpus/fetch.sh).
+        // The public corpus, when it is downloaded (tools/corpus/fetch.sh). In
+        // CI (`CI=true`) a missing file fails the test, as in
+        // tests/support/corpus.rs, so a run that skipped it is not `ok`.
         let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus");
+        let ci = std::env::var("CI").is_ok_and(|v| v == "true");
         for f in ["brick.ttl", "dcat-ap-shacl.ttl", "w3c-shacl.ttl"] {
-            if let Ok(text) = std::fs::read_to_string(corpus.join(f)) {
-                same_shapes_as_the_model(f, &text, &none);
+            match std::fs::read_to_string(corpus.join(f)) {
+                Ok(text) => {
+                    same_shapes_as_the_model(f, &text, &none);
+                }
+                Err(e) => assert!(
+                    !ci,
+                    "test/corpus/{f}: {e} (run tools/corpus/fetch.sh, or npm run corpus); \
+                     CI=true does not skip the corpus"
+                ),
             }
         }
     }

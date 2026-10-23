@@ -2374,7 +2374,7 @@ mod tests {
     /// The same text at a line start `n` tokens in: the cost of recovering must
     /// not grow with the length of the line.
     #[test]
-    fn recovery_inside_a_long_trig_line_is_linear() {
+    fn timing_recovery_inside_a_long_trig_line_is_linear() {
         let tokens = 200_000;
         let body = "<http://e/a> ".repeat(tokens);
         for src in [
