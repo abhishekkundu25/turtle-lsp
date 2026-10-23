@@ -7,6 +7,9 @@ name: Pages
 # A push to main deploys only after the CI workflow (which builds and tests
 # the browser engine, job "web") passed on that commit; a failed CI run
 # publishes nothing. A run started by hand republishes main without waiting.
+# CI runs on main are never cancelled, so they can finish out of order: only a
+# build of the current tip of main is published, never an older commit over a
+# newer one.
 on:
   workflow_run:
     workflows: [CI]
@@ -56,9 +59,32 @@ jobs:
         with:
           path: web/app
 
+  # A CI run for an older commit can finish after the run for a newer one.
+  tip:
+    name: Built commit is the tip of main
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      current: ${{ steps.tip.outputs.current }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILT: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - id: tip
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$tip" = "$BUILT" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Not deploying $BUILT: main has moved on to $tip."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
     name: Publish
-    needs: build
+    needs: tip
+    if: needs.tip.outputs.current == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
