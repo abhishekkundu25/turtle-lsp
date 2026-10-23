@@ -18,8 +18,10 @@ integration branch. Nothing is implemented until the plan is agreed.
 | 10 | #27 | JSON-LD multi-byte spans: fix the producers, full corpus in the shard | - | src/jsonld/** (span producers), src/semantic.rs (`encode_with`); **tests/chaos.rs** (the `is_ascii` filter and the ignored test only) |
 | 11 | #28 | TriG one-line graph block parses in linear time | - | src/syntax/parser.rs; **tests/chaos.rs** (the ignored test only) |
 | 12 | #21 | Harness: splice, token-sequence, `fix_all`, external prefixes, SPARQL and rename graph checks, squeeze, snippets | #15, #16, #24, #26, #20, #17 | **tests/chaos.rs** |
-| 13 | #22 | Close-out: 20 runs, replays, budget from measurement, CHANGELOG, docs | #15 to #29 | CHANGELOG.md; AGENTS.md (chaos sentence); README.md; this README (results); tests/chaos.rs (the budget constant only) |
+| 13 | #22 | Close-out: 20 runs, replays, budget from measurement, CHANGELOG, docs | #15 to #31 | CHANGELOG.md; AGENTS.md (chaos sentence); README.md; this README (results); tests/chaos.rs (the budget constant only) |
 | 14 | #29 | Bounded edit distance costs O(max x length) (E sibling, found by the watchdog) | - | src/vocab.rs |
+| 15 | #30 | SPARQL edits keep the token stream on every input (found by 12) | #21 | **src/syntax/names.rs** (`token_edits` result); src/sparql/features/{actions,edits,completion,rename}.rs |
+| 16 | #31 | JSON-LD edits keep the token stream on every input (found by 12) | #21 | src/features/navigation/jsonld.rs; src/features/completion/jsonld.rs |
 
 Waves:
 
@@ -105,3 +107,15 @@ medians against main, and the two nightly runs.
 - Ticket 09 found a quadratic edit distance in the lint's "did you mean"
   (default seed, iteration 275, about 11 s on main): new ticket 14 (#29).
   Ticket 09 lands after 14 so the push run stays green.
+- Ticket 08: fuel is 8 visits per byte, 4x the densest linear input
+  (unclosed nesting, about 1.9), not 4x the corpus maximum (0.34), which
+  would refuse legal unclosed nesting. The SHACL lint maps the fuel error
+  to the same wording (73ca691).
+- After tickets 02 and 03 landed, the watchdog caught SPARQL iteration
+  7670 (default seed, 10 s): every fix re-lexed its whole operation. Fixed
+  in its own commit (the SPARQL lexer resumes from saved states; the
+  Turtle fixer lexes a document once).
+- Ticket 12's checks found five classes of edits that break tokens on
+  inputs with syntax errors (SPARQL and JSON-LD; Turtle passes 10 seeds):
+  new tickets 15 (#30) and 16 (#31). Ticket 12 lands with them so the
+  push run stays green.
