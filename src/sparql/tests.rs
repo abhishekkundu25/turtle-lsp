@@ -144,6 +144,25 @@ fn lexing_from_a_kept_state_gives_the_tokens_of_the_whole_text() {
 }
 
 #[test]
+fn the_lexer_may_start_in_the_whitespace_after_a_long_token() {
+    let text = format!(
+        "SELECT * {{ ?s ?p \"{}\"\n  . ?s ?q ?o }}",
+        "a".repeat(2000)
+    );
+    let doc = Document::parse(&text, &PrefixMap::default(), None);
+    let gap = text.find('\n').unwrap() as u32 + 1;
+    let (at, state) = doc.lexer_state_at(gap);
+    assert_eq!(at, gap);
+    let rest = doc.tokens().iter().filter(|t| t.span.start >= at);
+    let want: Vec<_> = rest
+        .map(|t| (t.kind, Span::new(t.span.start - at, t.span.end - at)))
+        .collect();
+    assert_eq!(lexer::resume(&text[at as usize..], state).0, want);
+    // At the line break the string touches it: back to the last kept state.
+    assert_eq!(doc.lexer_state_at(gap - 1).0, 0);
+}
+
+#[test]
 fn a_less_than_after_an_operand_is_the_operator() {
     use TokenKind::*;
     let tail = |q: &'static str| {

@@ -23,6 +23,8 @@ use lsp_types::{
     CodeActionOrCommand, CodeActionParams, CompletionItem, CompletionParams, CompletionResponse,
     Position, Range, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, WorkspaceEdit,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -300,7 +302,13 @@ struct Lexed<'t> {
     toks: Vec<Tok>,
     /// The spans of its TriG graph blocks, as the parser reads them.
     graphs: Vec<(usize, usize)>,
+    /// What [`Lexed::splice`] said of each edit set: completions offer the
+    /// same imports at every position, and a SPARQL check lexes the whole text.
+    spliced: RefCell<HashMap<Spliced, Result<String, String>>>,
 }
+
+/// An edit set as [`Lexed::splice`] takes it, and its `keep`.
+type Spliced = (Vec<(usize, usize, String)>, bool);
 
 impl<'t> Lexed<'t> {
     fn new(text: &'t str, lex: Lexer) -> Lexed<'t> {
@@ -309,6 +317,7 @@ impl<'t> Lexed<'t> {
             lex,
             toks: lex.tokens(text),
             graphs: Vec::new(),
+            spliced: RefCell::default(),
         }
     }
 
@@ -379,7 +388,25 @@ impl<'t> Lexed<'t> {
     /// the same kinds; one that adds a directive may not. A directive an
     /// edit adds must follow a document-level statement or directive, or
     /// only comments. Else what is wrong, with the token and its offset.
-    fn splice(&self, mut edits: Vec<(usize, usize, &str)>, keep: bool) -> Result<String, String> {
+    fn splice(&self, edits: Vec<(usize, usize, &str)>, keep: bool) -> Result<String, String> {
+        let key = (
+            edits.iter().map(|&(s, e, n)| (s, e, n.into())).collect(),
+            keep,
+        );
+        if let Some(r) = self.spliced.borrow().get(&key) {
+            return r.clone();
+        }
+        let r = self.splice_anew(edits, keep);
+        self.spliced.borrow_mut().insert(key, r.clone());
+        r
+    }
+
+    /// [`Lexed::splice`], not looked up.
+    fn splice_anew(
+        &self,
+        mut edits: Vec<(usize, usize, &str)>,
+        keep: bool,
+    ) -> Result<String, String> {
         let (text, lex, toks) = (self.text, self.lex, &self.toks);
         let shown = |s: &str| format!("{:?}", s.chars().take(80).collect::<String>());
         edits.sort_by_key(|e| (e.0, e.1));
@@ -555,29 +582,6 @@ fn common_prefixes() -> PrefixMap {
 /// New names for renames: empty, a local name that reads as a number's
 /// exponent, ones ending in a digit, a word.
 const RENAMES: [&str; 5] = ["", "e1", "e5", "x1", "renamed"];
-
-/// The byte offset of `pos` in `text`, as `SparqlAnalysis::offset` (the
-/// crate's own) reads it: the end of the text past the last line.
-fn offset_at(text: &str, enc: Encoding, pos: Position) -> Option<u32> {
-    let start = match pos.line {
-        0 => 0,
-        n => match text.match_indices('\n').nth(n as usize - 1) {
-            Some((i, _)) => i + 1,
-            None => return Some(text.len() as u32),
-        },
-    };
-    let mut col = 0;
-    for (i, c) in text[start..].char_indices() {
-        if col >= pos.character || c == '\n' {
-            return Some((start + i) as u32);
-        }
-        col += match enc {
-            Encoding::Utf8 => c.len_utf8(),
-            Encoding::Utf16 => c.len_utf16(),
-        } as u32;
-    }
-    Some(text.len() as u32)
-}
 
 /// The edits of `edit` to `uri`.
 fn edits_to(edit: Option<&WorkspaceEdit>, uri: &str) -> Vec<TextEdit> {
@@ -2094,7 +2098,7 @@ fn sparql_features_at_random(
     let text = lexed.text;
     let edited = |what: &str, edits: &[TextEdit]| {
         let after = lexed
-            .edit(edits, |p| offset_at(text, enc, p), clean.is_some())
+            .edit(edits, |p| q.offset(enc, p), clean.is_some())
             .unwrap_or_else(|m| panic!("{what} {m}"));
         assert!(
             !clean.is_some_and(|f| f(&after)),
@@ -2138,8 +2142,8 @@ fn sparql_features_at_random(
                 context: None,
             };
             let items = completion_items(sparql_features::completion(q, k, enc, &params));
-            if let Some(off) = offset_at(text, enc, at) {
-                imports_keep_the_tokens(lexed, &items, |p| offset_at(text, enc, p), off);
+            if let Some(off) = q.offset(enc, at) {
+                imports_keep_the_tokens(lexed, &items, |p| q.offset(enc, p), off);
             }
             let _ = sparql_features::hover(q, k, enc, at);
             let _ = sparql_features::definition(q, k, enc, at, None);

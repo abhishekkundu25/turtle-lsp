@@ -452,7 +452,7 @@ impl SparqlAnalysis {
         Range::new(self.position(enc, span.start), self.position(enc, span.end))
     }
 
-    pub(crate) fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
+    pub fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
         offset_in(&self.lines, self.text(), enc, pos)
     }
 }

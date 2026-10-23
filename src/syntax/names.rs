@@ -174,7 +174,8 @@ pub(crate) fn token_edits<K: PartialEq + Copy>(
 
 /// [`token_edits`] where `text` and its edited forms lex by `lex_text`, a
 /// lexer that knows what came before `text`, and each replacement alone by
-/// `lex`.
+/// `lex`. `lex_text` reads `text` first and, when edits come back, the text
+/// they make last.
 pub(crate) fn token_edits_after<K: PartialEq + Copy>(
     text: &str,
     mut reps: Vec<(Span, String)>,

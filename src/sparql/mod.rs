@@ -209,10 +209,23 @@ impl Document {
     }
 
     /// The last place at or before `offset` the lexer may start from, and
-    /// the state to start in: a token start after whitespace, or 0.
+    /// the state to start in: a token start after whitespace, or 0, or
+    /// `offset` itself in the whitespace before a kept state, which holds
+    /// there too (a long token before it can leave the last one far back).
     pub(crate) fn lexer_state_at(&self, offset: u32) -> (u32, lexer::State) {
         let i = self.states.partition_point(|s| s.0 <= offset);
-        self.states[i - 1].clone()
+        let b = self.text.as_bytes();
+        let space = |c: &u8| matches!(c, b' ' | b'\t' | b'\r' | b'\n');
+        match self.states.get(i) {
+            Some((at, state))
+                if offset > 0
+                    && space(&b[offset as usize - 1])
+                    && b[offset as usize..*at as usize].iter().all(space) =>
+            {
+                (offset, state.clone())
+            }
+            _ => self.states[i - 1].clone(),
+        }
     }
 
     /// The prologue, operations, groups, scopes, variables and IRIs.

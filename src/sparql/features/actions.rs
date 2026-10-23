@@ -289,7 +289,13 @@ pub(super) fn text_edits(
     let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
     let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
     let (from, state) = q.doc.lexer_state_at(lo);
-    let lex_text = |s: &str| lexer::resume(s, state.clone());
+    // The state each text lexed ends in: the window's first, the edited window's last.
+    let ends = std::cell::RefCell::new(Vec::new());
+    let lex_text = |s: &str| {
+        let (tokens, end) = lexer::resume(s, state.clone());
+        ends.borrow_mut().push(end);
+        tokens
+    };
     let reps: Vec<_> = reps
         .into_iter()
         .map(|(s, r)| (Span::new(s.start - from, s.end - from), r))
@@ -305,12 +311,9 @@ pub(super) fn text_edits(
     }
     let edits_to = |to: usize| {
         let window = &text[from as usize..to];
-        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &|s| lex_text(s).0)?;
-        let mut new = window.to_owned();
-        for (s, t) in edits.iter().rev() {
-            new.replace_range(s.start as usize..s.end as usize, t);
-        }
-        (to == text.len() || lex_text(&new).1 == lex_text(window).1).then_some(edits)
+        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &lex_text);
+        let ends = ends.take();
+        (to == text.len() || ends.first() == ends.last()).then_some(edits?)
     };
     let edits = edits_to(to).or_else(|| edits_to(text.len()))?;
     let edits = edits
