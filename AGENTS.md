@@ -61,6 +61,11 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
   from the parallel run. CI's Tests, VS Code and Browser jobs build without
   fat LTO; a nightly run (`schedule` in `ci.yml`) builds with the shipped
   profile and runs the chaos tests with a new seed and 200,000 iterations.
+- A chaos failure prints a replay line: `CHAOS_SEED`, `CHAOS_ITERS` and
+  `CHAOS_ONLY=<iteration>` rerun that one input. A watchdog fails any
+  iteration over its budget (`CHAOS_ITERATION_BUDGET_MS` overrides it) and
+  saves the input under `target/tmp`. Fix what the chaos tests find, with a
+  unit test on the reduced input; never `#[ignore]` a test or exempt a check.
 
 - Leave `TMPDIR` at its default, outside the repository. The tests make
   their workspaces in the system temp folder and run `check --fix` there

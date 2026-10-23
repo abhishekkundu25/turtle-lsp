@@ -3043,11 +3043,9 @@ fn the_span_check_sees_every_span_field() {
 }
 
 // ---------------------------------------------------------------------------
-// Defects the chaos tests found. No ticket owns them yet; each test below
-// states the behaviour that is right, fails today, and is `#[ignore]`d so the
-// suite stays green. `cargo test --release --test chaos -- --ignored` runs
-// them; when one passes, delete its `#[ignore]` and the workaround it names
-// in the random tests above.
+// Defects the chaos tests found, kept as fixed inputs. A new one is fixed,
+// not ignored: no test in this file is `#[ignore]`d and no check has an
+// exemption.
 
 /// Malformed JSON-LD spans end on character boundaries: the diagnostics and
 /// the semantic tokens convert them to positions without panicking.
