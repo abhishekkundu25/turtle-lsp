@@ -220,7 +220,8 @@ test("typing a new subject re-diagnoses other open files once typing pauses, not
   }
 })
 
-test("1,000 undescribed terms against a 30,000-term namespace are diagnosed in under 50 ms", async () => {
+// How fast the same diagnosis is: latency.test.mjs.
+test("1,000 undescribed terms against a 30,000-term namespace: each is flagged, the first 100 with a suggestion", async () => {
   const NS = "https://ontology.example.com/big#"
   // Letters-only names of 9-16 characters, all distinct: a typo of one
   // differs from the others by letters, not only by digits.
@@ -233,7 +234,6 @@ test("1,000 undescribed terms against a 30,000-term namespace are diagnosed in u
     return s
   }
   const ws = tempDir("turtle-lint-big-")
-  const s0 = performance.now()
   const defs = []
   for (let i = 0; i < 30_000; i++) defs.push(`ex:${name(i)} a owl:Class .`)
   fs.writeFileSync(
@@ -252,18 +252,12 @@ test("1,000 undescribed terms against a 30,000-term namespace are diagnosed in u
     }
     const text = `@prefix ex: <${NS}> .\n@prefix inst: <https://ontology.example.com/inst#> .\n${uses.join("\n")}\n`
     const uri = uriOf(path.join(ws, "use.ttl"))
-    // Warm up: the first diagnosis of a file also loads the index.
+    // The first diagnosis of a file also loads the index; the one after a
+    // change is the one an edit gets.
     s.open(uri, text + "\n")
     await s.diagnosticsFor(uri, 30_000)
-    let best = Infinity
-    let diags
-    for (let round = 0; round < 3; round++) {
-      const t0 = performance.now()
-      s.change(uri, text + `# ${round}\n`)
-      diags = await s.diagnosticsFor(uri, 30_000)
-      best = Math.min(best, performance.now() - t0)
-    }
-    console.log(`# lint: 1,000 undescribed terms / 30,000 described diagnosed in ${best.toFixed(0)} ms`)
+    s.change(uri, text)
+    const diags = await s.diagnosticsFor(uri, 30_000)
     const flagged = lint(diags)
     assert.equal(flagged.length, 1000)
     // The first 100 flagged terms get a search; the rest stay information.
@@ -271,10 +265,8 @@ test("1,000 undescribed terms against a 30,000-term namespace are diagnosed in u
     assert.ok(suggested.length > 0 && suggested.length <= 100, `${suggested.length} suggestions`)
     assert.ok(flagged.slice(0, 100).some((d) => d.severity === 2))
     assert.ok(flagged.slice(100).every((d) => d.severity === 3 && d.data === undefined))
-    assert.ok(best < 50, `took ${best.toFixed(0)} ms`)
   } finally {
     await s.stop()
     fs.rmSync(ws, { recursive: true, force: true })
   }
-  assert.ok(performance.now() - s0 < 60_000)
 })

@@ -5,9 +5,10 @@
 // the same behaviour by counts and message order, with no clock.
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { startServer, tempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
+import { startServer, tempDir, uriOf, fixtures, positionOf, serverPath } from "./lsp-client.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const ms = (t0) => performance.now() - t0
@@ -224,4 +225,72 @@ test("completion in a 300-pattern query answers within 2 s", async (t) => {
   assert.ok(ms(t0) < 2000, `${ms(t0).toFixed(0)} ms`)
   const items = Array.isArray(res) ? res : (res?.items ?? [])
   assert.ok(items.some((i) => i.label === "ex:name"), items.slice(0, 10).map((i) => i.label).join(", "))
+})
+
+// ---- workspace lint (lint.test.mjs) ----
+
+test("1,000 undescribed terms against a 30,000-term namespace are diagnosed in under 50 ms", async (t) => {
+  const s0 = performance.now()
+  const NS = "https://ontology.example.com/big#"
+  // As lint.test.mjs: letters-only names of 9-16 characters, all distinct.
+  const letters = "abcdefghijklmnopqrstuvwxyz"
+  const name = (i) => {
+    let s = ""
+    let n = i
+    for (let k = 0; k < 4; k++, n = Math.floor(n / 26)) s += letters[n % 26]
+    for (let k = 0, h = i * 2654435761; k < 5 + (i % 8); k++, h = Math.floor(h / 7) + k * 13) s += letters[(h >>> 0) % 26]
+    return s
+  }
+  const defs = []
+  for (let i = 0; i < 30_000; i++) defs.push(`ex:${name(i)} a owl:Class .`)
+  const { s, at } = await session(t, {
+    "big.ttl": `@prefix ex: <${NS}> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n${defs.join("\n")}\n`,
+  })
+  await s.request("workspace/symbol", { query: "" })
+  // 1,000 distinct names that nothing describes, each one letter off a described name.
+  const uses = []
+  for (let i = 0; i < 1000; i++) {
+    const n = name(i * 29)
+    uses.push(`inst:i${i} a ex:${n.slice(0, 6)}${n[6] === "q" ? "z" : "q"}${n.slice(7)} .`)
+  }
+  const text = `@prefix ex: <${NS}> .\n@prefix inst: <https://ontology.example.com/inst#> .\n${uses.join("\n")}\n`
+  const uri = at("use.ttl")
+  // Warm up: the first diagnosis of a file also loads the index.
+  s.open(uri, text + "\n")
+  await s.diagnosticsFor(uri, 30_000)
+  let best = Infinity
+  let diags
+  for (let round = 0; round < 3; round++) {
+    const t0 = performance.now()
+    s.change(uri, text + `# ${round}\n`)
+    diags = await s.diagnosticsFor(uri, 30_000)
+    best = Math.min(best, ms(t0))
+  }
+  assert.equal(diags.filter((d) => d.code === "undescribed-term").length, 1000)
+  t.diagnostic(`lint: 1,000 undescribed terms / 30,000 described diagnosed in ${best.toFixed(0)} ms (best of 3)`)
+  assert.ok(best < 50, `took ${best.toFixed(0)} ms`)
+  assert.ok(ms(s0) < 60_000)
+})
+
+// ---- the command line (cli.test.mjs) ----
+
+test("check --statistics counts 20,000 undeclared uses in under a second", (t) => {
+  let text = ""
+  for (let i = 0; i < 20000; i++) text += `<http://x/s${i}> foaf:name "n${i}" .\n`
+  const dir = tempDir("turtle-latency-cli-")
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(dir, ".cache"))
+  fs.writeFileSync(path.join(dir, "big.ttl"), text)
+  const t0 = performance.now()
+  const r = spawnSync(serverPath, ["check", "--statistics"], {
+    cwd: dir,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(dir, ".cache"), NO_COLOR: "1" },
+  })
+  const took = ms(t0)
+  assert.equal(r.status, 1, r.stderr)
+  assert.match(r.stdout, /^ {2}20000 {2}total$/m)
+  t.diagnostic(`check --statistics: 20,000 undeclared uses in ${took.toFixed(0)} ms`)
+  assert.ok(took < 1000, `took ${took.toFixed(0)} ms`)
 })

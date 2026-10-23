@@ -571,16 +571,14 @@ test("check --format sarif: URIs are percent-encoded; a file outside the root is
   assert.match(abs.uri, /out%20side%231\.ttl$/)
 })
 
-test("check: 20,000 undeclared uses are counted in under a second; --format json still carries their fixes", (t) => {
+// How fast `check --statistics` counts them: latency.test.mjs.
+test("check: 20,000 undeclared uses are counted; --format json still carries their fixes", (t) => {
   let text = ""
   for (let i = 0; i < 20000; i++) text += `<http://x/s${i}> foaf:name "n${i}" .\n`
   const ws = workspace(t, { "big.ttl": text })
-  const started = Date.now()
   const stats = run(ws, ["check", "--statistics"])
-  const elapsed = Date.now() - started
   assert.equal(stats.code, 1)
   assert.deepEqual(stats.lines, ["  20000  undeclared-prefix", "  20000  total"])
-  assert.ok(elapsed < 1000, `took ${elapsed} ms`)
 
   // Nine megabytes: past what the helper's pipe holds, so to a file.
   run(ws, ["check", "--format", "json", "--output-file", "report.json"])
