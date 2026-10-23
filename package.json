@@ -20,7 +20,7 @@
     "@zazuko/rdf-vocabularies": "^2023.1.19",
     "monaco-editor": "0.52.2",
     "monaco-vim": "0.4.4",
-    "playwright-core": "1.64.0",
+    "playwright-core": "1.64.1",
     "vscode-jsonrpc": "9.0.3"
   }
 }
