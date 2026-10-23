@@ -152,7 +152,9 @@ jobs:
           mkdir -p target
           awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl"' tools/corpus/sources.tsv > target/corpus-sources.tsv
           test "$(wc -l < target/corpus-sources.tsv)" -eq 3
-          CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh
+          # One retry: w3.org and the other hosts throttle runners now and then.
+          CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh ||
+            { sleep 15; CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh; }
       # npm test, split so each part has its own time limit.
       # TODO: lower the build to 10 and --no-run to 10 minutes (and the job to
       # 30) once runs without fat LTO have been measured.
@@ -341,9 +343,10 @@ jobs:
       # "chrome" channel), so install that one rather than rely on the runner image.
       - run: npx playwright-core install chrome
         timeout-minutes: 5
+      # Two files at a time: most start Chrome, and the runner has 4 vCPUs.
       - name: Every web test (toolbox, editor, CSP, engine)
         timeout-minutes: 10
-        run: node --test --test-force-exit --test-timeout=60000 "web/test/*.test.mjs"
+        run: node --test --test-concurrency=2 --test-force-exit --test-timeout=60000 "web/test/*.test.mjs"
 
   vscode:
     name: VS Code extension (${{ matrix.os }})

@@ -772,7 +772,15 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
 /// whole under `CARGO_TARGET_TMPDIR` (the system temp directory is discarded
 /// by CI); the message carries the first characters so a CI log is enough to
 /// start from.
-fn failure_report(kind: &str, seed: u64, i: usize, ext: &str, text: &str, why: &str) -> String {
+fn failure_report(
+    kind: &str,
+    seed: u64,
+    iters: usize,
+    i: usize,
+    ext: &str,
+    text: &str,
+    why: &str,
+) -> String {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::create_dir_all(dir).unwrap();
     let dump = dir.join(format!("chaos-{kind}-{seed}-{i}.{ext}"));
@@ -780,7 +788,7 @@ fn failure_report(kind: &str, seed: u64, i: usize, ext: &str, text: &str, why: &
     let head: String = text.chars().take(300).collect();
     let more = if head.len() < text.len() { " ..." } else { "" };
     format!(
-        "iteration {i} (seed {seed}, {kind}) failed: {why}\n  input ({} bytes): {head:?}{more}\n  saved to {}",
+        "iteration {i} (seed {seed}, {kind}; replay with CHAOS_SEED={seed} CHAOS_ITERS={iters}) failed: {why}\n  input ({} bytes): {head:?}{more}\n  saved to {}",
         text.len(),
         dump.display()
     )
@@ -863,7 +871,7 @@ fn mutated_turtle(k: usize) {
             let ext = extension(syntax);
             panic!(
                 "{}",
-                failure_report("turtle", seed, i, ext, &text, &panic_message(&*e))
+                failure_report("turtle", seed, iters, i, ext, &text, &panic_message(&*e))
             );
         }
     }
@@ -992,7 +1000,15 @@ fn mutated_jsonld(k: usize) {
         if let Err(e) = r {
             panic!(
                 "{}",
-                failure_report("jsonld", seed, i, "jsonld", &text, &panic_message(&*e))
+                failure_report(
+                    "jsonld",
+                    seed,
+                    iters,
+                    i,
+                    "jsonld",
+                    &text,
+                    &panic_message(&*e)
+                )
             );
         }
     }
@@ -1333,7 +1349,7 @@ fn mutated_sparql(k: usize) {
             };
             panic!(
                 "{}",
-                failure_report("sparql", seed, i, ext, &text, &panic_message(&*e))
+                failure_report("sparql", seed, iters, i, ext, &text, &panic_message(&*e))
             );
         }
     }
@@ -1699,7 +1715,7 @@ fn corpora_are_sorted_and_cover_every_input_family() {
 #[test]
 fn a_failure_is_saved_under_the_target_dir_and_its_input_is_in_the_message() {
     let input = format!("<a> <b> \"{}\" .", "x".repeat(5_000));
-    let report = failure_report("turtle", 7, 3, "ttl", &input, "boom");
+    let report = failure_report("turtle", 7, 2000, 3, "ttl", &input, "boom");
     let dump = Path::new(env!("CARGO_TARGET_TMPDIR")).join("chaos-turtle-7-3.ttl");
     assert_eq!(
         fs::read_to_string(&dump).unwrap(),

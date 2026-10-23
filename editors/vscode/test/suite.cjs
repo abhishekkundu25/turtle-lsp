@@ -42,8 +42,8 @@ const fmt = (diags) => diags.map((d) => `${d.range.start.line}:${d.range.start.c
 // server's action. Returns that action and the last list of actions; throws
 // the cancellation when the last request was cancelled too.
 async function serverAction(doc, range, kind, resolve, pick) {
+  let actions = []
   for (const end = Date.now() + 5000; ; ) {
-    let actions
     try {
       actions = (await vscode.commands.executeCommand("vscode.executeCodeActionProvider", doc.uri, range, kind, resolve)) ?? []
       const found = pick(actions)

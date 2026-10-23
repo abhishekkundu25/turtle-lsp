@@ -54,7 +54,7 @@ timeout 120 cargo test --release --locked --doc            # the public-interfac
 timeout 120 node --test --test-timeout=30000 test/cli.test.mjs
 timeout 120 npm run test:latency                           # wall-clock checks, one at a time
 node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engine.test.mjs
-(cd editors/vscode && timeout 120 node --test test/manifest.test.mjs)
+(cd editors/vscode && timeout 120 node --test test/*.test.mjs)
 ```
 
 - Name a wall-clock lib test `timing_…`: CI runs those serially, apart
