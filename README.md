@@ -938,10 +938,12 @@ the modules.
 ### Performance in CI
 
 The CI job "Performance" runs `node bench/perf.mjs --json bench-results.json`
-on `ubuntu-latest` on every push to `main` and every pull request, and
-compares the keystroke rows' median with the results of the last run on
-`main`. On `main`, a ratio over 1.5 fails the job; on a pull request it is
-reported only. To make `main` report only, for example while the runner
-image changes, set the repository variable `PERF_GATE` to `off`.
+on `ubuntu-latest` with the shipped release profile on every push to `main`
+and every pull request, and compares the keystroke rows' median with the
+results of the last run on `main`: a ratio over 1.5 is marked in the step
+summary and reported only, because shared runners are too noisy for a
+wall-clock gate (`--gate` makes the comparison exit 1 for a local run). The
+memory budget (mimalloc's peak commit, scenario `big-file-peak`) is
+deterministic and gates in the Tests job on Linux and macOS.
 
 Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists the crates, data and packages that the binary, the `.vsix` and the browser site include, with their licences.
