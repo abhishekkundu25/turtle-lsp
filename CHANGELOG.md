@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A SPARQL syntax error after a dot in a prefixed name could crash the
+  server** when a multi-byte character followed the dot (`ex:a.😀`): the
+  error's position was mapped one byte too far. Found by the nightly chaos
+  run.
+- **"Shorten all IRIs in file" joined two IRIs written back to back**
+  (`<ns#><…#p>` became the one name `ex:sh:p`), which changed the graph.
+  Found by the nightly chaos run.
+
 ## 0.9.0 — 2026-10-23
 
 ### Fixed

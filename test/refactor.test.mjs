@@ -148,6 +148,21 @@ ex:bob foaf:name "Bob" .
   )
 })
 
+test("shorten all keeps two IRIs written back to back apart", async () => {
+  const glued = `@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix ex: <http://ex.example/> .
+<http://ex.example/><http://xmlns.com/foaf/0.1/knows> <http://ex.example/bob> .
+`
+  const { text } = await apply(glued, null, "Shorten all IRIs in file")
+  assert.equal(
+    text,
+    `@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix ex: <http://ex.example/> .
+ex: foaf:knows ex:bob .
+`
+  )
+})
+
 test("shorten all is resolved lazily through codeAction/resolve", async () => {
   const { uri, actions } = await actionsAt(s, iris, null)
   const all = actions.find((a) => a.title === "Shorten all IRIs in file")

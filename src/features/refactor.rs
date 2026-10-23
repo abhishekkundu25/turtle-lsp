@@ -214,15 +214,26 @@ fn written_absolute(a: &Analysis, r: &Ref) -> bool {
 }
 
 fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
-    let mut edits = Vec::new();
+    let mut found: Vec<(Span, String)> = Vec::new();
     each_shortenable(a, |r, pname| {
-        edits.push(TextEdit {
-            range: a.range(enc, r.span),
-            new_text: spaced(&a.text, r.span, pname),
-        });
+        found.push((r.span, spaced(&a.text, r.span, pname)));
         true
     });
-    edits
+    found.sort_by_key(|(span, _)| span.start);
+    // Two IRIs written back to back (`<a><b>`) each keep their neighbour
+    // apart as written; shortened together they would join (`ex:sh:p`).
+    for i in 1..found.len() {
+        if found[i - 1].0.end == found[i].0.start && !found[i - 1].1.ends_with(' ') {
+            found[i - 1].1.push(' ');
+        }
+    }
+    found
+        .into_iter()
+        .map(|(span, new_text)| TextEdit {
+            range: a.range(enc, span),
+            new_text,
+        })
+        .collect()
 }
 
 /// `<iri>` for a prefixed name, escaping what an IRIREF cannot hold. Only for
