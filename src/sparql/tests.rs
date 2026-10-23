@@ -678,6 +678,10 @@ fn diagnostics_stay_on_character_boundaries() {
         "SELECT * { ?s ?p é }",
         "SELECT * { ?s ?p \"日本",
         "PREFIX 日本: <http://e/>\nSELECT * { ?s 日本:p 日本 }",
+        // A dot in the name is escaped for the parser, which then reports
+        // the emoji one byte further on than it is in the text.
+        "PREFIX ex: <http://e/>\nSELECT * { ?s ex:a.😀 ?o }",
+        "PREFIX ex: <http://e/>\nSELECT * { ?s ex:a.é.😀 }",
     ] {
         for d in doc(text).diagnostics() {
             assert!(text.is_char_boundary(d.span.start as usize), "{text}");

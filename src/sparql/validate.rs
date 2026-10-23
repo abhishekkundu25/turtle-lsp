@@ -162,15 +162,25 @@ pub(crate) fn check_tokens(
         // The copy parses (a token the lexer reads differently): fall back.
         return Some(locate(&fixed, parser, update));
     }
-    // Offsets in the copy are inside a token (spans never start in room).
+    // Offsets in the copy are inside a token (spans never start in room). A
+    // token the copy rewrote (`a.b` as `a\.b`) is longer there, so an offset
+    // past the rewrite can land inside a character of the text: snap it back.
+    let snap = |q: usize| {
+        let mut q = q.min(text.len());
+        while !text.is_char_boundary(q) {
+            q -= 1;
+        }
+        q as u32
+    };
     let back = |q: u32| {
         let k = map.partition_point(|&(s, _)| s <= q).saturating_sub(1);
-        map.get(k).map_or(q, |&(s, o)| o + (q - s))
+        snap(map.get(k).map_or(q, |&(s, o)| o + (q - s)) as usize)
     };
     let at = match e.at {
         ErrorAt::Token(s) => {
             let start = back(s.start);
-            ErrorAt::Token(Span::new(start, start + (s.end - s.start)))
+            let end = snap(start as usize + (s.end - s.start) as usize).max(start);
+            ErrorAt::Token(Span::new(start, end))
         }
         other => other,
     };

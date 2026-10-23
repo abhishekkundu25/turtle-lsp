@@ -478,7 +478,9 @@ test("by default a remote context is not fetched from a loopback address, even w
   const server = await startStrictWithCache(dir, path.join(root, "cache"), { imports: { network: true } })
   try {
     server.open(uri, text, "jsonld")
-    const diags = await until(server, uri, (d) => withCode(d, "jsonld-context").length > 0, 4000)
+    // The refusal comes from the fetch thread: the first publication can
+    // still say the context is being fetched.
+    const diags = await until(server, uri, (d) => withCode(d, "jsonld-context").some((x) => !/being fetched/.test(x.message)), 4000)
     assert.deepEqual(rangesOf(diags, "jsonld-context"), [F.remoteDocUrl(url)], show(diags))
     assert.match(withCode(diags, "jsonld-context")[0].message, /loopback/)
     await sleep(300)
