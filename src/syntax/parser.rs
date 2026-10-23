@@ -2651,4 +2651,26 @@ mod review_tests {
         );
         assert_eq!(crate::rdf::Graph::new(&[&parsed.triples]).len(), 1);
     }
+
+    /// With no document base, a relative `@base` is an error; under a base
+    /// it resolves.
+    #[test]
+    fn a_relative_base_needs_a_document_base() {
+        use crate::syntax::{Severity, parse_with_base};
+        let text = "@base <hbase/> .\n<s> <p> <o> .\n";
+        let errors = |base| {
+            parse_with_base(text, &PrefixMap::default(), Syntax::Turtle, base)
+                .errors
+                .into_iter()
+                .filter(|e| e.severity == Severity::Error)
+                .map(|e| e.message().to_string())
+                .collect::<Vec<_>>()
+        };
+        let without = errors(None);
+        assert!(
+            without.len() == 1 && without[0].starts_with("Invalid base IRI"),
+            "{without:?}"
+        );
+        assert_eq!(errors(Some("file:///w/a.ttl")), Vec::<String>::new());
+    }
 }

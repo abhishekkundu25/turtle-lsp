@@ -7,10 +7,13 @@
 //! brackets, huge tokens) and runs the parser and every editor feature on each
 //! result at random positions in both position encodings. Any panic, and any
 //! span outside the text, fails the test. Deterministic: the corpus is read in
-//! sorted order, the seed is fixed, and CHAOS_SEED / CHAOS_ITERS override it.
+//! sorted order, the seed is fixed, and CHAOS_SEED / CHAOS_ITERS override it;
+//! CHAOS_ONLY=<i> runs iteration i alone.
 //!
 //! A failure's input is saved under `CARGO_TARGET_TMPDIR` (CI discards the
-//! system temp directory) and its start is in the panic message.
+//! system temp directory) and its start is in the panic message. An iteration
+//! that runs past its budget is reported the same way by a watchdog, which
+//! then exits the process.
 //!
 //! The mutations rarely build a 10,000-level nest or a megabyte token, so
 //! `pathological_inputs_are_survived` writes those down, each on a 2 MiB
@@ -21,8 +24,9 @@ use lsp_types::{
     TextDocumentIdentifier, TextDocumentPositionParams, WorkspaceEdit,
 };
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use turtle_lsp::analysis::{Analysis, Encoding, SparqlAnalysis};
 use turtle_lsp::features::hierarchy;
@@ -74,6 +78,123 @@ const SHARDS: usize = 4;
 /// once with no gap and no overlap.
 fn shard(iters: usize, k: usize) -> std::ops::Range<usize> {
     iters * k / SHARDS..iters * (k + 1) / SHARDS
+}
+
+/// The iterations shard `k` runs: its range, or only `CHAOS_ONLY` when that
+/// is set (nothing when another shard owns it).
+fn iterations(iters: usize, k: usize) -> std::ops::Range<usize> {
+    let all = shard(iters, k);
+    match std::env::var("CHAOS_ONLY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        Some(i) if all.contains(&i) => i..i + 1,
+        Some(_) => 0..0,
+        None => all,
+    }
+}
+
+/// How long one iteration may run before the watchdog fails the run;
+/// `CHAOS_ITERATION_BUDGET_MS` overrides it.
+const ITERATION_BUDGET: Duration = Duration::from_secs(10);
+
+/// The iteration a shard is running: its number, start, input and the
+/// extension its input is saved under.
+type Running = Option<(usize, Instant, Arc<str>, &'static str)>;
+
+/// A shard's watchdog: a thread that wakes every second and, when the
+/// iteration in the slot has run past the budget, reports it and exits the
+/// process (a hang would otherwise end in a timeout that names no input).
+/// Dropped, it prints the shard's five slowest iterations.
+struct Watchdog {
+    slot: Arc<Mutex<Running>>,
+    slowest: Vec<(Duration, usize)>,
+    kind: &'static str,
+}
+
+impl Watchdog {
+    fn new(kind: &'static str, seed: u64, iters: usize) -> Watchdog {
+        let budget = Duration::from_millis(env_or(
+            "CHAOS_ITERATION_BUDGET_MS",
+            ITERATION_BUDGET.as_millis() as u64,
+        ));
+        let slot: Arc<Mutex<Running>> = Arc::default();
+        let weak = Arc::downgrade(&slot);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let Some(slot) = weak.upgrade() else { return };
+                let running = slot.lock().unwrap();
+                let Some((i, started, text, ext)) = &*running else {
+                    continue;
+                };
+                if started.elapsed() > budget {
+                    let why = format!(
+                        "still running after {:?} (budget {budget:?})",
+                        started.elapsed()
+                    );
+                    let report = failure_report(kind, seed, iters, *i, ext, text, &why);
+                    // libtest captures `eprintln!` from this thread too, and the exit drops it.
+                    let _ = std::io::stderr()
+                        .lock()
+                        .write_all(format!("{report}\n").as_bytes());
+                    std::process::exit(101);
+                }
+            }
+        });
+        Watchdog {
+            slot,
+            slowest: Vec::new(),
+            kind,
+        }
+    }
+
+    /// Iteration `i` starts on `text`.
+    fn start(&mut self, i: usize, text: &str, ext: &'static str) {
+        let next = Some((i, Instant::now(), text.into(), ext));
+        let last = std::mem::replace(&mut *self.slot.lock().unwrap(), next);
+        self.time(last);
+    }
+
+    fn time(&mut self, last: Running) {
+        if let Some((i, started, _, _)) = last {
+            self.slowest.push((started.elapsed(), i));
+            self.slowest.sort_by(|a, b| b.cmp(a));
+            self.slowest.truncate(5);
+        }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        let last = self.slot.lock().unwrap().take();
+        self.time(last);
+        let slowest: Vec<String> = self
+            .slowest
+            .iter()
+            .map(|(took, i)| format!("{i} ({took:.2?})"))
+            .collect();
+        // Past libtest's capture, so a passing run's log has them too.
+        let line = format!("{} slowest iterations: {}\n", self.kind, slowest.join(", "));
+        let _ = std::io::stderr().lock().write_all(line.as_bytes());
+    }
+}
+
+/// The first line where `before` and `after` differ, with two lines of
+/// context on each side, quoted so a `\r` shows.
+fn first_difference(before: &str, after: &str) -> String {
+    let (b, a): (Vec<&str>, Vec<&str>) =
+        (before.split('\n').collect(), after.split('\n').collect());
+    let n = b.iter().zip(&a).take_while(|(x, y)| x == y).count();
+    let from = n.saturating_sub(2);
+    let mut out = format!("first difference at line {}:", n + 1);
+    for (sign, lines) in [("-", &b), ("+", &a)] {
+        for l in lines.iter().skip(from).take(n - from + 3) {
+            let l: String = l.chars().take(200).collect();
+            out += &format!("\n  {sign} {l:?}");
+        }
+    }
+    out
 }
 
 #[test]
@@ -547,19 +668,33 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         );
     } else {
         let out = formatted.expect("formatter refused a document without syntax errors");
-        let again = format::format(&out, &parse_doc(&out, syntax, None), &a.external, &opts);
-        // Known defect (see `format_drops_a_dangling_semicolon_once`): a `;`
-        // before a comment and the closing `.` is kept the first time and
-        // dropped the second. Only that difference is let through.
-        let known = out.contains("; .")
-            && again.as_deref().map(|a| a.replacen("; .", ".", 1))
-                == Some(out.replacen("; .", ".", 1));
-        if !known {
-            assert_eq!(
-                again.as_deref(),
-                Some(out.as_str()),
-                "formatting is not idempotent"
-            );
+        // The editor's second Format Document: the same URI and external prefixes.
+        let re = Analysis::with_syntax(
+            doc_uri(syntax).into(),
+            &out,
+            a.external.clone(),
+            true,
+            syntax,
+        );
+        match format::format(&out, &re.parsed, &re.external, &opts) {
+            None => {
+                let errors: Vec<String> = re
+                    .parsed
+                    .errors
+                    .iter()
+                    .filter(|e| e.severity == Severity::Error)
+                    .map(|e| {
+                        let at = out.get(e.span.start as usize..e.span.end as usize);
+                        format!("{} {:?} at {at:?}", e.code, e.message())
+                    })
+                    .collect();
+                panic!("the formatted text is refused: {errors:?}\n  formatted: {out:?}");
+            }
+            Some(again) => assert!(
+                again == out,
+                "formatting is not idempotent: {}",
+                first_difference(&out, &again)
+            ),
         }
     }
     for enc in [Encoding::Utf8, Encoding::Utf16] {
@@ -751,12 +886,14 @@ fn code_actions_keep_the_graph(
         let CodeActionOrCommand::CodeAction(c) = c else {
             continue;
         };
-        let after = refactor::apply(a, enc, &refactor::edits_of(a, enc, &c));
+        let edits = refactor::edits_of(a, enc, &c);
+        let after = refactor::apply(a, enc, &edits);
         let reparsed = parse_doc(&after, syntax, a.parsed.document_base.as_deref());
         assert!(
             reparsed.errors.is_empty() && triples(&after) == before,
-            "'{}' changed the graph:\n{after}",
-            c.title
+            "'{}' changed the graph: {}\n  edits: {edits:?}",
+            c.title,
+            first_difference(text, &after)
         );
     }
 }
@@ -788,7 +925,7 @@ fn failure_report(
     let head: String = text.chars().take(300).collect();
     let more = if head.len() < text.len() { " ..." } else { "" };
     format!(
-        "iteration {i} (seed {seed}, {kind}; replay with CHAOS_SEED={seed} CHAOS_ITERS={iters}) failed: {why}\n  input ({} bytes): {head:?}{more}\n  saved to {}",
+        "iteration {i} (seed {seed}, {kind}; replay with CHAOS_SEED={seed} CHAOS_ITERS={iters} CHAOS_ONLY={i}) failed: {why}\n  input ({} bytes): {head:?}{more}\n  saved to {}",
         text.len(),
         dump.display()
     )
@@ -854,7 +991,8 @@ fn mutated_turtle(k: usize) {
     let iters = env_or("CHAOS_ITERS", 2000usize);
     let corpus = corpus();
     let mut base = knowledge_of(&corpus);
-    for i in shard(iters, k) {
+    let mut dog = Watchdog::new("turtle", seed, iters);
+    for i in iterations(iters, k) {
         let mut rng = Rng::at(seed, i);
         let pick = rng.below(corpus.len());
         let (source, syntax) = &corpus[pick];
@@ -864,6 +1002,7 @@ fn mutated_turtle(k: usize) {
         if syntax == Syntax::Turtle && rng.below(4) == 0 {
             syntax = Syntax::TriG;
         }
+        dog.start(i, &text, extension(syntax));
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             exercise(&mut Rng(seed ^ i as u64 ^ 0x9E37), &text, syntax, &mut base)
         }));
@@ -979,10 +1118,12 @@ fn mutated_jsonld(k: usize) {
             .map(|p| (fs::read_to_string(p).unwrap(), Syntax::JsonLd)),
     );
     let mut base = knowledge_of(&docs);
-    for i in shard(iters, k) {
+    let mut dog = Watchdog::new("jsonld", seed, iters);
+    for i in iterations(iters, k) {
         let mut rng = Rng::at(seed, i);
         let source = &seeds[rng.below(seeds.len())];
         let text = mutate_with(&mut rng, source, JSON_SNIPPETS, false);
+        dog.start(i, &text, "jsonld");
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             exercise(
                 &mut Rng(seed ^ i as u64 ^ 0x9E37),
@@ -1196,7 +1337,11 @@ fn sparql_exercise(rng: &mut Rng, text: &str, k: &Knowledge) {
         );
         let twice =
             sparql::format(&out, &prefixes, base, &opts).expect("formatted text formats again");
-        assert_eq!(twice, out, "formatting is not idempotent");
+        assert!(
+            twice == out,
+            "formatting is not idempotent: {}",
+            first_difference(&out, &twice)
+        );
     }
 
     let external = Arc::new(PrefixMap::default());
@@ -1328,10 +1473,13 @@ fn mutated_sparql(k: usize) {
     // Names the queries can resolve: the Turtle fixtures.
     let docs: Vec<(String, Syntax)> = self::corpus().into_iter().step_by(2).collect();
     let known = knowledge_of(&docs);
-    for i in shard(iters, k) {
+    let mut dog = Watchdog::new("sparql", seed, iters);
+    for i in iterations(iters, k) {
         let mut rng = Rng::at(seed, i);
         let pick = rng.below(corpus.len());
         let text = sparql_mutate(&mut rng, &corpus[pick]);
+        // shortcut: an update is saved as .rq too; telling them apart parses, which can hang.
+        dog.start(i, &text, "rq");
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sparql_exercise(&mut Rng(seed ^ i as u64 ^ 0x9E37), &text, &known)
         }));
@@ -1734,6 +1882,36 @@ fn a_failure_is_saved_under_the_target_dir_and_its_input_is_in_the_message() {
     assert!(!std::env::temp_dir().join("chaos-turtle-7-3.ttl").exists());
 }
 
+/// An iteration past its budget: the child (this test binary, run again on
+/// this test) exits with 101 and writes the report to stderr, past libtest's
+/// capture.
+#[test]
+fn a_hung_iteration_is_reported_and_exits_the_run() {
+    if std::env::var_os("CHAOS_WATCHDOG_CHILD").is_some() {
+        let mut dog = Watchdog::new("turtle", 7, 2000);
+        dog.start(5, "<a> <b> <c> .", "ttl");
+        std::thread::sleep(Duration::from_secs(30));
+        panic!("the watchdog did not fire");
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "a_hung_iteration_is_reported_and_exits_the_run"])
+        .env("CHAOS_WATCHDOG_CHILD", "1")
+        .env("CHAOS_ITERATION_BUDGET_MS", "100")
+        .output()
+        .unwrap();
+    let dump = Path::new(env!("CARGO_TARGET_TMPDIR")).join("chaos-turtle-7-5.ttl");
+    assert_eq!(fs::read_to_string(&dump).unwrap(), "<a> <b> <c> .");
+    fs::remove_file(&dump).unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(101), "{stderr}");
+    assert!(
+        stderr.contains("iteration 5 ")
+            && stderr.contains("CHAOS_SEED=7 CHAOS_ITERS=2000 CHAOS_ONLY=5")
+            && stderr.contains("budget 100ms"),
+        "{stderr}"
+    );
+}
+
 /// A parse result with one bad span, whichever field it sits in: the check
 /// must see each. (The text is "abc": 0..99 is outside it.)
 #[test]
@@ -1976,19 +2154,4 @@ fn jsonld_spans_stay_on_character_boundaries() {
         });
         assert!(outcome.is_ok(), "panicked on {text:?}");
     }
-}
-
-/// `<a> <p> <o> ; # c` then `.` on the next line is formatted to `; . # c`,
-/// and that to `. # c`: the first output is not a fixed point (and keeps a
-/// `;` that nothing follows).
-#[test]
-#[ignore = "known defect: the formatter keeps a dangling ';' before a comment and '.' the first time only"]
-fn format_drops_a_dangling_semicolon_once() {
-    let text = "<a> <p> <o> ; # c\n.\n";
-    let opts = format::Options::default();
-    let parsed = parse(text, &PrefixMap::default(), Syntax::Turtle);
-    let once = format::format(text, &parsed, &PrefixMap::default(), &opts).unwrap();
-    let parsed = parse(&once, &PrefixMap::default(), Syntax::Turtle);
-    let twice = format::format(&once, &parsed, &PrefixMap::default(), &opts).unwrap();
-    assert_eq!(once, twice, "not idempotent: {once:?} then {twice:?}");
 }

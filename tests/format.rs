@@ -631,3 +631,42 @@ fn a_redundant_semicolon_with_a_comment_is_dropped_in_one_pass() {
         assert_eq!(fmt_as(&once, syntax, &o).unwrap(), once, "{src:?}");
     }
 }
+
+/// A relative `@base` resolves against the document's URI: under it, the
+/// output parses without error and formats to itself (the editor's second
+/// Format Document).
+#[test]
+fn a_relative_base_formats_to_a_fixed_point_under_the_document_uri() {
+    use std::sync::Arc;
+    use turtle_lsp::analysis::Analysis;
+    let cases = [
+        ("@base <b%411b/> .\n<s> <p> <o> .\n", Syntax::Turtle),
+        ("BASE <hbase/>\n<x> <p> <o> .\n", Syntax::Turtle),
+        (
+            "BASE <h#ttp://example.net/base/>\n<x> <p> <o> .\n",
+            Syntax::TriG,
+        ),
+        (
+            "@base <htexample.net/base/> .\n<g> { <x> <p> <o> }\n",
+            Syntax::TriG,
+        ),
+    ];
+    let o = Options::default();
+    for (src, syntax) in cases {
+        let file = if syntax == Syntax::TriG {
+            "file:///w/a.trig"
+        } else {
+            "file:///w/a.ttl"
+        };
+        for uri in [file, "untitled:Untitled-1"] {
+            let format_under = |text: &str| {
+                let a = Analysis::with_syntax(uri.into(), text, Arc::default(), true, syntax);
+                format(text, &a.parsed, &a.external, &o)
+            };
+            let once = format_under(src);
+            assert!(once.is_some(), "{src:?} under {uri}");
+            let twice = format_under(once.as_deref().unwrap());
+            assert_eq!(twice, once, "{src:?} under {uri}");
+        }
+    }
+}
