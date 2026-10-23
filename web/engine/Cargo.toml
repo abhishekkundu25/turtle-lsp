@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-getrandom = "0.3"
+getrandom = "0.4"
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 # SPARQL evaluation asks for the time (NOW()); the page supplies it (src/lib.rs).
