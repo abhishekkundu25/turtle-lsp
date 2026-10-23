@@ -683,6 +683,18 @@ fn fixed_keeps_the_tokens(
                 return None;
             }
         }
+        // A `.` with no statement before it is an empty statement: no content,
+        // and which directive the parser folds it into differs between texts.
+        let mut prev_dot = true;
+        out.retain(|t: &Tok| {
+            if lex.comment(t.0) {
+                return true;
+            }
+            let dot = &text[t.1..t.2] == ".";
+            let keep = !(dot && prev_dot);
+            prev_dot = dot;
+            keep
+        });
         Some(out)
     };
     // shortcut: what a fix removes of a broken declaration is the parser's
@@ -2802,6 +2814,11 @@ fn fix_all_may_change_only_the_directives() {
     // A broken `<...>` lexes as an error and a comment `#> .`: not compared.
     let broken = "@prefix a: <http://x/a\t#> .\n@prefix b: <http://x/b#> .\n.\n";
     fixed_keeps_the_tokens(broken, ".\n", Lexer::Turtle, false).unwrap();
+    // A PREFIX line put above a stray `.` takes it in; an empty statement
+    // carries nothing, so the texts still compare equal.
+    let stray = "# c\n.\n[ ex:a true ] .\n";
+    let added = "# c\nPREFIX ex: <http://e/>\n.\n[ ex:a true ] .\n";
+    fixed_keeps_the_tokens(stray, added, Lexer::Turtle, false).unwrap();
 }
 
 #[test]
