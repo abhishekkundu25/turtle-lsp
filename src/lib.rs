@@ -148,7 +148,7 @@
 //! use turtle_lsp::sparql::features::semantic_tokens_range as _; // tests
 //! use turtle_lsp::sparql::features::term_references as _; // tests
 //! use turtle_lsp::sparql::format as _; // examples, tests
-//! use turtle_lsp::sparql::lexer::tokenize as _; // examples
+//! use turtle_lsp::sparql::lexer::tokenize as _; // examples, tests
 //! use turtle_lsp::sparql::validate::text_for_spargebra as _; // examples
 //! use turtle_lsp::syntax::BlankId as _; // tests
 //! use turtle_lsp::syntax::Direction as _; // tests

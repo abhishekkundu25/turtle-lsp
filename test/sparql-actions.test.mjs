@@ -154,6 +154,21 @@ test("expand a prefixed name to its full IRI", async () => {
   assert.equal(after, text.replace("?s ex:name", "?s <https://query.example.org/def/name>"))
 })
 
+test("a rewritten IRI never joins its neighbour, and the query still parses", async () => {
+  const P = "PREFIX ex: <http://e/>\n"
+  const cases = [
+    ["SELECT * { <http://e/s><http://e/p><http://e/o> }", null, "Shorten all", "SELECT * { ex:s ex:p ex:o }"],
+    ["SELECT * { ?s ex:p?<http://e/o> }", "<http://e/o>", "Shorten IRI", "SELECT * { ?s ex:p? ex:o }"],
+    ["SELECT * { ?s ?p ?a FILTER(?a<ex:b) }", "ex:b", "Expand", "SELECT * { ?s ?p ?a FILTER(?a<<http://e/b>) }"],
+  ]
+  for (const [query, needle, title, want] of cases) {
+    const { text: after } = await run(`${P}${query}\n`, needle, title, { offsetInNeedle: 1 })
+    assert.equal(after, `${P}${want}\n`)
+    const errors = await q.withScratch(after, (doc) => doc.diags.filter((d) => d.severity === 1))
+    assert.deepEqual(errors, [], after)
+  }
+})
+
 test("no Turtle-only actions are offered in a query", async () => {
   const text = `${EX}SELECT * WHERE { ?s ex:name ?n ; foaf:name ?m }\n`
   await actionsAt(text, "foaf:name", (actions) => {

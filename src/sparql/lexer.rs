@@ -4,8 +4,11 @@
 //! not. Spans are byte ranges, never empty, never overlapping, always on
 //! character boundaries.
 //!
-//! `<` starts an IRI when an IRI reference follows (`<http://e/>`), else it
-//! is an operator (`<`, `<=`, `<<`, `<<(`). Signs are their own tokens
+//! `<` right after an operand (a variable, literal, name, IRI or `)`) inside
+//! an expression's parentheses is the `<` or `<=` operator, as `spargebra`
+//! reads it (`?a<=ex:b&&?c>?a`). Elsewhere `<` starts an IRI when an IRI
+//! reference follows (`<http://e/>`), else it is an operator (`<`, `<=`,
+//! `<<`, `<<(`). Signs are their own tokens
 //! (`-1` is `-` and `1`), as in the grammar's `INTEGER_NEGATIVE`. A word
 //! followed by `:` is a prefixed name (`select:x` is a prefixed name, not a
 //! keyword), except `PREFIX:` before an IRI, which is the keyword and the
@@ -195,10 +198,26 @@ fn bad_in_iri(c: char) -> bool {
     matches!(c, '<' | '"' | '{' | '}' | '|' | '^' | '`') || c <= ' '
 }
 
+/// What an open bracket holds.
+#[derive(Clone, Copy, PartialEq)]
+enum Open {
+    /// An expression: `FILTER(`, `BIND(`, a function's arguments, a `(` in a
+    /// SELECT clause or a solution modifier, any `(` inside an expression.
+    Expr,
+    /// A group `{`, with whether a SELECT clause or solution modifier was
+    /// open before it.
+    Group(bool),
+    /// A collection, `[`, `<<(`, a VALUES row.
+    Other,
+}
+
 struct Lexer<'a> {
     src: &'a str,
     b: &'a [u8],
     out: Vec<Token>,
+    open: Vec<Open>,
+    /// In a SELECT clause or a solution modifier (GROUP BY, HAVING, ORDER BY).
+    clause: bool,
 }
 
 impl Lexer<'_> {
@@ -208,10 +227,82 @@ impl Lexer<'_> {
 
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
         debug_assert!(start < end);
+        let text = &self.src[start..end];
+        match (kind, text) {
+            (TokenKind::Punct, "(") => {
+                let kw = |t: Option<&Token>, w: &str| {
+                    t.is_some_and(|t| {
+                        t.kind == TokenKind::Keyword && t.text(self.src).eq_ignore_ascii_case(w)
+                    })
+                };
+                let mut before = self
+                    .out
+                    .iter()
+                    .rev()
+                    .filter(|t| t.kind != TokenKind::Comment);
+                let (prev, prev2) = (before.next(), before.next());
+                let call = prev
+                    .is_some_and(|t| matches!(t.kind, TokenKind::Iri | TokenKind::PName))
+                    && kw(prev2, "FILTER");
+                let expr = self.open.last() == Some(&Open::Expr)
+                    || self.clause
+                    || kw(prev, "FILTER")
+                    || kw(prev, "BIND")
+                    || prev.is_some_and(|t| t.kind == TokenKind::Function)
+                    || call;
+                self.open.push(if expr { Open::Expr } else { Open::Other });
+            }
+            (TokenKind::Punct, "[" | "<<(") => self.open.push(Open::Other),
+            (TokenKind::Punct, ")" | "]" | ")>>") => {
+                if matches!(self.open.last(), Some(Open::Expr | Open::Other)) {
+                    self.open.pop();
+                }
+            }
+            (TokenKind::Punct, "{") => {
+                self.open.push(Open::Group(self.clause));
+                self.clause = false;
+            }
+            (TokenKind::Punct, "}") => {
+                while let Some(o) = self.open.pop() {
+                    if let Open::Group(clause) = o {
+                        self.clause = clause;
+                        break;
+                    }
+                }
+            }
+            (TokenKind::Keyword, _) => match keyword(text) {
+                Some("SELECT" | "GROUP" | "ORDER" | "HAVING") => self.clause = true,
+                Some("WHERE" | "FROM" | "LIMIT" | "OFFSET" | "VALUES") => self.clause = false,
+                _ => {}
+            },
+            _ => {}
+        }
         self.out.push(Token {
             kind,
             span: Span::new(start as u32, end as u32),
         });
+    }
+
+    /// Whether a `<` here is a comparison: it follows an operand inside an
+    /// expression, where `spargebra` reads no IRI.
+    fn comparison(&self) -> bool {
+        self.open.last() == Some(&Open::Expr)
+            && self
+                .out
+                .iter()
+                .rev()
+                .find(|t| t.kind != TokenKind::Comment)
+                .is_some_and(|t| match t.kind {
+                    TokenKind::Var
+                    | TokenKind::String
+                    | TokenKind::Number
+                    | TokenKind::Boolean
+                    | TokenKind::LangTag
+                    | TokenKind::Iri
+                    | TokenKind::PName => true,
+                    TokenKind::Punct => matches!(t.text(self.src), ")" | ")>>"),
+                    _ => false,
+                })
     }
 
     /// End of the IRI reference starting with `<` at `i`, if one does.
@@ -382,7 +473,11 @@ impl Lexer<'_> {
                     i = end;
                 }
                 b'<' => {
-                    if let Some(end) = self.iri_end(i) {
+                    if self.comparison() {
+                        let len = if b[i..].starts_with(b"<=") { 2 } else { 1 };
+                        self.push(TokenKind::Punct, i, i + len);
+                        i += len;
+                    } else if let Some(end) = self.iri_end(i) {
                         self.push(TokenKind::Iri, i, end);
                         i = end;
                     } else {
@@ -603,7 +698,14 @@ pub fn tokenize(src: &str) -> Vec<Token> {
         src,
         b: src.as_bytes(),
         out: Vec::with_capacity(src.len() / 4),
+        open: Vec::new(),
+        clause: false,
     };
     l.run();
     l.out
+}
+
+/// (kind, span) of every token of `src`, for `syntax::names::token_edits`.
+pub(crate) fn kinds(src: &str) -> Vec<(TokenKind, Span)> {
+    tokenize(src).iter().map(|t| (t.kind, t.span)).collect()
 }

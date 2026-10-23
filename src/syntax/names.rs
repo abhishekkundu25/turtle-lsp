@@ -112,27 +112,166 @@ pub(crate) fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
         .map(|(name, ns)| format!("{name}:{}", &iri[ns.len()..]))
 }
 
-/// A prefixed name replacing the IRI at `span`, with a space added where it
-/// would otherwise run into the neighbouring token (`a<x>`, `<x>ex:y`).
-pub(crate) fn spaced(text: &str, span: Span, pname: String) -> String {
-    let joins = |c: char| is_pn_chars(c) || matches!(c, ':' | '%' | '\\');
-    let before = text[..span.start as usize].chars().next_back();
-    let mut after = text[span.end as usize..].chars();
-    let next = after.next();
-    let space_before = before.is_some_and(joins);
-    let space_after = match next {
-        Some('.') => after.next().is_some_and(joins),
-        Some(c) => joins(c),
-        None => false,
-    };
-    match (space_before, space_after) {
-        (false, false) => pname,
-        (b, s) => format!(
-            "{}{pname}{}",
-            if b { " " } else { "" },
-            if s { " " } else { "" }
-        ),
+/// The Turtle lexer's (kind, span) of each token of `text`, for [`token_edits`].
+fn turtle_tokens(text: &str) -> Vec<(super::lexer::Kind, Span)> {
+    super::lexer::tokenize(text)
+        .iter()
+        .map(|t| (t.kind, Span::new(t.start, t.end)))
+        .collect()
+}
+
+/// [`token_edits`] for Turtle `text`, whose tokens are `tokens`. Only the
+/// run of tokens around the replacements up to a gap on either side is
+/// lexed again: no Turtle token reaches across whitespace, and a token start
+/// is a place to start lexing from, so one IRI costs its neighbours, not the
+/// file.
+pub(crate) fn turtle_token_edits(
+    text: &str,
+    tokens: &[super::lexer::Token],
+    reps: Vec<(Span, String)>,
+) -> Vec<(Span, String)> {
+    let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
+    let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
+    let (mut i, mut from) = (tokens.partition_point(|t| t.start < lo), lo);
+    while i > 0 && tokens[i - 1].end == from {
+        i -= 1;
+        from = tokens[i].start;
     }
+    let (mut j, mut to) = (tokens.partition_point(|t| t.end <= hi), hi);
+    while j < tokens.len() && tokens[j].start == to {
+        to = tokens[j].end;
+        j += 1;
+    }
+    let reps = reps
+        .into_iter()
+        .map(|(s, r)| (moved(s, -(from as i64)), r))
+        .collect();
+    token_edits(&text[from as usize..to as usize], reps, turtle_tokens)
+        .into_iter()
+        .map(|(s, r)| (moved(s, from as i64), r))
+        .collect()
+}
+
+/// Edits of `text` that replace whole tokens: each `(span, new)` replaces the
+/// tokens in `span` (an insertion is an empty span, a deletion an empty
+/// text). Invariant: `lex` reads the edited text as the token stream before
+/// with exactly those tokens changed. Where a replacement would fuse with or
+/// split a neighbour (`ex:a.b.` then `sh:V`, `1.` then `e1:x`), a space goes
+/// at that end; the edits come back sorted and trimmed to the characters
+/// that change.
+pub(crate) fn token_edits<K: PartialEq + Copy>(
+    text: &str,
+    mut reps: Vec<(Span, String)>,
+    lex: impl Fn(&str) -> Vec<(K, Span)>,
+) -> Vec<(Span, String)> {
+    reps.sort_by_key(|(s, _)| s.start);
+    let old = lex(text);
+    // A space at each end of each replacement: `2 * r` before, `2 * r + 1` after.
+    let mut pads = vec![false; 2 * reps.len()];
+    let padded = |pads: &[bool], r: usize, rep: &str| {
+        let space = |p: bool| if p { " " } else { "" };
+        format!("{}{rep}{}", space(pads[2 * r]), space(pads[2 * r + 1]))
+    };
+    loop {
+        // The edited text, the tokens it should lex to, and where each
+        // replacement's ends land in it (ascending).
+        let (mut new, mut want, mut ends) = (String::new(), Vec::new(), Vec::new());
+        let mut old_tokens = old.iter().peekable();
+        let mut copied = 0;
+        for (r, (span, rep)) in reps.iter().enumerate() {
+            let shift = new.len() as i64 - copied as i64;
+            while let Some(&(k, s)) = old_tokens.next_if(|(_, s)| s.end <= span.start) {
+                want.push((k, moved(s, shift)));
+            }
+            while old_tokens.next_if(|(_, s)| s.start < span.end).is_some() {}
+            new.push_str(&text[copied..span.start as usize]);
+            ends.push(new.len());
+            let rep = padded(&pads, r, rep);
+            let shift = new.len() as i64;
+            want.extend(lex(&rep).into_iter().map(|(k, s)| (k, moved(s, shift))));
+            new.push_str(&rep);
+            ends.push(new.len());
+            copied = span.end as usize;
+        }
+        let shift = new.len() as i64 - copied as i64;
+        want.extend(old_tokens.map(|&(k, s)| (k, moved(s, shift))));
+        new.push_str(&text[copied..]);
+        let got = lex(&new);
+        // Each run of differing tokens, from where both streams part to where
+        // they end a token at the same offset, gets a space at its first end
+        // of a replacement that has none, inside the run before at its edge.
+        let mut changed = false;
+        let (mut i, mut j) = (0, 0);
+        while i < want.len() || j < got.len() {
+            if want.get(i) == got.get(j) {
+                (i, j) = (i + 1, j + 1);
+                continue;
+            }
+            let start = |t: Option<&(K, Span)>| t.map_or(usize::MAX, |t| t.1.start as usize);
+            let lo = start(want.get(i)).min(start(got.get(j)));
+            let mut hi = lo;
+            loop {
+                let end = |t: Option<&(K, Span)>| t.map(|t| t.1.end as usize);
+                match (end(want.get(i)), end(got.get(j))) {
+                    (Some(a), Some(b)) if a == b => {
+                        (i, j, hi) = (i + 1, j + 1, a);
+                        break;
+                    }
+                    (Some(a), b) if b.is_none_or(|b| a < b) => (i, hi) = (i + 1, hi.max(a)),
+                    (_, Some(b)) => (j, hi) = (j + 1, hi.max(b)),
+                    _ => break,
+                }
+            }
+            let first = ends.partition_point(|&e| e < lo);
+            let run: Vec<usize> = (first..ends.len())
+                .take_while(|&e| ends[e] <= hi)
+                .filter(|&e| !pads[e])
+                .collect();
+            let inside = run.iter().find(|&&e| lo < ends[e] && ends[e] < hi);
+            if let Some(&e) = inside.or(run.first()) {
+                pads[e] = true;
+                changed = true;
+            }
+        }
+        // Equal, or no space at a replacement's end can make it so.
+        if !changed {
+            break;
+        }
+    }
+    reps.iter()
+        .enumerate()
+        .map(|(r, (span, rep))| {
+            let old = &text[span.start as usize..span.end as usize];
+            trimmed(old, *span, padded(&pads, r, rep))
+        })
+        .collect()
+}
+
+fn moved(s: Span, by: i64) -> Span {
+    Span::new((s.start as i64 + by) as u32, (s.end as i64 + by) as u32)
+}
+
+/// `(span, new)` without the characters `new` shares with the start and the
+/// end of `old`, the text at `span`.
+fn trimmed(old: &str, span: Span, new: String) -> (Span, String) {
+    let head: usize = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let tail: usize = old[head..]
+        .chars()
+        .rev()
+        .zip(new[head..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let text = new[head..new.len() - tail].to_owned();
+    (
+        Span::new(span.start + head as u32, span.end - tail as u32),
+        text,
+    )
 }
 
 // ---- prefixes in scope ----
@@ -372,13 +511,98 @@ mod tests {
         }
     }
 
+    /// `text` with `edits` applied.
+    fn apply(text: &str, mut edits: Vec<(Span, String)>) -> String {
+        edits.sort_by_key(|(s, _)| std::cmp::Reverse(s.start));
+        let mut out = text.to_owned();
+        for (s, t) in edits {
+            out.replace_range(s.start as usize..s.end as usize, &t);
+        }
+        out
+    }
+
     #[test]
-    fn spacing_keeps_tokens_apart() {
-        let t = "_:b<http://e/p>.<http://e/x>";
-        let s = Span::new(3, 15);
-        assert_eq!(spaced(t, s, "e:p".into()), " e:p");
-        let t = "<http://e/p>.ex:a";
-        assert_eq!(spaced(t, Span::new(0, 12), "e:p".into()), "e:p ");
+    fn token_edits_change_exactly_the_given_tokens() {
+        let span = |text: &str, token: &str| {
+            let at = text.find(token).unwrap() as u32;
+            Span::new(at, at + token.len() as u32)
+        };
+        let iri = "<http://e/x>";
+        // (text, replaced token or "" for an insertion at `at`, new text, after)
+        let turtle = [
+            (
+                "ex:a.b.<http://s/V>",
+                "<http://s/V>",
+                "sh:V",
+                "ex:a.b. sh:V",
+            ),
+            ("_:b.<http://e/x>", iri, "ex:x", "_:b. ex:x"),
+            ("1.<http://g/x>", "<http://g/x>", "e1:x", "1. e1:x"),
+            ("a<http://e/C>", "<http://e/C>", "ex:C", "a ex:C"),
+            ("<http://e/x>.b", iri, "ex:x", "ex:x .b"),
+            ("<http://e/x>:y", iri, "ex:x", "ex:x :y"),
+            ("<http://e/x>-1", iri, "ex:x", "ex:x -1"),
+            ("@prefix:<http://e/>", ":", "ex:", "@prefix ex:<http://e/>"),
+            ("ex:a<http://e/x>ex:b", iri, "", "ex:a ex:b"),
+            ("ex:a<http://e/x>", "", "ex:i", "ex:a ex:i<http://e/x>"),
+            ("ex:café .", "ex:café", "ex:cafè", "ex:cafè ."),
+        ];
+        let sparql = [
+            (
+                "?a<=<http://e/b>&&?c>?a",
+                "<http://e/b>",
+                "ex:b",
+                "?a<= ex:b&&?c>?a",
+            ),
+            (
+                "FILTER(?a<=<http://e/b>&&?c>?a)",
+                "<http://e/b>",
+                "ex:b",
+                "FILTER(?a<=ex:b&&?c>?a)",
+            ),
+        ];
+        let check = |text: &str, token: &str, new: &str, after: &str, sparql: bool| {
+            let at = if token.is_empty() {
+                Span::new(4, 4)
+            } else {
+                span(text, token)
+            };
+            let reps = vec![(at, new.to_owned())];
+            let edits = if sparql {
+                token_edits(text, reps, crate::sparql::lexer::kinds)
+            } else {
+                token_edits(text, reps, turtle_tokens)
+            };
+            for (s, _) in &edits {
+                assert!(
+                    text.is_char_boundary(s.start as usize)
+                        && text.is_char_boundary(s.end as usize)
+                );
+            }
+            assert_eq!(apply(text, edits), after, "{text}");
+        };
+        for (text, token, new, after) in turtle {
+            check(text, token, new, after, false);
+        }
+        for (text, token, new, after) in sparql {
+            check(text, token, new, after, true);
+        }
+        // Two replacements side by side, and the trim on a character boundary.
+        let text = "<http://e/a><http://e/b>";
+        let reps = vec![
+            (Span::new(0, 12), "ex:a".to_owned()),
+            (Span::new(12, 24), "ex:b".to_owned()),
+        ];
+        assert_eq!(
+            apply(text, token_edits(text, reps, turtle_tokens)),
+            "ex:a ex:b"
+        );
+        let edits = token_edits(
+            "ex:café",
+            vec![(Span::new(0, 8), "ex:cafè".into())],
+            turtle_tokens,
+        );
+        assert_eq!(edits, vec![(Span::new(6, 8), "è".to_owned())]);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::features::refactor::{
 use crate::knowledge::Knowledge;
 use crate::sparql::{Form, Level, PrefixSource, TermRef};
 use crate::syntax::Span;
-use crate::syntax::names::{newline, shorten, spaced};
+use crate::syntax::names::{newline, shorten, token_edits};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
@@ -138,25 +138,17 @@ pub(crate) fn code_actions(
         if let Some(r) = ref_in(q, start, end)
             && let Some(iri) = r.iri.as_deref()
         {
-            let at = |new_text: String| TextEdit {
-                range: q.range(enc, r.span),
-                new_text,
-            };
+            let at = |new_text: String| text_edits(q, enc, vec![(r.span, new_text)]);
             match r.form {
                 Form::Iri => {
                     if let Some(pname) = shorten(iri, &scope_at(q, r.span.start)) {
-                        let new_text = spaced(q.text(), r.span, pname);
-                        let title = format!("Shorten IRI to {}", new_text.trim());
-                        out.push(rewrite(title, Some(vec![at(new_text)]), None));
+                        let title = format!("Shorten IRI to {pname}");
+                        out.push(rewrite(title, Some(at(pname)), None));
                     }
                 }
                 Form::PName { .. } => {
                     if let Some(full) = expand_iri(iri, true) {
-                        out.push(rewrite(
-                            "Expand to full IRI".into(),
-                            Some(vec![at(full)]),
-                            None,
-                        ));
+                        out.push(rewrite("Expand to full IRI".into(), Some(at(full)), None));
                     }
                 }
                 Form::A => {}
@@ -268,11 +260,32 @@ fn shortenable(q: &SparqlAnalysis) -> Vec<(Span, String)> {
 }
 
 fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Vec<TextEdit> {
-    shortenable(q)
+    text_edits(q, enc, shortenable(q))
+}
+
+/// Edits replacing whole tokens, through [`token_edits`] on the operations
+/// that hold them: how `<` lexes depends on the brackets open before it, and
+/// none are open where an operation starts.
+fn text_edits(q: &SparqlAnalysis, enc: Encoding, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
+    let ops = &q.doc.structure().operations;
+    let op = |at: u32| {
+        ops.iter()
+            .find(|o| o.keyword.start <= at && at <= o.span.end)
+    };
+    let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
+    let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
+    let from = op(lo).map_or(0, |o| o.keyword.start);
+    let to = op(hi).map_or(q.text().len() as u32, |o| o.span.end);
+    let reps = reps
         .into_iter()
-        .map(|(span, pname)| TextEdit {
-            range: q.range(enc, span),
-            new_text: spaced(q.text(), span, pname),
+        .map(|(s, r)| (Span::new(s.start - from, s.end - from), r))
+        .collect();
+    let window = &q.text()[from as usize..to as usize];
+    token_edits(window, reps, crate::sparql::lexer::kinds)
+        .into_iter()
+        .map(|(span, new_text)| TextEdit {
+            range: q.range(enc, Span::new(span.start + from, span.end + from)),
+            new_text,
         })
         .collect()
 }

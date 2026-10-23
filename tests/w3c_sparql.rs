@@ -6,6 +6,9 @@
 //!   no error diagnostic, no error token, and the formatter's output parses
 //!   to the same algebra as the input and formats to itself.
 //! - Negative syntax tests: at least one error diagnostic.
+//! - Every query and update in the suites and in the SPARQL examples of
+//!   `test/corpus` that `spargebra` parses: our lexer and `spargebra` agree
+//!   where every IRI and `<` operator starts and ends.
 //!
 //! `spargebra` passes these suites itself; what is tested is our layer on
 //! top of it (lexer, structure, prefixes, error positions, formatter), and
@@ -23,6 +26,8 @@ use std::path::{Path, PathBuf};
 use turtle_lsp::features::format::Options;
 use turtle_lsp::sparql::{self, Document, Level, TokenKind};
 use turtle_lsp::syntax::PrefixMap;
+
+include!("support/corpus.rs");
 
 const MF: &str = "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#";
 const QT: &str = "http://www.w3.org/2001/sw/DataAccess/tests/test-query#";
@@ -233,6 +238,104 @@ fn algebra(text: &str, base: &str, update: bool) -> Result<String, String> {
         parser.parse_query(text).map(|q| q.to_string())
     };
     s.map(|s| canonical(&s)).map_err(|e| e.to_string())
+}
+
+/// `Ok` when `spargebra` reads the IRIs and `<` operators where our lexer
+/// does in `text`, whose algebra is `before`: a space at both ends of each
+/// keeps the algebra (none of ours is part of a longer token to `spargebra`),
+/// and each IRI replaced by another still parses (none of ours is operators).
+fn same_boundaries(text: &str, base: &str, update: bool, before: &str) -> Result<(), String> {
+    let (mut spaced, mut renamed, mut copied) = (String::new(), String::new(), 0);
+    for (i, t) in sparql::lexer::tokenize(text).iter().enumerate() {
+        let s = t.text(text);
+        if t.kind != TokenKind::Iri && !(t.kind == TokenKind::Punct && s.starts_with('<')) {
+            continue;
+        }
+        let gap = &text[copied..t.span.start as usize];
+        spaced += &format!("{gap} {s} ");
+        let swap = if t.kind == TokenKind::Iri {
+            format!("<urn:tok:{i}>")
+        } else {
+            s.to_owned()
+        };
+        renamed += &format!("{gap} {swap} ");
+        copied = t.span.end as usize;
+    }
+    spaced += &text[copied..];
+    renamed += &text[copied..];
+    match algebra(&spaced, base, update) {
+        Ok(a) if a == before => {}
+        other => return Err(format!("spaced around IRIs and `<`: {other:?}\n{spaced}")),
+    }
+    algebra(&renamed, base, update)
+        .map(|_| ())
+        .map_err(|e| format!("an IRI of ours is not one to spargebra: {e}\n{renamed}"))
+}
+
+#[test]
+fn iri_and_less_than_boundaries_agree_with_spargebra() {
+    let mut files = Vec::new();
+    let mut walk = vec![suites_dir()];
+    walk.extend(corpus_path("sib-sparql-examples/examples"));
+    while let Some(dir) = walk.pop() {
+        for e in fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk.push(p);
+            } else {
+                files.push(p);
+            }
+        }
+    }
+    // (text, base, update) of each query and update.
+    let mut queries = vec![(
+        "PREFIX ex: <http://e/> SELECT * { ?s ?p ?a FILTER(?a<=ex:b&&?c>?a) }".to_owned(),
+        "http://e/".to_owned(),
+        false,
+    )];
+    for p in &files {
+        let base = file_url(p);
+        match p.extension().and_then(|e| e.to_str()) {
+            Some("rq") => queries.push((fs::read_to_string(p).unwrap(), base, false)),
+            Some("ru") => queries.push((fs::read_to_string(p).unwrap(), base, true)),
+            Some("ttl") if p.starts_with(suites_dir()) => {}
+            Some("ttl") => {
+                let src = fs::read(p).unwrap();
+                for t in oxttl::TurtleParser::new().for_slice(&src).flatten() {
+                    let key = t
+                        .predicate
+                        .as_str()
+                        .strip_prefix("http://www.w3.org/ns/shacl#");
+                    if let Term::Literal(l) = &t.object
+                        && let Some(k @ ("select" | "ask" | "construct" | "describe" | "update")) =
+                            key
+                    {
+                        queries.push((l.value().to_owned(), base.clone(), k == "update"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for (text, base, update) in &queries {
+        let Ok(before) = algebra(text, base, *update) else {
+            continue;
+        };
+        checked += 1;
+        if let Err(e) = same_boundaries(text, base, *update, &before) {
+            failures.push(e);
+        }
+    }
+    eprintln!("IRI and `<` boundaries: {checked} queries checked");
+    assert!(checked > 1000, "only {checked} queries parse");
+    assert!(
+        failures.is_empty(),
+        "{} disagree:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// `Ok` if the test passes, else why not.

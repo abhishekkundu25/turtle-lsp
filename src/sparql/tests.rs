@@ -121,6 +121,62 @@ fn angle_brackets_are_iris_or_operators() {
 }
 
 #[test]
+fn a_less_than_after_an_operand_is_the_operator() {
+    use TokenKind::*;
+    let tail = |q: &'static str| {
+        let all = lex(q);
+        all[2..all.len() - 1].to_vec()
+    };
+    assert_eq!(
+        tail("FILTER(?a<=ex:b&&?c>?a)"),
+        vec![
+            (Var, "?a"),
+            (Punct, "<="),
+            (PName, "ex:b"),
+            (Punct, "&&"),
+            (Var, "?c"),
+            (Punct, ">"),
+            (Var, "?a"),
+        ]
+    );
+    assert_eq!(
+        tail("FILTER(?a<<http://e/b>)"),
+        vec![(Var, "?a"), (Punct, "<"), (Iri, "<http://e/b>")]
+    );
+    assert_eq!(
+        tail("FILTER(?x < ?y && ?y > ?z)"),
+        vec![
+            (Var, "?x"),
+            (Punct, "<"),
+            (Var, "?y"),
+            (Punct, "&&"),
+            (Var, "?y"),
+            (Punct, ">"),
+            (Var, "?z"),
+        ]
+    );
+    let iris = |q: &str| lex(q).into_iter().filter(|t| t.0 == Iri).count();
+    assert_eq!(iris("{ <http://e/s> <http://e/p> <http://e/o> }"), 3);
+    assert_eq!(iris("{ <http://e/s><http://e/p><http://e/o> }"), 3);
+    assert_eq!(
+        iris("{ ?s<http://e/p>?o FILTER(?o)<http://e/s> ?p ( ?o<http://e/l> ) }"),
+        3
+    );
+    assert_eq!(
+        iris("SELECT ?x (<http://e/f>(?x)<3 AS ?y) { } ORDER BY ?x <http://e/f>(?x<?y)"),
+        2
+    );
+    assert_eq!(
+        iris("SELECT (EXISTS { ?s ?p (?o<http://e/l>) } AS ?e) { }"),
+        1
+    );
+    assert_eq!(
+        iris("ASK { << ?s ?p ?o >> ?q <<( ?s ?p <http://e/o> )>> }"),
+        1
+    );
+}
+
+#[test]
 fn strings_comments_and_numbers() {
     use TokenKind::*;
     let text =
