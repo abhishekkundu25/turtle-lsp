@@ -103,6 +103,15 @@ test("query: a syntax error has its line and column; a missing query file is a r
   assert.throws(() => engine.call("query", { files: [], query: "nope.rq" }), /no file is named 'nope.rq'/)
 })
 
+test("query: 200 nested REGEX( in a FILTER is a syntax error at once", () => {
+  // Each level doubled spargebra's parse before its grammar was left-factored.
+  const started = Date.now()
+  const e = ask(`SELECT * WHERE { ?x ?p ?o FILTER(${"REGEX(".repeat(200)}?x) }`)
+  assert.equal(e.kind, "error")
+  assert.match(e.message, /syntax error/)
+  assert.ok(Date.now() - started < 5000, `${Date.now() - started} ms`)
+})
+
 test("query: the time limit stops a long query with a message, and the engine keeps answering", () => {
   const e = ask("SELECT * WHERE { ?a ?b ?c . ?d ?e ?f . ?g ?h ?i . ?j ?k ?l }", { timeout: 0.05 })
   assert.equal(e.kind, "error")

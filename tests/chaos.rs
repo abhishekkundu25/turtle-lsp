@@ -1748,6 +1748,22 @@ fn pathological_sparql_nesting() {
             "negation",
             format!("SELECT * WHERE {{ FILTER {} ?x }}", "!".repeat(N)),
         ),
+        // 200 levels, under `MAX_NESTING`: spargebra parses them.
+        (
+            "nested regex",
+            format!("SELECT * WHERE {{ FILTER({}?x) }}", "REGEX(".repeat(200)),
+        ),
+        (
+            "nested not",
+            format!("SELECT * WHERE {{ FILTER({}?x) }}", "!(".repeat(200)),
+        ),
+        (
+            "nested custom call",
+            format!(
+                "PREFIX : <http://example.org/>\nSELECT * WHERE {{ FILTER({}?x) }}",
+                ":f(".repeat(200)
+            ),
+        ),
     ];
     for (what, text) in cases {
         survive_sparql(what, text, Duration::from_secs(10));

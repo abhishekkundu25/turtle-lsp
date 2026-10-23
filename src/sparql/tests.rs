@@ -1297,3 +1297,139 @@ fn distinct_that_starts_a_prefixed_name_is_the_name() {
         assert!(query.to_string().contains(algebra), "{query}");
     }
 }
+
+// Ticket 08: parse fuel bounds the work of spargebra's grammar
+// (vendor/spargebra/parse-fuel.patch).
+
+const TOO_COMPLEX: &str = "SPARQL syntax error: too large to check (the query is too complex)";
+
+/// (path, text) of every query and update in the W3C suites (`.rq`, `.ru`)
+/// and in the SHACL examples of test/corpus (`sh:select`, `sh:ask`,
+/// `sh:construct`, `sh:update`), when it is downloaded.
+fn known_queries() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("tests/w3c/sparql-tests"), &mut files);
+    walk(&root.join("test/corpus"), &mut files);
+    let corpus = files
+        .iter()
+        .any(|f| f.starts_with(root.join("test/corpus")));
+    let ci = std::env::var("CI").is_ok_and(|v| v == "true");
+    assert!(
+        corpus || !ci,
+        "test/corpus is missing; CI=true does not skip it"
+    );
+    let mut out = Vec::new();
+    for f in files {
+        let name = f.display().to_string();
+        match f.extension().and_then(|x| x.to_str()) {
+            Some("rq" | "ru") => {
+                if let Ok(text) = std::fs::read_to_string(&f) {
+                    out.push((name, text));
+                }
+            }
+            Some("ttl") if f.starts_with(root.join("test/corpus")) => {
+                let bytes = std::fs::read(&f).unwrap();
+                for t in oxttl::TurtleParser::new().for_slice(&bytes).flatten() {
+                    let query = ["select", "ask", "construct", "update"]
+                        .iter()
+                        .any(|p| t.predicate.as_str() == format!("http://www.w3.org/ns/shacl#{p}"));
+                    if let (true, oxrdf::Term::Literal(l)) = (query, &t.object) {
+                        out.push((name.clone(), l.value().to_owned()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The messages of `text`'s error diagnostics, spargebra given `fuel` per byte.
+fn errors_with_fuel(text: &str, fuel: usize) -> Vec<(Span, String)> {
+    diagnostics::FUEL_PER_BYTE.set(Some(fuel));
+    let found = doc(text)
+        .diagnostics()
+        .iter()
+        .filter(|d| d.level == Level::Error)
+        .map(|d| (d.span, d.message.clone()))
+        .collect();
+    diagnostics::FUEL_PER_BYTE.set(None);
+    found
+}
+
+/// The largest rule visits per byte of a known query is under a quarter of
+/// [`spargebra::FUEL_PER_BYTE`]: every one parses with a quarter of it.
+#[test]
+fn a_quarter_of_the_fuel_parses_every_known_query() {
+    let queries = known_queries();
+    assert!(queries.len() > 600, "{}", queries.len());
+    for (path, text) in queries {
+        let found = errors_with_fuel(&text, spargebra::FUEL_PER_BYTE / 4);
+        assert!(found.iter().all(|(_, m)| m != TOO_COMPLEX), "{path}");
+    }
+}
+
+/// With [`spargebra::FUEL_PER_BYTE`], ticket 07's nested calls left open, and
+/// its two chaos inputs, give no "too complex" error (closed, ticket 07's
+/// tests assert their exact errors).
+#[test]
+fn the_fuel_parses_nested_calls_left_open() {
+    on_small_stack(|| {
+        let mut texts: Vec<String> = [
+            "REGEX(", "SUBSTR(", "REPLACE(", "GROUP_CONCAT(", "GROUP_CONCAT(DISTINCT ", "!(", "(!",
+            "!REGEX(", ":f(REGEX(", "COUNT(DISTINCT:a(",
+        ]
+        .iter()
+        .map(|open| {
+            let n = 200 / open.matches('(').count();
+            format!(
+                "PREFIX : <http://example.org/>\nPREFIX DISTINCT: <http://example.org/d#>\nSELECT ({}?x AS ?y) {{}}",
+                open.repeat(n)
+            )
+        })
+        .collect();
+        texts.push(format!(
+            "SELECT (AVG({}DISTINCT ?x) AS ?y) {{}}",
+            "REGEX(".repeat(223)
+        ));
+        texts.push(format!(
+            "PREFIX : <http://example/>\nSELECT (:{}RE",
+            "REGEX(".repeat(188)
+        ));
+        for text in texts {
+            let found = doc(&text).diagnostics().to_vec();
+            assert!(
+                !found.is_empty() && found.iter().all(|d| d.message != TOO_COMPLEX),
+                "{text}"
+            );
+        }
+    });
+}
+
+/// Out of fuel, a query of about 200 tokens that parses with one visit per
+/// byte is refused with the "too complex" error on a token.
+#[test]
+fn a_query_out_of_fuel_is_too_complex() {
+    let text = format!(
+        "SELECT * {{ FILTER({}?x{}) }}",
+        "STR(".repeat(65),
+        ")".repeat(65)
+    );
+    assert!(errors_with_fuel(&text, 1).is_empty());
+    let found = errors_with_fuel(&text, 0);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (span, message) = &found[0];
+    assert_eq!(message, TOO_COMPLEX);
+    assert!(span.start < span.end, "{span:?}");
+}

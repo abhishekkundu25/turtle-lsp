@@ -10,6 +10,6 @@ mod query;
 pub mod term;
 mod update;
 
-pub use parser::{SparqlParser, SparqlSyntaxError};
+pub use parser::{FUEL_PER_BYTE, SparqlParser, SparqlSyntaxError};
 pub use query::*;
 pub use update::*;

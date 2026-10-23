@@ -1,8 +1,8 @@
 # spargebra 0.4.7, patched
 
 This folder holds spargebra 0.4.7 as published on crates.io (oxigraph commit
-in `.cargo_vcs_info.json`, `lib/spargebra`), with one change to
-`src/parser.rs`. Both `Cargo.toml` files use it through `[patch.crates-io]`. spargebra is licensed
+in `.cargo_vcs_info.json`, `lib/spargebra`), with two patches,
+applied in this order. Both `Cargo.toml` files use it through `[patch.crates-io]`. spargebra is licensed
 MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, copied from
 `vendor/spareval`, which has the same oxigraph licence text).
 
@@ -39,6 +39,27 @@ oxigraph's main branch.
   `timing_every_builtin_nests_in_linear_time` and
   `distinct_that_starts_a_prefixed_name_is_the_name` in
   `src/sparql/tests.rs`.
+
+## Parse fuel
+
+`parse-fuel.patch` (on top of the first, same tree layout) bounds the work
+of a parse, the backstop for a rule that parses the same text again and
+that the linearity tests miss.
+
+- `ParserState` counts the visits of `Expression`, `GroupGraphPattern` and
+  `PrimaryExpression` (the rule `fuel`, a `{? }` predicate). Past
+  `FUEL_PER_BYTE` times the input's length in bytes, every further visit
+  fails, so the parse ends in time linear in the input, and fails with the
+  error `error at LINE:COLUMN: expected query too complex`. The rule
+  `refuel` resets the count at the start of each pass (peg parses again to
+  report an error).
+- `FUEL_PER_BYTE` (exported in `src/lib.rs`) has the measurement it is set
+  from in its comment.
+  `SparqlParser::with_fuel_per_byte` (hidden) replaces it, for tests.
+- The tests are `a_quarter_of_the_fuel_parses_every_known_query`,
+  `the_fuel_parses_nested_calls_left_open` and
+  `a_query_out_of_fuel_is_too_complex` in `src/sparql/tests.rs`, which maps
+  the error to the "too large to check" diagnostic.
 
 ## Review rule for a patch
 
