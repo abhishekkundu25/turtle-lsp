@@ -148,9 +148,11 @@ fn syntax_error(lit: &Lit, parser: SparqlParser, out: &mut Vec<Finding>) {
         );
         return;
     }
-    let what = e
-        .shown_expected()
-        .map_or(String::new(), |x| format!(": expected {x}"));
+    let what = match e.shown_expected() {
+        // spargebra ran out of fuel, worded as sparql::diagnostics words it.
+        Some("query too complex") => ": too large to check (the query is too complex)".into(),
+        x => x.map_or(String::new(), |x| format!(": expected {x}")),
+    };
     push(out, span, SYNTAX, format!("SPARQL syntax error{what}"));
 }
 
