@@ -777,6 +777,20 @@ mod tests {
         }
         assert!(fixer.add_all_missing().is_some());
     }
+
+    #[test]
+    fn the_prefix_fix_never_splits_a_statement_or_string() {
+        for text in [
+            "@prefix ex: <http://ex/> . ex:s\n  foaf:knows ex:o .\n",
+            "@prefix ex: <http://ex/> . ex:s ex:p \"\"\"a\nb\"\"\" .\nex:t foaf:knows ex:o .\n",
+        ] {
+            let (a, actions) = fixes("file:///t/doc.ttl", text);
+            let after = applied(&a, &actions, "Add @prefix foaf:");
+            let p = crate::syntax::parse(&after, &Default::default(), Default::default());
+            assert!(p.errors.is_empty(), "{after:?}");
+            assert!(p.prefix_uses.iter().all(|u| u.resolved), "{after:?}");
+        }
+    }
 }
 
 #[cfg(test)]

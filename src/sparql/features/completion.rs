@@ -148,8 +148,11 @@ pub(crate) fn completion_at(
     }
 
     incomplete |= rdf::finish(&mut cands, ranked, slot, typed, k, &prefixes);
+    let nl = crate::syntax::names::newline(q.text());
     let items = rdf::items(cands, replace, &prefixes, "PREFIX", |p, ns| {
-        add_prefix(q, enc, p, ns)
+        let mut e = add_prefix(q, enc, p, ns);
+        e.new_text = e.new_text.replace('\n', nl);
+        e
     });
     Some(CompletionResponse::List(CompletionList {
         is_incomplete: incomplete,
@@ -650,6 +653,11 @@ mod tests {
 
     /// The labels offered at `|` in `text`.
     fn offered(text: &str) -> Vec<String> {
+        items(text).into_iter().map(|i| i.label).collect()
+    }
+
+    /// The items offered at `|` in `text`.
+    fn items(text: &str) -> Vec<lsp_types::CompletionItem> {
         let at = text.find('|').unwrap();
         let text = text.replace('|', "");
         let q = SparqlAnalysis::new("file:///q.rq".into(), &text, Arc::new(PrefixMap::default()));
@@ -673,10 +681,23 @@ mod tests {
             context: None,
         };
         match completion(&q, &k, Encoding::Utf16, &params) {
-            Some(CompletionResponse::List(l)) => l.items.into_iter().map(|i| i.label).collect(),
-            Some(CompletionResponse::Array(a)) => a.into_iter().map(|i| i.label).collect(),
+            Some(CompletionResponse::List(l)) => l.items,
+            Some(CompletionResponse::Array(a)) => a,
             None => vec![],
         }
+    }
+
+    #[test]
+    fn an_added_prefix_ends_its_line_like_the_file() {
+        let items = items("PREFIX a: <http://a/>\rSELECT * WHERE { ?s foaf:na| }\r");
+        let edit = items
+            .iter()
+            .find_map(|i| i.additional_text_edits.as_ref())
+            .map(|e| e[0].new_text.clone());
+        assert_eq!(
+            edit.as_deref(),
+            Some("PREFIX foaf: <http://xmlns.com/foaf/0.1/>\r")
+        );
     }
 
     fn has(got: &[String], want: &[&str]) {

@@ -771,6 +771,27 @@ mod tests {
     }
 
     #[test]
+    fn an_extracted_prefix_is_declared_between_statements() {
+        // Reduced from chaos inputs: the first `\n` after the declaration
+        // sat inside a statement, then inside a string of a `\r` file.
+        let text = "@prefix ex: <http://e/1.5e> .  <http://x/a>  <http://q/def/n>  \n\"Al\" ;  <http://q/def/m>  \"Ally\" . ";
+        let ext = run(text, "http://q/def/n", "Extract prefix", false).unwrap();
+        assert!(
+            ext.starts_with(
+                "@prefix ex: <http://e/1.5e> .\n@prefix q: <http://q/def/> .  <http://x/a>  q:n"
+            ),
+            "{ext:?}"
+        );
+        let text = "@prefix ex: <http://ex/> .\r@prefix sh: <http://www.w3.org/ns/shacl#> .\rex:s sh:select \"\"\"SELECT ?x\n WHERE { ?x a ex:T }\"\"\" ;\r  ex:v \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .\r";
+        let ext = run(text, "XMLSchema", "Extract prefix", false).unwrap();
+        assert!(
+            ext.contains("shacl#> .\r@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\rex:s"),
+            "{ext:?}"
+        );
+        assert!(ext.contains("\"1\"^^xsd:integer"), "{ext:?}");
+    }
+
+    #[test]
     fn organise_refuses_unsafe_or_useless_edits() {
         let use_all = "a:x b:y c:z .\n";
         let redefined = format!(

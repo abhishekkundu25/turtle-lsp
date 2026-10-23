@@ -383,43 +383,73 @@ pub(crate) fn declaration_line(a: &Analysis, prefix: &str, ns: &str) -> String {
     }
 }
 
-/// Where a declaration line goes for text from `before` on: after the last
-/// declaration that ends before `before`, else at the top of the file after
-/// a leading comment block. The flag says the line must start with a line
-/// break (the point is the end of text that has none, or of a declaration a
-/// use follows on the same line).
+/// Where a declaration line goes for text from `before` on, by
+/// [`insertion_point`]: after the last declaration that ends before `before`
+/// outside a TriG graph block, else after the file's header comment. The
+/// flag says the line must start with a line break.
 pub(crate) fn declaration_point(a: &Analysis, before: u32) -> (usize, bool) {
-    let text: &str = &a.text;
-    match a
+    use super::lexer::Kind::Comment;
+    let (text, tokens, graphs) = (&a.text, a.tokens(), &a.parsed.graphs);
+    let in_graph = |s: Span| {
+        graphs[..graphs.partition_point(|g| g.span.start <= s.start)]
+            .last()
+            .is_some_and(|g| s.end <= g.span.end)
+    };
+    let anchor = a
         .parsed
         .prefixes
         .iter()
         .rev()
-        .find(|p| p.span.end <= before)
-    {
-        Some(p) => {
-            let end = p.span.end as usize;
-            match text[end..].find('\n') {
-                Some(i) if before as usize > end + i => (end + i + 1, false),
-                Some(_) => (end, true),
-                None => (text.len(), true),
-            }
+        .find(|p| p.span.end <= before && !in_graph(p.span))
+        .map(|p| p.span.end as usize);
+    let anchor = anchor.unwrap_or_else(|| {
+        let comments = tokens.iter().take_while(|t| t.kind == Comment);
+        header_end(text, comments.map(|t| Span::new(t.start, t.end)))
+    });
+    let next = tokens[tokens.partition_point(|t| (t.start as usize) < anchor)..]
+        .iter()
+        .find(|t| t.kind != Comment)
+        .map_or(text.len(), |t| t.start as usize);
+    insertion_point(text, anchor, next, before as usize)
+}
+
+/// The end of the header: the run of `comments` (the file's leading comment
+/// tokens) up to the first gap that holds a blank line; 0 with none.
+pub(crate) fn header_end(text: &str, comments: impl Iterator<Item = Span>) -> usize {
+    let breaks =
+        |s: &str| s.matches('\n').count() + s.matches('\r').count() - s.matches("\r\n").count();
+    let mut end = 0;
+    for c in comments {
+        // The top of the file counts as a line break: a blank first line ends the header.
+        if breaks(&text[end..c.start as usize]) + usize::from(end == 0) > 1 {
+            break;
         }
-        None => {
-            let mut off = 0;
-            for line in text.split_inclusive('\n') {
-                if line.trim_start().starts_with('#') {
-                    off += line.len();
-                } else {
-                    break;
-                }
-            }
-            (
-                off,
-                off == text.len() && !text.is_empty() && !text.ends_with('\n'),
-            )
+        end = c.end as usize;
+    }
+    end
+}
+
+/// Where a declaration goes after the token or header ending at
+/// `anchor_end`, when the next token that is no comment starts at
+/// `next_start`: the start of the line after the gap's first line break
+/// (`\r\n`, `\r` or `\n`; comments hold none), when that is at or before
+/// `before`; else `anchor_end`, with the flag that the text must start with
+/// a line break; the top of the file without one when `anchor_end` is 0.
+/// Either way the point is whitespace between two statements.
+pub(crate) fn insertion_point(
+    text: &str,
+    anchor_end: usize,
+    next_start: usize,
+    before: usize,
+) -> (usize, bool) {
+    let gap = &text[anchor_end..next_start];
+    if let Some(i) = gap.find(['\r', '\n']) {
+        let line = anchor_end + i + if gap[i..].starts_with("\r\n") { 2 } else { 1 };
+        if line <= before {
+            return (line, false);
         }
     }
+    (anchor_end, anchor_end > 0)
 }
 
 /// The edit that declares `prefix` as `ns`: see [`declarations_edit`].
@@ -436,7 +466,9 @@ pub(crate) fn declaration_edit(
 /// The edit that declares each of `decls` (prefix, namespace), one line
 /// each, for text from `before` on, at [`declaration_point`]. A prefix that
 /// is used before `before` without a declaration there moves the point back
-/// to that first use, so the declaration precedes every use it serves.
+/// to that first use, so the declaration precedes every use it serves. The
+/// text is an insertion through [`turtle_token_edits`], so it fuses with no
+/// neighbour (`.` then `1` is the decimal `.1`).
 pub(crate) fn declarations_edit(
     a: &Analysis,
     enc: Encoding,
@@ -456,13 +488,21 @@ pub(crate) fn declarations_edit(
         .iter()
         .map(|(p, ns)| declaration_line(a, p, ns))
         .collect();
-    let new_text = if break_first {
-        let nl = newline(&a.text);
+    let nl = newline(&a.text);
+    let text = if break_first {
         format!("{nl}{}", lines.trim_end_matches(nl))
     } else {
         lines
     };
-    let pos = a.position(enc, at as u32);
+    let at = Span::new(at as u32, at as u32);
+    let mut new_text = turtle_token_edits(&a.text, a.tokens(), vec![(at, text)])
+        .remove(0)
+        .1;
+    // A space would leave data on the declaration's line: end it with a line break.
+    if let Some(t) = new_text.strip_suffix(' ') {
+        new_text = format!("{t}{nl}");
+    }
+    let pos = a.position(enc, at.start);
     TextEdit {
         range: Range::new(pos, pos),
         new_text,
@@ -722,6 +762,58 @@ mod tests {
             declared("@prefix a: <http://a/> .\nex:s a:p a:o ."),
             "@prefix a: <http://a/> .\n@prefix ex: <http://ex/> .\nex:s a:p a:o ."
         );
+    }
+
+    #[test]
+    fn a_declaration_never_splits_a_token_or_statement() {
+        let cases = [
+            // Data, then a line break inside the statement.
+            (
+                "@prefix a: <http://a/> . a:s\n  ex:p a:o .\n",
+                "@prefix a: <http://a/> .\n@prefix ex: <http://ex/> . a:s\n  ex:p a:o .\n",
+            ),
+            // A line break inside a string on the declaration's line.
+            (
+                "@prefix a: <http://a/> . a:s a:p \"\"\"x\ny\"\"\" .\nex:s a:p a:o .\n",
+                "@prefix a: <http://a/> .\n@prefix ex: <http://ex/> . a:s a:p \"\"\"x\ny\"\"\" .\nex:s a:p a:o .\n",
+            ),
+            // `\r` line breaks.
+            (
+                "@prefix a: <http://a/> .\ra:s a:p \"\"\"x\ny\"\"\" .\rex:s a:p a:o .\r",
+                "@prefix a: <http://a/> .\r@prefix ex: <http://ex/> .\ra:s a:p \"\"\"x\ny\"\"\" .\rex:s a:p a:o .\r",
+            ),
+            (
+                "@prefix a: <http://a/> .\r# note\rex:s a:p a:o .\r",
+                "@prefix a: <http://a/> .\r@prefix ex: <http://ex/> .\r# note\rex:s a:p a:o .\r",
+            ),
+            (
+                "# c\rex:s a:p a:o .",
+                "# c\r@prefix ex: <http://ex/> .\rex:s a:p a:o .",
+            ),
+            // The header ends at a blank line: a doc comment stays on its statement.
+            (
+                "# licence\n\n# doc\nex:s a:p a:o .\n",
+                "# licence\n@prefix ex: <http://ex/> .\n\n# doc\nex:s a:p a:o .\n",
+            ),
+            // `.` then `1` would be the decimal `.1`.
+            (
+                "PREFIX a: <http://a/>1\nex:s a:p a:o .\n@prefix b: <http://b/> .\n",
+                "PREFIX a: <http://a/>\n@prefix ex: <http://ex/> .\n1\nex:s a:p a:o .\n@prefix b: <http://b/> .\n",
+            ),
+        ];
+        for (text, after) in cases {
+            assert_eq!(declared(text), after, "{text:?}");
+        }
+        // A declaration inside a TriG graph block is no anchor.
+        let text =
+            "@prefix a: <http://a/> .\na:g {\n  @prefix b: <http://b/> .\n}\nex:s a:p a:o .\n";
+        let a = Analysis::new(
+            "file:///t/doc.trig".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        );
+        assert_eq!(declaration_point(&a, u32::MAX), (25, false));
     }
 
     #[test]
