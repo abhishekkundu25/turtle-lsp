@@ -20,8 +20,8 @@
 //! thread, the smallest stack a host gives its threads.
 
 use lsp_types::{
-    CodeActionOrCommand, CodeActionParams, CompletionParams, Position, Range,
-    TextDocumentIdentifier, TextDocumentPositionParams, WorkspaceEdit,
+    CodeActionOrCommand, CodeActionParams, CompletionItem, CompletionParams, CompletionResponse,
+    Position, Range, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, WorkspaceEdit,
 };
 use std::fs;
 use std::io::Write;
@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use turtle_lsp::analysis::{Analysis, Encoding, SparqlAnalysis};
+use turtle_lsp::batch;
 use turtle_lsp::features::hierarchy;
 use turtle_lsp::features::{
     completion, diagnostics, format, hover, inlay, navigation, quickfix, refactor, semantic,
@@ -37,9 +38,12 @@ use turtle_lsp::features::{
 use turtle_lsp::imports;
 use turtle_lsp::jsonld;
 use turtle_lsp::knowledge::{Knowledge, Source};
-use turtle_lsp::settings::InlayLabels;
-use turtle_lsp::sparql::{self, Document, Level, features as sparql_features};
-use turtle_lsp::syntax::{Parsed, PrefixMap, Severity, Syntax, parse, parse_with_base};
+use turtle_lsp::settings::{InlayLabels, Settings};
+use turtle_lsp::sparql::{self, Document, Level, TokenKind, features as sparql_features};
+use turtle_lsp::syntax::lexer::Kind;
+use turtle_lsp::syntax::{
+    Form, GraphName, Iri, Node, Parsed, PrefixMap, Severity, Syntax, parse, parse_with_base,
+};
 
 struct Rng(u64);
 impl Rng {
@@ -197,6 +201,638 @@ fn first_difference(before: &str, after: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Token checks: what an edit may do to the tokens of a text.
+
+/// A token: its kind (the lexer's enum as a number) and its byte range.
+type Tok = (u8, usize, usize);
+
+/// The lexer a token check reads a text with. TriG is Turtle's, with
+/// graph blocks.
+#[derive(Clone, Copy, PartialEq)]
+enum Lexer {
+    Turtle,
+    TriG,
+    Sparql,
+    Json,
+}
+
+impl Lexer {
+    fn of(syntax: Syntax) -> Lexer {
+        match syntax {
+            Syntax::JsonLd => Lexer::Json,
+            Syntax::TriG => Lexer::TriG,
+            _ => Lexer::Turtle,
+        }
+    }
+
+    fn tokens(self, text: &str) -> Vec<Tok> {
+        match self {
+            Lexer::Turtle | Lexer::TriG => turtle_lsp::syntax::lexer::tokenize(text)
+                .iter()
+                .map(|t| (t.kind as u8, t.start as usize, t.end as usize))
+                .collect(),
+            Lexer::Sparql => sparql::lexer::tokenize(text)
+                .iter()
+                .map(|t| (t.kind as u8, t.span.start as usize, t.span.end as usize))
+                .collect(),
+            Lexer::Json => jsonld::json::tokens(text)
+                .iter()
+                .map(|t| (t.kind as u8, t.span.start as usize, t.span.end as usize))
+                .collect(),
+        }
+    }
+
+    fn comment(self, kind: u8) -> bool {
+        kind == match self {
+            Lexer::Turtle | Lexer::TriG => Kind::Comment as u8,
+            Lexer::Sparql => TokenKind::Comment as u8,
+            Lexer::Json => jsonld::json::TokenKind::Comment as u8,
+        }
+    }
+
+    fn string(self, kind: u8) -> bool {
+        kind == match self {
+            Lexer::Turtle | Lexer::TriG => Kind::String as u8,
+            Lexer::Sparql => TokenKind::String as u8,
+            Lexer::Json => jsonld::json::TokenKind::String as u8,
+        }
+    }
+
+    /// An IRI or a prefixed name.
+    fn term(self, kind: u8) -> bool {
+        match self {
+            Lexer::Turtle | Lexer::TriG => kind == Kind::Iri as u8 || kind == Kind::PName as u8,
+            Lexer::Sparql => kind == TokenKind::Iri as u8 || kind == TokenKind::PName as u8,
+            Lexer::Json => false,
+        }
+    }
+
+    /// Whether `t` starts a directive: `@prefix`, `PREFIX`, `@base`, `BASE`,
+    /// `@version`, `VERSION`.
+    fn directive(self, text: &str, t: Tok) -> bool {
+        match self {
+            Lexer::Turtle | Lexer::TriG => [
+                Kind::PrefixDirective,
+                Kind::BaseDirective,
+                Kind::VersionDirective,
+                Kind::SparqlPrefix,
+                Kind::SparqlBase,
+                Kind::SparqlVersion,
+            ]
+            .iter()
+            .any(|k| *k as u8 == t.0),
+            Lexer::Sparql => {
+                t.0 == TokenKind::Keyword as u8
+                    && ["PREFIX", "BASE", "VERSION"]
+                        .iter()
+                        .any(|k| text[t.1..t.2].eq_ignore_ascii_case(k))
+            }
+            Lexer::Json => false,
+        }
+    }
+}
+
+/// A text and its tokens: what the edits to it are checked against.
+struct Lexed<'t> {
+    text: &'t str,
+    lex: Lexer,
+    toks: Vec<Tok>,
+    /// The spans of its TriG graph blocks, as the parser reads them.
+    graphs: Vec<(usize, usize)>,
+}
+
+impl<'t> Lexed<'t> {
+    fn new(text: &'t str, lex: Lexer) -> Lexed<'t> {
+        Lexed {
+            text,
+            lex,
+            toks: lex.tokens(text),
+            graphs: Vec::new(),
+        }
+    }
+
+    /// Whether `toks[j]` ends a document-level directive or statement: a
+    /// `.`, a TriG graph block's `}` or the last token of a `PREFIX`, `BASE`
+    /// or `VERSION` line (or of an `@prefix` line without its `.`, which the
+    /// parser takes as one) outside every graph block, or a SPARQL update's
+    /// `;` outside every group. (A SPARQL `PREFIX` line inside braces is
+    /// misplaced, but what follows it is still the end of the prologue.)
+    fn ends_statement(&self, j: usize) -> bool {
+        let (text, lex) = (self.text, self.lex);
+        let word = |t: &Tok| &text[t.1..t.2];
+        let mut back = self.toks[..=j].iter().rev().filter(|t| !lex.comment(t.0));
+        let (t, b1, b2) = (self.toks[j], back.nth(1), back.next());
+        let is = |b: Option<&Tok>, keyword: &str| {
+            b.is_some_and(|b| {
+                lex.directive(text, *b)
+                    && word(b)
+                        .trim_start_matches('@')
+                        .eq_ignore_ascii_case(keyword)
+            })
+        };
+        let directive = is(b2, "PREFIX") || is(b1, "BASE") || is(b1, "VERSION");
+        match lex {
+            Lexer::Turtle => directive || word(&t) == ".",
+            Lexer::TriG => {
+                let in_graph = self.graphs.iter().any(|g| g.0 <= t.1 && t.2 < g.1);
+                !in_graph && (directive || matches!(word(&t), "." | "}"))
+            }
+            Lexer::Sparql => {
+                let depth = self.toks[..=j].iter().fold(0usize, |d, t| match word(t) {
+                    "{" => d + 1,
+                    "}" => d.saturating_sub(1),
+                    _ => d,
+                });
+                directive || depth == 0 && word(&t) == ";"
+            }
+            Lexer::Json => false,
+        }
+    }
+
+    /// [`Lexed::splice`] for LSP edits, their positions read with `offset`;
+    /// the edited text only when `keep`.
+    fn edit(
+        &self,
+        edits: &[TextEdit],
+        offset: impl Fn(Position) -> Option<u32>,
+        keep: bool,
+    ) -> Result<String, String> {
+        let mut spans = Vec::with_capacity(edits.len());
+        for e in edits {
+            match (offset(e.range.start), offset(e.range.end)) {
+                (Some(s), Some(t)) if s <= t => {
+                    spans.push((s as usize, t as usize, e.new_text.as_str()))
+                }
+                _ => return Err(format!("has an edit outside the text: {e:?}")),
+            }
+        }
+        self.splice(spans, keep)
+            .map_err(|m| format!("{m}\n  edits: {edits:?}"))
+    }
+
+    /// The text with `edits` (byte ranges and their new texts) applied, if
+    /// it lexes to the old tokens with those each edit replaces swapped for
+    /// its new text's, lexed alone. An edit that cuts into tokens (the local
+    /// name of `<http://e/a>`, the inside of a JSON string or of an embedded
+    /// query) is widened to them, and their new text must lex to tokens of
+    /// the same kinds; one that adds a directive may not. A directive an
+    /// edit adds must follow a document-level statement or directive, or
+    /// only comments. Else what is wrong, with the token and its offset.
+    fn splice(&self, mut edits: Vec<(usize, usize, &str)>, keep: bool) -> Result<String, String> {
+        let (text, lex, toks) = (self.text, self.lex, &self.toks);
+        let shown = |s: &str| format!("{:?}", s.chars().take(80).collect::<String>());
+        edits.sort_by_key(|e| (e.0, e.1));
+        if let Some(w) = edits.windows(2).find(|w| w[0].1 > w[1].0) {
+            return Err(format!("has overlapping edits {:?} and {:?}", w[0], w[1]));
+        }
+        // The token `at` falls strictly inside.
+        let inside = |at: usize| {
+            toks.get(toks.partition_point(|t| t.2 <= at))
+                .filter(|t| t.1 < at)
+        };
+        // (start, end, edits) of each stretch of the old text an edit set
+        // replaces: an edit, widened to the tokens it cuts into.
+        let mut regions: Vec<(usize, usize, std::ops::Range<usize>)> = Vec::new();
+        for (i, &(s, e, new)) in edits.iter().enumerate() {
+            let (mut rs, mut re) = (s, e);
+            for t in inside(s).into_iter().chain(inside(e)) {
+                (rs, re) = (rs.min(t.1), re.max(t.2));
+            }
+            // An insertion that fuses with a token it touches is what is left
+            // of a rewrite of that token once the text both share is trimmed
+            // (`sh:pat` to `sh:path` inserts `h`): it is part of that token.
+            if s == e {
+                let alone = lex.tokens(new).len();
+                let edge = &toks[toks.partition_point(|t| t.2 < s)..];
+                for t in edge.iter().take_while(|t| t.1 <= s) {
+                    let joined = match (t.2 == s, t.1 == s) {
+                        (true, _) => format!("{}{new}", &text[t.1..t.2]),
+                        (_, true) => format!("{new}{}", &text[t.1..t.2]),
+                        _ => continue,
+                    };
+                    if lex.tokens(&joined).len() == alone {
+                        (rs, re) = (rs.min(t.1), re.max(t.2));
+                    }
+                }
+            }
+            match regions.last_mut() {
+                Some(r) if rs < r.1 => {
+                    r.1 = r.1.max(re);
+                    r.2.end = i + 1;
+                }
+                _ => regions.push((rs, re, i..i + 1)),
+            }
+        }
+        let (Some(first), Some(last)) = (regions.first(), regions.last()) else {
+            return Ok(text.to_string());
+        };
+        // What is lexed again: from two old tokens before the edits to two
+        // after them and the tokens that touch those (the Turtle and JSON
+        // lexers look only ahead, and not past a space: `@prefix0` is a
+        // language tag and `0`), or the whole of a SPARQL query, whose lexer
+        // reads a `<` by the tokens before it.
+        let (w0, w1) = if lex == Lexer::Sparql {
+            (0, text.len())
+        } else {
+            let before = toks.partition_point(|t| t.2 <= first.0);
+            let mut end = toks.partition_point(|t| t.1 < last.1) + 1;
+            while toks.get(end + 1).is_some_and(|n| n.1 == toks[end].2) {
+                end += 1;
+            }
+            let w0 = before.checked_sub(2).map_or(0, |i| toks[i].1);
+            (w0, toks.get(end).map_or(text.len(), |t| t.2))
+        };
+        // The window's new text; offsets below are into it.
+        let mut after = String::new();
+        let mut want: Vec<Tok> = Vec::new();
+        let (mut at, mut next) = (w0, toks.partition_point(|t| t.1 < w0));
+        regions.push((w1, w1, edits.len()..edits.len()));
+        for (rs, re, range) in regions {
+            let base = after.len();
+            while next < toks.len() && toks[next].2 <= rs {
+                let t = toks[next];
+                want.push((t.0, t.1 + base - at, t.2 + base - at));
+                next += 1;
+            }
+            after += &text[at..rs];
+            if range.is_empty() {
+                break;
+            }
+            let mut region = String::new();
+            let mut from = rs;
+            for &(s, e, new) in &edits[range.clone()] {
+                region += &text[from..s];
+                region += new;
+                from = e;
+            }
+            region += &text[from..re];
+            let new = lex.tokens(&region);
+            let old = &toks[next..next + toks[next..].partition_point(|t| t.1 < re)];
+            let widened = rs < edits[range.start].0 || re > edits[range.end - 1].1;
+            let like = |a: &Tok, b: &Tok| a.0 == b.0 || lex.term(a.0) && lex.term(b.0);
+            let directives =
+                |ts: &[Tok], src: &str| ts.iter().filter(|t| lex.directive(src, **t)).count();
+            let adds = directives(&new, &region) > directives(old, text);
+            // A directive written into a token it then joins (a string) is
+            // seen in the edit's own text: a keyword and an IRI (`base` in
+            // `http://e/base/x` or `prefix` in `sh:prefix` is none).
+            let written = edits[range.clone()].iter().any(|&(_, _, new)| {
+                let ts = lex.tokens(new);
+                let iri = |j: usize| ts.get(j).is_some_and(|t| new[t.1..].starts_with('<'));
+                (0..ts.len()).any(|j| lex.directive(new, ts[j]) && (iri(j + 1) || iri(j + 2)))
+            });
+            if widened
+                && (adds
+                    || written
+                    || new.len() != old.len()
+                    || !new.iter().zip(old).all(|(a, b)| like(a, b)))
+            {
+                return Err(format!(
+                    "cuts into {} at byte {rs}, which becomes {}",
+                    shown(&text[rs..re]),
+                    shown(&region)
+                ));
+            }
+            let code = toks[..next].iter().rposition(|t| !lex.comment(t.0));
+            if adds
+                && let Some(j) = code
+                && !self.ends_statement(j)
+            {
+                let p = toks[j];
+                return Err(format!(
+                    "adds a directive at byte {rs}, after {} at byte {}, which ends no document-level statement or directive",
+                    shown(&text[p.1..p.2]),
+                    p.1
+                ));
+            }
+            let base = after.len();
+            want.extend(new.iter().map(|t| (t.0, t.1 + base, t.2 + base)));
+            after += &region;
+            next += old.len();
+            at = re;
+        }
+        let got = lex.tokens(&after);
+        let whole = || format!("{}{after}{}", &text[..w0], &text[w1..]);
+        if let Some(i) = (0..got.len().max(want.len())).find(|&i| got.get(i) != want.get(i)) {
+            let token = |t: Option<&Tok>| {
+                t.map_or("the end".into(), |t| {
+                    format!(
+                        "{} (kind {}) at byte {}",
+                        shown(&after[t.1..t.2]),
+                        t.0,
+                        t.1 + w0
+                    )
+                })
+            };
+            return Err(format!(
+                "makes {} what {} was: {}",
+                token(got.get(i)),
+                token(want.get(i)),
+                first_difference(text, &whole())
+            ));
+        }
+        Ok(if keep { whole() } else { String::new() })
+    }
+}
+
+/// The external prefixes one iteration in eight is analysed with, as a
+/// project's prefixes file or the `turtle.prefixes` setting supplies them.
+fn common_prefixes() -> PrefixMap {
+    [
+        ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"),
+        ("rdfs", "http://www.w3.org/2000/01/rdf-schema#"),
+        ("xsd", "http://www.w3.org/2001/XMLSchema#"),
+        ("owl", "http://www.w3.org/2002/07/owl#"),
+        ("sh", "http://www.w3.org/ns/shacl#"),
+        ("ex", "http://example.org/"),
+    ]
+    .into_iter()
+    .map(|(p, ns)| (p.to_string(), ns.to_string()))
+    .collect()
+}
+
+/// New names for renames: empty, a local name that reads as a number's
+/// exponent, ones ending in a digit, a word.
+const RENAMES: [&str; 5] = ["", "e1", "e5", "x1", "renamed"];
+
+/// The byte offset of `pos` in `text`, as `SparqlAnalysis::offset` (the
+/// crate's own) reads it: the end of the text past the last line.
+fn offset_at(text: &str, enc: Encoding, pos: Position) -> Option<u32> {
+    let start = match pos.line {
+        0 => 0,
+        n => match text.match_indices('\n').nth(n as usize - 1) {
+            Some((i, _)) => i + 1,
+            None => return Some(text.len() as u32),
+        },
+    };
+    let mut col = 0;
+    for (i, c) in text[start..].char_indices() {
+        if col >= pos.character || c == '\n' {
+            return Some((start + i) as u32);
+        }
+        col += match enc {
+            Encoding::Utf8 => c.len_utf8(),
+            Encoding::Utf16 => c.len_utf16(),
+        } as u32;
+    }
+    Some(text.len() as u32)
+}
+
+/// The edits of `edit` to `uri`.
+fn edits_to(edit: Option<&WorkspaceEdit>, uri: &str) -> Vec<TextEdit> {
+    edit.and_then(|e| e.changes.as_ref())
+        .into_iter()
+        .flatten()
+        .filter(|(u, _)| u.as_str() == uri)
+        .flat_map(|(_, e)| e.iter().cloned())
+        .collect()
+}
+
+/// The `additional_text_edits` of completion `items` (a prefix declared on
+/// the way), each set once, keep the tokens. A completion at `at` inside a
+/// string (an embedded query) edits that string; the SPARQL shard checks
+/// those against the query's own tokens.
+fn imports_keep_the_tokens(
+    lexed: &Lexed,
+    items: &[CompletionItem],
+    offset: impl Fn(Position) -> Option<u32>,
+    at: u32,
+) {
+    let at = at as usize;
+    let toks = &lexed.toks;
+    let string = toks
+        .get(toks.partition_point(|t| t.2 <= at))
+        .filter(|t| t.1 < at && lexed.lex.string(t.0));
+    let mut seen: Vec<&Vec<TextEdit>> = Vec::new();
+    for item in items {
+        let Some(edits) = &item.additional_text_edits else {
+            continue;
+        };
+        if seen.contains(&edits) {
+            continue;
+        }
+        seen.push(edits);
+        let within = |t: &Tok| {
+            edits.iter().all(|e| {
+                offset(e.range.start).is_some_and(|s| t.1 < s as usize && (s as usize) < t.2)
+            })
+        };
+        if string.is_some_and(within) {
+            continue;
+        }
+        if let Err(m) = lexed.edit(edits, &offset, false) {
+            panic!("completion '{}' {m}", item.label);
+        }
+    }
+}
+
+fn completion_items(r: Option<CompletionResponse>) -> Vec<CompletionItem> {
+    match r {
+        Some(CompletionResponse::Array(v)) => v,
+        Some(CompletionResponse::List(l)) => l.items,
+        None => Vec::new(),
+    }
+}
+
+/// `before` and `after` (the text `batch::fix_all` made of it) have the
+/// same tokens outside their directives; with `unsafe_too`, a term may
+/// have become another (a "Change to" fix).
+fn fixed_keeps_the_tokens(
+    before: &str,
+    after: &str,
+    lex: Lexer,
+    unsafe_too: bool,
+) -> Result<(), String> {
+    // Each `@prefix` or `PREFIX` line, its name, its IRI and a `.` after it
+    // (the Turtle parser reads one after a SPARQL-style line into it too), with the
+    // comments among them, left out; none when a keyword starts no such line.
+    let outside = |text: &str| {
+        let toks = lex.tokens(text);
+        let word = |j: usize| toks.get(j).map_or("", |t: &Tok| &text[t.1..t.2]);
+        let code = |j: usize| {
+            (j..toks.len())
+                .find(|&k| !lex.comment(toks[k].0))
+                .unwrap_or(toks.len())
+        };
+        let (mut out, mut i) = (Vec::new(), 0);
+        while i < toks.len() {
+            let (name, iri) = (code(i + 1), code(code(i + 1) + 1));
+            let prefix = word(i) == "@prefix" || word(i).eq_ignore_ascii_case("PREFIX");
+            if !(lex.directive(text, toks[i]) && prefix) {
+                out.push(toks[i]);
+                i += 1;
+            } else if word(name).ends_with(':') && word(iri).starts_with('<') {
+                let dot = code(iri + 1);
+                i = if word(dot) == "." && lex != Lexer::Sparql {
+                    dot + 1
+                } else {
+                    iri + 1
+                };
+            } else {
+                return None;
+            }
+        }
+        Some(out)
+    };
+    // shortcut: what a fix removes of a broken declaration is the parser's
+    // reading of it, which the tokens do not show; such texts are not compared.
+    let Some(old) = outside(before) else {
+        return Ok(());
+    };
+    let new = outside(after).ok_or("left a declaration that is not a whole line")?;
+    let same = |a: &Tok, b: &Tok| {
+        (a.0, &before[a.1..a.2]) == (b.0, &after[b.1..b.2])
+            || unsafe_too && lex.term(a.0) && lex.term(b.0)
+    };
+    let i = (0..old.len().max(new.len())).find(|&i| match (old.get(i), new.get(i)) {
+        (Some(a), Some(b)) => !same(a, b),
+        _ => true,
+    });
+    match i {
+        None => Ok(()),
+        Some(i) => {
+            let token = |t: Option<&Tok>, s: &str| {
+                t.map_or("the end".into(), |t| {
+                    format!("{:?} at byte {}", &s[t.1..t.2], t.1)
+                })
+            };
+            Err(format!(
+                "changed token {i} outside the directives from {} to {}: {}",
+                token(old.get(i), before),
+                token(new.get(i), after),
+                first_difference(before, after)
+            ))
+        }
+    }
+}
+
+/// `batch::fix_all` on `text` alone as file `name`, for one input in four,
+/// with unsafe fixes too or safe ones only: no token outside a directive
+/// changes, and a text without syntax errors (`clean` then tells whether a
+/// fixed text has one) gets none. (Around garbage a fix leaves as it was,
+/// the parser's recovery can count differently.) A JSON-LD fix adds
+/// `@context` members, not directives: those are only checked for syntax
+/// errors.
+fn fix_all_keeps_the_tokens(
+    rng: &mut Rng,
+    name: &str,
+    text: &str,
+    lex: Lexer,
+    clean: Option<&dyn Fn(&str) -> bool>,
+) {
+    // shortcut: each run costs a workspace (0.1 ms and up), and one on every
+    // input would take the push-sized run past its time budget.
+    let unsafe_too = match rng.below(8) {
+        0 => false,
+        1 => true,
+        _ => return,
+    };
+    let file = batch::BatchFile::named(name, text.to_string(), false);
+    let out = batch::fix_all(&[file], &Settings::default(), unsafe_too);
+    let after = &out.files[0].text;
+    let which = if unsafe_too { "unsafe" } else { "safe" };
+    assert!(
+        !clean.is_some_and(|f| f(after)),
+        "fix all ({which}) added a syntax error: {}",
+        first_difference(text, after)
+    );
+    if lex != Lexer::Json
+        && let Err(m) = fixed_keeps_the_tokens(text, after, lex, unsafe_too)
+    {
+        panic!("fix all ({which}) {m}");
+    }
+}
+
+/// `n` with IRI `from` read as `to`, in triple terms and datatypes too.
+fn merged(n: &Node, (from, to): (Iri, Iri)) -> Node {
+    match n {
+        Node::Iri(i) if *i == from => Node::Iri(to),
+        Node::Triple(t) => {
+            let p = if t.1 == from { to } else { t.1 };
+            Node::Triple(Box::new((
+                merged(&t.0, (from, to)),
+                p,
+                merged(&t.2, (from, to)),
+            )))
+        }
+        Node::Literal { datatype, .. } if *datatype == from => {
+            let mut n = n.clone();
+            if let Node::Literal { datatype, .. } = &mut n {
+                *datatype = to;
+            }
+            n
+        }
+        n => n.clone(),
+    }
+}
+
+/// The sorted triples of `p`, with IRI `merge.0` read as `merge.1`.
+fn graph(p: &Parsed, merge: Option<(Iri, Iri)>) -> Vec<String> {
+    let node = |n: &Node| merge.map_or_else(|| n.clone(), |m| merged(n, m));
+    let iri = |i: Iri| merge.map_or(i, |(from, to)| if i == from { to } else { i });
+    let mut v: Vec<String> = p
+        .triples
+        .iter()
+        .map(|t| {
+            let g = t.graph.map(|g| match g {
+                GraphName::Iri(i) => GraphName::Iri(iri(i)),
+                g => g,
+            });
+            format!("{:?} {:?} {:?} {:?}", node(&t.s), iri(t.p), node(&t.o), g)
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The IRI a rename at `off` changes and the IRI it becomes for local name
+/// `name`, as `navigation::target_at` and `renamed_iri` pick them; none for
+/// a prefix, whose rename keeps every IRI.
+fn renamed(a: &Analysis, off: u32, name: &str) -> Option<(Iri, Iri)> {
+    let inside = |s: turtle_lsp::syntax::Span| s.start <= off && off <= s.end;
+    if a.parsed.prefixes.iter().any(|p| inside(p.name_span)) {
+        return None;
+    }
+    let refs = &a.parsed.refs;
+    let from = refs.partition_point(|r| r.span.end < off);
+    let mut near = refs[from..].iter().take_while(|r| r.span.start <= off);
+    let r = near.find(|r| inside(r.span))?;
+    if let Form::PName { prefix_len } = r.form
+        && off <= r.span.start + prefix_len
+    {
+        return None;
+    }
+    let old = r.iri.as_str();
+    let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
+    Some((Iri::from(format!("{}{name}", &old[..cut]).as_str()), r.iri))
+}
+
+/// The `after` text of an edit to `text` (document `a`, parsed `before`)
+/// parses without errors to the same graph, once `merge` reads a renamed
+/// IRI as the old one: `a`, implied datatypes and a collection's
+/// `rdf:first` keep the old IRI.
+fn keeps_the_graph(
+    a: &Analysis,
+    text: &str,
+    before: &Parsed,
+    after: &str,
+    merge: Option<(Iri, Iri)>,
+) -> Result<(), String> {
+    let base = a.parsed.document_base.as_deref();
+    let reparsed = parse_doc(after, a.parsed.syntax, base, &a.external);
+    let (old, new) = (graph(before, merge), graph(&reparsed, merge));
+    let wrong = match reparsed.errors.first() {
+        Some(e) => format!("left the syntax error {:?}", e.message()),
+        None if old != new => {
+            let i = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+            format!("changed triple {:?} to {:?}", old.get(i), new.get(i))
+        }
+        None => return Ok(()),
+    };
+    Err(format!("{wrong}: {}", first_difference(text, after)))
+}
+
 #[test]
 fn the_shards_cover_every_iteration_once() {
     for iters in [0, 1, 3, 4, 5, 1199, 1200, 2000, 30_001] {
@@ -282,6 +918,10 @@ const SNIPPETS: &[&str] = &[
     "FILTER NOT EXISTS { $this ex:p ?v } ",
     "\\\n",
     "\\\r",
+    // A declaration's line with data on it, or a long string with a line break.
+    "@prefix d: <http://d/> . d:s d:p d:o .\n",
+    "@prefix q: <http://q/> . q:s q:p \"\"\"a\nb\"\"\" .\n",
+    " ; # c\n .",
 ];
 
 fn root() -> &'static Path {
@@ -408,11 +1048,11 @@ fn char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// Mutates `text` one to four times: inserts, cuts, copies, truncations, and
-/// now and then a bulk edit that reaches what single snippets do not (a long
-/// run of one snippet is a deep nest or a long line, `\n` to a lone `\r`, a
-/// huge token).
-fn mutate_with(rng: &mut Rng, text: &str, snippets: &[&str], wide: bool) -> String {
+/// Mutates `text` one to four times: inserts, cuts, copies, truncations,
+/// squeezes, and now and then a bulk edit that reaches what single snippets
+/// do not (a long run of one snippet is a deep nest or a long line, `\n` to a
+/// lone `\r`, a huge token).
+fn mutate_with(rng: &mut Rng, text: &str, snippets: &[&str], wide: bool, lex: Lexer) -> String {
     let mut s = text.to_string();
     for _ in 0..1 + rng.below(4) {
         let at = char_boundary(&s, rng.below(s.len() + 1));
@@ -429,7 +1069,8 @@ fn mutate_with(rng: &mut Rng, text: &str, snippets: &[&str], wide: bool) -> Stri
                 s.insert_str(to, &chunk);
             }
             24..=29 => s.truncate(at),
-            30..=56 => {
+            51..=56 => s = squeeze(rng, &s, lex),
+            30..=50 => {
                 let n = rng.below(6);
                 for _ in 0..n {
                     let at = char_boundary(&s, rng.below(s.len() + 1));
@@ -460,7 +1101,32 @@ fn mutate_with(rng: &mut Rng, text: &str, snippets: &[&str], wide: bool) -> Stri
 }
 
 fn mutate(rng: &mut Rng, text: &str) -> String {
-    mutate_with(rng, text, SNIPPETS, true)
+    mutate_with(rng, text, SNIPPETS, true, Lexer::Turtle)
+}
+
+/// Deletes the whitespace between up to eight pairs of neighbouring tokens
+/// that lex the same joined (`a<x>`, `ex:a.b.<x>`, `?p?<x>`): the adjacency
+/// an edit must keep apart. Returns `s` unchanged when the whole text would
+/// then lex differently.
+fn squeeze(rng: &mut Rng, s: &str, lex: Lexer) -> String {
+    let lexed = Lexed::new(s, lex);
+    let toks = &lexed.toks;
+    if toks.len() < 2 {
+        return s.to_string();
+    }
+    let mut gaps: Vec<(usize, usize, &str)> = Vec::new();
+    for _ in 0..8 {
+        let i = rng.below(toks.len() - 1);
+        let (l, r) = (toks[i], toks[i + 1]);
+        let joined = format!("{}{}", &s[l.1..l.2], &s[r.1..r.2]);
+        let n = l.2 - l.1;
+        if l.2 < r.1 && lex.tokens(&joined) == [(l.0, 0, n), (r.0, n, joined.len())] {
+            gaps.push((l.2, r.1, ""));
+        }
+    }
+    gaps.sort();
+    gaps.dedup();
+    lexed.splice(gaps, true).unwrap_or_else(|_| s.to_string())
 }
 
 fn doc_uri(syntax: Syntax) -> &'static str {
@@ -577,18 +1243,18 @@ fn pick_offset(rng: &mut Rng, text: &str) -> u32 {
 }
 
 /// `text` parsed with its own frontend: JSON-LD with no remote contexts, the
-/// Turtle family with no external prefixes.
-fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>) -> Parsed {
+/// Turtle family with `prefixes` from outside.
+fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>, prefixes: &PrefixMap) -> Parsed {
     if syntax == Syntax::JsonLd {
         jsonld::parse(text, base, &jsonld::NoNetwork::default())
     } else {
-        parse_with_base(text, &PrefixMap::default(), syntax, base)
+        parse_with_base(text, prefixes, syntax, base)
     }
 }
 
 fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // The parser alone: every span must be inside the text and on char boundaries.
-    let p = parse_doc(text, syntax, None);
+    let p = parse_doc(text, syntax, None, &PrefixMap::default());
     spans_are_inside(text, &p);
 
     // Import sources: catalogs and RDF/XML come from outside too.
@@ -596,10 +1262,15 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     let _ = imports::sniff(text.as_bytes());
     let _ = imports::rdf_xml_to_ntriples(text.as_bytes(), "http://example.com/chaos");
 
+    let external = Arc::new(if rng.below(8) == 0 {
+        common_prefixes()
+    } else {
+        PrefixMap::default()
+    });
     let a = Arc::new(Analysis::with_syntax(
         doc_uri(syntax).into(),
         text,
-        Arc::new(PrefixMap::default()),
+        external.clone(),
         true,
         syntax,
     ));
@@ -627,13 +1298,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // The analysis's tokens and comments are the parser's, whether kept or
     // made on demand.
     let key = |t: &turtle_lsp::syntax::lexer::Token| (t.kind, t.start, t.end, t.error());
-    let lean = Analysis::with_syntax(
-        doc_uri(syntax).into(),
-        text,
-        Arc::new(PrefixMap::default()),
-        false,
-        syntax,
-    );
+    let lean = Analysis::with_syntax(doc_uri(syntax).into(), text, external, false, syntax);
     for an in [&*a, &lean] {
         assert!(
             an.tokens().iter().map(key).eq(p.tokens.iter().map(key)),
@@ -697,9 +1362,19 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             ),
         }
     }
+    let mut lexed = Lexed::new(text, Lexer::of(syntax));
+    let graphs = a.parsed.graphs.iter();
+    lexed.graphs = graphs
+        .map(|g| (g.span.start as usize, g.span.end as usize))
+        .collect();
+    // The text as the refactorings' and renames' graph checks read it.
+    let before = a.parsed.errors.is_empty().then(|| {
+        let base = a.parsed.document_base.as_deref();
+        parse_doc(text, syntax, base, &a.external)
+    });
     for enc in [Encoding::Utf8, Encoding::Utf16] {
         let _ = format::formatting(&a, enc, &opts);
-        let _ = diagnostics::diagnostics(&a, docs, enc);
+        let diags = diagnostics::diagnostics(&a, docs, enc);
         let lint_off = diagnostics::Options {
             lint_undescribed_terms: false,
             ..diagnostics::Options::default()
@@ -713,10 +1388,12 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         let _ = symbols::folding_ranges(&a);
         let _ = symbols::workspace_symbols(docs, enc, "a");
         tokens_are_well_formed(text, enc, &semantic::full(&a, docs, enc).data);
+        quick_fixes_keep_the_tokens(&a, docs, &lexed, enc, diags);
         for _ in 0..4 {
             let off = pick_offset(rng, text);
             let pos: Position = a.position(enc, off);
-            let _ = completion::complete(&a, docs, enc, pos);
+            let items = completion_items(Some(completion::complete(&a, docs, enc, pos)));
+            imports_keep_the_tokens(&lexed, &items, |p| a.offset(enc, p), off);
             let _ = hover::hover(&a, docs, enc, pos);
             let _ = navigation::definition(&a, docs, enc, pos, None);
             let _ = navigation::type_definition(&a, docs, enc, pos);
@@ -734,7 +1411,21 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
                 file: None,
                 file_of: &mut |_| None,
             };
-            let _ = navigation::rename(&a, docs, enc, pos, "renamed", scope);
+            let name = RENAMES[rng.below(RENAMES.len())];
+            if let Ok(edit) = navigation::rename(&a, docs, enc, pos, name, scope) {
+                let edits = edits_to(Some(&edit), doc_uri(syntax));
+                let graph = before.is_some() && syntax != Syntax::JsonLd;
+                let after = lexed
+                    .edit(&edits, |p| a.offset(enc, p), graph)
+                    .unwrap_or_else(|m| panic!("renaming to {name:?} {m}"));
+                // The IRI renamed is the one at the offset the rename reads `pos` as.
+                let target = a.offset(enc, pos).and_then(|at| renamed(&a, at, name));
+                if let Some(before) = before.as_ref().filter(|_| graph)
+                    && let Err(m) = keeps_the_graph(&a, text, before, &after, target)
+                {
+                    panic!("renaming to {name:?} {m}\n  edits: {edits:?}");
+                }
+            }
             // Positions past the end of a line or of the file, as clients sometimes send.
             let wild = Position::new(
                 pos.line + rng.below(3) as u32,
@@ -754,14 +1445,24 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             }
             code_actions_keep_the_graph(
                 &a,
-                docs,
-                text,
+                &lexed,
                 enc,
                 Range::new(from, to),
                 rng.below(2) == 0,
+                before.as_ref(),
             );
         }
     }
+    let has_errors = |t: &str| {
+        let p = parse_doc(t, syntax, None, &PrefixMap::default());
+        p.errors.iter().any(|e| match syntax {
+            Syntax::JsonLd => e.code == "json-syntax",
+            _ => e.severity == Severity::Error,
+        })
+    };
+    let clean = (!has_errors(text)).then_some(&has_errors as &dyn Fn(&str) -> bool);
+    let name = format!("doc.{}", extension(syntax));
+    fix_all_keeps_the_tokens(rng, &name, text, lexed.lex, clean);
     // SHACL validation of the document with the corpus, as on save.
     let job = turtle_lsp::features::shacl_validate::Job {
         generation: 1,
@@ -834,67 +1535,66 @@ fn tokens_are_well_formed(text: &str, enc: Encoding, data: &[lsp_types::Semantic
     }
 }
 
-/// Every code action must not panic; on a file without syntax errors, every
-/// refactoring must leave the parsed triples unchanged.
-fn code_actions_keep_the_graph(
+/// The quick fixes of every diagnostic of the file (they do not depend on
+/// the range asked for) keep the tokens they do not replace, and a
+/// declaration one adds goes between document-level statements.
+fn quick_fixes_keep_the_tokens(
     a: &Analysis,
     k: &Knowledge,
-    text: &str,
+    lexed: &Lexed,
+    enc: Encoding,
+    diagnostics: Vec<lsp_types::Diagnostic>,
+) {
+    let params = CodeActionParams {
+        text_document: TextDocumentIdentifier::new(doc_uri(a.parsed.syntax).parse().unwrap()),
+        range: Range::default(),
+        context: lsp_types::CodeActionContext {
+            diagnostics,
+            ..Default::default()
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    };
+    for c in quickfix::code_actions(a, k, enc, &params) {
+        if let CodeActionOrCommand::CodeAction(c) = c
+            && let Err(m) = lexed.edit(&refactor::edits_of(a, enc, &c), |p| a.offset(enc, p), false)
+        {
+            panic!("'{}' {m}", c.title);
+        }
+    }
+}
+
+/// Every refactoring keeps the tokens it does not replace; on a file
+/// without syntax errors (parsed `before`), it also keeps the parsed
+/// triples.
+fn code_actions_keep_the_graph(
+    a: &Analysis,
+    lexed: &Lexed,
     enc: Encoding,
     range: Range,
     lazy: bool,
+    before: Option<&Parsed>,
 ) {
     let params = CodeActionParams {
-        text_document: lsp_types::TextDocumentIdentifier {
-            uri: doc_uri(a.parsed.syntax).parse().unwrap(),
-        },
+        text_document: TextDocumentIdentifier::new(doc_uri(a.parsed.syntax).parse().unwrap()),
         range,
         context: Default::default(),
         work_done_progress_params: Default::default(),
         partial_result_params: Default::default(),
     };
-    let context = lsp_types::CodeActionContext {
-        diagnostics: diagnostics::diagnostics(a, k, enc),
-        ..Default::default()
-    };
-    let _ = quickfix::code_actions(
-        a,
-        k,
-        enc,
-        &CodeActionParams {
-            context,
-            ..params.clone()
-        },
-    );
-    let actions = refactor::code_actions(a, enc, &params, lazy);
-    if !a.parsed.errors.is_empty() {
-        return;
-    }
-    let syntax = a.parsed.syntax;
-    let triples = |t: &str| {
-        let base = a.parsed.document_base.as_deref();
-        let mut v: Vec<String> = parse_doc(t, syntax, base)
-            .triples
-            .iter()
-            .map(|t| format!("{:?} {:?} {:?} {:?}", t.s, t.p, t.o, t.graph))
-            .collect();
-        v.sort();
-        v
-    };
-    let before = triples(text);
-    for c in actions {
+    for c in refactor::code_actions(a, enc, &params, lazy) {
         let CodeActionOrCommand::CodeAction(c) = c else {
             continue;
         };
         let edits = refactor::edits_of(a, enc, &c);
-        let after = refactor::apply(a, enc, &edits);
-        let reparsed = parse_doc(&after, syntax, a.parsed.document_base.as_deref());
-        assert!(
-            reparsed.errors.is_empty() && triples(&after) == before,
-            "'{}' changed the graph: {}\n  edits: {edits:?}",
-            c.title,
-            first_difference(text, &after)
-        );
+        let after = lexed
+            .edit(&edits, |p| a.offset(enc, p), before.is_some())
+            .unwrap_or_else(|m| panic!("'{}' {m}", c.title));
+        if let Some(before) = before
+            && let Err(m) = keeps_the_graph(a, lexed.text, before, &after, None)
+        {
+            panic!("'{}' {m}\n  edits: {edits:?}", c.title);
+        }
     }
 }
 
@@ -1122,7 +1822,7 @@ fn mutated_jsonld(k: usize) {
     for i in iterations(iters, k) {
         let mut rng = Rng::at(seed, i);
         let source = &seeds[rng.below(seeds.len())];
-        let text = mutate_with(&mut rng, source, JSON_SNIPPETS, false);
+        let text = mutate_with(&mut rng, source, JSON_SNIPPETS, false, Lexer::Json);
         dog.start(i, &text, "jsonld");
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             exercise(
@@ -1217,6 +1917,9 @@ const SPARQL_SNIPPETS: &[&str] = &[
     "GROUP_CONCAT(?x; SEPARATOR=\",\")",
     "STR(",
     "REGEX(",
+    "REGEX(REGEX(REGEX(",
+    "!(",
+    ":f(REGEX(",
     "EXISTS { ",
     "NOT EXISTS { ",
     "INSERT DATA { ",
@@ -1288,7 +1991,7 @@ fn sparql_corpus() -> Vec<String> {
 }
 
 fn sparql_mutate(rng: &mut Rng, text: &str) -> String {
-    mutate_with(rng, text, SPARQL_SNIPPETS, true)
+    mutate_with(rng, text, SPARQL_SNIPPETS, true, Lexer::Sparql)
 }
 
 /// Tokens and diagnostics stay inside the text and on character boundaries,
@@ -1344,7 +2047,20 @@ fn sparql_exercise(rng: &mut Rng, text: &str, k: &Knowledge) {
         );
     }
 
-    let external = Arc::new(PrefixMap::default());
+    let external = Arc::new(if rng.below(8) == 0 {
+        common_prefixes()
+    } else {
+        PrefixMap::default()
+    });
+    let error = |doc: &Document| doc.diagnostics().iter().any(|d| d.level == Level::Error);
+    let has_errors = |t: &str| error(&Document::parse(t, &external, base));
+    let had = if external.is_empty() {
+        error(&doc)
+    } else {
+        has_errors(text)
+    };
+    let clean = (!had).then_some(&has_errors as &dyn Fn(&str) -> bool);
+    let lexed = Lexed::new(text, Lexer::Sparql);
     let file = Arc::new(SparqlAnalysis::new(
         "file:///chaos/q.rq".into(),
         text,
@@ -1353,23 +2069,39 @@ fn sparql_exercise(rng: &mut Rng, text: &str, k: &Knowledge) {
     let embedded = Arc::new(SparqlAnalysis::embedded(
         "file:///chaos/shapes.ttl".into(),
         text,
-        external,
+        external.clone(),
     ));
     for q in [&file, &embedded] {
         for enc in [Encoding::Utf8, Encoding::Utf16] {
-            sparql_features_at_random(rng, text, k, q, enc, &file);
+            sparql_features_at_random(rng, k, q, enc, &file, &lexed, clean);
         }
     }
+    fix_all_keeps_the_tokens(rng, "q.rq", text, Lexer::Sparql, clean);
 }
 
+/// The features at random positions of `q` (the text `lexed`), each edit
+/// checked against its tokens; `clean`, for a query without syntax errors,
+/// tells whether an edited text has one.
 fn sparql_features_at_random(
     rng: &mut Rng,
-    text: &str,
     k: &Knowledge,
     q: &Arc<SparqlAnalysis>,
     enc: Encoding,
     others: &Arc<SparqlAnalysis>,
+    lexed: &Lexed,
+    clean: Option<&dyn Fn(&str) -> bool>,
 ) {
+    let text = lexed.text;
+    let edited = |what: &str, edits: &[TextEdit]| {
+        let after = lexed
+            .edit(edits, |p| offset_at(text, enc, p), clean.is_some())
+            .unwrap_or_else(|m| panic!("{what} {m}"));
+        assert!(
+            !clean.is_some_and(|f| f(&after)),
+            "{what} left a syntax error in a query without one: {}\n  edits: {edits:?}",
+            first_difference(text, &after)
+        );
+    };
     let others = std::slice::from_ref(others);
     let _ = sparql_features::document_symbols(q, enc);
     let _ = sparql_features::folding_ranges(q);
@@ -1405,13 +2137,22 @@ fn sparql_features_at_random(
                 partial_result_params: Default::default(),
                 context: None,
             };
-            let _ = sparql_features::completion(q, k, enc, &params);
+            let items = completion_items(sparql_features::completion(q, k, enc, &params));
+            if let Some(off) = offset_at(text, enc, at) {
+                imports_keep_the_tokens(lexed, &items, |p| offset_at(text, enc, p), off);
+            }
             let _ = sparql_features::hover(q, k, enc, at);
             let _ = sparql_features::definition(q, k, enc, at, None);
             let _ = sparql_features::references(q, k, enc, at, true, others);
             let _ = sparql_features::highlights(q, enc, at);
             let _ = sparql_features::prepare_rename(q, enc, at);
-            let _ = sparql_features::rename(q, k, enc, at, "renamed", None, others);
+            let name = RENAMES[rng.below(RENAMES.len())];
+            if let Ok(edit) = sparql_features::rename(q, k, enc, at, name, None, others) {
+                edited(
+                    &format!("renaming to {name:?}"),
+                    &edits_to(Some(&edit), &q.uri),
+                );
+            }
         }
         let (from, to) = if rng.below(2) == 0 {
             (pos, wild)
@@ -1440,7 +2181,11 @@ fn sparql_features_at_random(
         let lazy = rng.below(2) == 0;
         for action in sparql_features::code_actions(q, k, enc, &params, lazy) {
             if let CodeActionOrCommand::CodeAction(a) = action {
-                let _ = sparql_features::resolve_code_action(q, enc, a);
+                let a = sparql_features::resolve_code_action(q, enc, a);
+                edited(
+                    &format!("'{}'", a.title),
+                    &edits_to(a.edit.as_ref(), &q.uri),
+                );
             }
         }
     }
@@ -1926,6 +2671,162 @@ fn a_hung_iteration_is_reported_and_exits_the_run() {
             && stderr.contains("budget 100ms"),
         "{stderr}"
     );
+}
+
+/// `text` with `new` put in place of the first `old` (at its end when
+/// `old` is empty and `after` is set), through the token check.
+fn spliced(text: &str, lex: Lexer, old: &str, at: usize, new: &str) -> Result<String, String> {
+    let s = text.find(old).expect("old is in the text") + at;
+    let e = if at > 0 { s } else { s + old.len() };
+    Lexed::new(text, lex).splice(vec![(s, e, new)], true)
+}
+
+#[test]
+fn a_declaration_goes_only_between_document_level_statements() {
+    let text = "# header\nex:s ex:p \"\"\"x\ny\"\"\" .\nPREFIX a: <http://a/>\n";
+    let decl = "@prefix b: <http://b/> .\n";
+    // Into a long string: a cut, named with the string and where it starts.
+    let m = spliced(text, Lexer::Turtle, "y\"", 0, &format!("{decl}y\"")).unwrap_err();
+    assert!(
+        m.contains("cuts into \"\\\"\\\"\\\"x\\ny\\\"\\\"\\\"\" at byte 19"),
+        "{m}"
+    );
+    // After a subject: no statement ends there.
+    let m = spliced(text, Lexer::Turtle, "ex:s", 4, &format!("\n{decl}")).unwrap_err();
+    assert!(m.contains("after \"ex:s\" at byte 9, which ends no"), "{m}");
+    // After the header, a `.` or a SPARQL-style line: fine.
+    for (after, at) in [("# header\n", 9), (" .\n", 3), ("<http://a/>\n", 12)] {
+        spliced(text, Lexer::Turtle, after, at, decl).unwrap();
+    }
+    // In TriG, not inside a graph block.
+    let trig = "ex:g { ex:s ex:p ex:o . }\n";
+    let mut lexed = Lexed::new(trig, Lexer::TriG);
+    lexed.graphs = vec![(0, trig.len() - 1)];
+    let inside = trig.find(" }").unwrap();
+    assert!(
+        lexed
+            .splice(vec![(inside, inside, "\n@prefix b: <http://b/> .")], true)
+            .is_err()
+    );
+    let end = trig.len();
+    lexed.splice(vec![(end, end, decl)], true).unwrap();
+    // SPARQL: after a PREFIX line, and not after a pattern's `;`.
+    let q = "PREFIX a: <http://a/>\nSELECT * { ?s a:p 1 ; a:q 2 }";
+    spliced(
+        q,
+        Lexer::Sparql,
+        "<http://a/>\n",
+        12,
+        "PREFIX b: <http://b/>\n",
+    )
+    .unwrap();
+    let m = spliced(q, Lexer::Sparql, "; ", 2, "PREFIX b: <http://b/>\n").unwrap_err();
+    assert!(m.contains("after \";\" at byte"), "{m}");
+}
+
+#[test]
+fn a_rewrite_that_fuses_or_splits_tokens_names_the_token() {
+    // `ex:o` before `.ex:t` is one name: the count of tokens drops by two.
+    let text = "<http://e/s> <http://e/p> <http://e/o>.ex:t <http://e/p> 1 .";
+    let m = spliced(text, Lexer::Turtle, "<http://e/o>", 0, "ex:o").unwrap_err();
+    assert!(
+        m.contains("makes \"ex:o.ex:t\" (kind 1) at byte 26 what \"ex:o\""),
+        "{m}"
+    );
+    // A split and a fusion keep the count: the sequence still differs.
+    let text = "ex:s ex:p ex:o , ex:q :x .";
+    let (o, q) = (text.find("ex:o").unwrap(), text.find(" :x").unwrap());
+    let edits = vec![(o, o + 4, "ex:o ex:x"), (q, q + 1, "")];
+    let m = Lexed::new(text, Lexer::Turtle)
+        .splice(edits, true)
+        .unwrap_err();
+    assert!(m.contains("makes \"ex:q:x\" (kind 1) at byte 22"), "{m}");
+    // SPARQL: `ex:a` before `.5` is one name.
+    let q = "SELECT * { ?s ?p <http://e/a>.5 }";
+    let m = spliced(q, Lexer::Sparql, "<http://e/a>", 0, "ex:a").unwrap_err();
+    assert!(m.contains("\"ex:a.5\""), "{m}");
+    // A trimmed rewrite (`sh:pat` to `sh:path`) and a rename inside an IRI.
+    spliced("ex:s sh:pat ex:o .", Lexer::Turtle, "sh:pat", 6, "h").unwrap();
+    spliced(
+        "ex:s ex:p <http://e/alice> .",
+        Lexer::Turtle,
+        "alice",
+        0,
+        "e1",
+    )
+    .unwrap();
+    // JSON: a member written inside a string.
+    let json = "{\"@context\": {\"a\": \"http://a/\"}}";
+    let m = spliced(json, Lexer::Json, "//a/", 0, "\"ex\": \"http://e/\", ").unwrap_err();
+    assert!(
+        m.contains("cuts into \"\\\"http://a/\\\"\" at byte 19"),
+        "{m}"
+    );
+}
+
+#[test]
+fn fix_all_may_change_only_the_directives() {
+    let before = "ex:s ex:p ex:o , ex:q .\n";
+    let fixed = "@prefix ex: <http://e/> .\nex:s ex:p ex:o , ex:q .\n";
+    fixed_keeps_the_tokens(before, fixed, Lexer::Turtle, false).unwrap();
+    let fused = "@prefix ex: <http://e/> .\nex:s ex:pex:o , ex:q .\n";
+    let m = fixed_keeps_the_tokens(before, fused, Lexer::Turtle, false).unwrap_err();
+    assert!(
+        m.contains("from \"ex:p\" at byte 5 to \"ex:pex:o\" at byte 31"),
+        "{m}"
+    );
+    // An unsafe fix may change a term to another.
+    let changed = "ex:s ex:p <http://e/o> , ex:q .\n";
+    fixed_keeps_the_tokens(before, changed, Lexer::Turtle, true).unwrap();
+    assert!(fixed_keeps_the_tokens(before, changed, Lexer::Turtle, false).is_err());
+}
+
+#[test]
+fn a_rename_keeps_the_graph_but_for_the_new_iri() {
+    let text = "@prefix ex: <http://e/> .\nex:a ex:p ex:b , \"1\"^^ex:a .\n";
+    let a = Analysis::with_syntax(
+        doc_uri(Syntax::Turtle).into(),
+        text,
+        Arc::new(PrefixMap::default()),
+        true,
+        Syntax::Turtle,
+    );
+    let base = a.parsed.document_base.as_deref();
+    let before = parse_doc(text, Syntax::Turtle, base, &PrefixMap::default());
+    let at = text.find("ex:a").unwrap() as u32 + 3;
+    let target = renamed(&a, at, "e1");
+    assert_eq!(
+        target,
+        Some((Iri::from("http://e/e1"), Iri::from("http://e/a")))
+    );
+    let good = text.replace("ex:a", "ex:e1");
+    keeps_the_graph(&a, text, &before, &good, target).unwrap();
+    let bad = good.replace("ex:b", "ex:c");
+    let m = keeps_the_graph(&a, text, &before, &bad, target).unwrap_err();
+    assert!(
+        m.contains("changed triple") && m.contains("http://e/b"),
+        "{m}"
+    );
+    // On the prefix, nothing is renamed.
+    assert_eq!(renamed(&a, 9, "e1"), None);
+}
+
+#[test]
+fn a_squeeze_keeps_the_tokens() {
+    let text = "<http://e/s> <http://e/p> 1 , \"x\" ; <http://e/q> ex:o .";
+    let toks = |t: &str| {
+        let ts = Lexer::Turtle.tokens(t);
+        ts.iter()
+            .map(|x| (x.0, t[x.1..x.2].to_string()))
+            .collect::<Vec<_>>()
+    };
+    let mut shorter = false;
+    for seed in 1..50 {
+        let out = squeeze(&mut Rng(seed), text, Lexer::Turtle);
+        assert_eq!(toks(&out), toks(text), "{out:?}");
+        shorter |= out.len() < text.len();
+    }
+    assert!(shorter, "no squeeze took");
 }
 
 /// A parse result with one bad span, whichever field it sits in: the check
