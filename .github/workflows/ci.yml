@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly on main: the Tests, VS Code and Browser jobs with the shipped
+  # release profile (fat LTO), the chaos tests with a new seed, and the
+  # dependency audit, so a new advisory shows up here first.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 # Read-only by default; no job here needs to write anything.
 permissions:
@@ -14,18 +20,27 @@ permissions:
 # commit: in a shared group GitHub cancels a *pending* run when a newer one
 # queues, whatever cancel-in-progress says, and the release waits for the CI
 # run of its tagged commit (release.yml, job "ci"), which a canceled run fails.
+# A scheduled or manual run gets a group of its own run, so it never shares the
+# group of a push to the same commit.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.sha }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.event_name == 'push' && github.sha || format('{0}-{1}', github.event_name, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Actions are pinned to full commit SHAs (tags can be moved); Dependabot bumps them.
+#
+# Release profile: the Tests, VS Code and Browser jobs build without fat LTO
+# (the CARGO_PROFILE_RELEASE_* variables below), which takes minutes off every
+# build and test link. The nightly run keeps the shipped profile (Cargo.toml),
+# as do the Performance job and release.yml.
+#
+# Caches: only a push to main saves one (save-if). Pull requests restore main's,
+# and storage stays under the 10 GB limit, so main's warm cache is not evicted.
 jobs:
-  test:
-    name: Tests (${{ matrix.os }})
+  # Formatting on Linux; clippy on every OS, as there is cfg(windows) code.
+  lint:
+    name: Lint (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # A hang fails the job instead of holding a runner for 6 hours; each test
-    # step below has its own, shorter limit.
-    timeout-minutes: 60
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -36,47 +51,166 @@ jobs:
           persist-credentials: false
       # Installs the compiler pinned in rust-toolchain.toml.
       - run: rustup toolchain install
+        timeout-minutes: 5
+      - if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - if: runner.os == 'Linux'
+        run: cargo fmt --check --manifest-path web/engine/Cargo.toml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --release --locked --all-targets -- -D warnings
+        timeout-minutes: 10
+
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A hang fails the job instead of holding a runner for 6 hours; each test
+    # step below has its own, shorter limit.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+        timeout-minutes: 5
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
-      - name: Install Neovim (for the editor checks)
+      # The oldest Neovim the README promises (0.11), on Linux only, into its
+      # own folder (~/nvim-<version>). It goes before the main install: each
+      # install puts its folder first on PATH, so the later one is `nvim` for
+      # every step after. Raise both versions by hand; Dependabot does not.
+      - name: Install Neovim 0.11
+        id: nvim011
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        timeout-minutes: 5
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
         with:
           neovim: true
-          version: stable
-      - run: cargo fmt --check
-      - run: cargo clippy --release --locked --all-targets -- -D warnings
+          version: v0.11.7
+      - name: Install Neovim 0.11 (second attempt)
+        id: nvim011-retry
+        if: runner.os == 'Linux' && steps.nvim011.outcome == 'failure'
+        timeout-minutes: 5
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+        with:
+          neovim: true
+          version: v0.11.7
+      # A download fails now and then: one retry, and the second failure fails
+      # the job (the Neovim tests fail without nvim when CI=true).
+      - name: Install Neovim (for the editor checks)
+        id: nvim
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+        with:
+          neovim: true
+          version: v0.12.6
+      - name: Install Neovim (second attempt)
+        if: steps.nvim.outcome == 'failure'
+        timeout-minutes: 5
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+        with:
+          neovim: true
+          version: v0.12.6
       - run: npm ci
-      # The JSON-LD corpus the corpus tests read: with CI=true they fail when it
-      # is absent. Downloaded again only when its source list or checksums change.
+        timeout-minutes: 5
+      # The JSON-LD corpus and the three SHACL files that src/knowledge.rs reads:
+      # with CI=true the tests fail when they are absent. Downloaded again only
+      # when the source lists or checksums change.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test/corpus/jsonld
           key: jsonld-corpus-${{ hashFiles('tools/corpus/jsonld-sources.tsv', 'tools/corpus/jsonld-sha256.tsv') }}
-      - name: JSON-LD corpus
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            test/corpus/brick.ttl
+            test/corpus/dcat-ap-shacl.ttl
+            test/corpus/w3c-shacl.ttl
+          key: shacl-corpus-${{ hashFiles('tools/corpus/sources.tsv') }}
+      # fetch.sh with a source list of only those three rows; it fetches the
+      # JSON-LD corpus as well. Files already present are not downloaded again.
+      - name: Corpus (JSON-LD, Brick, DCAT-AP, SHACL)
         shell: bash
         timeout-minutes: 10
-        run: tools/corpus/fetch-jsonld.sh
-      # npm test, split so each part has its own time limit: the build may
-      # start without a cache; the Node tests take about a minute on Windows.
+        run: |
+          mkdir -p target
+          awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl"' tools/corpus/sources.tsv > target/corpus-sources.tsv
+          test "$(wc -l < target/corpus-sources.tsv)" -eq 3
+          CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh
+      # npm test, split so each part has its own time limit.
+      # TODO: lower the build to 10 and --no-run to 10 minutes (and the job to
+      # 30) once runs without fat LTO have been measured.
       - run: cargo build --release --locked
         timeout-minutes: 20
-      # Compiling the test binaries (fat LTO, one link each) takes longer than
-      # running them, most on Windows; each gets its own limit.
-      - run: cargo test --release --locked --no-run
+      # The test binaries: the lib, the integration tests and nothing else
+      # (`--bins` would link main.rs although it has `test = false`; the
+      # examples are type-checked by clippy).
+      - run: cargo test --release --locked --lib --tests --no-run
         timeout-minutes: 30
-      - run: cargo test --release --locked
+      # The wall-clock lib tests (named timing_*) run in the next step on their
+      # own. The mutation loops (mutated_*) run in the chaos step below, which
+      # macOS does not have, so macOS runs them here at their default counts.
+      - name: Tests
+        timeout-minutes: 5
+        run: cargo test --release --locked --lib --tests -- --skip timing_ ${{ runner.os != 'macOS' && '--skip mutated_' || '' }}
+      - name: Timing tests, one at a time
+        timeout-minutes: 5
+        run: cargo test --release --locked --lib -- timing_ --test-threads=1
+      # The public-interface list in src/lib.rs.
+      - run: cargo test --release --locked --doc
         timeout-minutes: 10
+      # The command line's memory budget: mimalloc's peak commit, the same
+      # figure on Linux and macOS (bench/perf.mjs, scenario big-file-peak).
+      - name: Memory budget
+        if: runner.os != 'Windows'
+        timeout-minutes: 5
+        run: node bench/perf.mjs --only big-file-peak
       - run: npm run test:node
         timeout-minutes: 5
-      - name: Chaos test, longer run
+      - name: Neovim 0.11
+        if: runner.os == 'Linux'
         timeout-minutes: 5
         env:
-          CHAOS_ITERS: "30000"
-        run: cargo test --release --locked --test chaos
+          NVIM_011: ${{ steps.nvim011.outputs.executable || steps.nvim011-retry.outputs.executable }}
+        run: |
+          PATH="$(dirname "$NVIM_011"):$PATH"
+          version=$(nvim --version | head -n 1)
+          echo "$version"
+          case "$version" in "NVIM v0.11."*) ;; *) echo "expected Neovim 0.11"; exit 1 ;; esac
+          node --test --test-timeout=30000 test/nvim.test.mjs test/nvim-plugin.test.mjs
+      # The mutation loops at 30,000 iterations with the fixed seeds, so a
+      # failure on a pull request is its own. Not on macOS: Windows' stack
+      # frames are the OS-specific signal, and macOS adds little to Linux.
+      # Nightly: a new seed (the run id) and 200,000 iterations; the failure
+      # message gives the seed, iteration and input to reproduce it.
+      - name: Chaos test, longer run
+        if: runner.os != 'macOS'
+        timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 5 }}
+        shell: bash
+        env:
+          CHAOS_ITERS: ${{ github.event_name == 'schedule' && '200000' || '30000' }}
+          CHAOS_SEED: ${{ github.event_name == 'schedule' && github.run_id || '' }}
+        run: |
+          if [ -n "$CHAOS_SEED" ]; then
+            echo "CHAOS_SEED=$CHAOS_SEED CHAOS_ITERS=$CHAOS_ITERS (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cargo test --release --locked --test chaos -- mutated_
       # What the integration tests left under target/tmp, to read a failure that
       # does not reproduce locally.
       - name: Keep the test folders of a failed run
@@ -87,6 +221,27 @@ jobs:
           path: target/tmp
           if-no-files-found: ignore
           retention-days: 7
+
+  # The oldest compiler Cargo.toml claims (rust-version; its comment says why).
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Every rustc and cargo call in the job, rust-cache's included, uses 1.91.0
+    # instead of rust-toolchain.toml's compiler.
+    env:
+      RUSTUP_TOOLCHAIN: 1.91.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.91.0 --profile minimal
+        timeout-minutes: 5
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: cargo +1.91.0 check --locked --all-targets
+        timeout-minutes: 10
 
   audit:
     name: Dependency audit
@@ -145,88 +300,113 @@ jobs:
           persist-credentials: false
       # The compiler pinned in rust-toolchain.toml, with the browser target.
       - run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+        timeout-minutes: 5
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
             web/engine
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+        timeout-minutes: 5
       # The engine for wasm32 (web/app/engine.wasm), then Monaco beside the pages.
+      # It keeps its own profile (web/engine/Cargo.toml), which its size budget
+      # in web/build.mjs assumes, so the profile variables are set only on the
+      # native build below.
       - run: node web/build.mjs
         timeout-minutes: 15
       - run: cargo clippy --locked -- -D warnings
         working-directory: web/engine
+        timeout-minutes: 10
       # The engine tests compare it with the native server, so build that too.
       - run: cargo build --release --locked
         timeout-minutes: 15
+        env:
+          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
+      # First the tests that need no browser, so a failure there points at the
+      # engine.
       - name: Engine tests (no browser)
         timeout-minutes: 5
         run: >-
           node --test --test-force-exit --test-timeout=60000
           web/test/engine.test.mjs web/test/host.test.mjs
           web/test/jsonld-engine.test.mjs web/test/lsp.test.mjs
-      # The page in a real browser. The test drives Google Chrome (Playwright's
+      # The pages in a real browser. The tests drive Google Chrome (Playwright's
       # "chrome" channel), so install that one rather than rely on the runner image.
       - run: npx playwright-core install chrome
         timeout-minutes: 5
-      - name: Toolbox page in Chrome
-        timeout-minutes: 5
-        run: node --test --test-force-exit --test-timeout=60000 web/test/browser.test.mjs
+      - name: Every web test (toolbox, editor, CSP, engine)
+        timeout-minutes: 10
+        run: node --test --test-force-exit --test-timeout=60000 "web/test/*.test.mjs"
 
   vscode:
-    name: VS Code extension (${{ matrix.os }}, ${{ matrix.vscode }})
+    name: VS Code extension (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        vscode: [stable]
-        include:
-          # The oldest VS Code the extension claims (engines.vscode).
-          - { os: ubuntu-latest, vscode: "1.91.0" }
     env:
-      VSCODE_VERSION: ${{ matrix.vscode }}
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: rustup toolchain install
+        timeout-minutes: 5
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
       - run: cargo build --release --locked
+        timeout-minutes: 15
       - working-directory: editors/vscode
+        timeout-minutes: 5
         run: npm ci && npm run typecheck
       # VS Code needs a display on Linux.
       - if: runner.os == 'Linux'
         working-directory: editors/vscode
+        timeout-minutes: 10
         run: xvfb-run -a npm test
       - if: runner.os != 'Linux'
         working-directory: editors/vscode
+        timeout-minutes: 10
         run: npm test
+      # The oldest VS Code the extension claims (engines.vscode), with the
+      # extension npm test just built.
+      - name: VS Code 1.91.0
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        timeout-minutes: 5
+        env:
+          VSCODE_VERSION: "1.91.0"
+        run: xvfb-run -a node test/run.mjs
       # Catches packaging errors (e.g. @types/vscode newer than engines.vscode)
       # before a release does.
-      - if: runner.os == 'Linux' && matrix.vscode == 'stable'
+      - if: runner.os == 'Linux'
         working-directory: editors/vscode
+        timeout-minutes: 5
         run: npm run package
 
-  # Performance (bench/perf.mjs). GitHub-hosted runners share hardware, so the
-  # timings are noisy: the gate is wide (1.5x on the p50 of the keystroke rows,
-  # which each have 20 or more samples) and the job never blocks a pull request.
-  # On main it compares with the artefact the last main run uploaded and fails
-  # over the ratio; the run's artefact is uploaded either way, so the next
-  # comparison is against this commit (a slow drift of under 1.5x per commit is
-  # not caught). Set the repository variable PERF_GATE to "off" to make main
-  # report only, for example while the runner image is changing.
+  # Performance (bench/perf.mjs), with the shipped release profile. GitHub-hosted
+  # runners share hardware, so the timings are noisy: the job reports and never
+  # fails on a wall-clock figure. It compares with the artefact the last main run
+  # uploaded (the p50 of the keystroke rows, marked over 1.5x) and writes the
+  # table to the step summary; a push to main uploads its own results for the
+  # next comparison. The benchmark still fails on a scenario that throws or an
+  # expectation that fails. The memory budget runs in Tests as well, where it gates.
   perf:
     name: Performance (ubuntu-latest, noisy)
     runs-on: ubuntu-latest
@@ -238,37 +418,32 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
-      PERF_GATE: ${{ vars.PERF_GATE }}
-      # The documented ratio: current p50 / main p50 of a keystroke row.
+      # The ratio a keystroke row is marked over: current p50 / main p50.
       PERF_MAX_RATIO: "1.5"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: rustup toolchain install
+        timeout-minutes: 5
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
+      # The bench starts servers through test/lsp-client.mjs, which needs
+      # vscode-jsonrpc.
       - run: npm ci
+        timeout-minutes: 5
       - run: cargo build --release --locked
         timeout-minutes: 20
-      # Instruction counts (perf stat) are steadier than times, where the runner
-      # lets a user read the counters; they cover the whole run (the bench and
-      # the servers it starts), are kept beside the results and are not gated.
       - name: Benchmark
         id: bench
         timeout-minutes: 10
-        run: |
-          if command -v perf >/dev/null 2>&1 && perf stat -e instructions:u -- true >/dev/null 2>&1; then
-            perf stat -x, -e instructions:u -o perf-stat.csv -- node bench/perf.mjs --json bench-results.json
-            { echo '### Instructions (user mode, whole run)'; echo; echo '```'; cat perf-stat.csv; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "perf stat cannot read the counters on this runner: timings only."
-            node bench/perf.mjs --json bench-results.json
-          fi
+        run: node bench/perf.mjs --json bench-results.json
       # The newest unexpired bench-results artefact that a run on main uploaded.
       - name: Download the last main results
         run: |
@@ -281,17 +456,31 @@ jobs:
           fi
       - name: Compare with the last main results
         if: hashFiles('base/bench-results.json') != ''
-        run: |
-          gate=--report-only
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PERF_GATE" != off ]; then gate=; fi
-          node bench/perf.mjs --compare base/bench-results.json bench-results.json --max-ratio "$PERF_MAX_RATIO" $gate
+        run: node bench/perf.mjs --compare base/bench-results.json bench-results.json --max-ratio "$PERF_MAX_RATIO"
       - name: Keep the results (main)
         if: always() && github.event_name == 'push' && steps.bench.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bench-results
-          path: |
-            bench-results.json
-            perf-stat.csv
+          path: bench-results.json
           if-no-files-found: error
           retention-days: 90
+
+  # The one check the ruleset requires: it passes when every job it needs
+  # passed, so a renamed or added matrix entry needs no ruleset change. Not
+  # Performance, which reports only.
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs: [lint, test, msrv, audit, web, vscode]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "*) exit 1 ;;
+          esac

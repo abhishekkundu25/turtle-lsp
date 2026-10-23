@@ -47,7 +47,8 @@ Keep every test run under two minutes: wrap it in `timeout 120`, and run one
 file at a time when a whole suite takes longer. Compiling is not a test run.
 
 ```sh
-timeout 120 cargo test --release --locked --lib            # unit tests
+timeout 120 cargo test --release --locked --lib -- --skip timing_   # unit tests
+timeout 120 cargo test --release --locked --lib -- timing_ --test-threads=1  # wall-clock unit tests, one at a time
 timeout 120 cargo test --release --locked --test chaos     # one integration test file
 timeout 120 cargo test --release --locked --doc            # the public-interface list in src/lib.rs
 timeout 120 node --test --test-timeout=30000 test/cli.test.mjs
@@ -55,6 +56,11 @@ timeout 120 npm run test:latency                           # wall-clock checks, 
 node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engine.test.mjs
 (cd editors/vscode && timeout 120 node --test test/manifest.test.mjs)
 ```
+
+- Name a wall-clock lib test `timing_…`: CI runs those serially, apart
+  from the parallel run. CI's Tests, VS Code and Browser jobs build without
+  fat LTO; a nightly run (`schedule` in `ci.yml`) builds with the shipped
+  profile and runs the chaos tests with a new seed and 200,000 iterations.
 
 - Leave `TMPDIR` at its default, outside the repository. The tests make
   their workspaces in the system temp folder and run `check --fix` there
