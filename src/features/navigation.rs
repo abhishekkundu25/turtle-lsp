@@ -490,11 +490,16 @@ pub fn rename(
                         (colon, format!("{new}:"))
                     })
                     .collect();
+                // A use before the first declaration is not bound by it: it is
+                // undeclared or comes from outside the document.
+                let first = d.parsed.prefixes.iter().filter(|p| p.name == old);
+                let first = first.map(|p| p.span.end).min();
                 reps.extend(
                     d.parsed
                         .prefix_uses
                         .iter()
                         .filter(|u| u.name == old)
+                        .filter(|u| first.map_or(u.resolved, |end| end <= u.span.start))
                         .map(|u| {
                             let local = &d.text
                                 [(u.span.start as usize + old.len() + 1)..u.span.end as usize];
@@ -762,6 +767,12 @@ mod tests {
                 "@prefix ex: <http://e/> .\nex:s ex:p ( ex:-1 ) .",
                 ("", "", ("http://e/", "http://e/a")),
                 "@prefix ex: <http://e/> .\nex:s ex:p ( ex:a -1 ) .",
+            ),
+            // The uses before the declaration are not its: they stay undeclared.
+            (
+                "ex:a ex:b ex:c .PREFIX ex: <http://e/>\nex:s ex:p ex:o .",
+                ("ex: <", "e5", ("", "")),
+                "ex:a ex:b ex:c .PREFIX e5: <http://e/>\ne5:s e5:p e5:o .",
             ),
             // `e:` would be shorter, but it is declared only after the use.
             (
