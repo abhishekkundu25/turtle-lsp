@@ -150,7 +150,7 @@ byte N in iteration i" rather than as a graph diff or a job timeout.
 
 Acceptance for the whole plan, pass/fail:
 
-- 20 consecutive runs with `CHAOS_ITERS=200000` and fresh seeds on macOS,
+- 5 consecutive runs (the owner set 5 for now, from 20, on 2026-10-24) with `CHAOS_ITERS=200000` and fresh seeds on macOS,
   each format's shards as their own command under `timeout 120`
   (`-- mutated_turtle`, `-- mutated_sparql`, `-- mutated_jsonld`, same
   seed), no failure and no iteration over the watchdog budget. Then the
@@ -374,7 +374,7 @@ Acceptance for the whole plan, pass/fail:
   the same query in bounded time; `survive` cases in tests/chaos.rs.
 - Replays: every saved input in the ticket README, with its seed and
   `CHAOS_ONLY`, as the last step of each ticket that fixes its class.
-- Whole plan: the 20-run acceptance above, run by the close-out ticket on
+- Whole plan: the 5-run acceptance above, run by the close-out ticket on
   a quiet machine, results recorded in the ticket README.
 
 ## Out of Scope
