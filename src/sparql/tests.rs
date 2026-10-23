@@ -141,6 +141,20 @@ fn lexing_from_a_kept_state_gives_the_tokens_of_the_whole_text() {
             "from {at}"
         );
     }
+    // From any token start, touching the token before or not.
+    for t in &all {
+        let (before, state, at) =
+            lexer::resume_until(&text, Default::default(), t.span.start as usize);
+        assert_eq!(at, t.span.start as usize);
+        let moved = |s: Span| Span::new(s.start + at as u32, s.end + at as u32);
+        let rest = lexer::resume(&text[at..], state)
+            .0
+            .into_iter()
+            .map(|(k, s)| (k, moved(s)));
+        let got: Vec<_> = before.into_iter().chain(rest).collect();
+        let want: Vec<_> = all.iter().map(|t| (t.kind, t.span)).collect();
+        assert_eq!(got, want, "from {at}");
+    }
 }
 
 #[test]

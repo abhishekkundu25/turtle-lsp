@@ -2,7 +2,7 @@
 //! add-prefix quick fixes, and completion of a term whose prefix is not
 //! declared).
 
-use super::actions::text_edits;
+use super::actions::{Tails, text_edits_with};
 use crate::analysis::{Encoding, SparqlAnalysis};
 use crate::sparql::{Token, TokenKind};
 use crate::syntax::Span;
@@ -14,12 +14,14 @@ use lsp_types::TextEdit;
 /// or `VERSION`) of the prologue, so it joins the block; with no prologue,
 /// after the header comment, followed by a blank line if none follows.
 /// `None` when the line would not lex as written there (inside an
-/// unclosed expression, its IRI reads as `<`).
+/// unclosed expression, its IRI reads as `<`). Calls with one `tails`
+/// lex the query after the line once.
 pub(crate) fn add_prefix(
     q: &SparqlAnalysis,
     enc: Encoding,
     name: &str,
     namespace: &str,
+    tails: &Tails,
 ) -> Option<TextEdit> {
     let st = q.doc.structure();
     let (text, tokens) = (q.text(), q.doc.tokens());
@@ -51,7 +53,8 @@ pub(crate) fn add_prefix(
     } else {
         format!("{line}\n")
     };
-    let mut edit = text_edits(q, enc, vec![(Span::new(at as u32, at as u32), new_text)])?.remove(0);
+    let insert = vec![(Span::new(at as u32, at as u32), new_text)];
+    let mut edit = text_edits_with(q, enc, insert, tails)?.remove(0);
     // A space would leave the query on the declaration's line.
     if let Some(t) = edit.new_text.strip_suffix(' ') {
         edit.new_text = format!("{t}\n");
@@ -67,12 +70,44 @@ mod tests {
 
     fn added(text: &str) -> String {
         let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
-        let e = add_prefix(&q, Encoding::Utf16, "foaf", "http://xmlns.com/foaf/0.1/").unwrap();
+        let e = add_prefix(
+            &q,
+            Encoding::Utf16,
+            "foaf",
+            "http://xmlns.com/foaf/0.1/",
+            &Tails::default(),
+        )
+        .unwrap();
         let at = q.offset(Encoding::Utf16, e.range.start).unwrap() as usize;
         format!("{}{}{}", &text[..at], e.new_text, &text[at..])
     }
 
     const FOAF: &str = "PREFIX foaf: <http://xmlns.com/foaf/0.1/>";
+
+    #[test]
+    fn prefix_lines_in_one_place_lex_what_follows_them_once() {
+        // The window after the line holds a long variable.
+        let text = format!(
+            "PREFIX a: <http://a/>\nSELECT ?{} {{ }}\n",
+            "v".repeat(50_000)
+        );
+        let q = SparqlAnalysis::new("file:///q.rq".into(), &text, Arc::new(PrefixMap::default()));
+        let tails = Tails::default();
+        for (i, name) in ["b", "c", "d", "e"].into_iter().enumerate() {
+            let ns = format!("http://{name}/");
+            crate::sparql::lexer::LEXED.with(|c| c.set(0));
+            let shared = add_prefix(&q, Encoding::Utf8, name, &ns, &tails);
+            let lexed = crate::sparql::lexer::LEXED.with(|c| c.get());
+            assert_eq!(
+                shared,
+                add_prefix(&q, Encoding::Utf8, name, &ns, &Tails::default())
+            );
+            assert!(shared.is_some());
+            if i > 0 {
+                assert!(lexed < 1_000, "{name}: {lexed} bytes lexed");
+            }
+        }
+    }
 
     #[test]
     fn joins_the_prefix_block() {
@@ -142,7 +177,8 @@ mod tests {
         // In an unclosed `BIND(`, `<` after the string `"1.2"` is the operator.
         let text = "VERSION \"1.2\"BIND(\nVERSION \"1.2\"\n\nSELECT * { ?s foaf:name ?n }\n";
         let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
-        assert!(add_prefix(&q, Encoding::Utf16, "foaf", "http://xmlns.com/foaf/0.1/").is_none());
+        let foaf = "http://xmlns.com/foaf/0.1/";
+        assert!(add_prefix(&q, Encoding::Utf16, "foaf", foaf, &Tails::default()).is_none());
     }
 
     #[test]

@@ -20,6 +20,7 @@ use crate::syntax::names::{newline, shorten, token_edits_after};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
+use std::cell::RefCell;
 
 /// `data.turtle` of a "Shorten all IRIs in file" offered without its edit.
 const SHORTEN_ALL: &str = "shorten-all";
@@ -67,9 +68,10 @@ pub(crate) fn code_actions(
                 if missing.contains(&p) {
                     continue;
                 }
+                let tails = Tails::default();
                 for (i, c) in candidates.iter().enumerate() {
                     let title = candidate_title(&p, c, "PREFIX");
-                    let Some(fix) = add_prefix(q, enc, &p, &c.namespace) else {
+                    let Some(fix) = add_prefix(q, enc, &p, &c.namespace, &tails) else {
                         continue;
                     };
                     let fix = in_document_style(q, fix);
@@ -221,7 +223,7 @@ fn add_all_missing(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> Option<C
         return None;
     }
     let line = |(p, ns): &(&str, String)| format!("PREFIX {p}: <{ns}>");
-    let mut fix = add_prefix(q, enc, all[0].0, &all[0].1)?;
+    let mut fix = add_prefix(q, enc, all[0].0, &all[0].1, &Tails::default())?;
     let lines: Vec<String> = all.iter().map(line).collect();
     fix.new_text = fix.new_text.replacen(&line(&all[0]), &lines.join("\n"), 1);
     let fix = in_document_style(q, fix);
@@ -285,14 +287,56 @@ pub(super) fn text_edits(
     enc: Encoding,
     reps: Vec<(Span, String)>,
 ) -> Option<Vec<TextEdit>> {
+    text_edits_with(q, enc, reps, &Tails::default())
+}
+
+/// What [`text_edits_with`] lexed of the text after its edits, from a place
+/// the lexer may resume: (where that starts, where the window ends, the
+/// state there), its tokens and the state after them. The `PREFIX` lines
+/// completion offers all go in one place and leave the lexer in one state,
+/// so they share the lexing of what follows.
+#[derive(Default)]
+pub(crate) struct Tails(RefCell<Vec<Tail>>);
+
+type Tail = (
+    (usize, usize, lexer::State),
+    Vec<(TokenKind, Span)>,
+    lexer::State,
+);
+
+/// [`text_edits`], lexing the text after the edits once per state in `tails`.
+pub(super) fn text_edits_with(
+    q: &SparqlAnalysis,
+    enc: Encoding,
+    reps: Vec<(Span, String)>,
+    tails: &Tails,
+) -> Option<Vec<TextEdit>> {
     let (text, tokens) = (q.text(), q.doc.tokens());
     let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
     let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
     let (from, state) = q.doc.lexer_state_at(lo);
     // The state each text lexed ends in: the window's first, the edited window's last.
-    let ends = std::cell::RefCell::new(Vec::new());
-    let lex_text = |s: &str| {
-        let (tokens, end) = lexer::resume(s, state.clone());
+    let ends = RefCell::new(Vec::new());
+    // `s`, a window edited or not, ends with `text[hi..to]`.
+    let lex_text = |s: &str, to: usize| {
+        let after = s.len() - (to - hi as usize);
+        let (mut tokens, mut end, at) = lexer::resume_until(s, state.clone(), after);
+        if at < s.len() {
+            let key = (to - (s.len() - at), to, end);
+            let mut tails = tails.0.borrow_mut();
+            let i = match tails.iter().position(|t| t.0 == key) {
+                Some(i) => i,
+                None => {
+                    let (rest, last) = lexer::resume(&s[at..], key.2.clone());
+                    tails.push((key, rest, last));
+                    tails.len() - 1
+                }
+            };
+            let (_, rest, last) = &tails[i];
+            let moved = |s: Span| Span::new(s.start + at as u32, s.end + at as u32);
+            tokens.extend(rest.iter().map(|&(k, s)| (k, moved(s))));
+            end = last.clone();
+        }
         ends.borrow_mut().push(end);
         tokens
     };
@@ -311,7 +355,7 @@ pub(super) fn text_edits(
     }
     let edits_to = |to: usize| {
         let window = &text[from as usize..to];
-        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &lex_text);
+        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &|s| lex_text(s, to));
         let ends = ends.take();
         (to == text.len() || ends.first() == ends.last()).then_some(edits?)
     };

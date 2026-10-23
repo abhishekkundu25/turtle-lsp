@@ -242,6 +242,8 @@ struct Lexer<'a> {
     st: State,
     /// (offset, state) at token starts after whitespace, when asked for.
     states: Option<Vec<(u32, State)>>,
+    /// The lexer stops at the first token start from here.
+    stop: usize,
 }
 
 impl Lexer<'_> {
@@ -478,13 +480,17 @@ impl Lexer<'_> {
         end
     }
 
-    fn run(&mut self) {
+    /// Lexes up to the end, or to where it stops: that offset.
+    fn run(&mut self) -> usize {
         let b = self.b;
         let mut i = 0;
         let space = |c: u8| matches!(c, b' ' | b'\t' | b'\r' | b'\n');
         let mut next_state = STATE_EVERY;
         while i < b.len() {
             let c = b[i];
+            if i >= self.stop && !space(c) {
+                return i;
+            }
             if let Some(states) = &mut self.states
                 && i >= next_state
                 && !space(c)
@@ -703,6 +709,7 @@ impl Lexer<'_> {
                 }
             }
         }
+        b.len()
     }
 }
 
@@ -728,22 +735,34 @@ fn exponent(b: &[u8], k: usize) -> Option<usize> {
 
 /// Every token of `src`, comments included, in order.
 pub fn tokenize(src: &str) -> Vec<Token> {
-    lex(src, State::default(), false).0
+    lex(src, State::default(), false, usize::MAX).0
 }
 
 /// [`tokenize`], with the state at token starts after whitespace about
 /// every [`STATE_EVERY`] bytes, the first at 0: places
 /// [`resume`] may lex a part of `src` from.
 pub(crate) fn tokenize_with_states(src: &str) -> (Vec<Token>, Vec<(u32, State)>) {
-    let (out, _, states) = lex(src, State::default(), true);
+    let (out, _, states, _) = lex(src, State::default(), true, usize::MAX);
     (out, states)
 }
 
 /// (kind, span) of every token of `src` lexed from `state`, and the state
 /// after the last.
 pub(crate) fn resume(src: &str, state: State) -> (Vec<(TokenKind, Span)>, State) {
-    let (out, state, _) = lex(src, state, false);
-    (out.iter().map(|t| (t.kind, t.span)).collect(), state)
+    let (out, state, _) = resume_until(src, state, usize::MAX);
+    (out, state)
+}
+
+/// [`resume`] up to the first token start at or past `at`, a place it may
+/// resume from (the text after it is not edited): the tokens before it, the
+/// state there, and the offset (the end of `src` when there is none).
+pub(crate) fn resume_until(
+    src: &str,
+    state: State,
+    at: usize,
+) -> (Vec<(TokenKind, Span)>, State, usize) {
+    let (out, state, _, stop) = lex(src, state, false, at);
+    (out.iter().map(|t| (t.kind, t.span)).collect(), state, stop)
 }
 
 /// (kind, span) of every token of `src`, for `syntax::names::token_edits`.
@@ -751,18 +770,24 @@ pub(crate) fn kinds(src: &str) -> Vec<(TokenKind, Span)> {
     resume(src, State::default()).0
 }
 
-fn lex(src: &str, st: State, keep_states: bool) -> (Vec<Token>, State, Vec<(u32, State)>) {
-    #[cfg(test)]
-    LEXED.with(|n| n.set(n.get() + src.len()));
+fn lex(
+    src: &str,
+    st: State,
+    keep_states: bool,
+    stop: usize,
+) -> (Vec<Token>, State, Vec<(u32, State)>, usize) {
     let mut l = Lexer {
         src,
         b: src.as_bytes(),
         out: Vec::with_capacity(src.len() / 4),
         st,
         states: keep_states.then(|| vec![(0, State::default())]),
+        stop,
     };
-    l.run();
-    (l.out, l.st, l.states.unwrap_or_default())
+    let at = l.run();
+    #[cfg(test)]
+    LEXED.with(|n| n.set(n.get() + at));
+    (l.out, l.st, l.states.unwrap_or_default(), at)
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@
 //! Nothing is offered inside a string, an IRI or a comment. Accepting a term
 //! whose prefix is not declared adds its `PREFIX` line.
 
+use super::actions::Tails;
 use super::edits::add_prefix;
 use crate::analysis::{Encoding, SparqlAnalysis};
 use crate::features::completion::{
@@ -149,8 +150,9 @@ pub(crate) fn completion_at(
 
     incomplete |= rdf::finish(&mut cands, ranked, slot, typed, k, &prefixes);
     let nl = crate::syntax::names::newline(q.text());
+    let tails = Tails::default();
     let items = rdf::items(cands, replace, &prefixes, "PREFIX", |p, ns| {
-        let mut e = add_prefix(q, enc, p, ns)?;
+        let mut e = add_prefix(q, enc, p, ns, &tails)?;
         e.new_text = e.new_text.replace('\n', nl);
         Some(e)
     });
