@@ -964,13 +964,7 @@ fn mutated_jsonld_never_panics_4() {
 fn mutated_jsonld(k: usize) {
     let seed = env_or("CHAOS_SEED", 0x5EED_0013_u64);
     let iters = env_or("CHAOS_ITERS", 1200usize);
-    // ASCII only, until the multi-byte defects listed below are fixed: in
-    // malformed JSON-LD several spans end inside a character and the features
-    // built on them panic. Their `#[ignore]`d tests reproduce each.
-    let seeds: Vec<String> = jsonld_corpus()
-        .into_iter()
-        .filter(|t| t.is_ascii())
-        .collect();
+    let seeds: Vec<String> = jsonld_corpus();
     // The workspace the JSON-LD document joins: the Turtle fixtures, and the
     // JSON-LD files themselves (those of the fixtures, not the W3C inputs).
     let mut docs: Vec<(String, Syntax)> = corpus()
@@ -1956,14 +1950,9 @@ fn the_span_check_sees_every_span_field() {
 // them; when one passes, delete its `#[ignore]` and the workaround it names
 // in the random tests above.
 
-/// The random JSON-LD test uses ASCII only: in malformed JSON-LD several spans
-/// (a dropped key written without quotes, a value without its closing quote)
-/// end inside a multi-byte character, the diagnostics turn them into
-/// positions, and `line-index` panics ("invalid offset"); `check` aborts on
-/// such a file. Another site: `semantic::encode_with` slices the text at a
-/// token boundary inside a character.
+/// Malformed JSON-LD spans end on character boundaries: the diagnostics and
+/// the semantic tokens convert them to positions without panicking.
 #[test]
-#[ignore = "known defect: JSON-LD spans split multi-byte characters in malformed input"]
 fn jsonld_spans_stay_on_character_boundaries() {
     let texts = [
         "{é\"b\":2}",
