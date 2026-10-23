@@ -94,8 +94,13 @@ export function createVim({ monaco, status, commands }) {
       if (editors.has(ed)) return
       // Registered before Vim's own key listener, so it runs first.
       const keys = ed.onKeyDown((e) => sessions.has(ed) && pageKey(e.browserEvent) && e.browserEvent.preventDefault())
-      const focus = ed.onDidFocusEditorWidget(() => ((focused = ed), show()))
-      editors.set(ed, [keys, focus])
+      // Text focus as well as widget focus: when a split's new editor takes
+      // the focus from inside this one's keydown, Monaco can leave this
+      // editor's widget focus set, and focusing it again then fires no
+      // widget-focus event.
+      const onFocus = () => ((focused = ed), show())
+      const focus = [ed.onDidFocusEditorWidget(onFocus), ed.onDidFocusEditorText(onFocus)]
+      editors.set(ed, [keys, ...focus])
       focused ??= ed
       if (enabled && lib) (start(ed), show())
     },
