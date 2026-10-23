@@ -4,8 +4,6 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import { settingsFrom } from "../src/server.ts"
-// `npm test` lists this file and grammar.test.mjs only: run the server-module tests with it.
-import "./find-server.test.mjs"
 
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
 const settings = pkg.contributes.configuration.properties

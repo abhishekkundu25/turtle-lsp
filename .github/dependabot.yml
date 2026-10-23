@@ -1,25 +1,36 @@
 # Weekly updates for dependencies and for the pinned GitHub Actions SHAs.
+# cooldown: a release is proposed only once it is 7 days old, so a version
+# that is yanked or compromised soon after publishing never reaches a PR.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     groups:
       cargo: { patterns: ["*"] }
   # The browser engine has its own Cargo.lock.
   - package-ecosystem: cargo
     directory: /web/engine
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     groups:
       cargo-web: { patterns: ["*"] }
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     groups:
-      test-tooling: { patterns: ["*"] }
+      # Shipped to users in the browser editor: a blocked Monaco update (0.x
+      # minors break) must not hold back the test tooling, or the other way round.
+      site: { patterns: ["monaco-editor", "monaco-vim"] }
+      test-tooling:
+        patterns: ["*"]
+        exclude-patterns: ["monaco-editor", "monaco-vim"]
   - package-ecosystem: npm
     directory: /editors/vscode
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     # Must not be newer than engines.vscode in package.json, or vsce refuses to
     # package. Raise both together by hand.
     ignore:
@@ -33,5 +44,6 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     groups:
       actions: { patterns: ["*"] }

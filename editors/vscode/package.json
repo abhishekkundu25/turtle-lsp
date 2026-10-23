@@ -2,7 +2,7 @@
   "name": "turtle-language-server",
   "displayName": "Turtle RDF, SPARQL & JSON-LD Language Server (TTL, OWL, SHACL)",
   "description": "Fast Turtle (.ttl) and RDF 1.2 support written in Rust, also for TriG, N-Triples, N-Quads, JSON-LD and SPARQL: syntax highlighting, error checking, SHACL validation, completion of 80+ vocabularies (rdf, rdfs, owl, skos, shacl, schema.org, foaf), hover docs, go to definition, rename, formatting and quick fixes for ontologies, queries and linked data.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "abhishekkundu25",
   "license": "MIT",
   "repository": {
@@ -385,7 +385,7 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/grammar.test.mjs test/manifest.test.mjs && node test/run.mjs",
+    "test": "npm run build && node --test test/*.test.mjs && node test/run.mjs",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {

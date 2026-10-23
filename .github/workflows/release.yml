@@ -17,22 +17,39 @@ name: Release
 # installs without scripts and holds no write permission; the secret is only in
 # the environment of the publish step. A run started by hand (workflow_dispatch)
 # only builds; it never releases or publishes.
+#
+# A pull request that changes how the release is built runs only the build
+# job (every platform, the smoke test), so a broken musl, arm64 or cross-built
+# darwin-x64 build shows before a tag. It reads no secret, checks no version,
+# waits for no CI run, and never releases or publishes.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - editors/vscode/scripts/package.mjs
+      - editors/vscode/package.json
+      - editors/vscode/package-lock.json
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - web/engine/Cargo.lock
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Two runs for one tag (a re-run of the push, a second dispatch) never release at once.
+# Two runs for one tag (a re-run of the push, a second dispatch) never release
+# at once. A new push to a pull request cancels its previous build.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   versions:
     name: Versions agree
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -65,9 +82,14 @@ jobs:
           url="repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=50"
           start=$SECONDS
           while true; do
-            ok=$(gh api "$url" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
-            open=$(gh api "$url" --jq '[.workflow_runs[] | select(.status != "completed")] | length')
-            total=$(gh api "$url" --jq '.total_count')
+            # One request: a run that finishes between two requests could read
+            # as neither successful nor open.
+            counts=$(gh api "$url" --jq '[
+              ([.workflow_runs[] | select(.conclusion == "success")] | length),
+              ([.workflow_runs[] | select(.status != "completed")] | length),
+              .total_count
+            ] | @tsv')
+            read -r ok open total <<< "$counts"
             if [ "$ok" -gt 0 ]; then
               echo "CI passed on $GITHUB_SHA"
               exit 0
@@ -88,6 +110,8 @@ jobs:
   build:
     name: ${{ matrix.vsce }}
     needs: versions
+    # On a pull request the versions job is skipped; otherwise it must pass.
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.versions.result == 'success') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -126,11 +150,13 @@ jobs:
         run: npm run package
       # Runs the server that is inside the .vsix, on the platform it was built
       # for: its version, the check command on a clean and a broken file, and an
-      # initialize / shutdown / exit round trip over stdio.
+      # initialize / shutdown / exit round trip over stdio. alpine-x64 runs in
+      # an Alpine container, not on the Ubuntu host.
       - name: Smoke test the packaged server
         shell: bash
         env:
           EXE: ${{ matrix.vsce == 'win32-x64' && 'turtle-lsp.exe' || 'turtle-lsp' }}
+          ALPINE: ${{ matrix.vsce == 'alpine-x64' }}
         run: |
           rm -rf smoke-vsix && mkdir smoke-vsix
           if [ "$RUNNER_OS" = Windows ]; then
@@ -140,7 +166,7 @@ jobs:
           fi
           export SMOKE_SERVER="smoke-vsix/extension/server/$EXE"
           test -f "$SMOKE_SERVER" || { echo "no $SMOKE_SERVER in the .vsix"; exit 1; }
-          node --input-type=module - <<'JS'
+          cat > smoke-vsix/smoke.mjs <<'JS'
           import { spawn, spawnSync } from "node:child_process"
           import assert from "node:assert/strict"
           import fs from "node:fs"
@@ -209,6 +235,12 @@ jobs:
             fs.rmSync(tmp, { recursive: true, force: true })
           }
           JS
+          if [ "$ALPINE" = true ]; then
+            docker run --rm -v "$PWD":/w -w /w -e SMOKE_SERVER alpine:3 \
+              sh -c 'apk add --no-cache nodejs > /dev/null && node smoke-vsix/smoke.mjs'
+          else
+            node smoke-vsix/smoke.mjs
+          fi
           rm -rf smoke-vsix
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -241,6 +273,7 @@ jobs:
 
   release:
     needs: [versions, ci, build]
+    # Never on a pull request or a run started by hand.
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -296,6 +329,7 @@ jobs:
   publish:
     name: Publish to the VS Code Marketplace
     needs: release
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release

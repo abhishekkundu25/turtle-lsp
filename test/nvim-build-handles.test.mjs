@@ -6,7 +6,7 @@
 // the server from a local release, none may still be open.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import { spawn, spawnSync, execFileSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import crypto from "node:crypto"
 import fs from "node:fs"
 import http from "node:http"
@@ -14,15 +14,9 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { serverPath } from "./lsp-client.mjs"
+import { hasNvim, ASSET, EXE, pack } from "./nvim-release.mjs"
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
-const hasNvim = spawnSync("nvim", ["--version"]).status === 0
-const ASSET = {
-  "darwin-arm64": "turtle-lsp-darwin-arm64.tar.gz",
-  "darwin-x64": "turtle-lsp-darwin-x64.tar.gz",
-  "linux-arm64": "turtle-lsp-linux-arm64.tar.gz",
-  "linux-x64": "turtle-lsp-linux-x64.tar.gz",
-}[`${process.platform}-${process.arch}`]
 const skip = !hasNvim ? "nvim not found on PATH" : !ASSET ? "no release asset for this platform" : false
 
 // Runs build.lua (its path is the first argument) with io.open and io.lines
@@ -59,8 +53,8 @@ before(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-nvim-handles-"))
   const release = path.join(home, "release")
   fs.mkdirSync(path.join(release, "stage"), { recursive: true })
-  fs.copyFileSync(serverPath, path.join(release, "stage", "turtle-lsp"))
-  execFileSync("tar", ["-czf", path.join(release, ASSET), "-C", path.join(release, "stage"), "turtle-lsp"])
+  fs.copyFileSync(serverPath, path.join(release, "stage", EXE))
+  pack(path.join(release, "stage"), path.join(release, ASSET))
   const sum = crypto.createHash("sha256").update(fs.readFileSync(path.join(release, ASSET))).digest("hex")
   fs.writeFileSync(path.join(release, "SHA256SUMS"), `${sum}  ${ASSET}\n`)
   server = http.createServer((req, res) => {
@@ -100,6 +94,6 @@ test("build.lua leaves no file open after installing a release", { skip }, async
   const r = await nvim(["-l", wrapper, path.join(dir, "build.lua")], { TURTLE_LSP_RELEASE_URL: base })
   assert.match(r.out, /BUILD true/, r.out)
   assert.doesNotMatch(r.out, /LEFT OPEN/, r.out)
-  assert.ok(fs.existsSync(path.join(dir, "bin", "turtle-lsp")), r.out)
-  assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), ["turtle-lsp"], "the scratch folder is removed")
+  assert.ok(fs.existsSync(path.join(dir, "bin", EXE)), r.out)
+  assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), [EXE], "the scratch folder is removed")
 })

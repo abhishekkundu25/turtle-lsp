@@ -2211,7 +2211,7 @@ mod tests {
     /// Two paths joined with nothing in common: minutes of work, stopped at
     /// the time limit once, not once per focus node.
     #[test]
-    fn a_slow_sparql_constraint_stops_at_the_time_limit() {
+    fn timing_a_slow_sparql_constraint_stops_at_the_time_limit() {
         let mut body = "ex:S sh:targetClass ex:C ; sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE { ?a ex:next* ?b . ?c ex:next* ?d . FILTER (STRLEN(CONCAT(STR(?a), STR(?d))) < 0) }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n".to_string();
         for i in 0..400 {
             body.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
@@ -2419,7 +2419,7 @@ mod tests {
     /// One SPARQL constraint on 10,000 focus nodes (run with --nocapture
     /// for the time).
     #[test]
-    fn sparql_on_ten_thousand_focus_nodes() {
+    fn timing_sparql_on_ten_thousand_focus_nodes() {
         let mut body = RULE.to_string();
         for i in 0..10_000 {
             body.push_str(&format!("ex:n{i} a ex:C ; ex:p {} .\n", i % 3));
@@ -2469,7 +2469,7 @@ mod tests {
     const STAR: &str = "ex:S sh:targetClass ex:C ; sh:property [ sh:path [ sh:zeroOrMorePath ex:next ] ; sh:maxCount 5 ] .\n";
 
     #[test]
-    fn a_closure_over_a_20k_chain_is_fast() {
+    fn timing_a_closure_over_a_20k_chain_is_fast() {
         let start = std::time::Instant::now();
         let r = bounded(
             &format!("{STAR}{}", chain(20_000, 50)),
@@ -2486,7 +2486,7 @@ mod tests {
     /// Every node of a chain asks for its own closure: 200 million values
     /// in all. The step budget ends that with a failure, quickly.
     #[test]
-    fn a_closure_from_every_node_of_a_20k_chain_stops_at_the_step_budget() {
+    fn timing_a_closure_from_every_node_of_a_20k_chain_stops_at_the_step_budget() {
         let start = std::time::Instant::now();
         let r = bounded(
             &format!("{STAR}{}", chain(20_000, 20_000)),
@@ -2545,7 +2545,7 @@ mod tests {
     /// node each time they cost the graph's size to the nesting's power
     /// (four levels over 300 triples took 17 s).
     #[test]
-    fn four_nested_closures_over_300_triples_finish() {
+    fn timing_four_nested_closures_over_300_triples_finish() {
         let mut data = String::new();
         for i in 0..100 {
             data.push_str(&format!(
@@ -2588,7 +2588,7 @@ mod tests {
     }
 
     #[test]
-    fn equals_over_large_value_sets_is_linear() {
+    fn timing_equals_over_large_value_sets_is_linear() {
         let mut data = String::from(
             "ex:S sh:targetNode ex:x ; sh:property [ sh:path ex:a ; sh:equals ex:b ] .\n",
         );
@@ -2607,7 +2607,7 @@ mod tests {
     /// A SELECT whose solutions are every pair of triples: 25 million over
     /// 5,000. It used to collect them all (11.7 GB) before the cap.
     #[test]
-    fn a_cartesian_select_stops_at_the_result_budget() {
+    fn timing_a_cartesian_select_stops_at_the_result_budget() {
         let mut data = String::from(
             "ex:S sh:targetNode ex:x ; sh:sparql [ sh:select \"SELECT $this ?value WHERE { ?a ?p ?o . ?value ?q ?r }\" ] .\n",
         );
@@ -2659,7 +2659,7 @@ mod tests {
     /// A query running for good, stopped by the job being superseded rather
     /// than by its time limit (200 ms in tests).
     #[test]
-    fn a_superseded_run_stops_inside_one_long_query() {
+    fn timing_a_superseded_run_stops_inside_one_long_query() {
         let mut body = "ex:S sh:targetNode ex:n0 ; sh:sparql [ sh:prefixes ex:P ; sh:select \"SELECT $this WHERE { ?a ex:next* ?b . ?c ex:next* ?d . FILTER (STRLEN(CONCAT(STR(?a), STR(?d))) < 0) }\" ] .\nex:P sh:declare [ sh:prefix \"ex\" ; sh:namespace \"http://example.com/\" ] .\n".to_string();
         body.push_str(&chain(400, 0));
         let began = std::time::Instant::now();
@@ -2951,7 +2951,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_too_deep_to_read_is_a_failure_not_a_skip() {
+    fn timing_a_path_too_deep_to_read_is_a_failure_not_a_skip() {
         // 11 steps validate: an odd number of inverses reaches b, backwards
         // along ex:p.
         let r = bounded(&long_path(10), Budget::default(), || false).unwrap();

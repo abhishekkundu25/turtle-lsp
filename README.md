@@ -13,7 +13,7 @@ the whole file formats in about 5 ms. The server starts in a few milliseconds.
 **[Try it in your browser](https://abhishekkundu25.github.io/turtle-lsp/)**: the same server, compiled to
 WebAssembly, in an editor that runs entirely in the tab. Nothing is uploaded.
 
-<p align="center"><img src="assets/demo.gif" alt="Editing RDF in the browser: SHACL errors as you type, completion from the shapes, rename across files" width="900"></p>
+<p align="center"><img src="assets/demo.gif" alt="Editing RDF in the browser: SHACL errors as you type, completion from the shapes, rename across files, a quick fix, and a SPARQL query with its results" width="900"></p>
 
 It is the only Turtle language server we know of that checks itself against
 the full W3C test suites and real public ontologies; see
@@ -61,7 +61,7 @@ fails. A file whose SHA-256 differs from the checksum recorded in
 | Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
 | SPARQL on 1,317 real queries ([SIB sparql-examples](https://github.com/sib-swiss/sparql-examples): UniProt, Rhea, Bgee, neXtProt, ...) | Same verdict as [spargebra](https://crates.io/crates/spargebra) on all; the formatter kept every query's algebra and comments, and formatting twice changes nothing |
 | Gene Ontology (118 MB, 1.28 million triples) | Parsed in 0.4 s, formatted in 0.8 s |
-| Fuzz testing (`tests/chaos.rs`) | On every CI run, 30,000 randomly damaged Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with SPARQL among them), 30,000 JSON-LD documents and 30,000 SPARQL queries and updates, with every editor feature run on each, without a crash |
+| Fuzz testing (`tests/chaos.rs`) | On every CI run (Linux and Windows; nightly 200,000 with a new seed), 30,000 randomly damaged Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with SPARQL among them), 30,000 JSON-LD documents and 30,000 SPARQL queries and updates, with every editor feature run on each, without a crash |
 | Resource checks | No CPU use while idle, no server left running after the editor quits |
 
 ¹ The one left is a SPARQL 1.2 proposal (a projected variable reused in a
@@ -122,7 +122,7 @@ with macOS 27.0: the median of three runs, load average 1.7 to 1.8. Results
 vary a little between runs. The
 bench also has stress rows (near-miss IRIs, a 2.4 MB file, typed completion
 over 40,000 subjects, 200 TriG datasets, `check` on the workspace); CI runs
-it on every push to main and every pull request (see [Performance in CI](#performance-in-ci)).
+it on every push to main, every pull request and nightly (see [Performance in CI](#performance-in-ci)).
 
 Why it is fast:
 
@@ -938,10 +938,12 @@ the modules.
 ### Performance in CI
 
 The CI job "Performance" runs `node bench/perf.mjs --json bench-results.json`
-on `ubuntu-latest` on every push to `main` and every pull request, and
-compares the keystroke rows' median with the results of the last run on
-`main`. On `main`, a ratio over 1.5 fails the job; on a pull request it is
-reported only. To make `main` report only, for example while the runner
-image changes, set the repository variable `PERF_GATE` to `off`.
+on `ubuntu-latest` with the shipped release profile on every push to `main`,
+every pull request and nightly, and compares the keystroke rows' median with the
+results of the last run on `main`: a ratio over 1.5 is marked in the step
+summary and reported only, because shared runners are too noisy for a
+wall-clock gate (`--gate` makes the comparison exit 1 for a local run). The
+memory budget (mimalloc's peak commit, scenario `big-file-peak`) is
+deterministic and gates in the Tests job on Linux and macOS.
 
 Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists the crates, data and packages that the binary, the `.vsix` and the browser site include, with their licences.

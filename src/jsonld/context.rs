@@ -3236,7 +3236,7 @@ mod tests {
 
     /// Processing schema.org's context a second time costs nearly nothing.
     #[test]
-    fn the_bundled_schema_org_context_is_processed_once() {
+    fn timing_the_bundled_schema_org_context_is_processed_once() {
         let cache = ContextCache::new();
         let doc = root(r#"{"@context": "https://schema.org/"}"#);
         let run = || {
@@ -3377,7 +3377,7 @@ mod tests {
     /// Nested contexts that include the one below them twice would take
     /// 2^depth steps: the work is capped, and the error is one.
     #[test]
-    fn doubling_nested_contexts_overflow_quickly() {
+    fn timing_doubling_nested_contexts_overflow_quickly() {
         let mut loader = NoNetwork::default().with(
             "http://example.com/c0",
             r#"{"@context": {"a": "http://a.org/"}}"#,

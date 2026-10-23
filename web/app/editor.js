@@ -269,8 +269,10 @@ function renderTree() {
     const files = [...W.files.keys()].filter((p) => dirOf(p) === dir).sort((a, b) => a.localeCompare(b))
     return { subs, files }
   }
+  // A render during an edit (diagnostics arrived, say) keeps what was typed.
+  const typed = $("tree").querySelector(".tree-input")?.value
   const input = (depth, value) =>
-    `<div class="row" style="padding-left:${8 + depth * 12}px"><span class="tw"></span><input class="tree-input" value="${esc(value)}" spellcheck="false" aria-label="Name"></div>`
+    `<div class="row" style="padding-left:${8 + depth * 12}px"><span class="tw"></span><input class="tree-input" value="${esc(typed ?? value)}" spellcheck="false" aria-label="Name"></div>`
   // Each folder's errors, the files under it summed once.
   const folderErrs = new Map()
   for (const p of W.files.keys()) {
@@ -310,7 +312,8 @@ function renderTree() {
   if (box) {
     box.focus()
     const dot = box.value.lastIndexOf(".")
-    box.setSelectionRange(0, dot > 0 ? dot : box.value.length)
+    if (typed === undefined) box.setSelectionRange(0, dot > 0 ? dot : box.value.length)
+    else box.setSelectionRange(box.value.length, box.value.length)
   }
 }
 
@@ -1083,7 +1086,8 @@ function wire() {
     } else if (e.key === "Enter" && W.selected) W.files.has(W.selected) ? openTab(W.selected) : (W.expanded.has(W.selected) ? W.expanded.delete(W.selected) : W.expanded.add(W.selected), changed({ tree: true, layout: true }))
   })
   tree.addEventListener("focusout", (e) => {
-    if (e.target.classList?.contains("tree-input")) setTimeout(() => W.editing && finishEdit(e.target.value), 0)
+    // Not when a render replaced the input: the new one has the focus.
+    if (e.target.classList?.contains("tree-input")) setTimeout(() => W.editing && e.target.isConnected && finishEdit(e.target.value), 0)
   })
   // A row dragged within the tree moves; files and folders dropped from the
   // desktop are imported. Either lands in the folder under the pointer.

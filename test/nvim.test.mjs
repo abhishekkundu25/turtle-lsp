@@ -7,8 +7,8 @@ import os from "node:os"
 import path from "node:path"
 import { serverPath, fixtures } from "./lsp-client.mjs"
 import { processesOf, leftRunning } from "./procs.mjs"
+import { hasNvim } from "./nvim-release.mjs"
 
-const nvim = spawnSync("nvim", ["--version"])
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-nvim-"))
 // Neovim runs its own copy of the server, so the leak check below sees only
 // servers Neovim started (other test files run servers in parallel).
@@ -16,7 +16,7 @@ const server = path.join(home, path.basename(serverPath))
 fs.copyFileSync(serverPath, server)
 fs.chmodSync(server, 0o755)
 const run =
-  nvim.status === 0
+  hasNvim
     ? spawnSync("nvim", ["--headless", "--clean", "-u", path.join(fixtures, "..", "nvim", "spec.lua")], {
         env: {
           ...process.env,

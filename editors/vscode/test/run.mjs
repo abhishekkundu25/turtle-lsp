@@ -35,14 +35,31 @@ const server = path.join(userData, exe)
 fs.copyFileSync(built, server)
 fs.chmodSync(server, 0o755)
 fs.mkdirSync(path.join(userData, "User"), { recursive: true })
-fs.writeFileSync(path.join(userData, "User", "settings.json"), JSON.stringify({ "turtle.server.path": server }))
+// The built-in AI registers code-action providers as it starts, and VS Code
+// cancels a code-action request when its providers change (VS Code 1.91
+// ignores the key). The client traces messages only while its "Turtle"
+// output channel is at log level trace (`--log` below); the channel is
+// printed when a check fails.
+const settings = { "turtle.server.path": server, "turtle.trace.server": "messages", "chat.disableAIFeatures": true }
+fs.writeFileSync(path.join(userData, "User", "settings.json"), JSON.stringify(settings))
+
+// VS Code writes each output channel to a file under the user data dir's logs.
+function printTurtleOutput() {
+  const logs = path.join(userData, "logs")
+  if (!fs.existsSync(logs)) return
+  for (const entry of fs.readdirSync(logs, { recursive: true })) {
+    if (!/(^|[\\/])Turtle\.log$/.test(entry)) continue
+    console.error(`--- output channel: ${entry}`)
+    console.error(fs.readFileSync(path.join(logs, entry), "utf8"))
+  }
+}
 
 try {
   await runTests({
     version: process.env.VSCODE_VERSION ?? "stable",
     extensionDevelopmentPath,
     extensionTestsPath: path.join(here, "suite.cjs"),
-    launchArgs: [fixtures, "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${userData}`],
+    launchArgs: [fixtures, "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${userData}`, "--log=abhishekkundu25.turtle-language-server:trace"],
     extensionTestsEnv: { TURTLE_FIXTURES: fixtures, TURTLE_LSP_CACHE_DIR: path.join(userData, "cache") },
   })
   // Quitting VS Code must not leave a server behind.
@@ -51,6 +68,7 @@ try {
   console.log("ok - no turtle-lsp left running after VS Code quit")
 } catch (err) {
   console.error(err)
+  printTurtleOutput()
   process.exitCode = 1
 } finally {
   fs.rmSync(userData, { recursive: true, force: true })

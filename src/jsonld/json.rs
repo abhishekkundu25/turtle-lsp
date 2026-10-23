@@ -2030,7 +2030,7 @@ mod tests {
     /// same data. Prints both times; fails when JSON is over twice as slow.
     #[cfg(not(debug_assertions))]
     #[test]
-    fn parses_30000_lines_about_as_fast_as_turtle() {
+    fn timing_parses_30000_lines_about_as_fast_as_turtle() {
         use std::time::{Duration, Instant};
         let mut json = String::from(
             "{\n  \"@context\": {\"ex\": \"http://example.org/\"},\n  \"@graph\": [\n",

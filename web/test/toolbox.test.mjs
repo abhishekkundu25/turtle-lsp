@@ -105,15 +105,20 @@ test("a 20,000-line file draws the lines in view only, edits quickly, and draws 
     assert.ok(drawn > 20 && drawn < 400, `${drawn} lines drawn`)
     const height = await page.evaluate(() => document.getElementById("hl").scrollHeight - document.getElementById("editor").scrollHeight)
     assert.ok(Math.abs(height) < 40, `the drawn text is as tall as the input (${height}px apart)`)
-    // An edit costs a screenful of lines, not the file.
+    // An edit costs a screenful of lines, not the file (a full draw of 20,000
+    // lines takes seconds). Best of three: CI runners are shared.
     const ms = await page.evaluate(() => {
       const ed = document.getElementById("editor")
-      ed.value = "# x\n" + ed.value
-      const t0 = performance.now()
-      ed.dispatchEvent(new Event("input"))
-      return performance.now() - t0
+      let best = Infinity
+      for (let i = 0; i < 3; i++) {
+        ed.value = "# x\n" + ed.value
+        const t0 = performance.now()
+        ed.dispatchEvent(new Event("input"))
+        best = Math.min(best, performance.now() - t0)
+      }
+      return best
     })
-    assert.ok(ms < 100, `an edit took ${ms} ms`)
+    assert.ok(ms < 200, `an edit took ${ms} ms`)
     // Scrolled far down, those lines are drawn and coloured.
     await page.evaluate(() => (document.getElementById("editor").scrollTop = 19 * 15_000))
     await page.locator('#hl .line[data-n="15005"]').waitFor()

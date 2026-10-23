@@ -1,6 +1,6 @@
 [package]
 name = "turtle-lsp"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 # 1.91: `str::floor_char_boundary` (src/query/mod.rs) is the newest std item in use,
 # found by `cargo clippy` (clippy::incompatible_msrv); let chains need 1.88 and the
@@ -10,6 +10,13 @@ rust-version = "1.91"
 license = "MIT"
 description = "Fast language server and command-line checker for RDF (Turtle, TriG, N-Triples, N-Quads, JSON-LD) and SPARQL, with SHACL validation"
 repository = "https://github.com/abhishekkundu25/turtle-lsp"
+
+# main.rs has no tests of its own, so `cargo test` does not link it as a test
+# binary. The integration tests still get the binary they run.
+[[bin]]
+name = "turtle-lsp"
+path = "src/main.rs"
+test = false
 
 [dependencies]
 crossbeam-channel = "0.5.17"

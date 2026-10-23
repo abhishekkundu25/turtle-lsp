@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.0 — 2026-10-23
+
+### Fixed
+
+- **Browser editor: the Vim status bar follows the focused editor of a
+  split.** Giving the focus back to the first editor after `Ctrl+\` could
+  leave the status showing the other editor's mode.
+
+### Internal
+
+- **CI runs in about a third of the time and tests more.** The test jobs
+  build without fat LTO (the shipped profile stays for the nightly run, the
+  Performance job and releases); the wall-clock unit tests run one at a time;
+  the chaos loops run as four shards; one "CI passed" check gates the merge.
+  New in CI: every `web/test` file (14 never ran), the extension's
+  `find-server` and `configuration` tests, the memory budget on every pull
+  request, the SHACL corpus files `src/knowledge.rs` reads, Neovim 0.11 and
+  the Windows plugin install, the minimum Rust version, formatting of
+  `web/engine`, a nightly chaos run with a fresh seed, and the release build
+  on pull requests that change how it is packaged. The VS Code checks wait for
+  the server's code action instead of asking once. Pages deploys only the tip
+  of `main`; the Alpine build is smoke-tested on Alpine.
+
 ## 0.8.0 — 2026-10-23
 
 ### Security

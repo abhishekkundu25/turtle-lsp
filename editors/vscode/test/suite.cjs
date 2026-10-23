@@ -35,6 +35,28 @@ async function settledDiagnostics(doc) {
 const problems = (diags) => diags.filter((d) => d.severity <= vscode.DiagnosticSeverity.Warning)
 const fmt = (diags) => diags.map((d) => `${d.range.start.line}:${d.range.start.character} ${d.message}`).join("; ")
 
+// VS Code cancels a code-action request when its set of providers changes
+// mid-request (its built-in AI registers providers as it starts). The command
+// then fails with "Canceled", or returns only the other providers' actions.
+// Ask again every 100 ms for up to 5 s until `pick(actions)` finds the
+// server's action. Returns that action and the last list of actions; throws
+// the cancellation when the last request was cancelled too.
+async function serverAction(doc, range, kind, resolve, pick) {
+  let actions = []
+  for (const end = Date.now() + 5000; ; ) {
+    try {
+      actions = (await vscode.commands.executeCommand("vscode.executeCodeActionProvider", doc.uri, range, kind, resolve)) ?? []
+      const found = pick(actions)
+      if (found) return { action: found, actions }
+    } catch (err) {
+      if (err?.name !== "Canceled" && err?.message !== "Canceled") throw err
+      if (Date.now() >= end) throw err
+    }
+    if (Date.now() >= end) return { action: undefined, actions }
+    await sleep(100)
+  }
+}
+
 const checks = []
 const check = (name, fn) => checks.push({ name, fn })
 
@@ -118,8 +140,7 @@ check("quick fix adds a missing well-known prefix", async () => {
     diag = vscode.languages.getDiagnostics(doc.uri).find((d) => /skos/.test(d.message))
   }
   assert.ok(diag, "no undeclared-prefix diagnostic")
-  const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", doc.uri, diag.range)
-  const fix = actions.find((a) => /Add @prefix skos:/.test(a.title))
+  const { action: fix, actions } = await serverAction(doc, diag.range, undefined, undefined, (as) => as.find((a) => /Add @prefix skos:/.test(a.title)))
   assert.ok(fix, actions.map((a) => a.title).join(", "))
   assert.ok(await vscode.workspace.applyEdit(fix.edit))
   assert.match(doc.getText(), /@prefix skos: <http:\/\/www\.w3\.org\/2004\/02\/skos\/core#> \./)
@@ -153,8 +174,8 @@ check("organise prefixes is offered as a source action", async () => {
   await vscode.window.showTextDocument(doc)
   await settledDiagnostics(doc)
   const range = new vscode.Range(0, 0, 0, 0)
-  const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", doc.uri, range, vscode.CodeActionKind.SourceOrganizeImports.value)
-  const organise = actions.find((a) => a.title === "Organise prefixes")
+  const kind = vscode.CodeActionKind.SourceOrganizeImports.value
+  const { action: organise, actions } = await serverAction(doc, range, kind, undefined, (as) => as.find((a) => a.title === "Organise prefixes"))
   assert.ok(organise, actions.map((a) => a.title).join(", "))
   assert.ok(vscode.CodeActionKind.SourceOrganizeImports.contains(organise.kind))
   assert.ok(await vscode.workspace.applyEdit(organise.edit))
@@ -168,8 +189,8 @@ check("shorten all IRIs is resolved and applied", async () => {
   await vscode.window.showTextDocument(doc)
   await settledDiagnostics(doc)
   const range = new vscode.Range(1, 0, 1, 0)
-  const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", doc.uri, range, vscode.CodeActionKind.RefactorRewrite.value, 10)
-  const all = actions.find((a) => a.title === "Shorten all IRIs in file")
+  const kind = vscode.CodeActionKind.RefactorRewrite.value
+  const { action: all, actions } = await serverAction(doc, range, kind, 10, (as) => as.find((a) => a.title === "Shorten all IRIs in file" && a.edit))
   assert.ok(all?.edit, actions.map((a) => a.title).join(", "))
   assert.ok(await vscode.workspace.applyEdit(all.edit))
   assert.equal(doc.getText(), "@prefix a: <http://a/> .\na:x a:p a:y .\n")

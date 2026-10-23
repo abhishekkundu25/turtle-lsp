@@ -6,7 +6,7 @@
 // asset, and the installed server attaches with vim.lsp.enable("turtle_lsp").
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import { spawn, spawnSync, execFileSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import crypto from "node:crypto"
 import fs from "node:fs"
 import http from "node:http"
@@ -15,16 +15,9 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { serverPath } from "./lsp-client.mjs"
 import { processesOf, leftRunning } from "./procs.mjs"
+import { hasNvim, ASSET, EXE, pack, windowsTar } from "./nvim-release.mjs"
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
-const hasNvim = spawnSync("nvim", ["--version"]).status === 0
-// The release asset build.lua asks for on this machine.
-const ASSET = {
-  "darwin-arm64": "turtle-lsp-darwin-arm64.tar.gz",
-  "darwin-x64": "turtle-lsp-darwin-x64.tar.gz",
-  "linux-arm64": "turtle-lsp-linux-arm64.tar.gz",
-  "linux-x64": "turtle-lsp-linux-x64.tar.gz",
-}[`${process.platform}-${process.arch}`]
 const skip = !hasNvim ? "nvim not found on PATH" : !ASSET ? "no release asset for this platform" : false
 
 let home, release, server, base
@@ -37,13 +30,13 @@ before(async () => {
   // A release: the built server as this machine's archive, and SHA256SUMS.
   release = path.join(home, "release")
   fs.mkdirSync(path.join(release, "stage"), { recursive: true })
-  fs.copyFileSync(serverPath, path.join(release, "stage", "turtle-lsp"))
-  execFileSync("tar", ["-czf", path.join(release, ASSET), "-C", path.join(release, "stage"), "turtle-lsp"])
+  fs.copyFileSync(serverPath, path.join(release, "stage", EXE))
+  pack(path.join(release, "stage"), path.join(release, ASSET))
   const sum = crypto.createHash("sha256").update(fs.readFileSync(path.join(release, ASSET))).digest("hex")
   fs.writeFileSync(path.join(release, "SHA256SUMS"), `${sum}  ${ASSET}\n`)
   fs.writeFileSync(path.join(release, "BAD"), `${"0".repeat(64)}  ${ASSET}\n`)
   // An archive that matches its checksum but cannot be extracted.
-  const junk = Buffer.from("this is not a tar archive\n".repeat(40))
+  const junk = Buffer.from("this is not an archive\n".repeat(40))
   fs.writeFileSync(path.join(release, "CORRUPT"), junk)
   fs.writeFileSync(path.join(release, "CORRUPT_SUMS"), `${crypto.createHash("sha256").update(junk).digest("hex")}  ${ASSET}\n`)
   server = http.createServer((req, res) => {
@@ -72,16 +65,19 @@ function checkout(name) {
   const dir = path.join(home, name)
   fs.mkdirSync(dir)
   for (const f of ["build.lua", "Cargo.toml", "lsp", "plugin"]) fs.cpSync(path.join(repo, f), path.join(dir, f), { recursive: true })
-  installed.push(path.join(dir, "bin", "turtle-lsp"))
+  installed.push(path.join(dir, "bin", EXE))
   return dir
 }
 
 // Neovim, isolated from the user's config and data, asynchronously (the
 // release is served by this process).
 function nvim(args, env = {}) {
+  const inherited = { ...process.env }
+  // Windows spells it Path: a second key, PATH, would leave which one counts to chance.
+  if (env.PATH) for (const key of Object.keys(inherited)) if (key.toUpperCase() === "PATH") delete inherited[key]
   return new Promise((resolve) => {
     const p = spawn("nvim", ["--headless", "--clean", ...args], {
-      env: { ...process.env, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, ...env },
+      env: { ...inherited, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, ...env },
     })
     let out = ""
     p.stdout.on("data", (d) => (out += d))
@@ -96,9 +92,9 @@ test("build.lua installs the release's server in bin/, and vim.lsp.enable attach
   const build = await nvim(["-l", path.join(dir, "build.lua")], { TURTLE_LSP_RELEASE_URL: `${base}/good` })
   assert.equal(build.code, 0, build.out)
   assert.match(build.out, /installed turtle-lsp \d+\.\d+\.\d+/)
-  const bin = path.join(dir, "bin", "turtle-lsp")
+  const bin = path.join(dir, "bin", EXE)
   assert.ok(fs.existsSync(bin), "bin/turtle-lsp")
-  assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), ["turtle-lsp"], "the archive is removed")
+  assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), [EXE], "the archive is removed")
 
   const ttl = path.join(home, "a.ttl")
   fs.writeFileSync(ttl, "@prefix ex: <https://e.org/> .\nex:a ex:b ex:c .\n")
@@ -118,11 +114,14 @@ test("build.lua installs the release's server in bin/, and vim.lsp.enable attach
   const r = await nvim(["--cmd", `set rtp^=${dir}`, "-c", `lua ${probe.replace(/\n\s*/g, " ")}`])
   const line = r.out.split("\n").find((l) => l.startsWith("RESULT "))
   assert.ok(line, r.out)
-  assert.deepEqual(JSON.parse(line.slice(7)), {
+  const { cmd, ...got } = JSON.parse(line.slice(7))
+  // Compared as files: on Windows Neovim joins with "/" and the temp folder may be a short (8.3) name.
+  assert.ok(cmd, r.out)
+  assert.equal(fs.realpathSync.native(cmd), fs.realpathSync.native(bin))
+  assert.deepEqual(got, {
     ft: "turtle",
     modeline: false,
     name: "turtle_lsp",
-    cmd: bin,
     nq: "nquads",
     jsonld: "jsonld",
     json: "json",
@@ -134,7 +133,7 @@ test("build.lua refuses a download whose checksum does not match SHA256SUMS", { 
   const build = await nvim(["-l", path.join(dir, "build.lua")], { TURTLE_LSP_RELEASE_URL: `${base}/bad` })
   assert.notEqual(build.code, 0)
   assert.match(build.out, /checksum of turtle-lsp-.+ does not match SHA256SUMS/)
-  assert.ok(!fs.existsSync(path.join(dir, "bin", "turtle-lsp")), "nothing installed")
+  assert.ok(!fs.existsSync(path.join(dir, "bin", EXE)), "nothing installed")
 })
 
 // ---------------------------------------------------------------------------
@@ -148,8 +147,20 @@ function onPath(tool) {
   }
 }
 
-/** A directory with the tools build.lua runs, plus `scripts` ({ name: shell script }). */
+const posix = process.platform !== "win32"
+const fakeSkip = skip || (!posix && "needs a POSIX shell")
+
+/**
+ * A directory with the tools build.lua runs, plus `scripts` ({ name: shell
+ * script }); returned as a PATH. On Windows, where a shell script is no tool,
+ * the PATH is nvim's folder and the system folder (curl, tar, certutil), and
+ * neither holds cargo.
+ */
 function toolbox(name, scripts = {}) {
+  if (!posix) {
+    assert.deepEqual(Object.keys(scripts), [], "fake tools need a POSIX shell: give the test fakeSkip")
+    return [path.dirname(onPath("nvim.exe")), path.dirname(windowsTar)].join(path.delimiter)
+  }
   const dir = path.join(home, name)
   fs.mkdirSync(dir)
   // (cp, basename, mkdir and sleep are for the fake scripts below; gzip for GNU
@@ -163,9 +174,6 @@ function toolbox(name, scripts = {}) {
   }
   return dir
 }
-
-const posix = process.platform !== "win32"
-const fakeSkip = skip || (!posix && "needs a POSIX shell")
 
 // A curl that serves the release directory for any URL and logs its arguments.
 const FAKE_CURL = `echo "$@" >> "$FAKE_LOG"
@@ -211,7 +219,7 @@ test("a release without the asset (404) and no cargo: a clear message, nothing i
   assert.match(r.out, /there is no release asset turtle-lsp-.+ at .+\(HTTP 404\)/)
   assert.match(r.out, /cargo is not installed/)
   assert.match(r.out, /rustup\.rs/)
-  assert.ok(!fs.existsSync(path.join(dir, "bin", "turtle-lsp")), "nothing installed")
+  assert.ok(!fs.existsSync(path.join(dir, "bin", EXE)), "nothing installed")
   assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), [], "no download left behind")
 })
 
@@ -230,7 +238,7 @@ mkdir -p target/release && cp "$FAKE_SERVER" target/release/turtle-lsp`,
   assert.match(r.out, /no release asset .*HTTP 404.*; building with cargo/)
   assert.match(fs.readFileSync(log(), "utf8"), /cargo build --release --locked in .*gone-cargo/)
   assert.match(r.out, /installed turtle-lsp \d+\.\d+\.\d+/)
-  assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), ["turtle-lsp"], "only the binary is left")
+  assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), [EXE], "only the binary is left")
 })
 
 test("a cargo build that produces no binary is an error, not a silent success", { skip: fakeSkip }, async () => {
@@ -239,12 +247,12 @@ test("a cargo build that produces no binary is an error, not a silent success", 
   const r = await nvim(["-l", path.join(dir, "build.lua")], { PATH: tools, TURTLE_LSP_RELEASE_URL: `${base}/gone` })
   assert.notEqual(r.code, 0, r.out)
   assert.match(r.out, /could not copy .*target\/release\/turtle-lsp to bin\//)
-  assert.ok(!fs.existsSync(path.join(dir, "bin", "turtle-lsp")))
+  assert.ok(!fs.existsSync(path.join(dir, "bin", EXE)))
 })
 
 test("a failed update leaves the installed server in place", { skip }, async () => {
   const dir = checkout("keep")
-  const bin = path.join(dir, "bin", "turtle-lsp")
+  const bin = path.join(dir, "bin", EXE)
   const first = await nvim(["-l", path.join(dir, "build.lua")], { TURTLE_LSP_RELEASE_URL: `${base}/good` })
   assert.equal(first.code, 0, first.out)
   const before = fs.readFileSync(bin)
@@ -254,7 +262,7 @@ test("a failed update leaves the installed server in place", { skip }, async () 
     assert.notEqual(r.code, 0, `${kind}: ${r.out}`)
     assert.ok(fs.existsSync(bin), `${kind}: the installed server was removed`)
     assert.ok(before.equals(fs.readFileSync(bin)), `${kind}: the installed server changed`)
-    assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), ["turtle-lsp"], `${kind}: leftovers`)
+    assert.deepEqual(fs.readdirSync(path.join(dir, "bin")), [EXE], `${kind}: leftovers`)
   }
 })
 
@@ -274,7 +282,7 @@ test("a download that hangs is stopped, not waited for", { skip: fakeSkip }, asy
 
 test("the real download goes over https with TLS 1.2 and is attested when gh is there", { skip: fakeSkip }, async () => {
   const dir = checkout("https")
-  const bin = path.join(dir, "bin", "turtle-lsp")
+  const bin = path.join(dir, "bin", EXE)
   const withGh = (code) => toolbox(`tools-gh${code}`, { curl: FAKE_CURL, gh: `echo "gh $@" >> "$FAKE_LOG"\nexit ${code}` })
   const version = fs.readFileSync(path.join(repo, "Cargo.toml"), "utf8").match(/^version\s*=\s*"([^"]+)"/m)[1]
 

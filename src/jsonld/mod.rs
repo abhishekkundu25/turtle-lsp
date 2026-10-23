@@ -638,7 +638,7 @@ mod tests {
     /// diagnostics, in tests/jsonld_budget.rs.
     #[cfg(not(debug_assertions))]
     #[test]
-    fn parses_30000_lines_within_4x_of_turtle() {
+    fn timing_parses_30000_lines_within_4x_of_turtle() {
         use std::fmt::Write as _;
         use std::time::{Duration, Instant};
         // The people of bench/jsonld-people.tpl, as the bench writes them
@@ -686,8 +686,9 @@ mod tests {
             j.triples.len(),
             jt.as_secs_f64() / tt.as_secs_f64()
         );
-        // 8x, not 4x: a busy Windows runner measured 4.1x (2.4x on a quiet machine).
-        assert!(jt <= tt * 8, "JSON-LD {jt:?} vs Turtle {tt:?}");
+        // 2.4x on a quiet machine. CI runs this alone (the `timing_` step),
+        // so other tests do not load it.
+        assert!(jt <= tt * 4, "JSON-LD {jt:?} vs Turtle {tt:?}");
     }
 
     #[test]
@@ -801,7 +802,7 @@ mod tests {
     /// Contexts that include the one below twice, 20 levels deep, are one
     /// error, quickly: the work is capped.
     #[test]
-    fn doubling_nested_contexts_are_one_error_not_a_hang() {
+    fn timing_doubling_nested_contexts_are_one_error_not_a_hang() {
         let mut loader = NoNetwork::default().with(
             "http://example.com/c0",
             r#"{"@context": {"a": "http://a.org/"}}"#,
@@ -830,7 +831,7 @@ mod tests {
 
     /// A `@json` literal with 100k keys is canonicalized in linear time.
     #[test]
-    fn a_huge_json_literal_is_parsed_quickly() {
+    fn timing_a_huge_json_literal_is_parsed_quickly() {
         let mut text = String::from(
             r#"{"@context": {"j": {"@id": "http://ex.org/j", "@type": "@json"}}, "@id": "http://ex.org/s", "j": {"#,
         );

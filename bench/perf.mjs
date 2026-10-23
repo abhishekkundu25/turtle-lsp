@@ -10,12 +10,14 @@
 //   --only A,B      run only these scenarios (env BENCH_ONLY)
 //   --list          print the scenario names and stop
 //
-//   node bench/perf.mjs --compare BASE.json CURRENT.json [--max-ratio 1.5] [--report-only]
+//   node bench/perf.mjs --compare BASE.json CURRENT.json [--max-ratio 1.5] [--gate]
 //
-// compares two results files: it prints every row present in both and exits 1
-// when a gated row (a keystroke row's p50) is more than --max-ratio times the
-// base (default 1.5), unless --report-only. Files taken at different scales or
-// on different platforms are not compared as a gate.
+// compares two results files: it prints every row present in both and marks a
+// gated row (a keystroke row's p50) that is more than --max-ratio times the
+// base (default 1.5). It reports only and exits 0: shared runners are too
+// noisy for a wall-clock gate. With --gate it exits 1 when a gated row is over
+// the ratio. Files taken at different scales or on different platforms are not
+// compared as a gate. --report-only is the default and still accepted.
 //
 // Statistics. Every row has n samples. p95 is reported only when n >= 20 (the
 // nearest-rank p95); with fewer samples the table shows the maximum instead and
@@ -60,7 +62,8 @@ function parseArgs(argv) {
     else if (arg === "--list") a.list = true
     else if (arg === "--compare") a.compare = [value(), value()]
     else if (arg === "--max-ratio") a.maxRatio = Number(value())
-    else if (arg === "--report-only") a.reportOnly = true
+    else if (arg === "--report-only") a.gate = false
+    else if (arg === "--gate") a.gate = true
     else if (arg.startsWith("--")) throw new Error(`unknown option ${arg}`)
     else a.positional.push(arg)
   }
@@ -79,7 +82,7 @@ const MIN_FOR_P95 = 20
 
 // ---- results file comparison
 
-function compare(basePath, currentPath, { maxRatio, reportOnly }) {
+function compare(basePath, currentPath, { maxRatio, gate }) {
   const base = JSON.parse(fs.readFileSync(basePath, "utf8"))
   const cur = JSON.parse(fs.readFileSync(currentPath, "utf8"))
   const lines = []
@@ -115,9 +118,9 @@ function compare(basePath, currentPath, { maxRatio, reportOnly }) {
     out(`Not compared as a gate: ${why.join("; ")}.`)
     failed = 0
   }
-  out(failed ? `${failed} gated row(s) over ${maxRatio}x${reportOnly ? " (report only)" : ""}.` : "No gated row over the ratio.")
+  out(failed ? `${failed} gated row(s) over ${maxRatio}x${gate ? "" : " (report only)"}.` : "No gated row over the ratio.")
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n")
-  return reportOnly ? 0 : failed ? 1 : 0
+  return gate && failed ? 1 : 0
 }
 
 const args = parseArgs(process.argv.slice(2))

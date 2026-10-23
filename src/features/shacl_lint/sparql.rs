@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn many_constraints_lint_fast() {
+    fn timing_many_constraints_lint_fast() {
         let mut body = String::new();
         for i in 0..200 {
             body.push_str(&format!(
