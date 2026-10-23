@@ -211,13 +211,37 @@ enum Open {
     Other,
 }
 
+/// All the lexer keeps of the text before a point between tokens: how the
+/// rest lexes depends on nothing else, so it may start there from this.
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct State {
+    open: Vec<Open>,
+    /// In a SELECT clause or a solution modifier (GROUP BY, HAVING, ORDER BY).
+    clause: bool,
+    /// The last two tokens that are no comment, the last first.
+    last: [Option<Last>; 2],
+}
+
+/// A token as the lexer remembers it: its kind, and the keyword (upper case)
+/// or `)` it is.
+#[derive(Clone, Copy, PartialEq)]
+struct Last {
+    kind: TokenKind,
+    word: Option<&'static str>,
+}
+
+/// The least distance between two [`State`]s kept by
+/// [`tokenize_with_states`]; a deeper stack of open brackets spaces them
+/// further, so together they hold no more entries than the text has bytes.
+const STATE_EVERY: usize = 512;
+
 struct Lexer<'a> {
     src: &'a str,
     b: &'a [u8],
     out: Vec<Token>,
-    open: Vec<Open>,
-    /// In a SELECT clause or a solution modifier (GROUP BY, HAVING, ORDER BY).
-    clause: bool,
+    st: State,
+    /// (offset, state) at token starts after whitespace, when asked for.
+    states: Option<Vec<(u32, State)>>,
 }
 
 impl Lexer<'_> {
@@ -228,54 +252,56 @@ impl Lexer<'_> {
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
         debug_assert!(start < end);
         let text = &self.src[start..end];
+        let word = match (kind, text) {
+            (TokenKind::Keyword, _) => keyword(text),
+            (TokenKind::Punct, ")" | ")>>") => Some(")"),
+            _ => None,
+        };
+        let st = &mut self.st;
         match (kind, text) {
             (TokenKind::Punct, "(") => {
-                let kw = |t: Option<&Token>, w: &str| {
-                    t.is_some_and(|t| {
-                        t.kind == TokenKind::Keyword && t.text(self.src).eq_ignore_ascii_case(w)
-                    })
+                let kw = |t: Option<Last>, w: &str| {
+                    t.is_some_and(|t| t.kind == TokenKind::Keyword && t.word == Some(w))
                 };
-                let mut before = self
-                    .out
-                    .iter()
-                    .rev()
-                    .filter(|t| t.kind != TokenKind::Comment);
-                let (prev, prev2) = (before.next(), before.next());
+                let [prev, prev2] = st.last;
                 let call = prev
                     .is_some_and(|t| matches!(t.kind, TokenKind::Iri | TokenKind::PName))
                     && kw(prev2, "FILTER");
-                let expr = self.open.last() == Some(&Open::Expr)
-                    || self.clause
+                let expr = st.open.last() == Some(&Open::Expr)
+                    || st.clause
                     || kw(prev, "FILTER")
                     || kw(prev, "BIND")
                     || prev.is_some_and(|t| t.kind == TokenKind::Function)
                     || call;
-                self.open.push(if expr { Open::Expr } else { Open::Other });
+                st.open.push(if expr { Open::Expr } else { Open::Other });
             }
-            (TokenKind::Punct, "[" | "<<(") => self.open.push(Open::Other),
+            (TokenKind::Punct, "[" | "<<(") => st.open.push(Open::Other),
             (TokenKind::Punct, ")" | "]" | ")>>") => {
-                if matches!(self.open.last(), Some(Open::Expr | Open::Other)) {
-                    self.open.pop();
+                if matches!(st.open.last(), Some(Open::Expr | Open::Other)) {
+                    st.open.pop();
                 }
             }
             (TokenKind::Punct, "{") => {
-                self.open.push(Open::Group(self.clause));
-                self.clause = false;
+                st.open.push(Open::Group(st.clause));
+                st.clause = false;
             }
             (TokenKind::Punct, "}") => {
-                while let Some(o) = self.open.pop() {
+                while let Some(o) = st.open.pop() {
                     if let Open::Group(clause) = o {
-                        self.clause = clause;
+                        st.clause = clause;
                         break;
                     }
                 }
             }
-            (TokenKind::Keyword, _) => match keyword(text) {
-                Some("SELECT" | "GROUP" | "ORDER" | "HAVING") => self.clause = true,
-                Some("WHERE" | "FROM" | "LIMIT" | "OFFSET" | "VALUES") => self.clause = false,
+            (TokenKind::Keyword, _) => match word {
+                Some("SELECT" | "GROUP" | "ORDER" | "HAVING") => st.clause = true,
+                Some("WHERE" | "FROM" | "LIMIT" | "OFFSET" | "VALUES") => st.clause = false,
                 _ => {}
             },
             _ => {}
+        }
+        if kind != TokenKind::Comment {
+            st.last = [Some(Last { kind, word }), st.last[0]];
         }
         self.out.push(Token {
             kind,
@@ -286,23 +312,18 @@ impl Lexer<'_> {
     /// Whether a `<` here is a comparison: it follows an operand inside an
     /// expression, where `spargebra` reads no IRI.
     fn comparison(&self) -> bool {
-        self.open.last() == Some(&Open::Expr)
-            && self
-                .out
-                .iter()
-                .rev()
-                .find(|t| t.kind != TokenKind::Comment)
-                .is_some_and(|t| match t.kind {
-                    TokenKind::Var
-                    | TokenKind::String
-                    | TokenKind::Number
-                    | TokenKind::Boolean
-                    | TokenKind::LangTag
-                    | TokenKind::Iri
-                    | TokenKind::PName => true,
-                    TokenKind::Punct => matches!(t.text(self.src), ")" | ")>>"),
-                    _ => false,
-                })
+        self.st.open.last() == Some(&Open::Expr)
+            && self.st.last[0].is_some_and(|t| match t.kind {
+                TokenKind::Var
+                | TokenKind::String
+                | TokenKind::Number
+                | TokenKind::Boolean
+                | TokenKind::LangTag
+                | TokenKind::Iri
+                | TokenKind::PName => true,
+                TokenKind::Punct => t.word == Some(")"),
+                _ => false,
+            })
     }
 
     /// End of the IRI reference starting with `<` at `i`, if one does.
@@ -460,8 +481,18 @@ impl Lexer<'_> {
     fn run(&mut self) {
         let b = self.b;
         let mut i = 0;
+        let space = |c: u8| matches!(c, b' ' | b'\t' | b'\r' | b'\n');
+        let mut next_state = STATE_EVERY;
         while i < b.len() {
             let c = b[i];
+            if let Some(states) = &mut self.states
+                && i >= next_state
+                && !space(c)
+                && space(b[i - 1])
+            {
+                states.push((i as u32, self.st.clone()));
+                next_state = i + STATE_EVERY.max(self.st.open.len());
+            }
             match c {
                 b' ' | b'\t' | b'\r' | b'\n' => i += 1,
                 b'#' => {
@@ -694,18 +725,45 @@ fn exponent(b: &[u8], k: usize) -> Option<usize> {
 
 /// Every token of `src`, comments included, in order.
 pub fn tokenize(src: &str) -> Vec<Token> {
-    let mut l = Lexer {
-        src,
-        b: src.as_bytes(),
-        out: Vec::with_capacity(src.len() / 4),
-        open: Vec::new(),
-        clause: false,
-    };
-    l.run();
-    l.out
+    lex(src, State::default(), false).0
+}
+
+/// [`tokenize`], with the state at token starts after whitespace about
+/// every [`STATE_EVERY`] bytes, the first at 0: places
+/// [`resume`] may lex a part of `src` from.
+pub(crate) fn tokenize_with_states(src: &str) -> (Vec<Token>, Vec<(u32, State)>) {
+    let (out, _, states) = lex(src, State::default(), true);
+    (out, states)
+}
+
+/// (kind, span) of every token of `src` lexed from `state`, and the state
+/// after the last.
+pub(crate) fn resume(src: &str, state: State) -> (Vec<(TokenKind, Span)>, State) {
+    let (out, state, _) = lex(src, state, false);
+    (out.iter().map(|t| (t.kind, t.span)).collect(), state)
 }
 
 /// (kind, span) of every token of `src`, for `syntax::names::token_edits`.
 pub(crate) fn kinds(src: &str) -> Vec<(TokenKind, Span)> {
-    tokenize(src).iter().map(|t| (t.kind, t.span)).collect()
+    resume(src, State::default()).0
+}
+
+fn lex(src: &str, st: State, keep_states: bool) -> (Vec<Token>, State, Vec<(u32, State)>) {
+    #[cfg(test)]
+    LEXED.with(|n| n.set(n.get() + src.len()));
+    let mut l = Lexer {
+        src,
+        b: src.as_bytes(),
+        out: Vec::with_capacity(src.len() / 4),
+        st,
+        states: keep_states.then(|| vec![(0, State::default())]),
+    };
+    l.run();
+    (l.out, l.st, l.states.unwrap_or_default())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes this thread has lexed: an edit's cost without a clock.
+    pub(crate) static LEXED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

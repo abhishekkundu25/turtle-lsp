@@ -121,6 +121,29 @@ fn angle_brackets_are_iris_or_operators() {
 }
 
 #[test]
+fn lexing_from_a_kept_state_gives_the_tokens_of_the_whole_text() {
+    let part = "{ ?s<http://e/p>?o FILTER(?o)<http://e/s> ?p ( ?o<http://e/l> ) \
+                FILTER(?a<=ex:b&&?c>?a) BIND(ex:f(?x)<3 AS ?y) }\n";
+    let text = format!(
+        "SELECT ?x (<http://e/f>(?x)<3 AS ?y) {{ {} }} ORDER BY ?x <http://e/f>(?x<?y)",
+        part.repeat(60)
+    );
+    let (all, states) = lexer::tokenize_with_states(&text);
+    assert!(states.len() > 10, "{} states", states.len());
+    for (at, state) in states {
+        let rest = all.iter().filter(|t| t.span.start >= at);
+        let want: Vec<_> = rest
+            .map(|t| (t.kind, Span::new(t.span.start - at, t.span.end - at)))
+            .collect();
+        assert_eq!(
+            lexer::resume(&text[at as usize..], state).0,
+            want,
+            "from {at}"
+        );
+    }
+}
+
+#[test]
 fn a_less_than_after_an_operand_is_the_operator() {
     use TokenKind::*;
     let tail = |q: &'static str| {

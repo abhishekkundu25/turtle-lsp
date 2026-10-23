@@ -158,6 +158,8 @@ impl Token {
 pub struct Document {
     text: String,
     tokens: Vec<Token>,
+    /// Where the lexer may start again: see [`Document::lexer_state_at`].
+    states: Vec<(u32, lexer::State)>,
     structure: Structure,
     diagnostics: Vec<Diagnostic>,
 }
@@ -166,12 +168,13 @@ impl Document {
     /// Parses `text` with the prefixes the document does not declare itself
     /// (project and setting prefixes) and the base IRI it is resolved against.
     pub fn parse(text: &str, prefixes: &PrefixMap, base: Option<&str>) -> Document {
-        let tokens = lexer::tokenize(text);
+        let (tokens, states) = lexer::tokenize_with_states(text);
         let structure = structure::build(text, &tokens, prefixes, base);
         let diagnostics = diagnostics::diagnostics(text, &tokens, &structure, prefixes, base);
         Document {
             text: text.to_owned(),
             tokens,
+            states,
             structure,
             diagnostics,
         }
@@ -184,11 +187,12 @@ impl Document {
         prefixes: &PrefixMap,
         base: Option<&str>,
     ) -> Document {
-        let tokens = lexer::tokenize(text);
+        let (tokens, states) = lexer::tokenize_with_states(text);
         let structure = structure::build(text, &tokens, prefixes, base);
         Document {
             text: text.to_owned(),
             tokens,
+            states,
             structure,
             diagnostics: Vec::new(),
         }
@@ -202,6 +206,13 @@ impl Document {
     /// Every token, comments included, in order.
     pub fn tokens(&self) -> &[Token] {
         &self.tokens
+    }
+
+    /// The last place at or before `offset` the lexer may start from, and
+    /// the state to start in: a token start after whitespace, or 0.
+    pub(crate) fn lexer_state_at(&self, offset: u32) -> (u32, lexer::State) {
+        let i = self.states.partition_point(|s| s.0 <= offset);
+        self.states[i - 1].clone()
     }
 
     /// The prologue, operations, groups, scopes, variables and IRIs.

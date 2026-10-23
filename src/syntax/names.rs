@@ -161,11 +161,23 @@ pub(crate) fn turtle_token_edits(
 /// that change.
 pub(crate) fn token_edits<K: PartialEq + Copy>(
     text: &str,
-    mut reps: Vec<(Span, String)>,
+    reps: Vec<(Span, String)>,
     lex: impl Fn(&str) -> Vec<(K, Span)>,
 ) -> Vec<(Span, String)> {
+    token_edits_after(text, reps, &lex, &lex)
+}
+
+/// [`token_edits`] where `text` and its edited forms lex by `lex_text`, a
+/// lexer that knows what came before `text`, and each replacement alone by
+/// `lex`.
+pub(crate) fn token_edits_after<K: PartialEq + Copy>(
+    text: &str,
+    mut reps: Vec<(Span, String)>,
+    lex: &dyn Fn(&str) -> Vec<(K, Span)>,
+    lex_text: &dyn Fn(&str) -> Vec<(K, Span)>,
+) -> Vec<(Span, String)> {
     reps.sort_by_key(|(s, _)| s.start);
-    let old = lex(text);
+    let old = lex_text(text);
     // A space at each end of each replacement: `2 * r` before, `2 * r + 1` after.
     let mut pads = vec![false; 2 * reps.len()];
     let padded = |pads: &[bool], r: usize, rep: &str| {
@@ -196,7 +208,7 @@ pub(crate) fn token_edits<K: PartialEq + Copy>(
         let shift = new.len() as i64 - copied as i64;
         want.extend(old_tokens.map(|&(k, s)| (k, moved(s, shift))));
         new.push_str(&text[copied..]);
-        let got = lex(&new);
+        let got = lex_text(&new);
         // Each run of differing tokens, from where both streams part to where
         // they end a token at the same offset, gets a space at its first end
         // of a replacement that has none, inside the run before at its edge.

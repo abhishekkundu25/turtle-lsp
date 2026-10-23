@@ -2,7 +2,7 @@
 //! extract a prefix for a namespace. Every edit keeps the graph the same.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::syntax::lexer::Kind;
+use crate::syntax::lexer::{Kind, Token};
 use crate::syntax::names::{
     Scope, declarable_namespace, declaration_edit, declaration_point, is_pn_local, is_pn_prefix,
     newline, shorten, turtle_token_edits,
@@ -217,7 +217,17 @@ fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
 
 /// Edits replacing whole tokens, through [`turtle_token_edits`].
 pub(crate) fn text_edits(a: &Analysis, enc: Encoding, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
-    turtle_token_edits(&a.text, &a.tokens_or_lexed(), reps)
+    text_edits_in(a, &a.tokens_or_lexed(), enc, reps)
+}
+
+/// [`text_edits`] with `tokens`, those of `a`, in hand.
+pub(crate) fn text_edits_in(
+    a: &Analysis,
+    tokens: &[Token],
+    enc: Encoding,
+    reps: Vec<(Span, String)>,
+) -> Vec<TextEdit> {
+    turtle_token_edits(&a.text, tokens, reps)
         .into_iter()
         .map(|(span, new_text)| TextEdit {
             range: a.range(enc, span),

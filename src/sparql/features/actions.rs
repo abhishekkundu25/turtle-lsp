@@ -13,9 +13,10 @@ use crate::features::refactor::{
     Directive, expand_iri, line_content_end, organise_block, wanted, workspace_edit,
 };
 use crate::knowledge::Knowledge;
-use crate::sparql::{Form, Level, PrefixSource, TermRef};
+use crate::sparql::lexer;
+use crate::sparql::{Form, Level, PrefixSource, TermRef, TokenKind};
 use crate::syntax::Span;
-use crate::syntax::names::{newline, shorten, token_edits};
+use crate::syntax::names::{newline, shorten, token_edits_after};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
@@ -262,29 +263,47 @@ fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Vec<TextEdit> {
     text_edits(q, enc, shortenable(q))
 }
 
-/// Edits replacing whole tokens, through [`token_edits`] on the operations
-/// that hold them: how `<` lexes depends on the brackets open before it, and
-/// none are open where an operation starts.
+/// Edits replacing whole tokens, through [`token_edits_after`] on a window
+/// around them: how `<` lexes depends on the brackets open before it, so the
+/// window starts where the document kept the lexer's state, and it ends two
+/// tokens past the last edit, where the edited text leaves the lexer as the
+/// old one did (else at the end of the text), so what follows lexes as before.
 pub(super) fn text_edits(
     q: &SparqlAnalysis,
     enc: Encoding,
     reps: Vec<(Span, String)>,
 ) -> Vec<TextEdit> {
-    let ops = &q.doc.structure().operations;
-    let op = |at: u32| {
-        ops.iter()
-            .find(|o| o.keyword.start <= at && at <= o.span.end)
-    };
+    let (text, tokens) = (q.text(), q.doc.tokens());
     let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
     let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
-    let from = op(lo).map_or(0, |o| o.keyword.start);
-    let to = op(hi).map_or(q.text().len() as u32, |o| o.span.end);
-    let reps = reps
+    let (from, state) = q.doc.lexer_state_at(lo);
+    let lex_text = |s: &str| lexer::resume(s, state.clone());
+    let reps: Vec<_> = reps
         .into_iter()
         .map(|(s, r)| (Span::new(s.start - from, s.end - from), r))
         .collect();
-    let window = &q.text()[from as usize..to as usize];
-    token_edits(window, reps, crate::sparql::lexer::kinds)
+    // The lexer remembers the last two tokens: past them, at a gap, the states can meet again.
+    let (mut to, mut more) = (hi as usize, 2);
+    for t in &tokens[tokens.partition_point(|t| t.span.end <= hi)..] {
+        if more == 0 && t.span.start as usize > to {
+            break;
+        }
+        more -= usize::from(more > 0 && t.kind != TokenKind::Comment);
+        to = t.span.end as usize;
+    }
+    let edits_to = |to: usize| {
+        let window = &text[from as usize..to];
+        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &|s| lex_text(s).0);
+        let mut new = window.to_owned();
+        for (s, t) in edits.iter().rev() {
+            new.replace_range(s.start as usize..s.end as usize, t);
+        }
+        (to == text.len() || lex_text(&new).1 == lex_text(window).1).then_some(edits)
+    };
+    let edits = edits_to(to)
+        .or_else(|| edits_to(text.len()))
+        .unwrap_or_default();
+    edits
         .into_iter()
         .map(|(span, new_text)| TextEdit {
             range: q.range(enc, Span::new(span.start + from, span.end + from)),
@@ -346,4 +365,45 @@ fn organise(q: &SparqlAnalysis, enc: Encoding) -> Option<TextEdit> {
         range: q.range(enc, span),
         new_text,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::PrefixMap;
+    use std::sync::Arc;
+
+    /// "Change to" in a group of `n` triples lexes the text around the term,
+    /// not the operation: the bytes lexed do not grow with `n`.
+    #[test]
+    fn a_token_edit_lexes_its_neighbourhood_not_the_operation() {
+        let lexed = |n: usize, new: &str| {
+            let text = format!(
+                "SELECT * WHERE {{ {}FILTER(?s < ex:a) }}",
+                "?s ?p ?o . ".repeat(n)
+            );
+            let q =
+                SparqlAnalysis::new("file:///q.rq".into(), &text, Arc::new(PrefixMap::default()));
+            let at = text.find("ex:a").unwrap() as u32;
+            lexer::LEXED.with(|c| c.set(0));
+            let edits = text_edits(
+                &q,
+                Encoding::Utf8,
+                vec![(Span::new(at, at + 4), new.into())],
+            );
+            let edits: Vec<_> = edits.into_iter().map(|e| e.new_text).collect();
+            (edits, lexer::LEXED.with(|c| c.get()))
+        };
+        // In context the `<` is the operator, so the IRI needs no space.
+        let (one, two) = (lexed(10_000, "<http://e/b>"), lexed(20_000, "<http://e/b>"));
+        assert_eq!(one.0, ["<http://e/b>"]);
+        assert!(
+            one.1 < 4096 && two.1 < 4096,
+            "{} then {} bytes",
+            one.1,
+            two.1
+        );
+        // An edit that opens a group changes how the rest lexes: the window grows to the end.
+        assert_eq!(lexed(10, "{").0, ["{"]);
+    }
 }

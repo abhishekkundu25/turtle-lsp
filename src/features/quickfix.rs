@@ -9,9 +9,10 @@
 
 use super::diagnostics::SOURCE;
 use crate::analysis::{Analysis, Encoding};
-use crate::features::refactor::text_edits;
+use crate::features::refactor::text_edits_in;
 use crate::jsonld;
 use crate::knowledge::Knowledge;
+use crate::syntax::lexer::Token;
 use crate::syntax::names::{declaration_edit, declaration_keyword, declarations_edit, newline};
 use crate::syntax::{Iri, Node, Span};
 use crate::vocab::VOCABS;
@@ -19,6 +20,7 @@ use lsp_types::*;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 
 /// A namespace to bind an undeclared prefix name to.
@@ -220,6 +222,8 @@ pub(crate) struct Fixer<'a> {
     first_uses: OnceCell<FxHashMap<&'a str, u32>>,
     /// [`Fixer::declaration`] by prefix, namespace and the offset it serves.
     declarations: RefCell<FxHashMap<(String, String, u32), TextEdit>>,
+    /// The document's tokens, lexed once for all the fixes when it keeps none.
+    tokens: OnceCell<Cow<'a, [Token]>>,
 }
 
 impl<'a> Fixer<'a> {
@@ -234,7 +238,14 @@ impl<'a> Fixer<'a> {
             imports: RefCell::default(),
             first_uses: OnceCell::new(),
             declarations: RefCell::default(),
+            tokens: OnceCell::new(),
         }
+    }
+
+    /// Edits replacing whole tokens, through [`text_edits_in`].
+    fn text_edits(&self, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
+        let tokens = self.tokens.get_or_init(|| self.a.tokens_or_lexed());
+        text_edits_in(self.a, tokens, self.enc, reps)
     }
 
     /// The edit that declares `prefix` as `ns` for a use at `at`. Every use
@@ -360,7 +371,7 @@ impl<'a> Fixer<'a> {
                 let start = a.offset(enc, d.range.start).unwrap_or(0);
                 let end = a.offset(enc, d.range.end).unwrap_or(0);
                 let span = removal(&a.text, Span::new(start, end));
-                let edits = text_edits(a, enc, vec![(span, String::new())]);
+                let edits = self.text_edits(vec![(span, String::new())]);
                 vec![self.quick(title.to_string(), d, edits, true)]
             }
             "unknown-term" | crate::features::lint::CODE => {
@@ -372,7 +383,7 @@ impl<'a> Fixer<'a> {
                 else {
                     return Vec::new();
                 };
-                let edits = text_edits(a, enc, vec![(Span::new(start, end), replace.clone())]);
+                let edits = self.text_edits(vec![(Span::new(start, end), replace.clone())]);
                 vec![self.quick(format!("Change to '{replace}'"), d, edits, true)]
             }
             _ => Vec::new(),
@@ -750,6 +761,32 @@ mod tests {
         assert!(matches!(FixData::of(&r), Some(FixData::Replace { .. })));
         r.source = Some("other".into());
         assert_eq!(FixData::of(&r), None);
+    }
+
+    /// A document kept without its tokens is lexed once for all its fixes,
+    /// not once per fix.
+    #[test]
+    fn the_fixes_of_a_document_without_tokens_lex_it_once() {
+        let unused: String = (0..200)
+            .map(|i| format!("@prefix p{i}: <http://example.org/p{i}/> .\n"))
+            .collect();
+        let text = format!("{unused}<http://example.org/s> <http://example.org/p> 1 .\n");
+        let uri: Uri = "file:///t/doc.ttl".parse().unwrap();
+        let a = Analysis::new(uri.to_string(), &text, Arc::default(), false);
+        let k = Knowledge::default();
+        let found = diagnostics(&a, &k, Encoding::Utf8);
+        let fixer = Fixer::new(&a, &k, Encoding::Utf8, &uri);
+        crate::syntax::lexer::LEXED.with(|c| c.set(0));
+        let fixes: usize = found.iter().map(|d| fixer.for_diagnostic(d).len()).sum();
+        assert_eq!(fixes, 200);
+        let lexed = crate::syntax::lexer::LEXED.with(|c| c.get());
+        // The text once, then a line or so around each fix.
+        assert!(
+            lexed < 4 * text.len(),
+            "{lexed} bytes lexed for {}",
+            text.len()
+        );
+        assert!(!a.has_tokens());
     }
 
     #[test]
