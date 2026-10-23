@@ -385,7 +385,7 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/grammar.test.mjs test/manifest.test.mjs && node test/run.mjs",
+    "test": "npm run build && node --test test/*.test.mjs && node test/run.mjs",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
