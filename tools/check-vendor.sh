@@ -1,51 +1,66 @@
 #!/usr/bin/env bash
-# Checks that vendor/spareval is spareval 0.2.7 as published on crates.io plus
-# its two patches (cancellation-in-joins.patch, dir-lang-string-equality.patch),
-# and nothing else. Run by CI (the audit job);
+# Checks that each folder under vendor/ is its crate as published on crates.io
+# plus its patches, and nothing else. Run by CI (the audit job);
 # locally: tools/check-vendor.sh. Needs curl, tar, patch and diff.
 #
-# When the vendored copy moves to another release, change VERSION and SHA256
+# When a vendored copy moves to another release, change its row in CRATES
 # (the checksum is the "cksum" of the release in the crates.io index) and
-# regenerate the patch (vendor/spareval/PATCH.md).
+# regenerate the patches (vendor/<crate>/PATCH.md).
 set -euo pipefail
 
-VERSION=0.2.7
-SHA256=85b51144836ff9ca2f792b7a2422c4170ff04460d86cd8f2f764cf53e339cbec
+# name version sha256 strip-depth patch-files (comma-separated, "-" for none)
+# The patches of spareval are diffs of oxigraph's tree (a/lib/spareval/src/...);
+# the crate has src/ at its top, hence depth 3.
+CRATES=(
+  "spareval 0.2.7 85b51144836ff9ca2f792b7a2422c4170ff04460d86cd8f2f764cf53e339cbec 3 cancellation-in-joins.patch,dir-lang-string-equality.patch"
+  "spargebra 0.4.7 bef3c186ffb9bf2dde7c5edd5528583f309fcb819b5773cf0e313194a990304f 0 -"
+)
 
-vendor=$(cd "$(dirname "$0")/../vendor/spareval" && pwd)
+root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-curl --fail --silent --show-error --location --retry 3 \
-  --output "$work/spareval.crate" \
-  "https://static.crates.io/crates/spareval/spareval-$VERSION.crate"
+for row in "${CRATES[@]}"; do
+  read -r name version sha256 strip patches <<<"$row"
+  vendor="$root/vendor/$name"
+  file="$work/$name.crate"
 
-if command -v sha256sum >/dev/null; then
-  actual=$(sha256sum "$work/spareval.crate" | cut -d' ' -f1)
-else
-  actual=$(shasum -a 256 "$work/spareval.crate" | cut -d' ' -f1)
-fi
-if [ "$actual" != "$SHA256" ]; then
-  echo "spareval-$VERSION.crate has sha256 $actual, expected $SHA256" >&2
-  exit 1
-fi
+  curl --fail --silent --show-error --location --retry 3 \
+    --output "$file" \
+    "https://static.crates.io/crates/$name/$name-$version.crate"
 
-tar -xzf "$work/spareval.crate" -C "$work"
-upstream="$work/spareval-$VERSION"
+  if command -v sha256sum >/dev/null; then
+    actual=$(sha256sum "$file" | cut -d' ' -f1)
+  else
+    actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+  fi
+  if [ "$actual" != "$sha256" ]; then
+    echo "$name-$version.crate has sha256 $actual, expected $sha256" >&2
+    exit 1
+  fi
 
-# The patches are diffs of oxigraph's tree (a/lib/spareval/src/...); the
-# crate has src/ at its top.
-for p in cancellation-in-joins.patch dir-lang-string-equality.patch; do
-  patch --quiet --strip=3 --directory="$upstream" --input="$vendor/$p"
+  tar -xzf "$file" -C "$work"
+  upstream="$work/$name-$version"
+
+  # What the vendored copy adds to the crate: the licence file, the notes on
+  # the patches and the patch files. The crate's own Cargo.lock is not
+  # vendored.
+  excludes=(--exclude=Cargo.lock --exclude=LICENSE-MIT --exclude=PATCH.md)
+  if [ "$patches" != "-" ]; then
+    IFS=, read -ra files <<<"$patches"
+    for p in "${files[@]}"; do
+      patch --quiet --strip="$strip" --directory="$upstream" --input="$vendor/$p"
+      excludes+=("--exclude=$p")
+    done
+  fi
+
+  if ! diff --recursive --unified "${excludes[@]}" "$upstream" "$vendor"; then
+    echo "vendor/$name differs from $name $version plus its patches" >&2
+    exit 1
+  fi
+  if [ "$patches" = "-" ]; then
+    echo "vendor/$name is $name $version, unchanged"
+  else
+    echo "vendor/$name is $name $version plus ${patches//,/, }"
+  fi
 done
-
-# What the vendored copy adds to the crate: the licence file (from the same
-# oxigraph commit) and the notes on the patch. The crate's own Cargo.lock is
-# not vendored.
-if ! diff --recursive --unified \
-  --exclude=Cargo.lock --exclude=LICENSE-MIT --exclude=PATCH.md --exclude=cancellation-in-joins.patch --exclude=dir-lang-string-equality.patch \
-  "$upstream" "$vendor"; then
-  echo "vendor/spareval differs from spareval $VERSION plus its patches" >&2
-  exit 1
-fi
-echo "vendor/spareval is spareval $VERSION plus its patches"

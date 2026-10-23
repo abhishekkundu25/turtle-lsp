@@ -393,3 +393,115 @@ fn canonical_algebra_ignores_generated_names() {
         algebra("SELECT * { ?s ?p ?x }", "http://example.com/", false).unwrap()
     );
 }
+
+// Golden record of what spargebra makes of real queries, so a change to the
+// vendored grammar (vendor/spargebra) that rejects a query that parsed, or
+// changes its algebra, shows as a difference. The record is
+// tests/sparql_golden.txt: one `path<TAB>algebra` line per `.rq` file in the
+// W3C suites and test/corpus that parses, sorted by path, with generated
+// names renumbered by `canonical` and `\` and line breaks escaped. Each
+// query is parsed with the base `http://example.org/base/<path>`. To accept
+// a deliberate change, rerun with UPDATE_GOLDEN=1 and review the data diff.
+
+const GOLDEN: &str = "tests/sparql_golden.txt";
+
+fn repo() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn query_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            query_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rq") {
+            out.push(p);
+        }
+    }
+}
+
+fn escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+}
+
+fn current() -> String {
+    let mut files = Vec::new();
+    query_files(&repo().join("tests/w3c/sparql-tests"), &mut files);
+    query_files(&repo().join("test/corpus"), &mut files);
+    let mut lines = BTreeMap::new();
+    for f in files {
+        let rel = f
+            .strip_prefix(repo())
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Ok(text) = fs::read_to_string(&f) else {
+            continue;
+        };
+        let parsed = spargebra::SparqlParser::new()
+            .with_base_iri(format!("http://example.org/base/{rel}"))
+            .unwrap()
+            .parse_query(&text);
+        if let Ok(q) = parsed {
+            lines.insert(rel, escape(&canonical(&q.to_string())));
+        }
+    }
+    let mut out = String::new();
+    for (path, algebra) in lines {
+        out.push_str(&format!("{path}\t{algebra}\n"));
+    }
+    out
+}
+
+#[test]
+fn parsed_queries_match_the_golden_record() {
+    let now = current();
+    let path = repo().join(GOLDEN);
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        fs::write(&path, &now).unwrap();
+        return;
+    }
+    let had = fs::read_to_string(&path).unwrap_or_default();
+    // test/corpus is not in a fresh checkout: its entries are compared only
+    // when it is present.
+    let corpus = repo().join("test/corpus").is_dir();
+    let keep = |l: &&str| corpus || !l.starts_with("test/corpus/");
+    let map = |s: &str| -> BTreeMap<String, String> {
+        s.lines()
+            .filter(keep)
+            .filter_map(|l| l.split_once('\t'))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    let (want, got) = (map(&had), map(&now));
+    let mut diffs = Vec::new();
+    for (k, v) in &want {
+        match got.get(k) {
+            None => diffs.push(format!("{k}: parsed before, no longer parses")),
+            Some(g) if g != v => {
+                diffs.push(format!("{k}: algebra changed\n  was: {v}\n  now: {g}"))
+            }
+            _ => {}
+        }
+    }
+    for k in got.keys().filter(|k| !want.contains_key(*k)) {
+        diffs.push(format!("{k}: parses now, not in the record"));
+    }
+    assert!(
+        diffs.is_empty(),
+        "{} differences from {GOLDEN} (UPDATE_GOLDEN=1 accepts them):\n{}",
+        diffs.len(),
+        diffs
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(want.len() > 300, "only {} queries recorded", want.len());
+}
