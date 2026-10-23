@@ -69,7 +69,10 @@ pub(crate) fn code_actions(
                 }
                 for (i, c) in candidates.iter().enumerate() {
                     let title = candidate_title(&p, c, "PREFIX");
-                    let fix = in_document_style(q, add_prefix(q, enc, &p, &c.namespace));
+                    let Some(fix) = add_prefix(q, enc, &p, &c.namespace) else {
+                        continue;
+                    };
+                    let fix = in_document_style(q, fix);
                     out.push(quick(title, Some(d), vec![fix], Some(i == 0)));
                 }
                 missing.push(p);
@@ -81,7 +84,9 @@ pub(crate) fn code_actions(
                     continue;
                 };
                 let span = removal(q.text(), Span::new(start, end));
-                let fix = text_edits(q, enc, vec![(span, String::new())]);
+                let Some(fix) = text_edits(q, enc, vec![(span, String::new())]) else {
+                    continue;
+                };
                 let title = if code == "unused-prefix" {
                     "Remove unused prefix"
                 } else {
@@ -98,7 +103,10 @@ pub(crate) fn code_actions(
                 else {
                     continue;
                 };
-                let fix = text_edits(q, enc, vec![(Span::new(start, end), rep.clone())]);
+                let Some(fix) = text_edits(q, enc, vec![(Span::new(start, end), rep.clone())])
+                else {
+                    continue;
+                };
                 out.push(quick(
                     format!("Change to '{rep}'"),
                     Some(d),
@@ -141,14 +149,16 @@ pub(crate) fn code_actions(
             let at = |new_text: String| text_edits(q, enc, vec![(r.span, new_text)]);
             match r.form {
                 Form::Iri => {
-                    if let Some(pname) = shorten(iri, &scope_at(q, r.span.start)) {
+                    if let Some(pname) = shorten(iri, &scope_at(q, r.span.start))
+                        && let Some(edits) = at(pname.clone())
+                    {
                         let title = format!("Shorten IRI to {pname}");
-                        out.push(rewrite(title, Some(at(pname)), None));
+                        out.push(rewrite(title, Some(edits), None));
                     }
                 }
                 Form::PName { .. } => {
-                    if let Some(full) = expand_iri(iri, true) {
-                        out.push(rewrite("Expand to full IRI".into(), Some(at(full)), None));
+                    if let Some(edits) = expand_iri(iri, true).and_then(at) {
+                        out.push(rewrite("Expand to full IRI".into(), Some(edits), None));
                     }
                 }
                 Form::A => {}
@@ -158,8 +168,9 @@ pub(crate) fn code_actions(
         let edits = if lazy {
             (!shortenable(q).is_empty()).then_some(None)
         } else {
-            let edits = shorten_all_edits(q, enc);
-            (!edits.is_empty()).then_some(Some(edits))
+            shorten_all_edits(q, enc)
+                .filter(|e| !e.is_empty())
+                .map(Some)
         };
         if let Some(edits) = edits {
             out.push(rewrite(
@@ -188,7 +199,7 @@ pub(crate) fn resolve_code_action(
     let Ok(uri) = serde_json::from_value::<Uri>(data["uri"].clone()) else {
         return action;
     };
-    action.edit = Some(workspace_edit(&uri, shorten_all_edits(q, enc)));
+    action.edit = shorten_all_edits(q, enc).map(|e| workspace_edit(&uri, e));
     action
 }
 
@@ -210,7 +221,7 @@ fn add_all_missing(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> Option<C
         return None;
     }
     let line = |(p, ns): &(&str, String)| format!("PREFIX {p}: <{ns}>");
-    let mut fix = add_prefix(q, enc, all[0].0, &all[0].1);
+    let mut fix = add_prefix(q, enc, all[0].0, &all[0].1)?;
     let lines: Vec<String> = all.iter().map(line).collect();
     fix.new_text = fix.new_text.replacen(&line(&all[0]), &lines.join("\n"), 1);
     let fix = in_document_style(q, fix);
@@ -259,7 +270,7 @@ fn shortenable(q: &SparqlAnalysis) -> Vec<(Span, String)> {
         .collect()
 }
 
-fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Vec<TextEdit> {
+fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Option<Vec<TextEdit>> {
     text_edits(q, enc, shortenable(q))
 }
 
@@ -268,11 +279,12 @@ fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Vec<TextEdit> {
 /// window starts where the document kept the lexer's state, and it ends two
 /// tokens past the last edit, where the edited text leaves the lexer as the
 /// old one did (else at the end of the text), so what follows lexes as before.
+/// `None` when the edits cannot keep the tokens (see [`token_edits_after`]).
 pub(super) fn text_edits(
     q: &SparqlAnalysis,
     enc: Encoding,
     reps: Vec<(Span, String)>,
-) -> Vec<TextEdit> {
+) -> Option<Vec<TextEdit>> {
     let (text, tokens) = (q.text(), q.doc.tokens());
     let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
     let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
@@ -293,23 +305,22 @@ pub(super) fn text_edits(
     }
     let edits_to = |to: usize| {
         let window = &text[from as usize..to];
-        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &|s| lex_text(s).0);
+        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &|s| lex_text(s).0)?;
         let mut new = window.to_owned();
         for (s, t) in edits.iter().rev() {
             new.replace_range(s.start as usize..s.end as usize, t);
         }
         (to == text.len() || lex_text(&new).1 == lex_text(window).1).then_some(edits)
     };
-    let edits = edits_to(to)
-        .or_else(|| edits_to(text.len()))
-        .unwrap_or_default();
-    edits
+    let edits = edits_to(to).or_else(|| edits_to(text.len()))?;
+    let edits = edits
         .into_iter()
         .map(|(span, new_text)| TextEdit {
             range: q.range(enc, Span::new(span.start + from, span.end + from)),
             new_text,
         })
-        .collect()
+        .collect();
+    Some(edits)
 }
 
 /// Sorts the prologue's run of `PREFIX` lines, drops duplicates and unused
@@ -391,7 +402,7 @@ mod tests {
                 Encoding::Utf8,
                 vec![(Span::new(at, at + 4), new.into())],
             );
-            let edits: Vec<_> = edits.into_iter().map(|e| e.new_text).collect();
+            let edits: Vec<_> = edits.into_iter().flatten().map(|e| e.new_text).collect();
             (edits, lexer::LEXED.with(|c| c.get()))
         };
         // In context the `<` is the operator, so the IRI needs no space.
@@ -405,5 +416,83 @@ mod tests {
         );
         // An edit that opens a group changes how the rest lexes: the window grows to the end.
         assert_eq!(lexed(10, "{").0, ["{"]);
+    }
+
+    /// The new text of each edit `text_edits` makes for `(token, new)` in `text`.
+    fn edited(text: &str, token: &str, new: &str) -> Option<Vec<String>> {
+        let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
+        let at = text.rfind(token).unwrap() as u32;
+        let reps = vec![(Span::new(at, at + token.len() as u32), new.into())];
+        let edits = text_edits(&q, Encoding::Utf8, reps)?;
+        Some(edits.into_iter().map(|e| e.new_text).collect())
+    }
+
+    /// Each action offered with the cursor on the last `token` of `text`,
+    /// with the text its edit leaves.
+    fn offered(text: &str, token: &str) -> Vec<(String, String)> {
+        let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
+        let (k, enc) = (Knowledge::default(), Encoding::Utf8);
+        let at = text.rfind(token).unwrap() as u32;
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///q.rq".parse().unwrap(),
+            },
+            range: q.range(enc, Span::new(at, at)),
+            context: CodeActionContext {
+                diagnostics: super::super::diagnostics::diagnostics(
+                    &q,
+                    &k,
+                    enc,
+                    &Default::default(),
+                ),
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let mut out = Vec::new();
+        for a in code_actions(&q, &k, enc, &params, false) {
+            let CodeActionOrCommand::CodeAction(a) = a else {
+                continue;
+            };
+            let changes = a.edit.and_then(|e| e.changes).unwrap_or_default();
+            let mut edits: Vec<_> = changes.into_values().flatten().collect();
+            edits.sort_by_key(|e| std::cmp::Reverse(e.range.start));
+            let mut after = text.to_owned();
+            for e in edits {
+                let (s, t) = (q.offset(enc, e.range.start), q.offset(enc, e.range.end));
+                after.replace_range(s.unwrap() as usize..t.unwrap() as usize, &e.new_text);
+            }
+            out.push((a.title, after));
+        }
+        out
+    }
+
+    #[test]
+    fn an_iri_that_would_read_as_less_than_is_not_offered() {
+        let text = "PREFIX ex: <http://e/>\nSELECT * { ?a ex:p ?o FILTER(?a ex:b) }\n";
+        let expand = |token: &str| {
+            offered(text, token)
+                .into_iter()
+                .any(|(title, _)| title == "Expand to full IRI")
+        };
+        assert!(expand("ex:p"));
+        assert!(!expand("ex:b"));
+    }
+
+    #[test]
+    fn a_prefix_named_prefix_is_removed_with_its_keyword() {
+        let text = "PREFIX PREFIX:<http://example/># c";
+        let removed = offered(text, "PREFIX:")
+            .into_iter()
+            .find(|(title, _)| title == "Remove unused prefix");
+        assert_eq!(removed.map(|r| r.1).as_deref(), Some("# c"));
+    }
+
+    #[test]
+    fn the_empty_local_name_stays_apart_from_a_keyword() {
+        let iri = "<http://e/>";
+        let text = format!("PREFIX : {iri}\nSELECT * {{ BIND((1+{iri}SELECT *?o) AS ?x) }}");
+        assert_eq!(edited(&text, iri, ":"), Some(vec![": ".to_owned()]));
     }
 }

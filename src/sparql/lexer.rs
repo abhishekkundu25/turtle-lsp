@@ -11,8 +11,8 @@
 //! `<<`, `<<(`). Signs are their own tokens
 //! (`-1` is `-` and `1`), as in the grammar's `INTEGER_NEGATIVE`. A word
 //! followed by `:` is a prefixed name (`select:x` is a prefixed name, not a
-//! keyword), except `PREFIX:` before an IRI, which is the keyword and the
-//! empty prefix.
+//! keyword), except `PREFIX:` before an IRI and not after `PREFIX`, which
+//! is the keyword and the empty prefix.
 
 use super::{Token, TokenKind};
 use crate::syntax::Span;
@@ -637,7 +637,10 @@ impl Lexer<'_> {
                     }
                     let pend = self.prefix_end(i);
                     let after_colon = self.char_at(pend + 1);
+                    // After the keyword, `PREFIX:` is the name it declares.
+                    let declared = self.st.last[0].is_some_and(|t| t.word == Some("PREFIX"));
                     let prefix_kw = src_eq(&self.src[i..pend], "PREFIX")
+                        && !declared
                         && after_colon.is_none_or(|c| c.is_whitespace() || c == '<');
                     if b.get(pend) == Some(&b':') && !prefix_kw {
                         let end = self.local_end(pend + 1);

@@ -129,7 +129,7 @@ pub(crate) fn turtle_token_edits(
     text: &str,
     tokens: &[super::lexer::Token],
     reps: Vec<(Span, String)>,
-) -> Vec<(Span, String)> {
+) -> Option<Vec<(Span, String)>> {
     let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
     let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
     let (mut i, mut from) = (tokens.partition_point(|t| t.start < lo), lo);
@@ -146,10 +146,13 @@ pub(crate) fn turtle_token_edits(
         .into_iter()
         .map(|(s, r)| (moved(s, -(from as i64)), r))
         .collect();
-    token_edits(&text[from as usize..to as usize], reps, turtle_tokens)
-        .into_iter()
-        .map(|(s, r)| (moved(s, from as i64), r))
-        .collect()
+    let edits = token_edits(&text[from as usize..to as usize], reps, turtle_tokens)?;
+    Some(
+        edits
+            .into_iter()
+            .map(|(s, r)| (moved(s, from as i64), r))
+            .collect(),
+    )
 }
 
 /// Edits of `text` that replace whole tokens: each `(span, new)` replaces the
@@ -158,12 +161,14 @@ pub(crate) fn turtle_token_edits(
 /// with exactly those tokens changed. Where a replacement would fuse with or
 /// split a neighbour (`ex:a.b.` then `sh:V`, `1.` then `e1:x`), a space goes
 /// at that end; the edits come back sorted and trimmed to the characters
-/// that change.
+/// that change. `None` when no spaces make the edited text lex so (an IRI
+/// after an operand in a SPARQL expression reads as `<`): such an edit is
+/// not to be made.
 pub(crate) fn token_edits<K: PartialEq + Copy>(
     text: &str,
     reps: Vec<(Span, String)>,
     lex: impl Fn(&str) -> Vec<(K, Span)>,
-) -> Vec<(Span, String)> {
+) -> Option<Vec<(Span, String)>> {
     token_edits_after(text, reps, &lex, &lex)
 }
 
@@ -175,7 +180,7 @@ pub(crate) fn token_edits_after<K: PartialEq + Copy>(
     mut reps: Vec<(Span, String)>,
     lex: &dyn Fn(&str) -> Vec<(K, Span)>,
     lex_text: &dyn Fn(&str) -> Vec<(K, Span)>,
-) -> Vec<(Span, String)> {
+) -> Option<Vec<(Span, String)>> {
     reps.sort_by_key(|(s, _)| s.start);
     let old = lex_text(text);
     // A space at each end of each replacement: `2 * r` before, `2 * r + 1` after.
@@ -212,13 +217,14 @@ pub(crate) fn token_edits_after<K: PartialEq + Copy>(
         // Each run of differing tokens, from where both streams part to where
         // they end a token at the same offset, gets a space at its first end
         // of a replacement that has none, inside the run before at its edge.
-        let mut changed = false;
+        let (mut changed, mut differs) = (false, false);
         let (mut i, mut j) = (0, 0);
         while i < want.len() || j < got.len() {
             if want.get(i) == got.get(j) {
                 (i, j) = (i + 1, j + 1);
                 continue;
             }
+            differs = true;
             let start = |t: Option<&(K, Span)>| t.map_or(usize::MAX, |t| t.1.start as usize);
             let lo = start(want.get(i)).min(start(got.get(j)));
             let mut hi = lo;
@@ -247,16 +253,21 @@ pub(crate) fn token_edits_after<K: PartialEq + Copy>(
         }
         // Equal, or no space at a replacement's end can make it so.
         if !changed {
+            if differs {
+                return None;
+            }
             break;
         }
     }
-    reps.iter()
+    let edits = reps
+        .iter()
         .enumerate()
         .map(|(r, (span, rep))| {
             let old = &text[span.start as usize..span.end as usize];
             trimmed(old, *span, padded(&pads, r, rep))
         })
-        .collect()
+        .collect();
+    Some(edits)
 }
 
 fn moved(s: Span, by: i64) -> Span {
@@ -507,9 +518,9 @@ pub(crate) fn declarations_edit(
         lines
     };
     let at = Span::new(at as u32, at as u32);
-    let mut new_text = turtle_token_edits(&a.text, a.tokens(), vec![(at, text)])
-        .remove(0)
-        .1;
+    // Never `None`: a space keeps any two Turtle tokens apart.
+    let edits = turtle_token_edits(&a.text, a.tokens(), vec![(at, text.clone())]);
+    let mut new_text = edits.and_then(|mut e| e.pop()).map_or(text, |e| e.1);
     // A space would leave data on the declaration's line: end it with a line break.
     if let Some(t) = new_text.strip_suffix(' ') {
         new_text = format!("{t}{nl}");
@@ -624,7 +635,8 @@ mod tests {
                 token_edits(text, reps, crate::sparql::lexer::kinds)
             } else {
                 token_edits(text, reps, turtle_tokens)
-            };
+            }
+            .unwrap();
             for (s, _) in &edits {
                 assert!(
                     text.is_char_boundary(s.start as usize)
@@ -646,7 +658,7 @@ mod tests {
             (Span::new(12, 24), "ex:b".to_owned()),
         ];
         assert_eq!(
-            apply(text, token_edits(text, reps, turtle_tokens)),
+            apply(text, token_edits(text, reps, turtle_tokens).unwrap()),
             "ex:a ex:b"
         );
         let edits = token_edits(
@@ -654,7 +666,11 @@ mod tests {
             vec![(Span::new(0, 8), "ex:cafè".into())],
             turtle_tokens,
         );
-        assert_eq!(edits, vec![(Span::new(6, 8), "è".to_owned())]);
+        assert_eq!(edits, Some(vec![(Span::new(6, 8), "è".to_owned())]));
+        // An IRI after an operand in an expression reads as `<`, spaced or not.
+        let text = "FILTER(?a ex:b)";
+        let reps = vec![(span(text, "ex:b"), iri.to_owned())];
+        assert_eq!(token_edits(text, reps, crate::sparql::lexer::kinds), None);
     }
 
     #[test]

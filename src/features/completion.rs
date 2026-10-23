@@ -602,13 +602,13 @@ fn starts_with_lowercase(local: &str, lower: &str) -> bool {
 
 /// The completion items, in the candidates' order, replacing `replace`. A
 /// candidate whose prefix is not declared gets `import_edit(name, namespace)`
-/// as an additional edit. Items for terms carry `data.iri` for [`resolve`].
-pub(crate) fn items(
+/// as an additional edit, when it has one. Items for terms carry `data.iri` for [`resolve`].
+pub(crate) fn items<E: Into<Option<TextEdit>>>(
     cands: Vec<Candidate>,
     replace: Range,
     prefixes: &PrefixMap,
     directive: Directive,
-    import_edit: impl Fn(&str, &str) -> TextEdit,
+    import_edit: impl Fn(&str, &str) -> E,
 ) -> Vec<CompletionItem> {
     cands
         .into_iter()
@@ -618,7 +618,8 @@ pub(crate) fn items(
                 .import
                 .as_ref()
                 .filter(|(p, _)| !prefixes.contains_key(p))
-                .map(|(p, ns)| vec![import_edit(p, ns)]);
+                .and_then(|(p, ns)| import_edit(p, ns).into())
+                .map(|e| vec![e]);
             CompletionItem {
                 filter_text: Some(c.label.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {

@@ -227,8 +227,10 @@ pub(crate) fn text_edits_in(
     enc: Encoding,
     reps: Vec<(Span, String)>,
 ) -> Vec<TextEdit> {
+    // Never `None`: a space keeps any two Turtle tokens apart.
     turtle_token_edits(&a.text, tokens, reps)
         .into_iter()
+        .flatten()
         .map(|(span, new_text)| TextEdit {
             range: a.range(enc, span),
             new_text,

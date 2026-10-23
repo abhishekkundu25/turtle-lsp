@@ -63,7 +63,7 @@ pub(crate) fn rename(
                 .ok_or("nothing to rename here")?;
             let new_iri = rdf::renamed_iri(old, new_name, &scope_at(q, r.span.start))?;
             rdf::rename_term(k, enc, old, &new_iri, &mut changes)?;
-            sparql_term_edits(&with_others(q, others), old, &new_iri, enc, &mut changes);
+            sparql_term_edits(&with_others(q, others), old, &new_iri, enc, &mut changes)?;
         }
     }
     Ok(WorkspaceEdit {
@@ -86,8 +86,18 @@ pub(crate) fn rdf_term_rename(
         new_iri,
         enc,
         edit.changes.get_or_insert_with(HashMap::new),
-    );
-    Ok(())
+    )
+}
+
+/// The edits of a rename in `q`, or why they cannot be made: one would
+/// change a token it does not rename.
+fn kept(q: &SparqlAnalysis, edits: Option<Vec<TextEdit>>) -> Result<Vec<TextEdit>, String> {
+    edits.ok_or_else(|| {
+        format!(
+            "cannot rename here: the new name would change how {} reads",
+            shown(&q.uri)
+        )
+    })
 }
 
 /// A SPARQL VARNAME.
@@ -141,7 +151,7 @@ fn rename_var(
             )
         })
         .collect();
-    Ok(text_edits(q, enc, reps))
+    kept(q, text_edits(q, enc, reps))
 }
 
 fn rename_prefix(
@@ -205,19 +215,20 @@ fn rename_prefix(
             })
             .map(|r| with_new(r.span)),
     );
-    Ok(text_edits(q, enc, reps))
+    kept(q, text_edits(q, enc, reps))
 }
 
 /// Adds the edits renaming IRI `old` to `new_iri` in SPARQL documents
 /// `docs`: a full IRI stays one; a prefixed name takes the prefixes in
 /// effect there when they shorten the new IRI, else becomes a full IRI.
+/// An error when a document cannot take its edits (see [`kept`]).
 fn sparql_term_edits(
     docs: &[&SparqlAnalysis],
     old: &str,
     new_iri: &str,
     enc: Encoding,
     changes: &mut HashMap<Uri, Vec<TextEdit>>,
-) {
+) -> Result<(), String> {
     for d in docs {
         let reps: Vec<(Span, String)> = d
             .doc
@@ -234,10 +245,11 @@ fn sparql_term_edits(
             })
             .collect();
         if !reps.is_empty() {
-            let edits = text_edits(d, enc, reps);
+            let edits = kept(d, text_edits(d, enc, reps))?;
             changes.entry(uri(&d.uri)).or_default().extend(edits);
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -257,7 +269,8 @@ mod tests {
                 new_iri,
                 Encoding::Utf16,
                 &mut changes,
-            );
+            )
+            .unwrap();
             let edits: Vec<TextEdit> = changes.into_values().flatten().collect();
             applied(&q, &edits)
         };
@@ -321,7 +334,8 @@ mod tests {
             "http://f/b",
             Encoding::Utf8,
             &mut changes,
-        );
+        )
+        .unwrap();
         let edits: Vec<TextEdit> = changes.into_values().flatten().collect();
         let out = applied(&q, &edits);
         assert_eq!(
@@ -332,5 +346,15 @@ mod tests {
             spargebra::SparqlParser::new().parse_query(&out).is_ok(),
             "{out}"
         );
+        // Without the `<`, the new IRI would read as one: no rename.
+        let q = query("PREFIX ex: <http://e/>\nSELECT * { ?a ex:p ?o FILTER(?a ex:b) }\n");
+        let edits = sparql_term_edits(
+            &[&q],
+            "http://e/b",
+            "http://f/b",
+            Encoding::Utf8,
+            &mut HashMap::new(),
+        );
+        assert!(edits.unwrap_err().starts_with("cannot rename here"));
     }
 }

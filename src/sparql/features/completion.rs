@@ -150,9 +150,9 @@ pub(crate) fn completion_at(
     incomplete |= rdf::finish(&mut cands, ranked, slot, typed, k, &prefixes);
     let nl = crate::syntax::names::newline(q.text());
     let items = rdf::items(cands, replace, &prefixes, "PREFIX", |p, ns| {
-        let mut e = add_prefix(q, enc, p, ns);
+        let mut e = add_prefix(q, enc, p, ns)?;
         e.new_text = e.new_text.replace('\n', nl);
-        e
+        Some(e)
     });
     Some(CompletionResponse::List(CompletionList {
         is_incomplete: incomplete,
@@ -685,6 +685,20 @@ mod tests {
             Some(CompletionResponse::Array(a)) => a,
             None => vec![],
         }
+    }
+
+    #[test]
+    fn no_prefix_is_added_where_its_iri_would_read_as_less_than() {
+        let import = |text: &str| {
+            let items = items(text);
+            let foaf = items.iter().find(|i| i.label.starts_with("foaf:")).unwrap();
+            foaf.additional_text_edits.is_some()
+        };
+        assert!(import("VERSION '1.2'\nSELECT * WHERE { ?s foaf:na| }\n"));
+        // In an unclosed `BIND(`, `<` after the string `'1.2'` is the operator.
+        assert!(!import(
+            "VERSION '1.2'BIND(\nVERSION '1.2'\nSELECT * WHERE { ?s foaf:na| }\n"
+        ));
     }
 
     #[test]

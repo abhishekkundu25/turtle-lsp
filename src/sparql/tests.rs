@@ -264,6 +264,15 @@ fn names_tags_blank_nodes_and_variables() {
         lex("PREFIX:<http://e/>"),
         vec![(Keyword, "PREFIX"), (PName, ":"), (Iri, "<http://e/>")]
     );
+    // After the keyword it is the name declared.
+    assert_eq!(
+        lex("PREFIX PREFIX:<http://e/>"),
+        vec![
+            (Keyword, "PREFIX"),
+            (PName, "PREFIX:"),
+            (Iri, "<http://e/>")
+        ]
+    );
     assert_eq!(lex("select:x"), vec![(PName, "select:x")]);
 }
 
