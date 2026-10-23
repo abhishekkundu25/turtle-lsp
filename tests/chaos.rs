@@ -1992,33 +1992,3 @@ fn format_drops_a_dangling_semicolon_once() {
     let twice = format::format(&once, &parsed, &PrefixMap::default(), &opts).unwrap();
     assert_eq!(once, twice, "not idempotent: {once:?} then {twice:?}");
 }
-
-/// Statements in one TriG graph block on one line cost time quadratic in
-/// their number (the same statements on separate lines, or outside a block,
-/// are linear): 100,000 tokens take over a second, 200,000 about five.
-#[test]
-#[ignore = "known defect: a TriG graph block on one line parses in quadratic time"]
-fn trig_graph_block_on_one_line_parses_in_linear_time() {
-    let time = |statements: usize| {
-        let text = format!(
-            "@prefix ex: <http://e/> . ex:g {{ {}}}",
-            "ex:a ex:b ex:c . ".repeat(statements)
-        );
-        let best = (0..3)
-            .map(|_| {
-                let started = Instant::now();
-                let p = parse(&text, &PrefixMap::default(), Syntax::TriG);
-                assert_eq!(p.triples.len(), statements);
-                started.elapsed()
-            })
-            .min()
-            .unwrap();
-        best.as_secs_f64()
-    };
-    let (small, large) = (time(6_250), time(25_000));
-    // Four times the input: linear is 4x, quadratic 16x.
-    assert!(
-        large < small * 8.0,
-        "6,250 statements took {small:.3}s, 25,000 took {large:.3}s"
-    );
-}

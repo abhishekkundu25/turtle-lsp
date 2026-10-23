@@ -33,6 +33,19 @@ use std::sync::OnceLock;
 
 type R<T> = Result<T, ()>;
 
+#[cfg(test)]
+thread_local! {
+    /// Token steps plus bytes read by line-start checks: a parse's cost without a clock.
+    static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn work(n: usize) {
+    #[cfg(test)]
+    WORK.with(|w| w.set(w.get() + n as u64));
+    #[cfg(not(test))]
+    let _ = n;
+}
+
 /// Deepest nesting of `[ ]`, `( )`, `<< >>`, `<<( )>>` and `{| |}` the parser follows.
 /// Real data rarely goes past a dozen; thousands only come from generated or
 /// hostile input, and would overflow a worker thread's stack.
@@ -392,6 +405,7 @@ impl<'a> P<'a> {
     }
     /// Step to the next token that is not a comment.
     fn advance(&mut self) {
+        work(1);
         self.prev = Some(self.pos);
         self.pos = self.skip_comments(self.pos + 1);
     }
@@ -436,6 +450,7 @@ impl<'a> P<'a> {
             None => 0,
         };
         let gap = &self.src.as_bytes()[from..t.start as usize];
+        work(gap.len());
         let (row, offset) = match gap.iter().rposition(|c| matches!(c, b'\n' | b'\r')) {
             Some(i) => (&gap[i + 1..], gap.len() - i - 1),
             // No line break since the previous token: the same line, unless
@@ -2397,6 +2412,30 @@ mod tests {
                     .any(|t| matches!(t.s, Node::Iri(i) if &*i == "http://e/z")),
                 "{:?}",
                 r.errors
+            );
+        }
+    }
+
+    /// Statements in one TriG graph block on one line, valid and without `.`
+    /// (recovery checks every token for a line start): 4x the statements is
+    /// 4x the work. Counted, not timed, so a loaded machine cannot fail it.
+    #[test]
+    fn one_line_graph_block_costs_work_linear_in_its_statements() {
+        let work_for = |statement: &str, n: usize| {
+            let src = format!(
+                "@prefix ex: <http://e/> . ex:g {{ {}}}",
+                statement.repeat(n)
+            );
+            WORK.with(|w| w.set(0));
+            trig(&src);
+            WORK.with(|w| w.get()) as f64
+        };
+        for statement in ["ex:a ex:b ex:c . ", "ex:a ex:b ex:c "] {
+            let (small, large) = (work_for(statement, 2_000), work_for(statement, 8_000));
+            let ratio = large / small;
+            assert!(
+                (3.9..4.1).contains(&ratio),
+                "{statement:?}: {small} then {large} ({ratio:.2}x)"
             );
         }
     }
