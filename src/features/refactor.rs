@@ -273,8 +273,10 @@ pub(crate) fn expand_iri(iri: &str, resolved: bool) -> Option<String> {
 // ---- extract prefix ----
 
 /// Namespace and new prefix name for the IRI at `r`, when no prefix covers it.
+/// Not for an invalid IRI: the declaration writes the namespace raw.
 fn extractable(a: &Analysis, r: &Ref) -> Option<(String, String)> {
     let iri: &str = &r.iri;
+    oxiri::Iri::parse(iri).ok()?;
     let ns = declarable_namespace(iri)?;
     if iri.len() == ns.len() || !is_pn_local(&iri[ns.len()..]) {
         return None;
@@ -801,6 +803,17 @@ mod tests {
             "{ext:?}"
         );
         assert!(ext.contains("\"1\"^^xsd:integer"), "{ext:?}");
+    }
+
+    #[test]
+    fn no_prefix_is_extracted_from_an_invalid_iri() {
+        // Reduced from a chaos input: the `\u0020`, written raw in the
+        // declaration, turned its `#> .` into a comment.
+        let text = "@prefix ex: <http://example.org/> . ex:s ex:p <http://example.org/a\\u0020b#c> ; ex:q 1 .";
+        assert_eq!(
+            run(text, "http://example.org/a", "Extract prefix", false),
+            None
+        );
     }
 
     #[test]

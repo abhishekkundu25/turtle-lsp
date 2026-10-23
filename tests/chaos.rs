@@ -601,8 +601,11 @@ fn imports_keep_the_tokens(
     lexed: &Lexed,
     items: &[CompletionItem],
     offset: impl Fn(Position) -> Option<u32>,
-    at: u32,
+    at: Position,
 ) {
+    // The byte the product completes at: a position past a line's content
+    // resolves to before its line break.
+    let Some(at) = offset(at) else { return };
     let at = at as usize;
     let toks = &lexed.toks;
     let string = toks
@@ -666,7 +669,10 @@ fn fixed_keeps_the_tokens(
             if !(lex.directive(text, toks[i]) && prefix) {
                 out.push(toks[i]);
                 i += 1;
-            } else if word(name).ends_with(':') && word(iri).starts_with('<') {
+            } else if word(name).ends_with(':')
+                && word(iri).starts_with('<')
+                && lex.term(toks[iri].0)
+            {
                 let dot = code(iri + 1);
                 i = if word(dot) == "." && lex != Lexer::Sparql {
                     dot + 1
@@ -1397,7 +1403,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             let off = pick_offset(rng, text);
             let pos: Position = a.position(enc, off);
             let items = completion_items(Some(completion::complete(&a, docs, enc, pos)));
-            imports_keep_the_tokens(&lexed, &items, |p| a.offset(enc, p), off);
+            imports_keep_the_tokens(&lexed, &items, |p| a.offset(enc, p), pos);
             let _ = hover::hover(&a, docs, enc, pos);
             let _ = navigation::definition(&a, docs, enc, pos, None);
             let _ = navigation::type_definition(&a, docs, enc, pos);
@@ -2142,9 +2148,7 @@ fn sparql_features_at_random(
                 context: None,
             };
             let items = completion_items(sparql_features::completion(q, k, enc, &params));
-            if let Some(off) = q.offset(enc, at) {
-                imports_keep_the_tokens(lexed, &items, |p| q.offset(enc, p), off);
-            }
+            imports_keep_the_tokens(lexed, &items, |p| q.offset(enc, p), at);
             let _ = sparql_features::hover(q, k, enc, at);
             let _ = sparql_features::definition(q, k, enc, at, None);
             let _ = sparql_features::references(q, k, enc, at, true, others);
@@ -2726,6 +2730,18 @@ fn a_declaration_goes_only_between_document_level_statements() {
     .unwrap();
     let m = spliced(q, Lexer::Sparql, "; ", 2, "PREFIX b: <http://b/>\n").unwrap_err();
     assert!(m.contains("after \";\" at byte"), "{m}");
+    // A completion at the end of a text whose open string ends in `\r` is
+    // inside the string: its import goes into the embedded query.
+    let text = "ex:s ex:p \"\"\"SELECT\r";
+    let a = Analysis::new("file:///t/a.ttl".into(), text, Arc::default(), true);
+    let at = Position::new(0, 13);
+    let item = CompletionItem {
+        additional_text_edits: Some(vec![TextEdit::new(Range::new(at, at), decl.into())]),
+        ..CompletionItem::default()
+    };
+    let end = a.position(Encoding::Utf8, text.len() as u32);
+    let offset = |p| a.offset(Encoding::Utf8, p);
+    imports_keep_the_tokens(&Lexed::new(text, Lexer::Turtle), &[item], offset, end);
 }
 
 #[test]
@@ -2783,6 +2799,9 @@ fn fix_all_may_change_only_the_directives() {
     let changed = "ex:s ex:p <http://e/o> , ex:q .\n";
     fixed_keeps_the_tokens(before, changed, Lexer::Turtle, true).unwrap();
     assert!(fixed_keeps_the_tokens(before, changed, Lexer::Turtle, false).is_err());
+    // A broken `<...>` lexes as an error and a comment `#> .`: not compared.
+    let broken = "@prefix a: <http://x/a\t#> .\n@prefix b: <http://x/b#> .\n.\n";
+    fixed_keeps_the_tokens(broken, ".\n", Lexer::Turtle, false).unwrap();
 }
 
 #[test]
