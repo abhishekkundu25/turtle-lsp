@@ -69,6 +69,7 @@
 pub(crate) mod diagnostics;
 pub mod features;
 mod format;
+pub(crate) mod join_width;
 pub mod lexer;
 pub(crate) mod structure;
 pub mod validate;
