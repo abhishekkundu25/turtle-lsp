@@ -567,3 +567,67 @@ fn strip(j: &turtle_lsp::jsonld::json::Json) -> String {
         v => format!("{v:?}"),
     }
 }
+
+#[test]
+fn a_redundant_semicolon_with_a_comment_is_dropped_in_one_pass() {
+    let o = Options::default();
+    let cases = [
+        (
+            Syntax::Turtle,
+            "<a> <p> <o> ; # c\n.\n",
+            "<a> <p> <o> . # c\n",
+        ),
+        (
+            Syntax::Turtle,
+            "<a> <p> <o> ;\n  # c\n  ;\n.\n",
+            "<a> <p> <o>\n# c\n.\n",
+        ),
+        (
+            Syntax::Turtle,
+            "<a> <p> <o> # c1\n ; # c2\n .\n",
+            "<a> <p> <o> # c1\n# c2\n.\n",
+        ),
+        (
+            Syntax::Turtle,
+            "<a> <p> [ <q> <r> ; # c\n ] .\n",
+            "<a> <p> [\n        <q> <r> # c\n    ] .\n",
+        ),
+        (
+            Syntax::Turtle,
+            "<a> <p> <o> ; # c1\n ; # c2\n <q> <r> .\n",
+            "<a> <p> <o> ; # c1\n    # c2\n    <q> <r> .\n",
+        ),
+        (
+            Syntax::TriG,
+            "<g> { <a> <p> <o> ; # c\n }\n",
+            "<g> {\n    <a> <p> <o> # c\n}\n",
+        ),
+        (
+            Syntax::Turtle,
+            "<a> <p> <o> {| <q> <r> ; # c\n |} .\n",
+            "<a> <p> <o> {|\n        <q> <r> # c\n    |} .\n",
+        ),
+        // No blank line the author did not write.
+        (
+            Syntax::Turtle,
+            "<a> <p> <o>\n;\n# c\n.\n",
+            "<a> <p> <o>\n# c\n.\n",
+        ),
+        // The comment is on the `;` line: the `.` does not go on a line alone.
+        (
+            Syntax::Turtle,
+            "<a> <p> <o>\n ; # c\n .\n",
+            "<a> <p> <o> . # c\n",
+        ),
+        (
+            Syntax::Turtle,
+            "<a> <p> <o> ; # c1\n.\n<b> <p> <o> ; # c2\n.\n",
+            "<a> <p> <o> . # c1\n\n<b> <p> <o> . # c2\n",
+        ),
+    ];
+    for (syntax, src, want) in cases {
+        let once = fmt_as(src, syntax, &o).unwrap();
+        assert_eq!(once, want, "{src:?}");
+        assert_eq!(fmt_as(&once, syntax, &o).unwrap(), once, "{src:?}");
+    }
+}
