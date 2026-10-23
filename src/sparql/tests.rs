@@ -1073,3 +1073,171 @@ fn true_and_false_are_read_in_any_case() {
     // A word that is no boolean still is an error.
     assert!(codes("SELECT * { ?s ?p TRUEISH }").contains(&"syntax"));
 }
+
+// Ticket 07: nested calls parse in time linear in their depth
+// (vendor/spargebra/left-factor-nested-calls.patch).
+
+/// Runs `f` on a 2 MiB stack, as a worker thread may have.
+fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+/// Checks `make(n)` and `make(n / 4)` and asserts the larger takes under four
+/// times the smaller plus 5 ms (the fastest of five runs each). Returns the
+/// messages of `make(n)`'s errors.
+fn assert_linear(n: usize, make: impl Fn(usize) -> String) -> Vec<String> {
+    let fastest = |text: &str| {
+        (0..5)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                doc(text);
+                t.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let (big, small) = (make(n), make(n / 4));
+    let (t_big, t_small) = (fastest(&big), fastest(&small));
+    assert!(
+        t_big < t_small * 4 + std::time::Duration::from_millis(5),
+        "{t_big:?} at depth {n}, {t_small:?} at depth {}: {}",
+        n / 4,
+        &big[..big.len().min(80)]
+    );
+    doc(&big)
+        .diagnostics()
+        .iter()
+        .filter(|d| d.level == Level::Error)
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn timing_nested_builtins_parse_in_linear_time() {
+    on_small_stack(|| {
+        for (open, close) in [
+            ("REGEX(", ", \"a\")"),
+            ("SUBSTR(", ", 1)"),
+            ("REPLACE(", ", \"a\", \"b\")"),
+            ("GROUP_CONCAT(", ")"),
+            ("GROUP_CONCAT(DISTINCT ", ")"),
+            ("!(", ")"),
+            ("(!", ")"),
+            ("!REGEX(", ", \"a\")"),
+            (":f(REGEX(", ", \"a\"))"),
+            ("COUNT(DISTINCT:a(", "))"),
+        ] {
+            // 200 levels, or 100 of a pattern that opens two brackets: under `MAX_NESTING`.
+            let n = 200 / open.matches('(').count();
+            for closed in [false, true] {
+                let found = assert_linear(n, |n| {
+                    let tail = if closed {
+                        close.repeat(n)
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "PREFIX : <http://example.org/>\nPREFIX DISTINCT: <http://example.org/d#>\nSELECT ({}?x{tail} AS ?y) {{}}",
+                        open.repeat(n)
+                    )
+                });
+                if closed {
+                    // Only the aggregates break a rule, nesting one in another.
+                    assert!(
+                        found
+                            .iter()
+                            .all(|m| m == "An aggregate cannot contain another aggregate"),
+                        "{open}: {found:?}"
+                    );
+                } else {
+                    assert!(!found.is_empty(), "{open}");
+                }
+            }
+        }
+        // The two chaos inputs: iteration 107183 of seed 1792799834 and 107745
+        // of seed 1792817485.
+        for make in [
+            (|n| format!("SELECT (AVG({}DISTINCT ?x) AS ?y) {{}}", "REGEX(".repeat(n)))
+                as fn(usize) -> String,
+            |n| {
+                format!(
+                    "PREFIX : <http://example/>\nSELECT (:{}RE",
+                    "REGEX(".repeat(n)
+                )
+            },
+        ]
+        .into_iter()
+        .zip([223, 188])
+        {
+            assert!(!assert_linear(make.1, make.0).is_empty());
+        }
+    });
+}
+
+#[test]
+fn timing_every_builtin_nests_in_linear_time() {
+    on_small_stack(|| {
+        let names: Vec<&str> = lexer::words()
+            .filter(|(_, kind)| *kind == TokenKind::Function)
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.len() > 60, "{names:?}");
+        for name in names {
+            // What follows the nested argument; `None` for a function whose
+            // argument cannot be a call.
+            let rest = match name {
+                "BOUND" | "NOW" | "RAND" | "UUID" | "STRUUID" => None,
+                "REGEX" | "CONTAINS" | "STRSTARTS" | "STRENDS" | "STRBEFORE" | "STRAFTER"
+                | "STRLANG" | "STRDT" | "langMatches" | "sameTerm" => Some(", \"a\""),
+                "SUBSTR" => Some(", 1"),
+                "IF" => Some(", 1, 2"),
+                "REPLACE" => Some(", \"a\", \"b\""),
+                "STRLANGDIR" => Some(", \"en\", \"ltr\""),
+                "TRIPLE" => Some(", <http://example.org/p>, 1"),
+                _ => Some(""),
+            };
+            let Some(rest) = rest else { continue };
+            let found = assert_linear(64, |n| {
+                format!(
+                    "SELECT ({}?x{} AS ?y) {{}}",
+                    format!("{name}(").repeat(n),
+                    format!("{rest})").repeat(n)
+                )
+            });
+            let aggregate = lexer::is_aggregate(name);
+            assert!(
+                found
+                    .iter()
+                    .all(|m| aggregate && m == "An aggregate cannot contain another aggregate"),
+                "{name}: {found:?}"
+            );
+        }
+    });
+}
+
+/// `DISTINCT` that starts a prefixed name is the name, as spargebra 0.4.7 read
+/// it; the keyword before a sign or a decimal stays the keyword.
+#[test]
+fn distinct_that_starts_a_prefixed_name_is_the_name() {
+    let text = "PREFIX distinct1: <http://e/> SELECT (COUNT(distinct1:x) AS ?c) {}";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    for (text, algebra) in [
+        (text, "(COUNT(<http://e/x>) AS"),
+        (
+            "SELECT (COUNT(DISTINCT-1) AS ?c) {}",
+            "(COUNT(DISTINCT -\"1\"^^<http://www.w3.org/2001/XMLSchema#integer>) AS",
+        ),
+        (
+            "SELECT (SUM(DISTINCT.5) AS ?s) {}",
+            "(SUM(DISTINCT \".5\"^^<http://www.w3.org/2001/XMLSchema#decimal>) AS",
+        ),
+    ] {
+        let query = spargebra::SparqlParser::new().parse_query(text).unwrap();
+        assert!(query.to_string().contains(algebra), "{query}");
+    }
+}
