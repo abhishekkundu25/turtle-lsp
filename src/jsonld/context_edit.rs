@@ -140,13 +140,23 @@ impl<'t> Tokens<'t> {
                     if let Some(&last) = objs.last() {
                         return insert_member(b, last, MEMBER);
                     }
-                    let sep = if has_element(b, v, close) { ", " } else { "" };
+                    let sep = match self.toks.get(vi + 1) {
+                        Some(t) if t.kind != TokenKind::RBracket => ", ",
+                        _ => "",
+                    };
+                    // Unclosed, the array runs to the end of the text, where a
+                    // comment or an unclosed string would take the text in.
+                    if close == text.len() {
+                        return (v + 1, 0, format!("{{ {MEMBER} }}{sep}"));
+                    }
                     return (close, 0, format!("{sep}{{ {MEMBER} }}"));
                 }
                 TokenKind::String => {
                     let (end, closed) = string_end(b, v);
-                    let end = if closed { end + 1 } else { end };
-                    return (v, end - v, format!("[{}, {{ {MEMBER} }}]", &text[v..end]));
+                    // An unclosed string runs to its line's end: the rest goes on the next.
+                    let (end, cut) = if closed { (end + 1, "") } else { (end, "\n") };
+                    let s = &text[v..end];
+                    return (v, end - v, format!("[{s}{cut}, {{ {MEMBER} }}]"));
                 }
                 TokenKind::Literal if text[v..].starts_with("null") => {
                     return (v, 4, format!("{{ {MEMBER} }}"));
@@ -183,10 +193,6 @@ fn insert_member(b: &[u8], brace: usize, member: &str) -> (usize, usize, String)
     let ws = std::str::from_utf8(&b[brace + 1..j]).unwrap_or(" ");
     let ws = if ws.is_empty() { " " } else { ws };
     (j, 0, format!("{member},{ws}"))
-}
-
-fn has_element(b: &[u8], open: usize, close: usize) -> bool {
-    b[open + 1..close].iter().any(|c| !c.is_ascii_whitespace())
 }
 
 /// The `{` of each object around `offset` found by reading the text, outermost

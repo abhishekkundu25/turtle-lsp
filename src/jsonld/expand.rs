@@ -307,10 +307,12 @@ struct Expander<'a, 'p, 'l, 'b> {
 /// An IRI expansion (`None`: `null`) and the form the value is written in.
 type Expansion = Option<(Arc<str>, Form)>;
 
-/// An object's entries as a map: with duplicate keys, the last one.
+/// An object's entries as a map: with duplicate keys, the last one. A key
+/// the parser recovered from an unquoted word (`false "k": 1`) is in no
+/// string, so it is no term: no use to hover, rename or correct.
 fn map_entries(o: &Object) -> Vec<&Member> {
     let mut entries = o.entries();
-    entries.retain(|m| !matches!(m.value.value, Value::Invalid));
+    entries.retain(|m| !matches!(m.value.value, Value::Invalid) && m.key_span != m.key_inner);
     entries
 }
 

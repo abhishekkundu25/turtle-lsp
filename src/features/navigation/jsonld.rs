@@ -6,6 +6,7 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::jsonld::context::is_keyword;
+use crate::jsonld::json::{self, TokenKind};
 use crate::jsonld::rename;
 use crate::jsonld::source::{DefId, Definition, Origin, UseKind};
 use crate::knowledge::{Knowledge, Source};
@@ -136,14 +137,36 @@ impl Changes {
         }
     }
 
-    /// `edits` (byte spans) of `text`, the text of `uri`.
+    /// `edits` (byte spans) of `text`, the text of `uri`. `Err` when one is
+    /// not inside a JSON string: a term is written in one, and text written
+    /// elsewhere lexes as other tokens (`http://e/` as a word and a comment).
     fn push_spans(
         &mut self,
         uri: &str,
         text: &str,
         enc: Encoding,
         edits: impl IntoIterator<Item = (Span, String)>,
-    ) {
+    ) -> Result<(), String> {
+        let edits: Vec<(Span, String)> = edits.into_iter().collect();
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let toks = json::tokens(text);
+        let in_string = |s: Span| {
+            toks.get(toks.partition_point(|t| t.span.end <= s.start))
+                .is_some_and(|t| {
+                    let open = t.span.start as usize;
+                    t.kind == TokenKind::String
+                        && t.span.start < s.start
+                        && s.end as usize <= json::string_end(text.as_bytes(), open).0
+                })
+        };
+        if !edits.iter().all(|(s, _)| in_string(*s)) {
+            return Err(format!(
+                "can't rename in {}: a use there is not written in a JSON string",
+                super::shown(uri)
+            ));
+        }
         let lines = LineIndex::new(text);
         let pos = |o| crate::analysis::position_in(&lines, enc, o);
         for (span, t) in edits {
@@ -153,6 +176,7 @@ impl Changes {
                 t,
             );
         }
+        Ok(())
     }
 }
 
@@ -177,15 +201,21 @@ pub(crate) fn iri_rename(
     };
     let edits = rename::iri_edits(&a.text, &a.source_index, old, new, &mut text_of)
         .map_err(|e| format!("can't rename in {}: {e}", super::shown(&a.uri)))?;
-    for e in edits {
-        match &e.origin {
-            Origin::File(url) => {
-                if let Some((uri, text)) = files.get(&**url) {
-                    out.push_spans(uri, text, enc, [(e.span, e.text)]);
-                }
-            }
-            _ => out.push(&a.uri, a.range(enc, e.span), e.text),
-        }
+    let (there, here): (Vec<_>, Vec<_>) = edits
+        .into_iter()
+        .partition(|e| matches!(e.origin, Origin::File(_)));
+    out.push_spans(
+        &a.uri,
+        &a.text,
+        enc,
+        here.into_iter().map(|e| (e.span, e.text)),
+    )?;
+    for (url, (uri, text)) in &files {
+        let edits = there
+            .iter()
+            .filter(|e| matches!(&e.origin, Origin::File(u) if **u == **url))
+            .map(|e| (e.span, e.text.clone()));
+        out.push_spans(uri, text, enc, edits)?;
     }
     Ok(())
 }
@@ -241,7 +271,7 @@ pub(crate) fn term_rename(
                 &document,
                 Some(d.key),
             )?;
-            out.push_spans(&a.uri, &a.text, enc, edits);
+            out.push_spans(&a.uri, &a.text, enc, edits)?;
             (normalize_uri(&a.uri), Vec::new())
         }
         Origin::File(url) => {
@@ -249,7 +279,7 @@ pub(crate) fn term_rename(
                 context_file(k, url).ok_or_else(|| format!("can't read the context file {url}"))?;
             let edits = rename::term_edits(&r, &file_text, None, None, &|_| false, Some(d.key))
                 .map_err(|e| format!("{e} (in {})", super::shown(&file_uri)))?;
-            out.push_spans(&file_uri, &file_text, enc, edits);
+            out.push_spans(&file_uri, &file_text, enc, edits)?;
             (file_uri, vec![a])
         }
     };
@@ -291,7 +321,7 @@ pub(crate) fn term_rename(
         let in_file = |o: &Origin| matches!(o, Origin::File(u) if normalize_uri(u) == file_uri);
         let edits = rename::term_edits(&r, &doc.text, Some(dix), id, &in_file, None)
             .map_err(|e| format!("{e} (in {})", super::shown(&doc.uri)))?;
-        out.push_spans(&doc.uri, &doc.text, enc, edits);
+        out.push_spans(&doc.uri, &doc.text, enc, edits)?;
     }
     Ok(out.by_uri)
 }
@@ -335,6 +365,34 @@ mod tests {
             out.replace_range(s..t, &e.new_text);
         }
         out
+    }
+
+    /// A term defined under an unquoted key is not renamed there:
+    /// `http://e/` in its place would lex as a word and a comment.
+    #[test]
+    fn a_rename_through_an_unquoted_word_is_refused() {
+        let dir = TempDir::new("bare-rename");
+        let text = "{\"@context\": {\"@vocab\": \"http://ex.org/\", a: {}},\n  \"a\": 1, \"@type\": \"http://ex.org/a\"}";
+        let mut ws = Workspace::new(vec![dir.0.clone()], PrefixMap::default());
+        let uri = path_to_uri(&dir.0.join("a.jsonld")).unwrap();
+        ws.open_doc(uri.clone(), text.into(), 1);
+        let a = ws.analysis(&uri).unwrap();
+        let at = text.rfind("http").unwrap() as u32 + 1;
+        let pos = a.position(Encoding::Utf16, at);
+        let scope = crate::features::navigation::PrefixScope {
+            file: None,
+            file_of: &mut |_| None,
+        };
+        let e = crate::features::navigation::rename(
+            &a,
+            ws.knowledge(),
+            Encoding::Utf16,
+            pos,
+            "http://other.org/b",
+            scope,
+        )
+        .unwrap_err();
+        assert!(e.contains("not written in a JSON string"), "{e}");
     }
 
     /// A prefix of a workspace context file, renamed from a document: every
