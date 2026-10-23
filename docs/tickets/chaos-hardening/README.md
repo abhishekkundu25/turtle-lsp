@@ -18,7 +18,8 @@ integration branch. Nothing is implemented until the plan is agreed.
 | 10 | #27 | JSON-LD multi-byte spans: fix the producers, full corpus in the shard | - | src/jsonld/** (span producers), src/semantic.rs (`encode_with`); **tests/chaos.rs** (the `is_ascii` filter and the ignored test only) |
 | 11 | #28 | TriG one-line graph block parses in linear time | - | src/syntax/parser.rs; **tests/chaos.rs** (the ignored test only) |
 | 12 | #21 | Harness: splice, token-sequence, `fix_all`, external prefixes, SPARQL and rename graph checks, squeeze, snippets | #15, #16, #24, #26, #20, #17 | **tests/chaos.rs** |
-| 13 | #22 | Close-out: 20 runs, replays, budget from measurement, CHANGELOG, docs | #15 to #28 | CHANGELOG.md; AGENTS.md (chaos sentence); README.md; this README (results); tests/chaos.rs (the budget constant only) |
+| 13 | #22 | Close-out: 20 runs, replays, budget from measurement, CHANGELOG, docs | #15 to #29 | CHANGELOG.md; AGENTS.md (chaos sentence); README.md; this README (results); tests/chaos.rs (the budget constant only) |
+| 14 | #29 | Bounded edit distance costs O(max x length) (E sibling, found by the watchdog) | - | src/vocab.rs |
 
 Waves:
 
@@ -85,3 +86,22 @@ medians against main, and the two nightly runs.
   removal and `fix_all` added, browser manifest added, exact pin, old
   ignores brought into scope, lock plan reworked). Issues #15 to #22 were
   created before the review and rewritten; #24 to #28 added.
+- Ticket 06: the golden record is a test in tests/w3c_sparql.rs (data in
+  tests/sparql_golden.txt), not a separate tests/sparql_golden.rs, so it
+  shares that file's `canonical` instead of a copy.
+- Ticket 10: no source change. The span defect was fixed by 3738498 before
+  this plan; the ignore and the ASCII filter were stale and are removed.
+- Ticket 11: no parser fix. The quadratic scan was replaced by ad09474; a
+  unit test now counts the parser's work, and the ignored wall-clock test is
+  deleted rather than enabled (millisecond ratios flake on loaded runners).
+- Ticket 05: comments are attached again in place (`Doc::attach(omit)`)
+  rather than a rebuilt `Doc`, and the omitted `;` come from one filter over
+  the tokens that mirrors `Cst::pol`. No golden output changed.
+- Ticket 07: the `!` rule keeps its second arm and gains a lookahead on the
+  first (the ticket's shape would reject `!(x)` without `sparql-12`).
+  DISTINCT is the keyword only when it does not start a prefixed name; the
+  one algebra change is `COUNT(DISTINCT:a)` with only `:` declared, now the
+  name `DISTINCT:a` as SPARQL's longest-match tokens read it.
+- Ticket 09 found a quadratic edit distance in the lint's "did you mean"
+  (default seed, iteration 275, about 11 s on main): new ticket 14 (#29).
+  Ticket 09 lands after 14 so the push run stays green.
