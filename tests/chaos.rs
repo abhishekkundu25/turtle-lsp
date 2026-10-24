@@ -673,12 +673,12 @@ fn fixed_keeps_the_tokens(
                 && word(iri).starts_with('<')
                 && lex.term(toks[iri].0)
             {
-                let dot = code(iri + 1);
-                i = if word(dot) == "." && lex != Lexer::Sparql {
-                    dot + 1
-                } else {
-                    iri + 1
-                };
+                i = iri + 1;
+                // Every `.` right after a directive is its end or an empty
+                // statement: which one the parser takes it for differs between texts.
+                while lex != Lexer::Sparql && word(code(i)) == "." {
+                    i = code(i) + 1;
+                }
             } else {
                 return None;
             }
@@ -2822,6 +2822,10 @@ fn fix_all_may_change_only_the_directives() {
     let stray = "# c\n.\n[ ex:a true ] .\n";
     let added = "# c\nPREFIX ex: <http://e/>\n.\n[ ex:a true ] .\n";
     fixed_keeps_the_tokens(stray, added, Lexer::Turtle, false).unwrap();
+    // The same after another directive: a SPARQL-style line, then the stray `.`.
+    let after_prefix = "PREFIX ex: <http://e/>\n.\n[ ex:a true ] .\n";
+    let added = "PREFIX ex: <http://e/>\nPREFIX f: <http://f/>\n.\n[ ex:a true ] .\n";
+    fixed_keeps_the_tokens(after_prefix, added, Lexer::Turtle, false).unwrap();
 }
 
 #[test]
