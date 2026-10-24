@@ -1,5 +1,6 @@
 use super::render::{csv, json, markdown, table, tsv, turtle};
 use super::*;
+use crate::sparql::join_width::MAX_JOIN_WIDTH;
 use spargebra::term::{BlankNode, Literal, NamedNode};
 use std::sync::Arc;
 

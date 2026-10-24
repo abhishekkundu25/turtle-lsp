@@ -13,12 +13,14 @@ use crate::features::refactor::{
     Directive, expand_iri, line_content_end, organise_block, wanted, workspace_edit,
 };
 use crate::knowledge::Knowledge;
-use crate::sparql::{Form, Level, PrefixSource, TermRef};
+use crate::sparql::lexer;
+use crate::sparql::{Form, Level, PrefixSource, TermRef, TokenKind};
 use crate::syntax::Span;
-use crate::syntax::names::{newline, shorten, spaced};
+use crate::syntax::names::{newline, shorten, token_edits_after};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
+use std::cell::RefCell;
 
 /// `data.turtle` of a "Shorten all IRIs in file" offered without its edit.
 const SHORTEN_ALL: &str = "shorten-all";
@@ -66,9 +68,13 @@ pub(crate) fn code_actions(
                 if missing.contains(&p) {
                     continue;
                 }
+                let tails = Tails::default();
                 for (i, c) in candidates.iter().enumerate() {
                     let title = candidate_title(&p, c, "PREFIX");
-                    let fix = in_document_style(q, add_prefix(q, enc, &p, &c.namespace));
+                    let Some(fix) = add_prefix(q, enc, &p, &c.namespace, &tails) else {
+                        continue;
+                    };
+                    let fix = in_document_style(q, fix);
                     out.push(quick(title, Some(d), vec![fix], Some(i == 0)));
                 }
                 missing.push(p);
@@ -80,29 +86,33 @@ pub(crate) fn code_actions(
                     continue;
                 };
                 let span = removal(q.text(), Span::new(start, end));
-                let fix = TextEdit {
-                    range: q.range(enc, span),
-                    new_text: String::new(),
+                let Some(fix) = text_edits(q, enc, vec![(span, String::new())]) else {
+                    continue;
                 };
                 let title = if code == "unused-prefix" {
                     "Remove unused prefix"
                 } else {
                     "Remove duplicate prefix"
                 };
-                out.push(quick(title.into(), Some(d), vec![fix], Some(true)));
+                out.push(quick(title.into(), Some(d), fix, Some(true)));
             }
             "unknown-term" | crate::features::lint::CODE => {
                 let Some(FixData::Replace { replace: rep }) = FixData::of(d) else {
                     continue;
                 };
-                let fix = TextEdit {
-                    range: d.range,
-                    new_text: rep.clone(),
+                let (Some(start), Some(end)) =
+                    (q.offset(enc, d.range.start), q.offset(enc, d.range.end))
+                else {
+                    continue;
+                };
+                let Some(fix) = text_edits(q, enc, vec![(Span::new(start, end), rep.clone())])
+                else {
+                    continue;
                 };
                 out.push(quick(
                     format!("Change to '{rep}'"),
                     Some(d),
-                    vec![fix],
+                    fix,
                     Some(true),
                 ));
             }
@@ -138,25 +148,19 @@ pub(crate) fn code_actions(
         if let Some(r) = ref_in(q, start, end)
             && let Some(iri) = r.iri.as_deref()
         {
-            let at = |new_text: String| TextEdit {
-                range: q.range(enc, r.span),
-                new_text,
-            };
+            let at = |new_text: String| text_edits(q, enc, vec![(r.span, new_text)]);
             match r.form {
                 Form::Iri => {
-                    if let Some(pname) = shorten(iri, &scope_at(q, r.span.start)) {
-                        let new_text = spaced(q.text(), r.span, pname);
-                        let title = format!("Shorten IRI to {}", new_text.trim());
-                        out.push(rewrite(title, Some(vec![at(new_text)]), None));
+                    if let Some(pname) = shorten(iri, &scope_at(q, r.span.start))
+                        && let Some(edits) = at(pname.clone())
+                    {
+                        let title = format!("Shorten IRI to {pname}");
+                        out.push(rewrite(title, Some(edits), None));
                     }
                 }
                 Form::PName { .. } => {
-                    if let Some(full) = expand_iri(iri, true) {
-                        out.push(rewrite(
-                            "Expand to full IRI".into(),
-                            Some(vec![at(full)]),
-                            None,
-                        ));
+                    if let Some(edits) = expand_iri(iri, true).and_then(at) {
+                        out.push(rewrite("Expand to full IRI".into(), Some(edits), None));
                     }
                 }
                 Form::A => {}
@@ -166,8 +170,9 @@ pub(crate) fn code_actions(
         let edits = if lazy {
             (!shortenable(q).is_empty()).then_some(None)
         } else {
-            let edits = shorten_all_edits(q, enc);
-            (!edits.is_empty()).then_some(Some(edits))
+            shorten_all_edits(q, enc)
+                .filter(|e| !e.is_empty())
+                .map(Some)
         };
         if let Some(edits) = edits {
             out.push(rewrite(
@@ -196,7 +201,7 @@ pub(crate) fn resolve_code_action(
     let Ok(uri) = serde_json::from_value::<Uri>(data["uri"].clone()) else {
         return action;
     };
-    action.edit = Some(workspace_edit(&uri, shorten_all_edits(q, enc)));
+    action.edit = shorten_all_edits(q, enc).map(|e| workspace_edit(&uri, e));
     action
 }
 
@@ -218,7 +223,7 @@ fn add_all_missing(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> Option<C
         return None;
     }
     let line = |(p, ns): &(&str, String)| format!("PREFIX {p}: <{ns}>");
-    let mut fix = add_prefix(q, enc, all[0].0, &all[0].1);
+    let mut fix = add_prefix(q, enc, all[0].0, &all[0].1, &Tails::default())?;
     let lines: Vec<String> = all.iter().map(line).collect();
     fix.new_text = fix.new_text.replacen(&line(&all[0]), &lines.join("\n"), 1);
     let fix = in_document_style(q, fix);
@@ -267,14 +272,102 @@ fn shortenable(q: &SparqlAnalysis) -> Vec<(Span, String)> {
         .collect()
 }
 
-fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Vec<TextEdit> {
-    shortenable(q)
+fn shorten_all_edits(q: &SparqlAnalysis, enc: Encoding) -> Option<Vec<TextEdit>> {
+    text_edits(q, enc, shortenable(q))
+}
+
+/// Edits replacing whole tokens, through [`token_edits_after`] on a window
+/// around them: how `<` lexes depends on the brackets open before it, so the
+/// window starts where the document kept the lexer's state, and it ends two
+/// tokens past the last edit, where the edited text leaves the lexer as the
+/// old one did (else at the end of the text), so what follows lexes as before.
+/// `None` when the edits cannot keep the tokens (see [`token_edits_after`]).
+pub(super) fn text_edits(
+    q: &SparqlAnalysis,
+    enc: Encoding,
+    reps: Vec<(Span, String)>,
+) -> Option<Vec<TextEdit>> {
+    text_edits_with(q, enc, reps, &Tails::default())
+}
+
+/// What [`text_edits_with`] lexed of the text after its edits, from a place
+/// the lexer may resume: (where that starts, where the window ends, the
+/// state there), its tokens and the state after them. The `PREFIX` lines
+/// completion offers all go in one place and leave the lexer in one state,
+/// so they share the lexing of what follows.
+#[derive(Default)]
+pub(crate) struct Tails(RefCell<Vec<Tail>>);
+
+type Tail = (
+    (usize, usize, lexer::State),
+    Vec<(TokenKind, Span)>,
+    lexer::State,
+);
+
+/// [`text_edits`], lexing the text after the edits once per state in `tails`.
+pub(super) fn text_edits_with(
+    q: &SparqlAnalysis,
+    enc: Encoding,
+    reps: Vec<(Span, String)>,
+    tails: &Tails,
+) -> Option<Vec<TextEdit>> {
+    let (text, tokens) = (q.text(), q.doc.tokens());
+    let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
+    let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
+    let (from, state) = q.doc.lexer_state_at(lo);
+    // The state each text lexed ends in: the window's first, the edited window's last.
+    let ends = RefCell::new(Vec::new());
+    // `s`, a window edited or not, ends with `text[hi..to]`.
+    let lex_text = |s: &str, to: usize| {
+        let after = s.len() - (to - hi as usize);
+        let (mut tokens, mut end, at) = lexer::resume_until(s, state.clone(), after);
+        if at < s.len() {
+            let key = (to - (s.len() - at), to, end);
+            let mut tails = tails.0.borrow_mut();
+            let i = match tails.iter().position(|t| t.0 == key) {
+                Some(i) => i,
+                None => {
+                    let (rest, last) = lexer::resume(&s[at..], key.2.clone());
+                    tails.push((key, rest, last));
+                    tails.len() - 1
+                }
+            };
+            let (_, rest, last) = &tails[i];
+            let moved = |s: Span| Span::new(s.start + at as u32, s.end + at as u32);
+            tokens.extend(rest.iter().map(|&(k, s)| (k, moved(s))));
+            end = last.clone();
+        }
+        ends.borrow_mut().push(end);
+        tokens
+    };
+    let reps: Vec<_> = reps
         .into_iter()
-        .map(|(span, pname)| TextEdit {
-            range: q.range(enc, span),
-            new_text: spaced(q.text(), span, pname),
+        .map(|(s, r)| (Span::new(s.start - from, s.end - from), r))
+        .collect();
+    // The lexer remembers the last two tokens: past them, at a gap, the states can meet again.
+    let (mut to, mut more) = (hi as usize, 2);
+    for t in &tokens[tokens.partition_point(|t| t.span.end <= hi)..] {
+        if more == 0 && t.span.start as usize > to {
+            break;
+        }
+        more -= usize::from(more > 0 && t.kind != TokenKind::Comment);
+        to = t.span.end as usize;
+    }
+    let edits_to = |to: usize| {
+        let window = &text[from as usize..to];
+        let edits = token_edits_after(window, reps.clone(), &lexer::kinds, &|s| lex_text(s, to));
+        let ends = ends.take();
+        (to == text.len() || ends.first() == ends.last()).then_some(edits?)
+    };
+    let edits = edits_to(to).or_else(|| edits_to(text.len()))?;
+    let edits = edits
+        .into_iter()
+        .map(|(span, new_text)| TextEdit {
+            range: q.range(enc, Span::new(span.start + from, span.end + from)),
+            new_text,
         })
-        .collect()
+        .collect();
+    Some(edits)
 }
 
 /// Sorts the prologue's run of `PREFIX` lines, drops duplicates and unused
@@ -330,4 +423,123 @@ fn organise(q: &SparqlAnalysis, enc: Encoding) -> Option<TextEdit> {
         range: q.range(enc, span),
         new_text,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::PrefixMap;
+    use std::sync::Arc;
+
+    /// "Change to" in a group of `n` triples lexes the text around the term,
+    /// not the operation: the bytes lexed do not grow with `n`.
+    #[test]
+    fn a_token_edit_lexes_its_neighbourhood_not_the_operation() {
+        let lexed = |n: usize, new: &str| {
+            let text = format!(
+                "SELECT * WHERE {{ {}FILTER(?s < ex:a) }}",
+                "?s ?p ?o . ".repeat(n)
+            );
+            let q =
+                SparqlAnalysis::new("file:///q.rq".into(), &text, Arc::new(PrefixMap::default()));
+            let at = text.find("ex:a").unwrap() as u32;
+            lexer::LEXED.with(|c| c.set(0));
+            let edits = text_edits(
+                &q,
+                Encoding::Utf8,
+                vec![(Span::new(at, at + 4), new.into())],
+            );
+            let edits: Vec<_> = edits.into_iter().flatten().map(|e| e.new_text).collect();
+            (edits, lexer::LEXED.with(|c| c.get()))
+        };
+        // In context the `<` is the operator, so the IRI needs no space.
+        let (one, two) = (lexed(10_000, "<http://e/b>"), lexed(20_000, "<http://e/b>"));
+        assert_eq!(one.0, ["<http://e/b>"]);
+        assert!(
+            one.1 < 4096 && two.1 < 4096,
+            "{} then {} bytes",
+            one.1,
+            two.1
+        );
+        // An edit that opens a group changes how the rest lexes: the window grows to the end.
+        assert_eq!(lexed(10, "{").0, ["{"]);
+    }
+
+    /// The new text of each edit `text_edits` makes for `(token, new)` in `text`.
+    fn edited(text: &str, token: &str, new: &str) -> Option<Vec<String>> {
+        let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
+        let at = text.rfind(token).unwrap() as u32;
+        let reps = vec![(Span::new(at, at + token.len() as u32), new.into())];
+        let edits = text_edits(&q, Encoding::Utf8, reps)?;
+        Some(edits.into_iter().map(|e| e.new_text).collect())
+    }
+
+    /// Each action offered with the cursor on the last `token` of `text`,
+    /// with the text its edit leaves.
+    fn offered(text: &str, token: &str) -> Vec<(String, String)> {
+        let q = SparqlAnalysis::new("file:///q.rq".into(), text, Arc::new(PrefixMap::default()));
+        let (k, enc) = (Knowledge::default(), Encoding::Utf8);
+        let at = text.rfind(token).unwrap() as u32;
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///q.rq".parse().unwrap(),
+            },
+            range: q.range(enc, Span::new(at, at)),
+            context: CodeActionContext {
+                diagnostics: super::super::diagnostics::diagnostics(
+                    &q,
+                    &k,
+                    enc,
+                    &Default::default(),
+                ),
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let mut out = Vec::new();
+        for a in code_actions(&q, &k, enc, &params, false) {
+            let CodeActionOrCommand::CodeAction(a) = a else {
+                continue;
+            };
+            let changes = a.edit.and_then(|e| e.changes).unwrap_or_default();
+            let mut edits: Vec<_> = changes.into_values().flatten().collect();
+            edits.sort_by_key(|e| std::cmp::Reverse(e.range.start));
+            let mut after = text.to_owned();
+            for e in edits {
+                let (s, t) = (q.offset(enc, e.range.start), q.offset(enc, e.range.end));
+                after.replace_range(s.unwrap() as usize..t.unwrap() as usize, &e.new_text);
+            }
+            out.push((a.title, after));
+        }
+        out
+    }
+
+    #[test]
+    fn an_iri_that_would_read_as_less_than_is_not_offered() {
+        let text = "PREFIX ex: <http://e/>\nSELECT * { ?a ex:p ?o FILTER(?a ex:b) }\n";
+        let expand = |token: &str| {
+            offered(text, token)
+                .into_iter()
+                .any(|(title, _)| title == "Expand to full IRI")
+        };
+        assert!(expand("ex:p"));
+        assert!(!expand("ex:b"));
+    }
+
+    #[test]
+    fn a_prefix_named_prefix_is_removed_with_its_keyword() {
+        let text = "PREFIX PREFIX:<http://example/># c";
+        let removed = offered(text, "PREFIX:")
+            .into_iter()
+            .find(|(title, _)| title == "Remove unused prefix");
+        assert_eq!(removed.map(|r| r.1).as_deref(), Some("# c"));
+    }
+
+    #[test]
+    fn the_empty_local_name_stays_apart_from_a_keyword() {
+        let iri = "<http://e/>";
+        let text = format!("PREFIX : {iri}\nSELECT * {{ BIND((1+{iri}SELECT *?o) AS ?x) }}");
+        assert_eq!(edited(&text, iri, ":"), Some(vec![": ".to_owned()]));
+    }
 }

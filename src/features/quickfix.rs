@@ -9,8 +9,10 @@
 
 use super::diagnostics::SOURCE;
 use crate::analysis::{Analysis, Encoding};
+use crate::features::refactor::text_edits_in;
 use crate::jsonld;
 use crate::knowledge::Knowledge;
+use crate::syntax::lexer::Token;
 use crate::syntax::names::{declaration_edit, declaration_keyword, declarations_edit, newline};
 use crate::syntax::{Iri, Node, Span};
 use crate::vocab::VOCABS;
@@ -18,6 +20,7 @@ use lsp_types::*;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 
 /// A namespace to bind an undeclared prefix name to.
@@ -219,6 +222,8 @@ pub(crate) struct Fixer<'a> {
     first_uses: OnceCell<FxHashMap<&'a str, u32>>,
     /// [`Fixer::declaration`] by prefix, namespace and the offset it serves.
     declarations: RefCell<FxHashMap<(String, String, u32), TextEdit>>,
+    /// The document's tokens, lexed once for all the fixes when it keeps none.
+    tokens: OnceCell<Cow<'a, [Token]>>,
 }
 
 impl<'a> Fixer<'a> {
@@ -233,7 +238,14 @@ impl<'a> Fixer<'a> {
             imports: RefCell::default(),
             first_uses: OnceCell::new(),
             declarations: RefCell::default(),
+            tokens: OnceCell::new(),
         }
+    }
+
+    /// Edits replacing whole tokens, through [`text_edits_in`].
+    fn text_edits(&self, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
+        let tokens = self.tokens.get_or_init(|| self.a.tokens_or_lexed());
+        text_edits_in(self.a, tokens, self.enc, reps)
     }
 
     /// The edit that declares `prefix` as `ns` for a use at `at`. Every use
@@ -359,21 +371,20 @@ impl<'a> Fixer<'a> {
                 let start = a.offset(enc, d.range.start).unwrap_or(0);
                 let end = a.offset(enc, d.range.end).unwrap_or(0);
                 let span = removal(&a.text, Span::new(start, end));
-                let edit = TextEdit {
-                    range: a.range(enc, span),
-                    new_text: String::new(),
-                };
-                vec![self.quick(title.to_string(), d, vec![edit], true)]
+                let edits = self.text_edits(vec![(span, String::new())]);
+                vec![self.quick(title.to_string(), d, edits, true)]
             }
             "unknown-term" | crate::features::lint::CODE => {
                 let Some(FixData::Replace { replace }) = FixData::of(d) else {
                     return Vec::new();
                 };
-                let edit = TextEdit {
-                    range: d.range,
-                    new_text: replace.clone(),
+                let (Some(start), Some(end)) =
+                    (a.offset(enc, d.range.start), a.offset(enc, d.range.end))
+                else {
+                    return Vec::new();
                 };
-                vec![self.quick(format!("Change to '{replace}'"), d, vec![edit], true)]
+                let edits = self.text_edits(vec![(Span::new(start, end), replace.clone())]);
+                vec![self.quick(format!("Change to '{replace}'"), d, edits, true)]
             }
             _ => Vec::new(),
         }
@@ -618,6 +629,20 @@ mod tests {
     }
 
     #[test]
+    fn the_prefix_fix_lands_after_a_lone_cr_line_end() {
+        let text = "# c\rex:s sd:p sd:o .";
+        let (a, actions) = fixes("file:///t/doc.ttl", text);
+        let action = actions
+            .iter()
+            .find(|c| c.title.starts_with("Add @prefix sd:"));
+        let edits = action.unwrap().edit.clone().unwrap().changes.unwrap();
+        let start = edits.into_values().flatten().next().unwrap().range.start;
+        assert_eq!(start, Position::new(1, 0));
+        let fixed = applied(&a, &actions, "Add @prefix sd:");
+        assert!(fixed.starts_with("# c\r@prefix sd: <"), "{fixed:?}");
+    }
+
+    #[test]
     fn add_all_writes_no_prefixes_into_line_based_syntaxes() {
         let text = "foaf:x rdfs:label foaf:z .\n";
         let (_, ttl) = fixes("file:///t/doc.ttl", text);
@@ -752,6 +777,32 @@ mod tests {
         assert_eq!(FixData::of(&r), None);
     }
 
+    /// A document kept without its tokens is lexed once for all its fixes,
+    /// not once per fix.
+    #[test]
+    fn the_fixes_of_a_document_without_tokens_lex_it_once() {
+        let unused: String = (0..200)
+            .map(|i| format!("@prefix p{i}: <http://example.org/p{i}/> .\n"))
+            .collect();
+        let text = format!("{unused}<http://example.org/s> <http://example.org/p> 1 .\n");
+        let uri: Uri = "file:///t/doc.ttl".parse().unwrap();
+        let a = Analysis::new(uri.to_string(), &text, Arc::default(), false);
+        let k = Knowledge::default();
+        let found = diagnostics(&a, &k, Encoding::Utf8);
+        let fixer = Fixer::new(&a, &k, Encoding::Utf8, &uri);
+        crate::syntax::lexer::LEXED.with(|c| c.set(0));
+        let fixes: usize = found.iter().map(|d| fixer.for_diagnostic(d).len()).sum();
+        assert_eq!(fixes, 200);
+        let lexed = crate::syntax::lexer::LEXED.with(|c| c.get());
+        // The text once, then a line or so around each fix.
+        assert!(
+            lexed < 4 * text.len(),
+            "{lexed} bytes lexed for {}",
+            text.len()
+        );
+        assert!(!a.has_tokens());
+    }
+
     #[test]
     fn a_diagnostics_fixes_do_not_include_the_file_wide_action() {
         let text = "foaf:x rdfs:label foaf:z .\n";
@@ -776,6 +827,141 @@ mod tests {
             );
         }
         assert!(fixer.add_all_missing().is_some());
+    }
+
+    #[test]
+    fn the_prefix_fix_never_splits_a_statement_or_string() {
+        for text in [
+            "@prefix ex: <http://ex/> . ex:s\n  foaf:knows ex:o .\n",
+            "@prefix ex: <http://ex/> . ex:s ex:p \"\"\"a\nb\"\"\" .\nex:t foaf:knows ex:o .\n",
+        ] {
+            let (a, actions) = fixes("file:///t/doc.ttl", text);
+            let after = applied(&a, &actions, "Add @prefix foaf:");
+            let p = crate::syntax::parse(&after, &Default::default(), Default::default());
+            assert!(p.errors.is_empty(), "{after:?}");
+            assert!(p.prefix_uses.iter().all(|u| u.resolved), "{after:?}");
+        }
+    }
+
+    /// The edit of the code action titled `title` among `actions`, applied
+    /// to the query `q`.
+    fn applied_to_query(
+        q: &crate::analysis::SparqlAnalysis,
+        actions: Vec<CodeActionOrCommand>,
+        title: &str,
+    ) -> String {
+        let action = actions
+            .into_iter()
+            .find_map(|c| match c {
+                CodeActionOrCommand::CodeAction(c) if c.title.starts_with(title) => Some(c),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no {title:?}"));
+        let mut edits: Vec<(u32, u32, String)> = action
+            .edit
+            .unwrap()
+            .changes
+            .unwrap()
+            .into_values()
+            .flatten()
+            .map(|e| {
+                let at = |p| q.offset(Encoding::Utf8, p).unwrap();
+                (at(e.range.start), at(e.range.end), e.new_text)
+            })
+            .collect();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+        let mut out = q.text().to_string();
+        for (s, e, t) in edits {
+            out.replace_range(s as usize..e as usize, &t);
+        }
+        out
+    }
+
+    /// Removing a directive between two names keeps them apart.
+    #[test]
+    fn a_removed_prefix_leaves_its_neighbours_apart() {
+        for (text, want) in [
+            (
+                "@prefix ex: <http://e/> .\nex:s ex:p ex:o.@prefix u: <http://u/> .ex:t ex:p ex:o .\n",
+                "@prefix ex: <http://e/> .\nex:s ex:p ex:o. ex:t ex:p ex:o .\n",
+            ),
+            (
+                "@prefix ex: <http://e/> .\n@prefix e1: <http://e1/> .\nex:s ex:p 1.PREFIX u: <http://u/>e1:x ex:p ex:o .\n",
+                "@prefix ex: <http://e/> .\n@prefix e1: <http://e1/> .\nex:s ex:p 1. e1:x ex:p ex:o .\n",
+            ),
+        ] {
+            let (a, actions) = fixes("file:///t/doc.ttl", text);
+            let out = applied(&a, &actions, "Remove unused prefix");
+            assert_eq!(out, want);
+            let p = crate::syntax::parse(&out, &Default::default(), Default::default());
+            assert!(p.errors.is_empty() && p.triples.len() == 2, "{out}");
+        }
+        let text = "PREFIX ex: <http://e/>\nPREFIX u: <http://u/>SELECT * { ex:s ?p ?o }\n";
+        let q = crate::analysis::SparqlAnalysis::new("file:///t/q.rq".into(), text, Arc::default());
+        let k = Knowledge::default();
+        let diagnostics =
+            crate::sparql::features::diagnostics(&q, &k, Encoding::Utf8, &Default::default());
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///t/q.rq".parse().unwrap(),
+            },
+            range: Range::default(),
+            context: CodeActionContext {
+                diagnostics,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let actions = crate::sparql::features::code_actions(&q, &k, Encoding::Utf8, &params, false);
+        assert_eq!(
+            applied_to_query(&q, actions, "Remove unused prefix"),
+            "PREFIX ex: <http://e/>\nSELECT * { ex:s ?p ?o }\n"
+        );
+    }
+
+    /// "Change to" a full IRI after `<` leaves `<` the operator: the query parses.
+    #[test]
+    fn a_change_to_a_full_iri_keeps_the_operator_apart() {
+        let text = "PREFIX ex: <http://e/>\nSELECT * { ?a ex:p ?o FILTER(?a<ex:typo) }\n";
+        let q = crate::analysis::SparqlAnalysis::new("file:///t/q.rq".into(), text, Arc::default());
+        let at = text.find("ex:typo").unwrap() as u32;
+        let mut d = Diagnostic {
+            range: Range::new(
+                q.position(Encoding::Utf8, at),
+                q.position(Encoding::Utf8, at + 7),
+            ),
+            code: Some(NumberOrString::String("unknown-term".into())),
+            source: Some(SOURCE.into()),
+            ..Default::default()
+        };
+        FixData::Replace {
+            replace: "<http://f/type>".into(),
+        }
+        .attach(&mut d);
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///t/q.rq".parse().unwrap(),
+            },
+            range: d.range,
+            context: CodeActionContext {
+                diagnostics: vec![d],
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let k = Knowledge::default();
+        let actions = crate::sparql::features::code_actions(&q, &k, Encoding::Utf8, &params, false);
+        let out = applied_to_query(&q, actions, "Change to");
+        assert_eq!(
+            out,
+            "PREFIX ex: <http://e/>\nSELECT * { ?a ex:p ?o FILTER(?a<<http://f/type>) }\n"
+        );
+        assert!(
+            spargebra::SparqlParser::new().parse_query(&out).is_ok(),
+            "{out}"
+        );
     }
 }
 

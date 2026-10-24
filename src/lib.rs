@@ -54,7 +54,7 @@
 //! use turtle_lsp::batch::Formatted as _; // web/engine
 //! use turtle_lsp::batch::Options as _; // tests, web/engine
 //! use turtle_lsp::batch::analyse as _; // tests, web/engine
-//! use turtle_lsp::batch::fix_all as _; // web/engine
+//! use turtle_lsp::batch::fix_all as _; // tests, web/engine
 //! use turtle_lsp::batch::query as _; // web/engine
 //! use turtle_lsp::cli::USAGE as _; // main
 //! use turtle_lsp::cli::run as _; // main
@@ -101,8 +101,10 @@
 //! use turtle_lsp::jsonld::RemoteDocument as _; // tests
 //! use turtle_lsp::jsonld::format::format as _; // tests
 //! use turtle_lsp::jsonld::json::Json as _; // tests
+//! use turtle_lsp::jsonld::json::TokenKind as _; // tests
 //! use turtle_lsp::jsonld::json::Value as _; // tests
 //! use turtle_lsp::jsonld::json::parse as _; // tests
+//! use turtle_lsp::jsonld::json::tokens as _; // tests
 //! use turtle_lsp::jsonld::parse as _; // tests
 //! use turtle_lsp::knowledge::Knowledge as _; // tests
 //! use turtle_lsp::knowledge::Source as _; // tests
@@ -148,7 +150,7 @@
 //! use turtle_lsp::sparql::features::semantic_tokens_range as _; // tests
 //! use turtle_lsp::sparql::features::term_references as _; // tests
 //! use turtle_lsp::sparql::format as _; // examples, tests
-//! use turtle_lsp::sparql::lexer::tokenize as _; // examples
+//! use turtle_lsp::sparql::lexer::tokenize as _; // examples, tests
 //! use turtle_lsp::sparql::validate::text_for_spargebra as _; // examples
 //! use turtle_lsp::syntax::BlankId as _; // tests
 //! use turtle_lsp::syntax::Direction as _; // tests

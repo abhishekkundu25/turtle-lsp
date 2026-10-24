@@ -97,6 +97,54 @@ test("check reports a 20,000-step path in sh:select and exits 1, no abort", () =
   }
 })
 
+// Each level of REGEX( doubled spargebra's parse before its grammar was
+// left-factored (vendor/spargebra/PATCH.md); left open, this is a syntax error.
+const nestedRegex = shapes(`$this ex:p ?x . FILTER(${"REGEX(".repeat(200)}?x)`)
+
+test("check reports 200 nested REGEX( in sh:select as one error and exits 1", () => {
+  const ws = tempDir("shacl-sparql-regex-")
+  try {
+    fs.writeFileSync(path.join(ws, "shapes.ttl"), nestedRegex)
+    fs.writeFileSync(path.join(ws, "prefixes.ttl"), fs.readFileSync(path.join(dir, "prefixes.ttl")))
+    const r = spawnSync(serverPath, ["check", "--root", ws], {
+      cwd: ws,
+      encoding: "utf8",
+      timeout: 30000,
+      env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(ws, ".cache"), NO_COLOR: "1" },
+    })
+    assert.equal(r.signal, null, r.stderr)
+    assert.equal(r.status, 1, r.stderr)
+    // The validator's warning that the query failed is beside it.
+    const errors = r.stdout.split("\n").filter((l) => l.includes(": error["))
+    assert.equal(errors.length, 1, r.stdout)
+    assert.match(errors[0], /^shapes\.ttl:\d+:\d+: error\[shacl-sparql-syntax\] /)
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true })
+  }
+})
+
+test("the server indexes 200 nested REGEX( in sh:select with no stall", async () => {
+  const ws = tempDir("shacl-sparql-regex-lsp-")
+  fs.writeFileSync(path.join(ws, "shapes.ttl"), nestedRegex)
+  fs.writeFileSync(path.join(ws, "prefixes.ttl"), fs.readFileSync(path.join(dir, "prefixes.ttl")))
+  const server = await startServer({ cwd: ws })
+  try {
+    // Sent while the folder is indexed.
+    const uri = uriOf(path.join(ws, "a.ttl"))
+    server.open(uri, `${head}ex:a ex:p ex:b .\n`)
+    const symbols = await server.request("textDocument/documentSymbol", { textDocument: { uri } })
+    assert.ok(symbols.some((x) => x.name === "ex:a"), JSON.stringify(symbols))
+    const shapesUri = uriOf(path.join(ws, "shapes.ttl"))
+    server.open(shapesUri, nestedRegex)
+    const diags = sparql(await server.diagnosticsFor(shapesUri))
+    assert.equal(diags.length, 1, JSON.stringify(diags))
+    assert.equal(diags[0].code, "shacl-sparql-syntax")
+  } finally {
+    await server.stop()
+    fs.rmSync(ws, { recursive: true, force: true })
+  }
+})
+
 test("a SPARQL target may use MINUS, VALUES and SERVICE as the validator allows", async () => {
   const uri = uriOf(path.join(dir, "targets.ttl"))
   const text = `${head}ex:S a sh:NodeShape ;

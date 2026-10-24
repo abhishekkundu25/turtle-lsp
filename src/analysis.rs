@@ -228,7 +228,7 @@ impl Analysis {
             uri,
             origin: None,
             text: Arc::from(text),
-            lines: LineIndex::new(text),
+            lines: line_index(text),
             parsed,
             tokens,
             dropped,
@@ -256,6 +256,15 @@ impl Analysis {
                 all
             })
             .as_slice()
+    }
+
+    /// [`Analysis::tokens`] when they are in memory, else lexed into a
+    /// temporary: an edit to a document built without them leaves it so.
+    pub(crate) fn tokens_or_lexed(&self) -> std::borrow::Cow<'_, [Token]> {
+        match self.tokens.get() {
+            Some(all) => all.as_slice().into(),
+            None => self.parsed.syntax.tokens(&self.text).into(),
+        }
     }
 
     /// Whether the tokens are in memory: kept by the parse, or made since.
@@ -349,6 +358,32 @@ impl Analysis {
     }
 }
 
+/// The line index of `text`. LSP lines also end at a lone `\r`, which the
+/// crate does not split on: it indexes a copy with each lone `\r` as `\n`
+/// (same length, so every column stays the same).
+pub(crate) fn line_index(text: &str) -> LineIndex {
+    let b = text.as_bytes();
+    let lone = |i: usize| b.get(i + 1) != Some(&b'\n');
+    if !text.match_indices('\r').any(|(i, _)| lone(i)) {
+        return LineIndex::new(text);
+    }
+    let mut bytes = b.to_vec();
+    for (i, _) in text.match_indices('\r').filter(|&(i, _)| lone(i)) {
+        bytes[i] = b'\n';
+    }
+    LineIndex::new(&String::from_utf8(bytes).expect("ASCII for ASCII keeps UTF-8"))
+}
+
+/// Whether a line starts at byte `x` of `text`: after a `\n`, or after a
+/// `\r` that no `\n` follows.
+fn starts_line(b: &[u8], x: usize) -> bool {
+    match b.get(x.wrapping_sub(1)) {
+        Some(b'\n') => true,
+        Some(b'\r') => b.get(x) != Some(&b'\n'),
+        _ => false,
+    }
+}
+
 /// The LSP position of byte `offset` (clamped to the end of the text).
 ///
 /// An offset inside a multi-byte character (a stale or foreign span) moves back
@@ -394,7 +429,7 @@ impl SparqlAnalysis {
         SparqlAnalysis {
             uri,
             doc,
-            lines: LineIndex::new(text),
+            lines: line_index(text),
             external,
         }
     }
@@ -406,7 +441,7 @@ impl SparqlAnalysis {
         SparqlAnalysis {
             uri,
             doc,
-            lines: LineIndex::new(text),
+            lines: line_index(text),
             external,
         }
     }
@@ -443,7 +478,7 @@ impl SparqlAnalysis {
         Range::new(self.position(enc, span.start), self.position(enc, span.end))
     }
 
-    pub(crate) fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
+    pub fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
         offset_in(&self.lines, self.text(), enc, pos)
     }
 }
@@ -488,12 +523,14 @@ fn clamped(text: &str, start: usize, end: usize, col: u32) -> u32 {
 
 /// Where the lines of a text being edited start, kept current through each
 /// edit: a batch of edits converts its positions without indexing the text
-/// again per edit. Lines end at `\n`, as in [`LineIndex`].
+/// again per edit. Lines end as in [`line_index`].
 pub(crate) struct LineStarts(Vec<u32>);
 
 impl LineStarts {
     pub(crate) fn new(text: &str) -> LineStarts {
-        let breaks = text.match_indices('\n').map(|(i, _)| i as u32 + 1);
+        let b = text.as_bytes();
+        let breaks = text.match_indices(['\n', '\r']).map(|(i, _)| i + 1);
+        let breaks = breaks.filter(|&x| starts_line(b, x)).map(|x| x as u32);
         LineStarts(std::iter::once(0).chain(breaks).collect())
     }
 
@@ -527,17 +564,21 @@ impl LineStarts {
         Some(clamped(text, start, end, col))
     }
 
-    /// The bytes `range` of the text were replaced by `new`.
-    pub(crate) fn replace(&mut self, range: std::ops::Range<usize>, new: &str) {
+    /// The bytes `range` of the text were replaced by `new`, leaving `text`.
+    pub(crate) fn replace(&mut self, text: &str, range: std::ops::Range<usize>, new: &str) {
         let (s, e) = (range.start as u32, range.end as u32);
-        // Lines that start after a removed `\n` are gone; those after the
-        // range move by the change in length.
-        let gone = self.0.partition_point(|&x| x <= s)..self.0.partition_point(|&x| x <= e);
+        // A line start depends on the bytes on either side of it, so those
+        // from `s` to the range's end are found again; later ones move by
+        // the change in length.
+        let gone = self.0.partition_point(|&x| x < s.max(1))..self.0.partition_point(|&x| x <= e);
         let grown = new.len() as i64 - i64::from(e - s);
         for x in &mut self.0[gone.end..] {
             *x = (i64::from(*x) + grown) as u32;
         }
-        let added = new.match_indices('\n').map(|(i, _)| s + i as u32 + 1);
+        let b = text.as_bytes();
+        let added = (range.start.max(1)..=range.start + new.len())
+            .filter(|&x| starts_line(b, x))
+            .map(|x| x as u32);
         self.0.splice(gone, added);
     }
 }
@@ -735,7 +776,7 @@ mod tests {
     fn line_starts_convert_positions_as_the_line_index_does() {
         let text = "ab\r\n\u{e9}\u{1F600}x\n\n\u{4e2d}\r\r\nend";
         let starts = LineStarts::new(text);
-        let lines = LineIndex::new(text);
+        let lines = line_index(text);
         for line in 0..8 {
             for col in (0..12).chain([u32::MAX - 1, u32::MAX]) {
                 for enc in [Encoding::Utf8, Encoding::Utf16] {
@@ -751,21 +792,65 @@ mod tests {
     }
 
     #[test]
+    fn lines_end_at_lf_crlf_and_a_lone_cr() {
+        let texts = [
+            ("a\nb", 2),
+            ("a\r\nb", 2),
+            ("a\rb", 2),
+            ("a\rb\r\nc\nd\r", 5),
+            ("a\r", 2),
+            ("a\r\n", 2),
+            ("x\r\u{e9}\u{1F600}y", 2),
+        ];
+        for (text, line_count) in texts {
+            let lines = line_index(text);
+            let starts = LineStarts::new(text);
+            assert_eq!(starts.0.len(), line_count, "{text:?}");
+            for enc in [Encoding::Utf8, Encoding::Utf16] {
+                for (o, _) in text.char_indices().chain([(text.len(), ' ')]) {
+                    let pos = position_in(&lines, enc, o as u32);
+                    let line_start = starts.0[pos.line as usize] as usize;
+                    // A `\n` after `\r` is the same line end: back to its content end.
+                    let want = if text[..o].ends_with('\r') && text[o..].starts_with('\n') {
+                        o - 1
+                    } else {
+                        o
+                    };
+                    assert!(line_start <= o, "{text:?} {o}");
+                    assert_eq!(offset_in(&lines, text, enc, pos), Some(want as u32));
+                    assert_eq!(starts.offset(text, enc, pos), Some(want as u32));
+                }
+            }
+        }
+        // After a lone `\r`, the column counts the multi-byte characters.
+        let text = "x\r\u{e9}\u{1F600}y";
+        let lines = line_index(text);
+        let y = text.len() as u32 - 1;
+        assert_eq!(position_in(&lines, Encoding::Utf16, y), Position::new(1, 3));
+        assert_eq!(position_in(&lines, Encoding::Utf8, y), Position::new(1, 6));
+    }
+
+    #[test]
     fn line_starts_follow_edits() {
         let mut text = String::from("ab\ncd\nef\n");
         let mut starts = LineStarts::new(&text);
-        let edits: [(usize, usize, &str); 6] = [
+        // The last four join and split `\r\n` across an edit's ends.
+        let edits: [(usize, usize, &str); 10] = [
             (0, 0, "1\n"),
             (3, 6, ""),
             (2, 2, "x\ny\n\u{e9}"),
             (0, 4, "\n\n"),
             (4, 9, "z"),
             (0, 0, ""),
+            (1, 1, "\r"),
+            (2, 2, "\n"),
+            (2, 2, "q"),
+            (0, 3, "\r\r"),
         ];
         for (s, e, new) in edits {
             let e = e.min(text.len());
             text.replace_range(s..e, new);
-            starts.replace(s..e, new);
+            starts.replace(&text, s..e, new);
             assert_eq!(
                 starts.0,
                 LineStarts::new(&text).0,

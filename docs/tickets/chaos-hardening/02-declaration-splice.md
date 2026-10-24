@@ -1,0 +1,17 @@
+# 02: Declaration insertion as a token splice (class A)
+
+**What to build:** `declaration_point` in src/syntax/names.rs decides on `a.tokens()`, never on text search. Anchor `B` = end of the last `PrefixDecl` with `span.end <= before` whose span lies outside every `parsed.graphs` block (no new field on `PrefixDecl`, which is public and built as a struct literal in tests/chaos.rs); with no anchor, the end of the leading comment run, where the run ends at the first gap that holds a blank line (so `# licence\n\n# doc\nex:s ...` keeps the declaration under the licence, as today); else 0. Gap = `B` to the start of the next non-comment token `N`. A new `insertion_point(text, anchor_end, next_start, before) -> (usize, bool)`: if the gap holds a line break (`\r\n`, `\r`, `\n`), the point is the start of the line after the first one, when that is `<= before`; else `(B, true)` (leading break); with no anchor and `B == 0`, `(0, false)`. `declarations_edit` then passes the directive text through `token_edits` (ticket 01) as an insertion, so a `.` before a digit or a name gets its line break. SPARQL `add_prefix` (src/sparql/features/edits.rs) uses `insertion_point` over `q.doc.tokens()` (anchor = last prologue declaration before the first operation); its no-prologue arm returns an offset below the leading comment run, the same rule as Turtle (today it inserts above the comments; admit the change). SPARQL completion's auto-import (src/sparql/features/completion.rs) goes through `in_document_style` like the code actions.
+
+**Blocked by:** #16.
+
+**Issue:** #15. **Wave:** 2. **Files (lock in bold):** **src/syntax/names.rs** (`declaration_point`, `insertion_point`, `declarations_edit`); src/sparql/features/edits.rs; src/sparql/features/completion.rs; src/features/quickfix.rs tests; src/features/refactor.rs tests (Extract cases)
+
+**Status:** proposed
+
+- [ ] names.rs `declared()` cases: `"@prefix a: <http://a/> . a:s\n  ex:p a:o .\n"` inserts right after the declaration with a leading break; a `"""x\ny"""` string on the declaration's line; `\r`-only file with a declaration inserts after the first `\r`; `"# c\rex:s a:p a:o ."` gives `"# c\r@prefix ex: <http://ex/> .\rex:s a:p a:o ."`; `# licence\n\n# doc\nex:s ...` keeps the declaration under the licence; a TriG declaration inside `ex:g { }` is not the anchor; `PREFIX a: <http://a/>1` with a later `@prefix` gets a break before the `1`.
+- [ ] refactor.rs tests: Extract prefix keeps the graph on minimised 73609 (`@prefix ex: <http://e/1.5e> .  <http://x/a>  <http://q/def/n>  \n"Al" ;  <http://q/def/m>  "Ally" . `) and on minimised 28769 (two `\r` declarations, a `"""` string holding `\n`, then a full XSD IRI).
+- [ ] quickfix.rs tests: the undeclared-prefix fix for the mid-statement-break and in-string cases leaves a file with no parse errors and the use resolved.
+- [ ] edits.rs `added()` cases: `PREFIX ex: <..> SELECT * {\n ?s foaf:name ?n }`, a `"""` string in the pattern, a `\r`-only query; each result parses with no error with the `PREFIX` in the prologue; a no-prologue query with a leading comment gets the declaration below the comment.
+- [ ] completion test: a `\r`-only query's auto-import edit contains `\r`, not `\n`.
+- [ ] `a_declaration_goes_before_the_first_use_it_serves` and `inserted_lines_end_like_the_file` unchanged; Node tests that assert quick-fix text updated only where the old after-the-data or above-the-comment placement was asserted, each listed in the report.
+- [ ] Replays of 11540, 73609, 28769 and 112031 pass (`CHAOS_ONLY`, under `timeout 120`).

@@ -757,6 +757,16 @@ mod tests {
   "ex:knows": {"@id": "_:b", "http://abs.org/p": 1, "rel": {"@id": "other"}}
 }"#;
 
+    /// A key recovered from an unquoted word (`false`) is in no string: no
+    /// use, so no hover, rename or "Change to" fix there.
+    #[test]
+    fn an_unquoted_key_is_no_use() {
+        let text = "{\"@context\": {\"@vocab\": \"http://schema.org/\"}, false \"k\": 1, \"p\": 2}";
+        let ix = parse_document(text, Some(BASE), &NoNetwork::default()).index;
+        let keys: Vec<&str> = ix.uses.iter().map(|u| at(text, u.span)).collect();
+        assert_eq!(keys, ["@context", "p"]);
+    }
+
     #[test]
     fn uses_record_how_each_key_type_and_id_is_written() {
         let ix = index(DOC);

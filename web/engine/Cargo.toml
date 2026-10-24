@@ -29,3 +29,5 @@ strip = true
 # which turtle-lsp's Cargo.toml pins to "=0.2.7"; this build gets spareval through it.
 [patch.crates-io]
 spareval = { path = "../../vendor/spareval" }
+# spargebra 0.4.7, vendored unchanged for now; pinned to "=0.4.7" in turtle-lsp's Cargo.toml.
+spargebra = { path = "../../vendor/spargebra" }

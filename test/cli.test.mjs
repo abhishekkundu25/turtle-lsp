@@ -459,6 +459,17 @@ test("check: a name that is a folder or cannot be read is an io error, not an ab
   }
 })
 
+test("query: 200 nested REGEX( in a FILTER is a syntax error at once", (t) => {
+  // Each level doubled spargebra's parse before its grammar was left-factored.
+  const ws = workspace(t, { "prefixes.ttl": PREFIXES, "a.ttl": CLEAN })
+  const started = Date.now()
+  const r = run(ws, ["query", "-e", `SELECT * WHERE { ?x ?p ?o FILTER(${"REGEX(".repeat(200)}?x) }`])
+  assert.equal(r.code, 2, r.err)
+  assert.equal(r.out, "")
+  assert.match(r.err, /^-e:1:\d+: .*syntax error/)
+  assert.ok(Date.now() - started < 10000, `${Date.now() - started} ms`)
+})
+
 test("format: a file that is not UTF-8 is not formatted, the others are (exit 2)", (t) => {
   const ws = workspace(t, { "a.ttl": UNFORMATTED })
   writeBytes(ws, "bad.ttl", Buffer.from([0xc3, 0x28, 0x0a]))

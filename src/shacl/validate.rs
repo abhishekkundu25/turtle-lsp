@@ -2236,6 +2236,36 @@ mod tests {
         );
     }
 
+    /// One reifier `~` per pattern past the widest join planned: planning
+    /// checks no clock and ran for minutes (chaos seed 34063671672, 74505).
+    #[test]
+    fn timing_a_join_too_wide_to_plan_is_a_failure() {
+        let reifiers = "~".repeat(crate::sparql::join_width::MAX_JOIN_WIDTH);
+        let body = format!(
+            "ex:S sh:targetNode ex:a ; sh:sparql [ sh:select \"SELECT $this WHERE {{ $this ?p ?o {reifiers} }}\" ] .\nex:a ex:p 1 .\n"
+        );
+        let p = parse(
+            &format!("{HEAD}{body}"),
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        let g = Graph::new(&[&p.triples]);
+        let start = std::time::Instant::now();
+        let r = validate_report(&g, &|| false, &|_| true).unwrap();
+        let messages: Vec<&str> = r.failures.iter().map(|f| f.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                "the query is too complex: it joins 201 patterns or path steps at once (the most allowed is 200)"
+            ]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(500),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
     /// A SPARQL target query that hits the time limit leaves the next one
     /// to run.
     #[test]

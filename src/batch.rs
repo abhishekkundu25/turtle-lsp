@@ -364,9 +364,10 @@ fn query_in(
 }
 
 /// Apply every preferred fix, round after round, until none is left; unsafe
-/// ones only with `include_unsafe`. A fix that touches text another fix of
-/// the round touches (or inserts at the same place) waits for the next
-/// round, analysed afresh.
+/// ones only with `include_unsafe`. A fix with an edit that overlaps or
+/// abuts one another fix of the round takes waits for the next round,
+/// analysed afresh: each fix's edits keep token boundaries only against the
+/// text it was computed on.
 ///
 /// Files marked context are part of the workspace but are not fixed: their
 /// own problems are skipped, a fix that would edit one is not applied, and
@@ -422,7 +423,7 @@ fn fix_all_in(
                 let clash = edits.iter().any(|(i, s, e, _)| {
                     taken
                         .iter()
-                        .any(|(j, ts, te, _)| i == j && ((s < te && ts < e) || s == ts))
+                        .any(|(j, ts, te, _)| i == j && s <= te && ts <= e)
                 });
                 if clash {
                     continue;
@@ -803,7 +804,7 @@ impl<'a> LineIndexes<'a> {
     }
 
     fn of(&self, file: usize) -> &LineIndex {
-        self.lines[file].get_or_init(|| LineIndex::new(&self.files[file].text))
+        self.lines[file].get_or_init(|| crate::analysis::line_index(&self.files[file].text))
     }
 
     /// The byte offset of `pos` in file `file`, as [`offset_in`] clamps it.
@@ -968,7 +969,8 @@ mod tests {
             .expect("unknown-term");
         let fix = &p.fixes[0];
         assert!(fix.preferred && !fix.safe, "{fix:?}");
-        assert_eq!(fix.edits[0].1[0].new_text, "rdfs:label");
+        // The edit changes only what differs: `rdfs:lab|l` gains its `e`.
+        assert_eq!(fix.edits[0].1[0].new_text, "e");
     }
 
     #[test]
@@ -1027,7 +1029,9 @@ mod tests {
         assert_eq!((d8.line, d8.character), (1, 18));
         assert_eq!((d16.line, d16.character), (1, 15));
         assert_eq!((dcp.line, dcp.character), (1, 14));
-        assert_eq!((e8, e16, ecp), (d8, d16, dcp));
+        // The edit starts past `rdfs:lab`, 8 units in every count.
+        let past = |p: Position| Position::new(p.line, p.character + 8);
+        assert_eq!((e8, e16, ecp), (past(d8), past(d16), past(dcp)));
     }
 
     #[test]
@@ -1246,5 +1250,22 @@ mod tests {
         assert!(
             BatchFile::at_path(Path::new("rel.ttl"), "rel.ttl", String::new(), false).is_none()
         );
+    }
+
+    /// Two removals that touch: the second waits for the next round, judged
+    /// against the text the first left, so `ex:o.` and `ex:t` stay apart.
+    #[test]
+    fn fixes_whose_edits_touch_are_applied_in_separate_rounds() {
+        let text = "@prefix ex: <http://e/> .\n\
+            ex:s ex:p ex:o.@prefix u: <http://u/> .@prefix v: <http://v/> .ex:t ex:p ex:o .\n";
+        let out = fix_all(&[file("a.ttl", text)], &Settings::default(), false);
+        assert_eq!(out.applied, 2);
+        let fixed = &out.files[0].text;
+        assert_eq!(
+            fixed,
+            "@prefix ex: <http://e/> .\nex:s ex:p ex:o. ex:t ex:p ex:o .\n"
+        );
+        let p = crate::syntax::parse(fixed, &Default::default(), Default::default());
+        assert!(p.errors.is_empty() && p.triples.len() == 2, "{fixed}");
     }
 }

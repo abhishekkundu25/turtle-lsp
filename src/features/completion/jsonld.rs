@@ -628,4 +628,41 @@ mod tests {
             r#"{ "@context": { "a": "b" }, "y": { "@context": { "p": "n", "c": "d" }, "x" } }"#
         );
     }
+
+    /// A `//` comment or an unclosed string, which run to the end of their
+    /// line, take in no part of the member.
+    #[test]
+    fn the_member_lands_outside_comments_and_unclosed_strings() {
+        let lexed = |text: &str| -> Vec<String> {
+            crate::jsonld::json::tokens(text)
+                .iter()
+                .map(|t| text[t.span.start as usize..t.span.end as usize].to_string())
+                .collect()
+        };
+        // An unclosed array ends in a comment or an unclosed string: the
+        // member goes after its `[`.
+        let out = edit(r#"{ "x|": 1, "@context": [ // c"#);
+        assert_eq!(out, r#"{ "x": 1, "@context": [{ "p": "n" } // c"#);
+        assert_eq!(
+            lexed(&out),
+            ["{", r#""x""#, ":", "1", ",", r#""@context""#, ":", "["]
+                .into_iter()
+                .chain(["{", r#""p""#, ":", r#""n""#, "}", "// c"])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            edit(r#"{ "x|": 1, "@context": ["c.jsonld"#),
+            r#"{ "x": 1, "@context": [{ "p": "n" }, "c.jsonld"#
+        );
+        // An unclosed string value: the rest of the array starts a line.
+        let out = edit("{ \"@context\": \"c.jsonld\n  \"x|\": 1 }");
+        assert_eq!(
+            out,
+            "{ \"@context\": [\"c.jsonld\n, { \"p\": \"n\" }]\n  \"x\": 1 }"
+        );
+        assert_eq!(
+            lexed(&out)[..6],
+            ["{", r#""@context""#, ":", "[", "\"c.jsonld", ","]
+        );
+    }
 }
