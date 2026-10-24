@@ -11,24 +11,61 @@ export const LOCK = "rdf-editor-workspace"
 
 /**
  * Take the workspace for this tab. `owner: false` means another tab has it;
- * `whenFree` then settles when that tab goes, and this tab holds the
- * workspace from then on. Where locks do not exist the tab owns the
- * workspace, as before.
- * @returns {Promise<{ owner: boolean, whenFree?: Promise<void> }>}
+ * this tab waits, and `onOwn` runs when it gets the workspace: the other tab
+ * went, or handed it over. `ask()` asks the owner to hand it over: the owner
+ * runs `onLose({ asked: true })` (it writes what is waiting and stops
+ * writing) and answers, and this tab takes the workspace, even from an owner
+ * that does not answer in `wait` ms: that one gets `onLose({ asked: false })`
+ * and must not write, since this tab may have read the workspace already.
+ * Where locks do not exist the tab owns the workspace, as before.
+ * @returns {Promise<{ owner: boolean, ask: () => Promise<void> }>}
  */
-export function claim({ locks = globalThis.navigator?.locks, name = LOCK } = {}) {
-  if (!locks?.request) return Promise.resolve({ owner: true })
-  const forever = new Promise(() => {})
+export function claim({ locks = globalThis.navigator?.locks, name = LOCK, onOwn = () => {}, onLose = async () => {}, wait = 3000 } = {}) {
+  if (!locks?.request) return Promise.resolve({ owner: true, ask: async () => {} })
+  const channel = new BroadcastChannel(name)
+  let owner = false
+  let queued = null // aborts this tab's place in the queue
+  let answered = () => {}
+  const hold = () => new Promise(() => {})
+  // A held lock that ends is stolen (`ask` in another tab): this tab owns
+  // nothing now. One that never held it was only taken out of the queue.
+  function request(options) {
+    let mine = false
+    const take = () => ((mine = owner = true), (queued = null), onOwn(), hold())
+    locks.request(name, options, take).catch(() => mine && lose({ asked: false }))
+  }
+  async function lose(how) {
+    if (!owner) return
+    owner = false
+    await onLose(how)
+    queue()
+  }
+  function queue() {
+    queued = new AbortController()
+    request({ signal: queued.signal })
+  }
+  channel.onmessage = async ({ data }) => {
+    if (data === "hand-over" && owner) (await lose({ asked: true }), channel.postMessage("handed-over"))
+    else if (data === "handed-over") answered()
+  }
+  async function ask() {
+    if (owner) return
+    const answer = new Promise((r) => (answered = r))
+    channel.postMessage("hand-over")
+    await Promise.race([answer, new Promise((r) => setTimeout(r, wait))])
+    if (owner) return
+    queued?.abort()
+    request({ steal: true })
+  }
   return new Promise((resolve) => {
     locks
       .request(name, { ifAvailable: true }, (lock) => {
-        if (lock) {
-          resolve({ owner: true })
-          return forever
-        }
-        resolve({ owner: false, whenFree: new Promise((free) => locks.request(name, () => (free(), forever))) })
+        if (!lock) return (queue(), resolve({ owner: false, ask }))
+        owner = true
+        resolve({ owner: true, ask })
+        return hold()
       })
-      .catch(() => resolve({ owner: true }))
+      .catch(() => (owner ? lose({ asked: false }) : resolve({ owner: true, ask })))
   })
 }
 

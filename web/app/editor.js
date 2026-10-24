@@ -93,7 +93,7 @@ const touchLayout = () => restoring || ws.touchLayout()
 // A change to the workspace in a tab that does not own it is refused.
 function writable() {
   if (!W.readOnly) return true
-  toast("This tab is read-only because another tab is editing this workspace. Close that tab to edit here.")
+  readOnlyNotice()
   return false
 }
 
@@ -1023,6 +1023,16 @@ function intro(show = true) {
   if (show) $("intro").querySelector("button").focus()
   else editor?.focus()
 }
+// A tab that does not own the workspace says so, and can take it over.
+let ownership
+function readOnlyNotice(show = true, moved = false) {
+  if (show && !W.readOnly) return
+  $("readonly").hidden = !show
+  if (!show) return editor?.focus()
+  $("readonly-title").textContent = moved ? "Editing moved to another tab" : "Open in another tab"
+  $("readonly-text").textContent = `${moved ? "You chose to edit this workspace in another tab." : "This workspace is open in another tab."} Only one tab can edit it at a time: this one shows it read-only. Edit here instead, and the other tab saves its changes and becomes read-only.`
+  $("readonly").querySelector("button").focus()
+}
 let toastTimer
 function toast(message, action, run) {
   const t = $("toast")
@@ -1172,7 +1182,13 @@ function wire() {
   $("panel-toggle").addEventListener("click", () => togglePanel())
   $("status-problems").addEventListener("click", () => togglePanel())
   $("status-labels").addEventListener("click", toggleLabels)
-  $("status-storage").addEventListener("click", () => intro())
+  $("status-storage").addEventListener("click", () => (W.readOnly ? readOnlyNotice() : intro()))
+  $("readonly").addEventListener("click", (e) => {
+    const act = e.target.closest("[data-act]")?.dataset.act
+    if (act === "here") (readOnlyNotice(false), ownership.ask())
+    else if (act === "read" || e.target === $("readonly")) readOnlyNotice(false)
+  })
+  $("readonly").addEventListener("keydown", (e) => e.key === "Escape" && (e.stopPropagation(), readOnlyNotice(false)))
   $("intro").addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act
     if (act === "start" || e.target === $("intro")) intro(false)
@@ -1285,7 +1301,7 @@ function restoreWorkspace(kept) {
 // labels choice).
 const keptSettings = (kept) => kept?.settings ?? (kept?.labels ? { "turtle.inlayHints.labels": "all" } : {})
 
-// The tab that owned the workspace has gone and this one owns it now: show
+// The tab that owned the workspace has gone or handed it over, and this one owns it now: show
 // what that tab kept, settings included (the ones this tab started with are
 // out of date, and would be written back), and let the editors write.
 async function takeOver() {
@@ -1298,7 +1314,20 @@ async function takeOver() {
   document.body.dataset.saved = "true"
   $("status-storage").textContent = "Kept in this browser"
   changed({ tree: true, tabs: true, problems: true, status: true })
-  toast("The other tab was closed. You can edit here now.")
+  readOnlyNotice(false)
+  toast("You can edit here now.")
+}
+
+// Another tab takes the workspace: write what is waiting if it asked first
+// (it reads the workspace after), then write nothing.
+async function handOver({ asked }) {
+  if (asked) await ws.flush()
+  W.readOnly = true
+  ws.setReadOnly(true)
+  for (const g of W.groups) g.editor.updateOptions({ readOnly: true })
+  document.body.dataset.saved = "readonly"
+  $("status-storage").textContent = "Read-only: open in another tab"
+  readOnlyNotice(true, true)
 }
 
 async function main() {
@@ -1350,7 +1379,7 @@ async function main() {
   hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
   $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
   // One tab owns the workspace; another one shows it and writes nothing.
-  const ownership = await claim()
+  ownership = await claim({ onOwn: takeOver, onLose: handOver })
   W.readOnly = !ownership.owner
   ws.setReadOnly(W.readOnly)
   document.body.dataset.saved = W.readOnly ? "readonly" : "true"
@@ -1405,8 +1434,7 @@ async function main() {
   })
   if (W.readOnly) {
     $("status-storage").textContent = "Read-only: open in another tab"
-    toast("This workspace is open in another tab, so this tab shows it read-only. Close the other tab to edit here.")
-    ownership.whenFree.then(takeOver)
+    readOnlyNotice()
   }
   if (kept?.files) restoreWorkspace(kept)
   else resetWorkspace(WORKSPACE)
