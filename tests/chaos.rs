@@ -1522,7 +1522,10 @@ fn shacl_docs(rng: &mut Rng, k: &Knowledge) -> Vec<(Source, Arc<Analysis>)> {
 
 /// Semantic tokens: sorted, non-empty, each inside one line, never overlapping.
 fn tokens_are_well_formed(text: &str, enc: Encoding, data: &[lsp_types::SemanticToken]) {
-    let lines: Vec<&str> = text.split('\n').collect();
+    let lines: Vec<&str> = text
+        .split("\r\n")
+        .flat_map(|l| l.split(['\r', '\n']))
+        .collect();
     let width = |l: &str| match enc {
         Encoding::Utf8 => l.len() as u32,
         Encoding::Utf16 => l.encode_utf16().count() as u32,
@@ -2742,7 +2745,7 @@ fn a_declaration_goes_only_between_document_level_statements() {
     .unwrap();
     let m = spliced(q, Lexer::Sparql, "; ", 2, "PREFIX b: <http://b/>\n").unwrap_err();
     assert!(m.contains("after \";\" at byte"), "{m}");
-    // A completion at the end of a text whose open string ends in `\r` is
+    // A completion before the `\r` that ends an open string's first line is
     // inside the string: its import goes into the embedded query.
     let text = "ex:s ex:p \"\"\"SELECT\r";
     let a = Analysis::new("file:///t/a.ttl".into(), text, Arc::default(), true);
@@ -2751,7 +2754,7 @@ fn a_declaration_goes_only_between_document_level_statements() {
         additional_text_edits: Some(vec![TextEdit::new(Range::new(at, at), decl.into())]),
         ..CompletionItem::default()
     };
-    let end = a.position(Encoding::Utf8, text.len() as u32);
+    let end = a.position(Encoding::Utf8, text.len() as u32 - 1);
     let offset = |p| a.offset(Encoding::Utf8, p);
     imports_keep_the_tokens(&Lexed::new(text, Lexer::Turtle), &[item], offset, end);
 }

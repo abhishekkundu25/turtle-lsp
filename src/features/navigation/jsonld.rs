@@ -12,7 +12,6 @@ use crate::jsonld::source::{DefId, Definition, Origin, UseKind};
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::{PrefixMap, Span, Syntax};
 use crate::workspace::{normalize_uri, uri_to_path};
-use line_index::LineIndex;
 use lsp_types::{Location, TextEdit, Uri};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -87,7 +86,7 @@ pub(crate) fn definition_location(
             if !spells(&text) {
                 return None;
             }
-            let lines = LineIndex::new(&text);
+            let lines = crate::analysis::line_index(&text);
             let pos = |o| crate::analysis::position_in(&lines, enc, o);
             Some(Location {
                 uri: super::uri(&uri),
@@ -167,7 +166,7 @@ impl Changes {
                 super::shown(uri)
             ));
         }
-        let lines = LineIndex::new(text);
+        let lines = crate::analysis::line_index(text);
         let pos = |o| crate::analysis::position_in(&lines, enc, o);
         for (span, t) in edits {
             self.push(

@@ -629,6 +629,20 @@ mod tests {
     }
 
     #[test]
+    fn the_prefix_fix_lands_after_a_lone_cr_line_end() {
+        let text = "# c\rex:s sd:p sd:o .";
+        let (a, actions) = fixes("file:///t/doc.ttl", text);
+        let action = actions
+            .iter()
+            .find(|c| c.title.starts_with("Add @prefix sd:"));
+        let edits = action.unwrap().edit.clone().unwrap().changes.unwrap();
+        let start = edits.into_values().flatten().next().unwrap().range.start;
+        assert_eq!(start, Position::new(1, 0));
+        let fixed = applied(&a, &actions, "Add @prefix sd:");
+        assert!(fixed.starts_with("# c\r@prefix sd: <"), "{fixed:?}");
+    }
+
+    #[test]
     fn add_all_writes_no_prefixes_into_line_based_syntaxes() {
         let text = "foaf:x rdfs:label foaf:z .\n";
         let (_, ttl) = fixes("file:///t/doc.ttl", text);

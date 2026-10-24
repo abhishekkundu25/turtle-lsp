@@ -804,7 +804,7 @@ impl<'a> LineIndexes<'a> {
     }
 
     fn of(&self, file: usize) -> &LineIndex {
-        self.lines[file].get_or_init(|| LineIndex::new(&self.files[file].text))
+        self.lines[file].get_or_init(|| crate::analysis::line_index(&self.files[file].text))
     }
 
     /// The byte offset of `pos` in file `file`, as [`offset_in`] clamps it.
