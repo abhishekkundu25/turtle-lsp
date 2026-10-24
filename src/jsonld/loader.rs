@@ -500,12 +500,13 @@ mod desktop {
                 return None;
             }
             let path = fetch::cache_file_as(dir, url, "jsonld");
+            // The document first: a new `.url` file beside an old document would vouch for it.
+            fetch::write_atomic(&path, doc.text.as_bytes()).ok()?;
             fetch::write_atomic(
                 &fetch::sidecar(&path),
                 fetch::sidecar_text(url, &doc.url).as_bytes(),
             )
             .ok()?;
-            fetch::write_atomic(&path, doc.text.as_bytes()).ok()?;
             Stamp::of(&path)
         }
 

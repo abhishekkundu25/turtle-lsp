@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **A JSON-LD context in the cache could be trusted for a moment without
+  being the fetched one.** Saving a fetched context wrote the `.url` file
+  that vouches for it before the document, so a check in between read the
+  old document as the new one. The document is now written first. Found by
+  a test on CI.
 - **A SPARQL syntax error after a dot in a prefixed name could crash the
   server** when a multi-byte character followed the dot (`ex:a.😀`): the
   error's position was mapped one byte too far. Found by the nightly chaos

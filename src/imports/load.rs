@@ -386,10 +386,11 @@ fn store(dir: &Path, url: &str, final_url: &str, format: Format, text: &str) -> 
         return None;
     }
     let path = cache_file_as(dir, url, format.cache_extension());
+    // The document first: a new `.url` file beside an old document would vouch for it.
+    write_atomic(&path, text.as_bytes()).ok()?;
     if format == Format::JsonLd {
         write_atomic(&sidecar(&path), sidecar_text(url, final_url).as_bytes()).ok()?;
     }
-    write_atomic(&path, text.as_bytes()).ok()?;
     for ext in CACHE_EXTENSIONS {
         if ext != format.cache_extension() {
             let other = cache_file_as(dir, url, ext);
