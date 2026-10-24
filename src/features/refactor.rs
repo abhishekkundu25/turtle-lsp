@@ -2,10 +2,10 @@
 //! extract a prefix for a namespace. Every edit keeps the graph the same.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::syntax::lexer::Kind;
+use crate::syntax::lexer::{Kind, Token};
 use crate::syntax::names::{
     Scope, declarable_namespace, declaration_edit, declaration_point, is_pn_local, is_pn_prefix,
-    newline, shorten, spaced,
+    newline, shorten, turtle_token_edits,
 };
 use crate::syntax::{Form, PrefixDecl, Ref, Span};
 use crate::vocab::VOCABS;
@@ -66,14 +66,10 @@ pub fn code_actions(
             Form::Iri => {
                 let scope = Scope::at(a, r.span.start);
                 if let Some(pname) = shorten(&r.iri, &scope) {
-                    let new_text = spaced(&a.text, r.span, pname);
                     push(
                         CodeActionKind::REFACTOR_REWRITE,
-                        format!("Shorten IRI to {}", new_text.trim()),
-                        Some(vec![TextEdit {
-                            range: a.range(enc, r.span),
-                            new_text,
-                        }]),
+                        format!("Shorten IRI to {pname}"),
+                        Some(text_edits(a, enc, vec![(r.span, pname)])),
                         None,
                     );
                 } else if let Some((ns, name)) = extractable(a, r) {
@@ -88,10 +84,7 @@ pub fn code_actions(
                     push(
                         CodeActionKind::REFACTOR_REWRITE,
                         "Expand to full IRI".into(),
-                        Some(vec![TextEdit {
-                            range: a.range(enc, r.span),
-                            new_text: full,
-                        }]),
+                        Some(text_edits(a, enc, vec![(r.span, full)])),
                         None,
                     );
                 }
@@ -216,19 +209,28 @@ fn written_absolute(a: &Analysis, r: &Ref) -> bool {
 fn shorten_all_edits(a: &Analysis, enc: Encoding) -> Vec<TextEdit> {
     let mut found: Vec<(Span, String)> = Vec::new();
     each_shortenable(a, |r, pname| {
-        found.push((r.span, spaced(&a.text, r.span, pname)));
+        found.push((r.span, pname));
         true
     });
-    found.sort_by_key(|(span, _)| span.start);
-    // Two IRIs written back to back (`<a><b>`) each keep their neighbour
-    // apart as written; shortened together they would join (`ex:sh:p`).
-    for i in 1..found.len() {
-        if found[i - 1].0.end == found[i].0.start && !found[i - 1].1.ends_with(' ') {
-            found[i - 1].1.push(' ');
-        }
-    }
-    found
+    text_edits(a, enc, found)
+}
+
+/// Edits replacing whole tokens, through [`turtle_token_edits`].
+pub(crate) fn text_edits(a: &Analysis, enc: Encoding, reps: Vec<(Span, String)>) -> Vec<TextEdit> {
+    text_edits_in(a, &a.tokens_or_lexed(), enc, reps)
+}
+
+/// [`text_edits`] with `tokens`, those of `a`, in hand.
+pub(crate) fn text_edits_in(
+    a: &Analysis,
+    tokens: &[Token],
+    enc: Encoding,
+    reps: Vec<(Span, String)>,
+) -> Vec<TextEdit> {
+    // Never `None`: a space keeps any two Turtle tokens apart.
+    turtle_token_edits(&a.text, tokens, reps)
         .into_iter()
+        .flatten()
         .map(|(span, new_text)| TextEdit {
             range: a.range(enc, span),
             new_text,
@@ -271,8 +273,10 @@ pub(crate) fn expand_iri(iri: &str, resolved: bool) -> Option<String> {
 // ---- extract prefix ----
 
 /// Namespace and new prefix name for the IRI at `r`, when no prefix covers it.
+/// Not for an invalid IRI: the declaration writes the namespace raw.
 fn extractable(a: &Analysis, r: &Ref) -> Option<(String, String)> {
     let iri: &str = &r.iri;
+    oxiri::Iri::parse(iri).ok()?;
     let ns = declarable_namespace(iri)?;
     if iri.len() == ns.len() || !is_pn_local(&iri[ns.len()..]) {
         return None;
@@ -294,10 +298,8 @@ fn extractable(a: &Analysis, r: &Ref) -> Option<(String, String)> {
 }
 
 fn extract_edits(a: &Analysis, enc: Encoding, ns: &str, name: &str) -> Vec<TextEdit> {
-    let text: &str = &a.text;
-    let insert = declaration_edit(a, enc, name, ns, u32::MAX);
     let from = insertion_offset(a);
-    let mut edits = vec![insert];
+    let mut reps = Vec::new();
     for r in a.parsed.refs.iter().filter(|r| r.form == Form::Iri) {
         let iri: &str = &r.iri;
         if r.span.start >= from
@@ -305,12 +307,11 @@ fn extract_edits(a: &Analysis, enc: Encoding, ns: &str, name: &str) -> Vec<TextE
             && is_pn_local(&iri[ns.len()..])
             && written_absolute(a, r)
         {
-            edits.push(TextEdit {
-                range: a.range(enc, r.span),
-                new_text: spaced(text, r.span, format!("{name}:{}", &iri[ns.len()..])),
-            });
+            reps.push((r.span, format!("{name}:{}", &iri[ns.len()..])));
         }
     }
+    let mut edits = vec![declaration_edit(a, enc, name, ns, u32::MAX)];
+    edits.extend(text_edits(a, enc, reps));
     edits
 }
 
@@ -763,6 +764,56 @@ mod tests {
         assert!(ext.contains("other:x ; z:q other:y."), "{ext}");
         let exp = run(text, "e:a", "Expand to full IRI", false).unwrap();
         assert!(exp.contains("\n<http://e/a> e:p"), "{exp}");
+    }
+
+    #[test]
+    fn a_rewritten_iri_never_joins_its_neighbour() {
+        // Reduced from a chaos input: the `.` ending a statement sat between a
+        // name and the IRI that starts the next one.
+        let line = "<http://s/s> a ex:C ; ex:p ex:a.b.<http://e/V> a <http://e/C> .\n";
+        let text = format!("@prefix ex: <http://ex/> .\n@prefix sh: <http://e/> .\n{line}");
+        let short = run(&text, "ex:C", "Shorten all", false).unwrap();
+        assert!(short.contains("ex:a.b. sh:V a sh:C ."), "{short}");
+        let one = run(&text, "http://e/V", "Shorten IRI", false).unwrap();
+        assert!(one.contains("ex:a.b. sh:V a <http://e/C>"), "{one}");
+        let text = format!("@prefix ex: <http://ex/> .\n{line}");
+        let ext = run(&text, "http://e/V", "Extract prefix", false).unwrap();
+        assert!(ext.contains("ex:a.b. e:V a e:C ."), "{ext}");
+        let text = "<http://n.org/a><http://n.org/b><http://n.org/c>.\n";
+        let ext = run(text, "n.org/a", "Extract prefix", false).unwrap();
+        assert!(ext.ends_with("\nn:a n:b n:c.\n"), "{ext}");
+    }
+
+    #[test]
+    fn an_extracted_prefix_is_declared_between_statements() {
+        // Reduced from chaos inputs: the first `\n` after the declaration
+        // sat inside a statement, then inside a string of a `\r` file.
+        let text = "@prefix ex: <http://e/1.5e> .  <http://x/a>  <http://q/def/n>  \n\"Al\" ;  <http://q/def/m>  \"Ally\" . ";
+        let ext = run(text, "http://q/def/n", "Extract prefix", false).unwrap();
+        assert!(
+            ext.starts_with(
+                "@prefix ex: <http://e/1.5e> .\n@prefix q: <http://q/def/> .  <http://x/a>  q:n"
+            ),
+            "{ext:?}"
+        );
+        let text = "@prefix ex: <http://ex/> .\r@prefix sh: <http://www.w3.org/ns/shacl#> .\rex:s sh:select \"\"\"SELECT ?x\n WHERE { ?x a ex:T }\"\"\" ;\r  ex:v \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> .\r";
+        let ext = run(text, "XMLSchema", "Extract prefix", false).unwrap();
+        assert!(
+            ext.contains("shacl#> .\r@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\rex:s"),
+            "{ext:?}"
+        );
+        assert!(ext.contains("\"1\"^^xsd:integer"), "{ext:?}");
+    }
+
+    #[test]
+    fn no_prefix_is_extracted_from_an_invalid_iri() {
+        // Reduced from a chaos input: the `\u0020`, written raw in the
+        // declaration, turned its `#> .` into a comment.
+        let text = "@prefix ex: <http://example.org/> . ex:s ex:p <http://example.org/a\\u0020b#c> ; ex:q 1 .";
+        assert_eq!(
+            run(text, "http://example.org/a", "Extract prefix", false),
+            None
+        );
     }
 
     #[test]

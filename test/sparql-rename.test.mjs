@@ -19,7 +19,8 @@ after(async () => {
 
 const rename = (uri, position, newName) => q.s.request("textDocument/rename", { textDocument: { uri }, position, newName })
 const nameOf = (u) => path.relative(dir, fileURLToPath(u)).split(path.sep).join("/")
-// Edits per file as "line:char text", sorted.
+// Edits per file as "line:char text", sorted. An edit changes only what
+// differs: ex:worksFor to ex:employedBy writes employedBy after the ex:.
 function edited(edit) {
   const out = {}
   for (const [u, edits] of Object.entries(edit.changes ?? {})) {
@@ -76,7 +77,7 @@ test("a variable projected by a subquery is renamed inside it too", async () => 
     const edit = await rename(uri, positionOf(text, "?p ex:name", 1), "person")
     const edits = onlyIn(edit, uri)
     assert.equal(edits.length, 5)
-    assert.ok(edits.every((e) => e.newText === "?person"), JSON.stringify(edits))
+    assert.equal(apply(text, edits), text.replace(/\?p\b/g, "?person"))
   })
 })
 
@@ -147,9 +148,9 @@ test("renaming a term in a query renames it in the query, the ontology and the d
   await q.withFile("people.rq", async ({ uri, text }) => {
     const edit = await rename(uri, positionOf(text, "ex:worksFor", 5), "ex:employedBy")
     assert.deepEqual(edited(edit), {
-      "people.rq": ["9:12 ex:employedBy"],
-      "ontology.ttl": ["18:0 ex:employedBy"],
-      "data.nq": ["3:37 <https://query.example.org/def/employedBy>"],
+      "people.rq": ["9:15 employedBy"],
+      "ontology.ttl": ["18:3 employedBy"],
+      "data.nq": ["3:68 employedBy"],
     })
   })
 })
@@ -158,9 +159,10 @@ test("renaming a term in Turtle renames it in SPARQL files that are not open", a
   await q.withFile("ontology.ttl", async ({ uri, text }) => {
     const edit = await rename(uri, positionOf(text, "ex:name a", 4), "fullName")
     const e = edited(edit)
-    assert.deepEqual(e["people.rq"], ["7:4 ex:fullName"])
-    assert.deepEqual(e["update.ru"], ["4:4 ex:fullName", "6:12 ex:fullName", "7:12 ex:fullName", "8:11 ex:fullName"])
-    assert.deepEqual(e["data.nq"], ["2:37 <https://query.example.org/def/fullName>", "7:5 <https://query.example.org/def/fullName>"])
+    // ex:name to ex:fullName: the n becomes fullN.
+    assert.deepEqual(e["people.rq"], ["7:7 fullN"])
+    assert.deepEqual(e["update.ru"], ["4:7 fullN", "6:15 fullN", "7:15 fullN", "8:14 fullN"])
+    assert.deepEqual(e["data.nq"], ["2:68 fullN", "7:36 fullN"])
   })
 })
 

@@ -112,27 +112,190 @@ pub(crate) fn shorten(iri: &str, scope: &PrefixMap) -> Option<String> {
         .map(|(name, ns)| format!("{name}:{}", &iri[ns.len()..]))
 }
 
-/// A prefixed name replacing the IRI at `span`, with a space added where it
-/// would otherwise run into the neighbouring token (`a<x>`, `<x>ex:y`).
-pub(crate) fn spaced(text: &str, span: Span, pname: String) -> String {
-    let joins = |c: char| is_pn_chars(c) || matches!(c, ':' | '%' | '\\');
-    let before = text[..span.start as usize].chars().next_back();
-    let mut after = text[span.end as usize..].chars();
-    let next = after.next();
-    let space_before = before.is_some_and(joins);
-    let space_after = match next {
-        Some('.') => after.next().is_some_and(joins),
-        Some(c) => joins(c),
-        None => false,
-    };
-    match (space_before, space_after) {
-        (false, false) => pname,
-        (b, s) => format!(
-            "{}{pname}{}",
-            if b { " " } else { "" },
-            if s { " " } else { "" }
-        ),
+/// The Turtle lexer's (kind, span) of each token of `text`, for [`token_edits`].
+fn turtle_tokens(text: &str) -> Vec<(super::lexer::Kind, Span)> {
+    super::lexer::tokenize(text)
+        .iter()
+        .map(|t| (t.kind, Span::new(t.start, t.end)))
+        .collect()
+}
+
+/// [`token_edits`] for Turtle `text`, whose tokens are `tokens`. Only the
+/// run of tokens around the replacements up to a gap on either side is
+/// lexed again: no Turtle token reaches across whitespace, and a token start
+/// is a place to start lexing from, so one IRI costs its neighbours, not the
+/// file.
+pub(crate) fn turtle_token_edits(
+    text: &str,
+    tokens: &[super::lexer::Token],
+    reps: Vec<(Span, String)>,
+) -> Option<Vec<(Span, String)>> {
+    let lo = reps.iter().map(|r| r.0.start).min().unwrap_or(0);
+    let hi = reps.iter().map(|r| r.0.end).max().unwrap_or(0);
+    let (mut i, mut from) = (tokens.partition_point(|t| t.start < lo), lo);
+    while i > 0 && tokens[i - 1].end == from {
+        i -= 1;
+        from = tokens[i].start;
     }
+    let (mut j, mut to) = (tokens.partition_point(|t| t.end <= hi), hi);
+    while j < tokens.len() && tokens[j].start == to {
+        to = tokens[j].end;
+        j += 1;
+    }
+    let reps = reps
+        .into_iter()
+        .map(|(s, r)| (moved(s, -(from as i64)), r))
+        .collect();
+    let edits = token_edits(&text[from as usize..to as usize], reps, turtle_tokens)?;
+    Some(
+        edits
+            .into_iter()
+            .map(|(s, r)| (moved(s, from as i64), r))
+            .collect(),
+    )
+}
+
+/// Edits of `text` that replace whole tokens: each `(span, new)` replaces the
+/// tokens in `span` (an insertion is an empty span, a deletion an empty
+/// text). Invariant: `lex` reads the edited text as the token stream before
+/// with exactly those tokens changed. Where a replacement would fuse with or
+/// split a neighbour (`ex:a.b.` then `sh:V`, `1.` then `e1:x`), a space goes
+/// at that end; the edits come back sorted and trimmed to the characters
+/// that change. `None` when no spaces make the edited text lex so (an IRI
+/// after an operand in a SPARQL expression reads as `<`): such an edit is
+/// not to be made.
+pub(crate) fn token_edits<K: PartialEq + Copy>(
+    text: &str,
+    reps: Vec<(Span, String)>,
+    lex: impl Fn(&str) -> Vec<(K, Span)>,
+) -> Option<Vec<(Span, String)>> {
+    token_edits_after(text, reps, &lex, &lex)
+}
+
+/// [`token_edits`] where `text` and its edited forms lex by `lex_text`, a
+/// lexer that knows what came before `text`, and each replacement alone by
+/// `lex`. `lex_text` reads `text` first and, when edits come back, the text
+/// they make last.
+pub(crate) fn token_edits_after<K: PartialEq + Copy>(
+    text: &str,
+    mut reps: Vec<(Span, String)>,
+    lex: &dyn Fn(&str) -> Vec<(K, Span)>,
+    lex_text: &dyn Fn(&str) -> Vec<(K, Span)>,
+) -> Option<Vec<(Span, String)>> {
+    reps.sort_by_key(|(s, _)| s.start);
+    let old = lex_text(text);
+    // A space at each end of each replacement: `2 * r` before, `2 * r + 1` after.
+    let mut pads = vec![false; 2 * reps.len()];
+    let padded = |pads: &[bool], r: usize, rep: &str| {
+        let space = |p: bool| if p { " " } else { "" };
+        format!("{}{rep}{}", space(pads[2 * r]), space(pads[2 * r + 1]))
+    };
+    loop {
+        // The edited text, the tokens it should lex to, and where each
+        // replacement's ends land in it (ascending).
+        let (mut new, mut want, mut ends) = (String::new(), Vec::new(), Vec::new());
+        let mut old_tokens = old.iter().peekable();
+        let mut copied = 0;
+        for (r, (span, rep)) in reps.iter().enumerate() {
+            let shift = new.len() as i64 - copied as i64;
+            while let Some(&(k, s)) = old_tokens.next_if(|(_, s)| s.end <= span.start) {
+                want.push((k, moved(s, shift)));
+            }
+            while old_tokens.next_if(|(_, s)| s.start < span.end).is_some() {}
+            new.push_str(&text[copied..span.start as usize]);
+            ends.push(new.len());
+            let rep = padded(&pads, r, rep);
+            let shift = new.len() as i64;
+            want.extend(lex(&rep).into_iter().map(|(k, s)| (k, moved(s, shift))));
+            new.push_str(&rep);
+            ends.push(new.len());
+            copied = span.end as usize;
+        }
+        let shift = new.len() as i64 - copied as i64;
+        want.extend(old_tokens.map(|&(k, s)| (k, moved(s, shift))));
+        new.push_str(&text[copied..]);
+        let got = lex_text(&new);
+        // Each run of differing tokens, from where both streams part to where
+        // they end a token at the same offset, gets a space at its first end
+        // of a replacement that has none, inside the run before at its edge.
+        let (mut changed, mut differs) = (false, false);
+        let (mut i, mut j) = (0, 0);
+        while i < want.len() || j < got.len() {
+            if want.get(i) == got.get(j) {
+                (i, j) = (i + 1, j + 1);
+                continue;
+            }
+            differs = true;
+            let start = |t: Option<&(K, Span)>| t.map_or(usize::MAX, |t| t.1.start as usize);
+            let lo = start(want.get(i)).min(start(got.get(j)));
+            let mut hi = lo;
+            loop {
+                let end = |t: Option<&(K, Span)>| t.map(|t| t.1.end as usize);
+                match (end(want.get(i)), end(got.get(j))) {
+                    (Some(a), Some(b)) if a == b => {
+                        (i, j, hi) = (i + 1, j + 1, a);
+                        break;
+                    }
+                    (Some(a), b) if b.is_none_or(|b| a < b) => (i, hi) = (i + 1, hi.max(a)),
+                    (_, Some(b)) => (j, hi) = (j + 1, hi.max(b)),
+                    _ => break,
+                }
+            }
+            let first = ends.partition_point(|&e| e < lo);
+            let run: Vec<usize> = (first..ends.len())
+                .take_while(|&e| ends[e] <= hi)
+                .filter(|&e| !pads[e])
+                .collect();
+            let inside = run.iter().find(|&&e| lo < ends[e] && ends[e] < hi);
+            if let Some(&e) = inside.or(run.first()) {
+                pads[e] = true;
+                changed = true;
+            }
+        }
+        // Equal, or no space at a replacement's end can make it so.
+        if !changed {
+            if differs {
+                return None;
+            }
+            break;
+        }
+    }
+    let edits = reps
+        .iter()
+        .enumerate()
+        .map(|(r, (span, rep))| {
+            let old = &text[span.start as usize..span.end as usize];
+            trimmed(old, *span, padded(&pads, r, rep))
+        })
+        .collect();
+    Some(edits)
+}
+
+fn moved(s: Span, by: i64) -> Span {
+    Span::new((s.start as i64 + by) as u32, (s.end as i64 + by) as u32)
+}
+
+/// `(span, new)` without the characters `new` shares with the start and the
+/// end of `old`, the text at `span`.
+fn trimmed(old: &str, span: Span, new: String) -> (Span, String) {
+    let head: usize = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let tail: usize = old[head..]
+        .chars()
+        .rev()
+        .zip(new[head..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let text = new[head..new.len() - tail].to_owned();
+    (
+        Span::new(span.start + head as u32, span.end - tail as u32),
+        text,
+    )
 }
 
 // ---- prefixes in scope ----
@@ -244,43 +407,73 @@ pub(crate) fn declaration_line(a: &Analysis, prefix: &str, ns: &str) -> String {
     }
 }
 
-/// Where a declaration line goes for text from `before` on: after the last
-/// declaration that ends before `before`, else at the top of the file after
-/// a leading comment block. The flag says the line must start with a line
-/// break (the point is the end of text that has none, or of a declaration a
-/// use follows on the same line).
+/// Where a declaration line goes for text from `before` on, by
+/// [`insertion_point`]: after the last declaration that ends before `before`
+/// outside a TriG graph block, else after the file's header comment. The
+/// flag says the line must start with a line break.
 pub(crate) fn declaration_point(a: &Analysis, before: u32) -> (usize, bool) {
-    let text: &str = &a.text;
-    match a
+    use super::lexer::Kind::Comment;
+    let (text, tokens, graphs) = (&a.text, a.tokens(), &a.parsed.graphs);
+    let in_graph = |s: Span| {
+        graphs[..graphs.partition_point(|g| g.span.start <= s.start)]
+            .last()
+            .is_some_and(|g| s.end <= g.span.end)
+    };
+    let anchor = a
         .parsed
         .prefixes
         .iter()
         .rev()
-        .find(|p| p.span.end <= before)
-    {
-        Some(p) => {
-            let end = p.span.end as usize;
-            match text[end..].find('\n') {
-                Some(i) if before as usize > end + i => (end + i + 1, false),
-                Some(_) => (end, true),
-                None => (text.len(), true),
-            }
+        .find(|p| p.span.end <= before && !in_graph(p.span))
+        .map(|p| p.span.end as usize);
+    let anchor = anchor.unwrap_or_else(|| {
+        let comments = tokens.iter().take_while(|t| t.kind == Comment);
+        header_end(text, comments.map(|t| Span::new(t.start, t.end)))
+    });
+    let next = tokens[tokens.partition_point(|t| (t.start as usize) < anchor)..]
+        .iter()
+        .find(|t| t.kind != Comment)
+        .map_or(text.len(), |t| t.start as usize);
+    insertion_point(text, anchor, next, before as usize)
+}
+
+/// The end of the header: the run of `comments` (the file's leading comment
+/// tokens) up to the first gap that holds a blank line; 0 with none.
+pub(crate) fn header_end(text: &str, comments: impl Iterator<Item = Span>) -> usize {
+    let breaks =
+        |s: &str| s.matches('\n').count() + s.matches('\r').count() - s.matches("\r\n").count();
+    let mut end = 0;
+    for c in comments {
+        // The top of the file counts as a line break: a blank first line ends the header.
+        if breaks(&text[end..c.start as usize]) + usize::from(end == 0) > 1 {
+            break;
         }
-        None => {
-            let mut off = 0;
-            for line in text.split_inclusive('\n') {
-                if line.trim_start().starts_with('#') {
-                    off += line.len();
-                } else {
-                    break;
-                }
-            }
-            (
-                off,
-                off == text.len() && !text.is_empty() && !text.ends_with('\n'),
-            )
+        end = c.end as usize;
+    }
+    end
+}
+
+/// Where a declaration goes after the token or header ending at
+/// `anchor_end`, when the next token that is no comment starts at
+/// `next_start`: the start of the line after the gap's first line break
+/// (`\r\n`, `\r` or `\n`; comments hold none), when that is at or before
+/// `before`; else `anchor_end`, with the flag that the text must start with
+/// a line break; the top of the file without one when `anchor_end` is 0.
+/// Either way the point is whitespace between two statements.
+pub(crate) fn insertion_point(
+    text: &str,
+    anchor_end: usize,
+    next_start: usize,
+    before: usize,
+) -> (usize, bool) {
+    let gap = &text[anchor_end..next_start];
+    if let Some(i) = gap.find(['\r', '\n']) {
+        let line = anchor_end + i + if gap[i..].starts_with("\r\n") { 2 } else { 1 };
+        if line <= before {
+            return (line, false);
         }
     }
+    (anchor_end, anchor_end > 0)
 }
 
 /// The edit that declares `prefix` as `ns`: see [`declarations_edit`].
@@ -297,7 +490,9 @@ pub(crate) fn declaration_edit(
 /// The edit that declares each of `decls` (prefix, namespace), one line
 /// each, for text from `before` on, at [`declaration_point`]. A prefix that
 /// is used before `before` without a declaration there moves the point back
-/// to that first use, so the declaration precedes every use it serves.
+/// to that first use, so the declaration precedes every use it serves. The
+/// text is an insertion through [`turtle_token_edits`], so it fuses with no
+/// neighbour (`.` then `1` is the decimal `.1`).
 pub(crate) fn declarations_edit(
     a: &Analysis,
     enc: Encoding,
@@ -317,13 +512,21 @@ pub(crate) fn declarations_edit(
         .iter()
         .map(|(p, ns)| declaration_line(a, p, ns))
         .collect();
-    let new_text = if break_first {
-        let nl = newline(&a.text);
+    let nl = newline(&a.text);
+    let text = if break_first {
         format!("{nl}{}", lines.trim_end_matches(nl))
     } else {
         lines
     };
-    let pos = a.position(enc, at as u32);
+    let at = Span::new(at as u32, at as u32);
+    // Never `None`: a space keeps any two Turtle tokens apart.
+    let edits = turtle_token_edits(&a.text, a.tokens(), vec![(at, text.clone())]);
+    let mut new_text = edits.and_then(|mut e| e.pop()).map_or(text, |e| e.1);
+    // A space would leave data on the declaration's line: end it with a line break.
+    if let Some(t) = new_text.strip_suffix(' ') {
+        new_text = format!("{t}{nl}");
+    }
+    let pos = a.position(enc, at.start);
     TextEdit {
         range: Range::new(pos, pos),
         new_text,
@@ -372,13 +575,103 @@ mod tests {
         }
     }
 
+    /// `text` with `edits` applied.
+    fn apply(text: &str, mut edits: Vec<(Span, String)>) -> String {
+        edits.sort_by_key(|(s, _)| std::cmp::Reverse(s.start));
+        let mut out = text.to_owned();
+        for (s, t) in edits {
+            out.replace_range(s.start as usize..s.end as usize, &t);
+        }
+        out
+    }
+
     #[test]
-    fn spacing_keeps_tokens_apart() {
-        let t = "_:b<http://e/p>.<http://e/x>";
-        let s = Span::new(3, 15);
-        assert_eq!(spaced(t, s, "e:p".into()), " e:p");
-        let t = "<http://e/p>.ex:a";
-        assert_eq!(spaced(t, Span::new(0, 12), "e:p".into()), "e:p ");
+    fn token_edits_change_exactly_the_given_tokens() {
+        let span = |text: &str, token: &str| {
+            let at = text.find(token).unwrap() as u32;
+            Span::new(at, at + token.len() as u32)
+        };
+        let iri = "<http://e/x>";
+        // (text, replaced token or "" for an insertion at `at`, new text, after)
+        let turtle = [
+            (
+                "ex:a.b.<http://s/V>",
+                "<http://s/V>",
+                "sh:V",
+                "ex:a.b. sh:V",
+            ),
+            ("_:b.<http://e/x>", iri, "ex:x", "_:b. ex:x"),
+            ("1.<http://g/x>", "<http://g/x>", "e1:x", "1. e1:x"),
+            ("a<http://e/C>", "<http://e/C>", "ex:C", "a ex:C"),
+            ("<http://e/x>.b", iri, "ex:x", "ex:x .b"),
+            ("<http://e/x>:y", iri, "ex:x", "ex:x :y"),
+            ("<http://e/x>-1", iri, "ex:x", "ex:x -1"),
+            ("@prefix:<http://e/>", ":", "ex:", "@prefix ex:<http://e/>"),
+            ("ex:a<http://e/x>ex:b", iri, "", "ex:a ex:b"),
+            ("ex:a<http://e/x>", "", "ex:i", "ex:a ex:i<http://e/x>"),
+            ("ex:café .", "ex:café", "ex:cafè", "ex:cafè ."),
+        ];
+        let sparql = [
+            (
+                "?a<=<http://e/b>&&?c>?a",
+                "<http://e/b>",
+                "ex:b",
+                "?a<= ex:b&&?c>?a",
+            ),
+            (
+                "FILTER(?a<=<http://e/b>&&?c>?a)",
+                "<http://e/b>",
+                "ex:b",
+                "FILTER(?a<=ex:b&&?c>?a)",
+            ),
+        ];
+        let check = |text: &str, token: &str, new: &str, after: &str, sparql: bool| {
+            let at = if token.is_empty() {
+                Span::new(4, 4)
+            } else {
+                span(text, token)
+            };
+            let reps = vec![(at, new.to_owned())];
+            let edits = if sparql {
+                token_edits(text, reps, crate::sparql::lexer::kinds)
+            } else {
+                token_edits(text, reps, turtle_tokens)
+            }
+            .unwrap();
+            for (s, _) in &edits {
+                assert!(
+                    text.is_char_boundary(s.start as usize)
+                        && text.is_char_boundary(s.end as usize)
+                );
+            }
+            assert_eq!(apply(text, edits), after, "{text}");
+        };
+        for (text, token, new, after) in turtle {
+            check(text, token, new, after, false);
+        }
+        for (text, token, new, after) in sparql {
+            check(text, token, new, after, true);
+        }
+        // Two replacements side by side, and the trim on a character boundary.
+        let text = "<http://e/a><http://e/b>";
+        let reps = vec![
+            (Span::new(0, 12), "ex:a".to_owned()),
+            (Span::new(12, 24), "ex:b".to_owned()),
+        ];
+        assert_eq!(
+            apply(text, token_edits(text, reps, turtle_tokens).unwrap()),
+            "ex:a ex:b"
+        );
+        let edits = token_edits(
+            "ex:café",
+            vec![(Span::new(0, 8), "ex:cafè".into())],
+            turtle_tokens,
+        );
+        assert_eq!(edits, Some(vec![(Span::new(6, 8), "è".to_owned())]));
+        // An IRI after an operand in an expression reads as `<`, spaced or not.
+        let text = "FILTER(?a ex:b)";
+        let reps = vec![(span(text, "ex:b"), iri.to_owned())];
+        assert_eq!(token_edits(text, reps, crate::sparql::lexer::kinds), None);
     }
 
     #[test]
@@ -498,6 +791,58 @@ mod tests {
             declared("@prefix a: <http://a/> .\nex:s a:p a:o ."),
             "@prefix a: <http://a/> .\n@prefix ex: <http://ex/> .\nex:s a:p a:o ."
         );
+    }
+
+    #[test]
+    fn a_declaration_never_splits_a_token_or_statement() {
+        let cases = [
+            // Data, then a line break inside the statement.
+            (
+                "@prefix a: <http://a/> . a:s\n  ex:p a:o .\n",
+                "@prefix a: <http://a/> .\n@prefix ex: <http://ex/> . a:s\n  ex:p a:o .\n",
+            ),
+            // A line break inside a string on the declaration's line.
+            (
+                "@prefix a: <http://a/> . a:s a:p \"\"\"x\ny\"\"\" .\nex:s a:p a:o .\n",
+                "@prefix a: <http://a/> .\n@prefix ex: <http://ex/> . a:s a:p \"\"\"x\ny\"\"\" .\nex:s a:p a:o .\n",
+            ),
+            // `\r` line breaks.
+            (
+                "@prefix a: <http://a/> .\ra:s a:p \"\"\"x\ny\"\"\" .\rex:s a:p a:o .\r",
+                "@prefix a: <http://a/> .\r@prefix ex: <http://ex/> .\ra:s a:p \"\"\"x\ny\"\"\" .\rex:s a:p a:o .\r",
+            ),
+            (
+                "@prefix a: <http://a/> .\r# note\rex:s a:p a:o .\r",
+                "@prefix a: <http://a/> .\r@prefix ex: <http://ex/> .\r# note\rex:s a:p a:o .\r",
+            ),
+            (
+                "# c\rex:s a:p a:o .",
+                "# c\r@prefix ex: <http://ex/> .\rex:s a:p a:o .",
+            ),
+            // The header ends at a blank line: a doc comment stays on its statement.
+            (
+                "# licence\n\n# doc\nex:s a:p a:o .\n",
+                "# licence\n@prefix ex: <http://ex/> .\n\n# doc\nex:s a:p a:o .\n",
+            ),
+            // `.` then `1` would be the decimal `.1`.
+            (
+                "PREFIX a: <http://a/>1\nex:s a:p a:o .\n@prefix b: <http://b/> .\n",
+                "PREFIX a: <http://a/>\n@prefix ex: <http://ex/> .\n1\nex:s a:p a:o .\n@prefix b: <http://b/> .\n",
+            ),
+        ];
+        for (text, after) in cases {
+            assert_eq!(declared(text), after, "{text:?}");
+        }
+        // A declaration inside a TriG graph block is no anchor.
+        let text =
+            "@prefix a: <http://a/> .\na:g {\n  @prefix b: <http://b/> .\n}\nex:s a:p a:o .\n";
+        let a = Analysis::new(
+            "file:///t/doc.trig".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        );
+        assert_eq!(declaration_point(&a, u32::MAX), (25, false));
     }
 
     #[test]

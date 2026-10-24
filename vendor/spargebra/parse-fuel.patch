@@ -1,0 +1,163 @@
+--- a/lib/spargebra/src/lib.rs
++++ b/lib/spargebra/src/lib.rs
+@@ -10,6 +10,6 @@
+ pub mod term;
+ mod update;
+ 
+-pub use parser::{SparqlParser, SparqlSyntaxError};
++pub use parser::{FUEL_PER_BYTE, SparqlParser, SparqlSyntaxError};
+ pub use query::*;
+ pub use update::*;
+--- a/lib/spargebra/src/parser.rs
++++ b/lib/spargebra/src/parser.rs
+@@ -35,8 +35,21 @@
+     base_iri: Option<Iri<String>>,
+     prefixes: HashMap<String, String>,
+     custom_aggregate_functions: HashSet<NamedNode>,
++    fuel_per_byte: Option<usize>,
+ }
+ 
++/// Visits of `Expression`, `GroupGraphPattern` and `PrimaryExpression`
++/// allowed per byte of input, past which a parse fails as too complex: the
++/// backstop for a rule that parses the same text again.
++///
++/// Measured on the left-factored grammar, the most visits per byte are 0.34
++/// over the 1,979 queries and updates of the W3C suites and turtle-lsp's
++/// corpus (`ASK { FILTER(2 IN (1, 2, 3)) }`, 11 in 32 bytes), 0.82 over the
++/// nested calls of turtle-lsp's linearity tests, and about 2 for `(` nested
++/// without end (two visits per byte). 8 is four times the last and 23 times
++/// the first.
++pub const FUEL_PER_BYTE: usize = 8;
++
+ impl SparqlParser {
+     #[inline]
+     pub fn new() -> Self {
+@@ -104,6 +117,14 @@
+         self
+     }
+ 
++    /// Replaces [`FUEL_PER_BYTE`], for tests of the limit.
++    #[doc(hidden)]
++    #[inline]
++    pub fn with_fuel_per_byte(mut self, fuel_per_byte: usize) -> Self {
++        self.fuel_per_byte = Some(fuel_per_byte);
++        self
++    }
++
+     /// Parse the given query string using the already set options.
+     ///
+     /// ```
+@@ -126,7 +147,8 @@
+         );
+         #[cfg(feature = "standard-unicode-escaping")]
+         let query = unescape_unicode_codepoints(query);
+-        Ok(parser::QueryUnit(&query, &mut state).map_err(SparqlSyntaxErrorKind::Syntax)?)
++        state.fuel = self.fuel_per_byte.unwrap_or(FUEL_PER_BYTE) * query.len();
++        Ok(parser::QueryUnit(&query, &mut state).map_err(|e| state.syntax_error(e))?)
+     }
+ 
+     /// Parse the given update string using the already set options.
+@@ -151,8 +173,9 @@
+         );
+         #[cfg(feature = "standard-unicode-escaping")]
+         let update = unescape_unicode_codepoints(update);
++        state.fuel = self.fuel_per_byte.unwrap_or(FUEL_PER_BYTE) * update.len();
+         let operations =
+-            parser::UpdateInit(&update, &mut state).map_err(SparqlSyntaxErrorKind::Syntax)?;
++            parser::UpdateInit(&update, &mut state).map_err(|e| state.syntax_error(e))?;
+         check_if_insert_data_are_sharing_blank_nodes(&operations)?;
+         Ok(Update {
+             operations,
+@@ -181,6 +204,8 @@
+     InvalidBaseIri(#[from] IriParseError),
+     #[error(transparent)]
+     Syntax(#[from] peg::error::ParseError<LineCol>),
++    #[error("error at {0}: expected query too complex")]
++    TooComplex(LineCol),
+     #[error("The blank node {0} cannot be shared by multiple blocks")]
+     SharedBlankNode(BlankNode),
+ }
+@@ -939,6 +964,8 @@
+     used_bnodes: HashSet<BlankNode>,
+     currently_used_bnodes: HashSet<BlankNode>,
+     aggregates: Vec<Vec<(Variable, AggregateExpression)>>,
++    fuel: usize,
++    visits: usize,
+ }
+ 
+ impl ParserState {
+@@ -954,6 +981,26 @@
+             used_bnodes: HashSet::new(),
+             currently_used_bnodes: HashSet::new(),
+             aggregates: Vec::new(),
++            fuel: 0,
++            visits: 0,
++        }
++    }
++
++    /// One visit of a recursive rule, refused past `fuel` visits.
++    fn burn(&mut self) -> Result<(), &'static str> {
++        self.visits += 1;
++        if self.visits <= self.fuel {
++            Ok(())
++        } else {
++            Err("query too complex")
++        }
++    }
++
++    fn syntax_error(&self, e: peg::error::ParseError<LineCol>) -> SparqlSyntaxErrorKind {
++        if self.visits > self.fuel {
++            SparqlSyntaxErrorKind::TooComplex(e.location)
++        } else {
++            SparqlSyntaxErrorKind::Syntax(e)
+         }
+     }
+ 
+@@ -1049,13 +1096,17 @@
+ parser! {
+     //See https://www.w3.org/TR/turtle/#sec-grammar
+     grammar parser(state: &mut ParserState) for str {
+-        pub rule QueryUnit() -> Query = Query()
++        // peg parses a second time to report an error: each pass gets the whole fuel.
++        rule refuel() = { state.visits = 0; }
++        rule fuel() = {? state.burn() }
+ 
++        pub rule QueryUnit() -> Query = refuel() q:Query() { q }
++
+         rule Query() -> Query = _ Prologue() _ q:(SelectQuery() / ConstructQuery() / DescribeQuery() / AskQuery()) _ {
+             q
+         }
+ 
+-        pub rule UpdateInit() -> Vec<GraphUpdateOperation> = Update()
++        pub rule UpdateInit() -> Vec<GraphUpdateOperation> = refuel() u:Update() { u }
+ 
+         rule Prologue() = (BaseDecl() _ / PrefixDecl() _ / VersionDecl() _)* {}
+ 
+@@ -1458,7 +1509,7 @@
+         rule TriplesTemplate_inner() -> Vec<TriplePattern> = _ t:TriplesSameSubject() _ { t }
+ 
+         rule GroupGraphPattern() -> GraphPattern =
+-            "{" _ GroupGraphPattern_clear() p:GroupGraphPatternSub() GroupGraphPattern_clear() _ "}" { p } /
++            fuel() "{" _ GroupGraphPattern_clear() p:GroupGraphPatternSub() GroupGraphPattern_clear() _ "}" { p } /
+             "{" _ GroupGraphPattern_clear() p:SubSelect() GroupGraphPattern_clear() _ "}" { p }
+         rule GroupGraphPattern_clear() = {
+              // We deal with blank nodes aliases rule
+@@ -2129,7 +2180,7 @@
+ 
+         rule Var() -> Variable = name:(VAR1() / VAR2()) { Variable::new_unchecked(name) }
+ 
+-        rule Expression() -> Expression = e:ConditionalOrExpression() {e}
++        rule Expression() -> Expression = fuel() e:ConditionalOrExpression() {e}
+ 
+         rule ConditionalOrExpression() -> Expression = e:ConditionalOrExpression_item() **<1,> ("||" _) {?
+             not_empty_fold(e.into_iter(), |a, b| Expression::Or(Box::new(a), Box::new(b)))
+@@ -2194,7 +2245,8 @@
+             None => e,
+         } }
+ 
+-        rule PrimaryExpression() -> Expression =
++        rule PrimaryExpression() -> Expression = fuel() e:PrimaryExpression_inner() { e }
++        rule PrimaryExpression_inner() -> Expression =
+             BrackettedExpression() /
+             ExprTripleTerm() /
+             iriOrFunction() /

@@ -200,6 +200,14 @@ test("check: a JSON syntax error exits 1 at its line and column", { timeout: 25_
   assert.match(r.lines[1], /^broken\.jsonld:6:47: error\[json-syntax\] /)
 })
 
+test("check: malformed JSON-LD around multi-byte characters exits 1 without aborting", { timeout: 25_000 }, (t) => {
+  const w = workspace(t, { "key.jsonld": '{"a":1,é"b":2}', "value.jsonld": '{"a":"é', "ctx.jsonld": '{"@context": {"@vocab":"x" \u200c "c"}}' })
+  const r = run(w, ["check"])
+  assert.equal(r.code, 1, r.err)
+  assert.doesNotMatch(r.err, /panick/)
+  for (const f of ["key", "value", "ctx"]) assert.match(r.out, new RegExp(`${f}\\.jsonld:\\d+:\\d+: error`), r.out)
+})
+
 // ---- @context errors (ticket 07) ----
 
 test("an invalid term definition is a jsonld-context error on the term", { timeout: 25_000 }, async (t) => {

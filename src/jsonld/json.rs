@@ -196,7 +196,7 @@ pub(crate) const MAX_ERRORS: usize = 100;
 
 /// What a [`Token`] is, for highlighting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TokenKind {
+pub enum TokenKind {
     LBrace,
     RBrace,
     LBracket,
@@ -216,14 +216,14 @@ pub(crate) enum TokenKind {
 
 /// A lexical token of a JSON text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Token {
-    pub(crate) kind: TokenKind,
-    pub(crate) span: Span,
+pub struct Token {
+    pub kind: TokenKind,
+    pub span: Span,
 }
 
 /// The tokens of a JSON text, in order, without whitespace. Never fails:
 /// anything that is not JSON is a [`TokenKind::Invalid`] token.
-pub(crate) fn tokens(text: &str) -> Vec<Token> {
+pub fn tokens(text: &str) -> Vec<Token> {
     let mut p = Parser::new(text, true);
     let mut out = Vec::new();
     loop {

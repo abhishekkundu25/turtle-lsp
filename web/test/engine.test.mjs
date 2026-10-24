@@ -3,12 +3,13 @@
 // `npm run web:build` first.
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createEngine } from "../app/engine.js"
 import { SETS, WORKSPACE } from "../app/samples.js"
-import { startServer, tempDir, uriOf } from "../../test/lsp-client.mjs"
+import { serverEnv, serverPath, startServer, tempDir, uriOf } from "../../test/lsp-client.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, "..", "..")
@@ -101,6 +102,15 @@ test("query: a syntax error has its line and column; a missing query file is a r
   assert.deepEqual([e.line, e.column], [2, 14])
   assert.match(e.message, /syntax error/)
   assert.throws(() => engine.call("query", { files: [], query: "nope.rq" }), /no file is named 'nope.rq'/)
+})
+
+test("query: 200 nested REGEX( in a FILTER is a syntax error at once", () => {
+  // Each level doubled spargebra's parse before its grammar was left-factored.
+  const started = Date.now()
+  const e = ask(`SELECT * WHERE { ?x ?p ?o FILTER(${"REGEX(".repeat(200)}?x) }`)
+  assert.equal(e.kind, "error")
+  assert.match(e.message, /syntax error/)
+  assert.ok(Date.now() - started < 5000, `${Date.now() - started} ms`)
 })
 
 test("query: the time limit stops a long query with a message, and the engine keeps answering", () => {
@@ -404,6 +414,24 @@ test("fix all applies every preferred fix across files and leaves the rest alone
   for (const f of res.files) {
     const left = f.diagnostics.filter((d) => d.fixes.some((x) => x.preferred))
     assert.deepEqual(left, [], f.name)
+  }
+})
+
+test("fix all gives the text check --fix --unsafe-fixes writes, fixes that touch included", () => {
+  // The two removals touch, and the second leaves ex:o. next to ex:t.
+  const text =
+    "@prefix ex: <http://e/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n" +
+    'ex:s rdfs:labl "a" ; ex:p ex:o.@prefix u: <http://u/> .@prefix v: <http://v/> .ex:t ex:p ex:o .\n'
+  const [fixed] = engine.call("fix_all", { files: [{ name: "a.ttl", text }] }).files
+  const ws = tempDir("turtle-engine-fix-")
+  try {
+    fs.writeFileSync(path.join(ws, "a.ttl"), text)
+    const r = spawnSync(serverPath, ["check", "--fix", "--unsafe-fixes", "a.ttl"], { cwd: ws, env: serverEnv(), encoding: "utf8" })
+    assert.equal(r.error, undefined)
+    assert.equal(fixed.text, fs.readFileSync(path.join(ws, "a.ttl"), "utf8"))
+    assert.match(fixed.text, /rdfs:label "a" ; ex:p ex:o\. ex:t ex:p ex:o \.\n$/)
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true })
   }
 })
 

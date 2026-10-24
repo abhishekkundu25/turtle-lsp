@@ -33,7 +33,7 @@ use crate::syntax::names::{
 use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span, Syntax};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
 
 const LIMIT: usize = 200;
@@ -602,14 +602,17 @@ fn starts_with_lowercase(local: &str, lower: &str) -> bool {
 
 /// The completion items, in the candidates' order, replacing `replace`. A
 /// candidate whose prefix is not declared gets `import_edit(name, namespace)`
-/// as an additional edit. Items for terms carry `data.iri` for [`resolve`].
-pub(crate) fn items(
+/// as an additional edit, when it has one, made once per prefix: up to
+/// [`LIMIT`] terms share it, and a SPARQL one lexes the text around it.
+/// Items for terms carry `data.iri` for [`resolve`].
+pub(crate) fn items<E: Into<Option<TextEdit>>>(
     cands: Vec<Candidate>,
     replace: Range,
     prefixes: &PrefixMap,
     directive: Directive,
-    import_edit: impl Fn(&str, &str) -> TextEdit,
+    import_edit: impl Fn(&str, &str) -> E,
 ) -> Vec<CompletionItem> {
+    let mut edits: FxHashMap<(String, String), Option<TextEdit>> = FxHashMap::default();
     cands
         .into_iter()
         .enumerate()
@@ -618,7 +621,11 @@ pub(crate) fn items(
                 .import
                 .as_ref()
                 .filter(|(p, _)| !prefixes.contains_key(p))
-                .map(|(p, ns)| vec![import_edit(p, ns)]);
+                .and_then(|(p, ns)| {
+                    let made = edits.entry((p.clone(), ns.clone()));
+                    made.or_insert_with(|| import_edit(p, ns).into()).clone()
+                })
+                .map(|e| vec![e]);
             CompletionItem {
                 filter_text: Some(c.label.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
@@ -941,6 +948,41 @@ mod tests {
             CompletionResponse::Array(items) => items,
             CompletionResponse::List(l) => l.items,
         }
+    }
+
+    #[test]
+    fn each_prefix_import_is_made_once_for_all_its_terms() {
+        let term = |label: &str, p: &str| Candidate {
+            tier: 0,
+            label: label.into(),
+            kind: CompletionItemKind::PROPERTY,
+            detail: String::new(),
+            iri: None,
+            rank: 0,
+            import: Some((p.into(), format!("http://e/{p}/"))),
+        };
+        let cands = vec![term("a:x", "a"), term("b:y", "b"), term("a:z", "a")];
+        let made = std::cell::Cell::new(0);
+        let items = items(
+            cands,
+            Range::default(),
+            &PrefixMap::default(),
+            "@prefix",
+            |p, ns| {
+                made.set(made.get() + 1);
+                TextEdit::new(Range::default(), format!("{p} {ns}"))
+            },
+        );
+        assert_eq!(made.get(), 2);
+        let added: Vec<_> = items
+            .iter()
+            .map(|i| {
+                i.additional_text_edits.as_ref().unwrap()[0]
+                    .new_text
+                    .as_str()
+            })
+            .collect();
+        assert_eq!(added, ["a http://e/a/", "b http://e/b/", "a http://e/a/"]);
     }
 
     #[test]

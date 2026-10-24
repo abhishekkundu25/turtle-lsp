@@ -9,6 +9,8 @@
 //!   between comments are kept (a run collapses to one);
 //! - the subject and its first predicate on one line, every further predicate
 //!   on its own line one level in, ` ;` between them and ` .` at the end;
+//!   any other `;` (a second in a row, or one after the last predicate) is
+//!   left out, and a comment on it goes with the token before or after it;
 //! - an object list on one line when it fits the line width, else one object
 //!   per line;
 //! - `[ ]`, `( )` and `{| |}` on one line when short and flat (nothing nested),
@@ -93,7 +95,7 @@ fn format_with<'t>(
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         return None;
     }
-    let doc = Doc::new(text, &tokens());
+    let mut doc = Doc::new(text, &tokens());
     let items = Cst {
         t: &doc.toks,
         pos: 0,
@@ -101,6 +103,23 @@ fn format_with<'t>(
         quads: parsed.syntax == Syntax::NQuads,
     }
     .document()?;
+    // The `;` the printer leaves out (`Semicolons::Needed`): the second of a
+    // run, and every one with no predicate after its run, as `Cst::pol` reads them.
+    let t = &doc.toks;
+    let omit: Vec<Ix> = (0..t.len())
+        .filter(|&i| {
+            t[i].kind == Kind::Semicolon
+                && (t[i - 1].kind == Kind::Semicolon
+                    || !t[i..]
+                        .iter()
+                        .find(|t| t.kind != Kind::Semicolon)
+                        .is_some_and(|t| matches!(t.kind, Kind::Iri | Kind::PName | Kind::A)))
+        })
+        .map(|i| i as Ix)
+        .collect();
+    if !omit.is_empty() {
+        doc.attach(&omit);
+    }
     let out = Formatter::new(&doc, opts, parsed.syntax).document(&items);
     #[cfg(test)]
     let out = tests::injected(text, out);

@@ -278,50 +278,87 @@ pub(crate) struct EditBuf {
     before: Vec<usize>,
     prev: Vec<usize>,
     cur: Vec<usize>,
+    /// Table cells computed, for the cost tests.
+    #[cfg(test)]
+    cells: u64,
 }
 
 impl EditBuf {
     /// The edit distance of `a` and `b` if it is at most `max`, else `None`,
-    /// giving up as soon as two rows in a row are all above `max`. The
-    /// distance allows adjacent transpositions (optimal string alignment):
-    /// insertions, deletions, substitutions and swapping two neighbouring
-    /// characters each cost 1, so `lable` is 1 from `label`.
+    /// giving up as soon as a row is all above `max`. The distance allows
+    /// adjacent transpositions (optimal string alignment): insertions,
+    /// deletions, substitutions and swapping two neighbouring characters each
+    /// cost 1, so `lable` is 1 from `label`. The cost is O(`max` x length):
+    /// the common prefix and suffix are stripped, and only the cells within
+    /// `max` of the diagonal are computed.
     pub(crate) fn within(&mut self, a: &[char], b: &[char], max: usize) -> Option<usize> {
         // Edit distance is at least the difference in length.
         if a.len().abs_diff(b.len()) > max {
             return None;
         }
-        let Self { before, prev, cur } = self;
+        // A shared prefix or suffix costs nothing: a swap across its edge
+        // would swap two equal characters.
+        let p = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+        let (a, b) = (&a[p..], &b[p..]);
+        let s = a
+            .iter()
+            .rev()
+            .zip(b.iter().rev())
+            .take_while(|(x, y)| x == y)
+            .count();
+        let (a, b) = (&a[..a.len() - s], &b[..b.len() - s]);
+        // No distance exceeds the longer length; this keeps `max + 1` from overflowing.
+        let max = max.min(a.len().max(b.len()));
+        let over = max + 1;
+        let m = b.len();
+        #[cfg(test)]
+        let cells = &mut self.cells;
+        let Self {
+            before, prev, cur, ..
+        } = self;
         before.clear();
-        before.resize(b.len() + 1, 0);
+        before.resize(m + 1, over);
         prev.clear();
-        prev.extend(0..=b.len());
+        prev.extend((0..=m).map(|j| j.min(over)));
         cur.clear();
-        cur.resize(b.len() + 1, 0);
-        let mut prev_min = 0;
-        for i in 0..a.len() {
-            cur[0] = i + 1;
-            let mut row_min = cur[0];
-            for j in 0..b.len() {
-                let mut d = (prev[j + 1] + 1)
-                    .min(cur[j] + 1)
-                    .min(prev[j] + usize::from(a[i] != b[j]));
-                if i > 0 && j > 0 && a[i] == b[j - 1] && a[i - 1] == b[j] {
-                    d = d.min(before[j - 1] + 1);
+        cur.resize(m + 1, over);
+        for i in 1..=a.len() {
+            let lo = i.saturating_sub(max).max(1);
+            let hi = (i + max).min(m);
+            // Cells outside the band stay at `over`; values are clamped to it.
+            cur[lo - 1] = if lo == 1 { i.min(over) } else { over };
+            let mut row_min = cur[lo - 1];
+            for j in lo..=hi {
+                #[cfg(test)]
+                {
+                    *cells += 1;
                 }
-                cur[j + 1] = d;
-                row_min = row_min.min(d);
+                let mut d = (prev[j] + 1)
+                    .min(cur[j - 1] + 1)
+                    .min(prev[j - 1] + usize::from(a[i - 1] != b[j - 1]));
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    d = d.min(before[j - 2] + 1);
+                }
+                cur[j] = d.min(over);
+                row_min = row_min.min(cur[j]);
             }
-            // A path to the last cell passes through one of any two
-            // neighbouring rows (a swap skips one) and never gets cheaper.
-            if row_min > max && prev_min > max {
+            // A path to the last cell crosses every row, and a swap from two
+            // rows up costs no less than the substitution through the row
+            // between, so one row all above `max` is enough.
+            if row_min > max {
                 return None;
             }
-            prev_min = row_min;
+            if hi < m {
+                cur[hi + 1] = over;
+            }
             std::mem::swap(before, prev);
             std::mem::swap(prev, cur);
+            // The reused row still holds the band edge of two rows up.
+            if lo >= 2 {
+                cur[lo - 2] = over;
+            }
         }
-        Some(prev[b.len()]).filter(|d| *d <= max)
+        Some(prev[m]).filter(|d| *d <= max)
     }
 }
 
@@ -448,6 +485,81 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The optimal-string-alignment distance from the whole table, unbounded.
+    fn full_table(a: &[char], b: &[char]) -> usize {
+        let mut t = vec![vec![0; b.len() + 1]; a.len() + 1];
+        for (i, row) in t.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        t[0] = (0..=b.len()).collect();
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let mut d = (t[i - 1][j] + 1)
+                    .min(t[i][j - 1] + 1)
+                    .min(t[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]));
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    d = d.min(t[i - 2][j - 2] + 1);
+                }
+                t[i][j] = d;
+            }
+        }
+        t[a.len()][b.len()]
+    }
+
+    #[test]
+    fn a_banded_distance_matches_the_full_table() {
+        // Every string over {a, b, c} up to length 4, so swaps land at the
+        // band's edge and at the edge of the stripped prefix and suffix.
+        let mut all: Vec<Vec<char>> = vec![Vec::new()];
+        let mut layer = all.clone();
+        for _ in 0..4 {
+            layer = layer
+                .iter()
+                .flat_map(|w| ['a', 'b', 'c'].map(|c| [w.as_slice(), &[c]].concat()))
+                .collect();
+            all.extend(layer.clone());
+        }
+        let mut buf = EditBuf::default();
+        for (xaby, xbay) in [("xaby", "xbay"), ("aab", "aba"), ("xabcy", "xbacy")] {
+            all.push(xaby.chars().collect());
+            all.push(xbay.chars().collect());
+        }
+        for a in &all {
+            for b in &all {
+                let d = full_table(a, b);
+                for max in 0..5 {
+                    assert_eq!(
+                        buf.within(a, b, max),
+                        (d <= max).then_some(d),
+                        "{a:?} {b:?} {max}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_bounded_distance_costs_the_band_not_the_table() {
+        // A zero run of length `l` between each name's head and tail.
+        let cells = |l: usize, [ha, ta, hb, tb]: [&str; 4], want: Option<usize>| {
+            let z = "0".repeat(l);
+            let a: Vec<char> = format!("{ha}{z}{ta}").chars().collect();
+            let b: Vec<char> = format!("{hb}{z}{tb}").chars().collect();
+            let mut buf = EditBuf::default();
+            assert_eq!(buf.within(&a, &b, 2), want);
+            buf.cells
+        };
+        let shapes = [
+            (["", "InvalidResource", "", "ValidResource1"], None),
+            (["ab", "c", "ba", "d"], Some(2)),
+        ];
+        for (parts, want) in shapes {
+            let (one, two) = (cells(10_000, parts, want), cells(20_000, parts, want));
+            assert!(one <= 5 * (10_000 + 20), "{one} cells");
+            assert!(two as f64 <= 2.1 * one as f64, "{one} cells, then {two}");
         }
     }
 

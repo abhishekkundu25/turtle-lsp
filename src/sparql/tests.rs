@@ -121,6 +121,118 @@ fn angle_brackets_are_iris_or_operators() {
 }
 
 #[test]
+fn lexing_from_a_kept_state_gives_the_tokens_of_the_whole_text() {
+    let part = "{ ?s<http://e/p>?o FILTER(?o)<http://e/s> ?p ( ?o<http://e/l> ) \
+                FILTER(?a<=ex:b&&?c>?a) BIND(ex:f(?x)<3 AS ?y) }\n";
+    let text = format!(
+        "SELECT ?x (<http://e/f>(?x)<3 AS ?y) {{ {} }} ORDER BY ?x <http://e/f>(?x<?y)",
+        part.repeat(60)
+    );
+    let (all, states) = lexer::tokenize_with_states(&text);
+    assert!(states.len() > 10, "{} states", states.len());
+    for (at, state) in states {
+        let rest = all.iter().filter(|t| t.span.start >= at);
+        let want: Vec<_> = rest
+            .map(|t| (t.kind, Span::new(t.span.start - at, t.span.end - at)))
+            .collect();
+        assert_eq!(
+            lexer::resume(&text[at as usize..], state).0,
+            want,
+            "from {at}"
+        );
+    }
+    // From any token start, touching the token before or not.
+    for t in &all {
+        let (before, state, at) =
+            lexer::resume_until(&text, Default::default(), t.span.start as usize);
+        assert_eq!(at, t.span.start as usize);
+        let moved = |s: Span| Span::new(s.start + at as u32, s.end + at as u32);
+        let rest = lexer::resume(&text[at..], state)
+            .0
+            .into_iter()
+            .map(|(k, s)| (k, moved(s)));
+        let got: Vec<_> = before.into_iter().chain(rest).collect();
+        let want: Vec<_> = all.iter().map(|t| (t.kind, t.span)).collect();
+        assert_eq!(got, want, "from {at}");
+    }
+}
+
+#[test]
+fn the_lexer_may_start_in_the_whitespace_after_a_long_token() {
+    let text = format!(
+        "SELECT * {{ ?s ?p \"{}\"\n  . ?s ?q ?o }}",
+        "a".repeat(2000)
+    );
+    let doc = Document::parse(&text, &PrefixMap::default(), None);
+    let gap = text.find('\n').unwrap() as u32 + 1;
+    let (at, state) = doc.lexer_state_at(gap);
+    assert_eq!(at, gap);
+    let rest = doc.tokens().iter().filter(|t| t.span.start >= at);
+    let want: Vec<_> = rest
+        .map(|t| (t.kind, Span::new(t.span.start - at, t.span.end - at)))
+        .collect();
+    assert_eq!(lexer::resume(&text[at as usize..], state).0, want);
+    // At the line break the string touches it: back to the last kept state.
+    assert_eq!(doc.lexer_state_at(gap - 1).0, 0);
+}
+
+#[test]
+fn a_less_than_after_an_operand_is_the_operator() {
+    use TokenKind::*;
+    let tail = |q: &'static str| {
+        let all = lex(q);
+        all[2..all.len() - 1].to_vec()
+    };
+    assert_eq!(
+        tail("FILTER(?a<=ex:b&&?c>?a)"),
+        vec![
+            (Var, "?a"),
+            (Punct, "<="),
+            (PName, "ex:b"),
+            (Punct, "&&"),
+            (Var, "?c"),
+            (Punct, ">"),
+            (Var, "?a"),
+        ]
+    );
+    assert_eq!(
+        tail("FILTER(?a<<http://e/b>)"),
+        vec![(Var, "?a"), (Punct, "<"), (Iri, "<http://e/b>")]
+    );
+    assert_eq!(
+        tail("FILTER(?x < ?y && ?y > ?z)"),
+        vec![
+            (Var, "?x"),
+            (Punct, "<"),
+            (Var, "?y"),
+            (Punct, "&&"),
+            (Var, "?y"),
+            (Punct, ">"),
+            (Var, "?z"),
+        ]
+    );
+    let iris = |q: &str| lex(q).into_iter().filter(|t| t.0 == Iri).count();
+    assert_eq!(iris("{ <http://e/s> <http://e/p> <http://e/o> }"), 3);
+    assert_eq!(iris("{ <http://e/s><http://e/p><http://e/o> }"), 3);
+    assert_eq!(
+        iris("{ ?s<http://e/p>?o FILTER(?o)<http://e/s> ?p ( ?o<http://e/l> ) }"),
+        3
+    );
+    assert_eq!(
+        iris("SELECT ?x (<http://e/f>(?x)<3 AS ?y) { } ORDER BY ?x <http://e/f>(?x<?y)"),
+        2
+    );
+    assert_eq!(
+        iris("SELECT (EXISTS { ?s ?p (?o<http://e/l>) } AS ?e) { }"),
+        1
+    );
+    assert_eq!(
+        iris("ASK { << ?s ?p ?o >> ?q <<( ?s ?p <http://e/o> )>> }"),
+        1
+    );
+}
+
+#[test]
 fn strings_comments_and_numbers() {
     use TokenKind::*;
     let text =
@@ -184,6 +296,15 @@ fn names_tags_blank_nodes_and_variables() {
     assert_eq!(
         lex("PREFIX:<http://e/>"),
         vec![(Keyword, "PREFIX"), (PName, ":"), (Iri, "<http://e/>")]
+    );
+    // After the keyword it is the name declared.
+    assert_eq!(
+        lex("PREFIX PREFIX:<http://e/>"),
+        vec![
+            (Keyword, "PREFIX"),
+            (PName, "PREFIX:"),
+            (Iri, "<http://e/>")
+        ]
     );
     assert_eq!(lex("select:x"), vec![(PName, "select:x")]);
 }
@@ -1072,4 +1193,308 @@ fn true_and_false_are_read_in_any_case() {
     }
     // A word that is no boolean still is an error.
     assert!(codes("SELECT * { ?s ?p TRUEISH }").contains(&"syntax"));
+}
+
+// Ticket 07: nested calls parse in time linear in their depth
+// (vendor/spargebra/left-factor-nested-calls.patch).
+
+/// Runs `f` on a 2 MiB stack, as a worker thread may have.
+fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+/// Checks `make(n)` and `make(n / 4)` and asserts the larger takes under four
+/// times the smaller plus 5 ms (the fastest of five runs each). Returns the
+/// messages of `make(n)`'s errors.
+fn assert_linear(n: usize, make: impl Fn(usize) -> String) -> Vec<String> {
+    let fastest = |text: &str| {
+        (0..5)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                doc(text);
+                t.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let (big, small) = (make(n), make(n / 4));
+    let (t_big, t_small) = (fastest(&big), fastest(&small));
+    assert!(
+        t_big < t_small * 4 + std::time::Duration::from_millis(5),
+        "{t_big:?} at depth {n}, {t_small:?} at depth {}: {}",
+        n / 4,
+        &big[..big.len().min(80)]
+    );
+    doc(&big)
+        .diagnostics()
+        .iter()
+        .filter(|d| d.level == Level::Error)
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn timing_nested_builtins_parse_in_linear_time() {
+    on_small_stack(|| {
+        for (open, close) in [
+            ("REGEX(", ", \"a\")"),
+            ("SUBSTR(", ", 1)"),
+            ("REPLACE(", ", \"a\", \"b\")"),
+            ("GROUP_CONCAT(", ")"),
+            ("GROUP_CONCAT(DISTINCT ", ")"),
+            ("!(", ")"),
+            ("(!", ")"),
+            ("!REGEX(", ", \"a\")"),
+            (":f(REGEX(", ", \"a\"))"),
+            ("COUNT(DISTINCT:a(", "))"),
+        ] {
+            // 200 levels, or 100 of a pattern that opens two brackets: under `MAX_NESTING`.
+            let n = 200 / open.matches('(').count();
+            for closed in [false, true] {
+                let found = assert_linear(n, |n| {
+                    let tail = if closed {
+                        close.repeat(n)
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "PREFIX : <http://example.org/>\nPREFIX DISTINCT: <http://example.org/d#>\nSELECT ({}?x{tail} AS ?y) {{}}",
+                        open.repeat(n)
+                    )
+                });
+                if closed {
+                    // Only the aggregates break a rule, nesting one in another.
+                    assert!(
+                        found
+                            .iter()
+                            .all(|m| m == "An aggregate cannot contain another aggregate"),
+                        "{open}: {found:?}"
+                    );
+                } else {
+                    assert!(!found.is_empty(), "{open}");
+                }
+            }
+        }
+        // The two chaos inputs: iteration 107183 of seed 1792799834 and 107745
+        // of seed 1792817485.
+        for make in [
+            (|n| format!("SELECT (AVG({}DISTINCT ?x) AS ?y) {{}}", "REGEX(".repeat(n)))
+                as fn(usize) -> String,
+            |n| {
+                format!(
+                    "PREFIX : <http://example/>\nSELECT (:{}RE",
+                    "REGEX(".repeat(n)
+                )
+            },
+        ]
+        .into_iter()
+        .zip([223, 188])
+        {
+            assert!(!assert_linear(make.1, make.0).is_empty());
+        }
+    });
+}
+
+#[test]
+fn timing_every_builtin_nests_in_linear_time() {
+    on_small_stack(|| {
+        let names: Vec<&str> = lexer::words()
+            .filter(|(_, kind)| *kind == TokenKind::Function)
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.len() > 60, "{names:?}");
+        for name in names {
+            // What follows the nested argument; `None` for a function whose
+            // argument cannot be a call.
+            let rest = match name {
+                "BOUND" | "NOW" | "RAND" | "UUID" | "STRUUID" => None,
+                "REGEX" | "CONTAINS" | "STRSTARTS" | "STRENDS" | "STRBEFORE" | "STRAFTER"
+                | "STRLANG" | "STRDT" | "langMatches" | "sameTerm" => Some(", \"a\""),
+                "SUBSTR" => Some(", 1"),
+                "IF" => Some(", 1, 2"),
+                "REPLACE" => Some(", \"a\", \"b\""),
+                "STRLANGDIR" => Some(", \"en\", \"ltr\""),
+                "TRIPLE" => Some(", <http://example.org/p>, 1"),
+                _ => Some(""),
+            };
+            let Some(rest) = rest else { continue };
+            let found = assert_linear(64, |n| {
+                format!(
+                    "SELECT ({}?x{} AS ?y) {{}}",
+                    format!("{name}(").repeat(n),
+                    format!("{rest})").repeat(n)
+                )
+            });
+            let aggregate = lexer::is_aggregate(name);
+            assert!(
+                found
+                    .iter()
+                    .all(|m| aggregate && m == "An aggregate cannot contain another aggregate"),
+                "{name}: {found:?}"
+            );
+        }
+    });
+}
+
+/// `DISTINCT` that starts a prefixed name is the name, as spargebra 0.4.7 read
+/// it; the keyword before a sign or a decimal stays the keyword.
+#[test]
+fn distinct_that_starts_a_prefixed_name_is_the_name() {
+    let text = "PREFIX distinct1: <http://e/> SELECT (COUNT(distinct1:x) AS ?c) {}";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    for (text, algebra) in [
+        (text, "(COUNT(<http://e/x>) AS"),
+        (
+            "SELECT (COUNT(DISTINCT-1) AS ?c) {}",
+            "(COUNT(DISTINCT -\"1\"^^<http://www.w3.org/2001/XMLSchema#integer>) AS",
+        ),
+        (
+            "SELECT (SUM(DISTINCT.5) AS ?s) {}",
+            "(SUM(DISTINCT \".5\"^^<http://www.w3.org/2001/XMLSchema#decimal>) AS",
+        ),
+    ] {
+        let query = spargebra::SparqlParser::new().parse_query(text).unwrap();
+        assert!(query.to_string().contains(algebra), "{query}");
+    }
+}
+
+// Ticket 08: parse fuel bounds the work of spargebra's grammar
+// (vendor/spargebra/parse-fuel.patch).
+
+const TOO_COMPLEX: &str = "SPARQL syntax error: too large to check (the query is too complex)";
+
+/// (path, text) of every query and update in the W3C suites (`.rq`, `.ru`)
+/// and in the SHACL examples of test/corpus (`sh:select`, `sh:ask`,
+/// `sh:construct`, `sh:update`), when it is downloaded.
+fn known_queries() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("tests/w3c/sparql-tests"), &mut files);
+    walk(&root.join("test/corpus"), &mut files);
+    let corpus = files
+        .iter()
+        .any(|f| f.starts_with(root.join("test/corpus")));
+    let ci = std::env::var("CI").is_ok_and(|v| v == "true");
+    assert!(
+        corpus || !ci,
+        "test/corpus is missing; CI=true does not skip it"
+    );
+    let mut out = Vec::new();
+    for f in files {
+        let name = f.display().to_string();
+        match f.extension().and_then(|x| x.to_str()) {
+            Some("rq" | "ru") => {
+                if let Ok(text) = std::fs::read_to_string(&f) {
+                    out.push((name, text));
+                }
+            }
+            Some("ttl") if f.starts_with(root.join("test/corpus")) => {
+                let bytes = std::fs::read(&f).unwrap();
+                for t in oxttl::TurtleParser::new().for_slice(&bytes).flatten() {
+                    let query = ["select", "ask", "construct", "update"]
+                        .iter()
+                        .any(|p| t.predicate.as_str() == format!("http://www.w3.org/ns/shacl#{p}"));
+                    if let (true, oxrdf::Term::Literal(l)) = (query, &t.object) {
+                        out.push((name.clone(), l.value().to_owned()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The messages of `text`'s error diagnostics, spargebra given `fuel` per byte.
+fn errors_with_fuel(text: &str, fuel: usize) -> Vec<(Span, String)> {
+    diagnostics::FUEL_PER_BYTE.set(Some(fuel));
+    let found = doc(text)
+        .diagnostics()
+        .iter()
+        .filter(|d| d.level == Level::Error)
+        .map(|d| (d.span, d.message.clone()))
+        .collect();
+    diagnostics::FUEL_PER_BYTE.set(None);
+    found
+}
+
+/// The largest rule visits per byte of a known query is under a quarter of
+/// [`spargebra::FUEL_PER_BYTE`]: every one parses with a quarter of it.
+#[test]
+fn a_quarter_of_the_fuel_parses_every_known_query() {
+    let queries = known_queries();
+    assert!(queries.len() > 600, "{}", queries.len());
+    for (path, text) in queries {
+        let found = errors_with_fuel(&text, spargebra::FUEL_PER_BYTE / 4);
+        assert!(found.iter().all(|(_, m)| m != TOO_COMPLEX), "{path}");
+    }
+}
+
+/// With [`spargebra::FUEL_PER_BYTE`], ticket 07's nested calls left open, and
+/// its two chaos inputs, give no "too complex" error (closed, ticket 07's
+/// tests assert their exact errors).
+#[test]
+fn the_fuel_parses_nested_calls_left_open() {
+    on_small_stack(|| {
+        let mut texts: Vec<String> = [
+            "REGEX(", "SUBSTR(", "REPLACE(", "GROUP_CONCAT(", "GROUP_CONCAT(DISTINCT ", "!(", "(!",
+            "!REGEX(", ":f(REGEX(", "COUNT(DISTINCT:a(",
+        ]
+        .iter()
+        .map(|open| {
+            let n = 200 / open.matches('(').count();
+            format!(
+                "PREFIX : <http://example.org/>\nPREFIX DISTINCT: <http://example.org/d#>\nSELECT ({}?x AS ?y) {{}}",
+                open.repeat(n)
+            )
+        })
+        .collect();
+        texts.push(format!(
+            "SELECT (AVG({}DISTINCT ?x) AS ?y) {{}}",
+            "REGEX(".repeat(223)
+        ));
+        texts.push(format!(
+            "PREFIX : <http://example/>\nSELECT (:{}RE",
+            "REGEX(".repeat(188)
+        ));
+        for text in texts {
+            let found = doc(&text).diagnostics().to_vec();
+            assert!(
+                !found.is_empty() && found.iter().all(|d| d.message != TOO_COMPLEX),
+                "{text}"
+            );
+        }
+    });
+}
+
+/// Out of fuel, a query of about 200 tokens that parses with one visit per
+/// byte is refused with the "too complex" error on a token.
+#[test]
+fn a_query_out_of_fuel_is_too_complex() {
+    let text = format!(
+        "SELECT * {{ FILTER({}?x{}) }}",
+        "STR(".repeat(65),
+        ")".repeat(65)
+    );
+    assert!(errors_with_fuel(&text, 1).is_empty());
+    let found = errors_with_fuel(&text, 0);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (span, message) = &found[0];
+    assert_eq!(message, TOO_COMPLEX);
+    assert!(span.start < span.end, "{span:?}");
 }

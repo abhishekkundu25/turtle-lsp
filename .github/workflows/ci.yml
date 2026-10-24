@@ -129,7 +129,8 @@ jobs:
           version: v0.12.6
       - run: npm ci
         timeout-minutes: 5
-      # The JSON-LD corpus and the three SHACL files that src/knowledge.rs reads:
+      # The JSON-LD corpus, the three SHACL files that src/knowledge.rs reads and
+      # the SPARQL examples that tests/w3c_sparql.rs checks the lexer against:
       # with CI=true the tests fail when they are absent. Downloaded again only
       # when the source lists or checksums change.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -142,16 +143,17 @@ jobs:
             test/corpus/brick.ttl
             test/corpus/dcat-ap-shacl.ttl
             test/corpus/w3c-shacl.ttl
-          key: shacl-corpus-${{ hashFiles('tools/corpus/sources.tsv') }}
-      # fetch.sh with a source list of only those three rows; it fetches the
+            test/corpus/sib-sparql-examples
+          key: corpus-files-v2-${{ hashFiles('tools/corpus/sources.tsv') }}
+      # fetch.sh with a source list of only those four rows; it fetches the
       # JSON-LD corpus as well. Files already present are not downloaded again.
-      - name: Corpus (JSON-LD, Brick, DCAT-AP, SHACL)
+      - name: Corpus (JSON-LD, Brick, DCAT-AP, SHACL, SPARQL examples)
         shell: bash
         timeout-minutes: 10
         run: |
           mkdir -p target
-          awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl"' tools/corpus/sources.tsv > target/corpus-sources.tsv
-          test "$(wc -l < target/corpus-sources.tsv)" -eq 3
+          awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl" || $1 == "sib-sparql-examples"' tools/corpus/sources.tsv > target/corpus-sources.tsv
+          test "$(wc -l < target/corpus-sources.tsv)" -eq 4
           # One retry: w3.org and the other hosts throttle runners now and then.
           CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh ||
             { sleep 15; CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh; }

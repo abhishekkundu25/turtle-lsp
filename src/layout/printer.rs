@@ -35,10 +35,9 @@ pub(crate) enum Groups {
 /// Which `;` after a predicate's objects are written.
 #[derive(Clone, Copy)]
 pub(crate) enum Semicolons {
-    /// The first one between two pairs. Any other (after the last pair, or
-    /// the second of a run) only when a comment hangs on it, since moving
-    /// that comment elsewhere would not survive a second pass (Turtle
-    /// family).
+    /// The first one between two pairs, never another (after the last pair,
+    /// or the second of a run). The formatter attaches comments as if those
+    /// were not there ([`Doc::attach`]) (Turtle family).
     Needed,
     /// Every one, as written (SPARQL).
     AsWritten,
@@ -406,21 +405,14 @@ impl<'a, T: LayoutToken> Printer<'a, T> {
             self.space(level + 1);
             self.objects(&po.objs, level, flat);
             let last = k + 1 == pol.len();
-            for (m, &s) in po.semis.iter().enumerate() {
-                let needed = m == 0 && !last;
-                match self.style.semicolons {
-                    Semicolons::Needed if !needed => self.extra_semi(s, level),
-                    _ => self.punct(s, level),
-                }
+            let written = match self.style.semicolons {
+                Semicolons::Needed if last => &[][..],
+                Semicolons::Needed => &po.semis[..po.semis.len().min(1)],
+                Semicolons::AsWritten => &po.semis[..],
+            };
+            for &s in written {
+                self.punct(s, level);
             }
-        }
-    }
-
-    /// A redundant `;`: left out, unless a comment hangs on it.
-    fn extra_semi(&mut self, i: Ix, level: usize) {
-        let (a, b) = self.d.leading(i);
-        if a < b || self.d.trail[i as usize].is_some() {
-            self.punct(i, level);
         }
     }
 

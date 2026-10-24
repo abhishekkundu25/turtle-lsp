@@ -6,6 +6,7 @@ use super::quickfix::{FixData, PrefixCandidate, add_prefix_note, prefix_candidat
 use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
+use crate::syntax::lexer::Kind;
 use crate::syntax::{Form, Severity, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
@@ -273,12 +274,38 @@ pub fn diagnostics_with(
     }
     let is_prefix_file = file_uri_name(&a.uri).as_deref() == Some(PREFIX_FILE);
     if !is_prefix_file {
-        let used: rustc_hash::FxHashSet<&str> = a
+        let mut used: rustc_hash::FxHashSet<&str> = a
             .parsed
             .prefix_uses
             .iter()
             .map(|u| u.name.as_str())
             .collect();
+        // A statement skipped by error recovery records no uses; its prefixed
+        // names still keep their prefix. Without a syntax error nothing is
+        // skipped, so the recorded uses are all of them.
+        if a.parsed
+            .errors
+            .iter()
+            .any(|e| e.severity == Severity::Error)
+            && a.parsed
+                .prefixes
+                .iter()
+                .any(|p| !used.contains(p.name.as_str()))
+        {
+            let tokens = a.tokens_or_lexed();
+            let names: rustc_hash::FxHashSet<u32> = a
+                .parsed
+                .prefixes
+                .iter()
+                .map(|p| p.name_span.start)
+                .collect();
+            used.extend(
+                tokens
+                    .iter()
+                    .filter(|t| t.kind == Kind::PName && !names.contains(&t.start))
+                    .filter_map(|t| a.text[t.start as usize..t.end as usize].split(':').next()),
+            );
+        }
         for p in a
             .parsed
             .prefixes
@@ -530,6 +557,21 @@ mod tests {
         };
         assert_eq!(codes("file:///t/myprefixes.ttl"), ["unused-prefix"]);
         assert_eq!(codes("file:///t/dir/prefixes.ttl"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_prefix_used_in_a_skipped_statement_is_used() {
+        // Reduced from a chaos input: `check --fix` deleted `dct:`.
+        let text = "@prefix dct: <http://purl.org/dc/terms/> .\n.ex:a) dct:title \"x\" .\n";
+        for keep in [true, false] {
+            let a = Analysis::new("file:///t/a.ttl".into(), text, Arc::default(), keep);
+            let d = diagnostics(&a, &Knowledge::default(), Encoding::Utf8);
+            assert!(
+                !d.iter()
+                    .any(|d| d.code == Some(NumberOrString::String("unused-prefix".into()))),
+                "{d:?}"
+            );
+        }
     }
 
     /// `n` lines, each a statement that parses and one that does not.

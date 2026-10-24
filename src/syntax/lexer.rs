@@ -130,7 +130,15 @@ struct Lexer<'a> {
     out: Vec<Token>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Bytes this thread has lexed: an edit's cost without a clock.
+    pub(crate) static LEXED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn tokenize(src: &str) -> Vec<Token> {
+    #[cfg(test)]
+    LEXED.with(|n| n.set(n.get() + src.len()));
     let mut lx = Lexer {
         src,
         b: src.as_bytes(),

@@ -55,7 +55,8 @@ async function rename(name, needle, newName, offset = 1) {
   }
 }
 
-// Edits per file, relative to the workspace, as "line:char text".
+// Edits per file, relative to the workspace, as "line:char text". An edit
+// changes only what differs: renaming ex to eg writes the g after the e.
 function edited(edit) {
   const out = {}
   for (const [u, edits] of Object.entries(edit.changes ?? {})) {
@@ -76,10 +77,10 @@ function apply(t, edits) {
 }
 
 const shared = {
-  "prefixes.ttl": ["0:8 eg"],
-  "data.ttl": ["0:0 eg", "0:5 eg", "0:10 eg"],
-  "sub/deep.ttl": ["0:0 eg", "0:5 eg", "0:10 eg"],
-  "clash/uses.ttl": ["1:0 eg", "1:5 eg"],
+  "prefixes.ttl": ["0:9 g"],
+  "data.ttl": ["0:1 g", "0:6 g", "0:11 g"],
+  "sub/deep.ttl": ["0:1 g", "0:6 g", "0:11 g"],
+  "clash/uses.ttl": ["1:1 g", "1:6 g"],
 }
 
 test("renaming a prefix in prefixes.ttl renames it in the files that take it from there", async () => {
@@ -118,14 +119,14 @@ test("after a shared rename no file has an undeclared prefix", async () => {
 
 test("a prefix the file declares itself is renamed only in that file", async () => {
   assert.deepEqual(edited(await rename("own.ttl", "ex:e", "eg")), {
-    "own.ttl": ["0:8 eg", "1:0 eg", "1:5 eg", "1:10 eg"],
+    "own.ttl": ["0:9 g", "1:1 g", "1:6 g", "1:11 g"],
   })
 })
 
 test("a nested prefixes.ttl is its own scope", async () => {
   assert.deepEqual(edited(await rename("nested/inner.ttl", "ex:g", "eg")), {
-    "nested/prefixes.ttl": ["0:8 eg"],
-    "nested/inner.ttl": ["0:0 eg", "0:5 eg", "0:10 eg"],
+    "nested/prefixes.ttl": ["0:9 g"],
+    "nested/inner.ttl": ["0:1 g", "0:6 g", "0:11 g"],
   })
 })
 
@@ -158,7 +159,7 @@ test("a shared prefix can be renamed and then renamed back", async () => {
     await save(await rename("prefixes.ttl", "ex:", "eg"))
     const back = await rename("prefixes.ttl", "eg:", "ex")
     const expected = Object.fromEntries(
-      Object.entries(shared).map(([name, edits]) => [name, edits.map((e) => e.replace(/ eg$/, " ex"))]),
+      Object.entries(shared).map(([name, edits]) => [name, edits.map((e) => e.replace(/ g$/, " x"))]),
     )
     assert.deepEqual(edited(back), expected)
     await save(back)

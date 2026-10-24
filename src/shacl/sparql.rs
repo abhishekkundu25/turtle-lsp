@@ -103,6 +103,9 @@ pub(crate) fn prepare(
     let text =
         crate::sparql::validate::text_for_spargebra(&text, &crate::sparql::lexer::tokenize(&text));
     let mut query = parser.parse_query(&text).map_err(|e| e.to_string())?;
+    if let Some(why) = crate::sparql::join_width::too_wide(&query) {
+        return Err(format!("the query is too complex: {why}"));
+    }
     let vars: Vec<Variable> = role
         .names()
         .into_iter()

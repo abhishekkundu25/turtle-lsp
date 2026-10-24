@@ -61,6 +61,11 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
   from the parallel run. CI's Tests, VS Code and Browser jobs build without
   fat LTO; a nightly run (`schedule` in `ci.yml`) builds with the shipped
   profile and runs the chaos tests with a new seed and 200,000 iterations.
+- A chaos failure prints a replay line: `CHAOS_SEED`, `CHAOS_ITERS` and
+  `CHAOS_ONLY=<iteration>` rerun that one input. A watchdog fails any
+  iteration over its budget (`CHAOS_ITERATION_BUDGET_MS` overrides it) and
+  saves the input under `target/tmp`. Fix what the chaos tests find, with a
+  unit test on the reduced input; never `#[ignore]` a test or exempt a check.
 
 - Leave `TMPDIR` at its default, outside the repository. The tests make
   their workspaces in the system temp folder and run `check --fix` there
@@ -102,11 +107,12 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
 2. When `rust-toolchain.toml` moves to a new compiler, run clippy on it;
    lower `rust-version` in `Cargo.toml` only after clippy passes on the
    lower number (its comment says why it is 1.91).
-3. When spareval moves to a new release, re-apply the patches in
-   `vendor/spareval` (`vendor/spareval/PATCH.md`), update `VERSION` and
-   `SHA256` in `tools/check-vendor.sh`, keep the exact `=` pin in
-   `Cargo.toml` (the `[patch.crates-io]` entry applies only while it
-   matches), and run `tools/check-vendor.sh`.
+3. When spareval or spargebra moves to a new release, re-apply the patches in
+   `vendor/spareval` (`vendor/spareval/PATCH.md`) or `vendor/spargebra`
+   (`vendor/spargebra/PATCH.md`), update that crate's row in
+   `tools/check-vendor.sh`, keep the exact `=` pin in `Cargo.toml` (the
+   `[patch.crates-io]` entry applies only while it matches), and run
+   `tools/check-vendor.sh`.
 4. Push the tag `vX.Y.Z` on a commit of `main` whose CI passed. The release
    workflow publishes to the Marketplace from the GitHub environment
    `release`, which must hold the `VSCE_PAT` secret.

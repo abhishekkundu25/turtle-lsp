@@ -4,7 +4,9 @@
 //! A comment on the same line as the token before it trails that token (one
 //! per token); every other comment is an own-line comment and leads the next
 //! token, or the end of the file. Each comment and token also records whether
-//! a blank line separates it from what comes before.
+//! a blank line separates it from what comes before. [`Doc::attach`] does
+//! this again as if some tokens were not there, for tokens a formatter leaves
+//! out.
 //!
 //! Generic over [`LayoutToken`], with adapters for the Turtle-family tokens
 //! (`syntax::lexer::Token`) and the SPARQL tokens (`sparql::Token`).
@@ -136,58 +138,108 @@ impl<'a, T: LayoutToken> Doc<'a, T> {
             src,
             toks: Vec::with_capacity(n),
             comments: Vec::new(),
-            lead: vec![(0, 0); n + 1],
-            trail: vec![None; n],
+            lead: Vec::with_capacity(n + 1),
+            trail: Vec::with_capacity(n),
             blank_before: Vec::with_capacity(n),
             lead_pref: Vec::with_capacity(n + 2),
             trail_pref: Vec::with_capacity(n + 1),
         };
-        let mut prev_end = 0usize;
-        // Comments waiting for the next token start here.
-        let mut lead_from = 0u32;
         for t in all {
             let span = t.span();
-            let gap = &src[prev_end..span.start as usize];
-            let blank = prev_end > 0 && has_blank(gap);
             if t.is_comment() {
                 let text = src[span.start as usize..span.end as usize].trim_end();
-                let idx = d.comments.len() as u32;
                 d.comments.push(Comment {
                     start: span.start,
                     end: span.start + text.len() as u32,
-                    blank_before: blank,
+                    blank_before: false,
                 });
-                let own_line = d.toks.is_empty() || prev_end == 0 || gap.contains(T::LINE_BREAKS);
-                if !own_line {
-                    let last = d.toks.len() - 1;
-                    if d.trail[last].is_none() && lead_from == idx {
-                        d.trail[last] = Some(idx);
-                        lead_from = idx + 1;
-                    }
-                }
             } else {
-                let j = d.toks.len();
-                d.lead[j] = (lead_from, d.comments.len() as u32);
-                lead_from = d.comments.len() as u32;
-                d.blank_before.push(blank);
                 d.toks.push(*t);
             }
-            prev_end = span.end as usize;
         }
-        d.lead[n] = (lead_from, d.comments.len() as u32);
-        let mut acc = 0;
-        d.lead_pref.push(0);
-        for r in &d.lead {
-            acc += u32::from(r.0 < r.1);
-            d.lead_pref.push(acc);
-        }
-        acc = 0;
-        d.trail_pref.push(0);
-        for t in &d.trail {
-            acc += u32::from(t.is_some());
-            d.trail_pref.push(acc);
-        }
+        d.attach(&[]);
         d
+    }
+
+    /// Attaches the comments again as if the tokens `omit` (ascending) were
+    /// not there, for tokens the formatter leaves out. An omitted token gets
+    /// no comment, and a comment on its line trails the token before it, if
+    /// that token has none yet; one on a line of its own leads the token
+    /// after it. A blank line counts only in whitespace, never across an
+    /// omitted token.
+    pub(crate) fn attach(&mut self, omit: &[Ix]) {
+        debug_assert!(omit.is_sorted(), "omitted tokens out of order");
+        let n = self.toks.len();
+        self.lead.clear();
+        self.lead.resize(n + 1, (0, 0));
+        self.trail.clear();
+        self.trail.resize(n, None);
+        self.blank_before.clear();
+        self.blank_before.resize(n, false);
+        let mut omit = omit.iter().copied().peekable();
+        // The end of whatever comes just before, omitted or not.
+        let mut prev_end = 0usize;
+        let mut seen = false;
+        // A blank line before an omitted token since the last thing kept.
+        let mut blank_skipped = false;
+        let mut last_kept: Option<usize> = None;
+        // Comments waiting for the next token start here.
+        let mut lead_from = 0u32;
+        let (mut i, mut c) = (0usize, 0usize);
+        while i < n || c < self.comments.len() {
+            let comment = c < self.comments.len()
+                && (i == n || self.comments[c].start < self.toks[i].span().start);
+            let (start, end) = if comment {
+                (self.comments[c].start, self.comments[c].end)
+            } else {
+                let s = self.toks[i].span();
+                (s.start, s.end)
+            };
+            let gap = &self.src[prev_end..start as usize];
+            let blank = seen && (blank_skipped || has_blank(gap));
+            if comment {
+                let idx = c as u32;
+                self.comments[c].blank_before = blank;
+                if let Some(last) = last_kept
+                    && !gap.contains(T::LINE_BREAKS)
+                    && self.trail[last].is_none()
+                    && lead_from == idx
+                {
+                    self.trail[last] = Some(idx);
+                    lead_from = idx + 1;
+                }
+                blank_skipped = false;
+                c += 1;
+            } else if omit.next_if_eq(&(i as Ix)).is_some() {
+                self.lead[i] = (lead_from, lead_from);
+                blank_skipped = blank;
+                i += 1;
+            } else {
+                self.lead[i] = (lead_from, c as u32);
+                lead_from = c as u32;
+                self.blank_before[i] = blank;
+                last_kept = Some(i);
+                blank_skipped = false;
+                i += 1;
+            }
+            prev_end = end as usize;
+            seen = true;
+        }
+        self.lead[n] = (lead_from, self.comments.len() as u32);
+        self.lead_pref.clear();
+        let mut acc = 0;
+        self.lead_pref.push(0);
+        for r in &self.lead {
+            acc += u32::from(r.0 < r.1);
+            self.lead_pref.push(acc);
+        }
+        self.trail_pref.clear();
+        acc = 0;
+        self.trail_pref.push(0);
+        for t in &self.trail {
+            acc += u32::from(t.is_some());
+            self.trail_pref.push(acc);
+        }
     }
 
     /// The text of token `i`.
@@ -239,8 +291,7 @@ mod tests {
         comment_blanks: Vec<bool>,
     }
 
-    fn shape<T: LayoutToken>(src: &str, all: &[T]) -> Shape {
-        let d = Doc::new(src, all);
+    fn shape<T: LayoutToken>(d: &Doc<T>) -> Shape {
         let lead = |i: usize| {
             let (a, b) = d.leading(i as Ix);
             (a..b).map(|c| d.comment(c).to_string()).collect::<Vec<_>>()
@@ -264,8 +315,8 @@ mod tests {
     /// tokens.
     fn both(src: &str) -> (Shape, Shape) {
         (
-            shape(src, &crate::syntax::lexer::tokenize(src)),
-            shape(src, &crate::sparql::lexer::tokenize(src)),
+            shape(&Doc::new(src, &crate::syntax::lexer::tokenize(src))),
+            shape(&Doc::new(src, &crate::sparql::lexer::tokenize(src))),
         )
     }
 
@@ -383,6 +434,44 @@ mod tests {
         let sparql = Doc::new(src, &toks);
         assert_eq!((rdf.text(0), rdf.text(1)), ("<a>", "ex:b"));
         assert_eq!((sparql.text(0), sparql.text(1)), ("<a>", "ex:b"));
+    }
+
+    #[test]
+    fn an_omitted_token_hands_its_comments_to_its_neighbours() {
+        let semi = |src: &str| {
+            let toks = crate::syntax::lexer::tokenize(src);
+            let mut d = Doc::new(src, &toks);
+            let omit: Vec<Ix> = (0..d.toks.len() as Ix)
+                .filter(|&i| d.text(i) == ";")
+                .collect();
+            d.attach(&omit);
+            let s = shape(&d);
+            assert!(
+                omit.iter()
+                    .all(|&i| s.toks[i as usize] == tok(&[], None, false))
+            );
+            s
+        };
+        // On the `;` line: trails the token before.
+        let s = semi("<o> ; # c\n.");
+        assert_eq!(s.toks[0], tok(&[], Some("# c"), false));
+        assert_eq!(s.toks[2], tok(&[], None, false));
+        let s = semi("<o>\n ; # c\n .");
+        assert_eq!(s.toks[0], tok(&[], Some("# c"), false));
+        // That token already has one: leads the token after.
+        let s = semi("<o> # c1\n; # c2\n.");
+        assert_eq!(s.toks[0], tok(&[], Some("# c1"), false));
+        assert_eq!(s.toks[2], tok(&["# c2"], None, false));
+        // An own-line comment above the `;` leads the token after it, with no
+        // blank line counted across the `;`.
+        let s = semi("<o>\n# c\n;\n.");
+        assert_eq!(s.toks[2], tok(&["# c"], None, false));
+        let s = semi("<o>\n;\n# c\n.");
+        assert_eq!(s.toks[2], tok(&["# c"], None, false));
+        assert_eq!(s.comment_blanks, [false]);
+        // A blank line in the whitespace before the `;` still counts.
+        let s = semi("<o>\n\n;\n# c\n.");
+        assert_eq!(s.comment_blanks, [true]);
     }
 
     #[test]

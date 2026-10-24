@@ -4,12 +4,15 @@
 //! not. Spans are byte ranges, never empty, never overlapping, always on
 //! character boundaries.
 //!
-//! `<` starts an IRI when an IRI reference follows (`<http://e/>`), else it
-//! is an operator (`<`, `<=`, `<<`, `<<(`). Signs are their own tokens
+//! `<` right after an operand (a variable, literal, name, IRI or `)`) inside
+//! an expression's parentheses is the `<` or `<=` operator, as `spargebra`
+//! reads it (`?a<=ex:b&&?c>?a`). Elsewhere `<` starts an IRI when an IRI
+//! reference follows (`<http://e/>`), else it is an operator (`<`, `<=`,
+//! `<<`, `<<(`). Signs are their own tokens
 //! (`-1` is `-` and `1`), as in the grammar's `INTEGER_NEGATIVE`. A word
 //! followed by `:` is a prefixed name (`select:x` is a prefixed name, not a
-//! keyword), except `PREFIX:` before an IRI, which is the keyword and the
-//! empty prefix.
+//! keyword), except `PREFIX:` before an IRI and not after `PREFIX`, which
+//! is the keyword and the empty prefix.
 
 use super::{Token, TokenKind};
 use crate::syntax::Span;
@@ -195,10 +198,52 @@ fn bad_in_iri(c: char) -> bool {
     matches!(c, '<' | '"' | '{' | '}' | '|' | '^' | '`') || c <= ' '
 }
 
+/// What an open bracket holds.
+#[derive(Clone, Copy, PartialEq)]
+enum Open {
+    /// An expression: `FILTER(`, `BIND(`, a function's arguments, a `(` in a
+    /// SELECT clause or a solution modifier, any `(` inside an expression.
+    Expr,
+    /// A group `{`, with whether a SELECT clause or solution modifier was
+    /// open before it.
+    Group(bool),
+    /// A collection, `[`, `<<(`, a VALUES row.
+    Other,
+}
+
+/// All the lexer keeps of the text before a point between tokens: how the
+/// rest lexes depends on nothing else, so it may start there from this.
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct State {
+    open: Vec<Open>,
+    /// In a SELECT clause or a solution modifier (GROUP BY, HAVING, ORDER BY).
+    clause: bool,
+    /// The last two tokens that are no comment, the last first.
+    last: [Option<Last>; 2],
+}
+
+/// A token as the lexer remembers it: its kind, and the keyword (upper case)
+/// or `)` it is.
+#[derive(Clone, Copy, PartialEq)]
+struct Last {
+    kind: TokenKind,
+    word: Option<&'static str>,
+}
+
+/// The least distance between two [`State`]s kept by
+/// [`tokenize_with_states`]; a deeper stack of open brackets spaces them
+/// further, so together they hold no more entries than the text has bytes.
+const STATE_EVERY: usize = 512;
+
 struct Lexer<'a> {
     src: &'a str,
     b: &'a [u8],
     out: Vec<Token>,
+    st: State,
+    /// (offset, state) at token starts after whitespace, when asked for.
+    states: Option<Vec<(u32, State)>>,
+    /// The lexer stops at the first token start from here.
+    stop: usize,
 }
 
 impl Lexer<'_> {
@@ -208,10 +253,79 @@ impl Lexer<'_> {
 
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
         debug_assert!(start < end);
+        let text = &self.src[start..end];
+        let word = match (kind, text) {
+            (TokenKind::Keyword, _) => keyword(text),
+            (TokenKind::Punct, ")" | ")>>") => Some(")"),
+            _ => None,
+        };
+        let st = &mut self.st;
+        match (kind, text) {
+            (TokenKind::Punct, "(") => {
+                let kw = |t: Option<Last>, w: &str| {
+                    t.is_some_and(|t| t.kind == TokenKind::Keyword && t.word == Some(w))
+                };
+                let [prev, prev2] = st.last;
+                let call = prev
+                    .is_some_and(|t| matches!(t.kind, TokenKind::Iri | TokenKind::PName))
+                    && kw(prev2, "FILTER");
+                let expr = st.open.last() == Some(&Open::Expr)
+                    || st.clause
+                    || kw(prev, "FILTER")
+                    || kw(prev, "BIND")
+                    || prev.is_some_and(|t| t.kind == TokenKind::Function)
+                    || call;
+                st.open.push(if expr { Open::Expr } else { Open::Other });
+            }
+            (TokenKind::Punct, "[" | "<<(") => st.open.push(Open::Other),
+            (TokenKind::Punct, ")" | "]" | ")>>") => {
+                if matches!(st.open.last(), Some(Open::Expr | Open::Other)) {
+                    st.open.pop();
+                }
+            }
+            (TokenKind::Punct, "{") => {
+                st.open.push(Open::Group(st.clause));
+                st.clause = false;
+            }
+            (TokenKind::Punct, "}") => {
+                while let Some(o) = st.open.pop() {
+                    if let Open::Group(clause) = o {
+                        st.clause = clause;
+                        break;
+                    }
+                }
+            }
+            (TokenKind::Keyword, _) => match word {
+                Some("SELECT" | "GROUP" | "ORDER" | "HAVING") => st.clause = true,
+                Some("WHERE" | "FROM" | "LIMIT" | "OFFSET" | "VALUES") => st.clause = false,
+                _ => {}
+            },
+            _ => {}
+        }
+        if kind != TokenKind::Comment {
+            st.last = [Some(Last { kind, word }), st.last[0]];
+        }
         self.out.push(Token {
             kind,
             span: Span::new(start as u32, end as u32),
         });
+    }
+
+    /// Whether a `<` here is a comparison: it follows an operand inside an
+    /// expression, where `spargebra` reads no IRI.
+    fn comparison(&self) -> bool {
+        self.st.open.last() == Some(&Open::Expr)
+            && self.st.last[0].is_some_and(|t| match t.kind {
+                TokenKind::Var
+                | TokenKind::String
+                | TokenKind::Number
+                | TokenKind::Boolean
+                | TokenKind::LangTag
+                | TokenKind::Iri
+                | TokenKind::PName => true,
+                TokenKind::Punct => t.word == Some(")"),
+                _ => false,
+            })
     }
 
     /// End of the IRI reference starting with `<` at `i`, if one does.
@@ -366,11 +480,25 @@ impl Lexer<'_> {
         end
     }
 
-    fn run(&mut self) {
+    /// Lexes up to the end, or to where it stops: that offset.
+    fn run(&mut self) -> usize {
         let b = self.b;
         let mut i = 0;
+        let space = |c: u8| matches!(c, b' ' | b'\t' | b'\r' | b'\n');
+        let mut next_state = STATE_EVERY;
         while i < b.len() {
             let c = b[i];
+            if i >= self.stop && !space(c) {
+                return i;
+            }
+            if let Some(states) = &mut self.states
+                && i >= next_state
+                && !space(c)
+                && space(b[i - 1])
+            {
+                states.push((i as u32, self.st.clone()));
+                next_state = i + STATE_EVERY.max(self.st.open.len());
+            }
             match c {
                 b' ' | b'\t' | b'\r' | b'\n' => i += 1,
                 b'#' => {
@@ -382,7 +510,11 @@ impl Lexer<'_> {
                     i = end;
                 }
                 b'<' => {
-                    if let Some(end) = self.iri_end(i) {
+                    if self.comparison() {
+                        let len = if b[i..].starts_with(b"<=") { 2 } else { 1 };
+                        self.push(TokenKind::Punct, i, i + len);
+                        i += len;
+                    } else if let Some(end) = self.iri_end(i) {
                         self.push(TokenKind::Iri, i, end);
                         i = end;
                     } else {
@@ -511,7 +643,10 @@ impl Lexer<'_> {
                     }
                     let pend = self.prefix_end(i);
                     let after_colon = self.char_at(pend + 1);
+                    // After the keyword, `PREFIX:` is the name it declares.
+                    let declared = self.st.last[0].is_some_and(|t| t.word == Some("PREFIX"));
                     let prefix_kw = src_eq(&self.src[i..pend], "PREFIX")
+                        && !declared
                         && after_colon.is_none_or(|c| c.is_whitespace() || c == '<');
                     if b.get(pend) == Some(&b':') && !prefix_kw {
                         let end = self.local_end(pend + 1);
@@ -574,6 +709,7 @@ impl Lexer<'_> {
                 }
             }
         }
+        b.len()
     }
 }
 
@@ -599,11 +735,63 @@ fn exponent(b: &[u8], k: usize) -> Option<usize> {
 
 /// Every token of `src`, comments included, in order.
 pub fn tokenize(src: &str) -> Vec<Token> {
+    lex(src, State::default(), false, usize::MAX).0
+}
+
+/// [`tokenize`], with the state at token starts after whitespace about
+/// every [`STATE_EVERY`] bytes, the first at 0: places
+/// [`resume`] may lex a part of `src` from.
+pub(crate) fn tokenize_with_states(src: &str) -> (Vec<Token>, Vec<(u32, State)>) {
+    let (out, _, states, _) = lex(src, State::default(), true, usize::MAX);
+    (out, states)
+}
+
+/// (kind, span) of every token of `src` lexed from `state`, and the state
+/// after the last.
+pub(crate) fn resume(src: &str, state: State) -> (Vec<(TokenKind, Span)>, State) {
+    let (out, state, _) = resume_until(src, state, usize::MAX);
+    (out, state)
+}
+
+/// [`resume`] up to the first token start at or past `at`, a place it may
+/// resume from (the text after it is not edited): the tokens before it, the
+/// state there, and the offset (the end of `src` when there is none).
+pub(crate) fn resume_until(
+    src: &str,
+    state: State,
+    at: usize,
+) -> (Vec<(TokenKind, Span)>, State, usize) {
+    let (out, state, _, stop) = lex(src, state, false, at);
+    (out.iter().map(|t| (t.kind, t.span)).collect(), state, stop)
+}
+
+/// (kind, span) of every token of `src`, for `syntax::names::token_edits`.
+pub(crate) fn kinds(src: &str) -> Vec<(TokenKind, Span)> {
+    resume(src, State::default()).0
+}
+
+fn lex(
+    src: &str,
+    st: State,
+    keep_states: bool,
+    stop: usize,
+) -> (Vec<Token>, State, Vec<(u32, State)>, usize) {
     let mut l = Lexer {
         src,
         b: src.as_bytes(),
         out: Vec::with_capacity(src.len() / 4),
+        st,
+        states: keep_states.then(|| vec![(0, State::default())]),
+        stop,
     };
-    l.run();
-    l.out
+    let at = l.run();
+    #[cfg(test)]
+    LEXED.with(|n| n.set(n.get() + at));
+    (l.out, l.st, l.states.unwrap_or_default(), at)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes this thread has lexed: an edit's cost without a clock.
+    pub(crate) static LEXED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

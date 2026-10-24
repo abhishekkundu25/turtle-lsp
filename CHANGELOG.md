@@ -11,6 +11,64 @@
 - **"Shorten all IRIs in file" joined two IRIs written back to back**
   (`<ns#><…#p>` became the one name `ex:sh:p`), which changed the graph.
   Found by the nightly chaos run.
+- **A new `@prefix` could land mid-statement or inside a string.** Quick
+  fixes, Extract prefix and completion's auto-import put it after the first
+  `\n` following the last declaration, found by text search. It now goes in
+  at a statement boundary found from the tokens, and files with `\r` line
+  endings get it at a real line break. When data shares the last
+  declaration's line, the new line now goes right after the declaration,
+  not below the data. SPARQL "Add prefix" goes below a leading comment block.
+- **Edits no longer fuse or split tokens.** Shorten, Expand, Extract,
+  rename, "Change to" and "Remove unused prefix" could turn `ex:a.b.<iri>`,
+  `1.<iri>`, `?p?<iri>` or `@prefix:<…>` into different tokens and change
+  the data; `check --fix`'s prefix removal could join two statements. Every
+  such edit is now checked against the tokens it should leave, and in
+  broken SPARQL where no spacing can keep them, the fix is not offered.
+  Edits now replace only the characters that change, so their ranges in
+  `--format json` and SARIF are smaller.
+- **JSON-LD renames write only inside strings**, so an IRI with `//` no
+  longer becomes a comment, and adding a prefix to `@context` no longer
+  lands inside an unclosed string or after a `//` comment. A bare word
+  such as `false` before a key is no longer read as a term.
+- **Format Document reaches its final form in one pass.** A `;` that
+  nothing follows, with a comment on it (`<o> ; # c` then `.`), is now
+  dropped at once. `format --check` fails on files written the old way
+  until they are formatted once.
+- **Deeply nested SPARQL no longer hangs the server or `check`.**
+  `REGEX`, `SUBSTR`, `REPLACE`, the aggregates and `!` nested about twenty
+  deep took seconds, two hundred deep never returned, including inside a
+  shape's `sh:select`. The vendored SPARQL parser now parses them in linear
+  time, and a work bound turns any future blow-up into a "too complex"
+  error. `COUNT(DISTINCT:a)` with only `:` declared now reads `DISTINCT:a`
+  as a prefixed name.
+- **The "did you mean" hint was quadratic in name length.** Two long local
+  names sharing a long run took a second per check; it is now linear.
+- **`check --fix` re-lexed the whole file for every fix**: 8,000 unused
+  prefixes took 30 s, now 1 s.
+- **A SHACL shape with a very wide SPARQL query hung `check` and the
+  server.** A query joining hundreds of patterns (a run of `~` reifiers)
+  spent minutes in query planning; SHACL now refuses it as too complex, as
+  `turtle-lsp query` already did.
+- **"Remove unused prefix" deleted a prefix used in a statement with a
+  syntax error**, which `check --fix` applied without asking. Uses inside
+  such statements now count.
+- **Renaming a prefix rewrote uses written above its declaration**, which
+  that declaration does not cover, so they changed meaning.
+- **Extract prefix is no longer offered for an IRI that is not valid as
+  written** (a space in it); the new `@prefix` line commented out the rest
+  of its line.
+- **Positions in files with `\r` line endings were wrong.** A lone `\r` now
+  ends a line, as LSP says, so quick fixes and errors land on the right line.
+
+### Internal
+
+- **The chaos tests check every edit, not only that nothing crashes.**
+  Quick fixes, renames, SPARQL actions, completion imports and `check --fix`
+  are checked against the tokens and the graph they should leave. A
+  watchdog names and saves any slow input, `CHAOS_ONLY` replays one, the
+  JSON-LD run covers non-ASCII files, and no test is ignored. spargebra
+  0.4.7 is vendored with two patches (`vendor/spargebra/PATCH.md`) and
+  pinned exactly; a golden record checks the parsed form of every W3C query.
 
 ## 0.9.0 — 2026-10-23
 

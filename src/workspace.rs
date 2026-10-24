@@ -846,7 +846,7 @@ impl Workspace {
                         let (s, e) = (s.min(e) as usize, e.max(s) as usize);
                         let range = s.min(doc.text.len())..e.min(doc.text.len());
                         doc.text.replace_range(range.clone(), &ch.text);
-                        lines.replace(range, &ch.text);
+                        lines.replace(&doc.text, range, &ch.text);
                     }
                 }
             }
@@ -3079,7 +3079,7 @@ pub(crate) mod tests {
             let mut indexed = start.to_string();
             for (i, ch) in changes.into_iter().enumerate() {
                 let r = ch.range.unwrap();
-                let lines = line_index::LineIndex::new(&indexed);
+                let lines = crate::analysis::line_index(&indexed);
                 let at = |p| crate::analysis::offset_in(&lines, &indexed, enc, p).unwrap() as usize;
                 let (s, e) = (at(r.start), at(r.end));
                 indexed.replace_range(s.min(e)..e.max(s), &ch.text);

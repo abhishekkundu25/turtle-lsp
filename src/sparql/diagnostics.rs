@@ -54,6 +54,10 @@ pub(super) fn diagnostics(
 
     // Syntax, with the undeclared prefixes bound to placeholders.
     let mut parser = SparqlParser::new();
+    #[cfg(test)]
+    if let Some(k) = FUEL_PER_BYTE.get() {
+        parser = parser.with_fuel_per_byte(k);
+    }
     if let Some(b) = base
         && let Ok(p) = parser.clone().with_base_iri(b)
     {
@@ -390,7 +394,15 @@ fn syntax(span: Span, message: String) -> Diagnostic {
     }
 }
 
+// The fuel `spargebra` is given per byte in place of its own, for tests.
+#[cfg(test)]
+thread_local!(pub(super) static FUEL_PER_BYTE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) });
+
 fn syntax_message(text: &str, span: Span, e: &validate::SyntaxError) -> String {
+    // `spargebra` ran out of fuel (vendor/spargebra/parse-fuel.patch).
+    if e.expected == "query too complex" {
+        return "SPARQL syntax error: too large to check (the query is too complex)".into();
+    }
     // A check the grammar's action made (`IRI parsing failed`, ...): an
     // unquoted item with words.
     let items = e.expected.strip_prefix("one of ").unwrap_or(&e.expected);

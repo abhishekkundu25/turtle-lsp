@@ -36,11 +36,11 @@ regex = "1.13.1"
 rustc-hash = "2.1.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-# Exact pin: the [patch.crates-io] entry below only applies while the registry version
-# it replaces still satisfies this requirement. With "0.2", `cargo update` would pick a
+# Exact pins: a [patch.crates-io] entry below only applies while the registry version
+# it replaces still satisfies the requirement. With "0.2", `cargo update` would pick a
 # published 0.2.8, ignore the patch (a warning) and drop the cancellation checks.
 spareval = { version = "=0.2.7", features = ["sparql-12", "sep-0006"] }
-spargebra = { version = "0.4", features = ["sparql-12"] }
+spargebra = { version = "=0.4.7", features = ["sparql-12"] }
 url = "2.5.8"
 
 # Not in the browser build (web/engine): no C allocator, no network client.
@@ -56,6 +56,8 @@ oxjsonld = { version = "0.2.6", features = ["rdf-12"] }
 # spareval 0.2.7 with cancellation checks inside its joins (vendor/spareval/PATCH.md).
 [patch.crates-io]
 spareval = { path = "vendor/spareval" }
+# spargebra 0.4.7, vendored unchanged for now (vendor/spargebra/PATCH.md).
+spargebra = { path = "vendor/spargebra" }
 
 # Whole-program optimisation, one codegen unit, no symbols.
 # `panic` stays "unwind": Server::guarded, the worker and SHACL threads catch handler
