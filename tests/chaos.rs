@@ -2218,7 +2218,10 @@ fn sparql_features_at_random(
             text_document: TextDocumentIdentifier::new(q.uri.parse().unwrap()),
             range,
             context: lsp_types::CodeActionContext {
-                diagnostics: sparql_features::diagnostics(q, k, enc, &Default::default()),
+                diagnostics: touching(
+                    sparql_features::diagnostics(q, k, enc, &Default::default()),
+                    range,
+                ),
                 ..Default::default()
             },
             work_done_progress_params: Default::default(),
@@ -2235,6 +2238,44 @@ fn sparql_features_at_random(
             }
         }
     }
+}
+
+/// The diagnostics that touch `range` (either way round), as a client sends
+/// them with a code action request: each one's fixes are applied and
+/// parsed, so all of a file's would cost diagnostics times text.
+fn touching(
+    mut diagnostics: Vec<lsp_types::Diagnostic>,
+    range: Range,
+) -> Vec<lsp_types::Diagnostic> {
+    let (lo, hi) = if range.start <= range.end {
+        (range.start, range.end)
+    } else {
+        (range.end, range.start)
+    };
+    diagnostics.retain(|d| d.range.start <= hi && lo <= d.range.end);
+    diagnostics
+}
+
+#[test]
+fn code_actions_get_only_the_diagnostics_in_their_range() {
+    let line = |l| Range::new(Position::new(l, 0), Position::new(l, 3));
+    let [small, big] = [350, 1400].map(|n| {
+        let text = "PREFIX ex: <http://e/>\n".repeat(n);
+        let q = SparqlAnalysis::new("file:///q.rq".into(), &text, Default::default());
+        let all = sparql_features::diagnostics(
+            &q,
+            &Knowledge::default(),
+            Encoding::Utf8,
+            &Default::default(),
+        );
+        assert!(all.len() >= n - 1, "{n} lines, {} diagnostics", all.len());
+        touching(all, line(10)).len()
+    });
+    assert!(small > 0, "no diagnostic on line 10");
+    assert_eq!(
+        small, big,
+        "a one-line range's diagnostics grow with the file"
+    );
 }
 
 #[test]
