@@ -19,6 +19,9 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+/* A read-only tab explains itself in the toast instead (editor.js, writable).
+   !important: Monaco shows the bubble with an inline display. */
+body[data-saved="readonly"] .monaco-editor-overlaymessage { display: none !important; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 [hidden] { display: none !important; }
 input.hidden-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
