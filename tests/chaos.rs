@@ -673,36 +673,51 @@ fn fixed_keeps_the_tokens(
                 && word(iri).starts_with('<')
                 && lex.term(toks[iri].0)
             {
+                // `@prefix` ends at its own `.`; `PREFIX` has none.
+                let turtle_style = word(i) == "@prefix";
                 i = iri + 1;
-                // Every `.` right after a directive is its end or an empty
-                // statement: which one the parser takes it for differs between texts.
-                while lex != Lexer::Sparql && word(code(i)) == "." {
+                if turtle_style && word(code(i)) == "." {
                     i = code(i) + 1;
                 }
+                // shortcut: a stray `.` beside a directive belongs to whichever
+                // statement the parser's recovery picks, which the tokens do not
+                // show; such texts are not compared.
+                if lex != Lexer::Sparql && word(code(i)) == "." {
+                    return Err(true);
+                }
             } else {
-                return None;
+                return Err(false);
             }
         }
         // A `.` with no statement before it is an empty statement: no content,
         // and which directive the parser folds it into differs between texts.
+        // Comments carry no data, and a removed directive may take or leave
+        // one among its tokens; content swallowed into a comment still shows as
+        // missing tokens.
         let mut prev_dot = true;
         out.retain(|t: &Tok| {
             if lex.comment(t.0) {
-                return true;
+                return false;
             }
             let dot = &text[t.1..t.2] == ".";
             let keep = !(dot && prev_dot);
             prev_dot = dot;
             keep
         });
-        Some(out)
+        Ok(out)
     };
     // shortcut: what a fix removes of a broken declaration is the parser's
-    // reading of it, which the tokens do not show; such texts are not compared.
-    let Some(old) = outside(before) else {
-        return Ok(());
+    // reading of it, which the tokens do not show; such texts are not compared,
+    // nor are texts where either side has a stray `.` beside a directive.
+    let old = match outside(before) {
+        Ok(old) => old,
+        Err(_) => return Ok(()),
     };
-    let new = outside(after).ok_or("left a declaration that is not a whole line")?;
+    let new = match outside(after) {
+        Ok(new) => new,
+        Err(true) => return Ok(()),
+        Err(false) => return Err("left a declaration that is not a whole line".into()),
+    };
     let same = |a: &Tok, b: &Tok| {
         (a.0, &before[a.1..a.2]) == (b.0, &after[b.1..b.2])
             || unsafe_too && lex.term(a.0) && lex.term(b.0)
@@ -719,10 +734,18 @@ fn fixed_keeps_the_tokens(
                     format!("{:?} at byte {}", &s[t.1..t.2], t.1)
                 })
             };
+            let near = |l: &[Tok], s: &str| {
+                l[i.saturating_sub(4)..(i + 3).min(l.len())]
+                    .iter()
+                    .map(|t| s[t.1..t.2].to_string())
+                    .collect::<Vec<_>>()
+            };
             Err(format!(
-                "changed token {i} outside the directives from {} to {}: {}",
+                "changed token {i} outside the directives from {} to {} (before {:?}, after {:?}): {}",
                 token(old.get(i), before),
                 token(new.get(i), after),
+                near(&old, before),
+                near(&new, after),
                 first_difference(before, after)
             ))
         }
