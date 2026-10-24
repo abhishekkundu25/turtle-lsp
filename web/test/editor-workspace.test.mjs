@@ -257,6 +257,12 @@ test("two tabs: the second shows the workspace read-only with a notice, writes n
     assert.equal(await second.page.evaluate(() => window.monaco.editor.getEditors().every((e) => e.getOption(window.monaco.editor.EditorOption.readOnly))), true)
     // Its errors are still drawn in the text, not only listed in Problems.
     await second.page.waitForFunction(() => document.querySelectorAll(".view-overlays .squiggly-error").length > 0, null, { timeout: 10_000 })
+    // Typing there says why it is refused, in the toast, not Monaco's bubble.
+    await second.page.evaluate(() => (document.getElementById("toast").hidden = true))
+    await second.page.locator(".view-lines").first().click()
+    await second.page.keyboard.type("x")
+    await second.page.locator("#toast", { hasText: "another tab is editing" }).waitFor()
+    assert.equal(await second.page.locator(".monaco-editor-overlaymessage:visible").count(), 0)
     // So are changes to the files and folders, with the reason.
     await second.page.getByRole("button", { name: "New File" }).click()
     await second.page.locator("#toast", { hasText: "read-only" }).waitFor()

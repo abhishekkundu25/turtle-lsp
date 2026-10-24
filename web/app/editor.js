@@ -93,7 +93,7 @@ const touchLayout = () => restoring || ws.touchLayout()
 // A change to the workspace in a tab that does not own it is refused.
 function writable() {
   if (!W.readOnly) return true
-  toast("This workspace is open in another tab, so this tab is read-only. Close the other tab to edit here.")
+  toast("This tab is read-only because another tab is editing this workspace. Close that tab to edit here.")
   return false
 }
 
@@ -457,6 +457,8 @@ function addGroup() {
   W.groups.push(g)
   ed.onDidFocusEditorText(() => focusGroup(W.groups.indexOf(g)))
   ed.onDidChangeCursorPosition(() => changed({ status: true }))
+  // Typing in a read-only tab says why, in the toast (editor.css hides Monaco's own bubble).
+  ed.onDidAttemptReadOnlyEdit(writable)
   // Suggestions pop up in Turtle and TriG strings, where the SPARQL queries
   // of SHACL shapes are typed; other languages keep Monaco's default.
   const stringSuggestions = () => {
