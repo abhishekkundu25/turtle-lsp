@@ -77,9 +77,24 @@ CHAOS_ITERS=200000 CHAOS_ONLY=<iteration> cargo test --release --locked
 
 ## Results
 
-Filled in by ticket 13: the 5 acceptance runs (seed, time per format, five
-slowest iterations), the watchdog budget derived from them, the benchmark
-medians against main, and the two nightly runs.
+Final code (2026-10-24), macOS, 200,000 iterations per run, fresh seeds:
+
+| format | runs | result | time per run |
+|---|---|---|---|
+| Turtle | 5 | 5 clean | 81-87 s |
+| JSON-LD | 5 | 5 clean | 16-19 s |
+| SPARQL | 5 | 4 clean; one hit the `::p` tokenizing corner, filed as #34 | 63-69 s |
+
+Slowest single iteration over the runs: 2.77 s; the watchdog budget is 30 s.
+Full suite on the final code: fmt, clippy, 741 lib tests, 26 timing tests,
+the doc test, every integration test file, every Node, web and VS Code test
+file: all pass. Benchmark (`bench/perf.mjs`, 3 runs each, branch against
+main, alternating): every row's median within 5% of main.
+
+Follow-ups filed during the work, not blocking: #32 (position conversion
+cost on long multi-byte lines), #33 (join planning seconds just under
+MAX_JOIN_WIDTH), #34 (`::p` read as two terms by the checker).
+The two nightly CI runs after merge are still to do.
 
 ## Departures from the plan
 

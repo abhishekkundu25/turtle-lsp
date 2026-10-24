@@ -45,6 +45,20 @@
   names sharing a long run took a second per check; it is now linear.
 - **`check --fix` re-lexed the whole file for every fix**: 8,000 unused
   prefixes took 30 s, now 1 s.
+- **A SHACL shape with a very wide SPARQL query hung `check` and the
+  server.** A query joining hundreds of patterns (a run of `~` reifiers)
+  spent minutes in query planning; SHACL now refuses it as too complex, as
+  `turtle-lsp query` already did.
+- **"Remove unused prefix" deleted a prefix used in a statement with a
+  syntax error**, which `check --fix` applied without asking. Uses inside
+  such statements now count.
+- **Renaming a prefix rewrote uses written above its declaration**, which
+  that declaration does not cover, so they changed meaning.
+- **Extract prefix is no longer offered for an IRI that is not valid as
+  written** (a space in it); the new `@prefix` line commented out the rest
+  of its line.
+- **Positions in files with `\r` line endings were wrong.** A lone `\r` now
+  ends a line, as LSP says, so quick fixes and errors land on the right line.
 
 ### Internal
 
