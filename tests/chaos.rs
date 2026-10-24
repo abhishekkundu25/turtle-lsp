@@ -101,8 +101,10 @@ fn iterations(iters: usize, k: usize) -> std::ops::Range<usize> {
 }
 
 /// How long one iteration may run before the watchdog fails the run;
-/// `CHAOS_ITERATION_BUDGET_MS` overrides it.
-const ITERATION_BUDGET: Duration = Duration::from_secs(10);
+/// `CHAOS_ITERATION_BUDGET_MS` overrides it. The slowest iteration over the
+/// acceptance runs (5 x 200,000 per format, 2026-10-24, load about 3 on an
+/// M-series Mac) took 2.77 s; the budget is about ten times that.
+const ITERATION_BUDGET: Duration = Duration::from_secs(30);
 
 /// The iteration a shard is running: its number, start, input and the
 /// extension its input is saved under.
