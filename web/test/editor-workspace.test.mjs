@@ -255,6 +255,8 @@ test("two tabs: the second shows the workspace read-only with a notice, writes n
     assert.match(await text(second.page, "data/people.ttl"), /# from the first tab\nid:bob/)
     // Typing is refused: the editors are read-only.
     assert.equal(await second.page.evaluate(() => window.monaco.editor.getEditors().every((e) => e.getOption(window.monaco.editor.EditorOption.readOnly))), true)
+    // Its errors are still drawn in the text, not only listed in Problems.
+    await second.page.waitForFunction(() => document.querySelectorAll(".view-overlays .squiggly-error").length > 0, null, { timeout: 10_000 })
     // So are changes to the files and folders, with the reason.
     await second.page.getByRole("button", { name: "New File" }).click()
     await second.page.locator("#toast", { hasText: "read-only" }).waitFor()

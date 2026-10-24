@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- **The browser editor drew no squiggles in a read-only tab.** A second
+  tab on the same workspace listed its errors in Problems but showed
+  nothing in the text.
 - **A JSON-LD context in the cache could be trusted for a moment without
   being the fetched one.** Saving a fetched context wrote the `.url` file
   that vouches for it before the document, so a check in between read the

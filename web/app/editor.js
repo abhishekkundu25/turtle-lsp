@@ -434,6 +434,8 @@ function editorOptions() {
   return {
     model: null,
     readOnly: W.readOnly,
+    // Monaco's default ("editable") hides the squiggles in a read-only tab.
+    renderValidationDecorations: "on",
     automaticLayout: true,
     theme: theme.monacoTheme(),
     fontSize: 13,
