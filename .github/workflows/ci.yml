@@ -144,7 +144,7 @@ jobs:
             test/corpus/dcat-ap-shacl.ttl
             test/corpus/w3c-shacl.ttl
             test/corpus/sib-sparql-examples
-          key: shacl-corpus-${{ hashFiles('tools/corpus/sources.tsv') }}
+          key: corpus-files-v2-${{ hashFiles('tools/corpus/sources.tsv') }}
       # fetch.sh with a source list of only those four rows; it fetches the
       # JSON-LD corpus as well. Files already present are not downloaded again.
       - name: Corpus (JSON-LD, Brick, DCAT-AP, SHACL, SPARQL examples)
