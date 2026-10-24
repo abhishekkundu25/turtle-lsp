@@ -280,13 +280,18 @@ pub fn diagnostics_with(
             .iter()
             .map(|u| u.name.as_str())
             .collect();
+        // A statement skipped by error recovery records no uses; its prefixed
+        // names still keep their prefix. Without a syntax error nothing is
+        // skipped, so the recorded uses are all of them.
         if a.parsed
-            .prefixes
+            .errors
             .iter()
-            .any(|p| !used.contains(p.name.as_str()))
+            .any(|e| e.severity == Severity::Error)
+            && a.parsed
+                .prefixes
+                .iter()
+                .any(|p| !used.contains(p.name.as_str()))
         {
-            // A statement skipped by error recovery records no uses; its
-            // prefixed names still keep their prefix.
             let tokens = a.tokens_or_lexed();
             let names: rustc_hash::FxHashSet<u32> = a
                 .parsed
