@@ -249,7 +249,12 @@ test("two tabs: the second shows the workspace read-only with a notice, writes n
 
     const second = await open(ctx)
     assert.equal(await second.page.evaluate(() => document.body.dataset.saved), "readonly")
-    await second.page.locator("#toast", { hasText: "open in another tab" }).waitFor()
+    const notice = second.page.getByRole("dialog", { name: "Open in another tab" })
+    await notice.waitFor()
+    // It carries the same credit line as the first-visit note.
+    assert.deepEqual(await notice.locator(".intro-foot a").allTextContents(), ["turtle-lsp", "GitHub", "Get it for VS Code"])
+    await notice.getByRole("button", { name: "Read only" }).click()
+    await notice.waitFor({ state: "hidden" })
     assert.match(await second.page.locator("#status-storage").textContent(), /Read-only/)
     // It shows what the first tab kept.
     assert.match(await text(second.page, "data/people.ttl"), /# from the first tab\nid:bob/)
@@ -257,15 +262,17 @@ test("two tabs: the second shows the workspace read-only with a notice, writes n
     assert.equal(await second.page.evaluate(() => window.monaco.editor.getEditors().every((e) => e.getOption(window.monaco.editor.EditorOption.readOnly))), true)
     // Its errors are still drawn in the text, not only listed in Problems.
     await second.page.waitForFunction(() => document.querySelectorAll(".view-overlays .squiggly-error").length > 0, null, { timeout: 10_000 })
-    // Typing there says why it is refused, in the toast, not Monaco's bubble.
-    await second.page.evaluate(() => (document.getElementById("toast").hidden = true))
+    // Typing there says why it is refused, in the notice, not Monaco's bubble.
     await second.page.locator(".view-lines").first().click()
     await second.page.keyboard.type("x")
-    await second.page.locator("#toast", { hasText: "another tab is editing" }).waitFor()
+    await notice.waitFor()
     assert.equal(await second.page.locator(".monaco-editor-overlaymessage:visible").count(), 0)
+    await second.page.keyboard.press("Escape")
+    await notice.waitFor({ state: "hidden" })
     // So are changes to the files and folders, with the reason.
     await second.page.getByRole("button", { name: "New File" }).click()
-    await second.page.locator("#toast", { hasText: "read-only" }).waitFor()
+    await notice.waitFor()
+    await notice.getByRole("button", { name: "Read only" }).click()
     assert.equal(await second.page.locator(".tree-input").count(), 0)
     await second.page.evaluate(() => window.monaco.editor.getEditors()[0].trigger("test", "rdf.fixAll", {}))
     // Even a change made in code is not written.
@@ -291,6 +298,45 @@ test("two tabs: the second shows the workspace read-only with a notice, writes n
     await second.page.keyboard.type("# from the second tab\n")
     await saved(second.page)
     assert.match((await records(second.page)).files.find((f) => f.path === "data/people.ttl").text, /# from the second tab\n/)
+    assert.deepEqual(second.errors, [])
+  } finally {
+    await ctx.close()
+  }
+})
+
+test("two tabs: Edit here moves the workspace to the second tab, with what the first had not written yet, and the first becomes read-only", async () => {
+  const ctx = await newContext()
+  try {
+    const first = await open(ctx)
+    await saved(first.page)
+    const second = await open(ctx)
+    const notice = second.page.getByRole("dialog", { name: "Open in another tab" })
+    await notice.waitFor()
+
+    // The first tab types; the hand-over writes it before the second tab reads.
+    await openFile(first.page, "data/people.ttl")
+    await at(first.page, "id:bob")
+    await first.page.keyboard.type("# typed just before\n")
+    await notice.getByRole("button", { name: "Edit here" }).click()
+    await second.page.locator("body[data-saved='true']").waitFor({ timeout: 10_000 })
+    await second.page.locator("#toast", { hasText: "You can edit here now" }).waitFor()
+    assert.match(await text(second.page, "data/people.ttl"), /# typed just before\nid:bob/)
+
+    // The first tab is read-only now, and says why.
+    await first.page.getByRole("dialog", { name: "Editing moved to another tab" }).waitFor()
+    assert.equal(await first.page.evaluate(() => document.body.dataset.saved), "readonly")
+    assert.equal(await first.page.evaluate(() => window.monaco.editor.getEditors().every((e) => e.getOption(window.monaco.editor.EditorOption.readOnly))), true)
+
+    // The second tab writes; the first tab can take it back the same way.
+    await openFile(second.page, "data/people.ttl")
+    await at(second.page, "id:bob")
+    await second.page.keyboard.type("# from the second tab\n")
+    await saved(second.page)
+    await first.page.getByRole("dialog", { name: "Editing moved to another tab" }).getByRole("button", { name: "Edit here" }).click()
+    await first.page.locator("body[data-saved='true']").waitFor({ timeout: 10_000 })
+    assert.match(await text(first.page, "data/people.ttl"), /# from the second tab\n/)
+    await second.page.getByRole("dialog", { name: "Editing moved to another tab" }).waitFor()
+    assert.deepEqual(first.errors, [])
     assert.deepEqual(second.errors, [])
   } finally {
     await ctx.close()

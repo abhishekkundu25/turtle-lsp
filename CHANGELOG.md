@@ -2,13 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **A read-only tab in the browser editor can take over editing.** A second
+  tab on the same workspace now opens with a dialog, like the first-visit
+  one, that says another tab is editing and offers Read only or Edit here.
+  Edit here makes the other tab write what it has not saved yet, become
+  read-only and say so in the same dialog, from which it can take editing
+  back. The dialog also shows when a read-only tab refuses a change, and
+  from the status bar.
+
 ### Fixed
 
 - **The browser editor drew no squiggles in a read-only tab.** A second
   tab on the same workspace listed its errors in Problems but showed
   nothing in the text. Typing in such a tab now says why it is refused, in
-  the same notice the tab shows when it opens, instead of Monaco's "Cannot
-  edit in read-only editor".
+  the dialog the tab shows when it opens, instead of Monaco's "Cannot edit
+  in read-only editor".
 - **A JSON-LD context in the cache could be trusted for a moment without
   being the fetched one.** Saving a fetched context wrote the `.url` file
   that vouches for it before the document, so a check in between read the
