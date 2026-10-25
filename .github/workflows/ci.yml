@@ -93,12 +93,17 @@ jobs:
       # own folder (~/nvim-<version>). It goes before the main install: each
       # install puts its folder first on PATH, so the later one is `nvim` for
       # every step after. Raise both versions by hand; Dependabot does not.
+      # TMPDIR: the action unpacks under the temp folder and renames the result
+      # into ~. On ubuntu-26.04 /tmp is another file system and the rename
+      # fails with EXDEV (rhysd/action-setup-vim#80); runner.temp is under ~.
       - name: Install Neovim 0.11
         id: nvim011
         if: runner.os == 'Linux'
         continue-on-error: true
         timeout-minutes: 5
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           neovim: true
           version: v0.11.7
@@ -107,6 +112,8 @@ jobs:
         if: runner.os == 'Linux' && steps.nvim011.outcome == 'failure'
         timeout-minutes: 5
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           neovim: true
           version: v0.11.7
@@ -117,6 +124,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           neovim: true
           version: v0.12.6
@@ -124,6 +133,8 @@ jobs:
         if: steps.nvim.outcome == 'failure'
         timeout-minutes: 5
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           neovim: true
           version: v0.12.6
