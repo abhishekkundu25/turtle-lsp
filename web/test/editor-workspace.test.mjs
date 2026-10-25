@@ -251,6 +251,8 @@ test("two tabs: the second shows the workspace read-only with a notice, writes n
     assert.equal(await second.page.evaluate(() => document.body.dataset.saved), "readonly")
     const notice = second.page.getByRole("dialog", { name: "Open in another tab" })
     await notice.waitFor()
+    // It carries the same credit line as the first-visit note.
+    assert.deepEqual(await notice.locator(".intro-foot a").allTextContents(), ["turtle-lsp", "GitHub", "Get it for VS Code"])
     await notice.getByRole("button", { name: "Read only" }).click()
     await notice.waitFor({ state: "hidden" })
     assert.match(await second.page.locator("#status-storage").textContent(), /Read-only/)
