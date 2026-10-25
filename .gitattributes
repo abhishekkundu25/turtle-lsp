@@ -2,3 +2,7 @@
 * text=auto eol=lf
 *.png binary
 tests/w3c/** -text
+# GitHub's language detection reads .ru as Ruby (Rackup); here it is SPARQL
+# Update. CodeQL's default setup picks its languages from that detection.
+*.ru linguist-language=SPARQL
+tests/w3c/** linguist-vendored
