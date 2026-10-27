@@ -2461,7 +2461,7 @@ parser! {
         }
 
         rule PrefixedName() -> Iri<String> = PNAME_LN() /
-            ns:PNAME_NS() {? if let Some(iri) = state.prefixes.get(ns).cloned() {
+            ns:PNAME_NS() !PN_LOCAL() {? if let Some(iri) = state.prefixes.get(ns).cloned() {
                 Iri::parse(iri).map_err(|_| "prefix IRI parsing failed")
             } else {
                 Err("Prefix not found")

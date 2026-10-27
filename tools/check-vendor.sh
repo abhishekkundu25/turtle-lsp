@@ -13,7 +13,7 @@ set -euo pipefail
 # each crate has src/ at its top, hence depth 3.
 CRATES=(
   "spareval 0.2.7 85b51144836ff9ca2f792b7a2422c4170ff04460d86cd8f2f764cf53e339cbec 3 cancellation-in-joins.patch,dir-lang-string-equality.patch"
-  "spargebra 0.4.7 bef3c186ffb9bf2dde7c5edd5528583f309fcb819b5773cf0e313194a990304f 3 left-factor-nested-calls.patch,parse-fuel.patch"
+  "spargebra 0.4.7 bef3c186ffb9bf2dde7c5edd5528583f309fcb819b5773cf0e313194a990304f 3 left-factor-nested-calls.patch,parse-fuel.patch,longest-prefixed-name.patch"
 )
 
 root=$(cd "$(dirname "$0")/.." && pwd)
