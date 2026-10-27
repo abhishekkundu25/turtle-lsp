@@ -20,7 +20,6 @@ test = false
 
 [dependencies]
 crossbeam-channel = "0.5.17"
-line-index = "0.1.2"
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 oxilangtag = "0.1.6"
@@ -52,6 +51,8 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 oxrdf = { version = "0.3", features = ["rdf-12"] }
 oxttl = { version = "0.2.4", features = ["rdf-12"] }
 oxjsonld = { version = "0.2.6", features = ["rdf-12"] }
+# The old position conversion, the oracle of `analysis::tests`.
+line-index = "0.1.2"
 
 # spareval 0.2.7 with cancellation checks inside its joins (vendor/spareval/PATCH.md).
 [patch.crates-io]

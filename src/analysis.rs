@@ -6,7 +6,6 @@
 use crate::sparql;
 use crate::syntax::lexer::{Kind, Token};
 use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Span, Syntax};
-use line_index::{LineIndex, TextSize, WideEncoding};
 use lsp_types::{Position, Range};
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -228,7 +227,7 @@ impl Analysis {
             uri,
             origin: None,
             text: Arc::from(text),
-            lines: line_index(text),
+            lines: LineIndex::new(text),
             parsed,
             tokens,
             dropped,
@@ -346,7 +345,7 @@ impl Analysis {
     }
 
     pub fn position(&self, enc: Encoding, offset: u32) -> Position {
-        position_in(&self.lines, enc, offset)
+        position_in(&self.lines, &self.text, enc, offset)
     }
 
     pub(crate) fn range(&self, enc: Encoding, span: Span) -> Range {
@@ -358,20 +357,132 @@ impl Analysis {
     }
 }
 
-/// The line index of `text`. LSP lines also end at a lone `\r`, which the
-/// crate does not split on: it indexes a copy with each lone `\r` as `\n`
-/// (same length, so every column stays the same).
-pub(crate) fn line_index(text: &str) -> LineIndex {
-    let b = text.as_bytes();
-    let lone = |i: usize| b.get(i + 1) != Some(&b'\n');
-    if !text.match_indices('\r').any(|(i, _)| lone(i)) {
-        return LineIndex::new(text);
+/// Where the lines of a text start, and running counts of its UTF-16 code
+/// units and code points: a column converts with a lookup and a scan of at
+/// most [`STRIDE`] bytes, however many multi-byte characters its line has.
+/// Lines end as in [`LineStarts`]. The conversions take the text it indexes.
+pub(crate) struct LineIndex {
+    starts: Vec<u32>,
+    /// Empty for ASCII text. Else mark `k` is at the first character boundary
+    /// at or after byte `k * STRIDE`, up to one at or after the end.
+    marks: Vec<Mark>,
+}
+
+/// Bytes between two [`LineIndex`] marks.
+const STRIDE: usize = 64;
+
+/// UTF-16 code units and code points in the text before byte `at`.
+#[derive(Clone, Copy)]
+struct Mark {
+    at: u32,
+    utf16: u32,
+    chars: u32,
+}
+
+/// UTF-16 code units and code points of the UTF-8 bytes `b`: one of each per
+/// leading byte, and a second code unit for a 4-byte character.
+fn tally(b: &[u8]) -> (u32, u32) {
+    let chars = b.iter().filter(|&&x| (x as i8) >= -0x40).count() as u32;
+    let wide = b.iter().filter(|&&x| x >= 0xF0).count() as u32;
+    (chars + wide, chars)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes the conversions on this thread scanned past a mark.
+    static SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn scanned(_n: usize) {
+    #[cfg(test)]
+    SCANNED.with(|s| s.set(s.get() + _n));
+}
+
+impl LineIndex {
+    pub(crate) fn new(text: &str) -> LineIndex {
+        let mut marks = Vec::new();
+        if !text.is_ascii() {
+            let b = text.as_bytes();
+            marks.reserve(b.len() / STRIDE + 1);
+            let (mut at, mut utf16, mut chars) = (0, 0, 0);
+            for k in 0..=b.len() / STRIDE {
+                let next = text.ceil_char_boundary(k * STRIDE);
+                let (u, c) = tally(&b[at..next]);
+                (at, utf16, chars) = (next, utf16 + u, chars + c);
+                let at = at as u32;
+                marks.push(Mark { at, utf16, chars });
+            }
+        }
+        LineIndex {
+            starts: LineStarts::new(text).0,
+            marks,
+        }
     }
-    let mut bytes = b.to_vec();
-    for (i, _) in text.match_indices('\r').filter(|&(i, _)| lone(i)) {
-        bytes[i] = b'\n';
+
+    /// The UTF-16 code units and code points of `text` before byte `x`, a
+    /// character boundary.
+    fn counts(&self, text: &str, x: usize) -> (u32, u32) {
+        let Some(m) = self.marks.get(x / STRIDE) else {
+            return (x as u32, x as u32);
+        };
+        scanned(x - m.at as usize);
+        let (u, c) = tally(&text.as_bytes()[m.at as usize..x]);
+        (m.utf16 + u, m.chars + c)
     }
-    LineIndex::new(&String::from_utf8(bytes).expect("ASCII for ASCII keeps UTF-8"))
+
+    /// The line of byte `offset` (clamped to the end of `text` and moved back
+    /// to a character's start), the byte its line starts at, and the offset.
+    fn line_of(&self, text: &str, offset: u32) -> (u32, usize, usize) {
+        let at = text.floor_char_boundary(offset as usize);
+        let line = self.starts.partition_point(|&s| s as usize <= at) - 1;
+        (line as u32, self.starts[line] as usize, at)
+    }
+
+    /// The bytes line `line` of `text` spans, its line break included.
+    fn line(&self, text: &str, line: u32) -> Option<(usize, usize)> {
+        let start = *self.starts.get(line as usize)? as usize;
+        let end = self.starts.get(line as usize + 1);
+        Some((start, end.map_or(text.len(), |&e| e as usize)))
+    }
+
+    /// The position of byte `offset` of `text` with its column in code points.
+    pub(crate) fn code_point_position(&self, text: &str, offset: u32) -> Position {
+        let (line, start, at) = self.line_of(text, offset);
+        Position::new(line, self.counts(text, at).1 - self.counts(text, start).1)
+    }
+
+    /// The UTF-8 column of UTF-16 column `w` on the line `start..end` of
+    /// `text`, as `line_index::LineIndex::to_utf8` gives it: `w` plus the bytes
+    /// beyond their UTF-16 length of the characters that start before `w`.
+    /// Past `u32::MAX` it is `None`.
+    fn utf8_col(&self, text: &str, start: usize, end: usize, w: u32) -> Option<u32> {
+        if self.marks.is_empty() {
+            return Some(w);
+        }
+        let before = u64::from(self.counts(text, start).0);
+        let want = before + u64::from(w);
+        // Start from the last mark at or before `want` code units: the next
+        // one is past it, so the scan stops within a stride. Mark 0 is at 0.
+        let m = self.marks[self.marks.partition_point(|m| u64::from(m.utf16) <= want) - 1];
+        let (mut x, mut units) = match m.at as usize {
+            at if at >= end => (end, u64::from(self.counts(text, end).0)),
+            at if at > start => (at, u64::from(m.utf16)),
+            _ => (start, before),
+        };
+        let (b, from) = (text.as_bytes(), x);
+        while x < end && units < want {
+            let len = match b[x] {
+                0..0x80 => 1,
+                0x80..0xE0 => 2,
+                0xE0..0xF0 => 3,
+                _ => 4,
+            };
+            units += 1 + u64::from(len == 4);
+            x += len;
+        }
+        scanned(x - from);
+        u32::try_from(u64::from(w) + (x - start) as u64 - (units - before)).ok()
+    }
 }
 
 /// Whether a line starts at byte `x` of `text`: after a `\n`, or after a
@@ -388,26 +499,13 @@ fn starts_line(b: &[u8], x: usize) -> bool {
 ///
 /// An offset inside a multi-byte character (a stale or foreign span) moves back
 /// to the character's start.
-pub(crate) fn position_in(lines: &LineIndex, enc: Encoding, offset: u32) -> Position {
-    let mut at = offset.min(u32::from(lines.len()));
-    let lc = loop {
-        match lines.try_line_col(TextSize::from(at)) {
-            Some(lc) => break lc,
-            None => at -= 1,
-        }
+pub(crate) fn position_in(lines: &LineIndex, text: &str, enc: Encoding, offset: u32) -> Position {
+    let (line, start, at) = lines.line_of(text, offset);
+    let col = match enc {
+        Encoding::Utf8 => (at - start) as u32,
+        Encoding::Utf16 => lines.counts(text, at).0 - lines.counts(text, start).0,
     };
-    match enc {
-        Encoding::Utf8 => Position::new(lc.line, lc.col),
-        Encoding::Utf16 => {
-            let w = lines
-                .to_wide(WideEncoding::Utf16, lc)
-                .unwrap_or(line_index::WideLineCol {
-                    line: lc.line,
-                    col: lc.col,
-                });
-            Position::new(w.line, w.col)
-        }
-    }
+    Position::new(line, col)
 }
 
 /// A SPARQL document (query or update), parsed once per version, with the
@@ -429,7 +527,7 @@ impl SparqlAnalysis {
         SparqlAnalysis {
             uri,
             doc,
-            lines: line_index(text),
+            lines: LineIndex::new(text),
             external,
         }
     }
@@ -441,7 +539,7 @@ impl SparqlAnalysis {
         SparqlAnalysis {
             uri,
             doc,
-            lines: line_index(text),
+            lines: LineIndex::new(text),
             external,
         }
     }
@@ -471,7 +569,7 @@ impl SparqlAnalysis {
     }
 
     pub fn position(&self, enc: Encoding, offset: u32) -> Position {
-        position_in(&self.lines, enc, offset)
+        position_in(&self.lines, self.text(), enc, offset)
     }
 
     pub(crate) fn range(&self, enc: Encoding, span: Span) -> Range {
@@ -492,21 +590,14 @@ pub(crate) fn offset_in(
     enc: Encoding,
     pos: Position,
 ) -> Option<u32> {
-    let Some(line) = lines.line(pos.line) else {
+    let Some((start, end)) = lines.line(text, pos.line) else {
         return Some(text.len() as u32);
     };
     let col = match enc {
         Encoding::Utf8 => pos.character,
-        Encoding::Utf16 => {
-            let wide = line_index::WideLineCol {
-                line: pos.line,
-                col: pos.character,
-            };
-            lines.to_utf8(WideEncoding::Utf16, wide)?.col
-        }
+        Encoding::Utf16 => lines.utf8_col(text, start, end, pos.character)?,
     };
-    let (start, end) = (u32::from(line.start()), u32::from(line.end()));
-    Some(clamped(text, start as usize, end as usize, col))
+    Some(clamped(text, start, end, col))
 }
 
 /// The offset `col` bytes into the line `start..end` of `text`, at most the
@@ -523,7 +614,7 @@ fn clamped(text: &str, start: usize, end: usize, col: u32) -> u32 {
 
 /// Where the lines of a text being edited start, kept current through each
 /// edit: a batch of edits converts its positions without indexing the text
-/// again per edit. Lines end as in [`line_index`].
+/// again per edit. Lines end at `\n`, `\r\n` and a lone `\r`.
 pub(crate) struct LineStarts(Vec<u32>);
 
 impl LineStarts {
@@ -544,7 +635,7 @@ impl LineStarts {
         let end = self.0.get(line + 1).map_or(text.len(), |&e| e as usize);
         let col = match enc {
             Encoding::Utf8 => pos.character,
-            // As `LineIndex::to_utf8`: each multi-byte character the column
+            // As [`LineIndex`] converts it: each multi-byte character the column
             // passes adds the bytes it has beyond its UTF-16 length.
             Encoding::Utf16 => {
                 let mut col = pos.character;
@@ -622,8 +713,8 @@ mod tests {
                 }
                 // No panic, and the same position as the character's start.
                 assert_eq!(
-                    position_in(&lines, enc, offset),
-                    position_in(&lines, enc, start as u32),
+                    position_in(&lines, text, enc, offset),
+                    position_in(&lines, text, enc, start as u32),
                     "{enc:?} {offset}"
                 );
             }
@@ -776,7 +867,7 @@ mod tests {
     fn line_starts_convert_positions_as_the_line_index_does() {
         let text = "ab\r\n\u{e9}\u{1F600}x\n\n\u{4e2d}\r\r\nend";
         let starts = LineStarts::new(text);
-        let lines = line_index(text);
+        let lines = LineIndex::new(text);
         for line in 0..8 {
             for col in (0..12).chain([u32::MAX - 1, u32::MAX]) {
                 for enc in [Encoding::Utf8, Encoding::Utf16] {
@@ -803,12 +894,12 @@ mod tests {
             ("x\r\u{e9}\u{1F600}y", 2),
         ];
         for (text, line_count) in texts {
-            let lines = line_index(text);
+            let lines = LineIndex::new(text);
             let starts = LineStarts::new(text);
             assert_eq!(starts.0.len(), line_count, "{text:?}");
             for enc in [Encoding::Utf8, Encoding::Utf16] {
                 for (o, _) in text.char_indices().chain([(text.len(), ' ')]) {
-                    let pos = position_in(&lines, enc, o as u32);
+                    let pos = position_in(&lines, text, enc, o as u32);
                     let line_start = starts.0[pos.line as usize] as usize;
                     // A `\n` after `\r` is the same line end: back to its content end.
                     let want = if text[..o].ends_with('\r') && text[o..].starts_with('\n') {
@@ -824,10 +915,218 @@ mod tests {
         }
         // After a lone `\r`, the column counts the multi-byte characters.
         let text = "x\r\u{e9}\u{1F600}y";
-        let lines = line_index(text);
+        let lines = LineIndex::new(text);
         let y = text.len() as u32 - 1;
-        assert_eq!(position_in(&lines, Encoding::Utf16, y), Position::new(1, 3));
-        assert_eq!(position_in(&lines, Encoding::Utf8, y), Position::new(1, 6));
+        assert_eq!(
+            position_in(&lines, text, Encoding::Utf16, y),
+            Position::new(1, 3)
+        );
+        assert_eq!(
+            position_in(&lines, text, Encoding::Utf8, y),
+            Position::new(1, 6)
+        );
+    }
+
+    /// The conversions as the `line_index` crate made them, before
+    /// [`LineIndex`]: the oracle for the equivalence test.
+    mod crate_index {
+        use super::super::{Encoding, clamped};
+        use line_index::{LineIndex, TextSize, WideEncoding, WideLineCol};
+        use lsp_types::Position;
+
+        /// A lone `\r` ends a line too: the crate indexes a copy with each
+        /// one as `\n` (same length, so every column stays the same).
+        pub(super) fn index(text: &str) -> LineIndex {
+            let b = text.as_bytes();
+            let mut bytes = b.to_vec();
+            for (i, _) in text.match_indices('\r') {
+                if b.get(i + 1) != Some(&b'\n') {
+                    bytes[i] = b'\n';
+                }
+            }
+            LineIndex::new(&String::from_utf8(bytes).unwrap())
+        }
+
+        pub(super) fn position(lines: &LineIndex, enc: Encoding, offset: u32) -> Position {
+            let mut at = offset.min(u32::from(lines.len()));
+            let lc = loop {
+                match lines.try_line_col(TextSize::from(at)) {
+                    Some(lc) => break lc,
+                    None => at -= 1,
+                }
+            };
+            match enc {
+                Encoding::Utf8 => Position::new(lc.line, lc.col),
+                Encoding::Utf16 => {
+                    let w = lines.to_wide(WideEncoding::Utf16, lc).unwrap();
+                    Position::new(w.line, w.col)
+                }
+            }
+        }
+
+        pub(super) fn offset(
+            lines: &LineIndex,
+            text: &str,
+            enc: Encoding,
+            pos: Position,
+        ) -> Option<u32> {
+            let Some(line) = lines.line(pos.line) else {
+                return Some(text.len() as u32);
+            };
+            let col = match enc {
+                Encoding::Utf8 => pos.character,
+                Encoding::Utf16 => {
+                    let wide = WideLineCol {
+                        line: pos.line,
+                        col: pos.character,
+                    };
+                    lines.to_utf8(WideEncoding::Utf16, wide)?.col
+                }
+            };
+            let (start, end) = (u32::from(line.start()), u32::from(line.end()));
+            Some(clamped(text, start as usize, end as usize, col))
+        }
+
+        /// As `batch` made code point columns: from a character boundary.
+        pub(super) fn code_point_position(lines: &LineIndex, text: &str, off: u32) -> Position {
+            let lc = lines.line_col(TextSize::from(off));
+            let line_start = off as usize - lc.col as usize;
+            Position::new(
+                lc.line,
+                text[line_start..off as usize].chars().count() as u32,
+            )
+        }
+    }
+
+    /// Texts of ASCII, 2-, 3- and 4-byte characters (a UTF-16 surrogate
+    /// pair), DEL, `\n`, `\r\n`, lone `\r` and empty lines, with lines
+    /// both shorter and longer than a stride.
+    fn mixed_texts() -> Vec<String> {
+        const PIECES: [&str; 13] = [
+            "a",
+            "b",
+            " ",
+            "\u{7f}",
+            "\u{e9}",
+            "\u{e9}",
+            "\u{4e2d}",
+            "\u{20ac}",
+            "\u{1F600}",
+            "\u{10FFFF}",
+            "\n",
+            "\r\n",
+            "\r",
+        ];
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let mut texts: Vec<String> = ["", "\n", "\r", "\r\n\r\n", "\u{1F600}"]
+            .map(String::from)
+            .into();
+        for i in 0..300 {
+            let len = next(if i % 4 == 0 { 600 } else { 80 });
+            // Every few texts, mostly one long line.
+            let pieces = if i % 3 == 0 { 10 } else { PIECES.len() };
+            texts.push((0..len).map(|_| PIECES[next(pieces)]).collect());
+        }
+        texts
+    }
+
+    #[test]
+    fn conversions_match_the_line_index_crate() {
+        for text in mixed_texts() {
+            let lines = LineIndex::new(&text);
+            let old = crate_index::index(&text);
+            let len = text.len() as u32;
+            for offset in 0..=len + 3 {
+                for enc in [Encoding::Utf8, Encoding::Utf16] {
+                    assert_eq!(
+                        position_in(&lines, &text, enc, offset),
+                        crate_index::position(&old, enc, offset),
+                        "{enc:?} {offset} in {text:?}"
+                    );
+                }
+                if text.is_char_boundary(offset.min(len) as usize) && offset <= len {
+                    assert_eq!(
+                        lines.code_point_position(&text, offset),
+                        crate_index::code_point_position(&old, &text, offset),
+                        "{offset} in {text:?}"
+                    );
+                }
+            }
+            let line_count = lines.starts.len() as u32;
+            let longest = text.split(['\n', '\r']).map(str::len).max().unwrap_or(0) as u32;
+            for line in 0..=line_count + 1 {
+                let cols = (0..=longest + 3).chain(u32::MAX - 8..=u32::MAX);
+                for col in cols {
+                    for enc in [Encoding::Utf8, Encoding::Utf16] {
+                        let pos = Position::new(line, col);
+                        assert_eq!(
+                            offset_in(&lines, &text, enc, pos),
+                            crate_index::offset(&old, &text, enc, pos),
+                            "{enc:?} {line}:{col} in {text:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The bytes the conversions scan past a mark while `f` runs.
+    fn scanned_by(f: impl FnOnce()) -> usize {
+        let before = SCANNED.with(|s| s.get());
+        f();
+        SCANNED.with(|s| s.get()) - before
+    }
+
+    #[test]
+    fn a_conversion_on_a_long_line_of_multi_byte_characters_scans_a_stride() {
+        // 100,000 `é` after a short line, then a short line.
+        let text = format!("ab\n{}x\ny", "\u{e9}".repeat(100_000));
+        let lines = LineIndex::new(&text);
+        let bound = 3 * STRIDE;
+        let mut most = 0;
+        for k in (0..=100_000u32)
+            .step_by(997)
+            .chain([99_999, 100_000, 100_001])
+        {
+            for (enc, col) in [(Encoding::Utf8, 2 * k), (Encoding::Utf16, k)] {
+                let mut offset = None;
+                let n =
+                    scanned_by(|| offset = offset_in(&lines, &text, enc, Position::new(1, col)));
+                most = most.max(n);
+                let want = 3 + 2 * k.min(100_000) as usize + usize::from(k > 100_000);
+                assert_eq!(offset, Some(want as u32), "{enc:?} {k}");
+                let mut pos = None;
+                let n = scanned_by(|| pos = Some(position_in(&lines, &text, enc, want as u32)));
+                most = most.max(n);
+                // Past the line's end, the column is the end of its content.
+                let col = col.min(want as u32 - 3);
+                assert_eq!(pos, Some(Position::new(1, col)), "{enc:?} {k}");
+                // Inside an `é`: back to its start.
+                let n = scanned_by(|| pos = Some(position_in(&lines, &text, enc, want as u32 + 1)));
+                most = most.max(n);
+            }
+            let n = scanned_by(|| {
+                assert_eq!(
+                    lines.code_point_position(&text, 3 + 2 * k.min(100_000)),
+                    Position::new(1, k.min(100_000))
+                );
+            });
+            most = most.max(n);
+        }
+        // A column past the line's end, and in UTF-16 one that overflows.
+        for col in [200_000, u32::MAX] {
+            let n = scanned_by(|| {
+                offset_in(&lines, &text, Encoding::Utf16, Position::new(1, col));
+            });
+            most = most.max(n);
+        }
+        assert!(most > 0 && most <= bound, "{most} bytes scanned");
     }
 
     #[test]

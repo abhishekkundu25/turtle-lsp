@@ -17,6 +17,11 @@
   two terms `:` and `:p` when `http://www.example.org:p` is not an IRI, so
   `{ ::p ?o . }` passed. It is now a syntax error, as it is after renaming
   the prefix (#34).
+- **Positions on long lines of accented or non-Latin text convert in
+  constant time.** Each conversion between a byte offset and an editor
+  position walked every multi-byte character on its line, so a long line of
+  `é`, CJK or emoji (minified JSON-LD, say) slowed every diagnostic, hover
+  and edit on it. A conversion now scans at most about 64 bytes (#32).
 
 ## 0.10.0 — 2026-10-25
 
