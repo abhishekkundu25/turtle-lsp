@@ -1,7 +1,7 @@
 # spargebra 0.4.7, patched
 
 This folder holds spargebra 0.4.7 as published on crates.io (oxigraph commit
-in `.cargo_vcs_info.json`, `lib/spargebra`), with two patches,
+in `.cargo_vcs_info.json`, `lib/spargebra`), with three patches,
 applied in this order. Both `Cargo.toml` files use it through `[patch.crates-io]`. spargebra is licensed
 MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, copied from
 `vendor/spareval`, which has the same oxigraph licence text).
@@ -60,6 +60,25 @@ that the linearity tests miss.
   `the_fuel_parses_nested_calls_left_open` and
   `a_query_out_of_fuel_is_too_complex` in `src/sparql/tests.rs`, which maps
   the error to the "too large to check" diagnostic.
+
+## Longest prefixed name
+
+`longest-prefixed-name.patch` (on top of the second, same tree layout)
+makes a prefixed name the longest text it can be, as SPARQL tokens are.
+
+- `PrefixedName` tried `PNAME_LN` and then `PNAME_NS`. When `PNAME_LN`
+  matched but its action failed, because the prefix and the local name do
+  not make an IRI, `PNAME_NS` took the prefix alone and left the local name
+  to be read as the next term. With `PREFIX : <http://www.example.org>`,
+  `{ ::p ?o . }` was read as `:` `:p` `?o` and accepted, although `::p` is
+  one name (the local name `:p`) and `http://www.example.org:p` is not an
+  IRI (issue #34).
+- `PNAME_NS` as a term now has to be followed by something that cannot
+  continue a local name (`!PN_LOCAL()`), so such a name is an error.
+- The tests are `a_local_name_that_starts_with_a_colon_is_one_name` in
+  `src/sparql/tests.rs` and `iri_name_and_less_than_boundaries_agree_with_spargebra`
+  in `tests/w3c_sparql.rs`, which now also replaces each prefixed name with
+  an IRI.
 
 ## Review rule for a patch
 

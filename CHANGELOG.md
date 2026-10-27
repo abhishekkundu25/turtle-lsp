@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A SPARQL prefixed name whose local name starts with `:` is one name.**
+  With `PREFIX : <http://www.example.org>`, the checker read `::p` as the
+  two terms `:` and `:p` when `http://www.example.org:p` is not an IRI, so
+  `{ ::p ?o . }` passed. It is now a syntax error, as it is after renaming
+  the prefix (#34).
+
 ## 0.10.0 — 2026-10-25
 
 ### Added
