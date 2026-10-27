@@ -1363,6 +1363,29 @@ fn distinct_that_starts_a_prefixed_name_is_the_name() {
     }
 }
 
+// Issue #34 (vendor/spargebra/longest-prefixed-name.patch): `::p` is one
+// prefixed name, the empty prefix with the local name `:p`.
+#[test]
+fn a_local_name_that_starts_with_a_colon_is_one_name() {
+    // `http://www.example.org:p` is not an IRI, so the name is an error; it
+    // used to be read as `:` and `:p`, which made the query valid.
+    let text = "PREFIX :<http://www.example.org>SELECT *WHERE {::p ?o .\n    :s :q ?o1\n    {BIND((1+?o) AS?o1) }\n }";
+    assert_eq!(codes(text), ["syntax"], "{:?}", diags(text));
+    // Renamed, as the chaos run renamed it: an error still, not a new one.
+    let renamed = text
+        .replace("PREFIX :", "PREFIX e5:")
+        .replace(" :", " e5:")
+        .replace("{::", "{e5::");
+    assert_eq!(codes(&renamed), ["syntax"], "{:?}", diags(&renamed));
+    let valid = "PREFIX : <http://e/> SELECT * { ::p :q ?o }";
+    assert!(diags(valid).is_empty(), "{:?}", diags(valid));
+    let query = spargebra::SparqlParser::new().parse_query(valid).unwrap();
+    assert!(
+        query.to_string().contains("<http://e/:p> <http://e/q>"),
+        "{query}"
+    );
+}
+
 // Ticket 08: parse fuel bounds the work of spargebra's grammar
 // (vendor/spargebra/parse-fuel.patch).
 

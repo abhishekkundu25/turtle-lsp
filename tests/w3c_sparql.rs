@@ -8,7 +8,7 @@
 //! - Negative syntax tests: at least one error diagnostic.
 //! - Every query and update in the suites and in the SPARQL examples of
 //!   `test/corpus` that `spargebra` parses: our lexer and `spargebra` agree
-//!   where every IRI and `<` operator starts and ends.
+//!   where every IRI, prefixed name and `<` operator starts and ends.
 //!
 //! `spargebra` passes these suites itself; what is tested is our layer on
 //! top of it (lexer, structure, prefixes, error positions, formatter), and
@@ -240,20 +240,29 @@ fn algebra(text: &str, base: &str, update: bool) -> Result<String, String> {
     s.map(|s| canonical(&s)).map_err(|e| e.to_string())
 }
 
-/// `Ok` when `spargebra` reads the IRIs and `<` operators where our lexer
-/// does in `text`, whose algebra is `before`: a space at both ends of each
-/// keeps the algebra (none of ours is part of a longer token to `spargebra`),
-/// and each IRI replaced by another still parses (none of ours is operators).
+/// `Ok` when `spargebra` reads the IRIs, prefixed names and `<` operators
+/// where our lexer does in `text`, whose algebra is `before`: a space at both
+/// ends of each keeps the algebra (none of ours is part of a longer token to
+/// `spargebra`), and each IRI or prefixed name replaced by an IRI still
+/// parses (none of ours is operators or two terms).
 fn same_boundaries(text: &str, base: &str, update: bool, before: &str) -> Result<(), String> {
     let (mut spaced, mut renamed, mut copied) = (String::new(), String::new(), 0);
-    for (i, t) in sparql::lexer::tokenize(text).iter().enumerate() {
+    let tokens = sparql::lexer::tokenize(text);
+    for (i, t) in tokens.iter().enumerate() {
         let s = t.text(text);
-        if t.kind != TokenKind::Iri && !(t.kind == TokenKind::Punct && s.starts_with('<')) {
+        // The name a `PREFIX` declares is not a term.
+        let declared = tokens[..i]
+            .iter()
+            .rfind(|p| p.kind != TokenKind::Comment)
+            .is_some_and(|p| p.text(text).eq_ignore_ascii_case("PREFIX"));
+        let name = t.kind == TokenKind::PName && !declared;
+        if t.kind != TokenKind::Iri && !name && !(t.kind == TokenKind::Punct && s.starts_with('<'))
+        {
             continue;
         }
         let gap = &text[copied..t.span.start as usize];
         spaced += &format!("{gap} {s} ");
-        let swap = if t.kind == TokenKind::Iri {
+        let swap = if t.kind == TokenKind::Iri || name {
             format!("<urn:tok:{i}>")
         } else {
             s.to_owned()
@@ -273,7 +282,7 @@ fn same_boundaries(text: &str, base: &str, update: bool, before: &str) -> Result
 }
 
 #[test]
-fn iri_and_less_than_boundaries_agree_with_spargebra() {
+fn iri_name_and_less_than_boundaries_agree_with_spargebra() {
     let mut files = Vec::new();
     let mut walk = vec![suites_dir()];
     walk.extend(corpus_path("sib-sparql-examples/examples"));
@@ -288,11 +297,15 @@ fn iri_and_less_than_boundaries_agree_with_spargebra() {
         }
     }
     // (text, base, update) of each query and update.
-    let mut queries = vec![(
-        "PREFIX ex: <http://e/> SELECT * { ?s ?p ?a FILTER(?a<=ex:b&&?c>?a) }".to_owned(),
-        "http://e/".to_owned(),
-        false,
-    )];
+    let mut queries: Vec<_> = [
+        "PREFIX ex: <http://e/> SELECT * { ?s ?p ?a FILTER(?a<=ex:b&&?c>?a) }",
+        // A local name that starts with `:` (issue #34): `::p` is one name,
+        // also when the IRI it stands for is not one.
+        "PREFIX : <http://e/> SELECT * { ::p :q ?o }",
+        "PREFIX : <http://www.example.org> SELECT * { ::p ?o . :s :q ?o1 }",
+    ]
+    .map(|q| (q.to_owned(), "http://e/".to_owned(), false))
+    .into();
     for p in &files {
         let base = file_url(p);
         match p.extension().and_then(|e| e.to_str()) {
@@ -328,7 +341,7 @@ fn iri_and_less_than_boundaries_agree_with_spargebra() {
             failures.push(e);
         }
     }
-    eprintln!("IRI and `<` boundaries: {checked} queries checked");
+    eprintln!("IRI, name and `<` boundaries: {checked} queries checked");
     assert!(checked > 1000, "only {checked} queries parse");
     assert!(
         failures.is_empty(),
