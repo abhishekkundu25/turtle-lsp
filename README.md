@@ -224,7 +224,7 @@ not by its extension.
   them (default 10 000 000; `0` for no limit) is stopped too. That limit
   counts rows, not bytes: ordinary rows take about 100 bytes each, but a row
   with long text (a `GROUP_CONCAT` result, say) takes more, so memory use can
-  pass 1 GB. A query that joins more than 200 patterns or path steps at once
+  pass 1 GB. A query that joins more than 70 patterns or path steps at once
   is refused before it runs. While it runs, an editor that shows progress
   shows "Running <file>" with the seconds so far and a cancel button, and
   an editor that can refresh code lenses shows the lens as
@@ -708,7 +708,7 @@ default for SELECT), `json` (SPARQL JSON results), `csv`, `tsv`, or `turtle`
 only) and `--max-buffered-rows N` (default 10 000 000; it counts rows, not
 bytes; `0` for no limit). Queries are SPARQL 1.1 and 1.2, with `LATERAL`
 ([SEP-0006](https://github.com/w3c/sparql-dev/blob/main/SEP/SEP-0006/sep-0006.md)).
-A query that joins more than 200 triple patterns or path steps at once is
+A query that joins more than 70 triple patterns or path steps at once is
 refused before it runs, because planning it would take longer than any time
 limit. A table cell shows at most 1,000 characters. Exit codes: 0 ran, 1 an
 ASK answered false, 2 an error (a syntax error is printed as
