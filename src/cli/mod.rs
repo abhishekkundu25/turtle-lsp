@@ -93,7 +93,7 @@ under PATHS (default: the workspace root). The default graph is the union of
 every triple of every file, named graphs included; GRAPH and FROM NAMED match
 nothing and FROM is ignored. SPARQL files are not data. prefixes.ttl and the
 'prefixes' setting apply to the query and to the data files, as in the
-editor. UPDATE is not run. A query that joins more than 200 patterns or
+editor. UPDATE is not run. A query that joins more than 70 patterns or
 path steps at once is refused before it runs.
 
 Options:

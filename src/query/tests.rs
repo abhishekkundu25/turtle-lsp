@@ -970,6 +970,29 @@ fn the_widest_join_is_counted_where_it_is() {
     }
 }
 
+/// The slowest shapes to plan, at the widest join allowed: every pattern
+/// shares `?s`, which sparopt plans in about quartic time with no clock
+/// check. They took 0.06 and 0.1 s on the release build; at 200 patterns,
+/// 3.9 and 6.8 s.
+#[test]
+fn timing_a_star_join_at_the_limit_plans_quickly() {
+    let n = MAX_JOIN_WIDTH;
+    let star: Vec<String> = (0..n).map(|i| format!("?s ex:p{i} ?o{i}")).collect();
+    let star = format!("ASK {{ {} }}", star.join(" . "));
+    let reifiers = format!("ASK {{ ?s ?p ?o {}}}", "~ ".repeat(n - 1));
+    let d = chain(3);
+    for q in [star, reifiers] {
+        let start = std::time::Instant::now();
+        let r = run(&[&d], &q, None, &ex_prefixes(), &Limits::default());
+        assert!(r.is_ok(), "{r:?}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+}
+
 #[test]
 fn unions_alternatives_and_optionals_plan_in_linear_time_and_are_not_counted() {
     let many = 1000;

@@ -2,8 +2,21 @@
 
 ## Unreleased
 
+### Changed
+
+- **A SPARQL query that joins more than 70 patterns or path steps at once
+  is refused (was 200).** Star-shaped joins, where every pattern shares a
+  variable, and SPARQL 1.2 reifiers of one triple took 4 to 7 seconds to
+  plan just under the old limit, with no way to stop them. At 70 the
+  slowest shape plans in about 0.1 s (#33).
+
 ### Fixed
 
+- **A SPARQL prefixed name whose local name starts with `:` is one name.**
+  With `PREFIX : <http://www.example.org>`, the checker read `::p` as the
+  two terms `:` and `:p` when `http://www.example.org:p` is not an IRI, so
+  `{ ::p ?o . }` passed. It is now a syntax error, as it is after renaming
+  the prefix (#34).
 - **Positions on long lines of accented or non-Latin text convert in
   constant time.** Each conversion between a byte offset and an editor
   position walked every multi-byte character on its line, so a long line of
