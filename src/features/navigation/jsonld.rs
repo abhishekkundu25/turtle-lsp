@@ -86,8 +86,8 @@ pub(crate) fn definition_location(
             if !spells(&text) {
                 return None;
             }
-            let lines = crate::analysis::line_index(&text);
-            let pos = |o| crate::analysis::position_in(&lines, enc, o);
+            let lines = crate::analysis::LineIndex::new(&text);
+            let pos = |o| crate::analysis::position_in(&lines, &text, enc, o);
             Some(Location {
                 uri: super::uri(&uri),
                 range: lsp_types::Range::new(pos(d.key.start), pos(d.key.end)),
@@ -166,8 +166,8 @@ impl Changes {
                 super::shown(uri)
             ));
         }
-        let lines = crate::analysis::line_index(text);
-        let pos = |o| crate::analysis::position_in(&lines, enc, o);
+        let lines = crate::analysis::LineIndex::new(text);
+        let pos = |o| crate::analysis::position_in(&lines, text, enc, o);
         for (span, t) in edits {
             self.push(
                 uri,

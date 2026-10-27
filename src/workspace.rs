@@ -3079,7 +3079,7 @@ pub(crate) mod tests {
             let mut indexed = start.to_string();
             for (i, ch) in changes.into_iter().enumerate() {
                 let r = ch.range.unwrap();
-                let lines = crate::analysis::line_index(&indexed);
+                let lines = crate::analysis::LineIndex::new(&indexed);
                 let at = |p| crate::analysis::offset_in(&lines, &indexed, enc, p).unwrap() as usize;
                 let (s, e) = (at(r.start), at(r.end));
                 indexed.replace_range(s.min(e)..e.max(s), &ch.text);

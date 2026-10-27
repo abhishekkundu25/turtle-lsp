@@ -14,7 +14,7 @@
 //! `file:///work/` (the browser's convention); [`BatchFile::at_path`] opens a
 //! file on disk at its own `file:` URI.
 
-use crate::analysis::{Analysis, Encoding, SparqlAnalysis, offset_in};
+use crate::analysis::{Analysis, Encoding, LineIndex, SparqlAnalysis, offset_in};
 use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::quickfix::Fixer;
 use crate::features::shacl_validate;
@@ -27,7 +27,6 @@ use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
 use crate::syntax::{PrefixMap, Severity, Syntax};
 use crate::workspace::{DocKind, Workspace};
-use line_index::{LineIndex, TextSize};
 use lsp_types::{
     CodeAction, CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams,
     Diagnostic, DiagnosticSeverity, Position, Range, TextDocumentIdentifier, TextEdit, Uri,
@@ -804,7 +803,7 @@ impl<'a> LineIndexes<'a> {
     }
 
     fn of(&self, file: usize) -> &LineIndex {
-        self.lines[file].get_or_init(|| crate::analysis::line_index(&self.files[file].text))
+        self.lines[file].get_or_init(|| LineIndex::new(&self.files[file].text))
     }
 
     /// The byte offset of `pos` in file `file`, as [`offset_in`] clamps it.
@@ -815,11 +814,9 @@ impl<'a> LineIndexes<'a> {
 
     /// `pos`, whose column counts UTF-8 bytes, with the column in code points.
     fn code_point_position(&self, file: usize, pos: Position) -> Position {
-        let text = &self.files[file].text;
         let off = self.offset(file, Encoding::Utf8, pos);
-        let lc = self.of(file).line_col(TextSize::from(off as u32));
-        let line_start = off - lc.col as usize;
-        Position::new(lc.line, text[line_start..off].chars().count() as u32)
+        self.of(file)
+            .code_point_position(&self.files[file].text, off as u32)
     }
 }
 
