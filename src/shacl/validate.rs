@@ -2256,7 +2256,7 @@ mod tests {
         assert_eq!(
             messages,
             [
-                "the query is too complex: it joins 201 patterns or path steps at once (the most allowed is 200)"
+                "the query is too complex: it joins 71 patterns or path steps at once (the most allowed is 70)"
             ]
         );
         assert!(

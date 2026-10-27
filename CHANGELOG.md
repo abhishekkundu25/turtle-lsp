@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **A SPARQL query that joins more than 70 patterns or path steps at once
+  is refused (was 200).** Star-shaped joins, where every pattern shares a
+  variable, and SPARQL 1.2 reifiers of one triple took 4 to 7 seconds to
+  plan just under the old limit, with no way to stop them. At 70 the
+  slowest shape plans in about 0.1 s (#33).
+
 ## 0.10.0 — 2026-10-25
 
 ### Added

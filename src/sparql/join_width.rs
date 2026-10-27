@@ -1,6 +1,6 @@
-//! How wide a query's joins are: `spareval` plans a join in about cubic time
-//! in its width and checks no clock while it plans, so `query::run` and the
-//! SHACL-SPARQL validator refuse a query wider than [`MAX_JOIN_WIDTH`]
+//! How wide a query's joins are: `spareval` plans a join in up to quartic
+//! time in its width and checks no clock while it plans, so `query::run` and
+//! the SHACL-SPARQL validator refuse a query wider than [`MAX_JOIN_WIDTH`]
 //! before planning it.
 
 use spargebra::Query;
@@ -8,14 +8,26 @@ use spargebra::algebra::{Expression, GraphPattern, OrderExpression, PropertyPath
 
 /// The most triple patterns, path steps and joined groups one join may hold.
 ///
-/// Planning a join is about cubic in its width and checks no clock. Measured
-/// on the release build with one triple in the data, an `ASK` over a
-/// sequence path of N steps, a basic graph pattern of N patterns and N
-/// joined groups took, for N = 100, 200, 400 and 800: 0.01, 0.1, 1 and 8.5 s
-/// (a 1 000-step path with `--timeout 1` ran 22 s). Unions and `OPTIONAL`
-/// chains plan in linear time and do not count. 200 plans in about 0.1 s,
-/// well below any real query: a hand-written one has tens of patterns.
-pub(crate) const MAX_JOIN_WIDTH: usize = 200;
+/// Planning a join checks no clock. When the patterns form a chain (each
+/// shares a variable with the next) it is about cubic in the width; when
+/// every pattern shares one variable (a star, or the SPARQL 1.2 reifiers of
+/// one triple, `?s ?p ?o ~ ~ ~`) sparopt re-estimates the whole join for
+/// every candidate and it is about quartic. Measured with `turtle-lsp
+/// query` on the release build (Apple M6, load average 2 to 2.5), one
+/// triple in the data, an `ASK` of N patterns, median of 3 runs, in
+/// seconds:
+///
+/// | N        | 50    | 60    | 70    | 80    | 100   | 150   | 199   |
+/// |----------|-------|-------|-------|-------|-------|-------|-------|
+/// | chain    | 0.004 | 0.005 | 0.006 | 0.009 | 0.014 | 0.04  | 0.09  |
+/// | star     | 0.017 | 0.032 | 0.06  | 0.098 | 0.24  | 1.2   | 3.9   |
+/// | reifiers | 0.027 | 0.054 | 0.1   | 0.17  | 0.41  | 2.1   | 6.8   |
+///
+/// A 1 000-step sequence path with `--timeout 1` ran 22 s. The reifiers are
+/// the slowest shape and set the limit: 70 plans in about 0.1 s, well below
+/// any real query: a hand-written one has tens of patterns. Unions and
+/// `OPTIONAL` chains plan in linear time and do not count.
+pub(crate) const MAX_JOIN_WIDTH: usize = 70;
 
 /// Why `query` is refused: its planning would run for seconds before the
 /// first clock check ([`MAX_JOIN_WIDTH`]).
