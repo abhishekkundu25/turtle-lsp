@@ -4,8 +4,8 @@
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `test/settings-file.test.mjs`: `lint.ignore` in the file hides a code (e.g. `unused-prefix`) for open documents and workspace diagnostics; the editor's `turtle.lint.ignore` adds to it; `lint.undescribedTerms: false` still works.
-- [ ] `test/cli.test.mjs`: `lint.ignore` in the file hides a code in `check`; `--ignore` adds to it; an opt-in code (`missing-ontology-license` once 05 lands; until then only that it is accepted by `--select`) is reported only when `lint.enable` lists it; exit codes with and without `--max-warnings`.
-- [ ] `editors/vscode` tests pass (`node --test test/*.test.mjs`), including any check that package.json settings match the server's keys.
+- [x] `test/settings-file.test.mjs`: `lint.ignore` in the file hides a code (e.g. `unused-prefix`) for open documents and workspace diagnostics; the editor's `turtle.lint.ignore` adds to it; `lint.undescribedTerms: false` still works.
+- [x] `test/cli.test.mjs`: `lint.ignore` in the file hides a code in `check`; `--ignore` adds to it; an opt-in code (`missing-ontology-license` once 05 lands; until then only that it is accepted by `--select`) is reported only when `lint.enable` lists it; exit codes with and without `--max-warnings`.
+- [x] `editors/vscode` tests pass (`node --test test/*.test.mjs`), including any check that package.json settings match the server's keys.
