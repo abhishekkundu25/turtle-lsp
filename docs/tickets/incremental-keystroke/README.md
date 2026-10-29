@@ -61,3 +61,12 @@ the old or new window), not per file, so this does not rule the splice out.
   close-out records the bench after each.
 - Part 3 is split into 04 (the splice on `Parsed` alone, with unit tests)
   and 05 (wiring), so the parser work runs alongside 01 to 03.
+- 03: the line table keeps a per-line flag (has a multi-byte character)
+  and marks only inside such lines over 4 KB, counted from the line start,
+  instead of running totals: every conversion is a column inside one line,
+  so nothing reads totals, and an edit shifts no counts. A conversion on a
+  short multi-byte line scans up to that line's length (at most 4 KB)
+  instead of 64 bytes. The kept state is an enum on the document
+  (`Analyzed`: none, current, failed, outdated, edited); an edit after a
+  prefix or context change keeps the outdated analysis as `last`, so 05
+  must fall back when the prefixes or base in effect differ.

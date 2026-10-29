@@ -34,12 +34,12 @@ fix it with a unit test on the reduced input).
 
 **Blocked by:** none.
 
-**Status:** open
+**Status:** done
 
-- [ ] Unit tests in `src/oracle.rs`: a ranged edit, a two-change batch, a
+- [x] Unit tests in `src/oracle.rs`: a ranged edit, a two-change batch, a
   full-text change, a CRLF text and a multi-byte text all pass; a deliberate
   difference (compare against a different final text) is reported with the
   field name.
-- [ ] `tests/chaos.rs` edit mode runs in the default chaos run, within the
+- [x] `tests/chaos.rs` edit mode runs in the default chaos run, within the
   per-iteration watchdog, and passes at `CHAOS_ITERS=20000`.
-- [ ] `cargo test --release --locked --doc` passes with the new public path.
+- [x] `cargo test --release --locked --doc` passes with the new public path.

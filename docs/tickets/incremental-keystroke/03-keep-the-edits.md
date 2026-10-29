@@ -22,16 +22,16 @@
 
 **Blocked by:** none.
 
-**Status:** open
+**Status:** done
 
-- [ ] `LineIndex` unit tests: the existing conversion tests pass; a new
+- [x] `LineIndex` unit tests: the existing conversion tests pass; a new
   property test compares the updated index with `LineIndex::new` on the
   edited text for random edits over ASCII, multi-byte, CRLF and lone CR
   text, and a line over 4 KB.
-- [ ] Workspace tests: a batch of ranged changes, then a full change, then
+- [x] Workspace tests: a batch of ranged changes, then a full change, then
   ranged again, each followed by an analysis, give the same positions as a
   fresh open (`change_doc_applies_ranged_changes_in_order` and its
   neighbours pass).
-- [ ] The existing counting test on position conversion (issue #32) still
+- [x] The existing counting test on position conversion (issue #32) still
   passes.
-- [ ] `tests/chaos.rs` and `timeout 120 npm run test:latency` pass.
+- [x] `tests/chaos.rs` and `timeout 120 npm run test:latency` pass.
