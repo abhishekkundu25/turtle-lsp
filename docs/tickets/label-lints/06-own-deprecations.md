@@ -4,7 +4,7 @@
 
 **Blocked by:** 02.
 
-**Status:** blocked
+**Status:** done
 
-- [ ] Unit tests: warning on use, none on the subject's own description, `false` clears it, vCard stays a hint, SPARQL `.rq` use flagged, JSON-LD use flagged; semantic modifier and hover.
-- [ ] `test/lint.test.mjs`: deprecated in one file, used in another; marking it false clears the warning.
+- [x] Unit tests: warning on use, none on the subject's own description, `false` clears it, vCard stays a hint, SPARQL `.rq` use flagged, JSON-LD use flagged; semantic modifier and hover.
+- [x] `test/lint.test.mjs`: deprecated in one file, used in another; marking it false clears the warning.
