@@ -11,7 +11,7 @@ import { chromium } from "playwright-core"
 import { listen } from "./static-server.mjs"
 import { createHitGrid } from "../app/graph/hitgrid.js"
 import { RING_CAPS, buildHierarchy, pathTo, ringLayout } from "../app/graph/rings.js"
-import { buildModel, chooseDefault, diagnosticMarks, overlaps, searchNodes, triplesOf, bestNode } from "../app/graph/model.js"
+import { buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, overlaps, searchNodes, triplesOf, bestNode } from "../app/graph/model.js"
 import { defaultState, hierarchyParams, normalizeState, setRule, toParams } from "../app/graph/filters.js"
 import { pickLabels, truncate } from "../app/graph/labels.js"
 import { NEUTRAL, colorSlots } from "../app/graph/colors.js"
@@ -21,6 +21,16 @@ const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
 const PORT = 4176
 
 // ---- pure parts, in Node -----------------------------------------------------------------
+
+test("file names are their path below the folder the workspace files share", () => {
+  const uris = ["file:///work/start-here.ttl", "file:///work/data/people.ttl", "file:///work/ontology/core.ttl"]
+  const root = commonRoot(uris)
+  assert.equal(root, "file:///work/")
+  assert.deepEqual(uris.map((u) => fileLabel(u, root)), ["start-here.ttl", "data/people.ttl", "ontology/core.ttl"])
+  // Files on different drives or roots share no folder: the last two segments.
+  assert.equal(commonRoot(["file:///a/x.ttl", "file:///b/y.ttl"]), "")
+  assert.equal(fileLabel("file:///a/b/c/x.ttl"), "c/x.ttl")
+})
 
 describe("hit grid", () => {
   test("finds the nearest node within the radius and nothing outside it (catches: clicks selecting a far node, or none)", () => {
@@ -125,6 +135,11 @@ describe("filters and request params", () => {
     assert.equal(s.filters.types, true)
     assert.deepEqual(s.filters.predicates, { include: [], exclude: [SUBCLASS] })
     assert.deepEqual(normalizeState("garbage"), defaultState())
+    // A host that offers smaller caps: a stored cap above them falls back,
+    // so the first request never asks for more than the host allows.
+    assert.equal(normalizeState({ filters: { maxNodes: 20000 } }, 5000).filters.maxNodes, 2000)
+    assert.equal(normalizeState({ filters: { maxNodes: 5000 } }, 5000).filters.maxNodes, 5000)
+    assert.equal(normalizeState({}, 500).filters.maxNodes, 500)
     const pair = { include: ["a"], exclude: [] }
     setRule(pair, "a", "exclude")
     assert.deepEqual(pair, { include: [], exclude: ["a"] })

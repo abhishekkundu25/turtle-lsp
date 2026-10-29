@@ -4,7 +4,7 @@
 // It changes `state` (filters.js) in place and says what changed.
 
 import { h } from "./el.js"
-import { KINDS, fileLabel } from "./model.js"
+import { KINDS, commonRoot, fileLabel } from "./model.js"
 import { CAPS, COLOR_BY, DEPTHS, ruleOf, setRule } from "./filters.js"
 
 const RULES = [["", "any"], ["include", "only"], ["exclude", "hide"]]
@@ -19,7 +19,7 @@ const LIST_MAX = 60
  * @param {(query: string) => void} on.enter Enter in the search box
  * @param {(index: number) => void} on.pick a search result chosen
  */
-export function createFilterPanel(el, state, on) {
+export function createFilterPanel(el, state, on, caps = CAPS) {
   const doc = el.ownerDocument
   const F = state.filters
   const facets = { files: new Map(), namespaces: new Map(), predicates: new Map() }
@@ -45,7 +45,7 @@ export function createFilterPanel(el, state, on) {
     h(doc, "div", { class: "graph-sec graph-fields" },
       select("colorBy", "Colour by", COLOR_BY.map((c) => [c, c]), state.colorBy),
       select("depth", "Depth around selection", DEPTHS.map((d) => [d, d ? `${d} hop${d > 1 ? "s" : ""}` : "whole graph"]), F.depth),
-      select("maxNodes", "Node cap", CAPS.map((c) => [c, c.toLocaleString("en")]), F.maxNodes),
+      select("maxNodes", "Node cap", caps.map((c) => [c, c.toLocaleString("en")]), F.maxNodes),
       check("literals", "on", F.literals, "Literals"),
       check("types", "on", F.types, "rdf:type edges")),
     section("Kinds", kinds, true),
@@ -63,7 +63,8 @@ export function createFilterPanel(el, state, on) {
     const map = facets[key]
     if (key === "files") {
       const uris = [...new Set([...map.keys(), ...(F.files ?? [])])]
-      box.replaceChildren(...(uris.length ? uris.slice(0, LIST_MAX).map((u) => check("file", u, !F.files || F.files.includes(u), fileLabel(u), map.get(u), u)) : [h(doc, "p", { class: "graph-none", text: "No files" })]))
+      const root = commonRoot(uris)
+      box.replaceChildren(...(uris.length ? uris.slice(0, LIST_MAX).map((u) => check("file", u, !F.files || F.files.includes(u), fileLabel(u, root), map.get(u), u)) : [h(doc, "p", { class: "graph-none", text: "No files" })]))
       return
     }
     const rules = F[key]

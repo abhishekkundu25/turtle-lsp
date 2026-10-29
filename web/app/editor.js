@@ -1282,6 +1282,9 @@ function showGraph(on) {
     const key = (k) => `rdf-editor-${k}`
     G.view = createGraphView({
       container: $("graph-host"),
+      // The layout runs on the worker that answers the editor: a 20,000-node
+      // layout would hold typing up for a second or more.
+      maxNodes: 5000,
       request: (method, params) => client.request(method, params),
       reveal: (uri, range) => {
         const path = pathByUri.get(uri)

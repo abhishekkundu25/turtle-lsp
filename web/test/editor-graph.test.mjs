@@ -340,7 +340,10 @@ test("a 17,000-class vocabulary opens in focus mode, and a keystroke waits for t
       return typed
     }
     await graphMode("graph mode, cap 2,000", () => page.getByRole("tab", { name: "Graph" }).click())
-    await graphMode("graph mode, cap 20,000", () => page.getByRole("combobox", { name: "Node cap" }).selectOption("20000"))
+    await graphMode("graph mode, cap 5,000", () => page.getByRole("combobox", { name: "Node cap" }).selectOption("5000"))
+    // The playground offers no cap above 5,000 (its layout runs on the editor's worker).
+    const caps = await page.getByRole("combobox", { name: "Node cap" }).locator("option").allTextContents()
+    assert.deepEqual(caps, ["500", "2,000", "5,000"])
     assert.deepEqual(errors, [])
   } finally {
     await close()

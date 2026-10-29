@@ -168,9 +168,19 @@ export function diagnosticMarks(nodes, diagnostics) {
 }
 
 /** A short name for a file URI: its last two path segments, decoded. */
-export function fileLabel(uri) {
-  const parts = String(uri).replace(/^[a-z]+:\/*/i, "").split("/").filter(Boolean)
-  const tail = parts.slice(-2).join("/")
+/** The folder every one of `uris` is in, with its trailing '/' ("" when they share none). */
+export function commonRoot(uris) {
+  if (!uris.length) return ""
+  let root = uris[0].slice(0, uris[0].lastIndexOf("/") + 1)
+  for (const u of uris) while (root && !u.startsWith(root)) root = root.slice(0, root.lastIndexOf("/", root.length - 2) + 1)
+  return /^[a-z]+:\/*$/i.test(root) ? "" : root
+}
+
+/** A file's name for the panel: its path below `root`, else its last two path segments. */
+export function fileLabel(uri, root = "") {
+  const path = String(uri).startsWith(root) ? String(uri).slice(root.length) : String(uri)
+  const parts = path.replace(/^[a-z]+:\/*/i, "").split("/").filter(Boolean)
+  const tail = root ? parts.join("/") : parts.slice(-2).join("/")
   try {
     return decodeURIComponent(tail)
   } catch {

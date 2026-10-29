@@ -37,8 +37,10 @@ const strings = (v) => (Array.isArray(v) ? [...new Set(v.filter((s) => typeof s 
 const pair = (v) => ({ include: strings(v?.include), exclude: strings(v?.exclude) })
 
 /** A state from whatever the store held: unknown or broken fields take their default. */
-export function normalizeState(raw) {
+/** `raw` (a stored state) checked; a node cap over `maxCap` falls back to the default. */
+export function normalizeState(raw, maxCap = CAPS[CAPS.length - 1]) {
   const s = defaultState()
+  s.filters.maxNodes = Math.min(s.filters.maxNodes, maxCap)
   if (!raw || typeof raw !== "object") return s
   if (MODES.includes(raw.mode)) s.mode = raw.mode
   if (typeof raw.focus === "string") s.focus = raw.focus
@@ -55,7 +57,7 @@ export function normalizeState(raw) {
   s.filters.literals = f.literals === true
   s.filters.types = f.types === true
   if (DEPTHS.includes(f.depth)) s.filters.depth = f.depth
-  if (CAPS.includes(f.maxNodes)) s.filters.maxNodes = f.maxNodes
+  if (CAPS.includes(f.maxNodes) && f.maxNodes <= maxCap) s.filters.maxNodes = f.maxNodes
   return s
 }
 

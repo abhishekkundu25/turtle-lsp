@@ -7,8 +7,8 @@
 // the filters. No globals, no network, no inline handlers or styles.
 
 import { h, kids } from "./el.js"
-import { BIG, KINDS, LITERAL, bestNode, buildModel, chooseDefault, diagnosticMarks, fileLabel, nameOf, neighbours, searchNodes, triplesOf } from "./model.js"
-import { CONTINUE_ITERATIONS, FIRST_ITERATIONS, MODES, hierarchyParams, normalizeState, toParams } from "./filters.js"
+import { BIG, KINDS, LITERAL, bestNode, buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, nameOf, neighbours, searchNodes, triplesOf } from "./model.js"
+import { CAPS, CONTINUE_ITERATIONS, FIRST_ITERATIONS, MODES, hierarchyParams, normalizeState, toParams } from "./filters.js"
 import { createHitGrid } from "./hitgrid.js"
 import { RING_CAPS, buildHierarchy, ringLayout } from "./rings.js"
 import { pickLabels, truncate } from "./labels.js"
@@ -37,12 +37,15 @@ const SEVERITY = ["", "error", "warning", "information", "hint"]
  * @param {{ get(key: string): any, set(key: string, value: any): void }} [o.store] keeps the filters and mode
  * @returns {{ refresh(): Promise<void>, resize(): void, destroy(): void, setTheme(theme?: Record<string, string>): void }}
  */
-export function createGraphView({ container, request, reveal, diagnostics, theme, store } = {}) {
+// `maxNodes`: the largest node cap offered (a host whose layout runs on the
+// thread that answers its editor keeps it low).
+export function createGraphView({ container, request, reveal, diagnostics, theme, store, maxNodes = CAPS[CAPS.length - 1] } = {}) {
   if (!container?.ownerDocument) throw new TypeError("createGraphView: a container element is required")
   if (typeof request !== "function") throw new TypeError("createGraphView: a request function is required")
   const doc = container.ownerDocument
   const win = doc.defaultView
-  const state = normalizeState(readStore(store))
+  const nodeCaps = CAPS.filter((c) => c <= maxNodes)
+  const state = normalizeState(readStore(store), nodeCaps[nodeCaps.length - 1])
 
   // ---- the elements ----
   const tabs = MODES.map((m) => h(doc, "button", { type: "button", role: "tab", class: "graph-tab", "data-mode": m, text: TITLES[m] }))
@@ -104,7 +107,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       if (matches.length) focusNode(matches[0])
     },
     pick: focusNode,
-  })
+  }, nodeCaps)
   const tree = createTreeView(treeBox, { select: (i) => select(i), open: openDefinition })
 
   // ---- talking to the host ----
@@ -321,7 +324,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const entries = []
     if (state.colorBy === "kind") KINDS.forEach((k, slot) => entries.push([slot, k]))
     else if (state.colorBy === "namespace") order.namespaces.slice(0, PALETTE_SIZE).forEach((ns, slot) => entries.push([slot, ns.prefix ? `${ns.prefix}:` : ns.iri]))
-    else order.files.slice(0, PALETTE_SIZE).forEach((uri, slot) => entries.push([slot, fileLabel(uri)]))
+    else order.files.slice(0, PALETTE_SIZE).forEach((uri, slot) => entries.push([slot, fileLabel(uri, commonRoot(order.files))]))
     const used = new Set(slots)
     legend.replaceChildren(...entries.filter(([slot]) => used.has(slot)).map(([slot, text]) => h(doc, "span", { class: "graph-key", role: "listitem" }, h(doc, "span", { class: `graph-swatch graph-c${slot}`, "aria-hidden": "true" }), text)))
     legend.hidden = mode === "hierarchy" || !legend.children.length
@@ -370,7 +373,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
         h(doc, "span", { class: "graph-badge", text: d.literal ? "literal" : d.kind || "other" }),
         h(doc, "button", { type: "button", class: "graph-x", "data-act": "close", "aria-label": "Close", title: "Close", text: "×" })),
       h(doc, "div", { class: "graph-info-id", text: d.id }),
-      d.uri ? h(doc, "div", { class: "graph-info-file", title: d.uri, text: fileLabel(d.uri) }) : null,
+      d.uri ? h(doc, "div", { class: "graph-info-file", title: d.uri, text: fileLabel(d.uri, commonRoot(order.files)) }) : null,
       marks[selected] ? h(doc, "div", { class: `graph-info-diag graph-sev${marks[selected]}`, text: `Has ${SEVERITY[marks[selected]]} diagnostics` }) : null,
       h(doc, "div", { class: "graph-actions" },
         h(doc, "button", { type: "button", class: "graph-btn", "data-act": "reveal", disabled: !canReveal, text: "Go to definition" }),
