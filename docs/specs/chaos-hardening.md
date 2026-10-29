@@ -1,7 +1,7 @@
 # Chaos hardening: every mutated input keeps the graph, the fixed point and the clock
 
-Status: proposed (2026-10-23), revised after review. Tickets:
-docs/tickets/chaos-hardening/ (GitHub tracking issue #23). Root-cause reports
+Status: proposed (2026-10-23), revised after review. GitHub tracking
+issue #23. Root-cause reports
 and the review are outside the repo (scratchpad chaos10/).
 
 ## Problem Statement

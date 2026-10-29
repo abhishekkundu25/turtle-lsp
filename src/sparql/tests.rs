@@ -1195,7 +1195,7 @@ fn true_and_false_are_read_in_any_case() {
     assert!(codes("SELECT * { ?s ?p TRUEISH }").contains(&"syntax"));
 }
 
-// Ticket 07: nested calls parse in time linear in their depth
+// Nested calls parse in time linear in their depth
 // (vendor/spargebra/left-factor-nested-calls.patch).
 
 /// Runs `f` on a 2 MiB stack, as a worker thread may have.
@@ -1386,7 +1386,7 @@ fn a_local_name_that_starts_with_a_colon_is_one_name() {
     );
 }
 
-// Ticket 08: parse fuel bounds the work of spargebra's grammar
+// Parse fuel bounds the work of spargebra's grammar
 // (vendor/spargebra/parse-fuel.patch).
 
 const TOO_COMPLEX: &str = "SPARQL syntax error: too large to check (the query is too complex)";
@@ -1468,9 +1468,9 @@ fn a_quarter_of_the_fuel_parses_every_known_query() {
     }
 }
 
-/// With [`spargebra::FUEL_PER_BYTE`], ticket 07's nested calls left open, and
-/// its two chaos inputs, give no "too complex" error (closed, ticket 07's
-/// tests assert their exact errors).
+/// With [`spargebra::FUEL_PER_BYTE`], the nested calls above left open, and
+/// their two chaos inputs, give no "too complex" error (closed, the tests
+/// above assert their exact errors).
 #[test]
 fn the_fuel_parses_nested_calls_left_open() {
     on_small_stack(|| {

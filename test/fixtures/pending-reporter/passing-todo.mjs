@@ -3,5 +3,5 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-test("ready to promote", { todo: "fixture:ready (ticket 99)" }, () => {})
+test("ready to promote", { todo: "fixture:ready" }, () => {})
 test("still pending", { todo: "fixture:pending" }, () => assert.fail("not yet"))

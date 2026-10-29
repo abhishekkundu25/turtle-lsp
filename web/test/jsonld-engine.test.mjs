@@ -1,8 +1,7 @@
 // JSON-LD in the browser engine: the same diagnostics, at the same
 // positions, as the language server, with contexts from the bundle (the
-// browser never fetches one). Each test is pending (`todo`), tagged with its
-// phase and the ticket in docs/tickets/jsonld/ that promotes it; see
-// test/jsonld.test.mjs. Run `npm run web:build` first.
+// browser never fetches one). A pending (`todo`) test is tagged with its
+// phase; see test/jsonld.test.mjs. Run `npm run web:build` first.
 import { test, before } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -14,7 +13,6 @@ import { startServer, tempDir, uriOf } from "../../test/lsp-client.mjs"
 import * as F from "../../test/jsonld-fixtures.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const phase1 = (ticket) => ({ todo: `jsonld:phase1 (ticket ${ticket})`, timeout: 40_000 })
 const phase2 = { todo: "jsonld:phase2", timeout: 40_000 }
 
 let engine

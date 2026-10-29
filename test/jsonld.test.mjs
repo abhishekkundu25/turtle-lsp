@@ -173,7 +173,7 @@ async function openFile(name) {
 // Diagnostics, context loading, cross-file knowledge and SHACL
 // =====================================================================================
 
-// ---- JSON syntax (ticket 05) ----
+// ---- JSON syntax ----
 
 test("a missing comma is one json-syntax error on the value before it; parsing goes on to the next error", { timeout: 25_000 }, async (t) => {
   const { uri, diags } = await openScratch(t, F.SYNTAX)
@@ -208,7 +208,7 @@ test("check: malformed JSON-LD around multi-byte characters exits 1 without abor
   for (const f of ["key", "value", "ctx"]) assert.match(r.out, new RegExp(`${f}\\.jsonld:\\d+:\\d+: error`), r.out)
 })
 
-// ---- @context errors (ticket 07) ----
+// ---- @context errors ----
 
 test("an invalid term definition is a jsonld-context error on the term", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.CTX_INVALID)
@@ -235,7 +235,7 @@ test("check: a context error is reported at the definition", { timeout: 25_000 }
   assert.deepEqual(cliRanges(r.of("context-error.jsonld", "jsonld-context")), cliExpected([F.CTX_INVALID_AT]), r.out)
 })
 
-// ---- lints (ticket 11) ----
+// ---- lints ----
 
 test("a key the context does not define is a jsonld-undefined-term warning on the key", { timeout: 25_000 }, async (t) => {
   const { diags } = await openScratch(t, F.LINTS)
@@ -379,7 +379,7 @@ test("check --fix leaves a @json literal's @context as it is", { timeout: 25_000
   assert.equal(fs.readFileSync(path.join(w, "literal.jsonld"), "utf8"), JSON_LITERAL)
 })
 
-// ---- context loading (ticket 06) ----
+// ---- context loading ----
 
 // A local web server for remote contexts, counting requests.
 let web
@@ -565,7 +565,7 @@ test("check: a remote context is fetched only with --network", { timeout: 25_000
   assert.deepEqual(hits.slice(before), ["/ctx.jsonld"])
 })
 
-// ---- cross-file knowledge (ticket 09) ----
+// ---- cross-file knowledge ----
 
 test("Turtle completion offers terms a JSON-LD file describes", { timeout: 25_000 }, async (t) => {
   const text = "@prefix ex: <https://jsonld.example.org/def/> .\nex:w2 a ex:Gad\n"
@@ -694,7 +694,7 @@ test("the editor and check report the same diagnostics on a mixed Turtle and JSO
   }
 })
 
-// ---- SHACL (ticket 10) ----
+// ---- SHACL ----
 
 const shaclRanges = (diags) => sortRanges(rangesOf(diags, "shacl-violation"))
 

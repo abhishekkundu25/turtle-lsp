@@ -54,8 +54,8 @@ test("a pending test that passes is listed and fails the run", () => {
   const r = nodeTest([...reporters, path.join(here, "fixtures/pending-reporter/passing-todo.mjs")])
   assert.match(r.stdout, /pending tests by tag:/)
   assert.match(r.stdout, /fixture:pending: 1/)
-  assert.match(r.stdout, /fixture:ready: 1 \(ticket 99: 1\), 1 passing/)
-  assert.match(r.stdout, /pending tests that pass, to promote:\n {2}fixture:ready \(ticket 99\): ready to promote/)
+  assert.match(r.stdout, /fixture:ready: 1, 1 passing/)
+  assert.match(r.stdout, /pending tests that pass, to promote:\n {2}fixture:ready: ready to promote/)
   assert.equal(r.status, 1, r.stdout)
 })
 

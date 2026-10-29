@@ -1,7 +1,6 @@
 # JSON-LD phase 2: editing inside JSON-LD
 
 Status: done in 0.6.0. Follows docs/specs/jsonld.md (phase 1, also in 0.6.0).
-Tickets: `docs/tickets/jsonld-phase2/`.
 
 ## Problem Statement
 

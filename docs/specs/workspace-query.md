@@ -1,8 +1,7 @@
 # Running SPARQL queries over the workspace
 
 Status: done in 0.7.0. Builds on docs/specs/lsp-capability.md (the shared
-`rdf` module, the command module and code lenses). Tickets:
-docs/tickets/workspace-query/.
+`rdf` module, the command module and code lenses).
 
 ## Problem Statement
 

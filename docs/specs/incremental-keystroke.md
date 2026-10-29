@@ -111,7 +111,7 @@ Every part is proven against a full rebuild by an oracle that runs in the chaos 
 - **Timing tests** (`timing_…`, run serially): one edit in the middle of a 2.4 MB file stays under a fixed budget, and N edits cost O(N × edit), not O(N × file).
 - **Node tests** through `test/lsp-client.mjs`: a sequence of edits on a fixture gives the same published diagnostics as reopening it, for Turtle, TriG, N-Quads, SPARQL and JSON-LD (the last two prove the fallback).
 - **Corpus:** every corpus file, opened and then edited at a few positions, matches a reopen; part 3's setting turns on only after this passes.
-- **Benchmark:** `big-file` and `big-vocab` rows before and after each part, main against the branch on a quiet machine. Prior art: the label-lints close-out (`docs/tickets/label-lints/07-close-out.md`).
+- **Benchmark:** `big-file` and `big-vocab` rows before and after each part, main against the branch on a quiet machine.
 
 Budgets, as pass/fail lines:
 - Results equal a full rebuild in every chaos iteration and on the corpus.

@@ -645,7 +645,7 @@ scenario("big-vocab", "a vocabulary over 2 MB: open and keystroke", async () => 
   })
 })
 
-// The memory budget of the command line (docs/tickets/audit-2026-10/34b): the peak
+// The memory budget of the command line: the peak
 // memory of `format --check` and `check --no-shacl` on the big-file scenario's
 // document, at most PEAK_BUDGET bytes per input byte, the median of three runs.
 // The peak is mimalloc's peak committed memory, which it prints at exit when

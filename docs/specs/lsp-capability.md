@@ -1,6 +1,6 @@
 # Seams and a more capable language server
 
-Status: done in 0.7.0. Tickets: docs/tickets/lsp-capability/.
+Status: done in 0.7.0.
 
 ## Problem Statement
 
