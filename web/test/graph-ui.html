@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- As strict as a VS Code webview's policy: scripts and styles from this origin only, nothing inline, no network. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Graph view test page</title>
+<link rel="stylesheet" href="../app/graph/graph.css">
+<script type="module" src="graph-ui-page.mjs"></script>
+</head>
+<body>
+<div id="host"></div>
+</body>
+</html>
