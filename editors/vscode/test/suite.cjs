@@ -390,11 +390,13 @@ async function until(what, ok, ms = 15000) {
   for (const end = Date.now() + ms; !(await ok()); await sleep(50)) if (Date.now() > end) assert.fail(`timed out waiting for ${what}`)
 }
 
-check("the graph command is registered but not contributed", async () => {
+check("the graph command is in the palette, the editor title and the Explorer menu, shown while the server offers it", async () => {
   const pkg = vscode.extensions.getExtension("abhishekkundu25.turtle-language-server").packageJSON
-  // No command, menu, keybinding, view or activation event names it.
-  const manifest = JSON.stringify({ contributes: pkg.contributes, activationEvents: pkg.activationEvents })
-  assert.ok(!/showGraph|turtle\.graph/.test(manifest), "the graph panel is named in the manifest")
+  assert.ok(pkg.contributes.commands.some((c) => c.command === "turtle.showGraph" && c.icon), "no contributed command with an icon")
+  for (const menu of ["commandPalette", "editor/title", "explorer/context"]) {
+    const item = (pkg.contributes.menus[menu] ?? []).find((m) => m.command === "turtle.showGraph")
+    assert.ok(item && /turtle\.graphAvailable/.test(item.when), `${menu}: missing, or not gated on turtle.graphAvailable`)
+  }
   assert.ok((await vscode.commands.getCommands(true)).includes("turtle.showGraph"), "turtle.showGraph is not registered")
 })
 

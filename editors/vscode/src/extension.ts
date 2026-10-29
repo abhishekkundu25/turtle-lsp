@@ -164,14 +164,14 @@ let serverHandle: ServerHandle<LanguageClient> | undefined
 export async function activate(context: vscode.ExtensionContext): Promise<TurtleApi> {
   const handle = (serverHandle = new ServerHandle<LanguageClient>(() => createClient(context)))
   let wantedServer = false
-  // The workspace graph panel (src/graph.ts) is registered, not contributed:
-  // no menu, palette entry, keybinding or activation event names it, so
-  // nobody sees it yet. To enable it, add to package.json "contributes.commands":
-  //   { "command": "turtle.showGraph", "title": "Turtle: Show Workspace Graph" }
-  // The command exists only while the server advertises experimental["turtle/graph"].
+  // The workspace graph panel (src/graph.ts): the command exists only while
+  // the server advertises experimental["turtle/graph"], and the context key
+  // turtle.graphAvailable shows its palette entry, editor title button and
+  // Explorer menu item only then.
   let graphCommand: vscode.Disposable | undefined
   const syncGraphCommand = (): void => {
     const advertised = advertisesGraph(handle.client())
+    void vscode.commands.executeCommand("setContext", "turtle.graphAvailable", advertised)
     if (advertised && !graphCommand) {
       graphCommand = registerGraphCommand({ context, client: () => handle.client(), served: isServed })
     } else if (!advertised && graphCommand) {

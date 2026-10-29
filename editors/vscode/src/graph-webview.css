@@ -1,6 +1,7 @@
 /* The graph panel's page (src/graph.ts): the view fills the webview, in the
-   colours of the VS Code theme. The palette (--graph-c0 … c7) keeps the
-   view's light-dark() pairs, which follow color-scheme. */
+   colours of the VS Code theme. The palette comes from the theme's chart
+   colours too: the view's own light-dark() pairs need Chromium 123, newer
+   than VS Code 1.91 ships. */
 html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
 body.vscode-light, body.vscode-high-contrast-light { color-scheme: light; }
 body.vscode-dark, body.vscode-high-contrast { color-scheme: dark; }
@@ -23,5 +24,15 @@ body .graph {
   --graph-warning: var(--vscode-editorWarning-foreground);
   --graph-info: var(--vscode-editorInfo-foreground);
   --graph-mono: var(--vscode-editor-font-family, monospace);
+  --graph-c0: var(--vscode-charts-blue, #3794ff);
+  --graph-c1: var(--vscode-charts-yellow, #cca700);
+  --graph-c2: var(--vscode-charts-green, #89d185);
+  --graph-c3: var(--vscode-charts-red, #f14c4c);
+  --graph-c4: var(--vscode-charts-purple, #b180d7);
+  --graph-c5: var(--vscode-terminal-ansiCyan, #11a8cd);
+  --graph-c6: var(--vscode-terminal-ansiGreen, #0dbc79);
+  --graph-c7: var(--vscode-charts-orange, #d18616);
+  --graph-match: var(--vscode-charts-yellow, #cca700);
+  --graph-neutral: var(--vscode-descriptionForeground, #8c8c8c);
   font-family: var(--vscode-font-family);
 }

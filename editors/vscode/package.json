@@ -339,8 +339,35 @@
       {
         "command": "turtle.restartServer",
         "title": "Turtle: Restart Language Server"
+      },
+      {
+        "command": "turtle.showGraph",
+        "title": "Turtle: Show Workspace Graph",
+        "icon": "$(graph-scatter)"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "turtle.showGraph",
+          "when": "turtle.graphAvailable"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "turtle.showGraph",
+          "when": "turtle.graphAvailable && (resourceLangId == turtle || resourceLangId == trig || resourceLangId == ntriples || resourceLangId == nquads || resourceLangId == sparql || resourceExtname == .jsonld)",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "turtle.showGraph",
+          "when": "turtle.graphAvailable && (explorerResourceIsFolder || resourceExtname =~ /^\\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/)",
+          "group": "navigation@90"
+        }
+      ]
+    },
     "semanticTokenModifiers": [
       {
         "id": "undescribed",
