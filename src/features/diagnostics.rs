@@ -19,9 +19,21 @@ pub(crate) const SOURCE: &str = "turtle";
 /// workspace, so are only reported once the initial index is in.
 pub(crate) const NEEDS_INDEX: &[&str] = crate::features::shacl_lint::NEEDS_INDEX;
 
+/// The curation checks that say a term or ontology lacks something any
+/// workspace document could give it: they wait for the index too.
+const CURATION_NEEDS_INDEX: &[&str] = &[
+    crate::features::curation::MISSING_LABEL,
+    crate::features::curation::MISSING_DEFINITION,
+    crate::features::curation::MISSING_ONTOLOGY_TITLE,
+    crate::features::curation::MISSING_ONTOLOGY_DESCRIPTION,
+    crate::features::curation::MISSING_ONTOLOGY_LICENSE,
+];
+
 pub(crate) fn needs_index(d: &Diagnostic) -> bool {
     matches!(&d.code, Some(NumberOrString::String(c))
-        if NEEDS_INDEX.contains(&c.as_str()) || c == crate::features::lint::CODE)
+        if NEEDS_INDEX.contains(&c.as_str())
+            || CURATION_NEEDS_INDEX.contains(&c.as_str())
+            || c == crate::features::lint::CODE)
 }
 
 /// One written occurrence of an IRI (never `a`), for the knowledge lints

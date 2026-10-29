@@ -109,3 +109,76 @@ test("check: --fix leaves the trim, --unsafe-fixes applies it", (t) => {
   assert.match(all.err, /Applied 1 fix in 1 file/)
   assert.equal(fs.readFileSync(file, "utf8"), `${prefixes}ex:a rdfs:label "Pump" .\n`)
 })
+
+// The last diagnostics published for `uri` that `pred` accepts, waiting up to
+// `ms` for one: a document another file's edit affects is diagnosed again
+// after a pause, without a change of its own.
+async function publishedUntil(s, uri, pred, ms = 10000) {
+  const end = Date.now() + ms
+  for (;;) {
+    const last = s.publications.filter((p) => p.uri === uri).at(-1)
+    if (last && pred(last.diagnostics)) return last.diagnostics
+    if (Date.now() > end) throw new Error(`no matching diagnostics for ${uri}: ${JSON.stringify(last?.diagnostics)}`)
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
+
+const OWL = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+const duplicates = (diags) => diags.filter((d) => d.code === "duplicate-label")
+
+test("a duplicate label across two open files clears in both when one is renamed", async (t) => {
+  const ws = tempDir("turtle-label-dup-")
+  const s = await startServer({ cwd: ws })
+  t.after(async () => {
+    await s.stop()
+    fs.rmSync(ws, { recursive: true, force: true })
+  })
+  const a = uriOf(path.join(ws, "a.ttl"))
+  const b = uriOf(path.join(ws, "b.ttl"))
+  s.open(a, `${OWL}${PREFIXES}ex:Pump a owl:Class ; rdfs:label "Pump"@en .\n`)
+  await s.diagnosticsFor(a)
+  s.open(b, `${OWL}${PREFIXES}ex:Pump2 a owl:Class ; skos:prefLabel "pump"@en .\n`)
+  const inB = duplicates(await s.diagnosticsFor(b))
+  assert.equal(inB.length, 1, JSON.stringify(inB))
+  assert.equal(inB[0].severity, 2)
+  assert.equal(inB[0].message, 'Label "pump" is also the label of ex:Pump')
+  // a.ttl did not change, but b.ttl now collides with it.
+  const inA = duplicates(await publishedUntil(s, a, (d) => duplicates(d).length === 1))
+  assert.equal(inA[0].message, 'Label "Pump" is also the label of ex:Pump2')
+  assert.deepEqual(inA[0].range, { start: { line: 4, character: 33 }, end: { line: 4, character: 39 } })
+
+  s.change(b, `${OWL}${PREFIXES}ex:Pump2 a owl:Class ; skos:prefLabel "Valve"@en .\n`)
+  assert.deepEqual(duplicates(await s.diagnosticsFor(b)), [])
+  await publishedUntil(s, a, (d) => duplicates(d).length === 0)
+})
+
+test("lint.enable in turtle-lsp.json turns on missing-label", async (t) => {
+  const ws = tempDir("turtle-label-enable-")
+  const text = `${OWL}${PREFIXES}ex:Pump a owl:Class .\n`
+  // The missing-* checks wait for the initial index: each run enables
+  // missing-definition too, and reads the publication that has it.
+  const missing = async (lint) => {
+    fs.writeFileSync(path.join(ws, "turtle-lsp.json"), JSON.stringify({ lint }))
+    const s = await startServer({ cwd: ws })
+    try {
+      const uri = uriOf(path.join(ws, "a.ttl"))
+      s.open(uri, text)
+      const indexed = await publishedUntil(s, uri, (d) => d.some((x) => x.code === "missing-definition"))
+      return indexed.filter((d) => d.code === "missing-label")
+    } finally {
+      await s.stop()
+    }
+  }
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }))
+  assert.deepEqual(await missing({ enable: ["missing-definition"] }), [], "off by default")
+  const [d] = await missing({ enable: ["missing-label", "missing-definition"] })
+  assert.ok(d)
+  assert.equal(d.severity, 2)
+  assert.equal(d.message, "ex:Pump has no rdfs:label or skos:prefLabel")
+  assert.deepEqual(d.range, { start: { line: 4, character: 0 }, end: { line: 4, character: 7 } })
+  assert.deepEqual(
+    await missing({ enable: ["missing-label", "missing-definition"], ignore: ["missing-label"] }),
+    [],
+    "lint.ignore wins",
+  )
+})

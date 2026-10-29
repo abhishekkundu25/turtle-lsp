@@ -10,16 +10,16 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::SOURCE;
 use crate::features::quickfix::FixData;
 use crate::jsonld::json;
-use crate::knowledge::Knowledge;
+use crate::knowledge::{Description, Knowledge, Source};
 use crate::syntax::lexer::{self, Kind};
-use crate::syntax::{Iri, Node, Span, Syntax};
+use crate::syntax::names::shorten;
+use crate::syntax::{Iri, Node, PrefixMap, Role, Span, Syntax};
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::OnceLock;
 
-// shortcut: unused until the label checks land; the slices remove the allow.
-#[allow(dead_code)]
 pub(crate) const DUPLICATE_LABEL: &str = "duplicate-label";
 pub(crate) const LABEL_WHITESPACE: &str = "label-whitespace";
-#[allow(dead_code)]
 pub(crate) const MULTIPLE_LABELS: &str = "multiple-labels";
 pub(crate) const MISSING_LABEL: &str = "missing-label";
 pub(crate) const MISSING_DEFINITION: &str = "missing-definition";
@@ -47,13 +47,515 @@ pub(crate) const OPT_IN: &[&str] = &[
 /// `house_style`.
 pub(crate) fn diagnostics(
     a: &Analysis,
-    _k: &Knowledge,
+    k: &Knowledge,
     enc: Encoding,
-    _house_style: bool,
+    house_style: bool,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     label_whitespace(a, enc, &mut out);
+    let mut c = Checks::new(a, k, enc);
+    c.labels(&mut out);
+    if house_style {
+        c.definitions(&mut out);
+        c.missing(&mut out);
+        c.headers(&mut out);
+    }
     out
+}
+
+/// The IRIs the label, definition and header checks read.
+struct Vocab {
+    /// What [`Knowledge::labelled`] compares, and what `missing-label` wants.
+    labels: [Iri; 2],
+    definition: Iri,
+    comment: Iri,
+    ontology: Iri,
+    /// The property types and `skos:Concept`, for [`TermKind::of`].
+    property_types: [Iri; 4],
+    concept: Iri,
+    title: [Iri; 3],
+    description: [Iri; 3],
+    license: [Iri; 3],
+}
+
+fn vocab() -> &'static Vocab {
+    static V: OnceLock<Vocab> = OnceLock::new();
+    V.get_or_init(|| {
+        let i = Iri::intern;
+        let rdfs = |l: &str| i(&format!("http://www.w3.org/2000/01/rdf-schema#{l}"));
+        let skos = |l: &str| i(&format!("http://www.w3.org/2004/02/skos/core#{l}"));
+        let dcterms = |l: &str| i(&format!("http://purl.org/dc/terms/{l}"));
+        let dc = |l: &str| i(&format!("http://purl.org/dc/elements/1.1/{l}"));
+        Vocab {
+            labels: [rdfs("label"), skos("prefLabel")],
+            definition: skos("definition"),
+            comment: rdfs("comment"),
+            ontology: i(crate::knowledge::OWL_ONTOLOGY),
+            property_types: [
+                i("http://www.w3.org/2002/07/owl#ObjectProperty"),
+                i("http://www.w3.org/2002/07/owl#DatatypeProperty"),
+                i("http://www.w3.org/2002/07/owl#AnnotationProperty"),
+                i("http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"),
+            ],
+            concept: skos("Concept"),
+            title: [dcterms("title"), dc("title"), rdfs("label")],
+            description: [dcterms("description"), dc("description"), rdfs("comment")],
+            license: [
+                dcterms("license"),
+                i("http://creativecommons.org/ns#license"),
+                i("http://web.resource.org/cc/license"),
+            ],
+        }
+    })
+}
+
+/// How many other terms a message names before "and N more".
+const NAMED: usize = 3;
+
+/// A literal object of a declared term in the document being checked.
+struct Lit<'a> {
+    subject: Iri,
+    p: Iri,
+    value: &'a str,
+    lang: Option<Iri>,
+    /// The quoted string ([`string_token`]), else the whole object.
+    span: Span,
+}
+
+/// The label, definition and header checks of one document. Each reads the
+/// document's own triples once, and the knowledge index by key, so a
+/// keystroke costs about the size of the document.
+struct Checks<'a> {
+    a: &'a Analysis,
+    k: &'a Knowledge,
+    enc: Encoding,
+    /// [`Knowledge::is_term`] by subject.
+    terms: FxHashMap<Iri, bool>,
+    /// [`TermKind::of`] by term, for the terms a label collides with.
+    kinds: FxHashMap<Iri, TermKind>,
+    /// The prefixes messages write IRIs with, read on first use.
+    prefixes: Option<PrefixMap>,
+}
+
+impl<'a> Checks<'a> {
+    fn new(a: &'a Analysis, k: &'a Knowledge, enc: Encoding) -> Checks<'a> {
+        Checks {
+            a,
+            k,
+            enc,
+            terms: FxHashMap::default(),
+            kinds: FxHashMap::default(),
+            prefixes: None,
+        }
+    }
+
+    fn is_term(&mut self, s: Iri) -> bool {
+        *self.terms.entry(s).or_insert_with(|| self.k.is_term(&s))
+    }
+
+    fn kind(&mut self, t: Iri) -> TermKind {
+        let k = self.k;
+        *self.kinds.entry(t).or_insert_with(|| TermKind::of(k, t))
+    }
+
+    /// `iri` as the document can write it: a prefixed name, else `<iri>`.
+    fn name(&mut self, iri: &str) -> String {
+        let a = self.a;
+        let prefixes = self.prefixes.get_or_insert_with(|| match a.parsed.syntax {
+            Syntax::JsonLd => crate::features::lint::jsonld_prefixes(a),
+            _ => a.prefix_map(),
+        });
+        shorten(iri, prefixes).unwrap_or_else(|| format!("<{iri}>"))
+    }
+
+    /// `terms` named, at most [`NAMED`] of them and then how many more.
+    fn names(&mut self, terms: &[Iri]) -> String {
+        let mut named: Vec<String> = terms.iter().take(NAMED).map(|t| self.name(t)).collect();
+        let more = terms.len().saturating_sub(NAMED);
+        if more > 0 {
+            return format!("{} and {more} more", named.join(", "));
+        }
+        let last = named.pop().unwrap_or_default();
+        if named.is_empty() {
+            last
+        } else {
+            format!("{} and {last}", named.join(", "))
+        }
+    }
+
+    fn warning(&self, span: Span, code: &str, message: String) -> Diagnostic {
+        Diagnostic {
+            range: self.a.range(self.enc, span),
+            severity: Some(DiagnosticSeverity::WARNING),
+            code: Some(NumberOrString::String(code.to_string())),
+            source: Some(SOURCE.to_string()),
+            message,
+            ..Default::default()
+        }
+    }
+
+    /// The literals of `predicates` whose subject is a declared term, in text
+    /// order, one per literal written (a JSON-LD value can give several
+    /// triples one literal).
+    fn literals(&mut self, predicates: &[Iri]) -> Vec<Lit<'a>> {
+        let a = self.a;
+        let mut out: Vec<Lit<'a>> = Vec::new();
+        let mut seen: FxHashSet<(Span, Iri, Iri)> = FxHashSet::default();
+        for t in a
+            .parsed
+            .triples
+            .iter()
+            .filter(|t| predicates.contains(&t.p))
+        {
+            let (Node::Iri(s), Node::Literal { value, lang, .. }) = (&t.s, &t.o) else {
+                continue;
+            };
+            if !self.is_term(*s) {
+                continue;
+            }
+            let span = string_token(a, t.o_span, value).unwrap_or(t.o_span);
+            if seen.insert((span, *s, t.p)) {
+                out.push(Lit {
+                    subject: *s,
+                    p: t.p,
+                    value,
+                    lang: *lang,
+                    span,
+                });
+            }
+        }
+        out
+    }
+
+    /// `duplicate-label` and `multiple-labels`. Empty labels (after
+    /// trimming) say nothing to tell terms apart by, so they never collide;
+    /// nor do terms of different [`TermKind`]s (a class `Judge` and a property
+    /// `judge` are two terms by convention, not a copy-paste slip).
+    fn labels(&mut self, out: &mut Vec<Diagnostic>) {
+        let lits = self.literals(&vocab().labels);
+        let k = self.k;
+        let mut sharing = Sharing::default();
+        for l in lits.iter().filter(|l| !l.value.trim().is_empty()) {
+            let mut others = sharing.others(l, |text, lang| k.labelled(text, lang));
+            if !others.is_empty() {
+                let kind = self.kind(l.subject);
+                others.retain(|t| kind.collides(self.kind(*t)));
+            }
+            if others.is_empty() {
+                continue;
+            }
+            let message = format!(
+                "Label \"{}\" is also the label of {}",
+                l.value.trim(),
+                self.names(&others)
+            );
+            out.push(self.warning(l.span, DUPLICATE_LABEL, message));
+        }
+        self.multiple(&lits, MULTIPLE_LABELS, out);
+    }
+
+    /// `duplicate-definition`, `multiple-definitions` and
+    /// `lowercase-definition` (empty definitions, like empty labels, never
+    /// collide). A term's definition is its `skos:definition`,
+    /// or its `rdfs:comment` when no workspace source gives it a
+    /// `skos:definition`: [`Knowledge::defined_as`] lists a comment's
+    /// subject only then.
+    fn definitions(&mut self, out: &mut Vec<Diagnostic>) {
+        let v = vocab();
+        let lits = self.literals(&[v.definition, v.comment]);
+        let k = self.k;
+        let mut sharing = Sharing::default();
+        let mut defs: Vec<Lit> = Vec::new();
+        for l in lits {
+            let all = sharing.all(&l, |text, lang| k.defined_as(text, lang));
+            if !all.contains(&l.subject) {
+                continue;
+            }
+            let others: Vec<Iri> = all.iter().copied().filter(|t| *t != l.subject).collect();
+            if !others.is_empty() && !l.value.trim().is_empty() {
+                let message = format!("Another term has this definition: {}", self.names(&others));
+                out.push(self.warning(l.span, DUPLICATE_DEFINITION, message));
+            }
+            if l.value
+                .trim_start()
+                .chars()
+                .next()
+                .is_some_and(char::is_lowercase)
+            {
+                let message = "Definition starts with a lowercase letter".to_string();
+                out.push(self.warning(l.span, LOWERCASE_DEFINITION, message));
+            }
+            defs.push(l);
+        }
+        self.multiple(&defs, MULTIPLE_DEFINITIONS, out);
+    }
+
+    /// `code` on each of `lits` whose subject has another value of the same
+    /// property in the same language here.
+    fn multiple(&mut self, lits: &[Lit], code: &str, out: &mut Vec<Diagnostic>) {
+        let mut values: FxHashMap<(Iri, Iri, Option<Iri>), Vec<&str>> = FxHashMap::default();
+        for l in lits {
+            let v = values.entry((l.subject, l.p, l.lang)).or_default();
+            if !v.contains(&l.value) {
+                v.push(l.value);
+            }
+        }
+        for l in lits {
+            let n = values[&(l.subject, l.p, l.lang)].len();
+            if n < 2 {
+                continue;
+            }
+            let (s, p) = (self.name(&l.subject), self.name(&l.p));
+            let message = match l.lang {
+                Some(lang) => format!("{s} has {n} {p} values tagged @{}", &*lang),
+                None => format!("{s} has {n} {p} values without a language tag"),
+            };
+            out.push(self.warning(l.span, code, message));
+        }
+    }
+
+    /// `missing-label` and `missing-definition`, on the subject of the first
+    /// statement about each declared term, in one document only: the first
+    /// by URI of the workspace documents that type the term or give it a
+    /// super class or property, else of those that describe it. A label or
+    /// definition in any workspace document counts: this document's are
+    /// read from its triples, another's from its label and comment indexes
+    /// ([`Analysis::label`], [`Analysis::comment_en`]), which look the term
+    /// up without a scan and also count `sh:name` and `dcterms:description`.
+    fn missing(&mut self, out: &mut Vec<Diagnostic>) {
+        let (a, k, v) = (self.a, self.k, vocab());
+        let mut labelled: FxHashSet<Iri> = FxHashSet::default();
+        let mut defined: FxHashSet<Iri> = FxHashSet::default();
+        for t in &a.parsed.triples {
+            if let (Node::Iri(s), Node::Literal { .. }) = (&t.s, &t.o) {
+                if v.labels.contains(&t.p) {
+                    labelled.insert(*s);
+                } else if t.p == v.definition || t.p == v.comment {
+                    defined.insert(*s);
+                }
+            }
+        }
+        let mut seen: FxHashSet<Iri> = FxHashSet::default();
+        for st in &a.parsed.statements {
+            let Some((s, span)) = st.subject else {
+                continue;
+            };
+            if !seen.insert(s) || !self.is_term(s) {
+                continue;
+            }
+            let descriptions: Vec<_> = k
+                .descriptions(&s)
+                .into_iter()
+                .filter(|d| d.source != Source::External)
+                .collect();
+            let declares = |d: &Description| {
+                d.analysis.types.contains_key(&s) || d.analysis.supers.contains_key(&s)
+            };
+            let reporter = descriptions
+                .iter()
+                .filter(|d| declares(d))
+                .map(|d| d.analysis.uri.as_str())
+                .min()
+                .or_else(|| descriptions.iter().map(|d| d.analysis.uri.as_str()).min());
+            if reporter.is_some_and(|uri| uri != a.uri) {
+                continue;
+            }
+            let elsewhere = || descriptions.iter().filter(|d| d.analysis.uri != a.uri);
+            if !labelled.contains(&s) && !elsewhere().any(|d| d.analysis.label(&s).is_some()) {
+                let message = format!("{} has no rdfs:label or skos:prefLabel", self.name(&s));
+                out.push(self.warning(span, MISSING_LABEL, message));
+            }
+            if !defined.contains(&s) && !elsewhere().any(|d| d.analysis.comment_en(&s).is_some()) {
+                let message = format!("{} has no skos:definition or rdfs:comment", self.name(&s));
+                out.push(self.warning(span, MISSING_DEFINITION, message));
+            }
+        }
+    }
+
+    /// `missing-ontology-title`, `-description` and `-license`, on the
+    /// subject of each IRI typed `owl:Ontology`, in the first by URI of the
+    /// workspace documents that type it so; a header property any workspace
+    /// document gives it counts.
+    fn headers(&mut self, out: &mut Vec<Diagnostic>) {
+        let (a, k, v) = (self.a, self.k, vocab());
+        let rdf_type = crate::shacl::vocab::get().rdf_type;
+        let mut seen: FxHashSet<Iri> = FxHashSet::default();
+        for t in &a.parsed.triples {
+            let Node::Iri(o) = &t.s else {
+                continue;
+            };
+            if t.p != rdf_type || t.o != Node::Iri(v.ontology) || !seen.insert(*o) {
+                continue;
+            }
+            let o = *o;
+            let descriptions: Vec<_> = k
+                .descriptions(&o)
+                .into_iter()
+                .filter(|d| d.source != Source::External)
+                .collect();
+            let reporter = descriptions
+                .iter()
+                .filter(|d| {
+                    d.analysis
+                        .types
+                        .get(&o)
+                        .is_some_and(|ts| ts.contains(&v.ontology))
+                })
+                .map(|d| d.analysis.uri.as_str())
+                .min();
+            if reporter.is_some_and(|uri| uri != a.uri) {
+                continue;
+            }
+            let span = a
+                .parsed
+                .statements
+                .get(t.statement as usize)
+                .and_then(|st| st.subject)
+                .filter(|(s, _)| *s == o)
+                .map_or(t.p_span, |(_, span)| span);
+            let has = |props: &[Iri]| {
+                std::iter::once(a)
+                    .chain(descriptions.iter().map(|d| d.analysis))
+                    .filter(|d| std::ptr::eq(*d, a) || d.uri != a.uri)
+                    .any(|d| {
+                        d.parsed
+                            .triples
+                            .iter()
+                            .any(|t| t.s == Node::Iri(o) && props.contains(&t.p))
+                    })
+            };
+            let checks = [
+                (
+                    &v.title,
+                    MISSING_ONTOLOGY_TITLE,
+                    "title (dcterms:title, dc:title or rdfs:label)",
+                ),
+                (
+                    &v.description,
+                    MISSING_ONTOLOGY_DESCRIPTION,
+                    "description (dcterms:description, dc:description or rdfs:comment)",
+                ),
+                (
+                    &v.license,
+                    MISSING_ONTOLOGY_LICENSE,
+                    "licence (dcterms:license or cc:license)",
+                ),
+            ];
+            for (props, code, what) in checks {
+                if !has(props) {
+                    let message = format!("Ontology {} has no {what}", self.name(&o));
+                    out.push(self.warning(span, code, message));
+                }
+            }
+        }
+    }
+}
+
+/// What sort of term an IRI is, as bits: [`TermKind::CLASS`], [`TermKind::PROPERTY`],
+/// [`TermKind::CONCEPT`]. Terms of different kinds may share a label.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TermKind(u8);
+
+impl TermKind {
+    const CLASS: u8 = 1;
+    const PROPERTY: u8 = 2;
+    const CONCEPT: u8 = 4;
+
+    /// The kinds the workspace gives `t`: its types (`owl:Class`,
+    /// `rdfs:Class`; the four property types; `skos:Concept`), and being the
+    /// subject of `rdfs:subClassOf` or `rdfs:subPropertyOf` in a statement
+    /// about it in a workspace document.
+    fn of(k: &Knowledge, t: Iri) -> TermKind {
+        let (v, c) = (crate::shacl::vocab::get(), vocab());
+        let mut bits = 0;
+        for ty in k.types(&t) {
+            bits |= match ty {
+                _ if ty == v.owl_class || ty == v.rdfs_class => TermKind::CLASS,
+                _ if c.property_types.contains(&ty) => TermKind::PROPERTY,
+                _ if ty == c.concept => TermKind::CONCEPT,
+                _ => 0,
+            };
+        }
+        for d in k.descriptions(&t) {
+            if d.source == Source::External {
+                continue;
+            }
+            if links(&d, v.sub_class_of) {
+                bits |= TermKind::CLASS;
+            }
+            if links(&d, v.sub_property_of) {
+                bits |= TermKind::PROPERTY;
+            }
+        }
+        TermKind(bits)
+    }
+
+    /// Whether terms of these kinds can collide: the same one kind, or
+    /// either unknown (none, or several).
+    fn collides(self, other: TermKind) -> bool {
+        let unknown = |k: TermKind| k.0.count_ones() != 1;
+        self == other || unknown(self) || unknown(other)
+    }
+}
+
+/// Whether predicate `p` is written in one of the statements about `d`'s
+/// IRI (the statement around each of its spans): a binary search of the
+/// document's uses of `p`, which are in text order.
+fn links(d: &Description, p: Iri) -> bool {
+    let refs = &d.analysis.parsed.refs;
+    let Some(uses) = d.analysis.refs_by_iri.get(&p) else {
+        return false;
+    };
+    let statements = &d.analysis.parsed.statements;
+    d.spans.iter().any(|at| {
+        let Some(span) = d
+            .analysis
+            .parsed
+            .statement_at(*at)
+            .map(|i| statements[i].span)
+        else {
+            return false;
+        };
+        let from = uses.partition_point(|&r| refs[r as usize].span.start < span.start);
+        uses[from..]
+            .iter()
+            .map(|&r| &refs[r as usize])
+            .take_while(|r| r.span.end <= span.end)
+            .any(|r| r.role == Role::Predicate)
+    })
+}
+
+/// The terms the index gives for each (folded text, language) the
+/// document's literals have, looked up once per key.
+#[derive(Default)]
+struct Sharing {
+    found: FxHashMap<(String, Option<Iri>), Vec<Iri>>,
+}
+
+impl Sharing {
+    /// The terms that share `l`'s text, `l`'s subject among them if the index
+    /// counts it.
+    fn all(&mut self, l: &Lit, find: impl Fn(&str, Option<&str>) -> Vec<Iri>) -> &[Iri] {
+        let folded: String = l
+            .value
+            .trim()
+            .chars()
+            .flat_map(char::to_lowercase)
+            .collect();
+        self.found
+            .entry((folded, l.lang))
+            .or_insert_with(|| find(l.value, l.lang.as_ref().map(|x| x.as_str())))
+    }
+
+    /// The other terms that share `l`'s text.
+    fn others(&mut self, l: &Lit, find: impl Fn(&str, Option<&str>) -> Vec<Iri>) -> Vec<Iri> {
+        let s = l.subject;
+        self.all(l, find)
+            .iter()
+            .copied()
+            .filter(|t| *t != s)
+            .collect()
+    }
 }
 
 /// The predicates whose literals [`label_whitespace`] checks, on any subject.
@@ -432,6 +934,447 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .contains(r#""value": "Kreisel","#)
+        );
+    }
+
+    // ---- duplicate-label, multiple-labels and the house-style checks ----
+
+    const HEADER: &str = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n@prefix dcterms: <http://purl.org/dc/terms/> .\n@prefix dc: <http://purl.org/dc/elements/1.1/> .\n@prefix ex: <http://example.org/> .\n";
+
+    /// A workspace of the Turtle documents `files` (name, body after
+    /// [`HEADER`]), all open.
+    fn workspace(files: &[(&str, &str)]) -> crate::workspace::Workspace {
+        let mut ws = crate::workspace::Workspace::new(Vec::new(), Default::default());
+        for (name, body) in files {
+            ws.open_doc(format!("file:///w/{name}"), format!("{HEADER}{body}"), 1);
+        }
+        ws
+    }
+
+    /// Settings with `lint.enable` and `lint.ignore` from the settings file.
+    fn settings(enable: &[&str], ignore: &[&str]) -> crate::settings::Settings {
+        let v = serde_json::json!({ "lint": { "enable": enable, "ignore": ignore } });
+        crate::settings::Settings::from_layers([(crate::settings::Layer::File, &v)])
+    }
+
+    /// The curation diagnostics of `name` as the composer reports them with
+    /// `settings`: (code, the text it covers, message), in order.
+    fn reported(
+        ws: &mut crate::workspace::Workspace,
+        name: &str,
+        settings: &crate::settings::Settings,
+    ) -> Vec<(String, String, String)> {
+        use crate::diagnose::{DiagnosticInputs, Doc, document};
+        let a = ws.analysis(&format!("file:///w/{name}")).unwrap();
+        let k = ws.knowledge();
+        let inputs = DiagnosticInputs::new(settings);
+        document(Doc::Rdf(&a), k, Encoding::Utf16, &inputs)
+            .into_iter()
+            .filter_map(|d| {
+                let Some(NumberOrString::String(code)) = &d.code else {
+                    return None;
+                };
+                if !CODES.contains(&code.as_str()) {
+                    return None;
+                }
+                assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
+                let (s, e) = (
+                    a.offset(Encoding::Utf16, d.range.start).unwrap() as usize,
+                    a.offset(Encoding::Utf16, d.range.end).unwrap() as usize,
+                );
+                Some((code.clone(), a.text[s..e].to_string(), d.message))
+            })
+            .collect()
+    }
+
+    const CODES: &[&str] = &[
+        DUPLICATE_LABEL,
+        MULTIPLE_LABELS,
+        MISSING_LABEL,
+        MISSING_DEFINITION,
+        MULTIPLE_DEFINITIONS,
+        DUPLICATE_DEFINITION,
+        LOWERCASE_DEFINITION,
+        MISSING_ONTOLOGY_TITLE,
+        MISSING_ONTOLOGY_DESCRIPTION,
+        MISSING_ONTOLOGY_LICENSE,
+    ];
+
+    /// The default-on checks of `name`.
+    fn by_default(files: &[(&str, &str)], name: &str) -> Vec<(String, String, String)> {
+        reported(&mut workspace(files), name, &settings(&[], &[]))
+    }
+
+    fn row(code: &str, at: &str, message: &str) -> (String, String, String) {
+        (code.into(), at.into(), message.into())
+    }
+
+    #[test]
+    fn a_duplicate_label_across_two_files_is_reported_on_both() {
+        let files = [
+            ("a.ttl", "ex:Pump a owl:Class ; rdfs:label \"Pump\"@en .\n"),
+            (
+                "b.ttl",
+                "ex:Pump2 a owl:Class ; skos:prefLabel \" pump\"@en .\n",
+            ),
+        ];
+        assert_eq!(
+            by_default(&files, "a.ttl"),
+            vec![row(
+                DUPLICATE_LABEL,
+                "\"Pump\"",
+                "Label \"Pump\" is also the label of ex:Pump2"
+            )]
+        );
+        assert_eq!(
+            by_default(&files, "b.ttl"),
+            vec![row(
+                DUPLICATE_LABEL,
+                "\" pump\"",
+                "Label \"pump\" is also the label of ex:Pump"
+            )]
+        );
+    }
+
+    #[test]
+    fn labels_collide_ignoring_case_but_not_across_languages() {
+        let files = [(
+            "a.ttl",
+            "ex:A a owl:Class ; rdfs:label \"Pump\"@en .\n\
+             ex:B a owl:Class ; rdfs:label \"Pump\"@de .\n\
+             ex:C a owl:Class ; rdfs:label \"Pump\" .\n\
+             ex:D a owl:Class ; rdfs:label \"Pump\"@en-GB .\n\
+             ex:E a owl:Class ; rdfs:label \"PUMP\"@EN .\n",
+        )];
+        let found = by_default(&files, "a.ttl");
+        assert_eq!(
+            found,
+            vec![
+                row(
+                    DUPLICATE_LABEL,
+                    "\"Pump\"",
+                    "Label \"Pump\" is also the label of ex:E"
+                ),
+                row(
+                    DUPLICATE_LABEL,
+                    "\"PUMP\"",
+                    "Label \"PUMP\" is also the label of ex:A"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn instance_data_and_external_sources_are_not_compared() {
+        let files = [(
+            "a.ttl",
+            "ex:Person a owl:Class ; rdfs:label \"Alice\" .\n\
+             ex:alice a ex:Person ; rdfs:label \"Alice\" .\n\
+             ex:bob rdfs:label \"Alice\" .\n\
+             ex:Valve a owl:Class ; rdfs:label \"Valve\" .\n",
+        )];
+        let mut ws = workspace(&files);
+        let ext = format!("{HEADER}ex:Other a owl:Class ; rdfs:label \"Valve\" .\n");
+        let ext = Analysis::new("import:x".into(), &ext, Arc::default(), false);
+        ws.knowledge_mut().add_external("import:x", Arc::new(ext));
+        assert_eq!(reported(&mut ws, "a.ttl", &settings(&[], &[])), vec![]);
+    }
+
+    #[test]
+    fn a_term_never_collides_with_itself_nor_an_empty_label() {
+        let files = [(
+            "a.ttl",
+            "ex:A a owl:Class ; rdfs:label \"Pump\" ; skos:prefLabel \"pump\" .\n\
+             ex:A rdfs:label \"Pump\" .\n\
+             ex:B a owl:Class ; rdfs:label \" \" .\nex:C a owl:Class ; rdfs:label \"\" .\n",
+        )];
+        // Nor do two empty labels make a duplicate.
+        assert_eq!(by_default(&files, "a.ttl"), vec![]);
+    }
+
+    #[test]
+    fn only_terms_of_the_same_kind_collide() {
+        let files = [(
+            "a.ttl",
+            "ex:Judge a owl:Class ; rdfs:label \"Judge\" .\n\
+             ex:judge a owl:ObjectProperty ; rdfs:label \"judge\" .\n\
+             ex:Court a owl:Class ; rdfs:label \"Court\" .\n\
+             ex:Court2 a rdfs:Class ; rdfs:label \"court\" .\n\
+             ex:court rdfs:subPropertyOf ex:judge ; rdfs:label \"Court\" .\n\
+             ex:Pump a owl:Class ; rdfs:label \"Pump\" .\n\
+             ex:Pump2 rdfs:subClassOf ex:Thing ; rdfs:label \"Pump\" .\n\
+             ex:pump a skos:Concept ; rdfs:label \"Pump\" .\n\
+             ex:Valve a owl:Class, skos:Concept ; rdfs:label \"Valve\" .\n\
+             ex:valve a owl:DatatypeProperty ; rdfs:label \"Valve\" .\n",
+        )];
+        let at: Vec<String> = by_default(&files, "a.ttl")
+            .into_iter()
+            .map(|r| r.2)
+            .collect();
+        assert_eq!(
+            at,
+            vec![
+                "Label \"Court\" is also the label of ex:Court2",
+                "Label \"court\" is also the label of ex:Court",
+                // An untyped subClassOf subject is a class.
+                "Label \"Pump\" is also the label of ex:Pump2",
+                "Label \"Pump\" is also the label of ex:Pump",
+                // A term of several kinds collides with any.
+                "Label \"Valve\" is also the label of ex:valve",
+                "Label \"Valve\" is also the label of ex:Valve",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_message_names_a_few_terms_then_counts_the_rest() {
+        let mut body = String::from("ex:A a owl:Class ; rdfs:label \"Pump\" .\n");
+        for t in ["B", "C", "D", "E", "F"] {
+            body += &format!("ex:{t} a owl:Class ; rdfs:label \"Pump\" .\n");
+        }
+        let found = by_default(&[("a.ttl", &body)], "a.ttl");
+        assert_eq!(found.len(), 6);
+        assert_eq!(
+            found[0].2,
+            "Label \"Pump\" is also the label of ex:B, ex:C, ex:D and 2 more"
+        );
+        let found = by_default(
+            &[(
+                "a.ttl",
+                "ex:A a owl:Class ; rdfs:label \"Pump\" .\n\
+                 <http://other.org/x> a owl:Class ; rdfs:label \"Pump\" .\n\
+                 ex:B a owl:Class ; rdfs:label \"Pump\" .\n",
+            )],
+            "a.ttl",
+        );
+        assert_eq!(
+            found[0].2,
+            "Label \"Pump\" is also the label of ex:B and <http://other.org/x>"
+        );
+    }
+
+    #[test]
+    fn multiple_labels_count_per_language_and_per_property() {
+        let files = [(
+            "a.ttl",
+            "ex:A a owl:Class ; rdfs:label \"Pump\"@en, \"Pumpe\"@de ; skos:prefLabel \"Pumping\"@en .\n\
+             ex:B a owl:Class ; rdfs:label \"Valve\"@en, \"Tap\"@en, \"Ventil\"@de .\n\
+             ex:C a owl:Class ; skos:prefLabel \"One\", \"Two\" .\n\
+             ex:i rdfs:label \"x\", \"y\" .\n",
+        )];
+        assert_eq!(
+            by_default(&files, "a.ttl"),
+            vec![
+                row(
+                    MULTIPLE_LABELS,
+                    "\"Valve\"",
+                    "ex:B has 2 rdfs:label values tagged @en"
+                ),
+                row(
+                    MULTIPLE_LABELS,
+                    "\"Tap\"",
+                    "ex:B has 2 rdfs:label values tagged @en"
+                ),
+                row(
+                    MULTIPLE_LABELS,
+                    "\"One\"",
+                    "ex:C has 2 skos:prefLabel values without a language tag"
+                ),
+                row(
+                    MULTIPLE_LABELS,
+                    "\"Two\"",
+                    "ex:C has 2 skos:prefLabel values without a language tag"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn house_style_checks_are_off_until_enabled_and_ignore_wins() {
+        let body = "<http://example.org/onto> a owl:Ontology .\n\
+                    ex:A a owl:Class .\n\
+                    ex:B a owl:Class ; rdfs:label \"B\" ; skos:definition \"a thing.\", \"Other.\" .\n\
+                    ex:C a owl:Class ; rdfs:label \"C\" ; skos:definition \"A thing.\" .\n";
+        let files = [("a.ttl", body)];
+        assert_eq!(by_default(&files, "a.ttl"), vec![]);
+        let all = reported(&mut workspace(&files), "a.ttl", &settings(OPT_IN, &[]));
+        assert_eq!(
+            all,
+            vec![
+                row(
+                    DUPLICATE_DEFINITION,
+                    "\"a thing.\"",
+                    "Another term has this definition: ex:C"
+                ),
+                row(
+                    LOWERCASE_DEFINITION,
+                    "\"a thing.\"",
+                    "Definition starts with a lowercase letter"
+                ),
+                row(
+                    DUPLICATE_DEFINITION,
+                    "\"A thing.\"",
+                    "Another term has this definition: ex:B"
+                ),
+                row(
+                    MULTIPLE_DEFINITIONS,
+                    "\"a thing.\"",
+                    "ex:B has 2 skos:definition values without a language tag"
+                ),
+                row(
+                    MULTIPLE_DEFINITIONS,
+                    "\"Other.\"",
+                    "ex:B has 2 skos:definition values without a language tag"
+                ),
+                row(
+                    MISSING_LABEL,
+                    "ex:A",
+                    "ex:A has no rdfs:label or skos:prefLabel"
+                ),
+                row(
+                    MISSING_DEFINITION,
+                    "ex:A",
+                    "ex:A has no skos:definition or rdfs:comment"
+                ),
+                row(
+                    MISSING_ONTOLOGY_TITLE,
+                    "<http://example.org/onto>",
+                    "Ontology ex:onto has no title (dcterms:title, dc:title or rdfs:label)"
+                ),
+                row(
+                    MISSING_ONTOLOGY_DESCRIPTION,
+                    "<http://example.org/onto>",
+                    "Ontology ex:onto has no description (dcterms:description, dc:description or rdfs:comment)"
+                ),
+                row(
+                    MISSING_ONTOLOGY_LICENSE,
+                    "<http://example.org/onto>",
+                    "Ontology ex:onto has no licence (dcterms:license or cc:license)"
+                ),
+            ]
+        );
+        // Each code alone, and `lint.ignore` over `lint.enable`.
+        for code in OPT_IN {
+            let one = reported(&mut workspace(&files), "a.ttl", &settings(&[code], &[]));
+            assert!(!one.is_empty(), "{code}");
+            assert!(one.iter().all(|r| r.0 == *code), "{code}: {one:?}");
+            let ignored = reported(&mut workspace(&files), "a.ttl", &settings(&[code], &[code]));
+            assert_eq!(ignored, vec![], "{code}");
+        }
+    }
+
+    #[test]
+    fn a_comment_is_a_definition_only_without_a_skos_definition() {
+        let enable = settings(&[MISSING_DEFINITION, LOWERCASE_DEFINITION], &[]);
+        let files = [
+            (
+                "a.ttl",
+                "ex:A a owl:Class ; rdfs:label \"A\" ; rdfs:comment \"moves water.\" .\n\
+                 ex:B a owl:Class ; rdfs:label \"B\" ; rdfs:comment \"lowercase note.\" .\n",
+            ),
+            ("b.ttl", "ex:B skos:definition \"Defined.\" .\n"),
+        ];
+        assert_eq!(
+            reported(&mut workspace(&files), "a.ttl", &enable),
+            vec![row(
+                LOWERCASE_DEFINITION,
+                "\"moves water.\"",
+                "Definition starts with a lowercase letter"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_missing_check_reads_every_workspace_document_and_reports_once() {
+        let enable = settings(&[MISSING_LABEL, MISSING_DEFINITION], &[]);
+        // B is labelled and defined in another file; C is described in both
+        // and labelled in neither: reported where it is declared.
+        let files = [
+            ("z-core.ttl", "ex:B a owl:Class .\nex:C a owl:Class .\n"),
+            (
+                "a-labels.ttl",
+                "ex:B rdfs:label \"B\" ; rdfs:comment \"A b.\" .\nex:C rdfs:comment \"A c.\" .\n",
+            ),
+        ];
+        let mut ws = workspace(&files);
+        assert_eq!(
+            reported(&mut ws, "z-core.ttl", &enable),
+            vec![row(
+                MISSING_LABEL,
+                "ex:C",
+                "ex:C has no rdfs:label or skos:prefLabel"
+            )]
+        );
+        assert_eq!(reported(&mut ws, "a-labels.ttl", &enable), vec![]);
+        // Declared in two documents: the first by URI reports.
+        let files = [
+            ("b.ttl", "ex:D a owl:Class .\n"),
+            ("a.ttl", "ex:D rdfs:subClassOf ex:E .\n"),
+        ];
+        let mut ws = workspace(&files);
+        let enable = settings(&[MISSING_LABEL], &[]);
+        assert_eq!(reported(&mut ws, "b.ttl", &enable), vec![]);
+        assert_eq!(
+            reported(&mut ws, "a.ttl", &enable),
+            vec![row(
+                MISSING_LABEL,
+                "ex:D",
+                "ex:D has no rdfs:label or skos:prefLabel"
+            )]
+        );
+    }
+
+    #[test]
+    fn the_header_accepts_each_alternative_property() {
+        let enable = settings(
+            &[
+                MISSING_ONTOLOGY_TITLE,
+                MISSING_ONTOLOGY_DESCRIPTION,
+                MISSING_ONTOLOGY_LICENSE,
+            ],
+            &[],
+        );
+        let headers = [
+            "dcterms:title \"T\" ; dcterms:description \"D\" ; dcterms:license <http://l> .",
+            "dc:title \"T\" ; dc:description \"D\" ; <http://creativecommons.org/ns#license> <http://l> .",
+            "rdfs:label \"T\" ; rdfs:comment \"D\" ; <http://web.resource.org/cc/license> <http://l> .",
+        ];
+        for h in headers {
+            let body = format!("ex:onto a owl:Ontology ; {h}\n");
+            let found = reported(&mut workspace(&[("a.ttl", &body)]), "a.ttl", &enable);
+            assert_eq!(found, vec![], "{h}");
+        }
+        // A header split over two documents: the one that types it reports.
+        let files = [
+            ("a.ttl", "ex:onto dcterms:title \"T\" .\n"),
+            (
+                "b.ttl",
+                "ex:onto a owl:Ontology ; dcterms:description \"D\" .\n",
+            ),
+        ];
+        let mut ws = workspace(&files);
+        assert_eq!(reported(&mut ws, "a.ttl", &enable), vec![]);
+        let found = reported(&mut ws, "b.ttl", &enable);
+        let codes: Vec<&str> = found.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(codes, vec![MISSING_ONTOLOGY_LICENSE]);
+    }
+
+    #[test]
+    fn json_ld_labels_are_compared_too() {
+        let mut ws = workspace(&[("a.ttl", "ex:A a owl:Class ; rdfs:label \"Pump\" .\n")]);
+        let json = r#"{
+  "@context": { "rdfs": "http://www.w3.org/2000/01/rdf-schema#", "owl": "http://www.w3.org/2002/07/owl#", "ex": "http://example.org/" },
+  "@id": "ex:B", "@type": "owl:Class",
+  "rdfs:label": "pump"
+}"#;
+        ws.open_doc("file:///w/b.jsonld".into(), json.into(), 1);
+        assert_eq!(
+            reported(&mut ws, "b.jsonld", &settings(&[], &[])),
+            vec![row(
+                DUPLICATE_LABEL,
+                "\"pump\"",
+                "Label \"pump\" is also the label of ex:A"
+            )]
         );
     }
 }

@@ -1314,8 +1314,6 @@ impl Knowledge {
     /// `rdfs:Class`, `owl:ObjectProperty`, `owl:DatatypeProperty`,
     /// `owl:AnnotationProperty`, `rdf:Property` or `skos:Concept`, or makes
     /// it the subject of `rdfs:subClassOf` or `rdfs:subPropertyOf`.
-    // used by features::curation (ticket 05/06)
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_term<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
         self.entries.get(iri).is_some_and(|e| e.term > 0)
     }
@@ -1323,8 +1321,6 @@ impl Knowledge {
     /// The terms with an `rdfs:label` or `skos:prefLabel` that equals
     /// `label` trimmed and ignoring case, in language `lang` (any case;
     /// `None`: untagged). Sorted, unique.
-    // used by features::curation (ticket 05/06)
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn labelled(&self, label: &str, lang: Option<&str>) -> Vec<Iri> {
         self.sharing(Text::Label, label, lang)
     }
@@ -1333,8 +1329,6 @@ impl Knowledge {
     /// [`Knowledge::labelled`] compares: a term's definition is its
     /// `skos:definition`, or its `rdfs:comment` when no workspace source
     /// gives it a `skos:definition`.
-    // used by features::curation (ticket 05/06)
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn defined_as(&self, definition: &str, lang: Option<&str>) -> Vec<Iri> {
         self.sharing(Text::Definition, definition, lang)
     }
