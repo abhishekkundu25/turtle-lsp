@@ -14,6 +14,8 @@
   filters; `check`, the browser and workspace diagnostics call it as
   before and take the full path.
 - Any full parse (fallback) drops the cache.
+- The setting 05 adds that turns the splice off turns this cache off too:
+  with it off, the parse and the checks both take the full path.
 
 **Blocked by:** 02, 05.
 

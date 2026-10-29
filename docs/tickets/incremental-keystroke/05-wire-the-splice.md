@@ -23,12 +23,12 @@
 
 **Blocked by:** 01, 03, 04.
 
-**Status:** open
+**Status:** done
 
-- [ ] Chaos passes at `CHAOS_ITERS=20000` with the splice on, with the
+- [x] Chaos passes at `CHAOS_ITERS=20000` with the splice on, with the
   path counts printed and the floor checked.
-- [ ] `test/incremental.test.mjs`, `test/settings-file.test.mjs` and the
+- [x] `test/incremental.test.mjs`, `test/settings-file.test.mjs` and the
   VS Code tests pass; the setting off gives the full path (a test checks
   the path counter, not timing).
-- [ ] A `timing_` test: one edit in the middle of a 2.4 MB file's analysis
+- [x] A `timing_` test: one edit in the middle of a 2.4 MB file's analysis
   is under a fixed budget, and N edits cost O(N × edit).

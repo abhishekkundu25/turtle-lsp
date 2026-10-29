@@ -92,3 +92,16 @@ the old or new window), not per file, so this does not rule the splice out.
   comment spans, which the analysis drops today. Full parses measured the
   same before and after the parser change (Turtle 6.5 ms, N-Triples 7.0 ms,
   medians of 31, A/B alternated).
+- 05: the setting is `parse.incremental` (VS Code `turtle.parse.incremental`),
+  on by default; embedded servers (the browser engine) and the CLI always
+  parse in full. One `Edit` type (`syntax::splice::Edit`) replaced 03's.
+  The old parse is copied out of the shared analysis (the index still reads
+  it during the swap), 0.6 ms on 2.4 MB. Chaos floor: at least 15% of the
+  analyses after an edit are spliced (measured 18 to 25%; most fallbacks are
+  `Directive` on small fixture files). Timing test: a keystroke in a label
+  in the middle of a 2.4 MB vocabulary analyses in 4.3 ms spliced against
+  11 ms in full (load about 3); what remains is the analysis maps rebuilt in
+  full (1.4 ms), `DocFacts::new` (1.3 ms), the copy (0.6 ms) and dropping
+  the old analysis (0.6 ms); the splice itself is 0.13 ms. A both-paths
+  check over the 41 RDF fixtures: 13,120 edited analyses, 7,895 spliced,
+  no difference.
