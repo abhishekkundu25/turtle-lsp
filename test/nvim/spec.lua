@@ -97,6 +97,21 @@ vim.lsp.handlers["textDocument/diagnostic"] = function(err, result, ctx, cfg)
   return ret
 end
 
+-- The file watchers the server registers (client/registerCapability).
+local watchers = {}
+local orig_register = vim.lsp.handlers["client/registerCapability"]
+vim.lsp.handlers["client/registerCapability"] = function(err, result, ctx, cfg)
+  for _, r in ipairs(result.registrations or {}) do
+    if r.method == "workspace/didChangeWatchedFiles" then
+      vim.list_extend(watchers, r.registerOptions.watchers)
+    end
+  end
+  return orig_register(err, result, ctx, cfg)
+end
+-- Neovim watches files only on macOS and Windows (protocol.lua); elsewhere the
+-- server registers nothing and the watcher checks have nothing to check.
+local watches = vim.tbl_get(vim.lsp.protocol.make_client_capabilities(), "workspace", "didChangeWatchedFiles", "dynamicRegistration")
+
 local function request(buf, method, params)
   local res, err = vim.lsp.buf_request_sync(buf, method, params, TIMEOUT)
   assert(res, "request " .. method .. " failed: " .. tostring(err))
@@ -467,6 +482,84 @@ end)
 
 check(".turtle files are Turtle", function()
   assert(vim.filetype.match({ filename = "x.turtle" }) == "turtle")
+end)
+
+check("Neovim's glob matcher matches the files the server watches", function()
+  if not watches then
+    return
+  end
+  local globs = {}
+  for _, w in ipairs(watchers) do
+    if w.kind == nil then
+      table.insert(globs, vim.glob.to_lpeg(w.globPattern))
+    end
+  end
+  assert(#globs > 0, "no watchers registered: " .. vim.inspect(watchers))
+  for _, path in ipairs({ "turtle-lsp.json", "data/a.ttl", "q/x.rq", "c.jsonld", "imports/catalog-v001.xml", "o.owl" }) do
+    local hit = false
+    for _, g in ipairs(globs) do
+      hit = hit or g:match(path) ~= nil
+    end
+    assert(hit, path .. " is not watched: " .. vim.inspect(watchers))
+  end
+end)
+
+check("saving turtle-lsp.json changes an open file's diagnostics", function()
+  if not watches then
+    return
+  end
+  local base = vim.fs.normalize(vim.fn.tempname())
+  vim.fn.mkdir(base, "p")
+  local settings = base .. "/turtle-lsp.json"
+  vim.fn.writefile({ '{ "lint": { "enable": ["missing-label"] } }' }, settings)
+  vim.fn.writefile({
+    "@prefix ex: <http://example.org/> .",
+    "@prefix owl: <http://www.w3.org/2002/07/owl#> .",
+    "ex:Pump a owl:Class .",
+  }, base .. "/vocab.ttl")
+  local ok, err = pcall(function()
+    local b, c = open(base .. "/vocab.ttl")
+    -- What Neovim reports, for the failure message.
+    local sent = {}
+    local notify = c.notify
+    c.notify = function(self, method, params, ...)
+      if method == "workspace/didChangeWatchedFiles" then
+        for _, ch in ipairs(params.changes) do
+          table.insert(sent, ch.type .. " " .. ch.uri)
+        end
+      end
+      return notify(self, method, params, ...)
+    end
+    local function labels()
+      return #vim.tbl_filter(function(d)
+        return d.code == "missing-label"
+      end, vim.diagnostic.get(b))
+    end
+    assert(vim.wait(TIMEOUT, function()
+      return labels() == 1
+    end, 20), "missing-label not shown: " .. fmt(vim.diagnostic.get(b)))
+    -- Saved from Neovim, as a user edits it.
+    vim.cmd.edit(vim.fn.fnameescape(settings))
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { '{ "lint": { "enable": [] } }' })
+    vim.cmd("write")
+    assert(vim.wait(TIMEOUT, function()
+      return labels() == 0
+    end, 20), "still shown after saving turtle-lsp.json: " .. fmt(vim.diagnostic.get(b))
+      .. "; root " .. tostring(c.root_dir) .. "; reported: " .. table.concat(sent, ", "))
+    c.notify = notify
+    vim.cmd("bwipeout! " .. vim.fn.bufnr(settings))
+    vim.cmd("bwipeout! " .. b)
+  end)
+  for _, c in ipairs(vim.lsp.get_clients({ name = "turtle_lsp" })) do
+    if c.root_dir and vim.fs.normalize(c.root_dir) == base then
+      c:stop()
+      vim.wait(TIMEOUT, function()
+        return c:is_stopped()
+      end, 20)
+    end
+  end
+  vim.fn.delete(base, "rf")
+  assert(ok, err)
 end)
 
 check("no LSP errors surfaced to the user", function()

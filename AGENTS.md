@@ -15,7 +15,7 @@ them; each file's `//!` doc says what it owns.
   document, triple terms, printer) is in `src/layout/`; each formatter's
   walk of its syntax stays in `features::format` or `sparql::format`.
 - File extensions and file names: the one table in
-  `src/workspace/kinds.rs`. The watcher glob `server::WATCHED_FILES` and
+  `src/workspace/kinds.rs`. The watcher globs `server::WATCHED_FILES` and
   `Syntax::from_extension` must match it; tests check both.
 - A workspace change: the `Workspace` method returns `Effects`, and
   `Server::apply` acts on them.

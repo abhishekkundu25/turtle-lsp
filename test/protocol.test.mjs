@@ -196,11 +196,14 @@ describe("file watchers", () => {
       const { registrations } = reg.params
       assert.deepEqual(registrations.map((r) => r.method), ["workspace/didChangeWatchedFiles"])
       const watchers = registrations[0].registerOptions.watchers
-      const files = watchers.find((w) => w.kind === undefined).globPattern
+      const files = watchers.filter((w) => w.kind === undefined).map((w) => w.globPattern)
+      // The extensions in one glob, the catalog in another. No `{...}` group
+      // holds a `*`: Neovim's glob matcher matches nothing with one.
+      const exts = /^\*\*\/\*\.\{([^*{}]+)\}$/.exec(files[0])?.[1].split(",") ?? []
       for (const ext of ["ttl", "turtle", "trig", "nt", "nq", "jsonld", "json", "rdf", "owl", "rq", "sparql", "ru"]) {
-        assert.ok(files.includes(`*.${ext}`), `${ext} is not watched: ${files}`)
+        assert.ok(exts.includes(ext), `${ext} is not watched: ${files}`)
       }
-      assert.ok(files.includes("catalog-v001.xml"), files)
+      assert.ok(files.includes("**/catalog-v001.xml"), JSON.stringify(files))
       // A deleted or renamed folder takes its files with it, and a file glob
       // does not report that: deletions of anything are asked for (kind 4).
       assert.ok(watchers.some((w) => w.globPattern === "**/*" && w.kind === 4), JSON.stringify(watchers))
