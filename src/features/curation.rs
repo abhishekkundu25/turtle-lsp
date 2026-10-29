@@ -13,7 +13,7 @@ use crate::jsonld::json;
 use crate::knowledge::{Description, Knowledge, Source};
 use crate::syntax::lexer::{self, Kind};
 use crate::syntax::names::shorten;
-use crate::syntax::{Iri, Node, PrefixMap, Span, Syntax};
+use crate::syntax::{Iri, Node, PrefixMap, Span, Syntax, Triple};
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::OnceLock;
@@ -52,9 +52,11 @@ pub(crate) fn diagnostics(
     house_style: bool,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    label_whitespace(a, enc, &mut out);
+    // One scan of the document for both label checks.
+    let labels = label_triples(a);
+    label_whitespace(a, &labels, enc, &mut out);
     let mut c = Checks::new(a, k, enc);
-    c.labels(&mut out);
+    c.labels(&labels, &mut out);
     if house_style {
         c.definitions(&mut out);
         c.missing(&mut out);
@@ -186,19 +188,19 @@ impl<'a> Checks<'a> {
         }
     }
 
-    /// The literals of `predicates` whose subject is a declared term, in text
-    /// order, one per literal written (a JSON-LD value can give several
-    /// triples one literal).
-    fn literals(&mut self, predicates: &[Iri]) -> Vec<Lit<'a>> {
+    /// The literals of `predicates` among `triples` (of the document, in
+    /// text order) whose subject is a declared term, in text order, one per
+    /// literal written (a JSON-LD value can give several triples one
+    /// literal).
+    fn literals(
+        &mut self,
+        triples: impl IntoIterator<Item = &'a Triple>,
+        predicates: &[Iri],
+    ) -> Vec<Lit<'a>> {
         let a = self.a;
         let mut out: Vec<Lit<'a>> = Vec::new();
         let mut seen: FxHashSet<(Span, Iri, Iri)> = FxHashSet::default();
-        for t in a
-            .parsed
-            .triples
-            .iter()
-            .filter(|t| predicates.contains(&t.p))
-        {
+        for t in triples.into_iter().filter(|t| predicates.contains(&t.p)) {
             let (Node::Iri(s), Node::Literal { value, lang, .. }) = (&t.s, &t.o) else {
                 continue;
             };
@@ -226,8 +228,9 @@ impl<'a> Checks<'a> {
     ///
     /// The terms a label can collide with are filtered once per (label,
     /// kind), so N terms that share one label cost O(N), not O(N²).
-    fn labels(&mut self, out: &mut Vec<Diagnostic>) {
-        let lits = self.literals(&vocab().labels);
+    /// `labels` are the document's triples of [`label_triples`].
+    fn labels(&mut self, labels: &[&'a Triple], out: &mut Vec<Diagnostic>) {
+        let lits = self.literals(labels.iter().copied(), &vocab().labels);
         let k = self.k;
         let mut sharing = Sharing::default();
         let mut by_kind: FxHashMap<(TextKey, TermKind), Vec<Iri>> = FxHashMap::default();
@@ -269,7 +272,7 @@ impl<'a> Checks<'a> {
     /// subject only then.
     fn definitions(&mut self, out: &mut Vec<Diagnostic>) {
         let v = vocab();
-        let lits = self.literals(&[v.definition, v.comment]);
+        let lits = self.literals(&self.a.parsed.triples, &[v.definition, v.comment]);
         let k = self.k;
         let mut sharing = Sharing::default();
         let mut defs: Vec<Lit> = Vec::new();
@@ -520,27 +523,38 @@ impl Sharing {
     }
 }
 
-/// The predicates whose literals [`label_whitespace`] checks, on any subject.
+/// The predicates whose literals [`label_whitespace`] checks, on any subject:
+/// those [`Checks::labels`] reads ([`Vocab::labels`]) and `skos:altLabel`.
 const WHITESPACE_CHECKED: [&str; 3] = [
     "http://www.w3.org/2000/01/rdf-schema#label",
     "http://www.w3.org/2004/02/skos/core#prefLabel",
     "http://www.w3.org/2004/02/skos/core#altLabel",
 ];
 
-/// `label-whitespace`: a label literal whose value starts or ends with
-/// whitespace ([`char::is_whitespace`]). The warning covers the literal's
-/// quoted string, and its [`FixData::Replace`] is that string trimmed.
-fn label_whitespace(a: &Analysis, enc: Encoding, out: &mut Vec<Diagnostic>) {
+/// The triples of `a` with a [`WHITESPACE_CHECKED`] predicate, in text order.
+fn label_triples(a: &Analysis) -> Vec<&Triple> {
     let checked: Vec<Iri> = WHITESPACE_CHECKED
         .iter()
         .filter_map(|p| Iri::get(p))
         .collect();
     if checked.is_empty() {
-        return;
+        return Vec::new();
     }
+    a.parsed
+        .triples
+        .iter()
+        .filter(|t| checked.contains(&t.p))
+        .collect()
+}
+
+/// `label-whitespace`: a label literal whose value starts or ends with
+/// whitespace ([`char::is_whitespace`]). The warning covers the literal's
+/// quoted string, and its [`FixData::Replace`] is that string trimmed.
+/// `labels` are the document's triples of [`label_triples`].
+fn label_whitespace(a: &Analysis, labels: &[&Triple], enc: Encoding, out: &mut Vec<Diagnostic>) {
     // A JSON-LD value can give one literal to several triples.
     let mut seen: FxHashSet<Span> = FxHashSet::default();
-    for t in a.parsed.triples.iter().filter(|t| checked.contains(&t.p)) {
+    for t in labels {
         let Node::Literal { value, .. } = &t.o else {
             continue;
         };
@@ -810,7 +824,7 @@ mod tests {
         let a = Analysis::new("file:///x/a.ttl".into(), &text, Arc::default(), true);
         let mut out = Vec::new();
         let start = std::time::Instant::now();
-        label_whitespace(&a, Encoding::Utf16, &mut out);
+        label_whitespace(&a, &label_triples(&a), Encoding::Utf16, &mut out);
         let took = start.elapsed();
         assert_eq!(out.len(), 40_000);
         assert!(took.as_millis() < 100, "took {took:?}");

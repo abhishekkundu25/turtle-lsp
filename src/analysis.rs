@@ -74,16 +74,28 @@ pub(crate) struct EmbeddedQuery {
     pub(crate) query: Arc<SparqlAnalysis>,
 }
 
-/// Which predicate feeds which index.
+/// Which predicate feeds which index: `types`, `supers`, the label index
+/// ([`Analysis::label`]) or the comment index ([`Analysis::comment_en`]).
 #[derive(Clone, Copy)]
-enum Index {
+pub(crate) enum Index {
     Type,
     Super,
     Label,
     Comment,
 }
 
-fn indexed_predicates() -> &'static [(Iri, Index)] {
+/// The index triples with predicate `p` feed: those about an IRI subject,
+/// with an IRI object for [`Index::Type`] and [`Index::Super`], a literal
+/// for [`Index::Label`] and [`Index::Comment`].
+pub(crate) fn feeds(p: Iri) -> Option<Index> {
+    indexed_predicates()
+        .iter()
+        .find(|(q, _)| *q == p)
+        .map(|&(_, index)| index)
+}
+
+/// Every predicate of [`feeds`].
+pub(crate) fn indexed_predicates() -> &'static [(Iri, Index)] {
     static P: std::sync::OnceLock<Vec<(Iri, Index)>> = std::sync::OnceLock::new();
     P.get_or_init(|| {
         [

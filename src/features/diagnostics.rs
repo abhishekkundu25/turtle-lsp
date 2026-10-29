@@ -139,6 +139,9 @@ where
     K: crate::syntax::IriKey,
 {
     let mut warned = FxHashSet::default();
+    if !k.has_deprecations() {
+        return warned;
+    }
     for u in uses.filter(|u| k.deprecated_here(&u.iri)) {
         warned.insert(u.span);
         let written = text
