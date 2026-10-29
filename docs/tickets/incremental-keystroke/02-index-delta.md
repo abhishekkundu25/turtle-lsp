@@ -24,15 +24,15 @@
 
 **Blocked by:** none.
 
-**Status:** open
+**Status:** done
 
-- [ ] `incremental_updates_match_a_rebuild` and every existing knowledge
+- [x] `incremental_updates_match_a_rebuild` and every existing knowledge
   test pass unchanged; new tests: a keystroke in a comment leaves the
   index and generations untouched; a label edit changes only that key; a
   ref added and removed in one swap nets to nothing; the change set names
   exactly the changed IRIs and keys.
-- [ ] A `timing_` test: replacing a 17,000-class vocabulary's facts after
+- [x] A `timing_` test: replacing a 17,000-class vocabulary's facts after
   a one-label edit is under a fixed budget well below a full
   release-and-apply (measure both in the test; assert the ratio, not only
   a wall time).
-- [ ] `tests/chaos.rs` passes.
+- [x] `tests/chaos.rs` passes.

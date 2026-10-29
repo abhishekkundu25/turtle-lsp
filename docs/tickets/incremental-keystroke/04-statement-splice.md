@@ -29,9 +29,9 @@ the analysis or workspace (that is 05).
 **Blocked by:** none (compare with `format!("{:?}")` until 01's
 `PartialEq` lands; switch to `==` after).
 
-**Status:** open
+**Status:** done
 
-- [ ] Unit tests in `splice.rs`, each a small text and one edit, the result
+- [x] Unit tests in `splice.rs`, each a small text and one edit, the result
   equal to a full parse of the new text (or the expected fallback): a
   literal edit; a comment edit; a directive edit (falls back); an opened
   and a closed `"""`; `1.` then `5`; a prefixed name losing its trailing
@@ -39,8 +39,8 @@ the analysis or workspace (that is 05).
   before later blank nodes; a `_:b` (falls back); TriG braces (fall back)
   and an edit inside a graph block; an N-Quads line edit; an edit at the
   very start and the very end; deleting everything.
-- [ ] A property test in the same module: random edits on the chaos
+- [x] A property test in the same module: random edits on the chaos
   fixtures, splice result equals the full parse whenever it does not fall
   back, and it does not fall back on most single-character edits inside
   literals.
-- [ ] The existing parser tests pass.
+- [x] The existing parser tests pass.

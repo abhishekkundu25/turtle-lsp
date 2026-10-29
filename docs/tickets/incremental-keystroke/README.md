@@ -70,3 +70,25 @@ the old or new window), not per file, so this does not rule the splice out.
   (`Analyzed`: none, current, failed, outdated, edited); an edit after a
   prefix or context change keeps the outdated analysis as `last`, so 05
   must fall back when the prefixes or base in effect differ.
+- 02: the change set is kept on `Knowledge` (`Changes`, read through
+  `changes()`, test-only until 06 uses it) instead of returned; it does not
+  cover per-IRI facts read from analyses (types, supers, subs, instances,
+  domains, ranges, descriptions, labels), which `shacl_lint` reads across
+  documents, so 06 must treat those checks as invalidated by
+  `generation`, not by `Changes`. `generation()` still moves on every
+  change (imports read it); only `described_generation` stays put on a
+  comment edit. The swap after a one-label edit went from 1.75 to 0.12 ms;
+  removal went from 4.1 to 4.8 ms and `DocFacts::new` (about 1.3 ms) is
+  still a full rebuild per keystroke. Text keys are matched by hash, not
+  text (a 64-bit collision could miss a refresh).
+- 04: the re-lex starts after the last token before the edit that is
+  followed by a blank (one token back is not enough: a prefixed name reads
+  through a run of dots). Blank nodes are numbered from 1 in both windows
+  and shifted after, not passed in the start state. The old window is
+  parsed again from the same state as a self-check (mismatch falls back as
+  `Unsure`). Extra stopping points (`@prefix`, a block's `}`), extra
+  fallbacks (`Base`, `Indent`, `BlankCount`), and a 4 KB floor on the 25%
+  window limit. The splice takes the old `Parsed` with its tokens and
+  comment spans, which the analysis drops today. Full parses measured the
+  same before and after the parser change (Turtle 6.5 ms, N-Triples 7.0 ms,
+  medians of 31, A/B alternated).
