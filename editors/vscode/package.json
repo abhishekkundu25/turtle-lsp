@@ -339,8 +339,35 @@
       {
         "command": "turtle.restartServer",
         "title": "Turtle: Restart Language Server"
+      },
+      {
+        "command": "turtle.showGraph",
+        "title": "Turtle: Show Workspace Graph",
+        "icon": "$(graph-scatter)"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "turtle.showGraph",
+          "when": "turtle.graphAvailable"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "turtle.showGraph",
+          "when": "turtle.graphAvailable && (resourceLangId == turtle || resourceLangId == trig || resourceLangId == ntriples || resourceLangId == nquads || resourceLangId == sparql || resourceExtname == .jsonld)",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "turtle.showGraph",
+          "when": "turtle.graphAvailable && (explorerResourceIsFolder || resourceExtname =~ /^\\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/)",
+          "group": "navigation@90"
+        }
+      ]
+    },
     "semanticTokenModifiers": [
       {
         "id": "undescribed",
@@ -407,7 +434,7 @@
     ]
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap",
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap && esbuild src/graph-webview.js --bundle --format=iife --outfile=out/graph/graph.js --minify --sourcemap",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.mjs && node test/run.mjs",
     "package": "node scripts/package.mjs"

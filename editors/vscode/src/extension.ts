@@ -4,6 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node"
+import { advertisesGraph, GraphProbe, graphProbe, registerGraphCommand } from "./graph"
 import { configurationChange, findServer, ServerHandle, settingsFrom } from "./server"
 
 const RDF_LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
@@ -143,6 +144,8 @@ export interface TurtleApi {
   client(): LanguageClient | undefined
   /** Settles when every start, restart and stop asked so far has finished. */
   idle(): Promise<void>
+  /** The open graph panel, if any. */
+  graph(): GraphProbe | undefined
 }
 
 /**
@@ -161,6 +164,22 @@ let serverHandle: ServerHandle<LanguageClient> | undefined
 export async function activate(context: vscode.ExtensionContext): Promise<TurtleApi> {
   const handle = (serverHandle = new ServerHandle<LanguageClient>(() => createClient(context)))
   let wantedServer = false
+  // The workspace graph panel (src/graph.ts): the command exists only while
+  // the server advertises experimental["turtle/graph"], and the context key
+  // turtle.graphAvailable shows its palette entry, editor title button and
+  // Explorer menu item only then.
+  let graphCommand: vscode.Disposable | undefined
+  const syncGraphCommand = (): void => {
+    const advertised = advertisesGraph(handle.client())
+    void vscode.commands.executeCommand("setContext", "turtle.graphAvailable", advertised)
+    if (advertised && !graphCommand) {
+      graphCommand = registerGraphCommand({ context, client: () => handle.client(), served: isServed })
+    } else if (!advertised && graphCommand) {
+      graphCommand.dispose()
+      graphCommand = undefined
+    }
+  }
+  context.subscriptions.push({ dispose: () => graphCommand?.dispose() })
   /** Runs a start or restart; a failure is shown, not thrown, so the restart command still works. */
   const run = async (step: () => Promise<unknown>): Promise<void> => {
     try {
@@ -168,6 +187,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Turtle
     } catch (err) {
       void vscode.window.showErrorMessage(`The Turtle language server did not start: ${err instanceof Error ? err.message : String(err)}`)
     }
+    syncGraphCommand()
   }
   const start = (): Promise<void> => {
     wantedServer = true
@@ -199,7 +219,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Turtle
     })
     context.subscriptions.push(waiting)
   }
-  return { client: () => handle.client(), idle: () => handle.idle() }
+  return { client: () => handle.client(), idle: () => handle.idle(), graph: graphProbe }
 }
 
 export async function deactivate(): Promise<void> {

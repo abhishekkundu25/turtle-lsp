@@ -29,6 +29,9 @@
 //! Requests are answered by `ide::Session`, which routes each by document
 //! kind: RDF documents to `features`, SPARQL documents to
 //! `sparql::features`; neither runs on the other.
+//! The one custom request, `turtle/graph` (listed under `experimental`),
+//! runs on a thread of its own over a copy of the knowledge index and
+//! answers from there.
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
@@ -45,6 +48,7 @@
 use crate::analysis::Encoding;
 use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
+use crate::features::graph::{GraphParams, GraphResult, InvalidParams};
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
 use crate::settings::{SETTINGS_FILE, Settings};
@@ -367,7 +371,8 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
 
     let (mut server, result, roots) = Server::configure(out.clone(), raw, Spawn::Thread)?;
     wire::initialize_finish(&out, &inbox, id, result)?;
-    // The server holds the only sender from here: the writer ends with it.
+    // The server holds the only sender from here (and a `turtle/graph`
+    // thread while it runs): the writer ends with them.
     drop(out);
 
     // Index the workspace in the background. What changes on disk meanwhile
@@ -496,6 +501,8 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
                 .collect(),
             work_done_progress_options: Default::default(),
         }),
+        // Custom requests, by method: `{"turtle/graph": true}`.
+        experimental: Some(serde_json::json!({ GRAPH: true })),
         ..Default::default()
     }
 }
@@ -511,6 +518,18 @@ fn internal_error_diagnostic(msg: &str) -> Diagnostic {
             "{msg}. The rest of the server keeps working; please report this file at https://github.com/abhishekkundu25/turtle-lsp/issues"
         ),
         ..Default::default()
+    }
+}
+
+/// The custom request for the workspace graph (`features::graph`).
+const GRAPH: &str = "turtle/graph";
+
+/// A `turtle/graph` answer as JSON text; parameters it cannot answer are
+/// `InvalidParams`.
+fn graph_json(r: Result<GraphResult, InvalidParams>) -> Result<String, (ErrorCode, String)> {
+    match r {
+        Ok(g) => json(&g),
+        Err(e) => Err((ErrorCode::InvalidParams, e.to_string())),
     }
 }
 
@@ -1576,12 +1595,61 @@ impl Server {
                 let lens = params!(CodeLens);
                 json(&self.session().resolve_code_lens(lens))
             }
+            GRAPH => {
+                let p = match req.params {
+                    Value::Null => GraphParams::default(),
+                    _ => params!(GraphParams),
+                };
+                // A big layout takes seconds: on a thread of its own, which
+                // answers the request itself.
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.spawn == Spawn::Thread {
+                    self.graph_on_thread(req.id.clone(), p)?;
+                    return Ok(None);
+                }
+                graph_json(self.session().graph(p))
+            }
             _ => Err((
                 ErrorCode::MethodNotFound,
                 format!("unhandled method {}", req.method),
             )),
         };
         answer.map(Some)
+    }
+
+    /// Answer `turtle/graph` request `id` from a thread of its own, over a
+    /// copy of the knowledge index (`Session::graph_job`): the main loop goes
+    /// on meanwhile. Nothing is kept: a `$/cancelRequest` does not stop it,
+    /// and the answer comes when the layout ends.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn graph_on_thread(
+        &mut self,
+        id: RequestId,
+        params: GraphParams,
+    ) -> Result<(), (ErrorCode, String)> {
+        let job = self.session().graph_job(params);
+        let out = self.client.sender();
+        self.spawn
+            .run(
+                "graph",
+                WORKER_STACK,
+                move || graph_json(job.run()),
+                move |answer| {
+                    let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
+                        Ok(json) => Out::Result { id, json },
+                        Err((code, message)) => {
+                            Out::Message(Response::new_err(id, code as i32, message).into())
+                        }
+                    };
+                    let _ = out.send(msg);
+                },
+            )
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("turtle-lsp could not start a thread for the graph: {e}"),
+                )
+            })
     }
 
     /// Start validating the workspace in the background (once indexed, when

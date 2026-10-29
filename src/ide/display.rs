@@ -1,6 +1,6 @@
 //! What the editor shows of a document: hover, document and workspace
-//! symbols, folding ranges, the type hierarchy, semantic tokens, inlay hints
-//! and code lenses. Two of them follow the client's settings: inlay hints
+//! symbols, folding ranges, the type hierarchy, semantic tokens, inlay hints,
+//! code lenses and the workspace graph (`turtle/graph`). Two of them follow the client's settings: inlay hints
 //! `inlayHints.labels`, and an RDF document's reference lenses
 //! `codeLens.references`.
 //!
@@ -8,8 +8,10 @@
 //! type hierarchy is RDF only: a SPARQL document has no items.
 
 use super::{Doc, Session};
-use crate::analysis::Analysis;
+use crate::analysis::{Analysis, Encoding};
+use crate::features::graph::{self, GraphParams, GraphResult, InvalidParams};
 use crate::features::{hierarchy, hover, inlay, lens, semantic, symbols};
+use crate::knowledge::{Knowledge, Source};
 use crate::sparql::features as sparql_features;
 use crate::workspace::normalize_uri;
 use lsp_types::{
@@ -134,10 +136,56 @@ impl Session<'_> {
         })
     }
 
+    /// `turtle/graph`: the workspace graph `params` asks for, laid out.
+    pub(crate) fn graph(&mut self, params: GraphParams) -> Result<GraphResult, InvalidParams> {
+        graph::graph(self.ws.knowledge(), self.enc, params)
+    }
+
+    /// [`Session::graph`] to run elsewhere: the index as it is now, sources
+    /// in the order the index holds them.
+    pub(crate) fn graph_job(&mut self, params: GraphParams) -> GraphJob {
+        let sources = self
+            .ws
+            .knowledge()
+            .sources()
+            .map(|(key, s, a)| (key.to_string(), s, a.clone()))
+            .collect();
+        GraphJob {
+            sources,
+            enc: self.enc,
+            params,
+        }
+    }
+
     /// `codeLens/resolve`: a reference lens with its count; any other lens
     /// as it is.
     pub(crate) fn resolve_code_lens(&mut self, lens: CodeLens) -> CodeLens {
         lens::resolve(lens, self.ws.knowledge(), self.enc)
+    }
+}
+
+/// `turtle/graph` with a copy of what the knowledge index is built from, to
+/// compute away from the session (on a thread of its own): the analyses are
+/// shared, the index is rebuilt from them. A rebuild equals the index it
+/// copies (`Knowledge`'s `incremental_updates_match_a_rebuild`).
+pub(crate) struct GraphJob {
+    sources: Vec<(String, Source, Arc<Analysis>)>,
+    enc: Encoding,
+    params: GraphParams,
+}
+
+impl GraphJob {
+    /// The answer [`Session::graph`] gives for the same workspace.
+    pub(crate) fn run(self) -> Result<GraphResult, InvalidParams> {
+        let mut k = Knowledge::default();
+        for (key, source, a) in self.sources {
+            if source == Source::External {
+                k.add_external(&key, a);
+            } else {
+                k.set(&key, source, a);
+            }
+        }
+        graph::graph(&k, self.enc, self.params)
     }
 }
 
@@ -363,5 +411,36 @@ mod tests {
         assert!(s.semantic_tokens_range(uri, everything()).is_none());
         assert!(s.inlay_hints(uri, everything()).is_none());
         assert!(s.code_lenses(uri).is_none());
+    }
+
+    #[test]
+    fn a_graph_job_answers_what_the_session_answers() {
+        let dir = Dir::new("graph-job");
+        let a = format!(
+            "{PREFIXES}ex:Pump a rdfs:Class ; rdfs:label \"Pump\" .\n\
+             ex:p1 a ex:Pump ; ex:feeds ex:p2 ; ex:part [ ex:size 3 ] .\n"
+        );
+        let b = format!("{PREFIXES}ex:p2 a ex:Pump ; rdfs:subClassOf ex:Device .\n");
+        let (mut ws, _) = workspace(&dir, &[("a.ttl", &a)]);
+        // One document indexed from disk, not open.
+        dir.write("b.ttl", &b);
+        ws.index_paths(vec![dir.0.join("b.ttl")]);
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let params = || -> GraphParams {
+            serde_json::from_value(serde_json::json!({
+                "types": true,
+                "literals": true,
+                "layout": { "iterations": 40 }
+            }))
+            .unwrap()
+        };
+        let here = s.graph(params()).unwrap();
+        assert!(here.nodes.len() >= 5, "{:?}", here.nodes);
+        assert!(here.nodes.iter().any(|n| n.uri.ends_with("/b.ttl")));
+        assert_eq!(s.graph_job(params()).run().unwrap(), here);
+        // Invalid parameters fail the same way.
+        let bad: GraphParams = serde_json::from_value(serde_json::json!({ "focus": "" })).unwrap();
+        assert_eq!(s.graph_job(bad.clone()).run(), s.graph(bad));
     }
 }

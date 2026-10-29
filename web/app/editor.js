@@ -16,6 +16,7 @@ import { createVim } from "./vim.js"
 import { createHierarchy } from "./hierarchy.js"
 import { createDiff } from "./diff.js"
 import { createQueryPane, isQuery } from "./query-pane.js"
+import { createGraphView } from "./graph/view.js"
 
 const SAVE_DELAY_MS = 300
 // A fetched ontology larger than this is refused.
@@ -87,7 +88,7 @@ const ws = createWorkspaceStore({
   onConflict: (paths) => toast(`${paths.length} file${paths.length === 1 ? " was" : "s were"} changed in another tab and not saved here: ${paths.join(", ")}`),
 })
 let restoring = false // the workspace is being read back: nothing to write
-const touch = (path) => restoring || ws.touch(path)
+const touch = (path) => (graphChanged(), restoring || ws.touch(path))
 const touchLayout = () => restoring || ws.touchLayout()
 
 // A change to the workspace in a tab that does not own it is refused.
@@ -466,6 +467,7 @@ function addGroup() {
     ed.updateOptions({ quickSuggestions: { other: "on", comments: "off", strings: on ? "on" : "off" } })
   }
   ed.onDidChangeModel(stringSuggestions)
+  ed.onDidChangeModel(() => hooks?.shown())
   ed.onDidChangeModelLanguage(stringSuggestions)
   g.isQuery = ed.createContextKey("rdf.isQuery", false)
   for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], precondition: c.when, contextMenuGroupId: c.menu, run: () => c.run() })
@@ -1244,6 +1246,99 @@ function showView(which) {
   if (which === "outline") renderOutline()
   if (which === "search") search.focus()
   if (which === "hierarchy") hierarchy.refresh()
+  showGraph(which === "graph")
+}
+
+// ---- the Graph view (graph/view.js) ------------------------------------------------------------------
+
+// Asked again this long after the last change to a file, while the view shows.
+const GRAPH_DELAY_MS = 400
+const G = { view: null, shown: false, wide: false, stale: false, timer: 0 }
+
+// Only a server that answers turtle/graph gets the button.
+function wireGraph(capabilities) {
+  if (!capabilities?.experimental?.["turtle/graph"]) return
+  $("act-graph").hidden = false
+  $("act-graph").addEventListener("click", () => showView("graph"))
+  $("graph-expand").addEventListener("click", () => expandGraph(!G.wide))
+  $("graph-back").addEventListener("click", () => expandGraph(false))
+  // The settings open in the editor area, under an expanded graph.
+  $("act-settings").addEventListener("click", () => expandGraph(false))
+  // Light or dark (theme.js sets data-theme): read the colours again.
+  new MutationObserver(() => G.view?.setTheme()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] })
+}
+
+function showGraph(on) {
+  if (on === G.shown) return
+  G.shown = on
+  $("act-graph").classList.toggle("on", on)
+  $("view-graph").hidden = !on
+  $("graph-host").hidden = !on
+  if (!on) {
+    // A change waiting to be asked for is asked for on the next show.
+    if (G.timer) (clearTimeout(G.timer), (G.timer = 0), (G.stale = true))
+    return
+  }
+  if (!G.view) {
+    const key = (k) => `rdf-editor-${k}`
+    G.view = createGraphView({
+      container: $("graph-host"),
+      // The layout runs on the worker that answers the editor: a 20,000-node
+      // layout would hold typing up for a second or more.
+      maxNodes: 5000,
+      request: (method, params) => client.request(method, params),
+      reveal: (uri, range) => {
+        const path = pathByUri.get(uri)
+        if (!path) return toast(`${uri} is not in the workspace.`)
+        expandGraph(false)
+        reveal(path, range)
+      },
+      diagnostics: (uri) => W.diags.get(uri) ?? [],
+      store: {
+        get(k) {
+          try {
+            return localStorage.getItem(key(k))
+          } catch {
+            return null
+          }
+        },
+        set(k, v) {
+          try {
+            localStorage.setItem(key(k), JSON.stringify(v))
+          } catch {}
+        },
+      },
+    })
+  } else {
+    G.view.resize()
+    if (G.stale) G.view.refresh()
+  }
+  G.stale = false
+}
+
+// A file was edited, added, removed or renamed: ask again once the changes
+// stop, or when the view is shown next.
+function graphChanged() {
+  if (!G.view) return
+  if (!G.shown) return void (G.stale = true)
+  clearTimeout(G.timer)
+  G.timer = setTimeout(() => ((G.timer = 0), G.view.refresh()), GRAPH_DELAY_MS)
+}
+
+// Expanded, the view covers the editor area and the panel; the side bar says where it went.
+function expandGraph(on) {
+  if (on === G.wide) return
+  G.wide = on
+  const host = $("graph-host")
+  host.classList.toggle("wide", on)
+  ;(on ? document.querySelector(".wb") : $("view-graph")).append(host)
+  $("graph-away").hidden = !on
+  const button = $("graph-expand")
+  button.setAttribute("aria-pressed", String(on))
+  button.title = on ? "Back to the side bar" : "Expand to the editor area"
+  button.setAttribute("aria-label", on ? "Back to Side Bar" : "Expand to Editor Area")
+  button.querySelector(".codicon").className = `codicon codicon-${on ? "screen-normal" : "screen-full"}`
+  G.view?.resize()
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------
@@ -1330,19 +1425,11 @@ async function handOver({ asked }) {
   readOnlyNotice(true, true)
 }
 
-async function main() {
-  window.MonacoEnvironment = { getWorkerUrl: () => "monaco-worker.js" }
-  monaco = await new Promise((resolve, reject) => {
-    window.require.config({ paths: { vs: "vendor/monaco/vs" } })
-    window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject)
-  })
-  registerSyntax(monaco)
-  quietJson(monaco)
-  defineThemes()
-  theme = createTheme({ monaco })
-
+// The language server's worker, started before Monaco loads so the engine
+// downloads and compiles meanwhile. Messages wait in its queue in the order
+// sent: initialize, the settings, then each file's didOpen.
+function startServer() {
   client = new LspClient(new URL("lsp-worker.js", import.meta.url))
-  let idle = []
   client.on("busy", (busy) => {
     document.body.dataset.busy = String(busy)
     $("status-busy").hidden = !busy
@@ -1363,8 +1450,7 @@ async function main() {
     else if (state === "dropped") toast(`The engine crashed and restarted without ${names}, which crashes it. Reload the page to try again. (${message})`)
     else toast(`The engine crashed and restarted with your files. (${message})`)
   })
-
-  const init = await client.initialize({
+  return client.initialize({
     processId: null,
     rootUri: null,
     capabilities: {
@@ -1376,8 +1462,24 @@ async function main() {
       workspace: { inlayHint: { refreshSupport: true }, semanticTokens: { refreshSupport: true } },
     },
   })
-  hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
-  $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
+}
+
+// Who waits for the server to have nothing pending (body[data-ready]).
+const idle = []
+
+async function main() {
+  const initialized = startServer()
+  initialized.catch(() => {}) // awaited below, once the files show
+  window.MonacoEnvironment = { getWorkerUrl: () => "monaco-worker.js" }
+  monaco = await new Promise((resolve, reject) => {
+    window.require.config({ paths: { vs: "vendor/monaco/vs" } })
+    window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject)
+  })
+  registerSyntax(monaco)
+  quietJson(monaco)
+  defineThemes()
+  theme = createTheme({ monaco })
+
   // One tab owns the workspace; another one shows it and writes nothing.
   ownership = await claim({ onOwn: takeOver, onLose: handOver })
   W.readOnly = !ownership.owner
@@ -1445,6 +1547,12 @@ async function main() {
   try {
     if (!localStorage.getItem(INTRO_SEEN)) (localStorage.setItem(INTRO_SEEN, "1"), intro())
   } catch {}
+  // The files show with Monaco's colours; the server's features come when it answers.
+  const init = await initialized
+  hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
+  hooks.shown()
+  wireGraph(init.capabilities)
+  $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
   await new Promise((r) => (client.busy ? idle.push(r) : r()))
   document.body.dataset.ready = "true"
 }
