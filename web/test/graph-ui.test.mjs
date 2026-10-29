@@ -117,7 +117,9 @@ describe("filters and request params", () => {
       layout: { iterations: 100, positions: { [`${EX}Pump`]: [1.23, -5.68] } },
     })
     const hp = hierarchyParams(f)
-    assert.deepEqual(hp.predicates, { include: [SUBCLASS], exclude: [] })
+    // rdf:type too, so a class with no rdfs:subClassOf is still in the tree.
+    assert.deepEqual(hp.predicates, { include: [SUBCLASS, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"], exclude: [] })
+    assert.deepEqual(hp.kinds, ["class"])
     assert.equal(hp.focus, undefined)
     assert.equal(hp.maxNodes, 20000)
     assert.equal(hp.layout.iterations, 0, "the hierarchy needs no layout")
@@ -245,6 +247,12 @@ describe("the view in Chrome", () => {
         const b = await canvas.boundingBox()
         return [b.x + b.width / 2, b.y + b.height / 2]
       },
+      // Where a fit puts the middle of the nodes: left of the centre by half
+      // the room it keeps for labels (min(220, 40% of the width)).
+      middle: async () => {
+        const b = await canvas.boundingBox()
+        return [b.x + (b.width - Math.min(220, b.width * 0.4)) / 2, b.y + b.height / 2]
+      },
       close: async () => {
         assert.deepEqual(await page.evaluate(() => window.__violations), [], "no policy violation")
         assert.deepEqual(errors, [], "no console error")
@@ -277,7 +285,7 @@ describe("the view in Chrome", () => {
   test("a click selects the node under it; the panel lists its triples and Go to definition reveals it (catches: wrong hit transform, panel off the response's edges, a broken reveal)", async () => {
     const v = await open()
     try {
-      const [x, y] = await v.center()
+      const [x, y] = await v.middle()
       await v.page.mouse.click(x, y)
       const info = v.page.getByRole("region", { name: "Selected node" })
       await info.getByRole("heading", { name: "Pump" }).waitFor()
@@ -337,7 +345,7 @@ describe("the view in Chrome", () => {
   test("focus mode puts the selection on rings with a +N more, asks with focus and depth and no layout (catches: no cap on rings, a force layout in mode C)", async () => {
     const v = await open()
     try {
-      const [x, y] = await v.center()
+      const [x, y] = await v.middle()
       await v.page.mouse.click(x, y)
       await v.page.getByRole("heading", { name: "Pump" }).waitFor()
       const n = (await v.calls()).length
@@ -362,7 +370,7 @@ describe("the view in Chrome", () => {
       const tree = v.page.getByRole("tree", { name: "Class hierarchy" })
       await tree.getByRole("treeitem", { name: /ex:Device/ }).waitFor()
       assert.deepEqual(await tree.getByRole("treeitem", { name: /ex:Device/ }).getByRole("treeitem").locator(".graph-tree-name").allTextContents(), ["Pump", "Valve"])
-      assert.deepEqual((await v.calls()).at(-1).params.predicates, { include: [SUBCLASS], exclude: [] })
+      assert.deepEqual((await v.calls()).at(-1).params.predicates, { include: [SUBCLASS, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"], exclude: [] })
     } finally {
       await v.close()
     }
@@ -406,7 +414,7 @@ describe("the view in Chrome", () => {
     const diag = [{ uri: A, range: { start: { line: 3, character: 2 }, end: { line: 3, character: 4 } }, severity: 1 }]
     const v = await open({ diagnostics: diag })
     try {
-      const [x, y] = await v.center()
+      const [x, y] = await v.middle()
       await v.page.mouse.click(x, y)
       await v.page.getByText("Has error diagnostics").waitFor()
     } finally {

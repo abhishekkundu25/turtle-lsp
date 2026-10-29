@@ -4,6 +4,8 @@
 
 import { KINDS, SUBCLASS } from "./model.js"
 
+const RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+
 export const MODES = ["graph", "focus", "hierarchy"]
 export const COLOR_BY = ["file", "kind", "namespace"]
 export const CAPS = [500, 2000, 5000, 20000]
@@ -98,7 +100,11 @@ export function toParams(filters, { focus = null, depth, positions, iterations =
 /** The params for the class hierarchy: the filters with only rdfs:subClassOf edges, no layout, up to HIERARCHY_CAP nodes. */
 export function hierarchyParams(filters) {
   const p = toParams({ ...filters, depth: 0 }, { iterations: 0, maxNodes: HIERARCHY_CAP })
-  p.predicates = { include: [SUBCLASS], exclude: [] }
+  // Every class, also one with no rdfs:subClassOf: its rdf:type triple makes
+  // it a node (with types off no edge is drawn for it), and only the
+  // subClassOf triples make edges.
+  p.predicates = { include: [SUBCLASS, RDF_TYPE], exclude: [] }
+  p.kinds = ["class"]
   return p
 }
 

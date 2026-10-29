@@ -39,6 +39,9 @@ const SEVERITY = ["", "error", "warning", "information", "hint"]
  */
 // `maxNodes`: the largest node cap offered (a host whose layout runs on the
 // thread that answers its editor keeps it low).
+// Gives each view's filter region its own id (aria-controls).
+let views = 0
+
 export function createGraphView({ container, request, reveal, diagnostics, theme, store, maxNodes = CAPS[CAPS.length - 1] } = {}) {
   if (!container?.ownerDocument) throw new TypeError("createGraphView: a container element is required")
   if (typeof request !== "function") throw new TypeError("createGraphView: a request function is required")
@@ -51,7 +54,9 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   const tabs = MODES.map((m) => h(doc, "button", { type: "button", role: "tab", class: "graph-tab", "data-mode": m, text: TITLES[m] }))
   const fitButton = h(doc, "button", { type: "button", class: "graph-btn graph-fit", text: "Fit", title: "Fit the graph to the view (0)" })
   const status = h(doc, "span", { class: "graph-status", role: "status", "aria-live": "polite" })
-  const filtersEl = h(doc, "div", { class: "graph-filters", role: "region", "aria-label": "Graph filters" })
+  const filtersEl = h(doc, "div", { class: "graph-filters", id: `graph-filters-${++views}`, role: "region", "aria-label": "Graph filters" })
+  // Narrow (a side bar): the filters fold away so the drawing has the height.
+  const filtersButton = h(doc, "button", { type: "button", class: "graph-btn graph-filters-toggle", text: "Filters", "aria-expanded": "false", "aria-controls": filtersEl.id })
   const canvas = h(doc, "canvas", { class: "graph-canvas", tabindex: "0", role: "application", "aria-roledescription": "graph", "aria-label": "Workspace graph. Click or search to select a node; arrow keys pan, plus and minus zoom, 0 fits, Enter opens the selected node's definition." })
   const moreLayer = h(doc, "div", { class: "graph-more-layer" })
   const tip = h(doc, "div", { class: "graph-tip", hidden: true, "aria-hidden": "true" })
@@ -60,9 +65,14 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   const info = h(doc, "section", { class: "graph-info", hidden: true, "aria-label": "Selected node" })
   const stage = h(doc, "div", { class: "graph-stage" }, canvas, moreLayer, treeBox, legend, tip, info)
   const root = h(doc, "div", { class: "graph", "data-busy": "false" },
-    h(doc, "div", { class: "graph-bar" }, h(doc, "div", { class: "graph-tabs", role: "tablist", "aria-label": "Graph mode" }, tabs), fitButton, status),
+    h(doc, "div", { class: "graph-bar" }, h(doc, "div", { class: "graph-tabs", role: "tablist", "aria-label": "Graph mode" }, tabs), fitButton, filtersButton, status),
     h(doc, "div", { class: "graph-body" }, filtersEl, stage))
   container.replaceChildren(root)
+  filtersButton.addEventListener("click", () => {
+    const open = filtersButton.getAttribute("aria-expanded") !== "true"
+    filtersButton.setAttribute("aria-expanded", String(open))
+    root.classList.toggle("graph-filters-open", open)
+  })
 
   const renderer = createRenderer(canvas)
   applyTheme(theme)
@@ -83,6 +93,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   const order = { files: [], namespaces: [] } // first-seen facets, so colours keep their slot
   let cam = { x: 0, y: 0, k: 1 }
   let fitPending = true
+  // The user panned or zoomed: new positions no longer refit the view.
+  let userMoved = false
   let selected = -1
   let selId = null
   let near = new Set()
@@ -163,6 +175,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       if (!res) return
       setModel(res)
       for (let i = 0; i < model.n; i++) known.set(model.nodes[i].id, [model.x[i], model.y[i]])
+      // The layout moved the nodes: keep them in view until the user takes over.
+      if (!userMoved) fitPending = true
       layoutGraph()
     }
     showStatus()
@@ -260,9 +274,11 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     }
     if (x0 === Infinity) return
     const w = renderer.width, hgt = renderer.height
-    // Room for the labels to the right of the nodes.
-    const k = x1 > x0 || y1 > y0 ? Math.min(Math.max(w - 220, w * 0.6) / (x1 - x0 || 1), Math.max(hgt - 50, hgt * 0.8) / (y1 - y0 || 1)) : 1.5
-    cam = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, k: clamp(Math.min(k, 4)) }
+    // Room for the labels to the right of the nodes: the nodes take the
+    // rest, and the view centres nodes plus label room, not the nodes alone.
+    const labels = Math.min(220, w * 0.4)
+    const k = clamp(Math.min(x1 > x0 || y1 > y0 ? Math.min((w - labels - 16) / (x1 - x0 || 1), Math.max(hgt - 50, hgt * 0.8) / (y1 - y0 || 1)) : 1.5, 4))
+    cam = { x: (x0 + x1) / 2 + labels / 2 / k, y: (y0 + y1) / 2, k }
     fitPending = false
     schedule()
   }
@@ -339,6 +355,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     if (center && drawn(selected)) {
       cam.x = scene.x[selected]
       cam.y = scene.y[selected]
+      userMoved = true
       cam.k = Math.max(cam.k, 1.5)
     }
     renderInfo()
@@ -456,7 +473,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     setMode(next.dataset.mode)
     e.preventDefault()
   })
-  fitButton.addEventListener("click", fit)
+  const refit = () => ((userMoved = false), fit())
+  fitButton.addEventListener("click", refit)
   info.addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act
     if (act === "close") return select(-1)
@@ -499,6 +517,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       if (!drag.moved) return
       cam.x = drag.cx - dx / cam.k
       cam.y = drag.cy - dy / cam.k
+      userMoved = true
       tip.hidden = true
       return schedule()
     }
@@ -541,6 +560,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   function zoomAt(factor, sx = renderer.width / 2, sy = renderer.height / 2) {
     const mx = sx - renderer.width / 2, my = sy - renderer.height / 2
     const wx = mx / cam.k + cam.x, wy = my / cam.k + cam.y
+    userMoved = true
     cam.k = clamp(cam.k * factor)
     cam.x = wx - mx / cam.k
     cam.y = wy - my / cam.k
@@ -548,13 +568,14 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   }
   canvas.addEventListener("keydown", (e) => {
     const step = 60 / cam.k
+    if (e.key.startsWith("Arrow")) userMoved = true
     if (e.key === "ArrowLeft") cam.x -= step
     else if (e.key === "ArrowRight") cam.x += step
     else if (e.key === "ArrowUp") cam.y -= step
     else if (e.key === "ArrowDown") cam.y += step
     else if (e.key === "+" || e.key === "=") return e.preventDefault(), zoomAt(1.25)
     else if (e.key === "-") return e.preventDefault(), zoomAt(0.8)
-    else if (e.key === "0") return e.preventDefault(), fit()
+    else if (e.key === "0") return e.preventDefault(), refit()
     else if (e.key === "Enter") return e.preventDefault(), selected >= 0 && (mode === "focus" && e.shiftKey ? focusOn(selected) : openDefinition(selected))
     else if (e.key === "Escape") return select(-1)
     else return
@@ -567,7 +588,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     if (destroyed) return
     const b = stage.getBoundingClientRect()
     renderer.size(b.width, b.height, win.devicePixelRatio || 1)
-    if (fitPending && scene) fit()
+    if ((fitPending || !userMoved) && scene) fit()
     draw()
   }
   const observer = win.ResizeObserver ? new win.ResizeObserver(() => resize()) : null

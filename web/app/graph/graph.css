@@ -118,10 +118,19 @@
 .graph-pred { color: var(--graph-muted); }
 .graph-obj { color: var(--graph-focus); }
 
-/* Narrow (a side bar, a phone): the filters above the drawing. */
+/* Wide: the filters always beside the drawing, so no toggle. */
+.graph-filters-toggle { display: none; }
+
+/* Narrow (a side bar, a phone): the filters fold away behind "Filters"
+   and open above the drawing. */
 @container (max-width: 560px) {
   .graph-body { flex-direction: column; }
-  .graph-filters { width: auto; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--graph-line); }
+  .graph-filters-toggle { display: inline-block; }
+  .graph-filters-toggle[aria-expanded="true"] { background: var(--graph-select); }
+  /* Folded: only the search stays, above the drawing. */
+  .graph:not(.graph-filters-open) .graph-filters > :not(.graph-find) { display: none; }
+  .graph:not(.graph-filters-open) .graph-filters { padding-bottom: 0; }
+  .graph-filters { width: auto; max-height: 50%; border-right: 0; border-bottom: 1px solid var(--graph-line); }
   .graph-stage { min-height: 240px; }
   .graph-info { left: 8px; width: auto; max-height: 50%; }
 }

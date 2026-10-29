@@ -190,6 +190,23 @@ test("a node clicked in the view opens its definition in the editor with Go to d
   }
 })
 
+test("the Hierarchy tab lists the classes of the starter workspace, which declare no rdfs:subClassOf (catches: a tree that needs a subClassOf link before it shows a class)", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await page.locator("#act-graph").click()
+    await shown(page)
+    await page.getByRole("tab", { name: "Hierarchy" }).click()
+    const rows = page.locator('#graph-host [role="treeitem"]')
+    await rows.first().waitFor({ timeout: 10_000 })
+    const names = await rows.allTextContents()
+    assert.ok(names.some((n) => /Person/.test(n)), names.join(" | "))
+    assert.ok(names.some((n) => /Organisation/.test(n)), names.join(" | "))
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("an edit refreshes the open view once, after the typing stops; a hidden view asks nothing until shown (catches: a request per keystroke, no refresh, refreshes while hidden)", async () => {
   const { page, errors, close } = await open()
   try {
@@ -340,6 +357,8 @@ test("a 17,000-class vocabulary opens in focus mode, and a keystroke waits for t
       return typed
     }
     await graphMode("graph mode, cap 2,000", () => page.getByRole("tab", { name: "Graph" }).click())
+    // In the side bar the filters are folded behind "Filters".
+    await page.getByRole("button", { name: "Filters" }).click()
     await graphMode("graph mode, cap 5,000", () => page.getByRole("combobox", { name: "Node cap" }).selectOption("5000"))
     // The playground offers no cap above 5,000 (its layout runs on the editor's worker).
     const caps = await page.getByRole("combobox", { name: "Node cap" }).locator("option").allTextContents()
