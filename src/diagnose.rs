@@ -88,6 +88,11 @@ pub(crate) fn document(
         }));
     }
     out.extend(inputs.shacl.iter().cloned());
+    // `lint.ignore`, and the off-by-default checks not in `lint.enable`.
+    out.retain(|d| match &d.code {
+        Some(lsp_types::NumberOrString::String(c)) => inputs.settings.lint_on(c),
+        _ => true,
+    });
     out
 }
 

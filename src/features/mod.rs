@@ -1,4 +1,5 @@
 pub mod completion;
+pub(crate) mod curation;
 pub mod diagnostics;
 pub(crate) mod embedded;
 pub mod format;

@@ -126,6 +126,10 @@ pub(crate) const MAX_SYNTAX_ERRORS: usize = 1000;
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub lint_undescribed_terms: bool,
+    /// Some off-by-default curation check is enabled
+    /// ([`crate::features::curation::OPT_IN`]); without one they are not
+    /// computed. Which codes are reported is decided by the composer.
+    pub house_style: bool,
     /// At most this many syntax errors and warnings of a Turtle-family
     /// document: past it, the ones that start first in the text (the first
     /// found, on a tie), in the order found, and one error that says there
@@ -139,6 +143,7 @@ impl Default for Options {
     fn default() -> Options {
         Options {
             lint_undescribed_terms: true,
+            house_style: false,
             max_syntax_errors: Some(MAX_SYNTAX_ERRORS),
         }
     }
@@ -147,7 +152,10 @@ impl Default for Options {
 impl Options {
     pub(crate) fn from_settings(s: &crate::settings::Settings) -> Options {
         Options {
-            lint_undescribed_terms: s.lint_undescribed_terms,
+            lint_undescribed_terms: s.lint_on(crate::features::lint::CODE),
+            house_style: crate::features::curation::OPT_IN
+                .iter()
+                .any(|c| s.lint_on(c)),
             ..Options::default()
         }
     }
@@ -414,6 +422,12 @@ pub fn diagnostics_with(
     if opts.lint_undescribed_terms {
         out.extend(crate::features::lint::undescribed_terms(a, k, enc));
     }
+    out.extend(crate::features::curation::diagnostics(
+        a,
+        k,
+        enc,
+        opts.house_style,
+    ));
     out
 }
 
