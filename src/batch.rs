@@ -123,6 +123,9 @@ pub struct Options {
     /// they are empty: nothing is computed for them. [`fix_all`] finds its
     /// own either way.
     pub fixes: bool,
+    /// Give the formatter's verdict on each file ([`FileReport::format`]).
+    /// Off, it is None: the formatter does not run.
+    pub verdict: bool,
 }
 
 impl Default for Options {
@@ -131,6 +134,7 @@ impl Default for Options {
             shacl: true,
             columns: Columns::Utf16,
             fixes: true,
+            verdict: true,
         }
     }
 }
@@ -161,7 +165,8 @@ pub struct FileReport {
     pub kind: &'static str,
     /// The file's diagnostics, SHACL results last.
     pub problems: Vec<Problem>,
-    /// None when the file could not be analysed.
+    /// None when the file could not be analysed, or no verdict was asked
+    /// for ([`Options::verdict`]).
     pub format: Option<Formatted>,
 }
 
@@ -280,11 +285,16 @@ fn analyse_in(
             name: f.name.clone(),
             kind: input.kind(uri),
             problems,
-            format: input.format(uri),
+            format: if opts.verdict {
+                input.format(uri)
+            } else {
+                None
+            },
         });
     }
     if opts.columns == Columns::CodePoints {
-        let lines = LineIndexes::new(files);
+        let held = files.iter().map(|f| input.held(&f.uri)).collect();
+        let lines = LineIndexes::with_held(files, held);
         for report in &mut out {
             to_code_points(report, files, &lines);
         }
@@ -776,6 +786,15 @@ impl<'a> Input<'a> {
         Some(Formatted { guarantee, outcome })
     }
 
+    /// The analysis of `uri`, whose line index is the file's.
+    fn held(&mut self, uri: &str) -> Option<Held> {
+        if self.ws.is_sparql(uri) {
+            self.ws.sparql(uri).map(Held::Sparql)
+        } else {
+            self.ws.analysis(uri).map(Held::Rdf)
+        }
+    }
+
     fn kind(&self, uri: &str) -> &'static str {
         match self.ws.doc_kind(uri) {
             Some(DocKind::Sparql) => "sparql",
@@ -792,22 +811,60 @@ fn it(n: usize) -> &'static str {
     if n == 1 { "it" } else { "them" }
 }
 
-/// The line index of each input file, made when first asked for: the texts
-/// do not change while one is in use.
+/// An analysis, which holds the line index of its text.
+enum Held {
+    Rdf(Arc<Analysis>),
+    Sparql(Arc<SparqlAnalysis>),
+}
+
+impl Held {
+    fn text(&self) -> &str {
+        match self {
+            Held::Rdf(a) => &a.text,
+            Held::Sparql(q) => q.text(),
+        }
+    }
+
+    fn lines(&self) -> &LineIndex {
+        match self {
+            Held::Rdf(a) => &a.lines,
+            Held::Sparql(q) => &q.lines,
+        }
+    }
+}
+
+/// The line index of each input file: its analysis's, else made when first
+/// asked for. The texts do not change while one is in use.
 struct LineIndexes<'a> {
     files: &'a [BatchFile],
+    held: Vec<Option<Held>>,
     lines: Vec<OnceCell<LineIndex>>,
 }
 
 impl<'a> LineIndexes<'a> {
     fn new(files: &'a [BatchFile]) -> LineIndexes<'a> {
+        LineIndexes::with_held(files, files.iter().map(|_| None).collect())
+    }
+
+    /// With `held[i]` the analysis of file `i`, used only if its text is the
+    /// file's.
+    fn with_held(files: &'a [BatchFile], mut held: Vec<Option<Held>>) -> LineIndexes<'a> {
+        for (h, f) in held.iter_mut().zip(files) {
+            if h.as_ref().is_some_and(|h| h.text() != f.text) {
+                *h = None;
+            }
+        }
         LineIndexes {
             files,
+            held,
             lines: files.iter().map(|_| OnceCell::new()).collect(),
         }
     }
 
     fn of(&self, file: usize) -> &LineIndex {
+        if let Some(h) = &self.held[file] {
+            return h.lines();
+        }
         self.lines[file].get_or_init(|| LineIndex::new(&self.files[file].text))
     }
 
@@ -1113,6 +1170,59 @@ mod tests {
         let f = r.files[0].format.as_ref().unwrap();
         assert_eq!(f.guarantee, "same graph");
         assert!(matches!(f.outcome, FormatOutcome::Changed(_)));
+    }
+
+    #[test]
+    fn without_the_verdict_the_problems_are_the_same() {
+        let files = [
+            file(
+                "a.ttl",
+                &format!("{RDFS}<http://x/é>  rdfs:labl \"a\" ;\r\n ex:p 1 .\n"),
+            ),
+            file("b.ttl", "<http://x/b> <http://x/p> \"\"\" ."),
+            file("q.rq", "SELECT * WHERE { ?s ex:p ?o }"),
+        ];
+        let with = report(&files, &Options::default());
+        let without = report(
+            &files,
+            &Options {
+                verdict: false,
+                ..Options::default()
+            },
+        );
+        for (w, wo) in with.files.iter().zip(&without.files) {
+            assert!(w.format.is_some());
+            assert!(wo.format.is_none());
+            assert!(!w.problems.is_empty());
+            assert_eq!(format!("{:?}", w.problems), format!("{:?}", wo.problems));
+        }
+    }
+
+    #[test]
+    fn code_points_from_the_analysis_equal_a_fresh_line_index() {
+        let files = [
+            file(
+                "a.ttl",
+                &format!("{RDFS}<http://x/é😀> rdfs:labl \"é\" ;\r\n ex:p 1 .\r\n"),
+            ),
+            file("q.rq", "# é😀\r\nSELECT * WHERE { ?s ex:p \"é\" }"),
+        ];
+        let opts = |columns| Options {
+            columns,
+            ..Options::default()
+        };
+        let held = report(&files, &opts(Columns::CodePoints));
+        let mut fresh = report(&files, &opts(Columns::Utf8));
+        let lines = LineIndexes::new(&files);
+        for r in &mut fresh.files {
+            to_code_points(r, &files, &lines);
+        }
+        let fixed = |r: &FileReport| r.problems.iter().any(|p| !p.fixes.is_empty());
+        assert!(fixed(&held.files[0]));
+        assert!(!held.files[1].problems.is_empty());
+        for (h, f) in held.files.iter().zip(&fresh.files) {
+            assert_eq!(format!("{:?}", h.problems), format!("{:?}", f.problems));
+        }
     }
 
     #[test]

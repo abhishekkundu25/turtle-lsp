@@ -12,13 +12,13 @@
 
 **Blocked by:** none.
 
-**Status:** todo
+**Status:** done
 
-- [ ] Unit test: over files with problems and fixes, the report with
+- [x] Unit test: over files with problems and fixes, the report with
   `verdict: false` has the same problems and fixes as with `verdict: true`,
   and every `format` is None.
-- [ ] Unit test: code-point positions from the analysis's line index equal
+- [x] Unit test: code-point positions from the analysis's line index equal
   those from a fresh `LineIndex` on non-ASCII and CRLF text, for diagnostics
   and for fix edits that target another file.
-- [ ] `test/cli.test.mjs` and the other check CLI tests green, unchanged.
-- [ ] `tests/diagnostics_agree.rs` and the browser engine tests green.
+- [x] `test/cli.test.mjs` and the other check CLI tests green, unchanged.
+- [x] `tests/diagnostics_agree.rs` and the browser engine tests green.

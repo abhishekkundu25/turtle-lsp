@@ -22,6 +22,7 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
         shacl: false,
         columns: Columns::CodePoints,
         fixes: false,
+        verdict: true,
     };
     let report = batch::analyse_on_disk(&batch, &settings, &opts, &disk);
 
