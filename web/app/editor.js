@@ -16,6 +16,7 @@ import { createVim } from "./vim.js"
 import { createHierarchy } from "./hierarchy.js"
 import { createDiff } from "./diff.js"
 import { createQueryPane, isQuery } from "./query-pane.js"
+import { createGraphView } from "./graph/view.js"
 
 const SAVE_DELAY_MS = 300
 // A fetched ontology larger than this is refused.
@@ -87,7 +88,7 @@ const ws = createWorkspaceStore({
   onConflict: (paths) => toast(`${paths.length} file${paths.length === 1 ? " was" : "s were"} changed in another tab and not saved here: ${paths.join(", ")}`),
 })
 let restoring = false // the workspace is being read back: nothing to write
-const touch = (path) => restoring || ws.touch(path)
+const touch = (path) => (graphChanged(), restoring || ws.touch(path))
 const touchLayout = () => restoring || ws.touchLayout()
 
 // A change to the workspace in a tab that does not own it is refused.
@@ -1244,6 +1245,96 @@ function showView(which) {
   if (which === "outline") renderOutline()
   if (which === "search") search.focus()
   if (which === "hierarchy") hierarchy.refresh()
+  showGraph(which === "graph")
+}
+
+// ---- the Graph view (graph/view.js) ------------------------------------------------------------------
+
+// Asked again this long after the last change to a file, while the view shows.
+const GRAPH_DELAY_MS = 400
+const G = { view: null, shown: false, wide: false, stale: false, timer: 0 }
+
+// Only a server that answers turtle/graph gets the button.
+function wireGraph(capabilities) {
+  if (!capabilities?.experimental?.["turtle/graph"]) return
+  $("act-graph").hidden = false
+  $("act-graph").addEventListener("click", () => showView("graph"))
+  $("graph-expand").addEventListener("click", () => expandGraph(!G.wide))
+  $("graph-back").addEventListener("click", () => expandGraph(false))
+  // The settings open in the editor area, under an expanded graph.
+  $("act-settings").addEventListener("click", () => expandGraph(false))
+  // Light or dark (theme.js sets data-theme): read the colours again.
+  new MutationObserver(() => G.view?.setTheme()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] })
+}
+
+function showGraph(on) {
+  if (on === G.shown) return
+  G.shown = on
+  $("act-graph").classList.toggle("on", on)
+  $("view-graph").hidden = !on
+  $("graph-host").hidden = !on
+  if (!on) {
+    // A change waiting to be asked for is asked for on the next show.
+    if (G.timer) (clearTimeout(G.timer), (G.timer = 0), (G.stale = true))
+    return
+  }
+  if (!G.view) {
+    const key = (k) => `rdf-editor-${k}`
+    G.view = createGraphView({
+      container: $("graph-host"),
+      request: (method, params) => client.request(method, params),
+      reveal: (uri, range) => {
+        const path = pathByUri.get(uri)
+        if (!path) return toast(`${uri} is not in the workspace.`)
+        expandGraph(false)
+        reveal(path, range)
+      },
+      diagnostics: (uri) => W.diags.get(uri) ?? [],
+      store: {
+        get(k) {
+          try {
+            return localStorage.getItem(key(k))
+          } catch {
+            return null
+          }
+        },
+        set(k, v) {
+          try {
+            localStorage.setItem(key(k), JSON.stringify(v))
+          } catch {}
+        },
+      },
+    })
+  } else {
+    G.view.resize()
+    if (G.stale) G.view.refresh()
+  }
+  G.stale = false
+}
+
+// A file was edited, added, removed or renamed: ask again once the changes
+// stop, or when the view is shown next.
+function graphChanged() {
+  if (!G.view) return
+  if (!G.shown) return void (G.stale = true)
+  clearTimeout(G.timer)
+  G.timer = setTimeout(() => ((G.timer = 0), G.view.refresh()), GRAPH_DELAY_MS)
+}
+
+// Expanded, the view covers the editor area and the panel; the side bar says where it went.
+function expandGraph(on) {
+  if (on === G.wide) return
+  G.wide = on
+  const host = $("graph-host")
+  host.classList.toggle("wide", on)
+  ;(on ? document.querySelector(".wb") : $("view-graph")).append(host)
+  $("graph-away").hidden = !on
+  const button = $("graph-expand")
+  button.setAttribute("aria-pressed", String(on))
+  button.title = on ? "Back to the side bar" : "Expand to the editor area"
+  button.setAttribute("aria-label", on ? "Back to Side Bar" : "Expand to Editor Area")
+  button.querySelector(".codicon").className = `codicon codicon-${on ? "screen-normal" : "screen-full"}`
+  G.view?.resize()
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------
@@ -1377,6 +1468,7 @@ async function main() {
     },
   })
   hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
+  wireGraph(init.capabilities)
   $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
   // One tab owns the workspace; another one shows it and writes nothing.
   ownership = await claim({ onOwn: takeOver, onLose: handOver })
