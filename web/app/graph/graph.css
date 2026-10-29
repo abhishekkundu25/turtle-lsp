@@ -75,6 +75,8 @@
 .graph-count { margin-left: auto; padding-left: 4px; font-size: 10px; color: var(--graph-muted); flex: none; }
 .graph-rule .graph-count { margin-left: 0; }
 .graph-none { margin: 2px 0; font-size: 11px; color: var(--graph-muted); }
+.graph-allnone { display: flex; gap: 4px; }
+.graph-allnone .graph-btn { padding: 0 6px; font-size: 11px; }
 
 .graph-canvas { position: absolute; inset: 0; display: block; touch-action: none; cursor: grab; }
 .graph-canvas:active { cursor: grabbing; }
@@ -85,6 +87,9 @@
 .graph-tip { position: absolute; pointer-events: none; padding: 2px 6px; border-radius: 3px; font-size: 11px; background: var(--graph-menu); border: 1px solid var(--graph-line); box-shadow: 0 2px 8px var(--graph-shadow); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-legend { position: absolute; left: 8px; bottom: 8px; display: flex; flex-wrap: wrap; gap: 2px 10px; max-width: calc(100% - 16px); font-size: 11px; color: var(--graph-muted); pointer-events: none; }
 .graph-key { display: flex; align-items: center; gap: 4px; }
+/* A file's key shows its full path on hover. */
+.graph-key[title] { pointer-events: auto; }
+.graph-notice { position: absolute; inset: 0; margin: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--graph-muted); }
 .graph-swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .graph-c0 { background: var(--graph-c0); } .graph-c1 { background: var(--graph-c1); } .graph-c2 { background: var(--graph-c2); } .graph-c3 { background: var(--graph-c3); }
 .graph-c4 { background: var(--graph-c4); } .graph-c5 { background: var(--graph-c5); } .graph-c6 { background: var(--graph-c6); } .graph-c7 { background: var(--graph-c7); }

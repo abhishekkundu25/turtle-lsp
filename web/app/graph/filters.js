@@ -16,7 +16,10 @@ export const CONTINUE_ITERATIONS = 100
 /** The hierarchy asks for this many nodes at most (the contract's ceiling). */
 export const HIERARCHY_CAP = 20000
 
-/** Nothing chosen yet: rdf:type edges and literals hidden, 2,000 nodes, the mode decided on the first answer. */
+/**
+ * Nothing chosen yet: rdf:type edges and literals hidden, 2,000 nodes, the mode decided on the first answer.
+ * `filters.files`: null is every file, a list is those files, an empty list is none.
+ */
 export function defaultState() {
   return {
     mode: null,
@@ -49,7 +52,8 @@ export function normalizeState(raw, maxCap = CAPS[CAPS.length - 1]) {
   if (COLOR_BY.includes(raw.colorBy)) s.colorBy = raw.colorBy
   const f = raw.filters
   if (!f || typeof f !== "object") return s
-  if (Array.isArray(f.files)) s.filters.files = strings(f.files)
+  // A stored empty list is "none"; a list that held only broken entries is broken, so every file.
+  if (Array.isArray(f.files) && (!f.files.length || strings(f.files).length)) s.filters.files = strings(f.files)
   if (Array.isArray(f.kinds)) {
     const k = strings(f.kinds).filter((v) => KINDS.includes(v))
     s.filters.kinds = k.length === KINDS.length ? null : k
@@ -65,8 +69,12 @@ export function normalizeState(raw, maxCap = CAPS[CAPS.length - 1]) {
 
 const round = (v) => Math.round(v * 100) / 100
 
+/** No file is selected: there is nothing to ask for. */
+export const selectsNothing = (filters) => Array.isArray(filters?.files) && filters.files.length === 0
+
 /**
- * The `turtle/graph` params for `filters`.
+ * The `turtle/graph` params for `filters`; null when they select no file
+ * (an empty `files` would read as no filter to a server).
  * @param {object} filters
  * @param {object} [o]
  * @param {string | null} [o.focus] a node id; sent only with a depth above 0
@@ -76,6 +84,7 @@ const round = (v) => Math.round(v * 100) / 100
  * @param {number} [o.maxNodes] overrides `filters.maxNodes`
  */
 export function toParams(filters, { focus = null, depth, positions, iterations = FIRST_ITERATIONS, maxNodes } = {}) {
+  if (selectsNothing(filters)) return null
   const p = { literals: filters.literals === true, types: filters.types === true, maxNodes: maxNodes ?? filters.maxNodes }
   if (filters.files) p.files = [...filters.files]
   if (filters.kinds) p.kinds = [...filters.kinds]
@@ -97,9 +106,10 @@ export function toParams(filters, { focus = null, depth, positions, iterations =
   return p
 }
 
-/** The params for the class hierarchy: the filters with only rdfs:subClassOf edges, no layout, up to HIERARCHY_CAP nodes. */
+/** The params for the class hierarchy: the filters with only rdfs:subClassOf edges, no layout, up to HIERARCHY_CAP nodes; null when no file is selected. */
 export function hierarchyParams(filters) {
   const p = toParams({ ...filters, depth: 0 }, { iterations: 0, maxNodes: HIERARCHY_CAP })
+  if (!p) return null
   // Every class, also one with no rdfs:subClassOf: its rdf:type triple makes
   // it a node (with types off no edge is drawn for it), and only the
   // subClassOf triples make edges.
@@ -107,6 +117,9 @@ export function hierarchyParams(filters) {
   p.kinds = ["class"]
   return p
 }
+
+/** The params that ask for the facets alone (no nodes), whatever files are selected: the files to choose from. */
+export const facetParams = (filters) => toParams({ ...filters, files: null, depth: 0 }, { iterations: 0, maxNodes: 0 })
 
 /** Set `value`'s rule in an include/exclude pair: "include", "exclude" or "" (neither). */
 export function setRule(pairValue, value, rule) {

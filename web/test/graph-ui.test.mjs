@@ -11,8 +11,8 @@ import { chromium } from "playwright-core"
 import { listen } from "./static-server.mjs"
 import { createHitGrid } from "../app/graph/hitgrid.js"
 import { RING_CAPS, buildHierarchy, pathTo, ringLayout } from "../app/graph/rings.js"
-import { buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, overlaps, searchNodes, triplesOf, bestNode } from "../app/graph/model.js"
-import { defaultState, hierarchyParams, normalizeState, setRule, toParams } from "../app/graph/filters.js"
+import { buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, middleCut, overlaps, searchNodes, triplesOf, bestNode } from "../app/graph/model.js"
+import { defaultState, facetParams, hierarchyParams, normalizeState, selectsNothing, setRule, toParams } from "../app/graph/filters.js"
 import { pickLabels, truncate } from "../app/graph/labels.js"
 import { NEUTRAL, colorSlots } from "../app/graph/colors.js"
 import { A, B, EX, SUBCLASS, bigGraph, smallGraph } from "./graph-fixture.mjs"
@@ -30,6 +30,32 @@ test("file names are their path below the folder the workspace files share", () 
   // Files on different drives or roots share no folder: the last two segments.
   assert.equal(commonRoot(["file:///a/x.ttl", "file:///b/y.ttl"]), "")
   assert.equal(fileLabel("file:///a/b/c/x.ttl"), "c/x.ttl")
+})
+
+test("middleCut keeps the file name and cuts the folders in the middle (catches: long paths cut at the end, hiding the name that tells files apart)", () => {
+  // Short enough: unchanged.
+  assert.equal(middleCut("a.ttl", 26), "a.ttl")
+  assert.equal(middleCut("data/people.ttl", 15), "data/people.ttl")
+  // The last segment whole, the folders' start before "…".
+  assert.equal(middleCut("shacl-playground/model/sensor-shapes.ttl", 26), "shacl-p…/sensor-shapes.ttl")
+  assert.equal(middleCut("a-long-folder/x.ttl", 8), "a…/x.ttl")
+  assert.equal(middleCut("folder/name.ttl", 10), "…/name.ttl", "no room for the folder: only …/ and the name")
+  // One segment, or a last segment too long to keep: the start and the end.
+  assert.equal(middleCut("x".repeat(10) + "-" + "y".repeat(10), 11), "xxxxx…yyyyy")
+  assert.equal(middleCut("dir/" + "abcdefghijklmnopqrstuvwxyz.ttl", 12), "dir/a…yz.ttl")
+  assert.equal(middleCut("abcdef", 5), "ab…ef")
+  // Never longer than max, and a character (an emoji, a family, an accent) is never split.
+  for (const t of ["données/π/😀😀😀😀😀😀😀😀😀😀.ttl", "👩‍👩‍👧".repeat(12), "e\u0301".repeat(30) + "/n.ttl"]) {
+    for (const max of [2, 5, 9, 14, 20]) {
+      const out = middleCut(t, max)
+      const n = [...new Intl.Segmenter().segment(out)].length
+      assert.ok(n <= max, `${out} within ${max}`)
+      assert.ok(!/\uFFFD/.test(out) && out.isWellFormed(), `${out} has whole characters`)
+      assert.equal(out.includes("…"), [...new Intl.Segmenter().segment(t)].length > max, "cut only when too long")
+    }
+  }
+  assert.equal(middleCut("👩‍👩‍👧".repeat(12), 5), "👩‍👩‍👧👩‍👩‍👧…👩‍👩‍👧👩‍👩‍👧")
+  assert.equal(middleCut("ü".normalize("NFD").repeat(3) + "/日本語.ttl", 10), "ü".normalize("NFD") + "…/日本語.ttl")
 })
 
 describe("hit grid", () => {
@@ -147,6 +173,25 @@ describe("filters and request params", () => {
     assert.deepEqual(pair, { include: [], exclude: ["a"] })
   })
 
+  test("files: null is every file, a list those, [] none; no request ever carries files: [] (catches: an empty selection that a server reads as no filter, so every file is drawn)", () => {
+    const f = defaultState().filters
+    assert.equal(toParams(f).files, undefined, "null: every file, no files param")
+    assert.deepEqual(toParams({ ...f, files: [A] }).files, [A])
+    assert.equal(selectsNothing({ ...f, files: [] }), true)
+    assert.equal(selectsNothing(f), false)
+    assert.equal(toParams({ ...f, files: [] }), null, "none: nothing to ask")
+    assert.equal(hierarchyParams({ ...f, files: [] }), null)
+    // The files to choose from are still asked for: facets only, no nodes, no files filter.
+    const fp = facetParams({ ...f, files: [], depth: 2 })
+    assert.equal(fp.files, undefined)
+    assert.equal(fp.maxNodes, 0)
+    assert.equal(fp.focus, undefined)
+    // The store keeps "none"; a list of only broken entries is broken, so every file.
+    assert.deepEqual(normalizeState({ filters: { files: [] } }).filters.files, [])
+    assert.equal(normalizeState({ filters: { files: [3, null] } }).filters.files, null)
+    assert.equal(normalizeState({ filters: {} }).filters.files, null)
+  })
+
   test("over 2,000 nodes the view opens in focus mode on the best-connected class with 2 hops (catches: a 17,000-node hairball first)", () => {
     assert.deepEqual(chooseDefault(smallGraph()), { mode: "graph" })
     const big = bigGraph(300, 17000)
@@ -226,7 +271,7 @@ describe("the view in Chrome", () => {
     await server?.close()
   })
 
-  async function open(mount = {}, viewport = { width: 1280, height: 800 }) {
+  async function open(mount = {}, viewport = { width: 1280, height: 800 }, ready = /Showing/) {
     const ctx = await browser.newContext({ viewport })
     const page = await ctx.newPage()
     page.setDefaultTimeout(10_000)
@@ -236,7 +281,7 @@ describe("the view in Chrome", () => {
     await page.goto(`${server.origin}/test/graph-ui.html`)
     await page.locator("body[data-ready='true']").waitFor()
     await page.evaluate((o) => window.__graph.mount(o), mount)
-    await page.locator(".graph[data-busy='false'] .graph-status", { hasText: /Showing/ }).waitFor()
+    await page.locator(".graph[data-busy='false'] .graph-status", { hasText: ready }).waitFor()
     const canvas = page.locator("canvas")
     return {
       page,
@@ -439,6 +484,116 @@ describe("the view in Chrome", () => {
       assert.ok(f.bottom <= s.top + 1, "the filters are above the stage")
       assert.ok(s.height > 200, "the drawing keeps room")
       assert.equal(await v.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "no horizontal scroll")
+    } finally {
+      await v.close()
+    }
+  })
+
+  // The request count after the debounce has had time to send one.
+  const settled = async (v) => (await v.page.waitForTimeout(400), (await v.calls()).length)
+
+  test("None asks nothing, clears the drawing and says so; then one file asks for that file, All for every file (catches: None sending files: [] and drawing every file, a stale drawing, one-by-one unticking)", async () => {
+    const v = await open()
+    try {
+      const n = (await v.calls()).length
+      const files = v.page.getByRole("group", { name: "Select files" })
+      await files.getByRole("button", { name: "None" }).click()
+      await v.page.locator(".graph-status", { hasText: "No files selected" }).waitFor()
+      assert.equal(await settled(v), n, "no request for no files")
+      await v.page.locator(".graph-notice", { hasText: "No files selected" }).waitFor()
+      assert.equal(await v.page.evaluate(() => window.__graph.inked()), 0, "the drawing is cleared")
+      assert.equal(await v.page.locator(".graph-legend").isHidden(), true)
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.stored.graph)).filters.files, [], "none is kept")
+      const a = v.page.getByRole("checkbox", { name: /^a\.ttl/ })
+      assert.equal(await a.isChecked(), false)
+      assert.equal(await v.page.getByRole("checkbox", { name: /^b\.ttl/ }).isChecked(), false)
+      // From none, one tick is that one file.
+      await a.check()
+      await v.page.locator(".graph[data-busy='false'] .graph-status", { hasText: /Showing/ }).waitFor()
+      assert.deepEqual((await v.calls()).at(-1).params.files, [A])
+      assert.equal(await v.page.locator(".graph-notice").isHidden(), true)
+      assert.ok((await v.page.evaluate(() => window.__graph.inked())) > 500, "drawn again")
+      // All: every file, so no files param.
+      const m = (await v.calls()).length
+      await files.getByRole("button", { name: "All" }).press("Enter")
+      await v.page.waitForFunction((k) => window.__graph.calls.length > k, m)
+      assert.equal("files" in (await v.calls()).at(-1).params, false)
+      assert.equal(await a.isChecked(), true)
+      // Unticking the last ticked file is none too.
+      await v.page.getByRole("checkbox", { name: /^b\.ttl/ }).uncheck()
+      await v.page.waitForFunction((k) => window.__graph.calls.length > k, m + 1)
+      const k = (await v.calls()).length
+      await a.uncheck()
+      await v.page.locator(".graph-status", { hasText: "No files selected" }).waitFor()
+      assert.equal(await settled(v), k)
+      // The other modes say so too, without a request.
+      await v.page.getByRole("tab", { name: "Hierarchy" }).click()
+      await v.page.locator(".graph-notice", { hasText: "No files selected" }).waitFor()
+      assert.equal(await v.page.locator(".graph-treebox").isHidden(), true)
+      assert.equal(await settled(v), k)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("opened with none stored, it asks once for the files to list, again on refresh, then a tick asks for that file (catches: an empty list to choose from after a reload, a file added while none is selected never listed, a request with files: [])", async () => {
+    const v = await open({ stored: { mode: "graph", filters: { files: [] } } }, undefined, "No files selected")
+    try {
+      const calls = await v.calls()
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0].params.maxNodes, 0, "the facets only")
+      assert.equal("files" in calls[0].params, false)
+      // The host says the workspace changed: the files to list are asked
+      // for again (a file added meanwhile shows up), still with no nodes.
+      await v.page.evaluate(() => window.__graph.view.refresh())
+      const again = await v.calls()
+      assert.equal(again.length, 2, "one facets request per refresh")
+      assert.equal(again[1].params.maxNodes, 0)
+      assert.equal("files" in again[1].params, false)
+      const b = v.page.getByRole("checkbox", { name: /^b\.ttl/ })
+      assert.equal(await b.isChecked(), false)
+      await b.check()
+      await v.page.locator(".graph[data-busy='false'] .graph-status", { hasText: /Showing/ }).waitFor()
+      assert.deepEqual((await v.calls()).at(-1).params.files, [B])
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("long file names are cut in the middle in the list and the legend, the full path in the title (catches: names cut at the end, no way to read the whole path)", async () => {
+    const v = await open()
+    const long = ["file:///work/shacl-playground/model/deeply/nested/folder/sensor-network-shapes.ttl", "file:///work/other-project/data/sensor-network-data.ttl"]
+    try {
+      await v.page.evaluate(async (long) => {
+        const { createGraphView } = await import("/app/graph/view.js")
+        const { smallGraph, A } = await import("/test/graph-fixture.mjs")
+        const rename = (u) => (u === A ? long[0] : u ? long[1] : u)
+        window.__graph.view.destroy()
+        window.__graph.view = createGraphView({
+          container: document.getElementById("host"),
+          request: async () => {
+            const r = smallGraph()
+            for (const x of [...r.nodes, ...r.edges, ...r.facets.files]) x.uri = rename(x.uri)
+            return r
+          },
+          store: { get: () => ({ mode: "graph" }), set() {} },
+        })
+      }, long)
+      await v.page.locator(".graph[data-busy='false'] .graph-status", { hasText: /Showing/ }).waitFor()
+      const root = commonRoot(long)
+      const keys = await v.page.locator(".graph-key").evaluateAll((els) => els.map((e) => [e.textContent, e.title]))
+      assert.deepEqual(keys, long.map((u) => [middleCut(fileLabel(u, root), 32), u]))
+      assert.equal(keys[0][0], "shacl…/sensor-network-shapes.ttl", "the legend keeps the file name")
+      const rows = await v.page.locator(".graph-check:has([data-g='file'])").evaluateAll((els) => els.map((e) => [e.querySelector(".graph-check-l").textContent, e.title]))
+      assert.deepEqual(rows, long.map((u) => [middleCut(fileLabel(u, root), 26), u]))
+      assert.ok(rows.every(([t]) => [...t].length <= 26 && t.includes("…")))
+      // The info panel's file line too.
+      const [x, y] = await v.middle()
+      await v.page.mouse.click(x, y)
+      const file = v.page.locator(".graph-info-file")
+      await file.waitFor()
+      assert.equal(await file.getAttribute("title"), long[0])
+      assert.equal(await file.textContent(), middleCut(fileLabel(long[0], root), 48))
     } finally {
       await v.close()
     }

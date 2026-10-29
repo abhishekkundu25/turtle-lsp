@@ -4,11 +4,16 @@
 // It changes `state` (filters.js) in place and says what changed.
 
 import { h } from "./el.js"
-import { KINDS, commonRoot, fileLabel } from "./model.js"
+import { KINDS, commonRoot, fileLabel, middleCut } from "./model.js"
 import { CAPS, COLOR_BY, DEPTHS, ruleOf, setRule } from "./filters.js"
 
 const RULES = [["", "any"], ["include", "only"], ["exclude", "hide"]]
 const LIST_MAX = 60
+// A file name in the list, in characters: the 240 px panel less the box and
+// the count leaves about 170 px, some 26 characters of 11 px monospace. A
+// wider panel (stacked on a narrow host) shows the same; CSS still ends a
+// line that does not fit with an ellipsis.
+const FILE_CHARS = 26
 
 /**
  * @param {HTMLElement} el the panel's element
@@ -39,6 +44,10 @@ export function createFilterPanel(el, state, on, caps = CAPS) {
   const kinds = h(doc, "div", { class: "graph-list" })
   const lists = { files: h(doc, "div", { class: "graph-list" }), namespaces: h(doc, "div", { class: "graph-list" }), predicates: h(doc, "div", { class: "graph-list" }) }
   const section = (title, body, open) => h(doc, "details", { class: "graph-sec", open }, h(doc, "summary", { text: title }), body)
+  // All / None for the files: a list of fifty is one click from one file.
+  const allNone = h(doc, "div", { class: "graph-allnone", role: "group", "aria-label": "Select files" },
+    h(doc, "button", { type: "button", class: "graph-btn", "data-files": "all", "data-key": "files:all", text: "All" }),
+    h(doc, "button", { type: "button", class: "graph-btn", "data-files": "none", "data-key": "files:none", text: "None" }))
 
   el.replaceChildren(
     h(doc, "div", { class: "graph-sec graph-find" }, search, results),
@@ -49,7 +58,7 @@ export function createFilterPanel(el, state, on, caps = CAPS) {
       check("literals", "on", F.literals, "Literals"),
       check("types", "on", F.types, "rdf:type edges")),
     section("Kinds", kinds, true),
-    section("Files", lists.files, true),
+    section("Files", [allNone, lists.files], true),
     section("Namespaces", lists.namespaces, false),
     section("Predicates", lists.predicates, false))
 
@@ -64,7 +73,7 @@ export function createFilterPanel(el, state, on, caps = CAPS) {
     if (key === "files") {
       const uris = [...new Set([...map.keys(), ...(F.files ?? [])])]
       const root = commonRoot(uris)
-      box.replaceChildren(...(uris.length ? uris.slice(0, LIST_MAX).map((u) => check("file", u, !F.files || F.files.includes(u), fileLabel(u, root), map.get(u), u)) : [h(doc, "p", { class: "graph-none", text: "No files" })]))
+      box.replaceChildren(...(uris.length ? uris.slice(0, LIST_MAX).map((u) => check("file", u, !F.files || F.files.includes(u), middleCut(fileLabel(u, root), FILE_CHARS), map.get(u), u)) : [h(doc, "p", { class: "graph-none", text: "No files" })]))
       return
     }
     const rules = F[key]
@@ -93,6 +102,15 @@ export function createFilterPanel(el, state, on, caps = CAPS) {
     else if (g === "file") F.files = toggle(F.files ?? [...facets.files.keys()], t.value, t.checked, [...facets.files.keys()])
     else if (g === "namespaces" || g === "predicates") setRule(F[g], t.dataset.v, t.value)
     else return
+    on.change("filter")
+  })
+  allNone.addEventListener("click", (e) => {
+    const which = e.target.closest("[data-files]")?.dataset.files
+    if (!which) return
+    const next = which === "all" ? null : []
+    if (JSON.stringify(next) === JSON.stringify(F.files)) return
+    F.files = next
+    renderList("files")
     on.change("filter")
   })
   // The list without (or with) `value`; null when it holds every one of `all`.

@@ -187,3 +187,29 @@ export function fileLabel(uri, root = "") {
     return tail
   }
 }
+
+// Characters as a reader counts them (an emoji or an accented letter is one),
+// so a cut never splits one.
+let segmenter = null
+function chars(s) {
+  if (typeof Intl?.Segmenter !== "function") return Array.from(s)
+  segmenter ??= new Intl.Segmenter()
+  return Array.from(segmenter.segment(s), (g) => g.segment)
+}
+
+/**
+ * `text` in at most `max` characters, cut in the middle with "…": a path keeps
+ * its last segment whole when "…/" and it fit, and as much of its start as
+ * the rest allows; otherwise the start and the end of the text, the end
+ * taking the extra character.
+ */
+export function middleCut(text, max) {
+  const s = String(text)
+  const c = chars(s)
+  if (c.length <= max) return s
+  if (max < 2) return max === 1 ? "…" : ""
+  const slash = c.lastIndexOf("/")
+  if (slash >= 0 && c.length - slash + 1 <= max) return c.slice(0, max - 1 - (c.length - slash)).join("") + "…" + c.slice(slash).join("")
+  const front = Math.floor((max - 1) / 2)
+  return c.slice(0, front).join("") + "…" + c.slice(c.length - (max - 1 - front)).join("")
+}
