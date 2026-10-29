@@ -160,3 +160,93 @@ test("a turtle-lsp.json over 1 MB warns and is ignored", async () => {
   assert.match(s.messages[0].message, /larger than 1 MB/)
   await done(s, ws)
 })
+
+// ---- lint.ignore and lint.enable ----
+//
+// A workspace of its own: vocab.ttl describes four ex: terms (so ex: is an own
+// namespace), and data.ttl and other.ttl each get an unused-prefix hint
+// (foaf:), an undescribed-term warning (ex:Persn) and an unknown-term warning
+// (rdfs:labl).
+
+const LINT_DATA = `@prefix ex: <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+ex:bob a ex:Persn ; rdfs:labl "Bob" .
+`
+const VOCAB = `@prefix ex: <http://example.org/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+ex:Person a rdfs:Class .
+ex:Place a rdfs:Class .
+ex:name a rdf:Property .
+ex:city a rdf:Property .
+`
+const ALL_CODES = ["undescribed-term", "unknown-term", "unused-prefix"]
+const codes = (diags) => diags.map((d) => d.code).sort()
+
+// The workspace with `settings` as turtle-lsp.json; a server started in it
+// with `initializationOptions`, stopped (and the folder removed) after the test.
+async function lintSession(t, settings, initializationOptions) {
+  const ws = tempDir("turtle-lintlists-")
+  fs.writeFileSync(path.join(ws, "vocab.ttl"), VOCAB)
+  fs.writeFileSync(path.join(ws, "data.ttl"), LINT_DATA)
+  fs.writeFileSync(path.join(ws, "other.ttl"), LINT_DATA)
+  if (settings !== undefined) fs.writeFileSync(path.join(ws, "turtle-lsp.json"), JSON.stringify(settings))
+  const s = await startServer({ cwd: ws, initializationOptions })
+  t.after(() => done(s, ws))
+  return { s, data: uriOf(path.join(ws, "data.ttl")), other: uriOf(path.join(ws, "other.ttl")) }
+}
+
+// Opens data.ttl once the index has landed; its codes once `ok` holds.
+async function openCodes(s, uri, ok) {
+  await s.request("workspace/symbol", { query: "" })
+  s.open(uri, LINT_DATA)
+  return codes(await until(() => s.diagnosticsFor(uri), (d) => ok(codes(d)), "open document"))
+}
+
+const section = (turtle) => ({ settings: { turtle: { diagnostics: { workspace: true }, ...turtle } } })
+const exactly = (want) => (d) => codes(d).join() === want.join()
+
+test("lint lists: with no settings every code is reported (what the list tests hide)", async (t) => {
+  const { s, data } = await lintSession(t)
+  assert.deepEqual(await openCodes(s, data, (c) => c.includes("undescribed-term")), ALL_CODES)
+})
+
+test("lint.ignore in turtle-lsp.json and in the editor settings add up, for open files and workspace diagnostics", async (t) => {
+  const { s, data, other } = await lintSession(t, { lint: { ignore: ["unused-prefix"] } }, {
+    diagnostics: { workspace: true },
+    lint: { ignore: ["unknown-term"] },
+  })
+  // The file's list and initializationOptions' list: only the undescribed term is left.
+  assert.deepEqual(await openCodes(s, data, (c) => c.includes("undescribed-term")), ["undescribed-term"])
+  // A file that is not open gets the same, from workspace diagnostics.
+  await until(() => s.diagnosticsFor(other), exactly(["undescribed-term"]), "workspace diagnostics")
+
+  // The configuration section replaces initializationOptions, and the file's
+  // list still applies; lint.undescribedTerms: false still works.
+  s.notify("workspace/didChangeConfiguration", section({ lint: { undescribedTerms: false } }))
+  await until(() => s.diagnosticsFor(data), exactly(["unknown-term"]), "open document with the lint off")
+  await until(() => s.diagnosticsFor(other), exactly(["unknown-term"]), "workspace diagnostics with the lint off")
+  // The section's lint.ignore adds to the file's.
+  s.notify("workspace/didChangeConfiguration", section({ lint: { ignore: ["unknown-term"] } }))
+  await until(() => s.diagnosticsFor(data), exactly(["undescribed-term"]), "open document, file + section")
+  await until(() => s.diagnosticsFor(other), exactly(["undescribed-term"]), "workspace diagnostics, file + section")
+  assert.deepEqual(s.messages, [])
+})
+
+test("lint.undescribedTerms: false in turtle-lsp.json still works next to lint.ignore", async (t) => {
+  const { s, data } = await lintSession(t, { lint: { ignore: ["unused-prefix"], undescribedTerms: false } })
+  assert.deepEqual(await openCodes(s, data, (c) => c.includes("unknown-term")), ["unknown-term"])
+  // After the index has landed the undescribed term stays hidden.
+  await sleep(300)
+  assert.deepEqual(codes(await s.diagnosticsFor(data)), ["unknown-term"])
+  assert.deepEqual(s.messages, [])
+})
+
+test("lint.enable with an off-by-default or unknown code changes nothing else and warns about nothing", async (t) => {
+  const file = { lint: { enable: ["missing-ontology-license", "missing-label", "no-such-code"], ignore: ["missing-definition"] } }
+  const { s, data } = await lintSession(t, file, { lint: { enable: ["unused-prefix", "also-unknown"] } })
+  // A code that is already on stays on when enabled; the others are untouched.
+  assert.deepEqual(await openCodes(s, data, (c) => c.includes("undescribed-term")), ALL_CODES)
+  assert.deepEqual(s.messages, [])
+})
