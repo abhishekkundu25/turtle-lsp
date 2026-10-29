@@ -4132,7 +4132,9 @@ pub(crate) mod tests {
     /// (`DocFacts::new`, a full rebuild), dropping the old analysis 0.6 ms
     /// and the index swap. The maps and the facts limit it; the full
     /// keystroke pays the same facts and drop, which is why the share is
-    /// not lower. The budget is about four times the laptop's keystroke.
+    /// not lower. A Windows CI runner measured 24.8 ms spliced against
+    /// 50.7 ms in full, so the checks are ratios; the wall-clock bound only
+    /// catches a keystroke gone badly wrong.
     #[cfg(not(debug_assertions))]
     #[test]
     fn timing_typing_in_the_middle_of_a_big_file_is_spliced() {
@@ -4188,7 +4190,7 @@ pub(crate) mod tests {
         // N keystrokes cost N times one, a fraction of N full analyses.
         let n = keys as u32;
         assert!(all * 5 < full * n * 3, "{msg}; {keys} spliced {all:?}");
-        assert!(first.as_millis() < 20, "{msg}");
+        assert!(first.as_millis() < 200, "{msg}");
     }
 }
 
