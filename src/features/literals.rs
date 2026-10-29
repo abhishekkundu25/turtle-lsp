@@ -35,11 +35,15 @@ pub(crate) fn ill_typed(datatype: &str, lexical: &str) -> bool {
     !well_formed(datatype, lexical.trim_matches([' ', '\t', '\n', '\r']))
 }
 
-/// Each ill-typed literal of `a` that is a triple's object (literals inside
-/// triple terms are not checked), with the message.
-pub(crate) fn invalid_literals(a: &Analysis) -> Vec<(Span, String)> {
+/// Each ill-typed literal that is the object of one of the triples `range`
+/// of `a` (literals inside triple terms are not checked): the triple's
+/// index, the literal's span, and the message.
+pub(crate) fn invalid_literals(
+    a: &Analysis,
+    range: std::ops::Range<usize>,
+) -> Vec<(u32, Span, String)> {
     let mut out = Vec::new();
-    for t in &a.parsed.triples {
+    for (i, t) in (range.start as u32..).zip(&a.parsed.triples[range]) {
         let Node::Literal {
             value,
             datatype,
@@ -56,7 +60,7 @@ pub(crate) fn invalid_literals(a: &Analysis) -> Vec<(Span, String)> {
         };
         if ill_typed(datatype, value) {
             let message = format!("'{}' is not a valid {prefix}:{local}", shown(value));
-            out.push((t.o_span, message));
+            out.push((i, t.o_span, message));
         }
     }
     out
@@ -294,9 +298,9 @@ mod tests {
             false,
             syntax,
         );
-        invalid_literals(&a)
+        invalid_literals(&a, 0..a.parsed.triples.len())
             .into_iter()
-            .map(|(s, m)| (text[s.start as usize..s.end as usize].to_string(), m))
+            .map(|(_, s, m)| (text[s.start as usize..s.end as usize].to_string(), m))
             .collect()
     }
 

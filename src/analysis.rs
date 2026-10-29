@@ -6,7 +6,7 @@
 use crate::sparql;
 use crate::syntax::lexer::{Kind, Token};
 pub use crate::syntax::splice::Fallback;
-use crate::syntax::splice::{self, Change, Edit};
+use crate::syntax::splice::{self, Change, Edit, Window};
 use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Span, Syntax};
 use lsp_types::{Position, Range};
 use rustc_hash::FxHashMap;
@@ -220,15 +220,16 @@ impl Analysis {
     }
 
     /// The parse of `text`, which `edit` made from this analysis's text, by
-    /// the statement splice; or why the splice does not apply. `uri` and
-    /// `external` are the document's URL and prefixes now.
+    /// the statement splice, and the window it parsed again; or why the
+    /// splice does not apply. `uri` and `external` are the document's URL
+    /// and prefixes now.
     pub(crate) fn splice(
         &self,
         uri: &str,
         text: &str,
         edit: Edit,
         external: &PrefixMap,
-    ) -> Result<Parsed, Fallback> {
+    ) -> Result<(Parsed, Window), Fallback> {
         let change = Change {
             old_text: &self.text,
             new_text: text,

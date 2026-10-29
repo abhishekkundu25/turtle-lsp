@@ -6,6 +6,7 @@ pub mod format;
 pub mod hierarchy;
 pub mod hover;
 pub mod inlay;
+pub(crate) mod kept;
 pub(crate) mod lens;
 pub(crate) mod lint;
 pub(crate) mod literals;

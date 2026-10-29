@@ -1,17 +1,21 @@
-//! The diagnostics of one RDF document. The quick fixes for them are in
+//! The diagnostics of one RDF document, check by check ([`Check`], each
+//! with what it reads), in one order. An open document keeps the findings
+//! of some between edits ([`Kept`]). The quick fixes for them are in
 //! [`super::quickfix`], which also owns the data a diagnostic carries for its
 //! fix; [`crate::diagnose`] composes these with the other sources.
 
+use super::kept::Kept;
 use super::quickfix::{FixData, PrefixCandidate, add_prefix_note, prefix_candidates};
 use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
-use crate::syntax::{Form, Role, Severity, Syntax, SyntaxError};
+use crate::syntax::{Form, Iri, Ref, Role, Severity, Span, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::BorrowMut;
 
 pub(crate) const SOURCE: &str = "turtle";
 
@@ -53,16 +57,18 @@ pub(crate) struct TermUse<'a, K> {
 /// `unknown-term` (warning, with a "did you mean" and `data.replace` in the
 /// document's own spelling) and `deprecated-term` (hint, deprecated tag) for
 /// terms of the well-known vocabularies, matched by namespace IRI. `mk`
-/// builds a diagnostic at a span. No hint where `warned`, the spans
-/// [`own_deprecations`] reported, has the use's span: that warning says it.
-pub(crate) fn vocabulary_terms<'a, K>(
+/// builds a diagnostic at a span (or a [`Found`]). No hint where `warned`,
+/// the spans [`own_deprecations`] reported, has the use's span: that
+/// warning says it.
+pub(crate) fn vocabulary_terms<'a, K, D>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     k: &Knowledge,
     warned: &FxHashSet<crate::syntax::Span>,
-    mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
-    out: &mut Vec<Diagnostic>,
+    mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> D,
+    out: &mut Vec<D>,
 ) where
     K: std::ops::Deref<Target = str> + crate::syntax::IriKey,
+    D: BorrowMut<Diagnostic>,
 {
     // Suggestions are memoised: a file can use one unknown term thousands of times.
     let mut suggestions: FxHashMap<(&str, String), Option<&str>> = FxHashMap::default();
@@ -83,7 +89,7 @@ pub(crate) fn vocabulary_terms<'a, K>(
                     "deprecated-term",
                     format!("'{}:{local}' is deprecated", v.prefix),
                 );
-                d.tags = Some(vec![DiagnosticTag::DEPRECATED]);
+                d.borrow_mut().tags = Some(vec![DiagnosticTag::DEPRECATED]);
                 out.push(d);
             }
             Some(_) => {}
@@ -113,9 +119,9 @@ pub(crate) fn vocabulary_terms<'a, K>(
                     FixData::Replace {
                         replace: replacement,
                     }
-                    .attach(&mut d);
+                    .attach(d.borrow_mut());
                 }
-                d.message = msg;
+                d.borrow_mut().message = msg;
                 out.push(d);
             }
         }
@@ -128,15 +134,16 @@ pub(crate) fn vocabulary_terms<'a, K>(
 /// leaves out subjects: they describe the term. Needs no index wait: an
 /// unindexed file can only hide a deprecation, never invent one. Returns
 /// the spans it reported, for [`vocabulary_terms`].
-pub(crate) fn own_deprecations<'a, K>(
+pub(crate) fn own_deprecations<'a, K, D>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     text: &str,
     k: &Knowledge,
-    mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
-    out: &mut Vec<Diagnostic>,
+    mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> D,
+    out: &mut Vec<D>,
 ) -> FxHashSet<crate::syntax::Span>
 where
     K: crate::syntax::IriKey,
+    D: BorrowMut<Diagnostic>,
 {
     let mut warned = FxHashSet::default();
     if !k.has_deprecations() {
@@ -153,7 +160,7 @@ where
             "deprecated-term",
             format!("'{written}' is deprecated: the workspace marks it owl:deprecated"),
         );
-        d.tags = Some(vec![DiagnosticTag::DEPRECATED]);
+        d.borrow_mut().tags = Some(vec![DiagnosticTag::DEPRECATED]);
         out.push(d);
     }
     warned
@@ -234,26 +241,252 @@ pub fn diagnostics(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic
     diagnostics_with(a, k, enc, &Options::default())
 }
 
+/// What a check reads besides the statement it reports in: what can change
+/// its findings, so when a finding kept from before an edit still holds
+/// ([`Kept`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reads {
+    /// Its statement alone, with the prefixes in effect, which a splice
+    /// never changes (a directive in its window makes it fall back).
+    Statement,
+    /// The statements about the same subject, and what the index says of
+    /// that subject.
+    Subject,
+    /// Its statement, and what the knowledge index says of the IRIs and
+    /// texts written there: a change of that is listed in the index's
+    /// change set ([`crate::knowledge::Changes`]).
+    Index,
+    /// The whole document.
+    Document,
+    /// The workspace beyond the change set: facts read from other
+    /// documents' analyses (their types, super classes, labels by IRI), or
+    /// a budget shared by the whole document. Any change can change them.
+    Workspace,
+}
+
+/// The checks of an RDF document, in the order the composer gives their
+/// findings ([`Check::ALL`]), each with what it reads ([`Check::reads`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Check {
+    /// The parse's errors and warnings: `syntax` and the parser's own codes.
+    Syntax,
+    /// `undeclared-prefix`, whose fix offers the namespaces the index binds
+    /// the prefix to.
+    UndeclaredPrefix,
+    /// `duplicate-prefix` and `redefined-prefix`.
+    PrefixDeclarations,
+    /// `unused-prefix`.
+    UnusedPrefix,
+    /// JSON-LD's own: what processing dropped, and undefined prefixes.
+    JsonLd,
+    /// `unknown-term` and `deprecated-term`: the terms of well-known
+    /// vocabularies, then the uses of terms the workspace deprecates.
+    TermUses,
+    /// `invalid-literal`.
+    Literals,
+    /// The SHACL shape lint ([`crate::features::shacl_lint`]).
+    ShaclLint,
+    /// `undescribed-term`, which shares one budget of suggestions.
+    UndescribedTerms,
+    /// `label-whitespace`.
+    LabelWhitespace,
+    /// `duplicate-label`.
+    DuplicateLabel,
+    /// `multiple-labels`.
+    MultipleLabels,
+    /// The opt-in curation checks ([`crate::features::curation::OPT_IN`]).
+    HouseStyle,
+}
+
+impl Check {
+    pub(crate) const ALL: [Check; 13] = [
+        Check::Syntax,
+        Check::UndeclaredPrefix,
+        Check::PrefixDeclarations,
+        Check::UnusedPrefix,
+        Check::JsonLd,
+        Check::TermUses,
+        Check::Literals,
+        Check::ShaclLint,
+        Check::UndescribedTerms,
+        Check::LabelWhitespace,
+        Check::DuplicateLabel,
+        Check::MultipleLabels,
+        Check::HouseStyle,
+    ];
+
+    pub(crate) fn reads(self) -> Reads {
+        match self {
+            Check::Syntax | Check::Literals | Check::LabelWhitespace => Reads::Statement,
+            Check::MultipleLabels => Reads::Subject,
+            Check::UndeclaredPrefix | Check::TermUses | Check::DuplicateLabel => Reads::Index,
+            Check::PrefixDeclarations | Check::UnusedPrefix | Check::JsonLd => Reads::Document,
+            Check::ShaclLint | Check::UndescribedTerms | Check::HouseStyle => Reads::Workspace,
+        }
+    }
+
+    /// Whether an open document keeps the findings between edits
+    /// ([`Kept`]). Kept: the checks that cost the most on a keystroke in a
+    /// big vocabulary (the label checks and the term uses were 80% of the
+    /// composition, profiled on 17,200 classes), and `invalid-literal`,
+    /// which reads its statement alone. The rest run in full each time:
+    /// the parse keeps the syntax errors per statement already, and the
+    /// others cost little or read more than the change set says. Only what
+    /// an edit's window or the index's change set can tell has changed is
+    /// kept: never a check that reads the document or the workspace.
+    pub(crate) fn kept(self) -> bool {
+        let followed = matches!(
+            self.reads(),
+            Reads::Statement | Reads::Subject | Reads::Index
+        );
+        followed && self.costly()
+    }
+
+    /// The checks [`Check::kept`] picks by their cost.
+    fn costly(self) -> bool {
+        match self {
+            Check::TermUses
+            | Check::Literals
+            | Check::LabelWhitespace
+            | Check::DuplicateLabel
+            | Check::MultipleLabels => true,
+            Check::Syntax
+            | Check::UndeclaredPrefix
+            | Check::PrefixDeclarations
+            | Check::UnusedPrefix
+            | Check::JsonLd
+            | Check::ShaclLint
+            | Check::UndescribedTerms
+            | Check::HouseStyle => false,
+        }
+    }
+}
+
+/// A finding at a span of the document: the diagnostic without its range,
+/// which [`Found::diagnostic`] fills in when the editor asks. Kept findings
+/// move with their statement ([`Kept`]); ranges would not.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Found {
+    pub(crate) span: Span,
+    pub(crate) diagnostic: Diagnostic,
+}
+
+impl Found {
+    pub(crate) fn new(
+        span: Span,
+        severity: DiagnosticSeverity,
+        code: &str,
+        message: String,
+    ) -> Found {
+        Found {
+            span,
+            diagnostic: Diagnostic {
+                severity: Some(severity),
+                code: Some(NumberOrString::String(code.to_string())),
+                source: Some(SOURCE.to_string()),
+                message,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The diagnostic, at its span of `a` in `enc` columns.
+    pub(crate) fn diagnostic(&self, a: &Analysis, enc: Encoding) -> Diagnostic {
+        self.clone().into_diagnostic(a, enc)
+    }
+
+    /// [`Found::diagnostic`], without a copy.
+    pub(crate) fn into_diagnostic(self, a: &Analysis, enc: Encoding) -> Diagnostic {
+        Diagnostic {
+            range: a.range(enc, self.span),
+            ..self.diagnostic
+        }
+    }
+}
+
+impl std::borrow::Borrow<Diagnostic> for Found {
+    fn borrow(&self) -> &Diagnostic {
+        &self.diagnostic
+    }
+}
+
+impl std::borrow::BorrowMut<Diagnostic> for Found {
+    fn borrow_mut(&mut self) -> &mut Diagnostic {
+        &mut self.diagnostic
+    }
+}
+
 pub fn diagnostics_with(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
     opts: &Options,
 ) -> Vec<Diagnostic> {
-    let mut out = Vec::new();
-    let mk = |span, severity, code: &str, message: String| Diagnostic {
-        range: a.range(enc, span),
-        severity: Some(severity),
-        code: Some(NumberOrString::String(code.to_string())),
-        source: Some(SOURCE.to_string()),
-        message,
-        ..Default::default()
-    };
+    diagnostics_kept(a, k, enc, opts, &Kept::of(a, k))
+}
 
-    let severity = |s| match s {
+/// [`diagnostics_with`], with the findings of the [`Check::kept`] checks
+/// from `kept`, which must be up to date with `a` and `k`.
+pub(crate) fn diagnostics_kept(
+    a: &Analysis,
+    k: &Knowledge,
+    enc: Encoding,
+    opts: &Options,
+    kept: &Kept,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let mk = |span, severity, code: &str, message: String| {
+        Found::new(span, severity, code, message).into_diagnostic(a, enc)
+    };
+    for check in Check::ALL {
+        if check.kept() {
+            out.extend(kept.findings(check).map(|f| f.diagnostic(a, enc)));
+            continue;
+        }
+        match check {
+            Check::Syntax => syntax_errors(a, opts, &mk, &mut out),
+            Check::UndeclaredPrefix => undeclared_prefixes(a, k, &mk, &mut out),
+            Check::PrefixDeclarations => prefix_declarations(a, &mk, &mut out),
+            Check::UnusedPrefix => unused_prefixes(a, &mk, &mut out),
+            Check::JsonLd if a.parsed.syntax == Syntax::JsonLd => {
+                jsonld_lints(a, k, &mk, &mut out);
+            }
+            Check::ShaclLint => {
+                for f in crate::features::shacl_lint::lint(a, k) {
+                    let sev = if f.error {
+                        DiagnosticSeverity::ERROR
+                    } else {
+                        DiagnosticSeverity::WARNING
+                    };
+                    out.push(mk(f.span, sev, f.code, f.message));
+                }
+            }
+            Check::UndescribedTerms if opts.lint_undescribed_terms => {
+                out.extend(crate::features::lint::undescribed_terms(a, k, enc));
+            }
+            Check::HouseStyle if opts.house_style => {
+                out.extend(crate::features::curation::house_style(a, k, enc));
+            }
+            Check::JsonLd | Check::UndescribedTerms | Check::HouseStyle => {}
+            Check::TermUses
+            | Check::Literals
+            | Check::LabelWhitespace
+            | Check::DuplicateLabel
+            | Check::MultipleLabels => unreachable!("kept: {check:?}"),
+        }
+    }
+    out
+}
+
+fn severity_of(s: Severity) -> DiagnosticSeverity {
+    match s {
         Severity::Error => DiagnosticSeverity::ERROR,
         Severity::Warning => DiagnosticSeverity::WARNING,
-    };
+    }
+}
+
+/// The parse's errors and warnings, at most [`Options::max_syntax_errors`].
+fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic>) {
     let errors = &a.parsed.errors;
     let cap = opts
         .max_syntax_errors
@@ -267,31 +500,33 @@ pub fn diagnostics_with(
         last_end = last_end.max(e.span.end);
         out.push(mk(
             e.span,
-            severity(e.severity),
+            severity_of(e.severity),
             e.code,
             e.message().to_string(),
         ));
     }
     if let Some(max) = cap {
         out.push(mk(
-            crate::syntax::Span::new(last_end, last_end),
+            Span::new(last_end, last_end),
             DiagnosticSeverity::ERROR,
             "syntax",
             format!("More than {max} syntax errors; the rest are not shown"),
         ));
     }
+}
 
-    // Undeclared prefixes, with "add @prefix" fixes for every known namespace.
-    let mut candidates: FxHashMap<&str, Vec<PrefixCandidate>> = FxHashMap::default();
+/// How the composer makes a diagnostic at a span.
+type Mk<'m> = dyn Fn(Span, DiagnosticSeverity, &str, String) -> Diagnostic + 'm;
+
+/// Undeclared prefixes, with "add @prefix" fixes for every known namespace.
+fn undeclared_prefixes(a: &Analysis, k: &Knowledge, mk: &Mk, out: &mut Vec<Diagnostic>) {
     // N-Triples and N-Quads have no prefixes at all; the parser already
     // reports the pname.
-    let has_prefixes = a.parsed.syntax.has_prefixes();
-    for u in a
-        .parsed
-        .prefix_uses
-        .iter()
-        .filter(|u| !u.resolved && has_prefixes)
-    {
+    if !a.parsed.syntax.has_prefixes() {
+        return;
+    }
+    let mut candidates: FxHashMap<&str, Vec<PrefixCandidate>> = FxHashMap::default();
+    for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {
         let shown = if u.name.is_empty() {
             ":".to_string()
         } else {
@@ -309,8 +544,10 @@ pub fn diagnostics_with(
         add_prefix_note(&mut d, &u.name, cands, "@prefix");
         out.push(d);
     }
+}
 
-    // Duplicate and unused declarations.
+/// Duplicate and redefined declarations.
+fn prefix_declarations(a: &Analysis, mk: &Mk, out: &mut Vec<Diagnostic>) {
     let mut seen: FxHashMap<&str, &str> = FxHashMap::default();
     for p in &a.parsed.prefixes {
         if let Some(prev) = seen.insert(&p.name, &p.iri) {
@@ -333,59 +570,159 @@ pub fn diagnostics_with(
             }
         }
     }
-    let is_prefix_file = file_uri_name(&a.uri).as_deref() == Some(PREFIX_FILE);
-    if !is_prefix_file {
-        let mut used: rustc_hash::FxHashSet<&str> = a
-            .parsed
-            .prefix_uses
-            .iter()
-            .map(|u| u.name.as_str())
-            .collect();
-        // A statement skipped by error recovery records no uses; its prefixed
-        // names still keep their prefix. Without a syntax error nothing is
-        // skipped, so the recorded uses are all of them.
-        if a.parsed
-            .errors
-            .iter()
-            .any(|e| e.severity == Severity::Error)
-            && a.parsed
-                .prefixes
-                .iter()
-                .any(|p| !used.contains(p.name.as_str()))
+}
+
+/// Declarations no prefixed name uses, except in a prefixes.ttl.
+fn unused_prefixes(a: &Analysis, mk: &Mk, out: &mut Vec<Diagnostic>) {
+    if file_uri_name(&a.uri).as_deref() == Some(PREFIX_FILE) {
+        return;
+    }
+    let declared: FxHashSet<&str> = a.parsed.prefixes.iter().map(|p| p.name.as_str()).collect();
+    if declared.is_empty() {
+        return;
+    }
+    // Most documents use every prefix they declare, and early: stop at
+    // the use that leaves none unused.
+    let mut used: FxHashSet<&str> = FxHashSet::default();
+    for u in &a.parsed.prefix_uses {
+        if declared.contains(u.name.as_str())
+            && used.insert(u.name.as_str())
+            && used.len() == declared.len()
         {
-            let tokens = a.tokens_or_lexed();
-            let names: rustc_hash::FxHashSet<u32> = a
-                .parsed
-                .prefixes
-                .iter()
-                .map(|p| p.name_span.start)
-                .collect();
-            used.extend(
-                tokens
-                    .iter()
-                    .filter(|t| t.kind == Kind::PName && !names.contains(&t.start))
-                    .filter_map(|t| a.text[t.start as usize..t.end as usize].split(':').next()),
-            );
+            return;
         }
-        for p in a
+    }
+    // A statement skipped by error recovery records no uses; its prefixed
+    // names still keep their prefix. Without a syntax error nothing is
+    // skipped, so the recorded uses are all of them.
+    if a.parsed
+        .errors
+        .iter()
+        .any(|e| e.severity == Severity::Error)
+    {
+        let tokens = a.tokens_or_lexed();
+        let names: FxHashSet<u32> = a
             .parsed
             .prefixes
             .iter()
-            .filter(|p| !used.contains(p.name.as_str()))
-        {
-            let mut d = mk(
-                p.span,
-                DiagnosticSeverity::HINT,
-                "unused-prefix",
-                format!("Prefix '{}:' is never used", p.name),
-            );
-            d.tags = Some(vec![DiagnosticTag::UNNECESSARY]);
-            out.push(d);
-        }
+            .map(|p| p.name_span.start)
+            .collect();
+        used.extend(
+            tokens
+                .iter()
+                .filter(|t| t.kind == Kind::PName && !names.contains(&t.start))
+                .filter_map(|t| a.text[t.start as usize..t.end as usize].split(':').next()),
+        );
     }
+    for p in a
+        .parsed
+        .prefixes
+        .iter()
+        .filter(|p| !used.contains(p.name.as_str()))
+    {
+        let mut d = mk(
+            p.span,
+            DiagnosticSeverity::HINT,
+            "unused-prefix",
+            format!("Prefix '{}:' is never used", p.name),
+        );
+        d.tags = Some(vec![DiagnosticTag::UNNECESSARY]);
+        out.push(d);
+    }
+}
 
-    // Uses of terms the workspace deprecates, added after the vocabulary
-    // checks, which leave out the hint where these warn.
+/// What JSON-LD processing dropped, and `rdfs:lable` with no `rdfs` in the
+/// context, for a prefix the workspace knows: an IRI with scheme `rdfs:`.
+fn jsonld_lints(a: &Analysis, k: &Knowledge, mk: &Mk, out: &mut Vec<Diagnostic>) {
+    for f in jsonld::lint::dropped(&a.text, &a.dropped) {
+        out.push(mk(f.span, severity_of(f.severity), f.code, f.message));
+    }
+    let mut namespaces: FxHashMap<&str, Option<String>> = FxHashMap::default();
+    for (span, word) in jsonld::lint::undefined_prefixes(&a.text, &a.source_index) {
+        let ns = namespaces.entry(word).or_insert_with(|| {
+            prefix_candidates(word, k)
+                .into_iter()
+                .next()
+                .map(|c| c.namespace)
+        });
+        let Some(ns) = ns else { continue };
+        let written = text_at(a, span, span.end - span.start).unwrap_or_default();
+        let mut d = mk(
+            span,
+            DiagnosticSeverity::WARNING,
+            jsonld::lint::UNDEFINED_PREFIX,
+            format!(
+                "'{word}' is not defined in the @context, so '{written}' is an IRI with scheme '{word}:'"
+            ),
+        );
+        FixData::UndefinedPrefix {
+            prefix: word.to_string(),
+            namespace: ns.clone(),
+        }
+        .attach(&mut d);
+        out.push(d);
+    }
+}
+
+/// The `len` bytes of `a`'s text from the start of `span`.
+fn text_at(a: &Analysis, span: Span, len: u32) -> Option<&str> {
+    a.text.get(span.start as usize..(span.start + len) as usize)
+}
+
+/// The use of the term `r` refers to, for the term checks: a prefixed name
+/// with its prefix as written, or an IRI; none for `a`.
+pub(crate) fn term_use<'a>(a: &'a Analysis, r: &Ref) -> Option<TermUse<'a, Iri>> {
+    match r.form {
+        Form::A => None,
+        Form::PName { prefix_len } => Some(TermUse {
+            span: r.span,
+            iri: r.iri,
+            prefix: text_at(a, r.span, prefix_len),
+            bare: None,
+        }),
+        Form::Iri => Some(TermUse {
+            span: r.span,
+            iri: r.iri,
+            prefix: None,
+            bare: None,
+        }),
+    }
+}
+
+/// [`Check::TermUses`] for the references `refs` of a Turtle-family
+/// document: the findings of [`vocabulary_terms`], and those of
+/// [`own_deprecations`] (subjects left out), each in the order of `refs`.
+pub(crate) fn term_uses<'a>(
+    a: &Analysis,
+    k: &Knowledge,
+    refs: impl Iterator<Item = &'a Ref> + Clone,
+) -> (Vec<Found>, Vec<Found>) {
+    let mk = Found::new;
+    let mut own = Vec::new();
+    let subjects_left_out = refs.clone().filter(|r| r.role != Role::Subject);
+    let warned = own_deprecations(
+        subjects_left_out.filter_map(|r| term_use(a, r)),
+        &a.text,
+        k,
+        &mk,
+        &mut own,
+    );
+    let mut vocab = Vec::new();
+    vocabulary_terms(
+        refs.filter_map(|r| term_use(a, r)),
+        k,
+        &warned,
+        &mk,
+        &mut vocab,
+    );
+    (vocab, own)
+}
+
+/// [`Check::TermUses`] for a JSON-LD document: a term of the context at its
+/// definition, anything else as written.
+pub(crate) fn jsonld_term_uses(a: &Analysis, k: &Knowledge) -> (Vec<Found>, Vec<Found>) {
+    let mk = Found::new;
+    let mut own = Vec::new();
     let uses = a.parsed.refs.iter().filter_map(|r| {
         (r.role != Role::Subject && !matches!(r.form, Form::A)).then_some(TermUse {
             span: r.span,
@@ -394,108 +731,25 @@ pub fn diagnostics_with(
             bare: None,
         })
     });
-    let mut own = Vec::new();
     let warned = own_deprecations(uses, &a.text, k, &mk, &mut own);
-
-    // Terms of well-known vocabularies (matched by namespace IRI, not prefix name).
-    let text_at = |span: crate::syntax::Span, len: u32| {
-        a.text.get(span.start as usize..(span.start + len) as usize)
-    };
-    if a.parsed.syntax == Syntax::JsonLd {
-        for f in jsonld::lint::dropped(&a.text, &a.dropped) {
-            out.push(mk(f.span, severity(f.severity), f.code, f.message));
-        }
-        // `rdfs:lable` with no `rdfs` in the context, for a prefix the
-        // workspace knows: an IRI with scheme `rdfs:`.
-        let mut namespaces: FxHashMap<&str, Option<String>> = FxHashMap::default();
-        for (span, word) in jsonld::lint::undefined_prefixes(&a.text, &a.source_index) {
-            let ns = namespaces.entry(word).or_insert_with(|| {
-                prefix_candidates(word, k)
-                    .into_iter()
-                    .next()
-                    .map(|c| c.namespace)
-            });
-            let Some(ns) = ns else { continue };
-            let written = text_at(span, span.end - span.start).unwrap_or_default();
-            let mut d = mk(
-                span,
-                DiagnosticSeverity::WARNING,
-                jsonld::lint::UNDEFINED_PREFIX,
-                format!(
-                    "'{word}' is not defined in the @context, so '{written}' is an IRI with scheme '{word}:'"
-                ),
-            );
-            FixData::UndefinedPrefix {
-                prefix: word.to_string(),
-                namespace: ns.clone(),
-            }
-            .attach(&mut d);
-            out.push(d);
-        }
-        // A term of the context at its definition; anything else as written.
-        let iris = jsonld::lint::vocabulary_iris(&a.text, &a.parsed.refs, &a.used_terms);
-        let uses = iris.iter().map(|w| match w.form {
-            Form::PName { prefix_len } => TermUse {
-                span: w.span,
-                iri: w.iri,
-                prefix: text_at(w.span, prefix_len),
-                bare: None,
-            },
-            _ => TermUse {
-                span: w.span,
-                iri: w.iri,
-                prefix: None,
-                bare: text_at(w.span, w.span.end - w.span.start),
-            },
-        });
-        vocabulary_terms(uses, k, &warned, &mk, &mut out);
-    } else {
-        let uses = a.parsed.refs.iter().filter_map(|r| match r.form {
-            Form::A => None,
-            Form::PName { prefix_len } => Some(TermUse {
-                span: r.span,
-                iri: r.iri,
-                prefix: text_at(r.span, prefix_len),
-                bare: None,
-            }),
-            Form::Iri => Some(TermUse {
-                span: r.span,
-                iri: r.iri,
-                prefix: None,
-                bare: None,
-            }),
-        });
-        vocabulary_terms(uses, k, &warned, &mk, &mut out);
-    }
-    out.append(&mut own);
-
-    for (span, message) in crate::features::literals::invalid_literals(a) {
-        out.push(mk(
-            span,
-            DiagnosticSeverity::WARNING,
-            crate::features::literals::CODE,
-            message,
-        ));
-    }
-
-    for f in crate::features::shacl_lint::lint(a, k) {
-        let sev = if f.error {
-            DiagnosticSeverity::ERROR
-        } else {
-            DiagnosticSeverity::WARNING
-        };
-        out.push(mk(f.span, sev, f.code, f.message));
-    }
-    if opts.lint_undescribed_terms {
-        out.extend(crate::features::lint::undescribed_terms(a, k, enc));
-    }
-    out.extend(crate::features::curation::diagnostics(
-        a,
-        k,
-        enc,
-        opts.house_style,
-    ));
-    out
+    let iris = jsonld::lint::vocabulary_iris(&a.text, &a.parsed.refs, &a.used_terms);
+    let uses = iris.iter().map(|w| match w.form {
+        Form::PName { prefix_len } => TermUse {
+            span: w.span,
+            iri: w.iri,
+            prefix: text_at(a, w.span, prefix_len),
+            bare: None,
+        },
+        _ => TermUse {
+            span: w.span,
+            iri: w.iri,
+            prefix: None,
+            bare: text_at(a, w.span, w.span.end - w.span.start),
+        },
+    });
+    let mut vocab = Vec::new();
+    vocabulary_terms(uses, k, &warned, &mk, &mut vocab);
+    (vocab, own)
 }
 
 #[cfg(test)]

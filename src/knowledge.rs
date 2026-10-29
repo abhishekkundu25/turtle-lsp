@@ -762,7 +762,7 @@ fn folded(text: &str) -> impl Iterator<Item = char> + '_ {
 
 /// The hash a label or definition is indexed by: of its folded text and its
 /// (lowercase) language tag.
-fn text_key(text: &str, lang: Option<&str>) -> u64 {
+pub(crate) fn text_key(text: &str, lang: Option<&str>) -> u64 {
     const CHUNK: usize = 64;
     let mut h = FxHasher::default();
     let trimmed = text.trim();
@@ -1598,7 +1598,6 @@ impl Knowledge {
     /// analysis is already registered.
     pub fn set(&mut self, uri: &str, source: Source, a: Arc<Analysis>) {
         if self.is_current(&Key::Workspace(uri.to_string()), source, &a) {
-            self.changes.clear();
             return;
         }
         let facts = DocFacts::new(&a);
@@ -1618,7 +1617,6 @@ impl Knowledge {
     }
 
     pub fn remove(&mut self, uri: &str) {
-        self.changes.clear();
         self.take(&Key::Workspace(uri.to_string()));
     }
 
@@ -1628,7 +1626,6 @@ impl Knowledge {
     pub(crate) fn add_external(&mut self, key: &str, a: Arc<Analysis>) {
         let k = Key::External(key.to_string());
         if self.is_current(&k, Source::External, &a) {
-            self.changes.clear();
             return;
         }
         let facts = DocFacts::new(&a);
@@ -1640,7 +1637,6 @@ impl Knowledge {
     pub(crate) fn add_external_prepared(&mut self, key: &str, a: Arc<Analysis>, facts: DocFacts) {
         let k = Key::External(key.to_string());
         if self.is_current(&k, Source::External, &a) {
-            self.changes.clear();
             return;
         }
         self.put(k, key, Source::External, a, facts);
@@ -1652,7 +1648,6 @@ impl Knowledge {
     }
 
     pub(crate) fn remove_external(&mut self, key: &str) {
-        self.changes.clear();
         self.take(&Key::External(key.to_string()));
     }
 
@@ -1727,9 +1722,10 @@ impl Knowledge {
         }
     }
 
-    /// What the last call that adds, replaces or removes a source changed
-    /// (see [`Changes`]); empty after a call that changed nothing.
-    #[cfg(test)]
+    /// What the change that moved [`Knowledge::generation`] to where it is
+    /// changed (see [`Changes`]): a caller that saw the generation before
+    /// it knows what to look at again. A call that changes nothing leaves
+    /// both as they are.
     pub(crate) fn changes(&self) -> &Changes {
         &self.changes
     }
@@ -3182,6 +3178,7 @@ mod tests {
                 let old = k.by_key.get(&key).map(|&id| &k.slot(id).facts);
                 let all = items(&old.into_iter().chain(new.as_ref()).collect::<Vec<_>>());
                 let before = read(&k, &all);
+                let (generation, last) = (k.generation(), k.changes().iris.clone());
                 match (a, external) {
                     (Some(a), true) => k.add_external(&uri, a),
                     (Some(a), false) => k.set(&uri, Source::Disk, a),
@@ -3191,6 +3188,12 @@ mod tests {
                 let after = read(&k, &all);
                 let c = k.changes();
                 let at = format!("seed {seed} step {step}");
+                if k.generation() == generation {
+                    // Nothing changed: the set stays the last change's.
+                    assert!(moved(&before.iris, &after.iris).is_empty(), "{at}");
+                    assert_eq!(c.iris, last, "{at}");
+                    continue;
+                }
                 assert_eq!(c.iris, moved(&before.iris, &after.iris), "{at}");
                 assert_eq!(
                     c.namespaces,

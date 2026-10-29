@@ -34,13 +34,15 @@
 //! server) only acts on it.
 
 use crate::analysis::{Analysis, Encoding, LineIndex, LineStarts, ParsePath, SparqlAnalysis};
+use crate::diagnose::{self, DiagnosticInputs};
+use crate::features::kept::Kept;
 use crate::jsonld::loader::{self, Bundled};
 use crate::jsonld::{ContextLoader, LoadError, RemoteDocument};
 use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::server::worker::catch;
-use crate::syntax::splice::Edit;
+use crate::syntax::splice::{Edit, Window};
 use crate::syntax::{PrefixMap, Severity, Span, Syntax, SyntaxError};
-use lsp_types::TextDocumentContentChangeEvent;
+use lsp_types::{Diagnostic, TextDocumentContentChangeEvent};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
@@ -191,6 +193,9 @@ pub(crate) struct Doc {
     query: Option<Arc<SparqlAnalysis>>,
     /// A cached copy of an import: the import already contributes its facts.
     cached_import: bool,
+    /// For an RDF document: the findings of the checks it keeps between
+    /// edits ([`Workspace::diagnostics`]).
+    kept: Kept,
 }
 
 /// An open RDF document's analysis against its text: current, or what the
@@ -674,6 +679,8 @@ struct OpenAnalysis {
     facts: Option<DocFacts>,
     path: ParsePath,
     difference: Option<String>,
+    /// What the splice parsed again, when the analysis is the splice's.
+    window: Option<Window>,
 }
 
 /// [`analyze`] for the open document `doc`, building on its last analysis
@@ -690,6 +697,7 @@ fn analyze_open(
     reparse: Reparse,
 ) -> OpenAnalysis {
     let mut path = ParsePath::Whole;
+    let mut window = None;
     let attempt = caught(&doc.text, || {
         let text = &doc.text;
         let lines = doc.analyzed.lines(text);
@@ -700,8 +708,9 @@ fn analyze_open(
                 None
             }
             Some((last, edit)) => match last.splice(uri, text, edit, &external) {
-                Ok(p) => {
+                Ok((p, w)) => {
                     path = ParsePath::Spliced;
+                    window = Some(w);
                     Some(p)
                 }
                 Err(f) => {
@@ -723,7 +732,10 @@ fn analyze_open(
         let full = Analysis::with_loader(u, text, ext, keep_tokens, syntax, loader);
         match crate::oracle::same_analysis(&a, &full) {
             Ok(()) => (a, None),
-            Err(diff) => (full, Some(diff)),
+            Err(diff) => {
+                window = None;
+                (full, Some(diff))
+            }
         }
     })
     .and_then(|(a, difference)| match doc.cached_import {
@@ -736,6 +748,7 @@ fn analyze_open(
             facts,
             path,
             difference,
+            window,
         },
         Err(msg) => {
             let failed = failed_analysis(uri.to_string(), syntax, external, &msg);
@@ -745,6 +758,7 @@ fn analyze_open(
                 facts,
                 path,
                 difference: None,
+                window: None,
             }
         }
     }
@@ -1050,6 +1064,7 @@ impl Workspace {
                 analyzed: Analyzed::No,
                 query: None,
                 cached_import,
+                kept: Kept::default(),
             },
         );
         self.edited(&uri)
@@ -1284,6 +1299,7 @@ impl Workspace {
             facts,
             path,
             difference,
+            window,
         } = a;
         if self.reparse.check {
             let uri = uri.to_string();
@@ -1297,8 +1313,34 @@ impl Workspace {
         if let (Some(f), Some(a)) = (facts, &current) {
             self.knowledge.set_prepared(uri, Source::Open, a.clone(), f);
         }
-        self.open.get_mut(uri)?.analyzed = analyzed;
+        let doc = self.open.get_mut(uri)?;
+        match (window, doc.analyzed.edited(), &analyzed) {
+            (Some(w), Some((last, _)), Analyzed::Current(now)) => doc.kept.spliced(last, w, now),
+            _ => doc.kept.drop_all(),
+        }
+        doc.analyzed = analyzed;
         current
+    }
+
+    /// The diagnostics of the open RDF document `uri`, whose analysis is
+    /// `a`, as [`diagnose::document`] composes them, with the findings the
+    /// document keeps between edits ([`Kept`]); in full when the setting
+    /// `parse.incremental` is off.
+    pub(crate) fn diagnostics(
+        &mut self,
+        uri: &str,
+        a: &Arc<Analysis>,
+        enc: Encoding,
+        inputs: &DiagnosticInputs,
+    ) -> Vec<Diagnostic> {
+        // The other open documents edited since, as `knowledge` brings in.
+        self.knowledge();
+        let k = &self.knowledge;
+        let kept = match self.open.get_mut(uri) {
+            Some(d) if !self.reparse.off => Some(&mut d.kept),
+            _ => None,
+        };
+        diagnose::rdf(a, k, enc, inputs, kept)
     }
 
     /// Whether `uri` is an open SPARQL document.
@@ -3815,6 +3857,269 @@ pub(crate) mod tests {
             }
         );
     }
+    // ---- kept diagnostics ----
+
+    const KEPT_HEAD: &str = "@prefix ex: <http://example.org/> .\n\
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n";
+
+    /// The diagnostics of the open `uri` as the server composes them, with
+    /// what the document keeps between edits.
+    fn kept_diagnostics(ws: &mut Workspace, uri: &str) -> Vec<Diagnostic> {
+        let a = ws.analysis(uri).unwrap();
+        let settings = crate::settings::Settings::default();
+        ws.diagnostics(uri, &a, Encoding::Utf16, &DiagnosticInputs::new(&settings))
+    }
+
+    /// The diagnostics of `uri` in full, in a fresh workspace with the
+    /// texts of `ws`'s open documents.
+    fn fresh_diagnostics(ws: &Workspace, uri: &str) -> Vec<Diagnostic> {
+        let mut fresh = Workspace::default();
+        for (u, d) in &ws.open {
+            fresh.open_doc(u.clone(), d.text.clone(), 1);
+        }
+        let a = fresh.analysis(uri).unwrap();
+        let settings = crate::settings::Settings::default();
+        let inputs = DiagnosticInputs::new(&settings);
+        diagnose::document(
+            diagnose::Doc::Rdf(&a),
+            fresh.knowledge(),
+            Encoding::Utf16,
+            &inputs,
+        )
+    }
+
+    fn count(ds: &[Diagnostic], code: &str) -> usize {
+        let code = Some(lsp_types::NumberOrString::String(code.into()));
+        ds.iter().filter(|d| d.code == code).count()
+    }
+
+    /// Where `needle` ends in `text`, as (line, column), ASCII.
+    fn after(text: &str, needle: &str) -> (u32, u32) {
+        let i = text.find(needle).unwrap() + needle.len();
+        let line = text[..i].matches('\n').count();
+        let col = i - text[..i].rfind('\n').map_or(0, |n| n + 1);
+        (line as u32, col as u32)
+    }
+
+    /// Forty classes, each with a label and an ill-typed literal, so each
+    /// statement has findings to keep.
+    fn forty_classes() -> String {
+        let mut text = KEPT_HEAD.to_string();
+        for i in 0..40 {
+            text += &format!(
+                "ex:C{i} a owl:Class ; rdfs:label \"Class {i}\" ; ex:size \"x{i}\"^^xsd:integer .\n"
+            );
+        }
+        text
+    }
+
+    #[test]
+    fn an_edit_in_one_statement_checks_only_its_window_again() {
+        let uri = "file:///w/a.ttl";
+        let text = forty_classes();
+        let mut ws = Workspace::default();
+        ws.open_doc(uri.into(), text.clone(), 1);
+        let before = kept_diagnostics(&mut ws, uri);
+        assert_eq!(count(&before, "invalid-literal"), 40);
+        assert_eq!(ws.open[uri].kept.checked.statements, 40);
+        // A character typed in the label of class 20, then a line break
+        // after the label: what follows moves down a line.
+        let at = after(&text, "\"Class 20");
+        ws.change_doc(uri, 2, vec![ranged(at, at, "x")], Encoding::Utf16);
+        let got = kept_diagnostics(&mut ws, uri);
+        let checked = ws.open[uri].kept.checked;
+        // The splice parses one statement before the edited one again (error
+        // recovery and lookahead cross a statement's end): two statements,
+        // their 12 references (the subject, `a`, the class, two predicates
+        // and the datatype), their two labels.
+        assert_eq!(checked.statements, 2, "{checked:?}");
+        assert_eq!(checked.refs, 12, "{checked:?}");
+        assert_eq!(checked.labels, 2, "{checked:?}");
+        assert_eq!(got, fresh_diagnostics(&ws, uri));
+        let at = (at.0, at.1 + 2);
+        ws.change_doc(uri, 3, vec![ranged(at, at, "\n")], Encoding::Utf16);
+        let got = kept_diagnostics(&mut ws, uri);
+        assert_eq!(ws.open[uri].kept.checked.statements, 2);
+        assert_eq!(got, fresh_diagnostics(&ws, uri));
+        assert_eq!(count(&got, "invalid-literal"), 40);
+    }
+
+    #[test]
+    fn a_label_edit_that_makes_a_duplicate_in_another_document_refreshes_it() {
+        let (a, b) = ("file:///w/a.ttl", "file:///w/b.ttl");
+        let mut ws = Workspace::default();
+        let text = forty_classes();
+        ws.open_doc(a.into(), text.clone(), 1);
+        let other = format!("{KEPT_HEAD}ex:B a owl:Class ; rdfs:label \"Valve\" .\n");
+        ws.open_doc(b.into(), other, 1);
+        kept_diagnostics(&mut ws, a);
+        assert_eq!(count(&kept_diagnostics(&mut ws, b), "duplicate-label"), 0);
+        // Class 20 is labelled "Valve" too.
+        let (line, end) = after(&text, "\"Class 20");
+        let range = ranged((line, end - "Class 20".len() as u32), (line, end), "Valve");
+        ws.change_doc(a, 2, vec![range], Encoding::Utf16);
+        let got = kept_diagnostics(&mut ws, a);
+        assert_eq!(count(&got, "duplicate-label"), 1);
+        let got = kept_diagnostics(&mut ws, b);
+        assert_eq!(got, fresh_diagnostics(&ws, b));
+        let dup: Vec<&str> = got
+            .iter()
+            .filter(|d| count(std::slice::from_ref(d), "duplicate-label") == 1)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(dup, ["Label \"Valve\" is also the label of ex:C20"]);
+        // B took it from the index's change set, its one label again; none
+        // of its statements.
+        let checked = ws.open[b].kept.checked;
+        assert_eq!((checked.statements, checked.labels), (0, 1), "{checked:?}");
+    }
+
+    #[test]
+    fn a_prefix_edit_checks_everything_again() {
+        let uri = "file:///w/a.ttl";
+        let text = forty_classes();
+        let mut ws = Workspace::default();
+        ws.set_check_incremental(true);
+        ws.open_doc(uri.into(), text.clone(), 1);
+        kept_diagnostics(&mut ws, uri);
+        let at = after(&text, "example.");
+        ws.change_doc(
+            uri,
+            2,
+            vec![ranged(at, (at.0, at.1 + 3), "com")],
+            Encoding::Utf16,
+        );
+        let got = kept_diagnostics(&mut ws, uri);
+        let directive = ParsePath::Fallback(crate::analysis::Fallback::Directive);
+        assert_eq!(paths(&mut ws).last(), Some(&(directive, None)));
+        assert_eq!(ws.open[uri].kept.checked.statements, 40);
+        assert_eq!(got, fresh_diagnostics(&ws, uri));
+    }
+
+    #[test]
+    fn a_deprecation_reaches_the_uses_outside_the_window() {
+        let uri = "file:///w/a.ttl";
+        let mut text = format!("{KEPT_HEAD}ex:old a owl:Class ; owl:deprecated false .\n");
+        for i in 0..30 {
+            text += &format!("ex:a{i} rdfs:subClassOf ex:old .\n");
+        }
+        let mut ws = Workspace::default();
+        ws.open_doc(uri.into(), text.clone(), 1);
+        assert_eq!(count(&kept_diagnostics(&mut ws, uri), "deprecated-term"), 0);
+        let at = after(&text, "owl:deprecated ");
+        ws.change_doc(
+            uri,
+            2,
+            vec![ranged(at, (at.0, at.1 + 5), "true")],
+            Encoding::Utf16,
+        );
+        let got = kept_diagnostics(&mut ws, uri);
+        assert_eq!(count(&got, "deprecated-term"), 30);
+        assert_eq!(got, fresh_diagnostics(&ws, uri));
+        // The window, then the 31 references to ex:old.
+        let checked = ws.open[uri].kept.checked;
+        assert!(checked.statements <= 2, "{checked:?}");
+        assert!(checked.refs <= 31 + 8, "{checked:?}");
+    }
+
+    #[test]
+    fn with_the_splice_off_nothing_is_kept() {
+        let uri = "file:///w/a.ttl";
+        let text = forty_classes();
+        let mut ws = Workspace::default();
+        ws.open_doc(uri.into(), text.clone(), 1);
+        kept_diagnostics(&mut ws, uri);
+        ws.set_incremental(false);
+        let at = after(&text, "\"Class 20");
+        ws.change_doc(uri, 2, vec![ranged(at, at, "x")], Encoding::Utf16);
+        let got = kept_diagnostics(&mut ws, uri);
+        assert_eq!(ws.open[uri].kept.checked, Default::default());
+        assert_eq!(got, fresh_diagnostics(&ws, uri));
+    }
+
+    /// A vocabulary of `n` classes, each labelled and defined: 2.4 MB at
+    /// 17,200.
+    fn big_vocabulary(n: usize) -> String {
+        let mut text = String::from(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n",
+        );
+        for i in 0..n {
+            text += &format!(
+                "\nex:C{i} a owl:Class ;\n    rdfs:label \"Class {i}\"@en ;\n    \
+                 skos:definition \"A class numbered {i}.\"@en ;\n    rdfs:subClassOf ex:C{} .\n",
+                (i + 1) % n
+            );
+        }
+        text
+    }
+
+    /// The diagnostics of a keystroke in a label in the middle of a 2.4 MB
+    /// vocabulary, with what the document keeps, against composing them in
+    /// full on the same analysis and index (the analysis is not timed). On
+    /// an M-series laptop (load 1.4 to 2.2, medians of 25 keystrokes, five
+    /// runs): 0.77 ms kept against 6.4 ms in full, 0.12 of it, the spread
+    /// under 2%. In full, the label checks and the term uses were 80% of
+    /// the composition (sampled); kept, the checks a keystroke still runs
+    /// in full limit it: `undescribed-term` about 70% (it reads the
+    /// workspace and shares one budget of suggestions), the SHACL lint's
+    /// scan for SHACL terms about 25%, and bringing the kept findings up to
+    /// date about 3%. The bound, a quarter, leaves twice the room.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn timing_the_diagnostics_of_a_keystroke_are_a_fraction_of_a_full_composition() {
+        let n = 17_200;
+        let text = big_vocabulary(n);
+        let uri = "file:///w/vocab.ttl";
+        let mut ws = Workspace::default();
+        ws.open_doc(uri.into(), text.clone(), 1);
+        kept_diagnostics(&mut ws, uri);
+        let label = format!("\"Class {}", n / 2);
+        let (line, mut col) = after(&text, &label);
+        let settings = crate::settings::Settings::default();
+        let inputs = DiagnosticInputs::new(&settings);
+        let (mut kept, mut full) = (Vec::new(), Vec::new());
+        for version in 2..27 {
+            ws.change_doc(
+                uri,
+                version,
+                vec![ranged((line, col), (line, col), "x")],
+                Encoding::Utf16,
+            );
+            col += 1;
+            let a = ws.analysis(uri).unwrap();
+            let t = std::time::Instant::now();
+            let got = ws.diagnostics(uri, &a, Encoding::Utf16, &inputs);
+            kept.push(t.elapsed());
+            let t = std::time::Instant::now();
+            let want = diagnose::document(
+                diagnose::Doc::Rdf(&a),
+                ws.knowledge(),
+                Encoding::Utf16,
+                &inputs,
+            );
+            full.push(t.elapsed());
+            assert_eq!(got, want);
+            // The window and the label's two keys, not the 17,200 labels.
+            let checked = ws.open[uri].kept.checked;
+            assert!(
+                checked.statements <= 2 && checked.labels <= 4,
+                "{checked:?}"
+            );
+        }
+        let median = |v: &mut [std::time::Duration]| {
+            v.sort();
+            v[v.len() / 2]
+        };
+        let (kept, full) = (median(&mut kept), median(&mut full));
+        eprintln!("diagnostics of a keystroke: kept {kept:?}, in full {full:?}");
+        assert!(kept * 4 < full, "kept {kept:?}, in full {full:?}");
+    }
+
     /// Typing in a label in the middle of a 2.4 MB vocabulary (17,200
     /// classes), one character and one analysis at a time, as the server
     /// does on each keystroke: with the splice, then in full. On an
@@ -3832,19 +4137,7 @@ pub(crate) mod tests {
     #[test]
     fn timing_typing_in_the_middle_of_a_big_file_is_spliced() {
         let n = 17_200;
-        let mut text = String::from(
-            "@prefix ex: <http://example.org/> .\n\
-             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
-             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
-             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n",
-        );
-        for i in 0..n {
-            text += &format!(
-                "\nex:C{i} a owl:Class ;\n    rdfs:label \"Class {i}\"@en ;\n    \
-                 skos:definition \"A class numbered {i}.\"@en ;\n    rdfs:subClassOf ex:C{} .\n",
-                (i + 1) % n
-            );
-        }
+        let text = big_vocabulary(n);
         let uri = "file:///w/vocab.ttl";
         let mut ws = Workspace::default();
         ws.open_doc(uri.into(), text.clone(), 1);

@@ -88,6 +88,44 @@ impl Edit {
     }
 }
 
+/// What a splice parsed again: the statements `statements.start..end` of
+/// the old parse became `statements.new_len` statements, which start at
+/// `statements.start` in the new one, and the bytes `bytes` hold them in
+/// each text. What comes before is as it was; what comes after is as it
+/// was, moved by the change in length and in statements. Two windows in a
+/// row collapse into one ([`Window::then`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Window {
+    pub(crate) statements: Edit,
+    pub(crate) bytes: Edit,
+}
+
+impl Window {
+    /// This window, then `next` on the parse it left, as one window.
+    pub(crate) fn then(self, next: Window) -> Window {
+        let range = |e: Edit| e.start as usize..e.end as usize;
+        Window {
+            statements: self
+                .statements
+                .then(range(next.statements), next.statements.new_len as usize),
+            bytes: self
+                .bytes
+                .then(range(next.bytes), next.bytes.new_len as usize),
+        }
+    }
+
+    /// Where `x`, a position of the old text outside the window, is in the
+    /// new one.
+    pub(crate) fn moved(&self, x: u32) -> u32 {
+        let b = self.bytes;
+        if x < b.end {
+            x
+        } else {
+            x + b.new_len - (b.end - b.start)
+        }
+    }
+}
+
 /// The texts before and after one edit.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Change<'t> {
@@ -134,15 +172,15 @@ pub enum Fallback {
 
 /// The parse of `change.new_text`, from `old`, the full parse of
 /// `change.old_text` (with its tokens and comment spans) with the external
-/// prefixes `old_external`; or why not. The new parse has `external` and the
-/// document's `base`.
+/// prefixes `old_external`, and the window it parsed again; or why not. The
+/// new parse has `external` and the document's `base`.
 pub(crate) fn splice(
     old: Parsed,
     change: Change,
     old_external: &PrefixMap,
     external: &PrefixMap,
     base: Option<&str>,
-) -> Result<Parsed, Fallback> {
+) -> Result<(Parsed, Window), Fallback> {
     applies(&old, change, old_external, external, base)?;
     if old.tokens.is_empty() {
         return Err(Fallback::NoTokens);
@@ -321,7 +359,7 @@ impl<'t> Splice<'t> {
         moved(x, -self.delta)
     }
 
-    fn run(mut self) -> Result<Parsed, Fallback> {
+    fn run(mut self) -> Result<(Parsed, Window), Fallback> {
         let syntax = self.syntax;
         let (k1n, p0, limit, delta) = (self.k1n, self.p0, self.limit, self.delta);
 
@@ -486,6 +524,14 @@ impl<'t> Splice<'t> {
         )?;
 
         // Splice, and shift what follows.
+        let c_end = c_pos.min(self.old_text.len() as u32);
+        let window = Window {
+            statements: Edit::new(a..c_old, out.statements.len()),
+            bytes: Edit::new(
+                p0 as usize..c_end as usize,
+                moved(c_end, delta) as usize - p0 as usize,
+            ),
+        };
         let ds = out.statements.len() as i64 - (c_old - a) as i64;
         let db = n_new as i64 - n_old as i64;
         let above = c + n_old;
@@ -568,7 +614,7 @@ impl<'t> Splice<'t> {
                 shift_graph_blank(name, above, db);
             }
         }
-        Ok(self.p)
+        Ok((self.p, window))
     }
 
     /// Where the old tokens after the re-lexed ones start, in the old text.
@@ -1093,11 +1139,36 @@ mod tests {
             },
         };
         let ext = external();
-        let spliced = splice(full(text, syntax), change, &ext, &ext, Some(BASE))?;
+        let old = full(text, syntax);
+        let (spliced, window) = splice(old.clone(), change, &ext, &ext, Some(BASE))?;
         if let Err(diff) = crate::oracle::same_parse(&spliced, &full(&new_text, syntax)) {
             panic!("splice differs from a full parse of {new_text:?}: {diff}");
         }
+        outside_the_window_as_it_was(&old, &spliced, window);
         Ok(())
+    }
+
+    /// The statements before `window` are the old ones; those after it are
+    /// the old ones moved; the window's bytes hold the edit and its
+    /// statements.
+    fn outside_the_window_as_it_was(old: &Parsed, new: &Parsed, window: Window) {
+        let (s, b) = (window.statements, window.bytes);
+        let (lo, hi) = (s.start as usize, s.end as usize);
+        assert_eq!(old.statements[..lo], new.statements[..lo], "{window:?}");
+        let after = &new.statements[lo + s.new_len as usize..];
+        assert_eq!(after.len(), old.statements.len() - hi, "{window:?}");
+        for (o, n) in old.statements[hi..].iter().zip(after) {
+            assert_eq!(window.moved(o.span.start), n.span.start, "{window:?}");
+        }
+        let inside = |st: &[Statement], end: u32| {
+            st.iter()
+                .all(|x| x.span.start >= b.start && x.span.start < end)
+        };
+        assert!(inside(&old.statements[lo..hi], b.end), "{window:?}");
+        assert!(
+            inside(&new.statements[lo..lo + s.new_len as usize], b.new_end()),
+            "{window:?}"
+        );
     }
 
     /// The edit replacing the first `find` with `ins`.
@@ -1477,7 +1548,7 @@ mod tests {
         let ext = external();
         let old = full(&t, Syntax::Turtle);
         let lexed_before = super::super::lexer::LEXED.with(|n| n.get());
-        let spliced = splice(old, change, &ext, &ext, Some(BASE)).expect("a splice");
+        let (spliced, _) = splice(old, change, &ext, &ext, Some(BASE)).expect("a splice");
         let lexed = super::super::lexer::LEXED.with(|n| n.get()) - lexed_before;
         assert!(
             lexed_before - before == t.len(),

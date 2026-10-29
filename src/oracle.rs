@@ -11,11 +11,17 @@
 //! the parse (errors included), the analysis maps, line conversions on a
 //! sample of offsets, the text, the knowledge index
 //! ([`crate::knowledge::Knowledge::snapshot`]) and the composed diagnostics
-//! ([`diagnose::document`]). The first difference is the error, named by
-//! field. The edited workspace also checks each spliced analysis against a
-//! full one as it goes ([`Workspace::set_check_incremental`]), and the
-//! report says how each analysis was parsed. The chaos tests run it on
-//! every iteration of their edit mode.
+//! ([`diagnose::document`]), the edited document's as the server composes
+//! them, with the findings it keeps between edits
+//! ([`Workspace::diagnostics`]). Beside it in both workspaces is a document
+//! whose terms share the labels the edited one starts with, diagnosed after
+//! each analysis of the edited one: its label checks follow the edits
+//! through the index's change set, and are compared too. The first
+//! difference is the error, named by field. The edited workspace also
+//! checks each spliced analysis against a full one as it goes
+//! ([`Workspace::set_check_incremental`]), and the report says how each
+//! analysis was parsed. The chaos tests run it on every iteration of their
+//! edit mode.
 
 use crate::analysis::{Analysis, Encoding, LineIndex, ParsePath, offset_in, position_in};
 use crate::diagnose::{self, DiagnosticInputs};
@@ -67,12 +73,15 @@ fn check_against(
     fresh: Option<&str>,
 ) -> Result<Report, String> {
     let uri = format!("file:///oracle/doc.{}", extension(syntax));
+    let other = companion(syntax, start);
     let settings = settings();
     let mut ws = Workspace::new(Vec::new(), PrefixMap::default());
     ws.set_check_incremental(true);
     ws.open_doc_as(uri.clone(), start.to_string(), 0, syntax);
+    ws.open_doc_as(OTHER.into(), other.clone(), 0, Syntax::Turtle);
     // As a client asks on open: the edits then have an analysis to go stale.
-    diagnostics(&mut ws, &uri, enc, &settings);
+    kept_diagnostics(&mut ws, &uri, enc, &settings);
+    kept_diagnostics(&mut ws, OTHER, enc, &settings);
     let mut text = start.to_string();
     for (i, batch) in batches.into_iter().enumerate() {
         for ch in &batch.changes {
@@ -80,14 +89,18 @@ fn check_against(
         }
         ws.change_doc(&uri, i as i32 + 1, batch.changes, enc);
         if batch.analyse {
-            diagnostics(&mut ws, &uri, enc, &settings);
+            kept_diagnostics(&mut ws, &uri, enc, &settings);
+            kept_diagnostics(&mut ws, OTHER, enc, &settings);
         }
     }
-    let got_diags = diagnostics(&mut ws, &uri, enc, &settings);
+    let got_diags = kept_diagnostics(&mut ws, &uri, enc, &settings);
+    let got_other = kept_diagnostics(&mut ws, OTHER, enc, &settings);
     let mut fresh_ws = Workspace::new(Vec::new(), PrefixMap::default());
     let want_text = fresh.unwrap_or(&text).to_string();
     fresh_ws.open_doc_as(uri.clone(), want_text, 0, syntax);
+    fresh_ws.open_doc_as(OTHER.into(), other, 0, Syntax::Turtle);
     let want_diags = diagnostics(&mut fresh_ws, &uri, enc, &settings);
+    let want_other = diagnostics(&mut fresh_ws, OTHER, enc, &settings);
 
     let (Some(got), Some(want)) = (ws.analysis(&uri), fresh_ws.analysis(&uri)) else {
         return Err("analysis: missing".into());
@@ -99,8 +112,10 @@ fn check_against(
         &fresh_ws.knowledge().snapshot(),
     )?;
     same_list("diagnostics", &got_diags, &want_diags)?;
+    same_list("other diagnostics", &got_other, &want_other)?;
     let mut paths = Vec::new();
-    for (i, record) in ws.take_parse_log().into_iter().enumerate() {
+    let log = ws.take_parse_log().into_iter().filter(|r| r.uri == uri);
+    for (i, record) in log.enumerate() {
         if let Some(diff) = record.difference {
             return Err(format!("analysis {i}, spliced: {diff}"));
         }
@@ -170,7 +185,7 @@ fn settings() -> Settings {
     }
 }
 
-/// The document's diagnostics as the server composes them.
+/// The document's diagnostics in full.
 fn diagnostics(ws: &mut Workspace, uri: &str, enc: Encoding, s: &Settings) -> Vec<Diagnostic> {
     let Some(a) = ws.analysis(uri) else {
         return Vec::new();
@@ -181,6 +196,75 @@ fn diagnostics(ws: &mut Workspace, uri: &str, enc: Encoding, s: &Settings) -> Ve
         enc,
         &DiagnosticInputs::new(s),
     )
+}
+
+/// The open document's diagnostics as the server composes them, with what
+/// it keeps between edits.
+fn kept_diagnostics(ws: &mut Workspace, uri: &str, enc: Encoding, s: &Settings) -> Vec<Diagnostic> {
+    let Some(a) = ws.analysis(uri) else {
+        return Vec::new();
+    };
+    ws.diagnostics(uri, &a, enc, &DiagnosticInputs::new(s))
+}
+
+/// Whether `tag` reads as a Turtle language tag.
+fn is_language_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let first = parts.next().unwrap_or_default();
+    !first.is_empty()
+        && first.chars().all(|c| c.is_ascii_alphabetic())
+        && parts.all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// The document beside the edited one.
+const OTHER: &str = "file:///oracle/other.ttl";
+
+/// A Turtle document with a term for each of the first labels of `text`, a
+/// `syntax` document, labelled the same: where the edited document keeps
+/// one of those labels on a term, the two documents report each other's
+/// term (`duplicate-label`). Typed as a class and a property, so its kind
+/// collides with any.
+fn companion(syntax: Syntax, text: &str) -> String {
+    const LABELS: [&str; 2] = [
+        "http://www.w3.org/2000/01/rdf-schema#label",
+        "http://www.w3.org/2004/02/skos/core#prefLabel",
+    ];
+    let a = Analysis::with_syntax(
+        "file:///oracle/doc".into(),
+        text,
+        Default::default(),
+        false,
+        syntax,
+    );
+    let mut out = String::from(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n",
+    );
+    let labels = a.parsed.triples.iter().filter_map(|t| match &t.o {
+        Node::Literal { value, lang, .. } if LABELS.contains(&t.p.as_str()) => Some((value, *lang)),
+        _ => None,
+    });
+    for (i, (value, lang)) in labels.take(64).enumerate() {
+        let lang = match lang {
+            Some(l) if is_language_tag(&l) => format!("@{}", &*l),
+            Some(_) => continue,
+            None => String::new(),
+        };
+        let mut quoted = String::new();
+        for c in value.chars() {
+            match c {
+                '\\' => quoted.push_str("\\\\"),
+                '"' => quoted.push_str("\\\""),
+                '\n' => quoted.push_str("\\n"),
+                '\r' => quoted.push_str("\\r"),
+                c => quoted.push(c),
+            }
+        }
+        out += &format!(
+            "<http://oracle.example/other/{i}> a owl:Class , owl:ObjectProperty ; rdfs:label \"{quoted}\"{lang} .\n"
+        );
+    }
+    out
 }
 
 fn extension(syntax: Syntax) -> &'static str {
