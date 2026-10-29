@@ -391,6 +391,10 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       if (method === "workspace/semanticTokens/refresh") semanticChanged.fire()
       if (method === "workspace/inlayHint/refresh") inlayChanged.fire()
     },
+    // A file was put in an editor (or the providers came after it was): ask
+    // for its semantic tokens now. Monaco would wait 300 ms or more after
+    // attaching a model; a change event from the provider asks at once.
+    shown: () => semanticChanged.fire(),
   }
 }
 

@@ -15,6 +15,40 @@
   if (matchMedia("(max-width: 760px)").matches && !new URLSearchParams(location.search).has("editor")) location.replace("toolbox.html")
 </script>
 <script>try { const t = localStorage.getItem("rdf-editor-theme"); if (t !== "auto") document.documentElement.dataset.theme = t === "light" ? "light" : "dark" } catch { document.documentElement.dataset.theme = "dark" }</script>
+<!-- Fetched at once, not one import after another: Monaco's code (its loader
+     asks only once editor.js runs), its icon font, and editor.js's modules. A
+     test keeps the module list equal to what editor.js imports. -->
+<link rel="preload" href="vendor/monaco/vs/editor/editor.main.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/base/browser/ui/codicons/codicon/codicon.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="modulepreload" href="editor.js">
+<link rel="modulepreload" href="samples.js">
+<link rel="modulepreload" href="editor-lsp.js">
+<link rel="modulepreload" href="lsp-host.js">
+<link rel="modulepreload" href="zip.js">
+<link rel="modulepreload" href="workspace-store.js">
+<link rel="modulepreload" href="store.js">
+<link rel="modulepreload" href="dom.js">
+<link rel="modulepreload" href="paths.js">
+<link rel="modulepreload" href="files.js">
+<link rel="modulepreload" href="text.js">
+<link rel="modulepreload" href="search.js">
+<link rel="modulepreload" href="settings.js">
+<link rel="modulepreload" href="theme.js">
+<link rel="modulepreload" href="vim.js">
+<link rel="modulepreload" href="hierarchy.js">
+<link rel="modulepreload" href="diff.js">
+<link rel="modulepreload" href="query-pane.js">
+<link rel="modulepreload" href="graph/view.js">
+<link rel="modulepreload" href="graph/el.js">
+<link rel="modulepreload" href="graph/model.js">
+<link rel="modulepreload" href="graph/filters.js">
+<link rel="modulepreload" href="graph/hitgrid.js">
+<link rel="modulepreload" href="graph/rings.js">
+<link rel="modulepreload" href="graph/labels.js">
+<link rel="modulepreload" href="graph/colors.js">
+<link rel="modulepreload" href="graph/canvas.js">
+<link rel="modulepreload" href="graph/panel.js">
+<link rel="modulepreload" href="graph/tree.js">
 <link rel="stylesheet" href="editor.css">
 <link rel="stylesheet" href="search.css">
 <link rel="stylesheet" href="settings.css">
@@ -24,6 +58,9 @@
 <link rel="stylesheet" href="query.css">
 <link rel="stylesheet" href="graph/graph.css">
 <link rel="stylesheet" href="graph-side.css">
+<!-- Monaco's own styles, last as when its loader adds them (it adds nothing
+     when this link is there). -->
+<link rel="stylesheet" href="vendor/monaco/vs/editor/editor.main.css">
 <script src="vendor/monaco/vs/loader.js"></script>
 <script type="module" src="editor.js"></script>
 </head>

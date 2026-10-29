@@ -289,6 +289,27 @@ test("both pages carry a Content-Security-Policy, with the editor page's inline 
   assert.equal(/<script>/.test(read("app", "toolbox.html")), false, "the toolbox has no inline script")
 })
 
+test("the editor page preloads every module editor.js imports, and nothing else, and the Monaco files it preloads are where the build puts them", () => {
+  const html = read("app", "index.html")
+  const preloaded = [...html.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map((m) => m[1])
+  // editor.js and what it imports, statically, through every module.
+  const imported = new Set()
+  const walk = (file) => {
+    if (imported.has(file)) return
+    imported.add(file)
+    for (const m of read("app", file).matchAll(/^\s*(?:import|export)\s[^"']*?from\s*["'](\.[^"']+)["']|^\s*import\s*["'](\.[^"']+)["']/gm)) {
+      walk(path.posix.normalize(path.posix.join(path.posix.dirname(file), m[1] ?? m[2])))
+    }
+  }
+  walk("editor.js")
+  assert.deepEqual([...preloaded].sort(), [...imported].sort())
+  const monaco = path.join(web, "..", "node_modules", "monaco-editor", "min")
+  for (const [, href] of html.matchAll(/<link rel="preload" href="vendor\/monaco\/([^"]+)"/g)) {
+    assert.ok(fs.existsSync(path.join(monaco, href)), `${href} is in Monaco's package`)
+    assert.ok(wanted(path.join(monaco, href)), `${href} is copied by the build`)
+  }
+})
+
 test("the dead prototype is gone, and so is the script that served it", () => {
   assert.equal(fs.existsSync(path.join(web, "prototype")), false)
   const scripts = JSON.parse(fs.readFileSync(path.join(web, "..", "package.json"), "utf8")).scripts

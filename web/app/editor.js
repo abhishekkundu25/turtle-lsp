@@ -467,6 +467,7 @@ function addGroup() {
     ed.updateOptions({ quickSuggestions: { other: "on", comments: "off", strings: on ? "on" : "off" } })
   }
   ed.onDidChangeModel(stringSuggestions)
+  ed.onDidChangeModel(() => hooks?.shown())
   ed.onDidChangeModelLanguage(stringSuggestions)
   g.isQuery = ed.createContextKey("rdf.isQuery", false)
   for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], precondition: c.when, contextMenuGroupId: c.menu, run: () => c.run() })
@@ -1424,19 +1425,11 @@ async function handOver({ asked }) {
   readOnlyNotice(true, true)
 }
 
-async function main() {
-  window.MonacoEnvironment = { getWorkerUrl: () => "monaco-worker.js" }
-  monaco = await new Promise((resolve, reject) => {
-    window.require.config({ paths: { vs: "vendor/monaco/vs" } })
-    window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject)
-  })
-  registerSyntax(monaco)
-  quietJson(monaco)
-  defineThemes()
-  theme = createTheme({ monaco })
-
+// The language server's worker, started before Monaco loads so the engine
+// downloads and compiles meanwhile. Messages wait in its queue in the order
+// sent: initialize, the settings, then each file's didOpen.
+function startServer() {
   client = new LspClient(new URL("lsp-worker.js", import.meta.url))
-  let idle = []
   client.on("busy", (busy) => {
     document.body.dataset.busy = String(busy)
     $("status-busy").hidden = !busy
@@ -1457,8 +1450,7 @@ async function main() {
     else if (state === "dropped") toast(`The engine crashed and restarted without ${names}, which crashes it. Reload the page to try again. (${message})`)
     else toast(`The engine crashed and restarted with your files. (${message})`)
   })
-
-  const init = await client.initialize({
+  return client.initialize({
     processId: null,
     rootUri: null,
     capabilities: {
@@ -1470,9 +1462,24 @@ async function main() {
       workspace: { inlayHint: { refreshSupport: true }, semanticTokens: { refreshSupport: true } },
     },
   })
-  hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
-  wireGraph(init.capabilities)
-  $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
+}
+
+// Who waits for the server to have nothing pending (body[data-ready]).
+const idle = []
+
+async function main() {
+  const initialized = startServer()
+  initialized.catch(() => {}) // awaited below, once the files show
+  window.MonacoEnvironment = { getWorkerUrl: () => "monaco-worker.js" }
+  monaco = await new Promise((resolve, reject) => {
+    window.require.config({ paths: { vs: "vendor/monaco/vs" } })
+    window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject)
+  })
+  registerSyntax(monaco)
+  quietJson(monaco)
+  defineThemes()
+  theme = createTheme({ monaco })
+
   // One tab owns the workspace; another one shows it and writes nothing.
   ownership = await claim({ onOwn: takeOver, onLose: handOver })
   W.readOnly = !ownership.owner
@@ -1540,6 +1547,12 @@ async function main() {
   try {
     if (!localStorage.getItem(INTRO_SEEN)) (localStorage.setItem(INTRO_SEEN, "1"), intro())
   } catch {}
+  // The files show with Monaco's colours; the server's features come when it answers.
+  const init = await initialized
+  hooks = connect(monaco, client, init.capabilities, (uri) => W.diags.get(uri) ?? [])
+  hooks.shown()
+  wireGraph(init.capabilities)
+  $("status-version").textContent = `turtle-lsp ${init.serverInfo?.version ?? ""}`
   await new Promise((r) => (client.busy ? idle.push(r) : r()))
   document.body.dataset.ready = "true"
 }
