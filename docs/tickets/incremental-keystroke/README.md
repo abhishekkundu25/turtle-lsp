@@ -105,3 +105,18 @@ the old or new window), not per file, so this does not rule the splice out.
   the old analysis (0.6 ms); the splice itself is 0.13 ms. A both-paths
   check over the 41 RDF fixtures: 13,120 edited analyses, 7,895 spliced,
   no difference.
+- 06: cached by measured cost, not every check: a profile of the full
+  composition on the vocabulary put the label checks at 58% and term uses
+  (`unknown-term`, `deprecated-term`) at 22%; those, `label-whitespace`,
+  `multiple-labels`, `duplicate-label` and `invalid-literal` are kept
+  between edits. `unused-prefix` stops at the first use instead (same
+  results). Everything else runs in full. Check classes are one enum
+  (`Check`, `Reads`) with an exhaustive match. A keystroke's diagnostics on
+  the 2.4 MB vocabulary: 0.77 ms kept against 6.4 ms full. Left:
+  `undescribed-term` (about 70% of the kept path) and the SHACL lint's
+  scan of all triples (25%). When the change set names any IRI (typing in
+  a subject's name), the label checks run in full (about 3.7 ms): a query
+  for an IRI's label keys would fix it. `Changes` is no longer cleared by
+  a call that changes nothing. Chaos does not toggle descriptions or
+  deprecations often enough to catch a missed recheck of references to a
+  changed IRI; `a_deprecation_reaches_the_uses_outside_the_window` does.

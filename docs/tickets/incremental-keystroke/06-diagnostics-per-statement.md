@@ -19,14 +19,14 @@
 
 **Blocked by:** 02, 05.
 
-**Status:** open
+**Status:** done
 
-- [ ] The oracle (chaos edit mode) passes at `CHAOS_ITERS=20000`: the
+- [x] The oracle (chaos edit mode) passes at `CHAOS_ITERS=20000`: the
   composed diagnostics equal a fresh workspace's, including cross-file
   label results after another document changes.
-- [ ] Unit tests: an edit in one statement recomputes only that
+- [x] Unit tests: an edit in one statement recomputes only that
   statement's local checks (counted, not timed); a label edit that creates
   a cross-file duplicate refreshes the other document; a prefix edit
   (fallback) recomputes everything.
-- [ ] `test/label-lints.test.mjs`, `test/lint.test.mjs` and the CLI tests
+- [x] `test/label-lints.test.mjs`, `test/lint.test.mjs` and the CLI tests
   pass.
