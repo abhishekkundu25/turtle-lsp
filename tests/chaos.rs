@@ -648,7 +648,8 @@ fn completion_items(r: Option<CompletionResponse>) -> Vec<CompletionItem> {
 /// escapes read. `None` for a malformed escape.
 fn string_value(token: &str) -> Option<String> {
     let q = token.chars().next()?;
-    let long = token.len() >= 6 && token[..3].chars().all(|c| c == q);
+    // `get`: the first three bytes can end inside a character (`" é "`).
+    let long = token.len() >= 6 && token.get(..3).is_some_and(|d| d.chars().all(|c| c == q));
     let delim = if long { 3 } else { 1 };
     let content = token.get(delim..token.len().checked_sub(delim)?)?;
     let mut out = String::new();
@@ -672,6 +673,13 @@ fn string_value(token: &str) -> Option<String> {
         });
     }
     Some(out)
+}
+
+#[test]
+fn a_string_value_with_a_multibyte_character_near_the_quote() {
+    assert_eq!(string_value("\" é \"").as_deref(), Some(" é "));
+    assert_eq!(string_value("\" 日本\"").as_deref(), Some(" 日本"));
+    assert_eq!(string_value("'''日本'''").as_deref(), Some("日本"));
 }
 
 /// `before` and `after` (the text `batch::fix_all` made of it) have the

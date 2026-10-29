@@ -13,6 +13,10 @@
 //! their own `owl:deprecated`) come from workspace sources only. Labels and
 //! definitions are indexed by a hash of their folded text: per key the index
 //! keeps the sources that use it, and each source keeps its own entries.
+//! What the curation checks read of other documents about a term or an
+//! ontology (its kind, whether it has a label, a comment or each header
+//! property, which documents declare it) each source keeps as a [`Curated`]
+//! summary per IRI.
 
 use crate::analysis::Analysis;
 use crate::shacl::vocab;
@@ -119,6 +123,58 @@ pub(crate) struct DocFacts {
     defined: Vec<Iri>,
     /// `owl:deprecated` with a boolean value (sorted, unique).
     deprecated: Vec<(Iri, bool)>,
+    /// What this source says about each IRI subject that the curation
+    /// checks read, sorted by IRI; IRIs it says none of it about are left out.
+    curated: Vec<(Iri, Curated)>,
+}
+
+/// What one workspace source says about an IRI that the curation checks of
+/// other documents read ([`Knowledge::term_kind`], [`TermState`]).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct Curated {
+    /// [`TERM_CLASS`], [`TERM_PROPERTY`] and [`TERM_CONCEPT`] bits.
+    kind: u8,
+    /// Gives it a type or an IRI super class or property
+    /// ([`Analysis::types`], [`Analysis::supers`]).
+    declares: bool,
+    /// The subject of a top-level statement ([`Analysis::defs`]).
+    describes: bool,
+    /// Types it `owl:Ontology`.
+    ontology: bool,
+    /// Gives it a label ([`Analysis::label`]), a comment
+    /// ([`Analysis::comment_en`]).
+    labelled: bool,
+    commented: bool,
+    /// Bit `i`: gives it a property of group `i` of [`header_properties`].
+    header: u8,
+}
+
+/// The term kind bits of [`Knowledge::term_kind`]: a class (typed
+/// `owl:Class` or `rdfs:Class`, or the subject of `rdfs:subClassOf`), a
+/// property (one of the four property types, or the subject of
+/// `rdfs:subPropertyOf`), a concept (`skos:Concept`).
+pub(crate) const TERM_CLASS: u8 = 1;
+pub(crate) const TERM_PROPERTY: u8 = 2;
+pub(crate) const TERM_CONCEPT: u8 = 4;
+
+/// What the curation checks of other documents read about a term or an
+/// ontology, from every workspace source: compared before and after a
+/// change to decide whether it bumps [`Knowledge::described_generation`].
+/// Facts that no check reads (a non-term's kind, a non-ontology's header)
+/// are left at their default.
+#[derive(Default, PartialEq, Eq)]
+struct TermState {
+    kind: u8,
+    labelled: bool,
+    commented: bool,
+    /// The document that reports `missing-label` and `missing-definition`:
+    /// the first by URI of those that describe and declare the term, else of
+    /// those that describe it.
+    reporter: Option<String>,
+    /// The document that reports the `missing-ontology-*` checks: the first
+    /// by URI of those that describe the IRI and type it `owl:Ontology`.
+    ontology: Option<String>,
+    header: u8,
 }
 
 /// One literal that names or defines an IRI subject.
@@ -250,6 +306,9 @@ pub struct Knowledge {
     /// Scratch for one change: the collisions under each text key it
     /// touches, before it.
     texts_before: FxHashMap<(Text, u64), Collisions>,
+    /// Scratch for one change: the state of each IRI whose [`Curated`]
+    /// summary it changes, before it.
+    terms_before: FxHashMap<Iri, TermState>,
 }
 
 pub(crate) const OWL_ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
@@ -314,6 +373,18 @@ struct Curation {
     definition: Iri,
     comment: Iri,
     deprecated: Iri,
+    /// The [`TERM_CLASS`], [`TERM_PROPERTY`] and [`TERM_CONCEPT`] types.
+    class_types: [Iri; 2],
+    property_types: [Iri; 4],
+    concept: Iri,
+    ontology: Iri,
+    header: [[Iri; 3]; 3],
+}
+
+/// The properties that give an ontology its title, description and licence,
+/// a group each: what the `missing-ontology-*` checks look for.
+pub(crate) fn header_properties() -> &'static [[Iri; 3]; 3] {
+    &curation().header
 }
 
 fn curation() -> &'static Curation {
@@ -323,6 +394,8 @@ fn curation() -> &'static Curation {
         let owl = |l: &str| i(&format!("http://www.w3.org/2002/07/owl#{l}"));
         let rdfs = |l: &str| i(&format!("http://www.w3.org/2000/01/rdf-schema#{l}"));
         let skos = |l: &str| i(&format!("http://www.w3.org/2004/02/skos/core#{l}"));
+        let dcterms = |l: &str| i(&format!("http://purl.org/dc/terms/{l}"));
+        let dc = |l: &str| i(&format!("http://purl.org/dc/elements/1.1/{l}"));
         Curation {
             term_types: [
                 owl("Class"),
@@ -337,6 +410,24 @@ fn curation() -> &'static Curation {
             definition: skos("definition"),
             comment: rdfs("comment"),
             deprecated: owl("deprecated"),
+            class_types: [owl("Class"), rdfs("Class")],
+            property_types: [
+                owl("ObjectProperty"),
+                owl("DatatypeProperty"),
+                owl("AnnotationProperty"),
+                i("http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"),
+            ],
+            concept: skos("Concept"),
+            ontology: i(OWL_ONTOLOGY),
+            header: [
+                [dcterms("title"), dc("title"), rdfs("label")],
+                [dcterms("description"), dc("description"), rdfs("comment")],
+                [
+                    dcterms("license"),
+                    i("http://creativecommons.org/ns#license"),
+                    i("http://web.resource.org/cc/license"),
+                ],
+            ],
         }
     })
 }
@@ -392,9 +483,11 @@ impl DocFacts {
         let mut f = DocFacts::default();
         let triples = &a.parsed.triples;
         let mut shape_nodes: Vec<Subj> = Vec::new();
+        let mut curated: FxHashMap<Iri, Curated> = FxHashMap::default();
         for (i, t) in triples.iter().enumerate() {
             if let Node::Iri(s) = &t.s {
                 f.curation(i as u32, *s, t);
+                curate(curated.entry(*s).or_default(), t);
             }
             if t.p == v.target_class
                 && let Some(s) = subj(&t.s)
@@ -433,6 +526,22 @@ impl DocFacts {
             });
         }
 
+        for &s in a.defs.keys() {
+            curated.entry(s).or_default();
+        }
+        let mut curated: Vec<(Iri, Curated)> = curated
+            .into_iter()
+            .filter_map(|(s, mut c)| {
+                c.declares = a.types.contains_key(&s) || a.supers.contains_key(&s);
+                c.describes = a.defs.contains_key(&s);
+                c.labelled = a.label(&s).is_some();
+                c.commented = a.comment_en(&s).is_some();
+                (c != Curated::default()).then_some((s, c))
+            })
+            .collect();
+        curated.sort_unstable_by_key(|c| c.0);
+        f.curated = curated;
+
         f.subjects = unique(
             a.defs
                 .keys()
@@ -440,6 +549,7 @@ impl DocFacts {
                 .chain(a.supers.keys())
                 .chain(f.domain.keys())
                 .chain(f.range.keys())
+                .chain(f.curated.iter().map(|c| &c.0))
                 .copied(),
         );
         f.objects = unique(
@@ -531,6 +641,7 @@ impl DocFacts {
         self.comments = Vec::new();
         self.defined = Vec::new();
         self.deprecated = Vec::new();
+        self.curated = Vec::new();
     }
 
     /// The [`Shape`]s among `nodes` (the subjects of `sh:targetClass` and
@@ -669,6 +780,68 @@ impl DocFacts {
     }
 }
 
+/// Add triple `t`, about the IRI subject `c` is for, to its [`Curated`]
+/// kind, ontology type and header bits.
+fn curate(c: &mut Curated, t: &syntax::Triple) {
+    let v = vocab::get();
+    let k = curation();
+    if t.p == v.rdf_type {
+        if let Node::Iri(o) = &t.o {
+            if k.class_types.contains(o) {
+                c.kind |= TERM_CLASS;
+            } else if k.property_types.contains(o) {
+                c.kind |= TERM_PROPERTY;
+            } else if *o == k.concept {
+                c.kind |= TERM_CONCEPT;
+            } else if *o == k.ontology {
+                c.ontology = true;
+            }
+        }
+    } else if t.p == v.sub_class_of {
+        c.kind |= TERM_CLASS;
+    } else if t.p == v.sub_property_of {
+        c.kind |= TERM_PROPERTY;
+    }
+    for (bit, group) in k.header.iter().enumerate() {
+        if group.contains(&t.p) {
+            c.header |= 1 << bit;
+        }
+    }
+}
+
+/// The IRIs whose [`Curated`] summaries differ between two versions of a
+/// source (`None`: no version).
+fn touched_iris(old: Option<&Slot>, new: Option<&Slot>) -> Vec<Iri> {
+    let xs = old.map_or(&[][..], |s| &s.facts.curated[..]);
+    let ys = new.map_or(&[][..], |s| &s.facts.curated[..]);
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    loop {
+        match (xs.get(i), ys.get(j)) {
+            (Some(x), Some(y)) if x.0 == y.0 => {
+                if x.1 != y.1 {
+                    out.push(x.0);
+                }
+                (i, j) = (i + 1, j + 1);
+            }
+            (Some(x), Some(y)) if x.0 < y.0 => {
+                out.push(x.0);
+                i += 1;
+            }
+            (Some(x), None) => {
+                out.push(x.0);
+                i += 1;
+            }
+            (_, Some(y)) => {
+                out.push(y.0);
+                j += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    out
+}
+
 /// The text keys whose entries differ between two versions of a source
 /// (`None`: no version), with what they collide as.
 fn touched_texts(old: Option<&Slot>, new: Option<&Slot>) -> Vec<(Text, u64)> {
@@ -764,9 +937,12 @@ impl Knowledge {
     /// an IRI becomes described or stops being described, a namespace becomes
     /// or stops being an own namespace, a prefix binding appears or goes, an
     /// IRI becomes or stops being a term, a term gains or loses its first
-    /// `skos:definition`, the own-deprecated set changes, or the terms that
+    /// `skos:definition`, the own-deprecated set changes, the terms that
     /// share a label or definition change where two or more share it before
-    /// or after. Ordinary keystrokes leave it alone.
+    /// or after, or what the curation checks read of a term or an ontology
+    /// changes ([`TermState`]: its kind, whether the workspace gives it a
+    /// label, a comment or each header property, which document reports it).
+    /// Ordinary keystrokes, inside a label or comment too, leave it alone.
     pub(crate) fn described_generation(&self) -> u64 {
         self.described_generation
     }
@@ -805,6 +981,79 @@ impl Knowledge {
             self.described_generation += 1;
         }
         self.texts_before = before;
+    }
+
+    /// Remember the state of each of `iris` before a change (see
+    /// [`touched_iris`]).
+    fn note_terms(&mut self, iris: Vec<Iri>) {
+        for iri in iris {
+            if !self.terms_before.contains_key(&iri) {
+                let state = self.term_state(iri);
+                self.terms_before.insert(iri, state);
+            }
+        }
+    }
+
+    /// Bump [`Knowledge::described_generation`] if the state of an IRI noted
+    /// by [`Knowledge::note_terms`] changed.
+    fn settle_terms(&mut self) {
+        let mut before = std::mem::take(&mut self.terms_before);
+        if before.drain().any(|(iri, was)| self.term_state(iri) != was) {
+            self.described_generation += 1;
+        }
+        self.terms_before = before;
+    }
+
+    /// The [`Curated`] summaries the workspace sources give `iri`, with the
+    /// URI of each source.
+    fn curated(&self, iri: Iri) -> impl Iterator<Item = (&str, &Curated)> {
+        self.entries
+            .get(&iri)
+            .into_iter()
+            .flat_map(|e| &e.subject)
+            .filter_map(move |&id| {
+                let s = self.slot(id);
+                let all = &s.facts.curated;
+                let at = all.binary_search_by(|c| c.0.cmp(&iri)).ok()?;
+                Some((s.uri.as_str(), &all[at].1))
+            })
+    }
+
+    fn term_state(&self, iri: Iri) -> TermState {
+        let term = self.is_term(&iri);
+        let mut st = TermState::default();
+        let (mut declarer, mut describer, mut ontology) = (None, None, None);
+        fn first<'a>(x: &mut Option<&'a str>, uri: &'a str) {
+            if x.is_none_or(|x| uri < x) {
+                *x = Some(uri);
+            }
+        }
+        let mut header = 0;
+        for (uri, c) in self.curated(iri) {
+            st.kind |= c.kind;
+            st.labelled |= c.labelled;
+            st.commented |= c.commented;
+            header |= c.header;
+            if c.describes {
+                first(&mut describer, uri);
+                if c.declares {
+                    first(&mut declarer, uri);
+                }
+                if c.ontology {
+                    first(&mut ontology, uri);
+                }
+            }
+        }
+        if !term {
+            (st.kind, st.labelled, st.commented) = (0, false, false);
+        } else {
+            st.reporter = declarer.or(describer).map(str::to_string);
+        }
+        if ontology.is_some() {
+            st.ontology = ontology.map(str::to_string);
+            st.header = header;
+        }
+        st
     }
 
     // ---- sources ----
@@ -921,7 +1170,9 @@ impl Knowledge {
         if source != Source::External {
             let old = self.by_key.get(&key).map(|&id| self.slot(id));
             let keys = touched_texts(old, Some(&slot));
+            let iris = touched_iris(old, Some(&slot));
             self.note_texts(keys);
+            self.note_terms(iris);
         }
         // Add the new version before removing the old one, so entries both
         // share (most of them, on a keystroke) are updated in place instead of
@@ -933,16 +1184,20 @@ impl Knowledge {
         }
         self.settle_namespaces();
         self.settle_texts();
+        self.settle_terms();
         self.generation += 1;
     }
 
     fn take(&mut self, key: &Key) {
         if let Some(id) = self.by_key.remove(key) {
             let keys = touched_texts(Some(self.slot(id)), None);
+            let iris = touched_iris(Some(self.slot(id)), None);
             self.note_texts(keys);
+            self.note_terms(iris);
             self.release(id);
             self.settle_namespaces();
             self.settle_texts();
+            self.settle_terms();
             self.generation += 1;
         }
     }
@@ -1316,6 +1571,17 @@ impl Knowledge {
     /// it the subject of `rdfs:subClassOf` or `rdfs:subPropertyOf`.
     pub(crate) fn is_term<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
         self.entries.get(iri).is_some_and(|e| e.term > 0)
+    }
+
+    /// What sort of term the workspace makes `iri`, as [`TERM_CLASS`],
+    /// [`TERM_PROPERTY`] and [`TERM_CONCEPT`] bits: from the types and the
+    /// `rdfs:subClassOf` and `rdfs:subPropertyOf` statements of workspace
+    /// sources (external ones say nothing).
+    pub(crate) fn term_kind<K: IriKey + ?Sized>(&self, iri: &K) -> u8 {
+        let Some(key) = iri.iri_key() else {
+            return 0;
+        };
+        self.curated(key).fold(0, |bits, (_, c)| bits | c.kind)
     }
 
     /// The terms with an `rdfs:label` or `skos:prefLabel` that equals
@@ -2183,22 +2449,127 @@ mod tests {
             "ex:A a owl:Class ; rdfs:label \"Valv\" .\nex:C a owl:Class ; owl:deprecated true .\n",
         );
         assert!(g5 > g4);
-        // A definition collision through the comment fallback.
+    }
+
+    #[test]
+    fn described_generation_moves_on_a_definition_colliding_with_a_comment() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:comment \"Same.\" .\n");
         put_ttl(
             &mut k,
-            "b",
-            "ex:B a owl:Class ; rdfs:label \"Valve\" ; rdfs:comment \"Same.\" .\n",
+            "a",
+            "ex:A a owl:Class ; skos:definition \"Different.\" .\n",
         );
-        let g6 = k.described_generation();
-        let g7 = set(
+        let g = k.described_generation();
+        // Only the definition's text changes: B's comment is its definition.
+        put_ttl(
             &mut k,
-            "ex:A a owl:Class ; rdfs:label \"Valv\" ; skos:definition \"same.\" .\n\
-             ex:C a owl:Class ; owl:deprecated true .\n",
+            "a",
+            "ex:A a owl:Class ; skos:definition \"same.\" .\n",
         );
-        assert!(g7 > g6);
-        // Removing a document that collides.
-        k.remove("file:///a.ttl");
-        assert!(k.described_generation() > g7);
+        assert!(k.described_generation() > g);
+    }
+
+    #[test]
+    fn described_generation_moves_when_a_colliding_label_goes_with_its_document() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:label \"Valve\" .\n");
+        // A is typed, and labelled in another language, in c.ttl; d.ttl
+        // only gives it the colliding label.
+        put_ttl(
+            &mut k,
+            "c",
+            "ex:A a owl:Class ; rdfs:label \"Ventil\"@de .\n",
+        );
+        put_ttl(&mut k, "d", "ex:A rdfs:label \"Valve\" .\n");
+        let g = k.described_generation();
+        k.remove("file:///d.ttl");
+        assert!(k.described_generation() > g);
+    }
+
+    #[test]
+    fn described_generation_moves_when_a_term_changes_kind() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:label \"Pump\" .\n");
+        put_ttl(&mut k, "a", "ex:A a owl:Class ; rdfs:label \"Pump\" .\n");
+        let g = k.described_generation();
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:A a owl:ObjectProperty ; rdfs:label \"Pump\" .\n",
+        );
+        let g2 = k.described_generation();
+        assert!(g2 > g);
+        assert_eq!(k.term_kind("http://ex.org/A"), TERM_PROPERTY);
+        // A sub-property statement in another document adds to the kind.
+        put_ttl(&mut k, "c", "ex:B rdfs:subPropertyOf ex:p .\n");
+        assert!(k.described_generation() > g2);
+        assert_eq!(k.term_kind("http://ex.org/B"), TERM_CLASS | TERM_PROPERTY);
+        // An external source says nothing about kinds.
+        let none = Arc::new(PrefixMap::default());
+        let ext = format!("{CURATION_HEADER}ex:A a skos:Concept .\n");
+        k.add_external("import:e", analysis("import:e", &ext, &none));
+        assert_eq!(k.term_kind("http://ex.org/A"), TERM_PROPERTY);
+    }
+
+    #[test]
+    fn described_generation_moves_when_another_document_labels_or_defines_a_term() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "z", "ex:A a owl:Class .\n");
+        put_ttl(&mut k, "b", "ex:A rdfs:seeAlso ex:x .\n");
+        let set = |k: &mut Knowledge, body: &str| {
+            put_ttl(k, "b", &format!("ex:A rdfs:seeAlso ex:x{body} .\n"));
+            k.described_generation()
+        };
+        let g = k.described_generation();
+        let g1 = set(&mut k, " ; rdfs:label \"A\"");
+        assert!(g1 > g);
+        // Typing inside the label.
+        assert_eq!(set(&mut k, " ; rdfs:label \"Ab\""), g1);
+        assert_eq!(set(&mut k, " ; rdfs:label \"Abc\"@en"), g1);
+        let g2 = set(&mut k, " ; rdfs:label \"Abc\" ; rdfs:comment \"A\"");
+        assert!(g2 > g1);
+        // Typing inside the comment.
+        assert_eq!(
+            set(&mut k, " ; rdfs:label \"Abc\" ; rdfs:comment \"An a\""),
+            g2
+        );
+        // The comment goes.
+        assert!(set(&mut k, " ; rdfs:label \"Abc\"") > g2);
+    }
+
+    #[test]
+    fn described_generation_moves_when_the_reporting_document_changes() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "z", "ex:D a owl:Class .\n");
+        put_ttl(&mut k, "a", "ex:D rdfs:seeAlso ex:x .\n");
+        let g = k.described_generation();
+        // a.ttl, before z.ttl by URI, starts declaring D: it reports now.
+        put_ttl(&mut k, "a", "ex:D rdfs:subClassOf ex:x .\n");
+        assert!(k.described_generation() > g);
+    }
+
+    #[test]
+    fn described_generation_moves_when_an_ontology_header_changes_elsewhere() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "o", "ex:onto a owl:Ontology .\n");
+        put_ttl(&mut k, "h", "ex:onto rdfs:seeAlso ex:x .\n");
+        let set = |k: &mut Knowledge, body: &str| {
+            put_ttl(k, "h", &format!("ex:onto rdfs:seeAlso ex:x{body} .\n"));
+            k.described_generation()
+        };
+        let g = k.described_generation();
+        let license = " ; <http://purl.org/dc/terms/license> <http://l>";
+        let g1 = set(&mut k, license);
+        assert!(g1 > g);
+        // Another licence changes nothing the checks read.
+        assert_eq!(set(&mut k, &format!("{license}, <http://m>")), g1);
+        let g2 = set(&mut k, &format!("{license} ; rdfs:label \"O\""));
+        assert!(g2 > g1);
+        assert_eq!(set(&mut k, &format!("{license} ; rdfs:label \"Onto\"")), g2);
+        // An ontology typed in a document before o.ttl by URI moves the report.
+        put_ttl(&mut k, "a", "ex:onto a owl:Ontology .\n");
+        assert!(k.described_generation() > g2);
     }
 
     /// A shape as lines of text: its node, statement and targets, then one

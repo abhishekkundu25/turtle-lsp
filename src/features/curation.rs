@@ -13,7 +13,7 @@ use crate::jsonld::json;
 use crate::knowledge::{Description, Knowledge, Source};
 use crate::syntax::lexer::{self, Kind};
 use crate::syntax::names::shorten;
-use crate::syntax::{Iri, Node, PrefixMap, Role, Span, Syntax};
+use crate::syntax::{Iri, Node, PrefixMap, Span, Syntax};
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::OnceLock;
@@ -70,9 +70,6 @@ struct Vocab {
     definition: Iri,
     comment: Iri,
     ontology: Iri,
-    /// The property types and `skos:Concept`, for [`TermKind::of`].
-    property_types: [Iri; 4],
-    concept: Iri,
     title: [Iri; 3],
     description: [Iri; 3],
     license: [Iri; 3],
@@ -84,27 +81,15 @@ fn vocab() -> &'static Vocab {
         let i = Iri::intern;
         let rdfs = |l: &str| i(&format!("http://www.w3.org/2000/01/rdf-schema#{l}"));
         let skos = |l: &str| i(&format!("http://www.w3.org/2004/02/skos/core#{l}"));
-        let dcterms = |l: &str| i(&format!("http://purl.org/dc/terms/{l}"));
-        let dc = |l: &str| i(&format!("http://purl.org/dc/elements/1.1/{l}"));
+        let [title, description, license] = *crate::knowledge::header_properties();
         Vocab {
             labels: [rdfs("label"), skos("prefLabel")],
             definition: skos("definition"),
             comment: rdfs("comment"),
             ontology: i(crate::knowledge::OWL_ONTOLOGY),
-            property_types: [
-                i("http://www.w3.org/2002/07/owl#ObjectProperty"),
-                i("http://www.w3.org/2002/07/owl#DatatypeProperty"),
-                i("http://www.w3.org/2002/07/owl#AnnotationProperty"),
-                i("http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"),
-            ],
-            concept: skos("Concept"),
-            title: [dcterms("title"), dc("title"), rdfs("label")],
-            description: [dcterms("description"), dc("description"), rdfs("comment")],
-            license: [
-                dcterms("license"),
-                i("http://creativecommons.org/ns#license"),
-                i("http://web.resource.org/cc/license"),
-            ],
+            title,
+            description,
+            license,
         }
     })
 }
@@ -168,10 +153,17 @@ impl<'a> Checks<'a> {
         shorten(iri, prefixes).unwrap_or_else(|| format!("<{iri}>"))
     }
 
-    /// `terms` named, at most [`NAMED`] of them and then how many more.
-    fn names(&mut self, terms: &[Iri]) -> String {
-        let mut named: Vec<String> = terms.iter().take(NAMED).map(|t| self.name(t)).collect();
-        let more = terms.len().saturating_sub(NAMED);
+    /// `terms` other than `except` (sorted, unique), named: at most
+    /// [`NAMED`] of them and then how many more.
+    fn names(&mut self, terms: &[Iri], except: Iri) -> String {
+        let count = others(terms, except);
+        let mut named: Vec<String> = terms
+            .iter()
+            .filter(|t| **t != except)
+            .take(NAMED)
+            .map(|t| self.name(t))
+            .collect();
+        let more = count.saturating_sub(NAMED);
         if more > 0 {
             return format!("{} and {more} more", named.join(", "));
         }
@@ -231,23 +223,38 @@ impl<'a> Checks<'a> {
     /// trimming) say nothing to tell terms apart by, so they never collide;
     /// nor do terms of different [`TermKind`]s (a class `Judge` and a property
     /// `judge` are two terms by convention, not a copy-paste slip).
+    ///
+    /// The terms a label can collide with are filtered once per (label,
+    /// kind), so N terms that share one label cost O(N), not O(N²).
     fn labels(&mut self, out: &mut Vec<Diagnostic>) {
         let lits = self.literals(&vocab().labels);
         let k = self.k;
         let mut sharing = Sharing::default();
+        let mut by_kind: FxHashMap<(TextKey, TermKind), Vec<Iri>> = FxHashMap::default();
         for l in lits.iter().filter(|l| !l.value.trim().is_empty()) {
-            let mut others = sharing.others(l, |text, lang| k.labelled(text, lang));
-            if !others.is_empty() {
-                let kind = self.kind(l.subject);
-                others.retain(|t| kind.collides(self.kind(*t)));
+            let key = Sharing::key(l);
+            let all = sharing.all(key.clone(), l, |text, lang| k.labelled(text, lang));
+            if others(all, l.subject) == 0 {
+                continue;
             }
-            if others.is_empty() {
+            let kind = self.kind(l.subject);
+            let group = (key, kind);
+            if !by_kind.contains_key(&group) {
+                let colliding = all
+                    .iter()
+                    .copied()
+                    .filter(|t| kind.collides(self.kind(*t)))
+                    .collect();
+                by_kind.insert(group.clone(), colliding);
+            }
+            let colliding = &by_kind[&group];
+            if others(colliding, l.subject) == 0 {
                 continue;
             }
             let message = format!(
                 "Label \"{}\" is also the label of {}",
                 l.value.trim(),
-                self.names(&others)
+                self.names(colliding, l.subject)
             );
             out.push(self.warning(l.span, DUPLICATE_LABEL, message));
         }
@@ -267,13 +274,13 @@ impl<'a> Checks<'a> {
         let mut sharing = Sharing::default();
         let mut defs: Vec<Lit> = Vec::new();
         for l in lits {
-            let all = sharing.all(&l, |text, lang| k.defined_as(text, lang));
-            if !all.contains(&l.subject) {
+            let all = sharing.all(Sharing::key(&l), &l, |text, lang| k.defined_as(text, lang));
+            if all.binary_search(&l.subject).is_err() {
                 continue;
             }
-            let others: Vec<Iri> = all.iter().copied().filter(|t| *t != l.subject).collect();
-            if !others.is_empty() && !l.value.trim().is_empty() {
-                let message = format!("Another term has this definition: {}", self.names(&others));
+            if others(all, l.subject) > 0 && !l.value.trim().is_empty() {
+                let names = self.names(all, l.subject);
+                let message = format!("Another term has this definition: {names}");
                 out.push(self.warning(l.span, DUPLICATE_DEFINITION, message));
             }
             if l.value
@@ -451,43 +458,18 @@ impl<'a> Checks<'a> {
     }
 }
 
-/// What sort of term an IRI is, as bits: [`TermKind::CLASS`], [`TermKind::PROPERTY`],
-/// [`TermKind::CONCEPT`]. Terms of different kinds may share a label.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// What sort of term an IRI is, as the bits of [`Knowledge::term_kind`].
+/// Terms of different kinds may share a label.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TermKind(u8);
 
 impl TermKind {
-    const CLASS: u8 = 1;
-    const PROPERTY: u8 = 2;
-    const CONCEPT: u8 = 4;
-
     /// The kinds the workspace gives `t`: its types (`owl:Class`,
     /// `rdfs:Class`; the four property types; `skos:Concept`), and being the
-    /// subject of `rdfs:subClassOf` or `rdfs:subPropertyOf` in a statement
-    /// about it in a workspace document.
+    /// subject of `rdfs:subClassOf` or `rdfs:subPropertyOf`, in workspace
+    /// documents only.
     fn of(k: &Knowledge, t: Iri) -> TermKind {
-        let (v, c) = (crate::shacl::vocab::get(), vocab());
-        let mut bits = 0;
-        for ty in k.types(&t) {
-            bits |= match ty {
-                _ if ty == v.owl_class || ty == v.rdfs_class => TermKind::CLASS,
-                _ if c.property_types.contains(&ty) => TermKind::PROPERTY,
-                _ if ty == c.concept => TermKind::CONCEPT,
-                _ => 0,
-            };
-        }
-        for d in k.descriptions(&t) {
-            if d.source == Source::External {
-                continue;
-            }
-            if links(&d, v.sub_class_of) {
-                bits |= TermKind::CLASS;
-            }
-            if links(&d, v.sub_property_of) {
-                bits |= TermKind::PROPERTY;
-            }
-        }
-        TermKind(bits)
+        TermKind(k.term_kind(&t))
     }
 
     /// Whether terms of these kinds can collide: the same one kind, or
@@ -498,63 +480,43 @@ impl TermKind {
     }
 }
 
-/// Whether predicate `p` is written in one of the statements about `d`'s
-/// IRI (the statement around each of its spans): a binary search of the
-/// document's uses of `p`, which are in text order.
-fn links(d: &Description, p: Iri) -> bool {
-    let refs = &d.analysis.parsed.refs;
-    let Some(uses) = d.analysis.refs_by_iri.get(&p) else {
-        return false;
-    };
-    let statements = &d.analysis.parsed.statements;
-    d.spans.iter().any(|at| {
-        let Some(span) = d
-            .analysis
-            .parsed
-            .statement_at(*at)
-            .map(|i| statements[i].span)
-        else {
-            return false;
-        };
-        let from = uses.partition_point(|&r| refs[r as usize].span.start < span.start);
-        uses[from..]
-            .iter()
-            .map(|&r| &refs[r as usize])
-            .take_while(|r| r.span.end <= span.end)
-            .any(|r| r.role == Role::Predicate)
-    })
+/// A literal's folded text and language: what [`Sharing`] looks terms up by.
+type TextKey = (String, Option<Iri>);
+
+/// How many of `terms` (sorted, unique) are not `except`.
+fn others(terms: &[Iri], except: Iri) -> usize {
+    terms.len() - usize::from(terms.binary_search(&except).is_ok())
 }
 
 /// The terms the index gives for each (folded text, language) the
 /// document's literals have, looked up once per key.
 #[derive(Default)]
 struct Sharing {
-    found: FxHashMap<(String, Option<Iri>), Vec<Iri>>,
+    found: FxHashMap<TextKey, Vec<Iri>>,
 }
 
 impl Sharing {
-    /// The terms that share `l`'s text, `l`'s subject among them if the index
-    /// counts it.
-    fn all(&mut self, l: &Lit, find: impl Fn(&str, Option<&str>) -> Vec<Iri>) -> &[Iri] {
-        let folded: String = l
+    fn key(l: &Lit) -> TextKey {
+        let folded = l
             .value
             .trim()
             .chars()
             .flat_map(char::to_lowercase)
             .collect();
-        self.found
-            .entry((folded, l.lang))
-            .or_insert_with(|| find(l.value, l.lang.as_ref().map(|x| x.as_str())))
+        (folded, l.lang)
     }
 
-    /// The other terms that share `l`'s text.
-    fn others(&mut self, l: &Lit, find: impl Fn(&str, Option<&str>) -> Vec<Iri>) -> Vec<Iri> {
-        let s = l.subject;
-        self.all(l, find)
-            .iter()
-            .copied()
-            .filter(|t| *t != s)
-            .collect()
+    /// The terms (sorted, unique) that share `l`'s text, whose key is `key`,
+    /// `l`'s subject among them if the index counts it.
+    fn all(
+        &mut self,
+        key: TextKey,
+        l: &Lit,
+        find: impl Fn(&str, Option<&str>) -> Vec<Iri>,
+    ) -> &[Iri] {
+        self.found
+            .entry(key)
+            .or_insert_with(|| find(l.value, l.lang.as_ref().map(|x| x.as_str())))
     }
 }
 
@@ -577,7 +539,7 @@ fn label_whitespace(a: &Analysis, enc: Encoding, out: &mut Vec<Diagnostic>) {
         return;
     }
     // A JSON-LD value can give one literal to several triples.
-    let mut seen: Vec<Span> = Vec::new();
+    let mut seen: FxHashSet<Span> = FxHashSet::default();
     for t in a.parsed.triples.iter().filter(|t| checked.contains(&t.p)) {
         let Node::Literal { value, .. } = &t.o else {
             continue;
@@ -594,10 +556,9 @@ fn label_whitespace(a: &Analysis, enc: Encoding, out: &mut Vec<Diagnostic>) {
         };
         let string = string_token(a, t.o_span, value);
         let span = string.unwrap_or(t.o_span);
-        if seen.contains(&span) {
+        if !seen.insert(span) {
             continue;
         }
-        seen.push(span);
         let mut d = Diagnostic {
             range: a.range(enc, span),
             severity: Some(DiagnosticSeverity::WARNING),
@@ -662,7 +623,9 @@ fn string_token(a: &Analysis, o_span: Span, value: &str) -> Option<Span> {
 /// Turtle one in any of its four quote styles. `None` when nothing changes.
 fn trimmed(token: &str, json: bool) -> Option<String> {
     let q = token.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-    let long = !json && token.len() >= 6 && token[..3].chars().all(|c| c == q);
+    // `get`: the first three bytes can end inside a character (`" é "`).
+    let long =
+        !json && token.len() >= 6 && token.get(..3).is_some_and(|d| d.chars().all(|c| c == q));
     let delim = if long { 3 } else { 1 };
     let content = token.get(delim..token.len().checked_sub(delim)?)?;
     // Each character or escape of the content: (start, end, whitespace).
@@ -819,6 +782,38 @@ mod tests {
             t("rdfs:label \"\"\"\n  Pump\n\"\"\""),
             "ex:a rdfs:label \"\"\"Pump\"\"\" .\n"
         );
+    }
+
+    #[test]
+    fn a_multibyte_character_near_the_quote_is_not_cut() {
+        // The first three bytes of `" é "` and `" 日本"` end inside a character.
+        assert_eq!(
+            turtle("rdfs:label \" é \""),
+            ("\" é \"".into(), "ex:a rdfs:label \"é\" .\n".into())
+        );
+        assert_eq!(
+            turtle("rdfs:label \" 日本\"").1,
+            "ex:a rdfs:label \"日本\" .\n"
+        );
+        assert_eq!(trimmed("\"é", false), None);
+        assert_eq!(trimmed("'日本 '", false), Some("'日本'".into()));
+    }
+
+    /// 40,000 labels with a trailing space: the literals already reported
+    /// are found by hash, not by a scan of the list (which took 200 ms).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn timing_many_spaced_labels_are_not_quadratic() {
+        let text: String = std::iter::once(PREFIXES.to_string())
+            .chain((0..40_000).map(|i| format!("ex:s{i} rdfs:label \"n{i} \" .\n")))
+            .collect();
+        let a = Analysis::new("file:///x/a.ttl".into(), &text, Arc::default(), true);
+        let mut out = Vec::new();
+        let start = std::time::Instant::now();
+        label_whitespace(&a, Encoding::Utf16, &mut out);
+        let took = start.elapsed();
+        assert_eq!(out.len(), 40_000);
+        assert!(took.as_millis() < 100, "took {took:?}");
     }
 
     #[test]
@@ -1124,6 +1119,43 @@ mod tests {
                 "Label \"Valve\" is also the label of ex:Valve",
             ]
         );
+    }
+
+    #[test]
+    fn an_external_type_does_not_change_a_term_kind() {
+        // The workspace makes B a class; an import calling it a property too
+        // would make its kind unknown, and so collide with the property A.
+        let files = [(
+            "a.ttl",
+            "ex:A a owl:ObjectProperty ; rdfs:label \"Pump\" .\n\
+             ex:B a owl:Class ; rdfs:label \"Pump\" .\n",
+        )];
+        let mut ws = workspace(&files);
+        let ext = format!("{HEADER}ex:B a owl:ObjectProperty .\n");
+        let ext = Analysis::new("import:x".into(), &ext, Arc::default(), false);
+        ws.knowledge_mut().add_external("import:x", Arc::new(ext));
+        assert_eq!(reported(&mut ws, "a.ttl", &settings(&[], &[])), vec![]);
+    }
+
+    /// 20,000 classes with one label in one document: each literal's other
+    /// terms come from one list per label and kind, not a copy of it (which
+    /// took about a second).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn timing_one_label_shared_by_20000_terms_is_not_quadratic() {
+        let body: String = (0..20_000)
+            .map(|i| format!("ex:T{i} a owl:Class ; rdfs:label \"Pump\" .\n"))
+            .collect();
+        let mut ws = workspace(&[("a.ttl", &body)]);
+        let a = ws.analysis("file:///w/a.ttl").unwrap();
+        let k = ws.knowledge();
+        let start = std::time::Instant::now();
+        let found = diagnostics(&a, k, Encoding::Utf16, false);
+        let took = start.elapsed();
+        assert_eq!(found.len(), 20_000);
+        let first = &found[0].message;
+        assert!(first.ends_with(" and 19996 more"), "{first}");
+        assert!(took.as_millis() < 200, "took {took:?}");
     }
 
     #[test]

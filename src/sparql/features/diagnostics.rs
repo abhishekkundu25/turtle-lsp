@@ -85,9 +85,11 @@ pub(crate) fn diagnostics(
             })
         })
     };
-    vocabulary_terms(uses(), k, &mk, &mut out);
     // A query only uses terms: none of its refs describes one.
-    own_deprecations(uses(), text, k, &mk, &mut out);
+    let mut own = Vec::new();
+    let warned = own_deprecations(uses(), text, k, &mk, &mut own);
+    vocabulary_terms(uses(), k, &warned, &mk, &mut out);
+    out.append(&mut own);
 
     if opts.lint_undescribed_terms {
         let st = q.doc.structure();

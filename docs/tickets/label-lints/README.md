@@ -43,3 +43,14 @@ and 06 together; then 07.
 - 05: cross-file `missing-label`/`missing-definition` read other documents'
   label and comment lookups, which also count `sh:name` and
   `dcterms:description`: lenient (may stay quiet), never a wrong warning.
+- Review fixes: each workspace source keeps a per-IRI summary of what the
+  curation checks read (term kind, label, comment, header properties,
+  which documents declare or type it `owl:Ontology`), and the knowledge
+  index compares each touched IRI's state before and after a change to
+  bump `described_generation`. A term's kind now comes from that summary,
+  workspace sources only; a subject counts as a class or property from its
+  own `rdfs:subClassOf` / `rdfs:subPropertyOf` triples, not from any such
+  predicate inside its statement.
+- Review fixes: the `duplicate-label` timing test uses 20,000 terms with a
+  200 ms budget, not 5,000: the quadratic version took 55 ms on 5,000,
+  under any budget with headroom for the fixed one (6 ms).

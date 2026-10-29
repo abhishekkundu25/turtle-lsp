@@ -11,7 +11,7 @@ use crate::syntax::{Form, Role, Severity, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub(crate) const SOURCE: &str = "turtle";
 
@@ -53,10 +53,12 @@ pub(crate) struct TermUse<'a, K> {
 /// `unknown-term` (warning, with a "did you mean" and `data.replace` in the
 /// document's own spelling) and `deprecated-term` (hint, deprecated tag) for
 /// terms of the well-known vocabularies, matched by namespace IRI. `mk`
-/// builds a diagnostic at a span.
+/// builds a diagnostic at a span. No hint where `warned`, the spans
+/// [`own_deprecations`] reported, has the use's span: that warning says it.
 pub(crate) fn vocabulary_terms<'a, K>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     k: &Knowledge,
+    warned: &FxHashSet<crate::syntax::Span>,
     mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
     out: &mut Vec<Diagnostic>,
 ) where
@@ -73,7 +75,7 @@ pub(crate) fn vocabulary_terms<'a, K>(
         }
         match v.term(local) {
             // A workspace deprecation too: [`own_deprecations`] warns instead.
-            Some(t) if t.deprecated && k.deprecated_here(&u.iri) => {}
+            Some(t) if t.deprecated && warned.contains(&u.span) => {}
             Some(t) if t.deprecated => {
                 let mut d = mk(
                     u.span,
@@ -124,17 +126,21 @@ pub(crate) fn vocabulary_terms<'a, K>(
 /// a workspace file marks `owl:deprecated true`
 /// ([`Knowledge::deprecated_here`]), named as written in `text`. The caller
 /// leaves out subjects: they describe the term. Needs no index wait: an
-/// unindexed file can only hide a deprecation, never invent one.
+/// unindexed file can only hide a deprecation, never invent one. Returns
+/// the spans it reported, for [`vocabulary_terms`].
 pub(crate) fn own_deprecations<'a, K>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     text: &str,
     k: &Knowledge,
     mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
     out: &mut Vec<Diagnostic>,
-) where
+) -> FxHashSet<crate::syntax::Span>
+where
     K: crate::syntax::IriKey,
 {
+    let mut warned = FxHashSet::default();
     for u in uses.filter(|u| k.deprecated_here(&u.iri)) {
+        warned.insert(u.span);
         let written = text
             .get(u.span.start as usize..u.span.end as usize)
             .unwrap_or_default();
@@ -147,6 +153,7 @@ pub(crate) fn own_deprecations<'a, K>(
         d.tags = Some(vec![DiagnosticTag::DEPRECATED]);
         out.push(d);
     }
+    warned
 }
 
 /// What replaces `written`, a JSON-LD string that spells `iri` in full or
@@ -374,6 +381,19 @@ pub fn diagnostics_with(
         }
     }
 
+    // Uses of terms the workspace deprecates, added after the vocabulary
+    // checks, which leave out the hint where these warn.
+    let uses = a.parsed.refs.iter().filter_map(|r| {
+        (r.role != Role::Subject && !matches!(r.form, Form::A)).then_some(TermUse {
+            span: r.span,
+            iri: r.iri,
+            prefix: None,
+            bare: None,
+        })
+    });
+    let mut own = Vec::new();
+    let warned = own_deprecations(uses, &a.text, k, &mk, &mut own);
+
     // Terms of well-known vocabularies (matched by namespace IRI, not prefix name).
     let text_at = |span: crate::syntax::Span, len: u32| {
         a.text.get(span.start as usize..(span.start + len) as usize)
@@ -425,7 +445,7 @@ pub fn diagnostics_with(
                 bare: text_at(w.span, w.span.end - w.span.start),
             },
         });
-        vocabulary_terms(uses, k, &mk, &mut out);
+        vocabulary_terms(uses, k, &warned, &mk, &mut out);
     } else {
         let uses = a.parsed.refs.iter().filter_map(|r| match r.form {
             Form::A => None,
@@ -442,17 +462,9 @@ pub fn diagnostics_with(
                 bare: None,
             }),
         });
-        vocabulary_terms(uses, k, &mk, &mut out);
+        vocabulary_terms(uses, k, &warned, &mk, &mut out);
     }
-    let uses = a.parsed.refs.iter().filter_map(|r| {
-        (r.role != Role::Subject && !matches!(r.form, Form::A)).then_some(TermUse {
-            span: r.span,
-            iri: r.iri,
-            prefix: None,
-            bare: None,
-        })
-    });
-    own_deprecations(uses, &a.text, k, &mk, &mut out);
+    out.append(&mut own);
 
     for (span, message) in crate::features::literals::invalid_literals(a) {
         out.push(mk(
@@ -849,6 +861,19 @@ mod tests {
         let got = own_deprecated("vcard:Email owl:deprecated true .\n", uses, Syntax::Turtle);
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0].0, S::WARNING);
+        // A subject gets no warning (it describes the term): it keeps the hint.
+        let uses = "@prefix vcard: <http://www.w3.org/2006/vcard/ns#> .\n\
+                    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                    vcard:Email rdfs:comment \"x\" .\n";
+        let got = own_deprecated("vcard:Email owl:deprecated true .\n", uses, Syntax::Turtle);
+        assert_eq!(
+            got,
+            [(
+                S::HINT,
+                "vcard:Email".into(),
+                "'vcard:Email' is deprecated".into()
+            )]
+        );
     }
 
     #[test]
