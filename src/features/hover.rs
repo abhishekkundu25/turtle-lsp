@@ -96,6 +96,8 @@ pub(crate) fn describe_iri(
     let mut kind = None;
     let mut text_label = None;
     let mut comment = None;
+    // A workspace file's `owl:deprecated true`, or the vocabulary's flag.
+    let mut deprecated = k.deprecated_here(iri);
 
     if let Some((v, local)) = VOCABS.lookup(iri)
         && let Some(t) = v.term(local)
@@ -111,9 +113,10 @@ pub(crate) fn describe_iri(
         if !t.comment.is_empty() {
             comment = Some(t.comment.clone());
         }
-        if t.deprecated {
-            out.push_str(" ~~deprecated~~");
-        }
+        deprecated |= t.deprecated;
+    }
+    if deprecated {
+        out.push_str(" ~~deprecated~~");
     }
 
     let mut defined_in: Vec<String> = k
@@ -206,6 +209,31 @@ mod tests {
         let md = describe_iri("http://ex.com/x#T", "T", &k, &PrefixMap::default()).unwrap();
         assert!(md.contains("_Described in http://ex.com/x:2_"), "{md}");
         assert!(!md.contains("0123456789abcdef"), "{md}");
+    }
+
+    #[test]
+    fn hover_says_an_own_deprecated_term_is_deprecated() {
+        let text = "<http://ex.com/x#T> <http://www.w3.org/2002/07/owl#deprecated> true .\n";
+        let a = Analysis::new(
+            "file:///work/onto.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            false,
+        );
+        let mut k = Knowledge::default();
+        k.set(
+            "file:///work/onto.ttl",
+            crate::knowledge::Source::Disk,
+            Arc::new(a),
+        );
+        let md = describe_iri("http://ex.com/x#T", "T", &k, &PrefixMap::default()).unwrap();
+        assert!(md.starts_with("**T** ~~deprecated~~"), "{md}");
+        // An import's deprecation is not the workspace's.
+        let mut k = Knowledge::default();
+        let a = Analysis::new("file:///c.ttl".into(), text, Arc::default(), false);
+        k.add_external("import:http://ex.com/x", Arc::new(a));
+        let md = describe_iri("http://ex.com/x#T", "T", &k, &PrefixMap::default()).unwrap();
+        assert!(!md.contains("deprecated"), "{md}");
     }
 
     #[test]

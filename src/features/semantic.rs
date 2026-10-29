@@ -379,7 +379,7 @@ pub(crate) fn classify(k: &Knowledge, iri: &str) -> Class {
     if term.is_some() {
         mods |= DEFAULT_LIBRARY;
     }
-    if vocab_term.is_some_and(|t| t.deprecated) {
+    if vocab_term.is_some_and(|t| t.deprecated) || k.deprecated_here(iri) {
         mods |= DEPRECATED;
     }
     if k.is_own_namespace(namespace_of(iri)) && !k.is_described(iri) {
@@ -571,6 +571,31 @@ mod tests {
         assert_eq!(get("Email"), (CLASS, DEPRECATED | DEFAULT_LIBRARY));
         assert_eq!(get("ghost"), (INDIVIDUAL, UNDESCRIBED));
         assert_eq!(get("t1"), (INDIVIDUAL, DECLARATION));
+    }
+
+    #[test]
+    fn own_deprecated_terms_are_struck_through() {
+        let v = Arc::new(Analysis::new(
+            "file:///v.ttl".into(),
+            "<http://example.com/ns#old> <http://www.w3.org/2002/07/owl#deprecated> true .\n",
+            Arc::new(PrefixMap::default()),
+            false,
+        ));
+        let text = "@prefix ex: <http://example.com/ns#> .\nex:a ex:p ex:old .\n";
+        let a = Arc::new(Analysis::new(
+            "file:///t.ttl".into(),
+            text,
+            Arc::new(PrefixMap::default()),
+            true,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///v.ttl", Source::Disk, v);
+        k.set("file:///t.ttl", Source::Open, a);
+        assert_ne!(
+            classify(&k, "http://example.com/ns#old").mods & DEPRECATED,
+            0
+        );
+        assert_eq!(classify(&k, "http://example.com/ns#a").mods & DEPRECATED, 0);
     }
 
     /// (line, column, text, type) of each token.

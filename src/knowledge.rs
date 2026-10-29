@@ -1341,8 +1341,6 @@ impl Knowledge {
 
     /// Some workspace source says `owl:deprecated` with a boolean true (`true`,
     /// `"true"^^xsd:boolean`, JSON-LD `true`), and none says false.
-    // used by features::curation (ticket 05/06)
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn deprecated_here<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
         self.entries
             .get(iri)

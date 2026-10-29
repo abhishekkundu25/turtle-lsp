@@ -7,7 +7,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
-use crate::syntax::{Form, Severity, Syntax, SyntaxError};
+use crate::syntax::{Form, Role, Severity, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
@@ -60,6 +60,8 @@ pub(crate) fn vocabulary_terms<'a, K>(
             continue;
         }
         match v.term(local) {
+            // A workspace deprecation too: [`own_deprecations`] warns instead.
+            Some(t) if t.deprecated && k.deprecated_here(&u.iri) => {}
             Some(t) if t.deprecated => {
                 let mut d = mk(
                     u.span,
@@ -103,6 +105,35 @@ pub(crate) fn vocabulary_terms<'a, K>(
                 out.push(d);
             }
         }
+    }
+}
+
+/// `deprecated-term` (warning, deprecated tag) for each use of a term that
+/// a workspace file marks `owl:deprecated true`
+/// ([`Knowledge::deprecated_here`]), named as written in `text`. The caller
+/// leaves out subjects: they describe the term. Needs no index wait: an
+/// unindexed file can only hide a deprecation, never invent one.
+pub(crate) fn own_deprecations<'a, K>(
+    uses: impl Iterator<Item = TermUse<'a, K>>,
+    text: &str,
+    k: &Knowledge,
+    mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
+    out: &mut Vec<Diagnostic>,
+) where
+    K: crate::syntax::IriKey,
+{
+    for u in uses.filter(|u| k.deprecated_here(&u.iri)) {
+        let written = text
+            .get(u.span.start as usize..u.span.end as usize)
+            .unwrap_or_default();
+        let mut d = mk(
+            u.span,
+            DiagnosticSeverity::WARNING,
+            "deprecated-term",
+            format!("'{written}' is deprecated: the workspace marks it owl:deprecated"),
+        );
+        d.tags = Some(vec![DiagnosticTag::DEPRECATED]);
+        out.push(d);
     }
 }
 
@@ -401,6 +432,15 @@ pub fn diagnostics_with(
         });
         vocabulary_terms(uses, k, &mk, &mut out);
     }
+    let uses = a.parsed.refs.iter().filter_map(|r| {
+        (r.role != Role::Subject && !matches!(r.form, Form::A)).then_some(TermUse {
+            span: r.span,
+            iri: r.iri,
+            prefix: None,
+            bare: None,
+        })
+    });
+    own_deprecations(uses, &a.text, k, &mk, &mut out);
 
     for (span, message) in crate::features::literals::invalid_literals(a) {
         out.push(mk(
@@ -706,6 +746,115 @@ mod tests {
         let all = shown(None);
         assert!(all.len() > 5, "{all:?}");
         assert_eq!(shown(Some(5)), all);
+    }
+
+    /// The `deprecated-term` diagnostics of `uses` (a document of `syntax`)
+    /// as (severity, text covered, message), with `vocab.ttl` beside it.
+    fn own_deprecated(
+        vocab: &str,
+        uses: &str,
+        syntax: Syntax,
+    ) -> Vec<(DiagnosticSeverity, String, String)> {
+        use crate::knowledge::Source;
+        let header = "@prefix ex: <http://ex.org/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                      @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\
+                      @prefix vcard: <http://www.w3.org/2006/vcard/ns#> .\n";
+        let v = Analysis::new(
+            "file:///w/vocab.ttl".into(),
+            &format!("{header}{vocab}"),
+            Arc::default(),
+            false,
+        );
+        let a = Arc::new(Analysis::with_syntax(
+            "file:///w/uses".into(),
+            uses,
+            Arc::default(),
+            false,
+            syntax,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/vocab.ttl", Source::Disk, Arc::new(v));
+        k.set("file:///w/uses", Source::Open, a.clone());
+        diagnostics(&a, &k, Encoding::Utf8)
+            .into_iter()
+            .filter(|d| d.code == Some(NumberOrString::String("deprecated-term".into())))
+            .map(|d| {
+                assert_eq!(d.tags, Some(vec![DiagnosticTag::DEPRECATED]));
+                let start = a.offset(Encoding::Utf8, d.range.start).unwrap() as usize;
+                let end = a.offset(Encoding::Utf8, d.range.end).unwrap() as usize;
+                (d.severity.unwrap(), uses[start..end].to_string(), d.message)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_use_of_an_own_deprecated_term_is_a_warning() {
+        use DiagnosticSeverity as S;
+        let uses = "@prefix ex: <http://ex.org/> .\n\
+                    ex:old ex:p ex:x .\nex:a ex:old <http://ex.org/old> .\n";
+        let got = own_deprecated("ex:old owl:deprecated true .\n", uses, Syntax::Turtle);
+        // Not at the subject: that describes the term.
+        assert_eq!(
+            got,
+            [
+                (
+                    S::WARNING,
+                    "ex:old".into(),
+                    "'ex:old' is deprecated: the workspace marks it owl:deprecated".into()
+                ),
+                (
+                    S::WARNING,
+                    "<http://ex.org/old>".into(),
+                    "'<http://ex.org/old>' is deprecated: the workspace marks it owl:deprecated"
+                        .into()
+                ),
+            ]
+        );
+        // The typed form counts; `false` anywhere clears it.
+        let typed = "ex:old owl:deprecated \"true\"^^xsd:boolean .\n";
+        assert_eq!(own_deprecated(typed, uses, Syntax::Turtle).len(), 2);
+        let undone = "ex:old owl:deprecated true .\nex:old owl:deprecated false .\n";
+        assert_eq!(own_deprecated(undone, uses, Syntax::Turtle), []);
+        // The deprecating file's own description is not flagged.
+        let v = "ex:old owl:deprecated true .\n";
+        assert_eq!(own_deprecated(v, "", Syntax::Turtle), []);
+    }
+
+    #[test]
+    fn a_vocabulary_deprecation_stays_a_hint_unless_the_workspace_says_so() {
+        use DiagnosticSeverity as S;
+        let uses = "@prefix vcard: <http://www.w3.org/2006/vcard/ns#> .\n\
+                    <http://ex.org/a> a vcard:Email .\n";
+        assert_eq!(
+            own_deprecated("", uses, Syntax::Turtle),
+            [(
+                S::HINT,
+                "vcard:Email".into(),
+                "'vcard:Email' is deprecated".into()
+            )]
+        );
+        // Deprecated by both: reported once, as the workspace's warning.
+        let got = own_deprecated("vcard:Email owl:deprecated true .\n", uses, Syntax::Turtle);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, S::WARNING);
+    }
+
+    #[test]
+    fn a_jsonld_use_of_an_own_deprecated_term_is_a_warning() {
+        let uses = r#"{
+  "@context": {"ex": "http://ex.org/", "old": {"@id": "ex:old", "@type": "@id"}},
+  "@id": "ex:a",
+  "old": "ex:b",
+  "ex:p": {"@id": "ex:old"}
+}"#;
+        let got = own_deprecated("ex:old owl:deprecated true .\n", uses, Syntax::JsonLd);
+        let at: Vec<&str> = got.iter().map(|g| g.1.as_str()).collect();
+        assert!(
+            got.iter().all(|g| g.0 == DiagnosticSeverity::WARNING),
+            "{got:?}"
+        );
+        // The term at its use, and the compact IRI; not the subject `ex:a`.
+        assert_eq!(at, ["old", "ex:old"], "{got:?}");
     }
 
     #[test]
