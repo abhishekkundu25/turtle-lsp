@@ -46,7 +46,7 @@ pub enum Kind {
 }
 
 /// A token: 12 bytes, because a document holds one per few bytes of text.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Token {
     pub kind: Kind,
     /// A [`Fault`] code for a malformed token, 0 for a well-formed one.

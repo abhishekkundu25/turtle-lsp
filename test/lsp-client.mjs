@@ -263,6 +263,17 @@ export async function startServer({
         contentChanges: [{ text }],
       })
     },
+    // One ranged change, as editors send them (the server syncs incrementally):
+    // `range` (LSP positions in the text before) is replaced by `text`.
+    edit(uri, range, text) {
+      const v = (versions.get(uri) ?? 1) + 1
+      versions.set(uri, v)
+      diagnostics.delete(uri)
+      conn.sendNotification("textDocument/didChange", {
+        textDocument: { uri, version: v },
+        contentChanges: [{ range, text }],
+      })
+    },
     // Incremental sync: `changes` ({ range, text }, UTF-16 positions) in one
     // didChange, applied in order, each to the text the one before left.
     changeRange(uri, changes) {

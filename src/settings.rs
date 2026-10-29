@@ -172,6 +172,9 @@ pub struct Settings {
     pub(crate) code_lens_references: bool,
     /// Diagnose the workspace files that are not open, in the background.
     pub(crate) diagnostics_workspace: bool,
+    /// Parse only the statements around an edit (the statement splice);
+    /// off, every edit parses the whole document.
+    pub(crate) parse_incremental: bool,
     /// "Run query" stops a query after this long; `None` (0) for no limit.
     pub query_timeout: Option<Duration>,
     /// "Run query" keeps at most this many rows (or triples) of an answer;
@@ -209,6 +212,7 @@ impl Default for Settings {
             format_line_width: 100,
             code_lens_references: true,
             diagnostics_workspace: false,
+            parse_incremental: true,
             query_timeout: Some(QUERY_TIMEOUT),
             query_max_rows: Some(QUERY_MAX_ROWS),
             query_max_buffered_rows: Some(QUERY_MAX_BUFFERED_ROWS),
@@ -308,6 +312,8 @@ impl Settings {
                 }
             }
             ["diagnostics", "workspace"] => set_bool(&mut self.diagnostics_workspace, v),
+            // The file may set it: either way the results are the same.
+            ["parse", "incremental"] => set_bool(&mut self.parse_incremental, v),
             ["format", "lineWidth"] => {
                 if let Some(n) = v.as_u64().and_then(|n| u32::try_from(n).ok()) {
                     self.format_line_width = n;
@@ -414,6 +420,7 @@ mod tests {
         assert_eq!(s.format_line_width, 100);
         assert!(s.code_lens_references);
         assert!(!s.diagnostics_workspace);
+        assert!(s.parse_incremental);
         assert_eq!(s.query_timeout, Some(Duration::from_secs(30)));
         assert_eq!(s.query_max_rows, Some(1000));
         assert_eq!(s.query_max_buffered_rows, Some(10_000_000));
@@ -448,6 +455,7 @@ mod tests {
             "format": {"lineWidth": 80},
             "codeLens": {"references": false},
             "diagnostics": {"workspace": true},
+            "parse": {"incremental": false},
             "query": {"timeoutSeconds": 2.5, "maxRows": 0, "maxBufferedRows": 0},
             "server": {"path": "/ignored"},
         });
@@ -463,6 +471,7 @@ mod tests {
             "turtle.format.lineWidth": 80,
             "codeLens.references": false,
             "diagnostics.workspace": true,
+            "parse.incremental": false,
             "query.timeoutSeconds": 2.5,
             "query.maxRows": 0,
             "query.maxBufferedRows": 0,
@@ -477,7 +486,7 @@ mod tests {
         assert_eq!(a.imports_unresolved, UnresolvedImports::Ignore);
         assert!(!a.code_lens_references);
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
-        assert!(a.diagnostics_workspace);
+        assert!(a.diagnostics_workspace && !a.parse_incremental);
         assert_eq!(a.query_timeout, Some(Duration::from_millis(2500)));
         assert_eq!((a.query_max_rows, a.query_max_buffered_rows), (None, None));
         let off = Settings::from_layers([(

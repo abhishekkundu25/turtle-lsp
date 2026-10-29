@@ -7,14 +7,14 @@
 //! composer ([`crate::diagnose::document`]) applies both lists.
 
 use crate::analysis::{Analysis, Encoding};
-use crate::features::diagnostics::SOURCE;
+use crate::features::diagnostics::Found;
 use crate::features::quickfix::FixData;
 use crate::jsonld::json;
 use crate::knowledge::{Description, Knowledge, Source};
 use crate::syntax::lexer::{self, Kind};
 use crate::syntax::names::shorten;
 use crate::syntax::{Iri, Node, PrefixMap, Span, Syntax, Triple};
-use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
+use lsp_types::{Diagnostic, DiagnosticSeverity};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::OnceLock;
 
@@ -43,26 +43,16 @@ pub(crate) const OPT_IN: &[&str] = &[
     MISSING_ONTOLOGY_LICENSE,
 ];
 
-/// The curation diagnostics of `a`; the [`OPT_IN`] checks only with
-/// `house_style`.
-pub(crate) fn diagnostics(
-    a: &Analysis,
-    k: &Knowledge,
-    enc: Encoding,
-    house_style: bool,
-) -> Vec<Diagnostic> {
+/// The house-style diagnostics of `a`: the [`OPT_IN`] checks. The label
+/// checks that are on by default run a statement at a time, for the
+/// findings an open document keeps ([`whitespace`], [`LabelChecks`]).
+pub(crate) fn house_style(a: &Analysis, k: &Knowledge, enc: Encoding) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    // One scan of the document for both label checks.
-    let labels = label_triples(a);
-    label_whitespace(a, &labels, enc, &mut out);
-    let mut c = Checks::new(a, k, enc);
-    c.labels(&labels, &mut out);
-    if house_style {
-        c.definitions(&mut out);
-        c.missing(&mut out);
-        c.headers(&mut out);
-    }
-    out
+    let mut c = Checks::new(a, k);
+    c.definitions(&mut out);
+    c.missing(&mut out);
+    c.headers(&mut out);
+    out.into_iter().map(|f| f.into_diagnostic(a, enc)).collect()
 }
 
 /// The IRIs the label, definition and header checks read.
@@ -101,6 +91,8 @@ const NAMED: usize = 3;
 
 /// A literal object of a declared term in the document being checked.
 struct Lit<'a> {
+    /// The triple that gives it, by index.
+    triple: u32,
     subject: Iri,
     p: Iri,
     value: &'a str,
@@ -115,7 +107,6 @@ struct Lit<'a> {
 struct Checks<'a> {
     a: &'a Analysis,
     k: &'a Knowledge,
-    enc: Encoding,
     /// [`Knowledge::is_term`] by subject.
     terms: FxHashMap<Iri, bool>,
     /// [`TermKind::of`] by term, for the terms a label collides with.
@@ -125,11 +116,10 @@ struct Checks<'a> {
 }
 
 impl<'a> Checks<'a> {
-    fn new(a: &'a Analysis, k: &'a Knowledge, enc: Encoding) -> Checks<'a> {
+    fn new(a: &'a Analysis, k: &'a Knowledge) -> Checks<'a> {
         Checks {
             a,
             k,
-            enc,
             terms: FxHashMap::default(),
             kinds: FxHashMap::default(),
             prefixes: None,
@@ -184,29 +174,25 @@ impl<'a> Checks<'a> {
         string_token(self.a, l.o_span, l.value).unwrap_or(l.o_span)
     }
 
-    fn warning(&self, span: Span, code: &str, message: String) -> Diagnostic {
-        Diagnostic {
-            range: self.a.range(self.enc, span),
-            severity: Some(DiagnosticSeverity::WARNING),
-            code: Some(NumberOrString::String(code.to_string())),
-            source: Some(SOURCE.to_string()),
-            message,
-            ..Default::default()
-        }
+    fn warning(&self, span: Span, code: &str, message: String) -> Found {
+        Found::new(span, DiagnosticSeverity::WARNING, code, message)
     }
 
-    /// The literals of `predicates` among `triples` (of the document, in
-    /// text order) whose subject is a declared term, in text order, one per
-    /// literal written (a JSON-LD value can give several triples one
-    /// literal).
+    /// The literals of `predicates` among `triples` (of the document, by
+    /// index, in text order) whose subject is a declared term, in text
+    /// order, one per literal written (a JSON-LD value can give several
+    /// triples of one statement one literal).
     fn literals(
         &mut self,
-        triples: impl IntoIterator<Item = &'a Triple>,
+        triples: impl IntoIterator<Item = (u32, &'a Triple)>,
         predicates: &[Iri],
     ) -> Vec<Lit<'a>> {
         let mut out: Vec<Lit<'a>> = Vec::new();
         let mut seen: FxHashSet<(Span, Iri, Iri)> = FxHashSet::default();
-        for t in triples.into_iter().filter(|t| predicates.contains(&t.p)) {
+        for (i, t) in triples
+            .into_iter()
+            .filter(|(_, t)| predicates.contains(&t.p))
+        {
             let (Node::Iri(s), Node::Literal { value, lang, .. }) = (&t.s, &t.o) else {
                 continue;
             };
@@ -216,6 +202,7 @@ impl<'a> Checks<'a> {
             // The object's span: one string per object, so the same literal.
             if seen.insert((t.o_span, *s, t.p)) {
                 out.push(Lit {
+                    triple: i,
                     subject: *s,
                     p: t.p,
                     value,
@@ -227,58 +214,16 @@ impl<'a> Checks<'a> {
         out
     }
 
-    /// `duplicate-label` and `multiple-labels`. Empty labels (after
-    /// trimming) say nothing to tell terms apart by, so they never collide;
-    /// nor do terms of different [`TermKind`]s (a class `Judge` and a property
-    /// `judge` are two terms by convention, not a copy-paste slip).
-    ///
-    /// The terms a label can collide with are filtered once per (label,
-    /// kind), so N terms that share one label cost O(N), not O(N²).
-    /// `labels` are the document's triples of [`label_triples`].
-    fn labels(&mut self, labels: &[&'a Triple], out: &mut Vec<Diagnostic>) {
-        let lits = self.literals(labels.iter().copied(), &vocab().labels);
-        let k = self.k;
-        let mut sharing = Sharing::default();
-        let mut by_kind: FxHashMap<(TextKey, TermKind), Vec<Iri>> = FxHashMap::default();
-        for l in lits.iter().filter(|l| !l.value.trim().is_empty()) {
-            let key = Sharing::key(l);
-            let all = sharing.all(key.clone(), l, |text, lang| k.labelled(text, lang));
-            if others(all, l.subject) == 0 {
-                continue;
-            }
-            let kind = self.kind(l.subject);
-            let group = (key, kind);
-            if !by_kind.contains_key(&group) {
-                let colliding = all
-                    .iter()
-                    .copied()
-                    .filter(|t| kind.collides(self.kind(*t)))
-                    .collect();
-                by_kind.insert(group.clone(), colliding);
-            }
-            let colliding = &by_kind[&group];
-            if others(colliding, l.subject) == 0 {
-                continue;
-            }
-            let message = format!(
-                "Label \"{}\" is also the label of {}",
-                l.value.trim(),
-                self.names(colliding, l.subject)
-            );
-            out.push(self.warning(self.span(l), DUPLICATE_LABEL, message));
-        }
-        self.multiple(&lits, MULTIPLE_LABELS, out);
-    }
-
     /// `duplicate-definition`, `multiple-definitions` and
     /// `lowercase-definition` (empty definitions, like empty labels, never
     /// collide). A term's definition is its `skos:definition`,
     /// or its `rdfs:comment` when no workspace source gives it a
     /// `skos:definition`: [`Knowledge::defined_as`] lists a comment's
     /// subject only then.
-    fn definitions(&mut self, out: &mut Vec<Diagnostic>) {
+    fn definitions(&mut self, out: &mut Vec<Found>) {
         let v = vocab();
-        let lits = self.literals(&self.a.parsed.triples, &[v.definition, v.comment]);
+        let triples = (0..).zip(&self.a.parsed.triples);
+        let lits = self.literals(triples, &[v.definition, v.comment]);
         let k = self.k;
         let mut sharing = Sharing::default();
         let mut defs: Vec<Lit> = Vec::new();
@@ -303,12 +248,16 @@ impl<'a> Checks<'a> {
             }
             defs.push(l);
         }
-        self.multiple(&defs, MULTIPLE_DEFINITIONS, out);
+        out.extend(
+            self.multiple(&defs, MULTIPLE_DEFINITIONS)
+                .into_iter()
+                .flatten(),
+        );
     }
 
-    /// `code` on each of `lits` whose subject has another value of the same
-    /// property in the same language here.
-    fn multiple(&mut self, lits: &[Lit], code: &str, out: &mut Vec<Diagnostic>) {
+    /// For each of `lits`, `code` if its subject has another value of the
+    /// same property in the same language among them.
+    fn multiple(&mut self, lits: &[Lit], code: &str) -> Vec<Option<Found>> {
         let mut values: FxHashMap<(Iri, Iri, Option<Iri>), Vec<&str>> = FxHashMap::default();
         for l in lits {
             let v = values.entry((l.subject, l.p, l.lang)).or_default();
@@ -316,9 +265,11 @@ impl<'a> Checks<'a> {
                 v.push(l.value);
             }
         }
+        let mut out = Vec::with_capacity(lits.len());
         for l in lits {
             let n = values[&(l.subject, l.p, l.lang)].len();
             if n < 2 {
+                out.push(None);
                 continue;
             }
             let (s, p) = (self.name(&l.subject), self.name(&l.p));
@@ -326,8 +277,9 @@ impl<'a> Checks<'a> {
                 Some(lang) => format!("{s} has {n} {p} values tagged @{}", &*lang),
                 None => format!("{s} has {n} {p} values without a language tag"),
             };
-            out.push(self.warning(self.span(l), code, message));
+            out.push(Some(self.warning(self.span(l), code, message)));
         }
+        out
     }
 
     /// `missing-label` and `missing-definition`, on the subject of the first
@@ -338,7 +290,7 @@ impl<'a> Checks<'a> {
     /// read from its triples, another's from its label and comment indexes
     /// ([`Analysis::label`], [`Analysis::comment_en`]), which look the term
     /// up without a scan and also count `sh:name` and `dcterms:description`.
-    fn missing(&mut self, out: &mut Vec<Diagnostic>) {
+    fn missing(&mut self, out: &mut Vec<Found>) {
         let (a, k, v) = (self.a, self.k, vocab());
         let mut labelled: FxHashSet<Iri> = FxHashSet::default();
         let mut defined: FxHashSet<Iri> = FxHashSet::default();
@@ -392,7 +344,7 @@ impl<'a> Checks<'a> {
     /// subject of each IRI typed `owl:Ontology`, in the first by URI of the
     /// workspace documents that type it so; a header property any workspace
     /// document gives it counts.
-    fn headers(&mut self, out: &mut Vec<Diagnostic>) {
+    fn headers(&mut self, out: &mut Vec<Found>) {
         let (a, k, v) = (self.a, self.k, vocab());
         let rdf_type = crate::shacl::vocab::get().rdf_type;
         let mut seen: FxHashSet<Iri> = FxHashSet::default();
@@ -467,6 +419,116 @@ impl<'a> Checks<'a> {
     }
 }
 
+/// A label of a declared term in the document: the triple that gives it (by
+/// index), its subject, and the key the index files its text under
+/// ([`crate::knowledge::text_key`]), by which the index's change set names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Label {
+    pub(crate) triple: u32,
+    pub(crate) subject: Iri,
+    pub(crate) key: u64,
+}
+
+/// `duplicate-label` and `multiple-labels` of one document, for some of its
+/// labels at a time. Empty labels (after trimming) say nothing to tell terms
+/// apart by, so they never collide; nor do terms of different [`TermKind`]s
+/// (a class `Judge` and a property `judge` are two terms by convention, not
+/// a copy-paste slip).
+pub(crate) struct LabelChecks<'a> {
+    c: Checks<'a>,
+    sharing: Sharing,
+    /// The terms a label can collide with, filtered once per (label, kind),
+    /// so N terms that share one label cost O(N), not O(N²).
+    by_kind: FxHashMap<(TextKey, TermKind), Vec<Iri>>,
+}
+
+impl<'a> LabelChecks<'a> {
+    pub(crate) fn new(a: &'a Analysis, k: &'a Knowledge) -> LabelChecks<'a> {
+        LabelChecks {
+            c: Checks::new(a, k),
+            sharing: Sharing::default(),
+            by_kind: FxHashMap::default(),
+        }
+    }
+
+    /// The labels of declared terms among the triples `range` of the
+    /// document, in order, one per literal written.
+    pub(crate) fn labels(&mut self, range: std::ops::Range<usize>) -> Vec<Label> {
+        let triples = &self.c.a.parsed.triples[range.clone()];
+        let triples = (range.start as u32..).zip(triples);
+        self.c
+            .literals(triples, &vocab().labels)
+            .into_iter()
+            .map(|l| Label {
+                triple: l.triple,
+                subject: l.subject,
+                key: crate::knowledge::text_key(l.value, l.lang.as_ref().map(|x| x.as_str())),
+            })
+            .collect()
+    }
+
+    /// The literal of `l`.
+    fn lit(&self, l: &Label) -> Lit<'a> {
+        let t = &self.c.a.parsed.triples[l.triple as usize];
+        let Node::Literal { value, lang, .. } = &t.o else {
+            unreachable!("a label is a literal");
+        };
+        Lit {
+            triple: l.triple,
+            subject: l.subject,
+            p: t.p,
+            value,
+            lang: *lang,
+            o_span: t.o_span,
+        }
+    }
+
+    /// `duplicate-label` on `l` when another term of a kind it collides
+    /// with has its text as a label.
+    pub(crate) fn duplicate(&mut self, l: &Label) -> Option<Found> {
+        let l = self.lit(l);
+        if l.value.trim().is_empty() {
+            return None;
+        }
+        let k = self.c.k;
+        let key = Sharing::key(&l);
+        let all = self
+            .sharing
+            .all(key.clone(), &l, |text, lang| k.labelled(text, lang));
+        if others(all, l.subject) == 0 {
+            return None;
+        }
+        let kind = self.c.kind(l.subject);
+        let group = (key, kind);
+        if !self.by_kind.contains_key(&group) {
+            let colliding = all
+                .iter()
+                .copied()
+                .filter(|t| kind.collides(self.c.kind(*t)))
+                .collect();
+            self.by_kind.insert(group.clone(), colliding);
+        }
+        let colliding = &self.by_kind[&group];
+        if others(colliding, l.subject) == 0 {
+            return None;
+        }
+        let message = format!(
+            "Label \"{}\" is also the label of {}",
+            l.value.trim(),
+            self.c.names(colliding, l.subject)
+        );
+        Some(self.c.warning(self.c.span(&l), DUPLICATE_LABEL, message))
+    }
+
+    /// `multiple-labels` for each of `labels`, which hold every label of
+    /// their subjects in the document: whether its subject has another
+    /// value of the same property in the same language.
+    pub(crate) fn multiple(&mut self, labels: &[Label]) -> Vec<Option<Found>> {
+        let lits: Vec<Lit> = labels.iter().map(|l| self.lit(l)).collect();
+        self.c.multiple(&lits, MULTIPLE_LABELS)
+    }
+}
+
 /// What sort of term an IRI is, as the bits of [`Knowledge::term_kind`].
 /// Terms of different kinds may share a label.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -538,30 +600,25 @@ const WHITESPACE_CHECKED: [&str; 3] = [
     "http://www.w3.org/2004/02/skos/core#altLabel",
 ];
 
-/// The triples of `a` with a [`WHITESPACE_CHECKED`] predicate, in text order.
-fn label_triples(a: &Analysis) -> Vec<&Triple> {
+/// `label-whitespace` on the triples `range` of `a`, with the index of the
+/// triple each is on: a label literal ([`WHITESPACE_CHECKED`], any subject)
+/// whose value starts or ends with whitespace ([`char::is_whitespace`]).
+/// The warning covers the literal's quoted string, and its
+/// [`FixData::Replace`] is that string trimmed.
+pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u32, Found)> {
+    let mut out = Vec::new();
     let checked: Vec<Iri> = WHITESPACE_CHECKED
         .iter()
         .filter_map(|p| Iri::get(p))
         .collect();
     if checked.is_empty() {
-        return Vec::new();
+        return out;
     }
-    a.parsed
-        .triples
-        .iter()
-        .filter(|t| checked.contains(&t.p))
-        .collect()
-}
-
-/// `label-whitespace`: a label literal whose value starts or ends with
-/// whitespace ([`char::is_whitespace`]). The warning covers the literal's
-/// quoted string, and its [`FixData::Replace`] is that string trimmed.
-/// `labels` are the document's triples of [`label_triples`].
-fn label_whitespace(a: &Analysis, labels: &[&Triple], enc: Encoding, out: &mut Vec<Diagnostic>) {
-    // A JSON-LD value can give one literal to several triples.
+    let triples = (range.start as u32..).zip(&a.parsed.triples[range]);
+    // A JSON-LD value can give one literal to several triples (of one
+    // statement).
     let mut seen: FxHashSet<Span> = FxHashSet::default();
-    for t in labels {
+    for (i, t) in triples.filter(|(_, t)| checked.contains(&t.p)) {
         let Node::Literal { value, .. } = &t.o else {
             continue;
         };
@@ -580,22 +637,21 @@ fn label_whitespace(a: &Analysis, labels: &[&Triple], enc: Encoding, out: &mut V
         if !seen.insert(span) {
             continue;
         }
-        let mut d = Diagnostic {
-            range: a.range(enc, span),
-            severity: Some(DiagnosticSeverity::WARNING),
-            code: Some(NumberOrString::String(LABEL_WHITESPACE.to_string())),
-            source: Some(SOURCE.to_string()),
-            message: message.to_string(),
-            ..Default::default()
-        };
+        let mut f = Found::new(
+            span,
+            DiagnosticSeverity::WARNING,
+            LABEL_WHITESPACE,
+            message.to_string(),
+        );
         let json = a.parsed.syntax == Syntax::JsonLd;
         if let Some(s) = string
             && let Some(replace) = trimmed(&a.text[s.start as usize..s.end as usize], json)
         {
-            FixData::Replace { replace }.attach(&mut d);
+            FixData::Replace { replace }.attach(&mut f.diagnostic);
         }
-        out.push(d);
+        out.push((i, f));
     }
+    out
 }
 
 /// The span of the quoted string that gives the literal at `o_span` its
@@ -714,7 +770,32 @@ fn trimmed(token: &str, json: bool) -> Option<String> {
 mod tests {
     use super::*;
     use crate::features::quickfix::Fixer;
+    use lsp_types::NumberOrString;
     use std::sync::Arc;
+
+    /// The curation diagnostics of `a` as [`crate::features::diagnostics`]
+    /// gives them; the [`OPT_IN`] ones only with `house_style`.
+    fn diagnostics(
+        a: &Analysis,
+        k: &Knowledge,
+        enc: Encoding,
+        house_style: bool,
+    ) -> Vec<Diagnostic> {
+        let opts = crate::features::diagnostics::Options {
+            house_style,
+            ..Default::default()
+        };
+        let ours = |d: &Diagnostic| match &d.code {
+            Some(NumberOrString::String(c)) => {
+                [DUPLICATE_LABEL, LABEL_WHITESPACE, MULTIPLE_LABELS].contains(&c.as_str())
+                    || OPT_IN.contains(&c.as_str())
+            }
+            _ => false,
+        };
+        let mut all = crate::features::diagnostics::diagnostics_with(a, k, enc, &opts);
+        all.retain(ours);
+        all
+    }
 
     const PREFIXES: &str = "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n@prefix ex: <http://example.org/> .\n";
 
@@ -829,9 +910,8 @@ mod tests {
             .chain((0..40_000).map(|i| format!("ex:s{i} rdfs:label \"n{i} \" .\n")))
             .collect();
         let a = Analysis::new("file:///x/a.ttl".into(), &text, Arc::default(), true);
-        let mut out = Vec::new();
         let start = std::time::Instant::now();
-        label_whitespace(&a, &label_triples(&a), Encoding::Utf16, &mut out);
+        let out = whitespace(&a, 0..a.parsed.triples.len());
         let took = start.elapsed();
         assert_eq!(out.len(), 40_000);
         assert!(took.as_millis() < 100, "took {took:?}");

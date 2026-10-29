@@ -119,11 +119,13 @@ impl Session<'_> {
         uri: &str,
         inputs: &DiagnosticInputs,
     ) -> Option<Vec<Diagnostic>> {
-        let doc = self.doc(uri)?;
-        let k = self.ws.knowledge();
+        let (uri, doc) = self.find(uri)?;
         Some(match doc {
-            Doc::Rdf(a) => diagnose::document(diagnose::Doc::Rdf(&a), k, self.enc, inputs),
-            Doc::Sparql(q) => diagnose::document(diagnose::Doc::Sparql(&q), k, self.enc, inputs),
+            Doc::Rdf(a) => self.ws.diagnostics(&uri, &a, self.enc, inputs),
+            Doc::Sparql(q) => {
+                let k = self.ws.knowledge();
+                diagnose::document(diagnose::Doc::Sparql(&q), k, self.enc, inputs)
+            }
         })
     }
 }

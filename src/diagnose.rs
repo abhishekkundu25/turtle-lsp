@@ -7,11 +7,13 @@
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::diagnostics::{self, needs_index};
+use crate::features::kept::Kept;
 use crate::imports::{self, Status};
 use crate::knowledge::Knowledge;
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
 use lsp_types::Diagnostic;
+use std::sync::Arc;
 
 /// A document to diagnose.
 #[derive(Clone, Copy)]
@@ -67,6 +69,30 @@ pub(crate) fn document(
     enc: Encoding,
     inputs: &DiagnosticInputs,
 ) -> Vec<Diagnostic> {
+    compose(doc, k, enc, inputs, None)
+}
+
+/// [`document`] for an open RDF document: with `kept`, the findings it keeps
+/// between edits, brought up to date with `a` and `k` first; without, in
+/// full.
+pub(crate) fn rdf(
+    a: &Arc<Analysis>,
+    k: &Knowledge,
+    enc: Encoding,
+    inputs: &DiagnosticInputs,
+    kept: Option<&mut Kept>,
+) -> Vec<Diagnostic> {
+    compose(Doc::Rdf(a), k, enc, inputs, kept.map(|kept| (a, kept)))
+}
+
+/// [`document`], with what `kept` holds for an RDF document when given.
+fn compose(
+    doc: Doc,
+    k: &Knowledge,
+    enc: Encoding,
+    inputs: &DiagnosticInputs,
+    kept: Option<(&Arc<Analysis>, &mut Kept)>,
+) -> Vec<Diagnostic> {
     if inputs.cached_import {
         return Vec::new();
     }
@@ -74,9 +100,13 @@ pub(crate) fn document(
         max_syntax_errors: inputs.max_syntax_errors,
         ..diagnostics::Options::from_settings(inputs.settings)
     };
-    let mut out = match doc {
-        Doc::Rdf(a) => diagnostics::diagnostics_with(a, k, enc, &opts),
-        Doc::Sparql(q) => sparql_features::diagnostics(q, k, enc, &opts),
+    let mut out = match (doc, kept) {
+        (Doc::Rdf(_), Some((a, kept))) => {
+            kept.update(a, k);
+            diagnostics::diagnostics_kept(a, k, enc, &opts, kept)
+        }
+        (Doc::Rdf(a), None) => diagnostics::diagnostics_with(a, k, enc, &opts),
+        (Doc::Sparql(q), _) => sparql_features::diagnostics(q, k, enc, &opts),
     };
     // "Known nowhere" findings wait for the initial index.
     if !inputs.indexed {

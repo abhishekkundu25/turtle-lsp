@@ -26,6 +26,16 @@
 
 ### Changed
 
+- **Typing in a large Turtle, TriG, N-Triples or N-Quads file is faster.**
+  After an edit, the server parses again only the statements around it,
+  keeps the rest of the parse, and checks again only what the edit can
+  change: the edited statements, and the uses and labels of the terms whose
+  description changed. The results are the same as after reopening the
+  file. The setting `turtle.parse.incremental` (`parse.incremental` in
+  `turtle-lsp.json`, on by default) turns this off; if a file you edit
+  shows other problems than after reopening it, turn it off and report the
+  file. SPARQL and JSON-LD files, `check` and the browser editor parse the
+  whole file as before.
 - **`deprecated-term` covers your own terms, as a warning.** A use of a
   term that a workspace file marks `owl:deprecated true`, in Turtle, SPARQL
   or JSON-LD, is a warning, struck through, and hover says the term is

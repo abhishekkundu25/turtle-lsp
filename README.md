@@ -133,6 +133,17 @@ Why it is fast:
   previous server parsed each document about seven times per keystroke.
 - **Batched edits.** The server reads every queued message before it computes
   diagnostics, so a burst of keystrokes costs one analysis.
+- **Edits cost the size of the edit.** After an edit in a Turtle, TriG,
+  N-Triples or N-Quads file, the server parses again only the statements
+  around it and splices them into the parse it has, updates the workspace
+  index by the difference, and checks again only the statements and terms
+  the edit can change. The result is the same as a full parse, which the
+  tests check on every edit of the chaos tests and on the public corpus.
+  Keystroke to diagnostics, median, against the release before: 13.4 to
+  4.9 ms on a 2.4 MB data file, 16.1 to 6.1 ms on a 2.4 MB vocabulary,
+  3.9 to 1.5 ms on the 30,000-line file (edits sent as ranges, as editors
+  send them).
+  `parse.incremental: false` parses every edit in full.
 - **Small replies.** Completion returns at most 200 ranked items and loads
   their documentation only when you select one.
 - **Background indexing.** Workspace files are parsed in parallel on a
@@ -500,7 +511,8 @@ report), `turtle.lint.enable` (off-by-default checks to switch on),
 JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
-default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
+default), `turtle.parse.incremental` (after an edit, parse only the
+statements around it; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
 `turtle.query.maxBufferedRows` (for ▶ Run query). Suggestions pop up while
 typing in Turtle and TriG strings, for the SPARQL queries of SHACL shapes
 (`editor.quickSuggestions` for `[turtle]` and `[trig]`; set it back in
@@ -575,6 +587,9 @@ is also accepted.
   code; `lint.enable` takes the house-style codes listed under
   [Features](#features). `"lint.undescribedTerms": false` works as before,
   the same as listing `undescribed-term`.
+- **`parse.incremental`** (on by default) parses only the statements
+  around an edit, in the editor; `false` parses the whole file on every
+  edit. The command line always parses whole files.
 - **On the command line,** flags win over the file.
 - **In the editor,** the server reads the file in the first workspace folder,
   and again when it changes (if the editor reports file changes to the server).
@@ -948,6 +963,7 @@ the modules.
 - `tests/w3c_sparql.rs` and `tests/w3c_sparql_eval.rs`: the W3C SPARQL syntax suites, and the SPARQL 1.1 query evaluation tests run through the query engine, against the status list `tests/w3c/sparql-tests/sparql11/eval-status.tsv` (`tests/w3c/README.md` says what is in scope).
 - `tests/chaos.rs`: randomly damaged Turtle, TriG, N-Triples, N-Quads, JSON-LD and SPARQL files through the parser and every editor feature; `CHAOS_ITERS` and `CHAOS_SEED` change the run. `test/protocol-errors.test.mjs` sends the server input an editor never should.
 - `tests/diagnostics_agree.rs`: the editor and `check` give a document the same diagnostics.
+- `tests/corpus_edits.rs`: every Turtle, TriG, N-Triples and N-Quads file of the public corpus, edited at fixed places as an editor edits it, gives what a fresh open of the edited text gives (`turtle_lsp::oracle`). Without the corpus it prints `skipped`, and with `CI=true` it fails.
 - `tests/w3c_jsonld.rs`: the W3C JSON-LD 1.1 suites, against the status list `tests/w3c/jsonld/expected-status.tsv`; a regression or a known failure that starts passing fails the run. `tests/jsonld_oracle.rs` and `tests/jsonld_lints.rs` run on the public JSON-LD corpus that `npm run corpus` downloads. Without it they print `skipped`, and with `CI=true` they fail, so a CI run that checked nothing is never reported as passing. `tests/jsonld_budget.rs` holds release builds to the JSON-LD performance budgets.
 - Pending tests (`todo`, tagged with a phase such as `jsonld:phase2`) run, and their failures do not fail the build; `npm test` prints their count per tag. A pending test that starts passing is listed and fails the run, so it gets promoted.
 

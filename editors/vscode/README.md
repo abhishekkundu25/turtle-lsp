@@ -88,6 +88,7 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.format.lineWidth`: line width for formatting (default 100).
 - `turtle.codeLens.references`: show "N references" above each subject a file describes; click it to list them (default on).
 - `turtle.diagnostics.workspace`: also check the files that are not open, in the background, and show their problems (default off).
+- `turtle.parse.incremental`: after an edit, parse only the statements around it, not the whole file (default on). The results are the same either way; if a file you edit shows other problems than after reopening it, turn this off and please report the file.
 - `turtle.query.timeoutSeconds`, `turtle.query.maxRows`: stop a query run with **▶ Run query** after this many seconds (default 30), and show at most this many rows of its results (default 1000); `0` for no limit.
 - `turtle.query.maxBufferedRows`: stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (default 10 000 000; `0` for no limit). It counts rows, not bytes: ordinary rows take about 100 bytes each, long text values take more.
 

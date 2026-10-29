@@ -1,0 +1,122 @@
+# Incremental keystroke tickets
+
+Spec: docs/specs/incremental-keystroke.md. Research:
+docs/research/incremental-reparse.md. Built with parallel slices on the
+integration branch `feat/incremental-keystroke`, one PR, stacked on PR #47
+(label lints), whose knowledge index and `big-vocab` benchmark it builds on.
+
+| # | Ticket | Blocked by | Files (lock in bold) |
+|---|---|---|---|
+| 00 | Measure: lexing, parsing, a span shift, the index swap | — | none (done by the orchestrator) |
+| 01 | The oracle: incremental equals a fresh workspace; chaos edit mode | — | new src/oracle.rs; **src/lib.rs**; **src/syntax/mod.rs** (derives only); **src/knowledge.rs** (`snapshot` only); tests/chaos.rs |
+| 02 | Index delta: counts per IRI, `put` applies the difference, change set | — | **src/knowledge.rs** (all but `snapshot`) |
+| 03 | Keep the edits and the line starts; a per-line line table | — | src/workspace.rs; src/analysis.rs |
+| 04 | Statement splice: the parser's start state and the splice module | — | src/syntax/parser.rs; new src/syntax/splice.rs; **src/syntax/mod.rs** (one `mod` line) |
+| 05 | Wire the splice: analysis, workspace, setting, chaos floor, debug check | 01, 03, 04 | src/analysis.rs; src/workspace.rs; src/settings.rs; editors/vscode/package.json; src/server.rs (debug switch); tests/chaos.rs; new test/incremental.test.mjs |
+| 06 | Diagnostics per statement, and reuse by the index's change set | 02, 05 | src/diagnose.rs; src/features/diagnostics.rs; src/features/curation.rs; src/workspace.rs |
+| 07 | Close-out: corpus edit test, docs, full validation, bench | 01–06 | README.md; CHANGELOG.md; ARCHITECTURE.md; editors/vscode/README.md; tests/corpus test; full validation |
+
+Lock files and how the edits stay apart:
+
+- `src/syntax/mod.rs`: 01 adds `PartialEq` to the derives of `Parsed` and
+  the types it holds; 04 adds one `pub(crate) mod splice;` line.
+- `src/knowledge.rs`: 01 only removes `#[cfg(test)]` from
+  `Knowledge::snapshot` and makes it `pub(crate)`; 02 owns the rest, and
+  extends `snapshot` only after 01 has landed (02 starts first, so it leaves
+  `snapshot` alone and says in its report if new fields need dumping).
+- `src/lib.rs`: 01 adds one `#[doc(hidden)] pub mod oracle;` line and its
+  line in the "Public interface" doctest.
+- `src/analysis.rs`, `src/workspace.rs`: 03, then 05, then 06 (one at a
+  time).
+- `tests/chaos.rs`: 01, then 05.
+
+Waves: 00 (orchestrator); then 01, 02, 03 and 04 together; then 05; then
+06; then 07.
+
+## Part 0 results (2026-10-29)
+
+A temporary example timed the pieces in process (median of 15, load about
+2.5 from other apps, so the ratios count, not the absolute numbers):
+
+| File | Size | Tokens | Lex | Lex + parse | Shift every span after the middle | Whole analysis | Index swap (`Knowledge::set`) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| big-file | 2.5 MB | 223,616 | 3.75 ms | 6.44 ms | 0.16 ms | 9.16 ms | 1.27 ms |
+| big-vocab | 2.4 MB | 255,024 | 2.73 ms | 7.16 ms | 0.17 ms | 10.70 ms | 2.60 ms |
+
+The shift costs about 2.5% of the parse, so the splice is worth building
+(the spec's gate was "stop after part 2 if the shift costs most of the
+parse"). Lexing is over half of the parse: re-lexing only the window
+matters as much as re-parsing only it. The analysis maps and line table
+after the parse are about 2.7 to 3.5 ms; part 3 rebuilds the maps in full
+at first, so they become the next target if the bench says so.
+
+`_:` labels: 1,224 of the 1,356 Turtle and TriG corpus files have at least
+one (most are small W3C test files). The fallback is per window (a `_:` in
+the old or new window), not per file, so this does not rule the splice out.
+
+## Departures from the plan
+
+- One PR for the four parts, not one per part (the user asked for one
+  branch and one PR). Each part still lands as its own commits, and the
+  close-out records the bench after each.
+- Part 3 is split into 04 (the splice on `Parsed` alone, with unit tests)
+  and 05 (wiring), so the parser work runs alongside 01 to 03.
+- 03: the line table keeps a per-line flag (has a multi-byte character)
+  and marks only inside such lines over 4 KB, counted from the line start,
+  instead of running totals: every conversion is a column inside one line,
+  so nothing reads totals, and an edit shifts no counts. A conversion on a
+  short multi-byte line scans up to that line's length (at most 4 KB)
+  instead of 64 bytes. The kept state is an enum on the document
+  (`Analyzed`: none, current, failed, outdated, edited); an edit after a
+  prefix or context change keeps the outdated analysis as `last`, so 05
+  must fall back when the prefixes or base in effect differ.
+- 02: the change set is kept on `Knowledge` (`Changes`, read through
+  `changes()`, test-only until 06 uses it) instead of returned; it does not
+  cover per-IRI facts read from analyses (types, supers, subs, instances,
+  domains, ranges, descriptions, labels), which `shacl_lint` reads across
+  documents, so 06 must treat those checks as invalidated by
+  `generation`, not by `Changes`. `generation()` still moves on every
+  change (imports read it); only `described_generation` stays put on a
+  comment edit. The swap after a one-label edit went from 1.75 to 0.12 ms;
+  removal went from 4.1 to 4.8 ms and `DocFacts::new` (about 1.3 ms) is
+  still a full rebuild per keystroke. Text keys are matched by hash, not
+  text (a 64-bit collision could miss a refresh).
+- 04: the re-lex starts after the last token before the edit that is
+  followed by a blank (one token back is not enough: a prefixed name reads
+  through a run of dots). Blank nodes are numbered from 1 in both windows
+  and shifted after, not passed in the start state. The old window is
+  parsed again from the same state as a self-check (mismatch falls back as
+  `Unsure`). Extra stopping points (`@prefix`, a block's `}`), extra
+  fallbacks (`Base`, `Indent`, `BlankCount`), and a 4 KB floor on the 25%
+  window limit. The splice takes the old `Parsed` with its tokens and
+  comment spans, which the analysis drops today. Full parses measured the
+  same before and after the parser change (Turtle 6.5 ms, N-Triples 7.0 ms,
+  medians of 31, A/B alternated).
+- 05: the setting is `parse.incremental` (VS Code `turtle.parse.incremental`),
+  on by default; embedded servers (the browser engine) and the CLI always
+  parse in full. One `Edit` type (`syntax::splice::Edit`) replaced 03's.
+  The old parse is copied out of the shared analysis (the index still reads
+  it during the swap), 0.6 ms on 2.4 MB. Chaos floor: at least 15% of the
+  analyses after an edit are spliced (measured 18 to 25%; most fallbacks are
+  `Directive` on small fixture files). Timing test: a keystroke in a label
+  in the middle of a 2.4 MB vocabulary analyses in 4.3 ms spliced against
+  11 ms in full (load about 3); what remains is the analysis maps rebuilt in
+  full (1.4 ms), `DocFacts::new` (1.3 ms), the copy (0.6 ms) and dropping
+  the old analysis (0.6 ms); the splice itself is 0.13 ms. A both-paths
+  check over the 41 RDF fixtures: 13,120 edited analyses, 7,895 spliced,
+  no difference.
+- 06: cached by measured cost, not every check: a profile of the full
+  composition on the vocabulary put the label checks at 58% and term uses
+  (`unknown-term`, `deprecated-term`) at 22%; those, `label-whitespace`,
+  `multiple-labels`, `duplicate-label` and `invalid-literal` are kept
+  between edits. `unused-prefix` stops at the first use instead (same
+  results). Everything else runs in full. Check classes are one enum
+  (`Check`, `Reads`) with an exhaustive match. A keystroke's diagnostics on
+  the 2.4 MB vocabulary: 0.77 ms kept against 6.4 ms full. Left:
+  `undescribed-term` (about 70% of the kept path) and the SHACL lint's
+  scan of all triples (25%). When the change set names any IRI (typing in
+  a subject's name), the label checks run in full (about 3.7 ms): a query
+  for an IRI's label keys would fix it. `Changes` is no longer cleared by
+  a call that changes nothing. Chaos does not toggle descriptions or
+  deprecations often enough to catch a missed recheck of references to a
+  changed IRI; `a_deprecation_reaches_the_uses_outside_the_window` does.

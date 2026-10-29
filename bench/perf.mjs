@@ -219,6 +219,20 @@ async function time(n, step) {
 }
 
 const WAIT = 120000
+// The keystroke `from` -> `to` at the first occurrence of `from`, sent as one
+// ranged change, as editors send them (the server syncs incrementally). The
+// documents are ASCII with \n line ends, so a string index is the UTF-16 column.
+// Returns the new text.
+function typeAt(s, uri, doc, from, to) {
+  const at = doc.indexOf(from)
+  if (at < 0) throw new Error(`not found: ${from}`)
+  let line = 0
+  for (let i = doc.indexOf("\n"); i >= 0 && i < at; i = doc.indexOf("\n", i + 1)) line++
+  const character = at - (doc.lastIndexOf("\n", at - 1) + 1)
+  s.edit(uri, { start: { line, character }, end: { line, character: character + from.length } }, to)
+  return doc.slice(0, at) + to + doc.slice(at + from.length)
+}
+
 const header = `@prefix ex: <http://example.org/> .
 @prefix foaf: <http://xmlns.com/foaf/0.1/> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -295,11 +309,10 @@ scenario("editing", "typing, completion, navigation, formatting and queries in a
     await s.diagnosticsFor(uri, WAIT)
     record("open", `didOpen -> diagnostics (${big.split("\n").length} lines)`, [performance.now() - t])
 
-    // Simulated typing: one char appended to a line, full sync, wait for diagnostics.
+    // Simulated typing: one char appended to a line, sent as a ranged change, wait for diagnostics.
     let text = big
     const edits = await time(25, async (i) => {
-      text = text.replace(`"Person ${i}"`, `"Person ${i}x"`)
-      s.change(uri, text)
+      text = typeAt(s, uri, text, `"Person ${i}"`, `"Person ${i}x"`)
       await s.diagnosticsFor(uri, WAIT)
     })
     record("keystroke", "keystroke -> diagnostics", edits, { gate: true })
@@ -466,8 +479,7 @@ scenario("jsonld", "JSON-LD against Turtle of the same length", async () => {
         s.open(u, doc, spec.lang)
         await s.diagnosticsFor(u, WAIT)
         const keys = await time(25, async (i) => {
-          doc = doc.replace(`"Person ${i}"`, `"Person ${i}x"`)
-          s.change(u, doc)
+          doc = typeAt(s, u, doc, `"Person ${i}"`, `"Person ${i}x"`)
           await s.diagnosticsFor(u, WAIT)
         })
         record(`${f}-keystroke`, `${f}: keystroke -> diagnostics`, keys, { gate: true })
@@ -558,8 +570,7 @@ scenario("near-miss", "1,000 near-miss IRIs against a 7,000-term namespace", asy
       s.open(u, doc)
       await s.diagnosticsFor(u, WAIT)
       const keys = await time(25, async (i) => {
-        doc = doc.replace(`ex:sk_${i} a`, `ex:sk_${i}x a`)
-        s.change(u, doc)
+        doc = typeAt(s, u, doc, `ex:sk_${i} a`, `ex:sk_${i}x a`)
         await s.diagnosticsFor(u, WAIT)
       })
       record("near-miss-keystroke", "near-miss: keystroke -> diagnostics", keys, { gate: true })
@@ -584,8 +595,7 @@ scenario("big-file", "a file over 2 MB: open and keystroke", async () => {
       const size = `${doc.split("\n").length} lines, ${(doc.length / 1024 / 1024).toFixed(1)} MB`
       record("big-file-open", `big file: didOpen -> diagnostics (${size})`, [performance.now() - t])
       const keys = await time(20, async (i) => {
-        doc = doc.replace(`"Person ${i}"`, `"Person ${i}x"`)
-        s.change(u, doc)
+        doc = typeAt(s, u, doc, `"Person ${i}"`, `"Person ${i}x"`)
         await s.diagnosticsFor(u, WAIT)
       })
       record("big-file-keystroke", `big file: keystroke -> diagnostics (${size})`, keys, { gate: true })
@@ -627,8 +637,7 @@ scenario("big-vocab", "a vocabulary over 2 MB: open and keystroke", async () => 
       const size = `${n} classes, ${(doc.length / 1024 / 1024).toFixed(1)} MB`
       record("big-vocab-open", `big vocabulary: didOpen -> diagnostics (${size})`, [performance.now() - t])
       const keys = await time(20, async (i) => {
-        doc = doc.replace(`"Class ${i}"`, `"Class ${i}x"`)
-        s.change(u, doc)
+        doc = typeAt(s, u, doc, `"Class ${i}"`, `"Class ${i}x"`)
         await s.diagnosticsFor(u, WAIT)
       })
       record("big-vocab-keystroke", `big vocabulary: keystroke -> diagnostics (${size})`, keys, { gate: true })
@@ -866,8 +875,7 @@ scenario("undeclared-prefix", "a 20,000-line file full of undeclared prefixes", 
       await s.diagnosticsFor(u, WAIT)
       let text = doc
       const keys = await time(20, async (i) => {
-        text = text.replace(`"n${i}"`, `"n${i}x"`)
-        s.change(u, text)
+        text = typeAt(s, u, text, `"n${i}"`, `"n${i}x"`)
         await s.diagnosticsFor(u, WAIT)
       })
       record("prefix-keystroke", `undeclared prefixes: keystroke -> diagnostics (${lines} lines)`, keys, { gate: true })
