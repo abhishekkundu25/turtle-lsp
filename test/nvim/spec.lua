@@ -518,7 +518,18 @@ check("saving turtle-lsp.json changes an open file's diagnostics", function()
     "ex:Pump a owl:Class .",
   }, base .. "/vocab.ttl")
   local ok, err = pcall(function()
-    local b = open(base .. "/vocab.ttl")
+    local b, c = open(base .. "/vocab.ttl")
+    -- What Neovim reports, for the failure message.
+    local sent = {}
+    local notify = c.notify
+    c.notify = function(self, method, params, ...)
+      if method == "workspace/didChangeWatchedFiles" then
+        for _, ch in ipairs(params.changes) do
+          table.insert(sent, ch.type .. " " .. ch.uri)
+        end
+      end
+      return notify(self, method, params, ...)
+    end
     local function labels()
       return #vim.tbl_filter(function(d)
         return d.code == "missing-label"
@@ -533,7 +544,9 @@ check("saving turtle-lsp.json changes an open file's diagnostics", function()
     vim.cmd("write")
     assert(vim.wait(TIMEOUT, function()
       return labels() == 0
-    end, 20), "still shown after saving turtle-lsp.json: " .. fmt(vim.diagnostic.get(b)))
+    end, 20), "still shown after saving turtle-lsp.json: " .. fmt(vim.diagnostic.get(b))
+      .. "; root " .. tostring(c.root_dir) .. "; reported: " .. table.concat(sent, ", "))
+    c.notify = notify
     vim.cmd("bwipeout! " .. vim.fn.bufnr(settings))
     vim.cmd("bwipeout! " .. b)
   end)
