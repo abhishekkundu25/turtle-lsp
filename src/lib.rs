@@ -108,6 +108,9 @@
 //! use turtle_lsp::jsonld::parse as _; // tests
 //! use turtle_lsp::knowledge::Knowledge as _; // tests
 //! use turtle_lsp::knowledge::Source as _; // tests
+//! use turtle_lsp::oracle::Batch as _; // tests
+//! use turtle_lsp::oracle::change as _; // tests
+//! use turtle_lsp::oracle::check as _; // tests
 //! use turtle_lsp::query::Answer as _; // tests, web/engine
 //! use turtle_lsp::query::Limits as _; // tests, web/engine
 //! use turtle_lsp::query::QueryError as _; // tests, web/engine
@@ -195,6 +198,8 @@ pub mod imports;
 pub mod jsonld;
 pub mod knowledge;
 pub(crate) mod layout;
+#[doc(hidden)]
+pub mod oracle;
 pub mod query;
 pub mod rdf;
 pub mod server;

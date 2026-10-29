@@ -6,7 +6,10 @@
 //! quotes, multi-byte characters, CRLF and lone CR, truncation, repeated
 //! brackets, huge tokens) and runs the parser and every editor feature on each
 //! result at random positions in both position encodings. Any panic, and any
-//! span outside the text, fails the test. Deterministic: the corpus is read in
+//! span outside the text, fails the test. An edit mode sends the same
+//! mutations, and the hazards of the incremental parse, as LSP changes to the
+//! previous text, and checks the edited document against a fresh open
+//! (`turtle_lsp::oracle`). Deterministic: the corpus is read in
 //! sorted order, the seed is fixed, and CHAOS_SEED / CHAOS_ITERS override it;
 //! CHAOS_ONLY=<i> runs iteration i alone.
 //!
@@ -21,7 +24,8 @@
 
 use lsp_types::{
     CodeActionOrCommand, CodeActionParams, CompletionItem, CompletionParams, CompletionResponse,
-    Position, Range, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, WorkspaceEdit,
+    Position, Range, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+    TextDocumentPositionParams, TextEdit, WorkspaceEdit,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -40,6 +44,7 @@ use turtle_lsp::features::{
 use turtle_lsp::imports;
 use turtle_lsp::jsonld;
 use turtle_lsp::knowledge::{Knowledge, Source};
+use turtle_lsp::oracle::{self, Batch};
 use turtle_lsp::settings::{InlayLabels, Settings};
 use turtle_lsp::sparql::{self, Document, Level, TokenKind, features as sparql_features};
 use turtle_lsp::syntax::lexer::Kind;
@@ -1147,51 +1152,128 @@ fn char_boundary(s: &str, mut i: usize) -> usize {
 /// do not (a long run of one snippet is a deep nest or a long line, `\n` to a
 /// lone `\r`, a huge token).
 fn mutate_with(rng: &mut Rng, text: &str, snippets: &[&str], wide: bool, lex: Lexer) -> String {
-    let mut s = text.to_string();
+    let mut e = Edited::new(text, None);
     for _ in 0..1 + rng.below(4) {
-        let at = char_boundary(&s, rng.below(s.len() + 1));
-        match rng.below(60) {
-            0..=11 => s.insert_str(at, snippets[rng.below(snippets.len())]),
-            12..=17 => {
-                let end = char_boundary(&s, at + rng.below(40));
-                s.replace_range(at..end, "");
-            }
-            18..=23 => {
-                let end = char_boundary(&s, at + rng.below(60));
-                let chunk = s[at..end].to_string();
-                let to = char_boundary(&s, rng.below(s.len() + 1));
-                s.insert_str(to, &chunk);
-            }
-            24..=29 => s.truncate(at),
-            51..=56 => s = squeeze(rng, &s, lex),
-            30..=50 => {
-                let n = rng.below(6);
-                for _ in 0..n {
-                    let at = char_boundary(&s, rng.below(s.len() + 1));
-                    s.insert_str(at, snippets[rng.below(snippets.len())]);
-                }
-            }
-            // 20 to 1,500 copies of one snippet: a deep nest, a long line.
-            57 => {
-                let snippet = snippets[rng.below(snippets.len())];
-                s.insert_str(at, &snippet.repeat(20 + rng.below(1500)));
-            }
-            // Old Mac line ends, or none.
-            58 => {
-                s = if rng.below(2) == 0 {
-                    s.replace("\r\n", "\n").replace('\n', "\r")
-                } else {
-                    s.replace(['\n', '\r'], " ")
-                }
-            }
-            // A token of tens of thousands of characters.
-            _ => {
-                let c = ["a", "0", "_", "-", "é"][rng.below(if wide { 5 } else { 4 })];
-                s.insert_str(at, &c.repeat(1000 + rng.below(60_000)));
+        mutation(rng, &mut e, snippets, wide, lex);
+    }
+    e.text
+}
+
+/// One mutation of [`mutate_with`].
+fn mutation(rng: &mut Rng, e: &mut Edited, snippets: &[&str], wide: bool, lex: Lexer) {
+    let len = e.text.len();
+    let at = char_boundary(&e.text, rng.below(len + 1));
+    match rng.below(60) {
+        0..=11 => e.insert(at, snippets[rng.below(snippets.len())]),
+        12..=17 => {
+            let end = char_boundary(&e.text, at + rng.below(40));
+            e.replace(at..end, "");
+        }
+        18..=23 => {
+            let end = char_boundary(&e.text, at + rng.below(60));
+            let chunk = e.text[at..end].to_string();
+            let to = char_boundary(&e.text, rng.below(len + 1));
+            e.insert(to, &chunk);
+        }
+        24..=29 => e.replace(at..len, ""),
+        51..=56 => {
+            let squeezed = squeeze(rng, &e.text, lex);
+            e.rewrite(&squeezed);
+        }
+        30..=50 => {
+            let n = rng.below(6);
+            for _ in 0..n {
+                let at = char_boundary(&e.text, rng.below(e.text.len() + 1));
+                e.insert(at, snippets[rng.below(snippets.len())]);
             }
         }
+        // 20 to 1,500 copies of one snippet: a deep nest, a long line.
+        57 => {
+            let snippet = snippets[rng.below(snippets.len())];
+            e.insert(at, &snippet.repeat(20 + rng.below(1500)));
+        }
+        // Old Mac line ends, or none.
+        58 => {
+            let s = &e.text;
+            let new = if rng.below(2) == 0 {
+                s.replace("\r\n", "\n").replace('\n', "\r")
+            } else {
+                s.replace(['\n', '\r'], " ")
+            };
+            e.rewrite(&new);
+        }
+        // A token of tens of thousands of characters.
+        _ => {
+            let c = ["a", "0", "_", "-", "é"][rng.below(if wide { 5 } else { 4 })];
+            e.insert(at, &c.repeat(1000 + rng.below(60_000)));
+        }
     }
-    s
+}
+
+/// A text being mutated and, in the edit mode, each mutation as the LSP
+/// change that makes it from the text before it.
+struct Edited {
+    text: String,
+    /// The encoding of the changes' positions, and the changes since the
+    /// last [`Edited::take`]; `None` when only the text counts.
+    changes: Option<(Encoding, Vec<TextDocumentContentChangeEvent>)>,
+}
+
+impl Edited {
+    fn new(text: &str, enc: Option<Encoding>) -> Edited {
+        Edited {
+            text: text.to_string(),
+            changes: enc.map(|enc| (enc, Vec::new())),
+        }
+    }
+
+    /// Replace the bytes `range`, on character boundaries, with `new`.
+    fn replace(&mut self, range: std::ops::Range<usize>, new: &str) {
+        if let Some((enc, changes)) = &mut self.changes {
+            changes.push(oracle::change(&self.text, range.clone(), new, *enc));
+        }
+        self.text.replace_range(range, new);
+    }
+
+    fn insert(&mut self, at: usize, new: &str) {
+        self.replace(at..at, new);
+    }
+
+    /// Make the text `new` with one ranged change over the part that differs.
+    fn rewrite(&mut self, new: &str) {
+        let (old, b) = (self.text.as_bytes(), new.as_bytes());
+        let mut p = old.iter().zip(b).take_while(|(x, y)| x == y).count();
+        while !self.text.is_char_boundary(p) || !new.is_char_boundary(p) {
+            p -= 1;
+        }
+        let most = old.len().min(b.len()) - p;
+        let same = old.iter().rev().zip(b.iter().rev()).take(most);
+        let mut q = same.take_while(|(x, y)| x == y).count();
+        while !self.text.is_char_boundary(old.len() - q) || !new.is_char_boundary(b.len() - q) {
+            q -= 1;
+        }
+        let tail = self.text.len() - q;
+        self.replace(p..tail, &new[p..new.len() - q]);
+    }
+
+    /// The whole text sent again, as a full-text change.
+    fn resend(&mut self) {
+        if let Some((_, changes)) = &mut self.changes {
+            changes.push(TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: self.text.clone(),
+            });
+        }
+    }
+
+    /// The changes since the last call.
+    fn take(&mut self) -> Vec<TextDocumentContentChangeEvent> {
+        self.changes
+            .as_mut()
+            .map(|(_, c)| std::mem::take(c))
+            .unwrap_or_default()
+    }
 }
 
 fn mutate(rng: &mut Rng, text: &str) -> String {
@@ -1810,6 +1892,156 @@ fn mutated_turtle(k: usize) {
                 failure_report("turtle", seed, iters, i, ext, &text, &panic_message(&*e))
             );
         }
+    }
+}
+
+/// What the statement splice must get right (see the incremental-keystroke
+/// spec): each is inserted, or one of its occurrences deleted.
+const HAZARDS: &[&str] = &[
+    "\"\"\"",
+    "\"",
+    "#",
+    "<",
+    "@prefix ex: <x> .",
+    "_:b",
+    "{",
+    "}",
+];
+
+/// One splice hazard: a [`HAZARDS`] entry inserted or deleted, a `.` after a
+/// number (`1` then `1.`) inserted or deleted, or a line break before a
+/// subject at the start of a line inserted or deleted.
+fn hazard(rng: &mut Rng, e: &mut Edited) {
+    let t = &e.text;
+    let any = char_boundary(t, rng.below(t.len() + 1));
+    let delete = rng.below(2) == 0;
+    // Where `at` picks among `found`, or `None` when there is none.
+    let pick = |rng: &mut Rng, found: Vec<usize>| match found.len() {
+        0 => None,
+        n => Some(found[rng.below(n)]),
+    };
+    match rng.below(HAZARDS.len() + 2) {
+        n if n < HAZARDS.len() => {
+            let h = HAZARDS[n];
+            match pick(rng, t.match_indices(h).map(|(i, _)| i).collect()) {
+                Some(at) if delete => e.replace(at..at + h.len(), ""),
+                _ => e.insert(any, h),
+            }
+        }
+        n if n == HAZARDS.len() => {
+            let b = t.as_bytes();
+            let digits = (1..=b.len())
+                .filter(|&i| b[i - 1].is_ascii_digit())
+                .collect();
+            match pick(rng, digits) {
+                Some(at) if delete && b.get(at) == Some(&b'.') => e.replace(at..at + 1, ""),
+                Some(at) => e.insert(at, "."),
+                None => e.insert(any, " 1."),
+            }
+        }
+        _ => {
+            let b = t.as_bytes();
+            let starts = (0..b.len()).filter(|&i| {
+                let line = i == 0 || b[i - 1] == b'\n' || (b[i - 1] == b'\r' && b[i] != b'\n');
+                line && !b[i].is_ascii_whitespace() && b[i] != b'#'
+            });
+            match pick(rng, starts.collect()) {
+                Some(at) if delete && at > 0 => {
+                    let crlf = at > 1 && &b[at - 2..at] == b"\r\n";
+                    e.replace(at - if crlf { 2 } else { 1 }..at, "");
+                }
+                Some(at) => e.insert(at, "\n"),
+                None => e.insert(any, "\nex:s"),
+            }
+        }
+    }
+}
+
+#[test]
+fn edits_match_a_fresh_open_1() {
+    edits_match_a_fresh_open(0);
+}
+
+#[test]
+fn edits_match_a_fresh_open_2() {
+    edits_match_a_fresh_open(1);
+}
+
+#[test]
+fn edits_match_a_fresh_open_3() {
+    edits_match_a_fresh_open(2);
+}
+
+#[test]
+fn edits_match_a_fresh_open_4() {
+    edits_match_a_fresh_open(3);
+}
+
+/// The edit mode: the mutations, and the splice hazards, applied as LSP
+/// changes to the previous text, one to four per batch, one to four
+/// batches, with the analysis asked for after some of them; the
+/// [`oracle`] then compares the edited document with a fresh open of the
+/// text the changes leave, which must also be the text the mutations made.
+fn edits_match_a_fresh_open(k: usize) {
+    let seed = env_or("CHAOS_SEED", 0x5EED_0019_u64);
+    let iters = env_or("CHAOS_ITERS", 2000usize);
+    let corpus = corpus();
+    let json = jsonld_corpus();
+    let mut dog = Watchdog::new("edits", seed, iters);
+    for i in iterations(iters, k) {
+        let mut rng = Rng::at(seed, i);
+        let (source, mut syntax) = match rng.below(8) {
+            0 => (&json[rng.below(json.len())], Syntax::JsonLd),
+            _ => {
+                let (t, s) = &corpus[rng.below(corpus.len())];
+                (t, *s)
+            }
+        };
+        if syntax == Syntax::Turtle && rng.below(4) == 0 {
+            syntax = Syntax::TriG;
+        }
+        let enc = [Encoding::Utf8, Encoding::Utf16][rng.below(2)];
+        let (snippets, wide) = match syntax {
+            Syntax::JsonLd => (JSON_SNIPPETS, false),
+            _ => (SNIPPETS, true),
+        };
+        let mut e = Edited::new(source, Some(enc));
+        let mut batches = Vec::new();
+        for _ in 0..1 + rng.below(4) {
+            for _ in 0..1 + rng.below(4) {
+                if syntax == Syntax::JsonLd || rng.below(2) == 0 {
+                    mutation(&mut rng, &mut e, snippets, wide, Lexer::of(syntax));
+                } else {
+                    hazard(&mut rng, &mut e);
+                }
+            }
+            if rng.below(16) == 0 {
+                e.resend();
+            }
+            let analyse = rng.below(2) == 0;
+            batches.push(Batch {
+                changes: e.take(),
+                analyse,
+            });
+        }
+        let ext = extension(syntax);
+        dog.start(i, source, ext);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            oracle::check(syntax, source, batches, enc)
+        }));
+        let why = match r {
+            Err(e) => panic_message(&*e),
+            Ok(Err(diff)) => format!("differs from a fresh open ({enc:?}): {diff}"),
+            Ok(Ok(report)) if report.text != e.text => format!(
+                "the edits left another text than the mutations ({enc:?}): {}",
+                first_difference(&e.text, &report.text)
+            ),
+            Ok(Ok(_)) => continue,
+        };
+        panic!(
+            "{}",
+            failure_report("edits", seed, iters, i, ext, source, &why)
+        );
     }
 }
 

@@ -2107,8 +2107,7 @@ impl Knowledge {
 
     /// Canonical dump of the whole index, independent of doc ids and of the
     /// order in which sources were added. For consistency tests.
-    #[cfg(test)]
-    fn snapshot(&self) -> Vec<String> {
+    pub(crate) fn snapshot(&self) -> Vec<String> {
         let uris = |ids: &[DocId]| {
             let mut v: Vec<String> = ids
                 .iter()

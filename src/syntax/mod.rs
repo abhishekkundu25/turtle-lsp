@@ -139,7 +139,7 @@ pub enum Form {
 }
 
 /// One occurrence of an IRI in the text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Ref {
     pub span: Span,
     pub iri: Iri,
@@ -147,7 +147,7 @@ pub struct Ref {
     pub form: Form,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PrefixDecl {
     pub name: String,
     pub iri: Iri,
@@ -158,7 +158,7 @@ pub struct PrefixDecl {
 }
 
 /// A use of a prefix name (`ex` in `ex:a`), resolved or not.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PrefixUse {
     /// The prefix name, without the colon.
     pub name: Iri,
@@ -220,7 +220,7 @@ pub enum Node {
     Triple(Box<(Node, Iri, Node)>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Triple {
     pub s: Node,
     pub p: Iri,
@@ -261,7 +261,7 @@ impl From<GraphName> for Node {
 }
 
 /// A TriG graph block: `{ ... }`, `ex:g { ... }` or `GRAPH ex:g { ... }`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GraphBlock {
     /// From `GRAPH` or the name to the closing `}` (or the last token of an
     /// unclosed block).
@@ -273,7 +273,7 @@ pub struct GraphBlock {
     pub statements: std::ops::Range<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Statement {
     pub span: Span,
     /// The top-level subject, if it is an IRI.
@@ -290,7 +290,7 @@ pub enum Severity {
     Warning,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SyntaxError {
     pub span: Span,
     /// Borrowed when the text is fixed, as most are.
@@ -322,7 +322,7 @@ impl SyntaxError {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Parsed {
     pub syntax: Syntax,
     pub prefixes: Vec<PrefixDecl>,
