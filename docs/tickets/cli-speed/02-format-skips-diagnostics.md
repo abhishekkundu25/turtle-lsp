@@ -16,11 +16,19 @@
 
 **Blocked by:** 01.
 
-**Status:** todo
+**Status:** done
 
-- [ ] Unit test: the report with `diagnostics: false` has the same verdicts
+- [x] Unit test: the report with `diagnostics: false` has the same verdicts
   as with it on, and no problems; on a SPARQL file with errors the refusal
   message is the same.
-- [ ] Unit test: a file with `owl:imports` is formatted without any import
+- [x] Unit test: a file with `owl:imports` is formatted without any import
   being loaded (no network, no cache read).
-- [ ] The format CLI tests green, unchanged.
+- [x] The format CLI tests green, unchanged.
+
+Done as: `format` still builds the knowledge index, which is how the
+workspace analyses its files in parallel; it skips imports, diagnostics,
+fixes and SHACL. Tokens are not kept (the verdict re-lexes), so peak memory
+does not move. The SPARQL "the query has N errors" count still runs that
+file's diagnostics, without loaded imports; a SPARQL file's errors do not
+depend on imports. The import test checks that the input loads none,
+without reading the import cache.

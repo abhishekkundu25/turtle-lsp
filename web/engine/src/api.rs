@@ -111,6 +111,7 @@ fn options() -> batch::Options {
         columns: Columns::Utf16,
         fixes: true,
         verdict: true,
+        diagnostics: true,
     }
 }
 

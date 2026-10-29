@@ -23,6 +23,8 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
         columns: Columns::CodePoints,
         fixes: false,
         verdict: true,
+        // The formatter's verdict is all `format` shows.
+        diagnostics: false,
     };
     let report = batch::analyse_on_disk(&batch, &settings, &opts, &disk);
 

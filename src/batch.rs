@@ -126,6 +126,9 @@ pub struct Options {
     /// Give the formatter's verdict on each file ([`FileReport::format`]).
     /// Off, it is None: the formatter does not run.
     pub verdict: bool,
+    /// Find each file's problems ([`FileReport::problems`]). Off, they are
+    /// empty: no diagnostics, fixes or SHACL, and imports are not loaded.
+    pub diagnostics: bool,
 }
 
 impl Default for Options {
@@ -135,6 +138,7 @@ impl Default for Options {
             columns: Columns::Utf16,
             fixes: true,
             verdict: true,
+            diagnostics: true,
         }
     }
 }
@@ -246,9 +250,9 @@ fn analyse_in(
     max_syntax_errors: Option<usize>,
 ) -> Report {
     let enc = opts.columns.encoding();
-    let mut input = Input::new(files, settings, enc, disk, None);
+    let mut input = Input::new(files, settings, enc, disk, None, opts.diagnostics);
     input.max_syntax_errors = max_syntax_errors;
-    let (has_shapes, mut shacl) = input.shacl(opts.shacl);
+    let (has_shapes, mut shacl) = input.shacl(opts.shacl && opts.diagnostics);
     let mut out = Vec::with_capacity(files.len());
     for f in files {
         let uri = &f.uri;
@@ -269,7 +273,11 @@ fn analyse_in(
             continue;
         }
         let own_shacl = shacl.remove(uri).unwrap_or_default();
-        let diags = input.diagnostics(uri, &own_shacl);
+        let diags = if opts.diagnostics {
+            input.diagnostics(uri, &own_shacl)
+        } else {
+            Vec::new()
+        };
         let mut fixes = if opts.fixes {
             input.fixes(uri, &diags)
         } else {
@@ -413,7 +421,7 @@ fn fix_all_in(
     let mut applied = 0;
     let mut loaded = None;
     for _ in 0..MAX_FIX_ROUNDS {
-        let mut input = Input::new(&files, settings, enc, disk, loaded.take());
+        let mut input = Input::new(&files, settings, enc, disk, loaded.take(), true);
         loaded = input.imports.clone();
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
@@ -483,13 +491,15 @@ struct Input<'a> {
 
 impl<'a> Input<'a> {
     /// On disk, `loaded` are the imports resolved for an earlier input of the
-    /// same workspace; None resolves them afresh.
+    /// same workspace; None resolves them afresh. Without `resolve` they are
+    /// not loaded at all (the formatter needs none).
     fn new(
         files: &[BatchFile],
         settings: &'a Settings,
         enc: Encoding,
         disk: Option<&Disk>,
         loaded: Option<Arc<imports::Resolved>>,
+        resolve: bool,
     ) -> Input<'a> {
         let roots = disk.map(|d| d.roots.clone()).unwrap_or_default();
         let mut ws = Workspace::new(roots, settings.prefixes.clone());
@@ -499,7 +509,11 @@ impl<'a> Input<'a> {
         for f in files {
             ws.open_doc(f.uri.clone(), f.text.clone(), 1);
         }
-        let imports = disk.map(|d| {
+        if !resolve {
+            // Analyses every file, in parallel when there are several.
+            ws.knowledge();
+        }
+        let imports = disk.filter(|_| resolve).map(|d| {
             let r = loaded.unwrap_or_else(|| {
                 Arc::new(imports::resolve_now(ws.knowledge(), &d.roots, d.network))
             });
@@ -1148,7 +1162,7 @@ mod tests {
         let text = format!("{RDFS}<http://x/a> rdfs:label \"a\" . # c\n");
         let files = [file("a.ttl", &text)];
         let settings = Settings::default();
-        let mut input = Input::new(&files, &settings, Encoding::Utf16, None, None);
+        let mut input = Input::new(&files, &settings, Encoding::Utf16, None, None, true);
         let a = input.ws.analysis(&files[0].uri).unwrap();
         assert!(!a.has_tokens());
         // Made when a feature asks, the same as kept ones.
@@ -1196,6 +1210,60 @@ mod tests {
             assert!(!w.problems.is_empty());
             assert_eq!(format!("{:?}", w.problems), format!("{:?}", wo.problems));
         }
+    }
+
+    #[test]
+    fn without_diagnostics_the_verdicts_are_the_same() {
+        let files = [
+            file(
+                "a.ttl",
+                &format!("{RDFS}<http://x/a>   rdfs:labl \"a\" .\n"),
+            ),
+            file("b.ttl", "<http://x/b> <http://x/p> \"\"\" ."),
+            file("q.rq", "SELECT * WHERE { ?s ex:p ?o }"),
+            file("r.rq", "SELECT  *  WHERE { ?s ?p ?o }"),
+            file("bad.rq", "SELECT * WHERE { ?s ?p }} ORDER"),
+        ];
+        let with = report(&files, &Options::default());
+        let without = report(
+            &files,
+            &Options {
+                diagnostics: false,
+                ..Options::default()
+            },
+        );
+        for (w, wo) in with.files.iter().zip(&without.files) {
+            assert!(!w.problems.is_empty() || w.name == "r.rq");
+            assert!(wo.problems.is_empty());
+            assert_eq!(format!("{:?}", w.format), format!("{:?}", wo.format));
+        }
+        let refused = |r: &Report| match &r.files[4].format.as_ref().unwrap().outcome {
+            FormatOutcome::Refused(why) => why.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(refused(&without).starts_with("the query has"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn without_diagnostics_imports_are_not_loaded() {
+        // No `owl:imports`, so resolving reads no import cache; it still runs.
+        let files = [file("a.ttl", "<http://x/a> <http://x/p> 1 .")];
+        let settings = Settings::default();
+        let disk = Disk::default();
+        let input = |resolve| {
+            Input::new(
+                &files,
+                &settings,
+                Encoding::Utf8,
+                Some(&disk),
+                None,
+                resolve,
+            )
+            .imports
+        };
+        assert!(input(true).is_some());
+        assert!(input(false).is_none());
     }
 
     #[test]
