@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "turtle-lsp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "crossbeam-channel",
  "line-index",
