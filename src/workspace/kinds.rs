@@ -5,8 +5,8 @@
 //! case (`Data.TTL` is Turtle), SPARQL extensions and the catalog's name only
 //! as written (`a.RQ` is not SPARQL). The extension is what follows the last
 //! `.` of the last part of a path or URI (after the last `/` or `\`). Every
-//! row is a file the server watches: `server::WATCHED_FILES` is the glob of
-//! all rows, and a test checks it. `Syntax::from_extension` keeps its own
+//! row is a file the server watches: `server::WATCHED_FILES` are the globs
+//! of all rows, and a test checks them. `Syntax::from_extension` keeps its own
 //! list, as the syntax core cannot read the workspace; a test checks it
 //! against the RDF rows.
 
@@ -187,16 +187,23 @@ mod tests {
         }
     }
 
-    /// The glob of every row, as `WATCHED_FILES` writes it.
-    fn glob() -> String {
-        let parts: Vec<String> = ROWS
+    /// The globs of the rows, as `WATCHED_FILES` writes them: the extensions
+    /// in one, then each file name.
+    fn globs() -> Vec<String> {
+        let exts: Vec<&str> = ROWS
             .iter()
-            .map(|row| match row.pattern {
-                Pattern::Extension(ext) => format!("*.{ext}"),
-                Pattern::Name(name) => name.to_string(),
+            .filter_map(|row| match row.pattern {
+                Pattern::Extension(ext) => Some(ext),
+                Pattern::Name(_) => None,
             })
             .collect();
-        format!("**/{{{}}}", parts.join(","))
+        let names = ROWS.iter().filter_map(|row| match row.pattern {
+            Pattern::Name(name) => Some(format!("**/{name}")),
+            Pattern::Extension(_) => None,
+        });
+        std::iter::once(format!("**/*.{{{}}}", exts.join(",")))
+            .chain(names)
+            .collect()
     }
 
     /// The row's text in another letter case.
@@ -216,7 +223,12 @@ mod tests {
 
     #[test]
     fn watched_files_is_the_glob_of_the_table() {
-        assert_eq!(WATCHED_FILES, glob());
+        assert_eq!(WATCHED_FILES.to_vec(), globs());
+        // No `{...}` group with a `*` in it, which Neovim cannot match.
+        for glob in WATCHED_FILES {
+            let groups = glob.split('{').skip(1).map(|g| g.split('}').next());
+            assert!(groups.flatten().all(|g| !g.contains('*')), "{glob}");
+        }
     }
 
     #[test]

@@ -88,9 +88,14 @@ use worker::{Fed, Feed, Spawn};
 
 /// The files the client is asked to report changes of: RDF documents, SPARQL
 /// queries, JSON-LD context files (`.json` too), imports sources and the
-/// settings file (a `.json` file). It is the glob of every row of the
-/// file-kind table ([`crate::workspace::kinds::ROWS`]), which a test checks.
-pub(crate) const WATCHED_FILES: &str = "**/{*.ttl,*.turtle,*.trig,*.nt,*.nq,*.jsonld,*.json,*.rdf,*.owl,*.rq,*.sparql,*.ru,catalog-v001.xml}";
+/// settings file (a `.json` file). They are the globs of the rows of the
+/// file-kind table ([`crate::workspace::kinds::ROWS`]), which a test checks:
+/// the extensions in one glob, then each file name. No `{...}` group holds a
+/// `*`: Neovim's glob matcher matches no path with one (`**/{*.ttl,*.rq}`).
+pub(crate) const WATCHED_FILES: [&str; 2] = [
+    "**/*.{ttl,turtle,trig,nt,nq,jsonld,json,rdf,owl,rq,sparql,ru}",
+    "**/catalog-v001.xml",
+];
 
 /// Pause after a described-set change before other documents are refreshed.
 const DESCRIBED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
@@ -1337,18 +1342,21 @@ impl Server {
             return;
         }
         let opts = DidChangeWatchedFilesRegistrationOptions {
-            watchers: vec![
-                FileSystemWatcher {
-                    glob_pattern: GlobPattern::String(WATCHED_FILES.into()),
+            watchers: WATCHED_FILES
+                .iter()
+                .map(|glob| FileSystemWatcher {
+                    glob_pattern: GlobPattern::String(glob.to_string()),
                     kind: None,
-                },
-                // A deleted or renamed folder takes the files below it along,
-                // and no file glob reports that: ask for every deletion.
-                FileSystemWatcher {
-                    glob_pattern: GlobPattern::String("**/*".into()),
-                    kind: Some(WatchKind::Delete),
-                },
-            ],
+                })
+                .chain([
+                    // A deleted or renamed folder takes the files below it along,
+                    // and no file glob reports that: ask for every deletion.
+                    FileSystemWatcher {
+                        glob_pattern: GlobPattern::String("**/*".into()),
+                        kind: Some(WatchKind::Delete),
+                    },
+                ])
+                .collect(),
         };
         let params = RegistrationParams {
             registrations: vec![Registration {

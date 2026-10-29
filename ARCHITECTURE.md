@@ -173,8 +173,8 @@ what a change means; `Server::apply` acts on it in one place.
 
 One table in `src/workspace/kinds.rs` says what kind of file a path names,
 for the workspace, the server and the command line's file scan
-(`src/cli/files.rs`). The file-watcher glob (`server::WATCHED_FILES`) lists
-every row, and a test checks it. `Syntax::from_extension` keeps its own
+(`src/cli/files.rs`). The file-watcher globs (`server::WATCHED_FILES`) list
+every row, and a test checks them. `Syntax::from_extension` keeps its own
 list, because `syntax` cannot read `workspace`, and a test checks it
 against the table's RDF rows.
 

@@ -438,6 +438,37 @@ check("turtle-lsp.json decides a setting the user did not set (format.lineWidth)
   }
 })
 
+check("turtle-lsp.json takes effect when it is saved, without a restart", async () => {
+  const settings = path.join(fixtures, "turtle-lsp.json")
+  const vocab = path.join(fixtures, "__vsc_watch.ttl")
+  fs.writeFileSync(vocab, "@prefix ex: <http://example.org/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\nex:Pump a owl:Class .\n")
+  const labels = (doc) =>
+    vscode.languages.getDiagnostics(doc.uri).filter((d) => (d.code?.value ?? d.code) === "missing-label").length
+  const until = async (doc, n, what) => {
+    for (let i = 0; i < 100 && labels(doc) !== n; i++) await sleep(100)
+    assert.equal(labels(doc), n, `${what}: ${fmt(vscode.languages.getDiagnostics(doc.uri))}`)
+  }
+  try {
+    const doc = await open(vocab)
+    await settledDiagnostics(doc)
+    await until(doc, 0, "missing-label is off by default")
+    // Written on disk, as git or another tool would.
+    fs.writeFileSync(settings, '{ "lint": { "enable": ["missing-label"] } }\n')
+    await until(doc, 1, "turtle-lsp.json written on disk did not turn missing-label on")
+    // Edited and saved in VS Code.
+    const json = await open(settings)
+    const edit = new vscode.WorkspaceEdit()
+    edit.replace(json.uri, new vscode.Range(0, 0, json.lineCount, 0), '{ "lint": { "enable": [] } }\n')
+    await vscode.workspace.applyEdit(edit)
+    await json.save()
+    await until(doc, 0, "turtle-lsp.json saved in VS Code did not turn missing-label off")
+  } finally {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+    fs.rmSync(settings, { force: true })
+    fs.rmSync(vocab, { force: true })
+  }
+})
+
 exports.run = async function run() {
   let failed = 0
   for (const { name, fn } of checks) {

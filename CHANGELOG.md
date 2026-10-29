@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Neovim now sees files change on disk.** The server asked the editor to
+  watch one glob, `**/{*.ttl,…,catalog-v001.xml}`, which Neovim's glob
+  matcher matches no path with. Saving `turtle-lsp.json` did nothing until
+  the server restarted, and a file changed outside the editor (`git
+  checkout`) kept its old content. The server now registers
+  `**/*.{ttl,…,ru}` and `**/catalog-v001.xml`, which Neovim and VS Code both
+  read. Neovim watches files on macOS and Windows only. (#56)
+
 ## 0.11.0 — 2026-10-29
 
 ### Added
