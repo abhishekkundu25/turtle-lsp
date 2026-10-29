@@ -92,6 +92,35 @@ test("editing turtle-lsp.json on disk applies the change", async () => {
   await done(s, ws)
 })
 
+// parse.incremental: with TURTLE_LSP_CHECK_INCREMENTAL=1 the server logs how
+// it parsed each analysis (`incremental: <uri> Spliced`, `... Off`).
+test("parse.incremental: false in turtle-lsp.json parses every edit in full; the editor can turn it back on", async () => {
+  const ws = tempDir("turtle-settings-")
+  fs.writeFileSync(path.join(ws, "turtle-lsp.json"), JSON.stringify({ parse: { incremental: false } }))
+  process.env.TURTLE_LSP_CHECK_INCREMENTAL = "1"
+  const s = await startServer({ cwd: ws })
+  delete process.env.TURTLE_LSP_CHECK_INCREMENTAL
+  const uri = uriOf(path.join(ws, "doc.ttl"))
+  const text = '@prefix ex: <http://example.org/> .\nex:a ex:p 1 .\nex:b ex:p 2 .\nex:c ex:p "x" .\nex:d ex:p 3 .\n'
+  s.open(uri, text)
+  await s.diagnosticsFor(uri)
+  // Typing inside "x" on line 3, one character a change.
+  let col = 12
+  const type = async () => {
+    const at = { line: 3, character: col++ }
+    s.changeRange(uri, [{ range: { start: at, end: at }, text: "y" }])
+    await s.diagnosticsFor(uri)
+    // Answered after the log of the analysis.
+    await s.request("workspace/symbol", { query: "" })
+    return s.logs.filter((m) => m.startsWith(`incremental: ${uri}`)).at(-1)
+  }
+  assert.equal(await type(), `incremental: ${uri} Off`)
+  s.notify("workspace/didChangeConfiguration", { settings: { turtle: { parse: { incremental: true } } } })
+  await until(type, (m) => m === `incremental: ${uri} Spliced`, "not spliced with the editor's setting on")
+  assert.deepEqual(s.messages, [])
+  await done(s, ws)
+})
+
 // A loopback listener that counts the requests it gets (404 to all).
 async function listener() {
   const hits = []

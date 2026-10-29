@@ -33,11 +33,12 @@
 //! indexed files to parse again. The workspace decides that; the caller (the
 //! server) only acts on it.
 
-use crate::analysis::{Analysis, Edit, Encoding, LineIndex, LineStarts, SparqlAnalysis};
+use crate::analysis::{Analysis, Encoding, LineIndex, LineStarts, ParsePath, SparqlAnalysis};
 use crate::jsonld::loader::{self, Bundled};
 use crate::jsonld::{ContextLoader, LoadError, RemoteDocument};
 use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::server::worker::catch;
+use crate::syntax::splice::Edit;
 use crate::syntax::{PrefixMap, Severity, Span, Syntax, SyntaxError};
 use lsp_types::TextDocumentContentChangeEvent;
 use rayon::prelude::*;
@@ -233,6 +234,14 @@ impl Analyzed {
         };
     }
 
+    /// The analysis before the client's edits since, and those edits.
+    fn edited(&self) -> Option<(&Analysis, Edit)> {
+        match self {
+            Analyzed::Edited { last, edit, .. } => Some((last, *edit)),
+            _ => None,
+        }
+    }
+
     /// The line starts of the document's text, when this keeps them.
     fn starts(&self) -> Option<&LineStarts> {
         match self {
@@ -329,6 +338,10 @@ pub(crate) struct Workspace {
     /// Analyze open documents without keeping their tokens (see
     /// [`Workspace::set_keep_tokens`]).
     drop_tokens: bool,
+    reparse: Reparse,
+    /// How each analysis of an open document was parsed, while the splice
+    /// is checked ([`Workspace::set_check_incremental`]).
+    parse_log: Vec<ParseRecord>,
 }
 
 /// A SPARQL file on disk, as read.
@@ -612,36 +625,61 @@ fn analyze(
     syntax: Syntax,
     loader: &dyn ContextLoader,
 ) -> Analysis {
-    let lines = || LineIndex::new(text);
-    let attempt = try_analyze(&uri, text, &external, keep_tokens, syntax, loader, lines);
+    let attempt = caught(text, || {
+        let (uri, external) = (uri.clone(), external.clone());
+        Analysis::with_loader(uri, text, external, keep_tokens, syntax, loader)
+    });
     attempt.unwrap_or_else(|msg| failed_analysis(uri, syntax, external, &msg))
 }
 
-/// [`Analysis::with_lines`] with the line index `lines` makes, or the
-/// message of its panic.
-fn try_analyze(
-    uri: &str,
-    text: &str,
-    external: &Arc<PrefixMap>,
-    keep_tokens: bool,
-    syntax: Syntax,
-    loader: &dyn ContextLoader,
-    lines: impl FnOnce() -> LineIndex,
-) -> Result<Analysis, String> {
+/// What `work` returns from analyzing `text`, or the message of its panic.
+fn caught<T>(text: &str, work: impl FnOnce() -> T) -> Result<T, String> {
     catch("analysis", || {
         #[cfg(test)]
         if text.contains(PANIC_IN_ANALYSIS) {
             panic!("injected analysis panic");
         }
-        let lines = lines();
-        let (uri, external) = (uri.to_string(), external.clone());
-        Analysis::with_lines(uri, text, external, keep_tokens, syntax, loader, lines)
+        #[cfg(not(test))]
+        let _ = text;
+        work()
     })
 }
 
+/// How the workspace parses an open document after an edit.
+#[derive(Clone, Copy, Default)]
+struct Reparse {
+    /// In full every time (the setting `parse.incremental` off).
+    off: bool,
+    /// Check every splice against a full parse, keep the full one when they
+    /// differ, and record each analysis's path
+    /// ([`Workspace::set_check_incremental`]).
+    check: bool,
+}
+
+/// How one analysis of an open document was parsed, recorded when the
+/// workspace checks the splice ([`Workspace::set_check_incremental`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ParseRecord {
+    pub(crate) uri: String,
+    pub(crate) path: ParsePath,
+    /// The first field in which the spliced analysis differed from the
+    /// full one, which the document got instead.
+    pub(crate) difference: Option<String>,
+}
+
+/// An analysis of an open document: what the document keeps, its facts
+/// unless it is a cached import, and how it was parsed.
+struct OpenAnalysis {
+    analyzed: Analyzed,
+    facts: Option<DocFacts>,
+    path: ParsePath,
+    difference: Option<String>,
+}
+
 /// [`analyze`] for the open document `doc`, building on its last analysis
-/// where it can, with its facts unless it is a cached import. A panic in
-/// either gives a [`failed_analysis`].
+/// where it can (its line index, and its parse through the statement
+/// splice), with its facts unless it is a cached import. A panic in either
+/// gives a [`failed_analysis`].
 fn analyze_open(
     uri: &str,
     doc: &Doc,
@@ -649,27 +687,65 @@ fn analyze_open(
     keep_tokens: bool,
     syntax: Syntax,
     loader: &dyn ContextLoader,
-) -> (Analyzed, Option<DocFacts>) {
-    let lines = || doc.analyzed.lines(&doc.text);
-    let attempt = try_analyze(
-        uri,
-        &doc.text,
-        &external,
-        keep_tokens,
-        syntax,
-        loader,
-        lines,
-    )
-    .and_then(|a| match doc.cached_import {
-        true => Ok((a, None)),
-        false => facts(&a).map(|f| (a, Some(f))),
+    reparse: Reparse,
+) -> OpenAnalysis {
+    let mut path = ParsePath::Whole;
+    let attempt = caught(&doc.text, || {
+        let text = &doc.text;
+        let lines = doc.analyzed.lines(text);
+        let parsed = match doc.analyzed.edited() {
+            None => None,
+            Some(_) if reparse.off => {
+                path = ParsePath::Off;
+                None
+            }
+            Some((last, edit)) => match last.splice(uri, text, edit, &external) {
+                Ok(p) => {
+                    path = ParsePath::Spliced;
+                    Some(p)
+                }
+                Err(f) => {
+                    path = ParsePath::Fallback(f);
+                    None
+                }
+            },
+        };
+        let (u, ext) = (uri.to_string(), external.clone());
+        let a = match parsed {
+            Some(p) => Analysis::with_parse(u, text, ext, keep_tokens, p, lines),
+            None => Analysis::with_lines(u, text, ext, keep_tokens, syntax, loader, lines),
+        };
+        if !(reparse.check && path == ParsePath::Spliced) {
+            return (a, None);
+        }
+        // From the text alone, the line index too.
+        let (u, ext) = (uri.to_string(), external.clone());
+        let full = Analysis::with_loader(u, text, ext, keep_tokens, syntax, loader);
+        match crate::oracle::same_analysis(&a, &full) {
+            Ok(()) => (a, None),
+            Err(diff) => (full, Some(diff)),
+        }
+    })
+    .and_then(|(a, difference)| match doc.cached_import {
+        true => Ok((a, None, difference)),
+        false => facts(&a).map(|f| (a, Some(f), difference)),
     });
     match attempt {
-        Ok((a, facts)) => (Analyzed::Current(Arc::new(a)), facts),
+        Ok((a, facts, difference)) => OpenAnalysis {
+            analyzed: Analyzed::Current(Arc::new(a)),
+            facts,
+            path,
+            difference,
+        },
         Err(msg) => {
             let failed = failed_analysis(uri.to_string(), syntax, external, &msg);
             let facts = (!doc.cached_import).then(|| DocFacts::new(&failed));
-            (Analyzed::Failed(Arc::new(failed)), facts)
+            OpenAnalysis {
+                analyzed: Analyzed::Failed(Arc::new(failed)),
+                facts,
+                path,
+                difference: None,
+            }
         }
     }
 }
@@ -738,6 +814,27 @@ impl Workspace {
     /// caller that analyzes each document once, such as `batch`.
     pub(crate) fn set_keep_tokens(&mut self, keep: bool) {
         self.drop_tokens = !keep;
+    }
+
+    /// Whether an edit to an open document is parsed with the statement
+    /// splice (the default) or in full (the setting `parse.incremental`).
+    /// The next analysis goes by it.
+    pub(crate) fn set_incremental(&mut self, on: bool) {
+        self.reparse.off = !on;
+    }
+
+    /// Check every spliced analysis against a full one, give the document
+    /// the full one when they differ, and record how each analysis of an
+    /// open document was parsed ([`Workspace::take_parse_log`]): for tests
+    /// and debugging, as it doubles the work of each analysis.
+    pub(crate) fn set_check_incremental(&mut self, on: bool) {
+        self.reparse.check = on;
+    }
+
+    /// The analyses recorded since the last call, while the splice is
+    /// checked.
+    pub(crate) fn take_parse_log(&mut self) -> Vec<ParseRecord> {
+        std::mem::take(&mut self.parse_log)
     }
 
     // ---- state ----
@@ -1125,25 +1222,20 @@ impl Workspace {
             .collect();
         let (open, roots, uses) = (&self.open, &self.roots, &self.context_uses);
         let keep_tokens = !self.drop_tokens;
+        let reparse = self.reparse;
         let contexts = self.contexts();
-        let done: Vec<(String, Analyzed, Option<DocFacts>)> = jobs
+        let done: Vec<(String, OpenAnalysis)> = jobs
             .into_par_iter()
             .filter_map(|(uri, syntax, ext)| {
                 let doc = open.get(&uri)?;
                 let loader = DocContexts::new(open, roots, &*contexts);
-                let (a, facts) = analyze_open(&uri, doc, ext, keep_tokens, syntax, &loader);
+                let a = analyze_open(&uri, doc, ext, keep_tokens, syntax, &loader, reparse);
                 loader.record(uses, &uri, syntax);
-                Some((uri, a, facts))
+                Some((uri, a))
             })
             .collect();
-        for (uri, a, facts) in done {
-            if let (Some(f), Some(current)) = (facts, a.current()) {
-                self.knowledge
-                    .set_prepared(&uri, Source::Open, current.clone(), f);
-            }
-            if let Some(doc) = self.open.get_mut(&uri) {
-                doc.analyzed = a;
-            }
+        for (uri, a) in done {
+            self.settle(&uri, a);
         }
         &self.knowledge
     }
@@ -1170,15 +1262,43 @@ impl Workspace {
         let contexts = self.contexts();
         let loader = DocContexts::new(&self.open, &self.roots, &*contexts);
         let doc = self.open.get(uri)?;
-        let (analyzed, facts) =
-            analyze_open(uri, doc, external, !self.drop_tokens, syntax, &loader);
+        let keep_tokens = !self.drop_tokens;
+        let a = analyze_open(
+            uri,
+            doc,
+            external,
+            keep_tokens,
+            syntax,
+            &loader,
+            self.reparse,
+        );
         loader.record(&self.context_uses, uri, syntax);
-        let a = analyzed.current().cloned();
-        if let (Some(f), Some(a)) = (facts, &a) {
+        self.settle(uri, a)
+    }
+
+    /// Give the open document `uri` its new analysis, and the knowledge
+    /// index its facts; the analysis, unless it failed.
+    fn settle(&mut self, uri: &str, a: OpenAnalysis) -> Option<Arc<Analysis>> {
+        let OpenAnalysis {
+            analyzed,
+            facts,
+            path,
+            difference,
+        } = a;
+        if self.reparse.check {
+            let uri = uri.to_string();
+            self.parse_log.push(ParseRecord {
+                uri,
+                path,
+                difference,
+            });
+        }
+        let current = analyzed.current().cloned();
+        if let (Some(f), Some(a)) = (facts, &current) {
             self.knowledge.set_prepared(uri, Source::Open, a.clone(), f);
         }
         self.open.get_mut(uri)?.analyzed = analyzed;
-        a
+        current
     }
 
     /// Whether `uri` is an open SPARQL document.
@@ -3355,6 +3475,72 @@ pub(crate) mod tests {
         }
     }
 
+    /// How the analyses of an open document were parsed since the last
+    /// call, and whether any splice differed from a full parse.
+    fn paths(ws: &mut Workspace) -> Vec<(ParsePath, Option<String>)> {
+        let log = ws.take_parse_log().into_iter();
+        log.map(|r| (r.path, r.difference)).collect()
+    }
+
+    #[test]
+    fn an_edit_is_spliced_unless_the_setting_is_off() {
+        let text = "@prefix ex: <http://e/> .\nex:a ex:p 1 .\nex:b ex:p 2 .\n\
+                    ex:c ex:p \"x\" .\nex:d ex:p 3 .\n";
+        let uris = ["file:///w/a.ttl", "file:///w/b.trig"];
+        for (on, edited) in [(true, ParsePath::Spliced), (false, ParsePath::Off)] {
+            let mut ws = Workspace::default();
+            ws.set_check_incremental(true);
+            ws.set_incremental(on);
+            for u in uris {
+                ws.open_doc(u.into(), text.into(), 1);
+            }
+            ws.knowledge();
+            let whole = (ParsePath::Whole, None);
+            assert_eq!(paths(&mut ws), [whole.clone(), whole]);
+            // Inside the literal: one analysis, then both in parallel.
+            ws.change_doc(
+                uris[0],
+                2,
+                vec![ranged((4, 11), (4, 11), "y")],
+                Encoding::Utf16,
+            );
+            assert_as_fresh(&mut ws, uris[0], "one");
+            assert_eq!(paths(&mut ws), [(edited, None)]);
+            for u in uris {
+                ws.change_doc(u, 3, vec![ranged((4, 11), (4, 12), "")], Encoding::Utf16);
+            }
+            ws.knowledge();
+            assert_eq!(paths(&mut ws), [(edited, None), (edited, None)]);
+            for u in uris {
+                assert_as_fresh(&mut ws, u, u);
+            }
+            // A directive: in full whatever the setting.
+            ws.change_doc(
+                uris[0],
+                4,
+                vec![ranged((0, 8), (0, 10), "ey")],
+                Encoding::Utf16,
+            );
+            ws.analysis(uris[0]);
+            let directive = match on {
+                true => ParsePath::Fallback(crate::analysis::Fallback::Directive),
+                false => ParsePath::Off,
+            };
+            assert_eq!(paths(&mut ws), [(directive, None)]);
+        }
+        // Without the check, nothing is recorded.
+        let mut ws = Workspace::default();
+        ws.open_doc(uris[0].into(), text.into(), 1);
+        ws.change_doc(
+            uris[0],
+            2,
+            vec![ranged((4, 11), (4, 11), "y")],
+            Encoding::Utf16,
+        );
+        assert_as_fresh(&mut ws, uris[0], "unchecked");
+        assert_eq!(paths(&mut ws), []);
+    }
+
     #[test]
     fn change_doc_reanalyzes_and_ignores_documents_that_are_not_open() {
         let mut ws = Workspace::default();
@@ -3628,6 +3814,88 @@ pub(crate) mod tests {
                 ..Effects::default()
             }
         );
+    }
+    /// Typing in a label in the middle of a 2.4 MB vocabulary (17,200
+    /// classes), one character and one analysis at a time, as the server
+    /// does on each keystroke: with the splice, then in full. On an
+    /// M-series laptop (load about 3, medians, five runs): 4.3 to 4.4 ms a
+    /// keystroke spliced against 11.0 to 11.5 ms in full (0.39 of it), 24
+    /// keystrokes 105 to 130 ms. Where a spliced keystroke goes, timed
+    /// apart: the analysis maps rebuilt in full 1.4 ms, copying the shared
+    /// old parse for the splice 0.6 ms, the splice 0.13 ms, the line index
+    /// 0.01 ms; then the facts for the knowledge index 1.3 ms
+    /// (`DocFacts::new`, a full rebuild), dropping the old analysis 0.6 ms
+    /// and the index swap. The maps and the facts limit it; the full
+    /// keystroke pays the same facts and drop, which is why the share is
+    /// not lower. The budget is about four times the laptop's keystroke.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn timing_typing_in_the_middle_of_a_big_file_is_spliced() {
+        let n = 17_200;
+        let mut text = String::from(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n",
+        );
+        for i in 0..n {
+            text += &format!(
+                "\nex:C{i} a owl:Class ;\n    rdfs:label \"Class {i}\"@en ;\n    \
+                 skos:definition \"A class numbered {i}.\"@en ;\n    rdfs:subClassOf ex:C{} .\n",
+                (i + 1) % n
+            );
+        }
+        let uri = "file:///w/vocab.ttl";
+        let mut ws = Workspace::default();
+        ws.open_doc(uri.into(), text.clone(), 1);
+        ws.analysis(uri);
+        // The cursor: after `"Class 8600` on its line.
+        let label = format!("\"Class {}", n / 2);
+        let line = text[..text.find(&label).unwrap()].matches('\n').count() as u32;
+        let mut col = 4 + "rdfs:label ".len() as u32 + label.len() as u32;
+        let mut version = 1;
+        let mut typing = |ws: &mut Workspace, keys: usize| -> Vec<std::time::Duration> {
+            (0..keys)
+                .map(|_| {
+                    version += 1;
+                    let at = (line, col);
+                    col += 1;
+                    let t = std::time::Instant::now();
+                    ws.change_doc(uri, version, vec![ranged(at, at, "x")], Encoding::Utf16);
+                    ws.analysis(uri);
+                    t.elapsed()
+                })
+                .collect()
+        };
+        let keys = 24;
+        let spliced = typing(&mut ws, keys);
+        ws.set_incremental(false);
+        let mut full = typing(&mut ws, 9);
+        // The typing gave what a fresh open gives, and it was spliced.
+        ws.set_incremental(true);
+        ws.set_check_incremental(true);
+        typing(&mut ws, 1);
+        assert_eq!(paths(&mut ws), [(ParsePath::Spliced, None)]);
+        let got = ws.analysis(uri).unwrap();
+        let mut fresh = Workspace::default();
+        fresh.open_doc(uri.into(), got.text.to_string(), 1);
+        let want = fresh.analysis(uri).unwrap();
+        assert_eq!(crate::oracle::same_analysis(&got, &want), Ok(()));
+
+        let median = |v: &mut [std::time::Duration]| {
+            v.sort();
+            v[v.len() / 2]
+        };
+        let (mut first, mut last) = (spliced[..8].to_vec(), spliced[keys - 8..].to_vec());
+        let all: std::time::Duration = spliced.iter().sum();
+        let (first, last, full) = (median(&mut first), median(&mut last), median(&mut full));
+        let msg = format!("a keystroke spliced: first {first:?}, last {last:?}; in full {full:?}");
+        // Each keystroke costs what the one before did: nothing piles up.
+        assert!(last < first * 2, "{msg}");
+        // N keystrokes cost N times one, a fraction of N full analyses.
+        let n = keys as u32;
+        assert!(all * 5 < full * n * 3, "{msg}; {keys} spliced {all:?}");
+        assert!(first.as_millis() < 20, "{msg}");
     }
 }
 

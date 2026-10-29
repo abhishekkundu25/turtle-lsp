@@ -12,10 +12,12 @@
 //! sample of offsets, the text, the knowledge index
 //! ([`crate::knowledge::Knowledge::snapshot`]) and the composed diagnostics
 //! ([`diagnose::document`]). The first difference is the error, named by
-//! field. The chaos tests run it on every iteration of their edit
-//! mode.
+//! field. The edited workspace also checks each spliced analysis against a
+//! full one as it goes ([`Workspace::set_check_incremental`]), and the
+//! report says how each analysis was parsed. The chaos tests run it on
+//! every iteration of their edit mode.
 
-use crate::analysis::{Analysis, Encoding, LineIndex, offset_in, position_in};
+use crate::analysis::{Analysis, Encoding, LineIndex, ParsePath, offset_in, position_in};
 use crate::diagnose::{self, DiagnosticInputs};
 use crate::settings::Settings;
 use crate::syntax::{Iri, IriMap, Node, Parsed, PrefixMap, Syntax};
@@ -38,6 +40,9 @@ pub struct Batch {
 pub struct Report {
     /// The document's text after the last batch.
     pub text: String,
+    /// How each analysis of the edited document was parsed, in order, the
+    /// one on open first.
+    pub paths: Vec<ParsePath>,
 }
 
 /// Apply `batches` to a `syntax` document opened on `start`, positions in
@@ -64,6 +69,7 @@ fn check_against(
     let uri = format!("file:///oracle/doc.{}", extension(syntax));
     let settings = settings();
     let mut ws = Workspace::new(Vec::new(), PrefixMap::default());
+    ws.set_check_incremental(true);
     ws.open_doc_as(uri.clone(), start.to_string(), 0, syntax);
     // As a client asks on open: the edits then have an analysis to go stale.
     diagnostics(&mut ws, &uri, enc, &settings);
@@ -93,7 +99,14 @@ fn check_against(
         &fresh_ws.knowledge().snapshot(),
     )?;
     same_list("diagnostics", &got_diags, &want_diags)?;
-    Ok(Report { text })
+    let mut paths = Vec::new();
+    for (i, record) in ws.take_parse_log().into_iter().enumerate() {
+        if let Some(diff) = record.difference {
+            return Err(format!("analysis {i}, spliced: {diff}"));
+        }
+        paths.push(record.path);
+    }
+    Ok(Report { text, paths })
 }
 
 /// Apply `ch` to `text` the plain way, finding the lines again for each
@@ -229,7 +242,8 @@ fn same_map<V: PartialEq + Debug>(
     ))
 }
 
-fn same_parse(got: &Parsed, want: &Parsed) -> Result<(), String> {
+/// The first field of two parses that differs.
+pub(crate) fn same_parse(got: &Parsed, want: &Parsed) -> Result<(), String> {
     // Every field, named: a field added to `Parsed` fails to compile here.
     let Parsed {
         syntax,
@@ -259,7 +273,9 @@ fn same_parse(got: &Parsed, want: &Parsed) -> Result<(), String> {
     same_list("parsed.tokens", tokens, &want.tokens)
 }
 
-fn same_analysis(got: &Analysis, want: &Analysis) -> Result<(), String> {
+/// The first field of two analyses that differs: the parse, the maps,
+/// line conversions, then the text.
+pub(crate) fn same_analysis(got: &Analysis, want: &Analysis) -> Result<(), String> {
     same_parse(&got.parsed, &want.parsed)?;
     same_list("tokens", got.tokens(), want.tokens())?;
     same_list("dropped", &got.dropped, &want.dropped)?;

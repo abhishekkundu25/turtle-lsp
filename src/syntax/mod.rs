@@ -323,7 +323,7 @@ impl SyntaxError {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Parsed {
     pub syntax: Syntax,
     pub prefixes: Vec<PrefixDecl>,

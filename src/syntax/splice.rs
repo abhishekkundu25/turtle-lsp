@@ -48,12 +48,44 @@ const MAX_BLANK_SCAN: usize = 4096;
 /// Statements of a graph block looked at for its indentation.
 const MAX_INDENT_SCAN: usize = 64;
 
-/// One edit: bytes `start..end` of the old text became `new_len` bytes.
+/// How a text changed: bytes `start..end` of the old text became `new_len`
+/// bytes, which start at `start` in the text now. Several edits collapse
+/// into one ([`Edit::then`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Edit {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) new_len: u32,
+}
+
+impl Edit {
+    /// The bytes `range` of the text were replaced by `new_len` bytes.
+    pub(crate) fn new(range: std::ops::Range<usize>, new_len: usize) -> Edit {
+        Edit {
+            start: range.start as u32,
+            end: range.end as u32,
+            new_len: new_len as u32,
+        }
+    }
+
+    /// Where the replacement ends in the text now.
+    pub(crate) fn new_end(&self) -> u32 {
+        self.start + self.new_len
+    }
+
+    /// This edit, then the bytes `range` of the text it left replaced by
+    /// `new_len` bytes, as one edit: the smallest that covers both.
+    pub(crate) fn then(self, range: std::ops::Range<usize>, new_len: usize) -> Edit {
+        let (start, end) = (range.start as u32, range.end as u32);
+        let lo = self.start.min(start);
+        let hi = self.new_end().max(end);
+        Edit {
+            start: lo,
+            // Past this edit's replacement, the text is the old text moved.
+            end: self.end + (hi - self.new_end()),
+            new_len: hi - lo - (end - start) + new_len as u32,
+        }
+    }
 }
 
 /// The texts before and after one edit.
@@ -66,7 +98,7 @@ pub(crate) struct Change<'t> {
 
 /// Why a splice gave up; the caller parses the new text in full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Fallback {
+pub enum Fallback {
     /// JSON-LD, which has its own frontend.
     Syntax,
     /// The edit does not fit the two texts.
@@ -104,10 +136,6 @@ pub(crate) enum Fallback {
 /// `change.old_text` (with its tokens and comment spans) with the external
 /// prefixes `old_external`; or why not. The new parse has `external` and the
 /// document's `base`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the analysis takes it up in ticket 05")
-)]
 pub(crate) fn splice(
     old: Parsed,
     change: Change,
@@ -115,24 +143,37 @@ pub(crate) fn splice(
     external: &PrefixMap,
     base: Option<&str>,
 ) -> Result<Parsed, Fallback> {
+    applies(&old, change, old_external, external, base)?;
+    if old.tokens.is_empty() {
+        return Err(Fallback::NoTokens);
+    }
+    Splice::new(old, change, change.edit, Start::document(external, base))?.run()
+}
+
+/// The fallbacks of [`splice`] that need no more than `old` without its
+/// tokens: a caller checks these before it makes the parse the splice takes.
+pub(crate) fn applies(
+    old: &Parsed,
+    change: Change,
+    old_external: &PrefixMap,
+    external: &PrefixMap,
+    base: Option<&str>,
+) -> Result<(), Fallback> {
     if old.syntax == Syntax::JsonLd {
         return Err(Fallback::Syntax);
     }
     if old_external != external || old.document_base.as_deref() != base {
         return Err(Fallback::Context);
     }
-    let edit = checked(change)?;
+    fits(change)?;
     if old.statements.is_empty() {
         return Err(Fallback::NoStatements);
     }
-    if old.tokens.is_empty() {
-        return Err(Fallback::NoTokens);
-    }
-    Splice::new(old, change, edit, Start::document(external, base))?.run()
+    Ok(())
 }
 
-/// The edit, when it fits the texts.
-fn checked(change: Change) -> Result<Edit, Fallback> {
+/// Whether the edit fits the texts.
+fn fits(change: Change) -> Result<(), Fallback> {
     let Change {
         old_text,
         new_text,
@@ -150,7 +191,7 @@ fn checked(change: Change) -> Result<Edit, Fallback> {
         && old_text.is_char_boundary(end)
         && new_text.is_char_boundary(start + new_len)
         && u32::try_from(new_text.len()).is_ok();
-    if fits { Ok(edit) } else { Err(Fallback::Edit) }
+    if fits { Ok(()) } else { Err(Fallback::Edit) }
 }
 
 /// A splice under way. Positions are bytes; "old" ones are in the old text.
@@ -1053,28 +1094,8 @@ mod tests {
         };
         let ext = external();
         let spliced = splice(full(text, syntax), change, &ext, &ext, Some(BASE))?;
-        let (got, want) = (
-            format!("{spliced:#?}"),
-            format!("{:#?}", full(&new_text, syntax)),
-        );
-        if got != want {
-            let line = got
-                .lines()
-                .zip(want.lines())
-                .position(|(g, w)| g != w)
-                .unwrap_or(0);
-            let around = |s: &str| {
-                s.lines()
-                    .skip(line.saturating_sub(8))
-                    .take(16)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            panic!(
-                "splice differs from a full parse of {new_text:?} at line {line}:\n--- splice\n{}\n--- full\n{}",
-                around(&got),
-                around(&want)
-            );
+        if let Err(diff) = crate::oracle::same_parse(&spliced, &full(&new_text, syntax)) {
+            panic!("splice differs from a full parse of {new_text:?}: {diff}");
         }
         Ok(())
     }
@@ -1463,10 +1484,8 @@ mod tests {
             "the full parse lexes once"
         );
         assert!(lexed < 2_000, "lexed {lexed} bytes for a one-byte edit");
-        assert_eq!(
-            format!("{spliced:?}"),
-            format!("{:?}", full(&new_text, Syntax::Turtle))
-        );
+        let want = full(&new_text, Syntax::Turtle);
+        assert_eq!(crate::oracle::same_parse(&spliced, &want), Ok(()));
         // Too big a paste: as cheap to parse in full.
         let paste = statements(9_000);
         assert_eq!(

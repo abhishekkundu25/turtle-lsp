@@ -46,6 +46,7 @@
 //! use turtle_lsp::VERSION as _; // web/engine
 //! use turtle_lsp::analysis::Analysis as _; // tests
 //! use turtle_lsp::analysis::Encoding as _; // tests
+//! use turtle_lsp::analysis::ParsePath as _; // tests
 //! use turtle_lsp::analysis::SparqlAnalysis as _; // tests
 //! use turtle_lsp::batch::BatchFile as _; // tests, web/engine
 //! use turtle_lsp::batch::Columns as _; // web/engine

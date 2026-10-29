@@ -34,7 +34,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use turtle_lsp::analysis::{Analysis, Encoding, SparqlAnalysis};
+use turtle_lsp::analysis::{Analysis, Encoding, ParsePath, SparqlAnalysis};
 use turtle_lsp::batch;
 use turtle_lsp::features::hierarchy;
 use turtle_lsp::features::{
@@ -1977,17 +1977,34 @@ fn edits_match_a_fresh_open_4() {
     edits_match_a_fresh_open(3);
 }
 
+/// The least share of the analyses after an edit that the statement splice
+/// makes, per shard, so the fallbacks cannot quietly take every edit. The
+/// fixture files are small, so most edits are near a directive (the window
+/// reaches back to the statement before) and fall back; JSON-LD always
+/// does. Measured 2026-10-29: the four shards of a run at CHAOS_ITERS=20000
+/// spliced 21.5% to 22.8%; at the default 2,000 iterations, seeds 1 to 6
+/// and the fixed one, 18.3% to 24.5% (spread about 1.5 points per shard).
+const SPLICE_FLOOR: f64 = 0.15;
+
+/// Shards with fewer analyses after an edit than this skip the floor (a
+/// replay of one iteration, say).
+const SPLICE_FLOOR_MIN: usize = 200;
+
 /// The edit mode: the mutations, and the splice hazards, applied as LSP
 /// changes to the previous text, one to four per batch, one to four
 /// batches, with the analysis asked for after some of them; the
 /// [`oracle`] then compares the edited document with a fresh open of the
 /// text the changes leave, which must also be the text the mutations made.
+/// Each shard prints how its analyses were parsed and checks the splice's
+/// share against [`SPLICE_FLOOR`].
 fn edits_match_a_fresh_open(k: usize) {
     let seed = env_or("CHAOS_SEED", 0x5EED_0019_u64);
     let iters = env_or("CHAOS_ITERS", 2000usize);
     let corpus = corpus();
     let json = jsonld_corpus();
     let mut dog = Watchdog::new("edits", seed, iters);
+    let mut paths: std::collections::BTreeMap<String, usize> = Default::default();
+    let (mut spliced, mut edited) = (0, 0);
     for i in iterations(iters, k) {
         let mut rng = Rng::at(seed, i);
         let (source, mut syntax) = match rng.below(8) {
@@ -2036,13 +2053,31 @@ fn edits_match_a_fresh_open(k: usize) {
                 "the edits left another text than the mutations ({enc:?}): {}",
                 first_difference(&e.text, &report.text)
             ),
-            Ok(Ok(_)) => continue,
+            Ok(Ok(report)) => {
+                for p in report.paths {
+                    *paths.entry(format!("{p:?}")).or_default() += 1;
+                    spliced += usize::from(p == ParsePath::Spliced);
+                    edited += usize::from(p != ParsePath::Whole);
+                }
+                continue;
+            }
         };
         panic!(
             "{}",
             failure_report("edits", seed, iters, i, ext, source, &why)
         );
     }
+    let share = spliced as f64 / edited.max(1) as f64;
+    eprintln!(
+        "edits shard {k}: spliced {spliced} of {edited} analyses after an edit ({:.1}%); {paths:?}",
+        share * 100.0
+    );
+    assert!(
+        edited < SPLICE_FLOOR_MIN || share >= SPLICE_FLOOR,
+        "the splice made {:.1}% of the analyses after an edit, under the floor of {:.0}%: {paths:?}",
+        share * 100.0,
+        SPLICE_FLOOR * 100.0
+    );
 }
 
 const JSON_SNIPPETS: &[&str] = &[

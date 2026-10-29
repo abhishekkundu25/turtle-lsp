@@ -5,6 +5,8 @@
 
 use crate::sparql;
 use crate::syntax::lexer::{Kind, Token};
+pub use crate::syntax::splice::Fallback;
+use crate::syntax::splice::{self, Change, Edit};
 use crate::syntax::{self, Iri, IriKey, IriMap, Node, Parsed, PrefixMap, Ref, Span, Syntax};
 use lsp_types::{Position, Range};
 use rustc_hash::FxHashMap;
@@ -18,6 +20,21 @@ const SH_NAME: &str = "http://www.w3.org/ns/shacl#name";
 const DCT_DESCRIPTION: &str = "http://purl.org/dc/terms/description";
 pub(crate) const RDFS_SUBCLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
 pub(crate) const RDFS_SUBPROPERTY_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subPropertyOf";
+
+/// How an analysis's text was parsed: by the statement splice, from the
+/// analysis before an edit, or in full, and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParsePath {
+    Spliced,
+    /// In full, with no edit to build on: the first analysis, a change of
+    /// the whole text, an analysis before it that failed, or the same text
+    /// with other prefixes or contexts.
+    Whole,
+    /// In full: the setting `parse.incremental` is off.
+    Off,
+    /// In full: the splice fell back.
+    Fallback(Fallback),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -184,12 +201,7 @@ impl Analysis {
         loader: &dyn crate::jsonld::ContextLoader,
         lines: LineIndex,
     ) -> Analysis {
-        let crate::jsonld::Document {
-            mut parsed,
-            dropped,
-            used_terms,
-            index: source_index,
-        } = match language {
+        let document = match language {
             // Relative IRIs resolve against the document's URL.
             Syntax::JsonLd => crate::jsonld::parse_document_with(
                 text,
@@ -204,6 +216,68 @@ impl Analysis {
                 ..Default::default()
             },
         };
+        Analysis::with_document(uri, text, external, keep_tokens, document, lines)
+    }
+
+    /// The parse of `text`, which `edit` made from this analysis's text, by
+    /// the statement splice; or why the splice does not apply. `uri` and
+    /// `external` are the document's URL and prefixes now.
+    pub(crate) fn splice(
+        &self,
+        uri: &str,
+        text: &str,
+        edit: Edit,
+        external: &PrefixMap,
+    ) -> Result<Parsed, Fallback> {
+        let change = Change {
+            old_text: &self.text,
+            new_text: text,
+            edit,
+        };
+        let base = Some(uri);
+        splice::applies(&self.parsed, change, &self.external, external, base)?;
+        let tokens = self.tokens.get().ok_or(Fallback::NoTokens)?;
+        // The splice works on the parse as the parser made it: with its
+        // tokens and comment spans, which this analysis keeps apart or
+        // drops. It is shared (the knowledge index holds it too), so the
+        // splice works on a copy.
+        let mut old = self.parsed.clone();
+        old.tokens = tokens.clone();
+        old.comments = comments_of(tokens).collect();
+        splice::splice(old, change, &self.external, external, base)
+    }
+
+    /// The analysis of `text` from its parse `parsed` ([`Analysis::splice`]).
+    pub(crate) fn with_parse(
+        uri: String,
+        text: &str,
+        external: Arc<PrefixMap>,
+        keep_tokens: bool,
+        parsed: Parsed,
+        lines: LineIndex,
+    ) -> Analysis {
+        let document = crate::jsonld::Document {
+            parsed,
+            ..Default::default()
+        };
+        Analysis::with_document(uri, text, external, keep_tokens, document, lines)
+    }
+
+    /// The analysis of `text` from its parse, and JSON-LD's extras.
+    fn with_document(
+        uri: String,
+        text: &str,
+        external: Arc<PrefixMap>,
+        keep_tokens: bool,
+        document: crate::jsonld::Document,
+        lines: LineIndex,
+    ) -> Analysis {
+        let crate::jsonld::Document {
+            mut parsed,
+            dropped,
+            used_terms,
+            index: source_index,
+        } = document;
         // The comment spans are the comment tokens.
         parsed.comments = Vec::new();
         let tokens = OnceLock::new();
@@ -301,10 +375,7 @@ impl Analysis {
 
     /// The comments, in text order (see [`Analysis::tokens`]).
     pub fn comments(&self) -> impl Iterator<Item = Span> + '_ {
-        self.tokens()
-            .iter()
-            .filter(|t| t.kind == Kind::Comment)
-            .map(|t| Span::new(t.start, t.end))
+        comments_of(self.tokens())
     }
 
     fn literal(&self, i: u32) -> &str {
@@ -382,6 +453,14 @@ impl Analysis {
     pub fn offset(&self, enc: Encoding, pos: Position) -> Option<u32> {
         offset_in(&self.lines, &self.text, enc, pos)
     }
+}
+
+/// The spans of the comment tokens among `tokens`.
+fn comments_of(tokens: &[Token]) -> impl Iterator<Item = Span> + '_ {
+    tokens
+        .iter()
+        .filter(|t| t.kind == Kind::Comment)
+        .map(|t| Span::new(t.start, t.end))
 }
 
 /// Where the lines of a text start, which of them hold a multi-byte
@@ -464,14 +543,14 @@ impl LineIndex {
         let line_at = |x: usize| new.partition_point(|&s| s as usize <= x) - 1;
         // The line before the edit can lose or gain its line break (a `\r`
         // then a `\n`), so it is read again too.
-        let first = line_at((edit.old.start as usize).saturating_sub(1));
+        let first = line_at((edit.start as usize).saturating_sub(1));
         let last = line_at(edit.new_end() as usize);
         // The lines after `last` start past the edit: they are the old
         // text's last lines, moved.
         let after = new.len() - (last + 1);
         let old_after = self.starts.0.len() - after;
         let old_tail = self.starts.0.get(old_after).map_or(u32::MAX, |&s| s);
-        let grown = i64::from(edit.new_len) - i64::from(edit.old.end - edit.old.start);
+        let grown = i64::from(edit.new_len) - i64::from(edit.end - edit.start);
         let head = self.marks.partition_point(|m| m.at < new[first]);
         let tail = self.marks.partition_point(|m| m.at < old_tail);
         let mut lines = LineIndex {
@@ -783,43 +862,6 @@ impl LineStarts {
             .filter(|&x| starts_line(b, x))
             .map(|x| x as u32);
         self.0.splice(gone, added);
-    }
-}
-
-/// How a text changed since it was last analysed: the bytes `old` of that
-/// text were replaced by `new_len` bytes, which start at `old.start` in the
-/// text now. Several edits collapse into one ([`Edit::then`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Edit {
-    pub(crate) old: std::ops::Range<u32>,
-    pub(crate) new_len: u32,
-}
-
-impl Edit {
-    /// The bytes `range` of the text were replaced by `new_len` bytes.
-    pub(crate) fn new(range: std::ops::Range<usize>, new_len: usize) -> Edit {
-        Edit {
-            old: range.start as u32..range.end as u32,
-            new_len: new_len as u32,
-        }
-    }
-
-    /// Where the replacement ends in the text now.
-    pub(crate) fn new_end(&self) -> u32 {
-        self.old.start + self.new_len
-    }
-
-    /// This edit, then the bytes `range` of the text it left replaced by
-    /// `new_len` bytes, as one edit: the smallest that covers both.
-    pub(crate) fn then(self, range: std::ops::Range<usize>, new_len: usize) -> Edit {
-        let (start, end) = (range.start as u32, range.end as u32);
-        let lo = self.old.start.min(start);
-        let hi = self.new_end().max(end);
-        Edit {
-            // Past this edit's replacement, the text is the old text moved.
-            old: lo..self.old.end + (hi - self.new_end()),
-            new_len: hi - lo - (end - start) + new_len as u32,
-        }
     }
 }
 
@@ -1348,10 +1390,7 @@ mod tests {
                 });
             }
             let e = edit.unwrap();
-            let (old, new) = (
-                e.old.start as usize..e.old.end as usize,
-                e.new_end() as usize,
-            );
+            let (old, new) = (e.start as usize..e.end as usize, e.new_end() as usize);
             // The last text with the edit's bytes replaced is the text now.
             let replaced = format!(
                 "{}{}{}",

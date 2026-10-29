@@ -296,6 +296,12 @@
           "markdownDescription": "Show problems in every workspace file, not only the open ones. Files that are not open are checked in the background, as `turtle-lsp check` checks them, and again when they change on disk.",
           "scope": "window"
         },
+        "turtle.parse.incremental": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "After an edit, parse only the statements around it instead of the whole file. The results are the same either way; turn it off if problems in a file you edit differ from those after reopening it, and please report the file.",
+          "scope": "window"
+        },
         "turtle.query.timeoutSeconds": {
           "type": "number",
           "default": 30,

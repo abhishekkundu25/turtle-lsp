@@ -47,7 +47,7 @@ use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
-use crate::settings::SETTINGS_FILE;
+use crate::settings::{SETTINGS_FILE, Settings};
 use crate::workspace::{
     Change, Dirty, DocKind, Effects, Workspace, is_import_source, normalize_uri, uri_to_path,
 };
@@ -131,6 +131,12 @@ impl Ended {
 
 /// Pause after the last edit before the workspace is validated (`shacl.onType`).
 const SHACL_TYPING_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// The environment variable that, set to `1`, makes the server parse each
+/// edited document both ways (the statement splice and in full) and log how
+/// each analysis was parsed and the first difference (see
+/// [`Workspace::set_check_incremental`]). For tests and debugging.
+const CHECK_INCREMENTAL: &str = "TURTLE_LSP_CHECK_INCREMENTAL";
 
 /// A SHACL run shows progress only once it has lasted this long.
 const SHACL_PROGRESS_DELAY: Duration = Duration::from_millis(200);
@@ -291,6 +297,8 @@ impl Server {
         let mut ws = Workspace::new(roots.clone(), settings.prefixes.clone());
         // Without watchers (see `register_watchers`), nothing reports new files.
         ws.set_rescan_sparql(!watch_dynamic);
+        ws.set_incremental(incremental(settings, spawn));
+        ws.set_check_incremental(std::env::var(CHECK_INCREMENTAL).is_ok_and(|v| v == "1"));
         let contexts = use_network(&mut ws, settings.imports_network, spawn);
 
         let result = wire::encode(&Initialized::new(capabilities(enc, pull)))?;
@@ -320,6 +328,12 @@ impl Server {
         };
         Ok((server, result, roots))
     }
+}
+
+/// Whether edits are parsed with the statement splice: as the settings say,
+/// but not embedded (the browser engine parses in full, as `check` does).
+fn incremental(settings: &Settings, spawn: Spawn) -> bool {
+    settings.parse_incremental && spawn == Spawn::Thread
 }
 
 /// Load JSON-LD contexts with the network when `network` is on: in the
@@ -709,6 +723,7 @@ impl Server {
         });
         self.guarded("the described set", |s| s.check_described());
         self.guarded("diagnostics", |s| s.publish_dirty());
+        self.guarded("the incremental check", |s| s.log_parses());
         self.guarded("the imports", |s| s.sync_imports());
         self.guarded("the imports", |s| s.track_imports_progress());
         self.guarded("refreshes", |s| s.refresh_if_needed());
@@ -1117,6 +1132,8 @@ impl Server {
         }
         self.layers.commit(change);
         self.wsdiag_setting();
+        self.ws
+            .set_incremental(incremental(self.layers.settings(), self.spawn));
         self.apply(fx);
     }
 
@@ -1230,6 +1247,27 @@ impl Server {
         })
         // A cached copy of an import is read-only: nothing to fix there.
         .map(|d| d.or_else(|| cached_import.then(Vec::new)))
+    }
+
+    /// With [`CHECK_INCREMENTAL`]: log how each analysis since the last
+    /// call was parsed, and, as an error, a splice that differed from a full
+    /// parse.
+    fn log_parses(&mut self) {
+        for r in self.ws.take_parse_log() {
+            let (typ, message) = match r.difference {
+                Some(d) => (
+                    MessageType::ERROR,
+                    format!("incremental: {} differs from a full parse: {d}", r.uri),
+                ),
+                None => (
+                    MessageType::LOG,
+                    format!("incremental: {} {:?}", r.uri, r.path),
+                ),
+            };
+            let params = LogMessageParams { typ, message };
+            self.client
+                .notify(lsp_types::notification::LogMessage::METHOD, params);
+        }
     }
 
     fn publish_dirty(&mut self) {

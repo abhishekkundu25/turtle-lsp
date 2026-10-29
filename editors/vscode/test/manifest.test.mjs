@@ -48,6 +48,7 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.format.lineWidth": ["integer", 100],
     "turtle.codeLens.references": ["boolean", true],
     "turtle.diagnostics.workspace": ["boolean", false],
+    "turtle.parse.incremental": ["boolean", true],
     "turtle.query.timeoutSeconds": ["number", 30],
     "turtle.query.maxRows": ["integer", 1000],
     "turtle.query.maxBufferedRows": ["integer", 10000000],
