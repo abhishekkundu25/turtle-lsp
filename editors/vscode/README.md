@@ -29,6 +29,7 @@ SPARQL 1.1 and 1.2 syntax 425/426, SHACL Core 98/98, SHACL-SPARQL 23/23.
 - **Rename across files**, including a prefix shared through `prefixes.ttl`, which is renamed in every file that takes it from there.
 - **Formatting** that keeps comments and statement order and never changes the graph.
 - **Outline, workspace symbol search and folding.**
+- **Workspace graph**: "Turtle: Show Workspace Graph" (or the graph button in the title bar of an RDF file) draws the workspace as one graph, with filters, search, a focus view and a class tree; click a node to go to its definition.
 - **Quick fixes and refactorings**: add a missing prefix (or the `owl:imports` that defines it), add all missing prefixes, remove an unused prefix, fix a misspelled term, organise prefixes, shorten or expand an IRI, extract a prefix for a namespace.
 
 ## SPARQL

@@ -30,6 +30,7 @@ the full W3C test suites and real public ontologies; see
 - **Formatting**: one consistent layout for Turtle, TriG, N-Triples and N-Quads, built from the tokens: comments and statement order are kept, the graph never changes, and formatting twice changes nothing. Files with syntax errors are left alone.
 - **Quick fixes and refactorings**: add a missing prefix (your project's own binding first), add all missing prefixes, remove an unused prefix, fix a misspelled term; organise prefixes, shorten or expand an IRI, and extract a prefix for a repeated namespace.
 - **Type hierarchy**: super- and subclasses (and sub-properties) across the workspace, imports and vocabularies.
+- **Workspace graph** (VS Code and the browser editor): the whole workspace as one graph, with filters, search, a focus view of a node's neighbours and a class tree; click a node to go to its definition. Built on `turtle/graph`, a custom request other clients can send too (listed under `experimental` capabilities).
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
 - **Label checks** (warnings, on by default): two terms of one kind (two classes, two properties or two concepts) in the workspace with the same `rdfs:label` or `skos:prefLabel` in one language, ignoring case (`duplicate-label`, on both labels, naming the other term); a label with whitespace at either end (`label-whitespace`, with a fix that trims it); a term with two labels in one language (`multiple-labels`). A use of a term that a workspace file marks `owl:deprecated true` is a `deprecated-term` warning; deprecated terms of bundled vocabularies and imports stay hints.
 - **House-style checks** (warnings, off until `lint.enable` lists them): `missing-label`, `missing-definition` (neither `skos:definition` nor `rdfs:comment`), `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, and on each `owl:Ontology`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. They look at classes, properties and concepts only, not instance data. `lint.ignore` turns any check off; see [Settings file](#settings-file-turtle-lspjson).
@@ -548,6 +549,10 @@ browser. Files never leave the tab.
 - **Limits**: opening or dropping a folder reads at most 1,000 files, each
   of at most 10 MB, and only Turtle, TriG, N-Triples, N-Quads, JSON-LD and
   SPARQL files.
+- **Graph**: the Graph button in the activity bar opens the workspace graph
+  in the side bar; the expand button lets it cover the editor area. Its node
+  cap goes up to 5,000 here (20,000 in VS Code), as the layout runs on the
+  same worker that answers the editor.
 - **Content Security Policy**: both pages load scripts only from the site
   itself. The editor may connect to other `http` and `https` sites, for the
   "Fetch" quick fix; the toolbox connects to none.

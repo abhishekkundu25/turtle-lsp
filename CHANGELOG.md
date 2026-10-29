@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Workspace graph, in VS Code and the browser editor.** Every file of the
+  workspace drawn as one graph: classes, properties, individuals, shapes
+  and concepts as nodes, triples as edges, coloured by file, kind or
+  namespace. Filters for files, kinds, namespaces, predicates, literals
+  and `rdf:type` edges; search; a focus view of a node's neighbours on
+  rings; and a class tree. Click a node to see its triples, and go to its
+  definition. A workspace of more than 2,000 nodes opens on its
+  best-connected class. In VS Code: "Turtle: Show Workspace Graph" in the
+  Command Palette, the graph button in the title bar of an RDF or SPARQL
+  file, or the Explorer's context menu. In the browser editor: the Graph
+  button in the activity bar.
+- **`turtle/graph`**, a custom request listed under the server's
+  `experimental` capabilities, answers the graph with a Barnes-Hut layout.
+  The server computes it only when asked, on a thread of its own; clients
+  that never send it see no change.
+
+### Changed
+
+- **The browser editor shows the files sooner.** The editor appears as
+  soon as its own code has loaded, with basic colours, and the language
+  server's features attach when it is ready. On a 50 Mbit/s connection the
+  text now shows after about 0.4 s instead of 1.2 s. A file opened for the
+  first time gets the server's colours about 0.03 s after it appears
+  instead of 0.45 s.
+
 ## 0.11.0 — 2026-10-29
 
 ### Added

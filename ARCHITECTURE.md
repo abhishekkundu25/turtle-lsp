@@ -202,6 +202,16 @@ target classes.
 | SPARQL inside SHACL shapes | `features::embedded` | |
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |
+| Workspace graph (`turtle/graph`) | `features::graph` | |
+
+The workspace graph is the server's one custom request, listed under
+`experimental` capabilities. `features::graph` reads the knowledge index
+and changes nothing: the query, the filters, the cap and the Barnes-Hut
+layout. The client passes back the positions it has, so the server keeps
+no graph state. The native server answers it on a thread of its own over
+a copy of the index; the browser engine answers inline. The drawing is
+`web/app/graph/`, one module the browser editor mounts and the VS Code
+extension bundles into its webview (`editors/vscode/src/graph.ts`).
 
 ## Threads
 
