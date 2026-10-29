@@ -10,8 +10,8 @@
 
 **Blocked by:** 02, 04.
 
-**Status:** blocked
+**Status:** done
 
-- [ ] Unit tests in `curation.rs` through a small `Workspace`: duplicate across two files, language and case rules, instance data skipped, self-collision, External source skipped, message names; multiple-labels per language and per property; each house-style check on and off through `Settings` (`lint.enable`, ignore wins) via `diagnose::document`; header alternatives.
-- [ ] `test/label-lints.test.mjs`: a duplicate across two open files, and an edit to one that resolves it clears the other file's warning (after the described pause); `lint.enable` from the file turns on `missing-label`.
-- [ ] `tests/chaos.rs` and the lib tests pass.
+- [x] Unit tests in `curation.rs` through a small `Workspace`: duplicate across two files, language and case rules, instance data skipped, self-collision, External source skipped, message names; multiple-labels per language and per property; each house-style check on and off through `Settings` (`lint.enable`, ignore wins) via `diagnose::document`; header alternatives.
+- [x] `test/label-lints.test.mjs`: a duplicate across two open files, and an edit to one that resolves it clears the other file's warning (after the described pause); `lint.enable` from the file turns on `missing-label`.
+- [x] `tests/chaos.rs` and the lib tests pass.

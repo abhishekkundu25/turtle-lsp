@@ -33,3 +33,13 @@ and 06 together; then 07.
   iterations the old check failed on the new fix.
 - 04: the `label-whitespace` range is the quoted string only, not the
   language tag or datatype.
+- 05: `duplicate-label` compares terms of the same kind only (class,
+  property, concept; a term of unknown or mixed kind collides with any).
+  On the corpus, class/property pairs that differ only in case (dbpedia
+  `Judge`/`judge`) made half the warnings; per-file corpus count went from
+  2,399 to 1,134 (schema.org 118 to 0).
+- 05: the five `missing-*` codes wait for the initial index, like
+  `undescribed-term`.
+- 05: cross-file `missing-label`/`missing-definition` read other documents'
+  label and comment lookups, which also count `sh:name` and
+  `dcterms:description`: lenient (may stay quiet), never a wrong warning.
