@@ -36,6 +36,12 @@
   shows other problems than after reopening it, turn it off and report the
   file. SPARQL and JSON-LD files, `check` and the browser editor parse the
   whole file as before.
+- **`turtle-lsp check` and `format` do only the work they report.**
+  `check` no longer runs the formatter, and `format` no longer computes
+  diagnostics or loads imports; positions are converted with the line
+  table the analysis already has. `check` takes about a third less time on
+  a 2.5 MB file and 44% less on a workspace of 202 files; `format --check`
+  13 to 32% less. The output is unchanged.
 - **`deprecated-term` covers your own terms, as a warning.** A use of a
   term that a workspace file marks `owl:deprecated true`, in Turtle, SPARQL
   or JSON-LD, is a warning, struck through, and hover says the term is

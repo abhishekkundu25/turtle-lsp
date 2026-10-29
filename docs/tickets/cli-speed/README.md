@@ -16,3 +16,12 @@ one at a time, in order. Waves: 01; then 02; then 03.
 Scope cut from the research's ranked list: options 1 to 3 only. The
 parallel per-file loop (4) and the SHACL work (5) are out: small gains for
 their code today.
+
+## Departures
+
+- 02: `format` still builds the knowledge index (that is how the workspace
+  analyses files in parallel) and does not keep tokens, so peak memory
+  does not move. The `format --check` budget is met on `vocab.ttl` (-19%)
+  and missed on `huge.ttl` (-13%).
+- The orchestrator built 01 and 02 directly instead of in slices: all three
+  tickets edit `src/batch.rs` in order, and each was a few dozen lines.
