@@ -382,6 +382,65 @@ check("saving a file that violates the project shapes shows a SHACL violation", 
   }
 })
 
+// The workspace graph panel (src/graph.ts): registered, not contributed.
+const graphApi = () => vscode.extensions.getExtension("abhishekkundu25.turtle-language-server").activate()
+const graphTabs = () =>
+  vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => t.label === "Workspace Graph" && t.input instanceof vscode.TabInputWebview)
+async function until(what, ok, ms = 15000) {
+  for (const end = Date.now() + ms; !(await ok()); await sleep(50)) if (Date.now() > end) assert.fail(`timed out waiting for ${what}`)
+}
+
+check("the graph command is registered but not contributed", async () => {
+  const pkg = vscode.extensions.getExtension("abhishekkundu25.turtle-language-server").packageJSON
+  // No command, menu, keybinding, view or activation event names it.
+  const manifest = JSON.stringify({ contributes: pkg.contributes, activationEvents: pkg.activationEvents })
+  assert.ok(!/showGraph|turtle\.graph/.test(manifest), "the graph panel is named in the manifest")
+  assert.ok((await vscode.commands.getCommands(true)).includes("turtle.showGraph"), "turtle.showGraph is not registered")
+})
+
+check("the graph panel opens, its request reaches the server and the view draws the answer", async () => {
+  const api = await graphApi()
+  await vscode.commands.executeCommand("turtle.showGraph")
+  const tabs = () => JSON.stringify(vscode.window.tabGroups.all.flatMap((g) => g.tabs).map((t) => [t.label, t.input?.constructor?.name, t.input?.viewType]))
+  await until(`a Workspace Graph tab in ${tabs()}`, () => graphTabs().length === 1, 2000)
+  await until("an answer", () => api.graph()?.answers > 0)
+  assert.ok(api.graph().nodes > 0, "the answer has no nodes")
+  await until("the view's status after a draw", () => /^Showing [1-9][\d,]* of [1-9]/.test(api.graph()?.status ?? ""))
+  // Asking again shows the same panel.
+  await vscode.commands.executeCommand("turtle.showGraph")
+  assert.equal(graphTabs().length, 1, "a second Workspace Graph tab")
+})
+
+check("a reveal from the graph opens the file at the range, and an edit refreshes the graph", async () => {
+  const api = await graphApi()
+  const probe = api.graph()
+  assert.ok(probe, "the graph panel is not open")
+  const uri = vscode.Uri.file(path.join(ws, "people.ttl"))
+  const range = { start: { line: 4, character: 0 }, end: { line: 4, character: 8 } }
+  await probe.receive({ type: "reveal", uri: uri.toString(), range })
+  const editor = vscode.window.activeTextEditor
+  assert.equal(editor?.document.uri.toString(), uri.toString())
+  assert.deepEqual([editor.selection.start.line, editor.selection.start.character, editor.selection.end.character], [4, 0, 8])
+  assert.equal(graphTabs().length, 1, "the reveal replaced the graph panel")
+  const answers = probe.answers
+  const edit = new vscode.WorkspaceEdit()
+  edit.insert(uri, new vscode.Position(editor.document.lineCount, 0), "ex:graphRefresh ex:p ex:o .\n")
+  assert.ok(await vscode.workspace.applyEdit(edit))
+  try {
+    await until("a refresh after the edit", () => probe.answers > answers, 5000)
+  } finally {
+    await vscode.commands.executeCommand("workbench.action.files.revert")
+  }
+})
+
+check("closing the graph panel disposes it", async () => {
+  const api = await graphApi()
+  assert.ok(await vscode.window.tabGroups.close(graphTabs()), "the tab did not close")
+  await until("the panel to be disposed", () => api.graph() === undefined, 2000)
+  assert.equal(graphTabs().length, 0)
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+})
+
 // These two restart the server, so they run last.
 async function running(api) {
   await api.idle()

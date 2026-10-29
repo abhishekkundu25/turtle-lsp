@@ -1,0 +1,27 @@
+/* The graph panel's page (src/graph.ts): the view fills the webview, in the
+   colours of the VS Code theme. The palette (--graph-c0 … c7) keeps the
+   view's light-dark() pairs, which follow color-scheme. */
+html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+body.vscode-light, body.vscode-high-contrast-light { color-scheme: light; }
+body.vscode-dark, body.vscode-high-contrast { color-scheme: dark; }
+#graph { height: 100%; }
+
+body .graph {
+  --graph-bg: var(--vscode-editor-background);
+  --graph-fg: var(--vscode-editor-foreground);
+  --graph-muted: var(--vscode-descriptionForeground);
+  --graph-line: var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+  --graph-panel: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --graph-input: var(--vscode-input-background);
+  --graph-input-fg: var(--vscode-input-foreground);
+  --graph-hover: var(--vscode-list-hoverBackground);
+  --graph-select: var(--vscode-list-inactiveSelectionBackground);
+  --graph-menu: var(--vscode-editorWidget-background);
+  --graph-shadow: var(--vscode-widget-shadow, transparent);
+  --graph-focus: var(--vscode-focusBorder);
+  --graph-error: var(--vscode-editorError-foreground);
+  --graph-warning: var(--vscode-editorWarning-foreground);
+  --graph-info: var(--vscode-editorInfo-foreground);
+  --graph-mono: var(--vscode-editor-font-family, monospace);
+  font-family: var(--vscode-font-family);
+}
