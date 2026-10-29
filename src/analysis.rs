@@ -169,6 +169,21 @@ impl Analysis {
         language: Syntax,
         loader: &dyn crate::jsonld::ContextLoader,
     ) -> Analysis {
+        let lines = LineIndex::new(text);
+        Analysis::with_lines(uri, text, external, keep_tokens, language, loader, lines)
+    }
+
+    /// [`Analysis::with_loader`], with the line index of `text` made by the
+    /// caller (from an earlier analysis, see [`LineIndex::edited`]).
+    pub(crate) fn with_lines(
+        uri: String,
+        text: &str,
+        external: Arc<PrefixMap>,
+        keep_tokens: bool,
+        language: Syntax,
+        loader: &dyn crate::jsonld::ContextLoader,
+        lines: LineIndex,
+    ) -> Analysis {
         let crate::jsonld::Document {
             mut parsed,
             dropped,
@@ -239,7 +254,7 @@ impl Analysis {
             uri,
             origin: None,
             text: Arc::from(text),
-            lines: LineIndex::new(text),
+            lines,
             parsed,
             tokens,
             dropped,
@@ -369,22 +384,34 @@ impl Analysis {
     }
 }
 
-/// Where the lines of a text start, and running counts of its UTF-16 code
-/// units and code points: a column converts with a lookup and a scan of at
-/// most [`STRIDE`] bytes, however many multi-byte characters its line has.
-/// Lines end as in [`LineStarts`]. The conversions take the text it indexes.
+/// Where the lines of a text start, which of them hold a multi-byte
+/// character, and marks inside the long ones: a column converts with a
+/// lookup and a scan of at most [`LONG`] bytes, or [`STRIDE`] bytes on a long
+/// line, however many multi-byte characters its line has. Every count is
+/// from the start of its line, so an edit changes the entries of the lines
+/// it touched and moves the later ones by its change in length
+/// ([`LineIndex::edited`]). Lines end as in [`LineStarts`]. The conversions
+/// take the text it indexes.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LineIndex {
-    starts: Vec<u32>,
-    /// Empty for ASCII text. Else mark `k` is at the first character boundary
-    /// at or after byte `k * STRIDE`, up to one at or after the end.
+    starts: LineStarts,
+    /// Per line: whether it holds a multi-byte character. Columns on the
+    /// other lines are byte counts.
+    wide: Vec<bool>,
+    /// In order: on each wide line longer than [`LONG`] bytes, mark `k >= 1`
+    /// at the first character boundary at or after `k * STRIDE` bytes into
+    /// the line, while that is before the line's end.
     marks: Vec<Mark>,
 }
+
+/// Lines up to this many bytes, line break included, have no marks.
+const LONG: usize = 4096;
 
 /// Bytes between two [`LineIndex`] marks.
 const STRIDE: usize = 64;
 
-/// UTF-16 code units and code points in the text before byte `at`.
-#[derive(Clone, Copy)]
+/// UTF-16 code units and code points from the start of its line to byte `at`.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Mark {
     at: u32,
     utf16: u32,
@@ -401,7 +428,8 @@ fn tally(b: &[u8]) -> (u32, u32) {
 
 #[cfg(test)]
 thread_local! {
-    /// Bytes the conversions on this thread scanned past a mark.
+    /// Bytes the conversions on this thread scanned past a line start or
+    /// a mark.
     static SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -412,76 +440,147 @@ fn scanned(_n: usize) {
 
 impl LineIndex {
     pub(crate) fn new(text: &str) -> LineIndex {
-        let mut marks = Vec::new();
-        if !text.is_ascii() {
-            let b = text.as_bytes();
-            marks.reserve(b.len() / STRIDE + 1);
-            let (mut at, mut utf16, mut chars) = (0, 0, 0);
-            for k in 0..=b.len() / STRIDE {
-                let next = text.ceil_char_boundary(k * STRIDE);
+        let starts = LineStarts::new(text);
+        let mut lines = LineIndex {
+            wide: Vec::with_capacity(starts.0.len()),
+            marks: Vec::new(),
+            starts,
+        };
+        if text.is_ascii() {
+            lines.wide.resize(lines.starts.0.len(), false);
+        } else {
+            lines.index(text, 0..lines.starts.0.len());
+        }
+        lines
+    }
+
+    /// The index of `text`, which `edit` made from the text this index is
+    /// of; `starts` are the line starts of `text` ([`LineStarts::replace`]
+    /// moved them through the edit). Only the lines the edit touched are
+    /// read: the entries of the others are copied, those after it moved by
+    /// its change in length.
+    pub(crate) fn edited(&self, text: &str, edit: &Edit, starts: &LineStarts) -> LineIndex {
+        let new = &starts.0;
+        let line_at = |x: usize| new.partition_point(|&s| s as usize <= x) - 1;
+        // The line before the edit can lose or gain its line break (a `\r`
+        // then a `\n`), so it is read again too.
+        let first = line_at((edit.old.start as usize).saturating_sub(1));
+        let last = line_at(edit.new_end() as usize);
+        // The lines after `last` start past the edit: they are the old
+        // text's last lines, moved.
+        let after = new.len() - (last + 1);
+        let old_after = self.starts.0.len() - after;
+        let old_tail = self.starts.0.get(old_after).map_or(u32::MAX, |&s| s);
+        let grown = i64::from(edit.new_len) - i64::from(edit.old.end - edit.old.start);
+        let head = self.marks.partition_point(|m| m.at < new[first]);
+        let tail = self.marks.partition_point(|m| m.at < old_tail);
+        let mut lines = LineIndex {
+            starts: starts.clone(),
+            wide: Vec::with_capacity(new.len()),
+            marks: Vec::with_capacity(self.marks.len()),
+        };
+        lines.wide.extend_from_slice(&self.wide[..first]);
+        lines.marks.extend_from_slice(&self.marks[..head]);
+        lines.index(text, first..last + 1);
+        lines.wide.extend_from_slice(&self.wide[old_after..]);
+        lines.marks.extend(self.marks[tail..].iter().map(|m| Mark {
+            at: (i64::from(m.at) + grown) as u32,
+            ..*m
+        }));
+        lines
+    }
+
+    /// Add the entries of lines `lines` of `text`, after those of the lines
+    /// before them.
+    fn index(&mut self, text: &str, lines: std::ops::Range<usize>) {
+        let b = text.as_bytes();
+        for line in lines {
+            let (start, end) = self.span(text, line);
+            let wide = !b[start..end].is_ascii();
+            self.wide.push(wide);
+            if !wide || end - start <= LONG {
+                continue;
+            }
+            let (mut at, mut utf16, mut chars) = (start, 0, 0);
+            for k in 1..=(end - start - 1) / STRIDE {
+                let next = text.ceil_char_boundary(start + k * STRIDE);
+                if next >= end {
+                    break;
+                }
                 let (u, c) = tally(&b[at..next]);
                 (at, utf16, chars) = (next, utf16 + u, chars + c);
                 let at = at as u32;
-                marks.push(Mark { at, utf16, chars });
+                self.marks.push(Mark { at, utf16, chars });
             }
-        }
-        LineIndex {
-            starts: LineStarts::new(text).0,
-            marks,
         }
     }
 
-    /// The UTF-16 code units and code points of `text` before byte `x`, a
-    /// character boundary.
-    fn counts(&self, text: &str, x: usize) -> (u32, u32) {
-        let Some(m) = self.marks.get(x / STRIDE) else {
-            return (x as u32, x as u32);
+    /// The bytes line `line` of `text` spans, its line break included.
+    fn span(&self, text: &str, line: usize) -> (usize, usize) {
+        let start = self.starts.0[line] as usize;
+        let end = self.starts.0.get(line + 1);
+        (start, end.map_or(text.len(), |&e| e as usize))
+    }
+
+    /// The line starts of the text.
+    pub(crate) fn starts(&self) -> &LineStarts {
+        &self.starts
+    }
+
+    /// The UTF-16 code units and code points of line `line` of `text`
+    /// before byte `x` of it, a character boundary.
+    fn counts(&self, text: &str, line: usize, x: usize) -> (u32, u32) {
+        let start = self.starts.0[line] as usize;
+        if !self.wide[line] {
+            return ((x - start) as u32, (x - start) as u32);
+        }
+        let mark = self.marks.partition_point(|m| m.at as usize <= x);
+        let (from, utf16, chars) = match mark.checked_sub(1).map(|k| self.marks[k]) {
+            Some(m) if m.at as usize >= start => (m.at as usize, m.utf16, m.chars),
+            _ => (start, 0, 0),
         };
-        scanned(x - m.at as usize);
-        let (u, c) = tally(&text.as_bytes()[m.at as usize..x]);
-        (m.utf16 + u, m.chars + c)
+        scanned(x - from);
+        let (u, c) = tally(&text.as_bytes()[from..x]);
+        (utf16 + u, chars + c)
     }
 
     /// The line of byte `offset` (clamped to the end of `text` and moved back
     /// to a character's start), the byte its line starts at, and the offset.
     fn line_of(&self, text: &str, offset: u32) -> (u32, usize, usize) {
         let at = text.floor_char_boundary(offset as usize);
-        let line = self.starts.partition_point(|&s| s as usize <= at) - 1;
-        (line as u32, self.starts[line] as usize, at)
+        let line = self.starts.0.partition_point(|&s| s as usize <= at) - 1;
+        (line as u32, self.starts.0[line] as usize, at)
     }
 
     /// The bytes line `line` of `text` spans, its line break included.
     fn line(&self, text: &str, line: u32) -> Option<(usize, usize)> {
-        let start = *self.starts.get(line as usize)? as usize;
-        let end = self.starts.get(line as usize + 1);
-        Some((start, end.map_or(text.len(), |&e| e as usize)))
+        let line = line as usize;
+        (line < self.starts.0.len()).then(|| self.span(text, line))
     }
 
     /// The position of byte `offset` of `text` with its column in code points.
     pub(crate) fn code_point_position(&self, text: &str, offset: u32) -> Position {
-        let (line, start, at) = self.line_of(text, offset);
-        Position::new(line, self.counts(text, at).1 - self.counts(text, start).1)
+        let (line, _, at) = self.line_of(text, offset);
+        Position::new(line, self.counts(text, line as usize, at).1)
     }
 
-    /// The UTF-8 column of UTF-16 column `w` on the line `start..end` of
-    /// `text`, as `line_index::LineIndex::to_utf8` gives it: `w` plus the bytes
-    /// beyond their UTF-16 length of the characters that start before `w`.
-    /// Past `u32::MAX` it is `None`.
-    fn utf8_col(&self, text: &str, start: usize, end: usize, w: u32) -> Option<u32> {
-        if self.marks.is_empty() {
+    /// The UTF-8 column of UTF-16 column `w` on line `line`, the bytes
+    /// `start..end` of `text`, as `line_index::LineIndex::to_utf8` gives it:
+    /// `w` plus the bytes beyond their UTF-16 length of the characters that
+    /// start before `w`. Past `u32::MAX` it is `None`.
+    fn utf8_col(&self, text: &str, line: u32, (start, end): (usize, usize), w: u32) -> Option<u32> {
+        if !self.wide[line as usize] {
             return Some(w);
         }
-        let before = u64::from(self.counts(text, start).0);
-        let want = before + u64::from(w);
-        // Start from the last mark at or before `want` code units: the next
-        // one is past it, so the scan stops within a stride. Mark 0 is at 0.
-        let m = self.marks[self.marks.partition_point(|m| u64::from(m.utf16) <= want) - 1];
-        let (mut x, mut units) = match m.at as usize {
-            at if at >= end => (end, u64::from(self.counts(text, end).0)),
-            at if at > start => (at, u64::from(m.utf16)),
-            _ => (start, before),
+        let first = self.marks.partition_point(|m| (m.at as usize) < start);
+        let marks = &self.marks[first..self.marks.partition_point(|m| (m.at as usize) < end)];
+        // Start from the line's last mark at or before `w` code units: the
+        // next one is past it, so the scan stops within a stride.
+        let (mut x, mut units) = match marks.partition_point(|m| m.utf16 <= w).checked_sub(1) {
+            Some(k) => (marks[k].at as usize, u64::from(marks[k].utf16)),
+            None => (start, 0),
         };
-        let (b, from) = (text.as_bytes(), x);
+        let (b, from, want) = (text.as_bytes(), x, u64::from(w));
         while x < end && units < want {
             let len = match b[x] {
                 0..0x80 => 1,
@@ -493,7 +592,7 @@ impl LineIndex {
             x += len;
         }
         scanned(x - from);
-        u32::try_from(u64::from(w) + (x - start) as u64 - (units - before)).ok()
+        u32::try_from(want + (x - start) as u64 - units).ok()
     }
 }
 
@@ -515,7 +614,7 @@ pub(crate) fn position_in(lines: &LineIndex, text: &str, enc: Encoding, offset: 
     let (line, start, at) = lines.line_of(text, offset);
     let col = match enc {
         Encoding::Utf8 => (at - start) as u32,
-        Encoding::Utf16 => lines.counts(text, at).0 - lines.counts(text, start).0,
+        Encoding::Utf16 => lines.counts(text, line as usize, at).0,
     };
     Position::new(line, col)
 }
@@ -607,7 +706,7 @@ pub(crate) fn offset_in(
     };
     let col = match enc {
         Encoding::Utf8 => pos.character,
-        Encoding::Utf16 => lines.utf8_col(text, start, end, pos.character)?,
+        Encoding::Utf16 => lines.utf8_col(text, pos.line, (start, end), pos.character)?,
     };
     Some(clamped(text, start, end, col))
 }
@@ -627,6 +726,7 @@ fn clamped(text: &str, start: usize, end: usize, col: u32) -> u32 {
 /// Where the lines of a text being edited start, kept current through each
 /// edit: a batch of edits converts its positions without indexing the text
 /// again per edit. Lines end at `\n`, `\r\n` and a lone `\r`.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LineStarts(Vec<u32>);
 
 impl LineStarts {
@@ -683,6 +783,43 @@ impl LineStarts {
             .filter(|&x| starts_line(b, x))
             .map(|x| x as u32);
         self.0.splice(gone, added);
+    }
+}
+
+/// How a text changed since it was last analysed: the bytes `old` of that
+/// text were replaced by `new_len` bytes, which start at `old.start` in the
+/// text now. Several edits collapse into one ([`Edit::then`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Edit {
+    pub(crate) old: std::ops::Range<u32>,
+    pub(crate) new_len: u32,
+}
+
+impl Edit {
+    /// The bytes `range` of the text were replaced by `new_len` bytes.
+    pub(crate) fn new(range: std::ops::Range<usize>, new_len: usize) -> Edit {
+        Edit {
+            old: range.start as u32..range.end as u32,
+            new_len: new_len as u32,
+        }
+    }
+
+    /// Where the replacement ends in the text now.
+    pub(crate) fn new_end(&self) -> u32 {
+        self.old.start + self.new_len
+    }
+
+    /// This edit, then the bytes `range` of the text it left replaced by
+    /// `new_len` bytes, as one edit: the smallest that covers both.
+    pub(crate) fn then(self, range: std::ops::Range<usize>, new_len: usize) -> Edit {
+        let (start, end) = (range.start as u32, range.end as u32);
+        let lo = self.old.start.min(start);
+        let hi = self.new_end().max(end);
+        Edit {
+            // Past this edit's replacement, the text is the old text moved.
+            old: lo..self.old.end + (hi - self.new_end()),
+            new_len: hi - lo - (end - start) + new_len as u32,
+        }
     }
 }
 
@@ -1040,7 +1177,12 @@ mod tests {
             .map(String::from)
             .into();
         for i in 0..300 {
-            let len = next(if i % 4 == 0 { 600 } else { 80 });
+            // A few lines long enough for marks.
+            let len = next(match i {
+                _ if i % 60 == 0 => 3000,
+                _ if i % 4 == 0 => 600,
+                _ => 80,
+            });
             // Every few texts, mostly one long line.
             let pieces = if i % 3 == 0 { 10 } else { PIECES.len() };
             texts.push((0..len).map(|_| PIECES[next(pieces)]).collect());
@@ -1070,7 +1212,7 @@ mod tests {
                     );
                 }
             }
-            let line_count = lines.starts.len() as u32;
+            let line_count = lines.starts.0.len() as u32;
             let longest = text.split(['\n', '\r']).map(str::len).max().unwrap_or(0) as u32;
             for line in 0..=line_count + 1 {
                 let cols = (0..=longest + 3).chain(u32::MAX - 8..=u32::MAX);
@@ -1167,6 +1309,136 @@ mod tests {
                 LineStarts::new(&text).0,
                 "after {s}..{e} -> {new:?}: {text:?}"
             );
+        }
+    }
+
+    /// A random number generator for the edit tests.
+    fn xorshift(mut seed: u64) -> impl FnMut(usize) -> usize {
+        move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        }
+    }
+
+    /// A character boundary of `text` at random.
+    fn boundary(text: &str, next: &mut impl FnMut(usize) -> usize) -> usize {
+        text.floor_char_boundary(next(text.len() + 1))
+    }
+
+    #[test]
+    fn collapsed_edits_cover_every_change() {
+        let mut next = xorshift(0x9E37_79B9_7F4A_7C15);
+        let pieces = ["", "a", "\u{e9}", "\n", "xyz\r\n", "\u{1F600}"];
+        for _ in 0..2000 {
+            let last = (0..next(12))
+                .map(|_| pieces[next(pieces.len())])
+                .collect::<String>();
+            let mut text = last.clone();
+            let mut edit: Option<Edit> = None;
+            for _ in 0..1 + next(4) {
+                let (a, b) = (boundary(&text, &mut next), boundary(&text, &mut next));
+                let range = a.min(b)..a.max(b);
+                let new = pieces[next(pieces.len())];
+                text.replace_range(range.clone(), new);
+                edit = Some(match edit {
+                    None => Edit::new(range, new.len()),
+                    Some(e) => e.then(range, new.len()),
+                });
+            }
+            let e = edit.unwrap();
+            let (old, new) = (
+                e.old.start as usize..e.old.end as usize,
+                e.new_end() as usize,
+            );
+            // The last text with the edit's bytes replaced is the text now.
+            let replaced = format!(
+                "{}{}{}",
+                &last[..old.start],
+                &text[old.start..new],
+                &last[old.end..]
+            );
+            assert_eq!(replaced, text, "{e:?} from {last:?}");
+        }
+    }
+
+    #[test]
+    fn an_edited_line_index_is_the_index_of_the_edited_text() {
+        // The `\n` of a long line's `\r\n` becomes a `x`: the line before
+        // the edit ends a byte sooner, at exactly `LONG` bytes, so it has no
+        // marks any more.
+        let mut text = format!("a{}\r\nz", "\u{e9}".repeat((LONG - 2) / 2));
+        let lines = LineIndex::new(&text);
+        let at = LONG;
+        assert!(!lines.marks.is_empty());
+        text.replace_range(at..at + 1, "x");
+        let mut starts = lines.starts().clone();
+        starts.replace(&text, at..at + 1, "x");
+        let edited = lines.edited(&text, &Edit::new(at..at + 1, 1), &starts);
+        assert_eq!(edited, LineIndex::new(&text));
+
+        let mut next = xorshift(0x2545_F491_4F6C_DD1D);
+        let pieces = [
+            "a",
+            "b c",
+            "\u{e9}",
+            "\u{4e2d}",
+            "\u{1F600}",
+            "\n",
+            "\r\n",
+            "\r",
+            "\r\r\n",
+        ];
+        // A long line (over `LONG`) of multi-byte characters, and one of ASCII.
+        let long_wide = "\u{e9}x\u{1F600}".repeat(1000);
+        let long_ascii = "ab".repeat(3000);
+        let inserts = [
+            "",
+            "x",
+            "\n",
+            "\r",
+            "\r\n",
+            "\u{e9}",
+            "\u{1F600}\n\u{4e2d}",
+            "a\rb\nc",
+            &long_wide,
+            &long_ascii,
+        ];
+        for round in 0..300 {
+            let mut text: String = (0..next(200)).map(|_| pieces[next(pieces.len())]).collect();
+            match round % 3 {
+                0 => text.insert_str(boundary(&text, &mut next), &long_wide),
+                1 => text.insert_str(boundary(&text, &mut next), &long_ascii),
+                _ => {}
+            }
+            if round % 10 == 0 {
+                text = text.replace(['\r', '\n'], "");
+            }
+            let mut lines = LineIndex::new(&text);
+            for _ in 0..8 {
+                // A batch of edits before the next analysis, as the
+                // workspace keeps them: one edit, and moved line starts.
+                let mut starts = lines.starts().clone();
+                let mut edit: Option<Edit> = None;
+                for _ in 0..1 + next(3) {
+                    let a = boundary(&text, &mut next);
+                    let b = match next(4) {
+                        0 => boundary(&text, &mut next),
+                        _ => text.ceil_char_boundary(a + next(6)),
+                    };
+                    let range = a.min(b)..a.max(b);
+                    let new = inserts[next(inserts.len())];
+                    text.replace_range(range.clone(), new);
+                    starts.replace(&text, range.clone(), new);
+                    edit = Some(match edit {
+                        None => Edit::new(range, new.len()),
+                        Some(e) => e.then(range, new.len()),
+                    });
+                }
+                lines = lines.edited(&text, &edit.unwrap(), &starts);
+                assert_eq!(lines, LineIndex::new(&text), "round {round}: {text:?}");
+            }
         }
     }
 }

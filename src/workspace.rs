@@ -33,7 +33,7 @@
 //! indexed files to parse again. The workspace decides that; the caller (the
 //! server) only acts on it.
 
-use crate::analysis::{Analysis, Encoding, LineStarts, SparqlAnalysis};
+use crate::analysis::{Analysis, Edit, Encoding, LineIndex, LineStarts, SparqlAnalysis};
 use crate::jsonld::loader::{self, Bundled};
 use crate::jsonld::{ContextLoader, LoadError, RemoteDocument};
 use crate::knowledge::{DocFacts, Knowledge, Source};
@@ -184,11 +184,108 @@ pub(crate) struct Doc {
     pub(crate) text: String,
     pub(crate) version: i32,
     pub(crate) kind: DocKind,
-    analysis: Option<Arc<Analysis>>,
+    /// For an RDF document: its analysis, or what the next one builds on.
+    analyzed: Analyzed,
     /// For a SPARQL document: its parse, until the next edit.
     query: Option<Arc<SparqlAnalysis>>,
     /// A cached copy of an import: the import already contributes its facts.
     cached_import: bool,
+}
+
+/// An open RDF document's analysis against its text: current, or what the
+/// next analysis can build on.
+enum Analyzed {
+    /// Nothing to build on: not analyzed yet, or the whole text was replaced
+    /// since (the next analysis starts from the text alone).
+    No,
+    /// Of the current text.
+    Current(Arc<Analysis>),
+    /// Of the current text, but its analysis panicked: the stand-in
+    /// ([`failed_analysis`]) is not of the text, so it is nothing to build on.
+    Failed(Arc<Analysis>),
+    /// Of the current text, with prefixes or contexts that changed since.
+    Outdated(Arc<Analysis>),
+    /// Of the text before `edit` (the client's changes since, collapsed);
+    /// `starts` are the line starts of the text now.
+    Edited {
+        last: Arc<Analysis>,
+        edit: Edit,
+        starts: LineStarts,
+    },
+}
+
+impl Analyzed {
+    /// The analysis of the current text, if it is up to date.
+    fn current(&self) -> Option<&Arc<Analysis>> {
+        match self {
+            Analyzed::Current(a) | Analyzed::Failed(a) => Some(a),
+            Analyzed::No | Analyzed::Outdated(_) | Analyzed::Edited { .. } => None,
+        }
+    }
+
+    /// The prefixes or contexts the analysis used changed: it is to be made
+    /// again, from the same text.
+    fn outdate(&mut self) {
+        *self = match std::mem::replace(self, Analyzed::No) {
+            Analyzed::Current(a) => Analyzed::Outdated(a),
+            Analyzed::Failed(_) | Analyzed::No => Analyzed::No,
+            other @ (Analyzed::Outdated(_) | Analyzed::Edited { .. }) => other,
+        };
+    }
+
+    /// The line starts of the document's text, when this keeps them.
+    fn starts(&self) -> Option<&LineStarts> {
+        match self {
+            Analyzed::Current(a) | Analyzed::Outdated(a) => Some(a.lines.starts()),
+            Analyzed::Edited { starts, .. } => Some(starts),
+            Analyzed::No | Analyzed::Failed(_) => None,
+        }
+    }
+
+    /// The bytes `range` of the document's text were replaced by `new`,
+    /// leaving `text`. `scratch` holds the line starts when this keeps none
+    /// ([`Analyzed::starts`]) and is moved instead.
+    fn replaced(
+        &mut self,
+        text: &str,
+        range: std::ops::Range<usize>,
+        new: &str,
+        scratch: &mut Option<LineStarts>,
+    ) {
+        *self = match std::mem::replace(self, Analyzed::No) {
+            Analyzed::Current(last) | Analyzed::Outdated(last) => {
+                let mut starts = last.lines.starts().clone();
+                starts.replace(text, range.clone(), new);
+                let edit = Edit::new(range, new.len());
+                Analyzed::Edited { last, edit, starts }
+            }
+            Analyzed::Edited {
+                last,
+                edit,
+                mut starts,
+            } => {
+                starts.replace(text, range.clone(), new);
+                let edit = edit.then(range, new.len());
+                Analyzed::Edited { last, edit, starts }
+            }
+            Analyzed::No | Analyzed::Failed(_) => {
+                if let Some(starts) = scratch {
+                    starts.replace(text, range, new);
+                }
+                Analyzed::No
+            }
+        };
+    }
+
+    /// The line index of `text`, the document's text: from the last
+    /// analysis's where there is one.
+    fn lines(&self, text: &str) -> LineIndex {
+        match self {
+            Analyzed::Current(a) | Analyzed::Outdated(a) => a.lines.clone(),
+            Analyzed::Edited { last, edit, starts } => last.lines.edited(text, edit, starts),
+            Analyzed::No | Analyzed::Failed(_) => LineIndex::new(text),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -515,21 +612,66 @@ fn analyze(
     syntax: Syntax,
     loader: &dyn ContextLoader,
 ) -> Analysis {
-    let attempt = catch("analysis", || {
+    let lines = || LineIndex::new(text);
+    let attempt = try_analyze(&uri, text, &external, keep_tokens, syntax, loader, lines);
+    attempt.unwrap_or_else(|msg| failed_analysis(uri, syntax, external, &msg))
+}
+
+/// [`Analysis::with_lines`] with the line index `lines` makes, or the
+/// message of its panic.
+fn try_analyze(
+    uri: &str,
+    text: &str,
+    external: &Arc<PrefixMap>,
+    keep_tokens: bool,
+    syntax: Syntax,
+    loader: &dyn ContextLoader,
+    lines: impl FnOnce() -> LineIndex,
+) -> Result<Analysis, String> {
+    catch("analysis", || {
         #[cfg(test)]
         if text.contains(PANIC_IN_ANALYSIS) {
             panic!("injected analysis panic");
         }
-        Analysis::with_loader(
-            uri.clone(),
-            text,
-            external.clone(),
-            keep_tokens,
-            syntax,
-            loader,
-        )
+        let lines = lines();
+        let (uri, external) = (uri.to_string(), external.clone());
+        Analysis::with_lines(uri, text, external, keep_tokens, syntax, loader, lines)
+    })
+}
+
+/// [`analyze`] for the open document `doc`, building on its last analysis
+/// where it can, with its facts unless it is a cached import. A panic in
+/// either gives a [`failed_analysis`].
+fn analyze_open(
+    uri: &str,
+    doc: &Doc,
+    external: Arc<PrefixMap>,
+    keep_tokens: bool,
+    syntax: Syntax,
+    loader: &dyn ContextLoader,
+) -> (Analyzed, Option<DocFacts>) {
+    let lines = || doc.analyzed.lines(&doc.text);
+    let attempt = try_analyze(
+        uri,
+        &doc.text,
+        &external,
+        keep_tokens,
+        syntax,
+        loader,
+        lines,
+    )
+    .and_then(|a| match doc.cached_import {
+        true => Ok((a, None)),
+        false => facts(&a).map(|f| (a, Some(f))),
     });
-    attempt.unwrap_or_else(|msg| failed_analysis(uri, syntax, external, &msg))
+    match attempt {
+        Ok((a, facts)) => (Analyzed::Current(Arc::new(a)), facts),
+        Err(msg) => {
+            let failed = failed_analysis(uri.to_string(), syntax, external, &msg);
+            let facts = (!doc.cached_import).then(|| DocFacts::new(&failed));
+            (Analyzed::Failed(Arc::new(failed)), facts)
+        }
+    }
 }
 
 /// What a document whose analysis panicked is analyzed as: empty, with the
@@ -547,17 +689,22 @@ fn failed_analysis(uri: String, syntax: Syntax, external: Arc<PrefixMap>, msg: &
     a
 }
 
-/// `a` with its facts for the knowledge index. When the facts cannot be
-/// computed, a [`failed_analysis`] stands in for it.
-fn prepared(a: Analysis) -> (Analysis, DocFacts) {
-    let attempt = catch("indexing", || {
+/// The facts of `a` for the knowledge index, or the message of the panic
+/// that computing them ended in.
+fn facts(a: &Analysis) -> Result<DocFacts, String> {
+    catch("indexing", || {
         #[cfg(test)]
         if a.text.contains(PANIC_IN_FACTS) {
             panic!("injected facts panic");
         }
-        DocFacts::new(&a)
-    });
-    match attempt {
+        DocFacts::new(a)
+    })
+}
+
+/// `a` with its facts for the knowledge index. When the facts cannot be
+/// computed, a [`failed_analysis`] stands in for it.
+fn prepared(a: Analysis) -> (Analysis, DocFacts) {
+    match facts(&a) {
         Ok(facts) => (a, facts),
         Err(msg) => {
             let failed = failed_analysis(a.uri.clone(), a.parsed.syntax, a.external.clone(), &msg);
@@ -677,7 +824,7 @@ impl Workspace {
         self.contexts = Some(loader);
         for d in self.open.values_mut() {
             if d.kind == DocKind::Rdf(Syntax::JsonLd) {
-                d.analysis = None;
+                d.analyzed.outdate();
             }
         }
         let on_web: Vec<PathBuf> = self
@@ -751,7 +898,7 @@ impl Workspace {
         let mut paths = Vec::new();
         for u in &users {
             if let Some(d) = self.open.get_mut(u) {
-                d.analysis = None;
+                d.analyzed.outdate();
             } else if disk && self.disk.contains_key(u) {
                 paths.extend(uri_to_path(u));
             }
@@ -803,7 +950,7 @@ impl Workspace {
                 text,
                 version,
                 kind,
-                analysis: None,
+                analyzed: Analyzed::No,
                 query: None,
                 cached_import,
             },
@@ -826,17 +973,23 @@ impl Workspace {
     ) -> Effects {
         if let Some(doc) = self.open.get_mut(uri) {
             // Each change's positions are in the text the changes before it
-            // left. The line starts are found once, when the first ranged
-            // change comes, and moved along with each change.
-            let mut lines: Option<LineStarts> = None;
+            // left. The line starts are those of the last analysis, or found
+            // once, when the first ranged change comes, and moved along with
+            // each change; the analysis keeps them, and the changes as one
+            // edit, for the next analysis.
+            let mut scratch: Option<LineStarts> = None;
             for ch in changes {
                 match ch.range {
                     None => {
                         doc.text = ch.text;
-                        lines = None;
+                        doc.analyzed = Analyzed::No;
+                        scratch = None;
                     }
                     Some(r) => {
-                        let lines = lines.get_or_insert_with(|| LineStarts::new(&doc.text));
+                        let lines = match doc.analyzed.starts() {
+                            Some(starts) => starts,
+                            None => scratch.get_or_insert_with(|| LineStarts::new(&doc.text)),
+                        };
                         let (Some(s), Some(e)) = (
                             lines.offset(&doc.text, enc, r.start),
                             lines.offset(&doc.text, enc, r.end),
@@ -846,12 +999,12 @@ impl Workspace {
                         let (s, e) = (s.min(e) as usize, e.max(s) as usize);
                         let range = s.min(doc.text.len())..e.min(doc.text.len());
                         doc.text.replace_range(range.clone(), &ch.text);
-                        lines.replace(&doc.text, range, &ch.text);
+                        doc.analyzed
+                            .replaced(&doc.text, range, &ch.text, &mut scratch);
                     }
                 }
             }
             doc.version = version;
-            doc.analysis = None;
             doc.query = None;
         }
         self.edited(uri)
@@ -934,7 +1087,7 @@ impl Workspace {
         match self.open.get(uri) {
             Some(d) if d.cached_import || d.kind == DocKind::Sparql => {}
             Some(d) => {
-                if let Some(a) = &d.analysis {
+                if let Some(a) = d.analyzed.current() {
                     self.knowledge.set(uri, Source::Open, a.clone());
                 }
                 // Not analyzed yet: the previous contribution stands until it is.
@@ -953,7 +1106,7 @@ impl Workspace {
             .open
             .iter()
             .filter_map(|(u, d)| match d.kind {
-                DocKind::Rdf(s) if d.analysis.is_none() => Some((u.clone(), s)),
+                DocKind::Rdf(s) if d.analyzed.current().is_none() => Some((u.clone(), s)),
                 _ => None,
             })
             .collect();
@@ -973,27 +1126,23 @@ impl Workspace {
         let (open, roots, uses) = (&self.open, &self.roots, &self.context_uses);
         let keep_tokens = !self.drop_tokens;
         let contexts = self.contexts();
-        let done: Vec<(String, Arc<Analysis>, Option<DocFacts>)> = jobs
+        let done: Vec<(String, Analyzed, Option<DocFacts>)> = jobs
             .into_par_iter()
             .filter_map(|(uri, syntax, ext)| {
                 let doc = open.get(&uri)?;
                 let loader = DocContexts::new(open, roots, &*contexts);
-                let a = analyze(uri.clone(), &doc.text, ext, keep_tokens, syntax, &loader);
+                let (a, facts) = analyze_open(&uri, doc, ext, keep_tokens, syntax, &loader);
                 loader.record(uses, &uri, syntax);
-                if doc.cached_import {
-                    return Some((uri, Arc::new(a), None));
-                }
-                let (a, facts) = prepared(a);
-                Some((uri, Arc::new(a), Some(facts)))
+                Some((uri, a, facts))
             })
             .collect();
         for (uri, a, facts) in done {
-            if let Some(f) = facts {
+            if let (Some(f), Some(current)) = (facts, a.current()) {
                 self.knowledge
-                    .set_prepared(&uri, Source::Open, a.clone(), f);
+                    .set_prepared(&uri, Source::Open, current.clone(), f);
             }
             if let Some(doc) = self.open.get_mut(&uri) {
-                doc.analysis = Some(a);
+                doc.analyzed = a;
             }
         }
         &self.knowledge
@@ -1009,7 +1158,7 @@ impl Workspace {
     /// copy's. `None` for a SPARQL document (see [`Workspace::sparql`]).
     pub(crate) fn analysis(&mut self, uri: &str) -> Option<Arc<Analysis>> {
         let syntax = match self.open.get(uri) {
-            Some(d) if d.analysis.is_some() => return d.analysis.clone(),
+            Some(d) if d.analyzed.current().is_some() => return d.analyzed.current().cloned(),
             Some(Doc {
                 kind: DocKind::Rdf(syntax),
                 ..
@@ -1020,27 +1169,16 @@ impl Workspace {
         let external = self.external_prefixes_as(uri, syntax);
         let contexts = self.contexts();
         let loader = DocContexts::new(&self.open, &self.roots, &*contexts);
-        let a = analyze(
-            uri.to_string(),
-            &self.open.get(uri)?.text,
-            external,
-            !self.drop_tokens,
-            syntax,
-            &loader,
-        );
+        let doc = self.open.get(uri)?;
+        let (analyzed, facts) =
+            analyze_open(uri, doc, external, !self.drop_tokens, syntax, &loader);
         loader.record(&self.context_uses, uri, syntax);
-        let doc = self.open.get_mut(uri)?;
-        if doc.cached_import {
-            let a = Arc::new(a);
-            doc.analysis = Some(a.clone());
-            return Some(a);
+        let a = analyzed.current().cloned();
+        if let (Some(f), Some(a)) = (facts, &a) {
+            self.knowledge.set_prepared(uri, Source::Open, a.clone(), f);
         }
-        let (a, facts) = prepared(a);
-        let a = Arc::new(a);
-        doc.analysis = Some(a.clone());
-        self.knowledge
-            .set_prepared(uri, Source::Open, a.clone(), facts);
-        Some(a)
+        self.open.get_mut(uri)?.analyzed = analyzed;
+        a
     }
 
     /// Whether `uri` is an open SPARQL document.
@@ -1344,7 +1482,7 @@ impl Workspace {
                 _ => true,
             };
             if below {
-                d.analysis = None;
+                d.analyzed.outdate();
                 d.query = None;
             }
         }
@@ -3088,6 +3226,132 @@ pub(crate) mod tests {
             assert_eq!(one.text(uri), many.text(uri), "{enc:?}");
             assert_eq!(one.text(uri), Some(indexed.as_str()), "{enc:?}");
             assert_ne!(one.text(uri), Some(start), "{enc:?}");
+        }
+    }
+
+    /// The analysis of `uri` (made now), checked against a fresh workspace
+    /// opened on the same text: the same line index, and the same positions
+    /// for every reference and error.
+    fn assert_as_fresh(ws: &mut Workspace, uri: &str, step: &str) {
+        let a = ws.analysis(uri).unwrap();
+        let mut fresh = Workspace::default();
+        fresh.open_doc(uri.into(), a.text.to_string(), 1);
+        let f = fresh.analysis(uri).unwrap();
+        assert_eq!(*a.text, *ws.text(uri).unwrap(), "{step}");
+        assert_eq!(a.lines, f.lines, "{step}");
+        let spans = |a: &Analysis| -> Vec<Span> {
+            let refs = a.parsed.refs.iter().map(|r| r.span);
+            refs.chain(a.parsed.errors.iter().map(|e| e.span)).collect()
+        };
+        assert_eq!(spans(&a), spans(&f), "{step}");
+        for span in spans(&a) {
+            for enc in [Encoding::Utf16, Encoding::Utf8] {
+                let range = a.range(enc, span);
+                assert_eq!(range, f.range(enc, span), "{step}");
+                assert_eq!(a.offset(enc, range.start), Some(span.start), "{step}");
+            }
+        }
+    }
+
+    #[test]
+    fn analyses_after_edits_match_a_fresh_open() {
+        let long = format!(
+            "ex:long rdfs:label \"{}\" .",
+            "\u{e9}t\u{1F600}".repeat(800)
+        );
+        let text = format!(
+            "@prefix ex: <http://e/> .\r\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\r\n\
+             ex:a ex:p \"\u{e9}\" .\rex:b ex:q ex:c .\n{long}\nex:d ex:p ex:e .\n"
+        );
+        let mut ws = Workspace::default();
+        let uri = "file:///w/a.ttl";
+        ws.open_doc(uri.into(), text, 1);
+        assert_as_fresh(&mut ws, uri, "open");
+        let edited = |ws: &Workspace| matches!(ws.open[uri].analyzed, Analyzed::Edited { .. });
+        // A batch: inside the long line, a line break added and one removed,
+        // a `\r\n` split, before and after one another.
+        ws.change_doc(
+            uri,
+            2,
+            vec![
+                ranged((3, 300), (3, 302), "\n\u{4e2d}"),
+                ranged((0, 25), (0, 25), "x"),
+                ranged((2, 0), (2, 4), "ex:z"),
+                ranged((1, 50), (2, 2), ""),
+            ],
+            Encoding::Utf16,
+        );
+        assert!(edited(&ws));
+        assert_as_fresh(&mut ws, uri, "a batch of ranged changes");
+        // Two batches before one analysis collapse into one edit.
+        ws.change_doc(
+            uri,
+            3,
+            vec![ranged((4, 10), (4, 10), "\r")],
+            Encoding::Utf16,
+        );
+        ws.change_doc(uri, 4, vec![ranged((0, 0), (0, 1), "@")], Encoding::Utf8);
+        assert!(edited(&ws));
+        assert_as_fresh(&mut ws, uri, "two batches");
+        ws.change_doc(
+            uri,
+            5,
+            vec![full("ex:a ex:p \"\u{e9}\" .\n")],
+            Encoding::Utf16,
+        );
+        assert!(matches!(ws.open[uri].analyzed, Analyzed::No));
+        assert_as_fresh(&mut ws, uri, "a full change");
+        ws.change_doc(
+            uri,
+            6,
+            vec![ranged((0, 12), (1, 0), "\u{1F600}\" .\r\n")],
+            Encoding::Utf16,
+        );
+        assert!(edited(&ws));
+        assert_as_fresh(&mut ws, uri, "ranged after a full change");
+        // A full change then a ranged one in one batch: nothing to build on.
+        ws.change_doc(
+            uri,
+            7,
+            vec![full("ex:a ex:p ex:b .\n"), ranged((0, 0), (0, 0), "\u{e9}")],
+            Encoding::Utf16,
+        );
+        assert!(matches!(ws.open[uri].analyzed, Analyzed::No));
+        assert_as_fresh(&mut ws, uri, "full then ranged in one batch");
+        // New prefixes: analyzed again from the same text, then edited.
+        ws.open_doc(
+            "file:///w/prefixes.ttl".into(),
+            "@prefix ex: <http://e/> .\n".into(),
+            1,
+        );
+        assert!(matches!(ws.open[uri].analyzed, Analyzed::Outdated(_)));
+        ws.change_doc(uri, 8, vec![ranged((0, 3), (0, 3), "\n")], Encoding::Utf16);
+        assert!(edited(&ws));
+        assert_as_fresh(&mut ws, uri, "an edit after new prefixes");
+    }
+
+    #[test]
+    fn documents_analyzed_together_after_edits_match_a_fresh_open() {
+        let mut ws = Workspace::default();
+        let uris = ["file:///w/a.ttl", "file:///w/b.ttl", "file:///w/c.trig"];
+        for u in uris {
+            ws.open_doc(
+                u.into(),
+                "ex:a ex:p \"\u{e9}\" .\r\nex:b ex:p ex:c .\n".into(),
+                1,
+            );
+        }
+        ws.knowledge();
+        for (i, u) in uris.into_iter().enumerate() {
+            let at = (i as u32 % 2, 2 + i as u32);
+            ws.change_doc(u, 2, vec![ranged(at, at, "\u{1F600}\r")], Encoding::Utf16);
+            assert!(matches!(ws.open[u].analyzed, Analyzed::Edited { .. }));
+        }
+        // Several stale documents are analyzed in parallel.
+        ws.knowledge();
+        for u in uris {
+            assert!(ws.open[u].analyzed.current().is_some());
+            assert_as_fresh(&mut ws, u, u);
         }
     }
 
