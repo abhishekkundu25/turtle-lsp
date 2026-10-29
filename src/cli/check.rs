@@ -106,6 +106,9 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
         shacl: !a.no_shacl,
         columns: Columns::CodePoints,
         fixes: shows_fixes,
+        // `check` never shows the formatter's verdict.
+        verdict: false,
+        diagnostics: true,
     };
     let report = batch::analyse_on_disk(&batch, &settings, &opts, &disk);
 

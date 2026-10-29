@@ -140,7 +140,9 @@ and in the browser:
 - **`batch`**: a set of files analysed as one workspace, without the event
   loop. `analyse`, `fix_all` and `query` (and their `_on_disk` forms, which
   load imports as the editor does) back `turtle-lsp check`, `format`,
-  `query` and the browser toolbox.
+  `query` and the browser toolbox. `Options` names what a caller reads:
+  `check` asks for no formatter verdict, `format` for no diagnostics (and
+  so no imports); the browser asks for both.
 - **`server::Embedded`**: the language server driven by its host instead of
   its own loop: the host hands over messages, and calls `tick` when a timer
   is due. The browser editor runs the server this way in a Web Worker; SHACL
