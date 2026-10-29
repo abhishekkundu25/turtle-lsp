@@ -136,6 +136,26 @@ describe("push", () => {
     s.close(use)
   })
 
+  test("a term deprecated in one file is a warning where another file uses it, until marked false", async () => {
+    const deprecated = (diags) => diags.filter((d) => d.code === "deprecated-term")
+    const use = file("data/__old-use.ttl")
+    const def = file("core/__old-def.ttl")
+    s.open(use, "obj:m7 sd:hasFunction sd:oldFunction .\n")
+    s.open(def, "sd:oldFunction a owl:Class ; owl:deprecated true .\n")
+    // Its own description is not flagged.
+    assert.deepEqual(deprecated(await s.diagnosticsFor(def)), [])
+    const [d] = await until(() => s.diagnosticsFor(use), (ds) => deprecated(ds).length === 1, "not flagged once deprecated")
+      .then(deprecated)
+    assert.equal(d.severity, 2)
+    assert.deepEqual(d.tags, [2])
+    assert.equal(d.message, "'sd:oldFunction' is deprecated: the workspace marks it owl:deprecated")
+    assert.deepEqual(d.range, { start: { line: 0, character: 22 }, end: { line: 0, character: 36 } })
+    s.change(def, "sd:oldFunction a owl:Class ; owl:deprecated false .\n")
+    await until(() => s.diagnosticsFor(use), (ds) => deprecated(ds).length === 0, "still flagged after owl:deprecated false")
+    s.close(def)
+    s.close(use)
+  })
+
   test("keystrokes that leave the described set alone do not re-diagnose other files", async () => {
     const a = file("data/__quiet-a.ttl")
     const b = file("data/__quiet-b.ttl")

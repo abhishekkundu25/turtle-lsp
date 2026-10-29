@@ -2,8 +2,35 @@
 
 ## Unreleased
 
+### Added
+
+- **Label checks, on by default.** `duplicate-label` warns on each of two
+  terms of one kind (two classes, two properties or two SKOS concepts) in
+  the workspace that share an
+  `rdfs:label` or `skos:prefLabel` in one language, ignoring case, and
+  names the other term. `label-whitespace` warns on a label with whitespace
+  at either end, with a quick fix that trims it (`check --fix` applies it
+  only with `--unsafe-fixes`). `multiple-labels` warns on a term with two
+  `rdfs:label` or two `skos:prefLabel` values in one language. All are
+  warnings, which fail `check` only with `--max-warnings`.
+- **House-style checks, off until listed in `lint.enable`:**
+  `missing-label`, `missing-definition`, `multiple-definitions`,
+  `duplicate-definition`, `lowercase-definition`, and for the
+  `owl:Ontology` header `missing-ontology-title`,
+  `missing-ontology-description` and `missing-ontology-license`.
+- **`lint.ignore` and `lint.enable`** in `turtle-lsp.json` and the editor
+  settings (`turtle.lint.ignore`, `turtle.lint.enable`). `lint.ignore`
+  hides any diagnostic code, like `--ignore`. Unlike other settings, the
+  lists add up across the file, the editor and `--ignore`; a code in both
+  stays off. `lint.undescribedTerms: false` still works.
+
 ### Changed
 
+- **`deprecated-term` covers your own terms, as a warning.** A use of a
+  term that a workspace file marks `owl:deprecated true`, in Turtle, SPARQL
+  or JSON-LD, is a warning, struck through, and hover says the term is
+  deprecated; the term's own description is not flagged. Deprecated terms
+  of bundled vocabularies and imports stay hints.
 - **A SPARQL query that joins more than 70 patterns or path steps at once
   is refused (was 200).** Star-shaped joins, where every pattern shares a
   variable, and SPARQL 1.2 reifiers of one triple took 4 to 7 seconds to

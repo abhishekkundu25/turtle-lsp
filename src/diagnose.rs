@@ -88,6 +88,11 @@ pub(crate) fn document(
         }));
     }
     out.extend(inputs.shacl.iter().cloned());
+    // `lint.ignore`, and the off-by-default checks not in `lint.enable`.
+    out.retain(|d| match &d.code {
+        Some(lsp_types::NumberOrString::String(c)) => inputs.settings.lint_on(c),
+        _ => true,
+    });
     out
 }
 
@@ -169,6 +174,38 @@ mod tests {
         let early = document(Doc::Rdf(&a), k, Encoding::Utf16, &inputs);
         assert!(early.iter().all(|d| !needs_index(d)));
         assert!(early.len() < all.len());
+    }
+
+    #[test]
+    fn missing_checks_wait_for_the_index() {
+        let text = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            @prefix ex: <http://e.org/> .\n\
+            ex:onto a owl:Ontology .\n\
+            ex:A a owl:Class .\n";
+        let (mut ws, a) = analysed(text);
+        let k = &*ws.knowledge_mut();
+        let v = serde_json::json!({ "lint": { "enable": crate::features::curation::OPT_IN } });
+        let settings = Settings::from_layers([(crate::settings::Layer::File, &v)]);
+        let mut inputs = DiagnosticInputs::new(&settings);
+        let mut codes: Vec<String> = document(Doc::Rdf(&a), k, Encoding::Utf16, &inputs)
+            .iter()
+            .map(|d| code(d).to_string())
+            .filter(|c| c.starts_with("missing-"))
+            .collect();
+        codes.sort();
+        assert_eq!(
+            codes,
+            [
+                "missing-definition",
+                "missing-label",
+                "missing-ontology-description",
+                "missing-ontology-license",
+                "missing-ontology-title",
+            ]
+        );
+        inputs.indexed = false;
+        let early = document(Doc::Rdf(&a), k, Encoding::Utf16, &inputs);
+        assert!(early.iter().all(|d| !code(d).starts_with("missing-")));
     }
 
     #[test]

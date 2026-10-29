@@ -62,6 +62,24 @@ test("server settings are declared with the server's defaults", () => {
   assert.deepEqual(settings["turtle.imports.unresolved"].enum, ["soften", "ignore"])
 })
 
+test("lint.ignore and lint.enable are lists of codes, empty by default, sent as lists", () => {
+  for (const key of ["turtle.lint.ignore", "turtle.lint.enable"]) {
+    assert.equal(settings[key].type, "array", key)
+    assert.equal(settings[key].items.type, "string", key)
+    assert.deepEqual(settings[key].default, [], key)
+    assert.equal(settings[key].scope, "resource", key)
+  }
+  // Every off-by-default code (features::curation::OPT_IN) is named in lint.enable's description.
+  const curation = fs.readFileSync(new URL("../../../src/features/curation.rs", import.meta.url), "utf8")
+  const names = Object.fromEntries([...curation.matchAll(/const (\w+): &str = "([\w-]+)"/g)].map((m) => [m[1], m[2]]))
+  const optIn = curation.match(/OPT_IN: &\[&str\] = &\[([^\]]*)\]/)[1].match(/\w+/g).map((n) => names[n])
+  assert.equal(optIn.length, 8, optIn.join(", "))
+  for (const code of optIn) assert.match(settings["turtle.lint.enable"].markdownDescription, new RegExp(`\`${code}\``), code)
+  // A list is sent as a list; like VS Code itself, the narrowest scope's list wins.
+  const inspect = (key) => (key === "lint.ignore" ? { globalValue: ["unused-prefix"], workspaceValue: ["unknown-term"] } : {})
+  assert.deepEqual(settingsFrom({ properties: settings, restricted, inspect, trusted: true }), { lint: { ignore: ["unknown-term"] } })
+})
+
 test("JSON-LD files are served without taking over VS Code's JSON language", () => {
   // The JSON language (and its highlighting) stays VS Code's own: no language
   // here claims .jsonld, and the client attaches to the files by name.

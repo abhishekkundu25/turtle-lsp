@@ -215,7 +215,7 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
 /// The prefixes a JSON-LD document uses, from its compact IRIs: each
 /// `prefix:local` it writes expands to the prefix's IRI followed by `local`.
 /// (Its prefixes live in `@context`, not in the parse's prefix list.)
-fn jsonld_prefixes(a: &Analysis) -> PrefixMap {
+pub(crate) fn jsonld_prefixes(a: &Analysis) -> PrefixMap {
     let mut out = PrefixMap::default();
     for r in &a.parsed.refs {
         let Form::PName { prefix_len } = r.form else {

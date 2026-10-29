@@ -594,6 +594,48 @@ scenario("big-file", "a file over 2 MB: open and keystroke", async () => {
   })
 })
 
+// Four triples per class: what the label and definition checks and the
+// workspace's term index work on, which instance data never reaches.
+function vocabDoc(n) {
+  let out = `${header}@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+`
+  for (let i = 0; i < n; i++) {
+    out += `
+ex:C${i} a owl:Class ;
+    rdfs:label "Class ${i}"@en ;
+    skos:definition "A class numbered ${i}."@en ;
+    rdfs:subClassOf ex:C${(i + 1) % n} .
+`
+  }
+  return out
+}
+
+scenario("big-vocab", "a vocabulary over 2 MB: open and keystroke", async () => {
+  const target = scaled(2_400_000)
+  let n = Math.ceil(target / 140)
+  let doc = vocabDoc(n)
+  while (doc.length < target) doc = vocabDoc((n = Math.ceil(n * 1.05)))
+  await withDir("turtle-bench-vocab-", async (ws) => {
+    const file = path.join(ws, "vocab.ttl")
+    fs.writeFileSync(file, doc)
+    await withServer(ws, async (s) => {
+      const u = uriOf(file)
+      s.open(u, doc)
+      const t = performance.now()
+      await s.diagnosticsFor(u, WAIT)
+      const size = `${n} classes, ${(doc.length / 1024 / 1024).toFixed(1)} MB`
+      record("big-vocab-open", `big vocabulary: didOpen -> diagnostics (${size})`, [performance.now() - t])
+      const keys = await time(20, async (i) => {
+        doc = doc.replace(`"Class ${i}"`, `"Class ${i}x"`)
+        s.change(u, doc)
+        await s.diagnosticsFor(u, WAIT)
+      })
+      record("big-vocab-keystroke", `big vocabulary: keystroke -> diagnostics (${size})`, keys, { gate: true })
+    })
+  })
+})
+
 // The memory budget of the command line (docs/tickets/audit-2026-10/34b): the peak
 // memory of `format --check` and `check --no-shacl` on the big-file scenario's
 // document, at most PEAK_BUDGET bytes per input byte, the median of three runs.

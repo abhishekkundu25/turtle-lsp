@@ -160,6 +160,80 @@ test("an open file shows what check reports for it (one composer for editor and 
   }
 })
 
+// The label checks compare terms across files, and the opt-in ones wait for
+// the initial index: the open files settle on what check reports, with
+// turtle-lsp.json's lint.ignore and lint.enable applied by both.
+const LABELS = {
+  "turtle-lsp.json": JSON.stringify({ lint: { ignore: ["unused-prefix"], enable: ["missing-ontology-license"] } }),
+  "core.ttl": `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+
+ex: a owl:Ontology ;
+    rdfs:label "Example" .
+
+ex:Pump a owl:Class ;
+    rdfs:label "Pump"@en .
+
+ex:Valve a owl:Class ;
+    rdfs:label "Valve"@en, "Tap"@en .
+
+ex:Pipe a owl:Class ;
+    rdfs:label " Pipe"@en .
+
+ex:Old a owl:Class ;
+    rdfs:label "Old"@en ;
+    owl:deprecated true .
+
+ex:Hose a owl:Class ;
+    rdfs:label "Hose"@en ;
+    rdfs:subClassOf ex:Old .
+`,
+  "other.ttl": `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+ex:Pump2 a owl:Class ;
+    rdfs:label "pump"@en .
+`,
+}
+
+test("an open file shows the label checks check reports, with lint.ignore and lint.enable", async (t) => {
+  const dir = workspace(t, LABELS)
+  const expected = check(dir)
+  const codes = new Set(
+    Object.values(expected)
+      .flat()
+      .map((l) => l.match(/\[([^\]]*)\]/)[1]),
+  )
+  for (const code of [
+    "duplicate-label",
+    "label-whitespace",
+    "multiple-labels",
+    "deprecated-term",
+    "missing-ontology-license",
+  ]) {
+    assert.ok(codes.has(code), `${code} in ${JSON.stringify(expected)}`)
+  }
+  // The unused foaf: prefix is ignored by the file.
+  assert.ok(!codes.has("unused-prefix"), JSON.stringify(expected))
+  // The duplicate is reported in both files; the own deprecation is a warning.
+  assert.ok(expected["other.ttl"].some((l) => l.includes("warning[duplicate-label]")), expected["other.ttl"])
+  assert.ok(expected["core.ttl"].some((l) => l.includes("warning[deprecated-term]")), expected["core.ttl"])
+
+  const s = await session(t, dir)
+  for (const name of ["core.ttl", "other.ttl"]) {
+    s.open(uri(dir, name), fs.readFileSync(path.join(dir, name), "utf8"), "turtle")
+  }
+  for (const name of ["core.ttl", "other.ttl"]) {
+    const u = uri(dir, name)
+    const same = (d, p) => p.version === 1 && JSON.stringify(fromServer(d)) === JSON.stringify(expected[name])
+    await until(s, u, same).catch(() => {})
+    assert.deepEqual(fromServer(latest(s, u)?.diagnostics ?? []), expected[name], name)
+  }
+})
+
 test("opening a file switches it to live diagnostics; closing hands it back", async (t) => {
   const dir = workspace(t)
   const s = await session(t, dir, ON)

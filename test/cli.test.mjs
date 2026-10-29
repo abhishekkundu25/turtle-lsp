@@ -624,6 +624,71 @@ test("check: --select and --ignore accept only codes turtle-lsp reports", (t) =>
   assert.equal(run(ws, ["check", "--ignore", "syntax,undeclared-prefix"]).code, 0)
 })
 
+// A workspace whose a.ttl gets an unused-prefix hint (foaf:), an
+// undescribed-term warning (ex:Persn: vocab.ttl makes ex: an own namespace)
+// and an unknown-term warning (rdfs:labl); `settings` is its turtle-lsp.json.
+function lintLists(t, settings) {
+  const ws = workspace(t, {
+    "vocab.ttl": `${PREFIXES}ex:Person a rdfs:Class .\nex:Place a rdfs:Class .\nex:name a rdf:Property .\nex:city a rdf:Property .\n`,
+    "a.ttl": `@prefix ex: <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+ex:bob a ex:Persn ; rdfs:labl "Bob" .
+`,
+  })
+  if (settings !== undefined) fs.writeFileSync(path.join(ws, "turtle-lsp.json"), JSON.stringify(settings))
+  return ws
+}
+const lintCodes = (r) => r.lines.filter((l) => l.startsWith("a.ttl:")).map((l) => l.match(/\[([^\]]+)\]/)[1]).sort()
+
+test("check: lint.ignore in turtle-lsp.json hides codes, --ignore adds to it", (t) => {
+  // vocab.ttl's unused sh: prefix is a hint of its own; only a.ttl is compared.
+  assert.deepEqual(lintCodes(run(lintLists(t), ["check"])), ["undescribed-term", "unknown-term", "unused-prefix"])
+  const ws = lintLists(t, { lint: { ignore: ["unused-prefix"] } })
+  assert.deepEqual(lintCodes(run(ws, ["check"])), ["undescribed-term", "unknown-term"])
+  assert.deepEqual(lintCodes(run(ws, ["check", "--ignore", "unknown-term"])), ["undescribed-term"])
+  // --select cannot bring back what the file ignores.
+  assert.deepEqual(lintCodes(run(ws, ["check", "--select", "unused-prefix,unknown-term"])), ["unknown-term"])
+  // The file's lint.undescribedTerms: false still works next to the list.
+  fs.writeFileSync(path.join(ws, "turtle-lsp.json"), JSON.stringify({ lint: { ignore: ["unused-prefix"], undescribedTerms: false } }))
+  const r = run(ws, ["check"])
+  assert.deepEqual(lintCodes(r), ["unknown-term"])
+  assert.equal(r.err.includes("turtle-lsp.json"), false, r.err)
+})
+
+test("check: warnings hidden by lint.ignore and --ignore do not count against --max-warnings", (t) => {
+  const ws = lintLists(t, { lint: { ignore: ["undescribed-term"] } })
+  assert.equal(run(ws, ["check"]).code, 0, "warnings alone pass")
+  // One warning left (unknown-term): over a limit of 0, within 1.
+  assert.equal(run(ws, ["check", "--max-warnings=0"]).code, 1)
+  assert.equal(run(ws, ["check", "--max-warnings=1"]).code, 0)
+  // --ignore hides the last one: no warnings, so a limit of 0 passes.
+  const none = run(ws, ["check", "--max-warnings=0", "--ignore", "unknown-term"])
+  assert.equal(none.code, 0, none.out)
+  assert.deepEqual(lintCodes(none), ["unused-prefix"])
+  // Without the file both warnings count.
+  fs.rmSync(path.join(ws, "turtle-lsp.json"))
+  assert.equal(run(ws, ["check", "--max-warnings=1"]).code, 1)
+})
+
+test("check: an off-by-default code is a known code; lint.enable with it or an unknown code changes nothing else", (t) => {
+  const ws = lintLists(t)
+  for (const flag of ["--select", "--ignore"]) {
+    const r = run(ws, ["check", flag, "missing-ontology-license"])
+    assert.equal(r.code, 0, `${flag}: ${r.err}`)
+  }
+  // Not enabled: --select of the code reports nothing.
+  assert.deepEqual(run(ws, ["check", "--select", "missing-ontology-license"]).lines, [])
+  fs.writeFileSync(
+    path.join(ws, "turtle-lsp.json"),
+    JSON.stringify({ lint: { enable: ["missing-ontology-license", "unused-prefix", "no-such-code"] } }),
+  )
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 0, r.err)
+  assert.deepEqual(lintCodes(r), ["undescribed-term", "unknown-term", "unused-prefix"])
+  assert.equal(r.err.includes("turtle-lsp.json"), false, r.err)
+})
+
 test("a word that is no command fails instead of starting the server", (t) => {
   const ws = workspace(t, {})
   for (const word of ["chek", "serve", "foo.ttl"]) {

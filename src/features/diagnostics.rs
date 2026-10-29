@@ -7,11 +7,11 @@ use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
-use crate::syntax::{Form, Severity, Syntax, SyntaxError};
+use crate::syntax::{Form, Role, Severity, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub(crate) const SOURCE: &str = "turtle";
 
@@ -19,9 +19,21 @@ pub(crate) const SOURCE: &str = "turtle";
 /// workspace, so are only reported once the initial index is in.
 pub(crate) const NEEDS_INDEX: &[&str] = crate::features::shacl_lint::NEEDS_INDEX;
 
+/// The curation checks that say a term or ontology lacks something any
+/// workspace document could give it: they wait for the index too.
+const CURATION_NEEDS_INDEX: &[&str] = &[
+    crate::features::curation::MISSING_LABEL,
+    crate::features::curation::MISSING_DEFINITION,
+    crate::features::curation::MISSING_ONTOLOGY_TITLE,
+    crate::features::curation::MISSING_ONTOLOGY_DESCRIPTION,
+    crate::features::curation::MISSING_ONTOLOGY_LICENSE,
+];
+
 pub(crate) fn needs_index(d: &Diagnostic) -> bool {
     matches!(&d.code, Some(NumberOrString::String(c))
-        if NEEDS_INDEX.contains(&c.as_str()) || c == crate::features::lint::CODE)
+        if NEEDS_INDEX.contains(&c.as_str())
+            || CURATION_NEEDS_INDEX.contains(&c.as_str())
+            || c == crate::features::lint::CODE)
 }
 
 /// One written occurrence of an IRI (never `a`), for the knowledge lints
@@ -41,10 +53,12 @@ pub(crate) struct TermUse<'a, K> {
 /// `unknown-term` (warning, with a "did you mean" and `data.replace` in the
 /// document's own spelling) and `deprecated-term` (hint, deprecated tag) for
 /// terms of the well-known vocabularies, matched by namespace IRI. `mk`
-/// builds a diagnostic at a span.
+/// builds a diagnostic at a span. No hint where `warned`, the spans
+/// [`own_deprecations`] reported, has the use's span: that warning says it.
 pub(crate) fn vocabulary_terms<'a, K>(
     uses: impl Iterator<Item = TermUse<'a, K>>,
     k: &Knowledge,
+    warned: &FxHashSet<crate::syntax::Span>,
     mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
     out: &mut Vec<Diagnostic>,
 ) where
@@ -60,6 +74,8 @@ pub(crate) fn vocabulary_terms<'a, K>(
             continue;
         }
         match v.term(local) {
+            // A workspace deprecation too: [`own_deprecations`] warns instead.
+            Some(t) if t.deprecated && warned.contains(&u.span) => {}
             Some(t) if t.deprecated => {
                 let mut d = mk(
                     u.span,
@@ -106,6 +122,43 @@ pub(crate) fn vocabulary_terms<'a, K>(
     }
 }
 
+/// `deprecated-term` (warning, deprecated tag) for each use of a term that
+/// a workspace file marks `owl:deprecated true`
+/// ([`Knowledge::deprecated_here`]), named as written in `text`. The caller
+/// leaves out subjects: they describe the term. Needs no index wait: an
+/// unindexed file can only hide a deprecation, never invent one. Returns
+/// the spans it reported, for [`vocabulary_terms`].
+pub(crate) fn own_deprecations<'a, K>(
+    uses: impl Iterator<Item = TermUse<'a, K>>,
+    text: &str,
+    k: &Knowledge,
+    mk: &impl Fn(crate::syntax::Span, DiagnosticSeverity, &str, String) -> Diagnostic,
+    out: &mut Vec<Diagnostic>,
+) -> FxHashSet<crate::syntax::Span>
+where
+    K: crate::syntax::IriKey,
+{
+    let mut warned = FxHashSet::default();
+    if !k.has_deprecations() {
+        return warned;
+    }
+    for u in uses.filter(|u| k.deprecated_here(&u.iri)) {
+        warned.insert(u.span);
+        let written = text
+            .get(u.span.start as usize..u.span.end as usize)
+            .unwrap_or_default();
+        let mut d = mk(
+            u.span,
+            DiagnosticSeverity::WARNING,
+            "deprecated-term",
+            format!("'{written}' is deprecated: the workspace marks it owl:deprecated"),
+        );
+        d.tags = Some(vec![DiagnosticTag::DEPRECATED]);
+        out.push(d);
+    }
+    warned
+}
+
 /// What replaces `written`, a JSON-LD string that spells `iri` in full or
 /// as its end (a `@vocab` word), so it spells `namespace` + `local`: the
 /// same beginning stays implied, else the full IRI.
@@ -126,6 +179,10 @@ pub(crate) const MAX_SYNTAX_ERRORS: usize = 1000;
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub lint_undescribed_terms: bool,
+    /// Some off-by-default curation check is enabled
+    /// ([`crate::features::curation::OPT_IN`]); without one they are not
+    /// computed. Which codes are reported is decided by the composer.
+    pub house_style: bool,
     /// At most this many syntax errors and warnings of a Turtle-family
     /// document: past it, the ones that start first in the text (the first
     /// found, on a tie), in the order found, and one error that says there
@@ -139,6 +196,7 @@ impl Default for Options {
     fn default() -> Options {
         Options {
             lint_undescribed_terms: true,
+            house_style: false,
             max_syntax_errors: Some(MAX_SYNTAX_ERRORS),
         }
     }
@@ -147,7 +205,10 @@ impl Default for Options {
 impl Options {
     pub(crate) fn from_settings(s: &crate::settings::Settings) -> Options {
         Options {
-            lint_undescribed_terms: s.lint_undescribed_terms,
+            lint_undescribed_terms: s.lint_on(crate::features::lint::CODE),
+            house_style: crate::features::curation::OPT_IN
+                .iter()
+                .any(|c| s.lint_on(c)),
             ..Options::default()
         }
     }
@@ -323,6 +384,19 @@ pub fn diagnostics_with(
         }
     }
 
+    // Uses of terms the workspace deprecates, added after the vocabulary
+    // checks, which leave out the hint where these warn.
+    let uses = a.parsed.refs.iter().filter_map(|r| {
+        (r.role != Role::Subject && !matches!(r.form, Form::A)).then_some(TermUse {
+            span: r.span,
+            iri: r.iri,
+            prefix: None,
+            bare: None,
+        })
+    });
+    let mut own = Vec::new();
+    let warned = own_deprecations(uses, &a.text, k, &mk, &mut own);
+
     // Terms of well-known vocabularies (matched by namespace IRI, not prefix name).
     let text_at = |span: crate::syntax::Span, len: u32| {
         a.text.get(span.start as usize..(span.start + len) as usize)
@@ -374,7 +448,7 @@ pub fn diagnostics_with(
                 bare: text_at(w.span, w.span.end - w.span.start),
             },
         });
-        vocabulary_terms(uses, k, &mk, &mut out);
+        vocabulary_terms(uses, k, &warned, &mk, &mut out);
     } else {
         let uses = a.parsed.refs.iter().filter_map(|r| match r.form {
             Form::A => None,
@@ -391,8 +465,9 @@ pub fn diagnostics_with(
                 bare: None,
             }),
         });
-        vocabulary_terms(uses, k, &mk, &mut out);
+        vocabulary_terms(uses, k, &warned, &mk, &mut out);
     }
+    out.append(&mut own);
 
     for (span, message) in crate::features::literals::invalid_literals(a) {
         out.push(mk(
@@ -414,6 +489,12 @@ pub fn diagnostics_with(
     if opts.lint_undescribed_terms {
         out.extend(crate::features::lint::undescribed_terms(a, k, enc));
     }
+    out.extend(crate::features::curation::diagnostics(
+        a,
+        k,
+        enc,
+        opts.house_style,
+    ));
     out
 }
 
@@ -692,6 +773,128 @@ mod tests {
         let all = shown(None);
         assert!(all.len() > 5, "{all:?}");
         assert_eq!(shown(Some(5)), all);
+    }
+
+    /// The `deprecated-term` diagnostics of `uses` (a document of `syntax`)
+    /// as (severity, text covered, message), with `vocab.ttl` beside it.
+    fn own_deprecated(
+        vocab: &str,
+        uses: &str,
+        syntax: Syntax,
+    ) -> Vec<(DiagnosticSeverity, String, String)> {
+        use crate::knowledge::Source;
+        let header = "@prefix ex: <http://ex.org/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                      @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\
+                      @prefix vcard: <http://www.w3.org/2006/vcard/ns#> .\n";
+        let v = Analysis::new(
+            "file:///w/vocab.ttl".into(),
+            &format!("{header}{vocab}"),
+            Arc::default(),
+            false,
+        );
+        let a = Arc::new(Analysis::with_syntax(
+            "file:///w/uses".into(),
+            uses,
+            Arc::default(),
+            false,
+            syntax,
+        ));
+        let mut k = Knowledge::default();
+        k.set("file:///w/vocab.ttl", Source::Disk, Arc::new(v));
+        k.set("file:///w/uses", Source::Open, a.clone());
+        diagnostics(&a, &k, Encoding::Utf8)
+            .into_iter()
+            .filter(|d| d.code == Some(NumberOrString::String("deprecated-term".into())))
+            .map(|d| {
+                assert_eq!(d.tags, Some(vec![DiagnosticTag::DEPRECATED]));
+                let start = a.offset(Encoding::Utf8, d.range.start).unwrap() as usize;
+                let end = a.offset(Encoding::Utf8, d.range.end).unwrap() as usize;
+                (d.severity.unwrap(), uses[start..end].to_string(), d.message)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_use_of_an_own_deprecated_term_is_a_warning() {
+        use DiagnosticSeverity as S;
+        let uses = "@prefix ex: <http://ex.org/> .\n\
+                    ex:old ex:p ex:x .\nex:a ex:old <http://ex.org/old> .\n";
+        let got = own_deprecated("ex:old owl:deprecated true .\n", uses, Syntax::Turtle);
+        // Not at the subject: that describes the term.
+        assert_eq!(
+            got,
+            [
+                (
+                    S::WARNING,
+                    "ex:old".into(),
+                    "'ex:old' is deprecated: the workspace marks it owl:deprecated".into()
+                ),
+                (
+                    S::WARNING,
+                    "<http://ex.org/old>".into(),
+                    "'<http://ex.org/old>' is deprecated: the workspace marks it owl:deprecated"
+                        .into()
+                ),
+            ]
+        );
+        // The typed form counts; `false` anywhere clears it.
+        let typed = "ex:old owl:deprecated \"true\"^^xsd:boolean .\n";
+        assert_eq!(own_deprecated(typed, uses, Syntax::Turtle).len(), 2);
+        let undone = "ex:old owl:deprecated true .\nex:old owl:deprecated false .\n";
+        assert_eq!(own_deprecated(undone, uses, Syntax::Turtle), []);
+        // The deprecating file's own description is not flagged.
+        let v = "ex:old owl:deprecated true .\n";
+        assert_eq!(own_deprecated(v, "", Syntax::Turtle), []);
+    }
+
+    #[test]
+    fn a_vocabulary_deprecation_stays_a_hint_unless_the_workspace_says_so() {
+        use DiagnosticSeverity as S;
+        let uses = "@prefix vcard: <http://www.w3.org/2006/vcard/ns#> .\n\
+                    <http://ex.org/a> a vcard:Email .\n";
+        assert_eq!(
+            own_deprecated("", uses, Syntax::Turtle),
+            [(
+                S::HINT,
+                "vcard:Email".into(),
+                "'vcard:Email' is deprecated".into()
+            )]
+        );
+        // Deprecated by both: reported once, as the workspace's warning.
+        let got = own_deprecated("vcard:Email owl:deprecated true .\n", uses, Syntax::Turtle);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, S::WARNING);
+        // A subject gets no warning (it describes the term): it keeps the hint.
+        let uses = "@prefix vcard: <http://www.w3.org/2006/vcard/ns#> .\n\
+                    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                    vcard:Email rdfs:comment \"x\" .\n";
+        let got = own_deprecated("vcard:Email owl:deprecated true .\n", uses, Syntax::Turtle);
+        assert_eq!(
+            got,
+            [(
+                S::HINT,
+                "vcard:Email".into(),
+                "'vcard:Email' is deprecated".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_jsonld_use_of_an_own_deprecated_term_is_a_warning() {
+        let uses = r#"{
+  "@context": {"ex": "http://ex.org/", "old": {"@id": "ex:old", "@type": "@id"}},
+  "@id": "ex:a",
+  "old": "ex:b",
+  "ex:p": {"@id": "ex:old"}
+}"#;
+        let got = own_deprecated("ex:old owl:deprecated true .\n", uses, Syntax::JsonLd);
+        let at: Vec<&str> = got.iter().map(|g| g.1.as_str()).collect();
+        assert!(
+            got.iter().all(|g| g.0 == DiagnosticSeverity::WARNING),
+            "{got:?}"
+        );
+        // The term at its use, and the compact IRI; not the subject `ex:a`.
+        assert_eq!(at, ["old", "ex:old"], "{got:?}");
     }
 
     #[test]

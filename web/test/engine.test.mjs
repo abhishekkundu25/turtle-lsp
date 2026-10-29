@@ -243,6 +243,87 @@ test("an undeclared prefix is reported with a fix that declares it", () => {
   assert.match(after, /@prefix rdfs: <http:\/\/www\.w3\.org\/2000\/01\/rdf-schema#> \./)
 })
 
+const LABELS = [
+  {
+    name: "core.ttl",
+    text: `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+ex: a owl:Ontology ;
+    rdfs:label "Example" .
+
+ex:Pump a owl:Class ;
+    rdfs:label "Pump"@en .
+
+ex:Valve a owl:Class ;
+    rdfs:label "Valve"@en, "Tap"@en .
+
+ex:Pipe a owl:Class ;
+    rdfs:label " Pipe"@en .
+
+ex:Old a owl:Class ;
+    rdfs:label "Old"@en ;
+    owl:deprecated true .
+
+ex:Hose a owl:Class ;
+    rdfs:label "Hose"@en ;
+    rdfs:subClassOf ex:Old .
+`,
+  },
+  {
+    name: "other.ttl",
+    text: `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+ex:Pump2 a owl:Class ;
+    rdfs:label "pump"@en .
+
+ex:Bare a owl:Class .
+`,
+  },
+]
+
+test("the label checks on by default are reported, and lint.ignore and lint.enable apply", () => {
+  const res = engine.call("analyse", { files: LABELS })
+  const core = fileOf(res, "core.ttl")
+  const other = fileOf(res, "other.ttl")
+  const text = LABELS[0].text
+  const [dup] = withCode(core, "duplicate-label")
+  assert.ok(dup, JSON.stringify(core.diagnostics))
+  assert.equal(covered(text, dup.range), '"Pump"')
+  assert.match(dup.message, /ex:Pump2/)
+  assert.equal(withCode(other, "duplicate-label").length, 1, JSON.stringify(other.diagnostics))
+  assert.deepEqual(
+    withCode(core, "multiple-labels").map((d) => covered(text, d.range)),
+    ['"Valve"', '"Tap"'],
+  )
+  const [ws] = withCode(core, "label-whitespace")
+  assert.equal(covered(text, ws.range), '" Pipe"')
+  assert.match(applyEdits(text, ws.fixes[0].edits["core.ttl"]), /rdfs:label "Pipe"@en/)
+  // A use of a term the workspace marks deprecated is a warning; its own
+  // description is not flagged.
+  const deprecated = withCode(core, "deprecated-term")
+  assert.equal(deprecated.length, 1, JSON.stringify(deprecated))
+  assert.equal(covered(text, deprecated[0].range), "ex:Old")
+  for (const f of [core, other]) assert.ok(f.diagnostics.every((d) => d.severity === 2), JSON.stringify(f.diagnostics))
+  // The house-style checks are off until enabled; ignore wins over enable.
+  assert.deepEqual(withCode(core, "missing-ontology-license"), [])
+  assert.deepEqual(withCode(other, "missing-label"), [])
+  const enable = ["missing-ontology-license", "missing-label"]
+  const on = engine.call("analyse", { files: LABELS, settings: { "turtle.lint.enable": enable } })
+  assert.equal(withCode(fileOf(on, "core.ttl"), "missing-ontology-license").length, 1)
+  assert.equal(withCode(fileOf(on, "other.ttl"), "missing-label").length, 1)
+  const settings = { "turtle.lint.enable": enable, "turtle.lint.ignore": ["duplicate-label", "missing-label"] }
+  const set = engine.call("analyse", { files: LABELS, settings })
+  assert.equal(withCode(fileOf(set, "core.ttl"), "missing-ontology-license").length, 1)
+  for (const f of set.files) {
+    assert.deepEqual(withCode(f, "duplicate-label"), [], f.name)
+    assert.deepEqual(withCode(f, "missing-label"), [], f.name)
+  }
+})
+
 test("a syntax error is reported where it is", () => {
   const text = "@prefix ex: <https://e.org/> .\nex:a ex:b ex:c ex:d .\n"
   const [f] = engine.call("analyse", { files: [{ name: "broken.ttl", text }] }).files

@@ -325,12 +325,53 @@ pub(crate) const CODES: &[(&str, &str)] = &[
         "unknown-term",
         "A term is not defined in its well-known vocabulary",
     ),
-    ("deprecated-term", "A term is deprecated in its vocabulary"),
+    (
+        "deprecated-term",
+        "A term is deprecated in its vocabulary or in the workspace",
+    ),
     (
         "undescribed-term",
         "A term is not described anywhere in the workspace",
     ),
     ("invalid-literal", "A literal is not valid for its datatype"),
+    (
+        "duplicate-label",
+        "Two terms in the workspace have the same label",
+    ),
+    ("label-whitespace", "A label starts or ends with whitespace"),
+    (
+        "multiple-labels",
+        "A term has more than one label in one language",
+    ),
+    ("missing-label", "A term has no label (off by default)"),
+    (
+        "missing-definition",
+        "A term has no definition (off by default)",
+    ),
+    (
+        "multiple-definitions",
+        "A term has more than one definition in one language (off by default)",
+    ),
+    (
+        "duplicate-definition",
+        "Two terms have the same definition (off by default)",
+    ),
+    (
+        "lowercase-definition",
+        "A definition starts with a lowercase letter (off by default)",
+    ),
+    (
+        "missing-ontology-title",
+        "An ontology header has no title (off by default)",
+    ),
+    (
+        "missing-ontology-description",
+        "An ontology header has no description (off by default)",
+    ),
+    (
+        "missing-ontology-license",
+        "An ontology header has no licence (off by default)",
+    ),
     (
         "unresolved-import",
         "An owl:imports target could not be loaded",

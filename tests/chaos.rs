@@ -644,9 +644,48 @@ fn completion_items(r: Option<CompletionResponse>) -> Vec<CompletionItem> {
     }
 }
 
+/// The value of Turtle string token `token`: its content without the quotes,
+/// escapes read. `None` for a malformed escape.
+fn string_value(token: &str) -> Option<String> {
+    let q = token.chars().next()?;
+    // `get`: the first three bytes can end inside a character (`" é "`).
+    let long = token.len() >= 6 && token.get(..3).is_some_and(|d| d.chars().all(|c| c == q));
+    let delim = if long { 3 } else { 1 };
+    let content = token.get(delim..token.len().checked_sub(delim)?)?;
+    let mut out = String::new();
+    let mut chars = content.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        out.push(match chars.next()? {
+            't' => '\t',
+            'b' => '\u{8}',
+            'n' => '\n',
+            'r' => '\r',
+            'f' => '\u{c}',
+            u @ ('u' | 'U') => {
+                let hex: String = chars.by_ref().take(if u == 'u' { 4 } else { 8 }).collect();
+                char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?
+            }
+            e => e,
+        });
+    }
+    Some(out)
+}
+
+#[test]
+fn a_string_value_with_a_multibyte_character_near_the_quote() {
+    assert_eq!(string_value("\" é \"").as_deref(), Some(" é "));
+    assert_eq!(string_value("\" 日本\"").as_deref(), Some(" 日本"));
+    assert_eq!(string_value("'''日本'''").as_deref(), Some("日本"));
+}
+
 /// `before` and `after` (the text `batch::fix_all` made of it) have the
 /// same tokens outside their directives; with `unsafe_too`, a term may
-/// have become another (a "Change to" fix).
+/// have become another (a "Change to" fix), and a string may have lost the
+/// whitespace at the ends of its value (the `label-whitespace` trim).
 fn fixed_keeps_the_tokens(
     before: &str,
     after: &str,
@@ -720,9 +759,17 @@ fn fixed_keeps_the_tokens(
         Err(true) => return Ok(()),
         Err(false) => return Err("left a declaration that is not a whole line".into()),
     };
+    let trimmed = |a: &Tok, b: &Tok| {
+        let (old, new) = (&before[a.1..a.2], &after[b.1..b.2]);
+        old.chars().next() == new.chars().next()
+            && string_value(old)
+                .zip(string_value(new))
+                .is_some_and(|(o, n)| o.trim() == n)
+    };
     let same = |a: &Tok, b: &Tok| {
         (a.0, &before[a.1..a.2]) == (b.0, &after[b.1..b.2])
             || unsafe_too && lex.term(a.0) && lex.term(b.0)
+            || unsafe_too && lex.string(a.0) && lex.string(b.0) && trimmed(a, b)
     };
     let i = (0..old.len().max(new.len())).find(|&i| match (old.get(i), new.get(i)) {
         (Some(a), Some(b)) => !same(a, b),

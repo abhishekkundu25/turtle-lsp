@@ -81,6 +81,8 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation, and the most triples one run validates, the shared triples and every dataset together; above it validation is skipped (default 2,000,000 triples).
 - `turtle.shacl.onType`: also validate while typing, not only on save (default on).
 - `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
+- `turtle.lint.ignore`: diagnostic codes never to report, such as `unused-prefix` or `duplicate-label`. Adds to the project's `lint.ignore` in `turtle-lsp.json`.
+- `turtle.lint.enable`: off-by-default checks to switch on: `missing-label`, `missing-definition`, `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, `missing-ontology-title`, `missing-ontology-description`, `missing-ontology-license`. Adds to the project's `lint.enable`; a code in either `lint.ignore` stays off.
 - `turtle.imports.network`: fetch `owl:imports` and JSON-LD contexts over the network (default off; off in untrusted workspaces). With it off, the quick fix on an unresolved import fetches that one import and caches it. Fetches go only to public addresses, follow at most 10 redirects (never from `https` to `http`), and one pass makes at most 100 requests; see [Network access](https://github.com/abhishekkundu25/turtle-lsp#network-access).
 - `turtle.imports.unresolved`: while an import can't be loaded, SHACL results it could change are warnings with a note (`soften`, the default); `ignore` keeps their full severity.
 - `turtle.format.lineWidth`: line width for formatting (default 100).

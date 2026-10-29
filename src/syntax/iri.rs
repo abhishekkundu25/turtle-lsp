@@ -111,6 +111,12 @@ impl Iri {
         iri
     }
 
+    /// The handle's number: a total order that costs no text comparison
+    /// (by first interning, not by text, so it differs between processes).
+    pub(crate) fn id(self) -> u32 {
+        self.0.get()
+    }
+
     /// The handle for `s` if it was ever interned. Never interns.
     pub(crate) fn get(s: &str) -> Option<Iri> {
         let shard = interner().shards[shard_of(s)]

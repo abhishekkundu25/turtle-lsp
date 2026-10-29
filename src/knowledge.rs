@@ -8,12 +8,22 @@
 //! Per IRI the index keeps posting lists of the sources that say something
 //! about it; the facts themselves are read back from those sources' analyses
 //! and facts, so the index stays small.
+//!
+//! The curation facts (which IRIs are terms, their labels and definitions,
+//! their own `owl:deprecated`) come from workspace sources only. Labels and
+//! definitions are indexed by a hash of their folded text: per key the index
+//! keeps the sources that use it, and each source keeps its own entries.
+//! What the curation checks read of other documents about a term or an
+//! ontology (its kind, whether it has a label, a comment or each header
+//! property, which documents declare it) each source keeps as a [`Curated`]
+//! summary per IRI.
 
 use crate::analysis::Analysis;
 use crate::shacl::vocab;
 use crate::syntax::{self, BlankId, Iri, IriKey, IriMap, Node, Role, Span};
 use crate::vocab::VOCABS;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
 /// A source in the index. Ids are reused after removal.
@@ -101,7 +111,139 @@ pub(crate) struct DocFacts {
     objects: Vec<Iri>,
     /// IRIs used in predicate position here.
     predicates: Vec<Iri>,
+    /// IRIs this source makes terms (unique, by [`Iri::id`]): see [`Knowledge::is_term`].
+    terms: Vec<Iri>,
+    /// `rdfs:label` and `skos:prefLabel` of IRI subjects, in text order.
+    labels: Vec<Keyed>,
+    /// `skos:definition` of IRI subjects, in text order.
+    definitions: Vec<Keyed>,
+    /// `rdfs:comment` of IRI subjects, in text order.
+    comments: Vec<Keyed>,
+    /// Per [`Index`], its entries' positions ordered by key: made on the
+    /// first lookup by key ([`DocFacts::under_key`]), which most documents
+    /// never get.
+    by_key: [OnceLock<Box<[u32]>>; 3],
+    /// Subjects of `definitions` (unique, by [`Iri::id`]).
+    defined: Vec<Iri>,
+    /// `owl:deprecated` with a boolean value (unique, by [`Iri::id`]).
+    deprecated: Vec<(Iri, bool)>,
+    /// What this source says about each IRI subject that the curation
+    /// checks read, sorted by [`Iri::id`]; IRIs it says none of it about are
+    /// left out.
+    curated: Vec<(Iri, Curated)>,
 }
+
+/// What one workspace source says about an IRI that the curation checks of
+/// other documents read ([`Knowledge::term_kind`], [`TermState`]).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct Curated {
+    /// [`TERM_CLASS`], [`TERM_PROPERTY`] and [`TERM_CONCEPT`] bits.
+    kind: u8,
+    /// Gives it a type or an IRI super class or property
+    /// ([`Analysis::types`], [`Analysis::supers`]).
+    declares: bool,
+    /// The subject of a top-level statement ([`Analysis::defs`]).
+    describes: bool,
+    /// Types it `owl:Ontology`.
+    ontology: bool,
+    /// Gives it a label ([`Analysis::label`]), a comment
+    /// ([`Analysis::comment_en`]).
+    labelled: bool,
+    commented: bool,
+    /// Bit `i`: gives it a property of group `i` of [`header_properties`].
+    header: u8,
+}
+
+impl Curated {
+    /// What `other`, read from other triples about the same IRI, adds.
+    fn add(&mut self, other: Curated) {
+        self.kind |= other.kind;
+        self.declares |= other.declares;
+        self.describes |= other.describes;
+        self.ontology |= other.ontology;
+        self.labelled |= other.labelled;
+        self.commented |= other.commented;
+        self.header |= other.header;
+    }
+}
+
+/// The term kind bits of [`Knowledge::term_kind`]: a class (typed
+/// `owl:Class` or `rdfs:Class`, or the subject of `rdfs:subClassOf`), a
+/// property (one of the four property types, or the subject of
+/// `rdfs:subPropertyOf`), a concept (`skos:Concept`).
+pub(crate) const TERM_CLASS: u8 = 1;
+pub(crate) const TERM_PROPERTY: u8 = 2;
+pub(crate) const TERM_CONCEPT: u8 = 4;
+
+/// What the curation checks of other documents read about a term or an
+/// ontology, from every workspace source: compared before and after a
+/// change to decide whether it bumps [`Knowledge::described_generation`].
+/// Facts that no check reads (a non-term's kind, a non-ontology's header)
+/// are left at their default.
+#[derive(Default, PartialEq, Eq)]
+struct TermState {
+    kind: u8,
+    labelled: bool,
+    commented: bool,
+    /// The document that reports `missing-label` and `missing-definition`:
+    /// the first by URI of those that describe and declare the term, else of
+    /// those that describe it.
+    reporter: Option<String>,
+    /// The document that reports the `missing-ontology-*` checks: the first
+    /// by URI of those that describe the IRI and type it `owl:Ontology`.
+    ontology: Option<String>,
+    header: u8,
+}
+
+/// One literal that names or defines an IRI subject.
+#[derive(Clone, Copy, Debug)]
+struct Keyed {
+    /// [`text_key`] of the literal.
+    key: u64,
+    subject: Iri,
+    /// Index into the parse's triples.
+    triple: u32,
+}
+
+/// The labels, definitions and comments, each indexed by text key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Index {
+    Label,
+    Definition,
+    Comment,
+}
+
+impl Index {
+    const ALL: [Index; 3] = [Index::Label, Index::Definition, Index::Comment];
+
+    fn of(self, f: &DocFacts) -> &[Keyed] {
+        match self {
+            Index::Label => &f.labels,
+            Index::Definition => &f.definitions,
+            Index::Comment => &f.comments,
+        }
+    }
+
+    /// What a key of this index collides as: a definition falls back to the
+    /// comment, so the two share one.
+    fn text(self) -> Text {
+        match self {
+            Index::Label => Text::Label,
+            Index::Definition | Index::Comment => Text::Definition,
+        }
+    }
+}
+
+/// What two terms can share: a label, or a definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Text {
+    Label,
+    Definition,
+}
+
+/// Terms that share a text under one key: (folded text, language, term),
+/// sorted.
+type Collisions = Vec<(String, Option<Iri>, Iri)>;
 
 struct Slot {
     uri: String,
@@ -135,6 +277,34 @@ impl Entry {
     }
 }
 
+/// The workspace sources that say of an IRI what only the curation checks
+/// read: kept apart from its [`Entry`], as few IRIs have any.
+#[derive(Default, Debug)]
+struct Marks {
+    /// Sources that make the IRI a term, give it a `skos:definition`, say
+    /// `owl:deprecated true`, say it `false`.
+    term: u32,
+    defined: u32,
+    deprecated: u32,
+    undeprecated: u32,
+    /// Sources whose [`Curated`] summary types it `owl:Ontology`.
+    ontology: u32,
+}
+
+impl Marks {
+    fn is_empty(&self) -> bool {
+        self.term == 0
+            && self.defined == 0
+            && self.deprecated == 0
+            && self.undeprecated == 0
+            && self.ontology == 0
+    }
+
+    fn deprecated(&self) -> bool {
+        self.deprecated > 0 && self.undeprecated == 0
+    }
+}
+
 #[derive(Default)]
 struct Namespace {
     /// Every IRI in this namespace that some source mentions.
@@ -156,6 +326,7 @@ pub struct Knowledge {
     free: Vec<DocId>,
     by_key: FxHashMap<Key, DocId>,
     entries: IriMap<Entry>,
+    marks: IriMap<Marks>,
     namespaces: FxHashMap<Iri, Namespace>,
     /// Prefix name -> namespace -> number of workspace files.
     bindings: FxHashMap<Iri, FxHashMap<Iri, u32>>,
@@ -165,6 +336,21 @@ pub struct Knowledge {
     /// Scratch for one change: namespaces whose counts moved, with whether
     /// they were own namespaces before it.
     own_before: FxHashMap<Iri, bool>,
+    /// Text key -> workspace sources with an entry under it, per [`Index`].
+    labels: FxHashMap<u64, Posting>,
+    definitions: FxHashMap<u64, Posting>,
+    comments: FxHashMap<u64, Posting>,
+    /// Scratch for one change: the collisions under each text key it
+    /// touches, before it.
+    texts_before: FxHashMap<(Text, u64), Collisions>,
+    /// Scratch for one change: the state of each IRI whose [`Curated`]
+    /// summary it changes, before it.
+    terms_before: FxHashMap<Iri, TermState>,
+    /// IRIs [`Knowledge::deprecated_here`] is true of: while there are none,
+    /// it answers without a lookup.
+    deprecations: u32,
+    /// IRIs [`Knowledge::is_term`] is true of.
+    terms: u32,
 }
 
 pub(crate) const OWL_ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
@@ -221,6 +407,129 @@ enum Subj {
     Blank(BlankId),
 }
 
+/// The IRIs the curation facts read.
+struct Curation {
+    /// A subject typed with one of these is a term.
+    term_types: [Iri; 7],
+    labels: [Iri; 2],
+    definition: Iri,
+    comment: Iri,
+    deprecated: Iri,
+    /// The [`TERM_CLASS`], [`TERM_PROPERTY`] and [`TERM_CONCEPT`] types.
+    class_types: [Iri; 2],
+    property_types: [Iri; 4],
+    concept: Iri,
+    ontology: Iri,
+    header: [[Iri; 3]; 3],
+    /// Every predicate [`DocFacts::curation`] and [`curate`] read: a triple
+    /// with another one says nothing to them.
+    read: FxHashSet<Iri>,
+}
+
+/// The properties that give an ontology its title, description and licence,
+/// a group each: what the `missing-ontology-*` checks look for.
+pub(crate) fn header_properties() -> &'static [[Iri; 3]; 3] {
+    &curation().header
+}
+
+fn curation() -> &'static Curation {
+    static C: OnceLock<Curation> = OnceLock::new();
+    C.get_or_init(|| {
+        let i = Iri::intern;
+        let owl = |l: &str| i(&format!("http://www.w3.org/2002/07/owl#{l}"));
+        let rdfs = |l: &str| i(&format!("http://www.w3.org/2000/01/rdf-schema#{l}"));
+        let skos = |l: &str| i(&format!("http://www.w3.org/2004/02/skos/core#{l}"));
+        let dcterms = |l: &str| i(&format!("http://purl.org/dc/terms/{l}"));
+        let dc = |l: &str| i(&format!("http://purl.org/dc/elements/1.1/{l}"));
+        let mut c = Curation {
+            term_types: [
+                owl("Class"),
+                rdfs("Class"),
+                owl("ObjectProperty"),
+                owl("DatatypeProperty"),
+                owl("AnnotationProperty"),
+                i("http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"),
+                skos("Concept"),
+            ],
+            labels: [rdfs("label"), skos("prefLabel")],
+            definition: skos("definition"),
+            comment: rdfs("comment"),
+            deprecated: owl("deprecated"),
+            class_types: [owl("Class"), rdfs("Class")],
+            property_types: [
+                owl("ObjectProperty"),
+                owl("DatatypeProperty"),
+                owl("AnnotationProperty"),
+                i("http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"),
+            ],
+            concept: skos("Concept"),
+            ontology: i(OWL_ONTOLOGY),
+            header: [
+                [dcterms("title"), dc("title"), rdfs("label")],
+                [dcterms("description"), dc("description"), rdfs("comment")],
+                [
+                    dcterms("license"),
+                    i("http://creativecommons.org/ns#license"),
+                    i("http://web.resource.org/cc/license"),
+                ],
+            ],
+            read: FxHashSet::default(),
+        };
+        let v = vocab::get();
+        c.read = [v.rdf_type, v.sub_class_of, v.sub_property_of]
+            .into_iter()
+            .chain(c.labels)
+            .chain([c.definition, c.comment, c.deprecated])
+            .chain(c.header.into_iter().flatten())
+            .chain(crate::analysis::indexed_predicates().iter().map(|p| p.0))
+            .collect();
+        c
+    })
+}
+
+/// A label or definition as compared: trimmed, letter case folded.
+fn folded(text: &str) -> impl Iterator<Item = char> + '_ {
+    text.trim().chars().flat_map(char::to_lowercase)
+}
+
+/// The hash a label or definition is indexed by: of its folded text and its
+/// (lowercase) language tag.
+fn text_key(text: &str, lang: Option<&str>) -> u64 {
+    const CHUNK: usize = 64;
+    let mut h = FxHasher::default();
+    let trimmed = text.trim();
+    if trimmed.is_ascii() {
+        // The bytes of what [`folded`] gives, without collecting it.
+        let mut buf = [0u8; CHUNK];
+        for chunk in trimmed.as_bytes().chunks(CHUNK) {
+            let b = &mut buf[..chunk.len()];
+            b.copy_from_slice(chunk);
+            b.make_ascii_lowercase();
+            h.write(b);
+        }
+    } else {
+        let folded: String = folded(text).collect();
+        for chunk in folded.as_bytes().chunks(CHUNK) {
+            h.write(chunk);
+        }
+    }
+    lang.hash(&mut h);
+    h.finish()
+}
+
+/// The text and language of the literal `k` was made from.
+fn literal<'a>(a: &'a Analysis, k: &Keyed) -> (&'a str, Option<Iri>) {
+    match &a.parsed.triples[k.triple as usize].o {
+        Node::Literal { value, lang, .. } => (value, *lang),
+        _ => ("", None),
+    }
+}
+
+/// Whether two (text, language) pairs fold to the same key.
+fn same_text(x: (&str, Option<Iri>), y: (&str, Option<Iri>)) -> bool {
+    x.1 == y.1 && (x.0 == y.0 || folded(x.0).eq(folded(y.0)))
+}
+
 fn subj(n: &Node) -> Option<Subj> {
     match n {
         Node::Iri(i) => Some(Subj::Iri(*i)),
@@ -243,7 +552,27 @@ impl DocFacts {
         let mut f = DocFacts::default();
         let triples = &a.parsed.triples;
         let mut shape_nodes: Vec<Subj> = Vec::new();
-        for t in triples {
+        // One summary per run of triples about one IRI subject, in text
+        // order: a subject's triples mostly come together.
+        let mut curated: Vec<(Iri, Curated)> = Vec::with_capacity(a.defs.len());
+        let read = &curation().read;
+        for (i, t) in triples.iter().enumerate() {
+            if let Node::Iri(s) = &t.s {
+                let reads = read.contains(&t.p);
+                if reads {
+                    f.curation(i as u32, *s, t);
+                }
+                let c = match curated.last_mut() {
+                    Some((r, c)) if r == s => c,
+                    _ => {
+                        curated.push((*s, Curated::default()));
+                        &mut curated.last_mut().expect("just pushed").1
+                    }
+                };
+                if reads {
+                    curate(c, t);
+                }
+            }
             if t.p == v.target_class
                 && let Some(s) = subj(&t.s)
             {
@@ -269,6 +598,15 @@ impl DocFacts {
         if !shape_nodes.is_empty() {
             f.shapes(a, shape_nodes);
         }
+        // By id, not text: these lists are only walked, so any order dedups.
+        f.terms.sort_unstable_by_key(|i| i.id());
+        f.terms.dedup();
+        f.defined.sort_unstable_by_key(|i| i.id());
+        f.defined.dedup();
+        f.deprecated.sort_unstable_by_key(|d| (d.0.id(), d.1));
+        f.deprecated.dedup();
+
+        f.curated = summaries(curated, a);
 
         f.subjects = unique(
             a.defs
@@ -277,6 +615,7 @@ impl DocFacts {
                 .chain(a.supers.keys())
                 .chain(f.domain.keys())
                 .chain(f.range.keys())
+                .chain(f.curated.iter().map(|c| &c.0))
                 .copied(),
         );
         f.objects = unique(
@@ -301,11 +640,12 @@ impl DocFacts {
             .iter()
             .map(|d| (Iri::intern(&d.name), d.iri))
             .collect();
-        let declared: FxHashSet<&str> = a.parsed.prefixes.iter().map(|d| d.name.as_str()).collect();
+        // By interned name: a document uses a few names thousands of times.
+        let declared: FxHashSet<Iri> = bindings.iter().map(|b| b.0).collect();
         let mut used: FxHashSet<Iri> = FxHashSet::default();
         for u in &a.parsed.prefix_uses {
             if u.resolved
-                && !declared.contains(u.name.as_str())
+                && !declared.contains(&u.name)
                 && used.insert(u.name)
                 && let Some(ns) = a.external.get(u.name.as_str())
             {
@@ -318,6 +658,72 @@ impl DocFacts {
         bindings.dedup();
         f.bindings = bindings;
         f
+    }
+
+    /// The entries of `index` under `key`.
+    fn under_key(&self, index: Index, key: u64) -> impl Iterator<Item = &Keyed> {
+        let all = index.of(self);
+        let order = self.by_key[index as usize].get_or_init(|| {
+            let mut keys: Vec<(u64, u32)> = all.iter().zip(0..).map(|(k, i)| (k.key, i)).collect();
+            keys.sort_unstable();
+            keys.into_iter().map(|k| k.1).collect()
+        });
+        let from = order.partition_point(|&i| all[i as usize].key < key);
+        order[from..]
+            .iter()
+            .map(move |&i| &all[i as usize])
+            .take_while(move |k| k.key == key)
+    }
+
+    /// The curation facts of triple `i`, whose subject is the IRI `s`.
+    fn curation(&mut self, i: u32, s: Iri, t: &syntax::Triple) {
+        let v = vocab::get();
+        let c = curation();
+        match &t.o {
+            Node::Iri(o) if t.p == v.rdf_type && c.term_types.contains(o) => self.terms.push(s),
+            _ if t.p == v.sub_class_of || t.p == v.sub_property_of => self.terms.push(s),
+            Node::Literal {
+                value,
+                lang,
+                datatype,
+                ..
+            } => {
+                let into = if c.labels.contains(&t.p) {
+                    &mut self.labels
+                } else if t.p == c.definition {
+                    self.defined.push(s);
+                    &mut self.definitions
+                } else if t.p == c.comment {
+                    &mut self.comments
+                } else {
+                    if t.p == c.deprecated && *datatype == v.xsd_boolean {
+                        match value.trim() {
+                            "true" | "1" => self.deprecated.push((s, true)),
+                            "false" | "0" => self.deprecated.push((s, false)),
+                            _ => {}
+                        }
+                    }
+                    return;
+                };
+                into.push(Keyed {
+                    key: text_key(value, lang.as_ref().map(|l| l.as_str())),
+                    subject: s,
+                    triple: i,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Forget the curation facts, which only workspace sources give.
+    fn drop_curation(&mut self) {
+        self.terms = Vec::new();
+        self.labels = Vec::new();
+        self.definitions = Vec::new();
+        self.comments = Vec::new();
+        self.defined = Vec::new();
+        self.deprecated = Vec::new();
+        self.curated = Vec::new();
     }
 
     /// The [`Shape`]s among `nodes` (the subjects of `sh:targetClass` and
@@ -456,6 +862,196 @@ impl DocFacts {
     }
 }
 
+/// The [`DocFacts::curated`] summaries from one per run of triples about an
+/// IRI subject (`runs`, in text order), and the subjects of the top-level
+/// statements of `a`: sorted, one per IRI, defaults left out.
+fn summaries(mut runs: Vec<(Iri, Curated)>, a: &Analysis) -> Vec<(Iri, Curated)> {
+    // Text order is mostly the order IRIs were first interned in, which a
+    // stable sort finds in one pass.
+    runs.sort_by_key(|r| r.0.id());
+    let mut out: Vec<(Iri, Curated)> = Vec::with_capacity(runs.len());
+    for (s, c) in runs {
+        match out.last_mut() {
+            Some((r, last)) if *r == s => last.add(c),
+            _ => out.push((s, c)),
+        }
+    }
+    let mut described = 0;
+    for (s, c) in &mut out {
+        c.describes = a.defs.contains_key(s);
+        described += usize::from(c.describes);
+    }
+    // A subject with no triple (a statement cut short by a syntax error).
+    if described < a.defs.len() {
+        let missing: Vec<Iri> = a
+            .defs
+            .keys()
+            .filter(|s| out.binary_search_by_key(&s.id(), |r| r.0.id()).is_err())
+            .copied()
+            .collect();
+        out.extend(missing.into_iter().map(|s| {
+            let c = Curated {
+                describes: true,
+                ..Curated::default()
+            };
+            (s, c)
+        }));
+        out.sort_by_key(|r| r.0.id());
+    }
+    out.retain(|(_, c)| *c != Curated::default());
+    out
+}
+
+/// Add triple `t`, about the IRI subject `c` is for, to its [`Curated`]
+/// summary: all of it but `describes`. What it says of the indexes of the
+/// analysis is what they hold ([`crate::analysis::feeds`]).
+fn curate(c: &mut Curated, t: &syntax::Triple) {
+    use crate::analysis::Index as Feeds;
+    match (crate::analysis::feeds(t.p), &t.o) {
+        (Some(Feeds::Type | Feeds::Super), Node::Iri(_)) => c.declares = true,
+        (Some(Feeds::Label), Node::Literal { .. }) => c.labelled = true,
+        (Some(Feeds::Comment), Node::Literal { .. }) => c.commented = true,
+        _ => {}
+    }
+    let v = vocab::get();
+    let k = curation();
+    if t.p == v.rdf_type {
+        if let Node::Iri(o) = &t.o {
+            if k.class_types.contains(o) {
+                c.kind |= TERM_CLASS;
+            } else if k.property_types.contains(o) {
+                c.kind |= TERM_PROPERTY;
+            } else if *o == k.concept {
+                c.kind |= TERM_CONCEPT;
+            } else if *o == k.ontology {
+                c.ontology = true;
+            }
+        }
+    } else if t.p == v.sub_class_of {
+        c.kind |= TERM_CLASS;
+    } else if t.p == v.sub_property_of {
+        c.kind |= TERM_PROPERTY;
+    }
+    for (bit, group) in k.header.iter().enumerate() {
+        if group.contains(&t.p) {
+            c.header |= 1 << bit;
+        }
+    }
+}
+
+/// The sources with an entry under a text key: one, nearly always, kept
+/// without an allocation.
+#[derive(Debug)]
+enum Posting {
+    One(DocId),
+    /// Two or more.
+    Many(Vec<DocId>),
+}
+
+impl Posting {
+    fn ids(&self) -> &[DocId] {
+        match self {
+            Posting::One(id) => std::slice::from_ref(id),
+            Posting::Many(ids) => ids,
+        }
+    }
+
+    /// Add `id` unless it is listed: last, or with `anywhere` anywhere.
+    fn add(&mut self, id: DocId, anywhere: bool) {
+        match self {
+            Posting::One(x) if *x == id => {}
+            Posting::One(x) => *self = Posting::Many(vec![*x, id]),
+            Posting::Many(ids) => {
+                if ids.last() != Some(&id) && !(anywhere && ids.contains(&id)) {
+                    ids.push(id);
+                }
+            }
+        }
+    }
+
+    /// Replace `from`, if listed, with `to`.
+    fn replace(&mut self, from: DocId, to: DocId) {
+        match self {
+            Posting::One(x) => {
+                if *x == from {
+                    *x = to;
+                }
+            }
+            Posting::Many(ids) => {
+                if let Some(at) = ids.iter().position(|&d| d == from) {
+                    ids[at] = to;
+                }
+            }
+        }
+    }
+
+    /// Remove `id`, if listed; false when none is left.
+    fn remove(&mut self, id: DocId) -> bool {
+        match self {
+            Posting::One(x) => *x != id,
+            Posting::Many(ids) => {
+                if let Some(at) = ids.iter().position(|&d| d == id) {
+                    ids.swap_remove(at);
+                }
+                if let [one] = ids[..] {
+                    *self = Posting::One(one);
+                }
+                true
+            }
+        }
+    }
+}
+
+/// Move the postings of one index's entries of a source from version `old`
+/// to version `new` (`None`: no version). The keys both versions start and
+/// end with, most of them on a keystroke, are found once each.
+fn repost(
+    postings: &mut FxHashMap<u64, Posting>,
+    old: Option<(DocId, &[Keyed])>,
+    new: Option<(DocId, &[Keyed])>,
+) {
+    let (xs, ys) = (old.map_or(&[][..], |o| o.1), new.map_or(&[][..], |n| n.1));
+    let head = xs
+        .iter()
+        .zip(ys)
+        .take_while(|(p, q)| p.key == q.key)
+        .count();
+    let tail = xs[head..]
+        .iter()
+        .rev()
+        .zip(ys[head..].iter().rev())
+        .take_while(|(p, q)| p.key == q.key)
+        .count();
+    if let (Some((from, _)), Some((to, _))) = (old, new) {
+        for k in xs[..head].iter().chain(&xs[xs.len() - tail..]) {
+            // Not found after an earlier entry with the same key.
+            if let Some(docs) = postings.get_mut(&k.key) {
+                docs.replace(from, to);
+            }
+        }
+    }
+    if let Some((from, _)) = old {
+        for k in &xs[head..xs.len() - tail] {
+            if let Some(docs) = postings.get_mut(&k.key)
+                && !docs.remove(from)
+            {
+                postings.remove(&k.key);
+            }
+        }
+    }
+    if let Some((to, _)) = new {
+        // Listed once for a key the source has more than once: after an
+        // earlier entry it is last, after a replacement anywhere.
+        let replaced = head + tail > 0;
+        for k in &ys[head..ys.len() - tail] {
+            postings
+                .entry(k.key)
+                .and_modify(|docs| docs.add(to, replaced))
+                .or_insert(Posting::One(to));
+        }
+    }
+}
+
 fn entry(entries: &mut IriMap<Entry>, iri: Iri) -> &mut Entry {
     entries.entry(iri).or_insert_with(|| Entry {
         ns: Some(Iri::intern(namespace_of(&iri))),
@@ -517,8 +1113,14 @@ impl Knowledge {
 
     /// Bumped only when a change can alter what other documents' lints say:
     /// an IRI becomes described or stops being described, a namespace becomes
-    /// or stops being an own namespace, or a prefix binding appears or goes.
-    /// Ordinary keystrokes leave it alone.
+    /// or stops being an own namespace, a prefix binding appears or goes, an
+    /// IRI becomes or stops being a term, a term gains or loses its first
+    /// `skos:definition`, the own-deprecated set changes, the terms that
+    /// share a label or definition change where two or more share it before
+    /// or after, or what the curation checks read of a term or an ontology
+    /// changes ([`TermState`]: its kind, whether the workspace gives it a
+    /// label, a comment or each header property, which document reports it).
+    /// Ordinary keystrokes, inside a label or comment too, leave it alone.
     pub(crate) fn described_generation(&self) -> u64 {
         self.described_generation
     }
@@ -533,6 +1135,192 @@ impl Knowledge {
         if flipped {
             self.described_generation += 1;
         }
+    }
+
+    /// The IRIs whose [`Curated`] summaries differ between two versions of a
+    /// source (`None`: no version). An IRI that is not a term and that no
+    /// version or other source types `owl:Ontology` is left out: its
+    /// [`TermState`] stays the default unless it becomes a term, which bumps
+    /// [`Knowledge::described_generation`] anyway.
+    fn touched_iris(&self, old: Option<&Slot>, new: Option<&Slot>) -> Vec<Iri> {
+        let xs = old.map_or(&[][..], |s| &s.facts.curated[..]);
+        let ys = new.map_or(&[][..], |s| &s.facts.curated[..]);
+        let mut out = Vec::new();
+        let mut touch = |iri: Iri, x: Option<&Curated>, y: Option<&Curated>| {
+            if x == y {
+                return;
+            }
+            let read = x.is_some_and(|c| c.ontology)
+                || y.is_some_and(|c| c.ontology)
+                || self
+                    .marks
+                    .get(&iri)
+                    .is_some_and(|m| m.term > 0 || m.ontology > 0);
+            if read {
+                out.push(iri);
+            }
+        };
+        let (mut i, mut j) = (0, 0);
+        loop {
+            match (xs.get(i), ys.get(j)) {
+                (Some(x), Some(y)) if x.0 == y.0 => {
+                    touch(x.0, Some(&x.1), Some(&y.1));
+                    (i, j) = (i + 1, j + 1);
+                }
+                (Some(x), Some(y)) if x.0.id() < y.0.id() => {
+                    touch(x.0, Some(&x.1), None);
+                    i += 1;
+                }
+                (Some(x), None) => {
+                    touch(x.0, Some(&x.1), None);
+                    i += 1;
+                }
+                (_, Some(y)) => {
+                    touch(y.0, None, Some(&y.1));
+                    j += 1;
+                }
+                (None, None) => break,
+            }
+        }
+        out
+    }
+
+    /// The text keys whose entries differ between two versions of a source
+    /// (`None`: no version), with what they collide as, perhaps more than
+    /// once: those of the entries between the longest run the two versions
+    /// start with and the longest they end with, about IRIs that count under
+    /// them ([`Knowledge::counts`]). A key whose changed entries do not count
+    /// keeps its collisions, unless a term or a term's definition appears or
+    /// goes, which bumps [`Knowledge::described_generation`] anyway.
+    fn touched_texts(&self, old: Option<&Slot>, new: Option<&Slot>) -> Vec<(Text, u64)> {
+        let mut out = Vec::new();
+        if self.terms == 0 {
+            // Nothing counts.
+            return out;
+        }
+        for index in Index::ALL {
+            let x = old.map(|s| (&*s.analysis, index.of(&s.facts)));
+            let y = new.map(|s| (&*s.analysis, index.of(&s.facts)));
+            let (xs, ys) = (x.map_or(&[][..], |x| x.1), y.map_or(&[][..], |y| y.1));
+            // Only for pairs, so with both versions.
+            let same = |p: &&Keyed, q: &&Keyed| {
+                p.key == q.key
+                    && p.subject == q.subject
+                    && same_text(literal(x.unwrap().0, p), literal(y.unwrap().0, q))
+            };
+            let head = xs.iter().zip(ys).take_while(|(p, q)| same(p, q)).count();
+            let (xs, ys) = (&xs[head..], &ys[head..]);
+            let tail = xs
+                .iter()
+                .rev()
+                .zip(ys.iter().rev())
+                .take_while(|(p, q)| same(p, q))
+                .count();
+            let changed = xs[..xs.len() - tail].iter().chain(&ys[..ys.len() - tail]);
+            for k in changed {
+                if self.counts(index, k.subject) {
+                    out.push((index.text(), k.key));
+                }
+            }
+        }
+        out
+    }
+
+    /// Remember the collisions under each of `keys` before a change (see
+    /// [`Knowledge::touched_texts`]).
+    fn note_texts(&mut self, keys: Vec<(Text, u64)>) {
+        for k in keys {
+            if !self.texts_before.contains_key(&k) {
+                let c = self.collisions(k.0, k.1);
+                self.texts_before.insert(k, c);
+            }
+        }
+    }
+
+    /// Bump [`Knowledge::described_generation`] if the collisions under a
+    /// key noted by [`Knowledge::note_texts`] changed.
+    fn settle_texts(&mut self) {
+        let mut before = std::mem::take(&mut self.texts_before);
+        if before
+            .drain()
+            .any(|((text, key), was)| self.collisions(text, key) != was)
+        {
+            self.described_generation += 1;
+        }
+        self.texts_before = before;
+    }
+
+    /// Remember the state of each of `iris` before a change (see
+    /// [`Knowledge::touched_iris`]).
+    fn note_terms(&mut self, iris: Vec<Iri>) {
+        for iri in iris {
+            if !self.terms_before.contains_key(&iri) {
+                let state = self.term_state(iri);
+                self.terms_before.insert(iri, state);
+            }
+        }
+    }
+
+    /// Bump [`Knowledge::described_generation`] if the state of an IRI noted
+    /// by [`Knowledge::note_terms`] changed.
+    fn settle_terms(&mut self) {
+        let mut before = std::mem::take(&mut self.terms_before);
+        if before.drain().any(|(iri, was)| self.term_state(iri) != was) {
+            self.described_generation += 1;
+        }
+        self.terms_before = before;
+    }
+
+    /// The [`Curated`] summaries the workspace sources give `iri`, with the
+    /// URI of each source.
+    fn curated(&self, iri: Iri) -> impl Iterator<Item = (&str, &Curated)> {
+        self.entries
+            .get(&iri)
+            .into_iter()
+            .flat_map(|e| &e.subject)
+            .filter_map(move |&id| {
+                let s = self.slot(id);
+                let all = &s.facts.curated;
+                let at = all.binary_search_by_key(&iri.id(), |c| c.0.id()).ok()?;
+                Some((s.uri.as_str(), &all[at].1))
+            })
+    }
+
+    fn term_state(&self, iri: Iri) -> TermState {
+        let term = self.is_term(&iri);
+        let mut st = TermState::default();
+        let (mut declarer, mut describer, mut ontology) = (None, None, None);
+        fn first<'a>(x: &mut Option<&'a str>, uri: &'a str) {
+            if x.is_none_or(|x| uri < x) {
+                *x = Some(uri);
+            }
+        }
+        let mut header = 0;
+        for (uri, c) in self.curated(iri) {
+            st.kind |= c.kind;
+            st.labelled |= c.labelled;
+            st.commented |= c.commented;
+            header |= c.header;
+            if c.describes {
+                first(&mut describer, uri);
+                if c.declares {
+                    first(&mut declarer, uri);
+                }
+                if c.ontology {
+                    first(&mut ontology, uri);
+                }
+            }
+        }
+        if !term {
+            (st.kind, st.labelled, st.commented) = (0, false, false);
+        } else {
+            st.reporter = declarer.or(describer).map(str::to_string);
+        }
+        if ontology.is_some() {
+            st.ontology = ontology.map(str::to_string);
+            st.header = header;
+        }
+        st
     }
 
     // ---- sources ----
@@ -632,7 +1420,10 @@ impl Knowledge {
         self.slots[id as usize].as_ref().expect("live doc id")
     }
 
-    fn put(&mut self, key: Key, uri: &str, source: Source, a: Arc<Analysis>, facts: DocFacts) {
+    fn put(&mut self, key: Key, uri: &str, source: Source, a: Arc<Analysis>, mut facts: DocFacts) {
+        if source == Source::External {
+            facts.drop_curation();
+        }
         let id = self.free.pop().unwrap_or_else(|| {
             self.slots.push(None);
             (self.slots.len() - 1) as DocId
@@ -643,22 +1434,40 @@ impl Knowledge {
             analysis: a,
             facts,
         };
+        if source != Source::External {
+            let old = self.by_key.get(&key).map(|&id| self.slot(id));
+            let keys = self.touched_texts(old, Some(&slot));
+            let iris = self.touched_iris(old, Some(&slot));
+            self.note_texts(keys);
+            self.note_terms(iris);
+        }
         // Add the new version before removing the old one, so entries both
         // share (most of them, on a keystroke) are updated in place instead of
         // being dropped and rebuilt.
         self.apply(id, &slot, true);
         self.slots[id as usize] = Some(slot);
-        if let Some(old) = self.by_key.insert(key, id) {
+        let old = self.by_key.insert(key, id);
+        self.repost(old, Some(id));
+        if let Some(old) = old {
             self.release(old);
         }
         self.settle_namespaces();
+        self.settle_texts();
+        self.settle_terms();
         self.generation += 1;
     }
 
     fn take(&mut self, key: &Key) {
         if let Some(id) = self.by_key.remove(key) {
+            let keys = self.touched_texts(Some(self.slot(id)), None);
+            let iris = self.touched_iris(Some(self.slot(id)), None);
+            self.note_texts(keys);
+            self.note_terms(iris);
+            self.repost(Some(id), None);
             self.release(id);
             self.settle_namespaces();
+            self.settle_texts();
+            self.settle_terms();
             self.generation += 1;
         }
     }
@@ -730,6 +1539,9 @@ impl Knowledge {
                 }
             }
         }
+        if ws {
+            described_moved |= self.apply_curation(f, add);
+        }
         if described_moved {
             self.described_generation += 1;
         }
@@ -758,6 +1570,174 @@ impl Knowledge {
                 }
             }
         }
+    }
+
+    /// Add (or subtract) one workspace source's curation facts. True when a
+    /// term, a term's definition or an own deprecation appears or goes.
+    fn apply_curation(&mut self, f: &DocFacts, add: bool) -> bool {
+        let marks = &mut self.marks;
+        let mut moved = false;
+        let (mut terms, mut deprecations) = (self.terms, self.deprecations);
+        // Step one count of `iri`'s marks; the marks before and after.
+        let mut mark = |iri: Iri, count: fn(&mut Marks) -> &mut u32| {
+            let m = marks.entry(iri).or_default();
+            let (was_term, was_deprecated) = (m.term > 0, m.deprecated());
+            let crossed = step(count(m), add);
+            let (is_term, is_deprecated) = (m.term > 0, m.deprecated());
+            if m.is_empty() {
+                marks.remove(&iri);
+            }
+            (crossed, was_term, is_term, was_deprecated, is_deprecated)
+        };
+        for &iri in &f.terms {
+            let (_, was, now, _, _) = mark(iri, |m| &mut m.term);
+            if was != now {
+                moved = true;
+                if was {
+                    terms -= 1;
+                } else {
+                    terms += 1;
+                }
+            }
+        }
+        for &iri in &f.defined {
+            let (crossed, _, term, _, _) = mark(iri, |m| &mut m.defined);
+            moved |= crossed && term;
+        }
+        for &(iri, value) in &f.deprecated {
+            let count: fn(&mut Marks) -> &mut u32 = if value {
+                |m| &mut m.deprecated
+            } else {
+                |m| &mut m.undeprecated
+            };
+            let (_, _, _, was, now) = mark(iri, count);
+            if was != now {
+                moved = true;
+                if was {
+                    deprecations -= 1;
+                } else {
+                    deprecations += 1;
+                }
+            }
+        }
+        for (iri, c) in &f.curated {
+            if c.ontology {
+                mark(*iri, |m| &mut m.ontology);
+            }
+        }
+        (self.terms, self.deprecations) = (terms, deprecations);
+        moved
+    }
+
+    /// Move the text postings of a source from version `old` to version
+    /// `new` (`None`: no version), both registered.
+    fn repost(&mut self, old: Option<DocId>, new: Option<DocId>) {
+        let slots = &self.slots;
+        let facts = |id: DocId| &slots[id as usize].as_ref().expect("live doc id").facts;
+        for index in Index::ALL {
+            let postings = match index {
+                Index::Label => &mut self.labels,
+                Index::Definition => &mut self.definitions,
+                Index::Comment => &mut self.comments,
+            };
+            repost(
+                postings,
+                old.map(|id| (id, index.of(facts(id)))),
+                new.map(|id| (id, index.of(facts(id)))),
+            );
+        }
+    }
+
+    fn postings(&self, index: Index) -> &FxHashMap<u64, Posting> {
+        match index {
+            Index::Label => &self.labels,
+            Index::Definition => &self.definitions,
+            Index::Comment => &self.comments,
+        }
+    }
+
+    /// Every entry of `index` under `key`, with the analysis it reads from.
+    fn keyed(&self, index: Index, key: u64) -> impl Iterator<Item = (&Analysis, &Keyed)> {
+        self.postings(index)
+            .get(&key)
+            .into_iter()
+            .flat_map(Posting::ids)
+            .flat_map(move |&id| {
+                let s = self.slot(id);
+                s.facts
+                    .under_key(index, key)
+                    .map(move |k| (&*s.analysis, k))
+            })
+    }
+
+    /// The terms with a label (or definition) under `key`, with that
+    /// literal's text and language. A comment counts as a definition only
+    /// for a term no workspace source gives a `skos:definition`.
+    fn under(&self, text: Text, key: u64) -> Vec<(&str, Option<Iri>, Iri)> {
+        let indexes: &[Index] = match text {
+            Text::Label => &[Index::Label],
+            Text::Definition => &[Index::Definition, Index::Comment],
+        };
+        let mut out = Vec::new();
+        for &index in indexes {
+            for (a, k) in self.keyed(index, key) {
+                if self.counts(index, k.subject) {
+                    let (value, lang) = literal(a, k);
+                    out.push((value, lang, k.subject));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether an entry of `index` about `subject` counts for
+    /// [`Knowledge::under`]: the subject is a term, and a comment is about a
+    /// term no workspace source gives a `skos:definition`.
+    fn counts(&self, index: Index, subject: Iri) -> bool {
+        self.marks
+            .get(&subject)
+            .is_some_and(|m| m.term > 0 && (index != Index::Comment || m.defined == 0))
+    }
+
+    /// The texts under `key` that two or more terms share.
+    fn collisions(&self, text: Text, key: u64) -> Collisions {
+        let found = self.under(text, key);
+        if found.len() < 2 {
+            return Vec::new();
+        }
+        let mut all: Collisions = found
+            .into_iter()
+            .map(|(t, lang, term)| (folded(t).collect(), lang, term))
+            .collect();
+        all.sort_unstable();
+        all.dedup();
+        all.chunk_by(|x, y| x.0 == y.0 && x.1 == y.1)
+            .filter(|group| group.len() >= 2)
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    /// The terms whose label (or definition) folds to `text` in `lang` (any
+    /// case; `None`: untagged), sorted, unique.
+    fn sharing(&self, kind: Text, text: &str, lang: Option<&str>) -> Vec<Iri> {
+        let lang = match lang.map(str::to_lowercase) {
+            // No literal has a tag that was never interned.
+            Some(l) => match Iri::get(&l) {
+                Some(l) => Some(l),
+                None => return Vec::new(),
+            },
+            None => None,
+        };
+        let mut out: Vec<Iri> = self
+            .under(kind, text_key(text, lang.as_ref().map(|l| l.as_str())))
+            .into_iter()
+            .filter(|&(t, l, _)| same_text((t, l), (text, lang)))
+            .map(|x| x.2)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     // ---- per-IRI facts ----
@@ -881,6 +1861,51 @@ impl Knowledge {
     /// The comment from the workspace, chosen like [`Knowledge::label`].
     pub(crate) fn comment<K: IriKey + ?Sized>(&self, iri: &K) -> Option<&str> {
         self.pick(iri, |a, k| a.comment_en(&k))
+    }
+
+    /// A term: some workspace source types the IRI `owl:Class`,
+    /// `rdfs:Class`, `owl:ObjectProperty`, `owl:DatatypeProperty`,
+    /// `owl:AnnotationProperty`, `rdf:Property` or `skos:Concept`, or makes
+    /// it the subject of `rdfs:subClassOf` or `rdfs:subPropertyOf`.
+    pub(crate) fn is_term<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
+        self.marks.get(iri).is_some_and(|m| m.term > 0)
+    }
+
+    /// What sort of term the workspace makes `iri`, as [`TERM_CLASS`],
+    /// [`TERM_PROPERTY`] and [`TERM_CONCEPT`] bits: from the types and the
+    /// `rdfs:subClassOf` and `rdfs:subPropertyOf` statements of workspace
+    /// sources (external ones say nothing).
+    pub(crate) fn term_kind<K: IriKey + ?Sized>(&self, iri: &K) -> u8 {
+        let Some(key) = iri.iri_key() else {
+            return 0;
+        };
+        self.curated(key).fold(0, |bits, (_, c)| bits | c.kind)
+    }
+
+    /// The terms with an `rdfs:label` or `skos:prefLabel` that equals
+    /// `label` trimmed and ignoring case, in language `lang` (any case;
+    /// `None`: untagged). Sorted, unique.
+    pub(crate) fn labelled(&self, label: &str, lang: Option<&str>) -> Vec<Iri> {
+        self.sharing(Text::Label, label, lang)
+    }
+
+    /// The terms whose definition equals `definition` as
+    /// [`Knowledge::labelled`] compares: a term's definition is its
+    /// `skos:definition`, or its `rdfs:comment` when no workspace source
+    /// gives it a `skos:definition`.
+    pub(crate) fn defined_as(&self, definition: &str, lang: Option<&str>) -> Vec<Iri> {
+        self.sharing(Text::Definition, definition, lang)
+    }
+
+    /// [`Knowledge::deprecated_here`] is true of some IRI.
+    pub(crate) fn has_deprecations(&self) -> bool {
+        self.deprecations > 0
+    }
+
+    /// Some workspace source says `owl:deprecated` with a boolean true (`true`,
+    /// `"true"^^xsd:boolean`, JSON-LD `true`), and none says false.
+    pub(crate) fn deprecated_here<K: IriKey + ?Sized>(&self, iri: &K) -> bool {
+        self.deprecations > 0 && self.marks.get(iri).is_some_and(Marks::deprecated)
     }
 
     /// Used in predicate position anywhere.
@@ -1108,10 +2133,14 @@ impl Knowledge {
                     e.refs_ws,
                     e.described_ws,
                     e.described_ext,
-                    e.predicate
+                    e.predicate,
                 )
             })
             .collect();
+        out.extend(self.marks.iter().map(|(iri, m)| format!("M {iri} {m:?}")));
+        if self.terms + self.deprecations > 0 {
+            out.push(format!("C {} {}", self.terms, self.deprecations));
+        }
         for (ns, n) in &self.namespaces {
             let mut terms: Vec<&str> = n.terms.iter().map(|t| t.as_str()).collect();
             terms.sort();
@@ -1123,6 +2152,11 @@ impl Knowledge {
         for (name, by_ns) in &self.bindings {
             for (ns, n) in by_ns {
                 out.push(format!("B {name} {ns} {n}"));
+            }
+        }
+        for index in Index::ALL {
+            for (key, docs) in self.postings(index) {
+                out.push(format!("T {index:?} {key} [{}]", uris(docs.ids())));
             }
         }
         out.sort();
@@ -1508,6 +2542,385 @@ mod tests {
         assert!(k.is_own_namespace("http://ex.org/"));
         k.remove("file:///a.ttl");
         assert!(k.described_generation() > g4);
+    }
+
+    const CURATION_HEADER: &str = "@prefix ex: <http://ex.org/> .\n\
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+        @prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n\
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n";
+
+    /// Register (or replace) the Turtle document `name` with `body` after
+    /// [`CURATION_HEADER`].
+    fn put_ttl(k: &mut Knowledge, name: &str, body: &str) {
+        let uri = format!("file:///{name}.ttl");
+        let text = format!("{CURATION_HEADER}{body}");
+        let none = Arc::new(PrefixMap::default());
+        k.set(&uri, Source::Open, analysis(&uri, &text, &none));
+    }
+
+    fn names(v: Vec<Iri>) -> Vec<String> {
+        v.iter()
+            .map(|i| i.replace("http://ex.org/", "ex:"))
+            .collect()
+    }
+
+    #[test]
+    fn the_term_rule() {
+        let mut k = Knowledge::default();
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:c1 a owl:Class .\nex:c2 a rdfs:Class .\nex:p1 a owl:ObjectProperty .\n\
+             ex:p2 a owl:DatatypeProperty .\nex:p3 a owl:AnnotationProperty .\n\
+             ex:p4 a rdf:Property .\nex:k a skos:Concept .\n\
+             ex:sub rdfs:subClassOf [ a owl:Restriction ] .\nex:subp rdfs:subPropertyOf ex:p1 .\n\
+             ex:alice a ex:Person ; rdfs:label \"Alice\" .\n",
+        );
+        for t in ["c1", "c2", "p1", "p2", "p3", "p4", "k", "sub", "subp"] {
+            assert!(k.is_term(&format!("http://ex.org/{t}")), "{t}");
+        }
+        // Instance data, and the objects of the links, are not terms.
+        for t in ["alice", "Person"] {
+            assert!(!k.is_term(&format!("http://ex.org/{t}")), "{t}");
+        }
+        // An external source does not make terms.
+        let none = Arc::new(PrefixMap::default());
+        let ext = format!("{CURATION_HEADER}ex:e a owl:Class .\n");
+        k.add_external("import:e", analysis("import:e", &ext, &none));
+        assert!(!k.is_term("http://ex.org/e"));
+        // Nor does it stop the workspace's: a term needs one workspace source.
+        put_ttl(&mut k, "b", "ex:c1 a owl:Class .\n");
+        k.remove("file:///a.ttl");
+        assert!(k.is_term("http://ex.org/c1"));
+        assert!(!k.is_term("http://ex.org/c2"));
+    }
+
+    #[test]
+    fn labelled_folds_case_and_trims_and_keeps_languages_apart() {
+        let mut k = Knowledge::default();
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:A a owl:Class ; rdfs:label \" Pump\\t\"@en, \"Pumpe\"@de .\n\
+             ex:B a owl:Class ; skos:prefLabel \"PUMP\"@EN .\n\
+             ex:C a owl:Class ; rdfs:label \"pump\" .\n\
+             ex:alice rdfs:label \"Pump\"@en .\n\
+             ex:D a owl:Class ; rdfs:comment \"Pump\"@en .\n",
+        );
+        put_ttl(
+            &mut k,
+            "b",
+            "ex:E rdfs:subClassOf ex:A ; rdfs:label \"pump \"@en .\n",
+        );
+        let en = names(k.labelled("PUMP", Some("En")));
+        assert_eq!(en, ["ex:A", "ex:B", "ex:E"]);
+        assert_eq!(names(k.labelled(" pump\n", None)), ["ex:C"]);
+        assert_eq!(names(k.labelled("pumpe", Some("de"))), ["ex:A"]);
+        assert!(k.labelled("pumpe", Some("en")).is_empty());
+        assert!(k.labelled("Pump", Some("xx-never-seen")).is_empty());
+        // A term that repeats its label is listed once.
+        put_ttl(&mut k, "c", "ex:A rdfs:label \"pump\"@en .\n");
+        assert_eq!(
+            names(k.labelled("Pump", Some("en"))),
+            ["ex:A", "ex:B", "ex:E"]
+        );
+    }
+
+    #[test]
+    fn labels_subtract_exactly_on_replace_and_remove() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "a", "ex:A a owl:Class ; rdfs:label \"Pump\" .\n");
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:label \"Pump\" .\n");
+        assert_eq!(names(k.labelled("pump", None)), ["ex:A", "ex:B"]);
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:label \"Valve\" .\n");
+        assert_eq!(names(k.labelled("pump", None)), ["ex:A"]);
+        assert_eq!(names(k.labelled("valve", None)), ["ex:B"]);
+        // The label stays while the type moves to another document.
+        put_ttl(&mut k, "c", "ex:A a owl:Class .\n");
+        put_ttl(&mut k, "a", "ex:A rdfs:label \"Pump\" .\n");
+        assert_eq!(names(k.labelled("pump", None)), ["ex:A"]);
+        k.remove("file:///c.ttl");
+        assert!(k.labelled("pump", None).is_empty());
+        for d in ["a", "b"] {
+            k.remove(&format!("file:///{d}.ttl"));
+        }
+        assert!(k.snapshot().is_empty(), "{:?}", k.snapshot());
+    }
+
+    #[test]
+    fn a_label_a_document_gives_twice_stays_until_both_go() {
+        let mut k = Knowledge::default();
+        let a = "ex:A a owl:Class ; rdfs:label \"Pump\" .\n";
+        let b = "ex:B a owl:Class ; rdfs:label \"Pump\" .\n";
+        let x = "ex:x rdfs:label \"Other\" .\n";
+        put_ttl(&mut k, "a", &format!("{a}{x}{b}"));
+        assert_eq!(names(k.labelled("pump", None)), ["ex:A", "ex:B"]);
+        // Changes at the start, in the middle and at the end.
+        let changes: [(String, &[&str]); 3] = [
+            (format!("{x}{b}"), &["ex:B"]),
+            (format!("{a}{x}{a}{b}"), &["ex:A", "ex:B"]),
+            (format!("{a}{x}"), &["ex:A"]),
+        ];
+        for (body, want) in changes {
+            put_ttl(&mut k, "a", &body);
+            assert_eq!(names(k.labelled("pump", None)), want, "{body}");
+        }
+        put_ttl(&mut k, "a", x);
+        assert!(k.labelled("pump", None).is_empty());
+        k.remove("file:///a.ttl");
+        assert!(k.snapshot().is_empty(), "{:?}", k.snapshot());
+    }
+
+    /// 400 documents of instance data that share their comments: adding
+    /// one compares no collisions, as no comment is about a term.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn timing_shared_comments_are_not_quadratic() {
+        let none = Arc::new(PrefixMap::default());
+        let docs: Vec<(String, Arc<Analysis>)> = (0..400)
+            .map(|f| {
+                let mut text = String::from(CURATION_HEADER);
+                for i in 0..100 {
+                    text += &format!("ex:s{f}_{i} rdfs:comment \"Shared {i}\" .\n");
+                }
+                let uri = format!("file:///w/{f}.ttl");
+                let a = analysis(&uri, &text, &none);
+                (uri, a)
+            })
+            .collect();
+        let mut k = Knowledge::default();
+        let start = std::time::Instant::now();
+        for (uri, a) in docs {
+            k.set(&uri, Source::Disk, a);
+        }
+        let took = start.elapsed();
+        assert!(took.as_millis() < 200, "took {took:?}");
+    }
+
+    #[test]
+    fn defined_as_falls_back_to_the_comment() {
+        let mut k = Knowledge::default();
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:A a owl:Class ; skos:definition \"A machine.\"@en ; rdfs:comment \"Moves water.\"@en .\n\
+             ex:B a owl:Class ; rdfs:comment \"a machine. \"@en .\n\
+             ex:C a owl:Class ; rdfs:comment \"Moves water.\"@en .\n\
+             ex:x rdfs:comment \"Moves water.\"@en .\n",
+        );
+        assert_eq!(
+            names(k.defined_as("A MACHINE.", Some("en"))),
+            ["ex:A", "ex:B"]
+        );
+        // A's comment is not its definition: it has a skos:definition.
+        assert_eq!(names(k.defined_as("moves water.", Some("en"))), ["ex:C"]);
+        // Once another document gives C a skos:definition, its comment stops counting.
+        put_ttl(&mut k, "b", "ex:C skos:definition \"Other.\"@en .\n");
+        assert!(k.defined_as("moves water.", Some("en")).is_empty());
+        assert_eq!(names(k.defined_as("other.", Some("en"))), ["ex:C"]);
+        k.remove("file:///b.ttl");
+        assert_eq!(names(k.defined_as("moves water.", Some("en"))), ["ex:C"]);
+    }
+
+    #[test]
+    fn deprecated_here_reads_boolean_true_and_false_wins() {
+        let mut k = Knowledge::default();
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:a owl:deprecated true .\nex:b owl:deprecated \"true\"^^xsd:boolean .\n\
+             ex:c owl:deprecated false .\nex:d owl:deprecated \"true\" .\nex:e owl:deprecated true .\n",
+        );
+        let none = Arc::new(PrefixMap::default());
+        let json =
+            r#"{"@id": "http://ex.org/j", "http://www.w3.org/2002/07/owl#deprecated": true}"#;
+        k.set(
+            "file:///j.jsonld",
+            Source::Disk,
+            analysis("file:///j.jsonld", json, &none),
+        );
+        let dep = |k: &Knowledge, l: &str| k.deprecated_here(&format!("http://ex.org/{l}"));
+        for l in ["a", "b", "j", "e"] {
+            assert!(dep(&k, l), "{l}");
+        }
+        // False, and a plain string, are not deprecations.
+        assert!(!dep(&k, "c") && !dep(&k, "d"));
+        // A false anywhere in the workspace wins.
+        put_ttl(&mut k, "b", "ex:e owl:deprecated false .\n");
+        assert!(!dep(&k, "e"));
+        k.remove("file:///b.ttl");
+        assert!(dep(&k, "e"));
+        // An external source's deprecation is not the workspace's.
+        let ext = format!("{CURATION_HEADER}ex:x owl:deprecated true .\n");
+        k.add_external("import:x", analysis("import:x", &ext, &none));
+        assert!(!dep(&k, "x"));
+    }
+
+    #[test]
+    fn described_generation_moves_on_label_collisions_and_curation_facts() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:label \"Valve\" .\n");
+        let set = |k: &mut Knowledge, body: &str| {
+            put_ttl(k, "a", body);
+            k.described_generation()
+        };
+        let x = "ex:x rdfs:label \"Other\" .\n";
+        let g = set(
+            &mut k,
+            &format!("{x}ex:A a owl:Class ; rdfs:label \"Pu\" .\n"),
+        );
+        // Typing inside a label that collides with nothing.
+        for body in ["\"Pum\" .\n", "\"Pump\" .\n", "\"Pump\" . \n"] {
+            let g2 = set(&mut k, &format!("{x}ex:A a owl:Class ; rdfs:label {body}"));
+            assert_eq!(g2, g, "{body}");
+        }
+        // Instance data whose label collides is not a term.
+        let body = "ex:x rdfs:label \"valve\" .\nex:A a owl:Class ; rdfs:label \"Pump\" .\n";
+        assert_eq!(set(&mut k, body), g);
+        // A new collision, and its end.
+        let g2 = set(&mut k, "ex:A a owl:Class ; rdfs:label \"Valve\" .\n");
+        assert!(g2 > g);
+        // Editing a collision's case keeps it the same.
+        assert_eq!(
+            set(&mut k, "ex:A a owl:Class ; rdfs:label \"VALVE\" .\n"),
+            g2
+        );
+        let g3 = set(&mut k, "ex:A a owl:Class ; rdfs:label \"Valv\" .\n");
+        assert!(g3 > g2);
+        // A new term, and a new own deprecation.
+        let g4 = set(
+            &mut k,
+            "ex:A a owl:Class ; rdfs:label \"Valv\" .\nex:C a owl:Class .\n",
+        );
+        assert!(g4 > g3);
+        let g5 = set(
+            &mut k,
+            "ex:A a owl:Class ; rdfs:label \"Valv\" .\nex:C a owl:Class ; owl:deprecated true .\n",
+        );
+        assert!(g5 > g4);
+    }
+
+    #[test]
+    fn described_generation_moves_on_a_definition_colliding_with_a_comment() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:comment \"Same.\" .\n");
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:A a owl:Class ; skos:definition \"Different.\" .\n",
+        );
+        let g = k.described_generation();
+        // Only the definition's text changes: B's comment is its definition.
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:A a owl:Class ; skos:definition \"same.\" .\n",
+        );
+        assert!(k.described_generation() > g);
+    }
+
+    #[test]
+    fn described_generation_moves_when_a_colliding_label_goes_with_its_document() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:label \"Valve\" .\n");
+        // A is typed, and labelled in another language, in c.ttl; d.ttl
+        // only gives it the colliding label.
+        put_ttl(
+            &mut k,
+            "c",
+            "ex:A a owl:Class ; rdfs:label \"Ventil\"@de .\n",
+        );
+        put_ttl(&mut k, "d", "ex:A rdfs:label \"Valve\" .\n");
+        let g = k.described_generation();
+        k.remove("file:///d.ttl");
+        assert!(k.described_generation() > g);
+    }
+
+    #[test]
+    fn described_generation_moves_when_a_term_changes_kind() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "b", "ex:B a owl:Class ; rdfs:label \"Pump\" .\n");
+        put_ttl(&mut k, "a", "ex:A a owl:Class ; rdfs:label \"Pump\" .\n");
+        let g = k.described_generation();
+        put_ttl(
+            &mut k,
+            "a",
+            "ex:A a owl:ObjectProperty ; rdfs:label \"Pump\" .\n",
+        );
+        let g2 = k.described_generation();
+        assert!(g2 > g);
+        assert_eq!(k.term_kind("http://ex.org/A"), TERM_PROPERTY);
+        // A sub-property statement in another document adds to the kind.
+        put_ttl(&mut k, "c", "ex:B rdfs:subPropertyOf ex:p .\n");
+        assert!(k.described_generation() > g2);
+        assert_eq!(k.term_kind("http://ex.org/B"), TERM_CLASS | TERM_PROPERTY);
+        // An external source says nothing about kinds.
+        let none = Arc::new(PrefixMap::default());
+        let ext = format!("{CURATION_HEADER}ex:A a skos:Concept .\n");
+        k.add_external("import:e", analysis("import:e", &ext, &none));
+        assert_eq!(k.term_kind("http://ex.org/A"), TERM_PROPERTY);
+    }
+
+    #[test]
+    fn described_generation_moves_when_another_document_labels_or_defines_a_term() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "z", "ex:A a owl:Class .\n");
+        put_ttl(&mut k, "b", "ex:A rdfs:seeAlso ex:x .\n");
+        let set = |k: &mut Knowledge, body: &str| {
+            put_ttl(k, "b", &format!("ex:A rdfs:seeAlso ex:x{body} .\n"));
+            k.described_generation()
+        };
+        let g = k.described_generation();
+        let g1 = set(&mut k, " ; rdfs:label \"A\"");
+        assert!(g1 > g);
+        // Typing inside the label.
+        assert_eq!(set(&mut k, " ; rdfs:label \"Ab\""), g1);
+        assert_eq!(set(&mut k, " ; rdfs:label \"Abc\"@en"), g1);
+        let g2 = set(&mut k, " ; rdfs:label \"Abc\" ; rdfs:comment \"A\"");
+        assert!(g2 > g1);
+        // Typing inside the comment.
+        assert_eq!(
+            set(&mut k, " ; rdfs:label \"Abc\" ; rdfs:comment \"An a\""),
+            g2
+        );
+        // The comment goes.
+        assert!(set(&mut k, " ; rdfs:label \"Abc\"") > g2);
+    }
+
+    #[test]
+    fn described_generation_moves_when_the_reporting_document_changes() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "z", "ex:D a owl:Class .\n");
+        put_ttl(&mut k, "a", "ex:D rdfs:seeAlso ex:x .\n");
+        let g = k.described_generation();
+        // a.ttl, before z.ttl by URI, starts declaring D: it reports now.
+        put_ttl(&mut k, "a", "ex:D rdfs:subClassOf ex:x .\n");
+        assert!(k.described_generation() > g);
+    }
+
+    #[test]
+    fn described_generation_moves_when_an_ontology_header_changes_elsewhere() {
+        let mut k = Knowledge::default();
+        put_ttl(&mut k, "o", "ex:onto a owl:Ontology .\n");
+        put_ttl(&mut k, "h", "ex:onto rdfs:seeAlso ex:x .\n");
+        let set = |k: &mut Knowledge, body: &str| {
+            put_ttl(k, "h", &format!("ex:onto rdfs:seeAlso ex:x{body} .\n"));
+            k.described_generation()
+        };
+        let g = k.described_generation();
+        let license = " ; <http://purl.org/dc/terms/license> <http://l>";
+        let g1 = set(&mut k, license);
+        assert!(g1 > g);
+        // Another licence changes nothing the checks read.
+        assert_eq!(set(&mut k, &format!("{license}, <http://m>")), g1);
+        let g2 = set(&mut k, &format!("{license} ; rdfs:label \"O\""));
+        assert!(g2 > g1);
+        assert_eq!(set(&mut k, &format!("{license} ; rdfs:label \"Onto\"")), g2);
+        // An ontology typed in a document before o.ttl by URI moves the report.
+        put_ttl(&mut k, "a", "ex:onto a owl:Ontology .\n");
+        assert!(k.described_generation() > g2);
     }
 
     /// A shape as lines of text: its node, statement and targets, then one

@@ -239,6 +239,24 @@
           "markdownDescription": "Warn about terms in your own namespaces that are used but described nowhere in the workspace.",
           "scope": "resource"
         },
+        "turtle.lint.ignore": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Diagnostic codes never to report, such as `unused-prefix` or `duplicate-label`. Adds to `lint.ignore` in `turtle-lsp.json`, and wins over `#turtle.lint.enable#`.",
+          "scope": "resource"
+        },
+        "turtle.lint.enable": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Off-by-default checks to switch on: `missing-label`, `missing-definition`, `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. Adds to `lint.enable` in `turtle-lsp.json`. A code in `#turtle.lint.ignore#` stays off.",
+          "scope": "resource"
+        },
         "turtle.imports.network": {
           "type": "boolean",
           "default": false,

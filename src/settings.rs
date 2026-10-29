@@ -157,6 +157,13 @@ pub struct Settings {
     /// Validate about a second after typing stops, not only on save.
     pub(crate) shacl_on_type: bool,
     pub(crate) lint_undescribed_terms: bool,
+    /// `lint.ignore`: diagnostic codes never reported. Unlike other keys, the
+    /// layers add up.
+    pub(crate) lint_ignore: Vec<String>,
+    /// `lint.enable`: off-by-default checks switched on
+    /// ([`crate::features::curation::OPT_IN`]); the layers add up, and
+    /// `lint.ignore` wins.
+    pub(crate) lint_enable: Vec<String>,
     /// Fetch `owl:imports` over the network.
     pub(crate) imports_network: bool,
     pub(crate) imports_unresolved: UnresolvedImports,
@@ -195,6 +202,8 @@ impl Default for Settings {
             shacl_max_triples: SHACL_MAX_TRIPLES,
             shacl_on_type: true,
             lint_undescribed_terms: true,
+            lint_ignore: Vec::new(),
+            lint_enable: Vec::new(),
             imports_network: false,
             imports_unresolved: UnresolvedImports::Soften,
             format_line_width: 100,
@@ -225,6 +234,16 @@ impl Settings {
             s.apply_layer(layer, v, &mut ignored);
         }
         (s, ignored)
+    }
+
+    /// Whether diagnostics with `code` are reported: not in `lint.ignore`
+    /// (nor `undescribed-term` with `lint.undescribedTerms` off), and an
+    /// off-by-default check only when `lint.enable` lists it.
+    pub(crate) fn lint_on(&self, code: &str) -> bool {
+        let listed = |l: &[String]| l.iter().any(|c| c == code);
+        !listed(&self.lint_ignore)
+            && (self.lint_undescribed_terms || code != crate::features::lint::CODE)
+            && (!crate::features::curation::OPT_IN.contains(&code) || listed(&self.lint_enable))
     }
 
     fn apply_layer(&mut self, layer: Layer, v: &Value, ignored: &mut Ignored) {
@@ -271,6 +290,9 @@ impl Settings {
             }
             ["shacl", "onType"] => set_bool(&mut self.shacl_on_type, v),
             ["lint", "undescribedTerms"] => set_bool(&mut self.lint_undescribed_terms, v),
+            // The file may set these: they only hide or add warnings.
+            ["lint", "ignore"] => add_codes(&mut self.lint_ignore, v),
+            ["lint", "enable"] => add_codes(&mut self.lint_enable, v),
             ["imports", "network"] => {
                 if file {
                     if v.as_bool() == Some(true) {
@@ -361,6 +383,15 @@ fn parse_unresolved(s: &str) -> Option<UnresolvedImports> {
     }
 }
 
+/// Add the strings of the array `v` to `codes`, each once.
+fn add_codes(codes: &mut Vec<String>, v: &Value) {
+    for c in v.as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if !codes.iter().any(|x| x == c) {
+            codes.push(c.to_string());
+        }
+    }
+}
+
 fn set_bool(slot: &mut bool, v: &Value) {
     if let Some(b) = v.as_bool() {
         *slot = b;
@@ -387,6 +418,23 @@ mod tests {
         assert_eq!(s.query_max_rows, Some(1000));
         assert_eq!(s.query_max_buffered_rows, Some(10_000_000));
         assert!(s.prefixes.is_empty());
+    }
+
+    #[test]
+    fn lint_lists_add_up_and_ignore_wins() {
+        let file = json!({"lint": {"ignore": ["unused-prefix"], "enable": ["missing-label", "missing-definition"]}});
+        let client = json!({"turtle": {"lint.ignore": ["missing-definition", "unused-prefix"], "lint": {"enable": ["duplicate-label"]}}});
+        let s = Settings::from_layers([(Layer::File, &file), (Layer::Client, &client)]);
+        assert_eq!(s.lint_ignore, ["unused-prefix", "missing-definition"]);
+        assert!(!s.lint_on("unused-prefix"));
+        assert!(s.lint_on("missing-label"));
+        assert!(!s.lint_on("missing-definition"), "ignore wins over enable");
+        assert!(s.lint_on("duplicate-label") && s.lint_on("syntax"));
+        assert!(!s.lint_on("missing-ontology-license"), "off by default");
+        let d = Settings::default();
+        assert!(d.lint_on("duplicate-label") && d.lint_on("multiple-labels"));
+        let off = Settings::from_layers([(Layer::File, &json!({"lint.undescribedTerms": false}))]);
+        assert!(!off.lint_on("undescribed-term") && d.lint_on("undescribed-term"));
     }
 
     #[test]
