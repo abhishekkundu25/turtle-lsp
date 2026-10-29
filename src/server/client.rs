@@ -30,6 +30,12 @@ impl Client {
         self.sender.send(Out::Result { id, json })
     }
 
+    /// The connection's sender, for a thread that answers a request
+    /// itself. The connection stays open while the thread holds it.
+    pub(super) fn sender(&self) -> Sender<Out> {
+        self.sender.clone()
+    }
+
     /// Send a notification (a closed connection drops it).
     pub(super) fn notify(&self, method: &str, params: impl serde::Serialize) {
         let _ = self.send(Notification::new(method.into(), params));

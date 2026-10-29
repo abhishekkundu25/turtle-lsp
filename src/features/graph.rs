@@ -294,8 +294,6 @@ pub(crate) struct PredicateFacet {
 /// `turtle/graph`: the workspace graph that `params` asks for, laid out.
 /// Positions and ranges are in `enc`. The documents are those of `k` that
 /// are not external sources.
-// Until `turtle/graph` routes here, only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn graph(
     k: &Knowledge,
     enc: Encoding,
