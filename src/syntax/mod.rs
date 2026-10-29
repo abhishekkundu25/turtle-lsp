@@ -7,6 +7,7 @@ mod iri;
 pub mod lexer;
 pub(crate) mod names;
 mod parser;
+pub(crate) mod splice;
 
 pub use iri::Iri;
 pub(crate) use iri::{IriKey, IriMap};

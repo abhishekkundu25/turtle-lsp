@@ -171,64 +171,163 @@ fn run(
         };
         return (refused, 0);
     }
-    let out = Parsed {
-        syntax,
-        document_base: base.map(str::to_string),
-        triples: Vec::with_capacity(graph_only.unwrap_or(0)),
-        ..Parsed::default()
-    };
+    let toks = syntax.tokens(src);
     let full = graph_only.is_none();
-    let mut p = P {
+    let mut p = P::new(
         src,
-        toks: syntax.tokens(src),
+        &toks,
+        syntax,
+        Start::document(external, base),
         full,
-        pos: 0,
-        prev: None,
-        prefixes: external
-            .iter()
-            .map(|(k, v)| (k.clone(), Iri::intern(v)))
-            .collect(),
-        base: base.and_then(|b| oxiri::Iri::parse(b.to_string()).ok()),
-        out,
-        bnodes: 0,
-        bnode_labels: FxHashMap::default(),
-        quoted: 0,
-        depth: 0,
-        subject: None,
-        statement: 0,
-        trig: syntax == Syntax::TriG,
-        quads: syntax == Syntax::NQuads,
-        graph: None,
-        label: None,
-        in_graph: false,
-        graph_indent: None,
-        iri_cache: FxHashMap::default(),
-        pname_cache: FxHashMap::default(),
-        buf: String::new(),
-        v: vocab(),
-    };
+        None,
+    );
+    p.out.document_base = base.map(str::to_string);
+    p.out.triples.reserve(graph_only.unwrap_or(0));
     let mut comments = 0;
-    for i in 0..p.toks.len() {
-        let t = p.toks[i];
+    for t in &toks {
         if t.kind == Kind::Comment {
             comments += 1;
             if full {
                 p.out.comments.push(Span::new(t.start, t.end));
             }
         }
-        if let Some(msg) = t.error() {
-            p.error(Span::new(t.start, t.end), msg);
+        if let Some(e) = lexer_error(t) {
+            p.out.errors.push(e);
         }
     }
-    p.pos = p.skip_comments(0);
     p.document();
     if syntax.is_line_based() {
         p.ntriples_restrictions();
     }
+    let mut out = p.out;
     if full {
-        p.out.tokens = p.toks;
+        out.tokens = toks;
     }
-    (p.out, comments)
+    (out, comments)
+}
+
+/// The state of the parser at the top of its statement loop, where a parse
+/// can start: a full parse at the first token in the initial state, a splice
+/// ([`super::splice`]) at the first token of an old statement, in the state
+/// the full parse had there.
+#[derive(Clone)]
+pub(crate) struct Start {
+    /// Prefix name -> namespace in effect: the external ones, then those
+    /// declared before.
+    pub(crate) prefixes: FxHashMap<String, Iri>,
+    /// The base in effect.
+    pub(crate) base: Option<oxiri::Iri<String>>,
+    /// The index the first statement parsed gets.
+    pub(crate) statement: u32,
+    /// Inside a TriG graph block: the block's name, and the indentation of
+    /// its first statement that starts a line, if one has been parsed.
+    pub(crate) block: Option<(Option<GraphName>, Option<u32>)>,
+    /// The token to start at, and the token before it that is not a comment.
+    pub(crate) at: usize,
+    pub(crate) prev: Option<usize>,
+}
+
+impl Start {
+    /// The start of a document: the first token, the external prefixes and
+    /// the document's base.
+    pub(crate) fn document(external: &PrefixMap, base: Option<&str>) -> Start {
+        Start {
+            prefixes: external
+                .iter()
+                .map(|(k, v)| (k.clone(), Iri::intern(v)))
+                .collect(),
+            base: base.and_then(|b| oxiri::Iri::parse(b.to_string()).ok()),
+            statement: 0,
+            block: None,
+            at: 0,
+            prev: None,
+        }
+    }
+}
+
+/// The parser at the top of its statement loop, as a window parse's `until`
+/// sees it: the current token (never a comment) and the token before it that
+/// is not a comment.
+#[derive(Clone, Copy)]
+pub(crate) struct Top {
+    pub(crate) pos: usize,
+    pub(crate) prev: Option<usize>,
+}
+
+/// Whether a window parse goes on past the [`Top`] it is at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Halt {
+    Go,
+    Stop,
+}
+
+/// How a window parse ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// `until` stopped it at this token.
+    Stopped(usize),
+    /// At the end of the tokens, outside a graph block.
+    End,
+    /// At a directive or a graph block, or out of the block it started in,
+    /// at this token: the state a splice keeps would change.
+    Left(usize),
+}
+
+/// The statements of a window parse ([`window`]).
+pub(crate) struct Window {
+    /// The statements, triples, references, prefix uses and parser errors
+    /// (not the lexer's, nor the N-Triples restrictions).
+    pub(crate) out: Parsed,
+    pub(crate) ended: Ended,
+    /// Blank nodes allocated, numbered from 1.
+    pub(crate) bnodes: u32,
+    /// The graph block's indentation at the end ([`Start::block`]).
+    pub(crate) indent: Option<u32>,
+    /// The deepest nesting reached.
+    pub(crate) deepest: u32,
+}
+
+/// Parse the statements of `toks` from `start` until `until` says stop at the
+/// top of the statement loop, the tokens end, or a directive or graph block
+/// comes (that `until` does not stop at). The same parser as a full parse, from a given state; blank nodes
+/// are numbered from 1, and no `_:label` is known.
+pub(crate) fn window(
+    src: &str,
+    toks: &[Token],
+    syntax: Syntax,
+    start: Start,
+    until: &mut dyn FnMut(Top) -> Halt,
+) -> Window {
+    let in_block = start.block.is_some();
+    let mut p = P::new(src, toks, syntax, start, true, Some(until));
+    if in_block {
+        p.graph_body(Span::default());
+    } else {
+        p.document();
+    }
+    let ended = p.ended.unwrap_or(if in_block {
+        Ended::Left(p.pos)
+    } else {
+        Ended::End
+    });
+    Window {
+        ended,
+        bnodes: p.bnodes,
+        indent: p.graph_indent,
+        deepest: p.deepest,
+        out: p.out,
+    }
+}
+
+/// The error for a token the lexer found malformed.
+pub(crate) fn lexer_error(t: &Token) -> Option<SyntaxError> {
+    let msg = t.error()?;
+    Some(SyntaxError::new(
+        Span::new(t.start, t.end),
+        msg,
+        Severity::Error,
+        "syntax",
+    ))
 }
 
 /// A term, and whether it is a prefixed name with an undeclared prefix or a
@@ -241,7 +340,7 @@ struct P<'a> {
     src: &'a str,
     /// Every token, comments too: they become [`Parsed::tokens`]. The parser
     /// steps over the comments.
-    toks: Vec<Token>,
+    toks: &'a [Token],
     /// Keep the tokens, references, prefix uses and comment spans
     /// ([`Parsed::graph_only`] does not).
     full: bool,
@@ -262,6 +361,8 @@ struct P<'a> {
     subject: Option<(Iri, Span)>,
     /// Index of the statement being parsed.
     statement: u32,
+    /// Index of the first statement this parse pushes ([`Start::statement`]).
+    first_statement: u32,
     trig: bool,
     /// N-Quads: a statement may end with a graph label.
     quads: bool,
@@ -281,6 +382,31 @@ struct P<'a> {
     /// Scratch space for building IRIs from prefixed names.
     buf: String,
     v: &'static Vocab,
+    /// A window parse's stopping rule ([`window`]); `None` in a full parse.
+    until: Option<&'a mut dyn FnMut(Top) -> Halt>,
+    /// How a window parse ended, once it has.
+    ended: Option<Ended>,
+    /// The deepest `depth` reached.
+    deepest: u32,
+}
+
+/// The column of a token starting at `start` if only spaces and tabs precede
+/// it on its line; `from` is the end of the token before it that is not a
+/// comment.
+pub(crate) fn line_indent(src: &str, from: Option<u32>, start: u32) -> Option<u32> {
+    let from = from.unwrap_or(0) as usize;
+    let gap = &src.as_bytes()[from..start as usize];
+    work(gap.len());
+    let (row, offset) = match gap.iter().rposition(|c| matches!(c, b'\n' | b'\r')) {
+        Some(i) => (&gap[i + 1..], gap.len() - i - 1),
+        // No line break since the previous token: the same line, unless
+        // this is the first token and nothing but blanks precedes it.
+        None if from == 0 => (gap, gap.len()),
+        None => return None,
+    };
+    row.iter()
+        .all(|c| matches!(c, b' ' | b'\t'))
+        .then_some(offset as u32)
 }
 
 fn is_starter(k: Kind) -> bool {
@@ -318,6 +444,38 @@ fn is_term(k: Kind) -> bool {
     )
 }
 
+const NT_DIRECTIVES: &str = "N-Triples does not allow directives";
+const NT_PNAME: &str = "N-Triples needs full IRIs like <http://example.org/x>, not prefixed names";
+const NT_A: &str =
+    "N-Triples does not allow 'a': write <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>";
+const NT_ABBREVIATION: &str = "N-Triples does not allow ';' or ',': write every triple in full";
+const NT_BRACKETS: &str = "N-Triples does not allow '[ ]': use a blank node label like _:b1";
+const NT_COLLECTION: &str = "N-Triples does not allow collections '( )'";
+const NT_UNQUOTED: &str =
+    "N-Triples literals must be quoted, e.g. \"1\"^^<http://www.w3.org/2001/XMLSchema#integer>";
+const NT_REIFIED: &str =
+    "N-Triples does not allow reified triples or annotations: use a triple term <<( s p o )>>";
+const NT_STRING: &str = "N-Triples strings use double quotes on one line: \"...\"";
+const NT_RELATIVE: &str = "N-Triples needs absolute IRIs (no relative IRIs, no @base)";
+const NT_ONE_PER_LINE: &str = "N-Triples allows one triple per line";
+const NT_ONE_LINE: &str = "An N-Triples triple must be on one line";
+
+/// What the N-Triples restrictions say about tokens, then about statements:
+/// the third group of [`Parsed::errors`], in that order.
+const TOKEN_RESTRICTIONS: [&str; 10] = [
+    NT_DIRECTIVES,
+    NT_PNAME,
+    NT_A,
+    NT_ABBREVIATION,
+    NT_BRACKETS,
+    NT_COLLECTION,
+    NT_UNQUOTED,
+    NT_REIFIED,
+    NT_STRING,
+    NT_RELATIVE,
+];
+const STATEMENT_RESTRICTIONS: [&str; 2] = [NT_ONE_PER_LINE, NT_ONE_LINE];
+
 /// The tokens N-Triples has no use for, and what to say about them.
 fn ntriples_forbids(k: Kind) -> Option<&'static str> {
     Some(match k {
@@ -326,24 +484,114 @@ fn ntriples_forbids(k: Kind) -> Option<&'static str> {
         | Kind::VersionDirective
         | Kind::SparqlPrefix
         | Kind::SparqlBase
-        | Kind::SparqlVersion => "N-Triples does not allow directives",
-        Kind::PName => "N-Triples needs full IRIs like <http://example.org/x>, not prefixed names",
-        Kind::A => {
-            "N-Triples does not allow 'a': write <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>"
-        }
-        Kind::Semicolon | Kind::Comma => {
-            "N-Triples does not allow ';' or ',': write every triple in full"
-        }
-        Kind::LBracket => "N-Triples does not allow '[ ]': use a blank node label like _:b1",
-        Kind::LParen => "N-Triples does not allow collections '( )'",
-        Kind::Number | Kind::Boolean => {
-            "N-Triples literals must be quoted, e.g. \"1\"^^<http://www.w3.org/2001/XMLSchema#integer>"
-        }
-        Kind::LTriple | Kind::Tilde | Kind::LAnnotation => {
-            "N-Triples does not allow reified triples or annotations: use a triple term <<( s p o )>>"
-        }
+        | Kind::SparqlVersion => NT_DIRECTIVES,
+        Kind::PName => NT_PNAME,
+        Kind::A => NT_A,
+        Kind::Semicolon | Kind::Comma => NT_ABBREVIATION,
+        Kind::LBracket => NT_BRACKETS,
+        Kind::LParen => NT_COLLECTION,
+        Kind::Number | Kind::Boolean => NT_UNQUOTED,
+        Kind::LTriple | Kind::Tilde | Kind::LAnnotation => NT_REIFIED,
         _ => return None,
     })
+}
+
+/// A restriction's message, named for N-Quads when `quads`.
+fn restriction_message(m: &'static str, quads: bool) -> Cow<'static, str> {
+    if quads {
+        Cow::Owned(
+            m.replace("one triple per line", "one quad per line")
+                .replace("N-Triples triple", "N-Quads quad")
+                .replace("N-Triples", "N-Quads"),
+        )
+    } else {
+        Cow::Borrowed(m)
+    }
+}
+
+fn restriction(span: Span, m: &'static str, quads: bool) -> SyntaxError {
+    SyntaxError::new(
+        span,
+        restriction_message(m, quads),
+        Severity::Error,
+        "syntax",
+    )
+}
+
+/// What N-Triples (N-Quads when `quads`) forbids in token `t`, if anything.
+pub(crate) fn token_restriction(src: &str, t: &Token, quads: bool) -> Option<SyntaxError> {
+    let m = match t.kind {
+        Kind::String => {
+            let text = t.text(src);
+            (text.starts_with('\'') || text.starts_with("\"\"\"")).then_some(NT_STRING)
+        }
+        Kind::Iri if t.error().is_none() => {
+            let text = t.text(src);
+            let raw = &text[1..text.len() - 1];
+            let raw = if raw.contains('\\') {
+                Cow::Owned(unescape_iri(raw))
+            } else {
+                Cow::Borrowed(raw)
+            };
+            (!has_scheme(&raw)).then_some(NT_RELATIVE)
+        }
+        // N-Triples 1.2 allows `VERSION "1.2"`, in upper case.
+        Kind::SparqlVersion if t.text(src) == "VERSION" => None,
+        k => ntriples_forbids(k),
+    }?;
+    Some(restriction(Span::new(t.start, t.end), m, quads))
+}
+
+/// What N-Triples forbids in a statement at `span`, after one that ends at
+/// `prev_end`: one triple per line, each on a single line.
+pub(crate) fn statement_restriction(
+    src: &str,
+    prev_end: Option<u32>,
+    span: Span,
+    quads: bool,
+) -> Option<SyntaxError> {
+    let newline = |a: u32, b: u32| {
+        let (a, b) = (a.min(b) as usize, a.max(b) as usize);
+        src.as_bytes()[a..b].contains(&b'\n')
+    };
+    let m = if prev_end.is_some_and(|end| !newline(end, span.start)) {
+        NT_ONE_PER_LINE
+    } else if newline(span.start, span.end) {
+        NT_ONE_LINE
+    } else {
+        return None;
+    };
+    Some(restriction(span, m, quads))
+}
+
+/// Which part of the N-Triples restrictions an error is from, if it is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Restriction {
+    Token,
+    Statement,
+}
+
+/// Whether `e` is an N-Triples (N-Quads when `quads`) restriction, and
+/// which part. The parser and the lexer never say what a restriction says.
+pub(crate) fn restriction_of(e: &SyntaxError, quads: bool) -> Option<Restriction> {
+    /// Every restriction's message, for N-Triples and for N-Quads.
+    type Texts = [Vec<(Restriction, Cow<'static, str>)>; 2];
+    static TEXTS: OnceLock<Texts> = OnceLock::new();
+    let texts = TEXTS.get_or_init(|| {
+        [false, true].map(|quads| {
+            let token = TOKEN_RESTRICTIONS.map(|m| (Restriction::Token, m));
+            let statement = STATEMENT_RESTRICTIONS.map(|m| (Restriction::Statement, m));
+            token
+                .into_iter()
+                .chain(statement)
+                .map(|(r, m)| (r, restriction_message(m, quads)))
+                .collect()
+        })
+    });
+    texts[usize::from(quads)]
+        .iter()
+        .find(|(_, m)| *m == e.message())
+        .map(|(r, _)| *r)
 }
 
 fn describe(k: Kind) -> &'static str {
@@ -382,6 +630,88 @@ fn describe(k: Kind) -> &'static str {
 }
 
 impl<'a> P<'a> {
+    fn new(
+        src: &'a str,
+        toks: &'a [Token],
+        syntax: Syntax,
+        start: Start,
+        full: bool,
+        until: Option<&'a mut dyn FnMut(Top) -> Halt>,
+    ) -> P<'a> {
+        let (graph, graph_indent) = start.block.unwrap_or_default();
+        let mut p = P {
+            src,
+            toks,
+            full,
+            pos: start.at,
+            prev: start.prev,
+            prefixes: start.prefixes,
+            base: start.base,
+            out: Parsed {
+                syntax,
+                ..Parsed::default()
+            },
+            bnodes: 0,
+            bnode_labels: FxHashMap::default(),
+            quoted: 0,
+            depth: 0,
+            subject: None,
+            statement: start.statement,
+            first_statement: start.statement,
+            trig: syntax == Syntax::TriG,
+            quads: syntax == Syntax::NQuads,
+            graph,
+            label: None,
+            in_graph: start.block.is_some(),
+            graph_indent,
+            iri_cache: FxHashMap::default(),
+            pname_cache: FxHashMap::default(),
+            buf: String::new(),
+            v: vocab(),
+            until,
+            ended: None,
+            deepest: 0,
+        };
+        p.pos = p.skip_comments(p.pos);
+        p
+    }
+
+    /// The index the next statement pushed gets.
+    fn next_statement(&self) -> u32 {
+        self.first_statement + self.out.statements.len() as u32
+    }
+
+    /// At the top of the statement loop of a window parse: whether to stop
+    /// here, for `until` or because a directive or a graph block comes.
+    fn halted(&mut self) -> bool {
+        let top = Top {
+            pos: self.pos,
+            prev: self.prev,
+        };
+        let Some(until) = self.until.as_mut() else {
+            return false;
+        };
+        if until(top) == Halt::Stop {
+            self.ended = Some(Ended::Stopped(self.pos));
+            return true;
+        }
+        let structural = matches!(
+            self.peek_kind(),
+            Some(
+                Kind::PrefixDirective
+                    | Kind::SparqlPrefix
+                    | Kind::BaseDirective
+                    | Kind::SparqlBase
+                    | Kind::VersionDirective
+                    | Kind::SparqlVersion
+            )
+        ) || self.graph_block_ahead();
+        if structural {
+            self.ended = Some(Ended::Left(self.pos));
+        }
+        structural
+    }
+
     // ---- token helpers ----
 
     fn peek(&self) -> Option<Token> {
@@ -445,22 +775,8 @@ impl<'a> P<'a> {
     /// the cost is the size of that gap, not the length of the line.
     fn line_indent(&self) -> Option<u32> {
         let t = self.toks.get(self.pos)?;
-        let from = match self.prev {
-            Some(i) => self.toks[i].end as usize,
-            None => 0,
-        };
-        let gap = &self.src.as_bytes()[from..t.start as usize];
-        work(gap.len());
-        let (row, offset) = match gap.iter().rposition(|c| matches!(c, b'\n' | b'\r')) {
-            Some(i) => (&gap[i + 1..], gap.len() - i - 1),
-            // No line break since the previous token: the same line, unless
-            // this is the first token and nothing but blanks precedes it.
-            None if from == 0 => (gap, gap.len()),
-            None => return None,
-        };
-        row.iter()
-            .all(|c| matches!(c, b' ' | b'\t'))
-            .then_some(offset as u32)
+        let from = self.prev.map(|i| self.toks[i].end);
+        line_indent(self.src, from, t.start)
     }
     fn prev_span(&self) -> Span {
         match self.prev.map(|i| self.toks[i]) {
@@ -555,6 +871,9 @@ impl<'a> P<'a> {
 
     fn document(&mut self) {
         while let Some(t) = self.peek() {
+            if self.halted() {
+                return;
+            }
             let start = self.pos;
             let ok = match t.kind {
                 Kind::PrefixDirective | Kind::SparqlPrefix => self.prefix_directive(),
@@ -662,7 +981,7 @@ impl<'a> P<'a> {
             return self.expected("'{'");
         };
         self.bump();
-        let first_statement = self.out.statements.len() as u32;
+        let first_statement = self.next_statement();
         let index = self.out.graphs.len();
         self.out.graphs.push(GraphBlock {
             span: Span::new(first.start, open.end),
@@ -677,7 +996,7 @@ impl<'a> P<'a> {
         self.in_graph = false;
         self.graph = None;
         let end = self.prev_span().end;
-        let statements = self.out.statements.len() as u32;
+        let statements = self.next_statement();
         let g = &mut self.out.graphs[index];
         g.span.end = g.span.end.max(end);
         g.statements.end = statements;
@@ -688,9 +1007,16 @@ impl<'a> P<'a> {
     fn graph_body(&mut self, open: Span) {
         loop {
             let Some(t) = self.peek() else {
+                if self.until.is_some() {
+                    self.ended = Some(Ended::Left(self.pos));
+                    return;
+                }
                 self.error(open, "Unclosed '{': expected '}' to close the graph block");
                 return;
             };
+            if self.halted() {
+                return;
+            }
             let span = Span::new(t.start, t.end);
             match t.kind {
                 Kind::RBrace => {
@@ -742,72 +1068,17 @@ impl<'a> P<'a> {
 
     /// What N-Triples forbids (N-Quads too: the messages name the syntax).
     fn ntriples_restrictions(&mut self) {
-        let mut errors: Vec<(Span, &'static str)> = Vec::new();
-        for t in &self.toks {
-            let msg = match t.kind {
-                Kind::String => {
-                    let text = self.text(*t);
-                    if text.starts_with('\'') || text.starts_with("\"\"\"") {
-                        Some("N-Triples strings use double quotes on one line: \"...\"")
-                    } else {
-                        None
-                    }
-                }
-                Kind::Iri if t.error().is_none() => {
-                    let text = self.text(*t);
-                    let raw = &text[1..text.len() - 1];
-                    let raw = if raw.contains('\\') {
-                        Cow::Owned(unescape_iri(raw))
-                    } else {
-                        Cow::Borrowed(raw)
-                    };
-                    (!has_scheme(&raw))
-                        .then_some("N-Triples needs absolute IRIs (no relative IRIs, no @base)")
-                }
-                // N-Triples 1.2 allows `VERSION "1.2"`, in upper case.
-                Kind::SparqlVersion if self.text(*t) == "VERSION" => None,
-                k => ntriples_forbids(k),
-            };
-            if let Some(m) = msg {
-                errors.push((Span::new(t.start, t.end), m));
+        for t in self.toks {
+            if let Some(e) = token_restriction(self.src, t, self.quads) {
+                self.out.errors.push(e);
             }
         }
-        // One triple per line, each on a single line. Statements are in text
-        // order, so lines are counted in one pass.
-        let bytes = self.src.as_bytes();
-        let (mut at, mut line) = (0usize, 0usize);
-        let mut line_of = |off: u32| {
-            let off = off as usize;
-            let newlines = |r: &[u8]| r.iter().filter(|b| **b == b'\n').count();
-            if off >= at {
-                line += newlines(&bytes[at..off]);
-            } else {
-                line -= newlines(&bytes[off..at]);
-            }
-            at = off;
-            line
-        };
-        let mut prev_end_line = None;
+        let mut prev = None;
         for st in &self.out.statements {
-            let (l0, l1) = (line_of(st.span.start), line_of(st.span.end));
-            if prev_end_line == Some(l0) {
-                errors.push((st.span, "N-Triples allows one triple per line"));
-            } else if l1 > l0 {
-                errors.push((st.span, "An N-Triples triple must be on one line"));
+            if let Some(e) = statement_restriction(self.src, prev, st.span, self.quads) {
+                self.out.errors.push(e);
             }
-            prev_end_line = Some(l1);
-        }
-        for (span, m) in errors {
-            let m = if self.quads {
-                Cow::Owned(
-                    m.replace("one triple per line", "one quad per line")
-                        .replace("N-Triples triple", "N-Quads quad")
-                        .replace("N-Triples", "N-Quads"),
-                )
-            } else {
-                Cow::Borrowed(m)
-            };
-            self.error(span, m);
+            prev = Some(st.span.end);
         }
     }
 
@@ -964,7 +1235,7 @@ impl<'a> P<'a> {
         let start = self.peek().map_or(0, |t| t.start);
         self.subject = None;
         self.label = None;
-        self.statement = self.out.statements.len() as u32;
+        self.statement = self.next_statement();
         let r = self.triples();
         let subject = self.subject.take();
         let end = self.prev_span().end.max(start);
@@ -1251,6 +1522,7 @@ impl<'a> P<'a> {
             return Err(());
         }
         self.depth += 1;
+        self.deepest = self.deepest.max(self.depth);
         let r = f(self);
         self.depth -= 1;
         r
