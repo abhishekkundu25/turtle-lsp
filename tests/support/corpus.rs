@@ -1,4 +1,4 @@
-// The private JSON-LD corpus, for the tests that read it. Included with
+// The public corpus, for the tests that read it. Included with
 // `include!("support/corpus.rs")` (it is not a test crate of its own).
 
 /// `rel` under `test/corpus`, when the corpus has it. Without it the test
@@ -16,7 +16,7 @@ fn corpus_in(root: &std::path::Path, rel: &str, ci: bool) -> Option<std::path::P
     if path.exists() {
         return Some(path);
     }
-    let message = format!("test/corpus/{rel} is absent (run tools/corpus/fetch-jsonld.sh)");
+    let message = format!("test/corpus/{rel} is absent (run tools/corpus/fetch.sh, or npm run corpus)");
     assert!(!ci, "{message}; CI=true does not skip the corpus tests");
     eprintln!("skipped: {message}");
     None

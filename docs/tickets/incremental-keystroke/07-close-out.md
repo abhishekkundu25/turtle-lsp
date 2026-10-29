@@ -19,7 +19,7 @@
 
 Budgets (spec, pass/fail):
 
-- [ ] Results equal a full rebuild in every chaos iteration and on the
+- [x] Results equal a full rebuild in every chaos iteration and on the
   corpus.
 - [ ] `big-vocab` keystroke at most 8 ms; `big-file` keystroke at most 8 ms.
 - [ ] No other keystroke row more than 5% slower; initial index within 10%.

@@ -50,6 +50,9 @@ Inside the larger modules, these files hold one part each:
 | `src/layout/doc.rs` | The token document: the tokens a formatter lays out, and each comment attached to a token |
 | `src/layout/terms.rs` | The triple terms (`Term`, `Obj`, `Po`) and their widths on one line |
 | `src/layout/printer.rs` | `Printer`, which both formatters write through; `Style` holds the two places where their triple layouts differ |
+| `src/syntax/splice.rs` | The statement splice: the parse after one edit, from the parse before it and the statements around the edit, or a `Fallback` that says why the caller parses in full |
+| `src/features/kept.rs` | `Kept`: the findings an open document keeps between edits, for the checks that keep them, and what each update checks again |
+| `src/oracle.rs` | The incremental oracle: a document edited through the workspace must give what a fresh workspace opened on the final text gives (public, hidden from the docs, for the tests) |
 | `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF, SPARQL, import sources, catalogs or JSON, and in which letter case |
 | `src/shacl/model.rs` | The shapes in a graph, with their paths, targets and parameters |
 | `src/shacl/vocab.rs` | The SHACL, RDF, RDFS and OWL IRIs the SHACL code compares against, interned once |
@@ -81,9 +84,46 @@ position helpers; SPARQL documents never feed the knowledge index and RDF
 features never run on them.
 
 The knowledge index (`knowledge::Knowledge`) keeps each source's
-contribution (`DocFacts`) and subtracts exactly that when the source
+contribution (`DocFacts`) and applies only the difference when the source
 changes, so a keystroke costs the size of one document, not of the
-workspace.
+workspace. Each change leaves a change set (`knowledge::Changes`): the IRIs,
+label and definition texts and namespaces whose entries other documents'
+checks read.
+
+## Edits between analyses
+
+An open Turtle, TriG, N-Triples or N-Quads document keeps what the next
+analysis builds on, in the `Analyzed` state of its workspace entry: after
+`didChange`, the last analysis, the client's changes since it collapsed into
+one `syntax::splice::Edit`, and the line starts of the text now (moved
+along with each change, not found again). The next analysis splices the
+statements around the edit into the old parse (`syntax::splice`). Any case
+the splice does not cover falls back to a full parse, and so does every
+analysis with the setting `parse.incremental` off, the first one, a change
+of the whole text, and a change of the prefixes or contexts in effect.
+SPARQL and JSON-LD documents, the command line and the browser engine
+always parse in full.
+
+The diagnostics then check again only what can have changed
+(`features::kept`). Each check in `features::diagnostics` is a `Check`, and
+`Check::reads` says what it reads besides the statement it reports in
+(`Reads`): its statement alone, the statements about the same subject, the
+knowledge index's entries for the IRIs and texts written there, the whole
+document, or the workspace beyond the change set. The matches are
+exhaustive, so a new check does not compile until it declares its class.
+`Check::kept` picks the checks whose findings an open document keeps: only
+those that read the statement, the subject or the index, so that the
+splice's window and the index's change set say when a finding is stale.
+Everything else runs in full on every analysis. Declare a new check by
+what it reads, not by what it reads today in the common case: a class too
+narrow keeps a stale finding.
+
+The oracle (`oracle::check`) is the proof: it applies batches of changes
+through the workspace, as a client sends them, and compares the parse,
+errors included, the analysis, the knowledge index and the composed
+diagnostics with a fresh workspace opened on the final text. The chaos
+tests (`tests/chaos.rs`) run it on every iteration of their edit mode, and
+`tests/corpus_edits.rs` runs it on the public corpus.
 
 ## The seams
 
