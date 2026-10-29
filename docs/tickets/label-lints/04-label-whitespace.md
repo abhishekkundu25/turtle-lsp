@@ -4,9 +4,9 @@
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Unit tests: leading, trailing, both, tab and newline (raw and escaped), long-quoted `"""…"""`, single quotes, language tag and datatype kept, JSON-LD value, a label that is all whitespace (fix leaves `""`), no diagnostic on clean labels or on other predicates.
-- [ ] `batch` test: the fix is not safe; `fix_all` applies it only with `include_unsafe`.
-- [ ] New `test/label-lints.test.mjs`: the diagnostic and the fix applied over LSP; `check --fix` leaves it and `--fix --unsafe-fixes` trims it.
-- [ ] `tests/chaos.rs` passes unchanged (it checks every quick fix's tokens and graph).
+- [x] Unit tests: leading, trailing, both, tab and newline (raw and escaped), long-quoted `"""…"""`, single quotes, language tag and datatype kept, JSON-LD value, a label that is all whitespace (fix leaves `""`), no diagnostic on clean labels or on other predicates.
+- [x] `batch` test: the fix is not safe; `fix_all` applies it only with `include_unsafe`.
+- [x] New `test/label-lints.test.mjs`: the diagnostic and the fix applied over LSP; `check --fix` leaves it and `--fix --unsafe-fixes` trims it.
+- [x] `tests/chaos.rs` passes unchanged (it checks every quick fix's tokens and graph).

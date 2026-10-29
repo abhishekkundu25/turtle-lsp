@@ -27,3 +27,9 @@ and 06 together; then 07.
   other ticket names.
 - `multiple-labels` is on by default (Part A), not opt-in: two labels in one
   language is a mistake tools trip over, not a house style.
+- 04 extended the chaos tests' unsafe-fix check: a string token may become
+  the same string with the whitespace at its value's ends removed (same
+  quotes). The fix itself is checked exactly, with no exemption. At 20,000
+  iterations the old check failed on the new fix.
+- 04: the `label-whitespace` range is the quoted string only, not the
+  language tag or datatype.
