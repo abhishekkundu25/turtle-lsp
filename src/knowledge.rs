@@ -111,7 +111,7 @@ pub(crate) struct DocFacts {
     objects: Vec<Iri>,
     /// IRIs used in predicate position here.
     predicates: Vec<Iri>,
-    /// IRIs this source makes terms (sorted, unique): see [`Knowledge::is_term`].
+    /// IRIs this source makes terms (unique, by [`Iri::id`]): see [`Knowledge::is_term`].
     terms: Vec<Iri>,
     /// `rdfs:label` and `skos:prefLabel` of IRI subjects, in text order.
     labels: Vec<Keyed>,
@@ -123,9 +123,9 @@ pub(crate) struct DocFacts {
     /// first lookup by key ([`DocFacts::under_key`]), which most documents
     /// never get.
     by_key: [OnceLock<Box<[u32]>>; 3],
-    /// Subjects of `definitions` (sorted, unique).
+    /// Subjects of `definitions` (unique, by [`Iri::id`]).
     defined: Vec<Iri>,
-    /// `owl:deprecated` with a boolean value (sorted, unique).
+    /// `owl:deprecated` with a boolean value (unique, by [`Iri::id`]).
     deprecated: Vec<(Iri, bool)>,
     /// What this source says about each IRI subject that the curation
     /// checks read, sorted by [`Iri::id`]; IRIs it says none of it about are
@@ -598,11 +598,12 @@ impl DocFacts {
         if !shape_nodes.is_empty() {
             f.shapes(a, shape_nodes);
         }
-        f.terms.sort_unstable();
+        // By id, not text: these lists are only walked, so any order dedups.
+        f.terms.sort_unstable_by_key(|i| i.id());
         f.terms.dedup();
-        f.defined.sort_unstable();
+        f.defined.sort_unstable_by_key(|i| i.id());
         f.defined.dedup();
-        f.deprecated.sort_unstable();
+        f.deprecated.sort_unstable_by_key(|d| (d.0.id(), d.1));
         f.deprecated.dedup();
 
         f.curated = summaries(curated, a);

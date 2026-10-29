@@ -105,8 +105,8 @@ struct Lit<'a> {
     p: Iri,
     value: &'a str,
     lang: Option<Iri>,
-    /// The quoted string ([`string_token`]), else the whole object.
-    span: Span,
+    /// The whole object: [`Checks::span`] finds the quoted string in it.
+    o_span: Span,
 }
 
 /// The label, definition and header checks of one document. Each reads the
@@ -177,6 +177,13 @@ impl<'a> Checks<'a> {
         }
     }
 
+    /// Where a warning on `l` goes: its quoted string ([`string_token`]),
+    /// else the whole object. Found only for a warning, as most literals
+    /// get none.
+    fn span(&self, l: &Lit) -> Span {
+        string_token(self.a, l.o_span, l.value).unwrap_or(l.o_span)
+    }
+
     fn warning(&self, span: Span, code: &str, message: String) -> Diagnostic {
         Diagnostic {
             range: self.a.range(self.enc, span),
@@ -197,7 +204,6 @@ impl<'a> Checks<'a> {
         triples: impl IntoIterator<Item = &'a Triple>,
         predicates: &[Iri],
     ) -> Vec<Lit<'a>> {
-        let a = self.a;
         let mut out: Vec<Lit<'a>> = Vec::new();
         let mut seen: FxHashSet<(Span, Iri, Iri)> = FxHashSet::default();
         for t in triples.into_iter().filter(|t| predicates.contains(&t.p)) {
@@ -207,14 +213,14 @@ impl<'a> Checks<'a> {
             if !self.is_term(*s) {
                 continue;
             }
-            let span = string_token(a, t.o_span, value).unwrap_or(t.o_span);
-            if seen.insert((span, *s, t.p)) {
+            // The object's span: one string per object, so the same literal.
+            if seen.insert((t.o_span, *s, t.p)) {
                 out.push(Lit {
                     subject: *s,
                     p: t.p,
                     value,
                     lang: *lang,
-                    span,
+                    o_span: t.o_span,
                 });
             }
         }
@@ -259,7 +265,7 @@ impl<'a> Checks<'a> {
                 l.value.trim(),
                 self.names(colliding, l.subject)
             );
-            out.push(self.warning(l.span, DUPLICATE_LABEL, message));
+            out.push(self.warning(self.span(l), DUPLICATE_LABEL, message));
         }
         self.multiple(&lits, MULTIPLE_LABELS, out);
     }
@@ -284,7 +290,7 @@ impl<'a> Checks<'a> {
             if others(all, l.subject) > 0 && !l.value.trim().is_empty() {
                 let names = self.names(all, l.subject);
                 let message = format!("Another term has this definition: {names}");
-                out.push(self.warning(l.span, DUPLICATE_DEFINITION, message));
+                out.push(self.warning(self.span(&l), DUPLICATE_DEFINITION, message));
             }
             if l.value
                 .trim_start()
@@ -293,7 +299,7 @@ impl<'a> Checks<'a> {
                 .is_some_and(char::is_lowercase)
             {
                 let message = "Definition starts with a lowercase letter".to_string();
-                out.push(self.warning(l.span, LOWERCASE_DEFINITION, message));
+                out.push(self.warning(self.span(&l), LOWERCASE_DEFINITION, message));
             }
             defs.push(l);
         }
@@ -320,7 +326,7 @@ impl<'a> Checks<'a> {
                 Some(lang) => format!("{s} has {n} {p} values tagged @{}", &*lang),
                 None => format!("{s} has {n} {p} values without a language tag"),
             };
-            out.push(self.warning(l.span, code, message));
+            out.push(self.warning(self.span(l), code, message));
         }
     }
 
@@ -483,13 +489,13 @@ impl TermKind {
     }
 }
 
-/// A literal's folded text and language: what [`Sharing`] looks terms up by.
-type TextKey = (String, Option<Iri>);
-
 /// How many of `terms` (sorted, unique) are not `except`.
 fn others(terms: &[Iri], except: Iri) -> usize {
     terms.len() - usize::from(terms.binary_search(&except).is_ok())
 }
+
+/// A literal's folded text and language: what [`Sharing`] looks terms up by.
+type TextKey = (String, Option<Iri>);
 
 /// The terms the index gives for each (folded text, language) the
 /// document's literals have, looked up once per key.
@@ -500,12 +506,13 @@ struct Sharing {
 
 impl Sharing {
     fn key(l: &Lit) -> TextKey {
-        let folded = l
-            .value
-            .trim()
-            .chars()
-            .flat_map(char::to_lowercase)
-            .collect();
+        let t = l.value.trim();
+        // Most labels are ASCII: lowercase them without a char-by-char walk.
+        let folded = if t.is_ascii() {
+            t.to_ascii_lowercase()
+        } else {
+            t.chars().flat_map(char::to_lowercase).collect()
+        };
         (folded, l.lang)
     }
 
