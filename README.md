@@ -31,6 +31,8 @@ the full W3C test suites and real public ontologies; see
 - **Quick fixes and refactorings**: add a missing prefix (your project's own binding first), add all missing prefixes, remove an unused prefix, fix a misspelled term; organise prefixes, shorten or expand an IRI, and extract a prefix for a repeated namespace.
 - **Type hierarchy**: super- and subclasses (and sub-properties) across the workspace, imports and vocabularies.
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
+- **Label checks** (warnings, on by default): two terms of one kind (two classes, two properties or two concepts) in the workspace with the same `rdfs:label` or `skos:prefLabel` in one language, ignoring case (`duplicate-label`, on both labels, naming the other term); a label with whitespace at either end (`label-whitespace`, with a fix that trims it); a term with two labels in one language (`multiple-labels`). A use of a term that a workspace file marks `owl:deprecated true` is a `deprecated-term` warning; deprecated terms of bundled vocabularies and imports stay hints.
+- **House-style checks** (warnings, off until `lint.enable` lists them): `missing-label`, `missing-definition` (neither `skos:definition` nor `rdfs:comment`), `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, and on each `owl:Ontology`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. They look at classes, properties and concepts only, not instance data. `lint.ignore` turns any check off; see [Settings file](#settings-file-turtle-lspjson).
 - **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, TriG, N-Triples, N-Quads, JSON-LD or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose. See [Network access](#network-access) for what is fetched and the limits.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
@@ -492,7 +494,9 @@ Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
 server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
 `turtle.shacl.maxTriples` (the most triples one SHACL run validates: the
 shared triples and every dataset together), `turtle.shacl.onType`,
-`turtle.lint.undescribedTerms`, `turtle.imports.network` (fetch imports and
+`turtle.lint.undescribedTerms`, `turtle.lint.ignore` (codes never to
+report), `turtle.lint.enable` (off-by-default checks to switch on),
+`turtle.imports.network` (fetch imports and
 JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
@@ -548,7 +552,10 @@ is also accepted.
 ```json
 {
   "prefixes": { "ex": "http://example.org/" },
-  "lint": { "undescribedTerms": false },
+  "lint": {
+    "ignore": ["unused-prefix"],
+    "enable": ["missing-label", "missing-ontology-license"]
+  },
   "shacl": { "maxTriples": 500000 },
   "format": { "lineWidth": 80 }
 }
@@ -561,6 +568,13 @@ is also accepted.
 - **Once the editor sends its `turtle` settings section,** that section replaces
   `init_options`: a key you remove from the editor's settings comes from
   `turtle-lsp.json` again, or takes its default.
+- **`lint.ignore` and `lint.enable` add up** instead: the lists from the
+  file, `init_options`, the `turtle` settings section and `--ignore` are
+  combined, so an editor can hide more than the project but not show what it
+  hides. A code in both lists stays off. `lint.ignore` takes any diagnostic
+  code; `lint.enable` takes the house-style codes listed under
+  [Features](#features). `"lint.undescribedTerms": false` works as before,
+  the same as listing `undescribed-term`.
 - **On the command line,** flags win over the file.
 - **In the editor,** the server reads the file in the first workspace folder,
   and again when it changes (if the editor reports file changes to the server).
@@ -687,7 +701,7 @@ read, and a read-only file, are left alone and reported.
 | `--format F` | `concise` (default), `json`, `github` (workflow annotations) or `sarif` (GitHub code scanning) |
 | `--output-file PATH` | write the report to a file instead of stdout |
 | `--fix` | apply the safe fixes (add a missing prefix, remove an unused one), then report what is left |
-| `--unsafe-fixes` | needs `--fix`; also apply "did you mean" renames of terms, which can change meaning |
+| `--unsafe-fixes` | needs `--fix`; also apply "did you mean" renames of terms and the trim of a label's whitespace, which can change meaning |
 | `--max-warnings N` | exit 1 when there are more than N warnings |
 | `--exit-zero` | exit 0 when the run completes, whatever it found |
 | `--select CODE,...` | report only these diagnostic codes (an unknown code is an error) |
@@ -716,7 +730,9 @@ ASK answered false, 2 an error (a syntax error is printed as
 never a partial answer).
 
 Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
-`unknown-term`, `undescribed-term`, `invalid-literal`, `unresolved-import`,
+`unknown-term`, `deprecated-term`, `undescribed-term`, `duplicate-label`,
+`label-whitespace`, `multiple-labels`, the house-style codes (see
+[Features](#features)), `invalid-literal`, `unresolved-import`,
 `shacl-violation`, `shacl-failure`, `shacl-invalid-path`, `io` and
 `encoding`, and for JSON-LD `json-syntax`, `jsonld-context`,
 `jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and
