@@ -9,12 +9,13 @@
 
 use super::diagnostics::SOURCE;
 use crate::analysis::{Analysis, Encoding};
+use crate::features::curation::LABEL_WHITESPACE;
 use crate::features::refactor::text_edits_in;
 use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Token;
 use crate::syntax::names::{declaration_edit, declaration_keyword, declarations_edit, newline};
-use crate::syntax::{Iri, Node, Span};
+use crate::syntax::{Iri, Node, Span, Syntax};
 use crate::vocab::VOCABS;
 use lsp_types::*;
 use rustc_hash::FxHashMap;
@@ -49,8 +50,8 @@ pub(crate) enum FixData {
     /// `jsonld-undefined-prefix`: `prefix` is not in the `@context`, and the
     /// workspace knows `namespace` for it.
     UndefinedPrefix { prefix: String, namespace: String },
-    /// `unknown-term` and `undescribed-term`: the text that replaces the
-    /// diagnostic's range.
+    /// `unknown-term`, `undescribed-term` and `label-whitespace`: the text
+    /// that replaces the diagnostic's range.
     Replace { replace: String },
 }
 
@@ -108,9 +109,11 @@ impl FixData {
                 prefix: text("prefix")?,
                 namespace: text("namespace")?,
             }),
-            "unknown-term" | crate::features::lint::CODE => Some(FixData::Replace {
-                replace: text("replace")?,
-            }),
+            "unknown-term" | crate::features::lint::CODE | LABEL_WHITESPACE => {
+                Some(FixData::Replace {
+                    replace: text("replace")?,
+                })
+            }
             _ => None,
         }
     }
@@ -385,6 +388,26 @@ impl<'a> Fixer<'a> {
                 };
                 let edits = self.text_edits(vec![(Span::new(start, end), replace.clone())]);
                 vec![self.quick(format!("Change to '{replace}'"), d, edits, true)]
+            }
+            LABEL_WHITESPACE => {
+                let Some(FixData::Replace { replace }) = FixData::of(d) else {
+                    return Vec::new();
+                };
+                let (Some(start), Some(end)) =
+                    (a.offset(enc, d.range.start), a.offset(enc, d.range.end))
+                else {
+                    return Vec::new();
+                };
+                let span = Span::new(start, end);
+                let edits = if a.parsed.syntax == Syntax::JsonLd {
+                    vec![TextEdit {
+                        range: a.range(enc, span),
+                        new_text: replace,
+                    }]
+                } else {
+                    self.text_edits(vec![(span, replace)])
+                };
+                vec![self.quick("Trim the label's whitespace".to_string(), d, edits, true)]
             }
             _ => Vec::new(),
         }

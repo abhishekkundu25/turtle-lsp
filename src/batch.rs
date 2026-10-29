@@ -18,7 +18,7 @@ use crate::analysis::{Analysis, Encoding, LineIndex, SparqlAnalysis, offset_in};
 use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::quickfix::Fixer;
 use crate::features::shacl_validate;
-use crate::features::{diagnostics, format, lint};
+use crate::features::{curation, diagnostics, format, lint};
 use crate::imports;
 use crate::knowledge::Source;
 use crate::layout;
@@ -44,6 +44,9 @@ const MAX_FIX_ROUNDS: usize = 20;
 /// Diagnostic codes whose fixes rename a term to a "did you mean" candidate.
 /// The rename may change what the data says, so these fixes are unsafe.
 const RENAME_CODES: [&str; 2] = ["unknown-term", lint::CODE];
+
+/// Diagnostic codes whose fixes rewrite a literal's value, so are unsafe too.
+const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 
 /// One input file.
 #[derive(Clone, Debug)]
@@ -174,8 +177,9 @@ pub struct Problem {
 pub struct Fix {
     pub title: String,
     pub preferred: bool,
-    /// Preferred and not a term rename ([`RENAME_CODES`]): applying it does
-    /// not change what the data means.
+    /// Preferred and neither a term rename ([`RENAME_CODES`]) nor a new
+    /// literal value ([`VALUE_CODES`]): applying it does not change what the
+    /// data means.
     pub(crate) safe: bool,
     /// The edits, by file name, in input order of the files.
     pub edits: Vec<(String, Vec<TextEdit>)>,
@@ -664,9 +668,10 @@ impl<'a> Input<'a> {
     /// `actions`, the code actions for `d`, as fixes: the quick fixes that
     /// edit files of the input, preferred first.
     fn as_fixes(&self, d: &Diagnostic, actions: impl IntoIterator<Item = CodeAction>) -> Vec<Fix> {
-        let rename = matches!(
+        let changes_data = matches!(
             &d.code,
-            Some(lsp_types::NumberOrString::String(c)) if RENAME_CODES.contains(&c.as_str())
+            Some(lsp_types::NumberOrString::String(c))
+                if RENAME_CODES.contains(&c.as_str()) || VALUE_CODES.contains(&c.as_str())
         );
         let mut out: Vec<Fix> = Vec::new();
         for c in actions {
@@ -685,7 +690,7 @@ impl<'a> Input<'a> {
             out.push(Fix {
                 title: c.title,
                 preferred,
-                safe: preferred && !rename,
+                safe: preferred && !changes_data,
                 edits: edits
                     .into_iter()
                     .map(|(i, list)| (self.names[i].0.clone(), list))
@@ -982,6 +987,29 @@ mod tests {
         let all = fix_all(&files, &settings, true);
         assert!(all.applied > safe.applied);
         assert!(all.files[0].text.contains("rdfs:label \"a\""));
+    }
+
+    #[test]
+    fn a_label_trim_is_unsafe() {
+        let text = format!("{RDFS}<http://x/a> rdfs:label \" Pump \"@en .\n");
+        let files = [file("a.ttl", &text)];
+        let r = report(&files, &Options::default());
+        let p = r.files[0]
+            .problems
+            .iter()
+            .find(|p| code(p) == Some(curation::LABEL_WHITESPACE))
+            .expect("label-whitespace");
+        let fix = &p.fixes[0];
+        assert!(fix.preferred && !fix.safe, "{fix:?}");
+        let settings = Settings::default();
+        let safe = fix_all(&files, &settings, false);
+        assert_eq!(
+            (safe.applied, safe.files[0].text.as_str()),
+            (0, text.as_str())
+        );
+        let all = fix_all(&files, &settings, true);
+        assert_eq!(all.applied, 1);
+        assert!(all.files[0].text.contains("rdfs:label \"Pump\"@en ."));
     }
 
     #[test]
