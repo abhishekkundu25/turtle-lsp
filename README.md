@@ -44,8 +44,7 @@ the full W3C test suites and real public ontologies; see
 ## Tested against the real world
 
 Every release is checked against the official W3C test suites and against
-public RDF files anyone can download (`npm run corpus`, results in
-[docs/research/corpus-validation.md](docs/research/corpus-validation.md)).
+public RDF files anyone can download (`npm run corpus`).
 `npm run corpus` downloads over `https` only and fails when a download
 fails. A file whose SHA-256 differs from the checksum recorded in
 `tools/corpus` gets a warning, or fails the run with `CORPUS_STRICT=1`.

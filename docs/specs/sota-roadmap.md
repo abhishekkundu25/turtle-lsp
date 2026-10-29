@@ -272,7 +272,7 @@ analysis plus the knowledge index)
   ourselves over the knowledge index's graph (property paths including
   sequence/alternative/inverse/zero-or-more/one-or-more/zero-or-one, and the
   core constraint components) and test it against the same suite. The
-  decision and the numbers are recorded in `docs/research/`. Execution: on
+  decision and the numbers are recorded in the commit. Execution: on
   `didSave` (and once after the initial index), a background worker validates
   the union of all workspace (and imported) triples as both data and shapes
   graph. A generation counter discards results from superseded runs. Results

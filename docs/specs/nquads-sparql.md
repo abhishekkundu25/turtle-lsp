@@ -567,8 +567,7 @@ D, E and G run alongside each other once their blockers land.
   spargebra rejects local names with two dots or more (`ec:1.1.1.353`, in
   five real queries): the server now escapes those dots in the text it gives
   spargebra. It also found the RDF parser accepting `[` in IRIs, which oxttl
-  rejects: pre-existing and left open (docs/research/corpus-validation.md,
-  finding 7).
+  rejects: pre-existing and left open.
 - **Verification** (2026-10-19): `cargo test` (all targets, chaos at 15,000
   iterations), clippy and fmt clean; Node suite 490/490 in two runs of 9 s
   and 24 s; VS Code 23/23; Neovim 23/23; benchmark unchanged against 0.4.2

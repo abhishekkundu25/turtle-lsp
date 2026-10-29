@@ -165,5 +165,4 @@ Warnings do not fail `turtle-lsp check` unless `--max-warnings` is given, so exi
 
 - Do A first, then B, which reuses A's term rule and index design. The settings-file-checks spec can run alongside either. Its check reports unknown codes in `lint.ignore` and `lint.enable` once both land.
 - The checks are informed by ROBOT `report`'s list (BSD-3-Clause), but no text or queries are copied, so no third-party notice is needed. If a later change copies ROBOT's level table or queries, add it to the third-party notices in the same change.
-- The research behind this is in `docs/research/lsp-feature-gaps.md` (git-ignored), gap 1.
 - Open question for review: should the duplicate checks also compare against imported ontologies' labels? They are left out here because those labels can't be fixed in the workspace.

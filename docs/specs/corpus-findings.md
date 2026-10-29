@@ -4,7 +4,7 @@ Status: done in 0.3.0.
 
 ## Problem Statement
 
-The public-corpus run (`docs/research/corpus-validation.md`) found three things
+The public-corpus run found three things
 a user opening well-known ontologies would hit:
 
 1. Editing `qudt-units.ttl` (2.3 MB) takes 4.6 s per keystroke to re-check, and

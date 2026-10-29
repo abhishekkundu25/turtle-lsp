@@ -1,6 +1,6 @@
 # CLI speed: do only the work each command reports
 
-Research: docs/research/cli-speed.md. Built on `feat/incremental-keystroke`
+Built on `feat/incremental-keystroke`
 (PR #54), because it edits the same batch and workspace code.
 
 ## Problem Statement

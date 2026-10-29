@@ -14,7 +14,7 @@ The editor already sends only the changed range (incremental sync), and the work
 
 The cost grows with the file, so new checks make it worse in proportion: the label checks added about 25% on vocabulary-shaped files, because each of them walks every label again on every keystroke. Users of big ontologies (schema.org-sized and up) feel this as lag; the roadmap's budget is a p95 keystroke of 12 ms on the 30,000-line file.
 
-The research in `docs/research/incremental-reparse.md` found that most language servers re-parse the whole file (the VS Code JSON and YAML servers, Stardog's Turtle server, Mentor, Qlue-ls, rust-analyzer's analysis path, TypeScript 7), and that the gains come from not redoing the work after the parse. The servers that do reuse old parse results (tree-sitter, Roslyn, IntelliJ, TypeScript up to 6) share four rules: widen the edit by one token, never reuse anything the edit touched or that holds an error, reuse only under the same parser state, and fall back to a full parse when in doubt.
+Research found that most language servers re-parse the whole file (the VS Code JSON and YAML servers, Stardog's Turtle server, Mentor, Qlue-ls, rust-analyzer's analysis path, TypeScript 7), and that the gains come from not redoing the work after the parse. The servers that do reuse old parse results (tree-sitter, Roslyn, IntelliJ, TypeScript up to 6) share four rules: widen the edit by one token, never reuse anything the edit touched or that holds an error, reuse only under the same parser state, and fall back to a full parse when in doubt.
 
 ## Solution
 
@@ -131,7 +131,7 @@ Budgets, as pass/fail lines:
 
 ## Further Notes
 
-- Source: `docs/research/incremental-reparse.md`, which cites every external claim at a pinned commit, and the profile of 2026-10-29.
+- Source: the profile of 2026-10-29.
 - The estimates are from profile shares, not measurements: parser and line table alone about 17 to 12–13 ms on the big file; with the index delta and the diagnostics cache about 5 to 7 ms. Normal files gain at most about a millisecond.
 - The main risk is a wrong splice giving stale or misplaced diagnostics, which is worse than a slow keystroke. Strict fallbacks and the oracle contain it; a fallback costs only speed.
 - The blank-node rule may fall back often on files that use `_:` labels heavily; count how many corpus files do during part 0.

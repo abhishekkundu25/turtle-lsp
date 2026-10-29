@@ -15,5 +15,3 @@ web/app/vendor/
 # The server Neovim's build.lua downloads.
 /bin/
 
-# Local tickets for the 0.7 release; not published.
-docs/tickets/release-0.7/
