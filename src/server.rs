@@ -966,12 +966,22 @@ impl Server {
     /// the rest means ([`Workspace::files_changed`]).
     fn watched_files_changed(&mut self, changes: Vec<FileEvent>) {
         let settings_file = self.ws.roots().first().map(|r| r.join(SETTINGS_FILE));
+        // The editor may spell the path otherwise than the root it gave (a
+        // symbolic link; on Windows a short 8.3 name or the drive letter's
+        // case): a file of that name is compared resolved.
+        let is_settings = |path: &PathBuf| {
+            settings_file.as_ref().is_some_and(|s| {
+                s == path
+                    || (path.file_name() == s.file_name()
+                        && crate::workspace::canonical(s) == crate::workspace::canonical(path))
+            })
+        };
         let mut files: Vec<(PathBuf, Change)> = Vec::new();
         for ch in changes {
             let Some(path) = uri_to_path(ch.uri.as_str()) else {
                 continue;
             };
-            if settings_file.as_ref() == Some(&path) {
+            if is_settings(&path) {
                 self.reload_settings_file();
                 continue;
             }

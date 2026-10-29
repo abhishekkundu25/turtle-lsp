@@ -92,6 +92,23 @@ test("editing turtle-lsp.json on disk applies the change", async () => {
   await done(s, ws)
 })
 
+// The editor may spell the file's path otherwise than the root it gave: a
+// symbolic link here, a short 8.3 name or another drive-letter case on Windows.
+test("turtle-lsp.json reported at another spelling of its path still applies", async () => {
+  const ws = workspace()
+  const links = tempDir("turtle-settings-link-")
+  const root = path.join(links, "project")
+  fs.symlinkSync(ws, root, "dir")
+  const { s, uri, diags } = await session(root)
+  assert.equal(diags.length, 1, JSON.stringify(diags))
+  const file = path.join(ws, "turtle-lsp.json")
+  fs.writeFileSync(file, JSON.stringify({ lint: { undescribedTerms: false } }))
+  s.notify("workspace/didChangeWatchedFiles", { changes: [{ uri: uriOf(file), type: 1 }] })
+  await until(() => s.diagnosticsFor(uri), (d) => lint(d).length === 0, "turtle-lsp.json at the real path was not applied")
+  await done(s, ws)
+  fs.rmSync(links, { recursive: true, force: true })
+})
+
 // parse.incremental: with TURTLE_LSP_CHECK_INCREMENTAL=1 the server logs how
 // it parsed each analysis (`incremental: <uri> Spliced`, `... Off`).
 test("parse.incremental: false in turtle-lsp.json parses every edit in full; the editor can turn it back on", async () => {
