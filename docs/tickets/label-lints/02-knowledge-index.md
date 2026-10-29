@@ -10,7 +10,7 @@
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Unit tests in `knowledge.rs`: term rule (each type, subClassOf, instance data not a term, External source not counted); `labelled` folds case and trims, keeps languages apart, untagged separate; removal and replacement subtract exactly; `defined_as` with the comment fallback; `deprecated_here` for the three true forms, false, and false winning; the generation bumps on a new collision and not on a non-colliding label edit.
-- [ ] The existing knowledge tests and `tests/chaos.rs` pass.
+- [x] Unit tests in `knowledge.rs`: term rule (each type, subClassOf, instance data not a term, External source not counted); `labelled` folds case and trims, keeps languages apart, untagged separate; removal and replacement subtract exactly; `defined_as` with the comment fallback; `deprecated_here` for the three true forms, false, and false winning; the generation bumps on a new collision and not on a non-colliding label edit.
+- [x] The existing knowledge tests and `tests/chaos.rs` pass.
