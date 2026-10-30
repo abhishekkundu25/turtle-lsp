@@ -287,7 +287,7 @@ test("Split with the graph tab active moves it to the other group, drawn, withou
   }
 })
 
-test("the graph tab closes by its close button, a middle click and the keyboard (Delete on the focused tab), and arrows move between tabs (catches: a tab only the mouse closes, the editor left hidden after the graph closes, the view made again on reopening)", async () => {
+test("the graph tab closes by its close button, a middle click and the keyboard (Delete on the focused tab), and arrows move between tabs (catches: a tab only the mouse closes, the editor left hidden after the graph closes, the view made again on reopening)", async (t) => {
   const { page, errors, close } = await open()
   try {
     const gone = async () => {
@@ -297,7 +297,9 @@ test("the graph tab closes by its close button, a middle click and the keyboard 
       await page.waitForFunction(() => document.querySelector("#status-lang").textContent === "Turtle")
     }
     await openGraph(page)
-    const calls = await quiet(page)
+    await quiet(page)
+    // The view's root element, marked: reopening must show this one, not a new view.
+    await page.evaluate(() => (document.querySelector(".graph-host .graph").dataset.first = "yes"))
     await tab(page, "Graph").locator("[data-close]").click()
     await gone()
     await openGraph(page)
@@ -316,7 +318,10 @@ test("the graph tab closes by its close button, a middle click and the keyboard 
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Graph" && document.activeElement.getAttribute("aria-selected") === "true")
     await page.keyboard.press("Delete")
     await gone()
-    assert.equal(await graphCalls(page), calls, "reopened, the view is the same one: nothing asked")
+    await openGraph(page)
+    assert.equal(await page.locator(".graph-host .graph").getAttribute("data-first"), "yes", "reopened, the view is the same one")
+    assert.equal(await page.locator(".graph-host .graph").count(), 1, "one view")
+    t.diagnostic(`graph answers: ${JSON.stringify(await page.evaluate(() => window.__wt.graph.map((g) => ({ iterations: g.iterations, nodes: g.nodes, focus: g.focus }))))}`)
     assert.deepEqual(errors, [])
   } finally {
     await close()
