@@ -75,6 +75,18 @@ const idle = (page) => page.locator("body[data-busy='false']").waitFor({ timeout
 const host = (page) => page.locator(".graph-host")
 const status = (page) => page.locator(".graph-host .graph-status")
 const graphCalls = (page) => page.evaluate(() => window.__wt.graph.length)
+// The graph requests once they stop coming: the first open sends a probe and
+// then the layout, and the status shows after the first; wait for 500 ms
+// without a new one.
+async function quiet(page) {
+  let n = await graphCalls(page)
+  for (let still = 0; still < 500; still += 100) {
+    await page.waitForTimeout(100)
+    const m = await graphCalls(page)
+    if (m !== n) (n = m), (still = -100)
+  }
+  return n
+}
 const groups = (page) => page.locator("#groups > .group")
 // An editor tab (not the view's own Graph / Focus / Hierarchy tabs), in group `g` or any.
 const tab = (page, name, g) => (g === undefined ? page.locator("#groups > .group > .tabs") : groups(page).nth(g).locator("> .tabs")).getByRole("tab", { name, exact: true })
@@ -172,7 +184,7 @@ test("the Graph button opens a Graph tab in the editor area, drawn, with one sid
     assert.ok(dark.inked > 300, `the canvas has nodes and edges drawn (${dark.inked} pixels)`)
 
     // A file tab shows the editor again, and its status.
-    const calls = await graphCalls(page)
+    const calls = await quiet(page)
     await tab(page, "start-here.ttl").click()
     assert.equal(await host(page).isHidden(), true)
     assert.equal(await page.locator("#groups > .group > .editor-host").isVisible(), true)
@@ -250,7 +262,7 @@ test("Split with the graph tab active moves it to the other group, drawn, withou
   const { page, errors, close } = await open()
   try {
     await openGraph(page)
-    const calls = await graphCalls(page)
+    const calls = await quiet(page)
     await page.keyboard.press("ControlOrMeta+Backslash")
     await tab(page, "Graph", 1).waitFor()
     await tabsAre(page, 0, ["start-here.ttl*"])
@@ -285,7 +297,7 @@ test("the graph tab closes by its close button, a middle click and the keyboard 
       await page.waitForFunction(() => document.querySelector("#status-lang").textContent === "Turtle")
     }
     await openGraph(page)
-    const calls = await graphCalls(page)
+    const calls = await quiet(page)
     await tab(page, "Graph").locator("[data-close]").click()
     await gone()
     await openGraph(page)
@@ -359,7 +371,7 @@ test("an edit refreshes the shown graph tab once, after the typing stops; a hidd
   try {
     const [, total] = await openGraph(page)
     await idle(page)
-    const calls = await graphCalls(page)
+    const calls = await quiet(page)
     // Three quick edits, as typing would make: one refresh after the last.
     for (const line of ["\nex:Robot a owl:Class ;", ' rdfs:label "Robot" ;', " rdfs:subClassOf ex:Person .\n"]) {
       await append(page, CORE, line)
