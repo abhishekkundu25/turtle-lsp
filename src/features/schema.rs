@@ -794,11 +794,15 @@ impl Merge {
             },
         );
 
-        // Rows nothing declares, on the subjects' direct types.
+        // Rows nothing declares, on the subjects' direct types: a property
+        // one of the subject's types (or their ancestors) declares is
+        // declared for it, whatever its other types (role classes: `a
+        // ex:Device , ex:Asset` with the domain on Device).
         for s in 0..n {
+            let types = direct(s);
             for &(p, ..) in uses.of(s) {
-                if !m.is_standard_property(p) {
-                    for &c in direct(s) {
+                if !m.is_standard_property(p) && !m.declared_by_any(types, p) {
+                    for &c in types {
                         m.undeclared(c, p);
                     }
                 }
@@ -1034,6 +1038,20 @@ impl Merge {
 
     /// Makes `p` a row of `c` with nothing declaring it, unless `c` or an
     /// ancestor declares it.
+    /// Whether one of `types` or their ancestors declares `p`.
+    fn declared_by_any(&mut self, types: &[u32], p: Iri) -> bool {
+        if types.len() < 2 {
+            return false;
+        }
+        let set = self.set(types) as usize;
+        let (a, b) = (self.set_off[set] as usize, self.set_off[set + 1] as usize);
+        self.set_list[a..b].iter().any(|&anc| {
+            self.row_ix
+                .get(&(anc, p))
+                .is_some_and(|&r| r != COVERED && !self.rows[r as usize].declared.is_empty())
+        })
+    }
+
     fn undeclared(&mut self, c: u32, p: Iri) {
         if self.row_ix.contains_key(&(c, p)) {
             return;

@@ -346,7 +346,8 @@ pub(super) fn check(
             .collect()
     };
 
-    // Undeclared rows, on the direct types.
+    // Undeclared rows, on the direct types, when none of the subject's
+    // types (nor their ancestors) declares the property.
     let mut rows: Map<String, Set<String>> = Map::new();
     for (c, p) in declared.keys() {
         rows.entry(c.clone()).or_default().insert(p.clone());
@@ -356,14 +357,17 @@ pub(super) fn check(
         if super::super::is_standard(p) {
             continue;
         }
-        for t in &types[s] {
-            let covered = ancestors(t)
+        let covered = types[s].iter().any(|t| {
+            ancestors(t)
                 .iter()
-                .any(|a| declared.contains_key(&(a.clone(), p.clone())));
-            if !covered {
-                undeclared.insert((t.clone(), p.clone()));
-                rows.entry(t.clone()).or_default().insert(p.clone());
-            }
+                .any(|a| declared.contains_key(&(a.clone(), p.clone())))
+        });
+        if covered {
+            continue;
+        }
+        for t in &types[s] {
+            undeclared.insert((t.clone(), p.clone()));
+            rows.entry(t.clone()).or_default().insert(p.clone());
         }
     }
 

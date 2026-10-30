@@ -1586,3 +1586,25 @@ fn timing_schema_search_on_2000_classes() {
         searched.saturating_sub(plain)
     );
 }
+
+/// Catches role classes flagged: an instance typed with two classes uses a
+/// property one of them declares; the other type gets no "not declared" row.
+#[test]
+fn a_property_one_of_an_instances_types_declares_is_declared_for_it() {
+    let ws = workspace(&[(
+        "a",
+        "ex:Device a owl:Class .\nex:Asset a owl:Class .\n\
+         ex:locatedIn rdfs:domain ex:Device .\n\
+         ex:d1 a ex:Device , ex:Asset ; ex:locatedIn ex:here .\n\
+         ex:a1 a ex:Asset ; ex:locatedIn ex:there .\n",
+    )]);
+    let r = run(&ws, serde_json::json!({}));
+    assert_eq!(
+        row(class(&r, "ex:Device"), "ex:locatedIn").state,
+        RowState::Ok
+    );
+    // ex:a1 is an Asset only: for it, nothing declares the property.
+    let asset = row(class(&r, "ex:Asset"), "ex:locatedIn");
+    assert_eq!(asset.state, RowState::Undeclared);
+    assert_eq!(asset.declared_for, ["ex:Device"]);
+}
