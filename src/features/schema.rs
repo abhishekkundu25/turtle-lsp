@@ -44,6 +44,9 @@ pub(crate) struct SchemaParams {
     /// A class IRI: the class whose rows list their [`Row::examples`], when
     /// it is listed. Omitted or not listed: the focus class, else none.
     pub(crate) examples: Option<String>,
+    /// Text to find among all the classes, listed or not (by name, label or
+    /// IRI): the answer's `matches`.
+    pub(crate) search: Option<String>,
 }
 
 /// A position in a document, as `at` sends it.
@@ -66,6 +69,10 @@ pub(crate) struct SchemaResult {
     pub(crate) total: SchemaTotal,
     /// Imported classes not listed (`imports` false).
     pub(crate) imported: usize,
+    /// The classes `search` finds, best first, at most [`MAX_MATCHES`];
+    /// empty without `search`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) matches: Vec<Match>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -165,6 +172,13 @@ pub(crate) struct Row {
     pub(crate) missing: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) conflict: Option<Conflict>,
+    /// On a conflict row: the values outside the shape's datatype or class.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) shape_bad_values: Option<usize>,
+    /// On a not-declared row: the classes that do declare the property
+    /// (their names), so the view can say "declared for Pipe, not Gasket".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) declared_for: Vec<String>,
     /// Where the row's problems are: the first [`MAX_EXAMPLES`] of each
     /// kind, in document order (by URI) and text order. Only on the rows of
     /// one class (`examples`, else the focus); empty on every other row.
@@ -187,7 +201,25 @@ pub(crate) enum ExampleKind {
     /// A use of a property nothing declares: the predicate and object of the
     /// instance's first use.
     Undeclared,
+    /// On a conflict row, a value outside the shape's datatype or class: the
+    /// value.
+    ShapeValue,
 }
+
+/// A class `search` found.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct Match {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) label: Option<String>,
+    /// Its index in `classes`, when it is listed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) index: Option<u32>,
+}
+
+/// The most classes `search` returns.
+pub(crate) const MAX_MATCHES: usize = 20;
 
 /// One place a row's problem shows.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1174,6 +1206,7 @@ impl Merge {
             focus_row,
             total: SchemaTotal { classes: total },
             imported,
+            matches: Vec::new(),
         }
     }
 
@@ -1429,6 +1462,8 @@ impl Merge {
             required: row.required().map(|min| Required { min, max: row.max }),
             missing,
             conflict,
+            shape_bad_values: None,
+            declared_for: Vec::new(),
             examples,
         };
         (r, severity)
