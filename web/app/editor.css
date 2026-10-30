@@ -82,9 +82,16 @@ main.center { grid-area: center; display: flex; flex-direction: column; min-widt
 .tab.dirty .x .codicon-close::before { content: "\25CF"; font: 10px system-ui; }
 .tab.dirty .x:hover .codicon-close::before { content: "\ea76"; font: 16px codicon; }
 .tab .e { color: var(--err); }
+.tab > .codicon { font-size: 14px; }
+.tab:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
 .crumbs { height: 22px; padding: 0 16px; display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; flex: none; background: var(--bg); }
 .editor-host { flex: 1; min-height: 0; }
 .welcome { position: absolute; inset: 57px 0 0 0; z-index: 2; display: grid; place-content: center; text-align: center; color: var(--muted); background: var(--bg); }
+/* The graph tab (editor.js) shows the graph view in place of the group's
+   editor; the view has its own bar, so no breadcrumbs. */
+.graph-host { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.graph-host > .graph { flex: 1; }
+.group:not([data-kind="graph"]) > .graph-host, .group[data-kind="graph"] > .editor-host, .group[data-kind="graph"] > .crumbs { display: none; }
 
 .panel { grid-area: panel; border-top: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 .panel-hd { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px 0 12px; flex: none; }
