@@ -458,14 +458,37 @@ export function createSchemaView(el, on) {
   }
 
   // ---- the camera ----
-  function applyCam() {
-    world.style.transform = `translate(${cam.x}px,${cam.y}px) scale(${cam.k})`
+  // `anchor`: a point of the view (a zoom's pointer) that keeps the box
+  // under it in place when the boxes fold or unfold, which moves them all.
+  function applyCam(anchor) {
     const nowFar = cam.k < FAR
     if (nowFar !== far) {
+      const keep = anchor && lay ? boxAt(anchor) : null
       far = nowFar
       el.classList.toggle("schema-far", far)
       if (model) relayout()
+      if (keep && lay) {
+        const { k, fx, fy } = keep
+        cam.x = anchor[0] - (lay.x[k] + fx * W) * cam.k
+        cam.y = anchor[1] - (lay.y[k] + fy * heights[k]) * cam.k
+      }
     }
+    world.style.transform = `translate(${cam.x}px,${cam.y}px) scale(${cam.k})`
+  }
+
+  // The box nearest to view point `p`, and where in it (0 to 1) `p` falls.
+  function boxAt([sx, sy]) {
+    const wx = (sx - cam.x) / cam.k, wy = (sy - cam.y) / cam.k
+    let best = -1, bestD = Infinity
+    for (let k = 0; k < lay.x.length; k++) {
+      const dx = Math.max(lay.x[k] - wx, 0, wx - lay.x[k] - W)
+      const dy = Math.max(lay.y[k] - wy, 0, wy - lay.y[k] - heights[k])
+      const d = dx * dx + dy * dy
+      if (d < bestD) (bestD = d), (best = k)
+    }
+    if (best < 0) return null
+    const unit = (v) => Math.min(1, Math.max(0, v))
+    return { k: best, fx: unit((wx - lay.x[best]) / W), fy: unit((wy - lay.y[best]) / Math.max(1, heights[best])) }
   }
   const viewSize = () => {
     const b = viewport.getBoundingClientRect()
@@ -519,7 +542,7 @@ export function createSchemaView(el, on) {
     cam.x = sx - wx * cam.k
     cam.y = sy - wy * cam.k
     userMoved = true
-    applyCam()
+    applyCam([sx, sy])
   }
 
   // ---- selection and the keyboard ----

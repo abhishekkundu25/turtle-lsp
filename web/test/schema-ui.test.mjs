@@ -388,6 +388,28 @@ describe("Schema in Chrome", () => {
     }
   })
 
+  test("zooming across 0.5 keeps the box under the pointer under it, though the boxes fold and the layout closes up (catches: the view jumping when it folds, on big workspaces)", async () => {
+    const v = await open()
+    try {
+      const pump = v.box(PUMP)
+      const at = await pump.boundingBox()
+      // A point inside Pump's box, below its header.
+      const px = at.x + at.width / 2, py = at.y + Math.min(at.height - 4, 30)
+      await v.page.mouse.move(px, py)
+      let folded = false
+      for (let k = 0; k < 20 && !folded; k++) {
+        await v.page.mouse.wheel(0, 120)
+        folded = await v.page.evaluate(() => document.querySelector(".graph-schemabox").classList.contains("schema-far"))
+      }
+      assert.ok(folded, "zoomed out past 0.5")
+      const after = await pump.boundingBox()
+      assert.ok(after.x <= px && px <= after.x + after.width && after.y - 2 <= py && py <= after.y + Math.max(after.height, 24) + 2,
+        `Pump moved from under the pointer: ${JSON.stringify({ px, py, after })}`)
+    } finally {
+      await v.close()
+    }
+  })
+
   test("Follow cursor: off by default and stored; several moves within 150 ms ask once, for the last; the answer selects the class and lights the row (catches: a request per keystroke, the toggle forgotten)", async () => {
     const v = await open({ atClass: { 30: [MOTOR, 1], 40: [PIPE] } })
     try {
