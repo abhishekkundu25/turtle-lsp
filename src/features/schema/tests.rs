@@ -1290,3 +1290,20 @@ fn timing_schema_warm_answer_on_100k_triples() {
     );
     assert!(median.as_millis() < 30, "warm answer took {median:?}");
 }
+
+/// Catches IRIs written in full when two documents bind one prefix name to
+/// different namespaces: each keeps the name its own document gives it.
+#[test]
+fn a_prefix_name_bound_twice_shortens_both_namespaces() {
+    let ws = workspace(&[
+        ("a", "ex:Person a owl:Class .\n"),
+        (
+            "b",
+            "@prefix ex: <http://example.org/plant#> .\nex:Pump a owl:Class .\n",
+        ),
+    ]);
+    let r = run(&ws, serde_json::json!({}));
+    let names = class_names(&r);
+    assert!(names.contains(&"ex:Person"), "{names:?}");
+    assert!(names.contains(&"ex:Pump"), "{names:?}");
+}

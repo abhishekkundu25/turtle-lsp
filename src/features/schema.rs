@@ -1450,25 +1450,51 @@ fn label(docs: &[Doc], c: &Class) -> Option<String> {
 }
 
 /// The prefixes of the workspace documents, the first by URI winning a
-/// name two bind differently.
+/// name two bind differently. A name bound to another namespace elsewhere
+/// is kept too, so `ex:` of `…/plant#` still shortens the IRIs of the
+/// documents that say so when another document binds `ex:` to `…/`.
 struct Names {
     prefixes: PrefixMap,
+    /// (name, namespace) bindings the first-wins map lost, in document order.
+    others: Vec<(String, String)>,
 }
 
 impl Names {
     fn new(docs: &[Doc]) -> Names {
         let mut prefixes = PrefixMap::default();
+        let mut others: Vec<(String, String)> = Vec::new();
         for doc in docs.iter().filter(|d| !d.external) {
             for (name, ns) in &doc.facts.prefixes {
-                if !prefixes.contains_key(name) {
-                    prefixes.insert(name.clone(), ns.clone());
+                match prefixes.get(name) {
+                    None => {
+                        prefixes.insert(name.clone(), ns.clone());
+                    }
+                    Some(have)
+                        if have != ns && !others.iter().any(|(n, o)| n == name && o == ns) =>
+                    {
+                        others.push((name.clone(), ns.clone()));
+                    }
+                    Some(_) => {}
                 }
             }
         }
-        Names { prefixes }
+        Names { prefixes, others }
     }
 
     fn short(&self, iri: &str) -> String {
-        short(iri, &self.prefixes)
+        let s = short(iri, &self.prefixes);
+        if !s.starts_with('<') {
+            return s;
+        }
+        // The longest namespace among the lost bindings that shortens it.
+        self.others
+            .iter()
+            .filter(|(_, ns)| iri.starts_with(ns.as_str()))
+            .max_by_key(|(_, ns)| ns.len())
+            .and_then(|(name, ns)| {
+                let one = PrefixMap::from_iter([(name.clone(), ns.clone())]);
+                Some(short(iri, &one)).filter(|s| !s.starts_with('<'))
+            })
+            .unwrap_or(s)
     }
 }
