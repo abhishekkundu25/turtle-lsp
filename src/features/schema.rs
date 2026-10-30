@@ -248,6 +248,31 @@ pub(crate) fn schema(
     Ok(Merge::new(&docs).answer(&docs, enc, &q))
 }
 
+/// [`schema`] for the integration tests (tests/chaos.rs): `docs` as the
+/// workspace's disk documents and `imports` as its external sources, each
+/// keyed by its URI; `params` as a client sends them (`null` for none), the
+/// answer as the client gets it, or the message of the parameter error.
+/// Every document's facts are computed afresh.
+pub fn answer(
+    docs: &[Arc<Analysis>],
+    imports: &[Arc<Analysis>],
+    enc: Encoding,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let params: SchemaParams = match params {
+        serde_json::Value::Null => SchemaParams::default(),
+        p => serde_json::from_value(p).map_err(|e| e.to_string())?,
+    };
+    let sources: Vec<(String, Source, Arc<Analysis>)> = docs
+        .iter()
+        .map(|a| (a, Source::Disk))
+        .chain(imports.iter().map(|a| (a, Source::External)))
+        .map(|(a, s)| (a.uri.clone(), s, a.clone()))
+        .collect();
+    let r = schema(&sources, enc, params, None, &FactsCache::default()).map_err(|e| e.0)?;
+    serde_json::to_value(r).map_err(|e| e.to_string())
+}
+
 /// [`SchemaParams`] checked, with the defaults applied.
 struct Query {
     focus: Option<String>,

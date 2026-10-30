@@ -1657,7 +1657,133 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         soften: true,
     };
     let _ = turtle_lsp::features::shacl_validate::run(&job, &|| false);
+    schema_is_sound(rng, &a, docs);
     k.remove(doc_uri(syntax));
+}
+
+/// `turtle/schema` over the document alone, then with another document of
+/// the workspace (picked by `rng`, so `CHAOS_ONLY` replays it) as a second
+/// file or as an import, under random caps and a focus taken from the first
+/// answer: each answer well formed ([`schema_answer_is_sound`]) and the same
+/// when asked twice.
+fn schema_is_sound(rng: &mut Rng, a: &Arc<Analysis>, k: &Knowledge) {
+    use serde_json::json;
+    use turtle_lsp::features::schema;
+    let enc = if rng.below(2) == 0 {
+        Encoding::Utf8
+    } else {
+        Encoding::Utf16
+    };
+    let ask = |docs: &[Arc<Analysis>], imports: &[Arc<Analysis>], params: serde_json::Value| {
+        let r = schema::answer(docs, imports, enc, params.clone())
+            .unwrap_or_else(|e| panic!("schema refused {params}: {e}"));
+        schema_answer_is_sound(&r, &params);
+        let again = schema::answer(docs, imports, enc, params.clone()).unwrap();
+        assert!(r == again, "schema answers {params} differently twice");
+        r
+    };
+    let alone = [a.clone()];
+    let first = ask(&alone, &[], serde_json::Value::Null);
+    // A class or a property of the answer, or an IRI it does not have.
+    let classes = first["classes"].as_array().unwrap();
+    let focus = match (rng.below(3), classes.get(rng.below(classes.len().max(1)))) {
+        (0, Some(c)) => c["id"].clone(),
+        (1, Some(c)) => match c["rows"].as_array().unwrap().as_slice() {
+            [] => c["id"].clone(),
+            rows => rows[rng.below(rows.len())]["property"].clone(),
+        },
+        _ => json!("http://example.org/chaos/absent"),
+    };
+    let caps = |rng: &mut Rng| {
+        let max_classes = [1, 2, 5, 300][rng.below(4)];
+        let max_rows = [1, 3, 64][rng.below(3)];
+        json!({
+            "maxClasses": max_classes,
+            "maxRows": max_rows,
+            "imports": rng.below(2) == 0,
+            "focus": focus,
+        })
+    };
+    ask(&alone, &[], caps(rng));
+    let others: Vec<&Arc<Analysis>> = k
+        .docs()
+        .filter(|(_, s, other)| *s != Source::Open && !Arc::ptr_eq(other, a))
+        .map(|(_, _, other)| other)
+        .collect();
+    if let Some(other) = others.get(rng.below(others.len())) {
+        let other = (*other).clone();
+        let params = caps(rng);
+        if rng.below(2) == 0 {
+            ask(&[a.clone(), other], &[], params);
+        } else {
+            ask(&alone, &[other], params);
+        }
+    }
+}
+
+/// What every `turtle/schema` answer to `params` keeps: indexes in range,
+/// the caps kept, `used <= of == instances`, and `problems` the rows that
+/// are not fine (state not ok, or instances missing), the rows cut counted
+/// in (the worst rows are kept, so a fine row kept means none was cut).
+fn schema_answer_is_sound(r: &serde_json::Value, params: &serde_json::Value) {
+    let n = |v: &serde_json::Value| v.as_u64().unwrap_or_else(|| panic!("not a count: {v}"));
+    let max_classes = params["maxClasses"].as_u64().unwrap_or(300);
+    let max_rows = params["maxRows"].as_u64().unwrap_or(64);
+    let classes = r["classes"].as_array().unwrap();
+    let len = classes.len() as u64;
+    let fail = |m: String| -> ! { panic!("schema answer to {params}: {m}\n  answer: {r}") };
+    if len > max_classes || len > n(&r["total"]["classes"]) {
+        fail(format!("{len} classes over the cap or the total"));
+    }
+    for (i, c) in classes.iter().enumerate() {
+        let name = &c["id"];
+        for p in c["parents"].as_array().unwrap() {
+            if n(p) >= len {
+                fail(format!("class {i} {name}: parent {p} out of range"));
+            }
+        }
+        let rows = c["rows"].as_array().unwrap();
+        let more = n(&c["moreRows"]);
+        if rows.len() as u64 > max_rows || (more > 0 && rows.len() as u64 != max_rows) {
+            fail(format!("class {name}: {} rows, {more} more", rows.len()));
+        }
+        let instances = n(&c["instances"]);
+        let bad = |row: &serde_json::Value| {
+            row["state"] != "ok" || row.get("missing").is_some_and(|m| n(m) > 0)
+        };
+        for row in rows {
+            let (used, of) = (n(&row["used"]), n(&row["of"]));
+            if used > of || of != instances {
+                fail(format!("class {name}: row {row} uses {used} of {of}"));
+            }
+            if let Some(t) = row.get("target").filter(|t| n(t) >= len) {
+                fail(format!("class {name}: row target {t} out of range"));
+            }
+        }
+        let shown = rows.iter().filter(|row| bad(row)).count() as u64;
+        let problems = n(&c["problems"]);
+        let focused = |row: &serde_json::Value| Some(&row["property"]) == params.get("focus");
+        let cut_fine = rows.iter().any(|row| !bad(row) && !focused(row));
+        let exact = more == 0 || cut_fine;
+        if problems < shown || problems > shown + more || (exact && problems != shown) {
+            fail(format!(
+                "class {name}: {problems} problems, {shown} rows not fine, {more} cut"
+            ));
+        }
+    }
+    if let Some(f) = r.get("focus") {
+        let f = n(f);
+        if f >= len {
+            fail(format!("focus {f} out of range"));
+        }
+        if let Some(row) = r.get("focusRow")
+            && n(row) >= classes[f as usize]["rows"].as_array().unwrap().len() as u64
+        {
+            fail(format!("focus row {row} out of range"));
+        }
+    } else if r.get("focusRow").is_some() {
+        fail("a focus row without a focus".into());
+    }
 }
 
 /// The document under test and eight others of the workspace: validating all
