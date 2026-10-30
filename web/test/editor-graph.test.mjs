@@ -88,7 +88,7 @@ async function quiet(page) {
   return n
 }
 const groups = (page) => page.locator("#groups > .group")
-// An editor tab (not the view's own Graph / Focus / Hierarchy tabs), in group `g` or any.
+// An editor tab (not the view's own Graph / Focus / Schema tabs), in group `g` or any.
 const tab = (page, name, g) => (g === undefined ? page.locator("#groups > .group > .tabs") : groups(page).nth(g).locator("> .tabs")).getByRole("tab", { name, exact: true })
 // A group's tabs by name, the selected one marked with *.
 const tabNames = (page, g) => groups(page).nth(g).locator("> .tabs [role=tab]").evaluateAll((ts) => ts.map((t) => `${t.getAttribute("aria-label")}${t.getAttribute("aria-selected") === "true" ? "*" : ""}`))
@@ -355,12 +355,12 @@ test("after a reload the graph tab is back where it was, and drawn; a server wit
   }
 })
 
-test("the Hierarchy mode lists the classes of the starter workspace, which declare no rdfs:subClassOf (catches: a tree that needs a subClassOf link before it shows a class)", async () => {
+test("the Schema mode draws a box for each class of the starter workspace, which declares no rdfs:subClassOf, from the engine's turtle/schema (catches: the request not routed in the engine, a layout that needs a subClassOf link before it shows a class)", async () => {
   const { page, errors, close } = await open()
   try {
     await openGraph(page)
-    await host(page).getByRole("tab", { name: "Hierarchy" }).click()
-    const rows = page.locator('.graph-host [role="treeitem"]')
+    await host(page).getByRole("tab", { name: "Schema" }).click()
+    const rows = page.locator(".graph-host .schema-box")
     await rows.first().waitFor({ timeout: 10_000 })
     const names = await rows.allTextContents()
     assert.ok(names.some((n) => /Person/.test(n)), names.join(" | "))
