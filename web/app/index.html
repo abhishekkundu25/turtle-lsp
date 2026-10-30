@@ -57,7 +57,6 @@
 <link rel="stylesheet" href="vim.css">
 <link rel="stylesheet" href="query.css">
 <link rel="stylesheet" href="graph/graph.css">
-<link rel="stylesheet" href="graph-side.css">
 <!-- Monaco's own styles, last as when its loader adds them (it adds nothing
      when this link is there). -->
 <link rel="stylesheet" href="vendor/monaco/vs/editor/editor.main.css">
@@ -97,15 +96,6 @@
     </section>
     <section class="view" id="view-search" hidden></section>
     <section class="view" id="view-hierarchy" hidden></section>
-    <section class="view" id="view-graph" hidden>
-      <div class="view-hd">
-        <span class="view-title">Graph</span>
-        <span class="sp"></span>
-        <button class="ic" id="graph-expand" aria-label="Expand to Editor Area" title="Expand to the editor area" aria-pressed="false"><span class="codicon codicon-screen-full"></span></button>
-      </div>
-      <p class="graph-away" id="graph-away" hidden>The graph covers the editor area. <button class="graph-back" id="graph-back">Back to the side bar</button></p>
-      <div class="graph-host" id="graph-host"></div>
-    </section>
     <section class="view" id="view-outline" hidden>
       <div class="view-hd"><span class="view-title">Outline</span></div>
       <div class="outline" id="outline"></div>

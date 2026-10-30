@@ -1,9 +1,0 @@
-/* The Graph side bar view (editor.js mounts graph/view.js in #graph-host).
-   Expanded, the host moves out of the side bar to cover the editor area and
-   the panel. Colours come from editor.css's tokens. */
-.graph-host { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
-.graph-host > .graph { flex: 1; }
-.graph-host.wide { grid-column: center-start / center-end; grid-row: center-start / panel-end; z-index: 5; background: var(--bg); border-left: 1px solid var(--line); }
-#view-graph .view-hd .ic[aria-pressed="true"] { background: var(--select); }
-.graph-away { font-size: 12px; color: var(--muted); padding: 4px 20px 8px; line-height: 1.5; margin: 0; }
-.graph-back { color: var(--focus); text-decoration: underline; padding: 0; }

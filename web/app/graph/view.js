@@ -7,8 +7,8 @@
 // the filters. No globals, no network, no inline handlers or styles.
 
 import { h, kids } from "./el.js"
-import { BIG, KINDS, LITERAL, bestNode, buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, nameOf, neighbours, searchNodes, triplesOf } from "./model.js"
-import { CAPS, CONTINUE_ITERATIONS, FIRST_ITERATIONS, MODES, hierarchyParams, normalizeState, toParams } from "./filters.js"
+import { BIG, KINDS, LITERAL, bestNode, buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, middleCut, nameOf, neighbours, searchNodes, triplesOf } from "./model.js"
+import { CAPS, CONTINUE_ITERATIONS, FIRST_ITERATIONS, MODES, facetParams, hierarchyParams, normalizeState, selectsNothing, toParams } from "./filters.js"
 import { createHitGrid } from "./hitgrid.js"
 import { RING_CAPS, buildHierarchy, ringLayout } from "./rings.js"
 import { pickLabels, truncate } from "./labels.js"
@@ -25,6 +25,12 @@ const ZOOM = [0.005, 20]
 const TITLES = { graph: "Graph", focus: "Focus", hierarchy: "Hierarchy" }
 const TRIPLES_SHOWN = 50
 const SEVERITY = ["", "error", "warning", "information", "hint"]
+// File names, in characters, cut in the middle (middleCut): a legend entry
+// shares a line with up to seven others; the info panel's line is about 320
+// px of 11 px monospace.
+const LEGEND_CHARS = 32
+const INFO_CHARS = 48
+const NO_FILES = "No files selected"
 
 /**
  * Mount the graph view in `container`.
@@ -63,7 +69,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   const legend = h(doc, "div", { class: "graph-legend", role: "list", "aria-label": "Colours" })
   const treeBox = h(doc, "div", { class: "graph-treebox", hidden: true })
   const info = h(doc, "section", { class: "graph-info", hidden: true, "aria-label": "Selected node" })
-  const stage = h(doc, "div", { class: "graph-stage" }, canvas, moreLayer, treeBox, legend, tip, info)
+  const notice = h(doc, "p", { class: "graph-notice", hidden: true, text: `${NO_FILES}. Choose files under Files, or All.` })
+  const stage = h(doc, "div", { class: "graph-stage" }, canvas, moreLayer, treeBox, notice, legend, tip, info)
   const root = h(doc, "div", { class: "graph", "data-busy": "false" },
     h(doc, "div", { class: "graph-bar" }, h(doc, "div", { class: "graph-tabs", role: "tablist", "aria-label": "Graph mode" }, tabs), fitButton, filtersButton, status),
     h(doc, "div", { class: "graph-body" }, filtersEl, stage))
@@ -105,6 +112,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   let frame = 0
   let destroyed = false
   let failed = false
+  // The filters select no file: nothing is asked or drawn.
+  let nothing = false
 
   const panel = createFilterPanel(filtersEl, state, {
     change(what) {
@@ -150,10 +159,17 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
 
   const hops = () => state.filters.depth || 2
 
-  /** Ask for the current mode's graph and show it. */
-  async function load() {
+  /** Ask for the current mode's graph and show it. `changed`: the host said
+   * the workspace changed (`refresh`). */
+  async function load({ changed = false } = {}) {
     clearTimeout(timer)
     if (destroyed) return
+    if (selectsNothing(state.filters)) return showNothing(changed)
+    if (nothing) {
+      nothing = false
+      notice.hidden = true
+      treeBox.hidden = mode !== "hierarchy"
+    }
     if (mode === "hierarchy") {
       const res = await ask(hierarchyParams(state.filters))
       if (!res) return
@@ -182,6 +198,33 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     showStatus()
     renderInfo()
     if (fitPending && scene && renderer.width > 1) fit()
+    draw()
+  }
+
+  /** No file selected: no request, an empty drawing and the notice; the files stay listed to choose from. */
+  async function showNothing(changed = false) {
+    // An answer still on its way is for files no longer selected.
+    seq++
+    root.dataset.busy = "false"
+    failed = false
+    let facets = model?.facets
+    if (!facets || changed) {
+      // Opened with none selected (a stored choice), or the workspace changed:
+      // ask for the files to list (no nodes).
+      const res = await ask(facetParams(state.filters))
+      if (!res || !selectsNothing(state.filters)) return
+      facets = buildModel(res).facets
+    }
+    nothing = true
+    setModel({ facets, total: { nodes: 0, edges: 0 } })
+    scene = null
+    rings = null
+    hier = null
+    moreLayer.replaceChildren()
+    notice.hidden = false
+    treeBox.hidden = true
+    showStatus()
+    renderInfo()
     draw()
   }
 
@@ -330,6 +373,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
 
   function showStatus() {
     if (failed) return
+    if (nothing) return void (status.textContent = NO_FILES)
     const shown = mode === "focus" ? rings?.nodes.length ?? 0 : model?.n ?? 0
     const total = model?.total.nodes ?? 0
     const f = (v) => v.toLocaleString("en")
@@ -340,9 +384,12 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const entries = []
     if (state.colorBy === "kind") KINDS.forEach((k, slot) => entries.push([slot, k]))
     else if (state.colorBy === "namespace") order.namespaces.slice(0, PALETTE_SIZE).forEach((ns, slot) => entries.push([slot, ns.prefix ? `${ns.prefix}:` : ns.iri]))
-    else order.files.slice(0, PALETTE_SIZE).forEach((uri, slot) => entries.push([slot, fileLabel(uri, commonRoot(order.files))]))
+    else {
+      const root = commonRoot(order.files)
+      order.files.slice(0, PALETTE_SIZE).forEach((uri, slot) => entries.push([slot, middleCut(fileLabel(uri, root), LEGEND_CHARS), uri]))
+    }
     const used = new Set(slots)
-    legend.replaceChildren(...entries.filter(([slot]) => used.has(slot)).map(([slot, text]) => h(doc, "span", { class: "graph-key", role: "listitem" }, h(doc, "span", { class: `graph-swatch graph-c${slot}`, "aria-hidden": "true" }), text)))
+    legend.replaceChildren(...entries.filter(([slot]) => used.has(slot)).map(([slot, text, title]) => h(doc, "span", { class: "graph-key", role: "listitem", title }, h(doc, "span", { class: `graph-swatch graph-c${slot}`, "aria-hidden": "true" }), text)))
     legend.hidden = mode === "hierarchy" || !legend.children.length
   }
 
@@ -390,7 +437,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
         h(doc, "span", { class: "graph-badge", text: d.literal ? "literal" : d.kind || "other" }),
         h(doc, "button", { type: "button", class: "graph-x", "data-act": "close", "aria-label": "Close", title: "Close", text: "×" })),
       h(doc, "div", { class: "graph-info-id", text: d.id }),
-      d.uri ? h(doc, "div", { class: "graph-info-file", title: d.uri, text: fileLabel(d.uri, commonRoot(order.files)) }) : null,
+      d.uri ? h(doc, "div", { class: "graph-info-file", title: d.uri, text: middleCut(fileLabel(d.uri, commonRoot(order.files)), INFO_CHARS) }) : null,
       marks[selected] ? h(doc, "div", { class: `graph-info-diag graph-sev${marks[selected]}`, text: `Has ${SEVERITY[marks[selected]]} diagnostics` }) : null,
       h(doc, "div", { class: "graph-actions" },
         h(doc, "button", { type: "button", class: "graph-btn", "data-act": "reveal", disabled: !canReveal, text: "Go to definition" }),
@@ -441,7 +488,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     }
     canvas.hidden = mode === "hierarchy"
     moreLayer.hidden = mode !== "focus"
-    treeBox.hidden = mode !== "hierarchy"
+    treeBox.hidden = mode !== "hierarchy" || nothing
     legend.hidden = mode === "hierarchy" || !legend.children.length
     tip.hidden = true
   }
@@ -603,7 +650,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   async function start() {
     syncTabs()
     resize()
-    if (!state.mode) {
+    if (!state.mode && !selectsNothing(state.filters)) {
       // Nothing chosen: a first answer without layout decides the mode.
       const res = await ask(toParams(state.filters, { iterations: 0 }))
       if (!res) return
@@ -620,7 +667,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     /** Ask again (a file changed), keeping positions, filters and the selection. */
     async refresh() {
       await started
-      await load()
+      await load({ changed: true })
     },
     /** The container changed size. */
     resize,

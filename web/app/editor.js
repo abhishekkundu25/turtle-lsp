@@ -321,14 +321,19 @@ function renderTree() {
 function renderTabs() {
   W.groups.forEach((g, i) => {
     const q = (sel) => g.el.querySelector(sel)
+    // Keys move between tabs (wire's tab bar handler): the focus stays on the selected one.
+    const keyed = q(".tabs").contains(document.activeElement)
     q(".tabs").innerHTML = g.tabs
-      .map((p) => {
-        const c = counts(p)
-        return `<div class="tab${dirty(p) ? " dirty" : ""}" role="tab" aria-label="${esc(nameOf(p))}" aria-selected="${g.active === p}" data-path="${esc(p)}" title="${esc(p)}"><span class="${c.e ? "e" : ""}">${esc(nameOf(p))}</span><span class="x" data-close="${esc(p)}" aria-hidden="true"><span class="codicon codicon-close"></span></span></div>`
+      .map((id) => {
+        const k = kindOf(id)
+        const on = g.active === id
+        const icon = k.icon ? `<span class="codicon codicon-${k.icon}" aria-hidden="true"></span>` : ""
+        return `<div class="tab${k.dirty(id) ? " dirty" : ""}" role="tab" tabindex="${on ? 0 : -1}" aria-label="${esc(k.label(id))}" aria-selected="${on}" data-path="${esc(id)}" title="${esc(k.title(id))}">${icon}<span class="${k.errors(id) ? "e" : ""}">${esc(k.label(id))}</span><span class="x" data-close="${esc(id)}" aria-hidden="true"><span class="codicon codicon-close"></span></span></div>`
       })
       .join("")
+    if (keyed) q(".tab[aria-selected=true]")?.focus()
     q(".welcome").hidden = Boolean(g.active)
-    q(".crumbs-path").innerHTML = g.active ? g.active.split("/").map(esc).join(` <span class="codicon codicon-chevron-right"></span> `) : ""
+    q(".crumbs-path").innerHTML = g.active ? kindOf(g.active).crumbs(g.active).map(esc).join(` <span class="codicon codicon-chevron-right"></span> `) : ""
     g.el.classList.toggle("focused", i === W.g && W.groups.length > 1)
     g.isQuery.set(isQuery(g.active))
     queries.update(g)
@@ -374,56 +379,107 @@ function renderStatus() {
   $("status-warnings").textContent = w
   $("status-shacl").textContent = s
   $("status-labels").textContent = settings.labelsText()
-  $("status-lang").textContent = W.active ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL", json: "JSON-LD" }[languageOf(W.active)] : ""
-  const pos = W.active && editor.getPosition()
+  // The language and the cursor of the file shown; none while the graph is.
+  const file = shownFile()
+  $("status-lang").textContent = file ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL", json: "JSON-LD" }[languageOf(file)] : ""
+  const pos = file && editor.getPosition()
   $("status-pos").textContent = pos ? `Ln ${pos.lineNumber}, Col ${pos.column}` : ""
 }
 
 // ---- tabs and the editor ----------------------------------------------------------------------
 
-// Open `path` in the focused group.
-function openTab(path, { focus = true } = {}) {
-  const f = W.files.get(path)
-  if (!f) return
+// What a tab shows. A group's tabs are ids: a file tab's id is its path, the
+// graph tab's is GRAPH, which no path can be (paths have no leading slash).
+// `can`: whether the tab can open. `single`: one tab in the whole editor (the
+// split moves it, and opening it focuses it where it is). `show` puts it in
+// group `g`, in place of what `hide` took away.
+const GRAPH = "/graph"
+const TABS = {
+  file: {
+    name: "file",
+    label: nameOf,
+    title: (path) => path,
+    crumbs: (path) => path.split("/"),
+    dirty,
+    errors: (path) => counts(path).e > 0,
+    can: (path) => W.files.has(path),
+    show(g, path, { focus }) {
+      W.selected = path
+      for (let d = dirOf(path); d; d = dirOf(d)) W.expanded.add(d)
+      g.editor.setModel(W.files.get(path).model)
+      const view = g.views.get(path)
+      if (view) g.editor.restoreViewState(view)
+      if (focus) g.editor.focus()
+    },
+    hide: (g, path) => g.views.set(path, g.editor.saveViewState()),
+  },
+  graph: {
+    name: "graph",
+    label: () => "Graph",
+    title: () => "Workspace graph",
+    icon: "graph-scatter",
+    crumbs: () => [],
+    dirty: () => false,
+    errors: () => false,
+    // Until the server answers it is not known whether it draws graphs: a restored graph tab waits.
+    can: () => G.available !== false,
+    single: true,
+    show: (g, _id, { focus }) => showGraph(g, focus),
+    hide: () => hideGraph(),
+  },
+}
+const kindOf = (id) => (id === GRAPH ? TABS.graph : TABS.file)
+// The file the focused group shows (null: none, or the graph).
+const shownFile = () => (W.files.has(W.active) ? W.active : null)
+
+// Open tab `id` in the focused group; a single tab open in another group is focused there.
+function openTab(id, { focus = true } = {}) {
+  const kind = kindOf(id)
+  if (!kind.can(id)) return
+  if (kind.single) {
+    const home = W.groups.findIndex((o) => o.tabs.includes(id))
+    if (home >= 0) focusGroup(home)
+  }
   const g = W.groups[W.g]
-  if (g.active && W.files.has(g.active)) g.views.set(g.active, editor.saveViewState())
-  if (!g.tabs.includes(path)) g.tabs.push(path)
-  g.active = path
-  W.selected = path
-  for (let d = dirOf(path); d; d = dirOf(d)) W.expanded.add(d)
-  editor.setModel(f.model)
-  const view = g.views.get(path)
-  if (view) editor.restoreViewState(view)
-  if (focus) editor.focus()
+  if (g.active && g.active !== id) kindOf(g.active).hide(g, g.active)
+  if (!g.tabs.includes(id)) g.tabs.push(id)
+  g.active = id
+  g.el.dataset.kind = kind.name
+  kind.show(g, id, { focus })
   changed({ tree: true, tabs: true, status: true, layout: true })
   if (!$("view-outline").hidden) renderOutline()
 }
 
-// Close `path` in group `group` (the focused one by default). A file with
+// Close tab `id` in group `group` (the focused one by default). A file with
 // unsaved changes shown in no other group asks first, unless `force`.
-async function closeTab(path, { group = W.g, quiet = false, force = false, keepGroup = false } = {}) {
+async function closeTab(id, { group = W.g, quiet = false, force = false, keepGroup = false } = {}) {
   const g = W.groups[group]
-  const i = g?.tabs.indexOf(path) ?? -1
+  const i = g?.tabs.indexOf(id) ?? -1
   if (i < 0) return
-  const elsewhere = W.groups.some((o, k) => k !== group && o.tabs.includes(path))
-  if (!force && dirty(path) && !elsewhere) {
-    const answer = await ask(`Do you want to save the changes you made to ${nameOf(path)}?`, "Your changes will be lost if you don't save them.", ["Save", "Don't Save", "Cancel"])
+  const kind = kindOf(id)
+  const elsewhere = W.groups.some((o, k) => k !== group && o.tabs.includes(id))
+  if (!force && kind.dirty(id) && !elsewhere) {
+    const answer = await ask(`Do you want to save the changes you made to ${kind.label(id)}?`, "Your changes will be lost if you don't save them.", ["Save", "Don't Save", "Cancel"])
     if (answer === "Cancel" || answer == null) return
-    if (answer === "Save" && !(await save(path))) return
-    if (answer === "Don't Save") await discard(path)
+    if (answer === "Save" && !(await save(id))) return
+    if (answer === "Don't Save") await discard(id)
   }
-  if (!g.tabs.includes(path)) return
-  g.tabs.splice(g.tabs.indexOf(path), 1)
-  g.views.delete(path)
+  if (!g.tabs.includes(id)) return
+  g.tabs.splice(g.tabs.indexOf(id), 1)
+  const wasActive = g.active === id
+  if (wasActive) {
+    kind.hide(g, id)
+    g.active = null
+  }
+  g.views.delete(id)
   if (!g.tabs.length && W.groups.length > 1 && !keepGroup) {
     closeGroup(group)
-  } else if (g.active === path) {
-    g.active = null
+  } else if (wasActive) {
     const next = g.tabs[Math.min(i, g.tabs.length - 1)]
     const focused = W.g
     focusGroup(group)
     if (next) openTab(next, { focus: !quiet })
-    else editor.setModel(null)
+    else (delete g.el.dataset.kind, g.editor.setModel(null))
     if (W.groups[focused]) focusGroup(focused)
   }
   changed({ tabs: true, status: true, layout: true })
@@ -485,6 +541,20 @@ function addGroup() {
     const tab = e.target.closest("[role=tab]")
     if (tab && e.button === 1) closeTab(tab.dataset.path, { group: W.groups.indexOf(g) })
   })
+  // The selected tab takes the focus (Tab key): arrows pick the next one,
+  // Enter shows it, Delete closes it.
+  el.querySelector(".tabs").addEventListener("keydown", (e) => {
+    const tab = e.target.closest("[role=tab]")
+    if (!tab) return
+    const id = tab.dataset.path
+    const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key]
+    if (!step && !["Enter", " ", "Delete"].includes(e.key)) return
+    e.preventDefault()
+    focusGroup(W.groups.indexOf(g))
+    if (step) openTab(g.tabs[(g.tabs.indexOf(id) + step + g.tabs.length) % g.tabs.length], { focus: false })
+    else if (e.key === "Delete") closeTab(id, { group: W.g })
+    else openTab(id)
+  })
   return g
 }
 
@@ -495,9 +565,18 @@ function focusGroup(i) {
   for (const [k, g] of W.groups.entries()) g.el.classList.toggle("focused", k === i && W.groups.length > 1)
 }
 
-// Split: a second group showing the focused file (two groups at most).
+// Split: a second group showing the focused file (two groups at most). A
+// single tab (the graph: one view) moves to the other group instead, and the
+// group it leaves stays when the split made the other one.
 function split() {
   const path = W.active
+  if (path && kindOf(path).single) {
+    const made = W.groups.length === 1
+    const to = made ? addGroup() : W.groups[1 - W.g]
+    closeTab(path, { quiet: true, force: true, keepGroup: made })
+    focusGroup(W.groups.indexOf(to))
+    return openTab(path)
+  }
   if (W.groups.length === 1) addGroup()
   focusGroup(W.groups.length - 1)
   if (path) openTab(path)
@@ -506,6 +585,7 @@ function split() {
 
 function closeGroup(i) {
   const [g] = W.groups.splice(i, 1)
+  if (g.active) kindOf(g.active).hide(g, g.active)
   vim.detach(g.editor)
   g.editor.dispose()
   g.el.remove()
@@ -523,8 +603,9 @@ function reveal(path, range) {
 
 async function renderOutline() {
   const box = $("outline")
-  if (!W.active) return (box.innerHTML = "")
-  const model = W.files.get(W.active).model
+  const file = shownFile()
+  if (!file) return (box.innerHTML = "")
+  const model = W.files.get(file).model
   const symbols = (await client.request("textDocument/documentSymbol", { textDocument: { uri: model.uri.toString() } }).catch(() => null)) ?? []
   let html = ""
   const walk = (list, depth) => {
@@ -612,7 +693,7 @@ async function fileHandle(path, { create = false } = {}) {
 
 // Save `path` to disk; whether it was. Files not opened in place are kept in
 // the browser as they are typed.
-async function save(path = W.active, { quiet = false } = {}) {
+async function save(path = shownFile(), { quiet = false } = {}) {
   const f = W.files.get(path)
   if (!f) return false
   // A save is a save for the server too (SHACL validates on save).
@@ -647,7 +728,7 @@ async function saveAll() {
 }
 
 // Put the disk text back into `path` (undoable).
-async function revert(path = W.active) {
+async function revert(path = shownFile()) {
   if (!writable()) return
   const f = W.files.get(path)
   if (!f || f.disk === undefined) return toast("Only files of a folder opened in place can be reverted.")
@@ -679,7 +760,7 @@ function ask(message, detail, buttons) {
       box.hidden = true
       box.onclick = box.onkeydown = null
       // The focus goes back to the file shown (as VS Code's dialogs do), else where it was.
-      ;(W.active ? editor : before)?.focus()
+      ;(shownFile() ? editor : before)?.focus()
       resolve(answer)
     }
     box.onclick = (e) => {
@@ -753,7 +834,7 @@ function download(name, blob) {
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
-function downloadFile(path = W.active ?? (W.files.has(W.selected) ? W.selected : null)) {
+function downloadFile(path = shownFile() ?? (W.files.has(W.selected) ? W.selected : null)) {
   const f = W.files.get(path)
   if (!f) return toast("Open a file to download it.")
   download(nameOf(path), new Blob([f.model.getValue()], { type: "text/plain" }))
@@ -890,11 +971,12 @@ function quickOpen(prefix = "") {
       })
     }
     if (q.startsWith("@")) {
-      if (!W.active) return []
-      const uri = W.files.get(W.active).model.uri.toString()
+      const file = shownFile()
+      if (!file) return []
+      const uri = W.files.get(file).model.uri.toString()
       const list = flatten(await client.request("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => []))
       const want = q.slice(1).toLowerCase()
-      return list.filter((s) => s.name.toLowerCase().includes(want)).map((s) => symbolItem(s, W.active))
+      return list.filter((s) => s.name.toLowerCase().includes(want)).map((s) => symbolItem(s, file))
     }
     const want = q.toLowerCase()
     return [...W.files.keys()]
@@ -969,8 +1051,8 @@ const COMMANDS = [
   { id: "file.save", label: "File: Save", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, run: () => save() },
   { id: "file.saveAll", label: "File: Save All", key: () => monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyCode.KeyS), run: saveAll },
   { id: "file.revert", label: "File: Revert File", run: () => revert() },
-  { id: "file.compareSaved", label: "File: Compare with Saved", run: () => W.active && diff.compareWithSaved(W.active, W.files.get(W.active)) },
-  { id: "rdf.previewFormat", label: "RDF: Preview Formatting", run: () => W.active && writable() && diff.previewFormatting(W.active, W.files.get(W.active)) },
+  { id: "file.compareSaved", label: "File: Compare with Saved", run: () => shownFile() && diff.compareWithSaved(shownFile(), W.files.get(shownFile())) },
+  { id: "rdf.previewFormat", label: "RDF: Preview Formatting", run: () => shownFile() && writable() && diff.previewFormatting(shownFile(), W.files.get(shownFile())) },
   { id: "view.split", label: "View: Split Editor", key: () => monaco.KeyMod.CtrlCmd | monaco.KeyCode.Backslash, run: split },
   { id: "file.new", label: "File: New File", run: () => startNew("newFile") },
   { id: "file.newFolder", label: "File: New Folder", run: () => startNew("newFolder") },
@@ -1206,14 +1288,14 @@ function wire() {
   hierarchy = createHierarchy({
     container: $("view-hierarchy"),
     request: (method, params) => client.request(method, params),
-    at: () => (W.active && editor.getModel() ? { uri: editor.getModel().uri.toString(), position: { line: editor.getPosition().lineNumber - 1, character: editor.getPosition().column - 1 } } : null),
+    at: () => (shownFile() && editor.getModel() ? { uri: editor.getModel().uri.toString(), position: { line: editor.getPosition().lineNumber - 1, character: editor.getPosition().column - 1 } } : null),
     pathOf: (uri) => pathByUri.get(uri),
     reveal,
     toast,
   })
   $("outline").addEventListener("click", (e) => {
     const row = e.target.closest("[data-line]")
-    if (row && W.active) reveal(W.active, { start: { line: +row.dataset.line, character: +row.dataset.ch }, end: { line: +row.dataset.line, character: +row.dataset.ch } })
+    if (row && shownFile()) reveal(shownFile(), { start: { line: +row.dataset.line, character: +row.dataset.ch }, end: { line: +row.dataset.line, character: +row.dataset.ch } })
   })
 
   // Shortcuts that work outside the editor too.
@@ -1229,7 +1311,7 @@ function wire() {
     else if (mod && e.shiftKey && e.key.toLowerCase() === "f") (e.preventDefault(), showView("search"))
     else if (e.key === "F1" || (mod && e.shiftKey && e.key.toLowerCase() === "p")) {
       e.preventDefault()
-      if (W.active) (editor.focus(), editor.trigger("keyboard", "editor.action.quickCommand", {}))
+      if (shownFile()) (editor.focus(), editor.trigger("keyboard", "editor.action.quickCommand", {}))
     } else if (e.key === "Escape") closeMenu()
   })
 }
@@ -1246,78 +1328,80 @@ function showView(which) {
   if (which === "outline") renderOutline()
   if (which === "search") search.focus()
   if (which === "hierarchy") hierarchy.refresh()
-  showGraph(which === "graph")
 }
 
-// ---- the Graph view (graph/view.js) ------------------------------------------------------------------
+// ---- the Graph view (graph/view.js), the graph tab's content ------------------------------------------
 
-// Asked again this long after the last change to a file, while the view shows.
+// Asked again this long after the last change to a file, while the graph tab shows.
 const GRAPH_DELAY_MS = 400
-const G = { view: null, shown: false, wide: false, stale: false, timer: 0 }
+// `available`: whether the server draws graphs (undefined until it answers).
+// `host`: the view's element, in the group that shows the graph tab (one view,
+// made when the tab first shows). `shown`: a group shows the tab.
+const G = { available: undefined, host: null, view: null, shown: false, stale: false, timer: 0 }
 
-// Only a server that answers turtle/graph gets the button.
+// Only a server that answers turtle/graph gets the button; without it, a
+// graph tab kept from before goes.
 function wireGraph(capabilities) {
-  if (!capabilities?.experimental?.["turtle/graph"]) return
-  $("act-graph").hidden = false
-  $("act-graph").addEventListener("click", () => showView("graph"))
-  $("graph-expand").addEventListener("click", () => expandGraph(!G.wide))
-  $("graph-back").addEventListener("click", () => expandGraph(false))
-  // The settings open in the editor area, under an expanded graph.
-  $("act-settings").addEventListener("click", () => expandGraph(false))
-  // Light or dark (theme.js sets data-theme): read the colours again.
-  new MutationObserver(() => G.view?.setTheme()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] })
-}
-
-function showGraph(on) {
-  if (on === G.shown) return
-  G.shown = on
-  $("act-graph").classList.toggle("on", on)
-  $("view-graph").hidden = !on
-  $("graph-host").hidden = !on
-  if (!on) {
-    // A change waiting to be asked for is asked for on the next show.
-    if (G.timer) (clearTimeout(G.timer), (G.timer = 0), (G.stale = true))
+  G.available = Boolean(capabilities?.experimental?.["turtle/graph"])
+  if (!G.available) {
+    for (let i = W.groups.length - 1; i >= 0; i--) closeTab(GRAPH, { group: i, quiet: true, force: true })
     return
   }
-  if (!G.view) {
-    const key = (k) => `rdf-editor-${k}`
+  $("act-graph").hidden = false
+  $("act-graph").addEventListener("click", () => openTab(GRAPH))
+  // Light or dark (theme.js sets data-theme): read the colours again.
+  new MutationObserver(() => G.view?.setTheme()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] })
+  // A graph tab restored before the server answered draws now.
+  const home = W.groups.find((g) => g.active === GRAPH)
+  if (home) showGraph(home, false)
+}
+
+// Show the graph in group `g`, in place of its editor (editor.css, by the group's data-kind).
+function showGraph(g, focus) {
+  G.host ??= Object.assign(document.createElement("div"), { className: "graph-host" })
+  if (G.host.parentElement !== g.el) g.el.querySelector(".editor-host").after(G.host)
+  G.shown = true
+  if (!G.available) return
+  if (G.view) {
+    G.view.resize()
+    if (G.stale) G.view.refresh()
+  } else {
     G.view = createGraphView({
-      container: $("graph-host"),
+      container: G.host,
       // The layout runs on the worker that answers the editor: a 20,000-node
       // layout would hold typing up for a second or more.
       maxNodes: 5000,
       request: (method, params) => client.request(method, params),
-      reveal: (uri, range) => {
-        const path = pathByUri.get(uri)
-        if (!path) return toast(`${uri} is not in the workspace.`)
-        expandGraph(false)
-        reveal(path, range)
-      },
+      reveal: revealBeside,
       diagnostics: (uri) => W.diags.get(uri) ?? [],
       store: {
         get(k) {
           try {
-            return localStorage.getItem(key(k))
+            return localStorage.getItem(`rdf-editor-${k}`)
           } catch {
             return null
           }
         },
         set(k, v) {
           try {
-            localStorage.setItem(key(k), JSON.stringify(v))
+            localStorage.setItem(`rdf-editor-${k}`, JSON.stringify(v))
           } catch {}
         },
       },
     })
-  } else {
-    G.view.resize()
-    if (G.stale) G.view.refresh()
   }
   G.stale = false
+  if (focus) G.host.querySelector("canvas")?.focus()
+}
+
+// No group shows the graph: a change waiting to be asked for is asked for when it shows next.
+function hideGraph() {
+  G.shown = false
+  if (G.timer) (clearTimeout(G.timer), (G.timer = 0), (G.stale = true))
 }
 
 // A file was edited, added, removed or renamed: ask again once the changes
-// stop, or when the view is shown next.
+// stop, or when the graph tab shows next.
 function graphChanged() {
   if (!G.view) return
   if (!G.shown) return void (G.stale = true)
@@ -1325,20 +1409,15 @@ function graphChanged() {
   G.timer = setTimeout(() => ((G.timer = 0), G.view.refresh()), GRAPH_DELAY_MS)
 }
 
-// Expanded, the view covers the editor area and the panel; the side bar says where it went.
-function expandGraph(on) {
-  if (on === G.wide) return
-  G.wide = on
-  const host = $("graph-host")
-  host.classList.toggle("wide", on)
-  ;(on ? document.querySelector(".wb") : $("view-graph")).append(host)
-  $("graph-away").hidden = !on
-  const button = $("graph-expand")
-  button.setAttribute("aria-pressed", String(on))
-  button.title = on ? "Back to the side bar" : "Expand to the editor area"
-  button.setAttribute("aria-label", on ? "Back to Side Bar" : "Expand to Editor Area")
-  button.querySelector(".codicon").className = `codicon codicon-${on ? "screen-normal" : "screen-full"}`
-  G.view?.resize()
+// Go to definition from the graph: the file opens in the other group (made
+// if there is one group), so the graph stays in view.
+function revealBeside(uri, range) {
+  const path = pathByUri.get(uri)
+  if (!path) return toast(`${uri} is not in the workspace.`)
+  const home = W.groups.findIndex((g) => g.tabs.includes(GRAPH))
+  const other = W.groups.find((_, i) => i !== home) ?? addGroup()
+  focusGroup(W.groups.indexOf(other))
+  reveal(path, range)
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------
@@ -1365,11 +1444,15 @@ function defineThemes() {
 function restoreWorkspace(kept) {
   restoring = true
   try {
-    for (const p of [...W.files.keys()]) removeFile(p)
     while (W.groups.length > 1) closeGroup(W.groups.length - 1)
-    Object.assign(W.groups[0], { tabs: [], active: null })
-    W.groups[0].views.clear()
+    const first = W.groups[0]
+    if (first.active) kindOf(first.active).hide(first, first.active)
+    Object.assign(first, { tabs: [], active: null })
+    first.views.clear()
+    delete first.el.dataset.kind
+    first.editor.setModel(null)
     focusGroup(0)
+    for (const p of [...W.files.keys()]) removeFile(p)
     W.folders = new Set(kept.folders ?? [])
     W.roots.clear()
     W.folded.clear()
@@ -1381,8 +1464,10 @@ function restoreWorkspace(kept) {
     groups.slice(0, 2).forEach((saved, i) => {
       if (i > 0) addGroup()
       focusGroup(i)
-      W.tabs = (saved.tabs ?? []).filter((p) => W.files.has(p))
-      const active = saved.active && W.files.has(saved.active) ? saved.active : W.tabs[0]
+      // A single tab (the graph) once, in the first group that had it.
+      const taken = (id) => kindOf(id).single && W.groups.some((o, k) => k < i && o.tabs.includes(id))
+      W.tabs = (saved.tabs ?? []).filter((id) => kindOf(id).can(id) && !taken(id))
+      const active = W.tabs.includes(saved.active) ? saved.active : W.tabs[0]
       if (active) openTab(active, { focus: false })
       if (i > 0 && !W.tabs.length) closeGroup(i)
     })

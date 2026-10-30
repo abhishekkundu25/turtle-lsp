@@ -550,9 +550,10 @@ browser. Files never leave the tab.
   of at most 10 MB, and only Turtle, TriG, N-Triples, N-Quads, JSON-LD and
   SPARQL files.
 - **Graph**: the Graph button in the activity bar opens the workspace graph
-  in the side bar; the expand button lets it cover the editor area. Its node
-  cap goes up to 5,000 here (20,000 in VS Code), as the layout runs on the
-  same worker that answers the editor.
+  as an editor tab. Split (Ctrl+\\) moves it beside a file, and Go to
+  definition opens the file in the other group, so the graph stays in view.
+  Its node cap goes up to 5,000 here (20,000 in VS Code), as the layout runs
+  on the same worker that answers the editor.
 - **Content Security Policy**: both pages load scripts only from the site
   itself. The editor may connect to other `http` and `https` sites, for the
   "Fetch" quick fix; the toolbox connects to none.
