@@ -1,20 +1,19 @@
-// The view's state (filters, mode, colouring) and the `turtle/graph` request
-// params made from it. State read back from the store is checked here, once;
+// The view's state (filters, mode, colouring, Follow cursor, the Schema
+// toggles) and the `turtle/graph` and `turtle/schema` request params made
+// from it. State read back from the store is checked here, once;
 // what leaves is always a valid request. Pure: no DOM.
 
-import { KINDS, SUBCLASS } from "./model.js"
+import { KINDS } from "./model.js"
 
-const RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
-
-export const MODES = ["graph", "focus", "hierarchy"]
+export const MODES = ["graph", "focus", "schema"]
 export const COLOR_BY = ["file", "kind", "namespace"]
 export const CAPS = [500, 2000, 5000, 20000]
 export const DEPTHS = [0, 1, 2, 3, 4]
 /** Layout steps for a first layout, and for continuing one from earlier positions. */
 export const FIRST_ITERATIONS = 300
 export const CONTINUE_ITERATIONS = 100
-/** The hierarchy asks for this many nodes at most (the contract's ceiling). */
-export const HIERARCHY_CAP = 20000
+/** Schema asks for this many classes at most (the server's default). */
+export const SCHEMA_CLASSES = 300
 
 /**
  * Nothing chosen yet: rdf:type edges and literals hidden, 2,000 nodes, the mode decided on the first answer.
@@ -25,6 +24,10 @@ export function defaultState() {
     mode: null,
     focus: null,
     colorBy: "file",
+    // Follow cursor: off until the user turns it on.
+    follow: false,
+    // Schema: "Problems only", and imported classes listed one by one.
+    schema: { problems: false, imports: false },
     filters: {
       files: null,
       kinds: null,
@@ -47,7 +50,12 @@ export function normalizeState(raw, maxCap = CAPS[CAPS.length - 1]) {
   const s = defaultState()
   s.filters.maxNodes = Math.min(s.filters.maxNodes, maxCap)
   if (!raw || typeof raw !== "object") return s
-  if (MODES.includes(raw.mode)) s.mode = raw.mode
+  // Schema replaced the Hierarchy mode: a state stored before opens Schema.
+  const mode = raw.mode === "hierarchy" ? "schema" : raw.mode
+  if (MODES.includes(mode)) s.mode = mode
+  s.follow = raw.follow === true
+  s.schema.problems = raw.schema?.problems === true
+  s.schema.imports = raw.schema?.imports === true
   if (typeof raw.focus === "string") s.focus = raw.focus
   if (COLOR_BY.includes(raw.colorBy)) s.colorBy = raw.colorBy
   const f = raw.filters
@@ -106,15 +114,21 @@ export function toParams(filters, { focus = null, depth, positions, iterations =
   return p
 }
 
-/** The params for the class hierarchy: the filters with only rdfs:subClassOf edges, no layout, up to HIERARCHY_CAP nodes; null when no file is selected. */
-export function hierarchyParams(filters) {
-  const p = toParams({ ...filters, depth: 0 }, { iterations: 0, maxNodes: HIERARCHY_CAP })
-  if (!p) return null
-  // Every class, also one with no rdfs:subClassOf: its rdf:type triple makes
-  // it a node (with types off no edge is drawn for it), and only the
-  // subClassOf triples make edges.
-  p.predicates = { include: [SUBCLASS, RDF_TYPE], exclude: [] }
-  p.kinds = ["class"]
+/**
+ * The `turtle/schema` params: the Files filter, the focus class, the class
+ * cap and whether imported classes are listed; null when no file is selected.
+ * @param {object} filters
+ * @param {object} [o]
+ * @param {string | null} [o.focus] a class or property IRI
+ * @param {{ uri: string, position: { line: number, character: number } } | null} [o.at] the term at a document position (Follow cursor)
+ * @param {boolean} [o.imports]
+ */
+export function schemaParams(filters, { focus = null, at = null, imports = false } = {}) {
+  if (selectsNothing(filters)) return null
+  const p = { maxClasses: SCHEMA_CLASSES, imports: imports === true }
+  if (filters.files) p.files = [...filters.files]
+  if (focus) p.focus = focus
+  if (at) p.at = at
   return p
 }
 

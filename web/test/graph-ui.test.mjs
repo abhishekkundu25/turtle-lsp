@@ -1,5 +1,5 @@
 // The shared graph view (web/app/graph/): its pure parts in Node (hit grid,
-// rings, hierarchy, request params, default mode, labels, diagnostics), then
+// rings, request params, default mode, labels, diagnostics), then
 // the whole view in the installed Google Chrome, driven by Playwright, on a
 // test page under a webview-strict policy with a fake `turtle/graph` server.
 // Each test names the defect it catches.
@@ -10,15 +10,14 @@ import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
 import { listen } from "./static-server.mjs"
 import { createHitGrid } from "../app/graph/hitgrid.js"
-import { RING_CAPS, buildHierarchy, pathTo, ringLayout } from "../app/graph/rings.js"
+import { RING_CAPS, ringLayout } from "../app/graph/rings.js"
 import { buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, middleCut, overlaps, searchNodes, triplesOf, bestNode } from "../app/graph/model.js"
-import { defaultState, facetParams, hierarchyParams, normalizeState, selectsNothing, setRule, toParams } from "../app/graph/filters.js"
+import { defaultState, facetParams, normalizeState, schemaParams, selectsNothing, setRule, toParams } from "../app/graph/filters.js"
 import { pickLabels, truncate } from "../app/graph/labels.js"
 import { NEUTRAL, colorSlots } from "../app/graph/colors.js"
 import { A, B, EX, SUBCLASS, bigGraph, smallGraph } from "./graph-fixture.mjs"
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
-const PORT = 4176
 
 // ---- pure parts, in Node -----------------------------------------------------------------
 
@@ -89,7 +88,7 @@ describe("hit grid", () => {
   })
 })
 
-describe("focus rings and hierarchy", () => {
+describe("focus rings", () => {
   test("rings cap each ring and count the rest as +N more (catches: hairball rings, a lost or wrong +N count)", () => {
     const m = buildModel(smallGraph())
     const pump = m.index.get(`${EX}Pump`)
@@ -111,23 +110,6 @@ describe("focus rings and hierarchy", () => {
     assert.equal(wider.more[1], 0)
     assert.equal(ringLayout(m, -1).nodes.length, 0)
   })
-
-  test("the class hierarchy has its roots, sorted children, sizes and survives a cycle (catches: missing classes, a hang on A ⊑ B ⊑ A)", () => {
-    const m = buildModel(smallGraph())
-    const h = buildHierarchy(m)
-    const id = (i) => m.nodes[i].id.slice(EX.length)
-    assert.equal(id(h.roots[0]), "Device")
-    assert.deepEqual(h.children.get(h.roots[0]).map(id), ["Pump", "Valve"])
-    assert.equal(h.size[h.roots[0]], 2)
-    assert.deepEqual(pathTo(h, m.index.get(`${EX}Valve`)).map(id), ["Device", "Valve"])
-    const cycle = buildModel({
-      nodes: ["a", "b", "c"].map((s) => ({ id: s, kind: "other" })),
-      edges: [{ source: 0, target: 1, predicate: SUBCLASS }, { source: 1, target: 0, predicate: SUBCLASS }, { source: 2, target: 2, predicate: SUBCLASS }],
-    })
-    const hc = buildHierarchy(cycle)
-    assert.deepEqual(hc.roots, [0], "a cycle with no way in gets a root; a self loop is ignored")
-    assert.deepEqual(pathTo(hc, 1), [0, 1])
-  })
 })
 
 describe("filters and request params", () => {
@@ -142,13 +124,10 @@ describe("filters and request params", () => {
       namespaces: { include: [], exclude: [EX] }, focus: `${EX}Pump`, depth: 2,
       layout: { iterations: 100, positions: { [`${EX}Pump`]: [1.23, -5.68] } },
     })
-    const hp = hierarchyParams(f)
-    // rdf:type too, so a class with no rdfs:subClassOf is still in the tree.
-    assert.deepEqual(hp.predicates, { include: [SUBCLASS, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"], exclude: [] })
-    assert.deepEqual(hp.kinds, ["class"])
-    assert.equal(hp.focus, undefined)
-    assert.equal(hp.maxNodes, 20000)
-    assert.equal(hp.layout.iterations, 0, "the hierarchy needs no layout")
+    // Schema: the Files filter, the focus, the class cap and the imports toggle; nothing else.
+    assert.deepEqual(schemaParams(f, { focus: `${EX}Pump` }), { maxClasses: 300, imports: false, files: [A], focus: `${EX}Pump` })
+    const at = { uri: A, position: { line: 3, character: 2 } }
+    assert.deepEqual(schemaParams(s.filters, { at, imports: true }), { maxClasses: 300, imports: true, at })
   })
 
   test("a stored state is checked: broken fields take their default (catches: a bad store value reaching the server)", () => {
@@ -180,7 +159,7 @@ describe("filters and request params", () => {
     assert.equal(selectsNothing({ ...f, files: [] }), true)
     assert.equal(selectsNothing(f), false)
     assert.equal(toParams({ ...f, files: [] }), null, "none: nothing to ask")
-    assert.equal(hierarchyParams({ ...f, files: [] }), null)
+    assert.equal(schemaParams({ ...f, files: [] }), null)
     // The files to choose from are still asked for: facets only, no nodes, no files filter.
     const fp = facetParams({ ...f, files: [], depth: 2 })
     assert.equal(fp.files, undefined)
@@ -263,7 +242,7 @@ describe("labels, model, colours and diagnostics", () => {
 describe("the view in Chrome", () => {
   let server, browser
   before(async () => {
-    server = await listen({ root: WEB, port: PORT })
+    server = await listen({ root: WEB })
     browser = await chromium.launch({ channel: "chrome", headless: true })
   })
   after(async () => {
@@ -410,12 +389,10 @@ describe("the view in Chrome", () => {
       // The focus is in the middle: a click there selects it.
       await v.page.mouse.click(x, y)
       await v.page.getByRole("heading", { name: "Pump" }).waitFor()
-      // The hierarchy tab shows the subClassOf tree.
-      await v.page.getByRole("tab", { name: "Hierarchy" }).click()
-      const tree = v.page.getByRole("tree", { name: "Class hierarchy" })
-      await tree.getByRole("treeitem", { name: /ex:Device/ }).waitFor()
-      assert.deepEqual(await tree.getByRole("treeitem", { name: /ex:Device/ }).getByRole("treeitem").locator(".graph-tree-name").allTextContents(), ["Pump", "Valve"])
-      assert.deepEqual((await v.calls()).at(-1).params.predicates, { include: [SUBCLASS, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"], exclude: [] })
+      // The Schema tab asks turtle/schema (schema-ui.test.mjs tests what it draws).
+      await v.page.getByRole("tab", { name: "Schema" }).click()
+      await v.page.locator(".graph-status", { hasText: "classes" }).waitFor()
+      assert.equal((await v.calls()).at(-1).method, "turtle/schema")
     } finally {
       await v.close()
     }
@@ -527,9 +504,9 @@ describe("the view in Chrome", () => {
       await v.page.locator(".graph-status", { hasText: "No files selected" }).waitFor()
       assert.equal(await settled(v), k)
       // The other modes say so too, without a request.
-      await v.page.getByRole("tab", { name: "Hierarchy" }).click()
+      await v.page.getByRole("tab", { name: "Schema" }).click()
       await v.page.locator(".graph-notice", { hasText: "No files selected" }).waitFor()
-      assert.equal(await v.page.locator(".graph-treebox").isHidden(), true)
+      assert.equal(await v.page.locator(".graph-schemabox").isHidden(), true)
       assert.equal(await settled(v), k)
     } finally {
       await v.close()

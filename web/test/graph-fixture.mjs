@@ -1,6 +1,7 @@
 // Canned `turtle/graph` answers for the graph view's tests (graph-ui.test.mjs
 // in Node, graph-ui-page.mjs in the browser): a small graph with known
-// positions, and a big one of any size.
+// positions, and a big one of any size; and a `turtle/schema` answer of any
+// number of classes (the small one is schema-fixture.json).
 
 export const EX = "http://example.org/"
 const RDFS = "http://www.w3.org/2000/01/rdf-schema#"
@@ -80,4 +81,47 @@ export function bigGraph(n, total = n) {
       predicates: [{ iri: SUBCLASS, name: "rdfs:subClassOf", edges: n - 1 }, { iri: `${EX}rel`, name: "ex:rel", edges: Math.floor(n / 2) }],
     },
   }
+}
+
+const XSD = "http://www.w3.org/2001/XMLSchema#"
+const STATES = ["ok", "ok", "ok", "unused", "undeclared", "badValues", "conflict"]
+
+/**
+ * A `turtle/schema` answer of `n` classes: a subclass tree three wide (every
+ * tenth class a root, every seventh with a second parent), four to eight rows
+ * each in every state, a link row to another class in most.
+ */
+export function bigSchema(n) {
+  let seed = 11
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
+  const classes = []
+  for (let i = 0; i < n; i++) {
+    const parents = i % 10 === 0 || i === 0 ? [] : [Math.floor((i - 1) / 3)]
+    if (i % 7 === 6 && i > 2) parents.push(i - 2)
+    const of = 10 + Math.floor(rnd() * 500)
+    const rows = []
+    const nrows = 4 + Math.floor(rnd() * 5)
+    for (let k = 0; k < nrows; k++) {
+      const state = STATES[Math.floor(rnd() * STATES.length)]
+      const link = k === 0 && n > 1
+      const target = link ? Math.floor(rnd() * n) : undefined
+      const row = {
+        property: `${EX}c${i}p${k}`,
+        name: `ex:c${i}p${k}`,
+        link,
+        ...(link ? { target, range: `${EX}C${target}`, rangeName: `ex:C${target}` } : { range: `${XSD}decimal`, rangeName: "xsd:decimal" }),
+        declared: state === "undeclared" ? [] : [{ how: "domain", uri: A, range: range(i * 10 + k) }],
+        used: state === "unused" ? 0 : Math.floor(of * rnd()),
+        of,
+        state,
+      }
+      if (state === "badValues") row.badValues = 1 + Math.floor(rnd() * 20)
+      if (state === "conflict") row.conflict = { declared: "xsd:decimal", shape: "xsd:integer" }
+      if (k === 1) (row.required = { min: 1, max: 1 }), (row.missing = i % 4 === 0 ? 2 : 0)
+      rows.push(row)
+    }
+    const problems = rows.filter((r) => r.state !== "ok").length + rows.filter((r) => r.missing > 0).length
+    classes.push({ id: `${EX}C${i}`, name: `ex:C${i}`, label: `Class ${i}`, uri: i % 2 ? A : B, range: range(i), kind: "class", parents, instances: of, problems, rows, moreRows: 0 })
+  }
+  return { classes, focus: 0, total: { classes: n }, imported: 0 }
 }
