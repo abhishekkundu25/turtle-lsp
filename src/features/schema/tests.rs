@@ -359,6 +359,146 @@ fn required_rows_count_the_instances_missing_them() {
     assert_eq!(pump.problems, 3);
 }
 
+/// The examples of a row as (kind, file name, line, text at the range, name).
+fn examples<'a>(ws: &'a Sources, r: &'a Row) -> Vec<(ExampleKind, &'a str, u32, &'a str, &'a str)> {
+    r.examples
+        .iter()
+        .map(|e| {
+            let a = &ws
+                .iter()
+                .find(|(.., a)| a.uri == e.uri)
+                .expect("its document")
+                .2;
+            let from = a.offset(Encoding::Utf16, e.range.start).expect("start") as usize;
+            let to = a.offset(Encoding::Utf16, e.range.end).expect("end") as usize;
+            let file = e.uri.rsplit('/').next().unwrap_or("");
+            (
+                e.kind,
+                file,
+                e.range.start.line,
+                &a.text[from..to],
+                e.name.as_str(),
+            )
+        })
+        .collect()
+}
+
+/// The line of the body's `n`th line (from 0), after [`HEAD`].
+fn line(n: u32) -> u32 {
+    HEAD.lines().count() as u32 + n
+}
+
+/// Catches missing instances listed in hash or subject order instead of
+/// document and text order, or located at a use instead of where the
+/// instance is described.
+#[test]
+fn missing_examples_are_the_instances_in_document_order() {
+    let shape = "ex:Pump a owl:Class .\n\
+        ex:S a sh:NodeShape ; sh:targetClass ex:Pump ;\n\
+          sh:property [ sh:path ex:serial ; sh:minCount 1 ] .\n\
+        ex:p9 a ex:Pump .\n";
+    let other = "ex:p1 a ex:Pump ; ex:serial \"1\" .\n\
+        ex:p2 ex:note \"b\" .\n\
+        ex:p2 a ex:Pump .\n\
+        [ a ex:Pump ; ex:note \"anon\" ] .\n";
+    // b.ttl sorts before c.ttl: p2 and the blank node come first, though p9
+    // was typed first.
+    let ws = workspace(&[("c", shape), ("b", other)]);
+    let r = run(&ws, serde_json::json!({}));
+    let serial = row(class(&r, "ex:Pump"), "ex:serial");
+    assert_eq!(serial.missing, Some(3));
+    assert_eq!(
+        examples(&ws, serial),
+        vec![
+            (ExampleKind::Missing, "b.ttl", line(1), "ex:p2", "ex:p2"),
+            (ExampleKind::Missing, "b.ttl", line(3), "a ex:Pump", "_:b1"),
+            (ExampleKind::Missing, "c.ttl", line(3), "ex:p9", "ex:p9"),
+        ]
+    );
+    let json = serde_json::to_value(serial).expect("json");
+    assert_eq!(json["examples"][0]["kind"], "missing");
+    assert_eq!(json["examples"][1]["name"], "_:b1");
+}
+
+/// Catches examples past the cap, or a cap that keeps the last ones.
+#[test]
+fn examples_stop_at_ten_and_keep_the_first() {
+    let mut body = String::from(
+        "ex:Pump a owl:Class .\n\
+         ex:S a sh:NodeShape ; sh:targetClass ex:Pump ;\n\
+           sh:property [ sh:path ex:serial ; sh:minCount 1 ; sh:datatype xsd:string ] .\n",
+    );
+    for i in 0..25 {
+        body.push_str(&format!("ex:p{i} a ex:Pump ; ex:serial {i} .\n"));
+    }
+    for i in 25..40 {
+        body.push_str(&format!("ex:p{i} a ex:Pump .\n"));
+    }
+    let ws = workspace(&[("d", &body)]);
+    let r = run(&ws, serde_json::json!({}));
+    let serial = row(class(&r, "ex:Pump"), "ex:serial");
+    assert_eq!((serial.missing, serial.bad_values), (Some(15), Some(25)));
+    let got = examples(&ws, serial);
+    let missing: Vec<&str> = got
+        .iter()
+        .filter(|e| e.0 == ExampleKind::Missing)
+        .map(|e| e.4)
+        .collect();
+    let want: Vec<String> = (25..35).map(|i| format!("ex:p{i}")).collect();
+    assert_eq!(missing, want);
+    let bad: Vec<(u32, &str, &str)> = got
+        .iter()
+        .filter(|e| e.0 == ExampleKind::BadValue)
+        .map(|e| (e.2, e.3, e.4))
+        .collect();
+    let want: Vec<(u32, String, String)> = (0..10)
+        .map(|i| (line(3 + i), i.to_string(), format!("ex:p{i}")))
+        .collect();
+    let want: Vec<(u32, &str, &str)> = want
+        .iter()
+        .map(|(l, v, n)| (*l, v.as_str(), n.as_str()))
+        .collect();
+    assert_eq!(bad, want);
+}
+
+/// Catches undeclared rows without the uses, or one example per use instead
+/// of per instance; and examples on rows with nothing to point at.
+#[test]
+fn undeclared_rows_point_at_each_instances_first_use() {
+    let ws = workspace(&[("pumps", PUMPS)]);
+    let r = run(&ws, serde_json::json!({}));
+    let pump = class(&r, "ex:Pump");
+    let vendor = row(pump, "ex:vendor");
+    assert_eq!(vendor.state, RowState::Undeclared);
+    assert_eq!(
+        examples(&ws, vendor),
+        vec![(
+            ExampleKind::Undeclared,
+            "pumps.ttl",
+            line(6),
+            "ex:vendor \"A\"",
+            "ex:p1"
+        )]
+    );
+    let pressure = row(pump, "ex:pressure");
+    assert_eq!(
+        examples(&ws, pressure),
+        vec![(
+            ExampleKind::BadValue,
+            "pumps.ttl",
+            line(7),
+            "\"high\"",
+            "ex:p2"
+        )]
+    );
+    for name in ["ex:maxRpm", "ex:flow"] {
+        let r = row(pump, name);
+        assert!(r.examples.is_empty(), "{name}: {:?}", r.examples);
+        let json = serde_json::to_value(r).expect("json");
+        assert!(json.get("examples").is_none(), "{name}: {json}");
+    }
+}
+
 /// Catches a cap that keeps classes by name, or drops the focus's family.
 #[test]
 fn the_cap_keeps_the_focus_family_first() {

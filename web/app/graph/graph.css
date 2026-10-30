@@ -201,6 +201,11 @@
 .schema-dot { font-size: 9px; line-height: 16px; flex: none; }
 .schema-problem-tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .schema-problem-d { font-size: 11px; color: var(--graph-muted); }
+.schema-ex { margin-top: 3px; font-size: 11px; }
+.schema-ex > summary { cursor: pointer; color: var(--graph-focus); width: max-content; }
+.schema-ex-list { list-style: none; margin: 3px 0 0; padding: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.schema-ex-item { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.schema-ex-more { font-size: 10px; color: var(--graph-muted); }
 /* Wide: the inspector is a column right of the boxes. */
 .graph[data-mode="schema"] .graph-info { top: 0; right: 0; bottom: 0; width: 320px; max-height: none; border-width: 0 0 0 1px; border-radius: 0; box-shadow: none; }
 .graph[data-mode="schema"][data-info="open"] .graph-schemabox { right: 320px; }

@@ -118,6 +118,9 @@ export function bigSchema(n) {
       if (state === "badValues") row.badValues = 1 + Math.floor(rnd() * 20)
       if (state === "conflict") row.conflict = { declared: "xsd:decimal", shape: "xsd:integer" }
       if (k === 1) (row.required = { min: 1, max: 1 }), (row.missing = i % 4 === 0 ? 2 : 0)
+      // Where the problems are, as the server lists them: up to 10 of each kind.
+      const places = (kind, n) => Array.from({ length: Math.min(10, n) }, (_, j) => ({ kind, uri: B, range: range(i * 10 + j), name: `ex:i${i}x${j}` }))
+      row.examples = [...places("missing", row.missing ?? 0), ...(state === "badValues" ? places("badValue", row.badValues) : []), ...(state === "undeclared" ? places("undeclared", row.used) : [])]
       rows.push(row)
     }
     const problems = rows.filter((r) => r.state !== "ok").length + rows.filter((r) => r.missing > 0).length

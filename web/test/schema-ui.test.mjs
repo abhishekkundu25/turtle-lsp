@@ -20,6 +20,12 @@ const WEB = path.join(HERE, "..")
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(HERE, "schema-fixture.json"), "utf8"))
 const PUMP = 1, MOTOR = 3, PIPE = 4
 const name = (c) => FIXTURE.classes[c].label
+// The fixture as a server without examples would answer.
+const withoutExamples = () => {
+  const f = JSON.parse(JSON.stringify(FIXTURE))
+  for (const c of f.classes) for (const r of c.rows) delete r.examples
+  return f
+}
 
 // ---- pure parts, in Node -----------------------------------------------------------------
 
@@ -28,10 +34,23 @@ test("each class's problems come from its rows and match the answer's count (cat
   FIXTURE.classes.forEach((c, i) => assert.equal(m.classes[i].problems.length, c.problems, c.name))
   assert.deepEqual(m.classes[PUMP].problems.map((p) => [p.kind, p.sev]), [["conflict", "error"], ["missing", "error"], ["badValues", "warning"], ["unused", ""], ["undeclared", ""]])
   assert.equal(m.classes[PUMP].worst, "error")
-  const undeclared = m.classes[PUMP].problems.find((p) => p.kind === "undeclared")
-  assert.equal(undeclared.at, null, "nothing declares it: nowhere to open")
-  const bad = m.classes[PUMP].problems.find((p) => p.kind === "badValues")
-  assert.deepEqual(bad.at, FIXTURE.classes[PUMP].rows[0].declared[0])
+  // A problem with places opens the first; the others open the declaration.
+  const of = (m, kind) => m.classes[PUMP].problems.find((p) => p.kind === kind)
+  const undeclared = of(m, "undeclared")
+  assert.deepEqual([undeclared.examples.length, undeclared.count], [10, 41])
+  assert.deepEqual(undeclared.at, FIXTURE.classes[PUMP].rows[5].examples[0])
+  const bad = of(m, "badValues")
+  assert.deepEqual([bad.examples.length, bad.count], [10, 12])
+  assert.deepEqual(bad.at, FIXTURE.classes[PUMP].rows[0].examples[0])
+  assert.deepEqual(of(m, "missing").examples.map((e) => e.name), ["ex:pump90", "ex:pump91", "ex:pump92"])
+  assert.deepEqual([of(m, "conflict").examples, of(m, "conflict").at], [[], FIXTURE.classes[PUMP].rows[1].declared[0]])
+  assert.deepEqual(of(m, "unused").at, FIXTURE.classes[PUMP].rows[4].declared[0])
+  const bare = schemaModel(withoutExamples())
+  assert.equal(of(bare, "undeclared").at, null, "nothing declares it and no place listed: nowhere to open")
+  assert.deepEqual(of(bare, "badValues").at, FIXTURE.classes[PUMP].rows[0].declared[0])
+  // Examples of another kind, or broken ones, are not the problem's.
+  const odd = schemaModel({ classes: [{ id: "a", rows: [{ property: "p", state: "undeclared", used: 2, declared: [], examples: [{ kind: "missing", uri: "file:///x", range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } } }, { kind: "undeclared", uri: 5 }, null] }] }] })
+  assert.deepEqual(odd.classes[0].problems[0].examples, [])
   // A broken answer: bad indexes and unknown states are dropped or made safe.
   const broken = schemaModel({ classes: [{ id: "a", parents: [0, 5, "x"], rows: [{ property: "p", state: "weird", target: 9, used: -3 }, null] }, null], focus: 7 })
   assert.deepEqual(broken.classes[0].parents, [])
@@ -288,11 +307,8 @@ describe("Schema in Chrome", () => {
       const problems = v.info.getByRole("list", { name: "Problems" }).getByRole("listitem")
       assert.equal(await problems.count(), 5)
       assert.equal(await v.info.getByRole("heading", { name: "Problems (5)" }).count(), 1)
-      await v.info.getByRole("button", { name: "Open: 12 values of ex:hasPressure not xsd:decimal" }).click()
-      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: "file:///ws/ontology.ttl", range: range(25) })
-      const none = v.info.getByRole("button", { name: "Open: ex:vendorCode is not declared" })
-      assert.equal(await none.isDisabled(), true)
-      assert.equal(await none.getAttribute("title"), "Nothing declares it: no place to open")
+      await v.info.getByRole("button", { name: "Open: ex:hasFlow: range and shape disagree" }).click()
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: "file:///ws/ontology.ttl", range: range(28) })
       // A row's name lights it in its box; the class's own definition opens.
       await v.info.getByRole("button", { name: "ex:maxRpm", exact: true }).click()
       assert.match(await v.row(PUMP, 4).getAttribute("class"), /is-lit/)
@@ -301,6 +317,73 @@ describe("Schema in Chrome", () => {
       // Close: no class, the drawing takes the width.
       await v.info.getByRole("button", { name: "Close" }).click()
       await v.info.waitFor({ state: "hidden" })
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("a problem lists its places behind Show N, each opens its place, +N more past ten, and its Open goes to the first place (catches: a missing count with no way to the instances)", async () => {
+    const v = await open()
+    try {
+      const reveals = () => v.page.evaluate(() => window.__graph.reveals)
+      const B = "file:///ws/data/plant-b.ttl"
+      const rng = (line, a, b) => ({ start: { line, character: a }, end: { line, character: b } })
+      // Closed until asked: the places do not crowd the problems.
+      const pump90 = v.info.getByRole("button", { name: "Open ex:pump90 at data/plant-b.ttl:6" })
+      assert.equal(await pump90.isVisible(), false)
+      const missing = v.info.locator("summary", { hasText: "Show 3" })
+      assert.equal(await missing.getAttribute("aria-label"), "Show 3 places: 3 instances miss ex:drivenBy")
+      await missing.click()
+      const places = v.info.getByRole("list", { name: "Places: 3 instances miss ex:drivenBy" }).getByRole("listitem")
+      assert.deepEqual(await places.allTextContents(), ["ex:pump90 · data/plant-b.ttl:6", "ex:pump91 · data/plant-b.ttl:7", "ex:pump92 · data/plant-b.ttl:8"])
+      await v.info.getByRole("button", { name: "Open ex:pump91 at data/plant-b.ttl:7" }).click()
+      assert.deepEqual((await reveals()).at(-1), { uri: B, range: rng(6, 0, 9) })
+      // Ten places listed of 41 uses: the rest counted.
+      await v.info.locator("summary[aria-label='Show 10 places: ex:vendorCode is not declared']").click()
+      const uses = v.info.getByRole("list", { name: "Places: ex:vendorCode is not declared" })
+      assert.equal(await uses.getByRole("button").count(), 10)
+      assert.equal(await uses.getByRole("listitem").last().textContent(), "+31 more")
+      // The problem's own Open: the first place; a conflict's: its declaration.
+      await v.info.getByRole("button", { name: "Open: 3 instances miss ex:drivenBy" }).click()
+      assert.deepEqual((await reveals()).at(-1), { uri: B, range: rng(5, 0, 9) })
+      await v.info.getByRole("button", { name: "Open: ex:vendorCode is not declared" }).click()
+      assert.deepEqual((await reveals()).at(-1), { uri: B, range: rng(100, 2, 20) })
+      await v.info.getByRole("button", { name: "Open: 12 values of ex:hasPressure not xsd:decimal" }).click()
+      assert.deepEqual((await reveals()).at(-1), { uri: "file:///ws/data/plant-a.ttl", range: rng(60, 17, 23) })
+      // A new answer for the class keeps the lists open.
+      await v.page.evaluate(() => window.__graph.view.refresh())
+      assert.equal(await pump90.isVisible(), true)
+      assert.equal(await uses.isVisible(), true)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("the places work from the keyboard: Enter opens the list, Tab reaches a place, Enter opens it (catches: places only a mouse reaches)", async () => {
+    const v = await open()
+    try {
+      const summary = v.info.locator("summary", { hasText: "Show 3" })
+      await summary.focus()
+      await v.page.keyboard.press("Enter")
+      await v.page.keyboard.press("Tab")
+      assert.equal(await v.page.evaluate(() => document.activeElement.getAttribute("aria-label")), "Open ex:pump90 at data/plant-b.ttl:6")
+      await v.page.keyboard.press("Enter")
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: "file:///ws/data/plant-b.ttl", range: { start: { line: 5, character: 0 }, end: { line: 5, character: 9 } } })
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("without places from the server, Open goes to the declaration, and a row nothing declares has nowhere to open (catches: a dead button that looks live)", async () => {
+    const v = await open({ schema: withoutExamples() })
+    try {
+      assert.equal(await v.info.locator("summary").count(), 0)
+      const none = v.info.getByRole("button", { name: "Open: ex:vendorCode is not declared" })
+      assert.equal(await none.isDisabled(), true)
+      assert.equal(await none.getAttribute("title"), "Nothing declares it: no place to open")
+      await v.info.getByRole("button", { name: "Open: 12 values of ex:hasPressure not xsd:decimal" }).click()
+      const range = (line) => ({ start: { line, character: 0 }, end: { line, character: 10 } })
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: "file:///ws/ontology.ttl", range: range(25) })
     } finally {
       await v.close()
     }

@@ -179,7 +179,7 @@ const SOURCE_CHARS = 30
 export function classInspector(doc, model, i, { lit = -1, canReveal = false } = {}) {
   const c = model.classes[i]
   const sources = []
-  const root = commonRoot([c.uri, ...c.rows.flatMap((r) => r.declared.map((d) => d.uri))].filter(Boolean))
+  const root = commonRoot([c.uri, ...c.rows.flatMap((r) => [...r.declared, ...r.examples].map((d) => d.uri))].filter(Boolean))
   const where = (d) => middleCut(fileLabel(d.uri, root), SOURCE_CHARS) + (d.range?.start ? `:${d.range.start.line + 1}` : "")
   const source = (d) => {
     sources.push({ uri: d.uri, range: d.range })
@@ -200,11 +200,25 @@ export function classInspector(doc, model, i, { lit = -1, canReveal = false } = 
           ? r.declared.map((d) => h(doc, "button", { type: "button", class: "schema-src", "data-act": "src", "data-src": source(d), disabled: !canReveal, title: `${d.how}: ${d.uri}`, "aria-label": `Open ${d.how} declaration at ${where(d)}`, text: `${where(d)} · ${d.how}` }))
           : h(doc, "span", { class: "graph-none", text: "Declared nowhere" })))
   }
+  // The places a problem lists, behind "Show N": each opens its place.
+  const examples = (p) => {
+    const key = `${p.row}:${p.kind}`
+    const more = p.count - p.examples.length
+    return h(doc, "details", { class: "schema-ex", "data-key": key },
+      h(doc, "summary", { "aria-label": `Show ${f(p.examples.length)} places: ${p.text}`, text: `Show ${f(p.examples.length)}` }),
+      h(doc, "ul", { class: "schema-ex-list", "aria-label": `Places: ${p.text}` },
+        p.examples.map((e, j) => h(doc, "li", {},
+          h(doc, "button", {
+            type: "button", class: "schema-src schema-ex-item", "data-act": "src", "data-src": canReveal ? source(e) : null, "data-key": `${key}:${j}`, disabled: !canReveal,
+            title: canReveal ? e.uri : "This host cannot open files", "aria-label": `Open ${e.name} at ${where(e)}`, text: `${e.name} · ${where(e)}`,
+          }))),
+        more > 0 ? h(doc, "li", { class: "schema-ex-more", text: `+${f(more)} more` }) : null))
+  }
   const problem = (p) => {
     const at = p.at && canReveal ? source(p.at) : -1
     return h(doc, "li", { class: "schema-problem" },
       h(doc, "span", { class: `schema-dot ${SEV[p.sev]}`, "aria-hidden": "true", text: "●" }),
-      h(doc, "div", { class: "schema-problem-tx" }, h(doc, "div", { text: p.text }), p.detail ? h(doc, "div", { class: "schema-problem-d", text: p.detail }) : null),
+      h(doc, "div", { class: "schema-problem-tx" }, h(doc, "div", { text: p.text }), p.detail ? h(doc, "div", { class: "schema-problem-d", text: p.detail }) : null, p.examples.length ? examples(p) : null),
       h(doc, "button", {
         type: "button", class: "graph-btn", "data-act": "src", "data-src": at >= 0 ? at : null, disabled: at < 0,
         "aria-label": `Open: ${p.text}`,

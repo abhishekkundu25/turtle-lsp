@@ -149,3 +149,55 @@ describe("turtle/schema", () => {
     for (const r of await Promise.all(schemas)) wellFormed(r)
   })
 })
+
+describe("turtle/schema examples", () => {
+  const shapes = `${PREFIXES}@prefix sh: <http://www.w3.org/ns/shacl#> .
+ex:Pump a rdfs:Class .
+ex:PumpShape a sh:NodeShape ; sh:targetClass ex:Pump ;
+  sh:property [ sh:path ex:serial ; sh:minCount 1 ] .
+`
+  const pumps = `${PREFIXES}ex:p1 a ex:Pump ; ex:serial "A1" .
+ex:p2 a ex:Pump .
+ex:p3 a ex:Pump ;
+  rdfs:label "no serial" .
+`
+  let s, dir, pumpsUri
+  before(async () => {
+    dir = tempDir("turtle-lsp-schema-examples-")
+    fs.writeFileSync(path.join(dir, "shapes.ttl"), shapes)
+    fs.writeFileSync(path.join(dir, "pumps.ttl"), pumps)
+    pumpsUri = uriOf(path.join(dir, "pumps.ttl"))
+    s = await startServer({ cwd: dir })
+  })
+  after(async () => {
+    await s?.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  // The text a range covers, one-line ranges only.
+  const at = (text, range) => {
+    assert.equal(range.start.line, range.end.line, JSON.stringify(range))
+    return text.split("\n")[range.start.line].slice(range.start.character, range.end.character)
+  }
+
+  test("a required property's row names the instances lacking it, with their places", async () => {
+    let row
+    const end = Date.now() + 10000
+    while (!row?.missing) {
+      if (Date.now() > end) throw new Error(`no missing serials: ${JSON.stringify(row)}`)
+      await new Promise((res) => setTimeout(res, 50))
+      const r = await s.request("turtle/schema", { focus: EX + "serial" })
+      row = r.classes[r.focus]?.rows[r.focusRow]
+    }
+    assert.equal(row.missing, 2)
+    assert.deepEqual(row.examples.map((e) => [e.kind, e.uri, e.name]), [
+      ["missing", pumpsUri, "ex:p2"],
+      ["missing", pumpsUri, "ex:p3"],
+    ])
+    const lines = pumps.split("\n").length
+    for (const e of row.examples) {
+      assert.ok(e.range.end.line < lines, JSON.stringify(e))
+      assert.equal(at(pumps, e.range), e.name)
+    }
+  })
+})

@@ -32,12 +32,14 @@ pub(super) enum Value {
 }
 
 /// A triple other than `rdf:type`: its subject (an index into
-/// [`DocFacts::subjects`]), predicate and value.
+/// [`DocFacts::subjects`]), predicate and value, and the triple's index in
+/// the parse (where it is written).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Use {
     pub(super) s: u32,
     pub(super) p: Iri,
     pub(super) v: Value,
+    pub(super) t: u32,
 }
 
 /// `rdfs:domain` or `schema:domainIncludes`: `p` is a property of `class`.
@@ -74,6 +76,8 @@ pub(super) struct ShapeRow {
 pub(crate) struct DocFacts {
     /// Every subject, in order of first mention.
     pub(super) subjects: Vec<Subj>,
+    /// Per subject: where its first triple names it (see [`subject_at`]).
+    pub(super) spans: Vec<Span>,
     /// `rdf:type` with an IRI class: (subject, class), in text order.
     pub(super) types: Vec<(u32, Iri)>,
     pub(super) uses: Vec<Use>,
@@ -128,7 +132,7 @@ pub(super) fn terms() -> &'static Terms {
 }
 
 /// From `a`'s start to `b`'s end, whichever way round they are.
-fn cover(a: Span, b: Span) -> Span {
+pub(super) fn cover(a: Span, b: Span) -> Span {
     Span::new(a.start.min(b.start), a.end.max(b.end))
 }
 
@@ -141,7 +145,7 @@ impl DocFacts {
         let mut index: FxHashMap<Subj, u32> = FxHashMap::default();
         let mut declared: FxHashSet<Iri> = FxHashSet::default();
         let mut shacl = false;
-        for tr in &p.triples {
+        for (ti, tr) in p.triples.iter().enumerate() {
             if tr.unresolved {
                 continue;
             }
@@ -152,6 +156,7 @@ impl DocFacts {
             };
             let s = *index.entry(subj).or_insert_with(|| {
                 f.subjects.push(subj);
+                f.spans.push(subject_at(a, tr));
                 (f.subjects.len() - 1) as u32
             });
             let o_iri = match tr.o {
@@ -190,6 +195,7 @@ impl DocFacts {
                     Node::Iri(_) | Node::Blank(_) => Value::Resource,
                     Node::Triple(_) => Value::Other,
                 },
+                t: ti as u32,
             });
             if tr.p == v.target_class {
                 shacl = true;
@@ -241,6 +247,21 @@ fn subject_span(a: &Analysis, tr: &crate::syntax::Triple) -> Span {
             _ => st.span,
         },
         None => tr.p_span,
+    }
+}
+
+/// Where a subject is named: the statement's subject when the triple's is
+/// that IRI, else the triple's predicate and object (a blank node's
+/// `[ ... ]`, a nested description).
+pub(super) fn subject_at(a: &Analysis, tr: &crate::syntax::Triple) -> Span {
+    match a
+        .parsed
+        .statements
+        .get(tr.statement as usize)
+        .and_then(|st| st.subject)
+    {
+        Some((i, span)) if Node::Iri(i) == tr.s => span,
+        _ => cover(tr.p_span, tr.o_span),
     }
 }
 

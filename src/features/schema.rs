@@ -162,6 +162,37 @@ pub(crate) struct Row {
     pub(crate) missing: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) conflict: Option<Conflict>,
+    /// Where the row's problems are: the first [`MAX_EXAMPLES`] of each
+    /// kind, in document order (by URI) and text order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) examples: Vec<Example>,
+}
+
+/// The most examples of each kind a row lists.
+pub(crate) const MAX_EXAMPLES: usize = 10;
+
+/// What an example shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ExampleKind {
+    /// An instance with fewer than `required.min` values: where the
+    /// instance is first described.
+    Missing,
+    /// A value outside the declared datatype: the value.
+    BadValue,
+    /// A use of a property nothing declares: the predicate and object of the
+    /// instance's first use.
+    Undeclared,
+}
+
+/// One place a row's problem shows.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct Example {
+    pub(crate) kind: ExampleKind,
+    pub(crate) uri: String,
+    pub(crate) range: Range,
+    /// The instance: a prefixed name, `<iri>` or `_:b<n>`.
+    pub(crate) name: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -184,7 +215,7 @@ mod facts;
 mod tests;
 
 pub(crate) use facts::FactsCache;
-use facts::{DocFacts, ShapePath, Value, terms};
+use facts::{DocFacts, ShapePath, Subj, Value, terms};
 
 const DEFAULT_MAX_CLASSES: u32 = 300;
 const DEFAULT_MAX_ROWS: u32 = 64;
@@ -332,6 +363,47 @@ struct RowAcc {
     /// The last subject counted, and its values so far.
     stamp: u32,
     count: u32,
+    /// The first places of each kind of problem.
+    missing_at: Firsts,
+    bad_at: Firsts,
+    undeclared_at: Firsts,
+}
+
+/// A place in a document of the request, and the subject it is about.
+#[derive(Clone, Copy)]
+struct Spot {
+    d: u32,
+    span: Span,
+    subj: Subj,
+}
+
+impl Spot {
+    fn key(&self) -> (u32, u32, u32) {
+        (self.d, self.span.start, self.span.end)
+    }
+}
+
+/// The first [`MAX_EXAMPLES`] spots offered, by document then text order;
+/// of equal spots, the first offered.
+#[derive(Default)]
+struct Firsts(Vec<Spot>);
+
+impl Firsts {
+    fn offer(&mut self, spot: Spot) {
+        let key = spot.key();
+        let full = self.0.len() == MAX_EXAMPLES;
+        if full && self.0[MAX_EXAMPLES - 1].key() <= key {
+            return;
+        }
+        if self.0.is_empty() {
+            self.0.reserve_exact(MAX_EXAMPLES);
+        }
+        if full {
+            self.0.pop();
+        }
+        let at = self.0.partition_point(|x| x.key() <= key);
+        self.0.insert(at, spot);
+    }
 }
 
 impl RowAcc {
@@ -350,6 +422,9 @@ impl RowAcc {
             bad: 0,
             stamp: NONE,
             count: 0,
+            missing_at: Firsts::default(),
+            bad_at: Firsts::default(),
+            undeclared_at: Firsts::default(),
         }
     }
 
@@ -547,6 +622,16 @@ impl Merge {
             }
         }
         let n = n as usize;
+        // Where each typed subject is first named: its first document, its
+        // index there.
+        let mut home = vec![(NONE, 0u32); n];
+        for (d, l) in local.iter().enumerate() {
+            for (j, &g) in l.iter().enumerate() {
+                if g != NONE && home[g as usize].0 == NONE {
+                    home[g as usize] = (d as u32, j as u32);
+                }
+            }
+        }
 
         // Each subject's direct types, then its member classes.
         let mut types = Grouped::new(n, 0, || {
@@ -592,24 +677,26 @@ impl Merge {
         }
 
         // The uses of the typed subjects.
+        // Each carries its document and its index in the document's uses.
         let uses = Grouped::new(
             n,
-            (crate::shacl::vocab::get().rdf_type, Value::Other),
+            (crate::shacl::vocab::get().rdf_type, Value::Other, 0, 0),
             || {
                 docs.iter().enumerate().flat_map(|(d, doc)| {
                     let l = &local[d];
                     doc.facts
                         .uses
                         .iter()
-                        .filter(move |u| l[u.s as usize] != NONE)
-                        .map(move |u| (l[u.s as usize], (u.p, u.v)))
+                        .enumerate()
+                        .filter(move |(_, u)| l[u.s as usize] != NONE)
+                        .map(move |(i, u)| (l[u.s as usize], (u.p, u.v, d as u32, i as u32)))
                 })
             },
         );
 
         // Rows nothing declares, on the subjects' direct types.
         for s in 0..n {
-            for &(p, _) in uses.of(s) {
+            for &(p, ..) in uses.of(s) {
                 if !m.is_standard_property(p) {
                     for &c in direct(s) {
                         m.undeclared(c, p);
@@ -641,11 +728,47 @@ impl Merge {
             }
         }
 
+        // The required rows of each class, and whether a set has any.
+        let required = Grouped::new(m.classes.len(), 0, || {
+            m.classes.iter().enumerate().flat_map(|(c, class)| {
+                class
+                    .rows
+                    .iter()
+                    .filter(|&&r| {
+                        let row = &m.rows[r as usize];
+                        matches!(row.prop, Prop::Iri(_)) && row.required().is_some()
+                    })
+                    .map(move |&r| (c as u32, r))
+            })
+        });
+        let set_required: Vec<bool> = (0..m.set_off.len().saturating_sub(1))
+            .map(|set| {
+                m.set_list[m.set_off[set] as usize..m.set_off[set + 1] as usize]
+                    .iter()
+                    .any(|&c| !required.of(c as usize).is_empty())
+            })
+            .collect();
+        // A use's place: its predicate and object, or its object alone.
+        let use_spot = |d: u32, i: u32, object: bool| {
+            let f = &docs[d as usize].facts;
+            let u = &f.uses[i as usize];
+            let t = &docs[d as usize].a.parsed.triples[u.t as usize];
+            Spot {
+                d,
+                span: if object {
+                    t.o_span
+                } else {
+                    facts::cover(t.p_span, t.o_span)
+                },
+                subj: f.subjects[u.s as usize],
+            }
+        };
+
         // The counts.
         for (s, &set) in subject_set.iter().enumerate() {
             let set = set as usize;
             let members = &m.set_list[m.set_off[set] as usize..m.set_off[set + 1] as usize];
-            for &(p, v) in uses.of(s) {
+            for &(p, v, d, i) in uses.of(s) {
                 for &c in members {
                     let Some(&r) = m.row_ix.get(&(c, p)) else {
                         continue;
@@ -658,6 +781,9 @@ impl Merge {
                         row.stamp = s as u32;
                         row.count = 0;
                         row.used += 1;
+                        if row.declared.is_empty() {
+                            row.undeclared_at.offer(use_spot(d, i, false));
+                        }
                     }
                     row.count += 1;
                     if row.required() == Some(row.count) {
@@ -667,10 +793,30 @@ impl Merge {
                         Value::Literal(dt) => {
                             if row.check.is_some_and(|c| c != dt) {
                                 row.bad += 1;
+                                row.bad_at.offer(use_spot(d, i, true));
                             }
                         }
                         Value::Resource => row.resource = true,
                         Value::Other => {}
+                    }
+                }
+            }
+            // The required rows this subject has too few values for.
+            if set_required[set] {
+                let (d, j) = home[s];
+                let f = &docs[d as usize].facts;
+                let spot = Spot {
+                    d,
+                    span: f.spans[j as usize],
+                    subj: f.subjects[j as usize],
+                };
+                for &c in members {
+                    for &r in required.of(c as usize) {
+                        let row = &mut m.rows[r as usize];
+                        let min = row.required().unwrap_or(1);
+                        if row.stamp != s as u32 || row.count < min {
+                            row.missing_at.offer(spot);
+                        }
                     }
                 }
             }
@@ -1162,6 +1308,29 @@ impl Merge {
                 }
             })
             .collect();
+        let mut examples = Vec::new();
+        let mut add = |kind: ExampleKind, at: &Firsts| {
+            examples.extend(at.0.iter().map(|spot| {
+                let a = docs[spot.d as usize].a;
+                Example {
+                    kind,
+                    uri: a.uri.clone(),
+                    range: a.range(enc, spot.span),
+                    name: match spot.subj {
+                        Subj::Iri(i) => names.short(&i),
+                        Subj::Blank(b) => format!("_:b{}", b.0),
+                    },
+                }
+            }))
+        };
+        if missing.is_some() {
+            add(ExampleKind::Missing, &row.missing_at);
+        }
+        match state {
+            RowState::BadValues => add(ExampleKind::BadValue, &row.bad_at),
+            RowState::Undeclared => add(ExampleKind::Undeclared, &row.undeclared_at),
+            _ => {}
+        }
         let r = Row {
             property,
             name,
@@ -1177,6 +1346,7 @@ impl Merge {
             required: row.required().map(|min| Required { min, max: row.max }),
             missing,
             conflict,
+            examples,
         };
         (r, severity)
     }

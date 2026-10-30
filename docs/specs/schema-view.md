@@ -106,6 +106,11 @@ classes: [{
     badValues?: number,
     required?: { min: number, max?: number }, missing?: number,
     conflict?: { declared: string, shape: string },
+    examples?: [{                        // omitted when empty
+      kind: "missing" | "badValue" | "undeclared",
+      uri, range,
+      name: string,                      // the instance: prefixed name, <iri> or _:b<n>
+    }],
   }],
   moreRows: number,
 }]
@@ -115,6 +120,14 @@ imported: number                         // imported classes not listed (imports
 ```
 
 Problems are derived on the client from the rows; the answer does not carry a second list.
+
+**Examples.** `examples` says where a row's problems are, so the inspector can open them. Each kind lists its first 10 places, in the request's document order (workspace documents by URI, then imports) and then text order; a row lists `missing` examples first, then its state's:
+
+- `missing` (when `missing` > 0): the instances with fewer than `sh:minCount` values, at the place their first document first names them (the statement's subject, or for a blank node or a nested description the first triple's predicate and object). An instance described in several documents is located in the first of them.
+- `badValue` (state `badValues`): each literal outside the declared datatype, at the literal.
+- `undeclared` (state `undeclared`): each instance using the property, at its first use (the triple's predicate and object).
+
+`conflict` and `unused` rows have none; their place is the declaration (`declared`). So the count of a kind's examples is the smaller of 10 and `missing`, `badValues` or `used`; the recount test checks the count, the order and every range.
 
 **Per-document facts, merged per request.** For each document, one pass over its triples yields its facts: class declarations, subClassOf edges, domain/domainIncludes/range declarations, shape property declarations, `rdf:type` assertions and property uses (subject, property, value kind: literal datatype or IRI). The facts are keyed by the document's `Arc<Analysis>`; a request reuses the facts of every document whose analysis did not change and computes the others in parallel (rayon, as `features::graph` does from 2000 nodes). The merge joins subjects across documents (an instance typed in one file and described in another counts). The facts are deterministic, so a reused result equals a fresh one; a test asserts it.
 
@@ -130,7 +143,7 @@ Problems are derived on the client from the rows; the answer does not carry a se
 
 **Hosts.** VS Code (`graph.ts`) forwards `turtle/schema` like `turtle/graph` and posts the active editor's cursor (`onDidChangeTextEditorSelection`, active end) to the webview when the view is visible. The browser editor posts Monaco's cursor (`onDidChangeCursorPosition`).
 
-**Fix buttons** open the source location of the problem (the row's declaration, or for "not declared" the first use) beside the view. New code actions for schema problems are a later PR.
+**Fix buttons** open the source location of the problem beside the view: the first example when the row has one (missing, bad values, not declared), else the row's first declaration (conflict, never used). The inspector lists a problem's examples behind "Show N", each opening its place, with "+N more" past the ten listed. New code actions for schema problems are a later PR.
 
 ## Testing Decisions
 

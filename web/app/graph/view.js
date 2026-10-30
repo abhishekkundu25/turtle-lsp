@@ -493,11 +493,20 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     if (i < 0 || nothing) {
       info.hidden = true
       info.replaceChildren()
+      delete info.dataset.cls
       return
     }
+    // A new answer for the same class keeps its open lists and the focused place.
+    const id = schema.model.classes[i]?.id
+    const same = info.dataset.cls === id
+    const open = same ? [...info.querySelectorAll("details[data-key][open]")].map((d) => d.dataset.key) : []
+    const focused = same && info.contains(doc.activeElement) ? doc.activeElement.dataset?.key : null
     const { nodes, sources } = classInspector(doc, schema.model, i, { lit: schema.lit, canReveal: typeof reveal === "function" })
     infoSources = sources
     info.replaceChildren(...nodes)
+    info.dataset.cls = id
+    for (const d of info.querySelectorAll("details[data-key]")) if (open.includes(d.dataset.key)) d.open = true
+    if (focused) info.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus()
     info.setAttribute("aria-label", "Selected class")
     info.hidden = false
   }

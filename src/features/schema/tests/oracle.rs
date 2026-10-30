@@ -27,6 +27,29 @@ struct T {
     s: String,
     p: String,
     o: O,
+    /// The document's place in the request's order, the triple's in the
+    /// parse.
+    rank: usize,
+    ti: usize,
+    /// Where the triple names its subject, its predicate to object, its
+    /// object.
+    at: Span,
+    po: Span,
+    os: Span,
+}
+
+/// A place: document rank, start, end.
+type Key = (usize, u32, u32);
+
+fn place(rank: usize, s: Span) -> Key {
+    (rank, s.start, s.end)
+}
+
+/// The first [`MAX_EXAMPLES`] places.
+fn firsts(mut v: Vec<(Key, &String)>) -> Vec<(Key, &String)> {
+    v.sort();
+    v.truncate(MAX_EXAMPLES);
+    v
 }
 
 #[derive(Default)]
@@ -50,10 +73,23 @@ fn checkable(i: &str) -> bool {
 }
 
 pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(), String> {
+    // The request's order: workspace documents by URI, then imports.
+    let mut by_rank: Vec<usize> = (0..ws.len()).collect();
+    by_rank.sort_by_key(|&d| {
+        (
+            ws[d].1 == Source::External,
+            ws[d].2.uri.as_str(),
+            ws[d].0.as_str(),
+        )
+    });
+    let mut rank_of = vec![0; ws.len()];
+    for (r, &d) in by_rank.iter().enumerate() {
+        rank_of[d] = r;
+    }
     // Every triple, blank nodes named per document.
     let mut ts: Vec<T> = Vec::new();
     for (d, (_, source, a)) in ws.iter().enumerate() {
-        for t in &a.parsed.triples {
+        for (ti, t) in a.parsed.triples.iter().enumerate() {
             if t.unresolved {
                 continue;
             }
@@ -69,11 +105,24 @@ pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(),
                 O::Iri(s) | O::Blank(s) => s,
                 _ => continue,
             };
+            let po = Span::new(
+                t.p_span.start.min(t.o_span.start),
+                t.p_span.end.max(t.o_span.end),
+            );
+            let at = match a.parsed.statements[t.statement as usize].subject {
+                Some((i, span)) if crate::syntax::Node::Iri(i) == t.s => span,
+                _ => po,
+            };
             ts.push(T {
                 ws: *source != Source::External,
                 s,
                 p: t.p.to_string(),
                 o: node(&t.o),
+                rank: rank_of[d],
+                ti,
+                at,
+                po,
+                os: t.o_span,
             });
         }
     }
@@ -251,12 +300,27 @@ pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(),
         }
     }
     let mut values: Map<(String, String), Vec<O>> = Map::new();
+    // The same values' triples.
+    let mut places: Map<(String, String), Vec<&T>> = Map::new();
     for t in &ts {
         if t.p != RDF_TYPE && types.contains_key(&t.s) {
             values
                 .entry((t.s.clone(), t.p.clone()))
                 .or_default()
                 .push(t.o.clone());
+            places
+                .entry((t.s.clone(), t.p.clone()))
+                .or_default()
+                .push(t);
+        }
+    }
+    // Where each subject is first named: its first triple, by document
+    // rank then parse order.
+    let mut home: Map<&str, &T> = Map::new();
+    for t in &ts {
+        let h = home.entry(t.s.as_str()).or_insert(t);
+        if (t.rank, t.ti) < (h.rank, h.ti) {
+            *h = t;
         }
     }
     let mut members: Map<String, Set<String>> = Map::new();
@@ -490,6 +554,115 @@ pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(),
             if state != RowState::Ok || missing.is_some() {
                 problems += 1;
             }
+
+            // The examples: the first places of each problem.
+            let mut want: Vec<(ExampleKind, Key, &String)> = Vec::new();
+            if let (Some(m), Some(_)) = (min, missing) {
+                let v = inst
+                    .iter()
+                    .filter(|s| vals(s).len() < m as usize)
+                    .map(|s| {
+                        let h = home[s.as_str()];
+                        (place(h.rank, h.at), *s)
+                    })
+                    .collect();
+                want.extend(
+                    firsts(v)
+                        .into_iter()
+                        .map(|(k, s)| (ExampleKind::Missing, k, s)),
+                );
+            }
+            let at = |s: &String| {
+                places
+                    .get(&(s.clone(), p.clone()))
+                    .map_or(&[][..], Vec::as_slice)
+            };
+            if state == RowState::BadValues {
+                let dt = check.as_ref().expect("bad values need a datatype");
+                let v = inst
+                    .iter()
+                    .flat_map(|s| at(s).iter().map(move |t| (s, t)))
+                    .filter(|(_, t)| matches!(&t.o, O::Literal(_, d) if d != dt))
+                    .map(|(s, t)| (place(t.rank, t.os), *s))
+                    .collect();
+                want.extend(
+                    firsts(v)
+                        .into_iter()
+                        .map(|(k, s)| (ExampleKind::BadValue, k, s)),
+                );
+            }
+            if state == RowState::Undeclared {
+                let v = inst
+                    .iter()
+                    .filter_map(|s| {
+                        let first = at(s).iter().map(|t| place(t.rank, t.po)).min()?;
+                        Some((first, *s))
+                    })
+                    .collect();
+                want.extend(
+                    firsts(v)
+                        .into_iter()
+                        .map(|(k, s)| (ExampleKind::Undeclared, k, s)),
+                );
+            }
+            let counts = [
+                (ExampleKind::Missing, missing.unwrap_or(0)),
+                (
+                    ExampleKind::BadValue,
+                    if state == RowState::BadValues { bad } else { 0 },
+                ),
+                (
+                    ExampleKind::Undeclared,
+                    if state == RowState::Undeclared {
+                        used
+                    } else {
+                        0
+                    },
+                ),
+            ];
+            for (kind, count) in counts {
+                let n = row.examples.iter().filter(|e| e.kind == kind).count();
+                if n != count.min(MAX_EXAMPLES) {
+                    return Err(format!("{c} {p}: {n} {kind:?} examples for {count}"));
+                }
+            }
+            let want_places: Vec<(ExampleKind, &str, Range)> = want
+                .iter()
+                .map(|&(kind, (rank, start, end), _)| {
+                    let a = &ws[by_rank[rank]].2;
+                    (
+                        kind,
+                        a.uri.as_str(),
+                        a.range(Encoding::Utf16, Span::new(start, end)),
+                    )
+                })
+                .collect();
+            let got_places: Vec<(ExampleKind, &str, Range)> = row
+                .examples
+                .iter()
+                .map(|e| (e.kind, e.uri.as_str(), e.range))
+                .collect();
+            if got_places != want_places {
+                return Err(format!(
+                    "{c} {p}: examples at {got_places:?}, recounted {want_places:?}"
+                ));
+            }
+            for (e, (.., s)) in row.examples.iter().zip(&want) {
+                let a = &ws
+                    .iter()
+                    .find(|(.., a)| a.uri == e.uri)
+                    .expect("its document")
+                    .2;
+                let end = a
+                    .range(Encoding::Utf16, Span::new(0, a.text.len() as u32))
+                    .end;
+                if e.range.start > e.range.end || e.range.end > end {
+                    return Err(format!("{c} {p}: {e:?} outside its document"));
+                }
+                if !names(ws, &e.name, s) {
+                    return Err(format!("{c} {p}: example named {} for {s}", e.name));
+                }
+            }
             if undeclared.contains(&key) != (state == RowState::Undeclared) {
                 return Err(format!("{c} {p}: undeclared mismatch"));
             }
@@ -499,6 +672,31 @@ pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// `name` names subject `s` (blank nodes as [`check`] names them): `<iri>`,
+/// a prefixed name some workspace document binds, or `_:b<n>`.
+fn names(ws: &Sources, name: &str, s: &str) -> bool {
+    if let Some(id) = s.strip_prefix("_:") {
+        return Some(name)
+            == id
+                .split_once(':')
+                .map(|(_, n)| format!("_:b{n}"))
+                .as_deref();
+    }
+    if name == format!("<{s}>") {
+        return true;
+    }
+    let Some((prefix, local)) = name.split_once(':') else {
+        return false;
+    };
+    ws.iter()
+        .filter(|(_, src, _)| *src != Source::External)
+        .any(|(.., a)| {
+            a.prefix_map()
+                .get(prefix)
+                .is_some_and(|ns| format!("{ns}{local}") == s)
+        })
 }
 
 /// The first `p` value of `s` whose text is a whole number, across the

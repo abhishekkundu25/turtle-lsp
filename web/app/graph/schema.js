@@ -24,6 +24,9 @@ const STATES = ["ok", "unused", "undeclared", "badValues", "conflict"]
 export const STATE_TEXT = { ok: "declared and used", unused: "never used", undeclared: "not declared", badValues: "bad values", conflict: "range and shape disagree" }
 export const MARK = { ok: "✓", unused: "○", undeclared: "?", badValues: "⚠", conflict: "✕" }
 const SEV_RANK = { error: 0, warning: 1, "": 2 }
+// The examples' kind for each problem that has them.
+const EXAMPLE_KIND = { missing: "missing", badValues: "badValue", undeclared: "undeclared" }
+const EXAMPLE_KINDS = Object.values(EXAMPLE_KIND)
 const SVG = "http://www.w3.org/2000/svg"
 
 // One formatter: toLocaleString makes one per call, thousands per answer.
@@ -58,6 +61,9 @@ export function schemaModel(res) {
         required: r.required && Number.isFinite(r.required.min) ? { min: r.required.min, max: Number.isFinite(r.required.max) ? r.required.max : undefined } : null,
         missing: count(r.missing),
         conflict: r.conflict && typeof r.conflict === "object" ? { declared: String(r.conflict.declared ?? ""), shape: String(r.conflict.shape ?? "") } : null,
+        examples: (Array.isArray(r.examples) ? r.examples : [])
+          .filter((e) => e && typeof e.uri === "string" && e.range?.start && EXAMPLE_KINDS.includes(e.kind))
+          .map((e) => ({ kind: e.kind, uri: e.uri, range: e.range, name: String(e.name ?? "") })),
       }))
     const problems = problemsOf(rows)
     return {
@@ -99,19 +105,26 @@ export function rowBadge(r) {
 
 /**
  * A class's problems: one per row whose state is not ok and one per row with
- * instances missing it, errors first. `at`: where to fix it (the row's first
- * declaration), null when nothing declares the row.
+ * instances missing it, errors first. `examples`: the places the answer lists
+ * for it (missing, bad values, not declared), of `count` in all. `at`: where
+ * to fix it: the first example, else the row's first declaration, else null.
  */
 export function problemsOf(rows) {
   const out = []
+  const push = (r, p) => {
+    const kind = EXAMPLE_KIND[p.kind]
+    const examples = kind ? (r.examples ?? []).filter((e) => e.kind === kind) : []
+    const count = p.kind === "missing" ? r.missing : p.kind === "badValues" ? r.badValues : p.kind === "undeclared" ? r.used : 0
+    out.push({ ...p, examples, count: Math.max(count, examples.length), at: examples[0] ?? p.at })
+  }
   rows.forEach((r, row) => {
     const at = r.declared[0] ?? null
     const range = r.rangeName ? ` ${r.rangeName}` : ""
-    if (r.state === "conflict") out.push({ row, kind: "conflict", sev: "error", at, text: `${r.name}: range and shape disagree`, detail: r.conflict ? `rdfs:range ${r.conflict.declared}, shape ${r.conflict.shape}` : "" })
-    else if (r.state === "badValues") out.push({ row, kind: "badValues", sev: "warning", at, text: `${plural(r.badValues, "value")} of ${r.name} not${range}`, detail: `Declared${range}` })
-    else if (r.state === "unused") out.push({ row, kind: "unused", sev: "", at, text: `${r.name} is never used`, detail: `None of ${plural(r.of, "instance")} has it` })
-    else if (r.state === "undeclared") out.push({ row, kind: "undeclared", sev: "", at: null, text: `${r.name} is not declared`, detail: `Used by ${fmt(r.used)} of ${plural(r.of, "instance")}` })
-    if (r.missing > 0) out.push({ row, kind: "missing", sev: "error", at, text: `${plural(r.missing, "instance")} miss ${r.name}`, detail: `Required: sh:minCount ${r.required?.min ?? 1}` })
+    if (r.state === "conflict") push(r, { row, kind: "conflict", sev: "error", at, text: `${r.name}: range and shape disagree`, detail: r.conflict ? `rdfs:range ${r.conflict.declared}, shape ${r.conflict.shape}` : "" })
+    else if (r.state === "badValues") push(r, { row, kind: "badValues", sev: "warning", at, text: `${plural(r.badValues, "value")} of ${r.name} not${range}`, detail: `Declared${range}` })
+    else if (r.state === "unused") push(r, { row, kind: "unused", sev: "", at, text: `${r.name} is never used`, detail: `None of ${plural(r.of, "instance")} has it` })
+    else if (r.state === "undeclared") push(r, { row, kind: "undeclared", sev: "", at: null, text: `${r.name} is not declared`, detail: `Used by ${fmt(r.used)} of ${plural(r.of, "instance")}` })
+    if (r.missing > 0) push(r, { row, kind: "missing", sev: "error", at, text: `${plural(r.missing, "instance")} miss ${r.name}`, detail: `Required: sh:minCount ${r.required?.min ?? 1}` })
   })
   return out.sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev])
 }
