@@ -902,7 +902,7 @@ async function schemaRuns(cwd, id, label, open, hover) {
   record(`schema-${id}-hover-alone`, `hover alone, for comparison (${label})`, m.alone, { notes: spread(m.alone) })
 }
 
-scenario("schema", "turtle/schema on the editing workspace and on a 100,000-triple file, and a hover during it", async () => {
+scenario("schema", "turtle/schema on the editing workspace, on a 100,000-triple file (with a hover during it) and on 2,000 classes with 40,000 instances", async () => {
   const { ws } = sharedWorkspace()
   const file = path.join(ws, "f0.ttl")
   await schemaRuns(ws, "editing", `${FILES + 1} files`, async (s) => {
@@ -931,6 +931,41 @@ scenario("schema", "turtle/schema on the editing workspace and on a 100,000-trip
       },
       (text) => positionOf(text, "a foaf:Person", 4),
     )
+  })
+  // A big answer: 2,000 classes in a subclass tree, 10 declared properties
+  // each (every third required by a shape), and 40,000 instances that use
+  // most of them, one in five with a wrong datatype.
+  const nClasses = scaled(2000)
+  const instances = scaled(40000)
+  await withDir("turtle-bench-schema-big-", async (dir) => {
+    const model = [`${header}@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n`]
+    for (let c = 0; c < nClasses; c++) {
+      model.push(`ex:C${c} a rdfs:Class${c ? ` ; rdfs:subClassOf ex:C${(c - 1) >> 2}` : ""} .\n`)
+      const shape = []
+      for (let p = 0; p < 10; p++) {
+        model.push(`ex:c${c}p${p} rdfs:domain ex:C${c} ; rdfs:range xsd:integer .\n`)
+        if (p % 3 === 0) shape.push(`[ sh:path ex:c${c}p${p} ; sh:datatype xsd:integer ; sh:minCount 1 ]`)
+      }
+      model.push(`ex:S${c} a sh:NodeShape ; sh:targetClass ex:C${c} ; sh:property ${shape.join(" , ")} .\n`)
+    }
+    fs.writeFileSync(path.join(dir, "model.ttl"), model.join(""))
+    const data = [header]
+    for (let i = 0; i < instances; i++) {
+      const c = i % nClasses
+      const uses = []
+      for (let p = 0; p < 10; p += 2) uses.push(`ex:c${c}p${p} ${i % 5 ? i : `"${i}"`}`)
+      data.push(`ex:i${i} a ex:C${c} ; ${uses.join(" ; ")} .\n`)
+    }
+    const big = path.join(dir, "data.ttl")
+    const doc = data.join("")
+    fs.writeFileSync(big, doc)
+    await schemaRuns(dir, "classes", `${nClasses} classes, ${instances} instances`, async (s) => {
+      const uri = uriOf(big)
+      openModel(s, dir)
+      s.open(uri, doc)
+      await s.diagnosticsFor(uri, WAIT)
+      return [uri, doc, () => `ex:i${instances - 1} a`]
+    })
   })
 })
 
