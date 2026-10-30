@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Graph view: All and None in the Files filter.** None clears the graph
+  and says "No files selected"; tick one file to see only it. Long file
+  names are cut in the middle, so the file name stays visible, with the
+  full path on hover. In VS Code and the browser editor.
+
+### Changed
+
+- **The browser editor's graph is an editor tab.** The Graph button opens
+  it in the editor area, with one side bar. Split moves it beside a file,
+  Go to definition opens the file in the other group, and the tab comes
+  back after a reload. Editor tabs can also be closed (Delete) and switched
+  (arrow keys) from the keyboard.
+
 ## 0.12.0 — 2026-10-30
 
 ### Added
