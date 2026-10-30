@@ -288,7 +288,6 @@ enum Prop {
 }
 
 struct RowAcc {
-    class: u32,
     prop: Prop,
     declared: Vec<(DeclaredBy, u32, Span)>,
     /// `sh:datatype` and `sh:class` of its shapes, sorted.
@@ -311,9 +310,8 @@ struct RowAcc {
 }
 
 impl RowAcc {
-    fn new(class: u32, prop: Prop) -> RowAcc {
+    fn new(prop: Prop) -> RowAcc {
         RowAcc {
-            class,
             prop,
             declared: Vec::new(),
             shape_datatypes: Vec::new(),
@@ -677,7 +675,7 @@ impl Merge {
 
     fn new_row(&mut self, class: u32, prop: Prop) -> u32 {
         let r = self.rows.len() as u32;
-        self.rows.push(RowAcc::new(class, prop));
+        self.rows.push(RowAcc::new(prop));
         self.classes[class as usize].rows.push(r);
         r
     }

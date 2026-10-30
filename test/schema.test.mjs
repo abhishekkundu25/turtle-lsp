@@ -103,7 +103,6 @@ describe("turtle/schema", () => {
 
   test(
     "at on a class focuses its box, and wins over focus",
-    { todo: "until features::schema computes the answer (ticket 1)" },
     async () => {
       const r = await s.request("turtle/schema", {
         focus: EX + "feeds",
