@@ -14,11 +14,17 @@
   Selecting a class lists its rows, where each is declared, and its
   problems, each with the instances or values to go and fix. Hover a link
   row's target to see the arrow to that class. Imported classes fold into
-  one box. In VS Code and the browser editor, with the new `turtle/schema`
-  request (listed under `experimental` capabilities).
+  one box. A conflict lists the values outside the shape; a property used
+  but not declared says which classes declare it. Search finds any class,
+  shown or not, and Enter goes to it. A big model opens on its most-used
+  class at a readable size, edits keep your zoom and place, and a narrow
+  split shows the class's details. In VS Code and the browser editor, with
+  the new `turtle/schema` request (listed under `experimental`
+  capabilities).
 - **Follow cursor, in the graph view.** With the toggle on, the view
   re-centres on the term at the editor's cursor once it rests: the class
-  (and its row, for a property) in Schema, the node in Graph and Focus.
+  (and its row, for a property, and the class of an instance) in Schema,
+  the node in Graph and Focus.
   Off by default; a hidden view sends nothing. `turtle/graph` and
   `turtle/schema` take an `at` position for it.
 
