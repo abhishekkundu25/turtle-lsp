@@ -613,6 +613,35 @@ describe("Schema in Chrome", () => {
     }
   })
 
+  test("a box drawn taller than it was laid out (a font, a fold, a view shown again) lays the boxes out again, so none overlaps (catches: a parent box covering its child, laid out with its folded height)", async () => {
+    const v = await open()
+    try {
+      const overlaps = () => v.page.evaluate(() => {
+        const r = [...document.querySelectorAll(".schema-box")].filter((e) => e.offsetParent).map((e) => e.getBoundingClientRect())
+        let n = 0
+        for (let i = 0; i < r.length; i++) for (let j = i + 1; j < r.length; j++) {
+          const ix = Math.min(r[i].right, r[j].right) - Math.max(r[i].left, r[j].left)
+          const iy = Math.min(r[i].bottom, r[j].bottom) - Math.max(r[i].top, r[j].top)
+          if (ix > 2 && iy > 2) n++
+        }
+        return n
+      })
+      assert.equal(await overlaps(), 0)
+      // Every box that has a child below it grows by 200 px after the layout.
+      await v.page.evaluate(() => {
+        for (const b of document.querySelectorAll(".schema-box")) {
+          const pad = document.createElement("div")
+          pad.style.height = "200px"
+          b.append(pad)
+        }
+      })
+      await v.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50)))))
+      assert.equal(await overlaps(), 0, "boxes overlap after growing")
+    } finally {
+      await v.close()
+    }
+  })
+
   test("zooming across 0.5 keeps the box under the pointer under it, though the boxes fold and the layout closes up (catches: the view jumping when it folds, on big workspaces)", async () => {
     const v = await open()
     try {
@@ -908,9 +937,11 @@ describe("Schema in Chrome", () => {
     }
   })
 
-  test("a Follow cursor jump that keeps the classes updates selection, lit row and camera in place: the same box elements, no long task on 300 classes (catches: 300 boxes rebuilt per jump, a 65-90 ms long task)", async () => {
+  test("a Follow cursor jump that keeps the classes updates selection, lit row and camera in place: the same box elements, a fraction of a full draw on 300 classes (catches: 300 boxes rebuilt per jump, a 65-90 ms long task)", async () => {
     const v = await open({ schemaSize: 300, stored: { mode: "schema", follow: true }, atClass: { 30: [5, 1], 31: [12, 2], 32: [40], 33: [140, 0] } })
     try {
+      // The first draw built all 300 boxes: the cost a rebuild per jump would have.
+      const draw = await v.page.evaluate(() => Number(document.querySelector("[data-draw-ms]")?.dataset.drawMs))
       await v.page.evaluate(() => {
         window.__boxes = [...document.querySelectorAll(".schema-box")]
         window.__long = []
@@ -933,9 +964,12 @@ describe("Schema in Chrome", () => {
         return now.length === window.__boxes.length && now.every((b, k) => b === window.__boxes[k] && b.isConnected)
       }), true, "the same box elements")
       const long = await v.page.evaluate(() => window.__long)
-      console.log(`follow in place on 300 classes: ${ms.map((t) => t.toFixed(1)).join(", ")} ms main thread; long tasks ${JSON.stringify(long)}`)
-      assert.deepEqual(long, [], "no long task")
-      assert.ok(Math.max(...ms) < 16, `follow ${ms} ms`)
+      // Against a full draw of the same 300 classes on this machine: a shared
+      // CI runner is several times slower than a laptop, so a fixed number
+      // (or "no long task" at all) says more about the runner than the code.
+      console.log(`follow in place on 300 classes: ${ms.map((t) => t.toFixed(1)).join(", ")} ms main thread; full draw ${draw} ms; long tasks ${JSON.stringify(long)}`)
+      assert.ok(draw > 0, "the full draw was measured")
+      assert.ok(Math.max(...ms) < Math.max(4, draw / 4), `follow ${ms} ms against a full draw of ${draw} ms`)
     } finally {
       await v.close()
     }

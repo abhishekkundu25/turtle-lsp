@@ -468,6 +468,21 @@ pub(super) fn check(
             if !p.starts_with("http") {
                 continue;
             }
+            // A not-declared row counts only the instances none of whose
+            // types declares the property (role classes).
+            let declares = |t: &String| {
+                ancestors(t)
+                    .iter()
+                    .any(|a| declared.contains_key(&(a.clone(), p.clone())))
+            };
+            let inst: Vec<&String> = if declares(c) {
+                inst.clone()
+            } else {
+                inst.iter()
+                    .copied()
+                    .filter(|s| !types[*s].iter().any(&declares))
+                    .collect()
+            };
             let key = (c.clone(), p.clone());
             let vals = |s: &String| {
                 values

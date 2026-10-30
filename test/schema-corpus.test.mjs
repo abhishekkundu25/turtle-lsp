@@ -105,7 +105,11 @@ test("turtle/schema on the whole corpus as one workspace", { skip: !present && "
       await new Promise((r) => setTimeout(r, 50))
     }
     // A workspace file opened, then edited: the answer follows the edit.
-    const file = path.join(root, "w3c-org.ttl")
+    // Any Turtle file at the corpus root: the corpus differs between
+    // machines (npm run corpus fetches what it can).
+    const name = fs.readdirSync(root).filter((n) => n.endsWith(".ttl")).sort()[0]
+    assert.ok(name, "no .ttl file at the corpus root")
+    const file = path.join(root, name)
     const uri = uriOf(file)
     let text = fs.readFileSync(file, "utf8")
     const textOf = (u) => (u === uri ? text : undefined)

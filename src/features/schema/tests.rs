@@ -1607,4 +1607,9 @@ fn a_property_one_of_an_instances_types_declares_is_declared_for_it() {
     let asset = row(class(&r, "ex:Asset"), "ex:locatedIn");
     assert_eq!(asset.state, RowState::Undeclared);
     assert_eq!(asset.declared_for, ["ex:Device"]);
+    assert_eq!(
+        (asset.used, asset.of),
+        (1, 2),
+        "only ex:a1 uses it undeclared"
+    );
 }

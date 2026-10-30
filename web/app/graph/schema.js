@@ -569,12 +569,32 @@ export function createSchemaView(el, on) {
     return items.find((i) => i >= 0) ?? -1
   }
 
+  // A box that is drawn taller or shorter than the layout measured it (a
+  // fold, a font, a view shown again after it was hidden) lays every box out
+  // again, the selected (else focus) class kept where it is on screen.
+  let resized = false
+  const sizes = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+    if (resized) return
+    resized = true
+    requestAnimationFrame(() => {
+      resized = false
+      // Hidden (no size): measured when shown again, which resizes the boxes.
+      if (!model || !lay || !viewport.offsetHeight) return
+      if (boxEl.every((b, k) => Math.abs(b.offsetHeight - heights[k]) <= 1)) return
+      const a = anchorOf()
+      relayout()
+      keepAnchor(a)
+    })
+  }) : null
+
   // Measure every box (one layout), lay them out, then write every position.
   function relayout() {
     if (!items.length) {
       lay = null
       return
     }
+    sizes?.disconnect()
+    for (const b of boxEl) sizes?.observe(b)
     heights = boxEl.map((b) => b.offsetHeight)
     const parents = items.map((i) => (i < 0 ? [] : model.classes[i].parents.map((p) => (itemOf[p] >= 0 ? itemOf[p] : importsItem)).filter((p) => p >= 0)))
     lay = tidyLayout(parents, heights)

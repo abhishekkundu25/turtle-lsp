@@ -914,11 +914,18 @@ impl Merge {
             let set = set as usize;
             let members = &m.set_list[m.set_off[set] as usize..m.set_off[set + 1] as usize];
             for &(p, v, d, i) in uses.of(s) {
+                // One of the subject's types declares `p`: its other types'
+                // not-declared rows do not count this use (role classes).
+                let declared_here = members.iter().any(|&a| {
+                    m.row_ix
+                        .get(&(a, p))
+                        .is_some_and(|&r| r != COVERED && !m.rows[r as usize].declared.is_empty())
+                });
                 for &c in members {
                     let Some(&r) = m.row_ix.get(&(c, p)) else {
                         continue;
                     };
-                    if r == COVERED {
+                    if r == COVERED || (declared_here && m.rows[r as usize].declared.is_empty()) {
                         continue;
                     }
                     let row = &mut m.rows[r as usize];
