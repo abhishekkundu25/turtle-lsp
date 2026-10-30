@@ -210,3 +210,44 @@ ex:p3 a ex:Pump ;
     assert.deepEqual(places(await s.request("turtle/schema", { examples: EX + "nothing" })), [])
   })
 })
+
+describe("turtle/schema search", () => {
+  const classes = `${PREFIXES}ex:Pump a rdfs:Class .
+ex:Valve a rdfs:Class ; rdfs:label "Check valve" .
+ex:p1 a ex:Pump .
+ex:p2 a ex:Pump .
+`
+  let s, dir
+  before(async () => {
+    dir = tempDir("turtle-lsp-schema-search-")
+    fs.writeFileSync(path.join(dir, "classes.ttl"), classes)
+    s = await startServer({ cwd: dir })
+  })
+  after(async () => {
+    await s?.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("finds a class the cap leaves out (no index) and a listed one (its index)", async () => {
+    let r
+    const end = Date.now() + 10000
+    while (!r?.matches) {
+      if (Date.now() > end) throw new Error(`no matches: ${JSON.stringify(r)}`)
+      await new Promise((res) => setTimeout(res, 50))
+      r = await s.request("turtle/schema", { search: "valve", maxClasses: 1 })
+    }
+    assert.deepEqual(r.classes.map((c) => c.id), [EX + "Pump"])
+    assert.deepEqual(r.matches, [{ id: EX + "Valve", name: "ex:Valve", label: "Check valve" }])
+    const listed = await s.request("turtle/schema", { search: "pump", maxClasses: 1 })
+    assert.deepEqual(listed.matches, [{ id: EX + "Pump", name: "ex:Pump", index: 0 }])
+    const blank = await s.request("turtle/schema", { search: "  ", maxClasses: 1 })
+    assert.equal(blank.matches, undefined)
+  })
+
+  test("a search over 200 characters is an InvalidParams error", async () => {
+    await assert.rejects(s.request("turtle/schema", { search: "x".repeat(201) }), (e) => {
+      assert.equal(e.code, InvalidParams)
+      return true
+    })
+  })
+})

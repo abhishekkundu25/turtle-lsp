@@ -22,6 +22,8 @@ use std::sync::Arc;
 pub(crate) const MAX_CLASSES: u32 = 2_000;
 /// The most rows per class a request can ask for.
 pub(crate) const MAX_ROWS: u32 = 512;
+/// The longest `search`, in characters.
+pub(crate) const MAX_SEARCH: usize = 200;
 
 // ---- the request ----
 
@@ -176,7 +178,8 @@ pub(crate) struct Row {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) shape_bad_values: Option<usize>,
     /// On a not-declared row: the classes that do declare the property
-    /// (their names), so the view can say "declared for Pipe, not Gasket".
+    /// (their names, sorted, at most [`MAX_DECLARED_FOR`]), so the view can
+    /// say "declared for Pipe, not Gasket".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) declared_for: Vec<String>,
     /// Where the row's problems are: the first [`MAX_EXAMPLES`] of each
@@ -221,6 +224,9 @@ pub(crate) struct Match {
 /// The most classes `search` returns.
 pub(crate) const MAX_MATCHES: usize = 20;
 
+/// The most classes a row's `declared_for` names.
+pub(crate) const MAX_DECLARED_FOR: usize = 5;
+
 /// One place a row's problem shows.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct Example {
@@ -251,7 +257,7 @@ mod facts;
 mod tests;
 
 pub(crate) use facts::FactsCache;
-use facts::{DocFacts, ShapePath, Subj, Value, terms};
+use facts::{DocFacts, NO_SUBJECT, ShapePath, Subj, Value, terms};
 
 const DEFAULT_MAX_CLASSES: u32 = 300;
 const DEFAULT_MAX_ROWS: u32 = 64;
@@ -280,6 +286,15 @@ pub(crate) fn schema(
     }
     if params.max_rows.is_some_and(|n| n == 0 || n > MAX_ROWS) {
         return Err(InvalidParams(format!("maxRows must be 1 to {MAX_ROWS}")));
+    }
+    if params
+        .search
+        .as_ref()
+        .is_some_and(|s| s.chars().count() > MAX_SEARCH)
+    {
+        return Err(InvalidParams(format!(
+            "search must be at most {MAX_SEARCH} characters"
+        )));
     }
     let files: Option<FxHashSet<&str>> = params
         .files
@@ -312,6 +327,10 @@ pub(crate) fn schema(
         max_rows: params.max_rows.unwrap_or(DEFAULT_MAX_ROWS) as usize,
         imports: params.imports,
         examples: params.examples,
+        search: params
+            .search
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty()),
     };
     let (merge, pick) = Merge::new(&docs, &q);
     Ok(merge.answer(&docs, enc, &q, pick))
@@ -349,6 +368,8 @@ struct Query {
     max_rows: usize,
     imports: bool,
     examples: Option<String>,
+    /// `search`, trimmed and lowercased; none when blank.
+    search: Option<String>,
 }
 
 /// What the answer lists and centres on, settled before the counts.
@@ -408,6 +429,14 @@ struct RowAcc {
     max: Option<u32>,
     /// The one datatype literals are checked against.
     check: Option<Iri>,
+    /// The row's first `rdfs:range`, and a shape's `sh:datatype` or
+    /// `sh:class` that is not among its ranges.
+    conflict: Option<(Iri, Iri)>,
+    /// On a conflict row: `shape_classes` as class indexes, [`NONE`] for a
+    /// class nothing is typed with.
+    shape_class_ix: Vec<u32>,
+    /// On a conflict row: values outside a shape's datatype or class.
+    shape_bad: usize,
     /// Some value is an IRI or a blank node.
     resource: bool,
     used: usize,
@@ -423,6 +452,7 @@ struct RowAcc {
     missing_at: Firsts,
     bad_at: Firsts,
     undeclared_at: Firsts,
+    shape_at: Firsts,
 }
 
 /// A place in a document of the request, and the subject it is about.
@@ -472,6 +502,9 @@ impl RowAcc {
             min: None,
             max: None,
             check: None,
+            conflict: None,
+            shape_class_ix: Vec::new(),
+            shape_bad: 0,
             resource: false,
             used: 0,
             at_least: 0,
@@ -482,6 +515,7 @@ impl RowAcc {
             missing_at: Firsts::default(),
             bad_at: Firsts::default(),
             undeclared_at: Firsts::default(),
+            shape_at: Firsts::default(),
         }
     }
 
@@ -499,6 +533,8 @@ struct Merge {
     row_ix: FxHashMap<(u32, Iri), u32>,
     /// Property -> its `rdfs:range`s, sorted.
     ranges: FxHashMap<Iri, Vec<Iri>>,
+    /// Property -> the classes a domain or a shape declares it for.
+    declarers: FxHashMap<Iri, Vec<u32>>,
     object_props: FxHashSet<Iri>,
     datatype_props: FxHashSet<Iri>,
     standard: FxHashMap<Iri, bool>,
@@ -609,12 +645,16 @@ impl Merge {
                 m.classes[k as usize].used |= ws;
                 let r = m.row(k, decl.p);
                 m.rows[r as usize].declared.push((decl.how, d, decl.span));
+                m.declarers.entry(decl.p).or_default().push(k);
             }
             for s in &f.shape_rows {
                 let k = m.class(s.class);
                 m.classes[k as usize].used |= ws;
                 let r = match &s.path {
-                    ShapePath::Predicate(p) => m.row(k, *p),
+                    ShapePath::Predicate(p) => {
+                        m.declarers.entry(*p).or_default().push(k);
+                        m.row(k, *p)
+                    }
                     ShapePath::Written(w) => m.written_row(k, w),
                 };
                 let row = &mut m.rows[r as usize];
@@ -766,7 +806,7 @@ impl Merge {
         }
 
         // The classes whose rows collect examples.
-        let pick = m.pick(q);
+        let pick = m.pick(q, docs, &type_classes);
         for c in pick.focus.iter().chain(&pick.examples) {
             for &r in &m.classes[*c as usize].rows {
                 m.rows[r as usize].examples = true;
@@ -793,6 +833,21 @@ impl Merge {
             dts.dedup();
             if dts.len() == 1 {
                 row.check = Some(dts[0]);
+            }
+            let shaped = row.declared.iter().any(|d| d.0 == DeclaredBy::Shape);
+            if let Some(ranges) = m.ranges.get(&p).filter(|_| shaped)
+                && let Some(&shape) = row
+                    .shape_datatypes
+                    .iter()
+                    .chain(&row.shape_classes)
+                    .find(|v| !ranges.contains(v))
+            {
+                row.conflict = Some((ranges[0], shape));
+                row.shape_class_ix = row
+                    .shape_classes
+                    .iter()
+                    .map(|c| m.class_ix.get(c).copied().unwrap_or(NONE))
+                    .collect();
             }
         }
 
@@ -833,6 +888,23 @@ impl Merge {
             }
         };
 
+        // Whether a value is typed with class `k` or a subclass of it; `d`
+        // is the use's document.
+        let rdfs_literal = terms().rdfs_literal;
+        let typed = |v: Value, d: u32, k: u32| {
+            let g = match v {
+                Value::Iri(i) => by_iri.get(&i).copied(),
+                Value::Blank(j) if j != NO_SUBJECT => Some(local[d as usize][j as usize]),
+                _ => None,
+            };
+            g.filter(|&g| g != NONE).is_some_and(|g| {
+                let set = subject_set[g as usize] as usize;
+                m.set_list[m.set_off[set] as usize..m.set_off[set + 1] as usize]
+                    .binary_search(&k)
+                    .is_ok()
+            })
+        };
+
         // The counts.
         for (s, &set) in subject_set.iter().enumerate() {
             let set = set as usize;
@@ -867,8 +939,24 @@ impl Merge {
                                 }
                             }
                         }
-                        Value::Resource => row.resource = true,
+                        Value::Iri(_) | Value::Blank(_) => row.resource = true,
                         Value::Other => {}
+                    }
+                    // A conflict row: the value against every datatype and
+                    // class of its shapes.
+                    if row.conflict.is_some() {
+                        let fits = row.shape_datatypes.iter().all(
+                            |&dt| matches!(v, Value::Literal(x) if x == dt || dt == rdfs_literal),
+                        ) && row
+                            .shape_class_ix
+                            .iter()
+                            .all(|&k| k != NONE && typed(v, d, k));
+                        if !fits {
+                            row.shape_bad += 1;
+                            if row.examples {
+                                row.shape_at.offer(use_spot(d, i, true));
+                            }
+                        }
                     }
                 }
             }
@@ -1023,8 +1111,9 @@ impl Merge {
     }
 
     /// What `q` lists and centres on. Reads the classes, the declarations
-    /// and the rows, not the counts.
-    fn pick(&self, q: &Query) -> Pick {
+    /// and the rows, not the counts; `type_classes` are the classes of each
+    /// document's `types`.
+    fn pick(&self, q: &Query, docs: &[Doc], type_classes: &[Vec<u32>]) -> Pick {
         let mut kinds: Vec<Option<ClassKind>> = self.classes.iter().map(|c| self.kind(c)).collect();
         let mut imported = 0;
         if !q.imports {
@@ -1040,7 +1129,8 @@ impl Merge {
             .collect();
         let by_rank = |a: &u32, b: &u32| self.by_rank(a, b);
 
-        // The focus: a listed class, or the class a property is a row of.
+        // The focus: a listed class, the class a property is a row of, or
+        // an instance's first listed type.
         let focus_iri = q.focus.as_deref().and_then(Iri::get);
         let mut focus: Option<u32> = None;
         let mut focus_prop: Option<Iri> = None;
@@ -1065,6 +1155,9 @@ impl Merge {
                         declared(*b).cmp(&declared(*a)).then_with(|| by_rank(a, b))
                     });
                 focus_prop = focus.map(|_| f);
+                if focus.is_none() && !self.class_ix.contains_key(&f) {
+                    focus = self.first_type(f, docs, type_classes, &kinds);
+                }
             }
         }
         let examples = q
@@ -1081,6 +1174,83 @@ impl Merge {
             focus_prop,
             examples,
         }
+    }
+
+    /// The first listed class `iri` is typed with, as the documents state
+    /// their types (by document order, then text order).
+    fn first_type(
+        &self,
+        iri: Iri,
+        docs: &[Doc],
+        type_classes: &[Vec<u32>],
+        kinds: &[Option<ClassKind>],
+    ) -> Option<u32> {
+        docs.iter().zip(type_classes).find_map(|(doc, tc)| {
+            let f = &doc.facts;
+            f.types
+                .iter()
+                .zip(tc)
+                .find(|((s, _), k)| {
+                    f.subjects[*s as usize] == Subj::Iri(iri) && kinds[**k as usize].is_some()
+                })
+                .map(|(_, &k)| k)
+        })
+    }
+
+    /// The classes of `listed` that `search` (lowercased) finds, best first:
+    /// the local name equal to it, then the name, local name or label
+    /// starting with it, then the name, label or IRI containing it; ties by
+    /// rank.
+    fn search(
+        &self,
+        docs: &[Doc],
+        names: &Names,
+        listed: &[u32],
+        out_ix: &[u32],
+        search: &str,
+    ) -> Vec<Match> {
+        let mut found: Vec<(u8, u32, String, Option<String>)> = Vec::new();
+        for &c in listed {
+            let class = &self.classes[c as usize];
+            let iri = class.iri.as_str();
+            let name = names.short(iri);
+            let label = label(docs, class);
+            let local = iri
+                .rsplit(['#', '/', ':'])
+                .next()
+                .unwrap_or(iri)
+                .to_lowercase();
+            let name_lc = name.to_lowercase();
+            let label_lc = label.as_deref().map(str::to_lowercase);
+            let label_has = |f: &dyn Fn(&str) -> bool| label_lc.as_deref().is_some_and(f);
+            let tier = if local == search {
+                0
+            } else if name_lc.starts_with(search)
+                || local.starts_with(search)
+                || label_has(&|l| l.starts_with(search))
+            {
+                1
+            } else if name_lc.contains(search)
+                || label_has(&|l| l.contains(search))
+                || iri.to_lowercase().contains(search)
+            {
+                2
+            } else {
+                continue;
+            };
+            found.push((tier, c, name, label));
+        }
+        found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| self.by_rank(&a.1, &b.1)));
+        found.truncate(MAX_MATCHES);
+        found
+            .into_iter()
+            .map(|(_, c, name, label)| Match {
+                id: self.classes[c as usize].iri.to_string(),
+                name,
+                label,
+                index: Some(out_ix[c as usize]).filter(|&i| i != NONE),
+            })
+            .collect()
     }
 
     fn by_rank(&self, a: &u32, b: &u32) -> std::cmp::Ordering {
@@ -1178,6 +1348,10 @@ impl Merge {
         // the focus.
         let examples = examples.filter(|&c| out_ix[c as usize] != NONE).or(focus);
         let names = Names::new(docs);
+        let matches = match &q.search {
+            Some(search) => self.search(docs, &names, &listed, &out_ix, search),
+            None => Vec::new(),
+        };
         let mut focus_row = None;
         let classes: Vec<ClassBox> = order
             .iter()
@@ -1206,7 +1380,7 @@ impl Merge {
             focus_row,
             total: SchemaTotal { classes: total },
             imported,
-            matches: Vec::new(),
+            matches,
         }
     }
 
@@ -1370,21 +1544,16 @@ impl Merge {
             .target_class(row)
             .map(|c| out_ix[c as usize])
             .filter(|&i| i != NONE);
-        let shaped = row.declared.iter().any(|d| d.0 == DeclaredBy::Shape);
-        let conflict = match ranges.first() {
-            Some(first) if shaped => row
-                .shape_datatypes
-                .iter()
-                .chain(&row.shape_classes)
-                .find(|v| !ranges.contains(v))
-                .map(|v| Conflict {
-                    declared: names.short(first),
-                    shape: names.short(v),
-                }),
-            _ => None,
-        };
+        let conflict = row.conflict.map(|(declared, shape)| Conflict {
+            declared: names.short(&declared),
+            shape: names.short(&shape),
+        });
         let counted = matches!(row.prop, Prop::Iri(_));
-        let (used, bad) = if of == 0 { (0, 0) } else { (row.used, row.bad) };
+        let (used, bad, shape_bad) = if of == 0 {
+            (0, 0, 0)
+        } else {
+            (row.used, row.bad, row.shape_bad)
+        };
         let state = if row.declared.is_empty() {
             RowState::Undeclared
         } else if conflict.is_some() {
@@ -1445,7 +1614,21 @@ impl Merge {
         match state {
             RowState::BadValues => add(ExampleKind::BadValue, &row.bad_at),
             RowState::Undeclared => add(ExampleKind::Undeclared, &row.undeclared_at),
+            RowState::Conflict => add(ExampleKind::ShapeValue, &row.shape_at),
             _ => {}
+        }
+        let mut declared_for = Vec::new();
+        if let (RowState::Undeclared, Prop::Iri(p)) = (state, &row.prop) {
+            declared_for = self
+                .declarers
+                .get(p)
+                .into_iter()
+                .flatten()
+                .map(|&k| names.short(&self.classes[k as usize].iri))
+                .collect();
+            declared_for.sort_unstable();
+            declared_for.dedup();
+            declared_for.truncate(MAX_DECLARED_FOR);
         }
         let r = Row {
             property,
@@ -1462,8 +1645,8 @@ impl Merge {
             required: row.required().map(|min| Required { min, max: row.max }),
             missing,
             conflict,
-            shape_bad_values: None,
-            declared_for: Vec::new(),
+            shape_bad_values: (shape_bad > 0).then_some(shape_bad),
+            declared_for,
             examples,
         };
         (r, severity)

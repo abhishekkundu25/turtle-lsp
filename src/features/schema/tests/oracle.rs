@@ -506,6 +506,49 @@ pub(super) fn check(
             } else {
                 RowState::Ok
             };
+            // A conflict row's values against every datatype and class of
+            // its shapes.
+            let fits = |v: &O| {
+                sh_dt.iter().all(|dt| {
+                    matches!(v, O::Literal(_, d) if d == dt || *dt == format!("{RDFS}Literal"))
+                }) && sh_class.iter().all(|k| {
+                    matches!(v, O::Iri(x) | O::Blank(x)
+                        if members.get(x).is_some_and(|m| m.contains(k)))
+                })
+            };
+            let shape_bad = if state == RowState::Conflict && of > 0 {
+                inst.iter()
+                    .flat_map(|s| vals(s))
+                    .filter(|v| !fits(v))
+                    .count()
+            } else {
+                0
+            };
+            // The classes that declare the property, on a not-declared row.
+            let mut declared_for: Vec<&String> = if state == RowState::Undeclared {
+                declared
+                    .keys()
+                    .filter(|(_, q)| q == p)
+                    .map(|(k, _)| k)
+                    .collect::<Set<_>>()
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            declared_for.truncate(MAX_DECLARED_FOR);
+            if row.declared_for.len() != declared_for.len()
+                || !row
+                    .declared_for
+                    .iter()
+                    .zip(&declared_for)
+                    .all(|(name, k)| names(ws, name, k))
+            {
+                return Err(format!(
+                    "{c} {p}: declared for {:?}, recounted {declared_for:?}",
+                    row.declared_for
+                ));
+            }
             let min = sh.iter().filter_map(|s| s.min).max().filter(|&m| m >= 1);
             let max = sh.iter().filter_map(|s| s.max).min();
             let missing = min
@@ -540,6 +583,7 @@ pub(super) fn check(
                 row.of,
                 row.state,
                 row.bad_values.unwrap_or(0),
+                row.shape_bad_values.unwrap_or(0),
                 row.missing,
                 row.required.map(|r| (r.min, r.max)),
                 row.range.as_ref(),
@@ -551,6 +595,7 @@ pub(super) fn check(
                 of,
                 state,
                 bad,
+                shape_bad,
                 missing,
                 min.map(|m| (m, max)),
                 range,
@@ -559,7 +604,7 @@ pub(super) fn check(
             );
             if got != want {
                 return Err(format!(
-                    "{c} {p}: (used, of, state, bad, missing, required, range, link, how) got {got:?}, recounted {want:?}"
+                    "{c} {p}: (used, of, state, bad, shape bad, missing, required, range, link, how) got {got:?}, recounted {want:?}"
                 ));
             }
             if state != RowState::Ok || missing.is_some() {
@@ -608,6 +653,19 @@ pub(super) fn check(
                         .map(|(k, s)| (ExampleKind::BadValue, k, s)),
                 );
             }
+            if state == RowState::Conflict {
+                let v = inst
+                    .iter()
+                    .flat_map(|s| at(s).iter().map(move |t| (s, t)))
+                    .filter(|(_, t)| !fits(&t.o))
+                    .map(|(s, t)| (place(t.rank, t.os), *s))
+                    .collect();
+                want.extend(
+                    firsts(v)
+                        .into_iter()
+                        .map(|(k, s)| (ExampleKind::ShapeValue, k, s)),
+                );
+            }
             if state == RowState::Undeclared {
                 let v = inst
                     .iter()
@@ -628,6 +686,7 @@ pub(super) fn check(
                     ExampleKind::BadValue,
                     if state == RowState::BadValues { bad } else { 0 },
                 ),
+                (ExampleKind::ShapeValue, shape_bad),
                 (
                     ExampleKind::Undeclared,
                     if state == RowState::Undeclared {
@@ -740,4 +799,62 @@ fn ts_count(ws: &Sources, s: &str, p: &str) -> Option<u32> {
         }
     }
     None
+}
+
+/// The focus of an answer to `focus: iri`, for an IRI that is no class:
+/// the first listed class it is typed with, by document rank then parse
+/// order. Answers asked of an IRI used as a class or a predicate are not
+/// checked.
+pub(super) fn instance_focus(ws: &Sources, r: &SchemaResult, iri: &str) -> Result<(), String> {
+    let mut by_rank: Vec<usize> = (0..ws.len()).collect();
+    by_rank.sort_by_key(|&d| {
+        (
+            ws[d].1 == Source::External,
+            ws[d].2.uri.as_str(),
+            ws[d].0.as_str(),
+        )
+    });
+    let classy = [
+        RDF_TYPE.to_string(),
+        format!("{RDFS}subClassOf"),
+        format!("{RDFS}domain"),
+        format!("{SH}targetClass"),
+    ];
+    let listed: Set<&str> = r.classes.iter().map(|c| c.id.as_str()).collect();
+    let mut first: Option<String> = None;
+    for &d in &by_rank {
+        for t in &ws[d].2.parsed.triples {
+            if t.unresolved {
+                continue;
+            }
+            let (p, s) = (t.p.as_str(), &t.s);
+            let o = match &t.o {
+                crate::syntax::Node::Iri(o) => Some(o.as_str()),
+                _ => None,
+            };
+            let s_is = matches!(s, crate::syntax::Node::Iri(i) if i.as_str() == iri);
+            let used_as_class = (o == Some(iri)
+                && (classy.iter().any(|c| c == p) || p.ends_with("schema.org/domainIncludes")))
+                || (s_is && p == classy[1])
+                || p == iri;
+            if used_as_class {
+                return Ok(());
+            }
+            if s_is
+                && p == RDF_TYPE
+                && first.is_none()
+                && let Some(o) = o.filter(|o| listed.contains(o))
+            {
+                first = Some(o.to_string());
+            }
+        }
+    }
+    let got = r.focus.map(|f| r.classes[f as usize].id.clone());
+    if got != first || r.focus_row.is_some() {
+        return Err(format!(
+            "focus on {iri}: got {got:?} row {:?}, recounted {first:?}",
+            r.focus_row
+        ));
+    }
+    Ok(())
 }

@@ -612,6 +612,7 @@ fn places_are_collected_for_the_chosen_classes_only() {
             max_rows: 64,
             imports: false,
             examples: examples.map(|e| format!("http://example.org/{e}")),
+            search: None,
         };
         let (m, _) = Merge::new(&docs, &q);
         let mut out: Vec<String> = m
@@ -622,7 +623,8 @@ fn places_are_collected_for_the_chosen_classes_only() {
                     let row = &m.rows[r as usize];
                     !(row.missing_at.0.is_empty()
                         && row.bad_at.0.is_empty()
-                        && row.undeclared_at.0.is_empty())
+                        && row.undeclared_at.0.is_empty()
+                        && row.shape_at.0.is_empty())
                 })
             })
             .map(|c| c.iri.to_string())
@@ -846,6 +848,7 @@ fn out_of_range_caps_are_invalid() {
         serde_json::json!({ "maxClasses": MAX_CLASSES + 1 }),
         serde_json::json!({ "maxRows": 0 }),
         serde_json::json!({ "maxRows": MAX_ROWS + 1 }),
+        serde_json::json!({ "search": "x".repeat(MAX_SEARCH + 1) }),
     ] {
         let params: SchemaParams = serde_json::from_value(p.clone()).unwrap();
         let cache = FactsCache::default();
@@ -1130,12 +1133,19 @@ fn every_count_matches_a_naive_recount() {
         let mut params = serde_json::json!({ "imports": imports, "maxRows": MAX_ROWS, "maxClasses": MAX_CLASSES });
         // Examples on one class: by `examples`, by the focus, or on none.
         let class = format!("http://example.org/C{}", seed / 3 % 4);
+        // Some focuses are instances, which focus their class.
+        let instance = format!("http://example.org/i{}", seed / 3 % 4);
+        let on_instance = seed % 3 == 1 && seed % 4 >= 2;
         match seed % 3 {
             0 => params["examples"] = class.as_str().into(),
+            1 if on_instance => params["focus"] = instance.as_str().into(),
             1 => params["focus"] = class.as_str().into(),
             _ => {}
         }
         let r = run(&ws, params);
+        if on_instance && let Err(e) = oracle::instance_focus(&ws, &r, &instance) {
+            panic!("seed {seed}: {e}\n{}", dump(&ws));
+        }
         let chosen = match seed % 3 {
             0 => r
                 .classes
@@ -1188,6 +1198,7 @@ fn reused_facts_answer_as_fresh_ones() {
                 "maxClasses": 1 + rng.below(6),
                 "maxRows": 1 + rng.below(4),
                 "imports": rng.chance(50),
+                "search": rng.pick(&["", "c", "C1", "example"]),
             });
             let warm = ask(&ws, params.clone(), &cache);
             let cold = run(&ws, params);
@@ -1206,8 +1217,14 @@ fn answers_are_deterministic_and_indexes_in_range() {
         let mut reversed = ws.clone();
         reversed.reverse();
         assert_eq!(a, run(&reversed, serde_json::json!({})), "seed {seed}");
-        let r = run(&ws, serde_json::json!({ "maxClasses": 2, "maxRows": 1 }));
+        let params = serde_json::json!({ "maxClasses": 2, "maxRows": 1, "search": "c" });
+        let r = run(&ws, params.clone());
+        assert_eq!(r, run(&reversed, params), "seed {seed}");
         assert!(r.classes.len() <= 2, "seed {seed}");
+        assert!(r.matches.len() <= MAX_MATCHES);
+        for m in &r.matches {
+            assert!(m.index.is_none_or(|i| r.classes[i as usize].id == m.id));
+        }
         for c in &r.classes {
             assert!(c.rows.len() <= 1);
             assert!(c.parents.iter().all(|&p| (p as usize) < r.classes.len()));
@@ -1306,4 +1323,266 @@ fn a_prefix_name_bound_twice_shortens_both_namespaces() {
     let names = class_names(&r);
     assert!(names.contains(&"ex:Person"), "{names:?}");
     assert!(names.contains(&"ex:Pump"), "{names:?}");
+}
+
+// ---- instance focus, search, conflict values, declared-for ----
+
+/// Catches an instance focus that answers with no focus, picks a type that
+/// is not listed, or picks by hash or class order instead of where the
+/// types are stated.
+#[test]
+fn an_instance_focus_is_its_first_listed_type() {
+    let ws = workspace(&[
+        (
+            "a",
+            "ex:Pump a owl:Class . ex:Valve a owl:Class .\n\
+             ex:p1 a owl:Thing , ex:Valve , ex:Pump .\n\
+             ex:v1 a ex:Valve .\n",
+        ),
+        ("b", "ex:p2 a ex:Pump .\nex:p2 a ex:Valve .\n"),
+        ("c", "ex:p2 a ex:Valve .\n"),
+    ]);
+    let focus = |iri: &str| {
+        let r = run(&ws, serde_json::json!({ "focus": iri }));
+        let f = r.focus.map(|f| r.classes[f as usize].name.clone());
+        (f, r.focus_row)
+    };
+    // owl:Thing is not listed: the next type, as stated.
+    assert_eq!(
+        focus("http://example.org/p1"),
+        (Some("ex:Valve".into()), None)
+    );
+    // Typed in b and c: b's first statement.
+    assert_eq!(
+        focus("http://example.org/p2"),
+        (Some("ex:Pump".into()), None)
+    );
+    assert_eq!(focus("http://example.org/nothing"), (None, None));
+    // The focus class lists the examples.
+    let r = run(
+        &ws,
+        serde_json::json!({ "focus": "http://example.org/v1", "maxClasses": 1 }),
+    );
+    assert_eq!(class_names(&r), ["ex:Valve"]);
+    assert_eq!(r.focus, Some(0));
+}
+
+fn found(r: &SchemaResult) -> Vec<(&str, Option<u32>)> {
+    r.matches
+        .iter()
+        .map(|m| (m.name.as_str(), m.index))
+        .collect()
+}
+
+/// Catches a search over the listed classes only, a ranking that puts a
+/// substring before an exact name, ties out of rank order, or a label that
+/// is not searched.
+#[test]
+fn search_ranks_exact_then_prefix_then_substring_over_every_class() {
+    let body = "ex:Pump a owl:Class . ex:PumpHouse a owl:Class . ex:SubPump a owl:Class .\n\
+        ex:Valve a owl:Class ; rdfs:label \"Pump valve\" .\n\
+        ex:Gasket a owl:Class .\n\
+        ex:Odd a owl:Class ; rdfs:label \"Not a pump\" .\n\
+        ex:v a ex:Valve . ex:g1 a ex:Gasket . ex:g2 a ex:Gasket .\n";
+    let ws = workspace(&[("d", body)]);
+    let r = run(
+        &ws,
+        serde_json::json!({ "search": " PUMP ", "maxClasses": 1 }),
+    );
+    assert_eq!(class_names(&r), ["ex:Gasket"]);
+    // Valve (1 instance) before PumpHouse (none) among the prefixes; none
+    // is listed, so none has an index.
+    assert_eq!(
+        found(&r),
+        [
+            ("ex:Pump", None),
+            ("ex:Valve", None),
+            ("ex:PumpHouse", None),
+            ("ex:Odd", None),
+            ("ex:SubPump", None),
+        ]
+    );
+    assert_eq!(r.matches[1].label.as_deref(), Some("Pump valve"));
+    assert_eq!(r.matches[1].id, "http://example.org/Valve");
+    // A listed class has its index.
+    let r = run(&ws, serde_json::json!({ "search": "gask" }));
+    assert_eq!(found(&r), [("ex:Gasket", Some(index(&r, "ex:Gasket")))]);
+    // The IRI is searched too.
+    let r = run(&ws, serde_json::json!({ "search": "example.org/sub" }));
+    assert_eq!(found(&r), [("ex:SubPump", Some(index(&r, "ex:SubPump")))]);
+    // Blank or absent: no matches, and nothing else changes.
+    let plain = run(&ws, serde_json::json!({}));
+    for search in ["", "   "] {
+        let r = run(&ws, serde_json::json!({ "search": search }));
+        assert_eq!(r, plain);
+    }
+    let r = run(&ws, serde_json::json!({ "search": "nothing like it" }));
+    assert!(r.matches.is_empty());
+}
+
+/// Catches more than [`MAX_MATCHES`] matches, or imports found when they
+/// are not asked for.
+#[test]
+fn search_stops_at_twenty_and_finds_imports_only_when_asked() {
+    let mut body = String::new();
+    for i in 0..30 {
+        body.push_str(&format!("ex:K{i:02} a owl:Class .\n"));
+    }
+    let ws = vec![
+        doc("d", &body, Source::Disk),
+        doc("up", "ex:Kimport a owl:Class .\n", Source::External),
+    ];
+    let r = run(&ws, serde_json::json!({ "search": "k" }));
+    assert_eq!(r.matches.len(), MAX_MATCHES);
+    assert_eq!(r.matches[0].name, "ex:K00");
+    assert!(r.matches.iter().all(|m| m.name != "ex:Kimport"));
+    let r = run(&ws, serde_json::json!({ "search": "kimp" }));
+    assert!(r.matches.is_empty());
+    let r = run(
+        &ws,
+        serde_json::json!({ "search": "kimp", "imports": true }),
+    );
+    assert_eq!(found(&r), [("ex:Kimport", Some(index(&r, "ex:Kimport")))]);
+}
+
+const CONFLICTS: &str = "ex:Pump a owl:Class . ex:Valve a owl:Class .\n\
+    ex:Sub rdfs:subClassOf ex:Valve .\n\
+    ex:flow rdfs:domain ex:Pump ; rdfs:range xsd:decimal .\n\
+    ex:feeds rdfs:domain ex:Pump ; rdfs:range ex:Pump .\n\
+    ex:S a sh:NodeShape ; sh:targetClass ex:Pump ;\n\
+      sh:property [ sh:path ex:flow ; sh:datatype xsd:integer ] ;\n\
+      sh:property [ sh:path ex:feeds ; sh:class ex:Valve ] .\n\
+    ex:v1 a ex:Valve . ex:v2 a ex:Sub .\n\
+    ex:p1 a ex:Pump ;\n\
+      ex:flow 2 , 1.5 , ex:v1 ;\n\
+      ex:feeds ex:v1 , ex:v2 , ex:p1 , \"x\" , [ a ex:Valve ] , [ ex:q 1 ] , ex:nowhere .\n";
+
+/// Catches a conflict row that does not count its values against the
+/// shape: literals of another datatype, resources where a datatype is
+/// required, values not typed with the class (or a subclass) or literals
+/// where a class is required; and their places listed out of order or on
+/// the wrong class.
+#[test]
+fn conflict_rows_count_the_values_outside_the_shape() {
+    let ws = workspace(&[("d", CONFLICTS)]);
+    let r = run(
+        &ws,
+        serde_json::json!({ "focus": "http://example.org/Pump" }),
+    );
+    let pump = class(&r, "ex:Pump");
+    let flow = row(pump, "ex:flow");
+    assert_eq!(flow.state, RowState::Conflict);
+    // 1.5 and ex:v1; the range and the shape disagree, so no bad values.
+    assert_eq!((flow.shape_bad_values, flow.bad_values), (Some(2), None));
+    let ex = examples(&ws, flow);
+    let body = |n| line(n);
+    assert_eq!(
+        ex,
+        [
+            (ExampleKind::ShapeValue, "d.ttl", body(9), "1.5", "ex:p1"),
+            (ExampleKind::ShapeValue, "d.ttl", body(9), "ex:v1", "ex:p1"),
+        ]
+    );
+    let feeds = row(pump, "ex:feeds");
+    assert_eq!(feeds.state, RowState::Conflict);
+    // ex:p1 (a Pump), "x", the untyped blank node, ex:nowhere.
+    assert_eq!(feeds.shape_bad_values, Some(4));
+    let texts: Vec<&str> = examples(&ws, feeds).iter().map(|e| e.3).collect();
+    assert_eq!(texts, ["ex:p1", "\"x\"", "[ ex:q 1 ]", "ex:nowhere"]);
+    // Other classes list no places; the count is there all the same.
+    let r = run(
+        &ws,
+        serde_json::json!({ "focus": "http://example.org/Valve" }),
+    );
+    let flow = row(class(&r, "ex:Pump"), "ex:flow");
+    assert_eq!((flow.shape_bad_values, flow.examples.len()), (Some(2), 0));
+}
+
+/// Catches `shapeBadValues` on rows that are no conflict, or on a conflict
+/// whose values all fit.
+#[test]
+fn shape_bad_values_only_on_conflict_rows_with_misfits() {
+    let body = "ex:Pump a owl:Class .\n\
+        ex:flow rdfs:domain ex:Pump ; rdfs:range xsd:decimal .\n\
+        ex:size rdfs:domain ex:Pump ; rdfs:range xsd:integer .\n\
+        ex:S a sh:NodeShape ; sh:targetClass ex:Pump ;\n\
+          sh:property [ sh:path ex:flow ; sh:datatype xsd:integer ] ;\n\
+          sh:property [ sh:path ex:size ; sh:datatype xsd:integer ] .\n\
+        ex:p a ex:Pump ; ex:flow 2 ; ex:size 1.5 .\n";
+    let r = run(&workspace(&[("d", body)]), serde_json::json!({}));
+    let pump = class(&r, "ex:Pump");
+    let flow = row(pump, "ex:flow");
+    assert_eq!(
+        (flow.state, flow.shape_bad_values),
+        (RowState::Conflict, None)
+    );
+    let size = row(pump, "ex:size");
+    assert_eq!(
+        (size.state, size.bad_values, size.shape_bad_values),
+        (RowState::BadValues, Some(1), None)
+    );
+}
+
+/// Catches a not-declared row that does not say which classes do declare
+/// its property: by domain, domainIncludes or shape, sorted, at most five.
+#[test]
+fn undeclared_rows_name_the_classes_that_declare_them() {
+    let mut body = String::from(
+        "ex:Pipe a owl:Class . ex:Gasket a owl:Class . ex:Valve a owl:Class .\n\
+         ex:diameter rdfs:domain ex:Pipe ; schema:domainIncludes ex:Valve .\n\
+         ex:S a sh:NodeShape ; sh:targetClass ex:Hose ; sh:property [ sh:path ex:diameter ] .\n\
+         ex:g1 a ex:Gasket ; ex:diameter 3 ; ex:color \"red\" ; ex:mass 1 .\n",
+    );
+    for c in ["F", "E", "D", "C", "B", "A"] {
+        body.push_str(&format!("ex:mass rdfs:domain ex:{c} .\n"));
+    }
+    let r = run(&workspace(&[("d", &body)]), serde_json::json!({}));
+    let gasket = class(&r, "ex:Gasket");
+    let diameter = row(gasket, "ex:diameter");
+    assert_eq!(diameter.state, RowState::Undeclared);
+    assert_eq!(diameter.declared_for, ["ex:Hose", "ex:Pipe", "ex:Valve"]);
+    assert!(row(gasket, "ex:color").declared_for.is_empty());
+    assert_eq!(
+        row(gasket, "ex:mass").declared_for,
+        ["ex:A", "ex:B", "ex:C", "ex:D", "ex:E"]
+    );
+    // Declared rows say nothing.
+    assert!(
+        row(class(&r, "ex:Pipe"), "ex:diameter")
+            .declared_for
+            .is_empty()
+    );
+}
+
+/// `search` over 2,000 classes, each labelled, adds under 5 ms to a warm
+/// answer.
+#[test]
+fn timing_schema_search_on_2000_classes() {
+    let mut body = String::new();
+    for c in 0..2_000 {
+        body.push_str(&format!(
+            "ex:Class{c} a owl:Class ; rdfs:label \"Class number {c}\" .\nex:i{c} a ex:Class{c} .\n"
+        ));
+    }
+    let ws = workspace(&[("d", &body)]);
+    let cache = FactsCache::default();
+    let median = |params: serde_json::Value| {
+        let mut times: Vec<_> = (0..11)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                ask(&ws, params.clone(), &cache);
+                t.elapsed()
+            })
+            .collect();
+        times.sort();
+        times[times.len() / 2]
+    };
+    let plain = median(serde_json::json!({}));
+    let searched = median(serde_json::json!({ "search": "number 1" }));
+    eprintln!("schema, 2,000 classes: warm median {plain:?}, with search {searched:?}");
+    assert!(
+        searched.saturating_sub(plain).as_millis() < 5,
+        "search added {:?}",
+        searched.saturating_sub(plain)
+    );
 }

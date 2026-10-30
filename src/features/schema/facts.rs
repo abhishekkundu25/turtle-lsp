@@ -25,11 +25,16 @@ pub(super) enum Subj {
 pub(super) enum Value {
     /// A literal, by its datatype (`rdf:langString` for a tagged string).
     Literal(Iri),
-    /// An IRI or a blank node.
-    Resource,
+    Iri(Iri),
+    /// A blank node: its index in [`DocFacts::subjects`], or [`NO_SUBJECT`]
+    /// when it is the subject of no triple.
+    Blank(u32),
     /// A triple term.
     Other,
 }
+
+/// [`Value::Blank`] of a blank node that is the subject of no triple.
+pub(super) const NO_SUBJECT: u32 = u32::MAX;
 
 /// A triple other than `rdf:type`: its subject (an index into
 /// [`DocFacts::subjects`]), predicate and value, and the triple's index in
@@ -145,6 +150,9 @@ impl DocFacts {
         let mut index: FxHashMap<Subj, u32> = FxHashMap::default();
         let mut declared: FxHashSet<Iri> = FxHashSet::default();
         let mut shacl = false;
+        // Uses whose value is a blank node, by its id: made subject indexes
+        // after the pass, as the node may be described later.
+        let mut blanks: Vec<(u32, BlankId)> = Vec::new();
         for (ti, tr) in p.triples.iter().enumerate() {
             if tr.unresolved {
                 continue;
@@ -187,12 +195,16 @@ impl DocFacts {
                 }
                 continue;
             }
+            if let Node::Blank(b) = tr.o {
+                blanks.push((f.uses.len() as u32, b));
+            }
             f.uses.push(Use {
                 s,
                 p: tr.p,
                 v: match &tr.o {
                     Node::Literal { datatype, .. } => Value::Literal(*datatype),
-                    Node::Iri(_) | Node::Blank(_) => Value::Resource,
+                    Node::Iri(i) => Value::Iri(*i),
+                    Node::Blank(_) => Value::Blank(NO_SUBJECT),
                     Node::Triple(_) => Value::Other,
                 },
                 t: ti as u32,
@@ -227,6 +239,11 @@ impl DocFacts {
             }
             if declares && declared.insert(si) {
                 f.classes.push((si, subject_span(a, tr)));
+            }
+        }
+        for (u, b) in blanks {
+            if let Some(&s) = index.get(&Subj::Blank(b)) {
+                f.uses[u as usize].v = Value::Blank(s);
             }
         }
         if shacl {
