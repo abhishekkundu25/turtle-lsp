@@ -41,6 +41,9 @@ pub(crate) struct SchemaParams {
     pub(crate) max_rows: Option<u32>,
     /// List imported classes; omitted or false: count them only.
     pub(crate) imports: bool,
+    /// A class IRI: the class whose rows list their [`Row::examples`], when
+    /// it is listed. Omitted or not listed: the focus class, else none.
+    pub(crate) examples: Option<String>,
 }
 
 /// A position in a document, as `at` sends it.
@@ -163,7 +166,8 @@ pub(crate) struct Row {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) conflict: Option<Conflict>,
     /// Where the row's problems are: the first [`MAX_EXAMPLES`] of each
-    /// kind, in document order (by URI) and text order.
+    /// kind, in document order (by URI) and text order. Only on the rows of
+    /// one class (`examples`, else the focus); empty on every other row.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) examples: Vec<Example>,
 }
@@ -275,8 +279,10 @@ pub(crate) fn schema(
         max_classes: params.max_classes.unwrap_or(DEFAULT_MAX_CLASSES) as usize,
         max_rows: params.max_rows.unwrap_or(DEFAULT_MAX_ROWS) as usize,
         imports: params.imports,
+        examples: params.examples,
     };
-    Ok(Merge::new(&docs).answer(&docs, enc, &q))
+    let (merge, pick) = Merge::new(&docs, &q);
+    Ok(merge.answer(&docs, enc, &q, pick))
 }
 
 /// [`schema`] for the integration tests (tests/chaos.rs): `docs` as the
@@ -310,6 +316,22 @@ struct Query {
     max_classes: usize,
     max_rows: usize,
     imports: bool,
+    examples: Option<String>,
+}
+
+/// What the answer lists and centres on, settled before the counts.
+struct Pick {
+    /// Per class: how it is listed, if it is.
+    kinds: Vec<Option<ClassKind>>,
+    /// Imported classes not listed.
+    imported: usize,
+    /// The classes listed, before the cap.
+    listed: Vec<u32>,
+    focus: Option<u32>,
+    /// The focus property, when the focus is one.
+    focus_prop: Option<Iri>,
+    /// The class `examples` names, when it can be listed.
+    examples: Option<u32>,
 }
 
 /// A document of the request: workspace documents by URI, then imports.
@@ -363,6 +385,8 @@ struct RowAcc {
     /// The last subject counted, and its values so far.
     stamp: u32,
     count: u32,
+    /// Its class may list examples: the places below are collected.
+    examples: bool,
     /// The first places of each kind of problem.
     missing_at: Firsts,
     bad_at: Firsts,
@@ -422,6 +446,7 @@ impl RowAcc {
             bad: 0,
             stamp: NONE,
             count: 0,
+            examples: false,
             missing_at: Firsts::default(),
             bad_at: Firsts::default(),
             undeclared_at: Firsts::default(),
@@ -510,7 +535,10 @@ fn sorted(mut v: Vec<Iri>) -> Vec<Iri> {
 }
 
 impl Merge {
-    fn new(docs: &[Doc]) -> Merge {
+    /// The merge of `docs`, and what `q` picks. Problem places are
+    /// collected only on the rows of the focus class and of the class
+    /// `q.examples` names.
+    fn new(docs: &[Doc], q: &Query) -> (Merge, Pick) {
         let mut m = Merge::default();
 
         // Classes, the hierarchy, the declarations.
@@ -705,6 +733,14 @@ impl Merge {
             }
         }
 
+        // The classes whose rows collect examples.
+        let pick = m.pick(q);
+        for c in pick.focus.iter().chain(&pick.examples) {
+            for &r in &m.classes[*c as usize].rows {
+                m.rows[r as usize].examples = true;
+            }
+        }
+
         // The datatype each row checks literals against, the rows nothing
         // declares included (a range is the property's).
         for i in 0..m.rows.len() {
@@ -728,7 +764,8 @@ impl Merge {
             }
         }
 
-        // The required rows of each class, and whether a set has any.
+        // The required rows that collect examples, per class, and whether a
+        // set has any.
         let required = Grouped::new(m.classes.len(), 0, || {
             m.classes.iter().enumerate().flat_map(|(c, class)| {
                 class
@@ -736,7 +773,7 @@ impl Merge {
                     .iter()
                     .filter(|&&r| {
                         let row = &m.rows[r as usize];
-                        matches!(row.prop, Prop::Iri(_)) && row.required().is_some()
+                        row.examples && matches!(row.prop, Prop::Iri(_)) && row.required().is_some()
                     })
                     .map(move |&r| (c as u32, r))
             })
@@ -781,7 +818,7 @@ impl Merge {
                         row.stamp = s as u32;
                         row.count = 0;
                         row.used += 1;
-                        if row.declared.is_empty() {
+                        if row.examples && row.declared.is_empty() {
                             row.undeclared_at.offer(use_spot(d, i, false));
                         }
                     }
@@ -793,7 +830,9 @@ impl Merge {
                         Value::Literal(dt) => {
                             if row.check.is_some_and(|c| c != dt) {
                                 row.bad += 1;
-                                row.bad_at.offer(use_spot(d, i, true));
+                                if row.examples {
+                                    row.bad_at.offer(use_spot(d, i, true));
+                                }
                             }
                         }
                         Value::Resource => row.resource = true,
@@ -821,7 +860,7 @@ impl Merge {
                 }
             }
         }
-        m
+        (m, pick)
     }
 
     fn class(&mut self, iri: Iri) -> u32 {
@@ -951,7 +990,9 @@ impl Merge {
         }
     }
 
-    fn answer(&self, docs: &[Doc], enc: Encoding, q: &Query) -> SchemaResult {
+    /// What `q` lists and centres on. Reads the classes, the declarations
+    /// and the rows, not the counts.
+    fn pick(&self, q: &Query) -> Pick {
         let mut kinds: Vec<Option<ClassKind>> = self.classes.iter().map(|c| self.kind(c)).collect();
         let mut imported = 0;
         if !q.imports {
@@ -965,13 +1006,7 @@ impl Merge {
         let listed: Vec<u32> = (0..self.classes.len() as u32)
             .filter(|&c| kinds[c as usize].is_some())
             .collect();
-        let total = listed.len();
-        let by_rank = |a: &u32, b: &u32| {
-            let (x, y) = (&self.classes[*a as usize], &self.classes[*b as usize]);
-            y.instances
-                .cmp(&x.instances)
-                .then_with(|| x.iri.as_str().cmp(y.iri.as_str()))
-        };
+        let by_rank = |a: &u32, b: &u32| self.by_rank(a, b);
 
         // The focus: a listed class, or the class a property is a row of.
         let focus_iri = q.focus.as_deref().and_then(Iri::get);
@@ -1000,6 +1035,40 @@ impl Merge {
                 focus_prop = focus.map(|_| f);
             }
         }
+        let examples = q
+            .examples
+            .as_deref()
+            .and_then(Iri::get)
+            .and_then(|e| self.class_ix.get(&e).copied())
+            .filter(|&c| kinds[c as usize].is_some());
+        Pick {
+            kinds,
+            imported,
+            listed,
+            focus,
+            focus_prop,
+            examples,
+        }
+    }
+
+    fn by_rank(&self, a: &u32, b: &u32) -> std::cmp::Ordering {
+        let (x, y) = (&self.classes[*a as usize], &self.classes[*b as usize]);
+        y.instances
+            .cmp(&x.instances)
+            .then_with(|| x.iri.as_str().cmp(y.iri.as_str()))
+    }
+
+    fn answer(&self, docs: &[Doc], enc: Encoding, q: &Query, pick: Pick) -> SchemaResult {
+        let Pick {
+            kinds,
+            imported,
+            listed,
+            focus,
+            focus_prop,
+            examples,
+        } = pick;
+        let total = listed.len();
+        let by_rank = |a: &u32, b: &u32| self.by_rank(a, b);
 
         // The order: the root, its ancestors and descendants by distance,
         // its link targets, then the rest by instances; ties by IRI.
@@ -1073,6 +1142,9 @@ impl Merge {
             out_ix[c as usize] = i as u32;
         }
 
+        // The class whose rows list examples: `examples` when listed, else
+        // the focus.
+        let examples = examples.filter(|&c| out_ix[c as usize] != NONE).or(focus);
         let names = Names::new(docs);
         let mut focus_row = None;
         let classes: Vec<ClassBox> = order
@@ -1088,6 +1160,7 @@ impl Merge {
                     &out_ix,
                     q.max_rows,
                     wanted,
+                    Some(c) == examples,
                 );
                 if row.is_some() {
                     focus_row = row;
@@ -1157,13 +1230,17 @@ impl Merge {
         out_ix: &[u32],
         max_rows: usize,
         focus_prop: Option<Iri>,
+        examples: bool,
     ) -> (ClassBox, Option<u32>) {
         let class = &self.classes[c as usize];
         let of = class.instances;
         let mut rows: Vec<(Row, u8)> = class
             .rows
             .iter()
-            .map(|&r| self.row_out(docs, enc, names, &self.rows[r as usize], of, out_ix))
+            .map(|&r| {
+                let row = &self.rows[r as usize];
+                self.row_out(docs, enc, names, row, of, out_ix, examples)
+            })
             .collect();
         let problems = rows.iter().filter(|(_, sev)| *sev > 0).count();
         let undeclared = |r: &Row| r.state == RowState::Undeclared;
@@ -1229,7 +1306,9 @@ impl Merge {
         (b, focus_row)
     }
 
-    /// The row as answered, and how bad it is (0: no problem).
+    /// The row as answered, with its examples when `examples`, and how bad
+    /// it is (0: no problem).
+    #[allow(clippy::too_many_arguments)]
     fn row_out(
         &self,
         docs: &[Doc],
@@ -1238,6 +1317,7 @@ impl Merge {
         row: &RowAcc,
         of: usize,
         out_ix: &[u32],
+        with_examples: bool,
     ) -> (Row, u8) {
         let (property, name, ranges) = match &row.prop {
             Prop::Iri(p) => (
@@ -1310,6 +1390,9 @@ impl Merge {
             .collect();
         let mut examples = Vec::new();
         let mut add = |kind: ExampleKind, at: &Firsts| {
+            if !with_examples {
+                return;
+            }
             examples.extend(at.0.iter().map(|spot| {
                 let a = docs[spot.d as usize].a;
                 Example {

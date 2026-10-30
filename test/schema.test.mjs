@@ -200,4 +200,13 @@ ex:p3 a ex:Pump ;
       assert.equal(at(pumps, e.range), e.name)
     }
   })
+
+  test("only one class lists places: the one `examples` names, else the focus, else none", async () => {
+    const places = (r) => r.classes.filter((c) => c.rows.some((row) => row.examples?.length)).map((c) => c.id)
+    assert.deepEqual(places(await s.request("turtle/schema", {})), [])
+    const asked = await s.request("turtle/schema", { examples: EX + "Pump" })
+    assert.deepEqual(places(asked), [EX + "Pump"])
+    assert.equal(asked.focus, undefined, "examples is not a focus")
+    assert.deepEqual(places(await s.request("turtle/schema", { examples: EX + "nothing" })), [])
+  })
 })

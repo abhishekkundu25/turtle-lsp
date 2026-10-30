@@ -17,7 +17,7 @@ import { pickLabels, truncate } from "./labels.js"
 import { PALETTE_SIZE, colorSlots, readColors } from "./colors.js"
 import { createRenderer } from "./canvas.js"
 import { classInspector, createFilterPanel } from "./panel.js"
-import { SCHEMA_METHOD, createSchemaView } from "./schema.js"
+import { SCHEMA_METHOD, createSchemaView, mergePlaces, needsPlaces } from "./schema.js"
 
 export const STORE_KEY = "graph"
 export const METHOD = "turtle/graph"
@@ -205,9 +205,10 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
         if (!f) return
         setModel({ facets: buildModel(f).facets, total: f.total })
       }
-      const res = await ask(schemaParams(state.filters, { focus: schema.selectedId, imports: state.schema.imports }), SCHEMA_METHOD)
+      const params = schemaParams(state.filters, { focus: schema.selectedId, imports: state.schema.imports })
+      const res = await ask(params, SCHEMA_METHOD)
       if (!res || mode !== "schema") return
-      showSchema(res)
+      showSchema(res, {}, params)
       scene = null
     } else if (mode === "focus") {
       if (!state.focus && !(await pickFocus())) return
@@ -501,7 +502,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const same = info.dataset.cls === id
     const open = same ? [...info.querySelectorAll("details[data-key][open]")].map((d) => d.dataset.key) : []
     const focused = same && info.contains(doc.activeElement) ? doc.activeElement.dataset?.key : null
-    const { nodes, sources } = classInspector(doc, schema.model, i, { lit: schema.lit, canReveal: typeof reveal === "function" })
+    const loading = askPlaces()
+    const { nodes, sources } = classInspector(doc, schema.model, i, { lit: schema.lit, canReveal: typeof reveal === "function", loading })
     infoSources = sources
     info.replaceChildren(...nodes)
     info.dataset.cls = id
@@ -511,11 +513,67 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     info.hidden = false
   }
 
-  function showSchema(res, o = {}) {
+  // ---- the selected class's places ----
+  // An answer lists the places of one class's problems (`examples`): the
+  // focus's. Selecting another class with problems asks for its places with
+  // the params of the answer shown plus `examples`, so the classes listed
+  // stay; the places merge into the model shown and only the inspector is
+  // drawn again. One request at a time; an answer for a class no longer
+  // selected, or for a model no longer shown, is dropped.
+  let shownParams = null
+  let placesAsking = false
+  // Per model shown: class id -> "asking" or "done".
+  const placesOf = new WeakMap()
+
+  /** Ask for the selected class's places when it needs them; true while they are on their way. */
+  function askPlaces() {
+    const m = schema.model, i = schema.selected
+    const c = m?.classes[i]
+    if (!shownParams || !needsPlaces(c)) return false
+    let asked = placesOf.get(m)
+    if (!asked) placesOf.set(m, (asked = new Map()))
+    if (asked.get(c.id) === "done") return false
+    if (!asked.has(c.id) && !placesAsking) fetchPlaces(m, c.id, asked)
+    return true
+  }
+
+  async function fetchPlaces(m, id, asked) {
+    placesAsking = true
+    asked.set(id, "asking")
+    let res = null, failed = false
+    try {
+      res = await request(SCHEMA_METHOD, { ...shownParams, examples: id })
+    } catch {
+      failed = true
+    }
+    placesAsking = false
+    if (destroyed) return
+    const i = schema.selected
+    const current = schema.model === m && m.classes[i]?.id === id
+    if (!current) asked.delete(id)
+    else {
+      asked.set(id, "done")
+      if (!failed) mergePlaces(m, i, res)
+    }
+    // Draw the answer, or ask for the class selected meanwhile.
+    if (mode === "schema") renderInfo()
+  }
+
+  function showSchema(res, o = {}, params = null) {
     // The inspector takes a column when a class is selected: make room
     // before the boxes are fitted into the rest.
     const before = root.dataset.info
     root.dataset.info = schema.selected >= 0 || Number.isInteger(res?.focus) ? "open" : ""
+    // The params that make this answer, the focus for `at` (the cursor
+    // may have moved on): asked again with `examples`, they list the same.
+    const f = Number.isInteger(res?.focus) ? res.classes?.[res.focus] : null
+    const focus = Number.isInteger(res?.focusRow) ? f?.rows?.[res.focusRow]?.property : f?.id
+    if (params?.at) {
+      params = { ...params }
+      delete params.at
+      if (typeof focus === "string") params.focus = focus
+    }
+    shownParams = params
     schema.show(res, { imports: state.schema.imports, ...o })
     const guess = root.dataset.info
     runSearch(panel.search, false)
@@ -789,7 +847,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     following = true
     try {
       const res = await request(method, params)
-      if (my === cursor && m === mode && !destroyed && state.follow && !nothing) followed(m, res)
+      if (my === cursor && m === mode && !destroyed && state.follow && !nothing) followed(m, res, params)
     } catch {
       // A failed follow leaves the view as it is.
     } finally {
@@ -804,11 +862,11 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   // An answer for the latest cursor. null: no term there, the view stays.
   // A turtle/graph answer lists the term's node first (breadth-first from
   // the focus the server resolved `at` to).
-  function followed(m, res) {
+  function followed(m, res, params) {
     if (res == null) return
     if (m === "schema") {
       if (!Number.isInteger(res?.focus) || res.focus < 0) return
-      showSchema(res, { focus: true })
+      showSchema(res, { focus: true }, params)
       return
     }
     const id = res.nodes?.[0]?.id

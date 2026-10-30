@@ -11,14 +11,14 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
 import { listen } from "./static-server.mjs"
-import { problemsOf, rowBadge, schemaModel, tidyLayout } from "../app/graph/schema.js"
+import { mergePlaces, needsPlaces, problemsOf, rowBadge, schemaModel, tidyLayout } from "../app/graph/schema.js"
 import { normalizeState } from "../app/graph/filters.js"
 import { A, EX, bigSchema } from "./graph-fixture.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const WEB = path.join(HERE, "..")
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(HERE, "schema-fixture.json"), "utf8"))
-const PUMP = 1, MOTOR = 3, PIPE = 4
+const EQUIPMENT = 0, PUMP = 1, MOTOR = 3, PIPE = 4
 const name = (c) => FIXTURE.classes[c].label
 // The fixture as a server without examples would answer.
 const withoutExamples = () => {
@@ -57,6 +57,23 @@ test("each class's problems come from its rows and match the answer's count (cat
   assert.deepEqual([broken.classes[0].rows[0].state, broken.classes[0].rows[0].target, broken.classes[0].rows[0].used], ["ok", -1, 0])
   assert.equal(broken.focus, -1)
   assert.equal(schemaModel(null).classes.length, 0)
+})
+
+test("a class with problems and no places needs them; a later answer's places merge into that class alone (catches: a request for every class, places merged into the wrong rows)", () => {
+  const m = schemaModel(withoutExamples())
+  assert.deepEqual(m.classes.map(needsPlaces), [true, true, false, false, false, false, false, false])
+  const pump = m.classes[PUMP]
+  const before = JSON.stringify(m.classes.filter((_, i) => i !== EQUIPMENT))
+  assert.equal(mergePlaces(m, EQUIPMENT, FIXTURE), true)
+  const missing = m.classes[EQUIPMENT].problems[0]
+  assert.deepEqual([missing.kind, missing.count, missing.examples.length], ["missing", 7, 7])
+  assert.deepEqual(missing.at, FIXTURE.classes[EQUIPMENT].rows[0].examples[0])
+  assert.equal(needsPlaces(m.classes[EQUIPMENT]), false)
+  assert.equal(JSON.stringify(m.classes.filter((_, i) => i !== EQUIPMENT)), before, "the other classes stay")
+  assert.equal(m.classes[PUMP], pump)
+  // An answer that does not list the class: nothing changes.
+  assert.equal(mergePlaces(m, PUMP, { classes: [] }), false)
+  assert.equal(needsPlaces(m.classes[PUMP]), true)
 })
 
 test("a row shows at most one badge, the worst: conflict, then missing, then bad values, then never used or not declared (catches: rows crowded with badges, a missing count hidden behind a milder one)", () => {
@@ -354,6 +371,84 @@ describe("Schema in Chrome", () => {
       await v.page.evaluate(() => window.__graph.view.refresh())
       assert.equal(await pump90.isVisible(), true)
       assert.equal(await uses.isVisible(), true)
+    } finally {
+      await v.close()
+    }
+  })
+
+  // Where each box is drawn, and the camera.
+  const placement = (v) => v.page.evaluate(() => [document.querySelector(".schema-world").style.transform, ...[...document.querySelectorAll(".schema-box")].map((b) => b.style.transform)])
+  const select = (v, c) => v.box(c).locator(".schema-name").click()
+
+  test("selecting a class whose places the answer does not list asks once more, with examples, and shows them; the boxes stay put (catches: places missing off the focus, a relayout or camera jump on selection)", async () => {
+    const v = await open()
+    try {
+      const first = await v.schemaCalls()
+      assert.equal(first.length, 1)
+      const placed = await placement(v)
+      await v.page.evaluate(() => (window.__graph.hold = true))
+      await select(v, EQUIPMENT)
+      await v.info.getByRole("heading", { name: "Equipment" }).waitFor()
+      await v.page.waitForFunction(() => window.__graph.held.length === 1)
+      const asked = await v.schemaCalls()
+      assert.equal(asked.length, 2)
+      assert.deepEqual(asked[1].params, { ...first[0].params, examples: FIXTURE.classes[EQUIPMENT].id })
+      // On their way: the counts, a loading line, and Open waits.
+      assert.match(await v.info.getByRole("list", { name: "Problems" }).textContent(), /7 instances miss ex:serialNumber/)
+      assert.equal(await v.info.getByText("Loading places…").count(), 1)
+      const open1 = v.info.getByRole("button", { name: "Open: 7 instances miss ex:serialNumber" })
+      assert.equal(await open1.isDisabled(), true)
+      assert.equal(await open1.textContent(), "Open first instance")
+      await v.page.evaluate(() => window.__graph.release(0))
+      await v.info.locator("summary", { hasText: "Show 7 instances" }).waitFor()
+      assert.equal(await v.info.getByText("Loading places…").count(), 0)
+      assert.equal(await open1.isDisabled(), false)
+      await open1.click()
+      const place = FIXTURE.classes[EQUIPMENT].rows[0].examples[0]
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: place.uri, range: place.range })
+      assert.deepEqual(await placement(v), placed, "no box and no camera moved")
+      // Asked once: back and forth, and the focus class (its places came
+      // with the answer), and a class without problems ask nothing.
+      await v.page.evaluate(() => (window.__graph.hold = false))
+      await select(v, PUMP)
+      await select(v, EQUIPMENT)
+      await select(v, MOTOR)
+      await v.info.getByRole("heading", { name: "Motor" }).waitFor()
+      await v.page.waitForTimeout(100)
+      assert.equal((await v.schemaCalls()).length, 2)
+      assert.equal(await v.info.getByText("Loading places…").count(), 0)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("selecting A then B quickly keeps one request in flight, drops A's places and asks for B's (catches: a late answer filling the wrong class, a request per click piling up)", async () => {
+    const big = schemaModel(bigSchema(12))
+    const [A, B] = [2, 3]
+    assert.ok([A, B].every((i) => i !== big.focus && big.classes[i].problems.some((p) => p.count > 0 && p.kind !== "unused" && p.kind !== "conflict")))
+    const v = await open({ schemaSize: 12 })
+    try {
+      const examplesAsked = async () => (await v.schemaCalls()).map((c) => c.params.examples).filter(Boolean)
+      await v.page.evaluate(() => (window.__graph.hold = true))
+      await select(v, A)
+      await v.page.waitForFunction(() => window.__graph.held.length === 1)
+      await select(v, B)
+      await v.info.getByRole("heading", { name: `Class ${B}` }).waitFor()
+      await v.page.waitForTimeout(100)
+      assert.deepEqual(await examplesAsked(), [`${EX}C${A}`], "B waits for A")
+      assert.equal(await v.info.getByText("Loading places…").count() > 0, true)
+      await v.page.evaluate(() => window.__graph.release(0))
+      await v.page.waitForFunction(() => window.__graph.held.length === 1)
+      assert.deepEqual(await examplesAsked(), [`${EX}C${A}`, `${EX}C${B}`])
+      assert.equal(await v.info.locator("summary").count(), 0, "A's places are not B's")
+      await v.page.evaluate(() => window.__graph.release(0))
+      await v.info.locator("summary").first().waitFor()
+      assert.equal(await v.info.getByText("Loading places…").count(), 0)
+      // A's answer was dropped: selecting A asks again.
+      await v.page.evaluate(() => (window.__graph.hold = false))
+      await select(v, A)
+      await v.info.locator("summary").first().waitFor()
+      assert.deepEqual(await examplesAsked(), [`${EX}C${A}`, `${EX}C${B}`, `${EX}C${A}`])
     } finally {
       await v.close()
     }

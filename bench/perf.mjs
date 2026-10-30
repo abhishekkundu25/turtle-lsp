@@ -844,10 +844,10 @@ function openModel(s, dir) {
   s.open(uriOf(path.join(dir, "schema-model.ttl")), SCHEMA_MODEL)
 }
 
-// `turtle/schema` with no params: its time in ms and the answer.
-async function timedSchema(s) {
+// `turtle/schema` with `params` (none by default): its time in ms and the answer.
+async function timedSchema(s, params) {
   const t = performance.now()
-  const r = await s.request("turtle/schema")
+  const r = await s.request("turtle/schema", params)
   return [performance.now() - t, r]
 }
 
@@ -855,11 +855,13 @@ async function timedSchema(s) {
 // to [uri, text, the text before which an edit types]; each run times the first
 // request, a repeat with no change and a repeat after one keystroke; with
 // `hover`, a hover sent while a request (after another keystroke) runs, and
-// a hover alone, for comparison.
-async function schemaRuns(cwd, id, label, open, hover) {
-  const m = { first: [], same: [], edited: [], during: [], alone: [], overlapped: 0 }
+// a hover alone, for comparison. With `examples`, a repeat that asks for
+// the places of one listed class (the inspector's request on selection).
+async function schemaRuns(cwd, id, label, open, hover, examples = false) {
+  const m = { first: [], same: [], edited: [], during: [], alone: [], examples: [], overlapped: 0 }
   let classes = 0
   let bytes = 0
+  let examplesBytes = 0
   for (let run = 0; run < SCHEMA_RUNS; run++) {
     await withServer(cwd, async (s) => {
       let [uri, text, target] = await open(s)
@@ -868,6 +870,14 @@ async function schemaRuns(cwd, id, label, open, hover) {
       classes = r.total.classes
       bytes = JSON.stringify(r).length
       m.same.push((await timedSchema(s))[0])
+      if (examples) {
+        // A listed class with problems, half way down the list.
+        const listed = r.classes.filter((c) => c.problems > 0)
+        expect(listed.length > 0, `schema (${label}): no class with problems`)
+        const [t, e] = await timedSchema(s, { examples: listed[listed.length >> 1].id })
+        m.examples.push(t)
+        examplesBytes = JSON.stringify(e).length
+      }
       const key = (k) => {
         text = typeAt(s, uri, text, target(k), `${target(k)}x`)
         return s.diagnosticsFor(uri, WAIT)
@@ -895,6 +905,11 @@ async function schemaRuns(cwd, id, label, open, hover) {
   record(`schema-${id}-first`, `turtle/schema, first request (${label}, 1 model open)`, m.first, { notes: notes(m.first) })
   record(`schema-${id}-same`, `turtle/schema, repeat with no change (${label})`, m.same, { notes: notes(m.same) })
   record(`schema-${id}-edited`, `turtle/schema, repeat after one keystroke (${label})`, m.edited, { notes: notes(m.edited) })
+  if (examples) {
+    record(`schema-${id}-examples`, `turtle/schema, repeat with examples for one listed class (${label})`, m.examples, {
+      notes: `${spread(m.examples)}; ${classes} classes, ${(examplesBytes / 1024).toFixed(0)} KB`,
+    })
+  }
   if (!hover) return
   record(`schema-${id}-hover-during`, `hover sent while turtle/schema runs (${label})`, m.during, {
     notes: `${spread(m.during)}; the schema answered after the hover in ${m.overlapped}/${SCHEMA_RUNS} runs`,
@@ -965,7 +980,7 @@ scenario("schema", "turtle/schema on the editing workspace, on a 100,000-triple 
       s.open(uri, doc)
       await s.diagnosticsFor(uri, WAIT)
       return [uri, doc, () => `ex:i${instances - 1} a`]
-    })
+    }, null, true)
   })
 })
 

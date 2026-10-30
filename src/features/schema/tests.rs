@@ -404,7 +404,10 @@ fn missing_examples_are_the_instances_in_document_order() {
     // b.ttl sorts before c.ttl: p2 and the blank node come first, though p9
     // was typed first.
     let ws = workspace(&[("c", shape), ("b", other)]);
-    let r = run(&ws, serde_json::json!({}));
+    let r = run(
+        &ws,
+        serde_json::json!({ "examples": "http://example.org/Pump" }),
+    );
     let serial = row(class(&r, "ex:Pump"), "ex:serial");
     assert_eq!(serial.missing, Some(3));
     assert_eq!(
@@ -435,7 +438,10 @@ fn examples_stop_at_ten_and_keep_the_first() {
         body.push_str(&format!("ex:p{i} a ex:Pump .\n"));
     }
     let ws = workspace(&[("d", &body)]);
-    let r = run(&ws, serde_json::json!({}));
+    let r = run(
+        &ws,
+        serde_json::json!({ "examples": "http://example.org/Pump" }),
+    );
     let serial = row(class(&r, "ex:Pump"), "ex:serial");
     assert_eq!((serial.missing, serial.bad_values), (Some(15), Some(25)));
     let got = examples(&ws, serial);
@@ -466,7 +472,10 @@ fn examples_stop_at_ten_and_keep_the_first() {
 #[test]
 fn undeclared_rows_point_at_each_instances_first_use() {
     let ws = workspace(&[("pumps", PUMPS)]);
-    let r = run(&ws, serde_json::json!({}));
+    let r = run(
+        &ws,
+        serde_json::json!({ "examples": "http://example.org/Pump" }),
+    );
     let pump = class(&r, "ex:Pump");
     let vendor = row(pump, "ex:vendor");
     assert_eq!(vendor.state, RowState::Undeclared);
@@ -497,6 +506,138 @@ fn undeclared_rows_point_at_each_instances_first_use() {
         let json = serde_json::to_value(r).expect("json");
         assert!(json.get("examples").is_none(), "{name}: {json}");
     }
+}
+
+const TWO_CLASSES: &str = "ex:S a sh:NodeShape ; sh:targetClass ex:Pump , ex:Valve ;\n\
+      sh:property [ sh:path ex:serial ; sh:minCount 1 ] .\n\
+    ex:p1 a ex:Pump ; ex:vendor \"A\" .\n\
+    ex:v1 a ex:Valve ; ex:vendor \"B\" .\n\
+    ex:v2 a ex:Valve ; ex:serial \"2\" .\n";
+
+/// The classes of `r` whose rows list examples.
+fn with_examples(r: &SchemaResult) -> Vec<&str> {
+    r.classes
+        .iter()
+        .filter(|c| c.rows.iter().any(|row| !row.examples.is_empty()))
+        .map(|c| c.name.as_str())
+        .collect()
+}
+
+/// Catches examples on every class (the answer grows with the classes
+/// listed), or `examples` ignored: only one class lists them, `examples`
+/// when it is listed, else the focus class, else none; the counts stay.
+#[test]
+fn examples_are_listed_on_one_class_only() {
+    let ws = workspace(&[("two", TWO_CLASSES)]);
+    let ex = |s: &str| format!("http://example.org/{s}");
+    let none = run(&ws, serde_json::json!({}));
+    assert_eq!(with_examples(&none), Vec::<&str>::new());
+    let pump = run(&ws, serde_json::json!({ "examples": ex("Pump") }));
+    assert_eq!(with_examples(&pump), ["ex:Pump"]);
+    let valve = run(&ws, serde_json::json!({ "focus": ex("Valve") }));
+    assert_eq!(with_examples(&valve), ["ex:Valve"]);
+    let both = run(
+        &ws,
+        serde_json::json!({ "focus": ex("Valve"), "examples": ex("Pump") }),
+    );
+    assert_eq!(with_examples(&both), ["ex:Pump"]);
+    // A property focus: its class.
+    let prop = run(&ws, serde_json::json!({ "focus": ex("serial") }));
+    assert_eq!(with_examples(&prop).len(), 1);
+    // Not a listed class: the focus, else none.
+    for absent in [ex("serial"), ex("Nothing"), "not an iri".into()] {
+        let r = run(
+            &ws,
+            serde_json::json!({ "focus": ex("Valve"), "examples": absent }),
+        );
+        assert_eq!(with_examples(&r), ["ex:Valve"]);
+        let r = run(&ws, serde_json::json!({ "examples": absent }));
+        assert_eq!(with_examples(&r), Vec::<&str>::new());
+    }
+    // Cut by the cap: the focus.
+    let r = run(
+        &ws,
+        serde_json::json!({ "focus": ex("Valve"), "examples": ex("Pump"), "maxClasses": 1 }),
+    );
+    assert_eq!(with_examples(&r), ["ex:Valve"]);
+    // The same counts, with or without examples.
+    let strip = |mut r: SchemaResult| {
+        for c in &mut r.classes {
+            for row in &mut c.rows {
+                row.examples.clear();
+            }
+        }
+        r
+    };
+    assert_eq!(strip(none.clone()), strip(pump.clone()));
+    let valve_first = run(
+        &ws,
+        serde_json::json!({ "focus": ex("Valve"), "examples": ex("Valve") }),
+    );
+    assert_eq!(valve_first, valve);
+    // The places are those the class lists alone.
+    let vendor = row(class(&pump, "ex:Pump"), "ex:vendor");
+    assert_eq!(examples(&ws, vendor).len(), 1);
+    let serial = row(class(&valve, "ex:Valve"), "ex:serial");
+    assert_eq!(
+        examples(&ws, serial)
+            .iter()
+            .map(|e| (e.0, e.4))
+            .collect::<Vec<_>>(),
+        [(ExampleKind::Missing, "ex:v1")]
+    );
+}
+
+/// Catches places collected on every row and dropped at the answer: only
+/// the rows of the focus class and of the `examples` class collect any.
+#[test]
+fn places_are_collected_for_the_chosen_classes_only() {
+    let ws = workspace(&[("two", TWO_CLASSES)]);
+    let cache = FactsCache::default();
+    let wanted: Vec<usize> = (0..ws.len()).collect();
+    let docs: Vec<Doc> = cache
+        .facts(&ws, &wanted)
+        .into_iter()
+        .zip(&ws)
+        .map(|(facts, (_, _, a))| Doc {
+            a,
+            external: false,
+            facts,
+        })
+        .collect();
+    let collected = |focus: Option<&str>, examples: Option<&str>| {
+        let q = Query {
+            focus: focus.map(|f| format!("http://example.org/{f}")),
+            max_classes: 300,
+            max_rows: 64,
+            imports: false,
+            examples: examples.map(|e| format!("http://example.org/{e}")),
+        };
+        let (m, _) = Merge::new(&docs, &q);
+        let mut out: Vec<String> = m
+            .classes
+            .iter()
+            .filter(|c| {
+                c.rows.iter().any(|&r| {
+                    let row = &m.rows[r as usize];
+                    !(row.missing_at.0.is_empty()
+                        && row.bad_at.0.is_empty()
+                        && row.undeclared_at.0.is_empty())
+                })
+            })
+            .map(|c| c.iri.to_string())
+            .collect();
+        out.sort();
+        out
+    };
+    let ex = |s: &str| format!("http://example.org/{s}");
+    assert_eq!(collected(None, None), Vec::<String>::new());
+    assert_eq!(collected(None, Some("Pump")), [ex("Pump")]);
+    assert_eq!(collected(Some("Valve"), None), [ex("Valve")]);
+    assert_eq!(
+        collected(Some("Valve"), Some("Pump")),
+        [ex("Pump"), ex("Valve")]
+    );
 }
 
 /// Catches a cap that keeps classes by name, or drops the focus's family.
@@ -986,9 +1127,25 @@ fn every_count_matches_a_naive_recount() {
     for seed in 0..20_000u64 {
         let ws = generated(seed);
         let imports = seed % 2 == 0;
-        let params = serde_json::json!({ "imports": imports, "maxRows": MAX_ROWS, "maxClasses": MAX_CLASSES });
+        let mut params = serde_json::json!({ "imports": imports, "maxRows": MAX_ROWS, "maxClasses": MAX_CLASSES });
+        // Examples on one class: by `examples`, by the focus, or on none.
+        let class = format!("http://example.org/C{}", seed / 3 % 4);
+        match seed % 3 {
+            0 => params["examples"] = class.as_str().into(),
+            1 => params["focus"] = class.as_str().into(),
+            _ => {}
+        }
         let r = run(&ws, params);
-        if let Err(e) = oracle::check(&ws, &r, imports) {
+        let chosen = match seed % 3 {
+            0 => r
+                .classes
+                .iter()
+                .find(|c| c.id == class)
+                .map(|c| c.id.as_str()),
+            1 => r.focus.map(|f| r.classes[f as usize].id.as_str()),
+            _ => None,
+        };
+        if let Err(e) = oracle::check(&ws, &r, imports, chosen) {
             panic!("seed {seed}: {e}\n{}", dump(&ws));
         }
     }

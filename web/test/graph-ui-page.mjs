@@ -42,7 +42,10 @@ const T = (window.__graph = {
     host.style.width = width ? `${width}px` : ""
     // `turtle/schema`: the handed answer (or `schemaSize` generated classes);
     // `at` on a line of `atClass` focuses that class; on any other line
-    // there is no term, and the server answers null.
+    // there is no term, and the server answers null. As the server, only
+    // one class's rows keep their places (`examples`): the class `examples`
+    // names when listed, else the focus (`focus` when listed, else the
+    // answer's own).
     const schemaAnswer = (params) => {
       const res = schemaSize ? bigSchema(schemaSize) : JSON.parse(JSON.stringify(schema ?? { classes: [], total: { classes: 0 }, imported: 0 }))
       if (params.at) {
@@ -52,6 +55,11 @@ const T = (window.__graph = {
         res.focus = hit[0]
         if (hit[1] != null) res.focusRow = hit[1]
       }
+      const ix = (id) => (typeof id === "string" ? res.classes.findIndex((c) => c.id === id) : -1)
+      const asked = ix(params.examples)
+      const focus = ix(params.focus) >= 0 ? ix(params.focus) : res.focus
+      const keep = asked >= 0 ? asked : focus
+      res.classes.forEach((c, i) => i !== keep && c.rows.forEach((r) => delete r.examples))
       return res
     }
     const answer = (method, params) => {

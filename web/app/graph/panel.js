@@ -174,9 +174,11 @@ const SOURCE_CHARS = 30
  * @param {object} [o]
  * @param {number} [o.lit] the row to light
  * @param {boolean} [o.canReveal] the host can open a location
+ * @param {boolean} [o.loading] the class's places are on their way: a
+ *   problem that has places says so, and its Open waits for them
  * @returns {{ nodes: HTMLElement[], sources: { uri: string, range: object }[] }}
  */
-export function classInspector(doc, model, i, { lit = -1, canReveal = false } = {}) {
+export function classInspector(doc, model, i, { lit = -1, canReveal = false, loading = false } = {}) {
   const c = model.classes[i]
   const sources = []
   const root = commonRoot([c.uri, ...c.rows.flatMap((r) => [...r.declared, ...r.examples].map((d) => d.uri))].filter(Boolean))
@@ -219,15 +221,18 @@ export function classInspector(doc, model, i, { lit = -1, canReveal = false } = 
         more > 0 ? h(doc, "li", { class: "schema-ex-more", text: `+${f(more)} more` }) : null))
   }
   const problem = (p) => {
-    const at = p.at && canReveal ? source(p.at) : -1
+    // Its places are on their way: Open waits for the first.
+    const waits = loading && PLACE[p.kind] && p.count > 0 && !p.examples.length
+    const at = p.at && canReveal && !waits ? source(p.at) : -1
     return h(doc, "li", { class: "schema-problem" },
       h(doc, "span", { class: `schema-dot ${SEV[p.sev]}`, "aria-hidden": "true", text: "●" }),
-      h(doc, "div", { class: "schema-problem-tx" }, h(doc, "div", { text: p.text }), p.detail ? h(doc, "div", { class: "schema-problem-d", text: p.detail }) : null, p.examples.length ? examples(p) : null),
+      h(doc, "div", { class: "schema-problem-tx" }, h(doc, "div", { text: p.text }), p.detail ? h(doc, "div", { class: "schema-problem-d", text: p.detail }) : null,
+        p.examples.length ? examples(p) : waits ? h(doc, "div", { class: "schema-problem-d schema-ex-loading", text: "Loading places…" }) : null),
       h(doc, "button", {
         type: "button", class: "graph-btn", "data-act": "src", "data-src": at >= 0 ? at : null, disabled: at < 0,
         "aria-label": `Open: ${p.text}`,
-        title: !p.at ? "Nothing declares it: no place to open" : !canReveal ? "This host cannot open files" : `Open ${where(p.at)}`,
-        text: p.examples.length ? `Open first ${PLACE[p.kind] ?? "place"}` : "Open declaration",
+        title: waits ? "Loading places…" : !p.at ? "Nothing declares it: no place to open" : !canReveal ? "This host cannot open files" : `Open ${where(p.at)}`,
+        text: p.examples.length || waits ? `Open first ${PLACE[p.kind] ?? "place"}` : "Open declaration",
       }))
   }
   const nodes = [

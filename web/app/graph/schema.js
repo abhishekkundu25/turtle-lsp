@@ -4,8 +4,11 @@
 // and the one arrow a hovered link chip draws. Pan and zoom move one
 // transformed layer; under zoom FAR the boxes fold to their header. A
 // class's problems are derived here from its rows (problemsOf), for its box
-// and for the inspector (panel.js). schemaModel, rowBadge, problemsOf and
-// tidyLayout are pure, so the tests run them in Node.
+// and for the inspector (panel.js). An answer lists the places of one
+// class's problems (`examples`, the focus's): needsPlaces says a class has
+// problems with none listed, mergePlaces adds those of a later answer.
+// schemaModel, rowBadge, problemsOf, needsPlaces, mergePlaces and tidyLayout
+// are pure, so the tests run them in Node.
 
 import { h } from "./el.js"
 import { commonRoot, fileLabel, middleCut } from "./model.js"
@@ -127,6 +130,31 @@ export function problemsOf(rows) {
     if (r.missing > 0) push(r, { row, kind: "missing", sev: "error", at, text: `${plural(r.missing, "instance")} miss ${r.name}`, detail: `Required: sh:minCount ${r.required?.min ?? 1}` })
   })
   return out.sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev])
+}
+
+/**
+ * Class `c` (of schemaModel) has problems that have places (missing, bad
+ * values, not declared) and its rows list none: an answer lists the places
+ * of one class only (the focus's, or the class `examples` names).
+ */
+export function needsPlaces(c) {
+  return Boolean(c) && !c.rows.some((r) => r.examples.length) && c.problems.some((p) => EXAMPLE_KIND[p.kind] && p.count > 0)
+}
+
+/**
+ * Put the places a later answer `res` lists for class `i` of `model` into
+ * its rows (by property) and derive its problems again; every other field
+ * and class stays. false when `res` does not list the class.
+ */
+export function mergePlaces(model, i, res) {
+  const c = model.classes[i]
+  const fresh = c ? schemaModel(res) : null
+  const j = fresh?.index.get(c.id)
+  if (j == null) return false
+  const places = new Map(fresh.classes[j].rows.map((r) => [r.property, r.examples]))
+  for (const r of c.rows) if (places.get(r.property)?.length) r.examples = places.get(r.property)
+  c.problems = problemsOf(c.rows)
+  return true
 }
 
 /**

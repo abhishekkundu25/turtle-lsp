@@ -72,7 +72,14 @@ fn checkable(i: &str) -> bool {
     datatype(i) && i != format!("{RDFS}Literal")
 }
 
-pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(), String> {
+/// `examples`: the class whose rows list examples, as the request picks it;
+/// every other row must list none.
+pub(super) fn check(
+    ws: &Sources,
+    r: &SchemaResult,
+    imports: bool,
+    examples: Option<&str>,
+) -> Result<(), String> {
     // The request's order: workspace documents by URI, then imports.
     let mut by_rank: Vec<usize> = (0..ws.len()).collect();
     by_rank.sort_by_key(|&d| {
@@ -448,8 +455,12 @@ pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(),
             return Err(format!("{c}: {n_written} written rows"));
         }
         let mut problems = 0;
+        let listing = examples == Some(c.as_str());
         for row in &b.rows {
             let p = &row.property;
+            if !listing && !row.examples.is_empty() {
+                return Err(format!("{c} {p}: examples on a class not asked for"));
+            }
             if !p.starts_with("http") {
                 continue;
             }
@@ -555,7 +566,13 @@ pub(super) fn check(ws: &Sources, r: &SchemaResult, imports: bool) -> Result<(),
                 problems += 1;
             }
 
-            // The examples: the first places of each problem.
+            // The examples: the first places of each problem, on one class.
+            if !listing {
+                if undeclared.contains(&key) != (state == RowState::Undeclared) {
+                    return Err(format!("{c} {p}: undeclared mismatch"));
+                }
+                continue;
+            }
             let mut want: Vec<(ExampleKind, Key, &String)> = Vec::new();
             if let (Some(m), Some(_)) = (min, missing) {
                 let v = inst
