@@ -1,28 +1,30 @@
 // The workspace graph view, shared by the playground and the VS Code webview.
 // Three modes on one filter panel: the graph (A: the server's force layout on
 // a 2D canvas), focus (C: the selected node on rings, N hops, capped per ring
-// with "+N more") and the class hierarchy (C: a tree). It talks to its host
-// only through the functions it is given: `request` for `turtle/graph`,
-// `reveal` to open a definition, `diagnostics` to mark nodes, `store` to keep
-// the filters. No globals, no network, no inline handlers or styles.
+// with "+N more") and the schema (classes as boxes with their properties,
+// schema.js). Follow cursor shows the term at the editor's cursor in each.
+// It talks to its host only through the functions it is given: `request` for
+// `turtle/graph` and `turtle/schema`, `reveal` to open a definition,
+// `diagnostics` to mark nodes, `store` to keep the filters; the host calls
+// `follow` with the cursor. No globals, no network, no inline handlers or styles.
 
 import { h, kids } from "./el.js"
 import { BIG, KINDS, LITERAL, bestNode, buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, middleCut, nameOf, neighbours, searchNodes, triplesOf } from "./model.js"
-import { CAPS, CONTINUE_ITERATIONS, FIRST_ITERATIONS, MODES, facetParams, hierarchyParams, normalizeState, selectsNothing, toParams } from "./filters.js"
+import { CAPS, CONTINUE_ITERATIONS, FIRST_ITERATIONS, MODES, facetParams, normalizeState, schemaParams, selectsNothing, toParams } from "./filters.js"
 import { createHitGrid } from "./hitgrid.js"
-import { RING_CAPS, buildHierarchy, ringLayout } from "./rings.js"
+import { RING_CAPS, ringLayout } from "./rings.js"
 import { pickLabels, truncate } from "./labels.js"
 import { PALETTE_SIZE, colorSlots, readColors } from "./colors.js"
 import { createRenderer } from "./canvas.js"
-import { createFilterPanel } from "./panel.js"
-import { createTreeView } from "./tree.js"
+import { classInspector, createFilterPanel } from "./panel.js"
+import { SCHEMA_METHOD, createSchemaView, displayName, mergePlaces, needsPlaces } from "./schema.js"
 
 export const STORE_KEY = "graph"
 export const METHOD = "turtle/graph"
 const DEBOUNCE_MS = 150
 const HIT_PX = 8
 const ZOOM = [0.005, 20]
-const TITLES = { graph: "Graph", focus: "Focus", hierarchy: "Hierarchy" }
+const TITLES = { graph: "Graph", focus: "Focus", schema: "Schema" }
 const TRIPLES_SHOWN = 50
 const SEVERITY = ["", "error", "warning", "information", "hint"]
 // File names, in characters, cut in the middle (middleCut): a legend entry
@@ -31,17 +33,31 @@ const SEVERITY = ["", "error", "warning", "information", "hint"]
 const LEGEND_CHARS = 32
 const INFO_CHARS = 48
 const NO_FILES = "No files selected"
+// The inspector alone, no boxes, under this width (graph.css has the same).
+const NARROW = 700
 
 /**
  * Mount the graph view in `container`.
  * @param {object} o
  * @param {HTMLElement} o.container
- * @param {(method: string, params: object) => Promise<any>} o.request sends `turtle/graph` to the language server
+ * @param {(method: string, params: object) => Promise<any>} o.request sends `turtle/graph` or `turtle/schema` to the language server
  * @param {(uri: string, range: object) => void} [o.reveal] opens a definition
  * @param {(uri: string) => { range: object, severity?: number }[]} [o.diagnostics] a document's diagnostics
  * @param {Record<string, string>} [o.theme] `--graph-…` CSS variables to set on the view
  * @param {{ get(key: string): any, set(key: string, value: any): void }} [o.store] keeps the filters and mode
- * @returns {{ refresh(): Promise<void>, resize(): void, destroy(): void, setTheme(theme?: Record<string, string>): void }}
+ * @returns {{ refresh(): Promise<void>, resize(): void, destroy(): void, setTheme(theme?: Record<string, string>): void, follow(at: { uri: string, position: { line: number, character: number } } | null): void }}
+ *
+ * `follow(at)`: the editor's cursor moved to `at` (null: no cursor). With
+ * Follow cursor on (a toggle in the bar, kept in the store, off by default)
+ * and the view visible, the view asks, once the cursor has rested 150 ms,
+ * for the term there: Schema asks `turtle/schema` with `at` and selects the
+ * class (and lights the row); Focus asks `turtle/graph` with `at` and walks
+ * to the node; Graph asks `turtle/graph` with `at` (one node, no layout)
+ * and selects and centres the node the answer's `focus` names. One request
+ * is in flight at a time; an answer for an older cursor is dropped, and an
+ * answer with no focus (the cursor on no term) leaves the view as it is but
+ * for Schema's lit row, which goes. A Schema answer that lists the classes
+ * shown updates the selection in place (schema.js show).
  */
 // `maxNodes`: the largest node cap offered (a host whose layout runs on the
 // thread that answers its editor keeps it low).
@@ -59,6 +75,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   // ---- the elements ----
   const tabs = MODES.map((m) => h(doc, "button", { type: "button", role: "tab", class: "graph-tab", "data-mode": m, text: TITLES[m] }))
   const fitButton = h(doc, "button", { type: "button", class: "graph-btn graph-fit", text: "Fit", title: "Fit the graph to the view (0)" })
+  const followButton = h(doc, "button", { type: "button", class: "graph-btn graph-follow", "aria-pressed": String(state.follow), text: "Follow cursor", title: "Show the term at the cursor of the editor beside this view" })
   const status = h(doc, "span", { class: "graph-status", role: "status", "aria-live": "polite" })
   const filtersEl = h(doc, "div", { class: "graph-filters", id: `graph-filters-${++views}`, role: "region", "aria-label": "Graph filters" })
   // Narrow (a side bar): the filters fold away so the drawing has the height.
@@ -67,12 +84,14 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   const moreLayer = h(doc, "div", { class: "graph-more-layer" })
   const tip = h(doc, "div", { class: "graph-tip", hidden: true, "aria-hidden": "true" })
   const legend = h(doc, "div", { class: "graph-legend", role: "list", "aria-label": "Colours" })
-  const treeBox = h(doc, "div", { class: "graph-treebox", hidden: true })
+  const schemaBox = h(doc, "div", { class: "graph-schemabox", hidden: true })
   const info = h(doc, "section", { class: "graph-info", hidden: true, "aria-label": "Selected node" })
+  // The inspector's file:line buttons and fix buttons: their locations.
+  let infoSources = []
   const notice = h(doc, "p", { class: "graph-notice", hidden: true, text: `${NO_FILES}. Choose files under Files, or All.` })
-  const stage = h(doc, "div", { class: "graph-stage" }, canvas, moreLayer, treeBox, notice, legend, tip, info)
+  const stage = h(doc, "div", { class: "graph-stage" }, canvas, moreLayer, schemaBox, notice, legend, tip, info)
   const root = h(doc, "div", { class: "graph", "data-busy": "false" },
-    h(doc, "div", { class: "graph-bar" }, h(doc, "div", { class: "graph-tabs", role: "tablist", "aria-label": "Graph mode" }, tabs), fitButton, filtersButton, status),
+    h(doc, "div", { class: "graph-bar" }, h(doc, "div", { class: "graph-tabs", role: "tablist", "aria-label": "Graph mode" }, tabs), fitButton, followButton, filtersButton, status),
     h(doc, "div", { class: "graph-body" }, filtersEl, stage))
   container.replaceChildren(root)
   filtersButton.addEventListener("click", () => {
@@ -93,7 +112,6 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   let grid = null
   let rings = null
   let caps = RING_CAPS.slice()
-  let hier = null
   let marks = new Uint8Array(0)
   let slots = new Uint8Array(0)
   const known = new Map() // node id -> [x, y]: earlier positions, sent back so the layout stays put
@@ -123,26 +141,45 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       timer = setTimeout(load, DEBOUNCE_MS)
     },
     search: runSearch,
-    enter(q) {
+    async enter(q) {
+      if (mode === "schema") {
+        const found = await schemaSearch(q, true)
+        if (found?.length && mode === "schema") pickMatch(found[0])
+        return
+      }
       runSearch(q)
       if (matches.length) focusNode(matches[0])
     },
     pick: focusNode,
   }, nodeCaps)
-  const tree = createTreeView(treeBox, { select: (i) => select(i), open: openDefinition })
+  const schema = createSchemaView(schemaBox, {
+    select: () => renderInfo(),
+    open: openClass,
+    row: () => renderInfo(),
+    imports(show) {
+      state.schema.imports = show
+      save()
+      load()
+    },
+    problems(on) {
+      state.schema.problems = on
+      save()
+    },
+  })
+  schema.setProblemsOnly(state.schema.problems)
 
   // ---- talking to the host ----
   function save() {
     try {
-      store?.set?.(STORE_KEY, { mode: state.mode, focus: state.focus, colorBy: state.colorBy, filters: state.filters })
+      store?.set?.(STORE_KEY, { mode: state.mode, focus: state.focus, colorBy: state.colorBy, follow: state.follow, schema: state.schema, filters: state.filters })
     } catch {}
   }
 
-  async function ask(params) {
+  async function ask(params, method = METHOD) {
     const my = ++seq
     root.dataset.busy = "true"
     try {
-      const res = await request(METHOD, params)
+      const res = await request(method, params)
       if (my !== seq || destroyed) return null
       failed = false
       return res ?? {}
@@ -168,16 +205,20 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     if (nothing) {
       nothing = false
       notice.hidden = true
-      treeBox.hidden = mode !== "hierarchy"
+      schemaBox.hidden = mode !== "schema"
     }
-    if (mode === "hierarchy") {
-      const res = await ask(hierarchyParams(state.filters))
-      if (!res) return
-      setModel(res)
-      hier = buildHierarchy(model)
-      tree.show(model, hier)
+    if (mode === "schema") {
+      // The Files filter lists the files of a graph answer: ask for them first.
+      if (!model?.facets.files.length || changed) {
+        const f = await ask(facetParams(state.filters))
+        if (!f) return
+        setModel({ facets: buildModel(f).facets, total: f.total })
+      }
+      const params = schemaParams(state.filters, { focus: schema.selectedId, imports: state.schema.imports })
+      const res = await ask(params, SCHEMA_METHOD)
+      if (!res || mode !== "schema") return
+      showSchema(res, {}, params)
       scene = null
-      if (selected >= 0) tree.reveal(selected, false)
     } else if (mode === "focus") {
       if (!state.focus && !(await pickFocus())) return
       const res = await ask(toParams(state.filters, { focus: state.focus, depth: hops(), iterations: 0 }))
@@ -219,10 +260,9 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     setModel({ facets, total: { nodes: 0, edges: 0 } })
     scene = null
     rings = null
-    hier = null
     moreLayer.replaceChildren()
     notice.hidden = false
-    treeBox.hidden = true
+    schemaBox.hidden = true
     showStatus()
     renderInfo()
     draw()
@@ -338,7 +378,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   function draw() {
     if (frame) win.cancelAnimationFrame(frame)
     frame = 0
-    if (destroyed || mode === "hierarchy") return
+    if (destroyed || mode === "schema") return
     const empty = { x: new Float64Array(0), y: new Float64Array(0), nodes: [], kind: new Uint8Array(0), edges: [] }
     const s = scene ?? empty
     const inView = []
@@ -374,6 +414,13 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   function showStatus() {
     if (failed) return
     if (nothing) return void (status.textContent = NO_FILES)
+    if (mode === "schema") {
+      const m = schema.model
+      const f = (v) => v.toLocaleString("en")
+      const shown = m?.classes.length ?? 0, total = m?.total ?? 0
+      status.textContent = `Showing ${f(shown)} of ${f(total)} classes` + (shown < total ? " · search or Follow cursor reach the others" : "")
+      return
+    }
     const shown = mode === "focus" ? rings?.nodes.length ?? 0 : model?.n ?? 0
     const total = model?.total.nodes ?? 0
     const f = (v) => v.toLocaleString("en")
@@ -390,7 +437,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     }
     const used = new Set(slots)
     legend.replaceChildren(...entries.filter(([slot]) => used.has(slot)).map(([slot, text, title]) => h(doc, "span", { class: "graph-key", role: "listitem", title }, h(doc, "span", { class: `graph-swatch graph-c${slot}`, "aria-hidden": "true" }), text)))
-    legend.hidden = mode === "hierarchy" || !legend.children.length
+    legend.hidden = mode === "schema" || !legend.children.length
   }
 
   // ---- selection and the info panel ----
@@ -414,6 +461,9 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   }
 
   function renderInfo() {
+    infoSources = []
+    if (mode === "schema") return renderClass()
+    root.dataset.info = selected >= 0 && model ? "open" : ""
     if (selected < 0 || !model) {
       info.hidden = true
       info.replaceChildren()
@@ -447,6 +497,112 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     info.hidden = false
   }
 
+  // The class the inspector shows (-1: none): the selected one; narrow, with none selected, the focus class.
+  let shownClass = -1
+  let narrow = false
+  const isNarrow = () => root.clientWidth > 0 && root.clientWidth < NARROW
+
+  // Schema: the selected class in the inspector.
+  function renderClass() {
+    narrow = isNarrow()
+    const i = (shownClass = schema.selected >= 0 ? schema.selected : narrow && !nothing ? schema.focusClass : -1)
+    root.dataset.info = i >= 0 && !nothing ? "open" : ""
+    if (i < 0 || nothing) {
+      info.hidden = true
+      info.replaceChildren()
+      delete info.dataset.cls
+      return
+    }
+    // A new answer for the same class keeps its open lists and the focused place.
+    const id = schema.model.classes[i]?.id
+    const same = info.dataset.cls === id
+    const open = same ? [...info.querySelectorAll("details[data-key][open]")].map((d) => d.dataset.key) : []
+    const focused = same && info.contains(doc.activeElement) ? doc.activeElement.dataset?.key : null
+    const loading = askPlaces(i)
+    const { nodes, sources } = classInspector(doc, schema.model, i, { lit: schema.lit, canReveal: typeof reveal === "function", loading })
+    infoSources = sources
+    info.replaceChildren(...nodes)
+    info.dataset.cls = id
+    for (const d of info.querySelectorAll("details[data-key]")) if (open.includes(d.dataset.key)) d.open = true
+    if (focused) info.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus()
+    info.setAttribute("aria-label", "Selected class")
+    info.hidden = false
+  }
+
+  // ---- the selected class's places ----
+  // An answer lists the places of one class's problems (`examples`): the
+  // focus's. Selecting another class with problems asks for its places with
+  // the params of the answer shown plus `examples`, so the classes listed
+  // stay; the places merge into the model shown and only the inspector is
+  // drawn again. One request at a time; an answer for a class no longer
+  // selected, or for a model no longer shown, is dropped.
+  let shownParams = null
+  let placesAsking = false
+  // Per model shown: class id -> "asking" or "done".
+  const placesOf = new WeakMap()
+
+  /** Ask for class `i`'s places (the one shown) when it needs them; true while they are on their way. */
+  function askPlaces(i) {
+    const m = schema.model
+    const c = m?.classes[i]
+    if (!shownParams || !needsPlaces(c)) return false
+    let asked = placesOf.get(m)
+    if (!asked) placesOf.set(m, (asked = new Map()))
+    if (asked.get(c.id) === "done") return false
+    if (!asked.has(c.id) && !placesAsking) fetchPlaces(m, c.id, asked)
+    return true
+  }
+
+  async function fetchPlaces(m, id, asked) {
+    placesAsking = true
+    asked.set(id, "asking")
+    let res = null, failed = false
+    try {
+      res = await request(SCHEMA_METHOD, { ...shownParams, examples: id })
+    } catch {
+      failed = true
+    }
+    placesAsking = false
+    if (destroyed) return
+    const i = shownClass
+    const current = schema.model === m && m.classes[i]?.id === id
+    if (!current) asked.delete(id)
+    else {
+      asked.set(id, "done")
+      if (!failed) mergePlaces(m, i, res)
+    }
+    // Draw the answer, or ask for the class selected meanwhile.
+    if (mode === "schema") renderInfo()
+  }
+
+  function showSchema(res, o = {}, params = null) {
+    // The inspector takes a column when a class is selected: make room
+    // before the boxes are fitted into the rest.
+    const before = root.dataset.info
+    root.dataset.info = schema.selected >= 0 || Number.isInteger(res?.focus) ? "open" : ""
+    // The params that make this answer, the focus for `at` (the cursor
+    // may have moved on): asked again with `examples`, they list the same.
+    const f = Number.isInteger(res?.focus) ? res.classes?.[res.focus] : null
+    const focus = Number.isInteger(res?.focusRow) ? f?.rows?.[res.focusRow]?.property : f?.id
+    if (params?.at) {
+      params = { ...params }
+      delete params.at
+      if (typeof focus === "string") params.focus = focus
+    }
+    shownParams = params
+    schema.show(res, { imports: state.schema.imports, ...o })
+    const guess = root.dataset.info
+    runSearch(panel.search, false)
+    showStatus()
+    renderInfo()
+    if (root.dataset.info !== guess || root.dataset.info !== before) schema.resize()
+  }
+
+  function openClass(i) {
+    const c = schema.model?.classes[i]
+    if (c?.uri && c.range && typeof reveal === "function") reveal(c.uri, c.range)
+  }
+
   function openDefinition(i) {
     const d = model?.nodes[i]
     if (d?.uri && d.range && typeof reveal === "function") reveal(d.uri, d.range)
@@ -463,19 +619,93 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     setMode("focus", true)
   }
 
-  /** Search's choice: select and centre it (graph), walk to it (focus), open the rows to it (hierarchy). */
+  /** Search's choice: select and centre it (graph, schema), walk to it (focus). In Schema `i` is a place in the results. */
   function focusNode(i) {
+    if (mode === "schema") return void (schemaFound[i] && pickMatch(schemaFound[i]))
     if (!model || i < 0 || i >= model.n) return
     if (mode === "focus") return focusOn(i)
-    if (mode === "hierarchy") return void tree.reveal(i)
     select(i, { center: true })
     canvas.focus({ preventScroll: true })
   }
 
   function runSearch(q, redraw = true) {
+    if (mode === "schema") {
+      matches = []
+      // A new answer (redraw false) leaves the results: each is found by its IRI when chosen.
+      if (redraw) schemaSearch(q)
+      return
+    }
     matches = model ? searchNodes(model, q, 50) : []
     panel.results(matches.slice(0, 8).map((i) => ({ index: i, name: truncate(nameOf(model.nodes[i]), 40), kind: model.kind[i] === LITERAL ? "literal" : KINDS[model.kind[i]] })))
     if (redraw) schedule()
+  }
+
+  // ---- Schema search ----
+  // The server searches every class, listed or not (`search`, with the
+  // params of the answer shown, so a match's `index` is into it): asked
+  // 150 ms after the last keystroke, or at once on Enter. One answer per
+  // query; an answer for an older query is dropped. A match not listed is
+  // asked for as the focus of a new answer.
+  let schemaFound = []
+  let searchSeq = 0
+  let searchTimer = 0
+  let searching = null // { q, asked, promise }: the query asked, or about to be
+
+  /** Ask for the classes `q` finds (debounced unless `now`); resolves to the matches shown, null if dropped. */
+  function schemaSearch(q, now = false) {
+    const s = String(q ?? "").trim()
+    if (searching?.q === s && (searching.asked || !now)) return searching.promise
+    clearTimeout(searchTimer)
+    const my = ++searchSeq
+    if (!s) {
+      searching = null
+      schemaFound = []
+      panel.results([])
+      return Promise.resolve([])
+    }
+    let go
+    const entry = { q: s, asked: false, promise: null }
+    entry.promise = new Promise((resolve) => (go = resolve)).then(async () => {
+      entry.asked = true
+      const base = shownParams ?? schemaParams(state.filters, { imports: state.schema.imports })
+      if (!base) return []
+      let res = null
+      try {
+        res = await request(SCHEMA_METHOD, { ...base, search: s })
+      } catch {}
+      if (my !== searchSeq || destroyed) return null
+      const listed = (i) => ({ id: schema.model.classes[i].id, name: schema.model.classes[i].name, label: schema.model.classes[i].label, index: i })
+      // No answer from the server: the classes listed.
+      const found = Array.isArray(res?.matches) ? res.matches.filter((m) => m && typeof m.id === "string") : schema.model ? schema.search(s, 8).map(listed) : []
+      showMatches(found)
+      return schemaFound
+    })
+    searching = entry
+    if (now) go()
+    else searchTimer = setTimeout(go, DEBOUNCE_MS)
+    return entry.promise
+  }
+
+  function showMatches(found) {
+    schemaFound = found.slice(0, 20)
+    panel.results(schemaFound.map((m, k) => {
+      const name = displayName(m.name, m.id)
+      const listed = schema.model?.index.has(m.id)
+      return { index: k, name: truncate(m.label && m.label !== name ? `${m.label} · ${name}` : name, 40), kind: listed ? "class" : "not shown", title: m.id }
+    }))
+  }
+
+  /** A match chosen: select it when listed, else ask for an answer centred on it, then select it. */
+  async function pickMatch(m) {
+    const i = schema.model?.index.get(m.id)
+    if (i != null) return schema.select(i, { center: true, focus: true })
+    const params = schemaParams(state.filters, { focus: m.id, imports: state.schema.imports })
+    if (!params) return
+    const res = await ask(params, SCHEMA_METHOD)
+    if (!res || mode !== "schema") return
+    showSchema(res, { focus: true }, params)
+    const j = schema.model.index.get(m.id)
+    if (j != null) schema.select(j, { center: true, focus: true })
   }
 
   // ---- modes ----
@@ -486,11 +716,12 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       t.setAttribute("aria-selected", String(on))
       t.tabIndex = on ? 0 : -1
     }
-    canvas.hidden = mode === "hierarchy"
+    canvas.hidden = mode === "schema"
     moreLayer.hidden = mode !== "focus"
-    treeBox.hidden = mode !== "hierarchy" || nothing
-    legend.hidden = mode === "hierarchy" || !legend.children.length
+    schemaBox.hidden = mode !== "schema" || nothing
+    legend.hidden = mode === "schema" || !legend.children.length
     tip.hidden = true
+    info.setAttribute("aria-label", "Selected node")
   }
 
   function setMode(m, force = false) {
@@ -504,6 +735,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     rings = null
     scene = null
     syncTabs()
+    renderInfo()
     load()
   }
 
@@ -520,18 +752,44 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     setMode(next.dataset.mode)
     e.preventDefault()
   })
-  const refit = () => ((userMoved = false), fit())
+  const refit = () => (mode === "schema" ? schema.fit() : ((userMoved = false), fit()))
   fitButton.addEventListener("click", refit)
   info.addEventListener("click", (e) => {
-    const act = e.target.closest("[data-act]")?.dataset.act
+    const b = e.target.closest("[data-act]")
+    const act = b?.dataset.act
+    if (mode === "schema") {
+      if (act === "close") return schema.select(-1)
+      if (act === "reveal") return openClass(shownClass)
+      if (act === "src") {
+        const s = infoSources[Number(b.dataset.src)]
+        if (s && typeof reveal === "function") reveal(s.uri, s.range)
+        return
+      }
+      if (act === "row") return schema.select(shownClass, { row: Number(b.dataset.row) })
+      if (act === "class") return schema.select(Number(b.dataset.c), { center: true })
+      return
+    }
     if (act === "close") return select(-1)
     if (act === "reveal") return openDefinition(selected)
     if (act === "focus") return focusOn(selected)
     const t = e.target.closest("[data-i]")
     if (!t) return
-    const i = Number(t.dataset.i)
-    if (mode === "hierarchy") return void tree.reveal(i)
-    select(i, { center: true })
+    select(Number(t.dataset.i), { center: true })
+  })
+  // Escape in the inspector: as in the drawing (the legend, then the selection).
+  info.addEventListener("keydown", (e) => {
+    if (mode !== "schema" || e.key !== "Escape") return
+    e.preventDefault()
+    schema.escape()
+  })
+  followButton.addEventListener("click", () => {
+    state.follow = !state.follow
+    followButton.setAttribute("aria-pressed", String(state.follow))
+    save()
+    if (!state.follow) {
+      clearTimeout(followTimer)
+      cursor++
+    }
   })
   moreLayer.addEventListener("click", (e) => {
     const b = e.target.closest("[data-ring]")
@@ -636,6 +894,10 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const b = stage.getBoundingClientRect()
     renderer.size(b.width, b.height, win.devicePixelRatio || 1)
     if ((fitPending || !userMoved) && scene) fit()
+    if (mode === "schema") {
+      schema.resize()
+      if (isNarrow() !== narrow) renderInfo()
+    }
     draw()
   }
   const observer = win.ResizeObserver ? new win.ResizeObserver(() => resize()) : null
@@ -644,6 +906,87 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   function applyTheme(t) {
     if (!t || typeof t !== "object") return
     for (const [k, v] of Object.entries(t)) if (k.startsWith("--graph-") && typeof v === "string") root.style.setProperty(k, v)
+  }
+
+  // ---- Follow cursor ----
+  // `cursor` counts the cursor moves: an answer asked for an older one is dropped.
+  let cursor = 0
+  let followAt = null
+  let followTimer = 0
+  let following = false
+  let followAgain = false
+  const visible = () => doc.visibilityState !== "hidden" && root.isConnected && root.getClientRects().length > 0
+  const validAt = (at) => typeof at?.uri === "string" && Number.isInteger(at.position?.line) && Number.isInteger(at.position?.character)
+
+  function follow(at) {
+    cursor++
+    clearTimeout(followTimer)
+    if (destroyed || !state.follow || !validAt(at) || !visible()) return
+    followAt = { uri: at.uri, position: { line: at.position.line, character: at.position.character } }
+    followTimer = setTimeout(followNow, DEBOUNCE_MS)
+  }
+
+  async function followNow() {
+    if (destroyed || !state.follow || nothing || !visible()) return
+    if (following) return void (followAgain = true)
+    const my = cursor, at = followAt, m = mode
+    let params, method = METHOD
+    if (m === "schema") (params = schemaParams(state.filters, { at, imports: state.schema.imports })), (method = SCHEMA_METHOD)
+    else if (m === "focus") params = toParams(state.filters, { focus: state.focus, depth: hops(), iterations: 0 })
+    else params = toParams({ ...state.filters, depth: 0 }, { iterations: 0, maxNodes: 1 })
+    if (!params) return
+    if (m !== "schema") params.at = at
+    if (m === "graph") params.depth = 0
+    following = true
+    try {
+      const res = await request(method, params)
+      if (my === cursor && m === mode && !destroyed && state.follow && !nothing) followed(m, res, params)
+    } catch {
+      // A failed follow leaves the view as it is.
+    } finally {
+      following = false
+      if (followAgain) {
+        followAgain = false
+        if (my !== cursor) followNow()
+      }
+    }
+  }
+
+  // An answer for the latest cursor. null: no term there, the view stays.
+  // A turtle/graph answer lists the term's node first (breadth-first from
+  // the focus the server resolved `at` to).
+  function followed(m, res, params) {
+    if (m === "schema") {
+      // No term there: the class stays, its lit row goes.
+      if (!Number.isInteger(res?.focus) || res.focus < 0) {
+        if (schema.lit >= 0) schema.select(schema.selected)
+        return
+      }
+      const t0 = win.performance.now()
+      showSchema(res, { focus: true }, params)
+      root.dataset.followMs = (win.performance.now() - t0).toFixed(2)
+      root.dataset.followRebuilt = String(schema.rebuilt)
+      return
+    }
+    if (res == null) return
+    const id = res.nodes?.[0]?.id
+    if (typeof id !== "string") return
+    if (m === "focus") {
+      if (!res.nodes?.some((d) => d?.id === id)) return
+      state.focus = id
+      selId = id
+      save()
+      setModel(res)
+      caps = RING_CAPS.slice()
+      layoutRings()
+      fit()
+      showStatus()
+      renderInfo()
+      draw()
+      return
+    }
+    const i = model?.index.get(id)
+    if (i !== undefined) select(i, { center: true, user: false })
   }
 
   // ---- start ----
@@ -674,10 +1017,13 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     destroy() {
       destroyed = true
       clearTimeout(timer)
+      clearTimeout(followTimer)
+      clearTimeout(searchTimer)
       if (frame) win.cancelAnimationFrame(frame)
       observer?.disconnect()
       container.replaceChildren()
     },
+    follow,
     /** Re-read the colours (after a theme change), optionally setting `--graph-…` variables first. */
     setTheme(t) {
       applyTheme(t)

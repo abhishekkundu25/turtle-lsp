@@ -435,6 +435,43 @@ check("a reveal from the graph opens the file at the range, and an edit refreshe
   }
 })
 
+check("moving the cursor in a Turtle file posts it to the visible graph view, which receives it; a file that is not RDF posts nothing", async () => {
+  const api = await graphApi()
+  const probe = api.graph()
+  assert.ok(probe, "the graph panel is not open")
+  const uri = vscode.Uri.file(path.join(ws, "people.ttl"))
+  const editor = await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.Beside, preview: false })
+  const sent = probe.cursorsSent
+  editor.selection = new vscode.Selection(0, 0, 4, 3) // the active end is (4, 3)
+  await until("a cursor message", () => probe.cursorsSent > sent, 5000)
+  assert.deepEqual(probe.lastCursor, { uri: uri.toString(), position: { line: 4, character: 3 } })
+  await until("the webview to receive it", () => probe.cursorsSeen > 0, 5000)
+  const plain = await vscode.workspace.openTextDocument({ language: "plaintext", content: "ex:a ex:b ex:c .\n" })
+  const before = probe.cursorsSent
+  const other = await vscode.window.showTextDocument(plain, { viewColumn: vscode.ViewColumn.Beside, preview: false })
+  other.selection = new vscode.Selection(0, 3, 0, 3)
+  await sleep(300)
+  assert.equal(probe.cursorsSent, before, "a plain-text editor's cursor was posted")
+  await vscode.window.showTextDocument(uri, { viewColumn: editor.viewColumn, preview: false })
+})
+
+check("the webview's turtle/schema request is answered by the server (an object with a classes array); other methods are rejected", async () => {
+  const api = await graphApi()
+  const probe = api.graph()
+  assert.ok(probe, "the graph panel is not open")
+  // Rejected whatever the server offers; the webview gets an error response.
+  await probe.receive({ type: "request", id: 9001, method: "workspace/executeCommand", params: {} })
+  assert.equal(probe.schemaAnswers, 0)
+  const client = vscode.extensions.getExtension("abhishekkundu25.turtle-language-server").exports?.client?.()
+  if (client?.initializeResult?.capabilities.experimental?.["turtle/schema"] !== true) {
+    console.log("  todo: the server does not advertise turtle/schema yet (schema slice); the answer is not checked")
+    return
+  }
+  await probe.receive({ type: "request", id: 9002, method: "turtle/schema", params: {} })
+  await until("a schema answer", () => probe.schemaAnswers > 0, 5000)
+  assert.ok(probe.lastSchema && typeof probe.lastSchema === "object" && Array.isArray(probe.lastSchema.classes), "no classes array")
+})
+
 check("closing the graph panel disposes it", async () => {
   const api = await graphApi()
   assert.ok(await vscode.window.tabGroups.close(graphTabs()), "the tab did not close")

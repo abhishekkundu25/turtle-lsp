@@ -820,6 +820,170 @@ scenario("document-symbol-rss", "memory after documentSymbol on a 100,000-triple
   })
 })
 
+// The schema view's budgets (docs/specs/schema-view.md, "Performance
+// budgets"). Each of the 20 runs starts a server, so every "first" is a
+// request with no per-document facts kept; the repeats follow in the same
+// server. The spread is in the notes (min and max beside p50 and p95).
+const SCHEMA_RUNS = 20
+const spread = (xs) => `min ${round1(Math.min(...xs))}, max ${round1(Math.max(...xs))} ms`
+
+// The model the schema rows are declared by, opened unsaved beside the
+// data: foaf:Person is a standard class, listed only once the workspace
+// declares properties for it. Every instance misses ex:age.
+const SCHEMA_MODEL = `${header}@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+foaf:name rdfs:domain foaf:Person ; rdfs:range xsd:string .
+foaf:knows rdfs:domain foaf:Person ; rdfs:range foaf:Person .
+ex:age a owl:DatatypeProperty .
+ex:PersonShape a sh:NodeShape ; sh:targetClass foaf:Person ;
+    sh:property [ sh:path foaf:name ; sh:datatype xsd:string ; sh:minCount 1 ] ,
+        [ sh:path ex:age ; sh:datatype xsd:integer ; sh:minCount 1 ] .
+`
+function openModel(s, dir) {
+  s.open(uriOf(path.join(dir, "schema-model.ttl")), SCHEMA_MODEL)
+}
+
+// `turtle/schema` with `params` (none by default): its time in ms and the answer.
+async function timedSchema(s, params) {
+  const t = performance.now()
+  const r = await s.request("turtle/schema", params)
+  return [performance.now() - t, r]
+}
+
+// The schema rows of one workload: `open(s)` opens a document and resolves
+// to [uri, text, the text before which an edit types]; each run times the first
+// request, a repeat with no change and a repeat after one keystroke; with
+// `hover`, a hover sent while a request (after another keystroke) runs, and
+// a hover alone, for comparison. With `examples`, a repeat that asks for
+// the places of one listed class (the inspector's request on selection).
+async function schemaRuns(cwd, id, label, open, hover, examples = false) {
+  const m = { first: [], same: [], edited: [], during: [], alone: [], examples: [], overlapped: 0 }
+  let classes = 0
+  let bytes = 0
+  let examplesBytes = 0
+  for (let run = 0; run < SCHEMA_RUNS; run++) {
+    await withServer(cwd, async (s) => {
+      let [uri, text, target] = await open(s)
+      const [first, r] = await timedSchema(s)
+      m.first.push(first)
+      classes = r.total.classes
+      bytes = JSON.stringify(r).length
+      m.same.push((await timedSchema(s))[0])
+      if (examples) {
+        // A listed class with problems, half way down the list.
+        const listed = r.classes.filter((c) => c.problems > 0)
+        expect(listed.length > 0, `schema (${label}): no class with problems`)
+        const [t, e] = await timedSchema(s, { examples: listed[listed.length >> 1].id })
+        m.examples.push(t)
+        examplesBytes = JSON.stringify(e).length
+      }
+      const key = (k) => {
+        text = typeAt(s, uri, text, target(k), `${target(k)}x`)
+        return s.diagnosticsFor(uri, WAIT)
+      }
+      await key(0)
+      m.edited.push((await timedSchema(s))[0])
+      if (!hover) return
+      const params = { textDocument: { uri }, position: hover(text) }
+      await key(1)
+      // Sent together: the server reads the schema request first.
+      const t = performance.now()
+      let schemaDone = 0
+      const schema = s.request("turtle/schema").then(() => (schemaDone = performance.now()))
+      await s.request("textDocument/hover", params)
+      const hovered = performance.now()
+      m.during.push(hovered - t)
+      await schema
+      if (schemaDone > hovered) m.overlapped++
+      await key(2)
+      m.alone.push((await time(1, () => s.request("textDocument/hover", params)))[0])
+    })
+  }
+  expect(classes > 0, `schema (${label}): the answer has no class`)
+  const notes = (xs) => `${spread(xs)}; ${classes} classes, ${(bytes / 1024).toFixed(0)} KB`
+  record(`schema-${id}-first`, `turtle/schema, first request (${label}, 1 model open)`, m.first, { notes: notes(m.first) })
+  record(`schema-${id}-same`, `turtle/schema, repeat with no change (${label})`, m.same, { notes: notes(m.same) })
+  record(`schema-${id}-edited`, `turtle/schema, repeat after one keystroke (${label})`, m.edited, { notes: notes(m.edited) })
+  if (examples) {
+    record(`schema-${id}-examples`, `turtle/schema, repeat with examples for one listed class (${label})`, m.examples, {
+      notes: `${spread(m.examples)}; ${classes} classes, ${(examplesBytes / 1024).toFixed(0)} KB`,
+    })
+  }
+  if (!hover) return
+  record(`schema-${id}-hover-during`, `hover sent while turtle/schema runs (${label})`, m.during, {
+    notes: `${spread(m.during)}; the schema answered after the hover in ${m.overlapped}/${SCHEMA_RUNS} runs`,
+  })
+  record(`schema-${id}-hover-alone`, `hover alone, for comparison (${label})`, m.alone, { notes: spread(m.alone) })
+}
+
+scenario("schema", "turtle/schema on the editing workspace, on a 100,000-triple file (with a hover during it) and on 2,000 classes with 40,000 instances", async () => {
+  const { ws } = sharedWorkspace()
+  const file = path.join(ws, "f0.ttl")
+  await schemaRuns(ws, "editing", `${FILES + 1} files`, async (s) => {
+    const text = fs.readFileSync(file, "utf8")
+    const uri = uriOf(file)
+    openModel(s, ws)
+    s.open(uri, text)
+    await s.diagnosticsFor(uri, WAIT)
+    return [uri, text, (k) => `"Person ${k}"`]
+  })
+  const subjects = scaled(25000)
+  const doc = bigDoc(subjects)
+  await withDir("turtle-bench-schema-", async (dir) => {
+    const big = path.join(dir, "triples.ttl")
+    fs.writeFileSync(big, doc)
+    await schemaRuns(
+      dir,
+      "100k",
+      `${subjects * 4} triples`,
+      async (s) => {
+        const uri = uriOf(big)
+        openModel(s, dir)
+        s.open(uri, doc)
+        await s.diagnosticsFor(uri, WAIT)
+        return [uri, doc, (k) => `"Person ${k}"`]
+      },
+      (text) => positionOf(text, "a foaf:Person", 4),
+    )
+  })
+  // A big answer: 2,000 classes in a subclass tree, 10 declared properties
+  // each (every third required by a shape), and 40,000 instances that use
+  // most of them, one in five with a wrong datatype.
+  const nClasses = scaled(2000)
+  const instances = scaled(40000)
+  await withDir("turtle-bench-schema-big-", async (dir) => {
+    const model = [`${header}@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n`]
+    for (let c = 0; c < nClasses; c++) {
+      model.push(`ex:C${c} a rdfs:Class${c ? ` ; rdfs:subClassOf ex:C${(c - 1) >> 2}` : ""} .\n`)
+      const shape = []
+      for (let p = 0; p < 10; p++) {
+        model.push(`ex:c${c}p${p} rdfs:domain ex:C${c} ; rdfs:range xsd:integer .\n`)
+        if (p % 3 === 0) shape.push(`[ sh:path ex:c${c}p${p} ; sh:datatype xsd:integer ; sh:minCount 1 ]`)
+      }
+      model.push(`ex:S${c} a sh:NodeShape ; sh:targetClass ex:C${c} ; sh:property ${shape.join(" , ")} .\n`)
+    }
+    fs.writeFileSync(path.join(dir, "model.ttl"), model.join(""))
+    const data = [header]
+    for (let i = 0; i < instances; i++) {
+      const c = i % nClasses
+      const uses = []
+      for (let p = 0; p < 10; p += 2) uses.push(`ex:c${c}p${p} ${i % 5 ? i : `"${i}"`}`)
+      data.push(`ex:i${i} a ex:C${c} ; ${uses.join(" ; ")} .\n`)
+    }
+    const big = path.join(dir, "data.ttl")
+    const doc = data.join("")
+    fs.writeFileSync(big, doc)
+    await schemaRuns(dir, "classes", `${nClasses} classes, ${instances} instances`, async (s) => {
+      const uri = uriOf(big)
+      openModel(s, dir)
+      s.open(uri, doc)
+      await s.diagnosticsFor(uri, WAIT)
+      return [uri, doc, () => `ex:i${instances - 1} a`]
+    }, null, true)
+  })
+})
+
 // The command-line check, as a CI job runs it: wall time of a whole process.
 function runCheck(cwd, extraArgs, runs) {
   let status = null

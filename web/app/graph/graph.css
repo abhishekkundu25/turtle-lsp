@@ -42,6 +42,8 @@
 .graph button:disabled { cursor: default; opacity: .5; }
 .graph :focus-visible { outline: 1px solid var(--graph-focus); outline-offset: -1px; }
 .graph-probe { position: absolute; width: 0; height: 0; overflow: hidden; }
+/* Read by screen readers, not shown. */
+.graph-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 .graph-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 8px; border-bottom: 1px solid var(--graph-line); }
 .graph-tabs { display: flex; }
@@ -49,12 +51,14 @@
 .graph-tab[aria-selected="true"] { color: var(--graph-fg); border-bottom-color: var(--graph-focus); }
 .graph-btn { border: 1px solid var(--graph-line); border-radius: 3px; padding: 2px 8px; background: var(--graph-input); color: var(--graph-input-fg); }
 .graph-btn:not(:disabled):hover { background: var(--graph-hover); }
-.graph[data-mode="hierarchy"] .graph-fit { display: none; }
+.graph-follow[aria-pressed="true"], .schema-problems-btn[aria-pressed="true"], .schema-imports-btn[aria-pressed="true"] { border-color: var(--graph-focus); background: var(--graph-select); }
 .graph-status { color: var(--graph-muted); font-size: 11px; margin-left: auto; }
 .graph[data-busy="true"] .graph-status::after { content: " · loading"; }
 
 .graph-body { flex: 1; display: flex; min-height: 0; min-width: 0; }
 .graph-filters { width: 240px; flex: none; overflow: auto; border-right: 1px solid var(--graph-line); background: var(--graph-panel); padding-bottom: 8px; }
+/* Schema uses the search and the files only. */
+.graph[data-mode="schema"] .graph-filters [data-for="graph"] { display: none; }
 .graph-stage { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 
 .graph-sec { padding: 4px 8px; display: flex; flex-direction: column; gap: 3px; }
@@ -89,23 +93,11 @@
 .graph-key { display: flex; align-items: center; gap: 4px; }
 /* A file's key shows its full path on hover. */
 .graph-key[title] { pointer-events: auto; }
-.graph-notice { position: absolute; inset: 0; margin: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--graph-muted); }
+.graph-notice, .schema-empty { position: absolute; inset: 0; margin: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--graph-muted); }
 .graph-swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .graph-c0 { background: var(--graph-c0); } .graph-c1 { background: var(--graph-c1); } .graph-c2 { background: var(--graph-c2); } .graph-c3 { background: var(--graph-c3); }
 .graph-c4 { background: var(--graph-c4); } .graph-c5 { background: var(--graph-c5); } .graph-c6 { background: var(--graph-c6); } .graph-c7 { background: var(--graph-c7); }
 .graph-c8 { background: var(--graph-neutral); }
-
-.graph-treebox { position: absolute; inset: 0; overflow: auto; padding: 4px 0 12px; }
-.graph-tree, .graph-tree ul { list-style: none; margin: 0; padding: 0; }
-.graph-tree ul { padding-left: 14px; }
-.graph-tree [role="treeitem"]:focus { outline: none; }
-.graph-tree [role="treeitem"]:focus-visible > .graph-row { outline: 1px solid var(--graph-focus); outline-offset: -1px; }
-.graph-row { display: flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; cursor: pointer; white-space: nowrap; user-select: none; }
-.graph-row:hover { background: var(--graph-hover); }
-[aria-selected="true"] > .graph-row { background: var(--graph-select); }
-.graph-twist { width: 12px; flex: none; color: var(--graph-muted); }
-.graph-tree-name { overflow: hidden; text-overflow: ellipsis; }
-.graph-more-row { margin-left: 24px; color: var(--graph-focus); font-size: 11px; }
 
 .graph-info { position: absolute; right: 8px; bottom: 8px; width: min(340px, calc(100% - 16px)); max-height: 60%; overflow: auto; padding: 8px 10px; background: var(--graph-menu); border: 1px solid var(--graph-line); border-radius: 6px; box-shadow: 0 4px 14px var(--graph-shadow); }
 .graph-info-hd { display: flex; align-items: baseline; gap: 6px; }
@@ -114,7 +106,7 @@
 .graph-x { font-size: 15px; line-height: 1; padding: 0 2px; color: var(--graph-muted); }
 .graph-info-id, .graph-info-file { font: 11px var(--graph-mono); color: var(--graph-muted); overflow-wrap: anywhere; margin-top: 2px; }
 .graph-info-diag { font-size: 11px; margin-top: 2px; }
-.graph-sev1 { color: var(--graph-error); } .graph-sev2 { color: var(--graph-warning); } .graph-sev3, .graph-sev4 { color: var(--graph-info); }
+.graph-sev0 { color: var(--graph-muted); } .graph-sev1 { color: var(--graph-error); } .graph-sev2 { color: var(--graph-warning); } .graph-sev3, .graph-sev4 { color: var(--graph-info); }
 .graph-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 2px; }
 .graph-info-sec { margin: 8px 0 2px; font-size: 10px; font-weight: normal; text-transform: uppercase; letter-spacing: .04em; color: var(--graph-muted); }
 .graph-triples { list-style: none; margin: 0; padding: 0; }
@@ -122,6 +114,109 @@
 .graph-triple:hover { background: var(--graph-hover); }
 .graph-pred { color: var(--graph-muted); }
 .graph-obj { color: var(--graph-focus); }
+
+/* Schema (schema.js): classes as boxes on a pannable layer. Red and amber
+   (--graph-error, --graph-warning) mark problems and nothing else. */
+.graph-schemabox { position: absolute; inset: 0; }
+.schema-view { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; background-image: radial-gradient(circle, var(--graph-line) 1px, transparent 1.2px); background-size: 20px 20px; }
+.schema-view.is-dragging { cursor: grabbing; }
+.schema-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.schema-lines { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.schema-tree, .schema-extra { fill: none; stroke: var(--graph-muted); stroke-width: 1.3; }
+.schema-extra { stroke-dasharray: 4 3; }
+.schema-head { fill: var(--graph-bg); stroke: var(--graph-muted); stroke-width: 1.3; }
+.schema-hot { fill: none; stroke: var(--graph-focus); stroke-width: 2; stroke-dasharray: 5 4; display: none; }
+.schema-hot-dot { fill: var(--graph-focus); display: none; }
+.schema-lines.is-hot .schema-hot, .schema-lines.is-hot .schema-hot-dot { display: inline; }
+.schema-box { position: absolute; left: 0; top: 0; width: 264px; box-sizing: border-box; background: var(--graph-bg); border: 1px solid var(--graph-line); border-radius: 6px; box-shadow: 0 1px 3px var(--graph-shadow); cursor: pointer; contain: layout style; }
+.schema-box:focus { outline: none; }
+.schema-box:focus-visible, .schema-box.is-target { outline: 2px solid var(--graph-focus); outline-offset: 1px; }
+.schema-box.is-selected { border-color: var(--graph-focus); box-shadow: 0 0 0 1px var(--graph-focus), 0 4px 14px var(--graph-shadow); }
+.schema-box.is-undefined { border-style: dashed; background: transparent; box-shadow: none; }
+.schema-box.is-imported, .schema-box.is-imports { border-style: dashed; }
+.schema-hd { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 5px 8px; background: var(--graph-panel); border-radius: 6px 6px 0 0; }
+.schema-box.is-undefined .schema-hd, .schema-box.is-imports .schema-hd { background: transparent; }
+.schema-rows { border-top: 1px solid var(--graph-line); }
+.schema-name { font-weight: 600; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.schema-pre { color: var(--graph-muted); font: 400 11px var(--graph-mono); }
+.schema-count { font: 600 10.5px var(--graph-mono); background: var(--graph-select); border-radius: 9px; padding: 0 6px; line-height: 16px; }
+.schema-pb { font: 600 10px var(--graph-mono); border-radius: 9px; padding: 0 6px; line-height: 16px; color: var(--graph-bg); background: var(--graph-muted); }
+.schema-pb.sev-error { background: var(--graph-error); }
+.schema-pb.sev-warning { background: var(--graph-warning); }
+.schema-tag { font-size: 10px; color: var(--graph-muted); border: 1px solid var(--graph-line); border-radius: 3px; padding: 0 4px; }
+.schema-file { margin-left: auto; color: var(--graph-muted); font: 10.5px var(--graph-mono); white-space: nowrap; }
+.schema-sub { width: 100%; color: var(--graph-muted); font-size: 11px; }
+.schema-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 6px; align-items: center; padding: 3px 8px 3px 8px; min-height: 24px; cursor: pointer; }
+.schema-row + .schema-row { border-top: 1px solid color-mix(in srgb, var(--graph-line) 50%, transparent); }
+.schema-row:hover { background: var(--graph-hover); }
+.schema-row:focus { outline: none; }
+.schema-row:focus-visible { outline: 1px solid var(--graph-focus); outline-offset: -1px; }
+.schema-row.is-lit { background: var(--graph-select); box-shadow: inset 3px 0 var(--graph-focus); }
+.schema-mk { width: 14px; text-align: center; font-size: 10px; font-weight: 700; color: var(--graph-muted); }
+.schema-st-conflict .schema-mk { color: var(--graph-error); }
+.schema-st-badValues .schema-mk { color: var(--graph-warning); }
+.schema-pn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-st-unused .schema-pn { text-decoration: line-through; color: var(--graph-muted); }
+.schema-row.schema-st-undeclared { outline: 1px dashed var(--graph-muted); outline-offset: -2px; }
+.schema-rg { font: 11px var(--graph-mono); color: var(--graph-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+.schema-chip { font: 11px var(--graph-mono); color: var(--graph-focus); border: 1px solid color-mix(in srgb, var(--graph-focus) 45%, transparent); background: color-mix(in srgb, var(--graph-focus) 9%, transparent); border-radius: 9px; padding: 0 7px; white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+.schema-chip:hover { background: color-mix(in srgb, var(--graph-focus) 22%, transparent); }
+.schema-chip.is-dead { color: var(--graph-muted); border-style: dashed; border-color: var(--graph-line); background: none; cursor: default; }
+.schema-meta { grid-column: 2 / 4; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.schema-use { font: 10px var(--graph-mono); color: var(--graph-muted); display: inline-flex; gap: 4px; align-items: center; }
+.schema-bar { display: inline-block; width: 46px; height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--graph-muted) var(--used, 0%), var(--graph-line) 0); }
+.schema-card { font: 10px var(--graph-mono); color: var(--graph-muted); }
+.schema-badge { font-size: 10px; border-radius: 3px; padding: 0 5px; line-height: 15px; border: 1px solid var(--graph-line); color: var(--graph-muted); white-space: nowrap; }
+.schema-badge.sev-error { color: var(--graph-error); border-color: currentColor; }
+.schema-badge.sev-warning { color: var(--graph-warning); border-color: currentColor; }
+.schema-more, .schema-none { padding: 3px 10px; color: var(--graph-muted); font-size: 11px; }
+.schema-imports { font-size: 11px; padding: 0 6px; margin-left: auto; }
+/* Zoomed out: the header only. */
+.schema-far .schema-rows, .schema-far .schema-file { display: none; }
+.schema-far .schema-hd { border-radius: 6px; }
+/* Problems only: fade the classes without, hide the rows that are fine. */
+.schema-problems-only .schema-box:not(.has-problems):not(.is-selected) { opacity: .3; }
+.schema-problems-only .schema-row.is-fine { display: none; }
+.schema-tools { position: absolute; left: 8px; top: 8px; display: flex; gap: 8px; }
+.schema-legend-btn { width: 24px; padding: 2px 0; border-radius: 50%; }
+.schema-legend { position: absolute; left: 8px; top: 40px; display: grid; gap: 4px; padding: 8px 10px; font-size: 11px; color: var(--graph-muted); background: var(--graph-menu); border: 1px solid var(--graph-line); border-radius: 6px; box-shadow: 0 2px 8px var(--graph-shadow); max-width: calc(100% - 16px); }
+.schema-key { display: flex; align-items: center; gap: 6px; }
+.schema-legend .schema-mk { flex: none; }
+.schema-ghost-key { width: 14px; height: 10px; border: 1px dashed var(--graph-muted); border-radius: 2px; flex: none; }
+.schema-legend-note { margin: 2px 0 0; }
+/* The class inspector (panel.js classInspector). */
+.schema-i-meta { font-size: 11px; color: var(--graph-muted); margin-top: 2px; }
+.schema-i-rows, .schema-problems { list-style: none; margin: 0; padding: 0; }
+.schema-i-row { padding: 3px 4px; border-radius: 3px; }
+.schema-i-row + .schema-i-row { border-top: 1px solid var(--graph-line); }
+.schema-i-row.is-lit { background: var(--graph-select); box-shadow: inset 3px 0 var(--graph-focus); }
+.schema-i-line { display: flex; align-items: center; gap: 6px; }
+.schema-i-name { font: 12px var(--graph-mono); text-align: left; padding: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-i-use { font: 10px var(--graph-mono); color: var(--graph-muted); }
+.schema-i-state { font-size: 10px; white-space: nowrap; }
+.schema-i-range { font: 10.5px var(--graph-mono); color: var(--graph-muted); }
+.schema-i-link { font: 10.5px var(--graph-mono); color: var(--graph-focus); padding: 0; }
+.schema-i-src { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.schema-src { font: 10px var(--graph-mono); border: 1px solid var(--graph-line); border-radius: 3px; padding: 0 4px; color: var(--graph-muted); }
+.schema-src:not(:disabled):hover { color: var(--graph-focus); border-color: var(--graph-focus); }
+.schema-problem { display: flex; gap: 8px; align-items: flex-start; padding: 6px 2px; border-top: 1px solid var(--graph-line); }
+.schema-dot { font-size: 9px; line-height: 16px; flex: none; }
+.schema-problem-tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.schema-problem-d { font-size: 11px; color: var(--graph-muted); }
+.schema-ex { margin-top: 3px; font-size: 11px; }
+.schema-ex > summary { cursor: pointer; color: var(--graph-focus); width: max-content; }
+.schema-ex-list { list-style: none; margin: 3px 0 0; padding: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.schema-ex-item { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.schema-ex-more { font-size: 10px; color: var(--graph-muted); }
+/* Wide: the inspector is a column right of the boxes. */
+.graph[data-mode="schema"] .graph-info { top: 0; right: 0; bottom: 0; width: 320px; max-height: none; border-width: 0 0 0 1px; border-radius: 0; box-shadow: none; }
+.graph[data-mode="schema"][data-info="open"] .graph-schemabox { right: 320px; }
+/* Under 700 px Schema is the inspector alone, on the focus class. */
+@container (max-width: 699px) {
+  .graph[data-mode="schema"] .graph-schemabox { display: none; }
+  .graph[data-mode="schema"] .graph-info { inset: 0; width: auto; max-height: none; border: 0; }
+  .graph[data-mode="schema"] .graph-info .graph-x { display: none; }
+}
 
 /* Wide: the filters always beside the drawing, so no toggle. */
 .graph-filters-toggle { display: none; }

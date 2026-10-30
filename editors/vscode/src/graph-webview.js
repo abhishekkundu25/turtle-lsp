@@ -61,6 +61,10 @@ window.addEventListener("message", (event) => {
     else p.resolve(m.result)
   } else if (m?.type === "refresh") {
     view.refresh()
+  } else if (m?.type === "cursor" && typeof m.uri === "string" && m.position) {
+    // Follow cursor: the view waits until the cursor rests, and ignores it while the toggle is off.
+    view.follow?.({ uri: m.uri, position: m.position })
+    vscode.postMessage({ type: "cursorSeen" })
   } else if (m?.type === "theme") {
     themeChanged()
   }

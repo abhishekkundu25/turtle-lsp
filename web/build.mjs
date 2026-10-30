@@ -16,8 +16,8 @@ import path from "node:path"
 import zlib from "node:zlib"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-/** The most the engine may weigh gzipped, in bytes (it weighs about 2.78 MB). */
-export const WASM_GZIP_BUDGET = 3_100_000
+/** The most the engine may weigh gzipped, in bytes (it weighs about 3.11 MB with the schema view). */
+export const WASM_GZIP_BUDGET = 3_150_000
 
 /** Monaco's language services the editor never starts: it opens Turtle, TriG, N-Triples, N-Quads, SPARQL and JSON-LD (JSON). */
 const UNUSED_LANGUAGES = ["typescript", "css", "html"]

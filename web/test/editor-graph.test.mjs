@@ -88,7 +88,7 @@ async function quiet(page) {
   return n
 }
 const groups = (page) => page.locator("#groups > .group")
-// An editor tab (not the view's own Graph / Focus / Hierarchy tabs), in group `g` or any.
+// An editor tab (not the view's own Graph / Focus / Schema tabs), in group `g` or any.
 const tab = (page, name, g) => (g === undefined ? page.locator("#groups > .group > .tabs") : groups(page).nth(g).locator("> .tabs")).getByRole("tab", { name, exact: true })
 // A group's tabs by name, the selected one marked with *.
 const tabNames = (page, g) => groups(page).nth(g).locator("> .tabs [role=tab]").evaluateAll((ts) => ts.map((t) => `${t.getAttribute("aria-label")}${t.getAttribute("aria-selected") === "true" ? "*" : ""}`))
@@ -355,16 +355,54 @@ test("after a reload the graph tab is back where it was, and drawn; a server wit
   }
 })
 
-test("the Hierarchy mode lists the classes of the starter workspace, which declare no rdfs:subClassOf (catches: a tree that needs a subClassOf link before it shows a class)", async () => {
+test("the Schema mode draws a box for each class of the starter workspace, which declares no rdfs:subClassOf, from the engine's turtle/schema (catches: the request not routed in the engine, a layout that needs a subClassOf link before it shows a class)", async () => {
   const { page, errors, close } = await open()
   try {
     await openGraph(page)
-    await host(page).getByRole("tab", { name: "Hierarchy" }).click()
-    const rows = page.locator('.graph-host [role="treeitem"]')
+    await host(page).getByRole("tab", { name: "Schema" }).click()
+    const rows = page.locator(".graph-host .schema-box")
     await rows.first().waitFor({ timeout: 10_000 })
     const names = await rows.allTextContents()
     assert.ok(names.some((n) => /Person/.test(n)), names.join(" | "))
     assert.ok(names.some((n) => /Organisation/.test(n)), names.join(" | "))
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
+test("Follow cursor: a Monaco cursor move calls view.follow with the LSP position (0-based); a model switch too; nothing while the graph tab is closed or before the view exists (catches: 1-based positions, no call, calls with no graph, a call for a hidden graph)", async () => {
+  const { page, errors, close } = await open()
+  try {
+    const move = (uri, line, column) =>
+      page.evaluate(
+        ([uri, line, column]) => {
+          const m = window.monaco
+          const ed = m.editor.getEditors().find((e) => e.getModel()?.uri.toString() === uri) ?? m.editor.getEditors()[0]
+          if (ed.getModel()?.uri.toString() !== uri) ed.setModel(m.editor.getModel(m.Uri.parse(uri)))
+          ed.setPosition({ lineNumber: line, column })
+        },
+        [uri, line, column]
+      )
+    // No view yet: moving the cursor does nothing (and must not fail).
+    await move(START, 2, 3)
+    assert.equal(await page.evaluate(() => window.__graphView ?? null), null)
+    await openGraph(page)
+    await page.evaluate(() => {
+      window.__follows = []
+      window.__graphView.follow = (at) => window.__follows.push(at)
+    })
+    const follows = () => page.evaluate(() => window.__follows)
+    // The graph tab shows: the editor is hidden behind it, so move the cursor through its model's editor.
+    await move(CORE, 3, 5)
+    assert.deepEqual((await follows()).at(-1), { uri: CORE, position: { line: 2, character: 4 } })
+    await move(START, 1, 1)
+    assert.deepEqual((await follows()).at(-1), { uri: START, position: { line: 0, character: 0 } })
+    // Closed graph tab: the view is hidden, nothing follows.
+    await page.evaluate(() => (window.__follows.length = 0))
+    await tab(page, "start-here.ttl").click()
+    await move(START, 2, 2)
+    assert.deepEqual(await follows(), [], "a cursor move while the graph is hidden")
     assert.deepEqual(errors, [])
   } finally {
     await close()

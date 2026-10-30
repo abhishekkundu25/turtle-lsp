@@ -14,6 +14,7 @@ pub(crate) mod literals;
 pub mod navigation;
 pub mod quickfix;
 pub mod refactor;
+pub mod schema;
 pub mod semantic;
 pub(crate) mod shacl_lint;
 pub mod shacl_validate;

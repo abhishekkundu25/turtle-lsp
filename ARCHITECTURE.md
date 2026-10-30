@@ -203,15 +203,22 @@ target classes.
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |
 | Workspace graph (`turtle/graph`) | `features::graph` | |
+| Workspace schema (`turtle/schema`) | `features::schema` | |
 
-The workspace graph is the server's one custom request, listed under
-`experimental` capabilities. `features::graph` reads the knowledge index
-and changes nothing: the query, the filters, the cap and the Barnes-Hut
-layout. The client passes back the positions it has, so the server keeps
-no graph state. The native server answers it on a thread of its own over
-a copy of the index; the browser engine answers inline. The drawing is
-`web/app/graph/`, one module the browser editor mounts and the VS Code
-extension bundles into its webview (`editors/vscode/src/graph.ts`).
+The workspace graph and the workspace schema are the server's two custom
+requests, listed under `experimental` capabilities. `features::graph`
+reads the knowledge index and changes nothing: the query, the filters, the
+cap and the Barnes-Hut layout. The client passes back the positions it
+has, so the server keeps no graph state. `features::schema` computes each
+document's facts (types, property uses, domains, ranges, shape property
+rows) once per analysis and keeps them in a cache the server holds; a
+request merges them into classes with declared and observed rows. Both
+take an `at` position (Follow cursor), which the main loop resolves to a
+term before the work starts; off a term the answer is `null`. The native
+server answers both on a thread of their own over a copy of the index; the
+browser engine answers inline. The drawing is `web/app/graph/`, one module
+the browser editor mounts and the VS Code extension bundles into its
+webview (`editors/vscode/src/graph.ts`).
 
 ## Threads
 

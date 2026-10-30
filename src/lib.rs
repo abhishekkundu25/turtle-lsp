@@ -84,6 +84,7 @@
 //! use turtle_lsp::features::refactor::apply as _; // tests
 //! use turtle_lsp::features::refactor::code_actions as _; // tests
 //! use turtle_lsp::features::refactor::edits_of as _; // tests
+//! use turtle_lsp::features::schema::answer as _; // tests
 //! use turtle_lsp::features::semantic::full as _; // tests
 //! use turtle_lsp::features::semantic::range as _; // tests
 //! use turtle_lsp::features::shacl_validate::Job as _; // tests
