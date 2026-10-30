@@ -371,6 +371,44 @@ test("the Hierarchy mode lists the classes of the starter workspace, which decla
   }
 })
 
+test("Follow cursor: a Monaco cursor move calls view.follow with the LSP position (0-based); a model switch too; nothing while the graph tab is closed or before the view exists (catches: 1-based positions, no call, calls with no graph, a call for a hidden graph)", async () => {
+  const { page, errors, close } = await open()
+  try {
+    const move = (uri, line, column) =>
+      page.evaluate(
+        ([uri, line, column]) => {
+          const m = window.monaco
+          const ed = m.editor.getEditors().find((e) => e.getModel()?.uri.toString() === uri) ?? m.editor.getEditors()[0]
+          if (ed.getModel()?.uri.toString() !== uri) ed.setModel(m.editor.getModel(m.Uri.parse(uri)))
+          ed.setPosition({ lineNumber: line, column })
+        },
+        [uri, line, column]
+      )
+    // No view yet: moving the cursor does nothing (and must not fail).
+    await move(START, 2, 3)
+    assert.equal(await page.evaluate(() => window.__graphView ?? null), null)
+    await openGraph(page)
+    await page.evaluate(() => {
+      window.__follows = []
+      window.__graphView.follow = (at) => window.__follows.push(at)
+    })
+    const follows = () => page.evaluate(() => window.__follows)
+    // The graph tab shows: the editor is hidden behind it, so move the cursor through its model's editor.
+    await move(CORE, 3, 5)
+    assert.deepEqual((await follows()).at(-1), { uri: CORE, position: { line: 2, character: 4 } })
+    await move(START, 1, 1)
+    assert.deepEqual((await follows()).at(-1), { uri: START, position: { line: 0, character: 0 } })
+    // Closed graph tab: the view is hidden, nothing follows.
+    await page.evaluate(() => (window.__follows.length = 0))
+    await tab(page, "start-here.ttl").click()
+    await move(START, 2, 2)
+    assert.deepEqual(await follows(), [], "a cursor move while the graph is hidden")
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("an edit refreshes the shown graph tab once, after the typing stops; a hidden graph tab asks nothing until shown, then once (catches: a request per keystroke, no refresh, refreshes while hidden)", async () => {
   const { page, errors, close } = await open()
   try {

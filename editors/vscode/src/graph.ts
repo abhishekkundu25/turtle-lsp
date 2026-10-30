@@ -8,6 +8,9 @@ import * as vscode from "vscode"
 import type { LanguageClient } from "vscode-languageclient/node"
 
 export const GRAPH_METHOD = "turtle/graph"
+export const SCHEMA_METHOD = "turtle/schema"
+/** The requests the webview may make; anything else is rejected. */
+const METHODS: readonly string[] = [GRAPH_METHOD, SCHEMA_METHOD]
 export const SHOW_GRAPH = "turtle.showGraph"
 const TITLE = "Workspace Graph"
 /** Ask again this long after the last change to a workspace RDF or SPARQL file. */
@@ -19,6 +22,11 @@ export function advertisesGraph(client: LanguageClient | undefined): boolean {
   return client?.initializeResult?.capabilities.experimental?.[GRAPH_METHOD] === true
 }
 
+/** Whether the server advertises a webview request (`experimental[method]`). */
+function advertises(client: LanguageClient | undefined, method: string): boolean {
+  return client?.initializeResult?.capabilities.experimental?.[method] === true
+}
+
 /** What the integration tests read of the open panel. */
 export interface GraphProbe {
   /** Requests from the webview the server has answered. */
@@ -27,6 +35,16 @@ export interface GraphProbe {
   nodes: number
   /** The view's status line after its last draw ("Showing N of M nodes"). */
   status: string
+  /** `turtle/schema` requests from the webview the server has answered. */
+  schemaAnswers: number
+  /** Cursor messages posted to the webview. */
+  cursorsSent: number
+  /** Cursor messages the webview says it passed to the view (it acknowledges each). */
+  cursorsSeen: number
+  /** The last cursor message posted. */
+  lastCursor: { uri: string; position: Position } | undefined
+  /** The last `turtle/schema` answer, as the webview received it. */
+  lastSchema: unknown
   /** Handles `message` as if the webview had posted it. */
   receive(message: unknown): Promise<void>
 }
@@ -86,7 +104,7 @@ class GraphPanel {
       localResourceRoots: [root],
     })
     this.panel.webview.html = page(this.panel.webview, root)
-    this.probe = { answers: 0, nodes: 0, status: "", receive: (m) => this.receive(m) }
+    this.probe = { answers: 0, nodes: 0, status: "", schemaAnswers: 0, cursorsSent: 0, cursorsSeen: 0, lastCursor: undefined, lastSchema: undefined, receive: (m) => this.receive(m) }
     const refreshOn = (doc: vscode.TextDocument) => {
       if (host.served(doc)) this.scheduleRefresh()
     }
@@ -100,6 +118,12 @@ class GraphPanel {
       watcher.onDidChange(() => this.scheduleRefresh()),
       watcher.onDidDelete(() => this.scheduleRefresh()),
       vscode.window.onDidChangeActiveColorTheme(() => void this.post({ type: "theme" })),
+      vscode.window.onDidChangeTextEditorSelection((e) => this.cursorMoved(e.textEditor)),
+      vscode.window.onDidChangeActiveTextEditor((editor) => editor && this.cursorMoved(editor)),
+      this.panel.onDidChangeViewState(() => {
+        const editor = vscode.window.activeTextEditor
+        if (this.panel.visible && editor) this.cursorMoved(editor)
+      }),
     )
     this.panel.onDidDispose(() => this.dispose())
   }
@@ -118,6 +142,16 @@ class GraphPanel {
     }, REFRESH_MS)
   }
 
+  /** Posts the active end of the primary selection of an RDF or SPARQL editor, while the panel is visible; the view waits until the cursor rests. */
+  private cursorMoved(editor: vscode.TextEditor): void {
+    if (!this.panel.visible || editor !== vscode.window.activeTextEditor || !this.host.served(editor.document)) return
+    const active = editor.selection.active
+    const cursor = { uri: editor.document.uri.toString(), position: { line: active.line, character: active.character } }
+    this.probe.cursorsSent++
+    this.probe.lastCursor = cursor
+    void this.post({ type: "cursor", ...cursor })
+  }
+
   private post(message: unknown): Thenable<boolean> {
     return this.panel.webview.postMessage(message)
   }
@@ -127,6 +161,7 @@ class GraphPanel {
     const m = message as Record<string, unknown>
     if (m.type === "request" && typeof m.id === "number") await this.answer(m.id, m.method, m.params)
     else if (m.type === "reveal" && typeof m.uri === "string" && isRange(m.range)) await reveal(m.uri, m.range)
+    else if (m.type === "cursorSeen") this.probe.cursorsSeen++
     else if (m.type === "drawn" && typeof m.status === "string") this.probe.status = m.status
   }
 
@@ -134,8 +169,15 @@ class GraphPanel {
   private async answer(id: number, method: unknown, params: unknown): Promise<void> {
     const client = this.host.client()
     try {
-      if (method !== GRAPH_METHOD) throw new Error(`unknown request ${String(method)}`)
-      if (!client?.isRunning() || !advertisesGraph(client)) throw new Error("the Turtle language server is not running")
+      if (typeof method !== "string" || !METHODS.includes(method)) throw new Error(`unknown request ${String(method)}`)
+      if (!client?.isRunning() || !advertises(client, method)) throw new Error("the Turtle language server is not running")
+      if (method === SCHEMA_METHOD) {
+        const result = await client.sendRequest<{ classes?: { uri?: string }[] }>(SCHEMA_METHOD, params ?? {})
+        this.probe.schemaAnswers++
+        this.probe.lastSchema = result
+        await this.post({ type: "response", id, result, diagnostics: diagnosticsOf(result?.classes ?? []) })
+        return
+      }
       const result = await client.sendRequest<{ nodes?: { uri?: string }[] }>(GRAPH_METHOD, params ?? {})
       this.probe.answers++
       this.probe.nodes = result?.nodes?.length ?? 0

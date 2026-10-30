@@ -513,7 +513,7 @@ function addGroup() {
   const g = { tabs: [], active: null, views: new Map(), editor: ed, el }
   W.groups.push(g)
   ed.onDidFocusEditorText(() => focusGroup(W.groups.indexOf(g)))
-  ed.onDidChangeCursorPosition(() => changed({ status: true }))
+  ed.onDidChangeCursorPosition(() => (changed({ status: true }), followCursor(ed)))
   // Typing in a read-only tab says why, in the toast (editor.css hides Monaco's own bubble).
   ed.onDidAttemptReadOnlyEdit(writable)
   // Suggestions pop up in Turtle and TriG strings, where the SPARQL queries
@@ -523,7 +523,7 @@ function addGroup() {
     ed.updateOptions({ quickSuggestions: { other: "on", comments: "off", strings: on ? "on" : "off" } })
   }
   ed.onDidChangeModel(stringSuggestions)
-  ed.onDidChangeModel(() => hooks?.shown())
+  ed.onDidChangeModel(() => (hooks?.shown(), followCursor(ed)))
   ed.onDidChangeModelLanguage(stringSuggestions)
   g.isQuery = ed.createContextKey("rdf.isQuery", false)
   for (const c of COMMANDS) ed.addAction({ id: c.id, label: c.label, keybindings: c.key ? [c.key()] : [], precondition: c.when, contextMenuGroupId: c.menu, run: () => c.run() })
@@ -1339,6 +1339,9 @@ const GRAPH_DELAY_MS = 400
 // made when the tab first shows). `shown`: a group shows the tab.
 const G = { available: undefined, host: null, view: null, shown: false, stale: false, timer: 0 }
 
+// The tests spy on the view (window.__graphView; undefined until it is made).
+Object.defineProperty(window, "__graphView", { get: () => G.view })
+
 // Only a server that answers turtle/graph gets the button; without it, a
 // graph tab kept from before goes.
 function wireGraph(capabilities) {
@@ -1365,6 +1368,9 @@ function showGraph(g, focus) {
   if (G.view) {
     G.view.resize()
     if (G.stale) G.view.refresh()
+    // The cursor of the file beside it: the view has not seen it while hidden.
+    const other = W.groups[W.g] !== g ? W.groups[W.g] : W.groups.find((o) => o !== g)
+    if (other) followCursor(other.editor)
   } else {
     G.view = createGraphView({
       container: G.host,
@@ -1392,6 +1398,17 @@ function showGraph(g, focus) {
   }
   G.stale = false
   if (focus) G.host.querySelector("canvas")?.focus()
+}
+
+// Follow cursor: the cursor of an editor, as an LSP position (0-based) in its
+// file, goes to the view, which waits until it rests. Nothing is done before
+// the view is made or while no group shows it.
+function followCursor(ed) {
+  if (!G.view || !G.shown) return
+  const model = ed.getModel()
+  const p = ed.getPosition()
+  if (!model || !p) return
+  G.view.follow?.({ uri: model.uri.toString(), position: { line: p.lineNumber - 1, character: p.column - 1 } })
 }
 
 // No group shows the graph: a change waiting to be asked for is asked for when it shows next.
