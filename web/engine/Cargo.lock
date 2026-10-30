@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "turtle-lsp"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "crossbeam-channel",
  "lsp-server",
