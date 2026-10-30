@@ -32,6 +32,9 @@
 //! The one custom request, `turtle/graph` (listed under `experimental`),
 //! runs on a thread of its own over a copy of the knowledge index and
 //! answers from there.
+//! So does `turtle/schema`, its per-document facts kept in the server's
+//! `features::schema::FactsCache`. Both resolve an `at` parameter (a
+//! document position) to their focus on the main loop first.
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
@@ -49,6 +52,7 @@ use crate::analysis::Encoding;
 use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
 use crate::features::graph::{GraphParams, GraphResult, InvalidParams};
+use crate::features::schema::{FactsCache, SchemaParams, SchemaResult};
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
 use crate::settings::{SETTINGS_FILE, Settings};
@@ -180,6 +184,8 @@ pub(crate) struct Server {
     wsdiag: workspace_diagnostics::State,
     /// The "Run query" runs going on.
     queries: run_query::State,
+    /// `turtle/schema`'s per-document facts, shared with its jobs.
+    schema_facts: Arc<FactsCache>,
     /// Tests: panic once after the next batch.
     #[cfg(test)]
     fault: bool,
@@ -326,6 +332,7 @@ impl Server {
             progress: Progress::new(work_done_progress),
             wsdiag,
             queries: run_query::State::new(show_document),
+            schema_facts: Arc::default(),
             spawn,
             #[cfg(test)]
             fault: false,
@@ -502,7 +509,7 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
             work_done_progress_options: Default::default(),
         }),
         // Custom requests, by method: `{"turtle/graph": true}`.
-        experimental: Some(serde_json::json!({ GRAPH: true })),
+        experimental: Some(serde_json::json!({ GRAPH: true, SCHEMA: true })),
         ..Default::default()
     }
 }
@@ -529,6 +536,18 @@ const GRAPH: &str = "turtle/graph";
 fn graph_json(r: Result<GraphResult, InvalidParams>) -> Result<String, (ErrorCode, String)> {
     match r {
         Ok(g) => json(&g),
+        Err(e) => Err((ErrorCode::InvalidParams, e.to_string())),
+    }
+}
+
+/// The custom request for the workspace schema (`features::schema`).
+const SCHEMA: &str = "turtle/schema";
+
+/// A `turtle/schema` answer as JSON text; parameters it cannot answer are
+/// `InvalidParams`.
+fn schema_json(r: Result<SchemaResult, InvalidParams>) -> Result<String, (ErrorCode, String)> {
+    match r {
+        Ok(s) => json(&s),
         Err(e) => Err((ErrorCode::InvalidParams, e.to_string())),
     }
 }
@@ -1600,6 +1619,12 @@ impl Server {
                     Value::Null => GraphParams::default(),
                     _ => params!(GraphParams),
                 };
+                // `at` to `focus` here, where the open documents are.
+                let p = match self.session().graph_at(p) {
+                    Ok(Some(p)) => p,
+                    Ok(None) => return json(&Value::Null).map(Some),
+                    Err(e) => return graph_json(Err(e)).map(Some),
+                };
                 // A big layout takes seconds: on a thread of its own, which
                 // answers the request itself.
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1608,6 +1633,29 @@ impl Server {
                     return Ok(None);
                 }
                 graph_json(self.session().graph(p))
+            }
+            SCHEMA => {
+                let p = match req.params {
+                    Value::Null => SchemaParams::default(),
+                    _ => params!(SchemaParams),
+                };
+                let cache = self.schema_facts.clone();
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.spawn == Spawn::Thread {
+                    // `at` to the focus here, where the open documents are.
+                    let job = match self.session().schema_job(p, cache) {
+                        Ok(Some(job)) => job,
+                        Ok(None) => return json(&Value::Null).map(Some),
+                        Err(e) => return schema_json(Err(e)).map(Some),
+                    };
+                    self.schema_on_thread(req.id.clone(), move || schema_json(job.run()))?;
+                    return Ok(None);
+                }
+                match self.session().schema(p, cache) {
+                    Ok(Some(r)) => schema_json(Ok(r)),
+                    Ok(None) => json(&Value::Null),
+                    Err(e) => schema_json(Err(e)),
+                }
             }
             _ => Err((
                 ErrorCode::MethodNotFound,
@@ -1648,6 +1696,34 @@ impl Server {
                 (
                     ErrorCode::InternalError,
                     format!("turtle-lsp could not start a thread for the graph: {e}"),
+                )
+            })
+    }
+
+    /// Answer `turtle/schema` request `id` from a thread of its own with
+    /// what `work` returns, as [`Server::graph_on_thread`] answers
+    /// `turtle/graph`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn schema_on_thread(
+        &mut self,
+        id: RequestId,
+        work: impl FnOnce() -> Result<String, (ErrorCode, String)> + Send + 'static,
+    ) -> Result<(), (ErrorCode, String)> {
+        let out = self.client.sender();
+        self.spawn
+            .run("schema", WORKER_STACK, work, move |answer| {
+                let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
+                    Ok(json) => Out::Result { id, json },
+                    Err((code, message)) => {
+                        Out::Message(Response::new_err(id, code as i32, message).into())
+                    }
+                };
+                let _ = out.send(msg);
+            })
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("turtle-lsp could not start a thread for the schema: {e}"),
                 )
             })
     }

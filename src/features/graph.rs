@@ -86,6 +86,9 @@ pub(crate) struct GraphParams {
     pub(crate) types: bool,
     /// A node id.
     pub(crate) focus: Option<String>,
+    /// The term at a document position (Follow cursor); the server resolves
+    /// it to `focus` before the graph is drawn (`Session::graph_at`).
+    pub(crate) at: Option<crate::features::schema::At>,
     pub(crate) depth: Option<u32>,
     pub(crate) max_nodes: Option<u32>,
     pub(crate) layout: LayoutParams,

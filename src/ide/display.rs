@@ -1,6 +1,7 @@
 //! What the editor shows of a document: hover, document and workspace
 //! symbols, folding ranges, the type hierarchy, semantic tokens, inlay hints,
-//! code lenses and the workspace graph (`turtle/graph`). Two of them follow the client's settings: inlay hints
+//! code lenses, the workspace graph (`turtle/graph`) and its schema
+//! (`turtle/schema`). Two of them follow the client's settings: inlay hints
 //! `inlayHints.labels`, and an RDF document's reference lenses
 //! `codeLens.references`.
 //!
@@ -10,6 +11,7 @@
 use super::{Doc, Session};
 use crate::analysis::{Analysis, Encoding};
 use crate::features::graph::{self, GraphParams, GraphResult, InvalidParams};
+use crate::features::schema::{self, At, FactsCache, SchemaParams, SchemaResult};
 use crate::features::{hierarchy, hover, inlay, lens, semantic, symbols};
 use crate::knowledge::{Knowledge, Source};
 use crate::sparql::features as sparql_features;
@@ -157,6 +159,86 @@ impl Session<'_> {
         }
     }
 
+    /// `params` with its `at` resolved to `focus` (see
+    /// [`Session::term_at`]); without `at`, `params` as they are. `None`
+    /// when `at` is on no term: Follow cursor has nothing to follow, and
+    /// the request is answered with `null`.
+    pub(crate) fn graph_at(
+        &mut self,
+        mut params: GraphParams,
+    ) -> Result<Option<GraphParams>, InvalidParams> {
+        if let Some(at) = params.at.take() {
+            match self.term_at(&at)? {
+                Some(iri) => params.focus = Some(iri),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(params))
+    }
+
+    /// `turtle/schema`: the schema `params` asks for, its per-document facts
+    /// kept in `cache`.
+    pub(crate) fn schema(
+        &mut self,
+        params: SchemaParams,
+        cache: Arc<FactsCache>,
+    ) -> Result<Option<SchemaResult>, InvalidParams> {
+        self.schema_job(params, cache)?
+            .map(SchemaJob::run)
+            .transpose()
+    }
+
+    /// [`Session::schema`] to run elsewhere: `at` resolved to the focus
+    /// here, the sources in the order the index holds them. `None` when
+    /// `at` is on no term (answered with `null`, as [`Session::graph_at`]).
+    pub(crate) fn schema_job(
+        &mut self,
+        params: SchemaParams,
+        cache: Arc<FactsCache>,
+    ) -> Result<Option<SchemaJob>, InvalidParams> {
+        let focus = match &params.at {
+            Some(at) => match self.term_at(at)? {
+                Some(iri) => Some(iri),
+                None => return Ok(None),
+            },
+            None => params.focus.clone(),
+        };
+        let sources = self
+            .ws
+            .knowledge()
+            .sources()
+            .map(|(key, s, a)| (key.to_string(), s, a.clone()))
+            .collect();
+        Ok(Some(SchemaJob {
+            sources,
+            enc: self.enc,
+            params,
+            focus,
+            cache,
+        }))
+    }
+
+    /// The IRI of the term at `at`, found as hover finds it (on either part
+    /// of a prefixed name); `None` off a term (whitespace, a literal, a
+    /// comment, punctuation, a prefix declaration). A document the
+    /// workspace does not have is `InvalidParams`.
+    pub(crate) fn term_at(&mut self, at: &At) -> Result<Option<String>, InvalidParams> {
+        let doc = self
+            .doc(&at.uri)
+            .ok_or_else(|| InvalidParams(format!("at: no document {}", at.uri)))?;
+        let enc = self.enc;
+        Ok(match doc {
+            Doc::Rdf(a) => a
+                .offset(enc, at.position)
+                .and_then(|o| a.ref_at(o))
+                .map(|r| r.iri.to_string()),
+            Doc::Sparql(q) => q.offset(enc, at.position).and_then(|o| {
+                let refs = &q.doc.structure().refs;
+                refs.iter().find(|r| r.span.contains(o))?.iri.clone()
+            }),
+        })
+    }
+
     /// `codeLens/resolve`: a reference lens with its count; any other lens
     /// as it is.
     pub(crate) fn resolve_code_lens(&mut self, lens: CodeLens) -> CodeLens {
@@ -186,6 +268,29 @@ impl GraphJob {
             }
         }
         graph::graph(&k, self.enc, self.params)
+    }
+}
+
+/// `turtle/schema` with a copy of the sources, to compute away from the
+/// session (on a thread of its own); `at` is already resolved to `focus`.
+pub(crate) struct SchemaJob {
+    sources: Vec<(String, Source, Arc<Analysis>)>,
+    enc: Encoding,
+    params: SchemaParams,
+    focus: Option<String>,
+    cache: Arc<FactsCache>,
+}
+
+impl SchemaJob {
+    /// The answer [`Session::schema`] gives for the same workspace.
+    pub(crate) fn run(self) -> Result<SchemaResult, InvalidParams> {
+        schema::schema(
+            &self.sources,
+            self.enc,
+            self.params,
+            self.focus,
+            &self.cache,
+        )
     }
 }
 
@@ -442,5 +547,138 @@ mod tests {
         // Invalid parameters fail the same way.
         let bad: GraphParams = serde_json::from_value(serde_json::json!({ "focus": "" })).unwrap();
         assert_eq!(s.graph_job(bad.clone()).run(), s.graph(bad));
+    }
+
+    #[test]
+    fn a_schema_job_answers_what_the_session_answers() {
+        let dir = Dir::new("schema-job");
+        let a = format!(
+            "{PREFIXES}ex:Pump a rdfs:Class .\nex:feeds rdfs:domain ex:Pump .\n\
+             ex:p1 a ex:Pump ; ex:feeds ex:p2 .\n"
+        );
+        let (mut ws, uris) = workspace(&dir, &[("a.ttl", &a)]);
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let cache = Arc::new(FactsCache::default());
+        let params = |v: serde_json::Value| -> SchemaParams { serde_json::from_value(v).unwrap() };
+
+        let here = s.schema(params(serde_json::json!({})), cache.clone());
+        let job = s.schema_job(params(serde_json::json!({})), cache.clone());
+        assert_eq!(job.unwrap().unwrap().run().map(Some), here);
+        // With `at` resolved, and with invalid parameters, the same.
+        let off = serde_json::json!({ "at": { "uri": uris[0], "position": at(&a, " .", 1) } });
+        let at = serde_json::json!({ "at": { "uri": uris[0], "position": at(&a, "ex:Pump", 4) } });
+        assert_eq!(
+            s.schema_job(params(at.clone()), cache.clone())
+                .unwrap()
+                .unwrap()
+                .run()
+                .map(Some),
+            s.schema(params(at), cache.clone())
+        );
+        // `at` on no term: nothing to follow, no job.
+        assert!(
+            s.schema_job(params(off.clone()), cache.clone())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(s.schema(params(off), cache.clone()), Ok(None));
+        let bad = || params(serde_json::json!({ "maxClasses": 0 }));
+        assert!(s.schema(bad(), cache.clone()).is_err());
+        assert_eq!(
+            s.schema_job(bad(), cache.clone())
+                .unwrap()
+                .unwrap()
+                .run()
+                .map(Some),
+            s.schema(bad(), cache.clone())
+        );
+        // An `at` in a document the workspace does not have fails before
+        // the job.
+        let nowhere = serde_json::json!({
+            "at": { "uri": "file:///nowhere.ttl", "position": { "line": 0, "character": 0 } }
+        });
+        assert!(
+            s.schema_job(params(nowhere.clone()), cache.clone())
+                .is_err()
+        );
+        assert!(s.schema(params(nowhere), cache).is_err());
+    }
+
+    /// Catches `at` resolved to the wrong term, or to a term off one.
+    #[test]
+    fn at_resolves_to_the_term_hover_finds() {
+        let dir = Dir::new("term-at");
+        let ttl = format!(
+            "{PREFIXES}ex:Pump a rdfs:Class .\n\
+             ex:p1 a ex:Pump ;   ex:feeds <http://example.org/p2> ; rdfs:label \"pump one\" . # ex:Note\n"
+        );
+        let rq = "PREFIX ex: <http://example.org/>\nSELECT ?s WHERE { ?s ex:feeds ?o }\n";
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl), ("q.rq", rq)]);
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let mut term = |uri: &str, pos: Position| {
+            s.term_at(&At {
+                uri: uri.to_string(),
+                position: pos,
+            })
+        };
+        let ex = |local: &str| Ok(Some(format!("http://example.org/{local}")));
+        let ttl_at = |needle: &str, delta: usize| at(&ttl, needle, delta);
+
+        // A class, on its local name and on its prefix.
+        assert_eq!(term(&uris[0], ttl_at("ex:Pump ;", 5)), ex("Pump"));
+        assert_eq!(term(&uris[0], ttl_at("ex:Pump ;", 1)), ex("Pump"));
+        // A property; a full IRI.
+        assert_eq!(term(&uris[0], ttl_at("ex:feeds", 4)), ex("feeds"));
+        assert_eq!(
+            term(&uris[0], ttl_at("<http://example.org/p2>", 3)),
+            ex("p2")
+        );
+        // Whitespace, a literal, a comment, punctuation, a prefix name,
+        // past the end: no term.
+        for pos in [
+            ttl_at(";   ex:feeds", 2),
+            ttl_at("\"pump one\"", 3),
+            ttl_at("ex:Note", 4),
+            ttl_at(" . # ex:Note", 1),
+            Position::new(0, 9),
+            Position::new(40, 0),
+        ] {
+            assert_eq!(term(&uris[0], pos), Ok(None), "{pos:?}");
+        }
+        // A query's term.
+        assert_eq!(term(&uris[1], at(rq, "ex:feeds", 4)), ex("feeds"));
+        assert_eq!(term(&uris[1], at(rq, "?o", 1)), Ok(None));
+        // A document the workspace does not have.
+        assert!(term("file:///nowhere.ttl", Position::new(0, 0)).is_err());
+    }
+
+    #[test]
+    fn graph_at_replaces_the_focus_with_the_term_at_the_position() {
+        let dir = Dir::new("graph-at");
+        let ttl = format!("{PREFIXES}ex:a ex:p ex:b .\n");
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let params = |pos: Position| -> GraphParams {
+            serde_json::from_value(serde_json::json!({
+                "focus": "http://example.org/a",
+                "at": { "uri": uris[0], "position": pos }
+            }))
+            .unwrap()
+        };
+        let p = s.graph_at(params(at(&ttl, "ex:b", 3))).unwrap().unwrap();
+        assert_eq!(p.focus.as_deref(), Some("http://example.org/b"));
+        assert!(p.at.is_none());
+        // Off a term: nothing to follow (answered with null).
+        assert!(s.graph_at(params(at(&ttl, " .", 1))).unwrap().is_none());
+        // Without `at`, the focus stays.
+        let p: GraphParams =
+            serde_json::from_value(serde_json::json!({ "focus": "http://example.org/a" })).unwrap();
+        assert_eq!(
+            s.graph_at(p).unwrap().unwrap().focus.as_deref(),
+            Some("http://example.org/a")
+        );
     }
 }

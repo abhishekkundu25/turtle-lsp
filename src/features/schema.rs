@@ -195,8 +195,13 @@ pub(crate) fn schema(
     cache: &FactsCache,
 ) -> Result<SchemaResult, InvalidParams> {
     let _ = (sources, enc, focus, cache);
-    if params.max_classes.is_some_and(|n| n == 0 || n > MAX_CLASSES) {
-        return Err(InvalidParams(format!("maxClasses must be 1 to {MAX_CLASSES}")));
+    if params
+        .max_classes
+        .is_some_and(|n| n == 0 || n > MAX_CLASSES)
+    {
+        return Err(InvalidParams(format!(
+            "maxClasses must be 1 to {MAX_CLASSES}"
+        )));
     }
     if params.max_rows.is_some_and(|n| n == 0 || n > MAX_ROWS) {
         return Err(InvalidParams(format!("maxRows must be 1 to {MAX_ROWS}")));

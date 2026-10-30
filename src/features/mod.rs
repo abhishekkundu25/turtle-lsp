@@ -14,7 +14,6 @@ pub(crate) mod literals;
 pub mod navigation;
 pub mod quickfix;
 pub mod refactor;
-#[allow(dead_code)] // Until ticket 2 wires the request; it removes this.
 pub(crate) mod schema;
 pub mod semantic;
 pub(crate) mod shacl_lint;

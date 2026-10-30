@@ -53,7 +53,7 @@ describe("turtle/graph", () => {
   })
 
   test("is listed under the experimental capabilities", () => {
-    assert.deepEqual(s.init.capabilities.experimental, { "turtle/graph": true })
+    assert.deepEqual(s.init.capabilities.experimental, { "turtle/graph": true, "turtle/schema": true })
   })
 
   test("answers the workspace's nodes, edges, positions, totals and facets", async () => {
@@ -99,6 +99,24 @@ describe("turtle/graph", () => {
     kept.nodes.forEach((n, i) => assert.deepEqual(kept.positions.slice(2 * i, 2 * i + 2), positions[n.id]))
   })
 
+  test("at focuses the term at a document position, and wins over focus", async () => {
+    const at = (uri, text, needle, offset) => ({ uri, position: positionOf(text, needle, offset) })
+    // On the local name or the prefix of a node.
+    for (const offset of [1, 5]) {
+      const r = await s.request("turtle/graph", { at: at(modelUri, model, "ex:Valve", offset), depth: 1 })
+      assert.deepEqual(ids(r), [EX + "Part", EX + "Valve"])
+      assert.equal(r.nodes[0].id, EX + "Valve", "the focus comes first")
+    }
+    // `at` wins over `focus`.
+    const r = await s.request("turtle/graph", { focus: EX + "Valve", at: at(dataUri, data, "ex:p1", 4), depth: 1 })
+    assert.deepEqual(ids(r), [EX + "p1", EX + "v1"])
+    // Off a term (a literal, punctuation, past the end): nothing to follow, null.
+    for (const position of [positionOf(model, '"Pump"', 2), positionOf(model, " ; rdfs:label", 1), { line: 99, character: 0 }]) {
+      const none = await s.request("turtle/graph", { focus: EX + "p1", depth: 1, at: { uri: modelUri, position } })
+      assert.equal(none, null, JSON.stringify(position))
+    }
+  })
+
   test("maxNodes caps the nodes, not the totals", async () => {
     const r = await s.request("turtle/graph", { maxNodes: 2 })
     assert.equal(r.nodes.length, 2)
@@ -119,6 +137,8 @@ describe("turtle/graph", () => {
       { maxNodes: "many" },
       { kinds: ["planet"] },
       { focus: "" },
+      { at: { uri: "file:///nowhere/model.ttl", position: { line: 0, character: 0 } } },
+      { at: { position: { line: 0, character: 0 } } },
       { layout: { positions: { [EX + "p1"]: [1e300, 0] } } },
       [1, 2],
     ]) {
