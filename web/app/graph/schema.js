@@ -7,8 +7,10 @@
 // and for the inspector (panel.js). An answer lists the places of one
 // class's problems (`examples`, the focus's): needsPlaces says a class has
 // problems with none listed, mergePlaces adds those of a later answer.
-// schemaModel, rowBadge, problemsOf, needsPlaces, mergePlaces and tidyLayout
-// are pure, so the tests run them in Node.
+// A name shown is displayName's: the prefixed name, else the IRI's local
+// name; the full IRI is the element's title. schemaModel, displayName,
+// rowBadge, problemsOf, needsPlaces, mergePlaces and tidyLayout are pure, so
+// the tests run them in Node.
 
 import { h } from "./el.js"
 import { commonRoot, fileLabel, middleCut } from "./model.js"
@@ -16,6 +18,12 @@ import { commonRoot, fileLabel, middleCut } from "./model.js"
 export const SCHEMA_METHOD = "turtle/schema"
 /** Under this zoom the boxes show their header only. */
 export const FAR = 0.5
+/** The first view fits the whole model when that keeps the zoom at this or above. */
+export const READABLE = 0.6
+/** Else it centres the focus class at this zoom. */
+export const FOCUS_ZOOM = 0.9
+/** Fit never zooms out further: the boxes folded to their header. */
+export const FIT_FLOOR = FAR * 0.99
 // A box's width in px: .schema-box in graph.css has the same.
 const W = 264
 const GAP_X = 28
@@ -28,7 +36,7 @@ export const STATE_TEXT = { ok: "declared and used", unused: "never used", undec
 export const MARK = { ok: "✓", unused: "○", undeclared: "?", badValues: "⚠", conflict: "✕" }
 const SEV_RANK = { error: 0, warning: 1, "": 2 }
 // The examples' kind for each problem that has them.
-const EXAMPLE_KIND = { missing: "missing", badValues: "badValue", undeclared: "undeclared" }
+const EXAMPLE_KIND = { missing: "missing", badValues: "badValue", undeclared: "undeclared", conflict: "shapeValue" }
 const EXAMPLE_KINDS = Object.values(EXAMPLE_KIND)
 const SVG = "http://www.w3.org/2000/svg"
 
@@ -36,6 +44,27 @@ const SVG = "http://www.w3.org/2000/svg"
 const fmt = new Intl.NumberFormat("en").format
 const count = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
 const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`
+
+/**
+ * The name to show for a term: `name` (a prefixed name, as the server
+ * writes it) when it is one, else the local name of `iri` (or of `name`'s
+ * `<iri>`): what follows the last `#` or `/`. The full IRI goes in a title.
+ */
+export function displayName(name, iri = "") {
+  const n = typeof name === "string" ? name : ""
+  if (n && !n.startsWith("<")) return n
+  const full = (typeof iri === "string" && iri) || n.replace(/^<|>$/g, "")
+  const trimmed = full.replace(/[#/]+$/, "")
+  const local = trimmed.slice(Math.max(trimmed.lastIndexOf("#"), trimmed.lastIndexOf("/")) + 1)
+  return local || full
+}
+
+/** A shown name split at its prefix: ["ex:", "Pump"], or ["", "Pump"] for a local name. */
+export function nameParts(name) {
+  const at = name.indexOf(":")
+  return at > 0 && !name.includes("/") ? [name.slice(0, at + 1), name.slice(at + 1)] : ["", name]
+}
+const short = (name) => nameParts(name)[1]
 
 /**
  * The answer checked once: indexes in range, unknown states as ok, counts as
@@ -51,11 +80,11 @@ export function schemaModel(res) {
       .filter((r) => r && typeof r.property === "string")
       .map((r) => ({
         property: r.property,
-        name: r.name || r.property,
+        name: displayName(r.name, r.property),
         link: r.link === true,
         target: ok(r.target) ? r.target : -1,
         range: typeof r.range === "string" ? r.range : "",
-        rangeName: r.rangeName || r.range || "",
+        rangeName: r.rangeName || r.range ? displayName(r.rangeName, r.range) : "",
         declared: (Array.isArray(r.declared) ? r.declared : []).filter((d) => d && typeof d.uri === "string"),
         used: count(r.used),
         of: count(r.of),
@@ -63,16 +92,21 @@ export function schemaModel(res) {
         badValues: count(r.badValues),
         required: r.required && Number.isFinite(r.required.min) ? { min: r.required.min, max: Number.isFinite(r.required.max) ? r.required.max : undefined } : null,
         missing: count(r.missing),
-        conflict: r.conflict && typeof r.conflict === "object" ? { declared: String(r.conflict.declared ?? ""), shape: String(r.conflict.shape ?? "") } : null,
+        conflict: r.conflict && typeof r.conflict === "object" ? { declared: displayName(String(r.conflict.declared ?? "")), shape: displayName(String(r.conflict.shape ?? "")) } : null,
+        shapeBadValues: count(r.shapeBadValues),
+        declaredFor: (Array.isArray(r.declaredFor) ? r.declaredFor : []).filter((d) => typeof d === "string" && d).map((d) => displayName(d)),
         examples: (Array.isArray(r.examples) ? r.examples : [])
           .filter((e) => e && typeof e.uri === "string" && e.range?.start && EXAMPLE_KINDS.includes(e.kind))
-          .map((e) => ({ kind: e.kind, uri: e.uri, range: e.range, name: String(e.name ?? "") })),
+          .map((e) => ({ kind: e.kind, uri: e.uri, range: e.range, name: displayName(String(e.name ?? "")) })),
       }))
-    const problems = problemsOf(rows)
+    const id = typeof c.id === "string" ? c.id : String(i)
+    const name = displayName(c.name, id)
+    const label = typeof c.label === "string" ? c.label : ""
+    const problems = problemsOf(rows, label || short(name))
     return {
-      id: typeof c.id === "string" ? c.id : String(i),
-      name: c.name || c.id || "",
-      label: typeof c.label === "string" ? c.label : "",
+      id,
+      name,
+      label,
       uri: typeof c.uri === "string" ? c.uri : "",
       range: c.range && c.range.start ? c.range : null,
       kind: ["class", "imported", "undefined"].includes(c.kind) ? c.kind : "class",
@@ -109,28 +143,41 @@ export function rowBadge(r) {
 /**
  * A class's problems: one per row whose state is not ok and one per row with
  * instances missing it, errors first. `examples`: the places the answer lists
- * for it (missing, bad values, not declared), of `count` in all. `at`: where
- * to fix it: the first example, else the row's first declaration, else null.
+ * for it (missing, bad values, not declared, values outside a conflicting
+ * shape), of `count` in all. `at`: where to fix it: the first example, else
+ * the row's first declaration, else null. `cls`: the class's name, for "declared for X, not cls".
  */
-export function problemsOf(rows) {
+export function problemsOf(rows, cls = "this class") {
   const out = []
   const push = (r, p) => {
     const kind = EXAMPLE_KIND[p.kind]
     const examples = kind ? (r.examples ?? []).filter((e) => e.kind === kind) : []
-    const count = p.kind === "missing" ? r.missing : p.kind === "badValues" ? r.badValues : p.kind === "undeclared" ? r.used : 0
+    const count = p.kind === "missing" ? r.missing : p.kind === "badValues" ? r.badValues : p.kind === "undeclared" ? r.used : p.kind === "conflict" ? r.shapeBadValues ?? 0 : 0
     out.push({ ...p, examples, count: Math.max(count, examples.length), at: examples[0] ?? p.at })
   }
   rows.forEach((r, row) => {
     const at = r.declared[0] ?? null
     const range = r.rangeName ? ` ${r.rangeName}` : ""
-    if (r.state === "conflict") push(r, { row, kind: "conflict", sev: "error", at, text: `${r.name}: range and shape disagree`, detail: r.conflict ? `rdfs:range ${r.conflict.declared}, shape ${r.conflict.shape}` : "" })
+    if (r.state === "conflict") {
+      const outside = r.shapeBadValues ? `${plural(r.shapeBadValues, "value")} outside the shape` : ""
+      push(r, { row, kind: "conflict", sev: "error", at, text: `${r.name}: range and shape disagree`, detail: [r.conflict ? `rdfs:range ${r.conflict.declared}, shape ${r.conflict.shape}` : "", outside].filter(Boolean).join(" · ") })
+    }
     else if (r.state === "badValues") push(r, { row, kind: "badValues", sev: "warning", at, text: `${plural(r.badValues, "value")} of ${r.name} not${range}`, detail: `Declared${range}` })
     else if (r.state === "unused") push(r, { row, kind: "unused", sev: "", at, text: `${r.name} is never used`, detail: `None of ${plural(r.of, "instance")} has it` })
-    else if (r.state === "undeclared") push(r, { row, kind: "undeclared", sev: "", at: null, text: `${r.name} is used but not declared for this class`, detail: `No rdfs:domain or shape gives it to this class; used by ${fmt(r.used)} of ${plural(r.of, "instance")}` })
+    else if (r.state === "undeclared") push(r, { row, kind: "undeclared", sev: "", at: null, text: `${r.name} is used but not declared for this class`, detail: `${declaredForText(r, cls)}; used by ${fmt(r.used)} of ${plural(r.of, "instance")}` })
     if (r.missing > 0) push(r, { row, kind: "missing", sev: "error", at, text: `${plural(r.missing, "instance")} miss ${r.name}`, detail: `Required: sh:minCount ${r.required?.min ?? 1}` })
   })
   return out.sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev])
 }
+
+/** Where a not-declared row's property is declared: "Declared for Pipe, not Gasket", or "Declared for no class". */
+export function declaredForText(r, cls = "this class") {
+  const by = r.declaredFor ?? []
+  return by.length ? `Declared for ${by.map(short).join(", ")}, not ${cls}` : "Declared for no class"
+}
+
+/** A class's name in text: its label, else its shown name without the prefix. */
+export const classText = (c) => c.label || short(c.name)
 
 /**
  * Class `c` (of schemaModel) has problems that have places (missing, bad
@@ -153,7 +200,7 @@ export function mergePlaces(model, i, res) {
   if (j == null) return false
   const places = new Map(fresh.classes[j].rows.map((r) => [r.property, r.examples]))
   for (const r of c.rows) if (places.get(r.property)?.length) r.examples = places.get(r.property)
-  c.problems = problemsOf(c.rows)
+  c.problems = problemsOf(c.rows, classText(c))
   return true
 }
 
@@ -276,15 +323,21 @@ export function createSchemaView(el, on) {
   const viewport = h(doc, "div", { class: "schema-view", role: "group", "aria-roledescription": "class schema", "aria-label": "Class schema. Arrow keys move between classes and rows, Enter selects or opens, plus and minus zoom, 0 fits." }, world)
   const problemsButton = h(doc, "button", { type: "button", class: "graph-btn schema-problems-btn", "aria-pressed": "false", text: "Problems only", title: "Fade classes without problems and hide rows that are fine" })
   const legendButton = h(doc, "button", { type: "button", class: "graph-btn schema-legend-btn", "aria-expanded": "false", "aria-label": "Legend", title: "Legend", text: "?" })
+  const usage = h(doc, "span", { class: "schema-use", "aria-hidden": "true" }, h(doc, "span", { class: "schema-bar" }))
+  usage.firstChild.style.setProperty("--used", "60%")
   const legend = h(doc, "div", { class: "schema-legend", id: `schema-legend-${Math.random().toString(36).slice(2)}`, role: "list", "aria-label": "Legend", hidden: true },
     STATES.map((s) => h(doc, "div", { role: "listitem", class: `schema-key schema-st-${s}` }, h(doc, "span", { class: "schema-mk", "aria-hidden": "true", text: MARK[s] }), STATE_TEXT[s])),
+    h(doc, "div", { role: "listitem", class: "schema-key" }, usage, "bar: the share of the class's instances that use the property"),
+    h(doc, "div", { role: "listitem", class: "schema-key" }, h(doc, "span", { class: "schema-use", text: "30/57" }), "30 of the class's 57 instances use it"),
+    h(doc, "div", { role: "listitem", class: "schema-key" }, h(doc, "span", { class: "schema-card", text: "1..1" }), "values each instance must have, min..max (sh:minCount, sh:maxCount; * no maximum)"),
     h(doc, "div", { role: "listitem", class: "schema-key" }, h(doc, "span", { class: "schema-badge sev-error", text: "3 missing" }), "instances lack a required property"),
     h(doc, "div", { role: "listitem", class: "schema-key" }, h(doc, "span", { class: "schema-chip", text: "→ Class" }), "link: hover for the arrow, click to go"),
     h(doc, "div", { role: "listitem", class: "schema-key" }, h(doc, "span", { class: "schema-pb sev-error", text: "2" }), "problems in the class"),
     h(doc, "div", { role: "listitem", class: "schema-key" }, h(doc, "span", { class: "schema-ghost-key", "aria-hidden": "true" }), "used, never defined"),
     h(doc, "p", { class: "schema-legend-note", text: "Red and amber mark problems only." }))
   legendButton.setAttribute("aria-controls", legend.id)
-  const tools = h(doc, "div", { class: "schema-tools" }, problemsButton, legendButton)
+  const importsButton = h(doc, "button", { type: "button", class: "graph-btn schema-imports-btn", "aria-pressed": "false", text: "Imports", title: "List imported classes one by one" })
+  const tools = h(doc, "div", { class: "schema-tools" }, problemsButton, importsButton, legendButton)
   const empty = h(doc, "p", { class: "schema-empty", hidden: true, text: "No classes in the selected files." })
   el.replaceChildren(viewport, tools, legend, empty)
 
@@ -295,6 +348,8 @@ export function createSchemaView(el, on) {
   // Boxes: per box its class index (-1: the imported classes' box) and element.
   let items = []
   let boxEl = []
+  // Per box, what it draws (sigOf): a box whose class is drawn the same is kept.
+  let sigs = []
   let itemOf = new Int32Array(0)
   let importsItem = -1
   let lay = null
@@ -302,6 +357,8 @@ export function createSchemaView(el, on) {
   let selected = -1
   let lit = -1
   let current = null // the element with tabindex 0
+  // The boxes were rebuilt by the last show (false: updated in place).
+  let rebuilt = false
   let hotTarget = null
   const cam = { x: 0, y: 0, k: 1 }
   let userMoved = false
@@ -312,14 +369,8 @@ export function createSchemaView(el, on) {
     return middleCut(fileLabel(uri, fileRoot), FILE_CHARS) + (range ? `:${range.start.line + 1}` : "")
   }
 
-  function nameParts(c) {
-    const name = c.label && c.kind === "class" ? c.name : c.name || c.label
-    const at = name.indexOf(":")
-    return at > 0 && !name.includes("/") ? [name.slice(0, at + 1), name.slice(at + 1)] : ["", name]
-  }
-
   // A row's fixed parts, cloned per row (faster than building each element).
-  const rowTemplate = h(doc, "div", { tabindex: "-1" },
+  const rowTemplate = h(doc, "div", { tabindex: "-1", role: "listitem" },
     h(doc, "span", { class: "schema-mk", "aria-hidden": "true" }),
     h(doc, "span", { class: "graph-sr" }),
     h(doc, "span", { class: "schema-pn" }),
@@ -338,6 +389,9 @@ export function createSchemaView(el, on) {
     row.className = `schema-row schema-st-${r.state}${r.state === "ok" && !r.missing ? " is-fine" : ""}`
     row.dataset.r = k
     row.title = r.property
+    const words = [STATE_TEXT[r.state]]
+    if (badge && (badge.kind === "missing" || badge.kind === "badValues")) words.push(badge.text)
+    row.setAttribute("aria-label", [r.name, r.rangeName, words.join(", ")].filter(Boolean).join(", "))
     const [mk, sr, pn, meta] = row.children
     mk.textContent = MARK[r.state]
     sr.textContent = `${STATE_TEXT[r.state]}: `
@@ -350,7 +404,7 @@ export function createSchemaView(el, on) {
       chip.dataset.t = r.target
       chip.title = r.range || r.rangeName
       chip.setAttribute("aria-label", `Link to ${r.rangeName || "an unknown class"}`)
-      chip.textContent = `→ ${r.rangeName ? r.rangeName.slice(r.rangeName.indexOf(":") + 1) : "?"}`
+      chip.textContent = `→ ${r.rangeName ? short(r.rangeName) : "?"}`
       row.insertBefore(chip, meta)
     } else if (!r.link && r.rangeName) row.insertBefore(span("schema-rg", r.rangeName, r.range), meta)
     const use = meta.firstChild
@@ -368,7 +422,7 @@ export function createSchemaView(el, on) {
 
   function boxOf(i) {
     const c = model.classes[i]
-    const [pre, local] = nameParts(c)
+    const [pre, local] = nameParts(c.name)
     const label = `${c.label || c.name}, ${c.kind === "undefined" ? "never defined" : plural(c.instances, "instance")}${c.problemCount ? `, ${plural(c.problemCount, "problem")}` : ""}`
     const head = h(doc, "div", { class: "schema-hd" },
       h(doc, "span", { class: "schema-name", title: c.id }, pre ? h(doc, "span", { class: "schema-pre", text: pre }) : null, local),
@@ -381,7 +435,7 @@ export function createSchemaView(el, on) {
       class: `schema-box is-${c.kind}${c.problemCount ? " has-problems" : ""}`,
       tabindex: "-1", role: "group", "aria-label": label, "data-c": i,
     }, head,
-    c.rows.length ? h(doc, "div", { class: "schema-rows" }, c.rows.map(rowEl), c.moreRows ? h(doc, "div", { class: "schema-more", text: `+${fmt(c.moreRows)} more` }) : null)
+    c.rows.length ? h(doc, "div", { class: "schema-rows", role: "list", "aria-label": `Properties of ${classText(c)}` }, c.rows.map(rowEl), c.moreRows ? h(doc, "div", { class: "schema-more", role: "listitem", text: `+${fmt(c.moreRows)} more` }) : null)
       : c.kind === "class" ? h(doc, "div", { class: "schema-rows" }, h(doc, "div", { class: "schema-none", text: "No properties" })) : null)
   }
 
@@ -394,15 +448,31 @@ export function createSchemaView(el, on) {
 
   /**
    * Draw an answer. `o.imports`: imported classes one box each (else one box
-   * counts them); `o.focus`: select the answer's focus (else keep the
-   * selection), and centre it; `o.keep`: keep the camera if the user moved it.
+   * counts them); `o.focus`: select the answer's focus and centre it (an
+   * answer that lists the same classes updates the selection and the camera
+   * in place, without building the boxes again); else the selection stays
+   * and the camera keeps its zoom and pan, shifted so the selected (else the
+   * focus) class stays where it was on screen. The first answer opens on
+   * firstView.
    * @returns {number} ms to build, measure and place the boxes
    */
   function show(res, o = {}) {
     const t0 = win.performance.now()
+    const fresh = schemaModel(res)
+    const wantImports = o.imports === true
+    if (o.focus && model && lay && wantImports === imports && sameClasses(model, fresh)) {
+      model = fresh
+      rebuilt = false
+      mark(model.focus, model.focusRow)
+      if (selected >= 0) center(selected)
+      return done(t0)
+    }
+    const prev = model && lay ? anchorOf() : null
     const prevId = selected >= 0 ? model?.classes[selected]?.id : null
-    model = schemaModel(res)
-    imports = o.imports === true
+    model = fresh
+    rebuilt = true
+    imports = wantImports
+    importsButton.setAttribute("aria-pressed", String(imports))
     fileRoot = commonRoot(model.classes.map((c) => c.uri).filter(Boolean))
     items = []
     itemOf = new Int32Array(model.classes.length).fill(-1)
@@ -415,11 +485,32 @@ export function createSchemaView(el, on) {
     const importsN = (imports ? model.classes.filter((c) => c.kind === "imported").length : foldedImports) + model.imported
     importsItem = importsN ? items.length : -1
     if (importsN) items.push(-1)
-    boxEl = items.map((i) => (i < 0 ? importsBox(importsN) : boxOf(i)))
+    // Boxes drawn the same stay (no new elements to style and lay out);
+    // the others are built, and the DOM order follows the answer's.
+    const old = new Map()
+    boxEl.forEach((b, k) => sigs[k] && old.set(sigs[k], b))
+    if (current) current.tabIndex = -1
+    world.querySelector(".schema-box.is-selected")?.classList.remove("is-selected")
+    world.querySelector(".schema-row.is-lit")?.classList.remove("is-lit")
+    sigs = items.map((i) => (i < 0 ? "" : sigOf(i)))
+    boxEl = items.map((i, k) => {
+      const b = sigs[k] && old.get(sigs[k])
+      if (b) old.delete(sigs[k])
+      return b || (i < 0 ? importsBox(importsN) : boxOf(i))
+    })
     boxEl.forEach((b, k) => (b.dataset.item = k))
-    const frag = doc.createDocumentFragment()
-    frag.append(svg, ...boxEl)
-    world.replaceChildren(frag)
+    let at = world.firstChild
+    if (at !== svg) world.insertBefore(svg, at)
+    at = svg.nextSibling
+    for (const b of boxEl) {
+      if (at === b) at = at.nextSibling
+      else world.insertBefore(b, at)
+    }
+    while (at) {
+      const next = at.nextSibling
+      at.remove()
+      at = next
+    }
     empty.hidden = items.length > 0
     hideArrow()
     current = null
@@ -431,10 +522,51 @@ export function createSchemaView(el, on) {
     if (next >= 0) mark(next, next === model.focus ? model.focusRow : -1)
     else setCurrent(boxEl[0] ?? null)
     if (o.focus && selected >= 0) center(selected)
-    else if (!o.keep || !userMoved) fit()
+    else if (prev) keepAnchor(prev)
+    else firstView()
+    return done(t0)
+  }
+  function done(t0) {
     const ms = win.performance.now() - t0
     el.dataset.drawMs = ms.toFixed(2)
     return ms
+  }
+
+  // What box `i` draws: its class but the places (the inspector's), its index, the file root.
+  const sigOf = (i) => JSON.stringify([i, fileRoot, model.classes[i]], (k, v) => (k === "examples" || k === "problems" ? undefined : v))
+
+  // The same classes in the same order, each with as many rows, instances
+  // and problems: the boxes drawn still show the answer.
+  function sameClasses(a, b) {
+    if (a.classes.length !== b.classes.length || a.imported !== b.imported) return false
+    for (let i = 0; i < a.classes.length; i++) {
+      const x = a.classes[i], y = b.classes[i]
+      if (x.id !== y.id || x.kind !== y.kind || x.rows.length !== y.rows.length || x.instances !== y.instances || x.problemCount !== y.problemCount || x.moreRows !== y.moreRows) return false
+    }
+    return true
+  }
+
+  // The class the camera keeps in place across a new answer, and where on screen it is.
+  function anchorOf() {
+    const i = selected >= 0 ? selected : focusClass()
+    const k = i >= 0 ? itemOf[i] : -1
+    if (k == null || k < 0) return { id: null }
+    return { id: model.classes[i].id, sx: lay.x[k] * cam.k + cam.x, sy: lay.y[k] * cam.k + cam.y }
+  }
+  function keepAnchor(a) {
+    const i = a.id != null ? model.index.get(a.id) : undefined
+    const k = i != null ? itemOf[i] : -1
+    if (lay && k >= 0) {
+      cam.x = a.sx - lay.x[k] * cam.k
+      cam.y = a.sy - lay.y[k] * cam.k
+    }
+    applyCam()
+  }
+  /** The focus class: the answer's focus, else its first class listed in a box; -1: none. */
+  function focusClass() {
+    if (!model) return -1
+    if (model.focus >= 0 && itemOf[model.focus] >= 0) return model.focus
+    return items.find((i) => i >= 0) ?? -1
   }
 
   // Measure every box (one layout), lay them out, then write every position.
@@ -537,26 +669,52 @@ export function createSchemaView(el, on) {
   }
   const clamp = (k) => Math.min(ZOOM[1], Math.max(ZOOM[0], k))
 
+  // The zoom that shows the whole layout as it is now (folded or not).
+  function fitScale() {
+    const [vw, vh] = viewSize()
+    return clamp(Math.min(1, (vw - 32) / lay.width, (vh - 56) / Math.max(1, lay.height)))
+  }
+
+  /** The whole model in view, at FIT_FLOOR or closer: past the floor, the selected (else focus) class is centred. */
   function fit() {
     if (!lay) return applyCam()
     const [vw, vh] = viewSize()
     if (vw < 2 || vh < 2) return applyCam()
-    const scale = () => clamp(Math.min(1, (vw - 32) / lay.width, (vh - 56) / Math.max(1, lay.height)))
-    cam.k = scale()
+    cam.k = fitScale()
     applyCam()
-    // Folded boxes are shorter: fit again, and stay folded.
-    if (far) cam.k = Math.min(scale(), FAR * 0.99)
-    cam.x = (vw - lay.width * cam.k) / 2
-    cam.y = Math.max(40, (vh - lay.height * cam.k) / 2)
+    // Under FAR the boxes fold: the floor, folded, whatever the folded layout's fit.
+    if (far) cam.k = FIT_FLOOR
+    const w = lay.width * cam.k, hgt = lay.height * cam.k
+    const anchor = selected >= 0 ? selected : focusClass()
+    if ((w > vw - 16 || hgt > vh - 40) && anchor >= 0) return center(anchor, cam.k, true), (userMoved = false)
+    cam.x = (vw - w) / 2
+    cam.y = Math.max(40, (vh - hgt) / 2)
     userMoved = false
     applyCam()
   }
 
-  function center(i, kMin = 0.8) {
+  /**
+   * The first view: the whole model when it fits at READABLE or closer,
+   * else the focus class centred at FOCUS_ZOOM with its neighbours around it.
+   */
+  function firstView() {
+    if (!lay) return applyCam()
+    const [vw, vh] = viewSize()
+    if (vw < 2 || vh < 2) return applyCam()
+    // Measure unfolded.
+    if (far) (cam.k = 1), applyCam()
+    const f = focusClass()
+    if (fitScale() >= READABLE || f < 0) return fit()
+    center(f, FOCUS_ZOOM, true)
+    userMoved = false
+  }
+
+  // Centre class `i` at zoom `kMin` or closer (`exact`: at `kMin`).
+  function center(i, kMin = 0.8, exact = false) {
     const k = itemOf[i]
     if (!lay || k == null || k < 0) return
     const [vw, vh] = viewSize()
-    cam.k = Math.max(cam.k, kMin)
+    cam.k = exact ? clamp(kMin) : Math.max(cam.k, kMin)
     applyCam()
     const hgt = heights[k] * cam.k
     cam.x = vw / 2 - (lay.x[k] + W / 2) * cam.k
@@ -629,7 +787,6 @@ export function createSchemaView(el, on) {
     if (e.key === "+" || e.key === "=") return e.preventDefault(), zoomAt(1.25)
     if (e.key === "-") return e.preventDefault(), zoomAt(0.8)
     if (e.key === "0") return e.preventDefault(), fit()
-    if (e.key === "Escape") return select(-1)
     if (!box || !lay) return
     const k = Number(box.dataset.item)
     const i = items[k]
@@ -747,12 +904,29 @@ export function createSchemaView(el, on) {
     setProblemsOnly(!problemsOnly)
     on.problems(problemsOnly)
   })
+  importsButton.addEventListener("click", () => on.imports(!imports))
   legendButton.addEventListener("click", () => {
     const open = legend.hidden
     legend.hidden = !open
     legendButton.setAttribute("aria-expanded", String(open))
   })
-  legend.addEventListener("keydown", (e) => e.key === "Escape" && ((legend.hidden = true), legendButton.setAttribute("aria-expanded", "false"), legendButton.focus()))
+  el.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return
+    e.preventDefault()
+    escape()
+  })
+
+  /** Escape: close the legend if it is open, else clear the selection and put the focus on the box that was selected. */
+  function escape() {
+    if (!legend.hidden) {
+      legend.hidden = true
+      legendButton.setAttribute("aria-expanded", "false")
+      return
+    }
+    const box = selected >= 0 ? boxEl[itemOf[selected]] : null
+    select(-1)
+    if (box && box.offsetParent !== null) setCurrent(box, true)
+  }
 
   function setProblemsOnly(v) {
     problemsOnly = v === true
@@ -764,6 +938,15 @@ export function createSchemaView(el, on) {
   return {
     show,
     select,
+    escape,
+    /** The last show built the boxes anew (false: it updated them in place). */
+    get rebuilt() {
+      return rebuilt
+    },
+    /** The class shown when none is selected (the narrow inspector): the answer's focus, else the first class; -1: none. */
+    get focusClass() {
+      return focusClass()
+    },
     /** The selected class (-1: none), its lit row, the answer as checked. */
     get selected() {
       return selected
@@ -778,9 +961,9 @@ export function createSchemaView(el, on) {
       return selected >= 0 ? model.classes[selected].id : null
     },
     fit,
-    /** The view changed size: refit unless the user moved the camera. */
+    /** The view changed size: the first view again unless the user moved the camera. */
     resize() {
-      if (model && !userMoved) fit()
+      if (model && !userMoved) firstView()
     },
     setProblemsOnly,
     /** Classes whose name, label or IRI has `q`: exact first, then prefix, then the rest; at most `max`. */

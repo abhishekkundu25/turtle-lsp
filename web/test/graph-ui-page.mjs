@@ -2,7 +2,9 @@
 // fake `request` that answers from graph-fixture.mjs (and `turtle/schema`
 // from the answer the test hands over) and records every call, a `reveal`
 // and a `store` that record too. As the server would, it resolves a Follow
-// cursor `at` by its line. The test drives it through window.__graph.
+// cursor `at` by its line, answers a Schema `search` with `matches` over the
+// classes listed and the `unlisted` ones, and lists an unlisted class when
+// it is the `focus`. The test drives it through window.__graph.
 
 import { createGraphView } from "../app/graph/view.js"
 import { smallGraph, bigGraph, bigSchema } from "./graph-fixture.mjs"
@@ -31,13 +33,17 @@ const T = (window.__graph = {
    * Mount a fresh view. `size`: a big graph of that many nodes instead of
    * the small one; `total`: its node count before the cap; `width`: the host's width.
    */
-  mount({ size = 0, total, width, diagnostics = [], stored, schema, schemaSize = 0, atClass = {}, atNode = {} } = {}) {
+  mount({ size = 0, total, width, diagnostics = [], stored, schema, schemaSize = 0, unlisted = [], atClass = {}, atNode = {} } = {}) {
     view?.destroy()
     T.calls = []
     T.reveals = []
     T.hold = false
     T.held = []
     T.stored = stored ? { graph: stored } : {}
+    // The Schema answer: the test may swap it (setSchema) to model an edit.
+    T.schema = schema
+    T.setSchema = (next) => (T.schema = next)
+    const big = schemaSize ? JSON.stringify(bigSchema(schemaSize)) : null
     host.style.height = "100vh"
     host.style.width = width ? `${width}px` : ""
     // `turtle/schema`: the handed answer (or `schemaSize` generated classes);
@@ -47,7 +53,21 @@ const T = (window.__graph = {
     // names when listed, else the focus (`focus` when listed, else the
     // answer's own).
     const schemaAnswer = (params) => {
-      const res = schemaSize ? bigSchema(schemaSize) : JSON.parse(JSON.stringify(schema ?? { classes: [], total: { classes: 0 }, imported: 0 }))
+      const res = JSON.parse(big ?? JSON.stringify(T.schema ?? { classes: [], total: { classes: 0 }, imported: 0 }))
+      // `unlisted`: classes past the cap ({ id, name, label?, instances? }).
+      res.total.classes = res.classes.length + unlisted.length
+      const far = unlisted.findIndex((c) => c.id === params.focus)
+      if (far >= 0) {
+        // As the server: the class asked for is listed, the last listed one makes room.
+        const c = unlisted[far]
+        res.classes.pop()
+        for (const k of res.classes) for (const r of k.rows) if (r.target >= res.classes.length) delete r.target
+        for (const k of res.classes) k.parents = k.parents.filter((p) => p < res.classes.length)
+        res.classes.push({ id: c.id, name: c.name, label: c.label, kind: "class", parents: [], instances: c.instances ?? 0, problems: 0, rows: [], moreRows: 0 })
+        res.focus = res.classes.length - 1
+        delete res.focusRow
+      }
+      if (typeof params.search === "string") res.matches = search(params.search, res, unlisted)
       if (params.at) {
         const hit = atClass[params.at.position.line]
         if (!hit) return null
@@ -61,6 +81,26 @@ const T = (window.__graph = {
       const keep = asked >= 0 ? asked : focus
       res.classes.forEach((c, i) => i !== keep && c.rows.forEach((r) => delete r.examples))
       return res
+    }
+    // Best first: the exact local name, then a name or label it starts, then
+    // one it is in (or the IRI); ties by instances, then IRI. At most 20.
+    const search = (q, res, extra) => {
+      const s = q.toLowerCase()
+      const all = [...res.classes.map((c, index) => ({ ...c, index })), ...extra.filter((c) => !res.classes.some((k) => k.id === c.id))]
+      const local = (n) => n.slice(n.indexOf(":") + 1).toLowerCase()
+      const rank = (c) => {
+        const names = [c.name ?? "", c.label ?? ""].map((v) => v.toLowerCase())
+        if (local(c.name ?? "") === s) return 0
+        if (names.some((v) => v.startsWith(s) || local(v).startsWith(s))) return 1
+        if ([...names, c.id.toLowerCase()].some((v) => v.includes(s))) return 2
+        return -1
+      }
+      return all
+        .map((c) => [rank(c), c])
+        .filter(([r]) => r >= 0)
+        .sort(([a, x], [b, y]) => a - b || (y.instances ?? 0) - (x.instances ?? 0) || (x.id < y.id ? -1 : 1))
+        .slice(0, 20)
+        .map(([, c]) => ({ id: c.id, name: c.name, ...(c.label ? { label: c.label } : {}), ...(c.index != null ? { index: c.index } : {}) }))
     }
     const answer = (method, params) => {
       if (method === "turtle/schema") return schemaAnswer(params)

@@ -17,7 +17,7 @@ import { pickLabels, truncate } from "./labels.js"
 import { PALETTE_SIZE, colorSlots, readColors } from "./colors.js"
 import { createRenderer } from "./canvas.js"
 import { classInspector, createFilterPanel } from "./panel.js"
-import { SCHEMA_METHOD, createSchemaView, mergePlaces, needsPlaces } from "./schema.js"
+import { SCHEMA_METHOD, createSchemaView, displayName, mergePlaces, needsPlaces } from "./schema.js"
 
 export const STORE_KEY = "graph"
 export const METHOD = "turtle/graph"
@@ -33,6 +33,8 @@ const SEVERITY = ["", "error", "warning", "information", "hint"]
 const LEGEND_CHARS = 32
 const INFO_CHARS = 48
 const NO_FILES = "No files selected"
+// The inspector alone, no boxes, under this width (graph.css has the same).
+const NARROW = 700
 
 /**
  * Mount the graph view in `container`.
@@ -53,7 +55,9 @@ const NO_FILES = "No files selected"
  * to the node; Graph asks `turtle/graph` with `at` (one node, no layout)
  * and selects and centres the node the answer's `focus` names. One request
  * is in flight at a time; an answer for an older cursor is dropped, and an
- * answer with no focus (the cursor on no term) leaves the view as it is.
+ * answer with no focus (the cursor on no term) leaves the view as it is but
+ * for Schema's lit row, which goes. A Schema answer that lists the classes
+ * shown updates the selection in place (schema.js show).
  */
 // `maxNodes`: the largest node cap offered (a host whose layout runs on the
 // thread that answers its editor keeps it low).
@@ -71,7 +75,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   // ---- the elements ----
   const tabs = MODES.map((m) => h(doc, "button", { type: "button", role: "tab", class: "graph-tab", "data-mode": m, text: TITLES[m] }))
   const fitButton = h(doc, "button", { type: "button", class: "graph-btn graph-fit", text: "Fit", title: "Fit the graph to the view (0)" })
-  const followButton = h(doc, "button", { type: "button", class: "graph-btn graph-follow", "aria-pressed": String(state.follow), text: "Follow cursor", title: "Show the term at the editor's cursor" })
+  const followButton = h(doc, "button", { type: "button", class: "graph-btn graph-follow", "aria-pressed": String(state.follow), text: "Follow cursor", title: "Show the term at the cursor of the editor beside this view" })
   const status = h(doc, "span", { class: "graph-status", role: "status", "aria-live": "polite" })
   const filtersEl = h(doc, "div", { class: "graph-filters", id: `graph-filters-${++views}`, role: "region", "aria-label": "Graph filters" })
   // Narrow (a side bar): the filters fold away so the drawing has the height.
@@ -137,7 +141,12 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       timer = setTimeout(load, DEBOUNCE_MS)
     },
     search: runSearch,
-    enter(q) {
+    async enter(q) {
+      if (mode === "schema") {
+        const found = await schemaSearch(q, true)
+        if (found?.length && mode === "schema") pickMatch(found[0])
+        return
+      }
       runSearch(q)
       if (matches.length) focusNode(matches[0])
     },
@@ -408,7 +417,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     if (mode === "schema") {
       const m = schema.model
       const f = (v) => v.toLocaleString("en")
-      status.textContent = `Showing ${f(m?.classes.length ?? 0)} of ${f(m?.total ?? 0)} classes`
+      const shown = m?.classes.length ?? 0, total = m?.total ?? 0
+      status.textContent = `Showing ${f(shown)} of ${f(total)} classes` + (shown < total ? " · search or Follow cursor reach the others" : "")
       return
     }
     const shown = mode === "focus" ? rings?.nodes.length ?? 0 : model?.n ?? 0
@@ -487,9 +497,15 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     info.hidden = false
   }
 
+  // The class the inspector shows (-1: none): the selected one; narrow, with none selected, the focus class.
+  let shownClass = -1
+  let narrow = false
+  const isNarrow = () => root.clientWidth > 0 && root.clientWidth < NARROW
+
   // Schema: the selected class in the inspector.
   function renderClass() {
-    const i = schema.selected
+    narrow = isNarrow()
+    const i = (shownClass = schema.selected >= 0 ? schema.selected : narrow && !nothing ? schema.focusClass : -1)
     root.dataset.info = i >= 0 && !nothing ? "open" : ""
     if (i < 0 || nothing) {
       info.hidden = true
@@ -502,7 +518,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const same = info.dataset.cls === id
     const open = same ? [...info.querySelectorAll("details[data-key][open]")].map((d) => d.dataset.key) : []
     const focused = same && info.contains(doc.activeElement) ? doc.activeElement.dataset?.key : null
-    const loading = askPlaces()
+    const loading = askPlaces(i)
     const { nodes, sources } = classInspector(doc, schema.model, i, { lit: schema.lit, canReveal: typeof reveal === "function", loading })
     infoSources = sources
     info.replaceChildren(...nodes)
@@ -525,9 +541,9 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   // Per model shown: class id -> "asking" or "done".
   const placesOf = new WeakMap()
 
-  /** Ask for the selected class's places when it needs them; true while they are on their way. */
-  function askPlaces() {
-    const m = schema.model, i = schema.selected
+  /** Ask for class `i`'s places (the one shown) when it needs them; true while they are on their way. */
+  function askPlaces(i) {
+    const m = schema.model
     const c = m?.classes[i]
     if (!shownParams || !needsPlaces(c)) return false
     let asked = placesOf.get(m)
@@ -548,7 +564,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     }
     placesAsking = false
     if (destroyed) return
-    const i = schema.selected
+    const i = shownClass
     const current = schema.model === m && m.classes[i]?.id === id
     if (!current) asked.delete(id)
     else {
@@ -603,9 +619,9 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     setMode("focus", true)
   }
 
-  /** Search's choice: select and centre it (graph, schema), walk to it (focus). */
+  /** Search's choice: select and centre it (graph, schema), walk to it (focus). In Schema `i` is a place in the results. */
   function focusNode(i) {
-    if (mode === "schema") return void (i >= 0 && schema.select(i, { center: true, focus: true }))
+    if (mode === "schema") return void (schemaFound[i] && pickMatch(schemaFound[i]))
     if (!model || i < 0 || i >= model.n) return
     if (mode === "focus") return focusOn(i)
     select(i, { center: true })
@@ -614,14 +630,82 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
 
   function runSearch(q, redraw = true) {
     if (mode === "schema") {
-      const found = schema.search(q, 8)
       matches = []
-      panel.results(found.map((i) => ({ index: i, name: truncate(schema.model.classes[i].name, 40), kind: "class" })))
+      // A new answer (redraw false) leaves the results: each is found by its IRI when chosen.
+      if (redraw) schemaSearch(q)
       return
     }
     matches = model ? searchNodes(model, q, 50) : []
     panel.results(matches.slice(0, 8).map((i) => ({ index: i, name: truncate(nameOf(model.nodes[i]), 40), kind: model.kind[i] === LITERAL ? "literal" : KINDS[model.kind[i]] })))
     if (redraw) schedule()
+  }
+
+  // ---- Schema search ----
+  // The server searches every class, listed or not (`search`, with the
+  // params of the answer shown, so a match's `index` is into it): asked
+  // 150 ms after the last keystroke, or at once on Enter. One answer per
+  // query; an answer for an older query is dropped. A match not listed is
+  // asked for as the focus of a new answer.
+  let schemaFound = []
+  let searchSeq = 0
+  let searchTimer = 0
+  let searching = null // { q, asked, promise }: the query asked, or about to be
+
+  /** Ask for the classes `q` finds (debounced unless `now`); resolves to the matches shown, null if dropped. */
+  function schemaSearch(q, now = false) {
+    const s = String(q ?? "").trim()
+    if (searching?.q === s && (searching.asked || !now)) return searching.promise
+    clearTimeout(searchTimer)
+    const my = ++searchSeq
+    if (!s) {
+      searching = null
+      schemaFound = []
+      panel.results([])
+      return Promise.resolve([])
+    }
+    let go
+    const entry = { q: s, asked: false, promise: null }
+    entry.promise = new Promise((resolve) => (go = resolve)).then(async () => {
+      entry.asked = true
+      const base = shownParams ?? schemaParams(state.filters, { imports: state.schema.imports })
+      if (!base) return []
+      let res = null
+      try {
+        res = await request(SCHEMA_METHOD, { ...base, search: s })
+      } catch {}
+      if (my !== searchSeq || destroyed) return null
+      const listed = (i) => ({ id: schema.model.classes[i].id, name: schema.model.classes[i].name, label: schema.model.classes[i].label, index: i })
+      // No answer from the server: the classes listed.
+      const found = Array.isArray(res?.matches) ? res.matches.filter((m) => m && typeof m.id === "string") : schema.model ? schema.search(s, 8).map(listed) : []
+      showMatches(found)
+      return schemaFound
+    })
+    searching = entry
+    if (now) go()
+    else searchTimer = setTimeout(go, DEBOUNCE_MS)
+    return entry.promise
+  }
+
+  function showMatches(found) {
+    schemaFound = found.slice(0, 20)
+    panel.results(schemaFound.map((m, k) => {
+      const name = displayName(m.name, m.id)
+      const listed = schema.model?.index.has(m.id)
+      return { index: k, name: truncate(m.label && m.label !== name ? `${m.label} · ${name}` : name, 40), kind: listed ? "class" : "not shown", title: m.id }
+    }))
+  }
+
+  /** A match chosen: select it when listed, else ask for an answer centred on it, then select it. */
+  async function pickMatch(m) {
+    const i = schema.model?.index.get(m.id)
+    if (i != null) return schema.select(i, { center: true, focus: true })
+    const params = schemaParams(state.filters, { focus: m.id, imports: state.schema.imports })
+    if (!params) return
+    const res = await ask(params, SCHEMA_METHOD)
+    if (!res || mode !== "schema") return
+    showSchema(res, { focus: true }, params)
+    const j = schema.model.index.get(m.id)
+    if (j != null) schema.select(j, { center: true, focus: true })
   }
 
   // ---- modes ----
@@ -675,13 +759,13 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const act = b?.dataset.act
     if (mode === "schema") {
       if (act === "close") return schema.select(-1)
-      if (act === "reveal") return openClass(schema.selected)
+      if (act === "reveal") return openClass(shownClass)
       if (act === "src") {
         const s = infoSources[Number(b.dataset.src)]
         if (s && typeof reveal === "function") reveal(s.uri, s.range)
         return
       }
-      if (act === "row") return schema.select(schema.selected, { row: Number(b.dataset.row) })
+      if (act === "row") return schema.select(shownClass, { row: Number(b.dataset.row) })
       if (act === "class") return schema.select(Number(b.dataset.c), { center: true })
       return
     }
@@ -691,6 +775,12 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const t = e.target.closest("[data-i]")
     if (!t) return
     select(Number(t.dataset.i), { center: true })
+  })
+  // Escape in the inspector: as in the drawing (the legend, then the selection).
+  info.addEventListener("keydown", (e) => {
+    if (mode !== "schema" || e.key !== "Escape") return
+    e.preventDefault()
+    schema.escape()
   })
   followButton.addEventListener("click", () => {
     state.follow = !state.follow
@@ -804,7 +894,10 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     const b = stage.getBoundingClientRect()
     renderer.size(b.width, b.height, win.devicePixelRatio || 1)
     if ((fitPending || !userMoved) && scene) fit()
-    if (mode === "schema") schema.resize()
+    if (mode === "schema") {
+      schema.resize()
+      if (isNarrow() !== narrow) renderInfo()
+    }
     draw()
   }
   const observer = win.ResizeObserver ? new win.ResizeObserver(() => resize()) : null
@@ -863,12 +956,19 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   // A turtle/graph answer lists the term's node first (breadth-first from
   // the focus the server resolved `at` to).
   function followed(m, res, params) {
-    if (res == null) return
     if (m === "schema") {
-      if (!Number.isInteger(res?.focus) || res.focus < 0) return
+      // No term there: the class stays, its lit row goes.
+      if (!Number.isInteger(res?.focus) || res.focus < 0) {
+        if (schema.lit >= 0) schema.select(schema.selected)
+        return
+      }
+      const t0 = win.performance.now()
       showSchema(res, { focus: true }, params)
+      root.dataset.followMs = (win.performance.now() - t0).toFixed(2)
+      root.dataset.followRebuilt = String(schema.rebuilt)
       return
     }
+    if (res == null) return
     const id = res.nodes?.[0]?.id
     if (typeof id !== "string") return
     if (m === "focus") {
@@ -918,6 +1018,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       destroyed = true
       clearTimeout(timer)
       clearTimeout(followTimer)
+      clearTimeout(searchTimer)
       if (frame) win.cancelAnimationFrame(frame)
       observer?.disconnect()
       container.replaceChildren()

@@ -11,14 +11,15 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
 import { listen } from "./static-server.mjs"
-import { mergePlaces, needsPlaces, problemsOf, rowBadge, schemaModel, tidyLayout } from "../app/graph/schema.js"
+import { FIT_FLOOR, FOCUS_ZOOM, READABLE, displayName, mergePlaces, needsPlaces, problemsOf, rowBadge, schemaModel, tidyLayout } from "../app/graph/schema.js"
 import { normalizeState } from "../app/graph/filters.js"
 import { A, EX, bigSchema } from "./graph-fixture.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const WEB = path.join(HERE, "..")
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(HERE, "schema-fixture.json"), "utf8"))
-const EQUIPMENT = 0, PUMP = 1, MOTOR = 3, PIPE = 4
+const EQUIPMENT = 0, PUMP = 1, MOTOR = 3, PIPE = 4, SITE = 5
+const PLANT = "http://example.org/plant#"
 const name = (c) => FIXTURE.classes[c].label
 // The fixture as a server without examples would answer.
 const withoutExamples = () => {
@@ -27,7 +28,36 @@ const withoutExamples = () => {
   return f
 }
 
+// The fixture with Pipe and the property that links to it written as IRIs,
+// as the server writes a name no prefix shortens.
+const unprefixed = () => {
+  const f = JSON.parse(JSON.stringify(FIXTURE))
+  const pipe = f.classes[PIPE]
+  pipe.name = `<${pipe.id}>`
+  delete pipe.label
+  const row = f.classes[PUMP].rows[2]
+  row.name = `<${row.property}>`
+  row.rangeName = `<${pipe.id}>`
+  return f
+}
+
 // ---- pure parts, in Node -----------------------------------------------------------------
+
+test("a name is the prefixed name, else the IRI's local name, never a cut IRI (catches: a chip reading → //example.or…, rows that look the same)", () => {
+  assert.equal(displayName("ex:Pump", `${PLANT}Pump`), "ex:Pump")
+  assert.equal(displayName(`<${PLANT}Pump>`, `${PLANT}Pump`), "Pump")
+  assert.equal(displayName("<http://example.org/a/b/c>"), "c")
+  assert.equal(displayName("", "http://example.org/ns/"), "ns", "a trailing / or # is not the local name")
+  assert.equal(displayName("", "urn:x"), "urn:x", "no # or /: the IRI")
+  const m = schemaModel(unprefixed())
+  assert.deepEqual([m.classes[PIPE].name, m.classes[PUMP].rows[2].name, m.classes[PUMP].rows[2].rangeName], ["Pipe", "connectedTo", "Pipe"])
+  // A not-declared row names the classes that declare it; none: says so.
+  const vendor = (m) => m.classes[PUMP].problems.find((p) => p.kind === "undeclared")
+  assert.equal(vendor(schemaModel(FIXTURE)).detail, "Declared for Site, not Pump; used by 41 of 352 instances")
+  const none = JSON.parse(JSON.stringify(FIXTURE))
+  delete none.classes[PUMP].rows[5].declaredFor
+  assert.match(vendor(schemaModel(none)).detail, /^Declared for no class;/)
+})
 
 test("each class's problems come from its rows and match the answer's count (catches: a box badge and an inspector that disagree with the server)", () => {
   const m = schemaModel(FIXTURE)
@@ -36,6 +66,7 @@ test("each class's problems come from its rows and match the answer's count (cat
   assert.equal(m.classes[PUMP].worst, "error")
   // A problem with places opens the first; the others open the declaration.
   const of = (m, kind) => m.classes[PUMP].problems.find((p) => p.kind === kind)
+  const bare = schemaModel(withoutExamples())
   const undeclared = of(m, "undeclared")
   assert.deepEqual([undeclared.examples.length, undeclared.count], [10, 41])
   assert.deepEqual(undeclared.at, FIXTURE.classes[PUMP].rows[5].examples[0])
@@ -43,9 +74,12 @@ test("each class's problems come from its rows and match the answer's count (cat
   assert.deepEqual([bad.examples.length, bad.count], [10, 12])
   assert.deepEqual(bad.at, FIXTURE.classes[PUMP].rows[0].examples[0])
   assert.deepEqual(of(m, "missing").examples.map((e) => e.name), ["ex:pump90", "ex:pump91", "ex:pump92"])
-  assert.deepEqual([of(m, "conflict").examples, of(m, "conflict").at], [[], FIXTURE.classes[PUMP].rows[1].declared[0]])
+  // A conflict lists the values outside the shape, of shapeBadValues.
+  const conflict = of(m, "conflict")
+  assert.deepEqual([conflict.examples.length, conflict.count, conflict.at], [10, 30, FIXTURE.classes[PUMP].rows[1].examples[0]])
+  assert.match(conflict.detail, /30 values outside the shape$/)
+  assert.deepEqual(of(bare, "conflict").at, FIXTURE.classes[PUMP].rows[1].declared[0], "no place listed: the declaration")
   assert.deepEqual(of(m, "unused").at, FIXTURE.classes[PUMP].rows[4].declared[0])
-  const bare = schemaModel(withoutExamples())
   assert.equal(of(bare, "undeclared").at, null, "nothing declares it and no place listed: nowhere to open")
   assert.deepEqual(of(bare, "badValues").at, FIXTURE.classes[PUMP].rows[0].declared[0])
   // Examples of another kind, or broken ones, are not the problem's.
@@ -316,7 +350,7 @@ describe("Schema in Chrome", () => {
       const rows = v.info.getByRole("list", { name: "Properties" }).getByRole("listitem")
       assert.equal(await rows.count(), 6)
       assert.match(await rows.nth(0).textContent(), /ex:hasPressure340\/35212 bad values/)
-      assert.match(await rows.nth(5).textContent(), /Declared nowhere/)
+      assert.match(await rows.nth(5).textContent(), /Declared for Site, not Pump/)
       await v.info.getByRole("button", { name: "Open shape declaration at shapes.ttl:21" }).click()
       await v.info.getByRole("button", { name: "Open domain declaration at ontology.ttl:26" }).click()
       const range = (line) => ({ start: { line, character: 0 }, end: { line, character: 10 } })
@@ -324,8 +358,9 @@ describe("Schema in Chrome", () => {
       const problems = v.info.getByRole("list", { name: "Problems" }).getByRole("listitem")
       assert.equal(await problems.count(), 5)
       assert.equal(await v.info.getByRole("heading", { name: "Problems (5)" }).count(), 1)
+      // A conflict's Open: the first value outside the shape.
       await v.info.getByRole("button", { name: "Open: ex:hasFlow: range and shape disagree" }).click()
-      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: "file:///ws/ontology.ttl", range: range(28) })
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), FIXTURE.classes[PUMP].rows[1].examples[0] && { uri: "file:///ws/data/plant-a.ttl", range: { start: { line: 200, character: 14 }, end: { line: 200, character: 19 } } })
       // A row's name lights it in its box; the class's own definition opens.
       await v.info.getByRole("button", { name: "ex:maxRpm", exact: true }).click()
       assert.match(await v.row(PUMP, 4).getAttribute("class"), /is-lit/)
@@ -376,6 +411,13 @@ describe("Schema in Chrome", () => {
     }
   })
 
+  // The camera's zoom.
+  const zoom = (v) => v.page.evaluate(() => Number(/scale\(([\d.]+)\)/.exec(document.querySelector(".schema-world").style.transform)[1]))
+  // Class `c`'s box is in the middle of the drawing.
+  const centred = async (v, c) => {
+    const [view, b] = await Promise.all([v.page.locator(".schema-view").boundingBox(), v.box(c).boundingBox()])
+    assert.ok(Math.abs(b.x + b.width / 2 - (view.x + view.width / 2)) < 3, `class ${c} not centred: ${JSON.stringify({ view, b })}`)
+  }
   // Where each box is drawn, and the camera.
   const placement = (v) => v.page.evaluate(() => [document.querySelector(".schema-world").style.transform, ...[...document.querySelectorAll(".schema-box")].map((b) => b.style.transform)])
   const select = (v, c) => v.box(c).locator(".schema-name").click()
@@ -507,6 +549,11 @@ describe("Schema in Chrome", () => {
       await q.click()
       assert.equal(await q.getAttribute("aria-expanded"), "true")
       assert.match(await legend.textContent(), /never used.*not declared.*bad values.*range and shape disagree/)
+      // Every mark a row shows: the usage bar, used/of and min..max.
+      const keys = await legend.getByRole("listitem").allTextContents()
+      assert.ok(keys.some((k) => /^bar: the share of the class's instances that use the property$/.test(k)), keys.join(" | "))
+      assert.ok(keys.includes("30/5730 of the class's 57 instances use it"))
+      assert.ok(keys.some((k) => k.startsWith("1..1values each instance must have, min..max")))
       await q.click()
       assert.equal(await legend.isHidden(), true)
     } finally {
@@ -701,9 +748,12 @@ describe("Schema in Chrome", () => {
       const median = [...draws].sort((a, b) => a - b)[2]
       console.log(`300 classes: draw ${median.toFixed(2)} ms median of 5 (${draws.map((d) => d.toFixed(1)).join(", ")})`)
       assert.ok(median < 50, `draw ${median} ms`)
-      // Zoomed out to fit 300 boxes: headers only. A hover's arrow is one
-      // path, whatever the size.
+      // Fit on 300 boxes: zoomed out to the floor, headers only, the
+      // selection centred. A hover's arrow is one path, whatever the size.
+      await v.page.getByRole("button", { name: "Fit" }).click()
       assert.equal(await v.page.locator(".graph-schemabox.schema-far").count(), 1)
+      assert.ok(Math.abs((await zoom(v)) - FIT_FLOOR) < 1e-6, `zoom ${await zoom(v)}`)
+      await centred(v, 0)
       await v.page.locator(".schema-chip").first().dispatchEvent("pointerover")
       assert.match(await v.page.locator(".schema-lines").getAttribute("class"), /is-hot/)
       assert.equal(await v.page.locator(".schema-lines path").count(), 4)
@@ -718,6 +768,307 @@ describe("Schema in Chrome", () => {
       assert.equal(await v.page.getByRole("tab", { name: "Schema" }).getAttribute("aria-selected"), "true")
       assert.equal(await v.page.getByRole("tab", { name: "Hierarchy" }).count(), 0)
       assert.deepEqual((await v.schemaCalls())[0].params.files, [A])
+    } finally {
+      await v.close()
+    }
+  })
+  // ---- the polish: names, first view, place keeping, search, follow in place ----
+
+  test("an IRI no prefix shortens shows its local name on the box, the row, the chip, the inspector and the search results, the IRI in a title (catches: → //example.or…, rows that read the same)", async () => {
+    const v = await open({ schema: unprefixed() })
+    try {
+      const name = v.box(PIPE).locator(".schema-name")
+      assert.equal(await name.textContent(), "Pipe")
+      assert.equal(await name.getAttribute("title"), `${PLANT}Pipe`)
+      const row = v.row(PUMP, 2)
+      assert.equal(await row.locator(".schema-pn").textContent(), "connectedTo")
+      assert.equal(await row.getAttribute("title"), `${PLANT}connectedTo`)
+      const chip = row.locator(".schema-chip")
+      assert.equal(await chip.textContent(), "→ Pipe")
+      assert.equal(await chip.getAttribute("title"), `${PLANT}Pipe`)
+      assert.equal(await v.info.getByRole("button", { name: "connectedTo", exact: true }).count(), 1)
+      assert.equal(await v.info.locator(".schema-i-link").first().textContent(), "→ Pipe")
+      await chip.click()
+      await v.info.getByRole("heading", { name: "Pipe" }).waitFor()
+      assert.equal(await v.info.getByRole("heading", { name: "Pipe" }).getAttribute("title"), `${PLANT}Pipe`)
+      await v.page.getByRole("searchbox").fill("Pipe")
+      const result = v.page.locator(".graph-result").first()
+      await result.waitFor()
+      assert.equal(await result.locator(".graph-check-l").textContent(), "Pipe")
+      assert.equal(await result.getAttribute("title"), `${PLANT}Pipe`)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("the first view is readable: a small model fits whole; a big one opens on its focus class at 0.9 (catches: text at 5-8 px, a big model opened at 5% with nothing in focus)", async () => {
+    const small = await open()
+    try {
+      const k = await zoom(small)
+      assert.ok(k >= READABLE, `small model at zoom ${k}`)
+      const view = await small.page.locator(".schema-view").boundingBox()
+      for (const b of await small.page.locator(".schema-box").all()) {
+        const r = await b.boundingBox()
+        assert.ok(r.x >= view.x - 1 && r.y >= view.y - 1 && r.x + r.width <= view.x + view.width + 1 && r.y + r.height <= view.y + view.height + 1, "every box in view")
+      }
+    } finally {
+      await small.close()
+    }
+    const big = await open({ schemaSize: 300 })
+    try {
+      assert.equal(await zoom(big), FOCUS_ZOOM)
+      assert.equal(await big.page.locator(".graph-schemabox.schema-far").count(), 0, "unfolded: rows readable")
+      assert.match(await big.box(0).getAttribute("class"), /is-selected/)
+      await centred(big, 0)
+    } finally {
+      await big.close()
+    }
+  })
+
+  test("in a narrow split the inspector shows the focus class, or the first class, when nothing is selected (catches: a blank panel until a class is chosen)", async () => {
+    const noFocus = JSON.parse(JSON.stringify(FIXTURE))
+    delete noFocus.focus
+    const v = await open({ width: 600, schema: noFocus }, { width: 600, height: 800 })
+    try {
+      await v.info.getByRole("heading", { name: name(EQUIPMENT) }).waitFor()
+      assert.equal(await v.page.locator(".schema-box.is-selected").count(), 0, "shown, not selected")
+      // Its places come as for a selected class.
+      await v.info.locator("summary", { hasText: "Show 7 instances" }).waitFor()
+    } finally {
+      await v.close()
+    }
+    const w = await open({ width: 600 }, { width: 600, height: 800 })
+    try {
+      await w.info.getByRole("heading", { name: name(PUMP) }).waitFor()
+      await w.info.getByRole("button", { name: "Go to definition" }).focus()
+      await w.page.keyboard.press("Escape")
+      assert.equal(await w.page.locator(".schema-box.is-selected").count(), 0)
+      assert.equal(await w.info.getByRole("heading", { name: name(PUMP) }).count(), 1, "still the focus class")
+      // Wide again: nothing selected, no inspector.
+      await w.page.setViewportSize({ width: 1400, height: 900 })
+      await w.page.evaluate(() => (document.getElementById("host").style.width = ""))
+      await w.info.waitFor({ state: "hidden" })
+    } finally {
+      await w.close()
+    }
+  })
+
+  test("Schema shows the search and the files only, and Problems only, Imports and ? in its bar; Graph shows its filters again (catches: 240 px of controls that do nothing)", async () => {
+    const v = await open()
+    try {
+      const filters = v.page.getByRole("region", { name: "Graph filters" })
+      assert.equal(await filters.getByRole("searchbox").isVisible(), true)
+      assert.equal(await filters.locator("summary", { hasText: "Files" }).isVisible(), true)
+      for (const label of ["Colour by", "Depth around selection", "Node cap", "Literals", "rdf:type edges"]) assert.equal(await filters.getByLabel(label).isVisible(), false, label)
+      for (const title of ["Kinds", "Namespaces", "Predicates"]) assert.equal(await filters.locator("summary", { hasText: title }).isVisible(), false, title)
+      for (const b of ["Problems only", "Imports", "Legend"]) assert.equal(await v.page.getByRole("button", { name: b, exact: true }).isVisible(), true, b)
+      // Imports: the imported classes one by one, and back.
+      const imports = v.page.getByRole("button", { name: "Imports", exact: true })
+      await imports.click()
+      await v.box(6).waitFor()
+      assert.equal(await imports.getAttribute("aria-pressed"), "true")
+      assert.equal((await v.schemaCalls()).at(-1).params.imports, true)
+      await v.page.getByRole("tab", { name: "Graph" }).click()
+      assert.equal(await filters.getByLabel("Colour by").isVisible(), true)
+      assert.equal(await filters.locator("summary", { hasText: "Kinds" }).isVisible(), true)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("Follow cursor: on an instance its class; the lit row moves with the cursor and goes when the cursor leaves a property (catches: a row lit for a property the cursor left)", async () => {
+    const v = await open({ stored: { mode: "schema", follow: true }, atClass: { 30: [PUMP, 1], 31: [PUMP, 3], 50: [MOTOR], 60: [PUMP] } })
+    try {
+      const lit = () => v.page.evaluate(() => [...document.querySelectorAll(".schema-row.is-lit, .schema-i-row.is-lit")].map((e) => `${e.closest("[data-c]")?.dataset.c ?? "i"}:${e.dataset.r ?? e.dataset.row}`))
+      await v.follow(30)
+      await v.page.waitForFunction(() => document.querySelector(".schema-row.is-lit")?.dataset.r === "1")
+      assert.deepEqual(await lit(), [`${PUMP}:1`, "i:1"])
+      await v.follow(31)
+      await v.page.waitForFunction(() => document.querySelector(".schema-row.is-lit")?.dataset.r === "3")
+      assert.deepEqual(await lit(), [`${PUMP}:3`, "i:3"])
+      // An instance of Motor: Motor, no row.
+      await v.follow(50)
+      await v.info.getByRole("heading", { name: name(MOTOR) }).waitFor()
+      assert.deepEqual(await lit(), [])
+      // An instance of Pump after a property: Pump, the row gone.
+      await v.follow(31)
+      await v.page.waitForFunction(() => document.querySelector(".schema-row.is-lit")?.dataset.r === "3")
+      await v.follow(60)
+      await v.page.waitForFunction(() => !document.querySelector(".schema-row.is-lit"))
+      assert.match(await v.box(PUMP).getAttribute("class"), /is-selected/)
+      // No term at the cursor: the class stays, the row goes.
+      await v.follow(31)
+      await v.page.waitForFunction(() => document.querySelector(".schema-row.is-lit")?.dataset.r === "3")
+      await v.follow(99)
+      await v.page.waitForFunction(() => !document.querySelector(".schema-row.is-lit, .schema-i-row.is-lit"))
+      assert.match(await v.box(PUMP).getAttribute("class"), /is-selected/)
+      assert.equal(await v.info.getByRole("heading", { name: name(PUMP) }).count(), 1)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("a Follow cursor jump that keeps the classes updates selection, lit row and camera in place: the same box elements, no long task on 300 classes (catches: 300 boxes rebuilt per jump, a 65-90 ms long task)", async () => {
+    const v = await open({ schemaSize: 300, stored: { mode: "schema", follow: true }, atClass: { 30: [5, 1], 31: [12, 2], 32: [40], 33: [140, 0] } })
+    try {
+      await v.page.evaluate(() => {
+        window.__boxes = [...document.querySelectorAll(".schema-box")]
+        window.__long = []
+        new PerformanceObserver((l) => window.__long.push(...l.getEntries().map((e) => Math.round(e.duration)))).observe({ type: "longtask" })
+      })
+      const ms = []
+      for (const [line, c, r] of [[30, 5, 1], [31, 12, 2], [32, 40, -1], [33, 140, 0]]) {
+        await v.follow(line)
+        await v.page.waitForFunction((c) => document.querySelector(".schema-box.is-selected")?.dataset.c === String(c), c)
+        await v.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r))))
+        const [lit, rebuilt, t] = await v.page.evaluate(() => [document.querySelector(".schema-row.is-lit")?.dataset.r ?? "-1", document.querySelector(".graph").dataset.followRebuilt, Number(document.querySelector(".graph").dataset.followMs)])
+        assert.equal(lit, String(r))
+        assert.equal(rebuilt, "false")
+        ms.push(t)
+        await centred(v, c)
+        await v.info.getByRole("heading", { name: `Class ${c}` }).waitFor()
+      }
+      assert.equal(await v.page.evaluate(() => {
+        const now = [...document.querySelectorAll(".schema-box")]
+        return now.length === window.__boxes.length && now.every((b, k) => b === window.__boxes[k] && b.isConnected)
+      }), true, "the same box elements")
+      const long = await v.page.evaluate(() => window.__long)
+      console.log(`follow in place on 300 classes: ${ms.map((t) => t.toFixed(1)).join(", ")} ms main thread; long tasks ${JSON.stringify(long)}`)
+      assert.deepEqual(long, [], "no long task")
+      assert.ok(Math.max(...ms) < 16, `follow ${ms} ms`)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("search asks the server after 150 ms, lists classes not shown, and Enter re-centres the answer on the first match and selects it; a listed match is selected in place; the status says how to reach the rest (catches: search limited to the 300 listed, Enter that does nothing)", async () => {
+    const valve = { id: `${PLANT}Valve`, name: "ex:Valve", label: "Valve", instances: 9 }
+    const v = await open({ unlisted: [valve, { id: `${PLANT}Gauge`, name: "ex:Gauge", instances: 2 }] })
+    try {
+      assert.equal(await v.page.locator(".graph-status").textContent(), "Showing 8 of 10 classes · search or Follow cursor reach the others")
+      const box = v.page.getByRole("searchbox")
+      const searches = async () => (await v.schemaCalls()).filter((c) => c.params.search != null)
+      await box.pressSequentially("Va", { delay: 20 })
+      await v.page.locator(".graph-result").first().waitFor()
+      const asked = await searches()
+      assert.equal(asked.length, 1, "one request for two keystrokes")
+      assert.deepEqual(asked[0].params, { maxClasses: 300, imports: false, search: "Va" })
+      assert.deepEqual(await v.page.locator(".graph-result").allTextContents(), ["Valve · ex:Valvenot shown"])
+      // Enter: the first match, not listed: an answer centred on it.
+      await box.press("Enter")
+      await v.info.getByRole("heading", { name: "Valve" }).waitFor()
+      assert.equal((await v.schemaCalls()).at(-1).params.focus, valve.id)
+      const c = await v.page.evaluate((id) => document.querySelector(".schema-box.is-selected .schema-name").title === id && document.querySelector(".schema-box.is-selected").dataset.c, valve.id)
+      assert.ok(c, "Valve's box selected")
+      await centred(v, c)
+      assert.equal(await v.page.evaluate(() => document.activeElement.classList.contains("is-selected")), true, "the focus on its box")
+      // A listed class: selected, no new answer.
+      await box.fill("Pipe")
+      await v.page.locator(".graph-result", { hasText: "Pipe" }).waitFor()
+      const n = (await v.schemaCalls()).length
+      await box.press("Enter")
+      await v.info.getByRole("heading", { name: "Pipe" }).waitFor()
+      await centred(v, PIPE)
+      assert.equal((await v.schemaCalls()).length, n)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("a new answer after an edit keeps zoom and pan, and the selected box keeps its place on screen though the layout moved (catches: an edit that refits the view and moves the boxes)", async () => {
+    const v = await open()
+    try {
+      // Equipment selected, zoomed in on it.
+      await select(v, EQUIPMENT)
+      const p = await v.box(EQUIPMENT).boundingBox()
+      await v.page.mouse.move(p.x + p.width / 2, p.y + 10)
+      await v.page.mouse.wheel(0, -200)
+      await v.page.waitForTimeout(50)
+      const k = await zoom(v)
+      const before = await v.box(EQUIPMENT).boundingBox()
+      const placed = await v.box(EQUIPMENT).evaluate((b) => b.style.transform)
+      // An edit: a new subclass of Equipment widens its tree.
+      const edited = JSON.parse(JSON.stringify(FIXTURE))
+      edited.classes.push({ id: `${PLANT}Valve`, name: "ex:Valve", label: "Valve", uri: "file:///ws/ontology.ttl", kind: "class", parents: [EQUIPMENT], instances: 3, problems: 0, rows: [], moreRows: 0 })
+      edited.total.classes++
+      await v.page.evaluate((s) => window.__graph.setSchema(s), edited)
+      await v.page.evaluate(() => window.__graph.view.refresh())
+      await v.box(8).waitFor()
+      assert.equal(await zoom(v), k, "same zoom")
+      assert.notEqual(await v.box(EQUIPMENT).evaluate((b) => b.style.transform), placed, "the layout moved Equipment (over its new child)")
+      const after = await v.box(EQUIPMENT).boundingBox()
+      assert.ok(Math.abs(after.x - before.x) <= 2 && Math.abs(after.y - before.y) <= 2, `Equipment moved on screen: ${JSON.stringify({ before, after })}`)
+      assert.match(await v.box(EQUIPMENT).getAttribute("class"), /is-selected/)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("the inspector lists problems before rows; a conflict counts and lists the values outside the shape; a not-declared row says where it is declared (catches: the work below the fold, \"declared nowhere\" for a property declared elsewhere)", async () => {
+    const v = await open()
+    try {
+      assert.deepEqual(await v.info.locator(".graph-info-sec").allTextContents(), ["Problems (5)", "Properties: declared vs. used (6)"])
+      const conflict = v.info.getByRole("listitem").filter({ hasText: "ex:hasFlow: range and shape disagree" })
+      assert.match(await conflict.textContent(), /rdfs:range xsd:decimal, shape xsd:integer · 30 values outside the shape/)
+      await conflict.locator("summary", { hasText: "Show 10 values" }).click()
+      const places = v.info.getByRole("list", { name: "Places: ex:hasFlow: range and shape disagree" })
+      assert.equal(await places.getByRole("button").count(), 10)
+      assert.equal(await places.getByRole("listitem").last().textContent(), "+20 more")
+      await places.getByRole("button", { name: "Open ex:pump31 at data/plant-a.ttl:202" }).click()
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: "file:///ws/data/plant-a.ttl", range: { start: { line: 201, character: 14 }, end: { line: 201, character: 19 } } })
+      assert.match(await v.info.getByRole("listitem").filter({ hasText: "ex:vendorCode is used but not declared" }).textContent(), /Declared for Site, not Pump; used by 41 of 352 instances/)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("each box's rows are a list whose items say the property, its range and its state (catches: rows a screen reader reads as bare text)", async () => {
+    const v = await open()
+    try {
+      const rows = v.box(PUMP).getByRole("list", { name: "Properties of Pump" }).getByRole("listitem")
+      assert.equal(await rows.count(), 6)
+      const labels = await rows.evaluateAll((l) => l.map((e) => e.getAttribute("aria-label")))
+      assert.deepEqual(labels, [
+        "ex:hasPressure, xsd:decimal, bad values, 12 bad values",
+        "ex:hasFlow, xsd:decimal, range and shape disagree",
+        "ex:connectedTo, ex:Pipe, declared and used",
+        "ex:drivenBy, ex:Motor, declared and used, 3 missing",
+        "ex:maxRpm, xsd:integer, never used",
+        "ex:vendorCode, xsd:string, not declared",
+      ])
+      assert.equal(await v.page.getByRole("listitem", { name: "ex:siteName, xsd:string, declared and used" }).count(), 1)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("Escape closes the legend, then clears the selection and puts the focus on the box, from the drawing or the inspector (catches: no keyboard way back out)", async () => {
+    const v = await open()
+    try {
+      await v.page.getByRole("button", { name: "Legend" }).click()
+      const legend = v.page.getByRole("list", { name: "Legend" })
+      assert.equal(await legend.isVisible(), true)
+      await v.page.keyboard.press("Escape")
+      assert.equal(await legend.isHidden(), true)
+      assert.match(await v.box(PUMP).getAttribute("class"), /is-selected/, "the first Escape closes the legend only")
+      await v.page.keyboard.press("Escape")
+      await v.info.waitFor({ state: "hidden" })
+      assert.equal(await v.page.evaluate(() => document.activeElement.dataset.c), String(PUMP))
+      // From a button in the inspector.
+      await select(v, MOTOR)
+      await v.info.getByRole("button", { name: "Go to definition" }).focus()
+      await v.page.keyboard.press("Escape")
+      await v.info.waitFor({ state: "hidden" })
+      assert.equal(await v.page.evaluate(() => document.activeElement.dataset.c), String(MOTOR))
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("the Follow cursor tooltip says it follows the editor beside the view (catches: a toggle with no visible effect when the graph is a tab)", async () => {
+    const v = await open()
+    try {
+      assert.equal(await v.page.getByRole("button", { name: "Follow cursor" }).getAttribute("title"), "Show the term at the cursor of the editor beside this view")
     } finally {
       await v.close()
     }

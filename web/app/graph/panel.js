@@ -1,13 +1,15 @@
 // The filter panel: search, colouring, depth and cap, what to show, then the
 // kinds, files, namespaces and predicates from the server's facets. Every
 // control is a labelled native input, so the keyboard reaches all of them.
-// It changes `state` (filters.js) in place and says what changed.
+// It changes `state` (filters.js) in place and says what changed. The
+// controls only the graph and focus modes use carry `data-for="graph"`;
+// graph.css hides them in Schema, which keeps the search and the files.
 // Also the class inspector: what the info panel shows for a class in Schema.
 
 import { h } from "./el.js"
 import { KINDS, commonRoot, fileLabel, middleCut } from "./model.js"
 import { CAPS, COLOR_BY, DEPTHS, ruleOf, setRule } from "./filters.js"
-import { STATE_TEXT, rowBadge } from "./schema.js"
+import { STATE_TEXT, classText, declaredForText, rowBadge } from "./schema.js"
 
 const RULES = [["", "any"], ["include", "only"], ["exclude", "hide"]]
 const LIST_MAX = 60
@@ -45,7 +47,7 @@ export function createFilterPanel(el, state, on, caps = CAPS) {
   const results = h(doc, "div", { class: "graph-results", role: "group", "aria-label": "Search results" })
   const kinds = h(doc, "div", { class: "graph-list" })
   const lists = { files: h(doc, "div", { class: "graph-list" }), namespaces: h(doc, "div", { class: "graph-list" }), predicates: h(doc, "div", { class: "graph-list" }) }
-  const section = (title, body, open) => h(doc, "details", { class: "graph-sec", open }, h(doc, "summary", { text: title }), body)
+  const section = (title, body, open, only) => h(doc, "details", { class: "graph-sec", open, "data-for": only }, h(doc, "summary", { text: title }), body)
   // All / None for the files: a list of fifty is one click from one file.
   const allNone = h(doc, "div", { class: "graph-allnone", role: "group", "aria-label": "Select files" },
     h(doc, "button", { type: "button", class: "graph-btn", "data-files": "all", "data-key": "files:all", text: "All" }),
@@ -53,16 +55,16 @@ export function createFilterPanel(el, state, on, caps = CAPS) {
 
   el.replaceChildren(
     h(doc, "div", { class: "graph-sec graph-find" }, search, results),
-    h(doc, "div", { class: "graph-sec graph-fields" },
+    h(doc, "div", { class: "graph-sec graph-fields", "data-for": "graph" },
       select("colorBy", "Colour by", COLOR_BY.map((c) => [c, c]), state.colorBy),
       select("depth", "Depth around selection", DEPTHS.map((d) => [d, d ? `${d} hop${d > 1 ? "s" : ""}` : "whole graph"]), F.depth),
       select("maxNodes", "Node cap", caps.map((c) => [c, c.toLocaleString("en")]), F.maxNodes),
       check("literals", "on", F.literals, "Literals"),
       check("types", "on", F.types, "rdf:type edges")),
-    section("Kinds", kinds, true),
+    section("Kinds", kinds, true, "graph"),
     section("Files", [allNone, lists.files], true),
-    section("Namespaces", lists.namespaces, false),
-    section("Predicates", lists.predicates, false))
+    section("Namespaces", lists.namespaces, false, "graph"),
+    section("Predicates", lists.predicates, false, "graph"))
 
   function renderKinds() {
     kinds.replaceChildren(...KINDS.map((k) => check("kind", k, !F.kinds || F.kinds.includes(k), k)))
@@ -147,9 +149,9 @@ export function createFilterPanel(el, state, on, caps = CAPS) {
       for (const key of Object.keys(lists)) renderList(key)
       if (active) el.querySelector(`[data-key="${CSS.escape(active)}"]`)?.focus()
     },
-    /** Show search results: `[{ index, name, kind }]`. */
+    /** Show search results: `[{ index, name, kind, title? }]`; choosing one calls `on.pick(index)`. */
     results(list) {
-      results.replaceChildren(...list.map((r) => h(doc, "button", { type: "button", class: "graph-result", "data-i": r.index }, h(doc, "span", { class: "graph-check-l", text: r.name }), h(doc, "span", { class: "graph-count", text: r.kind }))))
+      results.replaceChildren(...list.map((r) => h(doc, "button", { type: "button", class: "graph-result", "data-i": r.index, title: r.title }, h(doc, "span", { class: "graph-check-l", text: r.name }), h(doc, "span", { class: "graph-count", text: r.kind }))))
     },
     get search() {
       return search.value
@@ -195,16 +197,17 @@ export function classInspector(doc, model, i, { lit = -1, canReveal = false, loa
         h(doc, "button", { type: "button", class: "schema-i-name", "data-act": "row", "data-row": k, title: r.property, text: r.name }),
         h(doc, "span", { class: "schema-i-use", title: `${f(r.used)} of ${f(r.of)} instances use it`, text: `${f(r.used)}/${f(r.of)}` }),
         h(doc, "span", { class: `schema-i-state ${SEV[badge?.sev ?? ""]}`, text: badge ? badge.text : r.state === "ok" ? "ok" : STATE_TEXT[r.state] })),
-      r.link && r.target >= 0 ? h(doc, "button", { type: "button", class: "schema-i-link", "data-act": "class", "data-c": r.target, text: `→ ${r.rangeName || model.classes[r.target].name}` })
-        : r.rangeName ? h(doc, "div", { class: "schema-i-range", text: r.rangeName }) : null,
+      r.link && r.target >= 0 ? h(doc, "button", { type: "button", class: "schema-i-link", "data-act": "class", "data-c": r.target, title: r.range || model.classes[r.target].id, text: `→ ${r.rangeName || model.classes[r.target].name}` })
+        : r.rangeName ? h(doc, "div", { class: "schema-i-range", title: r.range, text: r.rangeName }) : null,
       h(doc, "div", { class: "schema-i-src" },
         r.declared.length
           ? r.declared.map((d) => h(doc, "button", { type: "button", class: "schema-src", "data-act": "src", "data-src": source(d), disabled: !canReveal, title: `${d.how}: ${d.uri}`, "aria-label": `Open ${d.how} declaration at ${where(d)}`, text: `${where(d)} · ${d.how}` }))
-          : h(doc, "span", { class: "graph-none", text: "Declared nowhere" })))
+          : h(doc, "span", { class: "graph-none", text: declaredForText(r, classText(c)) })))
   }
   // What a problem's places are: the instances missing a property, the
-  // bad values, or the uses of an undeclared one (never a declaration).
-  const PLACE = { missing: "instance", badValues: "value", undeclared: "use" }
+  // bad values, the uses of an undeclared one, or the values outside a
+  // conflicting shape (never a declaration).
+  const PLACE = { missing: "instance", badValues: "value", undeclared: "use", conflict: "value" }
   const places = (p, n) => `${f(n)} ${PLACE[p.kind] ?? "place"}${n === 1 ? "" : "s"}`
   // The places a problem lists, behind "Show N …": each opens its place.
   const examples = (p) => {
@@ -237,7 +240,7 @@ export function classInspector(doc, model, i, { lit = -1, canReveal = false, loa
   }
   const nodes = [
     h(doc, "div", { class: "graph-info-hd" },
-      h(doc, "h3", { class: "graph-info-name", text: c.label || c.name }),
+      h(doc, "h3", { class: "graph-info-name", title: c.id, text: c.label || c.name }),
       h(doc, "span", { class: "graph-badge", text: KIND_TEXT[c.kind] }),
       h(doc, "button", { type: "button", class: "graph-x", "data-act": "close", "aria-label": "Close", title: "Close", text: "×" })),
     h(doc, "div", { class: "graph-info-id", text: c.id }),
@@ -245,11 +248,12 @@ export function classInspector(doc, model, i, { lit = -1, canReveal = false, loa
     h(doc, "div", { class: "schema-i-meta", text: `${f(c.instances)} instance${c.instances === 1 ? "" : "s"} · ${c.problemCount ? `${f(c.problemCount)} problem${c.problemCount === 1 ? "" : "s"}` : "no problems"}` }),
     h(doc, "div", { class: "graph-actions" },
       h(doc, "button", { type: "button", class: "graph-btn", "data-act": "reveal", disabled: !(canReveal && c.uri && c.range), text: "Go to definition" })),
+    // The work first: the problems, then the rows.
+    h(doc, "h4", { class: "graph-info-sec", text: c.problems.length ? `Problems (${c.problems.length})` : "No problems" }),
+    c.problems.length ? h(doc, "ul", { class: "schema-problems", "aria-label": "Problems" }, c.problems.map(problem)) : null,
     h(doc, "h4", { class: "graph-info-sec", text: `Properties: declared vs. used (${c.rows.length + c.moreRows})` }),
     c.rows.length ? h(doc, "ul", { class: "schema-i-rows", "aria-label": "Properties" }, c.rows.map(rowItem)) : h(doc, "p", { class: "graph-none", text: "No properties" }),
     c.moreRows ? h(doc, "p", { class: "graph-none", text: `${f(c.moreRows)} more not listed` }) : null,
-    h(doc, "h4", { class: "graph-info-sec", text: c.problems.length ? `Problems (${c.problems.length})` : "No problems" }),
-    c.problems.length ? h(doc, "ul", { class: "schema-problems", "aria-label": "Problems" }, c.problems.map(problem)) : null,
   ].filter(Boolean)
   return { nodes, sources }
 }

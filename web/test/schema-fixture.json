@@ -475,7 +475,160 @@
      "conflict": {
       "declared": "xsd:decimal",
       "shape": "xsd:integer"
-     }
+     },
+     "shapeBadValues": 30,
+     "examples": [
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 200,
+         "character": 14
+        },
+        "end": {
+         "line": 200,
+         "character": 19
+        }
+       },
+       "name": "ex:pump30"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 201,
+         "character": 14
+        },
+        "end": {
+         "line": 201,
+         "character": 19
+        }
+       },
+       "name": "ex:pump31"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 202,
+         "character": 14
+        },
+        "end": {
+         "line": 202,
+         "character": 19
+        }
+       },
+       "name": "ex:pump32"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 203,
+         "character": 14
+        },
+        "end": {
+         "line": 203,
+         "character": 19
+        }
+       },
+       "name": "ex:pump33"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 204,
+         "character": 14
+        },
+        "end": {
+         "line": 204,
+         "character": 19
+        }
+       },
+       "name": "ex:pump34"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 205,
+         "character": 14
+        },
+        "end": {
+         "line": 205,
+         "character": 19
+        }
+       },
+       "name": "ex:pump35"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 206,
+         "character": 14
+        },
+        "end": {
+         "line": 206,
+         "character": 19
+        }
+       },
+       "name": "ex:pump36"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 207,
+         "character": 14
+        },
+        "end": {
+         "line": 207,
+         "character": 19
+        }
+       },
+       "name": "ex:pump37"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 208,
+         "character": 14
+        },
+        "end": {
+         "line": 208,
+         "character": 19
+        }
+       },
+       "name": "ex:pump38"
+      },
+      {
+       "kind": "shapeValue",
+       "uri": "file:///ws/data/plant-a.ttl",
+       "range": {
+        "start": {
+         "line": 209,
+         "character": 14
+        },
+        "end": {
+         "line": 209,
+         "character": 19
+        }
+       },
+       "name": "ex:pump39"
+      }
+     ]
     },
     {
      "property": "http://example.org/plant#connectedTo",
@@ -784,6 +937,9 @@
        },
        "name": "ex:pump59"
       }
+     ],
+     "declaredFor": [
+      "ex:Site"
      ]
     }
    ],

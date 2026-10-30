@@ -51,12 +51,14 @@
 .graph-tab[aria-selected="true"] { color: var(--graph-fg); border-bottom-color: var(--graph-focus); }
 .graph-btn { border: 1px solid var(--graph-line); border-radius: 3px; padding: 2px 8px; background: var(--graph-input); color: var(--graph-input-fg); }
 .graph-btn:not(:disabled):hover { background: var(--graph-hover); }
-.graph-follow[aria-pressed="true"], .schema-problems-btn[aria-pressed="true"] { border-color: var(--graph-focus); background: var(--graph-select); }
+.graph-follow[aria-pressed="true"], .schema-problems-btn[aria-pressed="true"], .schema-imports-btn[aria-pressed="true"] { border-color: var(--graph-focus); background: var(--graph-select); }
 .graph-status { color: var(--graph-muted); font-size: 11px; margin-left: auto; }
 .graph[data-busy="true"] .graph-status::after { content: " · loading"; }
 
 .graph-body { flex: 1; display: flex; min-height: 0; min-width: 0; }
 .graph-filters { width: 240px; flex: none; overflow: auto; border-right: 1px solid var(--graph-line); background: var(--graph-panel); padding-bottom: 8px; }
+/* Schema uses the search and the files only. */
+.graph[data-mode="schema"] .graph-filters [data-for="graph"] { display: none; }
 .graph-stage { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 
 .graph-sec { padding: 4px 8px; display: flex; flex-direction: column; gap: 3px; }
@@ -175,7 +177,7 @@
 /* Problems only: fade the classes without, hide the rows that are fine. */
 .schema-problems-only .schema-box:not(.has-problems):not(.is-selected) { opacity: .3; }
 .schema-problems-only .schema-row.is-fine { display: none; }
-.schema-tools { position: absolute; left: 8px; top: 8px; display: flex; gap: 6px; }
+.schema-tools { position: absolute; left: 8px; top: 8px; display: flex; gap: 8px; }
 .schema-legend-btn { width: 24px; padding: 2px 0; border-radius: 50%; }
 .schema-legend { position: absolute; left: 8px; top: 40px; display: grid; gap: 4px; padding: 8px 10px; font-size: 11px; color: var(--graph-muted); background: var(--graph-menu); border: 1px solid var(--graph-line); border-radius: 6px; box-shadow: 0 2px 8px var(--graph-shadow); max-width: calc(100% - 16px); }
 .schema-key { display: flex; align-items: center; gap: 6px; }
