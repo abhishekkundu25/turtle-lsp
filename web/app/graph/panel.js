@@ -200,12 +200,16 @@ export function classInspector(doc, model, i, { lit = -1, canReveal = false } = 
           ? r.declared.map((d) => h(doc, "button", { type: "button", class: "schema-src", "data-act": "src", "data-src": source(d), disabled: !canReveal, title: `${d.how}: ${d.uri}`, "aria-label": `Open ${d.how} declaration at ${where(d)}`, text: `${where(d)} · ${d.how}` }))
           : h(doc, "span", { class: "graph-none", text: "Declared nowhere" })))
   }
-  // The places a problem lists, behind "Show N": each opens its place.
+  // What a problem's places are: the instances missing a property, the
+  // bad values, or the uses of an undeclared one (never a declaration).
+  const PLACE = { missing: "instance", badValues: "value", undeclared: "use" }
+  const places = (p, n) => `${f(n)} ${PLACE[p.kind] ?? "place"}${n === 1 ? "" : "s"}`
+  // The places a problem lists, behind "Show N …": each opens its place.
   const examples = (p) => {
     const key = `${p.row}:${p.kind}`
     const more = p.count - p.examples.length
     return h(doc, "details", { class: "schema-ex", "data-key": key },
-      h(doc, "summary", { "aria-label": `Show ${f(p.examples.length)} places: ${p.text}`, text: `Show ${f(p.examples.length)}` }),
+      h(doc, "summary", { "aria-label": `Show ${places(p, p.examples.length)}: ${p.text}`, text: `Show ${places(p, p.examples.length)}` }),
       h(doc, "ul", { class: "schema-ex-list", "aria-label": `Places: ${p.text}` },
         p.examples.map((e, j) => h(doc, "li", {},
           h(doc, "button", {
@@ -223,7 +227,7 @@ export function classInspector(doc, model, i, { lit = -1, canReveal = false } = 
         type: "button", class: "graph-btn", "data-act": "src", "data-src": at >= 0 ? at : null, disabled: at < 0,
         "aria-label": `Open: ${p.text}`,
         title: !p.at ? "Nothing declares it: no place to open" : !canReveal ? "This host cannot open files" : `Open ${where(p.at)}`,
-        text: "Open",
+        text: p.examples.length ? `Open first ${PLACE[p.kind] ?? "place"}` : "Open declaration",
       }))
   }
   const nodes = [

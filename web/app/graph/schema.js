@@ -123,7 +123,7 @@ export function problemsOf(rows) {
     if (r.state === "conflict") push(r, { row, kind: "conflict", sev: "error", at, text: `${r.name}: range and shape disagree`, detail: r.conflict ? `rdfs:range ${r.conflict.declared}, shape ${r.conflict.shape}` : "" })
     else if (r.state === "badValues") push(r, { row, kind: "badValues", sev: "warning", at, text: `${plural(r.badValues, "value")} of ${r.name} not${range}`, detail: `Declared${range}` })
     else if (r.state === "unused") push(r, { row, kind: "unused", sev: "", at, text: `${r.name} is never used`, detail: `None of ${plural(r.of, "instance")} has it` })
-    else if (r.state === "undeclared") push(r, { row, kind: "undeclared", sev: "", at: null, text: `${r.name} is not declared`, detail: `Used by ${fmt(r.used)} of ${plural(r.of, "instance")}` })
+    else if (r.state === "undeclared") push(r, { row, kind: "undeclared", sev: "", at: null, text: `${r.name} is used but not declared for this class`, detail: `No rdfs:domain or shape gives it to this class; used by ${fmt(r.used)} of ${plural(r.of, "instance")}` })
     if (r.missing > 0) push(r, { row, kind: "missing", sev: "error", at, text: `${plural(r.missing, "instance")} miss ${r.name}`, detail: `Required: sh:minCount ${r.required?.min ?? 1}` })
   })
   return out.sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev])
