@@ -1,6 +1,6 @@
 # Reference lenses count the uses in SPARQL files
 
-Status: in progress. Fixes issue #46. Builds on docs/specs/lsp-capability.md
+Status: done (unreleased). Fixes issue #46. Builds on docs/specs/lsp-capability.md
 (reference lenses) and docs/specs/workspace-query.md (an RDF term's
 references include its uses in SPARQL files).
 

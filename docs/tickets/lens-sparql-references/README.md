@@ -11,4 +11,9 @@ Waves: 01, then 02. One slice: the fix touches one seam.
 
 ## Departures from the plan
 
-None yet.
+- `test/lens.test.mjs` pinned the old count: ex:Person goes from 4 to 5
+  references (its fixture's `q.rq` now counts).
+- Find References keeps its own code path; only its SPARQL step is shared
+  with the lens (`Session::sparql_term_references`), so a JSON-LD term's
+  references are unchanged.
+- The keystroke benchmark was not rerun (see 02).
