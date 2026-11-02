@@ -77,11 +77,11 @@ test("one lens per described subject, on its first description, with no command"
 
 test("resolve counts the workspace's references, declarations left out", async () => {
   const ls = await resolveAll(await lenses(at("vocab.ttl")))
-  // ex:Person: vocab domain, alice's type, bob's type, carol's @type.
+  // ex:Person: vocab domain, alice's type, bob's type, carol's @type, q.rq.
   // ex:name: alice's and bob's property. ex:alice: data.ttl and carol.jsonld.
   assert.deepEqual(
     ls.map((l) => l.command.title),
-    ["4 references", "2 references", "2 references"],
+    ["5 references", "2 references", "2 references"],
   )
 })
 

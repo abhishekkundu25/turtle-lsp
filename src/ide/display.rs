@@ -160,7 +160,7 @@ impl Session<'_> {
     /// `codeLens/resolve`: a reference lens with its count; any other lens
     /// as it is.
     pub(crate) fn resolve_code_lens(&mut self, lens: CodeLens) -> CodeLens {
-        lens::resolve(lens, self.ws.knowledge(), self.enc)
+        lens::resolve(lens, |iri| self.term_references(iri, false))
     }
 }
 
@@ -336,7 +336,7 @@ mod tests {
                 .all(|l| l.command.is_none() && l.data.is_some())
         );
         let first = s.resolve_code_lens(lenses[0].clone());
-        assert_eq!(first.command.unwrap().title, "1 reference");
+        assert_eq!(first.command.unwrap().title, "2 references");
 
         let run = s.code_lenses(&uris[1]).unwrap();
         assert_eq!(run.len(), 1, "{run:?}");

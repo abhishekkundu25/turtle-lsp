@@ -1,7 +1,8 @@
 //! Navigation and rename: definition, type definition, implementations,
 //! references, document highlights, prepare rename and rename. Two requests
 //! cross from RDF documents into SPARQL ones: references on an RDF term add
-//! its uses in the workspace's SPARQL documents, and renaming an RDF term
+//! its uses in the workspace's SPARQL documents ([`Session::term_references`],
+//! which the reference lenses count too), and renaming an RDF term
 //! renames it there too. A SPARQL document reads the others only when the
 //! cursor is on a term; variables and prefixes stay within the document.
 //!
@@ -60,13 +61,7 @@ impl Session<'_> {
                 let k = self.ws.knowledge();
                 let mut locs = navigation::references(&a, k, enc, pos, include_declaration);
                 if let Some((_, iri)) = rdf_term_at(&a, enc, pos) {
-                    let docs = self.ws.sparql_documents();
-                    locs.extend(sparql_features::term_references(
-                        &iri,
-                        include_declaration,
-                        &docs,
-                        enc,
-                    ));
+                    locs.extend(self.sparql_term_references(&iri, include_declaration));
                 }
                 locs
             }
@@ -76,6 +71,27 @@ impl Session<'_> {
                 sparql_features::references(&q, k, enc, pos, include_declaration, &others)
             }
         })
+    }
+
+    /// Where the workspace uses RDF term `iri`: its references in the RDF
+    /// documents (imports left out), then in the SPARQL documents, open or
+    /// not; its descriptions too with `include_declaration`. Find References
+    /// on the term and its reference lens both list this.
+    pub(crate) fn term_references(
+        &mut self,
+        iri: &str,
+        include_declaration: bool,
+    ) -> Vec<Location> {
+        let k = self.ws.knowledge();
+        let mut locs = navigation::term_references(k, self.enc, iri, include_declaration);
+        locs.extend(self.sparql_term_references(iri, include_declaration));
+        locs
+    }
+
+    /// The uses of RDF term `iri` in the workspace's SPARQL documents.
+    fn sparql_term_references(&mut self, iri: &str, include_declaration: bool) -> Vec<Location> {
+        let docs = self.ws.sparql_documents();
+        sparql_features::term_references(iri, include_declaration, &docs, self.enc)
     }
 
     /// `textDocument/documentHighlight`.
