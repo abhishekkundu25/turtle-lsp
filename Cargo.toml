@@ -45,7 +45,7 @@ url = "2.5.8"
 # Not in the browser build (web/engine): no C allocator, no network client.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false }
-ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 oxrdf = { version = "0.3", features = ["rdf-12"] }

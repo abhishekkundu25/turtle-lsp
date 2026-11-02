@@ -189,7 +189,8 @@ Bundled into `out/extension.js` by esbuild (`npm ls --omit=dev --all` in
 | vscode-languageserver-types | 3.18.4 | MIT | Copyright (c) Microsoft Corporation |
 | vscode-languageserver-textdocument | 1.0.15 | MIT | Copyright (c) Microsoft Corporation |
 | vscode-jsonrpc | 9.0.3 | MIT | Copyright (c) Microsoft Corporation |
-| minimatch | 10.2.6 | BlueOak-1.0.0 | Isaac Z. Schlueter and contributors |
+| minimatch | 11.0.4 | BlueOak-1.0.0 | Isaac Z. Schlueter and contributors |
+| @isaacs/nonrecursive-glob-match | 1.0.3 | BlueOak-1.0.0 | Isaac Z. Schlueter |
 | brace-expansion | 5.0.12 | MIT | Copyright Julian Gruber |
 | balanced-match | 4.0.4 | MIT | Original code Copyright Julian Gruber; port to TypeScript Copyright Isaac Z. Schlueter |
 | semver | 7.8.5 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
@@ -625,7 +626,7 @@ insights.
 
 ### Blue Oak Model License 1.0.0
 
-`minimatch`:
+`minimatch` and `@isaacs/nonrecursive-glob-match`:
 
 ````text
 # Blue Oak Model License

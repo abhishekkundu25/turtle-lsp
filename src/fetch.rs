@@ -788,6 +788,8 @@ mod tests {
         let timeout = || NextTimeout {
             after: ureq::unversioned::transport::time::Duration::NotHappening,
             reason: ureq::Timeout::Resolve,
+            per_read: None,
+            per_write: None,
         };
         let err = Guarded { policy: strict }
             .resolve(&uri, &config, timeout())
