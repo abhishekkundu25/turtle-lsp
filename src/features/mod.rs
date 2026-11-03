@@ -3,7 +3,6 @@ pub(crate) mod curation;
 pub mod diagnostics;
 pub(crate) mod embedded;
 pub mod format;
-pub(crate) mod graph;
 pub mod hierarchy;
 pub mod hover;
 pub mod inlay;

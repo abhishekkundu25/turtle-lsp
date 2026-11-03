@@ -32,10 +32,11 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `cli` | `check`, `format` and `query` (not in the browser build) | `main` |
 | `clock` | The time the server's timers read | `server`, `query`, `shacl` |
 | `ide` | `ide::Session`: every editor request over one workspace, routed by document kind | `server` |
+| `extensions` | The requests beyond the LSP standard (`turtle/graph`): one router entry, one `experimental` capability builder, one off-thread answer | `server` |
 | `layout` | What the Turtle and SPARQL formatters share: the layout options, the token document, the triple terms and the printer | `features`, `sparql`, `ide`, `batch`; `jsonld` and `query` take its options |
 
-Seven modules are private to the crate: `commands`, `diagnose`, `fetch`,
-`ide`, `layout`, `vocab` and `workspace`. The others are public because a
+Eight modules are private to the crate: `commands`, `diagnose`,
+`extensions`, `fetch`, `ide`, `layout`, `vocab` and `workspace`. The others are public because a
 consumer uses them: the browser engine, the examples, the integration tests
 or `src/main.rs`. The "Public interface" section of the crate doc lists
 every path those consumers use, one per line, as a doctest, so
@@ -202,10 +203,10 @@ target classes.
 | SPARQL inside SHACL shapes | `features::embedded` | |
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |
-| Workspace graph (`turtle/graph`) | `features::graph` | |
+| Workspace graph (`turtle/graph`) | `extensions::graph` | |
 
 The workspace graph is the server's one custom request, listed under
-`experimental` capabilities. `features::graph` reads the knowledge index
+`experimental` capabilities. `extensions::graph` reads the knowledge index
 and changes nothing: the query, the filters, the cap and the Barnes-Hut
 layout. The client passes back the positions it has, so the server keeps
 no graph state. The native server answers it on a thread of its own over

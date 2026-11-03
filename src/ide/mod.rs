@@ -9,6 +9,7 @@
 //! references, rename and the like), `display` and `edit`.
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
+use crate::knowledge::Knowledge;
 use crate::settings::Settings;
 use crate::workspace::{Workspace, normalize_uri};
 use std::sync::Arc;
@@ -53,6 +54,11 @@ impl<'w> Session<'w> {
     /// document. `None` when the workspace has no such document.
     pub(crate) fn doc(&mut self, uri: &str) -> Option<Doc> {
         self.find(uri).map(|(_, doc)| doc)
+    }
+
+    /// The knowledge index, and the position encoding the client negotiated.
+    pub(crate) fn knowledge(&mut self) -> (&Knowledge, Encoding) {
+        (self.ws.knowledge(), self.enc)
     }
 
     /// [`Session::doc`] with the URI the workspace keys it by.

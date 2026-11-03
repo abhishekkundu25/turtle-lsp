@@ -25,10 +25,11 @@
 //! | [`cli`] | `check`, `format` and `query` | `main` |
 //! | [`clock`] | The time the server's timers read | [`server`], [`query`], [`shacl`] |
 //! | `ide` | `ide::Session`: the editor requests over one workspace, routed by document kind | [`server`] |
+//! | `extensions` | The requests beyond the LSP standard: `turtle/graph` | [`server`] |
 //! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
 //!
-//! `commands`, `diagnose`, `fetch`, `ide`, `layout`, `vocab` and `workspace`
-//! are private to the crate: no consumer uses them.
+//! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `vocab` and
+//! `workspace` are private to the crate: no consumer uses them.
 //!
 //! # Public interface
 //!
@@ -192,6 +193,7 @@ pub mod cli;
 pub mod clock;
 pub(crate) mod commands;
 pub(crate) mod diagnose;
+pub(crate) mod extensions;
 pub mod features;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod fetch;

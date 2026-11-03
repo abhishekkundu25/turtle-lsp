@@ -29,9 +29,8 @@
 //! Requests are answered by `ide::Session`, which routes each by document
 //! kind: RDF documents to `features`, SPARQL documents to
 //! `sparql::features`; neither runs on the other.
-//! The one custom request, `turtle/graph` (listed under `experimental`),
-//! runs on a thread of its own over a copy of the knowledge index and
-//! answers from there.
+//! The requests beyond the standard are in `extensions`, and listed under
+//! `experimental`.
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
@@ -48,7 +47,7 @@
 use crate::analysis::Encoding;
 use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
-use crate::features::graph::{GraphParams, GraphResult, InvalidParams};
+use crate::extensions;
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
 use crate::settings::{SETTINGS_FILE, Settings};
@@ -76,7 +75,7 @@ mod refresh;
 mod run_query;
 mod shacl;
 mod timers;
-mod wire;
+pub(crate) mod wire;
 pub(crate) mod worker;
 mod workspace_diagnostics;
 
@@ -108,8 +107,7 @@ const EXIT_WAIT: Duration = Duration::from_secs(30);
 pub const MAIN_STACK: usize = 64 << 20;
 
 /// Stack of the threads that parse and analyze.
-#[cfg(not(target_arch = "wasm32"))]
-const WORKER_STACK: usize = 16 << 20;
+pub(crate) const WORKER_STACK: usize = 16 << 20;
 
 /// How the session ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,7 +369,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
 
     let (mut server, result, roots) = Server::configure(out.clone(), raw, Spawn::Thread)?;
     wire::initialize_finish(&out, &inbox, id, result)?;
-    // The server holds the only sender from here (and a `turtle/graph`
+    // The server holds the only sender from here (and an extension's
     // thread while it runs): the writer ends with them.
     drop(out);
 
@@ -501,8 +499,7 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
                 .collect(),
             work_done_progress_options: Default::default(),
         }),
-        // Custom requests, by method: `{"turtle/graph": true}`.
-        experimental: Some(serde_json::json!({ GRAPH: true })),
+        experimental: Some(extensions::capabilities()),
         ..Default::default()
     }
 }
@@ -521,20 +518,8 @@ fn internal_error_diagnostic(msg: &str) -> Diagnostic {
     }
 }
 
-/// The custom request for the workspace graph (`features::graph`).
-const GRAPH: &str = "turtle/graph";
-
-/// A `turtle/graph` answer as JSON text; parameters it cannot answer are
-/// `InvalidParams`.
-fn graph_json(r: Result<GraphResult, InvalidParams>) -> Result<String, (ErrorCode, String)> {
-    match r {
-        Ok(g) => json(&g),
-        Err(e) => Err((ErrorCode::InvalidParams, e.to_string())),
-    }
-}
-
 /// `result` as JSON text, for the answer to a request.
-fn json(result: &impl serde::Serialize) -> Result<String, (ErrorCode, String)> {
+pub(crate) fn json(result: &impl serde::Serialize) -> Result<String, (ErrorCode, String)> {
     wire::encode(result).map_err(|e| (ErrorCode::InternalError, e.to_string()))
 }
 
@@ -1595,19 +1580,9 @@ impl Server {
                 let lens = params!(CodeLens);
                 json(&self.session().resolve_code_lens(lens))
             }
-            GRAPH => {
-                let p = match req.params {
-                    Value::Null => GraphParams::default(),
-                    _ => params!(GraphParams),
-                };
-                // A big layout takes seconds: on a thread of its own, which
-                // answers the request itself.
-                #[cfg(not(target_arch = "wasm32"))]
-                if self.spawn == Spawn::Thread {
-                    self.graph_on_thread(req.id.clone(), p)?;
-                    return Ok(None);
-                }
-                graph_json(self.session().graph(p))
+            m if extensions::handles(m) => {
+                let out = self.client.sender();
+                return extensions::request(req, self.spawn, out, &mut self.session());
             }
             _ => Err((
                 ErrorCode::MethodNotFound,
@@ -1615,41 +1590,6 @@ impl Server {
             )),
         };
         answer.map(Some)
-    }
-
-    /// Answer `turtle/graph` request `id` from a thread of its own, over a
-    /// copy of the knowledge index (`Session::graph_job`): the main loop goes
-    /// on meanwhile. Nothing is kept: a `$/cancelRequest` does not stop it,
-    /// and the answer comes when the layout ends.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn graph_on_thread(
-        &mut self,
-        id: RequestId,
-        params: GraphParams,
-    ) -> Result<(), (ErrorCode, String)> {
-        let job = self.session().graph_job(params);
-        let out = self.client.sender();
-        self.spawn
-            .run(
-                "graph",
-                WORKER_STACK,
-                move || graph_json(job.run()),
-                move |answer| {
-                    let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
-                        Ok(json) => Out::Result { id, json },
-                        Err((code, message)) => {
-                            Out::Message(Response::new_err(id, code as i32, message).into())
-                        }
-                    };
-                    let _ = out.send(msg);
-                },
-            )
-            .map_err(|e| {
-                (
-                    ErrorCode::InternalError,
-                    format!("turtle-lsp could not start a thread for the graph: {e}"),
-                )
-            })
     }
 
     /// Start validating the workspace in the background (once indexed, when
