@@ -30,9 +30,6 @@
 //! has, get the base side's, its documents numbered by URI as the graph
 //! numbers the current ones.
 
-// Until `Session::graph_diff` routes the request (the next slice).
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::analysis::{Analysis, Encoding};
 use crate::features::graph::{InvalidParams, Key, LITERAL_NAME_CHARS, Names};
 use crate::knowledge::{Knowledge, Source};

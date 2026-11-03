@@ -10,14 +10,17 @@
 use super::{Doc, Session};
 use crate::analysis::{Analysis, Encoding};
 use crate::features::graph::{self, GraphParams, GraphResult, InvalidParams};
+use crate::features::graph_diff::{self, DiffQuery, GraphDiffParams, GraphDiffResult};
 use crate::features::{hierarchy, hover, inlay, lens, semantic, symbols};
 use crate::knowledge::{Knowledge, Source};
 use crate::sparql::features as sparql_features;
+use crate::syntax::PrefixMap;
 use crate::workspace::normalize_uri;
 use lsp_types::{
     CodeLens, DocumentSymbol, FoldingRange, Hover, InlayHint, Position, Range, SemanticTokens,
     SemanticTokensLegend, SymbolInformation, TypeHierarchyItem,
 };
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 impl Session<'_> {
@@ -157,6 +160,55 @@ impl Session<'_> {
         }
     }
 
+    /// `turtle/graphDiff`: the workspace against the base `params` lists.
+    pub(crate) fn graph_diff(
+        &mut self,
+        params: GraphDiffParams,
+    ) -> Result<GraphDiffResult, InvalidParams> {
+        let (q, prefixes) = self.diff_query(params)?;
+        Ok(graph_diff::graph_diff(
+            self.ws.knowledge(),
+            self.enc,
+            &q,
+            |u, t| Analysis::new(u.into(), t, prefixes[u].clone(), false),
+        ))
+    }
+
+    /// [`Session::graph_diff`] to run elsewhere, as [`Session::graph_job`].
+    pub(crate) fn graph_diff_job(
+        &mut self,
+        params: GraphDiffParams,
+    ) -> Result<GraphDiffJob, InvalidParams> {
+        let (query, prefixes) = self.diff_query(params)?;
+        let sources = self
+            .ws
+            .knowledge()
+            .sources()
+            .map(|(key, s, a)| (key.to_string(), s, a.clone()))
+            .collect();
+        Ok(GraphDiffJob {
+            sources,
+            enc: self.enc,
+            query,
+            prefixes,
+        })
+    }
+
+    /// `params` checked, and the external prefixes of each listed file.
+    fn diff_query(
+        &mut self,
+        params: GraphDiffParams,
+    ) -> Result<(DiffQuery, FxHashMap<String, Arc<PrefixMap>>), InvalidParams> {
+        let roots = self.ws.roots().to_vec();
+        let q = DiffQuery::new(params, self.ws.knowledge(), &roots)?;
+        let prefixes = q
+            .files()
+            .iter()
+            .map(|f| (f.uri.clone(), self.ws.external_prefixes_for(&f.uri)))
+            .collect();
+        Ok((q, prefixes))
+    }
+
     /// `codeLens/resolve`: a reference lens with its count; any other lens
     /// as it is.
     pub(crate) fn resolve_code_lens(&mut self, lens: CodeLens) -> CodeLens {
@@ -186,6 +238,32 @@ impl GraphJob {
             }
         }
         graph::graph(&k, self.enc, self.params)
+    }
+}
+
+/// `turtle/graphDiff` with a copy of the index's sources, as [`GraphJob`].
+pub(crate) struct GraphDiffJob {
+    sources: Vec<(String, Source, Arc<Analysis>)>,
+    enc: Encoding,
+    query: DiffQuery,
+    prefixes: FxHashMap<String, Arc<PrefixMap>>,
+}
+
+impl GraphDiffJob {
+    /// The answer [`Session::graph_diff`] gives for the same workspace.
+    pub(crate) fn run(self) -> GraphDiffResult {
+        let mut k = Knowledge::default();
+        for (key, source, a) in self.sources {
+            if source == Source::External {
+                k.add_external(&key, a);
+            } else {
+                k.set(&key, source, a);
+            }
+        }
+        let prefixes = self.prefixes;
+        graph_diff::graph_diff(&k, self.enc, &self.query, |u, t| {
+            Analysis::new(u.into(), t, prefixes[u].clone(), false)
+        })
     }
 }
 

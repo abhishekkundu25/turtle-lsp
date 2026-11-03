@@ -49,6 +49,7 @@ use crate::analysis::Encoding;
 use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
 use crate::features::graph::{GraphParams, GraphResult, InvalidParams};
+use crate::features::graph_diff::{GraphDiffParams, GraphDiffResult};
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
 use crate::settings::{SETTINGS_FILE, Settings};
@@ -502,7 +503,7 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
             work_done_progress_options: Default::default(),
         }),
         // Custom requests, by method: `{"turtle/graph": true}`.
-        experimental: Some(serde_json::json!({ GRAPH: true })),
+        experimental: Some(serde_json::json!({ GRAPH: true, GRAPH_DIFF: true })),
         ..Default::default()
     }
 }
@@ -524,9 +525,23 @@ fn internal_error_diagnostic(msg: &str) -> Diagnostic {
 /// The custom request for the workspace graph (`features::graph`).
 const GRAPH: &str = "turtle/graph";
 
+/// The custom request for the workspace against a base (`features::graph_diff`).
+const GRAPH_DIFF: &str = "turtle/graphDiff";
+
 /// A `turtle/graph` answer as JSON text; parameters it cannot answer are
 /// `InvalidParams`.
 fn graph_json(r: Result<GraphResult, InvalidParams>) -> Result<String, (ErrorCode, String)> {
+    match r {
+        Ok(g) => json(&g),
+        Err(e) => Err((ErrorCode::InvalidParams, e.to_string())),
+    }
+}
+
+/// A `turtle/graphDiff` answer as JSON text; parameters it cannot answer are
+/// `InvalidParams`.
+fn graph_diff_json(
+    r: Result<GraphDiffResult, InvalidParams>,
+) -> Result<String, (ErrorCode, String)> {
     match r {
         Ok(g) => json(&g),
         Err(e) => Err((ErrorCode::InvalidParams, e.to_string())),
@@ -1609,6 +1624,16 @@ impl Server {
                 }
                 graph_json(self.session().graph(p))
             }
+            GRAPH_DIFF => {
+                let p = params!(GraphDiffParams);
+                // Parsing the base texts takes a while: on a thread of its own.
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.spawn == Spawn::Thread {
+                    self.graph_diff_on_thread(req.id.clone(), p)?;
+                    return Ok(None);
+                }
+                graph_diff_json(self.session().graph_diff(p))
+            }
             _ => Err((
                 ErrorCode::MethodNotFound,
                 format!("unhandled method {}", req.method),
@@ -1648,6 +1673,42 @@ impl Server {
                 (
                     ErrorCode::InternalError,
                     format!("turtle-lsp could not start a thread for the graph: {e}"),
+                )
+            })
+    }
+
+    /// Answer `turtle/graphDiff` request `id` from a thread of its own, as
+    /// [`Server::graph_on_thread`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn graph_diff_on_thread(
+        &mut self,
+        id: RequestId,
+        params: GraphDiffParams,
+    ) -> Result<(), (ErrorCode, String)> {
+        let job = self
+            .session()
+            .graph_diff_job(params)
+            .map_err(|e| (ErrorCode::InvalidParams, e.to_string()))?;
+        let out = self.client.sender();
+        self.spawn
+            .run(
+                "graph diff",
+                WORKER_STACK,
+                move || graph_diff_json(Ok(job.run())),
+                move |answer| {
+                    let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
+                        Ok(json) => Out::Result { id, json },
+                        Err((code, message)) => {
+                            Out::Message(Response::new_err(id, code as i32, message).into())
+                        }
+                    };
+                    let _ = out.send(msg);
+                },
+            )
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("turtle-lsp could not start a thread for the graph diff: {e}"),
                 )
             })
     }
