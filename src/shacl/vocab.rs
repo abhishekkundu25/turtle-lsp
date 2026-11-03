@@ -1,7 +1,7 @@
 //! The SHACL, RDF, RDFS and OWL IRIs that the SHACL code compares against,
 //! interned once: the shape model ([`super::model`]), the shape lint and its
 //! SHACL-SPARQL part, the validator ([`super::validate`]) and the completion
-//! index's shapes and schema links ([`crate::knowledge`]), with the SHACL
+//! index's shapes and schema links, with the SHACL
 //! Core constraint parameters the validator compiles ([`Param`]).
 
 use crate::syntax::{Iri, RDF, XSD};

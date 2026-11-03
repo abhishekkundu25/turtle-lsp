@@ -188,7 +188,7 @@ pub(crate) fn splice(
     Splice::new(old, change, change.edit, Start::document(external, base))?.run()
 }
 
-/// The fallbacks of [`splice`] that need no more than `old` without its
+/// The fallbacks of [`splice()`] that need no more than `old` without its
 /// tokens: a caller checks these before it makes the parse the splice takes.
 pub(crate) fn applies(
     old: &Parsed,

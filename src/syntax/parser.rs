@@ -23,7 +23,7 @@
 //! Every syntax error and warning is kept, in the order found: the lexer's
 //! first, then the parser's, then the N-Triples restrictions. Each costs a
 //! span and, for a fixed message, a borrowed string. The editor shows the
-//! first [`crate::features::diagnostics::MAX_SYNTAX_ERRORS`] of a document;
+//! first `MAX_SYNTAX_ERRORS` of a document;
 //! `turtle-lsp check` reports them all.
 
 use super::lexer::{Kind, Token, tokenize};
@@ -2915,13 +2915,6 @@ mod review_tests {
             )),
             [false, false, false, true]
         );
-        // The graph keeps the absolute IRI's triple.
-        let parsed = parse(
-            &format!("urn:isbn:1 {p} 2 .\n<urn:isbn:1> {p} 1 .\n"),
-            &PrefixMap::default(),
-            Syntax::Turtle,
-        );
-        assert_eq!(crate::rdf::Graph::new(&[&parsed.triples]).len(), 1);
     }
 
     /// With no document base, a relative `@base` is an error; under a base

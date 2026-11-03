@@ -246,7 +246,7 @@ pub(crate) fn list(g: &Graph, head: Id) -> Vec<u32> {
 
 /// The property path whose root is `node`, as written: nested repetitions
 /// stay nested (the validator merges them, see
-/// [`super::validate::parse_path`]). Recursion stops past 64 levels with
+/// `validate::parse_path`). Recursion stops past 64 levels with
 /// [`Path::Invalid`].
 pub(crate) fn path(g: &Graph, node: Id) -> Path {
     path_at(g, node, 0)

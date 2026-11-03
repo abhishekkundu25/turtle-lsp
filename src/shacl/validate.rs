@@ -1822,7 +1822,7 @@ fn roots<'m>(g: &Graph, model: &'m Shapes) -> Vec<&'m model::Shape> {
 /// `sh:targetNode`, `sh:targetSubjectsOf`, `sh:targetObjectsOf`, `sh:target`)
 /// or a typed shape, where `used` says whether an IRI occurs. The one answer
 /// for a graph ([`validate_report`], see [`roots`]) and for a document
-/// ([`crate::features::shacl_validate::has_shapes`]).
+/// (`has_shapes` in the editor's SHACL feature).
 pub(crate) fn acts_on(used: &dyn Fn(Iri) -> bool) -> bool {
     root_kinds().into_iter().any(used)
 }
