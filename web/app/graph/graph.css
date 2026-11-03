@@ -22,6 +22,12 @@
   --graph-warning: var(--warn, light-dark(#bf8803, #cca700));
   --graph-info: var(--info, light-dark(#1a85ff, #3794ff));
   --graph-neutral: light-dark(#8a8a8a, #8c8c8c);
+  /* The Changes overlay: from the tokens above, so a host that sets those
+     (the VS Code webview) colours it too. */
+  --graph-added: var(--graph-c2);
+  --graph-changed: var(--graph-c1);
+  --graph-removed: var(--graph-error);
+  --graph-impacted: var(--graph-info);
   --graph-mono: var(--mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
   --graph-c0: light-dark(#2563eb, #60a5fa);
   --graph-c1: light-dark(#d97706, #fbbf24);
@@ -123,6 +129,32 @@
 .graph-pred { color: var(--graph-muted); }
 .graph-obj { color: var(--graph-focus); }
 
+/* The Changes toggle and its list (changes.js). Each row says its status in
+   text (+, −, ~, a word) as well as in colour. */
+.graph-changes-toggle[aria-pressed="true"] { background: var(--graph-select); border-color: var(--graph-focus); }
+.graph-changes-on .graph-filters { width: 320px; }
+.graph-changes { border-bottom: 1px solid var(--graph-line); padding-bottom: 8px; }
+.graph-changes-hd { margin: 2px 0 0; font-size: 11px; font-weight: normal; text-transform: uppercase; letter-spacing: .04em; color: var(--graph-muted); }
+.graph-changes-sum { margin: 0; font-size: 11px; }
+.graph-changes-file { display: flex; gap: 6px; margin: 6px 0 0; font: 600 11px var(--graph-mono); }
+.graph-change { display: flex; gap: 6px; width: 100%; text-align: left; font: 11px var(--graph-mono); padding: 1px 2px; border-radius: 2px; }
+.graph-change:hover { background: var(--graph-hover); }
+.graph-change-what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.graph-change-sign { flex: none; width: 1ch; font-weight: 700; }
+.graph-change-word { width: auto; min-width: 8ch; font-weight: normal; }
+.graph-change-line { flex: none; color: var(--graph-muted); }
+.graph-change-added .graph-change-sign, .graph-info-change.graph-change-added { color: var(--graph-added); }
+.graph-change-removed .graph-change-sign, .graph-info-change.graph-change-removed { color: var(--graph-removed); }
+.graph-change-changed .graph-change-sign, .graph-info-change.graph-change-changed { color: var(--graph-changed); }
+.graph-change-impacted .graph-change-sign, .graph-info-change.graph-change-impacted { color: var(--graph-impacted); }
+.graph-change-old { color: var(--graph-removed); text-decoration: line-through; }
+.graph-change-new { color: var(--graph-added); }
+.graph-info-change { font-size: 11px; margin-top: 2px; }
+.graph-st-added { background: var(--graph-added); }
+.graph-st-changed { background: var(--graph-changed); }
+.graph-st-impacted { border: 2px solid var(--graph-impacted); width: 5px; height: 5px; }
+.graph-st-removed { border: 1.5px dashed var(--graph-removed); width: 6px; height: 6px; }
+
 /* Wide: the filters always beside the drawing, so no toggle. */
 .graph-filters-toggle { display: none; }
 
@@ -133,9 +165,9 @@
   .graph-filters-toggle { display: inline-block; }
   .graph-filters-toggle[aria-expanded="true"] { background: var(--graph-select); }
   /* Folded: only the search stays, above the drawing. */
-  .graph:not(.graph-filters-open) .graph-filters > :not(.graph-find) { display: none; }
+  .graph:not(.graph-filters-open) .graph-filters > :not(.graph-find, .graph-changes) { display: none; }
   .graph:not(.graph-filters-open) .graph-filters { padding-bottom: 0; }
-  .graph-filters { width: auto; max-height: 50%; border-right: 0; border-bottom: 1px solid var(--graph-line); }
+  .graph-filters, .graph-changes-on .graph-filters { width: auto; max-height: 50%; border-right: 0; border-bottom: 1px solid var(--graph-line); }
   .graph-stage { min-height: 240px; }
   .graph-info { left: 8px; width: auto; max-height: 50%; }
 }

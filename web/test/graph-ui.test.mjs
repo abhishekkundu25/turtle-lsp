@@ -15,7 +15,8 @@ import { buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, midd
 import { defaultState, facetParams, hierarchyParams, normalizeState, selectsNothing, setRule, toParams } from "../app/graph/filters.js"
 import { pickLabels, truncate } from "../app/graph/labels.js"
 import { NEUTRAL, colorSlots } from "../app/graph/colors.js"
-import { A, B, EX, SUBCLASS, bigGraph, smallGraph } from "./graph-fixture.mjs"
+import { NODE, overlay, readDiff, rowText, rowsOf, summary } from "../app/graph/changes.js"
+import { A, B, EX, SUBCLASS, bigGraph, smallDiff, smallGraph } from "./graph-fixture.mjs"
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
 const PORT = 4176
@@ -255,6 +256,44 @@ describe("labels, model, colours and diagnostics", () => {
     assert.deepEqual([...marks], [1, 0, 0, 0])
     assert.deepEqual(asked, [A, B])
     assert.deepEqual([...diagnosticMarks(nodes)], [0, 0, 0, 0])
+  })
+})
+
+describe("changes", () => {
+  test("a diff answer gives each node its status, keys the added triples, and puts a removed term beside its old neighbour (catches: colours on the wrong node, a ghost far from where it was)", () => {
+    const diff = readDiff(smallDiff())
+    assert.equal(diff.status.get(`${EX}Pump`), NODE.changed)
+    assert.equal(diff.status.get(`${EX}hasPart`), NODE.added)
+    assert.equal(diff.status.get(`${EX}PumpShape`), NODE.impacted)
+    assert.equal(diff.status.get("lit:new"), NODE.added, "a changed value's new literal is added")
+    assert.equal(diff.status.has(`${EX}OldValve`), false, "a removed term has no node")
+    assert.equal(summary(diff.total), "+3 −2 triples · 1 added, 1 removed, 1 changed, 1 impacted")
+    assert.deepEqual(rowsOf(diff, `${EX}Pump`), [{ f: 0, r: 0 }, { f: 0, r: 1 }])
+    assert.deepEqual(rowText(diff.files[0].rows[1]), { what: 'ex:Pump rdfs:label "Pmp" → "Pump"', line: "line 6", label: 'Changed: ex:Pump rdfs:label "Pmp" → "Pump", line 6' })
+    assert.equal(rowText(diff.files[1].rows[0]).label, "Removed: ex:OldValve rdfs:subClassOf ex:Device, was line 12", "a removed row says the line it had")
+
+    const m = buildModel(smallGraph())
+    const scene = { x: m.x, y: m.y, nodes: Array.from({ length: m.n }, (_, i) => i) }
+    const o = overlay(diff, m, scene)
+    const at = (local) => m.index.get(`${EX}${local}`)
+    assert.equal(o.status[at("Pump")], NODE.changed)
+    assert.equal(o.status[at("Valve")], 0)
+    // Pump hasPart Valve is in the graph and added; nothing else is.
+    assert.deepEqual(o.added, [at("Pump"), at("Valve")])
+    // OldValve: one ghost near Device (-200, -150), its removed edge from there to Device.
+    assert.deepEqual(o.ghosts.text, ["ex:OldValve"])
+    const d = Math.hypot(o.ghosts.x[0] + 200, o.ghosts.y[0] + 150)
+    assert.ok(d > 10 && d < 40, `the ghost is beside Device (${d})`)
+    assert.deepEqual(o.removed, [o.ghosts.x[0], o.ghosts.y[0], -200, -150])
+    // A removed literal only with literals shown; a removed term only when its file is.
+    assert.deepEqual(overlay(diff, m, scene, { files: [A] }).ghosts.text, [])
+    assert.deepEqual(overlay(diff, m, scene, { literals: true }).ghosts.text.sort(), ['"Pmp"', "ex:OldValve"])
+    // A Device not drawn (focus rings without it): no ghost and no edge.
+    const without = { ...scene, x: Float64Array.from(m.x, (v, i) => (i === at("Device") ? NaN : v)) }
+    assert.deepEqual(overlay(diff, m, without).ghosts.text, [])
+    // A broken answer reads as no change.
+    const empty = readDiff({ files: [{ uri: A, rows: [{ change: "changed", subject: { id: "s" }, predicate: { id: "p" }, object: { id: "o" } }] }], terms: [{ id: "x", status: "bogus" }] })
+    assert.deepEqual([empty.files.length, empty.terms.length], [0, 0], "a changed row without was, a term of no status, are dropped")
   })
 })
 
@@ -594,6 +633,110 @@ describe("the view in Chrome", () => {
       await file.waitFor()
       assert.equal(await file.getAttribute("title"), long[0])
       assert.equal(await file.textContent(), middleCut(fileLabel(long[0], root), 48))
+    } finally {
+      await v.close()
+    }
+  })
+
+  const diffCalls = async (v) => (await v.calls()).filter((c) => c.method === "turtle/graphDiff")
+
+  test("without a base there is no Changes toggle; with one, off asks no turtle/graphDiff (catches: a toggle that can only fail, a diff computed for nobody)", async () => {
+    const v = await open()
+    try {
+      assert.equal(await v.page.getByRole("button", { name: "Changes" }).count(), 0, "no toggle without base")
+      await v.page.evaluate(() => window.__graph.view.refresh())
+      assert.equal((await diffCalls(v)).length, 0)
+      await v.page.evaluate(() => window.__graph.mount({ base: { files: [] } }))
+      await v.page.locator(".graph[data-busy='false'] .graph-status", { hasText: /Showing/ }).waitFor()
+      const toggle = v.page.getByRole("button", { name: "Changes" })
+      assert.equal(await toggle.getAttribute("aria-pressed"), "false")
+      await v.page.evaluate(() => window.__graph.view.refresh())
+      await settled(v)
+      assert.equal((await diffCalls(v)).length, 0, "off: nothing asked")
+      assert.equal(await v.page.locator(".graph-changes").isHidden(), true)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("Changes on asks once with the host's base, colours the graph, lists rows per file and terms with counts; a row reveals its line; refresh asks again; off draws as before (catches: a diff not drawn, a list without status words, a stale list, a request after off)", async () => {
+    const base = [{ uri: A, text: "@prefix ex: <http://example.org/> .\n" }, { uri: "file:///work/new.ttl", text: null }]
+    const v = await open({ base: { files: base } })
+    try {
+      const blue = await v.page.evaluate(() => window.__graph.color("c0"))
+      const near = (a, b) => a.every((c, k) => Math.abs(c - b[k]) <= 3)
+      // Pump's colour at the middle of the fit (the list widens the side panel, so the fit moves).
+      const pump = async () => {
+        await v.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+        return v.page.evaluate(([x, y]) => window.__graph.pixel(x, y), await v.middle())
+      }
+      assert.ok(near(await pump(), blue), "off: Pump in its file's colour")
+      const toggle = v.page.getByRole("button", { name: "Changes" })
+      await toggle.click()
+      assert.equal(await toggle.getAttribute("aria-pressed"), "true")
+      const list = v.page.getByRole("region", { name: "Changes" })
+      await list.getByText("+3 −2 triples · 1 added, 1 removed, 1 changed, 1 impacted").waitFor()
+      const calls = await diffCalls(v)
+      assert.equal(calls.length, 1)
+      assert.deepEqual(calls[0].params, { base })
+      // Pump changed: amber where it is drawn.
+      const amber = await v.page.evaluate(() => window.__graph.color("changed"))
+      assert.ok(near(await pump(), amber), "on: Pump in the changed colour")
+      // Rows per file, each with its status in words.
+      const files = await list.locator(".graph-changes-file").allTextContents()
+      assert.deepEqual(files, ["a.ttl+3 −1", "b.ttl+0 −1"], "a changed value counts once each way")
+      const rows = await list.locator("button[data-f]").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))
+      assert.deepEqual(rows, [
+        "Added: ex:Pump ex:hasPart ex:Valve, line 5",
+        'Changed: ex:Pump rdfs:label "Pmp" → "Pump", line 6',
+        "Added: ex:hasPart rdf:type owl:ObjectProperty, line 9",
+        "Removed: ex:OldValve rdfs:subClassOf ex:Device, was line 12",
+      ])
+      assert.deepEqual(await list.locator("button[data-f] .graph-change-sign").allTextContents(), ["+", "~", "+", "−"])
+      assert.deepEqual(await list.locator("h4.graph-info-sec").allTextContents(), ["Added terms (1)", "Removed terms (1)", "Changed terms (1)", "Impacted terms (1)"])
+      assert.match(await v.page.locator(".graph-legend").textContent(), /added.*changed.*impacted.*removed/, "the key names the statuses")
+      // A row is a button the keyboard reaches; it reveals the line and selects its subject.
+      const removed = list.getByRole("button", { name: /^Removed: ex:OldValve/ })
+      await removed.focus()
+      await v.page.keyboard.press("Enter")
+      await list.getByRole("button", { name: /^Changed: ex:Pump/ }).click()
+      assert.deepEqual(await v.page.evaluate(() => window.__graph.reveals), [
+        { uri: B, range: { start: { line: 11, character: 0 }, end: { line: 11, character: 6 } } },
+        { uri: A, range: { start: { line: 5, character: 0 }, end: { line: 5, character: 6 } } },
+      ])
+      // The node's part of the change, in the info panel.
+      const info = v.page.getByRole("region", { name: "Selected node" })
+      await info.getByRole("heading", { name: "Pump" }).waitFor()
+      assert.equal(await info.locator(".graph-info-change").textContent(), "Changed since the base")
+      assert.equal(await info.locator("button[data-f]").count(), 2)
+      await info.getByRole("button", { name: /^Added: ex:Pump ex:hasPart/ }).click()
+      assert.deepEqual((await v.page.evaluate(() => window.__graph.reveals)).at(-1), { uri: A, range: { start: { line: 4, character: 0 }, end: { line: 4, character: 6 } } })
+      // The workspace changed: asked again after the debounce.
+      await v.page.evaluate(() => window.__graph.view.refresh())
+      await v.page.waitForFunction(() => window.__graph.calls.filter((c) => c.method === "turtle/graphDiff").length === 2)
+      // Off: the list goes, the colours go, and nothing more is asked.
+      await toggle.click()
+      assert.equal(await toggle.getAttribute("aria-pressed"), "false")
+      assert.equal(await list.isHidden(), true)
+      await v.page.locator(".graph-info").evaluate((e) => e.querySelector("[data-act=close]").click())
+      assert.ok(near(await pump(), blue), "off again: Pump in its file's colour")
+      assert.match(await v.page.locator(".graph-legend").textContent(), /a\.ttl/)
+      await v.page.evaluate(() => window.__graph.view.refresh())
+      await settled(v)
+      assert.equal((await diffCalls(v)).length, 2)
+    } finally {
+      await v.close()
+    }
+  })
+
+  test("a base with nothing to compare with says why and asks nothing (catches: an empty list with no reason, a request with no base)", async () => {
+    const v = await open({ base: { reason: "Not in a git repository: nothing to compare with." } })
+    try {
+      await v.page.getByRole("button", { name: "Changes" }).click()
+      await v.page.getByRole("region", { name: "Changes" }).getByText("Not in a git repository: nothing to compare with.").waitFor()
+      await settled(v)
+      assert.equal((await diffCalls(v)).length, 0)
+      assert.match(await v.page.locator(".graph-legend").textContent(), /a\.ttl/, "no overlay, so the usual key")
     } finally {
       await v.close()
     }

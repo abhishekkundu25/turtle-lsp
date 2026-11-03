@@ -38,7 +38,7 @@ export function colorSlots(model, by, facets = model.facets) {
   return out
 }
 
-const TOKENS = ["bg", "fg", "muted", "edge", "focus", "match", "error", "warning", "info", "neutral"]
+const TOKENS = ["bg", "fg", "muted", "edge", "focus", "match", "error", "warning", "info", "neutral", "added", "removed", "changed", "impacted"]
 
 /** The theme's colours as the canvas needs them (resolved rgb strings), read through a probe inside `el`. */
 export function readColors(el) {

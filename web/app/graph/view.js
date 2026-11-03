@@ -2,9 +2,10 @@
 // Three modes on one filter panel: the graph (A: the server's force layout on
 // a 2D canvas), focus (C: the selected node on rings, N hops, capped per ring
 // with "+N more") and the class hierarchy (C: a tree). It talks to its host
-// only through the functions it is given: `request` for `turtle/graph`,
-// `reveal` to open a definition, `diagnostics` to mark nodes, `store` to keep
-// the filters. No globals, no network, no inline handlers or styles.
+// only through the functions it is given: `request` for `turtle/graph` (and
+// `turtle/graphDiff`), `reveal` to open a definition, `diagnostics` to mark
+// nodes, `store` to keep the filters, `base` for the Changes toggle. No
+// globals, no network, no inline handlers or styles.
 
 import { h, kids } from "./el.js"
 import { BIG, KINDS, LITERAL, bestNode, buildModel, chooseDefault, commonRoot, diagnosticMarks, fileLabel, middleCut, nameOf, neighbours, searchNodes, triplesOf } from "./model.js"
@@ -16,6 +17,7 @@ import { PALETTE_SIZE, colorSlots, readColors } from "./colors.js"
 import { createRenderer } from "./canvas.js"
 import { createFilterPanel } from "./panel.js"
 import { createTreeView } from "./tree.js"
+import { DIFF_METHOD, NODE, createChangeList, overlay, readDiff, rowButton, rowRange, rowsOf, termOf } from "./changes.js"
 
 export const STORE_KEY = "graph"
 export const METHOD = "turtle/graph"
@@ -41,6 +43,9 @@ const NO_FILES = "No files selected"
  * @param {(uri: string) => { range: object, severity?: number }[]} [o.diagnostics] a document's diagnostics
  * @param {Record<string, string>} [o.theme] `--graph-…` CSS variables to set on the view
  * @param {{ get(key: string): any, set(key: string, value: any): void }} [o.store] keeps the filters and mode
+ * @param {() => Promise<{ uri: string, text: string | null }[] | string>} [o.base] the files that differ from the
+ *   base and their base text, for the Changes toggle (`turtle/graphDiff`); a string is why there is nothing to
+ *   compare with. Without it there is no toggle.
  * @returns {{ refresh(): Promise<void>, resize(): void, destroy(): void, setTheme(theme?: Record<string, string>): void }}
  */
 // `maxNodes`: the largest node cap offered (a host whose layout runs on the
@@ -48,7 +53,7 @@ const NO_FILES = "No files selected"
 // Gives each view's filter region its own id (aria-controls).
 let views = 0
 
-export function createGraphView({ container, request, reveal, diagnostics, theme, store, maxNodes = CAPS[CAPS.length - 1] } = {}) {
+export function createGraphView({ container, request, reveal, diagnostics, theme, store, base, maxNodes = CAPS[CAPS.length - 1] } = {}) {
   if (!container?.ownerDocument) throw new TypeError("createGraphView: a container element is required")
   if (typeof request !== "function") throw new TypeError("createGraphView: a request function is required")
   const doc = container.ownerDocument
@@ -59,6 +64,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   // ---- the elements ----
   const tabs = MODES.map((m) => h(doc, "button", { type: "button", role: "tab", class: "graph-tab", "data-mode": m, text: TITLES[m] }))
   const fitButton = h(doc, "button", { type: "button", class: "graph-btn graph-fit", text: "Fit", title: "Fit the graph to the view (0)" })
+  const changesButton = h(doc, "button", { type: "button", class: "graph-btn graph-changes-toggle", text: "Changes", "aria-pressed": "false", hidden: typeof base !== "function", title: "Colour the graph by what changed since the base and list the changes" })
   const status = h(doc, "span", { class: "graph-status", role: "status", "aria-live": "polite" })
   const filtersEl = h(doc, "div", { class: "graph-filters", id: `graph-filters-${++views}`, role: "region", "aria-label": "Graph filters" })
   // Narrow (a side bar): the filters fold away so the drawing has the height.
@@ -72,7 +78,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   const notice = h(doc, "p", { class: "graph-notice", hidden: true, text: `${NO_FILES}. Choose files under Files, or All.` })
   const stage = h(doc, "div", { class: "graph-stage" }, canvas, moreLayer, treeBox, notice, legend, tip, info)
   const root = h(doc, "div", { class: "graph", "data-busy": "false" },
-    h(doc, "div", { class: "graph-bar" }, h(doc, "div", { class: "graph-tabs", role: "tablist", "aria-label": "Graph mode" }, tabs), fitButton, filtersButton, status),
+    h(doc, "div", { class: "graph-bar" }, h(doc, "div", { class: "graph-tabs", role: "tablist", "aria-label": "Graph mode" }, tabs), fitButton, filtersButton, changesButton, status),
     h(doc, "div", { class: "graph-body" }, filtersEl, stage))
   container.replaceChildren(root)
   filtersButton.addEventListener("click", () => {
@@ -80,6 +86,8 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     filtersButton.setAttribute("aria-expanded", String(open))
     root.classList.toggle("graph-filters-open", open)
   })
+
+  const changesEl = h(doc, "section", { class: "graph-sec graph-changes", hidden: true, "aria-label": "Changes" })
 
   const renderer = createRenderer(canvas)
   applyTheme(theme)
@@ -114,6 +122,13 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   let failed = false
   // The filters select no file: nothing is asked or drawn.
   let nothing = false
+  // The Changes toggle: null when off; on, the last answer (readDiff, null
+  // before the first) and a note (loading, why there is none, an error).
+  let changes = null
+  // What the canvas draws of `changes` over the scene (changes.js overlay), made when either changes.
+  let ov = null
+  let diffSeq = 0
+  let diffTimer = 0
 
   const panel = createFilterPanel(filtersEl, state, {
     change(what) {
@@ -130,6 +145,9 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     pick: focusNode,
   }, nodeCaps)
   const tree = createTreeView(treeBox, { select: (i) => select(i), open: openDefinition })
+  // The change list sits under the search, above the filters.
+  filtersEl.firstElementChild.after(changesEl)
+  const changeList = createChangeList(changesEl, { open: openChange })
 
   // ---- talking to the host ----
   function save() {
@@ -348,7 +366,9 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
         const [x, y] = toScreen(i)
         if (x > -20 && y > -20 && x < w + 20 && y < hgt + 20) inView.push(i)
       }
+    const over = overlayOf(s)
     const always = [selected, hover, ...near, ...matches.slice(0, 50)].filter(drawn)
+    if (over) for (let i = 0, n = 0; i < over.status.length && n < 50; i++) if (over.status[i] && drawn(i)) always.push(i), n++
     if (rings) for (const i of rings.rings.slice(0, 2).flat()) always.push(i)
     const labels = scene ? pickLabels({ always, inView, zoom: cam.k, deg: model.deg, few: rings ? 150 : undefined }) : []
     const strong = []
@@ -361,7 +381,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       }
       if (!rings && incident.length <= 24) for (const e of incident) edgeLabels.push({ a: e.source, b: e.target, text: truncate(e.name || e.predicate, 24) })
     }
-    const ms = renderer.draw({ ...s, slot: slots, marks, strong, edgeLabels, selected: drawn(selected) ? selected : -1, hover: drawn(hover) ? hover : -1, matches: matches.filter(drawn), labels, text: (i) => truncate(nameOf(model.nodes[i])) }, cam, colors)
+    const ms = renderer.draw({ ...s, slot: slots, marks, strong, edgeLabels, selected: drawn(selected) ? selected : -1, hover: drawn(hover) ? hover : -1, matches: matches.filter(drawn), labels, text: (i) => truncate(nameOf(model.nodes[i])), changes: over }, cam, colors)
     root.dataset.drawMs = ms.toFixed(2)
     for (const b of moreLayer.children) {
       const at = rings?.moreAt[Number(b.dataset.ring)]
@@ -369,6 +389,66 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       b.style.left = `${(at[0] - cam.x) * cam.k + w / 2}px`
       b.style.top = `${(at[1] - cam.y) * cam.k + hgt / 2}px`
     }
+  }
+
+  /** The Changes overlay of scene `s`, made again only when the scene or the answer changed. */
+  function overlayOf(s) {
+    const diff = changes?.diff
+    if (!diff || !scene || s !== scene) return null
+    if (ov?.scene !== scene || ov.diff !== diff) ov = { scene, diff, ...overlay(diff, model, scene, state.filters) }
+    return ov
+  }
+
+  // ---- the Changes toggle ----
+  function setChanges(on) {
+    if (on === !!changes) return
+    changesButton.setAttribute("aria-pressed", String(on))
+    root.classList.toggle("graph-changes-on", on)
+    changesEl.hidden = !on
+    clearTimeout(diffTimer)
+    diffSeq++
+    changes = on ? { diff: null, note: "Loading the changes…" } : null
+    ov = null
+    if (on) loadChanges()
+    else changeList.show(null)
+    renderLegend()
+    renderInfo()
+    draw()
+  }
+
+  /** Ask the host for its base, then the server for the changes against it. */
+  async function loadChanges() {
+    clearTimeout(diffTimer)
+    if (!changes || destroyed) return
+    const my = ++diffSeq
+    const current = () => my === diffSeq && changes && !destroyed
+    if (!changes.diff) changeList.show(null, changes.note)
+    let next
+    try {
+      const files = await base()
+      if (!current()) return
+      if (typeof files === "string") next = { diff: null, note: files }
+      else {
+        const res = await request(DIFF_METHOD, { base: Array.isArray(files) ? files : [] })
+        if (!current()) return
+        next = { diff: readDiff(res), note: "" }
+      }
+    } catch (e) {
+      if (!current()) return
+      next = { diff: changes.diff, note: `The changes could not be loaded: ${e?.message ?? e}` }
+    }
+    changes = next
+    changeList.show(changes.diff, changes.note)
+    renderLegend()
+    renderInfo()
+    draw()
+  }
+
+  /** A row or term of the change list: open its line and select its node when it is drawn. */
+  function openChange(uri, range, id) {
+    const i = model?.index.get(id) ?? -1
+    if (i >= 0 && i !== selected) select(i, { user: false })
+    if (uri && range && typeof reveal === "function") reveal(uri, range)
   }
 
   function showStatus() {
@@ -381,6 +461,12 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
   }
 
   function renderLegend() {
+    if (changes?.diff) {
+      // The overlay's key, each status in words.
+      legend.replaceChildren(...["added", "changed", "impacted", "removed"].map((s) => h(doc, "span", { class: "graph-key", role: "listitem" }, h(doc, "span", { class: `graph-swatch graph-st-${s}`, "aria-hidden": "true" }), s)))
+      legend.hidden = mode === "hierarchy"
+      return
+    }
     const entries = []
     if (state.colorBy === "kind") KINDS.forEach((k, slot) => entries.push([slot, k]))
     else if (state.colorBy === "namespace") order.namespaces.slice(0, PALETTE_SIZE).forEach((ns, slot) => entries.push([slot, ns.prefix ? `${ns.prefix}:` : ns.iri]))
@@ -439,12 +525,30 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
       h(doc, "div", { class: "graph-info-id", text: d.id }),
       d.uri ? h(doc, "div", { class: "graph-info-file", title: d.uri, text: middleCut(fileLabel(d.uri, commonRoot(order.files)), INFO_CHARS) }) : null,
       marks[selected] ? h(doc, "div", { class: `graph-info-diag graph-sev${marks[selected]}`, text: `Has ${SEVERITY[marks[selected]]} diagnostics` }) : null,
+      changeInfo(d.id),
       h(doc, "div", { class: "graph-actions" },
         h(doc, "button", { type: "button", class: "graph-btn", "data-act": "reveal", disabled: !canReveal, text: "Go to definition" }),
         mode !== "focus" || state.focus !== d.id ? h(doc, "button", { type: "button", class: "graph-btn", "data-act": "focus", disabled: model.kind[selected] === LITERAL, text: "Focus here" }) : null),
       list("Out", out, "out"),
       list("In", inc, "in")))
     info.hidden = false
+  }
+
+  /** The selected node's part of the change: its status and its rows. */
+  function changeInfo(id) {
+    const diff = changes?.diff
+    if (!diff) return null
+    const term = termOf(diff, id)
+    const status = term?.status ?? (diff.status.get(id) === NODE.added ? "added" : null)
+    const rows = rowsOf(diff, id)
+    if (!status && !rows.length) return null
+    return [
+      status ? h(doc, "div", { class: `graph-info-change graph-change-${status}`, text: `${status[0].toUpperCase()}${status.slice(1)} since the base` }) : null,
+      rows.length ? [
+        h(doc, "h4", { class: "graph-info-sec", text: `Changes (${rows.length})` }),
+        h(doc, "ul", { class: "graph-triples" }, rows.slice(0, TRIPLES_SHOWN).map(({ f, r }) => h(doc, "li", {}, rowButton(doc, diff, f, r)))),
+      ] : null,
+    ]
   }
 
   function openDefinition(i) {
@@ -521,12 +625,20 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     e.preventDefault()
   })
   const refit = () => ((userMoved = false), fit())
+  changesButton.addEventListener("click", () => setChanges(!changes))
   fitButton.addEventListener("click", refit)
   info.addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act
     if (act === "close") return select(-1)
     if (act === "reveal") return openDefinition(selected)
     if (act === "focus") return focusOn(selected)
+    const row = e.target.closest("[data-f]")
+    if (row && changes?.diff) {
+      const file = changes.diff.files[Number(row.dataset.f)]
+      const range = rowRange(file?.rows[Number(row.dataset.r)] ?? {})
+      if (file && range && typeof reveal === "function") reveal(file.uri, range)
+      return
+    }
     const t = e.target.closest("[data-i]")
     if (!t) return
     const i = Number(t.dataset.i)
@@ -667,6 +779,10 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     /** Ask again (a file changed), keeping positions, filters and the selection. */
     async refresh() {
       await started
+      if (changes) {
+        clearTimeout(diffTimer)
+        diffTimer = setTimeout(loadChanges, DEBOUNCE_MS)
+      }
       await load({ changed: true })
     },
     /** The container changed size. */
@@ -674,6 +790,7 @@ export function createGraphView({ container, request, reveal, diagnostics, theme
     destroy() {
       destroyed = true
       clearTimeout(timer)
+      clearTimeout(diffTimer)
       if (frame) win.cancelAnimationFrame(frame)
       observer?.disconnect()
       container.replaceChildren()
