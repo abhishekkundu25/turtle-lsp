@@ -4,7 +4,7 @@
 
 use super::actions::{Tails, text_edits_with};
 use crate::analysis::{Encoding, SparqlAnalysis};
-use crate::sparql::{Token, TokenKind};
+use crate::sparql::lexer::{Token, TokenKind};
 use crate::syntax::Span;
 use crate::syntax::names::{header_end, insertion_point};
 use lsp_types::TextEdit;

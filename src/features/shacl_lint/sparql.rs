@@ -16,6 +16,7 @@ use crate::knowledge::Knowledge;
 use crate::shacl::sparql::{Role, restrictions};
 use crate::shacl::vocab;
 use crate::sparql::validate::{self, ErrorAt, ErrorKind};
+use crate::sparql::{lexer, spargebra_input::text_for_spargebra};
 use crate::syntax::{Node, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spargebra::{Query, SparqlParser};
@@ -72,11 +73,12 @@ pub(super) fn lint(a: &Analysis, k: &Knowledge, out: &mut Vec<Finding>) {
                 parser = next;
             }
         }
-        if let Some(why) = crate::sparql::too_complex(value) {
+        let tokens = lexer::tokenize(value);
+        if let Some((_, why)) = lexer::too_complex(value, &tokens) {
             push(out, lit.span, SYNTAX, why);
             continue;
         }
-        let fixed = validate::text_for_spargebra(value, &crate::sparql::lexer::tokenize(value));
+        let fixed = text_for_spargebra(value, &tokens);
         let query = match parser.clone().parse_query(&fixed) {
             Ok(q) => q,
             Err(_) => {

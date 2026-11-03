@@ -135,7 +135,6 @@
 //! use turtle_lsp::shacl::validate_report as _; // tests
 //! use turtle_lsp::sparql::Document as _; // examples, tests
 //! use turtle_lsp::sparql::Level as _; // examples, tests
-//! use turtle_lsp::sparql::TokenKind as _; // examples, tests
 //! use turtle_lsp::sparql::features::code_actions as _; // tests
 //! use turtle_lsp::sparql::features::completion as _; // tests
 //! use turtle_lsp::sparql::features::definition as _; // tests
@@ -155,8 +154,9 @@
 //! use turtle_lsp::sparql::features::semantic_tokens_range as _; // tests
 //! use turtle_lsp::sparql::features::term_references as _; // tests
 //! use turtle_lsp::sparql::format as _; // examples, tests
+//! use turtle_lsp::sparql::lexer::TokenKind as _; // examples, tests
 //! use turtle_lsp::sparql::lexer::tokenize as _; // examples, tests
-//! use turtle_lsp::sparql::validate::text_for_spargebra as _; // examples
+//! use turtle_lsp::sparql::spargebra_input::text_for_spargebra as _; // examples
 //! use turtle_lsp::syntax::BlankId as _; // tests
 //! use turtle_lsp::syntax::Direction as _; // tests
 //! use turtle_lsp::syntax::Form as _; // tests

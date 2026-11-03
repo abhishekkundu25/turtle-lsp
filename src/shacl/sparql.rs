@@ -16,6 +16,8 @@ use super::Path;
 use crate::clock::Instant;
 use crate::rdf::dataset::{BLANK, Index, STerm};
 use crate::rdf::graph::Id;
+use crate::sparql::lexer::{tokenize, too_complex};
+use crate::sparql::spargebra_input::{text_for_spargebra, too_wide};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spareval::{
     CancellationToken, QueryEvaluationError, QueryEvaluator, QueryResults, QuerySolution,
@@ -97,13 +99,13 @@ pub(crate) fn prepare(
             .with_prefix(name, ns)
             .map_err(|e| format!("namespace <{ns}> of prefix {name}: {e}"))?;
     }
-    if let Some(why) = crate::sparql::too_complex(&text) {
+    let tokens = tokenize(&text);
+    if let Some((_, why)) = too_complex(&text, &tokens) {
         return Err(why);
     }
-    let text =
-        crate::sparql::validate::text_for_spargebra(&text, &crate::sparql::lexer::tokenize(&text));
+    let text = text_for_spargebra(&text, &tokens);
     let mut query = parser.parse_query(&text).map_err(|e| e.to_string())?;
-    if let Some(why) = crate::sparql::join_width::too_wide(&query) {
+    if let Some(why) = too_wide(&query) {
         return Err(format!("the query is too complex: {why}"));
     }
     let vars: Vec<Variable> = role

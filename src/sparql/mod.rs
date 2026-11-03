@@ -9,7 +9,7 @@
 //! - **Tokens** ([`lexer`]): every token of SPARQL 1.2 with its byte span,
 //!   comments included, never failing (a character no token starts with, an
 //!   unterminated string or a word that is no keyword is a
-//!   [`TokenKind::Error`] token). Keywords are matched case-insensitively.
+//!   [`lexer::TokenKind::Error`] token). Keywords are matched case-insensitively.
 //! - **Structure** ([`Structure`], from [`Document::structure`]), built from
 //!   the tokens by a tolerant walk:
 //!   - the prologue: [`Structure::prefixes`], [`Structure::bases`] and
@@ -69,8 +69,8 @@
 pub(crate) mod diagnostics;
 pub mod features;
 mod format;
-pub(crate) mod join_width;
 pub mod lexer;
+pub mod spargebra_input;
 pub(crate) mod structure;
 pub mod validate;
 
@@ -81,13 +81,6 @@ pub(crate) use structure::{
 
 use crate::layout::Options;
 use crate::syntax::{PrefixMap, Span};
-
-/// Why `text` must not be given to `spargebra`, if it must not: nesting or
-/// `OPTIONAL` / `MINUS` clauses deep enough to overflow its recursion. For
-/// callers outside documents (SHACL-SPARQL queries).
-pub(crate) fn too_complex(text: &str) -> Option<String> {
-    diagnostics::too_complex(text, &lexer::tokenize(text)).map(|(_, message)| message)
-}
 
 /// How serious a diagnostic is. The codes and levels match the Turtle ones
 /// where the meaning is the same.
@@ -108,57 +101,9 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenKind {
-    /// `<...>`.
-    Iri,
-    /// `prefix:local` or `prefix:`.
-    PName,
-    /// `?name` or `$name`.
-    Var,
-    /// Any string, `"..."`, `'...'`, `"""..."""` or `'''...'''`.
-    String,
-    /// An unsigned integer, decimal or double (`-` / `+` are [`Punct`](TokenKind::Punct)).
-    Number,
-    /// `true` / `false`.
-    Boolean,
-    /// `@en`, `@en-GB`, `@ar--rtl`.
-    LangTag,
-    /// `_:label`.
-    BlankNode,
-    /// A keyword (`SELECT`, `WHERE`, `OPTIONAL`, `NOT`, `EXISTS`, `AS`, ...),
-    /// any case; [`lexer::keyword`] gives its upper-case form.
-    Keyword,
-    /// A built-in function or aggregate name (`STRLEN`, `isBLANK`, `COUNT`),
-    /// any case; [`lexer::function`] gives its grammar spelling.
-    Function,
-    /// The `a` keyword (`rdf:type`).
-    A,
-    /// Punctuation and operators: `{ } ( ) [ ] . , ; * + - / ! ? ^ | = ~ < >`,
-    /// `<= >= != && || ^^`, `<< >> <<( )>> {| |}`.
-    Punct,
-    /// `# ...` to the end of the line.
-    Comment,
-    /// A character no SPARQL token starts with, an unterminated string, or a
-    /// word that is no keyword or function.
-    Error,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub span: Span,
-}
-
-impl Token {
-    pub fn text<'a>(&self, src: &'a str) -> &'a str {
-        &src[self.span.start as usize..self.span.end as usize]
-    }
-}
-
 pub struct Document {
     text: String,
-    tokens: Vec<Token>,
+    tokens: Vec<lexer::Token>,
     /// Where the lexer may start again: see [`Document::lexer_state_at`].
     states: Vec<(u32, lexer::State)>,
     structure: Structure,
@@ -205,7 +150,7 @@ impl Document {
     }
 
     /// Every token, comments included, in order.
-    pub fn tokens(&self) -> &[Token] {
+    pub fn tokens(&self) -> &[lexer::Token] {
         &self.tokens
     }
 

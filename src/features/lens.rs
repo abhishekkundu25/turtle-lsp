@@ -17,7 +17,7 @@
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::commands::RUN_QUERY;
-use crate::sparql::TokenKind;
+use crate::sparql::lexer::TokenKind;
 use lsp_types::{CodeLens, Command, Location};
 use serde_json::{Value, json};
 

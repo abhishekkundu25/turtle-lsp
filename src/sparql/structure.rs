@@ -9,7 +9,7 @@
 //! rename never miss one.
 
 use super::lexer;
-use super::{Token, TokenKind};
+use super::lexer::{Token, TokenKind};
 use crate::syntax::{PrefixMap, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 

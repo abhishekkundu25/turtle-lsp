@@ -2238,7 +2238,7 @@ mod tests {
     /// checks no clock and ran for minutes (chaos seed 34063671672, 74505).
     #[test]
     fn timing_a_join_too_wide_to_plan_is_a_failure() {
-        let reifiers = "~".repeat(crate::sparql::join_width::MAX_JOIN_WIDTH);
+        let reifiers = "~".repeat(crate::sparql::spargebra_input::MAX_JOIN_WIDTH);
         let body = format!(
             "ex:S sh:targetNode ex:a ; sh:sparql [ sh:select \"SELECT $this WHERE {{ $this ?p ?o {reifiers} }}\" ] .\nex:a ex:p 1 .\n"
         );
