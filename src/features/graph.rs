@@ -56,7 +56,7 @@ const MAX_DEPTH: u32 = 32;
 /// A previous position further out than this is not one the layout made.
 const MAX_COORDINATE: f64 = 1e7;
 /// A literal's name shows this many characters of its text.
-const LITERAL_NAME_CHARS: usize = 60;
+pub(crate) const LITERAL_NAME_CHARS: usize = 60;
 
 const SH: &str = "http://www.w3.org/ns/shacl#";
 const SKOS_CONCEPT: &str = "http://www.w3.org/2004/02/skos/core#Concept";
@@ -361,14 +361,14 @@ fn answer(k: &Knowledge, enc: Encoding, q: &Query) -> GraphResult {
 
 /// The prefixes of every workspace document, the first document by URI
 /// winning a name two bind differently.
-struct Names {
+pub(crate) struct Names {
     prefixes: PrefixMap,
     /// Namespace -> its shortest prefix name.
     by_namespace: FxHashMap<String, String>,
 }
 
 impl Names {
-    fn new(docs: &[&Analysis]) -> Names {
+    pub(crate) fn new(docs: &[&Analysis]) -> Names {
         let mut prefixes = PrefixMap::default();
         for a in docs {
             for (name, ns) in a.prefix_map() {
@@ -390,7 +390,7 @@ impl Names {
         }
     }
 
-    fn short(&self, iri: &str) -> String {
+    pub(crate) fn short(&self, iri: &str) -> String {
         short(iri, &self.prefixes)
     }
 
@@ -405,7 +405,7 @@ impl Names {
 // ---- the candidate graph ----
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum Key {
+pub(crate) enum Key {
     Iri(Iri),
     /// The document's index, the node.
     Blank(u32, BlankId),
@@ -414,7 +414,7 @@ enum Key {
 }
 
 impl Key {
-    fn id(self, docs: &[&Analysis]) -> String {
+    pub(crate) fn id(self, docs: &[&Analysis]) -> String {
         match self {
             Key::Iri(i) => i.to_string(),
             Key::Blank(d, b) => format!("_:{d}:{}", b.0),
