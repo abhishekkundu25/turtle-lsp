@@ -24,14 +24,13 @@ pub(crate) mod ranking;
 // `ranking` and the other modules of this directory write IRIs through here.
 pub(crate) use crate::syntax::names::shorten;
 
+use super::prefixes::{Scope, declaration_edit};
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
-use crate::syntax::names::{
-    Scope, declaration_edit, is_pn_chars, is_pn_local, vocabulary_namespace,
-};
+use crate::syntax::names::{is_pn_chars, is_pn_local};
 use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span, Syntax};
-use crate::vocab::{TermKind, VOCABS};
+use crate::vocab::{TermKind, VOCABS, split_namespace};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
@@ -775,7 +774,7 @@ pub(crate) fn may_match(iri: &str, typed: &str, prefixes: &PrefixMap) -> bool {
         Some((p, local)) => prefixes
             .get(p)
             .is_some_and(|ns| iri.starts_with(ns.as_str()) && fuzzy(local, &iri[ns.len()..])),
-        None => fuzzy(typed, &iri[vocabulary_namespace(iri).len()..]),
+        None => fuzzy(typed, &iri[split_namespace(iri).0.len()..]),
     }
 }
 

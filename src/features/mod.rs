@@ -12,6 +12,7 @@ pub(crate) mod lens;
 pub(crate) mod lint;
 pub(crate) mod literals;
 pub mod navigation;
+pub(crate) mod prefixes;
 pub mod quickfix;
 pub mod refactor;
 pub mod semantic;

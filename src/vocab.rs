@@ -652,6 +652,23 @@ mod tests {
     }
 
     #[test]
+    fn the_two_namespace_rules_differ_where_they_should() {
+        use crate::syntax::names::declarable_namespace;
+        assert_eq!(
+            declarable_namespace("http://xmlns.com/foaf/0.1/Person"),
+            Some("http://xmlns.com/foaf/0.1/")
+        );
+        assert_eq!(declarable_namespace("http://example.org"), None);
+        assert_eq!(declarable_namespace("http://example.org/a?x=/y"), None);
+        // The vocabulary rule always gives a namespace, even with no delimiter.
+        assert_eq!(split_namespace("nodelimiter").0, "");
+        assert_eq!(
+            split_namespace("http://ogp.me/ns#audio:album").0,
+            "http://ogp.me/ns#"
+        );
+    }
+
+    #[test]
     fn https_schema_org_is_schema() {
         let (v, local) = VOCABS.lookup("https://schema.org/Person").unwrap();
         assert_eq!((v.prefix, local), ("schema", "Person"));
