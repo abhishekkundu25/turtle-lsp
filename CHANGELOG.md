@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Changes on the graph.** A Changes toggle in the workspace graph (VS
+  Code and the browser editor) compares the data with a base version:
+  git HEAD in VS Code, the text at load in the browser. Triples added and
+  removed are listed per file, a changed value as one `~ old → new` row,
+  and each row opens its line. The graph colours terms added, changed and
+  impacted (they reference a changed term) and draws removed ones as
+  ghosts. Reformatting, reordering and prefix renames show no change. Built
+  on `turtle/graphDiff`, a new custom request listed under `experimental`.
+
 ## 0.13.1 — 2026-11-03
 
 ### Fixed

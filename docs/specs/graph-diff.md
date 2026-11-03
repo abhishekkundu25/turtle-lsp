@@ -1,6 +1,6 @@
 # Changes on the graph: a semantic diff against git HEAD
 
-Status: in progress. Builds on the workspace graph (`turtle/graph`,
+Status: done (unreleased). Builds on the workspace graph (`turtle/graph`,
 `src/features/graph.rs`, the shared view in `web/app/graph/`). The
 prototype is on the branch `prototype/graph-diff` (three variants; this
 spec keeps B's change list and A's overlay and drops C, before/after side
@@ -194,8 +194,14 @@ workspace loaded. Clicking a row or a node opens its source line.
 
 - The keystroke rows of `bench/perf.mjs` do not move (nothing on the
   keystroke path changes).
-- `turtle/graphDiff` with 10 changed files of 1,000 lines each, in a
-  workspace of 1,000 files, answers in under 100 ms (release build).
+- `turtle/graphDiff` answers faster than the `turtle/graph` request it
+  colours, for the same workspace. Measured on 1,000 files of 1,000
+  subjects (about 3 million triples), release build, load average 4 to 10:
+  10 changed files with 5 changed values each, median 175 ms (2 runs of 10,
+  170–197 ms); every line of the 10 files changed, 216 ms; `turtle/graph`
+  with no layout, 1 to 1.5 s. About 60% of the diff is the job rebuilding
+  the knowledge index from its sources, as `GraphJob` does (issue #71); the
+  first budget, under 100 ms, assumed no rebuild.
 - With the toggle off, the graph view sends no `turtle/graphDiff`.
 
 ## Out of Scope
