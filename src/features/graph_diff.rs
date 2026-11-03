@@ -117,8 +117,17 @@ impl DiffQuery {
                 )));
             }
             let in_workspace = k.get(&uri).is_some()
-                || uri_to_path(&uri)
-                    .is_some_and(|p| is_rdf_file(&p) && roots.iter().any(|r| p.starts_with(r)));
+                || match uri_to_path(&uri) {
+                    Some(p) => is_rdf_file(&p) && roots.iter().any(|r| p.starts_with(r)),
+                    // The WebAssembly build has no file paths or roots: its client
+                    // owns every file, and a base is never read from disk.
+                    None => {
+                        cfg!(target_arch = "wasm32")
+                            && url::Url::parse(&uri).is_ok_and(|u| {
+                                u.scheme() == "file" && is_rdf_file(std::path::Path::new(u.path()))
+                            })
+                    }
+                };
             if !in_workspace {
                 return Err(InvalidParams(format!(
                     "{uri} is not an RDF file of the workspace"
