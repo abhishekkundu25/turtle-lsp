@@ -20,7 +20,6 @@ use crate::features::format::format;
 use crate::features::hover::short;
 use crate::layout::Options;
 use crate::syntax::{PrefixMap, Syntax, XSD, parse};
-#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Map, Value, json};
 use spargebra::term::{Literal, NamedOrBlankNode, Term, Triple};
 use std::fmt::Write;
@@ -322,8 +321,8 @@ pub(crate) fn json(a: &Answer) -> Option<String> {
     Some(out)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn json_term(t: &Term) -> Value {
+/// A term in SPARQL 1.1 Query Results JSON form (see [`json`]).
+pub(crate) fn json_term(t: &Term) -> Value {
     match t {
         Term::NamedNode(n) => json!({ "type": "uri", "value": n.as_str() }),
         Term::BlankNode(b) => json!({ "type": "bnode", "value": b.as_str() }),

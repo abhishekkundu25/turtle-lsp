@@ -29,9 +29,9 @@
 //! Requests are answered by `ide::Session`, which routes each by document
 //! kind: RDF documents to `features`, SPARQL documents to
 //! `sparql::features`; neither runs on the other.
-//! The one custom request, `turtle/graph` (listed under `experimental`),
-//! runs on a thread of its own over a copy of the knowledge index and
-//! answers from there.
+//! The custom requests (listed under `experimental`) run on a thread of
+//! their own and answer from there: `turtle/graph` over a copy of the
+//! knowledge index, `turtle/query` (`query_request`) over the documents.
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
@@ -72,6 +72,7 @@ mod client;
 mod index;
 mod layers;
 mod progress;
+mod query_request;
 mod refresh;
 mod run_query;
 mod shacl;
@@ -180,6 +181,8 @@ pub(crate) struct Server {
     wsdiag: workspace_diagnostics::State,
     /// The "Run query" runs going on.
     queries: run_query::State,
+    /// The `turtle/query` runs going on (`query_request`).
+    query_requests: query_request::State,
     /// Tests: panic once after the next batch.
     #[cfg(test)]
     fault: bool,
@@ -326,6 +329,7 @@ impl Server {
             progress: Progress::new(work_done_progress),
             wsdiag,
             queries: run_query::State::new(show_document),
+            query_requests: query_request::State::default(),
             spawn,
             #[cfg(test)]
             fault: false,
@@ -501,8 +505,8 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
                 .collect(),
             work_done_progress_options: Default::default(),
         }),
-        // Custom requests, by method: `{"turtle/graph": true}`.
-        experimental: Some(serde_json::json!({ GRAPH: true })),
+        // Custom requests, by method: `{"turtle/graph": true, "turtle/query": true}`.
+        experimental: Some(serde_json::json!({ GRAPH: true, QUERY: true })),
         ..Default::default()
     }
 }
@@ -523,6 +527,8 @@ fn internal_error_diagnostic(msg: &str) -> Diagnostic {
 
 /// The custom request for the workspace graph (`features::graph`).
 const GRAPH: &str = "turtle/graph";
+/// The custom request that runs a query (`server::query_request`).
+const QUERY: &str = "turtle/query";
 
 /// A `turtle/graph` answer as JSON text; parameters it cannot answer are
 /// `InvalidParams`.
@@ -951,6 +957,7 @@ impl Server {
                         NumberOrString::String(s) => RequestId::from(s),
                     };
                     self.query_cancel_request(&id);
+                    self.query_requests.cancel(&id);
                 }
             }
             WorkDoneProgressCancel::METHOD => {
@@ -1608,6 +1615,12 @@ impl Server {
                     return Ok(None);
                 }
                 graph_json(self.session().graph(p))
+            }
+            QUERY => {
+                let p = params!(query_request::Params);
+                return self
+                    .query_request(req.id.clone(), p)
+                    .and_then(|v| v.map(|v| json(&v)).transpose());
             }
             _ => Err((
                 ErrorCode::MethodNotFound,

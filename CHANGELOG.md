@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`turtle/query`**, a custom request for other extensions and tools,
+  listed under the server's `experimental` capabilities: a SPARQL query as
+  text in, SPARQL 1.1 Query Results JSON out (`{"kind": "select" | "ask" |
+  "construct", …, "omitted", "elapsedMs"}`), over the workspace as the
+  editor has it or over the `files` given, with no row limit unless
+  `maxRows` is set. Nothing is shown and no file is written. The dataset is
+  the one of ▶ Run query. `timeoutSeconds` can only lower
+  `query.timeoutSeconds`; `$/cancelRequest` stops a run; at most four run
+  at a time.
+
 ## 0.13.1 — 2026-11-03
 
 ### Fixed

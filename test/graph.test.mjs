@@ -53,7 +53,7 @@ describe("turtle/graph", () => {
   })
 
   test("is listed under the experimental capabilities", () => {
-    assert.deepEqual(s.init.capabilities.experimental, { "turtle/graph": true })
+    assert.deepEqual(s.init.capabilities.experimental, { "turtle/graph": true, "turtle/query": true })
   })
 
   test("answers the workspace's nodes, edges, positions, totals and facets", async () => {
