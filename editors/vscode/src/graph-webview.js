@@ -9,7 +9,6 @@ import "./graph-webview.css"
 const vscode = acquireVsCodeApi()
 const pending = new Map()
 const diagnostics = new Map()
-const bases = new Map()
 let nextId = 0
 
 function request(method, params) {
@@ -23,8 +22,8 @@ function request(method, params) {
 // The files that differ from git HEAD, asked of the extension each time.
 function base() {
   const id = ++nextId
-  return new Promise((resolve) => {
-    bases.set(id, resolve)
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject })
     vscode.postMessage({ type: "base", id })
   })
 }
@@ -71,8 +70,10 @@ window.addEventListener("message", (event) => {
     if (m.error) p.reject(new Error(m.error))
     else p.resolve(m.result)
   } else if (m?.type === "base") {
-    bases.get(m.id)?.(m.base)
-    bases.delete(m.id)
+    const p = pending.get(m.id)
+    if (!p) return
+    pending.delete(m.id)
+    p.resolve(m.base)
   } else if (m?.type === "refresh") {
     view.refresh()
   } else if (m?.type === "theme") {
