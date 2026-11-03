@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.1 — 2026-11-03
 
 ### Fixed
 
@@ -8,6 +8,12 @@
   above a subject now lists what Find References lists without its
   declarations, so a term's uses in `.rq`, `.sparql` and `.ru` files count,
   open or not (#46).
+
+### Security
+
+- **The VS Code extension bundles minimatch 11.0.4**, past the moderate
+  denial-of-service advisory GHSA-g3hv-75wg-m249 in minimatch before 11.0.1
+  (pulled in by `vscode-languageclient`).
 
 ## 0.13.0 — 2026-10-30
 
