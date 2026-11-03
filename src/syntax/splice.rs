@@ -1141,9 +1141,11 @@ mod tests {
         let ext = external();
         let old = full(text, syntax);
         let (spliced, window) = splice(old.clone(), change, &ext, &ext, Some(BASE))?;
-        if let Err(diff) = crate::oracle::same_parse(&spliced, &full(&new_text, syntax)) {
-            panic!("splice differs from a full parse of {new_text:?}: {diff}");
-        }
+        let want = full(&new_text, syntax);
+        assert_eq!(
+            spliced, want,
+            "splice differs from a full parse of {new_text:?}"
+        );
         outside_the_window_as_it_was(&old, &spliced, window);
         Ok(())
     }
@@ -1556,7 +1558,7 @@ mod tests {
         );
         assert!(lexed < 2_000, "lexed {lexed} bytes for a one-byte edit");
         let want = full(&new_text, Syntax::Turtle);
-        assert_eq!(crate::oracle::same_parse(&spliced, &want), Ok(()));
+        assert_eq!(spliced, want);
         // Too big a paste: as cheap to parse in full.
         let paste = statements(9_000);
         assert_eq!(
