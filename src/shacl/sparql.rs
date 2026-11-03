@@ -13,7 +13,6 @@
 //! graph `$shapesGraph` names ([`SHAPES_GRAPH`]).
 
 use super::Path;
-use crate::clock::Instant;
 use crate::rdf::dataset::{BLANK, Index, STerm};
 use crate::rdf::graph::Id;
 use crate::sparql::lexer::{tokenize, too_complex};
@@ -406,17 +405,13 @@ pub(crate) struct Engine {
     timed_out: RefCell<FxHashSet<Query>>,
     /// Stops a running query, beside the time limit.
     cancel: Cancel,
-}
-
-impl Default for Engine {
-    fn default() -> Self {
-        Engine::new(Arc::new(|| false))
-    }
+    /// The time, which the time limit reads.
+    now: fn() -> Duration,
 }
 
 impl Engine {
     /// An engine whose queries also stop once `cancel` says so.
-    pub(crate) fn new(cancel: Cancel) -> Engine {
+    pub(crate) fn new(cancel: Cancel, now: fn() -> Duration) -> Engine {
         Engine {
             optimized: QueryEvaluator::new().with_custom_function(
                 NamedNode::new_unchecked(BLANK),
@@ -428,6 +423,7 @@ impl Engine {
             plain: QueryEvaluator::new().without_optimizations(),
             timed_out: RefCell::default(),
             cancel,
+            now,
         }
     }
 }
@@ -442,7 +438,8 @@ impl Engine {
     /// `evaluator`, stopped at [`TIME_LIMIT`] from now or when the job is
     /// cancelled (each checked every 64th time the evaluation asks).
     fn limited(&self, evaluator: &QueryEvaluator) -> (QueryEvaluator, Limit) {
-        let deadline = Instant::now() + TIME_LIMIT;
+        let now = self.now;
+        let deadline = now() + TIME_LIMIT;
         let checks = AtomicU32::new(0);
         let cancel = self.cancel.clone();
         let by_cancel = Arc::new(AtomicBool::new(false));
@@ -457,7 +454,7 @@ impl Engine {
                     flag.store(true, Ordering::Relaxed);
                     return true;
                 }
-                Instant::now() >= deadline
+                now() >= deadline
             }));
         (limited, Limit { by_cancel })
     }

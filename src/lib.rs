@@ -23,7 +23,7 @@
 //! | [`server`] | The LSP main loop, and the worker threads other modules start | `main`, the browser engine |
 //! | [`batch`] | Files analysed as one workspace without the event loop | [`cli`], the browser engine |
 //! | [`cli`] | `check`, `format` and `query` | `main` |
-//! | [`clock`] | The time the server's timers read | [`server`], [`query`], [`shacl`] |
+//! | [`clock`] | The time the server's timers read | [`server`], [`query`], [`features`] |
 //! | `ide` | `ide::Session`: the editor requests over one workspace, routed by document kind | [`server`] |
 //! | `extensions` | The requests beyond the LSP standard: `turtle/graph` | [`server`] |
 //! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
@@ -61,6 +61,7 @@
 //! use turtle_lsp::cli::USAGE as _; // main
 //! use turtle_lsp::cli::run as _; // main
 //! use turtle_lsp::clock::Instant as _; // web/engine
+//! use turtle_lsp::clock::elapsed as _; // examples, tests
 //! use turtle_lsp::features::completion::complete as _; // tests
 //! use turtle_lsp::features::diagnostics::Options as _; // tests
 //! use turtle_lsp::features::diagnostics::diagnostics as _; // tests

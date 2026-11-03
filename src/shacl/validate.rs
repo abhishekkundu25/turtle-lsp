@@ -44,6 +44,7 @@ use spargebra::term::{NamedNode, Term as RdfTerm, Variable};
 use std::cmp::Ordering;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// One `sh:ValidationResult`.
 #[derive(Clone, Debug, PartialEq)]
@@ -891,7 +892,7 @@ struct Run<'r, 'g, 'a> {
     /// least `min_batch`.
     min_batch: usize,
     /// Only these nodes (sorted) can be focus nodes; targets are looked for
-    /// among them rather than in the whole graph. See [`validate_report_among`].
+    /// among them rather than in the whole graph. See [`validate_report`].
     among: Option<&'r [Id]>,
     batch: Vec<Id>,
     in_batch: FxHashSet<Id>,
@@ -1829,48 +1830,35 @@ pub(crate) fn acts_on(used: &dyn Fn(Iri) -> bool) -> bool {
 /// Validate `g` against the shapes in it. `cancelled` is polled between
 /// focus nodes, between SPARQL queries, every few thousand steps (of path
 /// evaluation and shape checks), and inside a running query; a run it
-/// stops returns `None`. `json` says whether a text is JSON, for `rdf:JSON`.
+/// stops returns `None`. `json` says whether a text is JSON, for `rdf:JSON`;
+/// `now` is the time, for the SPARQL time limit.
 /// The [`Failure`]s are the queries and shapes that could not be validated.
+///
+/// With `among` (sorted), only those nodes are focus nodes, and the targets
+/// are found among them, not by walking the whole graph, so a few nodes of a
+/// large graph cost in proportion to themselves (a SPARQL target is the
+/// exception: its query runs over the graph).
 pub fn validate_report(
     g: &Graph,
     cancelled: &(impl Fn() -> bool + Send + Sync + Clone + 'static),
-    keep: &dyn Fn(Id) -> bool,
+    among: Option<&[Id]>,
     json: fn(&str) -> bool,
+    now: fn() -> Duration,
 ) -> Option<Report> {
-    report_over(
-        g,
-        Arc::new(cancelled.clone()),
-        keep,
-        None,
-        MIN_BATCH,
-        Budget::default(),
-        json,
-    )
-}
-
-/// [`validate_report`] for the focus nodes `among` (sorted) only: the same
-/// report as `validate_report` with a `keep` that accepts exactly them, but
-/// the targets are found among those nodes, not by walking the whole graph,
-/// so a few nodes of a large graph cost in proportion to themselves (a SPARQL
-/// target is the exception: its query runs over the graph).
-pub(crate) fn validate_report_among(
-    g: &Graph,
-    cancelled: &(impl Fn() -> bool + Send + Sync + Clone + 'static),
-    among: &[Id],
-    json: fn(&str) -> bool,
-) -> Option<Report> {
-    let keep = |id: Id| among.binary_search(&id).is_ok();
+    let keep = |id: Id| among.is_none_or(|a| a.binary_search(&id).is_ok());
     report_over(
         g,
         Arc::new(cancelled.clone()),
         &keep,
-        Some(among),
+        among,
         MIN_BATCH,
         Budget::default(),
         json,
+        now,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn report_over(
     g: &Graph,
     cancel: Cancel,
@@ -1879,6 +1867,7 @@ fn report_over(
     min_batch: usize,
     budget: Budget,
     json: fn(&str) -> bool,
+    now: fn() -> Duration,
 ) -> Option<Report> {
     let model = Shapes::new(g);
     let mut comp = Compiler {
@@ -1910,7 +1899,7 @@ fn report_over(
         memo: FxHashMap::default(),
         memo_ids: 0,
         ix: ix.as_ref(),
-        ev: sparql::Engine::new(cancel.clone()),
+        ev: sparql::Engine::new(cancel.clone(), now),
         cancel,
         stopped: false,
         budget,
@@ -1975,7 +1964,15 @@ fn report_over(
 mod tests {
     use super::*;
     use crate::syntax::{PrefixMap, Syntax, parse};
+    use std::sync::LazyLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
+    /// The time since the first call, for the SPARQL time limit.
+    fn now() -> Duration {
+        static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+        START.elapsed()
+    }
 
     fn results(body: &str) -> usize {
         let p = parse(
@@ -1986,7 +1983,7 @@ mod tests {
             Syntax::Turtle,
         );
         let g = Graph::new(&[&p.triples]);
-        validate_report(&g, &|| false, &|_| true, |_| true)
+        validate_report(&g, &|| false, None, |_| true, now)
             .unwrap()
             .results
             .len()
@@ -2041,13 +2038,23 @@ mod tests {
             v
         };
         let keep = |id: Id| mine.binary_search(&id).is_ok();
-        let whole = validate_report(&over, &|| false, &keep, |_| true).unwrap();
-        let among = validate_report_among(&over, &|| false, &mine, |_| true).unwrap();
+        let whole = report_over(
+            &over,
+            Arc::new(|| false),
+            &keep,
+            None,
+            MIN_BATCH,
+            Budget::default(),
+            |_| true,
+            now,
+        )
+        .unwrap();
+        let among = validate_report(&over, &|| false, Some(&mine), |_| true, now).unwrap();
         assert!(!whole.results.is_empty());
         assert_eq!(describe(&over, &whole), describe(&over, &among));
         assert_eq!(among.failures.len(), whole.failures.len());
         // More than the dataset's nodes: the shared ones are all of them.
-        let all = validate_report(&over, &|| false, &|_| true, |_| true).unwrap();
+        let all = validate_report(&over, &|| false, None, |_| true, now).unwrap();
         assert!(all.results.len() > among.results.len());
     }
 
@@ -2089,7 +2096,7 @@ mod tests {
             Syntax::Turtle,
         );
         let g = Graph::new(&[&p.triples]);
-        assert!(validate_report(&g, &|| true, &|_| true, |_| true).is_none());
+        assert!(validate_report(&g, &|| true, None, |_| true, now).is_none());
     }
 
     const HEAD: &str =
@@ -2158,7 +2165,7 @@ mod tests {
         );
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         let g = Graph::new(&[&p.triples]);
-        let r = validate_report(&g, &cancelled, &|_| true, |_| true)?;
+        let r = validate_report(&g, &cancelled, None, |_| true, now)?;
         let messages = r
             .results
             .iter()
@@ -2224,7 +2231,7 @@ mod tests {
         );
         let g = Graph::new(&[&p.triples]);
         let start = std::time::Instant::now();
-        let r = validate_report(&g, &|| false, &|_| true, |_| true).unwrap();
+        let r = validate_report(&g, &|| false, None, |_| true, now).unwrap();
         let messages: Vec<&str> = r.failures.iter().map(|f| f.message.as_str()).collect();
         assert_eq!(messages, [sparql::TIMED_OUT]);
         assert!(
@@ -2249,7 +2256,7 @@ mod tests {
         );
         let g = Graph::new(&[&p.triples]);
         let start = std::time::Instant::now();
-        let r = validate_report(&g, &|| false, &|_| true, |_| true).unwrap();
+        let r = validate_report(&g, &|| false, None, |_| true, now).unwrap();
         let messages: Vec<&str> = r.failures.iter().map(|f| f.message.as_str()).collect();
         assert_eq!(
             messages,
@@ -2391,6 +2398,7 @@ mod tests {
                     min_batch,
                     Budget::default(),
                     |_| true,
+                    now,
                 )
                 .unwrap();
                 let mut out: Vec<String> = r.results.iter().map(|x| format!("{x:?}")).collect();
@@ -2439,6 +2447,7 @@ mod tests {
                 min_batch,
                 Budget::default(),
                 |_| true,
+                now,
             )
             .unwrap()
             .results
@@ -2490,6 +2499,7 @@ mod tests {
             MIN_BATCH,
             budget,
             |_| true,
+            now,
         )
     }
 
@@ -2821,6 +2831,7 @@ mod tests {
             1,
             Budget::default(),
             |_| true,
+            now,
         )
         .unwrap();
         // A result per focus node, and n0's sh:node one for n1.
@@ -2863,6 +2874,7 @@ mod tests {
                 MIN_BATCH,
                 Budget::default(),
                 |_| true,
+                now,
             )
             .unwrap();
             let name = |id: Id| match g.term(id) {
@@ -2947,6 +2959,7 @@ mod tests {
             MIN_BATCH,
             budget,
             |_| true,
+            now,
         )
     }
 

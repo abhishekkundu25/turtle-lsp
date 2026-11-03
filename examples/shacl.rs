@@ -4,7 +4,7 @@
 //!
 //!     cargo run --release --example shacl -- FILE.ttl|FILE.trig ...
 
-use std::time::Instant;
+use turtle_lsp::clock::{Instant, elapsed};
 use turtle_lsp::jsonld::json;
 use turtle_lsp::rdf::graph::{Graph, Id, Term};
 use turtle_lsp::shacl::validate;
@@ -48,7 +48,7 @@ fn main() {
     let g = Graph::new(&docs);
     let loaded = t.elapsed();
     let t = Instant::now();
-    let report = validate::validate_report(&g, &|| false, &|_| true, json::valid).unwrap();
+    let report = validate::validate_report(&g, &|| false, None, json::valid, elapsed).unwrap();
     let validated = t.elapsed();
     for r in &report.results {
         let message = r
