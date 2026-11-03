@@ -898,6 +898,7 @@ struct Run<'r, 'g, 'a> {
     /// The solutions of such runs per focus node, by shape and check (`None`
     /// when the check runs per focus node).
     batched: FxHashMap<(Id, *const Check), Option<sparql::ByFocus>>,
+    json: fn(&str) -> bool,
 }
 
 fn kind_bits(t: Term) -> u8 {
@@ -1243,7 +1244,7 @@ impl Run<'_, '_, '_> {
             C::Datatype(dt) => each(out, &mut |x| {
                 !g.term(x)
                     .literal()
-                    .is_some_and(|(lex, d, _)| d == *dt && literal::well_formed(&d, lex))
+                    .is_some_and(|(lex, d, _)| d == *dt && literal::well_formed(&d, lex, self.json))
             }),
             C::NodeKind(bits) => each(out, &mut |x| kind_bits(g.term(x)) & bits == 0),
             C::MinCount(n) => {
@@ -1828,18 +1829,22 @@ pub(crate) fn acts_on(used: &dyn Fn(Iri) -> bool) -> bool {
 /// Validate `g` against the shapes in it. `cancelled` is polled between
 /// focus nodes, between SPARQL queries, every few thousand steps (of path
 /// evaluation and shape checks), and inside a running query; a run it
-/// stops returns `None`.
+/// stops returns `None`. `json` says whether a text is JSON, for `rdf:JSON`.
 /// The [`Failure`]s are the queries and shapes that could not be validated.
-pub fn validate_report<C>(g: &Graph, cancelled: &C, keep: &dyn Fn(Id) -> bool) -> Option<Report>
-where
-    C: Fn() -> bool + Send + Sync + Clone + 'static,
-{
-    report_with(
+pub fn validate_report(
+    g: &Graph,
+    cancelled: &(impl Fn() -> bool + Send + Sync + Clone + 'static),
+    keep: &dyn Fn(Id) -> bool,
+    json: fn(&str) -> bool,
+) -> Option<Report> {
+    report_over(
         g,
         Arc::new(cancelled.clone()),
         keep,
+        None,
         MIN_BATCH,
         Budget::default(),
+        json,
     )
 }
 
@@ -1848,10 +1853,12 @@ where
 /// the targets are found among those nodes, not by walking the whole graph,
 /// so a few nodes of a large graph cost in proportion to themselves (a SPARQL
 /// target is the exception: its query runs over the graph).
-pub(crate) fn validate_report_among<C>(g: &Graph, cancelled: &C, among: &[Id]) -> Option<Report>
-where
-    C: Fn() -> bool + Send + Sync + Clone + 'static,
-{
+pub(crate) fn validate_report_among(
+    g: &Graph,
+    cancelled: &(impl Fn() -> bool + Send + Sync + Clone + 'static),
+    among: &[Id],
+    json: fn(&str) -> bool,
+) -> Option<Report> {
     let keep = |id: Id| among.binary_search(&id).is_ok();
     report_over(
         g,
@@ -1860,19 +1867,8 @@ where
         Some(among),
         MIN_BATCH,
         Budget::default(),
+        json,
     )
-}
-
-/// [`validate_report`], batching SPARQL checks from `min_batch` focus nodes,
-/// within `budget`.
-fn report_with(
-    g: &Graph,
-    cancel: Cancel,
-    keep: &dyn Fn(Id) -> bool,
-    min_batch: usize,
-    budget: Budget,
-) -> Option<Report> {
-    report_over(g, cancel, keep, None, min_batch, budget)
 }
 
 fn report_over(
@@ -1882,6 +1878,7 @@ fn report_over(
     among: Option<&[Id]>,
     min_batch: usize,
     budget: Budget,
+    json: fn(&str) -> bool,
 ) -> Option<Report> {
     let model = Shapes::new(g);
     let mut comp = Compiler {
@@ -1928,6 +1925,7 @@ fn report_over(
         batch: Vec::new(),
         in_batch: FxHashSet::default(),
         batched: FxHashMap::default(),
+        json,
     };
     let mut out = Vec::new();
     'shapes: for (si, root) in roots {
@@ -1988,7 +1986,7 @@ mod tests {
             Syntax::Turtle,
         );
         let g = Graph::new(&[&p.triples]);
-        validate_report(&g, &|| false, &|_| true)
+        validate_report(&g, &|| false, &|_| true, |_| true)
             .unwrap()
             .results
             .len()
@@ -2043,13 +2041,13 @@ mod tests {
             v
         };
         let keep = |id: Id| mine.binary_search(&id).is_ok();
-        let whole = validate_report(&over, &|| false, &keep).unwrap();
-        let among = validate_report_among(&over, &|| false, &mine).unwrap();
+        let whole = validate_report(&over, &|| false, &keep, |_| true).unwrap();
+        let among = validate_report_among(&over, &|| false, &mine, |_| true).unwrap();
         assert!(!whole.results.is_empty());
         assert_eq!(describe(&over, &whole), describe(&over, &among));
         assert_eq!(among.failures.len(), whole.failures.len());
         // More than the dataset's nodes: the shared ones are all of them.
-        let all = validate_report(&over, &|| false, &|_| true).unwrap();
+        let all = validate_report(&over, &|| false, &|_| true, |_| true).unwrap();
         assert!(all.results.len() > among.results.len());
     }
 
@@ -2091,7 +2089,7 @@ mod tests {
             Syntax::Turtle,
         );
         let g = Graph::new(&[&p.triples]);
-        assert!(validate_report(&g, &|| true, &|_| true).is_none());
+        assert!(validate_report(&g, &|| true, &|_| true, |_| true).is_none());
     }
 
     const HEAD: &str =
@@ -2160,7 +2158,7 @@ mod tests {
         );
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         let g = Graph::new(&[&p.triples]);
-        let r = validate_report(&g, &cancelled, &|_| true)?;
+        let r = validate_report(&g, &cancelled, &|_| true, |_| true)?;
         let messages = r
             .results
             .iter()
@@ -2226,7 +2224,7 @@ mod tests {
         );
         let g = Graph::new(&[&p.triples]);
         let start = std::time::Instant::now();
-        let r = validate_report(&g, &|| false, &|_| true).unwrap();
+        let r = validate_report(&g, &|| false, &|_| true, |_| true).unwrap();
         let messages: Vec<&str> = r.failures.iter().map(|f| f.message.as_str()).collect();
         assert_eq!(messages, [sparql::TIMED_OUT]);
         assert!(
@@ -2251,7 +2249,7 @@ mod tests {
         );
         let g = Graph::new(&[&p.triples]);
         let start = std::time::Instant::now();
-        let r = validate_report(&g, &|| false, &|_| true).unwrap();
+        let r = validate_report(&g, &|| false, &|_| true, |_| true).unwrap();
         let messages: Vec<&str> = r.failures.iter().map(|f| f.message.as_str()).collect();
         assert_eq!(
             messages,
@@ -2385,12 +2383,14 @@ mod tests {
             assert!(p.errors.is_empty(), "{:?}", p.errors);
             let g = Graph::new(&[&p.triples]);
             let run = |min_batch| {
-                let r = report_with(
+                let r = report_over(
                     &g,
                     Arc::new(|| false),
                     &|_| true,
+                    None,
                     min_batch,
                     Budget::default(),
+                    |_| true,
                 )
                 .unwrap();
                 let mut out: Vec<String> = r.results.iter().map(|x| format!("{x:?}")).collect();
@@ -2431,12 +2431,14 @@ mod tests {
         assert!(sparse(20, g.len()), "20 focus nodes in {} triples", g.len());
         assert!(!sparse(300, g.len()));
         let run = |min_batch| {
-            report_with(
+            report_over(
                 &g,
                 Arc::new(|| false),
                 &|_| true,
+                None,
                 min_batch,
                 Budget::default(),
+                |_| true,
             )
             .unwrap()
             .results
@@ -2480,7 +2482,15 @@ mod tests {
         );
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         let g = Graph::new(&[&p.triples]);
-        report_with(&g, Arc::new(cancel), &|_| true, MIN_BATCH, budget)
+        report_over(
+            &g,
+            Arc::new(cancel),
+            &|_| true,
+            None,
+            MIN_BATCH,
+            budget,
+            |_| true,
+        )
     }
 
     /// `ex:n0 ex:next ex:n1 ...` over `n` nodes, the first `typed` of them
@@ -2803,7 +2813,16 @@ mod tests {
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         let g = Graph::new(&[&p.triples]);
         QUERIES_RUN.with(|c| c.set((0, 0)));
-        let r = report_with(&g, Arc::new(|| false), &|_| true, 1, Budget::default()).unwrap();
+        let r = report_over(
+            &g,
+            Arc::new(|| false),
+            &|_| true,
+            None,
+            1,
+            Budget::default(),
+            |_| true,
+        )
+        .unwrap();
         // A result per focus node, and n0's sh:node one for n1.
         assert_eq!((r.results.len(), r.failures.len()), (51, 0));
         // One batch; n1 runs once on its own, its rows taken by the nested check.
@@ -2836,12 +2855,14 @@ mod tests {
                 Syntax::Turtle,
             );
             let g = Graph::new(&[&p.triples]);
-            let r = report_with(
+            let r = report_over(
                 &g,
                 Arc::new(|| false),
                 &|_| true,
+                None,
                 MIN_BATCH,
                 Budget::default(),
+                |_| true,
             )
             .unwrap();
             let name = |id: Id| match g.term(id) {
@@ -2918,7 +2939,15 @@ mod tests {
         assert!(p.errors.is_empty(), "{:?}", p.errors);
         let base = Arc::new(Graph::new(&[&p.triples]));
         let g = Graph::overlay(&base, &p.triples);
-        report_with(&g, Arc::new(cancel), &|_| true, MIN_BATCH, budget)
+        report_over(
+            &g,
+            Arc::new(cancel),
+            &|_| true,
+            None,
+            MIN_BATCH,
+            budget,
+            |_| true,
+        )
     }
 
     #[test]

@@ -106,6 +106,7 @@
 //! use turtle_lsp::jsonld::json::Value as _; // tests
 //! use turtle_lsp::jsonld::json::parse as _; // tests
 //! use turtle_lsp::jsonld::json::tokens as _; // tests
+//! use turtle_lsp::jsonld::json::valid as _; // examples
 //! use turtle_lsp::jsonld::parse as _; // tests
 //! use turtle_lsp::knowledge::Knowledge as _; // tests
 //! use turtle_lsp::knowledge::Source as _; // tests

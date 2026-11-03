@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use turtle_lsp::jsonld::json;
 use turtle_lsp::rdf::graph::{Graph, Id, Term};
 use turtle_lsp::shacl::{self, Path as ShPath, validate_report};
 use turtle_lsp::syntax::{Iri, Parsed, PrefixMap, RDF, Syntax, XSD, parse_with_base};
@@ -247,7 +248,7 @@ fn run(suite: &Suite, case: &mut Case) -> Option<String> {
         vec![&data.triples, &shapes_doc.triples]
     };
     let g = Graph::new(&docs);
-    let report = validate_report(&g, &|| false, &|_| true).expect("not cancelled");
+    let report = validate_report(&g, &|| false, &|_| true, json::valid).expect("not cancelled");
     if case.failure {
         return report
             .failures

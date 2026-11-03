@@ -35,6 +35,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::SOURCE;
 use crate::features::hover::short;
 use crate::features::navigation;
+use crate::jsonld::json;
 use crate::knowledge::Source;
 use crate::rdf::graph::{Graph, Id, Term};
 use crate::shacl::sparql::{Cancel, TIMED_OUT};
@@ -479,9 +480,9 @@ fn validate_unit<'j>(
             let mut mine: Vec<Id> = g.added().flat_map(|(_, t)| [t.s, t.o]).collect();
             mine.sort_unstable();
             mine.dedup();
-            validate_report_among(g, &forward(cancelled), &mine)?
+            validate_report_among(g, &forward(cancelled), &mine, json::valid)?
         }
-        None => validate_report(g, &forward(cancelled), &|_| true)?,
+        None => validate_report(g, &forward(cancelled), &|_| true, json::valid)?,
     };
     let mut place = Placer {
         g,
@@ -924,7 +925,7 @@ fn term_name(g: &Graph, prefixes: &PrefixMap, id: Id) -> String {
                 } else if ["integer", "decimal", "double", "boolean"]
                     .iter()
                     .any(|l| dt.strip_prefix(XSD) == Some(l))
-                    && crate::shacl::literal::well_formed(&dt, lex)
+                    && crate::shacl::literal::well_formed(&dt, lex, json::valid)
                 {
                     // As Turtle writes them.
                     lex.to_string()
