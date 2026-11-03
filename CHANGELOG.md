@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Reference lenses count the uses in SPARQL files.** "N references"
+  above a subject now lists what Find References lists without its
+  declarations, so a term's uses in `.rq`, `.sparql` and `.ru` files count,
+  open or not (#46).
+
 ## 0.13.0 — 2026-10-30
 
 ### Added

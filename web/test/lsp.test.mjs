@@ -9,7 +9,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createEngine } from "../app/engine.js"
 import { EmbeddedServer } from "../app/lsp-host.js"
-import { SETS } from "../app/samples.js"
+import { SETS, WORKSPACE } from "../app/samples.js"
+import { languageOf } from "../app/editor-lsp.js"
 import { startServer, tempDir, uriOf, positionOf } from "../../test/lsp-client.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -226,6 +227,54 @@ test("prefixes.ttl supplies prefixes as natively, and editing it re-diagnoses", 
   } finally {
     await n.stop()
     fs.rmSync(pdir, { recursive: true, force: true })
+  }
+})
+
+// --- reference lenses ----------------------------------------------------------------------
+
+test("the lens on id:acme in the published workspace counts its uses in SPARQL too", async () => {
+  // The playground opens every file; natively only data/people.ttl is open,
+  // so the update that uses id:acme is a closed file there.
+  const wdir = tempDir("turtle-web-lens-")
+  for (const f of WORKSPACE) {
+    fs.mkdirSync(path.dirname(path.join(wdir, f.path)), { recursive: true })
+    fs.writeFileSync(path.join(wdir, f.path), f.text)
+  }
+  const root = uriOf(wdir)
+  const n = await startServer({ cwd: wdir })
+  const w = new EmbeddedServer(await createEngine(fs.readFileSync(path.join(here, "..", "app", "engine.wasm"))))
+  const people = WORKSPACE.find((f) => f.path === "data/people.ttl")
+  // The resolved lens on id:acme in data/people.ttl, by the server at `base`.
+  const acme = async (server, base) => {
+    const uri = `${base}/data/people.ttl`
+    const lenses = await server.request("textDocument/codeLens", { textDocument: { uri } })
+    const lens = lenses.find((l) => l.data?.iri === "https://toolbox.example.org/id/acme")
+    assert.ok(lens, JSON.stringify(lenses))
+    return (await server.request("codeLens/resolve", lens)).command
+  }
+  const files = (c) => c.arguments[2].map((l) => l.uri).sort()
+  try {
+    await w.initialize({ processId: null, rootUri: null, capabilities: {} })
+    for (const f of WORKSPACE) {
+      w.notify("textDocument/didOpen", { textDocument: { uri: `${WORK}/${f.path}`, languageId: languageOf(f.path), version: 1, text: f.text } })
+    }
+    await w.settle()
+    n.open(`${root}/data/people.ttl`, people.text)
+    // Native indexes the closed files in the background.
+    let native = await acme(n, root)
+    for (const end = Date.now() + 10_000; native.title !== "4 references" && Date.now() < end; ) {
+      await new Promise((r) => setTimeout(r, 100))
+      native = await acme(n, root)
+    }
+    const wasmLens = await acme(w, WORK)
+    assert.equal(wasmLens.title, "4 references")
+    assert.equal(native.title, "4 references")
+    const want = ["start-here.ttl", "data/people.ttl", "data/graphs.trig", "queries/move-to-acme.ru"].map((p) => `${WORK}/${p}`).sort()
+    assert.deepEqual(files(wasmLens), want)
+    assert.deepEqual(files(native).map((u) => u.replace(root, WORK)), want)
+  } finally {
+    await n.stop()
+    fs.rmSync(wdir, { recursive: true, force: true })
   }
 })
 

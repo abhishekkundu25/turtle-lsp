@@ -6,11 +6,9 @@
 //! counts the references then, so a document's lenses cost one pass over its
 //! definitions and each count is paid only when the editor shows it.
 //!
-//! The count is the workspace's RDF references with the declarations left
-//! out: what "Find References" lists without its declarations, minus the
-//! uses in SPARQL queries (finding those reads every query file from disk,
-//! too slow to do once per lens). A description of the IRI in another file
-//! is a declaration too, so it is not counted.
+//! The count is what "Find References" lists without its declarations: the
+//! session finds the locations, this module titles them. A description of
+//! the IRI in another file is a declaration too, so it is not counted.
 //!
 //! A SPARQL document that is a query (not an update) gets one "▶ Run query"
 //! lens at its query form's keyword ([`query_lenses`]), already resolved: it
@@ -19,10 +17,8 @@
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::commands::RUN_QUERY;
-use crate::features::navigation::term_references;
-use crate::knowledge::Knowledge;
 use crate::sparql::TokenKind;
-use lsp_types::{CodeLens, Command};
+use lsp_types::{CodeLens, Command, Location};
 use serde_json::{Value, json};
 
 /// The client-side command a resolved lens runs, with arguments
@@ -94,16 +90,20 @@ pub(crate) fn query_lenses(q: &SparqlAnalysis, enc: Encoding) -> Vec<CodeLens> {
     }]
 }
 
-/// `lens` with its title and [`SHOW_REFERENCES`] command; unchanged when its
-/// `data` is not one [`code_lenses`] made.
-pub(crate) fn resolve(mut lens: CodeLens, k: &Knowledge, enc: Encoding) -> CodeLens {
+/// `lens` with its title and [`SHOW_REFERENCES`] command, listing what
+/// `references` finds for the lens's IRI; unchanged (and `references` not
+/// called) when its `data` is not one [`code_lenses`] made.
+pub(crate) fn resolve(
+    mut lens: CodeLens,
+    references: impl FnOnce(&str) -> Vec<Location>,
+) -> CodeLens {
     let Some(data) = &lens.data else {
         return lens;
     };
     let (Some(uri), Some(iri)) = (data["uri"].as_str(), data["iri"].as_str()) else {
         return lens;
     };
-    let locations = term_references(k, enc, iri, false);
+    let locations = references(iri);
     let n = locations.len();
     lens.command = Some(Command {
         title: format!("{n} reference{}", if n == 1 { "" } else { "s" }),
@@ -120,7 +120,8 @@ pub(crate) fn resolve(mut lens: CodeLens, k: &Knowledge, enc: Encoding) -> CodeL
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::Source;
+    use crate::features::navigation::term_references;
+    use crate::knowledge::{Knowledge, Source};
     use crate::syntax::{PrefixMap, Syntax};
     use lsp_types::Position;
     use std::sync::Arc;
@@ -162,7 +163,7 @@ mod tests {
         assert!(lenses.iter().all(|l| l.command.is_none()));
         let resolved: Vec<CodeLens> = lenses
             .into_iter()
-            .map(|l| resolve(l, &k, Encoding::Utf16))
+            .map(|l| resolve(l, |iri| term_references(&k, Encoding::Utf16, iri, false)))
             .collect();
         // Objects: ex:a on line 2; ex:b on lines 1 and 3 and in b.ttl; ex:c on line 2.
         let titles: Vec<&str> = resolved.iter().map(title).collect();
@@ -241,7 +242,6 @@ mod tests {
             command: None,
             data: Some(json!({"other": 1})),
         };
-        let k = Knowledge::default();
-        assert_eq!(resolve(lens.clone(), &k, Encoding::Utf16), lens);
+        assert_eq!(resolve(lens.clone(), |_| unreachable!()), lens);
     }
 }

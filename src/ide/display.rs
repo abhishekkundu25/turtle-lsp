@@ -160,7 +160,7 @@ impl Session<'_> {
     /// `codeLens/resolve`: a reference lens with its count; any other lens
     /// as it is.
     pub(crate) fn resolve_code_lens(&mut self, lens: CodeLens) -> CodeLens {
-        lens::resolve(lens, self.ws.knowledge(), self.enc)
+        lens::resolve(lens, |iri| self.term_references(iri, false))
     }
 }
 
@@ -336,7 +336,7 @@ mod tests {
                 .all(|l| l.command.is_none() && l.data.is_some())
         );
         let first = s.resolve_code_lens(lenses[0].clone());
-        assert_eq!(first.command.unwrap().title, "1 reference");
+        assert_eq!(first.command.unwrap().title, "2 references");
 
         let run = s.code_lenses(&uris[1]).unwrap();
         assert_eq!(run.len(), 1, "{run:?}");
@@ -353,6 +353,42 @@ mod tests {
         let mut s = Session::new(&mut ws, Encoding::Utf16, &off, false);
         assert_eq!(s.code_lenses(&uris[0]), Some(vec![]));
         assert_eq!(s.code_lenses(&uris[1]).unwrap().len(), 1);
+    }
+
+    /// Issue #46: the lens lists what Find References lists without the
+    /// declarations, the uses in closed query and update files included.
+    #[test]
+    fn a_reference_lens_counts_the_uses_in_sparql_files() {
+        let dir = Dir::new("lens-sparql");
+        let ttl = format!("{PREFIXES}ex:acme a ex:Org .\nex:a ex:worksFor ex:acme .\n");
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
+        let rq = dir.write(
+            "q.rq",
+            "PREFIX ex: <http://example.org/>\nSELECT ?p WHERE { ?p ex:worksFor ex:acme }\n",
+        );
+        let ru = dir.write(
+            "u.ru",
+            "PREFIX ex: <http://example.org/>\nINSERT DATA { ex:b ex:worksFor ex:acme }\n",
+        );
+        let by_uri = |mut l: Vec<lsp_types::Location>| {
+            l.sort_by(|a, b| a.uri.as_str().cmp(b.uri.as_str()));
+            l
+        };
+
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let found = by_uri(
+            s.references(&uris[0], at(&ttl, "ex:acme a", 4), false)
+                .unwrap(),
+        );
+        let files: Vec<&str> = found.iter().map(|l| l.uri.as_str()).collect();
+        assert_eq!(files, [uris[0].as_str(), rq.as_str(), ru.as_str()]);
+
+        let lens = s.code_lenses(&uris[0]).unwrap().remove(0);
+        let command = s.resolve_code_lens(lens).command.unwrap();
+        let listed = by_uri(serde_json::from_value(command.arguments.unwrap()[2].clone()).unwrap());
+        assert_eq!(listed, found, "the lens lists what Find References finds");
+        assert_eq!(command.title, "3 references");
     }
 
     #[test]
