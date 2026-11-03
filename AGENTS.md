@@ -24,6 +24,17 @@ them; each file's `//!` doc says what it owns.
   what goes out on stdio, written as JSON text, in `src/server/wire.rs`.
 - SHACL shapes and IRIs: `src/shacl/model.rs` and `src/shacl/vocab.rs`,
   read by the shape lint and the validator.
+- A request, command or lens beyond the LSP standard: a file of its own in
+  `src/extensions/`, listed in `extensions::{handles, capabilities,
+  request}`. It reads the session's documents, the settings and the
+  libraries. Core code never names `extensions`, except `src/server.rs` and
+  the Run query lens in `src/features/lens.rs`. An extension never changes
+  shared code to suit itself: what it lacks is a core or library change,
+  proposed on its own.
+- The libraries name only libraries: `syntax` and `sparql::lexer` only
+  `syntax`; `rdf`, `shacl` and `sparql::spargebra_input` only `syntax`,
+  `rdf`, `shacl` and those two `sparql` files. The test `boundaries` in
+  `src/lib.rs` fails on a line that breaks either rule.
 
 Make a new item `pub(crate)`. Make it `pub` only when a consumer uses it
 (`web/engine`, `examples/`, `tests/` or `src/main.rs`), and add its path to

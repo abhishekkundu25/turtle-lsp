@@ -217,3 +217,85 @@ pub(crate) mod workspace;
 
 /// The version of this build, as the server reports it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The module boundaries that `AGENTS.md` ("Where things live") states, read
+/// from the source. Comments and `#[cfg(test)]` items are not checked.
+#[cfg(test)]
+mod boundaries {
+    const LIBRARIES: &str = "syntax rdf shacl sparql::lexer sparql::spargebra_input";
+    /// The only modules a library file may name, by path prefix.
+    const LAYERS: &[(&str, &str)] = &[
+        ("src/syntax/", "syntax"),
+        ("src/sparql/lexer.rs", "syntax"),
+        ("src/sparql/spargebra_input.rs", LIBRARIES),
+        ("src/rdf/", LIBRARIES),
+        ("src/shacl/", LIBRARIES),
+    ];
+    /// The core files that may name `extensions`: the router and the Run query lens.
+    const EXTENSION_USERS: &[&str] = &["src/server.rs", "src/features/lens.rs"];
+
+    #[test]
+    fn each_file_names_only_what_its_layer_allows() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (mut dirs, mut errors) = (vec!["src".to_string()], Vec::new());
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(root.join(&dir)).unwrap() {
+                let name = format!("{dir}/{}", entry.unwrap().file_name().to_string_lossy());
+                if root.join(&name).is_dir() {
+                    dirs.push(name);
+                } else if name.ends_with(".rs") {
+                    check(
+                        &name,
+                        &std::fs::read_to_string(root.join(&name)).unwrap(),
+                        &mut errors,
+                    );
+                }
+            }
+        }
+        assert!(errors.is_empty(), "{}", errors.join("\n"));
+    }
+
+    fn check(name: &str, text: &str, errors: &mut Vec<String>) {
+        let layer = LAYERS.iter().find(|(p, _)| name.starts_with(p));
+        let core = !name.starts_with("src/extensions/") && !EXTENSION_USERS.contains(&name);
+        let module = name[4..].trim_end_matches(".rs").trim_end_matches("/mod");
+        let parent = module
+            .rsplit_once('/')
+            .map_or("", |p| p.0)
+            .replace('/', "::");
+        let mut test_item = None;
+        for (i, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            let indent = line.len() - code.len();
+            if let Some(at) = test_item {
+                // The test item ends at the first line at its indent that closes it.
+                if indent == at && (code.ends_with(';') || code.ends_with('}')) {
+                    test_item = None;
+                }
+                continue;
+            } else if code == "#[cfg(test)]" {
+                test_item = Some(indent);
+            }
+            if code.starts_with("//") || test_item.is_some() {
+                continue;
+            }
+            let at = format!("{name}:{}", i + 1);
+            if core && (code.contains("crate::extensions") || code.contains("extensions::")) {
+                errors.push(format!("{at}: core code may not name extensions: {code}"));
+            }
+            let Some((_, allowed)) = layer else { continue };
+            let named = code.replace("super::", &format!("crate::{parent}::"));
+            for (k, _) in named.match_indices("crate::") {
+                let rest = &named[k + 7..];
+                let names = |m| {
+                    rest.strip_prefix(m).is_some_and(|r: &str| {
+                        !r.starts_with(|c: char| c == '_' || c.is_alphanumeric())
+                    })
+                };
+                if !allowed.split(' ').any(names) {
+                    errors.push(format!("{at}: may name only crate::{{{allowed}}}: {code}"));
+                }
+            }
+        }
+    }
+}

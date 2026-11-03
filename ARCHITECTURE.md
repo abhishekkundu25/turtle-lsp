@@ -35,6 +35,12 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `extensions` | The requests beyond the LSP standard (`turtle/graph`, "▶ Run query"): one router entry, one `experimental` capability builder, one off-thread answer | `server`; `features::lens` names Run query |
 | `layout` | What the Turtle and SPARQL formatters share: the layout options, the token document, the triple terms and the printer | `features`, `sparql`, `ide`, `batch`; `jsonld` and `query` take its options |
 
+Core code never names `extensions`, except the router in `server` and the
+Run query lens. The libraries `syntax`, `rdf`, `shacl`, `sparql::lexer` and
+`sparql::spargebra_input` name no module outside that set, and `syntax` and
+the lexer name only `syntax`. The `boundaries` test in `src/lib.rs` checks
+both rules.
+
 Eight modules are private to the crate: `commands`, `diagnose`,
 `extensions`, `fetch`, `ide`, `layout`, `vocab` and `workspace`. The others are public because a
 consumer uses them: the browser engine, the examples, the integration tests
