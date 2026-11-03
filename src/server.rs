@@ -47,7 +47,7 @@
 use crate::analysis::Encoding;
 use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
-use crate::extensions;
+use crate::extensions::{self, run_query};
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
 use crate::settings::{SETTINGS_FILE, Settings};
@@ -67,12 +67,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-mod client;
+pub(crate) mod client;
 mod index;
 mod layers;
-mod progress;
+pub(crate) mod progress;
 mod refresh;
-mod run_query;
 mod shacl;
 mod timers;
 pub(crate) mod wire;
@@ -228,7 +227,7 @@ impl Server {
                 .text_document
                 .as_ref()
                 .is_some_and(|t| t.diagnostic.is_some());
-        let display_refresh = [
+        let display_refresh: Vec<_> = [
             (
                 "inlayHint",
                 lsp_types::request::InlayHintRefreshRequest::METHOD,
@@ -316,6 +315,7 @@ impl Server {
             watch_dynamic,
             resolve_edits,
             layers,
+            queries: run_query::State::new(show_document, &display_refresh, spawn),
             refresh: Refresh::new(pull, refresh_support, display_refresh),
             timers: Timers::default(),
             imports: crate::imports::Imports::with_spawn(spawn),
@@ -323,7 +323,6 @@ impl Server {
             shacl: Shacl::default(),
             progress: Progress::new(work_done_progress),
             wsdiag,
-            queries: run_query::State::new(show_document),
             spawn,
             #[cfg(test)]
             fault: false,
@@ -495,6 +494,7 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
         execute_command_provider: Some(ExecuteCommandOptions {
             commands: crate::commands::COMMANDS
                 .iter()
+                .chain(&run_query::COMMANDS)
                 .map(|c| c.to_string())
                 .collect(),
             work_done_progress_options: Default::default(),
@@ -618,8 +618,12 @@ impl Server {
                 }
                 recv(self.queries.results()) -> done => {
                     if let Ok(done) = done {
-                        self.guarded("a query run", |s| s.query_done(done));
+                        self.guarded("a query run", |s| s.queries.on_done(done, &mut s.client, &mut s.progress));
                     }
+                    None
+                }
+                recv(self.queries.due().map_or_else(never, crossbeam_channel::at)) -> _ => {
+                    self.guarded("a query run", |s| s.queries.on_tick(&s.client, &s.progress));
                     None
                 }
                 recv(self.shacl.rx()) -> got => {
@@ -749,7 +753,6 @@ impl Server {
                     s.progress
                         .begin(&mut s.client, Work::Shacl, "Validating SHACL shapes");
                 }
-                Timer::QueryProgress => s.query_progress_tick(),
             });
         }
     }
@@ -935,14 +938,16 @@ impl Server {
                         NumberOrString::Number(n) => RequestId::from(n),
                         NumberOrString::String(s) => RequestId::from(s),
                     };
-                    self.query_cancel_request(&id);
+                    self.queries
+                        .on_cancel_request(&id, &mut self.client, &mut self.progress);
                 }
             }
             WorkDoneProgressCancel::METHOD => {
                 if let Some(p) = parse::<WorkDoneProgressCancelParams>(n.params)
                     && let NumberOrString::String(token) = p.token
                 {
-                    self.query_progress_cancelled(&token);
+                    self.queries
+                        .on_progress_cancel(&token, &mut self.client, &mut self.progress);
                 }
             }
             _ => {}
@@ -1493,22 +1498,19 @@ impl Server {
                 json(&self.session().code_actions(&p))
             }
             ExecuteCommand::METHOD => {
-                match crate::commands::parse(params!(ExecuteCommandParams))? {
+                let p = params!(ExecuteCommandParams);
+                if run_query::COMMANDS.contains(&p.command.as_str()) {
+                    let (ws, settings) = (&mut self.ws, self.layers.settings());
+                    let (client, progress) = (&mut self.client, &mut self.progress);
+                    return self
+                        .queries
+                        .command(req.id, p, ws, settings, client, progress);
+                }
+                match crate::commands::parse(p)? {
                     // The job starts when this batch ends; its answer
                     // republishes diagnostics like any other resolution pass.
                     crate::commands::Command::FetchImport { iri } => {
                         self.imports.fetch(&iri);
-                        json(&Value::Null)
-                    }
-                    // Answered when the query is done (see `run_query`).
-                    crate::commands::Command::RunQuery { uri } => {
-                        match self.run_query(req.id.clone(), &uri)? {
-                            Some(v) => json(&v),
-                            None => return Ok(None),
-                        }
-                    }
-                    crate::commands::Command::CancelQuery { uri } => {
-                        self.cancel_query(&uri);
                         json(&Value::Null)
                     }
                 }
@@ -1572,7 +1574,7 @@ impl Server {
                 let uri = p.text_document.uri.as_str();
                 let mut lenses = self.session().code_lenses(uri);
                 if let Some(l) = &mut lenses {
-                    self.query_lenses(uri, l);
+                    self.queries.lenses(uri, l);
                 }
                 json(&lenses)
             }
@@ -2211,6 +2213,34 @@ mod tests {
             let got = e.server.request(req).unwrap().unwrap();
             assert_eq!(got, expected, "{method}");
         }
+    }
+
+    /// The Run query commands take one document URI, and are advertised.
+    #[test]
+    fn run_query_commands_take_one_uri() {
+        let mut e = embedded();
+        let run = |e: &mut Embedded, command: &str, arguments: Value| {
+            let params = json!({ "command": command, "arguments": arguments });
+            let req = Request::new(1.into(), "workspace/executeCommand".into(), params);
+            e.server.request(req)
+        };
+        let Err((code, msg)) = run(&mut e, run_query::RUN_QUERY, json!([])) else {
+            panic!("accepted")
+        };
+        assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
+        assert_eq!(msg, "turtle.runQuery takes one document URI");
+        assert!(run(&mut e, run_query::CANCEL_QUERY, json!([1])).is_err());
+        let cancelled = run(&mut e, run_query::CANCEL_QUERY, json!(["file:///w/q.rq"]));
+        assert!(matches!(cancelled, Ok(Some(n)) if n == "null"));
+        let commands = capabilities(Encoding::Utf16, false).execute_command_provider;
+        assert_eq!(
+            commands.unwrap().commands,
+            [
+                "turtle.fetchImport",
+                "turtle.runQuery",
+                "turtle.cancelQuery"
+            ]
+        );
     }
 
     /// The `initialize` result is the text the `Value` it was built as

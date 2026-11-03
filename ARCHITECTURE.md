@@ -32,7 +32,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `cli` | `check`, `format` and `query` (not in the browser build) | `main` |
 | `clock` | The time the server's timers read | `server`, `query`, `features` |
 | `ide` | `ide::Session`: every editor request over one workspace, routed by document kind | `server` |
-| `extensions` | The requests beyond the LSP standard (`turtle/graph`): one router entry, one `experimental` capability builder, one off-thread answer | `server` |
+| `extensions` | The requests beyond the LSP standard (`turtle/graph`, "▶ Run query"): one router entry, one `experimental` capability builder, one off-thread answer | `server`; `features::lens` names Run query |
 | `layout` | What the Turtle and SPARQL formatters share: the layout options, the token document, the triple terms and the printer | `features`, `sparql`, `ide`, `batch`; `jsonld` and `query` take its options |
 
 Eight modules are private to the crate: `commands`, `diagnose`,
@@ -61,7 +61,7 @@ Inside the larger modules, these files hold one part each:
 | `src/server/worker.rs` | `Spawn`, `spawn_guarded` and `Feed`: how jobs start and how their answers come back |
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
-| `src/server/{run_query,workspace_diagnostics}.rs` | "▶ Run query", and the diagnostics of files that are not open |
+| `src/server/workspace_diagnostics.rs` | The diagnostics of files that are not open |
 
 ## One parse per document version
 
@@ -199,7 +199,7 @@ target classes.
 | Navigation, rename | `features::navigation` (JSON-LD in `navigation/jsonld.rs`) | `sparql::features::navigation`, `sparql::features::rename` |
 | Formatting | `features::format` over `layout`, `jsonld::format` | `sparql::format` over `layout` |
 | Outline, folding, semantic tokens | `features::symbols`, `features::semantic` | `sparql::features::outline`, `sparql::features::display` |
-| Code lenses | `features::lens` (reference counts) | `features::lens` ("▶ Run query"), run by `server::run_query` |
+| Code lenses | `features::lens` (reference counts) | `features::lens` ("▶ Run query"), run by `extensions::run_query` |
 | SPARQL inside SHACL shapes | `features::embedded` | |
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |

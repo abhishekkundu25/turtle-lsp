@@ -293,7 +293,7 @@ mod tests {
         let run = s.code_lenses(&uris[1]).unwrap();
         assert_eq!(run.len(), 1, "{run:?}");
         let title = &run[0].command.as_ref().unwrap().title;
-        assert_eq!(title, lens::RUN_QUERY_TITLE);
+        assert_eq!(title, crate::extensions::run_query::RUN_QUERY_TITLE);
         assert_eq!(run[0].range.start, at(rq, "SELECT", 0));
         // A resolved lens comes back as it is.
         assert_eq!(s.resolve_code_lens(run[0].clone()), run[0]);

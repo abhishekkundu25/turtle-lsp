@@ -12,7 +12,7 @@ use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
 use lsp_types::{
     NumberOrString, ProgressParams, ProgressParamsValue, WorkDoneProgress, WorkDoneProgressBegin,
-    WorkDoneProgressCreateParams, WorkDoneProgressEnd, WorkDoneProgressReport,
+    WorkDoneProgressCreateParams, WorkDoneProgressEnd,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -24,7 +24,7 @@ pub(super) enum Work {
     Shacl,
 }
 
-pub(super) struct Progress {
+pub(crate) struct Progress {
     /// The client declared `window.workDoneProgress`.
     supported: bool,
     /// The token of the progress shown, per kind of work ([`Work`] order).
@@ -75,7 +75,7 @@ impl Progress {
     /// [`Work`]: its token, None when the client cannot show progress. The
     /// client cancels it with `window/workDoneProgress/cancel`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn begin_cancellable(&mut self, client: &mut Client, title: &str) -> Option<String> {
+    pub(crate) fn begin_cancellable(&mut self, client: &mut Client, title: &str) -> Option<String> {
         self.create(client, title, true)
     }
 
@@ -136,7 +136,7 @@ impl Progress {
     }
 
     /// The progress of `token` ends with `message` (once begun, if it has not).
-    pub(super) fn end_token(&mut self, client: &Client, token: &str, message: String) {
+    pub(crate) fn end_token(&mut self, client: &Client, token: &str, message: String) {
         if self.live.remove(token) {
             send_end(client, token, message);
         } else if let Some(p) = self.pending.values_mut().find(|p| p.token == token) {
@@ -145,9 +145,10 @@ impl Progress {
     }
 
     /// The progress of `token` now says `message`; nothing before it begins.
-    pub(super) fn report(&self, client: &Client, token: &str, message: String) {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn report(&self, client: &Client, token: &str, message: String) {
         if self.live.contains(token) {
-            let report = WorkDoneProgressReport {
+            let report = lsp_types::WorkDoneProgressReport {
                 message: Some(message),
                 ..Default::default()
             };

@@ -25,7 +25,7 @@
 //! | [`cli`] | `check`, `format` and `query` | `main` |
 //! | [`clock`] | The time the server's timers read | [`server`], [`query`], [`features`] |
 //! | `ide` | `ide::Session`: the editor requests over one workspace, routed by document kind | [`server`] |
-//! | `extensions` | The requests beyond the LSP standard: `turtle/graph` | [`server`] |
+//! | `extensions` | The requests beyond the LSP standard: `turtle/graph`, "▶ Run query" | [`server`], [`features`] (the Run query lens) |
 //! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
 //!
 //! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `vocab` and

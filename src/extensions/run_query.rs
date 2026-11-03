@@ -33,23 +33,22 @@
 //! "■ Cancel query", which runs `turtle.cancelQuery`. Either way the run's
 //! request is answered "cancelled".
 
-use super::Server;
-use super::client::Client;
-use super::timers::Timer;
-use super::worker::Spawn;
 use crate::analysis::Analysis;
 use crate::clock::Instant;
-use crate::commands::{CANCEL_QUERY, RUN_QUERY};
-use crate::features::lens::CANCEL_QUERY_TITLE;
 use crate::knowledge::Source;
 use crate::query::{self, Answer, Limits, QueryError};
+use crate::server::client::Client;
+use crate::server::json;
+use crate::server::progress::Progress;
+use crate::server::worker::Spawn;
+use crate::settings::Settings;
 use crate::syntax::PrefixMap;
-use crate::workspace::{is_sparql_path, path_to_uri, uri_to_path};
+use crate::workspace::{Workspace, is_sparql_path, normalize_uri, path_to_uri, uri_to_path};
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_server::{ErrorCode, RequestId, Response};
-use lsp_types::request::Request as _;
-use lsp_types::{CodeLens, MessageType, ShowDocumentParams, Uri};
+use lsp_types::request::{CodeLensRefresh, Request as _};
+use lsp_types::{CodeLens, ExecuteCommandParams, MessageType, ShowDocumentParams, Uri};
 use rustc_hash::FxHashMap;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -57,11 +56,31 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+/// Run the SPARQL query of a document over the workspace (the "▶ Run query"
+/// lens), with the document's URI.
+pub(crate) const RUN_QUERY: &str = "turtle.runQuery";
+
+/// Stop the run of a document's query (the "■ Cancel query" lens), with the
+/// document's URI.
+pub(crate) const CANCEL_QUERY: &str = "turtle.cancelQuery";
+
+/// The commands [`State::command`] runs.
+pub(crate) const COMMANDS: [&str; 2] = [RUN_QUERY, CANCEL_QUERY];
+
+/// The title of the lens that runs a query.
+pub(crate) const RUN_QUERY_TITLE: &str = "▶ Run query";
+
+/// The title the lens has while the query runs.
+pub(crate) const CANCEL_QUERY_TITLE: &str = "■ Cancel query";
+
 /// The runs going on, by document URI, and the channel their results come
 /// back on.
 pub(crate) struct State {
     /// The client declared `window.showDocument.support`.
     show_document: bool,
+    /// The client can be asked for the code lenses again.
+    lens_refresh: bool,
+    spawn: Spawn,
     // Runs on a thread of their own hand their results back on this
     // channel; the browser build runs every query inline.
     #[cfg(not(target_arch = "wasm32"))]
@@ -70,6 +89,9 @@ pub(crate) struct State {
     done_rx: Receiver<Done>,
     #[cfg(not(target_arch = "wasm32"))]
     next_id: u64,
+    /// When each run's progress next says how long it has run.
+    #[cfg(not(target_arch = "wasm32"))]
+    tick: Option<Instant>,
     running: FxHashMap<String, Running>,
     /// The results file stem of each document run so far.
     stems: FxHashMap<String, String>,
@@ -82,10 +104,12 @@ struct Running {
     request: RequestId,
     /// The token of its progress, when the client shows progress.
     progress: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
     started: Instant,
 }
 
 /// How often a run's progress says how long it has run.
+#[cfg(not(target_arch = "wasm32"))]
 const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 
 /// A finished run, for the main loop.
@@ -121,18 +145,23 @@ struct Job {
 }
 
 impl State {
-    /// Runs for a client that can show a document (`show_document`) or not.
-    pub(crate) fn new(show_document: bool) -> State {
+    /// Runs for a client that can show a document (`show_document`) or not,
+    /// asked for the lenses again with the `display_refresh` requests.
+    pub(crate) fn new(show_document: bool, display_refresh: &[&str], spawn: Spawn) -> State {
         #[cfg(not(target_arch = "wasm32"))]
         let (done_tx, done_rx) = unbounded();
         State {
             show_document,
+            lens_refresh: display_refresh.contains(&CodeLensRefresh::METHOD),
+            spawn,
             #[cfg(not(target_arch = "wasm32"))]
             done_tx,
             #[cfg(not(target_arch = "wasm32"))]
             done_rx,
             #[cfg(not(target_arch = "wasm32"))]
             next_id: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            tick: None,
             running: FxHashMap::default(),
             stems: FxHashMap::default(),
         }
@@ -142,6 +171,12 @@ impl State {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn results(&self) -> Receiver<Done> {
         self.done_rx.clone()
+    }
+
+    /// When [`State::on_tick`] is due, for the main loop's timer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn due(&self) -> Option<Instant> {
+        self.tick
     }
 
     /// The results file stem of `uri`: its file stem, numbered when another
@@ -183,20 +218,32 @@ fn results_dir() -> Option<PathBuf> {
     crate::imports::cache_dir().map(|d| d.join("query-results"))
 }
 
-impl Server {
-    /// `turtle.runQuery` for `uri`, asked by request `id`: Some(answer) when
-    /// answered now, None when the answer comes with the result.
-    pub(super) fn run_query(
+impl State {
+    /// One of [`COMMANDS`], asked by request `id`, over `ws`: the answer as
+    /// JSON text when answered now, None when it comes with the result.
+    pub(crate) fn command(
         &mut self,
         #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] id: RequestId,
-        uri: &str,
-    ) -> Result<Option<Value>, (ErrorCode, String)> {
-        let uri = crate::workspace::normalize_uri(uri);
-        let (text, base, prefixes) = match self.ws.sparql(&uri) {
+        params: ExecuteCommandParams,
+        ws: &mut Workspace,
+        settings: &Settings,
+        c: &mut Client,
+        p: &mut Progress,
+    ) -> Result<Option<String>, (ErrorCode, String)> {
+        let [Value::String(uri)] = params.arguments.as_slice() else {
+            let e = format!("{} takes one document URI", params.command);
+            return Err((ErrorCode::InvalidParams, e));
+        };
+        let uri = normalize_uri(uri);
+        if params.command == CANCEL_QUERY {
+            self.cancel(&uri, c, p);
+            return json(&Value::Null).map(Some);
+        }
+        let (text, base, prefixes) = match ws.sparql(&uri) {
             Some(q) => (q.text().to_owned(), q.base().to_owned(), q.external.clone()),
             None => {
                 let path = uri_to_path(&uri)
-                    .filter(|p| is_sparql_path(p) && !self.ws.is_open(&uri))
+                    .filter(|p| is_sparql_path(p) && !ws.is_open(&uri))
                     .ok_or_else(|| {
                         (
                             ErrorCode::InvalidParams,
@@ -205,27 +252,25 @@ impl Server {
                     })?;
                 let text = std::fs::read_to_string(&path)
                     .map_err(|e| (ErrorCode::InvalidParams, format!("{}: {e}", path.display())))?;
-                (text, uri.clone(), self.ws.external_prefixes_for(&uri))
+                (text, uri.clone(), ws.external_prefixes_for(&uri))
             }
         };
-        let docs: Vec<Arc<Analysis>> = self
-            .ws
+        let docs: Vec<Arc<Analysis>> = ws
             .knowledge()
             .sources()
             .filter(|(_, s, _)| *s != Source::External)
             .map(|(_, _, a)| a.clone())
             .collect();
-        let cancel = Arc::new(AtomicBool::new(false));
         let job = Job {
             name: file_name(&uri),
             text,
             base,
             prefixes,
             docs,
-            timeout: self.layers.settings().query_timeout,
-            max_rows: self.layers.settings().query_max_rows,
-            max_buffered_rows: self.layers.settings().query_max_buffered_rows,
-            cancel: cancel.clone(),
+            timeout: settings.query_timeout,
+            max_rows: settings.query_max_rows,
+            max_buffered_rows: settings.query_max_buffered_rows,
+            cancel: Arc::default(),
             out: match self.spawn {
                 Spawn::Thread => results_dir(),
                 Spawn::Inline => None,
@@ -233,53 +278,49 @@ impl Server {
         };
         #[cfg(not(target_arch = "wasm32"))]
         if self.spawn == Spawn::Thread {
-            return self.start_query(id, uri, job, cancel);
+            return self.start(id, uri, job, c, p);
         }
-        let report = execute(&job, &self.queries.stem_for(&uri));
-        Ok(Some(self.queries.deliver(
-            &mut self.client,
-            &job.name,
-            report,
-        )))
+        let report = execute(&job, &self.stem_for(&uri));
+        json(&self.deliver(c, &job.name, report)).map(Some)
     }
 
-    /// The rest of [`Server::run_query`] on a thread: start the run; its
+    /// The rest of [`State::command`] on a thread: start the run; its
     /// answer comes with the result.
     #[cfg(not(target_arch = "wasm32"))]
-    fn start_query(
+    fn start(
         &mut self,
         id: RequestId,
         uri: String,
         job: Job,
-        cancel: Arc<AtomicBool>,
-    ) -> Result<Option<Value>, (ErrorCode, String)> {
+        c: &mut Client,
+        p: &mut Progress,
+    ) -> Result<Option<String>, (ErrorCode, String)> {
         // A newer run of the same document replaces the one going on.
-        if let Some(old) = self.stop_query(&uri, "Replaced by a newer run") {
+        if let Some(old) = self.stop(&uri, "Replaced by a newer run", c, p) {
             let resp = Response::new_ok(old.request, "cancelled: a newer run replaced it");
-            let _ = self.client.send(resp);
+            let _ = c.send(resp);
         }
-        self.queries.next_id += 1;
-        let run_id = self.queries.next_id;
-        let progress = self
-            .progress
-            .begin_cancellable(&mut self.client, &format!("Running {}", job.name));
-        if progress.is_some() && !self.timers.is_set(Timer::QueryProgress) {
-            self.timers
-                .set(Timer::QueryProgress, Instant::now() + PROGRESS_EVERY);
+        self.next_id += 1;
+        let run_id = self.next_id;
+        let token = p.begin_cancellable(c, &format!("Running {}", job.name));
+        if token.is_some() && self.tick.is_none() {
+            self.tick = Some(Instant::now() + PROGRESS_EVERY);
         }
-        self.queries.running.insert(
+        self.running.insert(
             uri.clone(),
             Running {
                 id: run_id,
-                cancel,
+                cancel: job.cancel.clone(),
                 request: id,
-                progress,
+                progress: token,
                 started: Instant::now(),
             },
         );
-        self.refresh.refresh_lenses(&mut self.client);
-        let out = self.queries.done_tx.clone();
-        let stem = self.queries.stem_for(&uri);
+        if self.lens_refresh {
+            c.request(CodeLensRefresh::METHOD, ());
+        }
+        let out = self.done_tx.clone();
+        let stem = self.stem_for(&uri);
         self.spawn
             .run(
                 // Also the name a panic's message gives the run.
@@ -306,77 +347,73 @@ impl Server {
     /// A run finished: show it and answer its request (unless it was
     /// replaced or cancelled meanwhile).
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn query_done(&mut self, done: Done) {
-        if self.queries.running.get(&done.uri).map(|r| r.id) != Some(done.id) {
+    pub(crate) fn on_done(&mut self, done: Done, c: &mut Client, p: &mut Progress) {
+        if self.running.get(&done.uri).map(|r| r.id) != Some(done.id) {
             return;
         }
         let name = file_name(&done.uri);
-        let summary = self.queries.deliver(&mut self.client, &name, done.report);
+        let summary = self.deliver(c, &name, done.report);
         let end = summary.as_str().unwrap_or_default().to_owned();
-        if let Some(run) = self.stop_query(&done.uri, &end) {
-            let _ = self.client.send(Response::new_ok(run.request, summary));
+        if let Some(run) = self.stop(&done.uri, &end, c, p) {
+            let _ = c.send(Response::new_ok(run.request, summary));
         }
     }
 
-    /// Stop the run of `uri`, if one goes on: end its progress with
-    /// `message` and show the lens that runs it again. The caller answers
-    /// its request.
-    fn stop_query(&mut self, uri: &str, message: &str) -> Option<Running> {
-        let run = self.queries.running.remove(uri)?;
+    /// Stop the run of `uri`, if one goes on: end its progress with `end`
+    /// and show the lens that runs it again. The caller answers its request.
+    fn stop(&mut self, uri: &str, end: &str, c: &mut Client, p: &mut Progress) -> Option<Running> {
+        let run = self.running.remove(uri)?;
         run.cancel.store(true, Ordering::Relaxed);
         if let Some(token) = &run.progress {
-            self.progress.end_token(&self.client, token, message.into());
+            p.end_token(c, token, end.into());
         }
-        self.refresh.refresh_lenses(&mut self.client);
+        if self.lens_refresh {
+            c.request(CodeLensRefresh::METHOD, ());
+        }
         Some(run)
     }
 
     /// `turtle.cancelQuery` for `uri`: stop its run, answered "cancelled".
-    pub(super) fn cancel_query(&mut self, uri: &str) {
-        let uri = crate::workspace::normalize_uri(uri);
-        if let Some(run) = self.stop_query(&uri, "Cancelled") {
-            let _ = self.client.send(Response::new_ok(run.request, "cancelled"));
+    fn cancel(&mut self, uri: &str, c: &mut Client, p: &mut Progress) {
+        if let Some(run) = self.stop(uri, "Cancelled", c, p) {
+            let _ = c.send(Response::new_ok(run.request, "cancelled"));
         }
     }
 
     /// The client cancelled the progress `token`: when it is a run's, stop
     /// the run.
-    pub(super) fn query_progress_cancelled(&mut self, token: &str) {
+    pub(crate) fn on_progress_cancel(&mut self, token: &str, c: &mut Client, p: &mut Progress) {
         let uri = self
-            .queries
             .running
             .iter()
             .find(|(_, r)| r.progress.as_deref() == Some(token))
             .map(|(u, _)| u.clone());
         if let Some(uri) = uri {
-            self.cancel_query(&uri);
+            self.cancel(&uri, c, p);
         }
     }
 
-    /// [`Timer::QueryProgress`]: each run's progress says how long it has
-    /// run, again in a second while any shows progress.
-    pub(super) fn query_progress_tick(&mut self) {
+    /// [`State::due`]: each run's progress says how long it has run, again
+    /// in a second while any shows progress.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn on_tick(&mut self, c: &Client, p: &Progress) {
         let now = Instant::now();
-        let mut any = false;
-        for run in self.queries.running.values() {
+        self.tick = None;
+        for run in self.running.values() {
             if let Some(token) = &run.progress {
                 let secs = now.saturating_duration_since(run.started).as_secs();
-                self.progress
-                    .report(&self.client, token, format!("{secs} s"));
-                any = true;
+                p.report(c, token, format!("{secs} s"));
+                self.tick = Some(now + PROGRESS_EVERY);
             }
-        }
-        if any {
-            self.timers.set(Timer::QueryProgress, now + PROGRESS_EVERY);
         }
     }
 
     /// While `uri`'s query runs, its "▶ Run query" lens cancels the run
     /// instead: only for a client that is asked for the lenses again when
     /// the run ends, as one that is not would keep showing "■ Cancel query".
-    pub(super) fn query_lenses(&self, uri: &str, lenses: &mut [CodeLens]) {
-        let uri = crate::workspace::normalize_uri(uri);
-        if !self.refresh.lenses_refresh() || !self.queries.running.contains_key(&uri) {
+    pub(crate) fn lenses(&self, uri: &str, lenses: &mut [CodeLens]) {
+        let uri = normalize_uri(uri);
+        if !self.lens_refresh || !self.running.contains_key(&uri) {
             return;
         }
         for c in lenses.iter_mut().filter_map(|l| l.command.as_mut()) {
@@ -389,9 +426,8 @@ impl Server {
 
     /// A `$/cancelRequest` for `id`: when it is a pending run, stop it and
     /// answer `RequestCanceled`.
-    pub(super) fn query_cancel_request(&mut self, id: &RequestId) {
+    pub(crate) fn on_cancel_request(&mut self, id: &RequestId, c: &mut Client, p: &mut Progress) {
         let Some(uri) = self
-            .queries
             .running
             .iter()
             .find(|(_, r)| r.request == *id)
@@ -399,18 +435,16 @@ impl Server {
         else {
             return;
         };
-        if let Some(run) = self.stop_query(&uri, "Cancelled") {
+        if let Some(run) = self.stop(&uri, "Cancelled", c, p) {
             let resp = Response::new_err(
                 run.request,
                 ErrorCode::RequestCanceled as i32,
                 "request cancelled".into(),
             );
-            let _ = self.client.send(resp);
+            let _ = c.send(resp);
         }
     }
-}
 
-impl State {
     /// Open the results file, or show the summary; the summary.
     fn deliver(&self, client: &mut Client, name: &str, report: Report) -> Value {
         let file = report
@@ -601,7 +635,7 @@ mod tests {
 
     #[test]
     fn stems_differ_by_more_than_case() {
-        let mut state = State::new(false);
+        let mut state = State::new(false, &[], Spawn::Inline);
         assert_eq!(state.stem_for("file:///a/Same.rq"), "Same");
         assert_eq!(state.stem_for("file:///b/same.rq"), "same-2");
     }

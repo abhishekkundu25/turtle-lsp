@@ -1,8 +1,10 @@
 //! The requests beyond the LSP standard, each in a file of its own:
 //! `turtle/graph` ([`graph`]). The server hands every method [`handles`] to
 //! [`request`], and lists them under `experimental` ([`capabilities`]).
+//! "▶ Run query" ([`run_query`]) is two commands and a state the server drives.
 
 pub(crate) mod graph;
+pub(crate) mod run_query;
 
 use crate::ide::Session;
 use crate::server::wire::Out;
