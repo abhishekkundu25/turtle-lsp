@@ -770,8 +770,14 @@ mod tests {
         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
         @prefix owl: <http://www.w3.org/2002/07/owl#> .\n";
 
+    /// The test workspace folder, as a URI this platform maps to a path.
+    #[cfg(windows)]
+    const ROOT: &str = "file:///C:/w";
+    #[cfg(not(windows))]
+    const ROOT: &str = "file:///w";
+
     fn uri(name: &str) -> String {
-        format!("file:///w/{name}.ttl")
+        normalize_uri(&format!("{ROOT}/{name}.ttl"))
     }
 
     fn knowledge(docs: &[(&str, &str)]) -> Knowledge {
@@ -784,7 +790,7 @@ mod tests {
     }
 
     fn roots() -> Vec<PathBuf> {
-        vec![PathBuf::from("/w")]
+        vec![uri_to_path(&format!("{ROOT}/")).unwrap()]
     }
 
     fn query(k: &Knowledge, base: &[(&str, Option<&str>)], limit: Option<u32>) -> DiffQuery {
@@ -1140,17 +1146,17 @@ mod tests {
         )
         .expect_err("duplicate");
         for outside in [
-            "file:///elsewhere/a.ttl",
-            "file:///w/q.rq",
-            "file:///w/notes.txt",
-            "untitled:Untitled-1",
-            "https://example.org/a.ttl",
+            "file:///elsewhere/a.ttl".to_string(),
+            format!("{ROOT}/q.rq"),
+            format!("{ROOT}/notes.txt"),
+            "untitled:Untitled-1".to_string(),
+            "https://example.org/a.ttl".to_string(),
         ] {
             check(
                 &k,
                 serde_json::json!({ "base": [{ "uri": outside, "text": "" }] }),
             )
-            .expect_err(outside);
+            .expect_err(&outside);
         }
         // What serde rejects, the server reports as InvalidParams too.
         for v in [

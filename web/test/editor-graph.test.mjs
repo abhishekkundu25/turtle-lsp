@@ -522,7 +522,6 @@ test("an edited data file shows its value change in the Changes list, with the c
     assert.match(await row.first().textContent(), /"Alice".*→.*"Alicia"/)
     assert.match(await row.first().textContent(), /~/)
     assert.match(await host(page).locator(".graph-changes-sum").textContent(), /\+1 −1 triples · 0 added, 0 removed, 1 changed/)
-    await page.screenshot({ path: process.env.CHANGES_PNG ?? "/private/tmp/claude-501/-Users-abhishek-repos-turtle-lsp/a2e5e6f0-39ed-4764-b8d8-a79d753d1e12/scratchpad/gd-05/changes.png" })
     await row.first().click()
     await tab(page, "people.ttl").waitFor()
     const at = await page.evaluate(() => {
