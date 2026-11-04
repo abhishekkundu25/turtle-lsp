@@ -1,8 +1,36 @@
 // The parts of the client that need neither `vscode` nor Node, so both
 // entries share them and Node tests them directly (test/find-server.test.mjs,
 // test/configuration.test.mjs, test/manifest.test.mjs): the settings the
-// server is sent, and a handle that starts, restarts and stops the language
-// client one step at a time.
+// server is sent, the documents it serves, and a handle that starts, restarts
+// and stops the language client one step at a time.
+
+// ---------------------------------------------------------------------------
+// The served files
+
+/**
+ * The workspace's RDF and SPARQL files: the `workspaceContains` activation
+ * glob (test/manifest.test.mjs checks they are the same) and the extensions
+ * of src/workspace/kinds.rs.
+ */
+export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}"
+
+/** The languages the extension contributes; the server handles each. */
+export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as const
+
+// JSON-LD files keep VS Code's own JSON language (and its highlighting): the
+// server attaches to them by name, and detects JSON-LD from the extension.
+export const JSONLD_PATTERN = "**/*.jsonld"
+
+/** One entry of the client's document selector. */
+export type DocumentFilter = { scheme: string; language: string } | { scheme: string; pattern: string }
+
+/** The documents the server handles, in the URI `schemes` given. An untitled document has no `.jsonld` name. */
+export function documentSelector(schemes: readonly string[]): DocumentFilter[] {
+  return [
+    ...LANGUAGES.flatMap((language) => schemes.map((scheme) => ({ scheme, language }))),
+    ...schemes.filter((s) => s !== "untitled").map((scheme) => ({ scheme, pattern: JSONLD_PATTERN })),
+  ]
+}
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -63,6 +91,73 @@ export function settingsFrom(src: SettingsSource): Record<string, unknown> {
  */
 export function configurationChange(settings: Record<string, unknown>): { settings: { turtle: Record<string, unknown> } } {
   return { settings: { turtle: settings } }
+}
+
+/**
+ * The keys a settings file may lower but not raise: past the default, or 0
+ * (no limit), they take the default. `imports.network` it may not set at
+ * all. As the native server reads `turtle-lsp.json` (`Layer::File` in
+ * src/settings.rs): any repository can ship one.
+ */
+const FILE_LIMITS = ["query.timeoutSeconds", "query.maxRows", "query.maxBufferedRows", "shacl.maxTriples"]
+
+/**
+ * The settings of a parsed `turtle-lsp.json` (keys nested or dotted,
+ * optionally inside a top-level `"turtle"` object), as nested objects, with
+ * the file's limits applied: `defaultOf(key)` is the manifest's default for
+ * `turtle.<key>`. `ignored` names the keys the file asked for and did not get.
+ */
+export function settingsFile(file: Record<string, unknown>, defaultOf: (key: string) => unknown): { settings: Record<string, unknown>; ignored: string[] } {
+  const settings: Record<string, unknown> = {}
+  const walk = (o: Record<string, unknown>, at: string[]): void => {
+    for (const [k, v] of Object.entries(o)) {
+      const path = [...at, ...k.split(".")]
+      if (path[0] === "turtle") path.shift()
+      if (path.length === 0) {
+        if (isObject(v)) walk(v, [])
+      } else if (path[0] === "prefixes") {
+        // A prefix name may hold dots; a prefixes object is one value.
+        if (path.length > 1) put(settings, ["prefixes", path.slice(1).join(".")], v)
+        else if (isObject(v)) for (const [name, iri] of Object.entries(v)) put(settings, ["prefixes", name], iri)
+      } else if (isObject(v)) walk(v, path)
+      else put(settings, path, v)
+    }
+  }
+  walk(file, [])
+  const ignored: string[] = []
+  const imports = settings.imports
+  if (isObject(imports) && "network" in imports) {
+    if (imports.network === true) ignored.push("imports.network")
+    delete imports.network
+  }
+  for (const key of FILE_LIMITS) {
+    const [group, name] = key.split(".")
+    const at = settings[group]
+    const limit = defaultOf(key)
+    if (!isObject(at) || typeof at[name] !== "number" || typeof limit !== "number") continue
+    const n = at[name] as number
+    if (n <= 0 || n > limit) {
+      at[name] = limit
+      ignored.push(key)
+    }
+  }
+  return { settings, ignored }
+}
+
+/**
+ * `over` (the user's settings) layered on `under` (a settings file's), as the
+ * native server applies its layers in turn: objects merge key by key, the
+ * lint lists add up, and `prefixes` set in `over` replaces the whole map.
+ */
+export function layered(under: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...under }
+  for (const [k, v] of Object.entries(over)) {
+    const below = out[k]
+    if (k !== "prefixes" && isObject(v) && isObject(below)) out[k] = layered(below, v)
+    else if (Array.isArray(v) && Array.isArray(below)) out[k] = [...new Set([...below, ...v])]
+    else out[k] = v
+  }
+  return out
 }
 
 function put(target: Record<string, unknown>, path: string[], value: unknown): void {

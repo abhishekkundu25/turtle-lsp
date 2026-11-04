@@ -5,13 +5,13 @@
 // over the diagnostics of the files in each answer.
 import * as vscode from "vscode"
 import type { BaseLanguageClient } from "vscode-languageclient"
+import { RDF_GLOB } from "./client"
 
 export const GRAPH_METHOD = "turtle/graph"
 export const SHOW_GRAPH = "turtle.showGraph"
 const TITLE = "Workspace Graph"
 /** Ask again this long after the last change to a workspace RDF or SPARQL file. */
 const REFRESH_MS = 500
-const WATCHED = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}"
 
 /** Whether the server advertises the graph request (`experimental["turtle/graph"]`). */
 export function advertisesGraph(client: BaseLanguageClient | undefined): boolean {
@@ -89,7 +89,7 @@ class GraphPanel {
     const refreshOn = (doc: vscode.TextDocument) => {
       if (host.served(doc)) this.scheduleRefresh()
     }
-    const watcher = vscode.workspace.createFileSystemWatcher(WATCHED)
+    const watcher = vscode.workspace.createFileSystemWatcher(RDF_GLOB)
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((m) => this.receive(m)),
       vscode.workspace.onDidChangeTextDocument((e) => refreshOn(e.document)),
@@ -155,10 +155,10 @@ function diagnosticsOf(nodes: { uri?: string }[]): Record<string, { range: Range
   return out
 }
 
-/** Opens `uri` at `range`, beside the panel. */
+/** Opens `uri` at `range`, beside the panel: a file, an untitled document, or one in a workspace folder (a virtual one in the browser). */
 async function reveal(uri: string, range: Range): Promise<void> {
   const target = vscode.Uri.parse(uri)
-  if (target.scheme !== "file" && target.scheme !== "untitled") return
+  if (target.scheme !== "file" && target.scheme !== "untitled" && !vscode.workspace.getWorkspaceFolder(target)) return
   await vscode.window.showTextDocument(target, { selection: toRange(range), viewColumn: vscode.ViewColumn.Beside, preview: false })
 }
 

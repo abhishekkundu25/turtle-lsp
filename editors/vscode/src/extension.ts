@@ -6,28 +6,11 @@ import * as path from "node:path"
 import * as vscode from "vscode"
 import { LanguageClient } from "vscode-languageclient/node"
 import * as shared from "./activate"
-import type { DocumentFilter, TurtleApi } from "./activate"
+import type { TurtleApi } from "./activate"
+import { documentSelector } from "./client"
 import { findServer } from "./server"
 
 export type { TurtleApi }
-
-// JSON-LD files keep VS Code's own JSON language (and its highlighting): the
-// server attaches to them by name, and detects JSON-LD from the extension.
-const JSONLD_PATTERN = "**/*.jsonld"
-
-const documentSelector: DocumentFilter[] = [
-  { scheme: "file", language: "turtle" },
-  { scheme: "untitled", language: "turtle" },
-  { scheme: "file", language: "trig" },
-  { scheme: "untitled", language: "trig" },
-  { scheme: "file", language: "ntriples" },
-  { scheme: "untitled", language: "ntriples" },
-  { scheme: "file", language: "nquads" },
-  { scheme: "untitled", language: "nquads" },
-  { scheme: "file", language: "sparql" },
-  { scheme: "untitled", language: "sparql" },
-  { scheme: "file", pattern: JSONLD_PATTERN },
-]
 
 const exe = process.platform === "win32" ? "turtle-lsp.exe" : "turtle-lsp"
 
@@ -63,7 +46,7 @@ export function activate(context: vscode.ExtensionContext): Promise<TurtleApi> {
     }),
   )
   return shared.activate(context, {
-    documentSelector,
+    documentSelector: documentSelector(["file", "untitled"]),
     createClient: (options) => {
       const command = findCommand(context)
       return command ? new LanguageClient("turtle", "Turtle", { command, args: [] }, options) : undefined

@@ -3,7 +3,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
-import { settingsFrom } from "../src/client.ts"
+import { documentSelector, JSONLD_PATTERN, RDF_GLOB, settingsFrom } from "../src/client.ts"
 
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
 const settings = pkg.contributes.configuration.properties
@@ -89,9 +89,33 @@ test("JSON-LD files are served without taking over VS Code's JSON language", () 
   assert.ok(!pkg.contributes.languages.some((l) => l.id === "json" || l.id === "jsonld"))
   assert.ok(pkg.activationEvents.some((e) => e.startsWith("workspaceContains:") && e.includes("jsonld")), pkg.activationEvents.join(", "))
   assert.ok(pkg.activationEvents.includes("onLanguage:json"))
-  const source = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8")
-  assert.match(source, /\{ scheme: "file", pattern: JSONLD_PATTERN \}/)
-  assert.match(source, /const JSONLD_PATTERN = "\*\*\/\*\.jsonld"/)
+  assert.equal(JSONLD_PATTERN, "**/*.jsonld")
+  assert.ok(documentSelector(["file", "untitled"]).some((f) => f.scheme === "file" && f.pattern === JSONLD_PATTERN))
+  const desktop = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8")
+  assert.match(desktop, /documentSelector\(\["file", "untitled"\]\)/)
+})
+
+test("one RDF glob: the workspaceContains activation, the start check, the watchers and the browser's files", () => {
+  const contains = pkg.activationEvents.filter((e) => e.startsWith("workspaceContains:"))
+  assert.deepEqual(contains, [`workspaceContains:${RDF_GLOB}`])
+  // Each source file names the constant, not a copy of the glob.
+  for (const file of ["activate.ts", "graph.ts", "web/files.ts"]) {
+    const source = fs.readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8")
+    assert.ok(source.includes("RDF_GLOB"), file)
+    assert.ok(!source.includes("{ttl,"), `${file} spells out the glob`)
+  }
+})
+
+test("the browser entry runs in a virtual workspace, with what is off described", () => {
+  assert.equal(pkg.browser, "./out/web/extension.js")
+  const cap = pkg.capabilities.virtualWorkspaces
+  assert.equal(cap.supported, "limited")
+  assert.match(cap.description, /Run query/)
+  assert.match(cap.description, /2,000 files/)
+  // Built by "npm run build" (npm test builds first).
+  for (const out of [pkg.browser, "./out/web/worker.js"]) {
+    assert.ok(fs.existsSync(new URL(`../${out}`, import.meta.url)), `${out} is not built`)
+  }
 })
 
 test("suggestions pop up in Turtle and TriG strings, where SHACL queries are typed", () => {

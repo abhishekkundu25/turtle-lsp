@@ -2,14 +2,14 @@
 // desktop and in the browser alike: the restart, references and graph
 // commands, the start on the first served document, and the settings sent to
 // the server. Each entry passes the documents it serves and a factory that
-// builds the client (src/extension.ts runs the binary).
+// builds the client (src/extension.ts runs the binary, src/web/extension.ts
+// a worker).
 import * as vscode from "vscode"
 import type { BaseLanguageClient, LanguageClientOptions } from "vscode-languageclient"
-import { configurationChange, ServerHandle, settingsFrom } from "./client"
+import { configurationChange, layered, RDF_GLOB, ServerHandle, settingsFrom, type DocumentFilter } from "./client"
 import { advertisesGraph, GraphProbe, graphProbe, registerGraphCommand } from "./graph"
 
-/** One entry of the client's document selector. */
-export type DocumentFilter = { scheme: string; language: string } | { scheme: string; pattern: string }
+export type { DocumentFilter }
 
 export interface ClientSetup {
   /** The documents the server handles. The server starts once one is open or the workspace has an RDF file. */
@@ -20,6 +20,12 @@ export interface ClientSetup {
    * on every start and restart.
    */
   createClient(options: LanguageClientOptions): BaseLanguageClient | undefined
+  /**
+   * Settings beneath the user's, where the server cannot read them itself
+   * (the browser's `turtle-lsp.json`). The server is sent the new settings
+   * when they change.
+   */
+  baseSettings?: { current(): Record<string, unknown>; onDidChange: vscode.Event<void> }
 }
 
 /** Exposed for the integration tests. */
@@ -34,28 +40,31 @@ export interface TurtleApi {
 /**
  * The `turtle.*` settings the server reads, as nested objects: the ones the
  * user set (not the defaults the manifest contributes, which would override
- * `turtle-lsp.json`), with network imports off in an untrusted workspace.
+ * `turtle-lsp.json`), with network imports off in an untrusted workspace,
+ * over the entry's `base` settings.
  */
-function settingsFor(context: vscode.ExtensionContext, trusted: boolean): Record<string, unknown> {
+function settingsFor(context: vscode.ExtensionContext, setup: ClientSetup): Record<string, unknown> {
   const manifest = context.extension.packageJSON
   const config = vscode.workspace.getConfiguration("turtle")
-  return settingsFrom({
+  const user = settingsFrom({
     properties: manifest.contributes.configuration.properties,
     restricted: manifest.capabilities.untrustedWorkspaces.restrictedConfigurations,
     inspect: (key) => config.inspect(key),
-    trusted,
+    trusted: vscode.workspace.isTrusted,
   })
+  return layered(setup.baseSettings?.current() ?? {}, user)
+}
+
+/** Sends the server its settings; the section replaces the ones it started with. */
+async function sendSettings(context: vscode.ExtensionContext, setup: ClientSetup, client: BaseLanguageClient | undefined): Promise<void> {
+  if (client?.isRunning()) await client.sendNotification("workspace/didChangeConfiguration", configurationChange(settingsFor(context, setup)))
 }
 
 /** The client options both entries share; the configuration middleware notifies `client()`. */
-function clientOptions(
-  context: vscode.ExtensionContext,
-  documentSelector: DocumentFilter[],
-  client: () => BaseLanguageClient | undefined,
-): LanguageClientOptions {
+function clientOptions(context: vscode.ExtensionContext, setup: ClientSetup, client: () => BaseLanguageClient | undefined): LanguageClientOptions {
   return {
-    documentSelector,
-    initializationOptions: settingsFor(context, vscode.workspace.isTrusted),
+    documentSelector: setup.documentSelector,
+    initializationOptions: settingsFor(context, setup),
     // Later changes reach the server as workspace/didChangeConfiguration.
     synchronize: { configurationSection: "turtle" },
     outputChannelName: "Turtle",
@@ -63,12 +72,10 @@ function clientOptions(
       workspace: {
         // The client would send the whole section, defaults included, which
         // beats turtle-lsp.json at the server. Send the user's settings instead.
-        didChangeConfiguration: async () => {
-          await client()?.sendNotification(
-            "workspace/didChangeConfiguration",
-            configurationChange(settingsFor(context, vscode.workspace.isTrusted)),
-          )
-        },
+        didChangeConfiguration: () => sendSettings(context, setup, client()),
+        // The same settings for a server that asks for its section.
+        configuration: (params, token, next) =>
+          params.items.every((i) => i.section === "turtle") ? params.items.map(() => settingsFor(context, setup)) : next(params, token),
       },
       window: {
         // Query results open beside the query, which keeps the focus.
@@ -120,7 +127,7 @@ async function showReferences(uri: string, position: LspPosition, locations: Lsp
  */
 async function wanted(served: (doc: vscode.TextDocument) => boolean): Promise<boolean> {
   if (vscode.workspace.textDocuments.some(served)) return true
-  const files = await vscode.workspace.findFiles("**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}", "**/node_modules/**", 1)
+  const files = await vscode.workspace.findFiles(RDF_GLOB, "**/node_modules/**", 1)
   return files.length > 0
 }
 
@@ -131,7 +138,7 @@ export async function activate(context: vscode.ExtensionContext, setup: ClientSe
   const served = (doc: vscode.TextDocument): boolean => vscode.languages.match(setup.documentSelector, doc) > 0
   const handle = (serverHandle = new ServerHandle<BaseLanguageClient>(() => {
     let created: BaseLanguageClient | undefined
-    created = setup.createClient(clientOptions(context, setup.documentSelector, () => created))
+    created = setup.createClient(clientOptions(context, setup, () => created))
     return created
   }))
   let wantedServer = false
@@ -170,6 +177,7 @@ export async function activate(context: vscode.ExtensionContext, setup: ClientSe
       return run(() => handle.restart())
     }),
     vscode.commands.registerCommand("turtle.showReferences", showReferences),
+    ...(setup.baseSettings ? [setup.baseSettings.onDidChange(() => sendSettings(context, setup, handle.client()))] : []),
     // Trust decides what the server may fetch, and on the desktop which binary may run.
     vscode.workspace.onDidGrantWorkspaceTrust(async () => {
       if (wantedServer) await vscode.commands.executeCommand("turtle.restartServer")
