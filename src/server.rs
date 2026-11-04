@@ -183,6 +183,10 @@ pub(crate) struct Server {
     queries: run_query::State,
     /// The `turtle/query` runs going on (`query_request`).
     query_requests: query_request::State,
+    /// The workspace folders as `initialize` named them. The browser build
+    /// has no file paths, so `ws.roots()` is empty there; a request that
+    /// needs a folder of the workspace uses these.
+    root_uris: Vec<String>,
     /// Tests: panic once after the next batch.
     #[cfg(test)]
     fault: bool,
@@ -275,6 +279,13 @@ impl Server {
             .and_then(|c| c.resolve_support.as_ref())
             .is_some_and(|r| r.properties.iter().any(|p| p == "edit"));
 
+        #[allow(deprecated)]
+        let root_uris: Vec<String> = match params.workspace_folders.as_deref() {
+            Some(folders) if !folders.is_empty() => {
+                folders.iter().map(|f| f.uri.to_string()).collect()
+            }
+            _ => params.root_uri.iter().map(|u| u.to_string()).collect(),
+        };
         let mut roots: Vec<PathBuf> = params
             .workspace_folders
             .iter()
@@ -328,6 +339,7 @@ impl Server {
             shacl: Shacl::default(),
             progress: Progress::new(work_done_progress),
             wsdiag,
+            root_uris,
             queries: run_query::State::new(show_document),
             query_requests: query_request::State::default(),
             spawn,

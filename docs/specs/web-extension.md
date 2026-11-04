@@ -276,6 +276,7 @@ What the implementation did differently from the plan above.
 - Hover's "Described in" links carried the server's `file:///workspace/<n>/` URIs; `src/web/uris.ts` now maps URIs inside prose coming out and leaves document content alone.
 - The headless test serves VS Code for the Web with test-web (browser "none") and opens installed Google Chrome through Playwright's `chrome` channel; `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` (workflow-wide in `ci.yml`) and `allowScripts` keep Playwright from downloading browsers.
 - `.vscodeignore` needed no change; a platform `.vsix` drops `out/web/engine.wasm` after the build. The release's `web` job restores no Rust cache, and a smoke step unpacks the web `.vsix`, checks its files and loads the engine in Node.
+- `turtle/query` (#74) without `files` found no `prefixes.ttl` in the browser: the browser build has no file paths, so the server had no root to look the query up at. The server now keeps the workspace folders' URIs from `initialize`, and the request falls back to the first one.
 
 ## Follow-ups
 

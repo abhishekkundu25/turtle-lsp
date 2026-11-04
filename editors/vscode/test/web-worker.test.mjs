@@ -130,6 +130,25 @@ test("a definition in a file only on disk, and closing a file keeps it found", {
   assert.ok(!JSON.stringify(gone.result ?? null).includes(DEFS), JSON.stringify(gone))
 })
 
+test("turtle/query over the workspace's files, with the prefixes of the root's prefixes.ttl", { skip }, async () => {
+  const c = await client()
+  await initialize(c)
+  c.notify("turtle/web/files", {
+    changed: [
+      { uri: `${ROOT}/prefixes.ttl`, text: "@prefix ex: <http://example.org/> .\n" },
+      { uri: `${ROOT}/data.ttl`, text: "ex:p1 ex:feeds ex:v1 .\n" },
+      { uri: `${ROOT}/more.nt`, text: "<http://example.org/p2> <http://example.org/feeds> <http://example.org/v2> .\n" },
+    ],
+    deleted: [],
+  })
+  const subjects = (r) => (r.error ? r.error.message : r.result.results.bindings.map((b) => b.s.value))
+  const FEEDS = "SELECT ?s WHERE { ?s ex:feeds ?o } ORDER BY ?s"
+  // files omitted: the query is looked up as a query file at the root, which
+  // the browser build knows only by its URI.
+  assert.deepEqual(subjects(await c.request("turtle/query", { query: FEEDS })), ["http://example.org/p1", "http://example.org/p2"])
+  assert.deepEqual(subjects(await c.request("turtle/query", { query: FEEDS, files: [`${ROOT}/more.nt`] })), ["http://example.org/p2"])
+})
+
 test("turtle/web/files never reaches the server, and a malformed one is ignored", { skip }, async () => {
   const real = await createEngine(bytes)
   const sent = []
