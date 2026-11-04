@@ -21,6 +21,18 @@ test("a hover request and its answer", () => {
   assert.deepEqual(map.toClient(answer), answer)
 })
 
+test("a server URI inside prose (a hover's link) is the client's", () => {
+  const hover = (root) => ({ contents: { kind: "markdown", value: `**ex:a**\n\n_Described in [b.ttl:1](${root}/b.ttl#L1) and [c.ttl](${root}/c.ttl)_` } })
+  assert.deepEqual(map.toClient(hover(S)), hover(REPO))
+  const two = uriMap(["vscode-vfs://github/o/one", "vscode-vfs://github/o/two"])
+  const tenth = "see file:///workspace/10/x.ttl"
+  assert.equal(uriMap(Array.from({ length: 2 }, (_, i) => `vscode-vfs://github/o/r${i}`)).toClient(tenth), tenth)
+  assert.equal(two.toClient("in file:///workspace/1/x.ttl"), "in vscode-vfs://github/o/two/x.ttl")
+  // Document content stays as written, even with a server URI in it.
+  const edit = { changes: { [`${S}/a.ttl`]: [{ range, newText: `<${S}/b.ttl> a ex:C .` }] } }
+  assert.deepEqual(map.toClient(edit), { changes: { [`${REPO}/a.ttl`]: [{ range, newText: `<${S}/b.ttl> a ex:C .` }] } })
+})
+
 test("a definition answer, as locations and as location links", () => {
   roundTrip(map, [{ uri: `${REPO}/defs/b.ttl`, range }], [{ uri: `${S}/defs/b.ttl`, range }])
   roundTrip(map, [{ targetUri: `${REPO}/b.ttl`, targetRange: range, targetSelectionRange: range }], [{ targetUri: `${S}/b.ttl`, targetRange: range, targetSelectionRange: range }])

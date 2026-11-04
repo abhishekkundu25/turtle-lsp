@@ -13,8 +13,10 @@ export interface UriMap {
   toClient<T>(message: T): T
 }
 
+const SERVER_ROOT = "file:///workspace/"
+
 /** What workspace folder `n` is to the server. */
-export const workspaceUri = (n: number): string => `file:///workspace/${n}`
+export const workspaceUri = (n: number): string => `${SERVER_ROOT}${n}`
 
 // Strings that are document content, not URIs: an IRI a user wrote in a file
 // stays as written even when it starts with a folder's URI.
@@ -35,12 +37,21 @@ function swap(pairs: Pair[], s: string): string {
   return s
 }
 
-function walk(pairs: Pair[], v: unknown): unknown {
-  if (typeof v === "string") return swap(pairs, v)
-  if (Array.isArray(v)) return v.map((x) => walk(pairs, x))
+// `s` with every server URI in it replaced, wherever it stands: the server
+// writes them into prose too (a hover's "Described in" link, a message). The
+// digit check keeps `file:///workspace/1` from matching `…/10`.
+function swapAll(pairs: Pair[], s: string): string {
+  if (!s.includes(SERVER_ROOT)) return s
+  for (const { from, to } of pairs) s = s.replace(new RegExp(`${from.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?![0-9])`, "g"), to)
+  return s
+}
+
+function walk(pairs: Pair[], v: unknown, strings: (pairs: Pair[], s: string) => string): unknown {
+  if (typeof v === "string") return strings(pairs, v)
+  if (Array.isArray(v)) return v.map((x) => walk(pairs, x, strings))
   if (v === null || typeof v !== "object") return v
   const out: Record<string, unknown> = {}
-  for (const [k, x] of Object.entries(v)) out[swap(pairs, k)] = CONTENT.has(k) ? x : walk(pairs, x)
+  for (const [k, x] of Object.entries(v)) out[swap(pairs, k)] = CONTENT.has(k) ? x : walk(pairs, x, strings)
   return out
 }
 
@@ -53,7 +64,7 @@ export function uriMap(folders: readonly string[]): UriMap {
   const inward = roots.map((f, n) => pair(f, workspaceUri(n))).sort((a, b) => b.from.length - a.from.length)
   const outward = roots.map((f, n) => pair(workspaceUri(n), f))
   return {
-    toServer: <T>(m: T) => walk(inward, m) as T,
-    toClient: <T>(m: T) => walk(outward, m) as T,
+    toServer: <T>(m: T) => walk(inward, m, swap) as T,
+    toClient: <T>(m: T) => walk(outward, m, swapAll) as T,
   }
 }

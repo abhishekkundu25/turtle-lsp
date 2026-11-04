@@ -72,6 +72,8 @@ check("hover on ex:Thing shows its type and comment from b.ttl", async () => {
   const hovers = await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, posOf(doc, "ex:Thing", 4))
   const text = hoverText(hovers)
   ok(text.includes("owl:Class") && text.includes("Anything at all."), `hover: ${JSON.stringify(text)}`)
+  // Its "Described in" link is the workspace's URI, not the server's.
+  ok(!text.includes("file:///workspace/") && text.includes(`${vscode.workspace.workspaceFolders[0].uri.toString().replace(/\/+$/, "")}/b.ttl`), `hover link: ${JSON.stringify(text)}`)
 })
 
 check("definition of ex:Thing lands in b.ttl", async () => {
