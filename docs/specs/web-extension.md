@@ -198,7 +198,8 @@ Packaging and docs
 ## Non-functional budgets
 
 - The native server and the desktop extension do not change behaviour:
-  every desktop suite passes, and no Rust file changes.
+  every desktop suite passes. The one Rust change is in `Embedded` (the
+  browser build only): once the server has ended, it reports no timer due.
 - The engine's gzipped size budget (`web/build.mjs`) does not move.
 - In the headless web test, the fixture workspace's diagnostics appear
   within 10 s of opening the first file, on CI.
