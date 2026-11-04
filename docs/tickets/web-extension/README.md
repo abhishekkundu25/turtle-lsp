@@ -22,3 +22,5 @@ unless they start with `.github/` or `docs/`. Lock files are in **bold**.
 ## Log
 
 Departures from the plan, as they happen.
+
+- 01: also changed one import line in `test/manifest.test.mjs` (owned by 03), since `settingsFrom` moved to `src/client.ts`; a re-export would only forward. "Served" is now `vscode.languages.match` against the document selector, so a wider browser selector widens the start-on-open and the graph refresh too. Open for 03: layered `turtle-lsp.json` on configuration changes needs a settings hook in `ClientSetup`; the graph panel's `reveal()` opens only `file:` and `untitled:` URIs; the RDF glob is written out in `activate.ts` and `graph.ts`.
