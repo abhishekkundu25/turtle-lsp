@@ -156,7 +156,11 @@ test("a shared prefix can be renamed and then renamed back", async () => {
     })
   }
   try {
-    await save(await rename("prefixes.ttl", "ex:", "eg"))
+    // Checked before it is saved: a file it misses is never written, and
+    // the rename back would then miss it too and be blamed for it.
+    const there = await rename("prefixes.ttl", "ex:", "eg")
+    assert.deepEqual(edited(there), shared)
+    await save(there)
     const back = await rename("prefixes.ttl", "eg:", "ex")
     const expected = Object.fromEntries(
       Object.entries(shared).map(([name, edits]) => [name, edits.map((e) => e.replace(/ g$/, " x"))]),

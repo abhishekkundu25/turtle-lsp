@@ -357,9 +357,21 @@ jobs:
       - run: npx playwright-core install chrome
         timeout-minutes: 5
       # Two files at a time: most start Chrome, and the runner has 4 vCPUs.
+      # The spec reporter prints a file only when it ends, so a step timeout
+      # would name no test: test/progress-reporter.mjs logs each start and
+      # end, and the step after prints the tail when this one fails.
       - name: Every web test (toolbox, editor, CSP, engine)
         timeout-minutes: 10
-        run: node --test --test-concurrency=2 --test-force-exit --test-timeout=60000 "web/test/*.test.mjs"
+        env:
+          TEST_PROGRESS_LOG: ${{ runner.temp }}/web-test-progress.log
+        run: >-
+          node --test --test-concurrency=2 --test-force-exit --test-timeout=60000
+          --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./test/progress-reporter.mjs --test-reporter-destination=stdout
+          "web/test/*.test.mjs"
+      - name: The web tests last started (a test that started and never ended hung)
+        if: failure()
+        run: tail -n 40 "$RUNNER_TEMP/web-test-progress.log" || true
 
   vscode:
     name: VS Code extension (${{ matrix.os }})
