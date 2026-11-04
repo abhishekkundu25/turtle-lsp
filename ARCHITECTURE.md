@@ -209,7 +209,8 @@ The workspace graph and `turtle/query` are the server's two custom
 requests, listed under `experimental` capabilities. `turtle/query` runs a
 query given as text over the workspace's documents, as "▶ Run query" does,
 and answers the results as JSON on a thread of its own; `$/cancelRequest`
-stops it. `features::graph` reads the knowledge index
+stops it. The thread holds only the map of runs, not the server's state, so
+`shutdown` and the end of the server stop every run. `features::graph` reads the knowledge index
 and changes nothing: the query, the filters, the cap and the Barnes-Hut
 layout. The client passes back the positions it has, so the server keeps
 no graph state. The native server answers it on a thread of its own over

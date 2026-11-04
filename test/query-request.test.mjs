@@ -95,15 +95,54 @@ describe("turtle/query", () => {
     }
   })
 
+  test("files: [] is InvalidParams, not an empty dataset", async () => {
+    await assert.rejects(s.request("turtle/query", { query: COUNT, files: [] }), (e) => {
+      assert.equal(e.code, InvalidParams)
+      assert.match(e.message, /files is empty/)
+      return true
+    })
+  })
+
+  test("a relative IRI without base says that a base is missing", async () => {
+    const query = "SELECT * WHERE { <p1> ?p ?o }"
+    await assert.rejects(s.request("turtle/query", { query }), (e) => {
+      assert.equal(e.code, InvalidParams)
+      assert.match(e.message, /relative IRI needs a base/)
+      return true
+    })
+    const r = await s.request("turtle/query", { query, base: EX })
+    assert.equal(r.results.bindings.length, 2)
+  })
+
   test("ASK, CONSTRUCT and maxRows", async () => {
     const a = await s.request("turtle/query", { query: "PREFIX ex: <http://example.org/> ASK { ex:p1 ex:feeds ex:v1 }" })
     assert.equal(a.kind, "ask")
     assert.equal(a.boolean, true)
+    const no = await s.request("turtle/query", { query: "PREFIX ex: <http://example.org/> ASK { ex:v1 ex:feeds ex:p1 }" })
+    assert.deepEqual(no.head, {})
+    assert.equal(no.boolean, false)
     const c = await s.request("turtle/query", { query: "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", maxRows: 2 })
     assert.equal(c.kind, "construct")
     assert.equal(c.triples.length, 2)
     assert.equal(c.omitted, 4)
     assert.equal(c.triples[0].subject.type, "uri")
+    // Every term in results JSON form: IRIs, a blank node, a literal.
+    const t = await s.request("turtle/query", {
+      query: `PREFIX ex: <http://example.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        CONSTRUCT { _:b ex:names ?l . ?s ex:label ?l } WHERE { ?s rdfs:label ?l }`,
+    })
+    assert.equal(t.omitted, 0)
+    const byPredicate = Object.fromEntries(t.triples.map((x) => [x.predicate.value, x]))
+    assert.deepEqual(Object.keys(byPredicate).sort(), [EX + "label", EX + "names"])
+    assert.deepEqual(byPredicate[EX + "label"], {
+      subject: { type: "uri", value: EX + "Pump" },
+      predicate: { type: "uri", value: EX + "label" },
+      object: { type: "literal", value: "Pump" },
+    })
+    const b = byPredicate[EX + "names"]
+    assert.equal(b.subject.type, "bnode")
+    assert.ok(b.subject.value)
+    assert.deepEqual(b.object, { type: "literal", value: "Pump" })
     const r = await s.request("turtle/query", { query: "SELECT * WHERE { ?s ?p ?o }", maxRows: 1 })
     assert.equal(r.results.bindings.length, 1)
     assert.equal(r.omitted, 5)
@@ -178,4 +217,108 @@ describe("turtle/query limits", () => {
     }
     assert.equal(await count(s, { query: "SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }" }), 400)
   })
+})
+
+describe("turtle/query prefixes", () => {
+  // Headerless files take ex: from prefixes.ttl; the N-Triples file has none.
+  let s, dir, ntUri
+  before(async () => {
+    dir = tempDir("turtle-lsp-query-request-prefixes-")
+    fs.writeFileSync(path.join(dir, "prefixes.ttl"), "@prefix ex: <http://example.org/> .\n")
+    fs.writeFileSync(path.join(dir, "data.ttl"), "ex:p1 ex:feeds ex:v1 .\n")
+    fs.writeFileSync(path.join(dir, "data.nt"), `<${EX}p2> <${EX}feeds> <${EX}v2> .\n`)
+    ntUri = uriOf(path.join(dir, "data.nt"))
+    s = await startServer({ cwd: dir })
+    await indexed(s, 2)
+  })
+  after(async () => {
+    await s?.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  const FEEDS = "SELECT ?s WHERE { ?s ex:feeds ?o } ORDER BY ?s"
+
+  test("a prefix of the root's prefixes.ttl works with files omitted", async () => {
+    const r = await s.request("turtle/query", { query: FEEDS })
+    assert.deepEqual(r.results.bindings.map((b) => b.s.value), [EX + "p1", EX + "p2"])
+  })
+
+  test("a prefix of prefixes.ttl works when the first file is N-Triples", async () => {
+    const r = await s.request("turtle/query", { query: FEEDS, files: [ntUri] })
+    assert.deepEqual(r.results.bindings.map((b) => b.s.value), [EX + "p2"])
+  })
+})
+
+describe("turtle/query maxRows", () => {
+  // More rows than the default query.maxRows (1000).
+  let s, dir
+  before(async () => {
+    dir = tempDir("turtle-lsp-query-request-rows-")
+    let big = "@prefix ex: <http://example.org/> .\n"
+    for (let i = 0; i < 1500; i++) big += `ex:n${i} ex:next ex:n${i + 1} .\n`
+    fs.writeFileSync(path.join(dir, "big.ttl"), big)
+    s = await startServer({ cwd: dir })
+    await indexed(s, 1500)
+  })
+  after(async () => {
+    await s?.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("omitted, 0 and a higher value are query.maxRows; a lower value lowers it", async () => {
+    for (const maxRows of [undefined, 0, 5000]) {
+      const r = await s.request("turtle/query", { query: "SELECT * WHERE { ?s ?p ?o }", maxRows })
+      assert.equal(r.results.bindings.length, 1000, String(maxRows))
+      assert.equal(r.omitted, 500, String(maxRows))
+    }
+    const c = await s.request("turtle/query", { query: "CONSTRUCT WHERE { ?s ?p ?o }" })
+    assert.equal(c.triples.length, 1000)
+    assert.equal(c.omitted, 500)
+    const r = await s.request("turtle/query", { query: "SELECT * WHERE { ?s ?p ?o }", maxRows: 10 })
+    assert.equal(r.results.bindings.length, 10)
+    assert.equal(r.omitted, 1490)
+  })
+})
+
+describe("turtle/query and the end of the server", () => {
+  // No time limit: only the end of the server stops the run.
+  let dir
+  before(() => {
+    dir = tempDir("turtle-lsp-query-request-exit-")
+    let big = "@prefix ex: <http://example.org/> .\n"
+    for (let i = 0; i < 400; i++) big += `ex:n${i} ex:next ex:n${i + 1} .\n`
+    fs.writeFileSync(path.join(dir, "big.ttl"), big)
+  })
+  after(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  // Start a server, start a slow query, end the session with `end`, and
+  // assert that the process exits within 3 s.
+  async function endsWithQueryRunning(end) {
+    const s = await startServer({ cwd: dir, initializationOptions: { query: { timeoutSeconds: 0 } } })
+    try {
+      await indexed(s, 400)
+      s.sendRaw([{ id: "raw-slow", method: "turtle/query", params: { query: SLOW } }])
+      await new Promise((r) => setTimeout(r, 200))
+      const exited = new Promise((r) => s.proc.once("exit", () => r(true)))
+      if (s.proc.exitCode !== null) return
+      await end(s)
+      const gone = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 3000).unref())])
+      assert.ok(gone, "turtle-lsp did not exit within 3 s")
+    } finally {
+      if (s.proc.exitCode === null) s.proc.kill()
+      s.conn.dispose()
+    }
+  }
+
+  test("shutdown and exit stop a running query", () =>
+    endsWithQueryRunning(async (s) => {
+      s.sendRaw([{ id: "raw-bye", method: "shutdown" }])
+      const resp = await s.rawResponse("raw-bye")
+      assert.equal(resp.error, undefined)
+      s.sendRaw([{ method: "exit" }])
+    }))
+
+  test("exit alone stops a running query", () => endsWithQueryRunning(async (s) => s.sendRaw([{ method: "exit" }])))
+
+  test("stdin closing stops a running query", () => endsWithQueryRunning(async (s) => s.proc.stdin.end()))
 })

@@ -808,6 +808,7 @@ impl Server {
         exit_wait: Duration,
     ) -> Result<Ended, Box<dyn std::error::Error + Send + Sync>> {
         self.queries.cancel_all();
+        self.query_requests.cancel_all();
         self.client.send(Response::new_ok(req.id, ()))?;
         let mut rest = rest;
         loop {

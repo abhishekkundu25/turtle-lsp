@@ -268,8 +268,10 @@ Only `query` is required. `files` limits the data to those documents
 (default: every RDF document of the workspace, open ones as the editor has
 them, imports excluded). `timeoutSeconds` can only lower
 `query.timeoutSeconds`: `0` or a higher value is the setting. `maxRows`
-defaults to no limit (`0` is no limit); `query.maxBufferedRows` applies as
-always. The dataset is the one of ▶ Run query: the union of every triple of
+can only lower `query.maxRows` in the same way; `query.maxBufferedRows`
+applies as always. The query can use the prefixes of `prefixes.ttl` and
+the `prefixes` setting without declaring them, as a query file beside the
+first of `files` (default: in the workspace root) gets them. The dataset is the one of ▶ Run query: the union of every triple of
 every file, with no named graphs.
 
 The answer is `{"kind": "select", "head": …, "results": …, "omitted": n,
@@ -278,11 +280,13 @@ rows past `maxRows`), `{"kind": "ask", "head": {}, "boolean": b,
 "elapsedMs": ms}`, or for CONSTRUCT and DESCRIBE `{"kind": "construct",
 "triples": [{"subject", "predicate", "object"}], "omitted": n, "elapsedMs":
 ms}` with the terms in the results JSON's term form. Nothing is shown and no
-file is written. A query that is not SPARQL, an update, or a `files` entry
-that is no workspace document is an `InvalidParams` error; a query stopped
+file is written. A query that is not SPARQL, an update, a relative IRI
+without `base`, an empty `files`, or a `files` entry that is no workspace
+document is an `InvalidParams` error; a query stopped
 at a limit is a `RequestFailed` error with the reason as its message. The
 query runs on a thread of its own, and `$/cancelRequest` stops it (a
-`RequestCanceled` error). At most four queries run at a time; one more is a
+`RequestCanceled` error); `shutdown`, `exit` and a closed connection stop
+every run. At most four queries run at a time; one more is a
 `RequestFailed` error, to send again when one has answered.
 
 ### SPARQL in SHACL shapes

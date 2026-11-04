@@ -7,8 +7,11 @@
 //! workspace, open ones with their unsaved edits, imports excluded), a
 //! `base` for relative IRIs, and limits: `timeoutSeconds`, which can only
 //! lower `query.timeoutSeconds` (a higher value, or `0`, is lowered to the
-//! setting), and `maxRows` (default and `0`: no limit).
-//! `query.maxBufferedRows` applies as always.
+//! setting), and `maxRows`, which can only lower `query.maxRows` in the
+//! same way. `query.maxBufferedRows` applies as always. The query may use
+//! undeclared the prefixes a query file would get beside the first of
+//! `files`, else in the first workspace root (`prefixes.ttl` and the
+//! `prefixes` setting).
 //!
 //! The dataset is [`query::run`]'s, as "▶ Run query" has it: the default
 //! graph is the union of every triple of every document; there are no named
@@ -24,13 +27,15 @@
 //!   "object"}], "omitted": n, "elapsedMs": ms}` for CONSTRUCT and DESCRIBE,
 //!   the terms in the results JSON's term form.
 //!
-//! A query that is not SPARQL, an UPDATE, or one of `files` that is not a
-//! workspace document is `InvalidParams`; a query stopped at a limit or by
+//! A query that is not SPARQL, an UPDATE, a relative IRI without `base`,
+//! an empty `files`, or one of `files` that is not a workspace document is
+//! `InvalidParams`; a query stopped at a limit or by
 //! the evaluator is `RequestFailed`, with the reason as the message. The
 //! query runs on a thread of its own ([`Spawn::Thread`]), which answers the
 //! request; at most [`MAX_RUNNING`] run at a time, and one more is refused
 //! with `RequestFailed`. A `$/cancelRequest` for a pending request stops its
-//! run, answered `RequestCanceled`. Embedded ([`Spawn::Inline`]), it runs
+//! run, answered `RequestCanceled`; `shutdown`, and the end of the server,
+//! stop every run. Embedded ([`Spawn::Inline`]), it runs
 //! inline, with no cap and no cancellation.
 
 use super::Server;
@@ -64,35 +69,33 @@ pub(crate) struct Params {
     base: Option<String>,
     /// Lowers `query.timeoutSeconds`; never raises it.
     timeout_seconds: Option<f64>,
-    /// `0` or omitted: no limit.
+    /// Lowers `query.maxRows`; never raises it.
     max_rows: Option<u64>,
 }
 
-/// The runs going on, by request id: each one's cancellation flag. Shared
-/// with the threads, which remove their own run when it ends.
-#[derive(Clone, Default)]
+/// The runs going on, by request id: each one's cancellation flag.
+type Runs = Arc<Mutex<FxHashMap<RequestId, Arc<AtomicBool>>>>;
+
+/// The runs going on. The server owns the one `State`; the threads hold
+/// only its map ([`Runs`]) and remove their own run when it ends, so
+/// dropping the `State` (the server ends) stops every run.
+#[derive(Default)]
 pub(crate) struct State {
-    running: Arc<Mutex<FxHashMap<RequestId, Arc<AtomicBool>>>>,
+    running: Runs,
+}
+
+fn lock(runs: &Runs) -> std::sync::MutexGuard<'_, FxHashMap<RequestId, Arc<AtomicBool>>> {
+    runs.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl State {
     /// The runs going on.
     fn count(&self) -> usize {
-        self.running.lock().unwrap_or_else(|e| e.into_inner()).len()
-    }
-
-    fn insert(&self, id: RequestId, cancel: Arc<AtomicBool>) {
-        self.running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, cancel);
+        lock(&self.running).len()
     }
 
     fn remove(&self, id: &RequestId) -> Option<Arc<AtomicBool>> {
-        self.running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(id)
+        lock(&self.running).remove(id)
     }
 
     /// Stop the run of request `id`, if one goes on. Its thread answers
@@ -105,12 +108,7 @@ impl State {
 
     /// Stop every run (the server is going away).
     pub(crate) fn cancel_all(&self) {
-        for flag in self
-            .running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-        {
+        for flag in lock(&self.running).values() {
             flag.store(true, Ordering::Relaxed);
         }
     }
@@ -118,12 +116,15 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
-        // The last owner: the threads hold the map, not the state.
-        if Arc::strong_count(&self.running) == 1 {
-            self.cancel_all();
-        }
+        self.cancel_all();
     }
 }
+
+/// The name of the query file whose prefixes the query gets.
+const QUERY_FILE: &str = "query.rq";
+
+/// A base to find out whether the query fails only for want of one.
+const PROBE_BASE: &str = "http://base.invalid/";
 
 /// One run, as handed to its thread.
 struct Job {
@@ -162,12 +163,17 @@ impl Server {
                 )));
             }
         };
-        let max_rows = match p.max_rows {
-            None | Some(0) => None,
-            Some(n) => {
-                Some(usize::try_from(n).map_err(|_| invalid(format!("maxRows: {n} is too many")))?)
-            }
+        let setting = self.layers.settings().query_max_rows;
+        // Only lower the setting: `0` and a higher value are the setting.
+        let max_rows = match p.max_rows.map(|n| usize::try_from(n).unwrap_or(usize::MAX)) {
+            None | Some(0) => setting,
+            Some(n) => Some(setting.map_or(n, |s| s.min(n))),
         };
+        if p.files.as_ref().is_some_and(Vec::is_empty) {
+            return Err(invalid(
+                "files is empty: omit it to query every RDF document".into(),
+            ));
+        }
         // The documents asked for, each once, in the order given.
         let wanted: Option<Vec<String>> = p.files.map(|v| {
             let mut seen = FxHashSet::default();
@@ -201,17 +207,19 @@ impl Server {
                 )));
             }
         }
-        // The prefixes the query may use undeclared: the project's, as a
-        // query file beside the first of `files` gets them, else one at the
-        // first workspace root.
+        // The prefixes the query may use undeclared: the ones a query file
+        // gets beside the first of `files`, else in the first workspace root.
+        // A query file, not the file itself: an N-Triples, N-Quads or JSON-LD
+        // file gets no prefixes, and a folder's URI is looked up from its
+        // parent.
         let at = wanted
             .as_ref()
-            .and_then(|w| w.first().cloned())
+            .and_then(|w| w.first())
+            .and_then(|u| url::Url::parse(u).ok()?.join(QUERY_FILE).ok())
+            .map(String::from)
             .or_else(|| {
-                self.ws
-                    .roots()
-                    .first()
-                    .and_then(|r| crate::workspace::path_to_uri(r))
+                let root = self.ws.roots().first()?;
+                crate::workspace::path_to_uri(&root.join(QUERY_FILE))
             })
             .unwrap_or_default();
         let prefixes = self.ws.external_prefixes_for(&at);
@@ -252,8 +260,8 @@ impl Server {
         }
         let cancel = Arc::new(AtomicBool::new(false));
         job.limits.cancel = Some(cancel.clone());
-        let state = self.query_requests.clone();
-        state.insert(id.clone(), cancel);
+        let runs = self.query_requests.running.clone();
+        lock(&runs).insert(id.clone(), cancel);
         let out = self.client.sender();
         let done_id = id.clone();
         let started = self.spawn.run(
@@ -265,7 +273,7 @@ impl Server {
                 })
             },
             move |answer| {
-                state.remove(&done_id);
+                lock(&runs).remove(&done_id);
                 let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
                     Ok(json) => Out::Result { id: done_id, json },
                     Err((code, message)) => {
@@ -307,6 +315,17 @@ fn execute(job: &Job) -> Result<Value, (ErrorCode, String)> {
             Ok(v)
         }
         Err(QueryError::Cancelled) => Err((ErrorCode::RequestCanceled, "cancelled".into())),
+        // Only a base is missing: say so, not where the parser stopped.
+        Err(e @ QueryError::Syntax { .. })
+            if job.base.is_none() && query::parses(&job.text, Some(PROBE_BASE), &job.prefixes) =>
+        {
+            Err((
+                ErrorCode::InvalidParams,
+                format!(
+                    "{e}: a relative IRI needs a base: give `base`, or write BASE in the query"
+                ),
+            ))
+        }
         Err(
             e
             @ (QueryError::Syntax { .. } | QueryError::Unsupported(_) | QueryError::TooComplex(_)),
