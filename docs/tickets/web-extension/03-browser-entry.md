@@ -1,6 +1,6 @@
 # 03: Browser entry and build
 
-Status: in progress. Blocked by: 01, 02.
+Status: done. Blocked by: 01, 02.
 
 ## What to build
 
