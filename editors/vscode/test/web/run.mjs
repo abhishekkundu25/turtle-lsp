@@ -23,7 +23,9 @@ import { open } from "@vscode/test-web"
 const here = path.dirname(fileURLToPath(import.meta.url))
 const extension = path.resolve(here, "../..")
 const data = path.join(extension, ".vscode-test", "web")
-const suite = path.join(data, "suite.js")
+// Not inside `data`: test-web empties that folder when it downloads VS Code
+// (always on a fresh CI runner). Under the extension, which test-web serves.
+const suite = path.join(extension, ".vscode-test", "web-suite", "suite.js")
 const fixtures = path.resolve(here, "../fixtures/web")
 const TIMEOUT_MS = 100_000
 // Chrome profiles of this runner: <tmp>/turtle-web-test-<runner pid>-<random>.
