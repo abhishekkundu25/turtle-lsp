@@ -147,6 +147,14 @@ test("turtle/query over the workspace's files, with the prefixes of the root's p
   // the browser build knows only by its URI.
   assert.deepEqual(subjects(await c.request("turtle/query", { query: FEEDS })), ["http://example.org/p1", "http://example.org/p2"])
   assert.deepEqual(subjects(await c.request("turtle/query", { query: FEEDS, files: [`${ROOT}/more.nt`] })), ["http://example.org/p2"])
+  // ASK both ways, CONSTRUCT cut by maxRows, and a bad query as InvalidParams.
+  assert.equal((await c.request("turtle/query", { query: "ASK { ex:p2 ex:feeds ex:v2 }" })).result.boolean, true)
+  assert.equal((await c.request("turtle/query", { query: "ASK { ex:v2 ex:feeds ex:p2 }" })).result.boolean, false)
+  const built = (await c.request("turtle/query", { query: "CONSTRUCT WHERE { ?s ex:feeds ?o }", maxRows: 1 })).result
+  assert.deepEqual([built.kind, built.triples.length, built.omitted], ["construct", 1, 1])
+  assert.equal(built.triples[0].predicate.value, "http://example.org/feeds")
+  const bad = await c.request("turtle/query", { query: "SELEKT nothing" })
+  assert.equal(bad.error?.code, -32602, JSON.stringify(bad))
 })
 
 test("turtle/web/files never reaches the server, and a malformed one is ignored", { skip }, async () => {

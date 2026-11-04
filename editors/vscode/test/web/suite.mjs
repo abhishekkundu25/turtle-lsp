@@ -105,6 +105,12 @@ check("formatting returns edits for an unformatted file", async () => {
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor")
 })
 
+check("turtle/query, as another extension sends it, uses the root's prefixes.ttl", async () => {
+  const api = vscode.extensions.getExtension(EXTENSION).exports
+  const r = await api.client().sendRequest("turtle/query", { query: "SELECT ?c WHERE { ?c a owl:Class }" })
+  ok(r.kind === "select" && r.results.bindings.some((b) => b.c.value === "http://example.org/Thing"), `turtle/query: ${JSON.stringify(r)}`)
+})
+
 check("a SPARQL file has no Run query lens", async () => {
   const doc = await open("q.rq")
   // A hover answered shows the server has q.rq, so an empty lens list is the
