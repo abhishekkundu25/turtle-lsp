@@ -3,9 +3,8 @@
 // "build" script). The webview asks for `turtle/graph` over postMessage and
 // this side forwards it to the language server, opens definitions and hands
 // over the diagnostics of the files in each answer.
-import { randomBytes } from "node:crypto"
 import * as vscode from "vscode"
-import type { LanguageClient } from "vscode-languageclient/node"
+import type { BaseLanguageClient } from "vscode-languageclient"
 
 export const GRAPH_METHOD = "turtle/graph"
 export const SHOW_GRAPH = "turtle.showGraph"
@@ -15,7 +14,7 @@ const REFRESH_MS = 500
 const WATCHED = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}"
 
 /** Whether the server advertises the graph request (`experimental["turtle/graph"]`). */
-export function advertisesGraph(client: LanguageClient | undefined): boolean {
+export function advertisesGraph(client: BaseLanguageClient | undefined): boolean {
   return client?.initializeResult?.capabilities.experimental?.[GRAPH_METHOD] === true
 }
 
@@ -33,7 +32,7 @@ export interface GraphProbe {
 
 interface Host {
   context: vscode.ExtensionContext
-  client(): LanguageClient | undefined
+  client(): BaseLanguageClient | undefined
   served(doc: vscode.TextDocument): boolean
 }
 
@@ -165,7 +164,7 @@ async function reveal(uri: string, range: Range): Promise<void> {
 
 /** The webview's page: the bundled view and its styles, nothing inline but the nonce'd script tag. */
 function page(webview: vscode.Webview, root: vscode.Uri): string {
-  const nonce = randomBytes(16).toString("base64")
+  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))))
   const src = webview.cspSource
   const csp = `default-src 'none'; script-src ${src} 'nonce-${nonce}'; style-src ${src}; img-src ${src} data:; font-src ${src}`
   return `<!doctype html>

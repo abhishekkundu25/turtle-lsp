@@ -3,7 +3,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
-import { settingsFrom } from "../src/server.ts"
+import { settingsFrom } from "../src/client.ts"
 
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
 const settings = pkg.contributes.configuration.properties

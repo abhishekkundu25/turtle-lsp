@@ -3,7 +3,7 @@
 // configuration does), so the user's settings go inside that section.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { configurationChange } from "../src/server.ts"
+import { configurationChange } from "../src/client.ts"
 
 test("a settings change goes to the server as the turtle section of settings", () => {
   const settings = { format: { lineWidth: 80 }, imports: { network: false } }

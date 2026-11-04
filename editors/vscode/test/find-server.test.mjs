@@ -1,10 +1,11 @@
 // Which binary the extension runs, and how the language client is started and
-// restarted. Both live in src/server.ts, which does not import `vscode`, so
-// they run here with a stubbed file system and a fake client.
+// restarted. They live in src/server.ts and src/client.ts, which do not
+// import `vscode`, so they run here with a stubbed file system and a fake client.
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import path from "node:path"
-import { findServer, ServerHandle } from "../src/server.ts"
+import { findServer } from "../src/server.ts"
+import { ServerHandle } from "../src/client.ts"
 
 /** A file system holding exactly `files`. */
 const fsWith = (...files) => ({ existsSync: (p) => files.includes(p) })
