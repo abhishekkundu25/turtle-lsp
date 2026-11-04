@@ -1,6 +1,6 @@
 # 05: Web .vsix and release
 
-Status: todo. Blocked by: 03.
+Status: done. Blocked by: 03.
 
 ## What to build
 
