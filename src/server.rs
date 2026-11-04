@@ -1788,8 +1788,12 @@ impl Embedded {
         self.step(None)
     }
 
-    /// Milliseconds until the next timer, if one is pending.
+    /// Milliseconds until the next timer, if one is pending. None once
+    /// the session has ended: [`Embedded::tick`] would not run it.
     pub fn due_in_ms(&self) -> Option<f64> {
+        if self.ended {
+            return None;
+        }
         let due = self.server.next_due()?;
         Some(due.saturating_duration_since(Instant::now()).as_secs_f64() * 1000.0)
     }
@@ -1882,6 +1886,20 @@ mod tests {
             json!({"textDocument": {"uri": uri}}),
         );
         r.as_array().unwrap_or_else(|| panic!("{r}")).len()
+    }
+
+    #[test]
+    fn an_embedded_server_that_has_ended_has_no_timer_due() {
+        let mut e = embedded();
+        open(&mut e, "file:///w/a.ttl", "ex:s ex:p ex:o .\n");
+        assert!(
+            e.due_in_ms().is_some(),
+            "an open document has a timer pending"
+        );
+        ask(&mut e, 1, "shutdown", Value::Null);
+        assert!(e.ended);
+        assert_eq!(e.due_in_ms(), None);
+        assert!(e.tick().is_empty());
     }
 
     #[test]

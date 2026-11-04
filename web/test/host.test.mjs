@@ -106,6 +106,28 @@ test("a document that crashes the replay too is left out, and the server keeps w
   assert.equal(crashes.length, 1)
 })
 
+test("stop ends the server's timers: settle resolves and no step runs after it, however often it is called", async () => {
+  const real = await createEngine(wasm)
+  let ticks = 0
+  const engine = {
+    call(op, payload) {
+      if (op === "lsp_tick") ticks++
+      return real.call(op, payload)
+    },
+  }
+  const host = new EmbeddedServer(engine)
+  await host.initialize({ processId: null, rootUri: null, capabilities: {} })
+  host.notify("textDocument/didOpen", { textDocument: { uri: URI, languageId: "turtle", version: 1, text: TEXT } })
+  assert.ok(host.timer, "the open document has a timer pending")
+  const settled = host.settle()
+  host.stop()
+  host.stop()
+  await settled
+  await host.settle()
+  await new Promise((r) => setTimeout(r, 1500))
+  assert.equal(ticks, 0, "no timer ran after stop")
+})
+
 test("crashes that a restart does not stop (a timer) turn the server off instead of looping", async () => {
   const real = await createEngine(wasm)
   // Once armed, every timer step crashes, whatever is open, as a SHACL run
