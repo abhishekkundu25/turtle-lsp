@@ -1,0 +1,3 @@
+ex:widget a ex:Thing ;
+    rdfs:label "Widget" ;
+    ex:colour "red" .

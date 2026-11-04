@@ -1,0 +1,1 @@
+ex:gadget   a ex:Thing;rdfs:label    "Gadget".

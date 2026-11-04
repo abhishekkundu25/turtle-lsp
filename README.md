@@ -571,6 +571,30 @@ Other editors pass the server settings without the `turtle.` prefix, as
 init_options = { inlayHints = { labels = "all" }, format = { lineWidth = 80 } }
 ```
 
+### In the browser (vscode.dev, github.dev)
+
+The extension also runs in VS Code for the Web. There it starts the
+WebAssembly engine (`web/engine`) in a web worker instead of the binary,
+and sends it the workspace's RDF and SPARQL files, read through VS Code's
+file system API (on github.dev, the repository's files).
+
+The language features work as on the desktop, including cross-file
+features over those files, problems in files that are not open,
+`prefixes.ttl`, `turtle-lsp.json` at the root of the first folder, SHACL
+validation and the workspace graph. These do not:
+
+- ▶ Run query is not shown, as it writes its results to disk. The
+  `turtle/query` request still works.
+- `owl:imports` are not fetched; a web import stays unresolved, as offline.
+- At most 2,000 files and 50 MB of RDF are read; past either limit the
+  extension says how many files it read.
+- A workspace folder added after the start is read on the next restart
+  (Turtle: Restart Language Server).
+
+`turtle.server.path` does not apply in the browser; the other settings do.
+In `editors/vscode`, `VSCE_TARGET=web npm run package` builds the engine
+and writes `turtle-lsp-web-<version>.vsix`.
+
 ## Browser editor and toolbox
 
 The [browser editor](https://abhishekkundu25.github.io/turtle-lsp/) and its

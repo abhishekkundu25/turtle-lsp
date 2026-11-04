@@ -221,6 +221,20 @@ impl Server {
                 let root = self.ws.roots().first()?;
                 crate::workspace::path_to_uri(&root.join(QUERY_FILE))
             })
+            // The browser build has no paths: the folder as the client named it.
+            .or_else(|| {
+                let root = self.root_uris.first()?;
+                let dir = if root.ends_with('/') {
+                    root.clone()
+                } else {
+                    format!("{root}/")
+                };
+                url::Url::parse(&dir)
+                    .ok()?
+                    .join(QUERY_FILE)
+                    .ok()
+                    .map(String::from)
+            })
             .unwrap_or_default();
         let prefixes = self.ws.external_prefixes_for(&at);
         let job = Job {
