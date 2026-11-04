@@ -1,6 +1,6 @@
 # 04: Headless web test in CI
 
-Status: todo. Blocked by: 03.
+Status: done. Blocked by: 03.
 
 ## What to build
 
