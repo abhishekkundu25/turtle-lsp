@@ -1,0 +1,3 @@
+ex:Thing a owl:Class ;
+    rdfs:label "Thing" ;
+    rdfs:comment "Anything at all." .

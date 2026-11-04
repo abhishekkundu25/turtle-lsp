@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# @vscode/test-web depends on Playwright's Chromium, which its install script
+# would download in every job that installs editors/vscode; the tests use the
+# runner's Google Chrome. (package.json's allowScripts denies it too.)
+env:
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
 # A new push to a pull request supersedes the run before it (one group per
 # pull request, in progress canceled). A push to main gets a group of its own
 # commit: in a shared group GitHub cancels a *pending* run when a newer one
@@ -360,6 +366,13 @@ jobs:
       - name: Every web test (toolbox, editor, CSP, engine)
         timeout-minutes: 10
         run: node --test --test-concurrency=2 --test-force-exit --test-timeout=60000 "web/test/*.test.mjs"
+      # The extension's browser entry in VS Code for the Web, with the engine
+      # built above, in the same Google Chrome. Playwright's own Chromium is
+      # not used, so it is not downloaded.
+      - name: VS Code for the Web
+        working-directory: editors/vscode
+        timeout-minutes: 5
+        run: npm ci && npm run build && npm run test:web
 
   vscode:
     name: VS Code extension (${{ matrix.os }})
