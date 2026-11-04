@@ -60,7 +60,7 @@ Inside the larger modules, these files hold one part each:
 | `src/server/worker.rs` | `Spawn`, `spawn_guarded` and `Feed`: how jobs start and how their answers come back |
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
-| `src/server/{run_query,workspace_diagnostics}.rs` | "▶ Run query", and the diagnostics of files that are not open |
+| `src/server/{run_query,query_request,workspace_diagnostics}.rs` | "▶ Run query", the `turtle/query` request, and the diagnostics of files that are not open |
 
 ## One parse per document version
 
@@ -203,9 +203,14 @@ target classes.
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |
 | Workspace graph (`turtle/graph`) | `features::graph` | |
+| A query for another extension or tool (`turtle/query`) | `server::query_request` over `query::run` | |
 
-The workspace graph is the server's one custom request, listed under
-`experimental` capabilities. `features::graph` reads the knowledge index
+The workspace graph and `turtle/query` are the server's two custom
+requests, listed under `experimental` capabilities. `turtle/query` runs a
+query given as text over the workspace's documents, as "▶ Run query" does,
+and answers the results as JSON on a thread of its own; `$/cancelRequest`
+stops it. The thread holds only the map of runs, not the server's state, so
+`shutdown` and the end of the server stop every run. `features::graph` reads the knowledge index
 and changes nothing: the query, the filters, the cap and the Barnes-Hut
 layout. The client passes back the positions it has, so the server keeps
 no graph state. The native server answers it on a thread of its own over
