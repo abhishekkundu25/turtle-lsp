@@ -1,6 +1,6 @@
 # VS Code for the Web: the extension in vscode.dev and github.dev
 
-Status: in progress. Issue #52.
+Status: done. Issue #52.
 
 ## Problem Statement
 
@@ -208,6 +208,43 @@ Packaging and docs
   machine; the close-out records the figure and what bounds it.
 - The web `.vsix` is under 8 MB.
 
+## Measured
+
+At the close-out, on an Apple M6 with 12 cores and a load average of 1.8
+to 2.7 from desktop apps, VS Code for the Web stable through test-web and
+headless Google Chrome, each run with a new Chrome profile.
+
+- **The 201-file bench workspace: 1.36 s** from page load to the last
+  diagnostics published (median of 5 runs; min 1.35 s, max 1.49 s), well
+  under the 15 s budget. The workspace is `bench/perf.mjs`'s shared one: 200
+  files of 200 subjects and `big.ttl` of 5,000 subjects, 6.6 MB of Turtle.
+  The phases (medians, from the page load): the engine loaded at 0.79 s;
+  the extension active, client running, at 0.82 s; the 201 files found,
+  read with `vscode.workspace.fs` and sent at 0.89 s (about 65 ms of
+  reading, then one 6.6 MB message that the worker has within 1 ms); the
+  diagnostics of `f199.ttl`, never opened, in the Problems panel at 1.01 s
+  (the engine analyses the 200 `didOpen`s of the first notification in one
+  call of 100 to 116 ms); the last diagnostics at 1.36 s. Every file read
+  showed its `unused-prefix` hint, no editor was open, and the bytes sent
+  equal the workspace's 6,619,137.
+  What bounds it: 0.79 s goes to VS Code's own start (workbench, extension
+  host, worker and engine load) before the extension does anything. Of the
+  0.55 s after that, 300 ms is a timer: the 201 files change the set of
+  described terms, so the server waits `DESCRIBED_DEBOUNCE` (300 ms,
+  `src/server.rs`) and diagnoses every file again (45 to 55 ms, a second
+  `publishDiagnostics` for each file). The rest is the engine's analysis on
+  the worker's single thread. The test mount serves the files from a local
+  server; on github.dev the reads go over the network and were not
+  measured.
+- **The web `.vsix`: 3.40 MB** (budget 8 MB), nearly all of it the engine;
+  the darwin-arm64 `.vsix` is 5.95 MB.
+- **The engine: 3.05 MB gzipped**, within the unchanged budget of 3.10 MB
+  (`WASM_GZIP_BUDGET` in `web/build.mjs`); the extension adds no Rust code
+  to it beyond the `Embedded` timer fix.
+- **First diagnostics in the headless web test: about 30 ms** after opening
+  the first file (budget 10 s), as the server has the fixture files from
+  disk before the editor opens one.
+
 ## Out of Scope
 
 - Run query in the browser (it writes its results to the cache folder); a
@@ -225,3 +262,28 @@ Packaging and docs
 - `web/app/lsp-host.js` and `web/app/engine.js` stay in `web/app`; the
   extension's bundler includes them. A fix to either reaches both hosts.
 - The RDF Editor's tests are unaffected: its files do not change.
+
+## Departures
+
+What the implementation did differently from the plan above.
+
+- Shared activation: "served" is `vscode.languages.match` against the document selector, so a wider browser selector also widens the start on open and the graph refresh.
+- The worker's protocol code is in `src/web/handler.ts`, testable without a Worker; `src/web/worker.ts` is 27 lines.
+- One Rust change: `Embedded::due_in_ms` returns `None` once the server has ended, and `EmbeddedServer` gained `stop()` (`web/app/lsp-host.js`), so the host stops ticking after `shutdown`.
+- VS Code for the Web runs an extension's worker as a `blob:` worker, so the browser entry's first message to the worker is the engine's URL.
+- The browser client drops the pull-diagnostics capability, so the server pushes the problems of files never opened.
+- The extension, not the server, reads `turtle-lsp.json` in the browser, and copies the native rules for it (`settingsFile` in `src/client.ts`).
+- Hover's "Described in" links carried the server's `file:///workspace/<n>/` URIs; `src/web/uris.ts` now maps URIs inside prose coming out and leaves document content alone.
+- The headless test serves VS Code for the Web with test-web (browser "none") and opens installed Google Chrome through Playwright's `chrome` channel; `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` (workflow-wide in `ci.yml`) and `allowScripts` keep Playwright from downloading browsers.
+- `.vscodeignore` needed no change; a platform `.vsix` drops `out/web/engine.wasm` after the build. The release's `web` job restores no Rust cache, and a smoke step unpacks the web `.vsix`, checks its files and loads the engine in Node.
+
+## Follow-ups
+
+- `src/web/handler.ts` repeats the queue and batching of `web/app/lsp-worker.js`; one queue module in `web/app` could serve both.
+- After a crash that ends "dropped" or "off", the layers still count those documents as on the server.
+- Files read from disk open with languageId `""`, so a language mode chosen later in the editor does not reach the server.
+- `Embedded` could take `turtle-lsp.json` as `Layer::File`; then `settingsFile` in `src/client.ts` goes.
+- The files of a deleted workspace folder stay on the server until a restart.
+- The file system watcher is not tested in the browser: the test-web mount reports no changes.
+- The wasm build warns about thread-only code of `turtle/query` (#74).
+- `tests/w3c_sparql.rs` `iri_name_and_less_than_boundaries_agree_with_spargebra` prints "skipped" without `test/corpus` and then fails; without the corpus it should skip unless `CI=true`.

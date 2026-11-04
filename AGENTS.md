@@ -55,6 +55,7 @@ timeout 120 node --test --test-timeout=30000 test/cli.test.mjs
 timeout 120 npm run test:latency                           # wall-clock checks, one at a time
 node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engine.test.mjs
 (cd editors/vscode && timeout 120 node --test test/*.test.mjs)
+(cd editors/vscode && npm run build && timeout 120 npm run test:web)  # the browser entry in VS Code for the Web; needs web/build.mjs first and Google Chrome
 ```
 
 - Name a wall-clock lib test `timing_…`: CI runs those serially, apart

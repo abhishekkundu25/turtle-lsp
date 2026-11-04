@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The VS Code extension runs in VS Code for the Web** (vscode.dev,
+  github.dev) (#52). The server runs as the WebAssembly engine in a web
+  worker, and the extension sends it the workspace's RDF and SPARQL files,
+  at most 2,000 files and 50 MB, so cross-file features, problems in files
+  that are not open, `prefixes.ttl`, `turtle-lsp.json`, SHACL and the
+  workspace graph work as on the desktop. ▶ Run query is not shown and
+  `owl:imports` are not fetched. The release publishes a web `.vsix`
+  (3.4 MB) beside the platform ones.
+
 ## 0.14.0 — 2026-11-04
 
 ### Added
