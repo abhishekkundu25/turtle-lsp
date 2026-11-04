@@ -1,6 +1,6 @@
 # 02: Server worker
 
-Status: todo. Blocked by: none.
+Status: done. Blocked by: none.
 
 ## What to build
 
