@@ -75,7 +75,7 @@
     },
     "virtualWorkspaces": {
       "supported": "limited",
-      "description": "In a virtual workspace (vscode.dev, github.dev) the language server runs in the browser: Run query is off, owl:imports are not fetched, and past 2,000 files or 50 MB of RDF the rest of the workspace is not read."
+      "description": "In the browser (vscode.dev, github.dev) the language server runs in the page: Run query is off, owl:imports are not fetched, and past 2,000 files or 50 MB of RDF the rest of the workspace is not read. VS Code on the desktop needs the folder on disk: clone it, or open it in vscode.dev or github.dev."
     }
   },
   "contributes": {
