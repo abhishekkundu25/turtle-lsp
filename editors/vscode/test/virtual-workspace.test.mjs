@@ -65,3 +65,11 @@ test("several virtual folders are named together, each scheme once", () => {
   // The first virtual folder is the one offered.
   assert.equal(plan.notice.browserUrl, "https://vscode.dev/github/ex/a")
 })
+
+test("a virtual window that gains a folder on disk runs the server, and loses it again", () => {
+  const vfs = { scheme: "vscode-vfs", authority: "github", path: "/owner/repo", name: "repo" }
+  const disk = { scheme: "file", authority: "", path: "/home/u/data", name: "data" }
+  assert.equal(planWorkspace([vfs]).runServer, false)
+  assert.equal(planWorkspace([vfs, disk]).runServer, true)
+  assert.equal(planWorkspace([vfs]).runServer, false)
+})

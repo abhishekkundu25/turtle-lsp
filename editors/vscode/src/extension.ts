@@ -51,22 +51,29 @@ async function showVirtualNotice(notice: VirtualNotice): Promise<void> {
   else if (choice === browser) await vscode.env.openExternal(vscode.Uri.parse(notice.browserUrl))
 }
 
+/** The plan for the window's folders as they are now. */
+const currentPlan = () =>
+  planWorkspace((vscode.workspace.workspaceFolders ?? []).map((f) => ({ scheme: f.uri.scheme, authority: f.uri.authority, path: f.uri.path, name: f.name })))
+
 export function activate(context: vscode.ExtensionContext): Promise<TurtleApi> {
   // A virtual workspace (GitHub Repositories) has no files on disk for the
-  // binary: say so when an RDF document there is open, or opens.
-  const plan = planWorkspace(
-    (vscode.workspace.workspaceFolders ?? []).map((f) => ({ scheme: f.uri.scheme, authority: f.uri.authority, path: f.uri.path, name: f.name })),
-  )
-  const notice = plan.notice
-  if (notice) {
-    const unserved = documentSelector(plan.unserved)
-    const tell = (doc: vscode.TextDocument): void => {
-      if (vscode.languages.match(unserved, doc) > 0) void showVirtualNotice(notice)
-    }
-    vscode.workspace.textDocuments.forEach(tell)
-    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(tell))
+  // binary: say so when an RDF document there is open, or opens. The plan
+  // follows the folders: each start uses it as it is then, and a change that
+  // turns the server on or off restarts it.
+  let plan = currentPlan()
+  const tell = (doc: vscode.TextDocument): void => {
+    const notice = plan.notice
+    if (notice && vscode.languages.match(documentSelector(plan.unserved), doc) > 0) void showVirtualNotice(notice)
   }
+  vscode.workspace.textDocuments.forEach(tell)
   context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(tell),
+    vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+      const before = plan.runServer
+      plan = currentPlan()
+      vscode.workspace.textDocuments.forEach(tell)
+      if (plan.runServer !== before) await vscode.commands.executeCommand("turtle.restartServer")
+    }),
     vscode.workspace.onDidChangeConfiguration(async (e) => {
       if (e.affectsConfiguration("turtle.server.path")) {
         await vscode.commands.executeCommand("turtle.restartServer")
@@ -76,8 +83,9 @@ export function activate(context: vscode.ExtensionContext): Promise<TurtleApi> {
   return shared.activate(context, {
     documentSelector: documentSelector(["file", "untitled"]),
     createClient: (options) => {
+      plan = currentPlan()
       if (!plan.runServer) {
-        if (notice) void showVirtualNotice(notice)
+        if (plan.notice) void showVirtualNotice(plan.notice)
         return undefined
       }
       const command = findCommand(context)
