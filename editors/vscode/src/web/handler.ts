@@ -9,7 +9,8 @@
 // - Document notifications and the extension's `turtle/web/files` go through
 //   the disk and editor layers (layers.ts); `turtle/web/files` never reaches
 //   the server.
-// - Every URI is mapped both ways (uris.ts), the `initialize` params' too.
+// - Every URI is mapped both ways (uris.ts), the `initialize` params' and
+//   error messages' too.
 // - Server requests (refreshes, progress, registrations, configuration) are
 //   answered by the host at once with null, as in the RDF Editor, and
 //   forwarded to the client under fresh ids. The client's answers are
@@ -204,7 +205,7 @@ export function createHandler(engine: Engine | Promise<Engine>, post: (message: 
           answers.push(
             server.request(method, uris.toServer(item.params)).then(
               (result) => respond(id, { result: layers.forClient(uris.toClient(result ?? null)) }),
-              (err: { code?: number; message?: string }) => fail(id, err?.code ?? ErrorCodes.InternalError, String(err?.message ?? err)),
+              (err: { code?: number; message?: string }) => fail(id, err?.code ?? ErrorCodes.InternalError, uris.toClient({ message: String(err?.message ?? err) }).message),
             ),
           )
         }

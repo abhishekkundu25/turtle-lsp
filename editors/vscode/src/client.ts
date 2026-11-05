@@ -54,6 +54,17 @@ export interface SettingsSource {
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 
+/**
+ * Keys no setting has and that, assigned or descended into, reach an object's
+ * prototype. `JSON.parse` keeps `"__proto__"` as an own key, and a
+ * `turtle-lsp.json` or a workspace's settings come from any repository, so
+ * the settings code skips these wherever it reads a key.
+ */
+const isUnsafeKey = (k: string): boolean => k === "__proto__" || k === "constructor" || k === "prototype"
+
+/** `o`'s own entries without the unsafe keys. */
+const entries = (o: Record<string, unknown>): [string, unknown][] => Object.entries(o).filter(([k]) => !isUnsafeKey(k))
+
 /** The `turtle.*` settings that belong to the editor, not the server. */
 const isClientSetting = (key: string): boolean => key.startsWith("server.") || key.startsWith("trace.")
 
@@ -77,7 +88,7 @@ export function settingsFrom(src: SettingsSource): Record<string, unknown> {
     const set = layers.filter((v) => v !== undefined)
     if (set.length === 0) continue
     // Objects (the prefixes) merge across scopes; anything else takes the narrowest.
-    const value = set.every(isObject) ? Object.assign({}, ...set) : set[set.length - 1]
+    const value = set.every(isObject) ? Object.fromEntries(set.flatMap(entries)) : set[set.length - 1]
     put(out, key.split("."), value)
   }
   if (!src.trusted) put(out, ["imports", "network"], false)
@@ -110,15 +121,16 @@ const FILE_LIMITS = ["query.timeoutSeconds", "query.maxRows", "query.maxBuffered
 export function settingsFile(file: Record<string, unknown>, defaultOf: (key: string) => unknown): { settings: Record<string, unknown>; ignored: string[] } {
   const settings: Record<string, unknown> = {}
   const walk = (o: Record<string, unknown>, at: string[]): void => {
-    for (const [k, v] of Object.entries(o)) {
+    for (const [k, v] of entries(o)) {
       const path = [...at, ...k.split(".")]
+      if (path.some(isUnsafeKey)) continue
       if (path[0] === "turtle") path.shift()
       if (path.length === 0) {
         if (isObject(v)) walk(v, [])
       } else if (path[0] === "prefixes") {
         // A prefix name may hold dots; a prefixes object is one value.
         if (path.length > 1) put(settings, ["prefixes", path.slice(1).join(".")], v)
-        else if (isObject(v)) for (const [name, iri] of Object.entries(v)) put(settings, ["prefixes", name], iri)
+        else if (isObject(v)) for (const [name, iri] of entries(v)) put(settings, ["prefixes", name], iri)
       } else if (isObject(v)) walk(v, path)
       else put(settings, path, v)
     }
@@ -150,9 +162,9 @@ export function settingsFile(file: Record<string, unknown>, defaultOf: (key: str
  * lint lists add up, and `prefixes` set in `over` replaces the whole map.
  */
 export function layered(under: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...under }
-  for (const [k, v] of Object.entries(over)) {
-    const below = out[k]
+  const out: Record<string, unknown> = Object.fromEntries(entries(under))
+  for (const [k, v] of entries(over)) {
+    const below = Object.hasOwn(out, k) ? out[k] : undefined
     if (k !== "prefixes" && isObject(v) && isObject(below)) out[k] = layered(below, v)
     else if (Array.isArray(v) && Array.isArray(below)) out[k] = [...new Set([...below, ...v])]
     else out[k] = v
@@ -160,10 +172,12 @@ export function layered(under: Record<string, unknown>, over: Record<string, unk
   return out
 }
 
+/** Sets `value` at `path` in `target`, making the objects on the way; a path with an unsafe key sets nothing. */
 function put(target: Record<string, unknown>, path: string[], value: unknown): void {
+  if (path.some(isUnsafeKey)) return
   let at = target
   for (const step of path.slice(0, -1)) {
-    const next = at[step]
+    const next = Object.hasOwn(at, step) ? at[step] : undefined
     at = isObject(next) ? next : (at[step] = {})
   }
   at[path[path.length - 1]] = value

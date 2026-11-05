@@ -1,4 +1,4 @@
-// Which server binary the desktop extension runs. It does not import
+// Whether the desktop extension runs a server, and which binary. It does not import
 // `vscode`, so Node tests it directly (test/find-server.test.mjs).
 import * as nodePath from "node:path"
 
@@ -83,4 +83,76 @@ export function findServer(opts: FindServerOptions): FoundServer {
     if (opts.fs.existsSync(file) && !refused(file)) return { command: file }
   }
   return { error: NOT_FOUND }
+}
+
+// ---------------------------------------------------------------------------
+// Virtual workspaces
+
+/** A workspace folder's URI, in parts (`vscode.Uri` fields). */
+export interface FolderUri {
+  scheme: string
+  authority: string
+  path: string
+  /** The folder's name in the workspace. */
+  name: string
+}
+
+/** What to tell the user about folders the desktop server cannot read. */
+export interface VirtualNotice {
+  message: string
+  /** Passed to `git.clone`: the repository's clone URL, when known. */
+  cloneUrl?: string
+  /** Where the folder opens in the browser, whose entry serves virtual files. */
+  browserUrl: string
+}
+
+export interface WorkspacePlan {
+  /** Whether to run the native server (for the `file` folders and untitled documents). */
+  runServer: boolean
+  /** The schemes of the folders the server does not read; empty when none. */
+  unserved: string[]
+  notice?: VirtualNotice
+}
+
+/** The repository host of a GitHub Repositories or Azure Repos folder (`vscode-vfs://github+ref/owner/repo`). */
+function vfsHost(folder: FolderUri): string | undefined {
+  if (folder.scheme !== "vscode-vfs") return undefined
+  const host = folder.authority.split("+")[0]
+  return host === "github" || host === "azurerepos" ? host : undefined
+}
+
+/**
+ * Whether the desktop entry runs its server, from the workspace folders as
+ * its extension host sees them. The binary reads files from disk, which a
+ * folder on a virtual file system (`vscode-vfs:` for GitHub Repositories) is
+ * not. Remote windows (SSH, WSL, containers, Codespaces) run this entry on
+ * the remote machine, where their folders are `file:` URIs, so they count as
+ * on disk.
+ *
+ * - No folders, or every folder `file:`: run the server, say nothing.
+ * - Every folder virtual: no server, not even for untitled documents (they
+ *   would check without the workspace around them); say the folder must be
+ *   on disk.
+ * - Some of each: run the server for the `file:` folders and untitled
+ *   documents; say the virtual folders are not checked.
+ */
+export function planWorkspace(folders: readonly FolderUri[]): WorkspacePlan {
+  const virtual = folders.filter((f) => f.scheme !== "file")
+  if (virtual.length === 0) return { runServer: true, unserved: [] }
+  const first = virtual[0]
+  const host = vfsHost(first)
+  const repo = first.path.replace(/^\/+|\/+$/g, "")
+  const cloneUrl = host === "github" && /^[^/]+\/[^/]+$/.test(repo) ? `https://github.com/${repo}.git` : undefined
+  const browserUrl = host && repo ? `https://vscode.dev/${host}/${repo}` : "https://vscode.dev"
+  const all = virtual.length === folders.length
+  const names = virtual.map((f) => f.name).join(", ")
+  const one = virtual.length === 1
+  const [it, folder, is] = one ? ["it", "folder", "is"] : ["them", "folders", "are"]
+  const why = all ? `Turtle features need the ${folder} on disk.` : `Turtle features need the ${folder} on disk, so ${names} ${is} not checked.`
+  const message = `${why} Clone ${it}, or open ${it} in vscode.dev or github.dev, where they run in the browser.`
+  return {
+    runServer: !all,
+    unserved: [...new Set(virtual.map((f) => f.scheme))],
+    notice: { message, browserUrl, ...(cloneUrl ? { cloneUrl } : {}) },
+  }
 }

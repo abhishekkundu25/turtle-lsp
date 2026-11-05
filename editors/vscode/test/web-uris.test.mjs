@@ -25,12 +25,42 @@ test("a server URI inside prose (a hover's link) is the client's", () => {
   const hover = (root) => ({ contents: { kind: "markdown", value: `**ex:a**\n\n_Described in [b.ttl:1](${root}/b.ttl#L1) and [c.ttl](${root}/c.ttl)_` } })
   assert.deepEqual(map.toClient(hover(S)), hover(REPO))
   const two = uriMap(["vscode-vfs://github/o/one", "vscode-vfs://github/o/two"])
-  const tenth = "see file:///workspace/10/x.ttl"
-  assert.equal(uriMap(Array.from({ length: 2 }, (_, i) => `vscode-vfs://github/o/r${i}`)).toClient(tenth), tenth)
-  assert.equal(two.toClient("in file:///workspace/1/x.ttl"), "in vscode-vfs://github/o/two/x.ttl")
+  const tenth = { message: "see file:///workspace/10/x.ttl" }
+  assert.deepEqual(uriMap(Array.from({ length: 2 }, (_, i) => `vscode-vfs://github/o/r${i}`)).toClient(tenth), tenth)
+  assert.deepEqual(two.toClient({ message: "in file:///workspace/1/x.ttl" }), { message: "in vscode-vfs://github/o/two/x.ttl" })
   // Document content stays as written, even with a server URI in it.
   const edit = { changes: { [`${S}/a.ttl`]: [{ range, newText: `<${S}/b.ttl> a ex:C .` }] } }
   assert.deepEqual(map.toClient(edit), { changes: { [`${REPO}/a.ttl`]: [{ range, newText: `<${S}/b.ttl> a ex:C .` }] } })
+})
+
+test("a diagnostic's message, a shown message and an inlay hint's tooltip are prose", () => {
+  const diag = (root) => ({ uri: `${root}/a.ttl`, diagnostics: [{ range, message: `Import <http://example.org/o> names ${root}/o.ttl: not found` }] })
+  assert.deepEqual(map.toClient(diag(S)), diag(REPO))
+  assert.deepEqual(map.toClient({ type: 1, message: `cannot read ${S}/b.ttl` }), { type: 1, message: `cannot read ${REPO}/b.ttl` })
+  assert.deepEqual(map.toClient([{ position: range.start, label: "x", tooltip: `<${S}/b.ttl#x>` }]), [{ position: range.start, label: "x", tooltip: `<${REPO}/b.ttl#x>` }])
+})
+
+test("any other string is mapped only when it is a URI as a whole", () => {
+  const item = { label: `${S}/b.ttl#x`, detail: `"see ${S}/a.ttl"`, documentation: { kind: "markdown", value: `[b](${S}/b.ttl)` } }
+  assert.deepEqual(map.toClient(item), { label: `${REPO}/b.ttl#x`, detail: `"see ${S}/a.ttl"`, documentation: { kind: "markdown", value: `[b](${REPO}/b.ttl)` } })
+})
+
+test("turtle/query terms: a uri term is mapped, literals and blank nodes never", () => {
+  const select = (root) => ({
+    kind: "select",
+    head: { vars: ["s", "o"] },
+    results: {
+      bindings: [
+        { s: { type: "uri", value: `${root}/a.ttl#x` }, o: { type: "literal", value: `see ${S}/x` } },
+        { s: { type: "bnode", value: `${S}/b` }, o: { type: "literal", value: `${S}/x`, datatype: "http://www.w3.org/2001/XMLSchema#anyURI" } },
+      ],
+    },
+    omitted: 0,
+    elapsedMs: 1,
+  })
+  assert.deepEqual(map.toClient(select(S)), select(REPO))
+  const construct = (root) => ({ kind: "construct", triples: [{ subject: { type: "uri", value: `${root}/a.ttl#x` }, predicate: { type: "uri", value: "http://example.org/p" }, object: { type: "literal", value: `${S}/a.ttl`, "xml:lang": "en" } }] })
+  assert.deepEqual(map.toClient(construct(S)), construct(REPO))
 })
 
 test("a definition answer, as locations and as location links", () => {
@@ -100,4 +130,11 @@ test("the message given is not changed", () => {
   const m = { uri: `${REPO}/a.ttl` }
   map.toServer(m)
   assert.deepEqual(m, { uri: `${REPO}/a.ttl` })
+})
+
+test("a literal keeps its value, and its datatype IRI is mapped", () => {
+  const term = (root) => ({ type: "literal", value: `see ${S}/a.ttl`, datatype: `${root}/myType` })
+  assert.deepEqual(map.toClient({ results: { bindings: [{ v: term(S) }] } }), { results: { bindings: [{ v: { ...term(REPO), value: `see ${S}/a.ttl` } }] } })
+  const plain = { type: "literal", value: "5", datatype: "http://www.w3.org/2001/XMLSchema#integer" }
+  assert.deepEqual(map.toClient(plain), plain)
 })
