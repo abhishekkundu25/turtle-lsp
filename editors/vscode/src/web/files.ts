@@ -1,33 +1,33 @@
 // The workspace's RDF files for the server worker, which has no disk: found
 // with the extension's glob, read with `vscode.workspace.fs`, sent as
 // `turtle/web/files` (handler.ts), and kept current with a file system
-// watcher. Every read is checked here (unreadable, not UTF-8, past the caps);
-// the worker trusts what it is sent.
+// watcher. Every read is checked here (unreadable, not UTF-8, past the caps;
+// the caps from each file's size before it is read, budget.ts); the worker
+// trusts what it is sent.
 import * as vscode from "vscode"
 import { RDF_GLOB } from "../client"
+import { gather, type Io, type Room } from "./budget"
 import type { WorkspaceFiles } from "./handler"
 
 /** At most this many files are read... */
 export const MAX_FILES = 2000
 /** ...and this many bytes of text in all. */
 export const MAX_BYTES = 50 * 1024 * 1024
-/** Files per notification, so no one message stalls the worker. */
-const CHUNK = 200
+const MB = MAX_BYTES / 1024 / 1024
 const EXCLUDE = "**/node_modules/**"
 
 const utf8 = new TextDecoder("utf-8", { fatal: true })
 
-/** `uri`'s text, or undefined when it cannot be read or is not UTF-8. */
-async function read(uri: vscode.Uri): Promise<{ text: string; bytes: number } | undefined> {
-  try {
+const io: Io<vscode.Uri> = {
+  size: async (uri) => (await vscode.workspace.fs.stat(uri)).size,
+  async read(uri) {
     const bytes = await vscode.workspace.fs.readFile(uri)
     return { text: utf8.decode(bytes), bytes: bytes.byteLength }
-  } catch {
-    return undefined
-  }
+  },
 }
 
 const count = (n: number): string => n.toLocaleString("en-US")
+const files = (n: number): string => `${count(n)} ${n === 1 ? "file" : "files"}`
 const inNodeModules = (uri: vscode.Uri): boolean => uri.path.split("/").includes("node_modules")
 
 export interface WorkspaceFileSync extends vscode.Disposable {
@@ -49,8 +49,13 @@ export function workspaceFileSync(send: (files: WorkspaceFiles) => Promise<void>
   let tail: Promise<void> = Promise.resolve()
   const enqueue = (step: () => Promise<void>): Promise<void> => (tail = tail.then(step).catch(() => {}))
 
-  const fits = (uri: string, size: number): boolean =>
-    sent.has(uri) ? bytes - sent.get(uri)! + size <= MAX_BYTES : sent.size < MAX_FILES && bytes + size <= MAX_BYTES
+  // What is left of the caps for `uri`, counting what it already takes.
+  const roomFor = (uri: string): Room => {
+    const own = sent.get(uri)
+    return own === undefined
+      ? { files: MAX_FILES - sent.size, bytes: MAX_BYTES - bytes }
+      : { files: MAX_FILES - sent.size + 1, bytes: MAX_BYTES - bytes + own }
+  }
   const record = (uri: string, size: number): void => {
     bytes += size - (sent.get(uri) ?? 0)
     sent.set(uri, size)
@@ -64,48 +69,41 @@ export function workspaceFileSync(send: (files: WorkspaceFiles) => Promise<void>
     sent.clear()
     bytes = 0
     const found = await vscode.workspace.findFiles(RDF_GLOB, EXCLUDE)
-    let unreadable = 0
-    let capped = false
     let first = true
-    for (let i = 0; i < found.length && !capped; i += CHUNK) {
-      const chunk = found.slice(i, i + CHUNK)
-      const texts = await Promise.all(chunk.map(read))
-      const changed: WorkspaceFiles["changed"] = []
-      for (const [j, file] of texts.entries()) {
-        const uri = chunk[j].toString()
-        if (!file) unreadable++
-        else if (!fits(uri, file.bytes)) {
-          capped = true
-          break
-        } else {
-          record(uri, file.bytes)
-          changed.push({ uri, text: file.text })
-        }
-      }
+    const tally = await gather(found, io, { files: MAX_FILES, bytes: MAX_BYTES }, async (batch) => {
+      const changed = batch.map((file) => {
+        const uri = file.uri.toString()
+        record(uri, file.bytes)
+        return { uri, text: file.text }
+      })
       await send({ ...(first ? folders() : {}), changed, deleted: [] })
       first = false
-    }
+    })
     if (first) await send({ ...folders(), changed: [], deleted: [] })
-    if (told || (!capped && unreadable === 0)) return
+    const capped = tally.tooMany + tally.tooBig
+    if (told || (capped === 0 && tally.unreadable === 0)) return
     told = true
     const parts: string[] = []
     if (capped) {
+      const why: string[] = []
+      if (tally.tooMany) why.push(`${files(tally.tooMany)} past the ${count(MAX_FILES)}-file limit`)
+      if (tally.tooBig) why.push(`${files(tally.tooBig)} too large for what was left of the ${MB} MB limit`)
       parts.push(
-        `Turtle read ${count(sent.size)} of the workspace's ${count(found.length)} RDF files: in the browser it reads at most ${count(MAX_FILES)} files and ${MAX_BYTES / 1024 / 1024} MB, and the rest are not checked or found by references.`,
+        `Turtle read ${count(tally.read)} of the workspace's ${count(found.length)} RDF files: in the browser it reads at most ${count(MAX_FILES)} files and ${MB} MB of text. It skipped ${why.join(" and ")}; they are not checked or found by references.`,
       )
     }
-    if (unreadable) parts.push(`${unreadable} ${unreadable === 1 ? "file" : "files"} could not be read as UTF-8 text and ${unreadable === 1 ? "was" : "were"} skipped.`)
+    if (tally.unreadable) parts.push(`${files(tally.unreadable)} could not be read as UTF-8 text and ${tally.unreadable === 1 ? "was" : "were"} skipped.`)
     void vscode.window.showInformationMessage(parts.join(" "))
   }
 
   async function changed(uri: vscode.Uri): Promise<void> {
     if (inNodeModules(uri)) return
     const key = uri.toString()
-    const file = await read(uri)
-    if (file && fits(key, file.bytes)) {
+    const tally = await gather([uri], io, roomFor(key), async ([file]) => {
       record(key, file.bytes)
       await send({ changed: [{ uri: key, text: file.text }], deleted: [] })
-    } else if (sent.has(key)) {
+    })
+    if (tally.read === 0 && sent.has(key)) {
       // No longer readable or past the cap: the server forgets it rather than keep stale text.
       forget(key)
       await send({ changed: [], deleted: [key] })
