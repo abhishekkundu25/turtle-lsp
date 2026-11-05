@@ -254,3 +254,17 @@ test("turtle/query answers: a literal holding a server URI stays as stored, a re
   const missing = await c.request("turtle/query", { query: "ASK {}", files: [`${ROOT}/missing.ttl`] })
   assert.match(missing.error?.message ?? "", /not a workspace document: vscode-test-web:\/\/mount\/missing\.ttl/, JSON.stringify(missing))
 })
+
+test("a file opened before prefixes.ttl arrives is checked again with its prefixes", { skip }, async () => {
+  const c = await client()
+  await initialize(c)
+  const a = `${ROOT}/a.ttl`
+  const text = "ex:x a ex:Thing .\n"
+  c.open(a, text)
+  await c.handler.idle()
+  const undeclared = () => (c.diagnostics(a) ?? []).filter((d) => d.code === "undeclared-prefix")
+  assert.ok(undeclared().length > 0, "without prefixes.ttl, ex: is undeclared")
+  c.notify("turtle/web/files", { workspaceFolders: [ROOT], changed: [{ uri: `${ROOT}/prefixes.ttl`, text: "@prefix ex: <http://example.org/> .\n" }], deleted: [] })
+  await c.handler.idle()
+  assert.deepEqual(undeclared(), [], JSON.stringify(c.diagnostics(a)))
+})

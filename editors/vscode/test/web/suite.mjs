@@ -60,11 +60,20 @@ check("activates in the browser with its server running", async () => {
 check(`diagnostics on an open headerless file within ${FIRST_DIAGNOSTICS_MS / 1000} s, prefixes.ttl honoured`, async () => {
   const start = Date.now()
   const doc = await open("a.ttl")
-  const expected = ["undescribed-term", "undeclared-prefix"]
-  const diags = await until("a.ttl's diagnostics", () => vscode.languages.getDiagnostics(doc.uri), (d) => d.some((x) => expected.includes(codeOf(x))), FIRST_DIAGNOSTICS_MS)
-  console.log(`# first diagnostics ${Date.now() - start} ms after opening a.ttl, ${Date.now() - loaded} ms after the suite started`)
-  const undeclared = diags.filter((d) => codeOf(d) === "undeclared-prefix")
-  ok(undeclared.length === 0, `prefixes.ttl not honoured: ${fmt(undeclared)}`)
+  // The first diagnostics may come before prefixes.ttl has been read (the
+  // extension sends the workspace's files after the client starts); a.ttl
+  // is checked again when it arrives. Wait for that settled state: the
+  // expected hint, and no undeclared prefix.
+  const settled = (d) => d.some((x) => codeOf(x) === "undescribed-term") && !d.some((x) => codeOf(x) === "undeclared-prefix")
+  let diags
+  try {
+    diags = await until("a.ttl's diagnostics with prefixes.ttl read", () => vscode.languages.getDiagnostics(doc.uri), settled, FIRST_DIAGNOSTICS_MS)
+  } catch (e) {
+    const undeclared = vscode.languages.getDiagnostics(doc.uri).filter((d) => codeOf(d) === "undeclared-prefix")
+    ok(undeclared.length === 0, `prefixes.ttl not honoured within ${FIRST_DIAGNOSTICS_MS} ms: ${fmt(undeclared)}`)
+    throw e
+  }
+  console.log(`# diagnostics with prefixes.ttl ${Date.now() - start} ms after opening a.ttl, ${Date.now() - loaded} ms after the suite started (${diags.length})`)
 })
 
 check("hover on ex:Thing shows its type and comment from b.ttl", async () => {
