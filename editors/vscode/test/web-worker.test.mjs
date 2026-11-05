@@ -10,6 +10,9 @@ import { createEngine } from "../../../web/app/engine.js"
 import { createHandler } from "../src/web/handler.ts"
 
 const WASM = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "web", "app", "engine.wasm")
+// Skipped without the engine, except where it must be there: CI's Browser job
+// builds it and sets TURTLE_REQUIRE_ENGINE=1, so a missing engine fails there.
+if (!fs.existsSync(WASM) && process.env.TURTLE_REQUIRE_ENGINE === "1") throw new Error(`${WASM} is missing and TURTLE_REQUIRE_ENGINE=1`)
 const skip = fs.existsSync(WASM) ? false : `${WASM} is missing: build it with \`node web/build.mjs\``
 const bytes = skip ? null : fs.readFileSync(WASM)
 

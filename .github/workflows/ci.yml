@@ -373,6 +373,14 @@ jobs:
         working-directory: editors/vscode
         timeout-minutes: 5
         run: npm ci && npm run build && npm run test:web
+      # The worker tests drive the server worker on the engine built above;
+      # the VS Code job has no engine, so they skip there and must run here.
+      - name: Server worker tests
+        working-directory: editors/vscode
+        timeout-minutes: 3
+        env:
+          TURTLE_REQUIRE_ENGINE: "1"
+        run: node --test --test-timeout=60000 test/web-worker.test.mjs
 
   vscode:
     name: VS Code extension (${{ matrix.os }})
