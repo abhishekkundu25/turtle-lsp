@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **In the browser, a repository's `turtle-lsp.json` can no longer change
+  shared JavaScript state.** A `__proto__` key in the file reached
+  `Object.prototype` in the web extension host. The settings code now skips
+  `__proto__`, `constructor` and `prototype` wherever it reads a key.
+- **In the browser, the 50 MB limit is checked before a file is read.** Each
+  file's size comes first; only files that fit what is left are read, eight
+  at a time. A file too large for what is left is skipped and counted, and
+  smaller files after it are still read.
+- **`turtle/query` results in the browser keep their literals as stored.** A
+  literal that held the server's internal `file:///workspace/<n>/` address
+  came back rewritten. Addresses are now rewritten only in messages,
+  tooltips and hover text, and in IRIs.
+- **VS Code on the desktop says when a folder is not on disk.** Since 0.15.0
+  the extension was enabled in a GitHub Repositories window but did nothing.
+  It now starts no server there and offers to clone the repository or open
+  it in vscode.dev.
+
 ## 0.15.0 — 2026-11-05
 
 ### Added
