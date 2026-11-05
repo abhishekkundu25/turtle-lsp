@@ -22,6 +22,18 @@ export const workspaceUri = (n: number): string => `${SERVER_ROOT}${n}`
 // stays as written even when it starts with a folder's URI.
 const CONTENT = new Set(["text", "newText", "newName", "insertText"])
 
+// Strings the server writes for people, where it puts file URIs among other
+// words: a diagnostic's, an error's or a shown message's `message`, an inlay
+// hint's `tooltip`, and a MarkupContent's `value` (a hover's "Described in"
+// link). Server URIs are replaced anywhere in these; any other string is
+// mapped only when it is a URI as a whole.
+const PROSE = new Set(["message", "tooltip"])
+const MARKUP = new Set(["markdown", "plaintext"])
+
+// A SPARQL results term that is data, not a URI (`turtle/query`'s bindings
+// and triples): its value stays as the store holds it.
+const DATA_TERM = new Set(["literal", "bnode"])
+
 // Percent escapes compare equal in either letter case (`%3A`, `%3a`).
 const canon = (s: string): string => s.replace(/%[0-9a-f]{2}/gi, (m) => m.toUpperCase())
 
@@ -37,21 +49,27 @@ function swap(pairs: Pair[], s: string): string {
   return s
 }
 
-// `s` with every server URI in it replaced, wherever it stands: the server
-// writes them into prose too (a hover's "Described in" link, a message). The
-// digit check keeps `file:///workspace/1` from matching `…/10`.
+// `s` with every server URI in it replaced, wherever it stands. The digit
+// check keeps `file:///workspace/1` from matching `…/10`.
 function swapAll(pairs: Pair[], s: string): string {
   if (!s.includes(SERVER_ROOT)) return s
   for (const { from, to } of pairs) s = s.replace(new RegExp(`${from.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?![0-9])`, "g"), to)
   return s
 }
 
-function walk(pairs: Pair[], v: unknown, strings: (pairs: Pair[], s: string) => string): unknown {
-  if (typeof v === "string") return strings(pairs, v)
-  if (Array.isArray(v)) return v.map((x) => walk(pairs, x, strings))
+// `v` with its URIs mapped; `prose` (outward only) maps inside prose strings.
+function walk(pairs: Pair[], v: unknown, prose: boolean): unknown {
+  if (typeof v === "string") return swap(pairs, v)
+  if (Array.isArray(v)) return v.map((x) => walk(pairs, x, prose))
   if (v === null || typeof v !== "object") return v
+  const o = v as Record<string, unknown>
+  if (DATA_TERM.has(o.type as string)) return v
+  const markup = MARKUP.has(o.kind as string)
   const out: Record<string, unknown> = {}
-  for (const [k, x] of Object.entries(v)) out[swap(pairs, k)] = CONTENT.has(k) ? x : walk(pairs, x, strings)
+  for (const [k, x] of Object.entries(o)) {
+    const text = prose && typeof x === "string" && (PROSE.has(k) || (markup && k === "value"))
+    out[swap(pairs, k)] = CONTENT.has(k) ? x : text ? swapAll(pairs, x as string) : walk(pairs, x, prose)
+  }
   return out
 }
 
@@ -64,7 +82,7 @@ export function uriMap(folders: readonly string[]): UriMap {
   const inward = roots.map((f, n) => pair(f, workspaceUri(n))).sort((a, b) => b.from.length - a.from.length)
   const outward = roots.map((f, n) => pair(workspaceUri(n), f))
   return {
-    toServer: <T>(m: T) => walk(inward, m, swap) as T,
-    toClient: <T>(m: T) => walk(outward, m, swapAll) as T,
+    toServer: <T>(m: T) => walk(inward, m, false) as T,
+    toClient: <T>(m: T) => walk(outward, m, true) as T,
   }
 }

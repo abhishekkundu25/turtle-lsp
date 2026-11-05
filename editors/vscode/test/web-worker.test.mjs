@@ -240,3 +240,17 @@ test("shutdown, exit and a new session: the disk files are back, the editor's do
   const where = c.at(A, A_TEXT, "Thing .")
   assert.deepEqual([(await c.request("textDocument/definition", where)).result].flat().map((l) => l.uri ?? l.targetUri), [DEFS])
 })
+
+test("turtle/query answers: a literal holding a server URI stays as stored, a relative IRI is the workspace's", { skip }, async () => {
+  const c = await client()
+  await initialize(c)
+  const text = `${PREFIX}\n<#x> ex:note "see file:///workspace/0/a.ttl" .\n`
+  c.notify("turtle/web/files", { changed: [{ uri: `${ROOT}/notes.ttl`, text }], deleted: [] })
+  const r = await c.request("turtle/query", { query: "SELECT ?s ?note WHERE { ?s <http://example.org/note> ?note }" })
+  assert.deepEqual(r.result?.results.bindings, [{ s: { type: "uri", value: `${ROOT}/notes.ttl#x` }, note: { type: "literal", value: "see file:///workspace/0/a.ttl" } }], JSON.stringify(r))
+  const built = await c.request("turtle/query", { query: "CONSTRUCT WHERE { ?s <http://example.org/note> ?note }" })
+  assert.deepEqual(built.result?.triples.map((t) => [t.subject.value, t.object.value]), [[`${ROOT}/notes.ttl#x`, "see file:///workspace/0/a.ttl"]], JSON.stringify(built))
+  // An error's message names the file by the client's URI.
+  const missing = await c.request("turtle/query", { query: "ASK {}", files: [`${ROOT}/missing.ttl`] })
+  assert.match(missing.error?.message ?? "", /not a workspace document: vscode-test-web:\/\/mount\/missing\.ttl/, JSON.stringify(missing))
+})
