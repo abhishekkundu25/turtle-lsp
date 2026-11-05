@@ -63,7 +63,8 @@ function walk(pairs: Pair[], v: unknown, prose: boolean): unknown {
   if (Array.isArray(v)) return v.map((x) => walk(pairs, x, prose))
   if (v === null || typeof v !== "object") return v
   const o = v as Record<string, unknown>
-  if (DATA_TERM.has(o.type as string)) return v
+  // A literal's or blank node's value is data; a literal's datatype is an IRI.
+  if (DATA_TERM.has(o.type as string)) return typeof o.datatype === "string" ? { ...o, datatype: swap(pairs, o.datatype) } : v
   const markup = MARKUP.has(o.kind as string)
   const out: Record<string, unknown> = {}
   for (const [k, x] of Object.entries(o)) {

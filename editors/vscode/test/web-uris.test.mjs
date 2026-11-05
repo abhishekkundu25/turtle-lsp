@@ -131,3 +131,10 @@ test("the message given is not changed", () => {
   map.toServer(m)
   assert.deepEqual(m, { uri: `${REPO}/a.ttl` })
 })
+
+test("a literal keeps its value, and its datatype IRI is mapped", () => {
+  const term = (root) => ({ type: "literal", value: `see ${S}/a.ttl`, datatype: `${root}/myType` })
+  assert.deepEqual(map.toClient({ results: { bindings: [{ v: term(S) }] } }), { results: { bindings: [{ v: { ...term(REPO), value: `see ${S}/a.ttl` } }] } })
+  const plain = { type: "literal", value: "5", datatype: "http://www.w3.org/2001/XMLSchema#integer" }
+  assert.deepEqual(map.toClient(plain), plain)
+})
