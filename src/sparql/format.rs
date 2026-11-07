@@ -60,7 +60,8 @@
 //!
 //! Linear in the number of tokens, apart from the `spargebra` checks.
 
-use super::{Document, Token, TokenKind, lexer};
+use super::Document;
+use super::lexer::{self, Token, TokenKind};
 use crate::layout::{
     BIG, Blank, Doc, Groups, Ix, LayoutToken, Obj, Options, Po, Printer, Semicolons, Style, Term,
 };
@@ -195,7 +196,7 @@ fn algebra(doc: &Document, prefixes: &PrefixMap, base: Option<&str>) -> Result<S
         }
     }
     // Blanking kept every byte position, so the tokens still fit the text.
-    let text = super::validate::text_for_spargebra(&text, doc.tokens());
+    let text = super::spargebra_input::text_for_spargebra(&text, doc.tokens());
     let printed = if st.is_update {
         parser.parse_update(&text).map(|u| u.to_string())
     } else {

@@ -3,9 +3,9 @@
 // "build" script). The webview asks for `turtle/graph` over postMessage and
 // this side forwards it to the language server, opens definitions and hands
 // over the diagnostics of the files in each answer.
-import { randomBytes } from "node:crypto"
 import * as vscode from "vscode"
-import type { LanguageClient } from "vscode-languageclient/node"
+import type { BaseLanguageClient } from "vscode-languageclient"
+import { RDF_GLOB } from "./client"
 import { gitBase, type GitApi } from "./git-base"
 
 export const GRAPH_METHOD = "turtle/graph"
@@ -15,10 +15,9 @@ export const SHOW_GRAPH = "turtle.showGraph"
 const TITLE = "Workspace Graph"
 /** Ask again this long after the last change to a workspace RDF or SPARQL file. */
 const REFRESH_MS = 500
-const WATCHED = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}"
 
 /** Whether the server advertises the graph request (`experimental["turtle/graph"]`). */
-export function advertisesGraph(client: LanguageClient | undefined): boolean {
+export function advertisesGraph(client: BaseLanguageClient | undefined): boolean {
   return client?.initializeResult?.capabilities.experimental?.[GRAPH_METHOD] === true
 }
 
@@ -36,7 +35,7 @@ export interface GraphProbe {
 
 interface Host {
   context: vscode.ExtensionContext
-  client(): LanguageClient | undefined
+  client(): BaseLanguageClient | undefined
   served(doc: vscode.TextDocument): boolean
 }
 
@@ -93,7 +92,7 @@ class GraphPanel {
     const refreshOn = (doc: vscode.TextDocument) => {
       if (host.served(doc)) this.scheduleRefresh()
     }
-    const watcher = vscode.workspace.createFileSystemWatcher(WATCHED)
+    const watcher = vscode.workspace.createFileSystemWatcher(RDF_GLOB)
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((m) => this.receive(m)),
       vscode.workspace.onDidChangeTextDocument((e) => refreshOn(e.document)),
@@ -172,16 +171,16 @@ function diagnosticsOf(nodes: { uri?: string }[]): Record<string, { range: Range
   return out
 }
 
-/** Opens `uri` at `range`, beside the panel. */
+/** Opens `uri` at `range`, beside the panel: a file, an untitled document, or one in a workspace folder (a virtual one in the browser). */
 async function reveal(uri: string, range: Range): Promise<void> {
   const target = vscode.Uri.parse(uri)
-  if (target.scheme !== "file" && target.scheme !== "untitled") return
+  if (target.scheme !== "file" && target.scheme !== "untitled" && !vscode.workspace.getWorkspaceFolder(target)) return
   await vscode.window.showTextDocument(target, { selection: toRange(range), viewColumn: vscode.ViewColumn.Beside, preview: false })
 }
 
 /** The webview's page: the bundled view and its styles, nothing inline but the nonce'd script tag. */
 function page(webview: vscode.Webview, root: vscode.Uri): string {
-  const nonce = randomBytes(16).toString("base64")
+  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))))
   const src = webview.cspSource
   const csp = `default-src 'none'; script-src ${src} 'nonce-${nonce}'; style-src ${src}; img-src ${src} data:; font-src ${src}`
   return `<!doctype html>

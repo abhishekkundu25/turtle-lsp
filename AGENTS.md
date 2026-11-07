@@ -24,6 +24,17 @@ them; each file's `//!` doc says what it owns.
   what goes out on stdio, written as JSON text, in `src/server/wire.rs`.
 - SHACL shapes and IRIs: `src/shacl/model.rs` and `src/shacl/vocab.rs`,
   read by the shape lint and the validator.
+- A request, command or lens beyond the LSP standard: a file of its own in
+  `src/extensions/`, listed in `extensions::{handles, capabilities,
+  request}`. It reads the session's documents, the settings and the
+  libraries. Core code never names `extensions`, except `src/server.rs` and
+  the Run query lens in `src/features/lens.rs`. An extension never changes
+  shared code to suit itself: what it lacks is a core or library change,
+  proposed on its own.
+- The libraries name only libraries: `syntax` and `sparql::lexer` only
+  `syntax`; `rdf`, `shacl` and `sparql::spargebra_input` only `syntax`,
+  `rdf`, `shacl` and those two `sparql` files. The test `boundaries` in
+  `src/lib.rs` fails on a line that breaks either rule.
 
 Make a new item `pub(crate)`. Make it `pub` only when a consumer uses it
 (`web/engine`, `examples/`, `tests/` or `src/main.rs`), and add its path to
@@ -55,6 +66,7 @@ timeout 120 node --test --test-timeout=30000 test/cli.test.mjs
 timeout 120 npm run test:latency                           # wall-clock checks, one at a time
 node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engine.test.mjs
 (cd editors/vscode && timeout 120 node --test test/*.test.mjs)
+(cd editors/vscode && npm run build && timeout 120 npm run test:web)  # the browser entry in VS Code for the Web; needs web/build.mjs first and Google Chrome
 ```
 
 - Name a wall-clock lib test `timing_…`: CI runs those serially, apart

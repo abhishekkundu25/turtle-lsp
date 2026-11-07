@@ -8,6 +8,7 @@ import fs from "node:fs"
 import { createRequire } from "node:module"
 import vsctm from "vscode-textmate"
 import oniguruma from "vscode-oniguruma"
+import { documentSelector } from "../src/client.ts"
 
 const require = createRequire(import.meta.url)
 const wasm = fs.readFileSync(require.resolve("vscode-oniguruma/release/onig.wasm"))
@@ -174,13 +175,13 @@ test("SPARQL: update keywords and long strings", () => {
 
 test("every contributed language has a grammar, and the client serves it", () => {
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
-  const extension = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8")
+  const served = documentSelector(["file"]).map((f) => f.language)
   const ids = pkg.contributes.languages.map((l) => l.id)
   assert.deepEqual(ids, ["turtle", "trig", "ntriples", "nquads", "sparql"])
   for (const id of ids) {
     const g = pkg.contributes.grammars.find((x) => x.language === id)
     assert.ok(g && fs.existsSync(new URL(`../${g.path}`, import.meta.url)), `no grammar for ${id}`)
-    assert.ok(extension.includes(`language: "${id}"`), `documentSelector misses ${id}`)
+    assert.ok(served.includes(id), `documentSelector misses ${id}`)
   }
   assert.ok(pkg.activationEvents.some((e) => e.includes("trig") && e.includes("nt")))
   for (const ext of ["nq", "rq", "sparql", "ru"]) {

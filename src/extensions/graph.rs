@@ -30,6 +30,7 @@
 //!    else highest degree first; ties by id. The edges between kept nodes.
 //! 5. The layout, starting from the positions the client passes back.
 
+use super::{Answer, ErrorCode, Json, Out, Request, Sender, Session, Spawn, on_thread};
 use crate::analysis::{Analysis, Encoding};
 use crate::features::hover::short;
 use crate::knowledge::{Knowledge, Source, TERM_CLASS, TERM_CONCEPT, TERM_PROPERTY, namespace_of};
@@ -42,6 +43,60 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::fmt;
+
+pub(super) const METHOD: &str = "turtle/graph";
+
+/// Answer `turtle/graph`. A big layout takes seconds: with threads, on one
+/// of its own over a copy of the knowledge index, which answers the request.
+pub(super) fn request(req: Request, spawn: Spawn, out: Sender<Out>, s: &mut Session) -> Answer {
+    let params = match req.params {
+        serde_json::Value::Null => GraphParams::default(),
+        p => serde_json::from_value(p).map_err(|e| (ErrorCode::InvalidParams, e.to_string()))?,
+    };
+    let (k, enc) = s.knowledge();
+    if spawn == Spawn::Inline {
+        return json(graph(k, enc, params)).map(Some);
+    }
+    let sources = Sources::of(k);
+    on_thread(out, req.id, "graph", move || {
+        json(graph(&sources.rebuild(), enc, params))
+    })
+}
+
+/// What a knowledge index is built from, in order, analyses shared: to
+/// rebuild it on another thread.
+pub(super) struct Sources(Vec<(String, Source, std::sync::Arc<Analysis>)>);
+
+impl Sources {
+    pub(super) fn of(k: &Knowledge) -> Sources {
+        Sources(
+            k.sources()
+                .map(|(key, s, a)| (key.to_string(), s, a.clone()))
+                .collect(),
+        )
+    }
+
+    /// The index rebuilt: equal to the original (`Knowledge`'s
+    /// `incremental_updates_match_a_rebuild`).
+    pub(super) fn rebuild(self) -> Knowledge {
+        let mut k = Knowledge::default();
+        for (key, source, a) in self.0 {
+            if source == Source::External {
+                k.add_external(&key, a);
+            } else {
+                k.set(&key, source, a);
+            }
+        }
+        k
+    }
+}
+
+/// A `turtle/graph` answer as JSON text; parameters it cannot answer are
+/// `InvalidParams`.
+fn json(r: Result<GraphResult, InvalidParams>) -> Json {
+    r.map_err(|e| (ErrorCode::InvalidParams, e.0))
+        .and_then(|g| crate::server::json(&g))
+}
 
 /// The most nodes a request can ask for.
 pub(crate) const MAX_NODES: u32 = 20_000;
@@ -1242,6 +1297,35 @@ mod tests {
             k.set(&uri, Source::Disk, Arc::new(a));
         }
         k
+    }
+
+    #[test]
+    fn a_rebuilt_index_answers_what_the_index_answers() {
+        // One document open, one indexed from disk.
+        let mut k = knowledge(&[("b", "ex:p2 a ex:Pump ; rdfs:subClassOf ex:Device .\n")]);
+        let a = format!(
+            "{HEAD}ex:Pump a rdfs:Class ; rdfs:label \"Pump\" .\n\
+             ex:p1 a ex:Pump ; ex:feeds ex:p2 ; ex:part [ ex:size 3 ] .\n"
+        );
+        let uri = "file:///w/a.ttl";
+        let a = Analysis::new(uri.to_string(), &a, Arc::default(), false);
+        k.set(uri, Source::Open, Arc::new(a));
+        let copy = Sources::of(&k).rebuild();
+        let params = serde_json::json!({
+            "types": true,
+            "literals": true,
+            "layout": { "iterations": 40 }
+        });
+        let here = run(&k, params.clone());
+        assert!(here.nodes.len() >= 5, "{:?}", here.nodes);
+        assert!(here.nodes.iter().any(|n| n.uri.ends_with("/b.ttl")));
+        assert_eq!(run(&copy, params), here);
+        // Invalid parameters fail the same way.
+        let bad: GraphParams = serde_json::from_value(serde_json::json!({ "focus": "" })).unwrap();
+        assert_eq!(
+            graph(&copy, Encoding::Utf16, bad.clone()),
+            graph(&k, Encoding::Utf16, bad)
+        );
     }
 
     fn run(k: &Knowledge, params: serde_json::Value) -> GraphResult {

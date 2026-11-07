@@ -1,5 +1,5 @@
 // The custom request `turtle/graphDiff` over stdio: the workspace against a
-// base the client supplies (src/features/graph_diff.rs), as a client sees it.
+// base the client supplies (src/extensions/graph_diff.rs), as a client sees it.
 import { test, describe, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"

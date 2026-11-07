@@ -1,4 +1,5 @@
 use super::*;
+use lexer::TokenKind;
 use structure::{ClauseKind, Position};
 
 const EX: &str = "PREFIX ex: <https://query.example.org/def/>\n";
@@ -976,11 +977,16 @@ fn a_glued_keyword_spargebra_accepts_is_still_an_error() {
     }
 }
 
+/// Why `text` is not given to `spargebra`, as the SHACL-SPARQL callers see it.
+fn too_complex(text: &str) -> Option<String> {
+    lexer::too_complex(text, &lexer::tokenize(text)).map(|(_, why)| why)
+}
+
 #[test]
 fn too_complex_names_deep_nesting() {
     let deep = format!("SELECT * {}{}", "{ ".repeat(300), "}".repeat(300));
-    assert!(crate::sparql::too_complex(&deep).is_some());
-    assert!(crate::sparql::too_complex("SELECT * { { ?s ?p ?o } }").is_none());
+    assert!(too_complex(&deep).is_some());
+    assert!(too_complex("SELECT * { { ?s ?p ?o } }").is_none());
 }
 
 #[test]
@@ -1066,7 +1072,7 @@ fn a_long_chain_is_one_diagnostic_not_a_crash() {
 
 #[test]
 fn a_chain_at_its_limit_parses_cleanly() {
-    use super::diagnostics::{MAX_OPERATORS, MAX_PATH_STEPS, MAX_UNARY};
+    use super::lexer::{MAX_OPERATORS, MAX_PATH_STEPS, MAX_UNARY};
     for (kind, max) in [
         ("||", MAX_OPERATORS),
         ("&&", MAX_OPERATORS),
@@ -1147,13 +1153,13 @@ fn many_short_chains_are_no_long_chain() {
         ));
         assert!(found.is_empty(), "{found:?}");
     }
-    assert!(crate::sparql::too_complex("SELECT (COUNT(*) AS ?c) { ?s ?p ?o }").is_none());
+    assert!(too_complex("SELECT (COUNT(*) AS ?c) { ?s ?p ?o }").is_none());
 }
 
 #[test]
 fn too_complex_names_a_long_chain_for_callers_outside_documents() {
     for kind in ["||", "/", "!"] {
-        let why = crate::sparql::too_complex(&chain_query(kind, 20_000));
+        let why = too_complex(&chain_query(kind, 20_000));
         assert!(
             why.is_some_and(|w| w.contains("too large to check")),
             "{kind}"

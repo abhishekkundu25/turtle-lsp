@@ -25,13 +25,14 @@
 //!   statement with an added or changed term as an object, `rdf:type`
 //!   objects included, found with the references index.
 //!
-//! Ids and names are the graph's ([`crate::features::graph`]), on the
+//! Ids and names are the graph's ([`super::graph`]), on the
 //! current side; a literal of a removed row, and a blank node only the base
 //! has, get the base side's, its documents numbered by URI as the graph
 //! numbers the current ones.
 
+use super::graph::{InvalidParams, Key, LITERAL_NAME_CHARS, Names, Sources};
+use super::{Answer, ErrorCode, Out, Request, Sender, Session, Spawn, on_thread};
 use crate::analysis::{Analysis, Encoding};
-use crate::features::graph::{InvalidParams, Key, LITERAL_NAME_CHARS, Names};
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::{BlankId, Iri, Node, Role, Span, Triple, XSD};
 use crate::workspace::{MAX_FILE_BYTES, is_rdf_file, normalize_uri, uri_to_path};
@@ -46,6 +47,34 @@ pub(crate) const MAX_ENTRIES: usize = 5_000;
 /// The most rows, and impacted terms, a request can ask for.
 pub(crate) const MAX_LIMIT: u32 = 20_000;
 const DEFAULT_LIMIT: u32 = 2_000;
+
+pub(super) const METHOD: &str = "turtle/graphDiff";
+
+/// Answer `turtle/graphDiff`. Parsing the base texts takes a while: with
+/// threads, on one of its own over a copy of the knowledge index, as
+/// `turtle/graph` does.
+pub(super) fn request(req: Request, spawn: Spawn, out: Sender<Out>, s: &mut Session) -> Answer {
+    let invalid = |m: String| (ErrorCode::InvalidParams, m);
+    let p: GraphDiffParams =
+        serde_json::from_value(req.params).map_err(|e| invalid(e.to_string()))?;
+    let roots = s.roots().to_vec();
+    let q = DiffQuery::new(p, s.knowledge().0, &roots).map_err(|e| invalid(e.0))?;
+    // Each base text is parsed as the workspace parses its file.
+    let prefixes: FxHashMap<String, _> = q
+        .files()
+        .iter()
+        .map(|f| (f.uri.clone(), s.external_prefixes_for(&f.uri)))
+        .collect();
+    let parse = move |u: &str, t: &str| Analysis::new(u.into(), t, prefixes[u].clone(), false);
+    let (k, enc) = s.knowledge();
+    if spawn == Spawn::Inline {
+        return crate::server::json(&graph_diff(k, enc, &q, parse)).map(Some);
+    }
+    let sources = Sources::of(k);
+    on_thread(out, req.id, "graph diff", move || {
+        crate::server::json(&graph_diff(&sources.rebuild(), enc, &q, parse))
+    })
+}
 
 // ---- the request ----
 
@@ -761,8 +790,8 @@ fn literal_name(names: &Names, n: &Node) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::graph::{GraphParams, graph};
     use super::*;
-    use crate::features::graph::{GraphParams, graph};
     use lsp_types::Position;
     use std::sync::Arc;
 

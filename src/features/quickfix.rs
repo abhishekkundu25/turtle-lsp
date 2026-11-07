@@ -8,13 +8,14 @@
 //! with both.
 
 use super::diagnostics::SOURCE;
+use super::prefixes::{declaration_edit, declaration_keyword, declarations_edit};
 use crate::analysis::{Analysis, Encoding};
 use crate::features::curation::LABEL_WHITESPACE;
 use crate::features::refactor::text_edits_in;
 use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Token;
-use crate::syntax::names::{declaration_edit, declaration_keyword, declarations_edit, newline};
+use crate::syntax::names::newline;
 use crate::syntax::{Iri, Node, Span, Syntax};
 use crate::vocab::VOCABS;
 use lsp_types::*;

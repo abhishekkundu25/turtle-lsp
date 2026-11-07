@@ -13,8 +13,8 @@ use crate::features::refactor::{
     Directive, expand_iri, line_content_end, organise_block, wanted, workspace_edit,
 };
 use crate::knowledge::Knowledge;
-use crate::sparql::lexer;
-use crate::sparql::{Form, Level, PrefixSource, TermRef, TokenKind};
+use crate::sparql::lexer::{self, TokenKind};
+use crate::sparql::{Form, Level, PrefixSource, TermRef};
 use crate::syntax::Span;
 use crate::syntax::names::{newline, shorten, token_edits_after};
 use lsp_types::*;

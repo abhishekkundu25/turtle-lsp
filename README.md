@@ -31,6 +31,7 @@ the full W3C test suites and real public ontologies; see
 - **Quick fixes and refactorings**: add a missing prefix (your project's own binding first), add all missing prefixes, remove an unused prefix, fix a misspelled term; organise prefixes, shorten or expand an IRI, and extract a prefix for a repeated namespace.
 - **Type hierarchy**: super- and subclasses (and sub-properties) across the workspace, imports and vocabularies.
 - **Workspace graph** (VS Code and the browser editor): the whole workspace as one graph, with filters, search, a focus view of a node's neighbours and a class tree; click a node to go to its definition. A Changes toggle compares the data with git HEAD (in the browser, with the text at load) and shows what was added, removed and changed, on the graph and as a list. Built on `turtle/graph` and `turtle/graphDiff`, custom requests other clients can send too (listed under `experimental` capabilities).
+- **Queries for other extensions and tools**: `turtle/query`, a custom request (listed under `experimental` capabilities) that runs a SPARQL query given as text over the workspace as the editor has it and answers SPARQL 1.1 Query Results JSON. See [Queries from another extension or tool](#queries-from-another-extension-or-tool-turtlequery).
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
 - **Label checks** (warnings, on by default): two terms of one kind (two classes, two properties or two concepts) in the workspace with the same `rdfs:label` or `skos:prefLabel` in one language, ignoring case (`duplicate-label`, on both labels, naming the other term); a label with whitespace at either end (`label-whitespace`, with a fix that trims it); a term with two labels in one language (`multiple-labels`). A use of a term that a workspace file marks `owl:deprecated true` is a `deprecated-term` warning; deprecated terms of bundled vocabularies and imports stay hints.
 - **House-style checks** (warnings, off until `lint.enable` lists them): `missing-label`, `missing-definition` (neither `skos:definition` nor `rdfs:comment`), `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, and on each `owl:Ontology`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. They look at classes, properties and concepts only, not instance data. `lint.ignore` turns any check off; see [Settings file](#settings-file-turtle-lspjson).
@@ -250,6 +251,43 @@ you ask, over the workspace's own files: the default graph is the union of
 every triple of every file, named graphs included; `GRAPH` and `FROM NAMED`
 match nothing, `FROM` is ignored, imports are not queried, updates are never
 run and no endpoint is contacted.
+
+### Queries from another extension or tool: `turtle/query`
+
+A client that is not an editor (another extension, a tool that reuses the
+running server) sends the custom request `turtle/query`, listed under the
+server's `experimental` capabilities, with the query as text:
+
+```json
+{ "query": "SELECT ?s WHERE { ?s a <http://example.org/Pump> }",
+  "files": ["file:///w/data.ttl", "file:///w/model.ttl"],
+  "base": "file:///w/", "timeoutSeconds": 10, "maxRows": 1000 }
+```
+
+Only `query` is required. `files` limits the data to those documents
+(default: every RDF document of the workspace, open ones as the editor has
+them, imports excluded). `timeoutSeconds` can only lower
+`query.timeoutSeconds`: `0` or a higher value is the setting. `maxRows`
+can only lower `query.maxRows` in the same way; `query.maxBufferedRows`
+applies as always. The query can use the prefixes of `prefixes.ttl` and
+the `prefixes` setting without declaring them, as a query file beside the
+first of `files` (default: in the workspace root) gets them. The dataset is the one of ▶ Run query: the union of every triple of
+every file, with no named graphs.
+
+The answer is `{"kind": "select", "head": …, "results": …, "omitted": n,
+"elapsedMs": ms}` (SPARQL 1.1 Query Results JSON, full IRIs, `omitted` the
+rows past `maxRows`), `{"kind": "ask", "head": {}, "boolean": b,
+"elapsedMs": ms}`, or for CONSTRUCT and DESCRIBE `{"kind": "construct",
+"triples": [{"subject", "predicate", "object"}], "omitted": n, "elapsedMs":
+ms}` with the terms in the results JSON's term form. Nothing is shown and no
+file is written. A query that is not SPARQL, an update, a relative IRI
+without `base`, an empty `files`, or a `files` entry that is no workspace
+document is an `InvalidParams` error; a query stopped
+at a limit is a `RequestFailed` error with the reason as its message. The
+query runs on a thread of its own, and `$/cancelRequest` stops it (a
+`RequestCanceled` error); `shutdown`, `exit` and a closed connection stop
+every run. At most four queries run at a time; one more is a
+`RequestFailed` error, to send again when one has answered.
 
 ### SPARQL in SHACL shapes
 
@@ -532,6 +570,30 @@ Other editors pass the server settings without the `turtle.` prefix, as
 ```lua
 init_options = { inlayHints = { labels = "all" }, format = { lineWidth = 80 } }
 ```
+
+### In the browser (vscode.dev, github.dev)
+
+The extension also runs in VS Code for the Web. There it starts the
+WebAssembly engine (`web/engine`) in a web worker instead of the binary,
+and sends it the workspace's RDF and SPARQL files, read through VS Code's
+file system API (on github.dev, the repository's files).
+
+The language features work as on the desktop, including cross-file
+features over those files, problems in files that are not open,
+`prefixes.ttl`, `turtle-lsp.json` at the root of the first folder, SHACL
+validation and the workspace graph. These do not:
+
+- ▶ Run query is not shown, as it writes its results to disk. The
+  `turtle/query` request still works.
+- `owl:imports` are not fetched; a web import stays unresolved, as offline.
+- At most 2,000 files and 50 MB of RDF are read; past either limit the
+  extension says how many files it read.
+- A workspace folder added after the start is read on the next restart
+  (Turtle: Restart Language Server).
+
+`turtle.server.path` does not apply in the browser; the other settings do.
+In `editors/vscode`, `VSCE_TARGET=web npm run package` builds the engine
+and writes `turtle-lsp-web-<version>.vsix`.
 
 ## Browser editor and toolbox
 

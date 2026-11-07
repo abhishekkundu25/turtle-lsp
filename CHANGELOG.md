@@ -13,6 +13,78 @@
   ghosts. Reformatting, reordering and prefix renames show no change. Built
   on `turtle/graphDiff`, a new custom request listed under `experimental`.
 
+### Fixed
+
+- **Accepting a JSON-LD completion no longer breaks a string elsewhere in the
+  file.** Completion found the cursor's place with its own reading of the
+  text, which did not know comments. A quote inside a `/* */` comment could
+  make the edit that adds a prefix to `@context` land inside a string.
+  Completion now reads the text as the parser does: comments are skipped,
+  single-quoted strings are strings, and a cursor inside a comment offers
+  nothing. The word a completion replaces no longer takes in a comment or a
+  string next to it.
+
+### Internal
+
+- **Editor extensions live in one place, apart from the core.** The
+  requests and commands beyond the LSP standard (`turtle/graph`,
+  `turtle/query`, Run query) are in `src/extensions/`; the server routes
+  them through one entry and lists them from one function. The parser, the SPARQL lexer, the graph and
+  the SHACL engine no longer reach into server code: SHACL takes its JSON
+  check and clock from the caller. A test fails when core code depends on
+  an extension or a library module reaches outside the libraries. No
+  behaviour changes; the code is about 16 lines shorter.
+
+## 0.15.1 — 2026-11-05
+
+### Fixed
+
+- **In the browser, a repository's `turtle-lsp.json` can no longer change
+  shared JavaScript state.** A `__proto__` key in the file reached
+  `Object.prototype` in the web extension host. The settings code now skips
+  `__proto__`, `constructor` and `prototype` wherever it reads a key.
+- **In the browser, the 50 MB limit is checked before a file is read.** Each
+  file's size comes first; only files that fit what is left are read, eight
+  at a time. A file too large for what is left is skipped and counted, and
+  smaller files after it are still read.
+- **`turtle/query` results in the browser keep their literals as stored.** A
+  literal that held the server's internal `file:///workspace/<n>/` address
+  came back rewritten. Addresses are now rewritten only in messages,
+  tooltips and hover text, and in IRIs.
+- **VS Code on the desktop says when a folder is not on disk.** Since 0.15.0
+  the extension was enabled in a GitHub Repositories window but did nothing.
+  It now starts no server there and offers to clone the repository or open
+  it in vscode.dev.
+
+## 0.15.0 — 2026-11-05
+
+### Added
+
+- **The VS Code extension runs in VS Code for the Web** (vscode.dev,
+  github.dev) (#52). The server runs as the WebAssembly engine in a web
+  worker, and the extension sends it the workspace's RDF and SPARQL files,
+  at most 2,000 files and 50 MB, so cross-file features, problems in files
+  that are not open, `prefixes.ttl`, `turtle-lsp.json`, SHACL and the
+  workspace graph work as on the desktop. ▶ Run query is not shown and
+  `owl:imports` are not fetched. The release publishes a web `.vsix`
+  (3.4 MB) beside the platform ones.
+
+## 0.14.0 — 2026-11-04
+
+### Added
+
+- **`turtle/query`**, a custom request for other extensions and tools,
+  listed under the server's `experimental` capabilities: a SPARQL query as
+  text in, SPARQL 1.1 Query Results JSON out (`{"kind": "select" | "ask" |
+  "construct", …, "omitted", "elapsedMs"}`), over the workspace as the
+  editor has it or over the `files` given, with the prefixes a query file
+  in the workspace root gets (`prefixes.ttl`, the `prefixes` setting).
+  Nothing is shown and no file is written. The dataset is
+  the one of ▶ Run query. `timeoutSeconds` and `maxRows` can only lower
+  `query.timeoutSeconds` and `query.maxRows`; `$/cancelRequest` stops a
+  run, and so do `shutdown`, `exit` and a closed connection; at most four
+  run at a time.
+
 ## 0.13.1 — 2026-11-03
 
 ### Fixed

@@ -168,7 +168,7 @@ mod tests {
         src: &str,
     ) -> (
         Doc<'_, crate::syntax::lexer::Token>,
-        Doc<'_, crate::sparql::Token>,
+        Doc<'_, crate::sparql::lexer::Token>,
     ) {
         (
             Doc::new(src, &crate::syntax::lexer::tokenize(src)),

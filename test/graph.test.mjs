@@ -1,5 +1,5 @@
 // The custom request `turtle/graph` over stdio: the workspace graph, its
-// filters, cap and layout (src/features/graph.rs), as a client sees it.
+// filters, cap and layout (src/extensions/graph.rs), as a client sees it.
 import { test, describe, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -53,7 +53,11 @@ describe("turtle/graph", () => {
   })
 
   test("is listed under the experimental capabilities", () => {
-    assert.equal(s.init.capabilities.experimental["turtle/graph"], true)
+    assert.deepEqual(s.init.capabilities.experimental, {
+      "turtle/graph": true,
+      "turtle/graphDiff": true,
+      "turtle/query": true,
+    })
   })
 
   test("answers the workspace's nodes, edges, positions, totals and facets", async () => {

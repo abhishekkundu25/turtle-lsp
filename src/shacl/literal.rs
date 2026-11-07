@@ -256,9 +256,9 @@ fn instant(k: Kind, s: &str) -> Option<(i128, bool)> {
     Some((nanos - tz as i128 * 60 * 1_000_000_000, true))
 }
 
-/// Whether `lexical` is in the lexical space of `datatype`. Datatypes this
-/// module does not know are taken as valid.
-pub(crate) fn well_formed(datatype: &str, lexical: &str) -> bool {
+/// Whether `lexical` is in the lexical space of `datatype` (`json` decides
+/// `rdf:JSON`). Datatypes this module does not know are taken as valid.
+pub(crate) fn well_formed(datatype: &str, lexical: &str, json: fn(&str) -> bool) -> bool {
     match kind(datatype) {
         Kind::Integer { min, max } => match integer(lexical) {
             Some(n) => min.is_none_or(|m| n >= m) && max.is_none_or(|m| n <= m),
@@ -306,10 +306,7 @@ pub(crate) fn well_formed(datatype: &str, lexical: &str) -> bool {
         }
         Kind::Base64Binary => base64(lexical),
         Kind::Language => language(lexical),
-        Kind::Json => {
-            let doc = crate::jsonld::json::parse(lexical);
-            doc.root.is_some() && doc.errors.is_empty()
-        }
+        Kind::Json => json(lexical),
         Kind::String | Kind::Other => true,
     }
 }
@@ -427,7 +424,7 @@ enum Value<'a> {
 
 fn value<'a>(datatype: &str, lexical: &'a str) -> Option<Value<'a>> {
     let k = kind(datatype);
-    if !well_formed(datatype, lexical) {
+    if !well_formed(datatype, lexical, |_| false) {
         return None;
     }
     Some(match k {
@@ -473,28 +470,35 @@ mod tests {
 
     #[test]
     fn lexical_forms() {
-        assert!(well_formed(&x("byte"), "127"));
-        assert!(!well_formed(&x("byte"), "300"));
-        assert!(!well_formed(&x("byte"), "c"));
-        assert!(well_formed(&x("integer"), "+5"));
+        assert!(well_formed(&x("byte"), "127", |_| true));
+        assert!(!well_formed(&x("byte"), "300", |_| true));
+        assert!(!well_formed(&x("byte"), "c", |_| true));
+        assert!(well_formed(&x("integer"), "+5", |_| true));
         let huge = "123456789012345678901234567890123456789012";
-        assert!(well_formed(&x("integer"), huge));
-        assert!(well_formed(&x("integer"), &format!("-{huge}")));
-        assert!(!well_formed(&x("negativeInteger"), huge));
-        assert!(!well_formed(&x("int"), huge));
-        assert!(!well_formed(&x("integer"), "5.0"));
-        assert!(well_formed(&x("decimal"), "-.5"));
-        assert!(!well_formed(&x("decimal"), "."));
-        assert!(well_formed(&x("double"), "1.5E-3"));
-        assert!(well_formed(&x("double"), "INF"));
-        assert!(!well_formed(&x("double"), "1e"));
-        assert!(well_formed(&x("boolean"), "0"));
-        assert!(!well_formed(&x("boolean"), "yes"));
-        assert!(well_formed(&x("date"), "2024-02-29"));
-        assert!(!well_formed(&x("date"), "2023-02-29"));
-        assert!(well_formed(&x("dateTime"), "2024-01-01T10:00:00.5+02:00"));
-        assert!(!well_formed(&x("dateTime"), "2024-01-01"));
-        assert!(well_formed("http://example.com/dt", "anything"));
+        assert!(well_formed(&x("integer"), huge, |_| true));
+        assert!(well_formed(&x("integer"), &format!("-{huge}"), |_| true));
+        assert!(!well_formed(&x("negativeInteger"), huge, |_| true));
+        assert!(!well_formed(&x("int"), huge, |_| true));
+        assert!(!well_formed(&x("integer"), "5.0", |_| true));
+        assert!(well_formed(&x("decimal"), "-.5", |_| true));
+        assert!(!well_formed(&x("decimal"), ".", |_| true));
+        assert!(well_formed(&x("double"), "1.5E-3", |_| true));
+        assert!(well_formed(&x("double"), "INF", |_| true));
+        assert!(!well_formed(&x("double"), "1e", |_| true));
+        assert!(well_formed(&x("boolean"), "0", |_| true));
+        assert!(!well_formed(&x("boolean"), "yes", |_| true));
+        assert!(well_formed(&x("date"), "2024-02-29", |_| true));
+        assert!(!well_formed(&x("date"), "2023-02-29", |_| true));
+        assert!(well_formed(
+            &x("dateTime"),
+            "2024-01-01T10:00:00.5+02:00",
+            |_| true
+        ));
+        assert!(!well_formed(&x("dateTime"), "2024-01-01", |_| true));
+        assert!(well_formed("http://example.com/dt", "anything", |_| false));
+        let json = format!("{RDF}JSON");
+        assert!(well_formed(&json, "[1]", |s| s == "[1]"));
+        assert!(!well_formed(&json, "[1", |s| s == "[1]"));
     }
 
     #[test]

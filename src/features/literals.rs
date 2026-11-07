@@ -10,6 +10,7 @@
 //! `xsd:anyURI`, `rdf:HTML`; nor is `rdf:XMLLiteral`.
 
 use crate::analysis::Analysis;
+use crate::jsonld::json::valid;
 use crate::shacl::literal::well_formed;
 use crate::syntax::{Node, RDF, Span, XSD};
 
@@ -32,7 +33,8 @@ fn shown(value: &str) -> String {
 
 /// Whether `lexical` is not in the lexical space of `datatype`.
 pub(crate) fn ill_typed(datatype: &str, lexical: &str) -> bool {
-    !well_formed(datatype, lexical.trim_matches([' ', '\t', '\n', '\r']))
+    let lexical = lexical.trim_matches([' ', '\t', '\n', '\r']);
+    !well_formed(datatype, lexical, valid)
 }
 
 /// Each ill-typed literal that is the object of one of the triples `range`

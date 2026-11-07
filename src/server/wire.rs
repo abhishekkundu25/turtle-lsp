@@ -27,7 +27,7 @@ use std::io::{self, BufRead, Write};
 
 /// Something the server sends.
 #[derive(Debug)]
-pub(super) enum Out {
+pub(crate) enum Out {
     Message(Message),
     /// The answer to request `id`: its result, as JSON text ([`encode`]).
     Result {

@@ -1,33 +1,22 @@
 //! The commands the server runs on `workspace/executeCommand`.
 //!
-//! [`COMMANDS`] is what the server advertises; [`parse`] turns a request into a
-//! [`Command`], and the server performs its effect.
+//! [`COMMANDS`] is what the server advertises beside the Run query commands
+//! (`extensions::run_query`); [`parse`] turns a request into a [`Command`],
+//! and the server performs its effect.
 
 use crate::imports::FETCH_COMMAND;
 use lsp_server::ErrorCode;
 use lsp_types::ExecuteCommandParams;
 use serde_json::Value;
 
-/// Run the SPARQL query of a document over the workspace (the "▶ Run query"
-/// lens), with the document's URI.
-pub(crate) const RUN_QUERY: &str = "turtle.runQuery";
-
-/// Stop the run of a document's query (the "■ Cancel query" lens), with the
-/// document's URI.
-pub(crate) const CANCEL_QUERY: &str = "turtle.cancelQuery";
-
-/// Every command name the server advertises.
-pub(crate) const COMMANDS: &[&str] = &[FETCH_COMMAND, RUN_QUERY, CANCEL_QUERY];
+/// The names of the commands [`parse`] knows.
+pub(crate) const COMMANDS: &[&str] = &[FETCH_COMMAND];
 
 /// A parsed `workspace/executeCommand` request.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     /// Fetch one `owl:imports` target from the network.
     FetchImport { iri: String },
-    /// Run the query of one SPARQL document.
-    RunQuery { uri: String },
-    /// Stop the run of one SPARQL document's query.
-    CancelQuery { uri: String },
 }
 
 /// Parses `params`; bad arguments and unknown commands are `InvalidParams`.
@@ -42,16 +31,6 @@ pub(crate) fn parse(params: ExecuteCommandParams) -> Result<Command, (ErrorCode,
             iri: std::mem::take(iri),
         }),
         (FETCH_COMMAND, _) => Err((ErrorCode::InvalidParams, format!("{command} takes one IRI"))),
-        (RUN_QUERY, [Value::String(uri)]) => Ok(Command::RunQuery {
-            uri: std::mem::take(uri),
-        }),
-        (CANCEL_QUERY, [Value::String(uri)]) => Ok(Command::CancelQuery {
-            uri: std::mem::take(uri),
-        }),
-        (RUN_QUERY | CANCEL_QUERY, _) => Err((
-            ErrorCode::InvalidParams,
-            format!("{command} takes one document URI"),
-        )),
         _ => Err((
             ErrorCode::InvalidParams,
             format!("unknown command {command}"),
@@ -99,36 +78,6 @@ mod tests {
             assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
             assert_eq!(msg, "turtle.fetchImport takes one IRI");
         }
-    }
-
-    #[test]
-    fn run_query_with_one_uri() {
-        let Ok(command) = parse(params(RUN_QUERY, vec![json!("file:///w/q.rq")])) else {
-            panic!("rejected")
-        };
-        assert_eq!(
-            command,
-            Command::RunQuery {
-                uri: "file:///w/q.rq".into()
-            }
-        );
-        let Err((code, msg)) = parse(params(RUN_QUERY, vec![])) else {
-            panic!("accepted")
-        };
-        assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
-        assert_eq!(msg, "turtle.runQuery takes one document URI");
-        assert!(COMMANDS.contains(&RUN_QUERY));
-        let Ok(command) = parse(params(CANCEL_QUERY, vec![json!("file:///w/q.rq")])) else {
-            panic!("rejected")
-        };
-        assert_eq!(
-            command,
-            Command::CancelQuery {
-                uri: "file:///w/q.rq".into()
-            }
-        );
-        assert!(parse(params(CANCEL_QUERY, vec![json!(1)])).is_err());
-        assert!(COMMANDS.contains(&CANCEL_QUERY));
     }
 
     #[test]

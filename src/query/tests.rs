@@ -1,6 +1,6 @@
 use super::render::{csv, json, markdown, table, tsv, turtle};
 use super::*;
-use crate::sparql::join_width::MAX_JOIN_WIDTH;
+use crate::sparql::spargebra_input::MAX_JOIN_WIDTH;
 use spargebra::term::{BlankNode, Literal, NamedNode};
 use std::sync::Arc;
 
@@ -1028,5 +1028,166 @@ fn results_without_a_row_cap_keep_too_many_rows() {
     ] {
         let r = run(&[&d], q, None, &ex_prefixes(), &limits);
         assert_eq!(r, Err(QueryError::TooManyRows(10)), "{q}");
+    }
+}
+
+mod dataset {
+    use crate::analysis::Analysis;
+    use crate::query::{Answer, Limits, run};
+    use crate::syntax::PrefixMap;
+    use spargebra::term::Term;
+    use std::sync::Arc;
+
+    const EX: &str = "http://example.com/";
+
+    fn doc(uri: &str, body: &str) -> Analysis {
+        let text = format!("@prefix ex: <{EX}> .\n{body}");
+        Analysis::new(uri.into(), &text, Arc::new(PrefixMap::default()), false)
+    }
+
+    fn rows(docs: &[&Analysis], query: &str) -> Vec<Vec<Option<Term>>> {
+        let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
+        match run(docs, query, None, &prefixes, &Limits::default()) {
+            Ok(Answer::Solutions(s)) => s.rows,
+            other => panic!("not solutions: {other:?}"),
+        }
+    }
+
+    fn ask(docs: &[&Analysis], query: &str) -> bool {
+        let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
+        match run(docs, query, None, &prefixes, &Limits::default()) {
+            Ok(Answer::Boolean(b)) => b,
+            other => panic!("not a boolean: {other:?}"),
+        }
+    }
+
+    fn text(t: &Option<Term>) -> String {
+        match t {
+            Some(Term::Literal(l)) => l.value().to_string(),
+            other => panic!("not a literal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_directional_string_has_a_language_and_a_direction() {
+        let d = doc(
+            "file:///d.ttl",
+            "ex:s ex:l \"hi\"@en--rtl , \"hi\"@en , \"salut\"@FR--ltr .\n",
+        );
+        let r = rows(
+            &[&d],
+            "SELECT ?v (LANG(?l) AS ?lang) (LANGDIR(?l) AS ?dir) (DATATYPE(?l) AS ?dt) \
+             WHERE { ex:s ex:l ?l . BIND(STR(?l) AS ?v) } ORDER BY ?lang ?dir",
+        );
+        let shown: Vec<_> = r
+            .iter()
+            .map(|row| {
+                let dt = match &row[3] {
+                    Some(Term::NamedNode(n)) => n.as_str().rsplit('#').next().unwrap().to_string(),
+                    other => panic!("{other:?}"),
+                };
+                (text(&row[1]), text(&row[2]), dt)
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("en".to_string(), String::new(), "langString".to_string()),
+                (
+                    "en".to_string(),
+                    "rtl".to_string(),
+                    "dirLangString".to_string()
+                ),
+                (
+                    "fr".to_string(),
+                    "ltr".to_string(),
+                    "dirLangString".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_constant_directional_string_matches_only_its_own_direction() {
+        let d = doc("file:///d.ttl", "ex:s ex:l \"hi\"@en--rtl .\n");
+        assert!(ask(&[&d], "ASK { ex:s ex:l \"hi\"@en--rtl }"));
+        assert!(!ask(&[&d], "ASK { ex:s ex:l \"hi\"@en--ltr }"));
+        assert!(!ask(&[&d], "ASK { ex:s ex:l \"hi\"@en }"));
+    }
+
+    const JOIN: &str = "SELECT ?t ?v WHERE { ?t ex:r ?tt . BIND(SUBJECT(?tt) AS ?x) ?x ex:p ?v } \
+                        ORDER BY ?t";
+
+    #[test]
+    fn a_blank_node_in_a_triple_term_is_the_same_node_outside_it() {
+        let d = doc(
+            "file:///d.ttl",
+            "ex:t ex:r <<( _:x ex:q 1 )>> .\n_:x ex:p 2 .\n",
+        );
+        let r = rows(&[&d], JOIN);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(text(&r[0][1]), "2");
+    }
+
+    #[test]
+    fn the_same_blank_label_in_two_documents_stays_two_nodes_in_triple_terms() {
+        let a = doc(
+            "file:///a.ttl",
+            "ex:t ex:r <<( _:x ex:q 1 )>> .\n_:x ex:p 2 .\n",
+        );
+        let b = doc(
+            "file:///b.ttl",
+            "ex:u ex:r <<( _:x ex:q 1 )>> .\n_:x ex:p 3 .\n",
+        );
+        let r = rows(&[&a, &b], JOIN);
+        let shown: Vec<_> = r
+            .iter()
+            .map(|row| match &row[0] {
+                Some(Term::NamedNode(n)) => (
+                    n.as_str().rsplit('/').next().unwrap().to_string(),
+                    text(&row[1]),
+                ),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("t".to_string(), "2".to_string()),
+                ("u".to_string(), "3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_relative_iri_is_the_absolute_one_in_query_results() {
+        let a = doc("file:///w/a.ttl", "<#me> ex:p 1 .\n");
+        let b = doc("file:///w/b.ttl", "<#me> ex:p 2 .\n");
+        let r = rows(&[&a, &b], "SELECT ?s ?v WHERE { ?s ex:p ?v } ORDER BY ?v");
+        let subjects: Vec<_> = r
+            .iter()
+            .map(|row| match &row[0] {
+                Some(Term::NamedNode(n)) => n.as_str().to_string(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(subjects, ["file:///w/a.ttl#me", "file:///w/b.ttl#me"]);
+    }
+
+    #[test]
+    fn triples_with_an_undeclared_prefix_are_not_in_the_graph() {
+        let d = Analysis::new(
+            "file:///d.ttl".into(),
+            "@prefix ex: <http://example.com/> .\nex:a ex:p nope:o , ex:o .\nnope:s ex:p ex:o .\n",
+            Arc::new(PrefixMap::default()),
+            false,
+        );
+        assert_eq!(d.parsed.triples.len(), 3);
+        let r = rows(&[&d], "SELECT ?s ?o WHERE { ?s ex:p ?o }");
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(!ask(
+            &[&d],
+            "ASK { ?s ?p ?o FILTER (STRSTARTS(STR(?o), \"nope:\")) }"
+        ));
     }
 }

@@ -16,8 +16,8 @@
 //! query's diagnostics: a run with a syntax error reports the error.
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
-use crate::commands::RUN_QUERY;
-use crate::sparql::TokenKind;
+use crate::extensions::run_query::{RUN_QUERY, RUN_QUERY_TITLE};
+use crate::sparql::lexer::TokenKind;
 use lsp_types::{CodeLens, Command, Location};
 use serde_json::{Value, json};
 
@@ -52,12 +52,6 @@ pub(crate) fn code_lenses(a: &Analysis, enc: Encoding, enabled: bool) -> Vec<Cod
         })
         .collect()
 }
-
-/// The title of the lens that runs a query.
-pub(crate) const RUN_QUERY_TITLE: &str = "▶ Run query";
-
-/// The title the lens has while the query runs (see `server::run_query`).
-pub(crate) const CANCEL_QUERY_TITLE: &str = "■ Cancel query";
 
 /// The "▶ Run query" lens of a SPARQL document: one, at the first `SELECT`,
 /// `CONSTRUCT`, `DESCRIBE` or `ASK` keyword after the prologue, when the

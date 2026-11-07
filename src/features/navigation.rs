@@ -2,10 +2,11 @@
 //! Cursor on the prefix part of `ex:a` (or a prefix declaration) works on the
 //! prefix instead.
 
+use super::prefixes::{Scope, declaration_at};
 use crate::analysis::{Analysis, Encoding};
 use crate::features::refactor::text_edits;
 use crate::knowledge::{Knowledge, Source};
-use crate::syntax::names::{Scope, declaration_at, is_pn_prefix};
+use crate::syntax::names::is_pn_prefix;
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
 use crate::workspace::{PREFIX_FILE, uri_to_path};
 use lsp_types::*;

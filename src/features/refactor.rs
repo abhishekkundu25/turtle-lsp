@@ -1,11 +1,11 @@
 //! Refactorings: organise the prefix block, shorten and expand IRIs, and
 //! extract a prefix for a namespace. Every edit keeps the graph the same.
 
+use super::prefixes::{Scope, declaration_edit, declaration_point};
 use crate::analysis::{Analysis, Encoding};
 use crate::syntax::lexer::{Kind, Token};
 use crate::syntax::names::{
-    Scope, declarable_namespace, declaration_edit, declaration_point, is_pn_local, is_pn_prefix,
-    newline, shorten, turtle_token_edits,
+    declarable_namespace, is_pn_local, is_pn_prefix, newline, shorten, turtle_token_edits,
 };
 use crate::syntax::{Form, PrefixDecl, Ref, Span};
 use crate::vocab::VOCABS;

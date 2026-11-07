@@ -9,9 +9,9 @@
 //! out.
 //!
 //! Generic over [`LayoutToken`], with adapters for the Turtle-family tokens
-//! (`syntax::lexer::Token`) and the SPARQL tokens (`sparql::Token`).
+//! (`syntax::lexer::Token`) and the SPARQL tokens (`sparql::lexer::Token`).
 
-use crate::sparql::{Token as SparqlToken, TokenKind, lexer as sparql_lexer};
+use crate::sparql::lexer::{self as sparql_lexer, Token as SparqlToken, TokenKind};
 use crate::syntax::Span;
 use crate::syntax::lexer::{Kind, Token as RdfToken};
 
