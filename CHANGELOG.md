@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Accepting a JSON-LD completion no longer breaks a string elsewhere in the
+  file.** Completion found the cursor's place with its own reading of the
+  text, which did not know comments. A quote inside a `/* */` comment could
+  make the edit that adds a prefix to `@context` land inside a string.
+  Completion now reads the text as the parser does: comments are skipped,
+  single-quoted strings are strings, and a cursor inside a comment offers
+  nothing. The word a completion replaces no longer takes in a comment or a
+  string next to it.
+
 ## 0.15.1 — 2026-11-05
 
 ### Fixed

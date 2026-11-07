@@ -224,12 +224,30 @@ pub struct Token {
 /// The tokens of a JSON text, in order, without whitespace. Never fails:
 /// anything that is not JSON is a [`TokenKind::Invalid`] token.
 pub fn tokens(text: &str) -> Vec<Token> {
+    lex(text).map(|l| l.token).collect()
+}
+
+/// A [`Token`] and whether it closed: a string with its quote, a block
+/// comment with its `*/`. A line comment runs to the end of its line and
+/// never closes; other tokens always do.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Lexeme {
+    pub(crate) token: Token,
+    pub(crate) closed: bool,
+}
+
+/// [`tokens`] one at a time, with whether each closed, for a scan that
+/// stops early.
+pub(crate) fn lex(text: &str) -> impl Iterator<Item = Lexeme> + '_ {
     let mut p = Parser::new(text, true);
-    let mut out = Vec::new();
-    loop {
+    std::iter::from_fn(move || {
         let t = p.lex();
+        let closed = match t.kind {
+            K::Str { closed, .. } | K::Comment { closed } => closed,
+            _ => true,
+        };
         let kind = match t.kind {
-            K::Eof => return out,
+            K::Eof => return None,
             K::LBrace => TokenKind::LBrace,
             K::RBrace => TokenKind::RBrace,
             K::LBracket => TokenKind::LBracket,
@@ -240,13 +258,16 @@ pub fn tokens(text: &str) -> Vec<Token> {
             K::Num { valid: true } => TokenKind::Number,
             K::Num { valid: false } | K::Word => TokenKind::Invalid,
             K::True | K::False | K::Null => TokenKind::Literal,
-            K::Comment => TokenKind::Comment,
+            K::Comment { .. } => TokenKind::Comment,
         };
-        out.push(Token {
-            kind,
-            span: t.span(),
-        });
-    }
+        Some(Lexeme {
+            token: Token {
+                kind,
+                span: t.span(),
+            },
+            closed,
+        })
+    })
 }
 
 /// Parse JSON text (RFC 8259) into a tree of spans, with `json-syntax`
@@ -369,7 +390,11 @@ enum K {
     False,
     Null,
     Word,
-    Comment,
+    /// `closed`: a block comment that ends with its `*/` (a line comment
+    /// runs to the end of its line and never closes).
+    Comment {
+        closed: bool,
+    },
     Eof,
 }
 
@@ -594,7 +619,7 @@ impl<'a> Parser<'a> {
                 break self.eof();
             }
             let t = self.lex();
-            if t.kind != K::Comment {
+            if !matches!(t.kind, K::Comment { .. }) {
                 break t;
             }
         };
@@ -739,20 +764,21 @@ impl<'a> Parser<'a> {
 
     fn comment(&mut self, start: usize) -> Lexed {
         let b = self.b;
-        let end = if b[start + 1] == b'/' {
-            b[start..]
+        let (end, closed) = if b[start + 1] == b'/' {
+            let end = b[start..]
                 .iter()
                 .position(|&c| matches!(c, b'\n' | b'\r'))
-                .map_or(b.len(), |n| start + n)
+                .map_or(b.len(), |n| start + n);
+            (end, false)
         } else {
             b[start + 2..]
                 .windows(2)
                 .position(|w| w == b"*/")
-                .map_or(b.len(), |n| start + 2 + n + 2)
+                .map_or((b.len(), false), |n| (start + 2 + n + 2, true))
         };
         self.pos = end;
         let t = Lexed {
-            kind: K::Comment,
+            kind: K::Comment { closed },
             start: start as u32,
             end: end as u32,
         };
@@ -877,7 +903,7 @@ impl<'a> Parser<'a> {
             K::Comma => "','".into(),
             K::Str { .. } => "a string".into(),
             K::Num { .. } => "a number".into(),
-            K::True | K::False | K::Null | K::Word | K::Comment => {
+            K::True | K::False | K::Null | K::Word | K::Comment { .. } => {
                 format!("`{}`", short(self.slice(t)))
             }
             K::Eof => "the end of the file".into(),
@@ -904,7 +930,7 @@ impl<'a> Parser<'a> {
                 );
                 Value::Invalid
             }
-            K::RBrace | K::RBracket | K::Colon | K::Comma | K::Comment | K::Eof => {
+            K::RBrace | K::RBracket | K::Colon | K::Comma | K::Comment { .. } | K::Eof => {
                 self.error(
                     t.span(),
                     format!("Expected a value, found {}", self.describe(t)),
@@ -943,7 +969,7 @@ impl<'a> Parser<'a> {
             format!("Expected ':' after the key, found {}", self.describe(t)),
         );
         match t.kind {
-            K::RBrace | K::RBracket | K::Colon | K::Comma | K::Comment | K::Eof => Json {
+            K::RBrace | K::RBracket | K::Colon | K::Comma | K::Comment { .. } | K::Eof => Json {
                 value: Value::Invalid,
                 span: Span::new(key.end, key.end),
                 inner: Span::new(key.end, key.end),

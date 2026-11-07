@@ -1,8 +1,10 @@
 //! Completion inside JSON-LD.
 //!
-//! The slot comes from the text before the cursor, scanned as JSON that may be
-//! half typed (an unclosed string ends at its line): a key (in quotes or
-//! not), an `@type` value (or a value of one of its aliases), or nothing.
+//! The slot comes from the text before the cursor, read with the parser's
+//! tokens as JSON that may be half typed (an unclosed string ends at its
+//! line, a comment is skipped): a key (in quotes or not), an `@type` value
+//! (or a value of one of its aliases), or nothing. A cursor in a comment has
+//! no slot.
 //! What is offered comes from the active context of the innermost object
 //! around the cursor ([`crate::jsonld::SourceIndex::scope_at`]):
 //!
@@ -27,7 +29,8 @@ use super::{
 };
 use crate::analysis::{Analysis, Encoding};
 use crate::jsonld::context::{ActiveContext, is_keyword};
-use crate::jsonld::context_edit::{MEMBER, context_edit, string_end};
+use crate::jsonld::context_edit::{MEMBER, context_edit};
+use crate::jsonld::json::{self, TokenKind};
 use crate::jsonld::source::UseRole;
 use crate::knowledge::Knowledge;
 use crate::syntax::{Iri, PrefixMap, Span};
@@ -416,26 +419,65 @@ impl Frame {
     }
 }
 
+/// A token that is part of a bare word: `ex:a` is `ex`, `:`, `a`.
+fn is_bare_token(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Number | TokenKind::Literal | TokenKind::Invalid | TokenKind::Colon
+    )
+}
+
 fn is_bare(c: u8) -> bool {
     !(c.is_ascii_whitespace() || matches!(c, b'"' | b',' | b':' | b'{' | b'}' | b'[' | b']'))
 }
 
 /// Scans the JSON before `offset` (forgiving errors) for what the cursor is
 /// in. `is_type(key)` tells whether a key's value is an `@type` value.
+///
+/// It reads the parser's tokens ([`json::lex`]), so a quote in a comment is
+/// no string here either, each object it reports is a `{` token, and a bare
+/// word is the tokens the parser reads as one.
 fn scan(text: &str, offset: usize, is_type: &dyn Fn(&str) -> bool) -> Cursor {
     let b = text.as_bytes();
     let mut stack: Vec<Frame> = Vec::new();
-    let mut i = 0;
     let mut in_string: Option<(usize, usize)> = None;
-    while i < offset {
-        match b[i] {
-            b'"' => {
-                let (end, _) = string_end(b, i);
+    // The run of touching bare tokens (`ex`, `:`, `a`) the last token ends.
+    let mut bare: Option<(usize, usize)> = None;
+    let mut lexemes = json::lex(text);
+    let mut after = None;
+    for l in lexemes.by_ref() {
+        let t = l.token;
+        let (i, t_end) = (t.span.start as usize, t.span.end as usize);
+        if i >= offset {
+            after = Some(l);
+            break;
+        }
+        bare = match (is_bare_token(t.kind), bare) {
+            (false, _) => None,
+            (true, Some((s, e))) if e == i => Some((s, t_end)),
+            (true, _) => Some((i, t_end)),
+        };
+        match t.kind {
+            TokenKind::Comment => {
+                // A line comment, or a block comment left open, takes in the
+                // end of its text too.
+                if offset < t_end || (offset == t_end && !l.closed) {
+                    return Cursor {
+                        place: None,
+                        word: (offset, offset),
+                        quoted: false,
+                        objects: Vec::new(),
+                    };
+                }
+            }
+            TokenKind::String => {
+                // Its closing quote, or (unclosed) the end of its line.
+                let end = if l.closed { t_end - 1 } else { t_end };
                 if offset <= end {
                     // The cursor is in this string; a bare end runs to the
                     // end of the word.
                     let mut e = end;
-                    if b.get(end) != Some(&b'"') {
+                    if !l.closed {
                         e = offset;
                         while e < end && (is_bare(b[e]) || b[e] == b':') {
                             e += 1;
@@ -450,10 +492,8 @@ fn scan(text: &str, offset: usize, is_type: &dyn Fn(&str) -> bool) -> Cursor {
                     *key = Some((i + 1, end));
                     *expect = Expect::Colon;
                 }
-                i = end + 1;
-                continue;
             }
-            b'{' => {
+            TokenKind::LBrace => {
                 let in_context = context_child(&stack, text);
                 stack.push(Frame::Object {
                     start: i,
@@ -462,7 +502,7 @@ fn scan(text: &str, offset: usize, is_type: &dyn Fn(&str) -> bool) -> Cursor {
                     in_context,
                 });
             }
-            b'[' => {
+            TokenKind::LBracket => {
                 let in_context = context_child(&stack, text);
                 let key = match stack.last() {
                     Some(Frame::Object { key, .. }) => *key,
@@ -470,34 +510,35 @@ fn scan(text: &str, offset: usize, is_type: &dyn Fn(&str) -> bool) -> Cursor {
                 };
                 stack.push(Frame::Array { key, in_context });
             }
-            b'}' | b']' => {
+            TokenKind::RBrace | TokenKind::RBracket => {
                 stack.pop();
             }
-            b':' => {
+            TokenKind::Colon => {
                 if let Some(Frame::Object { expect, .. }) = stack.last_mut() {
                     *expect = Expect::Value;
                 }
             }
-            b',' => {
+            TokenKind::Comma => {
                 if let Some(Frame::Object { expect, key, .. }) = stack.last_mut() {
                     *expect = Expect::Key;
                     *key = None;
                 }
             }
-            _ => {}
+            TokenKind::Number | TokenKind::Literal | TokenKind::Invalid => {}
         }
-        i += 1;
     }
     let (word, quoted) = match in_string {
         Some(w) => (w, true),
         None => {
-            let mut s = offset;
-            while s > 0 && (is_bare(b[s - 1]) || b[s - 1] == b':') {
-                s -= 1;
-            }
-            let mut e = offset;
-            while e < b.len() && (is_bare(b[e]) || b[e] == b':') {
-                e += 1;
+            // The bare run at the cursor, and the bare tokens touching it after.
+            let (s, mut e) = bare
+                .filter(|&(_, e)| e >= offset)
+                .unwrap_or((offset, offset));
+            for l in after.into_iter().chain(lexemes) {
+                if l.token.span.start as usize != e || !is_bare_token(l.token.kind) {
+                    break;
+                }
+                e = l.token.span.end as usize;
             }
             ((s, e), false)
         }
@@ -592,6 +633,62 @@ mod tests {
             place(r#"{ "a": "x\"y", "@type": "fo:B|"#),
             (Some(Place::Type), "fo:B".into(), true)
         );
+    }
+
+    /// Quotes in a comment are not strings: the slot is the one the parser
+    /// sees, and a cursor in a comment has none.
+    #[test]
+    fn comments_are_read_as_the_parser_reads_them() {
+        assert_eq!(
+            place(r#"{ /* " */ "@type": "Wi|dget" }"#),
+            (Some(Place::Type), "Widget".into(), true)
+        );
+        assert_eq!(
+            place("{ // \"\n  \"na|me\": 1 }"),
+            (Some(Place::Key), "name".into(), true)
+        );
+        assert_eq!(place(r#"{ "a": 1, /* "na| */ }"#).0, None);
+        assert_eq!(place("{ \"a\": 1, // \"na|\n}").0, None);
+        assert_eq!(place("{ \"a\": 1, // na|\n}").0, None);
+    }
+
+    /// A bare word is the tokens the parser reads: it stops at a comment or
+    /// a string before it, so accepting an item replaces neither.
+    #[test]
+    fn a_bare_word_is_the_parser_s_tokens() {
+        assert_eq!(
+            place(r#"{ "a": 1, /* c */ex|"#),
+            (Some(Place::Key), "ex".into(), false)
+        );
+        assert_eq!(place(r#"{ "a": 1, ex:na|me }"#).1, "ex:name");
+        assert_eq!(place(r#"{ 'x'ab|"#).1, "ab");
+        assert_eq!(
+            place(r#"{ "a": 1, |/* c */"#),
+            (Some(Place::Key), "".into(), false)
+        );
+    }
+
+    /// The chaos input (seed 42207436534, iteration 80675): a `/* */`
+    /// comment with quotes in it. Wherever completion offers a term, the
+    /// `@context` edit lands between tokens, never inside one.
+    #[test]
+    fn the_context_edit_never_cuts_into_a_token() {
+        let text = "{/*\n /,/ex:a\", {\"@id\": \"\"}\"ex:b\"]\n  }\n} \"e*/x:p\\u00rop\": {\"\"\n ,   \"@value\"\r: \"value\",\n    \"@type\": [\"ex:a\", \"ex:b\":]\n  }\n}";
+        let toks = crate::jsonld::json::tokens(text);
+        for offset in (0..=text.len()).filter(|&o| text.is_char_boundary(o)) {
+            let c = scan(text, offset, &|k| k == "@type");
+            if c.place.is_none() {
+                continue;
+            }
+            let (at, _, _) = context_edit(text, &c.objects, offset);
+            let cut = toks
+                .iter()
+                .find(|t| (t.span.start as usize) < at && at < t.span.end as usize);
+            assert!(
+                cut.is_none(),
+                "at offset {offset} the edit at {at} cuts into {cut:?}"
+            );
+        }
     }
 
     fn edit(text: &str) -> String {
