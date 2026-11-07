@@ -143,7 +143,7 @@ pub enum QueryError {
     /// The caller's cancellation flag was set.
     Cancelled,
     /// The query joins too many patterns or path steps at once to plan (the
-    /// message says how many and the most allowed, [`MAX_JOIN_WIDTH`](crate::sparql::join_width::MAX_JOIN_WIDTH)).
+    /// message says how many and the most allowed, [`MAX_JOIN_WIDTH`](crate::sparql::spargebra_input::MAX_JOIN_WIDTH)).
     TooComplex(String),
     /// The evaluator failed (an unsupported custom function or `SERVICE`).
     Evaluation(String),
@@ -208,9 +208,9 @@ pub fn run(
 }
 
 /// Refuses a query whose planning would run for seconds before the first
-/// clock check ([`MAX_JOIN_WIDTH`](crate::sparql::join_width::MAX_JOIN_WIDTH)).
+/// clock check ([`MAX_JOIN_WIDTH`](crate::sparql::spargebra_input::MAX_JOIN_WIDTH)).
 fn check_complexity(query: &Query) -> Result<(), QueryError> {
-    crate::sparql::join_width::too_wide(query)
+    crate::sparql::spargebra_input::too_wide(query)
         .map_or(Ok(()), |why| Err(QueryError::TooComplex(why)))
 }
 
@@ -257,7 +257,7 @@ fn parse(text: &str, base: Option<&str>, prefixes: &PrefixMap) -> Result<Query, 
             parser = p;
         }
     }
-    let fixed = crate::sparql::validate::text_for_spargebra(text, doc.tokens());
+    let fixed = crate::sparql::spargebra_input::text_for_spargebra(text, doc.tokens());
     // The diagnostics found nothing (they should have): locate it here.
     parser
         .clone()
@@ -267,7 +267,7 @@ fn parse(text: &str, base: Option<&str>, prefixes: &PrefixMap) -> Result<Query, 
 
 /// The syntax error of `text` (tokenized as `tokens`), which `parser`
 /// rejects, at its place in `text`: the parser is given a rewritten copy.
-fn located(text: &str, tokens: &[crate::sparql::Token], parser: SparqlParser) -> QueryError {
+fn located(text: &str, tokens: &[crate::sparql::lexer::Token], parser: SparqlParser) -> QueryError {
     let e = crate::sparql::validate::check_tokens(text, tokens, parser, false);
     let offset = match e.as_ref().map(|e| e.at) {
         Some(crate::sparql::validate::ErrorAt::Token(s)) => s.start as usize,

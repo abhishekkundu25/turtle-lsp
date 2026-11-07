@@ -10,7 +10,7 @@ use crate::features::semantic::{
 };
 use crate::knowledge::Knowledge;
 use crate::settings::InlayLabels;
-use crate::sparql::{Form, PrefixSource, TermRef, TermRole, TokenKind};
+use crate::sparql::{Form, PrefixSource, TermRef, TermRole, lexer::TokenKind};
 use crate::syntax::{RDF_TYPE, Span};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};

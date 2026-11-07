@@ -312,6 +312,12 @@ pub fn parse(text: &str) -> JsonDoc {
     }
 }
 
+/// Whether `text` is JSON with no syntax errors: what an `rdf:JSON` literal must be.
+pub fn valid(text: &str) -> bool {
+    let doc = parse(text);
+    doc.root.is_some() && doc.errors.is_empty()
+}
+
 /// How many times [`parse`] ran on this thread, for tests that check a
 /// feature reads a text once.
 #[cfg(test)]

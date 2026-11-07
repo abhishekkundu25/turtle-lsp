@@ -1,7 +1,7 @@
 //! The outline (document symbols) and folding ranges of SPARQL documents.
 
 use crate::analysis::{Encoding, SparqlAnalysis};
-use crate::sparql::{TokenKind, lexer};
+use crate::sparql::lexer::{self, TokenKind};
 use crate::syntax::Span;
 use lsp_types::*;
 

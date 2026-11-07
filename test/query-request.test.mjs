@@ -1,5 +1,5 @@
 // The custom request `turtle/query` over stdio: a query as text, its
-// results as JSON (src/server/query_request.rs).
+// results as JSON (src/extensions/query.rs).
 import { test, describe, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"

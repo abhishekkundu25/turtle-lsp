@@ -8,6 +8,12 @@ pub use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 pub use page::Instant;
 
+/// The time since the first call: the clock for code that takes a `fn() -> Duration`.
+pub fn elapsed() -> std::time::Duration {
+    static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+    Instant::now().saturating_duration_since(*START)
+}
+
 #[cfg(target_arch = "wasm32")]
 mod page {
     use std::time::Duration;

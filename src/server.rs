@@ -29,9 +29,9 @@
 //! Requests are answered by `ide::Session`, which routes each by document
 //! kind: RDF documents to `features`, SPARQL documents to
 //! `sparql::features`; neither runs on the other.
-//! The custom requests (listed under `experimental`) run on a thread of
-//! their own and answer from there: `turtle/graph` over a copy of the
-//! knowledge index, `turtle/query` (`query_request`) over the documents.
+//! The requests beyond the standard (`turtle/graph`, `turtle/query`) are
+//! in `extensions`, listed under `experimental`; each runs on a thread of
+//! its own and answers from there.
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
@@ -48,7 +48,7 @@
 use crate::analysis::Encoding;
 use crate::clock::Instant;
 use crate::diagnose::DiagnosticInputs;
-use crate::features::graph::{GraphParams, GraphResult, InvalidParams};
+use crate::extensions::{self, run_query};
 use crate::features::{diagnostics, navigation, shacl_validate};
 use crate::ide;
 use crate::settings::{SETTINGS_FILE, Settings};
@@ -68,16 +68,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-mod client;
+pub(crate) mod client;
 mod index;
 mod layers;
-mod progress;
-mod query_request;
+pub(crate) mod progress;
 mod refresh;
-mod run_query;
 mod shacl;
 mod timers;
-mod wire;
+pub(crate) mod wire;
 pub(crate) mod worker;
 mod workspace_diagnostics;
 
@@ -109,8 +107,7 @@ const EXIT_WAIT: Duration = Duration::from_secs(30);
 pub const MAIN_STACK: usize = 64 << 20;
 
 /// Stack of the threads that parse and analyze.
-#[cfg(not(target_arch = "wasm32"))]
-const WORKER_STACK: usize = 16 << 20;
+pub(crate) const WORKER_STACK: usize = 16 << 20;
 
 /// How the session ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,8 +178,8 @@ pub(crate) struct Server {
     wsdiag: workspace_diagnostics::State,
     /// The "Run query" runs going on.
     queries: run_query::State,
-    /// The `turtle/query` runs going on (`query_request`).
-    query_requests: query_request::State,
+    /// The `turtle/query` runs going on (`extensions::query`).
+    query_requests: extensions::query::State,
     /// The workspace folders as `initialize` named them. The browser build
     /// has no file paths, so `ws.roots()` is empty there; a request that
     /// needs a folder of the workspace uses these.
@@ -237,7 +234,7 @@ impl Server {
                 .text_document
                 .as_ref()
                 .is_some_and(|t| t.diagnostic.is_some());
-        let display_refresh = [
+        let display_refresh: Vec<_> = [
             (
                 "inlayHint",
                 lsp_types::request::InlayHintRefreshRequest::METHOD,
@@ -332,6 +329,7 @@ impl Server {
             watch_dynamic,
             resolve_edits,
             layers,
+            queries: run_query::State::new(show_document, &display_refresh, spawn),
             refresh: Refresh::new(pull, refresh_support, display_refresh),
             timers: Timers::default(),
             imports: crate::imports::Imports::with_spawn(spawn),
@@ -340,8 +338,7 @@ impl Server {
             progress: Progress::new(work_done_progress),
             wsdiag,
             root_uris,
-            queries: run_query::State::new(show_document),
-            query_requests: query_request::State::default(),
+            query_requests: extensions::query::State::default(),
             spawn,
             #[cfg(test)]
             fault: false,
@@ -387,7 +384,7 @@ pub fn run() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
 
     let (mut server, result, roots) = Server::configure(out.clone(), raw, Spawn::Thread)?;
     wire::initialize_finish(&out, &inbox, id, result)?;
-    // The server holds the only sender from here (and a `turtle/graph`
+    // The server holds the only sender from here (and an extension's
     // thread while it runs): the writer ends with them.
     drop(out);
 
@@ -513,12 +510,12 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
         execute_command_provider: Some(ExecuteCommandOptions {
             commands: crate::commands::COMMANDS
                 .iter()
+                .chain(&run_query::COMMANDS)
                 .map(|c| c.to_string())
                 .collect(),
             work_done_progress_options: Default::default(),
         }),
-        // Custom requests, by method: `{"turtle/graph": true, "turtle/query": true}`.
-        experimental: Some(serde_json::json!({ GRAPH: true, QUERY: true })),
+        experimental: Some(extensions::capabilities()),
         ..Default::default()
     }
 }
@@ -537,22 +534,8 @@ fn internal_error_diagnostic(msg: &str) -> Diagnostic {
     }
 }
 
-/// The custom request for the workspace graph (`features::graph`).
-const GRAPH: &str = "turtle/graph";
-/// The custom request that runs a query (`server::query_request`).
-const QUERY: &str = "turtle/query";
-
-/// A `turtle/graph` answer as JSON text; parameters it cannot answer are
-/// `InvalidParams`.
-fn graph_json(r: Result<GraphResult, InvalidParams>) -> Result<String, (ErrorCode, String)> {
-    match r {
-        Ok(g) => json(&g),
-        Err(e) => Err((ErrorCode::InvalidParams, e.to_string())),
-    }
-}
-
 /// `result` as JSON text, for the answer to a request.
-fn json(result: &impl serde::Serialize) -> Result<String, (ErrorCode, String)> {
+pub(crate) fn json(result: &impl serde::Serialize) -> Result<String, (ErrorCode, String)> {
     wire::encode(result).map_err(|e| (ErrorCode::InternalError, e.to_string()))
 }
 
@@ -651,8 +634,12 @@ impl Server {
                 }
                 recv(self.queries.results()) -> done => {
                     if let Ok(done) = done {
-                        self.guarded("a query run", |s| s.query_done(done));
+                        self.guarded("a query run", |s| s.queries.on_done(done, &mut s.client, &mut s.progress));
                     }
+                    None
+                }
+                recv(self.queries.due().map_or_else(never, crossbeam_channel::at)) -> _ => {
+                    self.guarded("a query run", |s| s.queries.on_tick(&s.client, &s.progress));
                     None
                 }
                 recv(self.shacl.rx()) -> got => {
@@ -782,7 +769,6 @@ impl Server {
                     s.progress
                         .begin(&mut s.client, Work::Shacl, "Validating SHACL shapes");
                 }
-                Timer::QueryProgress => s.query_progress_tick(),
             });
         }
     }
@@ -969,7 +955,8 @@ impl Server {
                         NumberOrString::Number(n) => RequestId::from(n),
                         NumberOrString::String(s) => RequestId::from(s),
                     };
-                    self.query_cancel_request(&id);
+                    self.queries
+                        .on_cancel_request(&id, &mut self.client, &mut self.progress);
                     self.query_requests.cancel(&id);
                 }
             }
@@ -977,7 +964,8 @@ impl Server {
                 if let Some(p) = parse::<WorkDoneProgressCancelParams>(n.params)
                     && let NumberOrString::String(token) = p.token
                 {
-                    self.query_progress_cancelled(&token);
+                    self.queries
+                        .on_progress_cancel(&token, &mut self.client, &mut self.progress);
                 }
             }
             _ => {}
@@ -1528,22 +1516,19 @@ impl Server {
                 json(&self.session().code_actions(&p))
             }
             ExecuteCommand::METHOD => {
-                match crate::commands::parse(params!(ExecuteCommandParams))? {
+                let p = params!(ExecuteCommandParams);
+                if run_query::COMMANDS.contains(&p.command.as_str()) {
+                    let (ws, settings) = (&mut self.ws, self.layers.settings());
+                    let (client, progress) = (&mut self.client, &mut self.progress);
+                    return self
+                        .queries
+                        .command(req.id, p, ws, settings, client, progress);
+                }
+                match crate::commands::parse(p)? {
                     // The job starts when this batch ends; its answer
                     // republishes diagnostics like any other resolution pass.
                     crate::commands::Command::FetchImport { iri } => {
                         self.imports.fetch(&iri);
-                        json(&Value::Null)
-                    }
-                    // Answered when the query is done (see `run_query`).
-                    crate::commands::Command::RunQuery { uri } => {
-                        match self.run_query(req.id.clone(), &uri)? {
-                            Some(v) => json(&v),
-                            None => return Ok(None),
-                        }
-                    }
-                    crate::commands::Command::CancelQuery { uri } => {
-                        self.cancel_query(&uri);
                         json(&Value::Null)
                     }
                 }
@@ -1607,7 +1592,7 @@ impl Server {
                 let uri = p.text_document.uri.as_str();
                 let mut lenses = self.session().code_lenses(uri);
                 if let Some(l) = &mut lenses {
-                    self.query_lenses(uri, l);
+                    self.queries.lenses(uri, l);
                 }
                 json(&lenses)
             }
@@ -1615,25 +1600,16 @@ impl Server {
                 let lens = params!(CodeLens);
                 json(&self.session().resolve_code_lens(lens))
             }
-            GRAPH => {
-                let p = match req.params {
-                    Value::Null => GraphParams::default(),
-                    _ => params!(GraphParams),
-                };
-                // A big layout takes seconds: on a thread of its own, which
-                // answers the request itself.
-                #[cfg(not(target_arch = "wasm32"))]
-                if self.spawn == Spawn::Thread {
-                    self.graph_on_thread(req.id.clone(), p)?;
-                    return Ok(None);
-                }
-                graph_json(self.session().graph(p))
-            }
-            QUERY => {
-                let p = params!(query_request::Params);
-                return self
-                    .query_request(req.id.clone(), p)
-                    .and_then(|v| v.map(|v| json(&v)).transpose());
+            m if extensions::handles(m) => {
+                let out = self.client.sender();
+                let (queries, roots) = (&self.query_requests, &self.root_uris);
+                let mut session = ide::Session::new(
+                    &mut self.ws,
+                    self.enc,
+                    self.layers.settings(),
+                    self.resolve_edits,
+                );
+                return extensions::request(req, queries, roots, self.spawn, out, &mut session);
             }
             _ => Err((
                 ErrorCode::MethodNotFound,
@@ -1641,41 +1617,6 @@ impl Server {
             )),
         };
         answer.map(Some)
-    }
-
-    /// Answer `turtle/graph` request `id` from a thread of its own, over a
-    /// copy of the knowledge index (`Session::graph_job`): the main loop goes
-    /// on meanwhile. Nothing is kept: a `$/cancelRequest` does not stop it,
-    /// and the answer comes when the layout ends.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn graph_on_thread(
-        &mut self,
-        id: RequestId,
-        params: GraphParams,
-    ) -> Result<(), (ErrorCode, String)> {
-        let job = self.session().graph_job(params);
-        let out = self.client.sender();
-        self.spawn
-            .run(
-                "graph",
-                WORKER_STACK,
-                move || graph_json(job.run()),
-                move |answer| {
-                    let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
-                        Ok(json) => Out::Result { id, json },
-                        Err((code, message)) => {
-                            Out::Message(Response::new_err(id, code as i32, message).into())
-                        }
-                    };
-                    let _ = out.send(msg);
-                },
-            )
-            .map_err(|e| {
-                (
-                    ErrorCode::InternalError,
-                    format!("turtle-lsp could not start a thread for the graph: {e}"),
-                )
-            })
     }
 
     /// Start validating the workspace in the background (once indexed, when
@@ -2315,6 +2256,34 @@ mod tests {
             let got = e.server.request(req).unwrap().unwrap();
             assert_eq!(got, expected, "{method}");
         }
+    }
+
+    /// The Run query commands take one document URI, and are advertised.
+    #[test]
+    fn run_query_commands_take_one_uri() {
+        let mut e = embedded();
+        let run = |e: &mut Embedded, command: &str, arguments: Value| {
+            let params = json!({ "command": command, "arguments": arguments });
+            let req = Request::new(1.into(), "workspace/executeCommand".into(), params);
+            e.server.request(req)
+        };
+        let Err((code, msg)) = run(&mut e, run_query::RUN_QUERY, json!([])) else {
+            panic!("accepted")
+        };
+        assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
+        assert_eq!(msg, "turtle.runQuery takes one document URI");
+        assert!(run(&mut e, run_query::CANCEL_QUERY, json!([1])).is_err());
+        let cancelled = run(&mut e, run_query::CANCEL_QUERY, json!(["file:///w/q.rq"]));
+        assert!(matches!(cancelled, Ok(Some(n)) if n == "null"));
+        let commands = capabilities(Encoding::Utf16, false).execute_command_provider;
+        assert_eq!(
+            commands.unwrap().commands,
+            [
+                "turtle.fetchImport",
+                "turtle.runQuery",
+                "turtle.cancelQuery"
+            ]
+        );
     }
 
     /// The `initialize` result is the text the `Value` it was built as

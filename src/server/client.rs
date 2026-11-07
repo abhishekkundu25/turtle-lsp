@@ -8,7 +8,7 @@ use lsp_server::{Message, Notification, Request, RequestId};
 use lsp_types::notification::Notification as _;
 use lsp_types::{MessageType, ShowMessageParams};
 
-pub(super) struct Client {
+pub(crate) struct Client {
     sender: Sender<Out>,
     /// The number of the last request sent.
     next_id: i32,
@@ -20,7 +20,7 @@ impl Client {
     }
 
     /// Send `msg`; Err when the connection is gone.
-    pub(super) fn send(&self, msg: impl Into<Message>) -> Result<(), SendError<Out>> {
+    pub(crate) fn send(&self, msg: impl Into<Message>) -> Result<(), SendError<Out>> {
         self.sender.send(Out::Message(msg.into()))
     }
 
@@ -46,7 +46,7 @@ impl Client {
         self.show(MessageType::WARNING, message);
     }
 
-    pub(super) fn show(&self, typ: MessageType, message: String) {
+    pub(crate) fn show(&self, typ: MessageType, message: String) {
         let params = ShowMessageParams { typ, message };
         self.notify(lsp_types::notification::ShowMessage::METHOD, params);
     }
@@ -57,7 +57,7 @@ impl Client {
     }
 
     /// Send a request; the answer is matched by the returned id.
-    pub(super) fn request(&mut self, method: &str, params: impl serde::Serialize) -> RequestId {
+    pub(crate) fn request(&mut self, method: &str, params: impl serde::Serialize) -> RequestId {
         self.next_id += 1;
         let id = RequestId::from(format!("turtle-{}", self.next_id));
         let _ = self.send(Request::new(id.clone(), method.into(), params));

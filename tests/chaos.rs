@@ -46,7 +46,7 @@ use turtle_lsp::jsonld;
 use turtle_lsp::knowledge::{Knowledge, Source};
 use turtle_lsp::oracle::{self, Batch};
 use turtle_lsp::settings::{InlayLabels, Settings};
-use turtle_lsp::sparql::{self, Document, Level, TokenKind, features as sparql_features};
+use turtle_lsp::sparql::{self, Document, Level, features as sparql_features, lexer::TokenKind};
 use turtle_lsp::syntax::lexer::Kind;
 use turtle_lsp::syntax::{
     Form, GraphName, Iri, Node, Parsed, PrefixMap, Severity, Syntax, parse, parse_with_base,

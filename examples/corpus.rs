@@ -60,7 +60,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use turtle_lsp::features::format::{Options, format};
-use turtle_lsp::sparql::{self, Document, Level, TokenKind};
+use turtle_lsp::sparql::{self, Document, Level, lexer::TokenKind};
 use turtle_lsp::syntax::lexer::{Kind, tokenize};
 use turtle_lsp::syntax::{PrefixMap, Severity, Syntax, parse_with_base};
 
@@ -1055,7 +1055,7 @@ fn algebra(
     }
     // As the server gives it: local names with several dots escaped, which
     // spargebra 0.4 rejects although the grammar allows them.
-    let text = turtle_lsp::sparql::validate::text_for_spargebra(
+    let text = turtle_lsp::sparql::spargebra_input::text_for_spargebra(
         text,
         &turtle_lsp::sparql::lexer::tokenize(text),
     );

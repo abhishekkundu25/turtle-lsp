@@ -11,6 +11,6 @@ pub(crate) mod vocab;
 pub use model::Path;
 pub(crate) use model::{Shape, ShapeKind, Shapes};
 pub use validate::validate_report;
-pub(crate) use validate::{Failure, FailureKind, ValidationResult, validate_report_among};
+pub(crate) use validate::{Failure, FailureKind, ValidationResult};
 
 pub const SH: &str = "http://www.w3.org/ns/shacl#";

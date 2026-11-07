@@ -13,6 +13,17 @@
   nothing. The word a completion replaces no longer takes in a comment or a
   string next to it.
 
+### Internal
+
+- **Editor extensions live in one place, apart from the core.** The
+  requests and commands beyond the LSP standard (`turtle/graph`,
+  `turtle/query`, Run query) are in `src/extensions/`; the server routes
+  them through one entry and lists them from one function. The parser, the SPARQL lexer, the graph and
+  the SHACL engine no longer reach into server code: SHACL takes its JSON
+  check and clock from the caller. A test fails when core code depends on
+  an extension or a library module reaches outside the libraries. No
+  behaviour changes; the code is about 16 lines shorter.
+
 ## 0.15.1 — 2026-11-05
 
 ### Fixed

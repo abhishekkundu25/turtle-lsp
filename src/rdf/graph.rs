@@ -232,7 +232,7 @@ impl<'a> Graph<'a> {
     }
 
     /// `base` with one more document, `triples`, which is document number
-    /// [`Graph::documents`] of `base` in [`Graph::origin`] and the blank nodes.
+    /// `documents()` of `base` in [`Graph::origin`] and the blank nodes.
     /// Its blank nodes are its own. Costs in proportion to `triples`.
     pub(crate) fn overlay(base: &Arc<Graph<'a>>, triples: &'a [Triple]) -> Graph<'a> {
         debug_assert!(base.base.is_none(), "an overlay of an overlay");
@@ -646,6 +646,13 @@ mod tests {
         assert_eq!(g.len(), 2);
         // `origin` still names the triple's place in the document.
         assert_eq!(g.origin, [(0, 1), (0, 3)]);
+        // An absolute IRI spelled like an undeclared name stays in.
+        let p = parse(
+            "urn:isbn:1 <http://e/p> 2 .\n<urn:isbn:1> <http://e/p> 1 .\n",
+            &PrefixMap::default(),
+            Syntax::Turtle,
+        );
+        assert_eq!(Graph::new(&[&p.triples]).len(), 1);
     }
 
     #[test]

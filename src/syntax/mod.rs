@@ -239,8 +239,7 @@ pub struct Triple {
     pub graph: Option<GraphName>,
     /// A term was written as a prefixed name whose prefix is not declared.
     /// The term is kept as the name's own text (`nope:p`), which is not what
-    /// the author meant, so [`crate::rdf::Graph::new`] leaves the triple out
-    /// of the query and SHACL graph.
+    /// the author meant, so the query and SHACL graph leave the triple out.
     pub unresolved: bool,
 }
 

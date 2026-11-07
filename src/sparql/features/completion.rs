@@ -24,10 +24,8 @@ use crate::features::completion::{
     self as rdf, Candidate, Slot, fuzzy, may_match, ranking, ranking::Subject,
 };
 use crate::knowledge::Knowledge;
-use crate::sparql::lexer::{self, AGGREGATES};
-use crate::sparql::{
-    GroupId, GroupKind, OperationKind, Structure, TermRef, Token, TokenKind, TriplePattern,
-};
+use crate::sparql::lexer::{self, AGGREGATES, Token, TokenKind};
+use crate::sparql::{GroupId, GroupKind, OperationKind, Structure, TermRef, TriplePattern};
 use crate::syntax::lexer::is_pn_chars;
 use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Span};
 use lsp_types::*;

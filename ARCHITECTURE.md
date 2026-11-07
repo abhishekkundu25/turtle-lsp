@@ -30,12 +30,19 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `server` | The LSP main loop, its state groups, its timers, the stdio transport and the worker threads other modules start | `main`, the browser engine |
 | `batch` | Files analysed as one workspace without the event loop | `cli`, the browser engine |
 | `cli` | `check`, `format` and `query` (not in the browser build) | `main` |
-| `clock` | The time the server's timers read | `server`, `query`, `shacl` |
+| `clock` | The time the server's timers read | `server`, `query`, `features` |
 | `ide` | `ide::Session`: every editor request over one workspace, routed by document kind | `server` |
+| `extensions` | The requests beyond the LSP standard (`turtle/graph`, "▶ Run query"): one router entry, one `experimental` capability builder, one off-thread answer | `server`; `features::lens` names Run query |
 | `layout` | What the Turtle and SPARQL formatters share: the layout options, the token document, the triple terms and the printer | `features`, `sparql`, `ide`, `batch`; `jsonld` and `query` take its options |
 
-Seven modules are private to the crate: `commands`, `diagnose`, `fetch`,
-`ide`, `layout`, `vocab` and `workspace`. The others are public because a
+Core code never names `extensions`, except the router in `server` and the
+Run query lens. The libraries `syntax`, `rdf`, `shacl`, `sparql::lexer` and
+`sparql::spargebra_input` name no module outside that set, and `syntax` and
+the lexer name only `syntax`. The `boundaries` test in `src/lib.rs` checks
+both rules.
+
+Eight modules are private to the crate: `commands`, `diagnose`,
+`extensions`, `fetch`, `ide`, `layout`, `vocab` and `workspace`. The others are public because a
 consumer uses them: the browser engine, the examples, the integration tests
 or `src/main.rs`. The "Public interface" section of the crate doc lists
 every path those consumers use, one per line, as a doctest, so
@@ -60,7 +67,7 @@ Inside the larger modules, these files hold one part each:
 | `src/server/worker.rs` | `Spawn`, `spawn_guarded` and `Feed`: how jobs start and how their answers come back |
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
-| `src/server/{run_query,query_request,workspace_diagnostics}.rs` | "▶ Run query", the `turtle/query` request, and the diagnostics of files that are not open |
+| `src/server/workspace_diagnostics.rs` | The diagnostics of files that are not open |
 
 ## One parse per document version
 
@@ -198,19 +205,19 @@ target classes.
 | Navigation, rename | `features::navigation` (JSON-LD in `navigation/jsonld.rs`) | `sparql::features::navigation`, `sparql::features::rename` |
 | Formatting | `features::format` over `layout`, `jsonld::format` | `sparql::format` over `layout` |
 | Outline, folding, semantic tokens | `features::symbols`, `features::semantic` | `sparql::features::outline`, `sparql::features::display` |
-| Code lenses | `features::lens` (reference counts) | `features::lens` ("▶ Run query"), run by `server::run_query` |
+| Code lenses | `features::lens` (reference counts) | `features::lens` ("▶ Run query"), run by `extensions::run_query` |
 | SPARQL inside SHACL shapes | `features::embedded` | |
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |
-| Workspace graph (`turtle/graph`) | `features::graph` | |
-| A query for another extension or tool (`turtle/query`) | `server::query_request` over `query::run` | |
+| Workspace graph (`turtle/graph`) | `extensions::graph` | |
+| A query for another extension or tool (`turtle/query`) | `extensions::query` over `query::run` | |
 
 The workspace graph and `turtle/query` are the server's two custom
 requests, listed under `experimental` capabilities. `turtle/query` runs a
 query given as text over the workspace's documents, as "▶ Run query" does,
 and answers the results as JSON on a thread of its own; `$/cancelRequest`
 stops it. The thread holds only the map of runs, not the server's state, so
-`shutdown` and the end of the server stop every run. `features::graph` reads the knowledge index
+`shutdown` and the end of the server stop every run. `extensions::graph` reads the knowledge index
 and changes nothing: the query, the filters, the cap and the Barnes-Hut
 layout. The client passes back the positions it has, so the server keeps
 no graph state. The native server answers it on a thread of its own over

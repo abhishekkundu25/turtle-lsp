@@ -1,8 +1,9 @@
 //! Hover: what a term is, where it is described, and its label/comment.
 
+use super::prefixes::{Scope, declaration_at};
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
-use crate::syntax::names::{Scope, declaration_at, shorten};
+use crate::syntax::names::shorten;
 use crate::syntax::{Form, Iri, PrefixMap};
 use crate::vocab::{TermKind, VOCABS};
 use crate::workspace::uri_to_path;

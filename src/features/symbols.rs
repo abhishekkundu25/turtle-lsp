@@ -1,10 +1,11 @@
 //! Document symbols (outline), workspace symbols and folding ranges.
 
+use super::prefixes::Scope;
 use crate::analysis::{Analysis, Encoding};
 use crate::features::navigation::uri;
 use crate::knowledge::{DocId, Knowledge, Source};
 use crate::syntax::lexer::{Kind, tokenize};
-use crate::syntax::names::{Scope, shorten};
+use crate::syntax::names::shorten;
 use crate::syntax::{GraphName, Iri, Span, Statement, Syntax};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};

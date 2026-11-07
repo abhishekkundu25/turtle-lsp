@@ -38,15 +38,14 @@
 //! stop every run. Embedded ([`Spawn::Inline`]), it runs
 //! inline, with no cap and no cancellation.
 
-use super::Server;
-use super::worker::Spawn;
+use super::{ErrorCode, Out, Request, Sender, Session, Spawn};
 use crate::analysis::Analysis;
 use crate::clock::Instant;
 use crate::knowledge::Source;
 use crate::query::render::json_term;
 use crate::query::{self, Answer, Limits, QueryError};
 use crate::syntax::PrefixMap;
-use lsp_server::{ErrorCode, RequestId};
+use lsp_server::{RequestId, Response};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -75,6 +74,8 @@ pub(crate) struct Params {
 
 /// The runs going on, by request id: each one's cancellation flag.
 type Runs = Arc<Mutex<FxHashMap<RequestId, Arc<AtomicBool>>>>;
+
+pub(super) const METHOD: &str = "turtle/query";
 
 /// The runs going on. The server owns the one `State`; the threads hold
 /// only its map ([`Runs`]) and remove their own run when it ends, so
@@ -135,177 +136,169 @@ struct Job {
     limits: Limits,
 }
 
-impl Server {
-    /// `turtle/query` asked by request `id`: Some(answer) when answered now,
-    /// None when the answer comes from the thread.
-    pub(super) fn query_request(
-        &mut self,
-        id: RequestId,
-        p: Params,
-    ) -> Result<Option<Value>, (ErrorCode, String)> {
-        let invalid = |m: String| (ErrorCode::InvalidParams, m);
-        let setting = self.layers.settings().query_timeout;
-        let timeout = match p.timeout_seconds {
-            None => setting,
-            Some(s) if s.is_finite() && s >= 0.0 => {
-                let asked = Duration::try_from_secs_f64(s)
-                    .map_err(|e| invalid(format!("timeoutSeconds: {e}")))?;
-                // Only lower the setting: `0` and a higher value are the setting.
-                match setting {
-                    Some(t) if asked.is_zero() || asked > t => Some(t),
-                    Some(_) => Some(asked),
-                    None => (!asked.is_zero()).then_some(asked),
-                }
+/// Answer `turtle/query`, now or (with threads) from the thread that runs
+/// it. `runs` are the runs going on; `root_uris` the workspace folders as
+/// `initialize` named them (the browser build has no paths).
+pub(super) fn request(
+    req: Request,
+    runs: &State,
+    root_uris: &[String],
+    spawn: Spawn,
+    out: Sender<Out>,
+    s: &mut Session,
+) -> super::Answer {
+    let invalid = |m: String| (ErrorCode::InvalidParams, m);
+    let p: Params = serde_json::from_value(req.params).map_err(|e| invalid(e.to_string()))?;
+    let setting = s.settings().query_timeout;
+    let timeout = match p.timeout_seconds {
+        None => setting,
+        Some(s) if s.is_finite() && s >= 0.0 => {
+            let asked = Duration::try_from_secs_f64(s)
+                .map_err(|e| invalid(format!("timeoutSeconds: {e}")))?;
+            // Only lower the setting: `0` and a higher value are the setting.
+            match setting {
+                Some(t) if asked.is_zero() || asked > t => Some(t),
+                Some(_) => Some(asked),
+                None => (!asked.is_zero()).then_some(asked),
             }
-            Some(s) => {
-                return Err(invalid(format!(
-                    "timeoutSeconds: {s} is not a number of seconds"
-                )));
-            }
-        };
-        let setting = self.layers.settings().query_max_rows;
-        // Only lower the setting: `0` and a higher value are the setting.
-        let max_rows = match p.max_rows.map(|n| usize::try_from(n).unwrap_or(usize::MAX)) {
-            None | Some(0) => setting,
-            Some(n) => Some(setting.map_or(n, |s| s.min(n))),
-        };
-        if p.files.as_ref().is_some_and(Vec::is_empty) {
-            return Err(invalid(
-                "files is empty: omit it to query every RDF document".into(),
-            ));
         }
-        // The documents asked for, each once, in the order given.
-        let wanted: Option<Vec<String>> = p.files.map(|v| {
-            let mut seen = FxHashSet::default();
-            v.iter()
-                .map(|u| crate::workspace::normalize_uri(u))
-                .filter(|u| seen.insert(u.clone()))
-                .collect()
-        });
-        let docs: Vec<Arc<Analysis>> = self
-            .ws
-            .knowledge()
-            .sources()
-            .filter(|(_, source, _)| *source != Source::External)
-            .filter(|(_, _, a)| {
-                wanted
-                    .as_ref()
-                    .is_none_or(|w| w.iter().any(|u| *u == a.uri))
-            })
-            .map(|(_, _, a)| a.clone())
+        Some(s) => {
+            return Err(invalid(format!(
+                "timeoutSeconds: {s} is not a number of seconds"
+            )));
+        }
+    };
+    let setting = s.settings().query_max_rows;
+    // Only lower the setting: `0` and a higher value are the setting.
+    let max_rows = match p.max_rows.map(|n| usize::try_from(n).unwrap_or(usize::MAX)) {
+        None | Some(0) => setting,
+        Some(n) => Some(setting.map_or(n, |s| s.min(n))),
+    };
+    if p.files.as_ref().is_some_and(Vec::is_empty) {
+        return Err(invalid(
+            "files is empty: omit it to query every RDF document".into(),
+        ));
+    }
+    // The documents asked for, each once, in the order given.
+    let wanted: Option<Vec<String>> = p.files.map(|v| {
+        let mut seen = FxHashSet::default();
+        v.iter()
+            .map(|u| crate::workspace::normalize_uri(u))
+            .filter(|u| seen.insert(u.clone()))
+            .collect()
+    });
+    let docs: Vec<Arc<Analysis>> = s
+        .knowledge()
+        .0
+        .sources()
+        .filter(|(_, source, _)| *source != Source::External)
+        .filter(|(_, _, a)| {
+            wanted
+                .as_ref()
+                .is_none_or(|w| w.iter().any(|u| *u == a.uri))
+        })
+        .map(|(_, _, a)| a.clone())
+        .collect();
+    if let Some(w) = &wanted {
+        let missing: Vec<&str> = w
+            .iter()
+            .filter(|u| !docs.iter().any(|a| a.uri == **u))
+            .map(String::as_str)
             .collect();
-        if let Some(w) = &wanted {
-            let missing: Vec<&str> = w
-                .iter()
-                .filter(|u| !docs.iter().any(|a| a.uri == **u))
-                .map(String::as_str)
-                .collect();
-            if !missing.is_empty() {
-                return Err(invalid(format!(
-                    "not a workspace document: {}",
-                    missing.join(", ")
-                )));
-            }
+        if !missing.is_empty() {
+            return Err(invalid(format!(
+                "not a workspace document: {}",
+                missing.join(", ")
+            )));
         }
-        // The prefixes the query may use undeclared: the ones a query file
-        // gets beside the first of `files`, else in the first workspace root.
-        // A query file, not the file itself: an N-Triples, N-Quads or JSON-LD
-        // file gets no prefixes, and a folder's URI is looked up from its
-        // parent.
-        let at = wanted
-            .as_ref()
-            .and_then(|w| w.first())
-            .and_then(|u| url::Url::parse(u).ok()?.join(QUERY_FILE).ok())
-            .map(String::from)
-            .or_else(|| {
-                let root = self.ws.roots().first()?;
-                crate::workspace::path_to_uri(&root.join(QUERY_FILE))
-            })
-            // The browser build has no paths: the folder as the client named it.
-            .or_else(|| {
-                let root = self.root_uris.first()?;
-                let dir = if root.ends_with('/') {
-                    root.clone()
-                } else {
-                    format!("{root}/")
-                };
-                url::Url::parse(&dir)
-                    .ok()?
-                    .join(QUERY_FILE)
-                    .ok()
-                    .map(String::from)
-            })
-            .unwrap_or_default();
-        let prefixes = self.ws.external_prefixes_for(&at);
-        let job = Job {
-            text: p.query,
-            base: p.base,
-            prefixes,
-            docs,
-            limits: Limits {
-                timeout,
-                cancel: None,
-                max_rows,
-                max_buffered_rows: self.layers.settings().query_max_buffered_rows,
-            },
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.spawn == Spawn::Thread {
-            return self.query_on_thread(id, job);
-        }
-        execute(&job).map(Some)
     }
+    // The prefixes the query may use undeclared: the ones a query file
+    // gets beside the first of `files`, else in the first workspace root.
+    // A query file, not the file itself: an N-Triples, N-Quads or JSON-LD
+    // file gets no prefixes, and a folder's URI is looked up from its
+    // parent.
+    let at = wanted
+        .as_ref()
+        .and_then(|w| w.first())
+        .and_then(|u| url::Url::parse(u).ok()?.join(QUERY_FILE).ok())
+        .map(String::from)
+        .or_else(|| {
+            let root = s.roots().first()?;
+            crate::workspace::path_to_uri(&root.join(QUERY_FILE))
+        })
+        // The browser build has no paths: the folder as the client named it.
+        .or_else(|| {
+            let root = root_uris.first()?;
+            let dir = if root.ends_with('/') {
+                root.clone()
+            } else {
+                format!("{root}/")
+            };
+            url::Url::parse(&dir)
+                .ok()?
+                .join(QUERY_FILE)
+                .ok()
+                .map(String::from)
+        })
+        .unwrap_or_default();
+    let prefixes = s.external_prefixes_for(&at);
+    let job = Job {
+        text: p.query,
+        base: p.base,
+        prefixes,
+        docs,
+        limits: Limits {
+            timeout,
+            cancel: None,
+            max_rows,
+            max_buffered_rows: s.settings().query_max_buffered_rows,
+        },
+    };
+    if spawn == Spawn::Thread {
+        return on_thread(runs, out, req.id, job);
+    }
+    execute(&job)
+        .and_then(|v| crate::server::json(&v))
+        .map(Some)
+}
 
-    /// The rest of [`Server::query_request`] on a thread, which answers the
-    /// request itself and removes its run from [`State`].
-    #[cfg(not(target_arch = "wasm32"))]
-    fn query_on_thread(
-        &mut self,
-        id: RequestId,
-        mut job: Job,
-    ) -> Result<Option<Value>, (ErrorCode, String)> {
-        use super::wire::Out;
-        use lsp_server::Response;
-        if self.query_requests.count() >= MAX_RUNNING {
-            return Err((
-                ErrorCode::RequestFailed,
-                format!("{MAX_RUNNING} queries are running: try again when one has answered"),
-            ));
-        }
-        let cancel = Arc::new(AtomicBool::new(false));
-        job.limits.cancel = Some(cancel.clone());
-        let runs = self.query_requests.running.clone();
-        lock(&runs).insert(id.clone(), cancel);
-        let out = self.client.sender();
-        let done_id = id.clone();
-        let started = self.spawn.run(
-            "query request",
-            super::WORKER_STACK,
-            move || {
-                execute(&job).and_then(|v| {
-                    super::wire::encode(&v).map_err(|e| (ErrorCode::InternalError, e.to_string()))
-                })
-            },
-            move |answer| {
-                lock(&runs).remove(&done_id);
-                let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
-                    Ok(json) => Out::Result { id: done_id, json },
-                    Err((code, message)) => {
-                        Out::Message(Response::new_err(done_id, code as i32, message).into())
-                    }
-                };
-                let _ = out.send(msg);
-            },
-        );
-        if let Err(e) = started {
-            self.query_requests.remove(&id);
-            return Err((
-                ErrorCode::InternalError,
-                format!("turtle-lsp could not start a thread for the query: {e}"),
-            ));
-        }
-        Ok(None)
+/// The rest of [`request`] on a thread, which answers the request itself
+/// and removes its run from [`State`].
+fn on_thread(state: &State, out: Sender<Out>, id: RequestId, mut job: Job) -> super::Answer {
+    if state.count() >= MAX_RUNNING {
+        return Err((
+            ErrorCode::RequestFailed,
+            format!("{MAX_RUNNING} queries are running: try again when one has answered"),
+        ));
     }
+    let cancel = Arc::new(AtomicBool::new(false));
+    job.limits.cancel = Some(cancel.clone());
+    let runs = state.running.clone();
+    lock(&runs).insert(id.clone(), cancel);
+    let done_id = id.clone();
+    let started = Spawn::Thread.run(
+        "query request",
+        crate::server::WORKER_STACK,
+        move || execute(&job).and_then(|v| crate::server::json(&v)),
+        move |answer| {
+            lock(&runs).remove(&done_id);
+            let msg = match answer.unwrap_or_else(|e| Err((ErrorCode::InternalError, e))) {
+                Ok(json) => Out::Result { id: done_id, json },
+                Err((code, message)) => {
+                    Out::Message(Response::new_err(done_id, code as i32, message).into())
+                }
+            };
+            let _ = out.send(msg);
+        },
+    );
+    if let Err(e) = started {
+        state.remove(&id);
+        return Err((
+            ErrorCode::InternalError,
+            format!("turtle-lsp could not start a thread for the query: {e}"),
+        ));
+    }
+    Ok(None)
 }
 
 /// Run `job`; its answer as JSON, or the error to answer with.

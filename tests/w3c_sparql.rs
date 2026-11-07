@@ -24,7 +24,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use turtle_lsp::features::format::Options;
-use turtle_lsp::sparql::{self, Document, Level, TokenKind};
+use turtle_lsp::sparql::{self, Document, Level, lexer::TokenKind};
 use turtle_lsp::syntax::PrefixMap;
 
 include!("support/corpus.rs");
