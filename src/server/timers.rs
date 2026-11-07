@@ -14,10 +14,20 @@ pub(crate) enum Timer {
     ShaclTyping,
     /// A SHACL run has lasted long enough to show progress.
     ShaclProgress,
+    /// Typing paused: reason over the workspace again.
+    ReasoningTyping,
+    /// A reasoning run has lasted long enough to show progress.
+    ReasoningProgress,
 }
 
 /// Every kind of timer, in the order due ones fire.
-const ALL: [Timer; 3] = [Timer::Described, Timer::ShaclTyping, Timer::ShaclProgress];
+const ALL: [Timer; 5] = [
+    Timer::Described,
+    Timer::ShaclTyping,
+    Timer::ShaclProgress,
+    Timer::ReasoningTyping,
+    Timer::ReasoningProgress,
+];
 
 impl Timer {
     fn slot(self) -> usize {

@@ -3,7 +3,8 @@
 //! closed file, and [`crate::batch`] (the command line's `check` and the
 //! browser) all call [`document`], so they cannot disagree about which
 //! diagnostics a document has or in which order they come: the document's
-//! own, then the unresolved imports, then the SHACL results.
+//! own, then the unresolved imports, then the SHACL results, then the
+//! reasoning findings.
 
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::diagnostics::{self, needs_index};
@@ -29,8 +30,10 @@ pub(crate) struct DiagnosticInputs<'a> {
     /// The status of each `owl:imports` target by IRI; an import without one
     /// is not reported.
     pub(crate) import_status: &'a dyn Fn(&str) -> Option<&'a Status>,
-    /// The SHACL results for the document, which come last.
+    /// The SHACL results for the document.
     pub(crate) shacl: &'a [Diagnostic],
+    /// The reasoning findings for the document, which come last.
+    pub(crate) reasoning: &'a [Diagnostic],
     /// Whether the workspace is indexed. Until it is, findings that say a
     /// term is known nowhere are left out ([`needs_index`]).
     pub(crate) indexed: bool,
@@ -44,13 +47,14 @@ pub(crate) struct DiagnosticInputs<'a> {
 }
 
 impl<'a> DiagnosticInputs<'a> {
-    /// A workspace that is indexed, with no import status and no SHACL
-    /// results.
+    /// A workspace that is indexed, with no import status, no SHACL
+    /// results and no reasoning findings.
     pub(crate) fn new(settings: &'a Settings) -> DiagnosticInputs<'a> {
         DiagnosticInputs {
             settings,
             import_status: &no_status,
             shacl: &[],
+            reasoning: &[],
             indexed: true,
             cached_import: false,
             max_syntax_errors: Some(diagnostics::MAX_SYNTAX_ERRORS),
@@ -118,6 +122,7 @@ fn compose(
         }));
     }
     out.extend(inputs.shacl.iter().cloned());
+    out.extend(inputs.reasoning.iter().cloned());
     // `lint.ignore`, and the off-by-default checks not in `lint.enable`.
     out.retain(|d| match &d.code {
         Some(lsp_types::NumberOrString::String(c)) => inputs.settings.lint_on(c),
@@ -156,20 +161,23 @@ mod tests {
         <http://x/a> rdfs:labl \"a\" ; foaf:name \"b\" .\n";
 
     #[test]
-    fn the_order_is_own_then_imports_then_shacl() {
+    fn the_order_is_own_then_imports_then_shacl_then_reasoning() {
         let (mut ws, a) = analysed(TEXT);
         let k = &*ws.knowledge_mut();
         let status = Status::Unresolved("not loaded".into());
-        let shacl = [Diagnostic {
-            code: Some(NumberOrString::String("shacl-violation".into())),
+        let finding = |c: &str| Diagnostic {
+            code: Some(NumberOrString::String(c.into())),
             severity: Some(DiagnosticSeverity::ERROR),
             ..Default::default()
-        }];
+        };
+        let shacl = [finding("shacl-violation")];
+        let reasoning = [finding("turbowl/cax-dw")];
         let settings = Settings::default();
         let lookup = |iri: &str| (iri == "http://x/missing").then_some(&status);
         let inputs = DiagnosticInputs {
             import_status: &lookup,
             shacl: &shacl,
+            reasoning: &reasoning,
             ..DiagnosticInputs::new(&settings)
         };
         let d = document(Doc::Rdf(&a), k, Encoding::Utf16, &inputs);
@@ -182,7 +190,8 @@ mod tests {
         };
         assert!(at("unknown-term") < at("unresolved-import"));
         assert_eq!(at("unresolved-import") + 1, at("shacl-violation"));
-        assert_eq!(codes.last(), Some(&"shacl-violation"));
+        assert_eq!(at("shacl-violation") + 1, at("turbowl/cax-dw"));
+        assert_eq!(codes.last(), Some(&"turbowl/cax-dw"));
     }
 
     #[test]
