@@ -23,9 +23,9 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `features` | Completion, hover, diagnostics, formatting and the other editor features of RDF documents | `server`, `ide`, `batch` |
 | `diagnose` | The diagnostics composer: one document's diagnostics, the same for the editor and `check` | `ide`, `server`, `batch` |
 | `shacl` | The shape model, the SHACL vocabulary, SHACL Core and SHACL-SPARQL validation | `features`, `knowledge` |
-| `reasoning` | Reasoning with TurbOWL (`turtle.reasoning.rules`): the base it reads and where each triple is written, the state runs write and hovers read, the reasoning thread, findings as diagnostics, proofs as hover markdown | `server`, `ide`, `features` |
+| `reasoning` | Reasoning with TurbOWL (`turtle.reasoning.rules`): the base it reads and where each triple is written, the state runs write and hovers read, the reasoning thread, findings as diagnostics, proofs as hover markdown, and the closure a query adds (`infer`) | `server`, `ide`, `features`, `query` |
 | `rdf` | The union of documents' triples as a graph and as a SPARQL dataset | `query`, `shacl` |
-| `query` | Running SPARQL queries and rendering the results | `cli`, `server`, `batch`, the browser engine |
+| `query` | Running SPARQL queries and rendering the results; with `query.reasoning` on, a query reasons over its own snapshot (`reasoning::infer`) and adds the inferred triples to its graph | `cli`, `server`, `batch`, the browser engine |
 | `settings` | Client settings and their layers | `server`, `cli` |
 | `commands` | `workspace/executeCommand` commands | `server` |
 | `server` | The LSP main loop, its state groups, its timers, the stdio transport and the worker threads other modules start | `main`, the browser engine |

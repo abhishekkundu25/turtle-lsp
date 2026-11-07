@@ -385,6 +385,35 @@ id:freedonia a id:Country , id:Republic .
 id:Monarchy owl:disjointWith id:Republic .
 `
 
+const REASONING_QUERY_PARTS = `${head([
+  "A query over what reasoning infers. Run it (the Run button above), then set",
+  "Inferred beside Run to Off and run it again: the rows disappear, since no",
+  "file says that a part is certified. With Default rules: lab:gearbox3,",
+  "lab:screw9 and lab:catalog77 (the same screw, merged by its serial number).",
+])}PREFIX lab: <http://example.org/lab/>
+
+SELECT ?part ?standard WHERE {
+  ?part a lab:CertifiedPart ;
+        lab:certifiedUnder ?standard .
+}
+ORDER BY ?part
+`
+const REASONING_QUERY_SAME = `${head([
+  "Which names stand for the same thing? No owl:sameAs is written: a serial",
+  "number, a badge holder and a MAC address merge them. Inferred Off: no rows.",
+  "Default rules: three pairs. Complete rules: the identity file's merges too.",
+])}PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX lab: <http://example.org/lab/>
+PREFIX hc: <http://example.org/hidden/>
+PREFIX id: <http://example.org/identity/>
+
+SELECT ?a ?b WHERE {
+  ?a owl:sameAs ?b .
+  FILTER (?a != ?b)
+}
+ORDER BY ?a ?b
+`
+
 export const WORKSPACE = [
   { path: "start-here.ttl", text: START },
   { path: "prefixes.ttl", text: PREFIXES },
@@ -400,4 +429,6 @@ export const WORKSPACE = [
   { path: "reasoning/01-long-chain.ttl", text: REASONING_CHAIN },
   { path: "reasoning/02-hidden-contradictions.ttl", text: REASONING_CLASH },
   { path: "reasoning/03-identity-needs-complete.ttl", text: REASONING_IDENTITY },
+  { path: "reasoning/04-certified-parts.rq", text: REASONING_QUERY_PARTS },
+  { path: "reasoning/05-merged-names.rq", text: REASONING_QUERY_SAME },
 ]

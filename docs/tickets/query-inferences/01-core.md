@@ -27,7 +27,7 @@ editor extensions pass `Off` and ignore the note, nothing more.
 
 **Blocked by:** none.
 
-**Status:** open
+**Status:** done
 
 - [ ] Query unit tests with `Default`: a class inferred through a range, a subclass chain, an inverse, a transitive property, a property chain and an `owl:sameAs` merge each match; a pattern joining a written and an inferred triple through a blank node matches; an imported axiom infers while the imported document's own triples are not in the results; CONSTRUCT includes inferred triples; ASK answers over them.
 - [ ] With `Off`, the existing query tests pass unchanged and the note is none.

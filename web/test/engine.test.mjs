@@ -648,3 +648,14 @@ for (const [name, set] of Object.entries(SETS)) {
     }
   })
 }
+
+test("query: the sample's reasoning queries answer only with inferred triples", () => {
+  const files = WORKSPACE.map((f) => ({ name: f.path, text: f.text }))
+  const run = (query, reasoning) => engine.call("query", { files, query, reasoning })
+  assert.deepEqual(run("reasoning/04-certified-parts.rq", "off").rows, [])
+  assert.deepEqual(run("reasoning/04-certified-parts.rq", "default").rows.map((r) => r[0]), ["lab:catalog77", "lab:gearbox3", "lab:screw9"])
+  assert.deepEqual(run("reasoning/05-merged-names.rq", "off").rows, [])
+  const pairs = run("reasoning/05-merged-names.rq", "default").rows.map((r) => r.join(" = "))
+  for (const p of ["lab:catalog77 = lab:screw9", "hc:frank = hc:fritz", "hc:sensorA = hc:sensorC"]) assert.ok(pairs.includes(p), JSON.stringify(pairs))
+  assert.ok(run("reasoning/05-merged-names.rq", "complete").rows.length > pairs.length)
+})

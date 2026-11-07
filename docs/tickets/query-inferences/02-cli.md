@@ -11,7 +11,7 @@ stdout stays the results in every output format.
 
 **Blocked by:** 01.
 
-**Status:** open
+**Status:** done
 
 - [ ] `test/query-cli.test.mjs`: `--reasoning default` returns a row only an inference gives, and prints the note on stderr; stdout parses as before in `--format json`; without the flag the output is unchanged; `--reasoning nope` exits 2 with an argument error.
 - [ ] `cargo fmt --check`, clippy and the CLI unit tests pass.

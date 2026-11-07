@@ -1,6 +1,6 @@
 # SPARQL queries over inferred triples
 
-Status: in progress. Tickets:
+Status: done. Tickets:
 [../tickets/query-inferences/](../tickets/query-inferences/README.md). Builds on [workspace-query.md](workspace-query.md) (the
 query feature and its four ways in) and
 [turbowl-reasoning.md](turbowl-reasoning.md) (TurbOWL, the base, the rule

@@ -26,6 +26,19 @@
   raise it. Reasoning is off by default, and while it is off nothing runs.
   The browser editor reasons too, on its one thread, and has both settings.
 
+- **Queries over inferred triples.** `query.reasoning` (`off`, `default`
+  or `complete`; off by default) makes a query reason over its own snapshot
+  with TurbOWL and run over the written triples plus the inferred ones, so
+  `?x a ex:Organisation` finds what a range or a subclass implies. It
+  applies to ▶ Run query, `turtle/query` (its `reasoning` parameter, and an
+  `inferred` member in the answer), `turtle-lsp query --reasoning` and the
+  browser editor's query pane (an Inferred choice beside Run, on with the
+  default rules there). The results say how many triples TurbOWL added and
+  how many findings it reported, or that the workspace was over
+  `turtle.reasoning.maxTriples`. The editors also count the imports'
+  axioms; the imports' own triples stay out of the data. Updates never see
+  inferred triples. Off, queries run exactly as before.
+
 ### Fixed
 
 - **Accepting a JSON-LD completion no longer breaks a string elsewhere in the

@@ -317,7 +317,7 @@ test("with reasoning on, hover shows the inferred type and its proof as natively
 })
 
 test("the sample workspace's reasoning folder shows its long proof, its seven contradictions and, with complete, its identity cascade", async () => {
-  const reasoning = WORKSPACE.filter((f) => f.path.startsWith("reasoning/"))
+  const reasoning = WORKSPACE.filter((f) => f.path.startsWith("reasoning/") && f.path.endsWith(".ttl"))
   assert.deepEqual(reasoning.map((f) => f.path), ["reasoning/01-long-chain.ttl", "reasoning/02-hidden-contradictions.ttl", "reasoning/03-identity-needs-complete.ttl"])
   const codes = (w, p) => [...new Set(w.diagnostics(`${WORK}/${p}`).map((d) => d.code).filter((c) => String(c).startsWith("turbowl/")))].sort()
   const open = async (rules) => {

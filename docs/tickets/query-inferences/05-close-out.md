@@ -10,7 +10,7 @@ required.
 
 **Blocked by:** 02, 03, 04.
 
-**Status:** open
+**Status:** done
 
 - [ ] build, `cargo fmt --check`, clippy, lib unit tests (timing tests once, rerun alone on a failure), doc test.
 - [ ] Every Node test file in `test/`, every `web/test/*.test.mjs`, and the VS Code extension's node tests pass.

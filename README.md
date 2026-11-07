@@ -229,7 +229,9 @@ not by its extension.
 - **Semantic highlighting, folding and outline** (the query form, or each
   update operation, with its clauses).
 - **▶ Run query**: a code lens above a query runs it over the workspace's
-  files as the editor has them, unsaved edits included, and opens the
+  files as the editor has them, unsaved edits included (and, with
+  `query.reasoning` set to `default` or `complete`, over the triples
+  TurbOWL infers from them too; the results say how many), and opens the
   results as a Markdown document (a table, `true`/`false`, or Turtle for
   `CONSTRUCT` and `DESCRIBE`) with `window/showDocument`; VS Code opens it
   beside the query. The query runs on its own thread with a time limit and
@@ -555,7 +557,7 @@ JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.diagnostics.workspace` (check files that are not open; off by
 default), `turtle.parse.incremental` (after an edit, parse only the
 statements around it; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
-`turtle.query.maxBufferedRows` (for ▶ Run query). Suggestions pop up while
+`turtle.query.maxBufferedRows` (for ▶ Run query), and `turtle.query.reasoning` (`off`, `default` or `complete`: also query what TurbOWL infers; off by default). Suggestions pop up while
 typing in Turtle and TriG strings, for the SPARQL queries of SHACL shapes
 (`editor.quickSuggestions` for `[turtle]` and `[trig]`; set it back in
 your settings to turn that off).
@@ -745,6 +747,7 @@ turtle-lsp format                    # format files in place
 turtle-lsp format --check            # list files that would change; change nothing
 turtle-lsp format --diff             # print a unified diff instead
 turtle-lsp query people.rq           # run a query over the workspace's files
+turtle-lsp query --reasoning default people.rq   # ...and over what TurbOWL infers from them
 turtle-lsp query -e 'SELECT ?s WHERE { ?s a foaf:Person }' data/
 ```
 

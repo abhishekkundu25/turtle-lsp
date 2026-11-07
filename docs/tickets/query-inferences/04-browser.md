@@ -10,7 +10,7 @@ browser's settings list gets `query.reasoning` under Query with default
 
 **Blocked by:** 01.
 
-**Status:** open
+**Status:** done
 
 - [ ] `web/test/engine.test.mjs`: the query request with `reasoning: "default"` returns an inferred row and the `inferred` member; `off` answers as before with no member.
 - [ ] `web/test/editor-query.test.mjs`: on a fresh visit the sample's people query includes the inferred row and the note; turning Inferred off removes both.

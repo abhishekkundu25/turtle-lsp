@@ -15,7 +15,7 @@ forwarding it as the other `query.*` settings are, and the
 
 **Blocked by:** 01.
 
-**Status:** open
+**Status:** done
 
 - [ ] `test/query-request.test.mjs`: the `reasoning` parameter returns an inferred row and the `inferred` member; off answers exactly as before with no member; the skipped form over a low `turtle.reasoning.maxTriples`; the default follows `query.reasoning`; a bad value is `InvalidParams`; an imported axiom infers.
 - [ ] `test/query-lsp.test.mjs`: with `query.reasoning` on, "▶ Run query"'s document includes the inferred row and the note; off, the document is unchanged.
