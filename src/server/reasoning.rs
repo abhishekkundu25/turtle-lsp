@@ -79,6 +79,7 @@ impl Runs {
             enc,
             related: self.related,
             findings: settings.reasoning_diagnostics,
+            project: Default::default(),
         }
     }
 

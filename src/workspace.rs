@@ -1517,6 +1517,14 @@ impl Workspace {
         self.external_prefixes_as(uri, Syntax::detect(None, uri))
     }
 
+    /// The project's prefixes where `uri` is, whatever its syntax: those a
+    /// Turtle document there may use undeclared. Reasoning names IRIs with
+    /// them in N-Triples, N-Quads and JSON-LD documents too, which parse
+    /// with none.
+    pub(crate) fn project_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
+        self.external_prefixes_as(uri, Syntax::Turtle)
+    }
+
     fn external_prefixes_as(&mut self, uri: &str, syntax: Syntax) -> Arc<PrefixMap> {
         if !syntax.has_prefixes() {
             return Arc::new(PrefixMap::default());

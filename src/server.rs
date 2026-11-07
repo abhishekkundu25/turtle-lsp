@@ -1799,9 +1799,21 @@ impl Server {
             .docs()
             .map(|(_, s, a)| (s, a.clone()))
             .collect();
-        let job = self
+        let mut job = self
             .reasoning_runs
             .job(docs, self.layers.settings(), self.enc);
+        if job.findings {
+            // What the findings in a document without prefixes of its own
+            // are named with.
+            job.project = job
+                .docs
+                .iter()
+                .filter(|(s, a)| {
+                    *s != crate::knowledge::Source::External && !a.parsed.syntax.has_prefixes()
+                })
+                .map(|(_, a)| (a.uri.clone(), self.ws.project_prefixes_for(&a.uri)))
+                .collect();
+        }
         if self.spawn == Spawn::Inline {
             let outcome = crate::reasoning::run_inline(&shared, &job);
             self.reasoning_outcome(outcome);

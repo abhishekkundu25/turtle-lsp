@@ -1,9 +1,9 @@
 //! Hover: what a term is, where it is described, and its label/comment.
 
-use super::prefixes::{Scope, declaration_at};
+use super::prefixes::{Naming, Scope, declaration_at};
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
-use crate::reasoning::{HOVER_WAIT, Names, Origin, Shared, Types};
+use crate::reasoning::{HOVER_WAIT, Inferred, Names, Origin, Shared, Shown, Types};
 use crate::syntax::names::shorten;
 use crate::syntax::{Form, Iri, PrefixMap};
 use crate::vocab::{TermKind, VOCABS};
@@ -19,13 +19,15 @@ pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Optio
 }
 
 /// [`hover`], and on a resource, with `reasoning` on, the types reasoning
-/// infers for it after what [`hover`] says (see [`inferred`]).
+/// infers for it after what [`hover`] says (see [`inferred`]); `reasoning`
+/// holds the project's prefixes for `a` too, which the proofs are named
+/// with after `a`'s own ([`Naming`]).
 pub(crate) fn hover_reasoned(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
     pos: Position,
-    reasoning: Option<&Arc<Shared>>,
+    reasoning: Option<(&Arc<Shared>, Arc<PrefixMap>)>,
 ) -> Option<Hover> {
     let offset = a.offset(enc, pos)?;
     if let Some(h) = super::embedded::hover(a, k, enc, offset) {
@@ -78,9 +80,10 @@ pub(crate) fn hover_reasoned(
     let prefixes = Scope::at(a, r.span.start);
     let label = text_label.unwrap_or_else(|| short(&r.iri, &prefixes));
     let mut body = describe_iri(&r.iri, &label, k, &prefixes)?;
-    if let Some(shared) = reasoning {
+    if let Some((shared, project)) = reasoning {
         let types = shared.inferred_types(&r.iri, HOVER_WAIT);
-        body.push_str(&inferred(types, &r.iri, k, &prefixes));
+        let naming = Naming::at(a, r.span.start, project);
+        body.push_str(&inferred(types, &r.iri, k, &naming));
     }
     Some(md(body, a.range(enc, r.span)))
 }
@@ -88,15 +91,20 @@ pub(crate) fn hover_reasoned(
 /// The "Inferred" section of a hover on `iri`: each type reasoning infers
 /// and no document asserts, with its proof folded under it; while a run is
 /// writing the state, or the proofs are still being searched for, a line
-/// that says so. Empty when there is nothing to add.
+/// that says so. Empty when there is nothing to add. IRIs are written by
+/// `naming`.
+///
+/// The closest types come first: those whose proofs have fewer steps, then
+/// less depth, then by name. A step an earlier type's proof wrote is not
+/// written again: a later proof refers to it ([`Shown`]).
 ///
 /// A type whose proof rests on no triple of a document (an axiom, as
 /// `dt-type1` types `xsd:integer` an `rdfs:Datatype`) says nothing of the
 /// text: such types are named on one line after the others, without proofs.
-fn inferred(types: Types, iri: &str, k: &Knowledge, prefixes: &PrefixMap) -> String {
+fn inferred(types: Types, iri: &str, k: &Knowledge, naming: &Naming) -> String {
     let asserted = k.types(iri);
     let new = |class: &str| !asserted.iter().any(|t| &**t == class);
-    let iri_name = |i: &str| short(i, prefixes);
+    let iri_name = |i: &str| naming.name(i);
     let place = |o: &Origin| place(&o.uri, o.imported_from.as_deref(), o.line);
     let names = Names {
         iri: &iri_name,
@@ -107,20 +115,35 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, prefixes: &PrefixMap) -> Str
     let (items, note): (Vec<String>, _) = match types {
         Types::Unknown => return String::new(),
         Types::Running => return "\n\n**Inferred:** _reasoning is running_".into(),
-        Types::Proved(v) => (
-            v.iter()
-                .filter(|t| new(&t.class))
-                .filter_map(|t| match &t.proof {
-                    Some(p) if !p.rests_on_documents() => {
-                        built_in.push(iri_name(&t.class));
-                        None
+        Types::Proved(v) => {
+            let mut listed: Vec<(Inferred, String)> = Vec::new();
+            for t in v.into_iter().filter(|t| new(&t.class)) {
+                match &t.proof {
+                    Some(p) if !p.rests_on_documents() => built_in.push(iri_name(&t.class)),
+                    _ => {
+                        let title = title(&t.class);
+                        listed.push((t, title));
                     }
-                    Some(p) => Some(p.markdown(&title(&t.class), &names)),
-                    None => Some(format!("- {} · _no proof found_", title(&t.class))),
-                })
-                .collect(),
-            "",
-        ),
+                }
+            }
+            listed.sort_by_cached_key(|(t, title)| {
+                let size = t
+                    .proof
+                    .as_ref()
+                    .map_or((usize::MAX, usize::MAX), |p| p.size());
+                (size, title.clone())
+            });
+            let mut shown = Shown::default();
+            let written = listed.iter().enumerate().map(|(n, (t, title))| {
+                match &t.proof {
+                    // Not written, only counted.
+                    _ if n >= MAX_INFERRED => String::new(),
+                    Some(p) => p.markdown(title, &names, &mut shown),
+                    None => format!("- {title} · _no proof found_"),
+                }
+            });
+            (written.collect(), "")
+        }
         Types::Pending(classes) => (
             classes
                 .iter()
@@ -139,6 +162,7 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, prefixes: &PrefixMap) -> Str
         lines.push(format!("- _and {more} more_"));
     }
     if !built_in.is_empty() {
+        built_in.sort();
         lines.push(format!(
             "- _From the built-in vocabulary:_ {}",
             built_in.join(", ")
@@ -320,7 +344,9 @@ mod tests {
         );
         let ex = |l: &str| format!("http://example.org/{l}");
         let prefixes = PrefixMap::from_iter([("ex".to_string(), ex(""))]);
-        let section = |t: Types| inferred(t, &ex("rex"), &k, &prefixes);
+        let a = Analysis::new("file:///w/a.ttl".into(), text, Arc::default(), false);
+        let naming = Naming::at(&a, 0, Arc::new(prefixes));
+        let section = |t: Types| inferred(t, &ex("rex"), &k, &naming);
         assert_eq!(section(Types::Unknown), "");
         assert_eq!(section(Types::Proved(Vec::new())), "");
         assert_eq!(

@@ -3,9 +3,10 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::syntax::lexer::Kind;
 use crate::syntax::names::{header_end, insertion_point, newline, shorten, turtle_token_edits};
-use crate::syntax::{PrefixDecl, PrefixMap, Span};
+use crate::syntax::{PrefixDecl, PrefixMap, Span, Syntax};
 use lsp_types::{Range, TextEdit};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 /// The prefixes in scope at a position of a document.
 #[derive(Clone, Debug, Default)]
@@ -43,6 +44,64 @@ impl Scope {
     pub(crate) fn write(&self, iri: &str) -> String {
         shorten(iri, &self.0).unwrap_or_else(|| format!("<{iri}>"))
     }
+}
+
+/// How reasoning names an IRI in a document, in hover and in diagnostics
+/// alike, in every RDF syntax: with the document's own prefixes (its
+/// declarations, or the prefix terms of a JSON-LD `@context`), then with
+/// the project's (`prefixes.ttl` and the `prefixes` setting, which N-Triples
+/// and N-Quads documents only name with), then with a well-known
+/// vocabulary's, else as `<iri>`.
+pub(crate) struct Naming {
+    own: PrefixMap,
+    project: Arc<PrefixMap>,
+}
+
+impl Naming {
+    /// Naming at `offset` of `a` (`u32::MAX`: the whole document), with the
+    /// project's prefixes for it, `project`.
+    pub(crate) fn at(a: &Analysis, offset: u32, project: Arc<PrefixMap>) -> Naming {
+        let own = match a.parsed.syntax {
+            Syntax::JsonLd => context_prefixes(&a.source_index, offset),
+            _ => a
+                .parsed
+                .prefixes
+                .iter()
+                .take_while(|p| p.span.end <= offset)
+                .map(|p| (p.name.clone(), p.iri.to_string()))
+                .collect(),
+        };
+        Naming { own, project }
+    }
+
+    /// `iri` as `prefix:local`, else `<iri>`.
+    pub(crate) fn name(&self, iri: &str) -> String {
+        shorten(iri, &self.own)
+            .or_else(|| shorten(iri, &self.project))
+            .unwrap_or_else(|| crate::features::hover::short(iri, &PrefixMap::default()))
+    }
+}
+
+/// The prefix terms of a JSON-LD document's contexts: the context at
+/// `offset` first, then the others in text order; a term's first definition
+/// wins.
+fn context_prefixes(index: &crate::jsonld::SourceIndex, offset: u32) -> PrefixMap {
+    let mut out = PrefixMap::default();
+    for ctx in index.context_at(offset).into_iter().chain(index.contexts()) {
+        for (term, d) in ctx.terms() {
+            let Some(iri) = d.iri.as_deref() else {
+                continue;
+            };
+            if d.prefix
+                && !term.contains(':')
+                && !iri.starts_with(['@', '_'])
+                && !out.contains_key(term)
+            {
+                out.insert(term.to_string(), iri.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// The declaration of prefix `name` in scope at `offset`: the last one ending

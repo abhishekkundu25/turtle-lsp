@@ -157,6 +157,36 @@ test("findings in a file that is not open show in workspace diagnostics", async 
   }
 })
 
+test("in an N-Triples file the findings are named with the project's prefixes.ttl", async () => {
+  const type = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>"
+  const nt =
+    `<http://example.org/tom> ${type} <http://example.org/Cat> .\n` +
+    `<http://example.org/tom> ${type} <http://example.org/Dog> .\n`
+  const w = await session(
+    {
+      "onto.ttl": `${HEAD}ex:Cat owl:disjointWith ex:Dog .\n`,
+      "prefixes.ttl": "@prefix ex: <http://example.org/> .\n",
+      "data.nt": nt,
+    },
+    { initializationOptions: ON },
+  )
+  const a = w.uri("data.nt")
+  try {
+    w.s.open(a, nt)
+    const found = turbowl(await until(w.s, a, (d) => turbowl(d).length > 0))
+    assert.ok(found.length > 0, JSON.stringify(found))
+    for (const d of found) {
+      assert.equal(d.code, "turbowl/cax-dw")
+      assert.ok(d.message.startsWith("ex:tom is both a ex:Cat and a ex:Dog, which are disjoint.\n"), d.message)
+      assert.ok(d.message.includes("onto.ttl:3  ex:Cat owl:disjointWith ex:Dog"), d.message)
+      assert.ok(d.message.includes("data.nt:1  ex:tom a ex:Cat"), d.message)
+      assert.ok(!d.message.includes("<http"), d.message)
+    }
+  } finally {
+    await w.end()
+  }
+})
+
 test("over turtle.reasoning.maxTriples, the run is skipped with a note", async () => {
   const w = await session({ "a.ttl": CLASH }, { initializationOptions: { reasoning: { rules: "default", maxTriples: 1 } } })
   const a = w.uri("a.ttl")

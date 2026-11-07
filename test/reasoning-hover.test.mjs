@@ -99,3 +99,41 @@ test("with reasoning off, hover is today's", async () => {
     assert.equal(md.split("\n\n**Inferred**")[0], today, needle)
   }
 })
+
+test("in a JSON-LD document the proofs are named with its @context, the closest type first, each step once", async () => {
+  const dir = tempDir("turtle-reasoning-hover-jsonld-")
+  const onto = `${HEADER}ex:C rdfs:subClassOf ex:B .\nex:B rdfs:subClassOf ex:A .\n`
+  const data = '{\n  "@context": { "ex": "http://example.org/" },\n  "@id": "ex:x",\n  "@type": "ex:C"\n}\n'
+  fs.writeFileSync(path.join(dir, "onto.ttl"), onto)
+  fs.writeFileSync(path.join(dir, "data.jsonld"), data)
+  const uri = uriOf(path.join(dir, "data.jsonld"))
+  const s = await startServer({ cwd: dir, initializationOptions: { reasoning: { rules: "default" } } })
+  try {
+    await s.request("workspace/symbol", { query: "" })
+    s.open(uri, data)
+    const end = Date.now() + 20000
+    let md
+    for (;;) {
+      const h = await s.request("textDocument/hover", { textDocument: { uri }, position: positionOf(data, '"ex:x"', 4) })
+      md = h.contents.value
+      if (md.includes("**Inferred**\n\n- ") && !md.includes("still being worked out")) break
+      if (Date.now() > end) throw new Error(`no proofs:\n${md}`)
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    const section = md.slice(md.indexOf("\n\n**Inferred**"))
+    assert.ok(!section.includes("<http"), section)
+    assert.ok(section.includes("`ex:x a ex:C` [data.jsonld:4]"), section)
+    // The closest type first.
+    assert.ok(section.indexOf("- **ex:B**") < section.indexOf("- **ex:A**"), section)
+    assert.ok(section.indexOf("- **ex:B**") >= 0, section)
+    // Each base triple is written once, with its link; a later proof
+    // refers to it.
+    const links = [...section.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1])
+    assert.equal(links.length, 3, section)
+    assert.equal(new Set(links).size, 3, section)
+    assert.ok(section.includes(" (above)"), section)
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

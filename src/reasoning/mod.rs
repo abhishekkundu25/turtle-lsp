@@ -13,7 +13,8 @@
 //!   validation's; `run_inline` for the embedded server.
 //! - `diagnostics.rs`: what a run shows in the documents.
 //! - `proof.rs`: a [`Proof`] as hover markdown, a nested list ([`Names`]
-//!   says how the hover writes IRIs and places).
+//!   says how the hover writes IRIs and places; [`Shown`], what the proofs
+//!   of one hover have written, which a later one refers to).
 //! - `turtle.rs`: how hover and diagnostics write a proof's terms and base
 //!   triples: short names, `[]` for a blank node, an RDF list as one
 //!   `( … )`.
@@ -35,8 +36,7 @@ mod worker;
 use base::Base;
 pub(crate) use base::Origin;
 pub(crate) use diagnostics::{ByUri, SKIPPED_CODE};
-pub(crate) use proof::Names;
-#[cfg(test)]
+pub(crate) use proof::{Names, Shown};
 pub(crate) use state::Inferred;
 pub(crate) use state::{HOVER_WAIT, Proof, Shared, Types};
 pub(crate) use worker::{Job, Outcome, Worker, run_inline};

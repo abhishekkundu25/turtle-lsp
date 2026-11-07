@@ -12,8 +12,9 @@
 //! datatype). A finding only about imports is not shown. Its code is
 //! `turbowl/<rule>`.
 //!
-//! Its message is one sentence, its IRIs written with the prefixes of the
-//! document it is shown in. When its proof is searched for, the base
+//! Its message is one sentence, its IRIs written as the hover writes them
+//! in the document it is shown in ([`Naming`]: the document's prefixes,
+//! then the project's). When its proof is searched for, the base
 //! triples the proof rests on follow, written as `turtle.rs` writes them
 //! (an RDF list as one item), in proof order: as related information, each
 //! at its place, when the client shows it; otherwise as lines of the
@@ -23,7 +24,8 @@ use super::turtle::{IriName, term};
 use super::{Base, Origin, Proof};
 use crate::analysis::Analysis;
 use crate::features::diagnostics::SOURCE;
-use crate::features::hover::{file_label, short};
+use crate::features::hover::file_label;
+use crate::features::prefixes::Naming;
 use crate::knowledge::Source;
 use crate::syntax::PrefixMap;
 use lsp_types::{
@@ -47,11 +49,13 @@ const MAX_PER_DOC: usize = 1000;
 
 /// The diagnostics of `r`'s last run over `base`, and the explainer's
 /// cache their proofs filled. With `related`, the proof's triples are
-/// related information; without, lines of the message.
+/// related information; without, lines of the message. `project` holds the
+/// project's prefixes of the documents that parse with none.
 pub(super) fn of(
     r: &turbowl::Reasoner,
     base: &Base,
     related: bool,
+    project: &FxHashMap<String, Arc<PrefixMap>>,
 ) -> (ByUri, turbowl::ExplainCache) {
     let mut out = ByUri::default();
     let found = r.diagnostics();
@@ -61,7 +65,7 @@ pub(super) fn of(
     let mentions = Mentions::of(base, found);
     let explainer = r.explainer().ok();
     let mut explained = 0;
-    let mut prefixes: FxHashMap<String, PrefixMap> = FxHashMap::default();
+    let mut naming: FxHashMap<String, Naming> = FxHashMap::default();
     for d in found {
         let places = mentions.places(base, d);
         if places.is_empty() {
@@ -84,10 +88,11 @@ pub(super) fn of(
             let (message, related_information) = written
                 .entry(a.uri.as_str())
                 .or_insert_with(|| {
-                    let prefixes = prefixes
-                        .entry(a.uri.clone())
-                        .or_insert_with(|| a.prefix_map());
-                    let iri = |i: &str| short(i, prefixes);
+                    let naming = naming.entry(a.uri.clone()).or_insert_with(|| {
+                        let project = project.get(&a.uri).unwrap_or(&a.external);
+                        Naming::at(a, u32::MAX, Arc::clone(project))
+                    });
+                    let iri = |i: &str| naming.name(i);
                     explained_message(d, proof.as_ref(), &iri, related)
                 })
                 .clone();
@@ -393,6 +398,7 @@ mod tests {
             enc: Encoding::Utf16,
             related,
             findings: true,
+            project: Default::default(),
         };
         let mut out = run_inline(&shared, &job).diagnostics;
         let mut v = out.remove(URI).unwrap_or_default();

@@ -10,6 +10,7 @@ use super::{Base, rules};
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Source;
 use crate::settings::Reasoning;
+use crate::syntax::PrefixMap;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
@@ -30,6 +31,11 @@ pub(crate) struct Job {
     /// TurbOWL's findings become diagnostics (`reasoning.diagnostics`);
     /// without, the run gives none and searches no proof for them.
     pub(crate) findings: bool,
+    /// The project's prefixes of each document whose syntax takes none
+    /// (N-Triples, N-Quads, JSON-LD), by URI: the findings name IRIs with
+    /// them after the document's own. A Turtle or TriG document has them as
+    /// its `external`.
+    pub(crate) project: FxHashMap<String, Arc<PrefixMap>>,
 }
 
 /// What a run gives the server: its diagnostics per document URI (the
@@ -123,7 +129,7 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
     reasoner.reason();
     let types = inferred_types(&reasoner);
     let (diagnostics, cache) = if job.findings {
-        diagnostics::of(&reasoner, &base, job.related)
+        diagnostics::of(&reasoner, &base, job.related, &job.project)
     } else {
         Default::default()
     };
@@ -176,6 +182,7 @@ mod tests {
             enc: Encoding::Utf16,
             related: true,
             findings: true,
+            project: Default::default(),
         }
     }
 
