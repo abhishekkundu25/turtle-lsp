@@ -6,8 +6,9 @@
 //! are kept apart per document and named `g<n>` as the SPARQL dataset names
 //! them ([`Index::term`]), so the same documents give the same base, blank
 //! node names included, whatever order they come in. TriG and N-Quads
-//! graphs are merged into that one graph. A triple written twice keeps its
-//! first place.
+//! graphs are merged into that one graph. A triple written twice is one
+//! base triple: proofs link to its first place, and findings are shown at
+//! every place.
 //!
 //! The base also knows its RDF lists (the blank nodes with `rdf:first` and
 //! `rdf:rest`), so that a proof can write a list as one `( … )`.
@@ -19,6 +20,7 @@ use crate::syntax::Span;
 use lsp_types::Range;
 use rustc_hash::FxHashMap;
 use spargebra::term::{BlankNode, NamedNode, NamedOrBlankNode, Term, Triple};
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 /// Where a base triple is written.
@@ -41,8 +43,11 @@ pub(crate) struct Base {
     /// over, so places stay where they were until the next run.
     docs: Vec<(Source, Arc<Analysis>)>,
     enc: Encoding,
-    /// Each triple, with (document, index into its parse's triples).
+    /// Each triple, with (document, index into its parse's triples) of its
+    /// first place.
     places: FxHashMap<Triple, (u32, u32)>,
+    /// The places after the first of the triples written more than once.
+    repeats: Vec<(Triple, (u32, u32))>,
     /// The RDF list cells: each blank node with `rdf:first` or `rdf:rest`.
     cells: FxHashMap<BlankNode, Cell>,
 }
@@ -69,6 +74,7 @@ impl Base {
         let g = Graph::new(&parses);
         let terms = Index::new(&g, None);
         let mut places = FxHashMap::default();
+        let mut repeats = Vec::new();
         let mut cells: FxHashMap<BlankNode, Cell> = FxHashMap::default();
         places.reserve(g.len());
         for (at, t) in g.added() {
@@ -95,7 +101,12 @@ impl Base {
                     slot.get_or_insert_with(|| triple.object.clone());
                 }
             }
-            places.entry(triple).or_insert_with(|| g.origin(at));
+            match places.entry(triple) {
+                Entry::Occupied(e) => repeats.push((e.key().clone(), g.origin(at))),
+                Entry::Vacant(e) => {
+                    e.insert(g.origin(at));
+                }
+            }
         }
         let links: Vec<(BlankNode, BlankNode)> = cells
             .iter()
@@ -113,6 +124,7 @@ impl Base {
             docs,
             enc,
             places,
+            repeats,
             cells,
         }
     }
@@ -163,10 +175,12 @@ impl Base {
     }
 
     /// The workspace documents' triples, not the imports', each with its
-    /// (document, index).
+    /// (document, index), at every place it is written.
     pub(super) fn in_workspace(&self) -> impl Iterator<Item = (&Triple, (u32, u32))> {
+        let repeats = self.repeats.iter().map(|(t, place)| (t, place));
         self.places
             .iter()
+            .chain(repeats)
             .filter(|(_, (d, _))| self.docs[*d as usize].0 != Source::External)
             .map(|(t, &place)| (t, place))
     }

@@ -489,6 +489,50 @@ mod tests {
     }
 
     #[test]
+    fn a_triple_written_in_two_places_is_shown_in_both() {
+        let individual = "@prefix ex: <http://example.org/> .\nex:x a ex:Cat , ex:Dog .\n";
+        let docs = vec![
+            doc(Source::Open, "file:///w/a.ttl", individual),
+            doc(
+                Source::Open,
+                "file:///w/b.ttl",
+                &format!("{individual}ex:y a ex:Cat .\nex:x a ex:Cat , ex:Dog .\n"),
+            ),
+            doc(
+                Source::Disk,
+                "file:///w/c.ttl",
+                "@prefix ex: <http://example.org/> .\n\
+                 @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                 ex:Cat owl:disjointWith ex:Dog .\n",
+            ),
+        ];
+        let job = Job {
+            generation: 1,
+            docs,
+            rules: Reasoning::Default,
+            max_triples: 1000,
+            enc: Encoding::Utf16,
+            related: true,
+            findings: true,
+            project: Default::default(),
+        };
+        let out = run_inline(&Shared::new(Spawn::Thread), &job).diagnostics;
+        let lines = |uri: &str| {
+            let mut v: Vec<u32> = out
+                .get(uri)
+                .into_iter()
+                .flatten()
+                .map(|d| d.range.start.line + 1)
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(lines("file:///w/a.ttl"), [2], "{out:#?}");
+        assert_eq!(lines("file:///w/b.ttl"), [2, 4], "{out:#?}");
+        assert!(lines("file:///w/c.ttl").is_empty(), "{out:#?}");
+    }
+
+    #[test]
     fn names_use_the_prefixes_of_the_document_and_iris_without_one_stay_whole() {
         let text = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
             <http://example.org/Cat> owl:disjointWith <http://example.org/Dog> .\n\
