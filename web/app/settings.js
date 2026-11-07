@@ -23,6 +23,11 @@ const SETTINGS = [
   { key: "turtle.reasoning.maxTriples", group: "turtle-lsp", cat: "Reasoning", title: "Max Triples", type: "number", def: 2000000, min: 0, max: Number.MAX_SAFE_INTEGER, desc: "Skip reasoning when the workspace holds more triples than this." },
   { key: "turtle.reasoning.diagnostics", group: "turtle-lsp", cat: "Reasoning", title: "Diagnostics", type: "bool", def: false, desc: "Show TurbOWL's findings (contradictions, ill-typed literals) as diagnostics, each with its proof. Off by default: SHACL shapes often check the same rules." },
   {
+    key: "turtle.query.reasoning", group: "turtle-lsp", cat: "Query", title: "Inferred Triples", type: "enum", def: "default",
+    options: [["off", "Only the triples the files hold"], ["default", "Also what TurbOWL's default OWL 2 RL rules infer"], ["complete", "Also what every W3C OWL 2 RL rule infers: slower"]],
+    desc: "Run queries over what TurbOWL infers from the workspace too, as hover shows it. The Inferred choice beside Run sets this.",
+  },
+  {
     key: LABELS, group: "turtle-lsp", cat: "Inlay Hints", title: "Labels", type: "enum", def: "opaque",
     options: [["opaque", "Only for terms whose IRI does not say what they are, such as ex:P1234"], ["all", "For every term that has a label"], ["off", "No label hints"]],
     desc: "Which terms get their rdfs:label (or skos:prefLabel) shown as an inlay hint. The Labels button in the status bar (Alt+L) switches between this and all.",
@@ -92,6 +97,7 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
           shacl: { enabled: get("turtle.shacl.enabled"), onType: get("turtle.shacl.onType"), maxTriples: get("turtle.shacl.maxTriples") },
           reasoning: { rules: get("turtle.reasoning.rules"), maxTriples: get("turtle.reasoning.maxTriples"), diagnostics: get("turtle.reasoning.diagnostics") },
           lint: { undescribedTerms: get("turtle.lint.undescribedTerms") },
+          query: { reasoning: get("turtle.query.reasoning") },
           format: { lineWidth: get("turtle.format.lineWidth") },
         },
       },
@@ -128,8 +134,8 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
     else vals[key] = value
     if (key === LABELS && value !== "all") otherLabels = value
     if (key.startsWith("turtle.")) sendTurtle()
-    else if (effects[key]) effects[key](value)
-    else applyEditors()
+    else if (!effects[key]) applyEditors()
+    effects[key]?.(value)
     if (!page.hidden) markModified()
     onChange()
   }

@@ -120,6 +120,48 @@ test("Ctrl+Enter runs the query: true or false, Turtle, and an error at its line
   }
 })
 
+const inferred = (page) => page.getByRole("combobox", { name: "Inferred", exact: true })
+const note = (page) => pane(page).locator(".qpane-note")
+
+test("on a fresh visit a query includes TurbOWL's inferred triples and says so; Inferred off leaves both out", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    assert.equal(await inferred(page).inputValue(), "default")
+    await runButton(page).click()
+    await pane(page).locator("table").waitFor()
+    assert.match(await note(page).textContent(), /^Includes [\d,]+ inferred triples \(TurbOWL, default rules\)(; TurbOWL reported \d+ findings?)?$/)
+    // Bob works for Alice, and ex:worksFor's range is ex:Organisation: only
+    // inference makes id:alice one.
+    const body = pane(page).locator(".qpane-body")
+    await setText(page, "SELECT ?o WHERE { ?o a ex:Organisation } ORDER BY ?o")
+    await page.keyboard.press("ControlOrMeta+Enter")
+    await body.locator("td", { hasText: "id:alice" }).waitFor()
+    assert.deepEqual(await body.locator("td").allTextContents(), ["id:acme", "id:alice"])
+    await inferred(page).selectOption("off")
+    await runButton(page).click()
+    await page.waitForFunction(() => document.querySelectorAll(".qpane-body td").length === 1)
+    assert.deepEqual(await body.locator("td").allTextContents(), ["id:acme"])
+    assert.equal(await note(page).isVisible(), false)
+    assert.equal(await note(page).textContent(), "")
+    // The choice is the setting `query.reasoning`, both ways.
+    await page.keyboard.press("ControlOrMeta+Comma")
+    const settings = page.getByRole("region", { name: "Settings" })
+    const setting = settings.getByRole("combobox", { name: "Query: Inferred Triples" })
+    assert.equal(await setting.inputValue(), "off")
+    await setting.selectOption("complete")
+    await page.keyboard.press("Escape")
+    await settings.waitFor({ state: "hidden" })
+    assert.equal(await inferred(page).inputValue(), "complete")
+    await runButton(page).click()
+    await body.locator("td", { hasText: "id:alice" }).waitFor()
+    assert.match(await note(page).textContent(), /^Includes [\d,]+ inferred triples \(TurbOWL, complete rules\)/)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("a prefix only Settings declares is known to the query, as it is to the editor", async () => {
   const { page, errors, close } = await open()
   try {

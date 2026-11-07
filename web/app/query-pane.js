@@ -1,7 +1,9 @@
-// SPARQL queries in the editor: a Run button in an editor group's breadcrumbs
-// bar when its file is a query (.rq, .sparql), and the results under the
-// editor: a table, true or false, or the constructed graph as Turtle. The
-// query runs in its own engine worker (worker.js), so typing is never slowed.
+// SPARQL queries in the editor: a Run button and the Inferred choice (whether
+// the query runs over what TurbOWL infers too) in an editor group's
+// breadcrumbs bar when its file is a query (.rq, .sparql), and the results
+// under the editor: a table, true or false, or the constructed graph as
+// Turtle, with a line saying what inference added. The query runs in its own
+// engine worker (worker.js), so typing is never slowed.
 
 import { esc } from "./dom.js"
 import { currentSettings } from "./editor-lsp.js"
@@ -15,8 +17,11 @@ const plural = (n, what) => `${n.toLocaleString("en")} ${what}${n === 1 ? "" : "
 // user's settings (the object Settings' `values()` gives, or the server's
 // configuration), by default what the page last sent the server. A query
 // runs under them: their prefixes, and `query.timeoutSeconds` and
-// `query.maxRows` (30 seconds and 1000 rows unless set).
-export function createQueryPane({ files, reveal, settings = currentSettings }) {
+// `query.maxRows` (30 seconds and 1000 rows unless set). `inferred`: the
+// setting `query.reasoning` ("off", "default" or "complete") as `get()` and
+// `set(value)`; the query runs with what `get()` gives, and `showInferred(value)`
+// puts a changed value in every Inferred choice.
+export function createQueryPane({ files, reveal, settings = currentSettings, inferred }) {
   let worker = null
   let seq = 0
   const pending = new Map()
@@ -64,12 +69,20 @@ export function createQueryPane({ files, reveal, settings = currentSettings }) {
     button.innerHTML = `<span class="codicon codicon-play" aria-hidden="true"></span><span class="qrun-label">Run</span>`
     button.hidden = true
     button.addEventListener("click", run)
-    crumbs.append(button)
+    const choice = document.createElement("label")
+    choice.className = "qinfer"
+    choice.title = "Whether the query also runs over what TurbOWL infers from the workspace (the Query: Inferred Triples setting)"
+    choice.innerHTML = `<span class="qinfer-label" aria-hidden="true">Inferred</span><select aria-label="Inferred">${INFERRED.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>`
+    choice.hidden = true
+    const select = choice.querySelector("select")
+    select.value = inferred.get()
+    select.addEventListener("change", () => inferred.set(select.value))
+    crumbs.append(choice, button)
     const pane = document.createElement("section")
     pane.className = "qpane"
     pane.hidden = true
     pane.setAttribute("aria-label", "Query results")
-    pane.innerHTML = `<div class="qpane-hd"><span class="view-title">Results</span><span class="qpane-file"></span><span class="qpane-status" role="status"></span><span class="sp"></span><button class="ic" aria-label="Close Results" title="Close Results"><span class="codicon codicon-close"></span></button></div><div class="qpane-body" tabindex="0"></div>`
+    pane.innerHTML = `<div class="qpane-hd"><span class="view-title">Results</span><span class="qpane-file"></span><span class="qpane-status" role="status"></span><span class="qpane-note" hidden></span><span class="sp"></span><button class="ic" aria-label="Close Results" title="Close Results"><span class="codicon codicon-close"></span></button></div><div class="qpane-body" tabindex="0"></div>`
     pane.querySelector(".ic").addEventListener("click", () => {
       g.query = null
       pane.hidden = true
@@ -80,14 +93,14 @@ export function createQueryPane({ files, reveal, settings = currentSettings }) {
       if (at && g.query) reveal(g.query.path, Number(at.dataset.line), Number(at.dataset.column))
     })
     g.el.querySelector(".editor-host").after(pane)
-    g.run = { button, pane }
+    g.run = { button, choice, select, pane }
   }
 
   // Shows the button when the group's file is a query, and the results when
   // they are its file's.
   function update(g) {
     if (!g.run) return
-    g.run.button.hidden = !isQuery(g.active)
+    g.run.button.hidden = g.run.choice.hidden = !isQuery(g.active)
     g.run.pane.hidden = !g.query || g.query.path !== g.active
   }
 
@@ -105,7 +118,7 @@ export function createQueryPane({ files, reveal, settings = currentSettings }) {
     update(g)
     let answer
     try {
-      answer = await call({ op: "query", files: files(), query: path, settings: settings() })
+      answer = await call({ op: "query", files: files(), query: path, settings: settings(), reasoning: inferred.get() })
     } catch (e) {
       answer = { kind: "error", message: e.message, line: null, column: null }
     }
@@ -118,7 +131,28 @@ export function createQueryPane({ files, reveal, settings = currentSettings }) {
     button.disabled = Boolean(g.query?.running)
   }
 
-  return { attach, update, run }
+  // The setting changed (here or on the Settings page).
+  function showInferred(value) {
+    for (const select of document.querySelectorAll(".qinfer select")) select.value = value
+  }
+
+  return { attach, update, run, showInferred }
+}
+
+// The Inferred choice's values, as the setting `query.reasoning` has them.
+const INFERRED = [
+  ["off", "Off"],
+  ["default", "Default rules"],
+  ["complete", "Complete rules (slower)"],
+]
+
+// The line that says what inference added to the query's data (the answer's
+// `inferred`), or "" when it was off.
+function inferredNote(i) {
+  if (!i) return ""
+  if (i.skipped) return `Inferred triples skipped: the workspace has ${plural(i.skipped.triples, "triple")}, over the reasoning limit of ${i.skipped.limit.toLocaleString("en")}`
+  const line = `Includes ${plural(i.triples, "inferred triple")} (TurbOWL, ${i.rules} rules)`
+  return i.findings ? `${line}; TurbOWL reported ${plural(i.findings, "finding")}` : line
 }
 
 function show(pane, a) {
@@ -143,6 +177,9 @@ function show(pane, a) {
     html = `<p class="qerror"><span class="codicon codicon-error" aria-hidden="true"></span> ${where}<span class="msg">${esc(a.message)}</span></p>`
   }
   pane.querySelector(".qpane-status").textContent = status + ms
+  const note = pane.querySelector(".qpane-note")
+  note.textContent = note.title = inferredNote(a.inferred)
+  note.hidden = !note.textContent
   body.innerHTML = html
   body.scrollTop = 0
 }

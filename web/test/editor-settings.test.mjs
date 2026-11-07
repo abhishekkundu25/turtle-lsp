@@ -62,7 +62,7 @@ test("Ctrl+, opens Settings, the search box filters, Escape closes", async () =>
     const search = page.getByRole("searchbox", { name: "Search settings" })
     assert.equal(await search.evaluate((el) => el === document.activeElement), true, "Ctrl+, focuses the search box")
     const all = await settingsPage(page).locator(".stg-item:visible").count()
-    assert.equal(all, 18)
+    assert.equal(all, 19)
     await search.fill("shacl")
     const titles = await settingsPage(page).locator(".stg-item:visible .stg-title b").allTextContents()
     // Reasoning's Diagnostics too: its description names SHACL shapes.

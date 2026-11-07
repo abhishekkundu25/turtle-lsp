@@ -188,6 +188,35 @@ test("query: a row limit past what the engine's memory can count is no limit, no
   for (const maxRows of [-1, 1.5, "ten"]) assert.throws(() => ask(all, { maxRows }), (e) => !e.crashed && /maxRows must be/.test(e.message), String(maxRows))
 })
 
+test("query: `reasoning` adds TurbOWL's inferred triples and says so; off answers as before", () => {
+  // ex:worksFor's range makes id:alice (Bob works for her) an ex:Organisation.
+  const orgs = "SELECT ?o WHERE { ?o a ex:Organisation } ORDER BY ?o"
+  const off = ask(orgs)
+  assert.deepEqual(off.rows, [["id:acme"]])
+  assert.equal("inferred" in off, false)
+  const timeless = ({ elapsedMs, ...a }) => a
+  assert.deepEqual(timeless(ask(orgs, { reasoning: "off" })), timeless(off))
+  const on = ask(orgs, { reasoning: "default" })
+  assert.deepEqual(on.rows, [["id:acme"], ["id:alice"]])
+  assert.equal(on.inferred.rules, "default")
+  assert.ok(Number.isInteger(on.inferred.triples) && on.inferred.triples > 0, JSON.stringify(on.inferred))
+  assert.equal(typeof on.inferred.findings, "number")
+  assert.equal(ask(orgs, { reasoning: "complete" }).inferred.rules, "complete")
+  assert.equal(ask("ASK { id:alice a ex:Organisation }", { reasoning: "default" }).boolean, true)
+  // The default is the settings' `query.reasoning`; the request's wins.
+  assert.equal(ask(orgs, { settings: { "query.reasoning": "default" } }).inferred.rules, "default")
+  assert.equal(ask(orgs, { settings: { turtle: { query: { reasoning: "default" } } } }).inferred.rules, "default")
+  assert.equal("inferred" in ask(orgs, { settings: { "query.reasoning": "default" }, reasoning: "off" }), false)
+  // Over `reasoning.maxTriples` the query runs without them, and says so.
+  const big = ask(orgs, { reasoning: "default", settings: { "reasoning.maxTriples": 1 } })
+  assert.deepEqual(big.rows, [["id:acme"]])
+  assert.equal(big.inferred.skipped.limit, 1)
+  assert.ok(big.inferred.skipped.triples > 1)
+  for (const reasoning of ["on", "Default", true, 1]) {
+    assert.throws(() => ask(orgs, { reasoning }), (e) => !e.crashed && /reasoning must be "off", "default" or "complete"/.test(e.message), String(reasoning))
+  }
+})
+
 test("analyse and fix all use the settings: a prefix they declare needs no fix", () => {
   const files = [{ name: "a.ttl", text: "zz:a zz:b zz:c .\n" }]
   const plain = engine.call("analyse", { files }).files[0]
