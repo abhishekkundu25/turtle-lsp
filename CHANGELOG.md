@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- **Reasoning, with proofs.** With `turtle.reasoning.rules` set to
+  `default` or `complete`, the server runs TurbOWL, an OWL 2 RL reasoner,
+  over the workspace and its loaded imports. A run starts when a document
+  opens or closes, on save, and after a pause in typing. It runs in the
+  background, and a long run shows progress. Hover on a resource adds an
+  "Inferred" section: each type the rules infer and no document states,
+  with its proof folded under it. Each step names its W3C rule, and each
+  triple the proof rests on is a link to its file and line. TurbOWL's
+  findings, such as a member of two disjoint classes, are diagnostics on
+  the statements of their terms, with the proof in the message (code
+  `turbowl/<rule>`). `default` runs TurbOWL's default rules; `complete`
+  runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples`
+  (default 2,000,000) is the most triples a run reads; past it the run is
+  skipped with a note (`reasoning-skipped`), and `turtle-lsp.json` cannot
+  raise it. Reasoning is off by default, and while it is off nothing runs.
+  The browser editor reasons too, on its one thread, and has both settings.
+
 ### Fixed
 
 - **Accepting a JSON-LD completion no longer breaks a string elsewhere in the

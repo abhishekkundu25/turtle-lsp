@@ -25,7 +25,7 @@ pub(crate) type ByUri = FxHashMap<String, Vec<Diagnostic>>;
 /// The note on the open documents that a run was skipped for its size.
 pub(crate) const SKIPPED_CODE: &str = "reasoning-skipped";
 /// The code of a finding is this followed by its W3C rule.
-pub(crate) const CODE_PREFIX: &str = "turbowl/";
+const CODE_PREFIX: &str = "turbowl/";
 /// Findings whose proofs are searched for; the rest show their sentence.
 const MAX_EXPLAINED: usize = 100;
 /// Findings shown per document; the rest are summarized in one diagnostic.

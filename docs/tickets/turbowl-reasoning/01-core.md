@@ -6,7 +6,7 @@ Build the `reasoning` module's types for every later ticket: the base with its o
 
 **Blocked by:** 00.
 
-**Status:** todo
+**Status:** done (ef20c9b)
 
 - [ ] `turbowl` path dependency (`default-features = false`, `features = ["rdf-12"]`); `cargo build --release --locked` passes.
 - [ ] Settings `turtle.reasoning` (`off`/`default`/`complete`) and `turtle.reasoning.maxTriples`, parsed and clamped in `settings.rs` with unit tests; in `package.json` (with `complete` described as slower) and `restrictedConfigurations` as SHACL's cap is; `manifest.test.mjs` passes; `web/app/settings.js` lists them.

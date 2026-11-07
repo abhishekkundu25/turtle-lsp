@@ -1,6 +1,6 @@
 //! The state the reasoning thread and hovers share: the reasoner after its
-//! last run, that run's base and generation, each IRI's inferred types and
-//! the explainer's cache.
+//! last run, that run's base, each IRI's inferred types and the
+//! explainer's cache.
 //!
 //! Only the reasoning thread writes it, and it holds the write lock for a
 //! whole run (the reasoner reuses its last run's work, so the run changes
@@ -32,7 +32,6 @@ pub(crate) struct Shared {
 
 /// The result of the last run that finished.
 pub(super) struct Reasoned {
-    pub(super) generation: u64,
     pub(super) reasoner: turbowl::Reasoner,
     pub(super) base: Base,
     /// Each IRI's inferred types that are IRIs, sorted.
@@ -84,11 +83,6 @@ impl Proof {
             .collect();
         Proof { proof, origins }
     }
-
-    /// Where the base triples it rests on are written, in step order.
-    pub(crate) fn leaves(&self) -> impl Iterator<Item = &Origin> {
-        self.origins.iter().flatten()
-    }
 }
 
 /// A proof's statement as an RDF triple, when it is one.
@@ -119,15 +113,6 @@ impl Shared {
         (settings.reasoning != Reasoning::Off).then(|| Arc::new(Shared::new(spawn)))
     }
 
-    /// The generation of the last run that finished, if it is readable now.
-    pub(crate) fn generation(&self) -> Option<u64> {
-        match self.held.try_read() {
-            Ok(held) => held.as_ref().map(|r| r.generation),
-            Err(TryLockError::Poisoned(e)) => e.into_inner().as_ref().map(|r| r.generation),
-            Err(TryLockError::WouldBlock) => None,
-        }
-    }
-
     /// The inferred types of `iri` (an IRI, as written in full), with their
     /// proofs when they are found within `wait`. Inline (no threads), the
     /// search runs here, without a limit.
@@ -154,7 +139,13 @@ impl Shared {
         if started.is_err() {
             return self.prove(iri);
         }
-        match rx.recv_timeout(wait) {
+        // Inline the search has run already, and the browser has no clock
+        // for `recv_timeout` to read.
+        let answer = match rx.try_recv() {
+            Ok(answer) => Ok(answer),
+            Err(_) => rx.recv_timeout(wait),
+        };
+        match answer {
             Ok(Ok(types)) => types,
             // A bug in the search: no proofs rather than no hover.
             Ok(Err(_)) => Types::Unknown,

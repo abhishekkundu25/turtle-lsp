@@ -278,6 +278,44 @@ test("the lens on id:acme in the published workspace counts its uses in SPARQL t
   }
 })
 
+// --- reasoning -----------------------------------------------------------------------------
+
+test("with reasoning on, hover shows the inferred type and its proof as natively", async () => {
+  const project = {
+    "onto.ttl": "@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\nex:Dog rdfs:subClassOf ex:Animal .\n",
+    "data.ttl": '@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\nex:rex a ex:Dog ;\n  rdfs:label "Rex" .\n',
+  }
+  const rdir = tempDir("turtle-web-reasoning-")
+  for (const [name, text] of Object.entries(project)) fs.writeFileSync(path.join(rdir, name), text)
+  const root = uriOf(rdir)
+  const initializationOptions = { reasoning: { rules: "default" } }
+  const n = await startServer({ cwd: rdir, initializationOptions })
+  const w = new EmbeddedServer(await createEngine(fs.readFileSync(path.join(here, "..", "app", "engine.wasm"))))
+  const params = (base) => ({ textDocument: { uri: `${base}/data.ttl` }, position: positionOf(project["data.ttl"], "ex:rex a", 3) })
+  try {
+    await w.initialize({ processId: null, rootUri: null, capabilities: {}, initializationOptions })
+    for (const [name, text] of Object.entries(project)) {
+      n.open(`${root}/${name}`, text)
+      w.notify("textDocument/didOpen", { textDocument: { uri: `${WORK}/${name}`, languageId: "turtle", version: 1, text } })
+    }
+    await w.settle()
+    // Natively the run and the proof search are in the background.
+    const proved = (h) => h?.contents.value.includes("**Inferred**\n\n- ") && !h.contents.value.includes("still being worked out")
+    let native = await n.request("textDocument/hover", params(root))
+    for (const end = Date.now() + 20_000; !proved(native) && Date.now() < end; ) {
+      await new Promise((r) => setTimeout(r, 100))
+      native = await n.request("textDocument/hover", params(root))
+    }
+    const got = await w.request("textDocument/hover", params(WORK))
+    assert.ok(proved(got), JSON.stringify(got))
+    assert.match(got.contents.value, /- \*\*ex:Animal\*\* · _cax-sco_/)
+    assert.deepEqual(got, JSON.parse(JSON.stringify(native).replaceAll(root, WORK)))
+  } finally {
+    await n.stop()
+    fs.rmSync(rdir, { recursive: true, force: true })
+  }
+})
+
 // --- the embedded driver --------------------------------------------------------------------
 
 test("an unknown request is the native server's error, and the server keeps answering", async () => {

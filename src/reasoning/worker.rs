@@ -117,7 +117,6 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
     let types = inferred_types(&reasoner);
     let (diagnostics, cache) = diagnostics::of(&reasoner, &base);
     *held = Some(Reasoned {
-        generation: job.generation,
         reasoner,
         base,
         types,
@@ -191,7 +190,7 @@ mod tests {
         let out = run_inline(&shared, &job(7, vec![animals()]));
         assert_eq!(out.generation, 7);
         assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
-        assert_eq!(shared.generation(), Some(7));
+        assert!(shared.read_for_test().is_some());
         let types = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
         assert_eq!(types.len(), 1);
         assert_eq!(types[0].class, format!("{EX}Animal"));
@@ -203,7 +202,7 @@ mod tests {
                 ..
             }
         ));
-        let mut lines: Vec<u32> = proof.leaves().map(|o| o.line).collect();
+        let mut lines: Vec<u32> = proof.origins.iter().flatten().map(|o| o.line).collect();
         lines.sort_unstable();
         assert_eq!(lines, [3, 4]);
         // An asserted type is not inferred; a term with none has none.
@@ -215,7 +214,7 @@ mod tests {
     fn a_run_over_the_size_limit_is_skipped_and_leaves_no_result() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
         run_inline(&shared, &job(1, vec![animals()]));
-        assert_eq!(shared.generation(), Some(1));
+        assert!(shared.read_for_test().is_some());
         let small = Job {
             max_triples: 1,
             ..job(2, vec![animals()])
@@ -231,7 +230,7 @@ mod tests {
             ))
         );
         assert!(notes[0].message.contains("turtle.reasoning.maxTriples"));
-        assert_eq!(shared.generation(), None);
+        assert!(shared.read_for_test().is_none());
         assert!(matches!(
             shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(1)),
             Types::Unknown
@@ -313,7 +312,7 @@ mod tests {
         worker.submit(job(1, vec![animals()]));
         let out = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(out.generation, 1);
-        assert_eq!(shared.generation(), Some(1));
+        assert!(shared.read_for_test().is_some());
         // An edit: the same reasoner runs again over the new base.
         let more = doc(
             Source::Disk,
@@ -329,7 +328,9 @@ mod tests {
             .proof
             .as_ref()
             .unwrap()
-            .leaves()
+            .origins
+            .iter()
+            .flatten()
             .map(|o| o.uri.as_str())
             .collect();
         assert!(leaf_uris.contains(&"file:///w/b.ttl"), "{leaf_uris:?}");
@@ -352,7 +353,7 @@ mod tests {
             ..job(2, vec![animals()])
         };
         assert!(run_inline(&shared, &off).diagnostics.is_empty());
-        assert_eq!(shared.generation(), None);
+        assert!(shared.read_for_test().is_none());
         let settings = crate::settings::Settings::default();
         assert!(Shared::when_on(&settings, crate::server::worker::Spawn::Thread).is_none());
     }

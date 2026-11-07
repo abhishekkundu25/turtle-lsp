@@ -18,7 +18,7 @@
 //! | [`shacl`] | Shapes, SHACL Core and SHACL-SPARQL validation | [`features`], [`knowledge`] |
 //! | [`rdf`] | The union of documents' triples as a graph and a SPARQL dataset | [`query`], [`shacl`] |
 //! | [`query`] | Running SPARQL queries and rendering results | [`cli`], [`server`], [`batch`], the browser engine |
-//! | `reasoning` | Reasoning over the workspace with TurbOWL: the base, the shared state, the reasoning thread | [`server`], `ide` |
+//! | `reasoning` | Reasoning over the workspace with TurbOWL: the base, the shared state, the reasoning thread, findings as diagnostics, proofs for hover | [`server`], `ide`, [`features`] |
 //! | [`settings`] | Client settings and their layers | [`server`], [`cli`] |
 //! | `commands` | `workspace/executeCommand` commands | [`server`] |
 //! | [`server`] | The LSP main loop, and the worker threads other modules start | `main`, the browser engine |

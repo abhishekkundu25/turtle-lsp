@@ -4,7 +4,7 @@
 
 **Blocked by:** 01.
 
-**Status:** todo
+**Status:** done (5343681)
 
 - [ ] New `test/reasoning.test.mjs`: a disjointness contradiction is a diagnostic with its proof; an edit updates diagnostics after the pause; the size limit gives the note; progress begins and ends; `off` publishes exactly today's diagnostics.
 - [ ] The existing `test/shacl-validate.test.mjs` still passes.

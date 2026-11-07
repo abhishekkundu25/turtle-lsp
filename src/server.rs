@@ -64,7 +64,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::PathBuf;
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -2019,7 +2018,6 @@ mod tests {
 
         let sent = e.handle(vec![rules("default")]);
         assert_eq!(found(&sent), Some(true));
-        assert_eq!(e.server.reasoning.as_ref().unwrap().generation(), Some(1));
         // An edit reasons again once typing pauses.
         e.handle(vec![notify(
             "textDocument/didChange",
@@ -2028,9 +2026,9 @@ mod tests {
         assert!(e.server.timers.is_set(Timer::ReasoningTyping));
         // Another rule set reruns over the same state.
         let shared = e.server.reasoning.clone().unwrap();
-        e.handle(vec![rules("complete")]);
+        let sent = e.handle(vec![rules("complete")]);
         assert!(Arc::ptr_eq(&shared, e.server.reasoning.as_ref().unwrap()));
-        assert_eq!(shared.generation(), Some(2));
+        assert_eq!(found(&sent), Some(true));
 
         let sent = e.handle(vec![rules("off")]);
         assert_eq!(found(&sent), Some(false));

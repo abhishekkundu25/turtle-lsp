@@ -1,6 +1,9 @@
 # Lightweight reasoning (RDFS, then a part of OWL RL)
 
-Status: spec only, not scheduled.
+Status: superseded by [turbowl-reasoning.md](turbowl-reasoning.md), which
+replaces this spec's engine, provenance and `owl:sameAs` decisions; phase 1
+of it is done. The user stories, consumers, size limit, imports and browser
+parity here still stand.
 
 ## Problem Statement
 

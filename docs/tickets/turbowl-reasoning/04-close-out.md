@@ -4,9 +4,9 @@
 
 **Blocked by:** 02, 03.
 
-**Status:** todo
+**Status:** done
 
-- [ ] `web/engine` depends on `turbowl` (no default features, `rdf-12`); `node web/build.mjs` passes within the engine's size budget, or the budget is raised on purpose with the reason in the commit.
-- [ ] One case in `web/test/lsp.test.mjs`: inferred type in hover, native and wasm agree.
-- [ ] `CHANGELOG.md` (Unreleased, Added), `README.md` feature list, `ARCHITECTURE.md` (the `reasoning` module and `server::reasoning`), `reasoning.md`'s status line pointing at the new spec, this README's statuses and departures.
-- [ ] The handover file `docs/handover-turbowl.md` is removed, its content now in the spec.
+- [x] `web/engine` depends on `turbowl` (no default features, `rdf-12`); `node web/build.mjs` passes within the engine's size budget, or the budget is raised on purpose with the reason in the commit.
+- [x] One case in `web/test/lsp.test.mjs`: inferred type in hover, native and wasm agree.
+- [x] `CHANGELOG.md` (Unreleased, Added), `README.md` feature list, `ARCHITECTURE.md` (the `reasoning` module and `server::reasoning`), `reasoning.md`'s status line pointing at the new spec, this README's statuses and departures.
+- [x] The handover file `docs/handover-turbowl.md` is removed, its content now in the spec.

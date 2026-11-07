@@ -489,6 +489,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxttl"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1d0fe19fa62a6a102f85b052bbd86e3cdc3360cd6a338d01bab1a6743bf1d8e"
+dependencies = [
+ "memchr",
+ "oxilangtag",
+ "oxiri 0.2.11",
+ "oxrdf",
+ "thiserror",
+]
+
+[[package]]
 name = "peg"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -932,6 +945,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbowl"
+version = "0.1.0"
+dependencies = [
+ "oxrdf",
+ "oxrdfxml",
+ "oxttl",
+ "rustc-hash",
+]
+
+[[package]]
 name = "turtle-lsp"
 version = "0.15.1"
 dependencies = [
@@ -949,6 +972,7 @@ dependencies = [
  "serde_json",
  "spareval",
  "spargebra",
+ "turbowl",
  "ureq",
  "url",
 ]

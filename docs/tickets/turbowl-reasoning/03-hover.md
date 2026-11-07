@@ -4,7 +4,7 @@
 
 **Blocked by:** 01.
 
-**Status:** todo
+**Status:** done (77b8503)
 
 - [ ] `src/reasoning/proof.rs`: proof to markdown, unit-tested.
 - [ ] New `test/reasoning-hover.test.mjs`: an inferred type with its proof and a link to the right line; a type through `owl:sameAs`; reasoning off gives today's hover.

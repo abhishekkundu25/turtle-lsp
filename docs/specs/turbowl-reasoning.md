@@ -1,9 +1,8 @@
 # Reasoning and proofs through TurbOWL
 
-Status: phase 1 in progress. Replaces the engine, provenance and
-`owl:sameAs` decisions of [reasoning.md](reasoning.md); its user stories,
-consumers, size limit, imports and browser parity stand. Handover:
-[../handover-turbowl.md](../handover-turbowl.md). Tickets:
+Status: phase 1 done (tickets 01 to 04). Replaces the engine, provenance
+and `owl:sameAs` decisions of [reasoning.md](reasoning.md); its user
+stories, consumers, size limit, imports and browser parity stand. Tickets:
 [../tickets/turbowl-reasoning/](../tickets/turbowl-reasoning/README.md).
 
 ## Problem Statement
@@ -16,7 +15,7 @@ it while they edit.
 
 ## Solution
 
-With `turtle.reasoning` set to `default` or `complete`, the server hands the
+With `turtle.reasoning.rules` set to `default` or `complete`, the server hands the
 workspace's triples (imports included) to TurbOWL, the owner's OWL 2 RL
 reasoner, on a thread of its own after open, save and a pause in typing.
 Hover on a resource lists its inferred types, each with its proof: the base
@@ -51,17 +50,17 @@ changes nothing.
 19. As a user, I want proofs through imported files to link to where the import is cached, as "Described in" does, so that I can open them.
 20. As a user, I want hover to answer within about 200 ms even when a proof is slow, saying it is still being worked out, so that hover never hangs; hovering again shows the proof.
 21. As a browser-editor user, I want the same inferred types, proofs and diagnostics in the browser, so that both editors agree.
-22. As a user of a repository's `turtle-lsp.json`, I want `turtle.reasoning` settable there, with the size limit clamped as SHACL's is, so that a cloned repository cannot make my editor slow.
+22. As a user of a repository's `turtle-lsp.json`, I want `turtle.reasoning.rules` and `turtle.reasoning.maxTriples` settable there, with the size limit clamped as SHACL's is, so that a cloned repository cannot make my editor slow.
 23. As a maintainer, I want reasoning's correctness left to TurbOWL's oracles and proof checker, so that turtle-lsp tests only the wiring and what users see.
 24. As a maintainer, I want the server's benchmark unchanged with reasoning off, so that the default costs nothing.
 
 ## Implementation Decisions
 
-- **Dependency.** `turbowl` as a path dependency on `../turtle-reasoner/crates/turbowl`, `default-features = false`, with its `rdf-12` feature (TurbOWL ticket `rdf12/01`: a triple term is an opaque term). The browser engine takes the same dependency; TurbOWL runs on one thread there. This branch cannot build in CI until TurbOWL is published; light local checks stand in.
-- **Setting.** `turtle.reasoning`: `off` (default), `default`, `complete`, mapped to `Switches::default()` and `Switches::complete()`. `turtle.reasoning.maxTriples`: the base size above which a run is skipped, default the same as SHACL's cap, clamped in an untrusted `turtle-lsp.json` like SHACL's.
+- **Dependency.** `turbowl` as a path dependency on `../turtle-reasoner/crates/turbowl`, `default-features = false`, with its `rdf-12` feature (TurbOWL ticket `rdf12/01`: a triple term is an opaque term). The browser engine gets it through turtle-lsp, with the same features; TurbOWL runs on one thread there. This branch cannot build in CI until TurbOWL is published; light local checks stand in.
+- **Setting.** `turtle.reasoning.rules`: `off` (default), `default`, `complete`, mapped to `Switches::default()` and `Switches::complete()`. `turtle.reasoning.maxTriples`: the base size above which a run is skipped, default the same as SHACL's cap, clamped in an untrusted `turtle-lsp.json` like SHACL's.
 - **A core module `reasoning`.** It owns:
   - the **base**: the workspace's documents (imports included) in a stable order, `(Source, uri)` as SHACL sorts them, made into oxrdf triples with the existing `rdf::Graph` conversion, so blank-node names are fixed for a run, and each base triple maps back to its document and triple (`Graph::origin`) and so to a file and line;
-  - the **state** shared between the reasoning thread and hovers: the reasoner, the base's origin map, the generation it reflects, the explain cache; behind a read-write lock, written only by the reasoning thread;
+  - the **state** shared between the reasoning thread and hovers: the reasoner, the base's origin map, the explain cache; behind a read-write lock, written only by the reasoning thread;
   - the **worker**: one thread, newest job wins, generation counter, panics caught, as `features::shacl_validate::Worker`; `run_inline` for the embedded server;
   - **proof rendering**: a `Proof` to markdown, leaves as `[file:line](uri#Lline)` links as `features::hover::describe_iri` writes them.
 - **Server wiring** follows SHACL's: a `server::reasoning` group (worker, feed, generation, diagnostics by URI), a typing timer and a progress timer, `Work::Reasoning` progress titled "TurbOWL: reasoning…", `Effects` flag on workspace changes, results feeding `DiagnosticInputs` and the closed-file workspace diagnostics. The skip note is an information diagnostic as `shacl-skipped` is, code `reasoning-skipped`.
@@ -92,4 +91,4 @@ changes nothing.
 - foundational-thinking, model-the-domain: the `reasoning` module's base, origin map and shared state come first (ticket 01) and every later ticket reads them.
 - boundary-discipline: settings are parsed and clamped in `settings.rs`; TurbOWL's terms are converted at the `reasoning` module's edge, never past it.
 - separate-before-serializing-shared-state: only the reasoning thread writes the state; hovers read under the lock and hand the cache back.
-- make-operations-idempotent: a run on an unchanged base converges to the same state; a crashed run leaves the previous result and the next job retries.
+- make-operations-idempotent: a run on an unchanged base converges to the same state; a crashed run leaves no result and the next job starts afresh.
