@@ -137,6 +137,9 @@
     "^(turtle\\.)*query\\.maxBufferedRows$": {
       "$ref": "#/definitions/query.maxBufferedRows"
     },
+    "^(turtle\\.)*query\\.reasoning$": {
+      "$ref": "#/definitions/query.reasoning"
+    },
     "^(turtle\\.)+query$": {
       "$ref": "#/definitions/query"
     }
@@ -448,10 +451,26 @@
       "description": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (ordinary rows take about 100 bytes each; long text values take more). This file can lower it but not raise it past 10,000,000 (0, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag.",
       "markdownDescription": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (ordinary rows take about 100 bytes each; long text values take more). This file can lower it but not raise it past 10,000,000 (`0`, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag."
     },
+    "query.reasoning": {
+      "type": "string",
+      "enum": [
+        "off",
+        "default",
+        "complete"
+      ],
+      "enumDescriptions": [
+        "Only the written triples, as without reasoning.",
+        "Also the triples TurbOWL infers with its default OWL 2 RL rules.",
+        "Also the triples TurbOWL infers with every W3C OWL 2 RL rule. Slower."
+      ],
+      "default": "off",
+      "description": "Run queries with ▶ Run query over the triples TurbOWL infers from the workspace, imports' axioms included, as well as the written ones. The results say how many inferred triples they include. Apart from reasoning.rules. This file may choose it; reasoning.maxTriples still holds.",
+      "markdownDescription": "Run queries with **▶ Run query** over the triples TurbOWL infers from the workspace, imports' axioms included, as well as the written ones. The results say how many inferred triples they include. Apart from `reasoning.rules`. This file may choose it; `reasoning.maxTriples` still holds."
+    },
     "query": {
       "type": "object",
-      "description": "Limits on SPARQL query runs. This file can lower them but not raise them.",
-      "markdownDescription": "Limits on SPARQL query runs. This file can lower them but not raise them.",
+      "description": "SPARQL query runs: their limits, which this file can lower but not raise, and their inferred triples.",
+      "markdownDescription": "SPARQL query runs: their limits, which this file can lower but not raise, and their inferred triples.",
       "properties": {
         "timeoutSeconds": {
           "$ref": "#/definitions/query.timeoutSeconds"
@@ -461,6 +480,9 @@
         },
         "maxBufferedRows": {
           "$ref": "#/definitions/query.maxBufferedRows"
+        },
+        "reasoning": {
+          "$ref": "#/definitions/query.reasoning"
         }
       },
       "additionalProperties": false

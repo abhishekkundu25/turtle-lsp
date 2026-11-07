@@ -9,6 +9,17 @@
 //! imports. The query sees the prefixes the editor gives the document
 //! (prefixes.ttl and the `prefixes` setting).
 //!
+//! With `query.reasoning` on (`default` or `complete`), the query also runs
+//! over the triples TurbOWL infers from that snapshot with that rule set,
+//! reading the workspace's imports (the knowledge index's external sources,
+//! as background reasoning reads them) for their axioms only, up to
+//! `turtle.reasoning.maxTriples`. The results document then says so in one
+//! line under its heading: "Includes 12 inferred triples (TurbOWL, default
+//! rules)." with "TurbOWL reported 2 findings." when there are any, or
+//! "Inferred triples skipped: the workspace has N triples, over the
+//! reasoning limit of M.". With `off` nothing is read or built and the
+//! document has no such line.
+//!
 //! The query runs on a thread of its own (never the main loop), with
 //! `query.timeoutSeconds` and `query.maxRows`. The thread renders the
 //! results as Markdown and writes them to
@@ -35,8 +46,7 @@
 
 use crate::analysis::Analysis;
 use crate::clock::Instant;
-use crate::knowledge::Source;
-use crate::query::{self, Answer, Limits, QueryError};
+use crate::query::{self, Answer, Inference, Inferred, Limits, QueryError};
 use crate::server::client::Client;
 use crate::server::json;
 use crate::server::progress::Progress;
@@ -140,6 +150,7 @@ struct Job {
     timeout: Option<Duration>,
     max_rows: Option<usize>,
     max_buffered_rows: Option<usize>,
+    inference: Inference,
     cancel: Arc<AtomicBool>,
     out: Option<PathBuf>,
 }
@@ -255,12 +266,8 @@ impl State {
                 (text, uri.clone(), ws.external_prefixes_for(&uri))
             }
         };
-        let docs: Vec<Arc<Analysis>> = ws
-            .knowledge()
-            .sources()
-            .filter(|(_, s, _)| *s != Source::External)
-            .map(|(_, _, a)| a.clone())
-            .collect();
+        let rules = settings.query_reasoning;
+        let (docs, imports) = super::query::sources(ws.knowledge(), rules, |_| true);
         let job = Job {
             name: file_name(&uri),
             text,
@@ -270,6 +277,11 @@ impl State {
             timeout: settings.query_timeout,
             max_rows: settings.query_max_rows,
             max_buffered_rows: settings.query_max_buffered_rows,
+            inference: Inference {
+                rules,
+                imports,
+                max_triples: settings.reasoning_max_triples,
+            },
             cancel: Arc::default(),
             out: match self.spawn {
                 Spawn::Thread => results_dir(),
@@ -519,10 +531,13 @@ fn execute(job: &Job, stem: &str) -> Report {
         Some(&job.base),
         &job.prefixes,
         &limits,
-        &query::Inference::default(),
-    )
-    .map(|o| o.answer);
+        &job.inference,
+    );
     let elapsed = Instant::now().saturating_duration_since(start);
+    let (outcome, inferred) = match outcome {
+        Ok(o) => (Ok(o.answer), o.inferred),
+        Err(e) => (Err(e), Inferred::None),
+    };
     let summary = match &outcome {
         Ok(a) => format!("{} in {}", answer_summary(a), duration(elapsed)),
         Err(QueryError::Timeout) => format!(
@@ -544,7 +559,7 @@ fn execute(job: &Job, stem: &str) -> Report {
     }
     let file = match &job.out {
         Some(dir) => {
-            let md = document(job, &outcome, elapsed);
+            let md = document(job, &outcome, inferred, elapsed);
             let path = dir.join(format!("{stem}.md"));
             std::fs::create_dir_all(dir)
                 .and_then(|()| std::fs::write(&path, md))
@@ -583,8 +598,14 @@ fn duration(d: Duration) -> String {
 }
 
 /// The results document: a title with the query's name, how long it took
-/// over how many files, then the results (or the error).
-fn document(job: &Job, outcome: &Result<Answer, QueryError>, elapsed: Duration) -> String {
+/// over how many files, what reasoning added, then the results (or the
+/// error).
+fn document(
+    job: &Job,
+    outcome: &Result<Answer, QueryError>,
+    inferred: Inferred,
+    elapsed: Duration,
+) -> String {
     let files = job.docs.len();
     let mut out = format!(
         "# {}\n\nRan in {} over {files} file{}.\n\n",
@@ -592,6 +613,10 @@ fn document(job: &Job, outcome: &Result<Answer, QueryError>, elapsed: Duration) 
         duration(elapsed),
         if files == 1 { "" } else { "s" }
     );
+    if let Some(line) = inferred_line(inferred) {
+        out.push_str(&line);
+        out.push_str("\n\n");
+    }
     match outcome {
         Ok(a) => {
             let prefixes = query::display_prefixes(&job.text, &job.prefixes);
@@ -620,6 +645,36 @@ fn document(job: &Job, outcome: &Result<Answer, QueryError>, elapsed: Duration) 
         }
     }
     out
+}
+
+/// The results document's line on what reasoning added; none when it was
+/// off.
+fn inferred_line(inferred: Inferred) -> Option<String> {
+    let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+    match inferred {
+        Inferred::None => None,
+        Inferred::Added {
+            rules,
+            triples,
+            findings,
+        } => {
+            let mut line = format!(
+                "Includes {} (TurbOWL, {} rules).",
+                count(triples, "inferred triple"),
+                super::query::rules_name(rules)
+            );
+            if findings > 0 {
+                line.push_str(&format!(
+                    " TurbOWL reported {}.",
+                    count(findings, "finding")
+                ));
+            }
+            Some(line)
+        }
+        Inferred::Skipped { triples, limit } => Some(format!(
+            "Inferred triples skipped: the workspace has {triples} triples, over the reasoning limit of {limit}."
+        )),
+    }
 }
 
 fn capitalize(s: &str) -> String {
@@ -656,6 +711,45 @@ mod tests {
     }
 
     #[test]
+    fn the_inferred_line() {
+        use crate::settings::Reasoning;
+        assert_eq!(inferred_line(Inferred::None), None);
+        let added = |rules, triples, findings| {
+            inferred_line(Inferred::Added {
+                rules,
+                triples,
+                findings,
+            })
+        };
+        assert_eq!(
+            added(Reasoning::Default, 12, 0).as_deref(),
+            Some("Includes 12 inferred triples (TurbOWL, default rules).")
+        );
+        assert_eq!(
+            added(Reasoning::Complete, 1, 1).as_deref(),
+            Some(
+                "Includes 1 inferred triple (TurbOWL, complete rules). TurbOWL reported 1 finding."
+            )
+        );
+        assert_eq!(
+            added(Reasoning::Default, 3, 2).as_deref(),
+            Some(
+                "Includes 3 inferred triples (TurbOWL, default rules). TurbOWL reported 2 findings."
+            )
+        );
+        assert_eq!(
+            inferred_line(Inferred::Skipped {
+                triples: 9,
+                limit: 4
+            })
+            .as_deref(),
+            Some(
+                "Inferred triples skipped: the workspace has 9 triples, over the reasoning limit of 4."
+            )
+        );
+    }
+
+    #[test]
     fn a_run_writes_the_results_document() {
         let dir = std::env::temp_dir().join(format!("turtle-lsp-run-query-{}", std::process::id()));
         let data = Arc::new(Analysis::new(
@@ -676,6 +770,7 @@ mod tests {
             timeout: Some(Duration::from_secs(5)),
             max_rows: Some(1),
             max_buffered_rows: None,
+            inference: Inference::default(),
             cancel: Arc::new(AtomicBool::new(false)),
             out: Some(dir.clone()),
         };

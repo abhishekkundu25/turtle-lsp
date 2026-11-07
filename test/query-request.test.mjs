@@ -322,3 +322,141 @@ describe("turtle/query and the end of the server", () => {
 
   test("stdin closing stops a running query", () => endsWithQueryRunning(async (s) => s.proc.stdin.end()))
 })
+
+describe("turtle/query reasoning", () => {
+  // ex:Pump is a subclass of ex:Device here, and ex:Device of ex:Thing in
+  // the imported ontology (RDF/XML: an import, never a workspace document).
+  const MODEL = `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<http://example.org/model> a owl:Ontology ; owl:imports <http://example.org/vendor> .
+ex:Pump rdfs:subClassOf ex:Device .
+ex:p1 a ex:Pump .
+`
+  const VENDOR = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://example.org/vendor"/>
+    <owl:Class rdf:about="http://example.org/Device">
+        <rdfs:subClassOf rdf:resource="http://example.org/Thing"/>
+    </owl:Class>
+</rdf:RDF>
+`
+  const CATALOG = `<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+    <uri name="http://example.org/vendor" uri="vendor/vendor.rdf"/>
+</catalog>
+`
+  const OF = (cls) => `PREFIX ex: <http://example.org/> SELECT ?s WHERE { ?s a ex:${cls} }`
+  const subjects = (r) => r.results.bindings.map((b) => b.s.value)
+  const without = ({ elapsedMs, ...rest }) => rest
+  const dirs = []
+  after(() => dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true })))
+
+  async function workspace(initializationOptions) {
+    const dir = tempDir("turtle-lsp-query-request-reasoning-")
+    dirs.push(dir)
+    fs.mkdirSync(path.join(dir, "vendor"))
+    fs.writeFileSync(path.join(dir, "model.ttl"), MODEL)
+    fs.writeFileSync(path.join(dir, "vendor", "vendor.rdf"), VENDOR)
+    fs.writeFileSync(path.join(dir, "catalog-v001.xml"), CATALOG)
+    const s = await startServer({ cwd: dir, initializationOptions })
+    try {
+      await indexed(s, 4)
+    } catch (e) {
+      await s.stop()
+      throw e
+    }
+    return s
+  }
+
+  // Ask until the import has loaded (imports resolve after the index).
+  async function imported(s) {
+    const end = Date.now() + 10000
+    for (;;) {
+      const r = await s.request("turtle/query", { query: OF("Thing"), reasoning: "default" })
+      if (subjects(r).length > 0) return r
+      if (Date.now() > end) throw new Error("the import never inferred ex:p1 a ex:Thing")
+      await new Promise((res) => setTimeout(res, 50))
+    }
+  }
+
+  test("default and complete add the inferred rows and say so; off answers as before", async () => {
+    const s = await workspace()
+    try {
+      const plain = await s.request("turtle/query", { query: OF("Device") })
+      assert.deepEqual(subjects(plain), [])
+      assert.equal("inferred" in plain, false)
+      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off" })
+      assert.deepEqual(without(off), without(plain))
+      for (const rules of ["default", "complete"]) {
+        const r = await s.request("turtle/query", { query: OF("Device"), reasoning: rules })
+        assert.deepEqual(subjects(r), [EX + "p1"], rules)
+        assert.deepEqual(Object.keys(r.inferred).sort(), ["findings", "rules", "triples"], rules)
+        assert.equal(r.inferred.rules, rules)
+        assert.ok(r.inferred.triples > 0, JSON.stringify(r.inferred))
+        assert.equal(r.inferred.findings, 0)
+      }
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("an imported axiom infers; the import's own triples are not queried", async () => {
+    const s = await workspace()
+    try {
+      const r = await imported(s)
+      assert.deepEqual(subjects(r), [EX + "p1"])
+      const a = await s.request("turtle/query", {
+        query: "PREFIX ex: <http://example.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> ASK { ex:Device rdfs:subClassOf ex:Thing }",
+        reasoning: "default",
+      })
+      assert.equal(a.boolean, false)
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("a bad reasoning value is InvalidParams", async () => {
+    const s = await workspace()
+    try {
+      for (const reasoning of ["on", "Default", 1, true]) {
+        await assert.rejects(s.request("turtle/query", { query: OF("Device"), reasoning }), (e) => {
+          assert.equal(e.code, InvalidParams, String(reasoning))
+          assert.ok(e.message, String(reasoning))
+          return true
+        })
+      }
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("the default is query.reasoning", async () => {
+    const s = await workspace({ query: { reasoning: "default" } })
+    try {
+      const r = await s.request("turtle/query", { query: OF("Device") })
+      assert.deepEqual(subjects(r), [EX + "p1"])
+      assert.equal(r.inferred.rules, "default")
+      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off" })
+      assert.deepEqual(subjects(off), [])
+      assert.equal("inferred" in off, false)
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("over turtle.reasoning.maxTriples the inferred triples are skipped, and the answer says so", async () => {
+    const s = await workspace({ reasoning: { maxTriples: 1 } })
+    try {
+      const r = await s.request("turtle/query", { query: OF("Device"), reasoning: "default" })
+      assert.deepEqual(subjects(r), [])
+      assert.deepEqual(Object.keys(r.inferred), ["skipped"])
+      assert.equal(r.inferred.skipped.limit, 1)
+      assert.ok(r.inferred.skipped.triples >= 4, JSON.stringify(r.inferred))
+    } finally {
+      await s.stop()
+    }
+  })
+})

@@ -62,7 +62,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, turtle.query.*, turtle.shacl.maxTriples and turtle.diagnostics.workspace, and network imports are off: nothing is fetched unless you run the quick fix that fetches one unresolved import. A server inside the workspace is never run.",
+      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, the turtle.query limits (timeoutSeconds, maxRows, maxBufferedRows), turtle.shacl.maxTriples, turtle.reasoning.maxTriples and turtle.diagnostics.workspace, and network imports are off: nothing is fetched unless you run the quick fix that fetches one unresolved import. A server inside the workspace is never run.",
       "restrictedConfigurations": [
         "turtle.server.path",
         "turtle.imports.network",
@@ -345,6 +345,22 @@
           "default": 1000,
           "minimum": 0,
           "markdownDescription": "Show at most this many rows (or triples) of a query's results; the total is still counted. `0` for no limit.",
+          "scope": "window"
+        },
+        "turtle.query.reasoning": {
+          "type": "string",
+          "enum": [
+            "off",
+            "default",
+            "complete"
+          ],
+          "enumDescriptions": [
+            "Only the written triples, as without reasoning.",
+            "Also the triples TurbOWL infers with its default OWL 2 RL rules.",
+            "Also the triples TurbOWL infers with every W3C OWL 2 RL rule. Slower."
+          ],
+          "default": "off",
+          "markdownDescription": "Run queries with **▶ Run query** over the triples TurbOWL infers from the workspace, imports' axioms included, as well as the written ones. The results say how many inferred triples they include. Apart from `turtle.reasoning.rules`; `turtle.reasoning.maxTriples` still holds.",
           "scope": "window"
         },
         "turtle.query.maxBufferedRows": {

@@ -128,6 +128,7 @@ test("a project's file passes; a typo or a wrong value does not", () => {
     { $schema: "./node_modules/x/turtle-lsp.schema.json", "prefixes.ex": "http://example.org/", "lint.undescribedTerms": false },
     { turtle: { "lint.ignore": ["unused-prefix"], lint: { enable: ["missing-label"] } } },
     { query: { timeoutSeconds: 2.5, maxRows: 50 }, reasoning: { rules: "complete" }, imports: { network: false } },
+    { query: { reasoning: "default" }, "query.reasoning": "complete" },
   ]) {
     assert.deepEqual(errors(ok), [], JSON.stringify(ok))
   }
@@ -136,6 +137,7 @@ test("a project's file passes; a typo or a wrong value does not", () => {
     { "lint.ignroe": ["unused-prefix"] },
     { shacl: { enabled: "yes" } },
     { reasoning: { rules: "all" } },
+    { query: { reasoning: "on" } },
     { format: { lineWidth: 10 } },
     { prefixes: { ex: 42 } },
     { lint: { enable: ["missing-lable"] } },

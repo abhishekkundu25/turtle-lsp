@@ -55,6 +55,7 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.query.timeoutSeconds": ["number", 30],
     "turtle.query.maxRows": ["integer", 1000],
     "turtle.query.maxBufferedRows": ["integer", 10000000],
+    "turtle.query.reasoning": ["string", "off"],
   }
   for (const [key, [type, def]] of Object.entries(expected)) {
     assert.ok(settings[key], `${key} missing`)
@@ -66,6 +67,8 @@ test("server settings are declared with the server's defaults", () => {
   assert.deepEqual(settings["turtle.imports.unresolved"].enum, ["soften", "ignore"])
   assert.deepEqual(settings["turtle.reasoning.rules"].enum, ["off", "default", "complete"])
   assert.match(settings["turtle.reasoning.rules"].enumDescriptions[2], /Slower/)
+  assert.deepEqual(settings["turtle.query.reasoning"].enum, ["off", "default", "complete"])
+  assert.match(settings["turtle.query.reasoning"].enumDescriptions[2], /Slower/)
 })
 
 test("lint.ignore and lint.enable are lists of codes, empty by default, sent as lists", () => {

@@ -15,7 +15,12 @@
 //!
 //! The dataset is [`query::run`]'s, as "▶ Run query" has it: the default
 //! graph is the union of every triple of every document; there are no named
-//! graphs.
+//! graphs. `reasoning` (`off`, `default` or `complete`; default the
+//! `query.reasoning` setting) adds the triples TurbOWL infers from those
+//! documents with that rule set, reading the workspace's imports (the
+//! knowledge index's external sources, as background reasoning reads them)
+//! for their axioms only, up to `turtle.reasoning.maxTriples`. With `off`
+//! nothing is read or built and the answer is as without the parameter.
 //!
 //! The answer is one of
 //!
@@ -27,8 +32,16 @@
 //!   "object"}], "omitted": n, "elapsedMs": ms}` for CONSTRUCT and DESCRIBE,
 //!   the terms in the results JSON's term form.
 //!
+//! With inferred triples on, the answer also has `inferred`: `{"rules":
+//! "default" | "complete", "triples": n, "findings": k}` (the inferred
+//! triples added, and how many findings TurbOWL reported, which do not stop
+//! the query), or `{"skipped": {"triples": n, "limit": m}}` when the
+//! documents and imports have more triples than the limit and none were
+//! added. With `off` there is no `inferred`.
+//!
 //! A query that is not SPARQL, an UPDATE, a relative IRI without `base`,
-//! an empty `files`, or one of `files` that is not a workspace document is
+//! an empty `files`, one of `files` that is not a workspace document, or a
+//! `reasoning` that is not one of the three is
 //! `InvalidParams`; a query stopped at a limit or by
 //! the evaluator is `RequestFailed`, with the reason as the message. The
 //! query runs on a thread of its own ([`Spawn::Thread`]), which answers the
@@ -43,7 +56,8 @@ use crate::analysis::Analysis;
 use crate::clock::Instant;
 use crate::knowledge::Source;
 use crate::query::render::json_term;
-use crate::query::{self, Answer, Limits, QueryError};
+use crate::query::{self, Answer, Inference, Inferred, Limits, QueryError};
+use crate::settings::Reasoning;
 use crate::syntax::PrefixMap;
 use lsp_server::{RequestId, Response};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -70,6 +84,59 @@ pub(crate) struct Params {
     timeout_seconds: Option<f64>,
     /// Lowers `query.maxRows`; never raises it.
     max_rows: Option<u64>,
+    /// The inferred triples to add; omitted: `query.reasoning`.
+    reasoning: Option<Rules>,
+}
+
+/// The `reasoning` parameter, as written; [`Reasoning`] past the boundary.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Rules {
+    Off,
+    Default,
+    Complete,
+}
+
+impl From<Rules> for Reasoning {
+    fn from(r: Rules) -> Reasoning {
+        match r {
+            Rules::Off => Reasoning::Off,
+            Rules::Default => Reasoning::Default,
+            Rules::Complete => Reasoning::Complete,
+        }
+    }
+}
+
+/// The name of a rule set, as `reasoning` and `turtle.reasoning.rules`
+/// write it.
+pub(super) fn rules_name(r: Reasoning) -> &'static str {
+    match r {
+        Reasoning::Off => "off",
+        Reasoning::Default => "default",
+        Reasoning::Complete => "complete",
+    }
+}
+
+/// The documents a query reads and the imports its reasoning reads: the
+/// knowledge index's sources that `keep` accepts, and with `rules` on, its
+/// external ones (none with `rules` off).
+pub(super) fn sources(
+    k: &crate::knowledge::Knowledge,
+    rules: Reasoning,
+    keep: impl Fn(&Analysis) -> bool,
+) -> (Vec<Arc<Analysis>>, Vec<Arc<Analysis>>) {
+    let mut docs = Vec::new();
+    let mut imports = Vec::new();
+    for (_, source, a) in k.sources() {
+        if source != Source::External {
+            if keep(a) {
+                docs.push(a.clone());
+            }
+        } else if rules != Reasoning::Off {
+            imports.push(a.clone());
+        }
+    }
+    (docs, imports)
 }
 
 /// The runs going on, by request id: each one's cancellation flag.
@@ -134,6 +201,7 @@ struct Job {
     prefixes: Arc<PrefixMap>,
     docs: Vec<Arc<Analysis>>,
     limits: Limits,
+    inference: Inference,
 }
 
 /// Answer `turtle/query`, now or (with threads) from the thread that runs
@@ -187,18 +255,13 @@ pub(super) fn request(
             .filter(|u| seen.insert(u.clone()))
             .collect()
     });
-    let docs: Vec<Arc<Analysis>> = s
-        .knowledge()
-        .0
-        .sources()
-        .filter(|(_, source, _)| *source != Source::External)
-        .filter(|(_, _, a)| {
-            wanted
-                .as_ref()
-                .is_none_or(|w| w.iter().any(|u| *u == a.uri))
-        })
-        .map(|(_, _, a)| a.clone())
-        .collect();
+    let rules = p
+        .reasoning
+        .map_or(s.settings().query_reasoning, Reasoning::from);
+    let max_triples = s.settings().reasoning_max_triples;
+    let (docs, imports) = sources(s.knowledge().0, rules, |a| {
+        wanted.as_ref().is_none_or(|w| w.contains(&a.uri))
+    });
     if let Some(w) = &wanted {
         let missing: Vec<&str> = w
             .iter()
@@ -252,6 +315,11 @@ pub(super) fn request(
             cancel: None,
             max_rows,
             max_buffered_rows: s.settings().query_max_buffered_rows,
+        },
+        inference: Inference {
+            rules,
+            imports,
+            max_triples,
         },
     };
     if spawn == Spawn::Thread {
@@ -311,14 +379,16 @@ fn execute(job: &Job) -> Result<Value, (ErrorCode, String)> {
         job.base.as_deref(),
         &job.prefixes,
         &job.limits,
-        &query::Inference::default(),
-    )
-    .map(|o| o.answer);
+        &job.inference,
+    );
     let elapsed = Instant::now().saturating_duration_since(start).as_millis();
     match outcome {
-        Ok(a) => {
-            let mut v = answer_json(&a);
+        Ok(o) => {
+            let mut v = answer_json(&o.answer);
             if let Value::Object(m) = &mut v {
+                if let Some(note) = inferred_json(o.inferred) {
+                    m.insert("inferred".into(), note);
+                }
                 m.insert("elapsedMs".into(), (elapsed as u64).into());
             }
             Ok(v)
@@ -340,6 +410,25 @@ fn execute(job: &Job) -> Result<Value, (ErrorCode, String)> {
             @ (QueryError::Syntax { .. } | QueryError::Unsupported(_) | QueryError::TooComplex(_)),
         ) => Err((ErrorCode::InvalidParams, e.to_string())),
         Err(e) => Err((ErrorCode::RequestFailed, e.to_string())),
+    }
+}
+
+/// The answer's `inferred` member; none when reasoning was off.
+fn inferred_json(inferred: Inferred) -> Option<Value> {
+    match inferred {
+        Inferred::None => None,
+        Inferred::Added {
+            rules,
+            triples,
+            findings,
+        } => Some(json!({
+            "rules": rules_name(rules),
+            "triples": triples,
+            "findings": findings,
+        })),
+        Inferred::Skipped { triples, limit } => {
+            Some(json!({ "skipped": { "triples": triples, "limit": limit } }))
+        }
     }
 }
 

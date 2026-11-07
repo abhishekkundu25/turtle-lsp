@@ -252,3 +252,45 @@ test("a run shows cancellable progress and a Cancel lens; both stop it", async (
     await s.stop()
   }
 })
+
+test("with query.reasoning on, the results include the inferred rows and say so; off, they are as before", async () => {
+  const dir = tempDir("turtle-query-reasoning-")
+  const model = `@prefix ex: <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+ex:Pump rdfs:subClassOf ex:Device .
+ex:p1 a ex:Pump .
+`
+  const query = "PREFIX ex: <http://example.org/>\nSELECT ?s WHERE { ?s a ex:Device }\n"
+  fs.writeFileSync(path.join(dir, "model.ttl"), model)
+  fs.writeFileSync(path.join(dir, "devices.rq"), query)
+  const uri = uriOf(path.join(dir, "devices.rq"))
+  const s = await startServer({ cwd: dir, capabilities: showDocument, onRequest })
+  try {
+    const results = () => fs.readFileSync(path.join(s.cacheDir, "query-results", "devices.md"), "utf8")
+    s.open(uri, query, "sparql")
+    assert.match(await run(s, uri), /^0 rows/)
+    const off = results()
+    assert.match(off, /^# devices\.rq\n\nRan in \d+ ms over 1 file\.\n\nNo results\.\n$/)
+    assert.ok(!off.includes("inferred") && !off.includes("TurbOWL"), off)
+
+    for (const rules of ["default", "complete"]) {
+      s.notify("workspace/didChangeConfiguration", { settings: { turtle: { query: { reasoning: rules } } } })
+      assert.match(await run(s, uri), /^1 row in/, rules)
+      const md = results()
+      assert.match(md, new RegExp(`^# devices\\.rq\\n\\nRan in \\d+ ms over 1 file\\.\\n\\nIncludes \\d+ inferred triples? \\(TurbOWL, ${rules} rules\\)\\.\\n\\n1 row\\n`), md)
+      assert.ok(md.includes("| `ex:p1` |"), md)
+      assert.ok(!md.includes("findings"), md)
+    }
+
+    s.notify("workspace/didChangeConfiguration", { settings: { turtle: { query: { reasoning: "default" }, reasoning: { maxTriples: 1 } } } })
+    assert.match(await run(s, uri), /^0 rows/)
+    assert.ok(results().includes("\n\nInferred triples skipped: the workspace has 2 triples, over the reasoning limit of 1.\n\nNo results.\n"), results())
+
+    s.notify("workspace/didChangeConfiguration", { settings: { turtle: {} } })
+    assert.match(await run(s, uri), /^0 rows/)
+    assert.equal(results().replace(/Ran in \d+ ms/, ""), off.replace(/Ran in \d+ ms/, ""))
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
