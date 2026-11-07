@@ -18,6 +18,7 @@
 //! | [`shacl`] | Shapes, SHACL Core and SHACL-SPARQL validation | [`features`], [`knowledge`] |
 //! | [`rdf`] | The union of documents' triples as a graph and a SPARQL dataset | [`query`], [`shacl`] |
 //! | [`query`] | Running SPARQL queries and rendering results | [`cli`], [`server`], [`batch`], the browser engine |
+//! | `reasoning` | Reasoning over the workspace with TurbOWL: the base, the shared state, the reasoning thread | [`server`], `ide` |
 //! | [`settings`] | Client settings and their layers | [`server`], [`cli`] |
 //! | `commands` | `workspace/executeCommand` commands | [`server`] |
 //! | [`server`] | The LSP main loop, and the worker threads other modules start | `main`, the browser engine |
@@ -28,8 +29,8 @@
 //! | `extensions` | The requests beyond the LSP standard: `turtle/graph`, "▶ Run query" | [`server`], [`features`] (the Run query lens) |
 //! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
 //!
-//! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `vocab` and
-//! `workspace` are private to the crate: no consumer uses them.
+//! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `reasoning`,
+//! `vocab` and `workspace` are private to the crate: no consumer uses them.
 //!
 //! # Public interface
 //!
@@ -207,6 +208,7 @@ pub(crate) mod layout;
 pub mod oracle;
 pub mod query;
 pub mod rdf;
+pub(crate) mod reasoning;
 pub mod server;
 pub mod settings;
 pub mod shacl;

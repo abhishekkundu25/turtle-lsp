@@ -42,6 +42,8 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.shacl.enabled": ["boolean", true],
     "turtle.shacl.maxTriples": ["integer", 2000000],
     "turtle.shacl.onType": ["boolean", true],
+    "turtle.reasoning.rules": ["string", "off"],
+    "turtle.reasoning.maxTriples": ["integer", 2000000],
     "turtle.lint.undescribedTerms": ["boolean", true],
     "turtle.imports.network": ["boolean", false],
     "turtle.imports.unresolved": ["string", "soften"],
@@ -61,6 +63,8 @@ test("server settings are declared with the server's defaults", () => {
   }
   assert.deepEqual(settings["turtle.inlayHints.labels"].enum, ["opaque", "all", "off"])
   assert.deepEqual(settings["turtle.imports.unresolved"].enum, ["soften", "ignore"])
+  assert.deepEqual(settings["turtle.reasoning.rules"].enum, ["off", "default", "complete"])
+  assert.match(settings["turtle.reasoning.rules"].enumDescriptions[2], /Slower/)
 })
 
 test("lint.ignore and lint.enable are lists of codes, empty by default, sent as lists", () => {
@@ -132,7 +136,7 @@ test("suggestions pop up in Turtle and TriG strings, where SHACL queries are typ
 })
 
 test("the manifest declares exactly the settings the server applies", () => {
-  assert.ok(serverKeys.length >= 14, `found ${serverKeys.join(", ")} in src/settings.rs`)
+  assert.ok(serverKeys.length >= 16, `found ${serverKeys.join(", ")} in src/settings.rs`)
   const declared = Object.keys(settings)
     .map((k) => k.replace(/^turtle\./, ""))
     // Editor-only settings, not sent to the server.
@@ -149,6 +153,7 @@ test("settings the server limits or fetches with are restricted in untrusted wor
     "turtle.query.maxRows",
     "turtle.query.maxBufferedRows",
     "turtle.shacl.maxTriples",
+    "turtle.reasoning.maxTriples",
     "turtle.diagnostics.workspace",
   ]) {
     assert.ok(restricted.includes(key), `${key} is not in restrictedConfigurations`)

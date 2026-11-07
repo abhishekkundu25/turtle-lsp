@@ -969,6 +969,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbowl"
+version = "0.1.0"
+dependencies = [
+ "oxrdf",
+ "oxrdfxml",
+ "oxttl",
+ "rustc-hash",
+]
+
+[[package]]
 name = "turtle-lsp"
 version = "0.15.1"
 dependencies = [
@@ -990,6 +1000,7 @@ dependencies = [
  "serde_json",
  "spareval",
  "spargebra",
+ "turbowl",
  "ureq",
  "url",
 ]

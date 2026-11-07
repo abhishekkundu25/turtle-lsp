@@ -19,13 +19,15 @@ mod edit;
 mod navigation;
 
 /// The workspace, as one client sees it: the position encoding it
-/// negotiated, its settings, and whether it resolves code actions' edits
-/// lazily (`codeAction/resolve`).
+/// negotiated, its settings, whether it resolves code actions' edits
+/// lazily (`codeAction/resolve`), and the reasoning state when reasoning is
+/// on.
 pub(crate) struct Session<'w> {
     ws: &'w mut Workspace,
     enc: Encoding,
     settings: &'w Settings,
     resolve_edits: bool,
+    reasoning: Option<&'w Arc<crate::reasoning::Shared>>,
 }
 
 /// A document, by kind.
@@ -46,7 +48,22 @@ impl<'w> Session<'w> {
             enc,
             settings,
             resolve_edits,
+            reasoning: None,
         }
+    }
+
+    /// The session with the reasoning state (`None` with reasoning off).
+    pub(crate) fn with_reasoning(
+        self,
+        reasoning: Option<&'w Arc<crate::reasoning::Shared>>,
+    ) -> Session<'w> {
+        Session { reasoning, ..self }
+    }
+
+    /// The reasoning state; `None` with reasoning off.
+    #[allow(dead_code)] // Until hover reads it (ticket 03).
+    pub(crate) fn reasoning(&self) -> Option<&'w Arc<crate::reasoning::Shared>> {
+        self.reasoning
     }
 
     /// The document at `uri` (in any spelling the client uses): an open

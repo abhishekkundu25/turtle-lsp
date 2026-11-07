@@ -40,6 +40,12 @@ serde_json = "1.0.154"
 # published 0.2.8, ignore the patch (a warning) and drop the cancellation checks.
 spareval = { version = "=0.2.7", features = ["sparql-12", "sep-0006"] }
 spargebra = { version = "=0.4.7", features = ["sparql-12"] }
+# TurbOWL, the OWL 2 RL reasoner behind `turtle.reasoning` (src/reasoning/): a path
+# dependency on its checkout, which must sit next to this one (its rule program is read
+# from the repository with include_str!). Without its default features: turtle-lsp
+# parses, so its parsers and its thread pool stay out. `rdf-12` because oxrdf has it
+# here (through spargebra and oxrdfxml), and TurbOWL does not compile otherwise.
+turbowl = { path = "../turtle-reasoner/crates/turbowl", default-features = false, features = ["rdf-12"] }
 url = "2.5.8"
 
 # Not in the browser build (web/engine): no C allocator, no network client.

@@ -70,6 +70,7 @@
         "turtle.query.maxRows",
         "turtle.query.maxBufferedRows",
         "turtle.shacl.maxTriples",
+        "turtle.reasoning.maxTriples",
         "turtle.diagnostics.workspace"
       ]
     },
@@ -232,6 +233,29 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Also validate about a second after you stop typing, on the unsaved text. When off, validation runs on save only.",
+          "scope": "resource"
+        },
+        "turtle.reasoning.rules": {
+          "type": "string",
+          "enum": [
+            "off",
+            "default",
+            "complete"
+          ],
+          "enumDescriptions": [
+            "No reasoning.",
+            "TurbOWL's default OWL 2 RL rules: classes, properties, `owl:sameAs`, property chains and the consistency checks.",
+            "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
+          ],
+          "default": "off",
+          "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs, and contradictions become diagnostics.",
+          "scope": "resource"
+        },
+        "turtle.reasoning.maxTriples": {
+          "type": "integer",
+          "default": 2000000,
+          "minimum": 0,
+          "markdownDescription": "The most triples reasoning reads: the workspace's and its loaded imports'. Past it, reasoning is skipped, with a note.",
           "scope": "resource"
         },
         "turtle.lint.undescribedTerms": {

@@ -170,6 +170,9 @@ pub(crate) struct Server {
     /// by URL, once each has arrived or failed.
     contexts: Feed<String>,
     shacl: Shacl,
+    /// The reasoning state, which the reasoning thread writes and hovers
+    /// read; `None` with reasoning off (`turtle.reasoning.rules`).
+    reasoning: Option<Arc<crate::reasoning::Shared>>,
     progress: Progress,
     /// How the jobs run: on threads, or inline when embedded in a host
     /// without threads (see [`Embedded`]), where the host drives the timers.
@@ -328,6 +331,8 @@ impl Server {
             index: Index::new(),
             watch_dynamic,
             resolve_edits,
+            // Before `layers` moves: `settings` borrows it.
+            reasoning: crate::reasoning::Shared::when_on(settings, spawn),
             layers,
             queries: run_query::State::new(show_document, &display_refresh, spawn),
             refresh: Refresh::new(pull, refresh_support, display_refresh),
@@ -1396,6 +1401,7 @@ impl Server {
             self.layers.settings(),
             self.resolve_edits,
         )
+        .with_reasoning(self.reasoning.as_ref())
     }
 
     /// The answer to `req`, its result as JSON text: None when it is
