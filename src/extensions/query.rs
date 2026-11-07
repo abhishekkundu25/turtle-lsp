@@ -304,14 +304,16 @@ fn on_thread(state: &State, out: Sender<Out>, id: RequestId, mut job: Job) -> su
 /// Run `job`; its answer as JSON, or the error to answer with.
 fn execute(job: &Job) -> Result<Value, (ErrorCode, String)> {
     let start = Instant::now();
-    let docs: Vec<&Analysis> = job.docs.iter().map(|a| &**a).collect();
+    let docs: Vec<_> = job.docs.iter().collect();
     let outcome = query::run(
         &docs,
         &job.text,
         job.base.as_deref(),
         &job.prefixes,
         &job.limits,
-    );
+        &query::Inference::default(),
+    )
+    .map(|o| o.answer);
     let elapsed = Instant::now().saturating_duration_since(start).as_millis();
     match outcome {
         Ok(a) => {

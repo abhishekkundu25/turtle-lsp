@@ -7,15 +7,35 @@ use std::sync::Arc;
 const EX: &str = "http://example.com/";
 const HEAD: &str = "@prefix ex: <http://example.com/> .\n";
 
-fn doc(uri: &str, text: &str) -> Analysis {
-    Analysis::new(uri.into(), text, Arc::new(PrefixMap::default()), false)
+fn doc(uri: &str, text: &str) -> Arc<Analysis> {
+    Arc::new(Analysis::new(
+        uri.into(),
+        text,
+        Arc::new(PrefixMap::default()),
+        false,
+    ))
+}
+
+/// [`super::run`] without inferred triples: its answer, the note checked
+/// to be none.
+fn run(
+    docs: &[&Arc<Analysis>],
+    q: &str,
+    base: Option<&str>,
+    prefixes: &PrefixMap,
+    limits: &Limits,
+) -> Result<Answer, QueryError> {
+    super::run(docs, q, base, prefixes, limits, &Inference::default()).map(|o| {
+        assert_eq!(o.inferred, Inferred::None);
+        o.answer
+    })
 }
 
 fn ex_prefixes() -> PrefixMap {
     PrefixMap::from_iter([("ex".to_string(), EX.to_string())])
 }
 
-fn people() -> Analysis {
+fn people() -> Arc<Analysis> {
     doc(
         "file:///w/people.ttl",
         &format!(
@@ -26,11 +46,11 @@ fn people() -> Analysis {
     )
 }
 
-fn run_on(docs: &[&Analysis], q: &str) -> Result<Answer, QueryError> {
+fn run_on(docs: &[&Arc<Analysis>], q: &str) -> Result<Answer, QueryError> {
     run(docs, q, None, &ex_prefixes(), &Limits::default())
 }
 
-fn select(docs: &[&Analysis], q: &str) -> Solutions {
+fn select(docs: &[&Arc<Analysis>], q: &str) -> Solutions {
     match run_on(docs, q) {
         Ok(Answer::Solutions(s)) => s,
         other => panic!("not solutions: {other:?}"),
@@ -236,7 +256,7 @@ fn prefixes_and_base_resolve_headerless_queries() {
 /// itself four times, 500 million rows.
 const RUNAWAY: &str = "SELECT (COUNT(*) AS ?n) WHERE { ?a ?b ?c . ?d ?e ?f . ?g ?h ?i . ?j ?k ?l }";
 
-fn big() -> Analysis {
+fn big() -> Arc<Analysis> {
     let mut text = HEAD.to_string();
     for i in 0..150 {
         text.push_str(&format!("ex:s{i} ex:p {i} .\n"));
@@ -316,7 +336,7 @@ fn a_cancelled_query_stops() {
 }
 
 /// A chain of `n` `ex:next` links.
-fn chain(n: usize) -> Analysis {
+fn chain(n: usize) -> Arc<Analysis> {
     let mut text = HEAD.to_string();
     for i in 0..n {
         text.push_str(&format!("ex:n{i} ex:next ex:n{} .\n", i + 1));
@@ -437,7 +457,7 @@ fn equality_of_directional_language_strings_is_answered() {
     assert_eq!(ask("?o != \"x\"@en--rtl"), Ok(Answer::Boolean(true)));
 }
 
-fn capped(docs: &[&Analysis], q: &str, max: usize) -> Answer {
+fn capped(docs: &[&Arc<Analysis>], q: &str, max: usize) -> Answer {
     let limits = Limits {
         max_rows: Some(max),
         ..Limits::default()
@@ -805,7 +825,7 @@ fn a_stop_whose_error_is_dropped_is_not_a_partial_answer() {
 }
 
 /// `n` subjects of two triples each, for a cross product that takes seconds.
-fn wide(n: usize) -> Analysis {
+fn wide(n: usize) -> Arc<Analysis> {
     let mut text = HEAD.to_string();
     for i in 0..n {
         text.push_str(&format!("ex:s{i} ex:p ex:o{i} ; ex:q ex:r{i} .\n"));
@@ -1031,21 +1051,325 @@ fn results_without_a_row_cap_keep_too_many_rows() {
     }
 }
 
+// --- inferred triples --------------------------------------------------------
+
+const OWL_HEAD: &str = "@prefix ex: <http://example.com/> .\n\
+                        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                        @prefix owl: <http://www.w3.org/2002/07/owl#> .\n";
+
+fn owl(uri: &str, body: &str) -> Arc<Analysis> {
+    doc(uri, &format!("{OWL_HEAD}{body}"))
+}
+
+fn inference(rules: Reasoning) -> Inference {
+    Inference {
+        rules,
+        imports: Vec::new(),
+        max_triples: 1000,
+    }
+}
+
+/// `q` over `docs` with `inference`.
+fn reasoned(docs: &[&Arc<Analysis>], q: &str, inference: &Inference) -> Outcome {
+    super::run(docs, q, None, &ex_prefixes(), &Limits::default(), inference).unwrap()
+}
+
+/// The rows of SELECT `q` over `docs` with the default rules.
+fn inferred_rows(docs: &[&Arc<Analysis>], q: &str) -> Vec<Vec<String>> {
+    match reasoned(docs, q, &inference(Reasoning::Default)).answer {
+        Answer::Solutions(s) => shown(&s),
+        other => panic!("not solutions: {other:?}"),
+    }
+}
+
+#[test]
+fn each_kind_of_inference_matches_with_the_default_rules() {
+    let cases = [
+        (
+            "a class through a range",
+            "ex:worksFor rdfs:range ex:Organisation .\nex:bob ex:worksFor ex:alice .\n",
+            "SELECT ?x WHERE { ?x a ex:Organisation }",
+            "ex:alice",
+        ),
+        (
+            "a subclass chain",
+            "ex:Puppy rdfs:subClassOf ex:Dog .\nex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Puppy .\n",
+            "SELECT ?x WHERE { ?x a ex:Animal }",
+            "ex:rex",
+        ),
+        (
+            "an inverse",
+            "ex:parentOf owl:inverseOf ex:childOf .\nex:ann ex:parentOf ex:ben .\n",
+            "SELECT ?x WHERE { ex:ben ex:childOf ?x }",
+            "ex:ann",
+        ),
+        (
+            "a transitive property",
+            "ex:partOf a owl:TransitiveProperty .\nex:a ex:partOf ex:b .\nex:b ex:partOf ex:c .\n",
+            "SELECT ?x WHERE { ex:a ex:partOf ?x FILTER (?x != ex:b) }",
+            "ex:c",
+        ),
+        (
+            "a property chain",
+            "ex:uncleOf owl:propertyChainAxiom ( ex:brotherOf ex:parentOf ) .\n\
+             ex:carl ex:brotherOf ex:ann .\nex:ann ex:parentOf ex:ben .\n",
+            "SELECT ?x WHERE { ?x ex:uncleOf ex:ben }",
+            "ex:carl",
+        ),
+        (
+            "an owl:sameAs merge",
+            "ex:bob owl:sameAs ex:robert .\nex:bob ex:name \"Bob\" .\n",
+            "SELECT ?n WHERE { ex:robert ex:name ?n }",
+            "\"Bob\"",
+        ),
+    ];
+    for (what, body, q, want) in cases {
+        let d = owl("file:///w/model.ttl", body);
+        let off = select(&[&d], q);
+        assert!(off.rows.is_empty(), "{what}: off already matches");
+        let rows = inferred_rows(&[&d], q);
+        let got: Vec<String> = rows.into_iter().flatten().collect();
+        assert_eq!(got.join(" "), want, "{what}");
+    }
+}
+
+#[test]
+fn the_note_says_how_many_triples_were_added_with_which_rules() {
+    let d = owl(
+        "file:///w/model.ttl",
+        "ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog .\n",
+    );
+    let q = "SELECT ?c WHERE { ex:rex a ?c }";
+    for rules in [Reasoning::Default, Reasoning::Complete] {
+        let o = reasoned(&[&d], q, &inference(rules));
+        let Inferred::Added {
+            rules: r,
+            triples,
+            findings,
+        } = o.inferred
+        else {
+            panic!("{rules:?}: {:?}", o.inferred);
+        };
+        assert_eq!((r, findings), (rules, 0));
+        assert!(triples >= 1, "{rules:?}: {triples}");
+        let Answer::Solutions(s) = o.answer else {
+            panic!()
+        };
+        assert!(shown(&s).contains(&vec!["ex:Animal".to_string()]));
+    }
+}
+
+#[test]
+fn off_adds_nothing_and_its_note_is_none() {
+    let d = owl(
+        "file:///w/model.ttl",
+        "ex:worksFor rdfs:range ex:Organisation .\nex:bob ex:worksFor ex:alice .\n",
+    );
+    let q = "SELECT ?x WHERE { ?x a ex:Organisation }";
+    let o = reasoned(&[&d], q, &Inference::default());
+    assert_eq!(o.inferred, Inferred::None);
+    assert_eq!(o.answer, run_on(&[&d], q).unwrap());
+    let Answer::Solutions(s) = o.answer else {
+        panic!()
+    };
+    assert!(s.rows.is_empty());
+}
+
+#[test]
+fn an_inferred_triple_joins_a_written_one_through_a_blank_node() {
+    // Given out of URI order, each with blank nodes: the reasoning base
+    // reads them sorted, the query graph in the order given.
+    let z = owl(
+        "file:///w/z.ttl",
+        "ex:zed ex:worksFor _:x .\n_:x ex:name \"Zeta\" .\n_:y ex:name \"unused\" .\n",
+    );
+    let a = owl(
+        "file:///w/a.ttl",
+        "ex:worksFor rdfs:range ex:Organisation .\nex:alice ex:worksFor [ ex:name \"Acme\" ] .\n",
+    );
+    let q =
+        "SELECT ?p ?n WHERE { ?p ex:worksFor ?o . ?o a ex:Organisation ; ex:name ?n } ORDER BY ?n";
+    let want = [["ex:alice", "\"Acme\""], ["ex:zed", "\"Zeta\""]];
+    assert_eq!(inferred_rows(&[&z, &a], q), want);
+    assert_eq!(inferred_rows(&[&a, &z], q), want);
+}
+
+#[test]
+fn an_imported_axiom_infers_but_the_imports_own_triples_are_not_queried() {
+    let import = owl(
+        "file:///cache/animals.ttl",
+        "ex:Dog rdfs:subClassOf ex:Animal .\nex:Dog ex:label \"dog\" .\n_:r ex:about ex:Dog .\n",
+    );
+    let data = owl(
+        "file:///w/data.ttl",
+        "_:d ex:about ex:rex .\nex:rex a ex:Dog .\n",
+    );
+    let with = Inference {
+        imports: vec![import],
+        ..inference(Reasoning::Default)
+    };
+    let select = |q: &str| match reasoned(&[&data], q, &with).answer {
+        Answer::Solutions(s) => shown(&s),
+        other => panic!("{other:?}"),
+    };
+    assert!(select("SELECT ?c WHERE { ex:rex a ?c }").contains(&vec!["ex:Animal".to_string()]));
+    let ask = |q: &str| reasoned(&[&data], q, &with).answer;
+    assert_eq!(
+        ask("ASK { ex:Dog <http://www.w3.org/2000/01/rdf-schema#subClassOf> ex:Animal }"),
+        Answer::Boolean(false)
+    );
+    assert_eq!(ask("ASK { ex:Dog ex:label ?l }"), Answer::Boolean(false));
+    // The import's blank node is not one of the data's.
+    assert_eq!(ask("ASK { ?b ex:about ex:Dog }"), Answer::Boolean(false));
+    assert_eq!(
+        select("SELECT ?b WHERE { ?b ex:about ?x }").len(),
+        1,
+        "the data's one blank node"
+    );
+}
+
+#[test]
+fn construct_and_ask_answer_over_inferred_triples() {
+    let d = owl(
+        "file:///w/model.ttl",
+        "ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog .\n",
+    );
+    let on = inference(Reasoning::Default);
+    let Answer::Triples(ts) =
+        reasoned(&[&d], "CONSTRUCT { ?x a ?c } WHERE { ?x a ?c }", &on).answer
+    else {
+        panic!()
+    };
+    let set: FxHashSet<String> = ts.iter().map(|t| t.to_string()).collect();
+    let rdf_type = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+    assert!(
+        set.contains(&format!("<{EX}rex> <{rdf_type}> <{EX}Animal>")),
+        "{set:?}"
+    );
+    let q = "ASK { ex:rex a ex:Animal }";
+    assert_eq!(run_on(&[&d], q), Ok(Answer::Boolean(false)));
+    assert_eq!(reasoned(&[&d], q, &on).answer, Answer::Boolean(true));
+}
+
+#[test]
+fn over_the_size_limit_nothing_is_added_and_the_note_says_skipped() {
+    let d = owl(
+        "file:///w/model.ttl",
+        "ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog .\n",
+    );
+    let import = owl(
+        "file:///cache/i.ttl",
+        "ex:Cat rdfs:subClassOf ex:Animal .\n",
+    );
+    let q = "SELECT ?x ?c WHERE { ?x a ?c }";
+    let small = Inference {
+        imports: vec![import],
+        max_triples: 2,
+        ..inference(Reasoning::Default)
+    };
+    let o = reasoned(&[&d], q, &small);
+    assert_eq!(
+        o.inferred,
+        Inferred::Skipped {
+            triples: 3,
+            limit: 2
+        }
+    );
+    assert_eq!(o.answer, run_on(&[&d], q).unwrap());
+}
+
+/// `q` over `d` with the default rules and `limits`, `during` run while
+/// the query reasons; and whether a query graph was built.
+fn stopped_while_reasoning(
+    limits: &Limits,
+    during: Box<dyn FnOnce()>,
+) -> (Result<Outcome, QueryError>, bool) {
+    let d = owl(
+        "file:///w/model.ttl",
+        "ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog .\n",
+    );
+    WHILE_REASONING.with(|h| *h.borrow_mut() = Some(during));
+    let before = crate::rdf::graph::INDEXED.with(|c| c.get());
+    let r = super::run(
+        &[&d],
+        "SELECT ?c WHERE { ex:rex a ?c }",
+        None,
+        &ex_prefixes(),
+        limits,
+        &inference(Reasoning::Default),
+    );
+    let built = crate::rdf::graph::INDEXED.with(|c| c.get()) != before;
+    assert!(WHILE_REASONING.with(|h| h.borrow().is_none()), "reasoned");
+    (r, built)
+}
+
+#[test]
+fn a_timeout_that_passes_while_reasoning_stops_before_evaluation() {
+    let limits = Limits {
+        timeout: Some(Duration::from_millis(300)),
+        ..Limits::default()
+    };
+    let during = Box::new(|| std::thread::sleep(Duration::from_millis(400)));
+    let (r, built) = stopped_while_reasoning(&limits, during);
+    assert_eq!(r, Err(QueryError::Timeout));
+    assert!(!built, "the query graph was built");
+}
+
+#[test]
+fn a_cancel_while_reasoning_stops_before_evaluation() {
+    let flag = Arc::new(AtomicBool::new(false));
+    let limits = Limits {
+        cancel: Some(flag.clone()),
+        ..Limits::default()
+    };
+    let during = Box::new(move || flag.store(true, Ordering::Relaxed));
+    let (r, built) = stopped_while_reasoning(&limits, during);
+    assert_eq!(r, Err(QueryError::Cancelled));
+    assert!(!built, "the query graph was built");
+}
+
+#[test]
+fn a_contradiction_still_answers_and_its_findings_are_counted() {
+    let d = owl(
+        "file:///w/model.ttl",
+        "ex:Cat owl:disjointWith ex:Dog .\nex:Dog rdfs:subClassOf ex:Animal .\nex:tom a ex:Cat , ex:Dog .\n",
+    );
+    let o = reasoned(
+        &[&d],
+        "SELECT ?c WHERE { ex:tom a ?c } ORDER BY ?c",
+        &inference(Reasoning::Default),
+    );
+    let Inferred::Added { findings, .. } = o.inferred else {
+        panic!("{:?}", o.inferred)
+    };
+    assert!(findings >= 1, "{findings}");
+    let Answer::Solutions(s) = o.answer else {
+        panic!()
+    };
+    assert!(shown(&s).contains(&vec!["ex:Animal".to_string()]), "{s:?}");
+}
+
 mod dataset {
+    use super::run;
     use crate::analysis::Analysis;
-    use crate::query::{Answer, Limits, run};
+    use crate::query::{Answer, Limits};
     use crate::syntax::PrefixMap;
     use spargebra::term::Term;
     use std::sync::Arc;
 
     const EX: &str = "http://example.com/";
 
-    fn doc(uri: &str, body: &str) -> Analysis {
+    fn doc(uri: &str, body: &str) -> Arc<Analysis> {
         let text = format!("@prefix ex: <{EX}> .\n{body}");
-        Analysis::new(uri.into(), &text, Arc::new(PrefixMap::default()), false)
+        Arc::new(Analysis::new(
+            uri.into(),
+            &text,
+            Arc::new(PrefixMap::default()),
+            false,
+        ))
     }
 
-    fn rows(docs: &[&Analysis], query: &str) -> Vec<Vec<Option<Term>>> {
+    fn rows(docs: &[&Arc<Analysis>], query: &str) -> Vec<Vec<Option<Term>>> {
         let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
         match run(docs, query, None, &prefixes, &Limits::default()) {
             Ok(Answer::Solutions(s)) => s.rows,
@@ -1053,7 +1377,7 @@ mod dataset {
         }
     }
 
-    fn ask(docs: &[&Analysis], query: &str) -> bool {
+    fn ask(docs: &[&Arc<Analysis>], query: &str) -> bool {
         let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
         match run(docs, query, None, &prefixes, &Limits::default()) {
             Ok(Answer::Boolean(b)) => b,
@@ -1176,12 +1500,12 @@ mod dataset {
 
     #[test]
     fn triples_with_an_undeclared_prefix_are_not_in_the_graph() {
-        let d = Analysis::new(
+        let d = Arc::new(Analysis::new(
             "file:///d.ttl".into(),
             "@prefix ex: <http://example.com/> .\nex:a ex:p nope:o , ex:o .\nnope:s ex:p ex:o .\n",
             Arc::new(PrefixMap::default()),
             false,
-        );
+        ));
         assert_eq!(d.parsed.triples.len(), 3);
         let r = rows(&[&d], "SELECT ?s ?o WHERE { ?s ex:p ?o }");
         assert_eq!(r.len(), 1, "{r:?}");

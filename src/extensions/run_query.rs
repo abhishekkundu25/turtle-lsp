@@ -506,14 +506,22 @@ fn stem(uri: &str) -> String {
 /// Run `job`, render the results and write them to `<job.out>/<stem>.md`.
 fn execute(job: &Job, stem: &str) -> Report {
     let start = Instant::now();
-    let docs: Vec<&Analysis> = job.docs.iter().map(|a| &**a).collect();
+    let docs: Vec<_> = job.docs.iter().collect();
     let limits = Limits {
         timeout: job.timeout,
         cancel: Some(job.cancel.clone()),
         max_rows: job.max_rows,
         max_buffered_rows: job.max_buffered_rows,
     };
-    let outcome = query::run(&docs, &job.text, Some(&job.base), &job.prefixes, &limits);
+    let outcome = query::run(
+        &docs,
+        &job.text,
+        Some(&job.base),
+        &job.prefixes,
+        &limits,
+        &query::Inference::default(),
+    )
+    .map(|o| o.answer);
     let elapsed = Instant::now().saturating_duration_since(start);
     let summary = match &outcome {
         Ok(a) => format!("{} in {}", answer_summary(a), duration(elapsed)),

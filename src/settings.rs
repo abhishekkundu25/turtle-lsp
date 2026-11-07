@@ -148,7 +148,7 @@ pub(crate) enum UnresolvedImports {
 
 /// Which rules reasoning runs (`reasoning.rules`), as TurbOWL's switches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Reasoning {
+pub enum Reasoning {
     /// No reasoning: no thread, no state, every answer as without it.
     #[default]
     Off,
@@ -202,6 +202,9 @@ pub struct Settings {
     /// memory (to sort, deduplicate, group or join them); `None` (0) for no
     /// limit.
     pub query_max_buffered_rows: Option<usize>,
+    /// The inferred triples a query runs over by default
+    /// (`query.reasoning`), apart from `reasoning.rules`.
+    pub(crate) query_reasoning: Reasoning,
 }
 
 /// The default `query.maxBufferedRows`: about 1 GB of ordinary rows (about 100
@@ -239,6 +242,7 @@ impl Default for Settings {
             query_timeout: Some(QUERY_TIMEOUT),
             query_max_rows: Some(QUERY_MAX_ROWS),
             query_max_buffered_rows: Some(QUERY_MAX_BUFFERED_ROWS),
+            query_reasoning: Reasoning::Off,
         }
     }
 }
@@ -362,6 +366,12 @@ impl Settings {
                 }
             }
             ["codeLens", "references"] => set_bool(&mut self.code_lens_references, v),
+            // The file may set it: `reasoning.maxTriples` still bounds it.
+            ["query", "reasoning"] => {
+                if let Some(r) = v.as_str().and_then(parse_reasoning) {
+                    self.query_reasoning = r;
+                }
+            }
             ["query", "timeoutSeconds"] => {
                 let Some(n) = v.as_f64() else { return };
                 let Some(d) = seconds(n) else {
@@ -557,6 +567,38 @@ mod tests {
         )]);
         assert_eq!((off.query_timeout, off.query_max_rows), (None, Some(5)));
         assert_eq!(off.query_max_buffered_rows, Some(500));
+    }
+
+    #[test]
+    fn query_reasoning_is_off_by_default_and_set_by_the_editor_or_the_file() {
+        assert_eq!(Settings::default().query_reasoning, Reasoning::Off);
+        for layer in [Layer::File, Layer::Client] {
+            for (v, want) in [
+                ("default", Reasoning::Default),
+                ("complete", Reasoning::Complete),
+                ("off", Reasoning::Off),
+            ] {
+                let nested = Settings::from_layers([(layer, &json!({"query": {"reasoning": v}}))]);
+                let dotted =
+                    Settings::from_layers([(layer, &json!({"turtle.query.reasoning": v}))]);
+                assert_eq!(
+                    (nested.query_reasoning, dotted.query_reasoning),
+                    (want, want)
+                );
+            }
+        }
+        // Apart from the editor's reasoning, and an unknown value is ignored.
+        let s = Settings::from_layers([
+            (Layer::File, &json!({"query.reasoning": "complete"})),
+            (
+                Layer::Client,
+                &json!({"query.reasoning": "rdfs", "reasoning.rules": "default"}),
+            ),
+        ]);
+        assert_eq!(
+            (s.query_reasoning, s.reasoning),
+            (Reasoning::Complete, Reasoning::Default)
+        );
     }
 
     #[test]

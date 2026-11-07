@@ -245,13 +245,22 @@ fn run(t: &Test) -> Outcome {
         Ok(e) => e,
         Err(e) => return Outcome::Fail(format!("expected results: {e}")),
     };
-    let refs: Vec<&Analysis> = docs.iter().collect();
+    let docs: Vec<Arc<Analysis>> = docs.into_iter().map(Arc::new).collect();
+    let refs: Vec<&Arc<Analysis>> = docs.iter().collect();
     let limits = Limits {
         timeout: Some(Duration::from_secs(10)),
         ..Limits::default()
     };
     let answer = std::panic::catch_unwind(|| {
-        query::run(&refs, &text, Some(&t.query), &PrefixMap::default(), &limits)
+        query::run(
+            &refs,
+            &text,
+            Some(&t.query),
+            &PrefixMap::default(),
+            &limits,
+            &Default::default(),
+        )
+        .map(|o| o.answer)
     });
     let answer = match answer {
         Ok(Ok(a)) => a,

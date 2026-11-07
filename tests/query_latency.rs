@@ -13,17 +13,17 @@ use turtle_lsp::syntax::PrefixMap;
 
 const EX: &str = "http://example.com/";
 
-fn doc(text: String) -> Analysis {
-    Analysis::new(
+fn doc(text: String) -> Arc<Analysis> {
+    Arc::new(Analysis::new(
         "file:///w/data.ttl".into(),
         &format!("@prefix ex: <{EX}> .\n{text}"),
         Arc::new(PrefixMap::default()),
         false,
-    )
+    ))
 }
 
 /// `ex:n0 ex:next ex:n1 . ex:n1 ex:next ex:n2 . ...`, `n` links.
-fn chain(n: usize) -> Analysis {
+fn chain(n: usize) -> Arc<Analysis> {
     doc((0..n)
         .map(|i| format!("ex:n{i} ex:next ex:n{} .\n", i + 1))
         .collect())
@@ -32,7 +32,7 @@ fn chain(n: usize) -> Analysis {
 /// One case: `q` over `d` stops with `want` within `within`.
 fn check(
     failed: &mut Vec<String>,
-    d: &Analysis,
+    d: &Arc<Analysis>,
     q: &str,
     limits: &Limits,
     want: fn(&QueryError) -> bool,
@@ -40,7 +40,7 @@ fn check(
 ) {
     let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
     let start = Instant::now();
-    let r = run(&[d], q, None, &prefixes, limits);
+    let r = run(&[d], q, None, &prefixes, limits, &Default::default());
     let took = start.elapsed();
     let short = &q[..q.len().min(70)];
     match r {

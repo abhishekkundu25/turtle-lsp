@@ -12,6 +12,8 @@
 //!   run at a time, the newest job first, panics caught, as SHACL
 //!   validation's; `run_inline` for the embedded server.
 //! - `diagnostics.rs`: what a run shows in the documents.
+//! - [`infer`] (`infer.rs`): what TurbOWL infers from a query's documents,
+//!   in the query graph's terms, for a query over inferred triples.
 //! - `proof.rs`: a [`Proof`] as hover markdown, a nested list ([`Names`]
 //!   says how the hover writes IRIs and places; [`Shown`], what the proofs
 //!   of one hover have written, which a later one refers to).
@@ -28,6 +30,7 @@
 
 mod base;
 mod diagnostics;
+mod infer;
 mod proof;
 mod state;
 mod turtle;
@@ -36,6 +39,7 @@ mod worker;
 use base::Base;
 pub(crate) use base::Origin;
 pub(crate) use diagnostics::{ByUri, SKIPPED_CODE};
+pub(crate) use infer::infer;
 pub(crate) use proof::{Names, Shown};
 pub(crate) use state::Inferred;
 pub(crate) use state::{HOVER_WAIT, Proof, Shared, Types};
