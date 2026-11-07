@@ -363,6 +363,64 @@ mod tests {
     }
 
     #[test]
+    fn one_proof_search_at_a_time_and_a_hover_again_gets_its_answer() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let more = doc(
+            Source::Disk,
+            "file:///w/b.ttl",
+            "@prefix ex: <http://example.org/> .\nex:fido a ex:Dog .\n",
+        );
+        shown(&shared, &job(1, vec![animals(), more]));
+        let (rex, fido) = (format!("{EX}rex"), format!("{EX}fido"));
+        let searches = || shared.searches.load(std::sync::atomic::Ordering::Relaxed);
+        let short = Duration::from_millis(20);
+        {
+            // The search cannot finish yet: the cache is in use.
+            let held = shared.read_for_test();
+            let cache = held.as_ref().unwrap().cache.lock().unwrap();
+            assert!(matches!(
+                shared.inferred_types(&rex, short),
+                Types::Pending(_)
+            ));
+            assert_eq!(searches(), 1);
+            // Hovering again waits on the same search; another term does
+            // not start one beside it.
+            assert!(matches!(
+                shared.inferred_types(&rex, short),
+                Types::Pending(_)
+            ));
+            assert!(matches!(
+                shared.inferred_types(&fido, short),
+                Types::Pending(_)
+            ));
+            assert_eq!(searches(), 1);
+            drop(cache);
+            drop(held);
+        }
+        // The search ends: its answer is the next hover's.
+        let long = Duration::from_secs(10);
+        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_some());
+        assert_eq!(searches(), 1);
+        assert!(
+            proved(shared.inferred_types(&fido, long))[0]
+                .proof
+                .is_some()
+        );
+        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_some());
+        assert_eq!(searches(), 3);
+    }
+
+    #[test]
+    fn inline_every_hover_has_its_proofs_at_once() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Inline));
+        shown(&shared, &job(1, vec![animals()]));
+        for _ in 0..2 {
+            let t = proved(shared.inferred_types(&format!("{EX}rex"), Duration::ZERO));
+            assert!(t[0].proof.is_some());
+        }
+    }
+
+    #[test]
     fn hover_says_a_run_is_writing_the_state() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));

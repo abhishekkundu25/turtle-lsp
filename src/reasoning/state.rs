@@ -9,10 +9,14 @@
 //! generation, and the server marks the run whose findings it shows
 //! ([`Shared::show`]): a reader reads no other run's result, so a run
 //! superseded while it ran (its findings dropped) shows nothing in hover
-//! either, until the next run's result is shown ([`Types::Running`]). A proof is searched on a
-//! thread of its own under the read lock, and the hover waits for it at
-//! most a given time; past it the search goes on, its findings go into the
-//! cache, and the next hover has them at once.
+//! either, until the next run's result is shown ([`Types::Running`]).
+//!
+//! A proof is searched on a thread of its own under the read lock, one
+//! search at a time (they take turns on the explainer's cache), and the
+//! hover waits for it at most a given time. Past it the search goes on: a
+//! hover on the same term waits for that search and has its answer, a hover
+//! on another term says its proofs are still being worked out, and once the
+//! search is done its findings are in the cache for the next.
 
 use super::base::{Base, Origin};
 use super::turtle::Items;
@@ -21,7 +25,7 @@ use crate::settings::{Reasoning, Settings};
 use crate::syntax::RDF_TYPE;
 use rustc_hash::FxHashMap;
 use spargebra::term::{NamedNode, Triple};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard, TryLockError};
 use std::time::Duration;
 
@@ -37,6 +41,11 @@ pub(crate) struct Shared {
     /// The generation of the run whose findings the server shows; only
     /// that run's result is read.
     shown: AtomicU64,
+    /// The proof search started last, going on or done.
+    search: Mutex<Option<Search>>,
+    /// Tests: how many proof searches have started.
+    #[cfg(test)]
+    pub(super) searches: std::sync::atomic::AtomicUsize,
 }
 
 /// The result of the last run that finished.
@@ -50,6 +59,17 @@ pub(super) struct Reasoned {
     /// The explainer's indexes and what its searches found, for this
     /// reasoner: an explanation takes it and gives it back.
     pub(super) cache: Mutex<turbowl::ExplainCache>,
+}
+
+/// A proof search, for the hovers on its term to wait for.
+struct Search {
+    /// The term, and the generation of the result it reads.
+    iri: String,
+    generation: u64,
+    /// Its answer, once there, until a hover takes it.
+    answer: crossbeam_channel::Receiver<Result<Types, String>>,
+    /// The search has ended: its answer has been sent.
+    done: Arc<AtomicBool>,
 }
 
 /// What reasoning says of a term's types.
@@ -119,6 +139,9 @@ impl Shared {
             spawn,
             held: RwLock::new(None),
             shown: AtomicU64::new(0),
+            search: Mutex::new(None),
+            #[cfg(test)]
+            searches: Default::default(),
         }
     }
 
@@ -136,37 +159,46 @@ impl Shared {
 
     /// The inferred types of `iri` (an IRI, as written in full), with their
     /// proofs when they are found within `wait`. Inline (no threads), the
-    /// search runs here, without a limit; when its thread cannot start, the
-    /// types are [`Types::Pending`].
+    /// search runs here, without a limit. They are [`Types::Pending`] when
+    /// the search's thread cannot start, or a search for another term is
+    /// going on.
     pub(crate) fn inferred_types(self: &Arc<Self>, iri: &str, wait: Duration) -> Types {
-        let classes = match self.read(|r| r.types.get(iri).cloned().unwrap_or_default()) {
+        let read = self.read(|r| (r.generation, r.types.get(iri).cloned().unwrap_or_default()));
+        let (generation, classes) = match read {
             Err(t) => return t,
             Ok(c) => c,
         };
         if classes.is_empty() {
             return Types::Proved(Vec::new());
         }
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let shared = Arc::clone(self);
-        let subject = iri.to_string();
-        let started = self.spawn.run(
-            "reasoning-explain",
-            // Defence in depth, as the reasoning thread's.
-            16 << 20,
-            move || shared.prove(&subject),
-            move |proved| {
-                let _ = tx.send(proved);
+        let mut search = self.search.lock().unwrap_or_else(PoisonError::into_inner);
+        let answer = match search.as_ref() {
+            // That search's answer, or wait for it.
+            Some(s)
+                if s.iri == iri
+                    && s.generation == generation
+                    && (!s.answer.is_empty() || !s.done.load(Ordering::Acquire)) =>
+            {
+                s.answer.clone()
+            }
+            // Not beside it.
+            Some(s) if !s.done.load(Ordering::Acquire) => return Types::Pending(classes),
+            _ => match self.search(iri, generation) {
+                Some(started) => {
+                    let answer = started.answer.clone();
+                    *search = Some(started);
+                    answer
+                }
+                // No thread to spare: not the search here, which may take long.
+                None => return Types::Pending(classes),
             },
-        );
-        // No thread to spare: not the search here, which may take long.
-        if started.is_err() {
-            return Types::Pending(classes);
-        }
+        };
+        drop(search);
         // Inline the search has run already, and the browser has no clock
         // for `recv_timeout` to read.
-        let answer = match rx.try_recv() {
+        let answer = match answer.try_recv() {
             Ok(answer) => Ok(answer),
-            Err(_) => rx.recv_timeout(wait),
+            Err(_) => answer.recv_timeout(wait),
         };
         match answer {
             Ok(Ok(types)) => types,
@@ -174,6 +206,36 @@ impl Shared {
             Ok(Err(_)) => Types::Unknown,
             Err(_) => Types::Pending(classes),
         }
+    }
+
+    /// Start a search for the proofs of `iri`'s types in the result of
+    /// `generation`; `None` when its thread cannot start.
+    fn search(self: &Arc<Self>, iri: &str, generation: u64) -> Option<Search> {
+        let (tx, answer) = crossbeam_channel::bounded(1);
+        let done = Arc::new(AtomicBool::new(false));
+        let shared = Arc::clone(self);
+        let subject = iri.to_string();
+        let ended = Arc::clone(&done);
+        #[cfg(test)]
+        self.searches.fetch_add(1, Ordering::Relaxed);
+        self.spawn
+            .run(
+                "reasoning-explain",
+                // Defence in depth, as the reasoning thread's.
+                16 << 20,
+                move || shared.prove(&subject),
+                move |proved| {
+                    let _ = tx.send(proved);
+                    ended.store(true, Ordering::Release);
+                },
+            )
+            .ok()?;
+        Some(Search {
+            iri: iri.to_string(),
+            generation,
+            answer,
+            done,
+        })
     }
 
     /// The proofs of `iri`'s inferred types in the state as it is now.
