@@ -5,7 +5,11 @@
 //! Only the reasoning thread writes it, and it holds the write lock for a
 //! whole run (the reasoner reuses its last run's work, so the run changes
 //! it in place). A reader never waits for a run: it tries the lock and, when
-//! a run holds it, says so ([`Types::Running`]). A proof is searched on a
+//! a run holds it, says so ([`Types::Running`]). A result carries its run's
+//! generation, and the server marks the run whose findings it shows
+//! ([`Shared::show`]): a reader reads no other run's result, so a run
+//! superseded while it ran (its findings dropped) shows nothing in hover
+//! either, until the next run's result is shown ([`Types::Running`]). A proof is searched on a
 //! thread of its own under the read lock, and the hover waits for it at
 //! most a given time; past it the search goes on, its findings go into the
 //! cache, and the next hover has them at once.
@@ -17,6 +21,7 @@ use crate::settings::{Reasoning, Settings};
 use crate::syntax::RDF_TYPE;
 use rustc_hash::FxHashMap;
 use spargebra::term::{NamedNode, Triple};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard, TryLockError};
 use std::time::Duration;
 
@@ -29,10 +34,15 @@ pub(crate) struct Shared {
     /// browser, which has no threads, and waits for it).
     spawn: Spawn,
     held: RwLock<Option<Reasoned>>,
+    /// The generation of the run whose findings the server shows; only
+    /// that run's result is read.
+    shown: AtomicU64,
 }
 
 /// The result of the last run that finished.
 pub(super) struct Reasoned {
+    /// The generation of the job the run was.
+    pub(super) generation: u64,
     pub(super) reasoner: turbowl::Reasoner,
     pub(super) base: Base,
     /// Each IRI's inferred types that are IRIs, sorted.
@@ -47,7 +57,8 @@ pub(crate) enum Types {
     /// No result to read: no run has finished, or the last one was skipped
     /// or failed.
     Unknown,
-    /// A run is writing the state.
+    /// A run is writing the state, or the result there is of a run
+    /// superseded while it ran: the next run's is coming.
     Running,
     /// Each inferred type, with its proof.
     Proved(Vec<Inferred>),
@@ -107,7 +118,14 @@ impl Shared {
         Shared {
             spawn,
             held: RwLock::new(None),
+            shown: AtomicU64::new(0),
         }
+    }
+
+    /// The server shows the findings of the run of `generation`: its
+    /// result is the one to read.
+    pub(crate) fn show(&self, generation: u64) {
+        self.shown.store(generation, Ordering::Release);
     }
 
     /// A state when `settings` turn reasoning on; `None` when it is off, so
@@ -190,7 +208,7 @@ impl Shared {
         self.read(read).unwrap_or_else(|t| t)
     }
 
-    /// `f` of the last result, without waiting: Err with what to say when
+    /// `f` of the result shown, without waiting: Err with what to say when
     /// there is none to read.
     fn read<T>(&self, f: impl FnOnce(&Reasoned) -> T) -> Result<T, Types> {
         let held = match self.held.try_read() {
@@ -199,7 +217,11 @@ impl Shared {
             Err(TryLockError::Poisoned(e)) => e.into_inner(),
             Err(TryLockError::WouldBlock) => return Err(Types::Running),
         };
-        held.as_ref().map(f).ok_or(Types::Unknown)
+        match held.as_ref() {
+            None => Err(Types::Unknown),
+            Some(r) if r.generation != self.shown.load(Ordering::Acquire) => Err(Types::Running),
+            Some(r) => Ok(f(r)),
+        }
     }
 
     #[cfg(test)]

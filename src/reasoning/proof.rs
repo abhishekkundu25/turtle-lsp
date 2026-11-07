@@ -168,6 +168,7 @@ mod tests {
                 project: Default::default(),
             },
         );
+        shared.show(1);
         match shared.inferred_types(&format!("{EX}{local}"), Duration::from_secs(10)) {
             Types::Proved(v) => v,
             _ => panic!("not proved"),

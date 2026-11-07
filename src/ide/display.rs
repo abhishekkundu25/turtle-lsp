@@ -291,6 +291,7 @@ mod tests {
                 project: Default::default(),
             },
         );
+        shared.show(1);
         let md = hover(&mut ws);
         let link = |line: u32| format!("[data.ttl:{line}]({}#L{line})", uris[0]);
         assert_eq!(
@@ -347,6 +348,7 @@ mod tests {
                 project: Default::default(),
             },
         );
+        shared.show(1);
         let integer = hover_at(
             &mut ws,
             &settings,
@@ -431,6 +433,7 @@ mod tests {
                     project: Default::default(),
                 },
             );
+            shared.show(1);
             let settings = Settings::default();
             let md = hover_at(&mut ws, &settings, &shared, &uris[0], at(text, needle, 0));
             let section = &md[md

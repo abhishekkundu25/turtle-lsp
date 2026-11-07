@@ -1043,9 +1043,11 @@ impl Server {
         }
     }
 
-    /// Reason again once typing pauses, with reasoning on.
+    /// Reason again once typing pauses, with reasoning on. The run going on
+    /// reads the text before the change: its outcome is dropped.
     fn reason_after_typing(&mut self) {
         if self.reasoning.is_some() {
+            self.reasoning_runs.invalidate();
             self.timers.set(
                 Timer::ReasoningTyping,
                 Instant::now() + REASONING_TYPING_DEBOUNCE,
@@ -1841,6 +1843,10 @@ impl Server {
         if !self.reasoning_runs.is_current(&o) {
             return;
         }
+        // Hover reads this run's result now.
+        if let Some(shared) = &self.reasoning {
+            shared.show(o.generation);
+        }
         self.timers.clear(Timer::ReasoningProgress);
         if self.progress.is_shown(Work::Reasoning) {
             let summary = reasoning::summary(&o.diagnostics);
@@ -2055,6 +2061,77 @@ mod tests {
         assert!(e.server.reasoning.is_none());
         assert!(!e.server.timers.is_set(Timer::ReasoningTyping));
         assert!(e.server.reasoning_runs.diagnostics().is_empty());
+    }
+
+    /// A run over text since edited (on the thread, it was running when
+    /// the edit came) lands after the edit: neither its findings nor the
+    /// state it wrote are shown.
+    #[test]
+    fn a_run_that_lands_after_an_edit_shows_nothing() {
+        const AXIOMS: &str = "@prefix ex: <http://example.org/> .\n\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ex:Cat owl:disjointWith ex:Dog .\n\
+            ex:Kitten rdfs:subClassOf ex:Cat .\n";
+        let clean = format!("{AXIOMS}ex:tom a ex:Dog .\n");
+        let clash = format!("{AXIOMS}ex:tom a ex:Kitten , ex:Dog .\n");
+        let uri = "file:///w/a.ttl";
+        let change = |version: i32, text: &str| {
+            notify(
+                "textDocument/didChange",
+                json!({"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]}),
+            )
+        };
+        let hover = |e: &mut Embedded, id: i32| {
+            let r = ask(
+                e,
+                id,
+                "textDocument/hover",
+                json!({"textDocument": {"uri": uri}, "position": {"line": 5, "character": 4}}),
+            );
+            r["contents"]["value"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut e = embedded();
+        open(&mut e, uri, &clean);
+        e.handle(vec![notify(
+            "workspace/didChangeConfiguration",
+            json!({"settings": {"turtle": {"reasoning": {"rules": "default", "diagnostics": true}}}}),
+        )]);
+        assert!(e.server.reasoning_runs.diagnostics().is_empty());
+        // The run that starts once typing pauses after the first edit.
+        e.handle(vec![change(2, &clash)]);
+        let docs: Vec<_> = e
+            .server
+            .ws
+            .knowledge()
+            .docs()
+            .map(|(_, s, a)| (s, a.clone()))
+            .collect();
+        let old = e
+            .server
+            .reasoning_runs
+            .job(docs, e.server.layers.settings(), e.server.enc);
+        let shared = e.server.reasoning.clone().unwrap();
+        // The text changes back while it runs; then it lands.
+        e.handle(vec![change(3, &clean)]);
+        let landed = crate::reasoning::run_inline(&shared, &old);
+        assert!(!landed.diagnostics.is_empty(), "the old text has a finding");
+        e.server.reasoning_outcome(landed);
+        assert!(
+            e.server.reasoning_runs.diagnostics().is_empty(),
+            "{:?}",
+            e.server.reasoning_runs.diagnostics()
+        );
+        let md = hover(&mut e, 10);
+        assert!(!md.contains("ex:Cat"), "{md}");
+        // The run once typing pauses shows what the text says.
+        e.server.reason();
+        assert!(e.server.reasoning_runs.diagnostics().is_empty());
+        let md = hover(&mut e, 11);
+        assert!(!md.contains("Inferred"), "{md}");
     }
 
     #[test]

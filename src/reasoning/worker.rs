@@ -1,8 +1,8 @@
 //! The reasoning thread: one job at a time, the newest queued one first, as
 //! SHACL validation's ([`crate::features::shacl_validate::Worker`]). A run
 //! cannot be stopped halfway, so a superseded run finishes and the server
-//! drops its outcome by generation; the state it wrote is replaced by the
-//! next run's.
+//! drops its outcome by generation; hover does not read the state it wrote
+//! (see [`Shared::show`]), which the next run's replaces.
 
 use super::diagnostics::{self, ByUri};
 use super::state::{Reasoned, Shared};
@@ -134,6 +134,7 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
         Default::default()
     };
     *held = Some(Reasoned {
+        generation: job.generation,
         reasoner,
         base,
         types,
@@ -197,6 +198,14 @@ mod tests {
         )
     }
 
+    /// Run `job` inline, its result then shown as the server shows a
+    /// current run's.
+    fn shown(shared: &Shared, job: &Job) -> Outcome {
+        let out = run_inline(shared, job);
+        shared.show(job.generation);
+        out
+    }
+
     fn proved(t: Types) -> Vec<super::super::state::Inferred> {
         match t {
             Types::Proved(v) => v,
@@ -207,7 +216,7 @@ mod tests {
     #[test]
     fn a_subclass_gives_the_inferred_type_with_its_proof() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
-        let out = run_inline(&shared, &job(7, vec![animals()]));
+        let out = shown(&shared, &job(7, vec![animals()]));
         assert_eq!(out.generation, 7);
         assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
         assert!(shared.read_for_test().is_some());
@@ -237,13 +246,13 @@ mod tests {
     #[test]
     fn a_run_over_the_size_limit_is_skipped_and_leaves_no_result() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
-        run_inline(&shared, &job(1, vec![animals()]));
+        shown(&shared, &job(1, vec![animals()]));
         assert!(shared.read_for_test().is_some());
         let small = Job {
             max_triples: 1,
             ..job(2, vec![animals()])
         };
-        let out = run_inline(&shared, &small);
+        let out = shown(&shared, &small);
         let notes = &out.diagnostics["file:///w/a.ttl"];
         assert_eq!(notes.len(), 1);
         let code = notes[0].code.clone();
@@ -272,7 +281,7 @@ mod tests {
              ex:tom a ex:Cat ,\n  ex:Dog .\n",
         );
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
-        let out = run_inline(&shared, &job(1, vec![d]));
+        let out = shown(&shared, &job(1, vec![d]));
         let list = &out.diagnostics["file:///w/a.ttl"];
         let code = Some(lsp_types::NumberOrString::String("turbowl/cax-dw".into()));
         let found: Vec<_> = list.iter().filter(|d| d.code == code).collect();
@@ -295,7 +304,7 @@ mod tests {
     #[test]
     fn hover_waits_at_most_its_limit_and_the_search_goes_on() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
-        run_inline(&shared, &job(1, vec![animals()]));
+        shown(&shared, &job(1, vec![animals()]));
         let rex = format!("{EX}rex");
         {
             // A search that cannot finish yet: the cache is in use.
@@ -323,9 +332,27 @@ mod tests {
     }
 
     #[test]
+    fn hover_reads_only_the_result_of_the_run_shown() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let rex = format!("{EX}rex");
+        shown(&shared, &job(1, vec![animals()]));
+        // A run the server dropped, superseded while it ran.
+        run_inline(&shared, &job(2, vec![animals()]));
+        assert!(matches!(
+            shared.inferred_types(&rex, Duration::from_secs(10)),
+            Types::Running
+        ));
+        shared.show(2);
+        assert_eq!(
+            proved(shared.inferred_types(&rex, Duration::from_secs(10))).len(),
+            1
+        );
+    }
+
+    #[test]
     fn hover_says_a_run_is_writing_the_state() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
-        run_inline(&shared, &job(1, vec![animals()]));
+        shown(&shared, &job(1, vec![animals()]));
         let held = shared.write();
         let t = shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(1));
         assert!(matches!(t, Types::Running));
@@ -349,6 +376,7 @@ mod tests {
         worker.submit(job(2, vec![animals(), more]));
         let out = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(out.generation, 2);
+        shared.show(2);
         let fido = proved(shared.inferred_types(&format!("{EX}fido"), Duration::from_secs(10)));
         assert_eq!(fido[0].class, format!("{EX}Animal"));
         let leaf_uris: Vec<&str> = fido[0]
@@ -371,14 +399,14 @@ mod tests {
             rules: Reasoning::Complete,
             ..job(1, vec![animals()])
         };
-        run_inline(&shared, &complete);
+        shown(&shared, &complete);
         let rex = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
         assert!(rex.iter().any(|t| t.class == format!("{EX}Animal")));
         let off = Job {
             rules: Reasoning::Off,
             ..job(2, vec![animals()])
         };
-        assert!(run_inline(&shared, &off).diagnostics.is_empty());
+        assert!(shown(&shared, &off).diagnostics.is_empty());
         assert!(shared.read_for_test().is_none());
         let settings = crate::settings::Settings::default();
         assert!(Shared::when_on(&settings, crate::server::worker::Spawn::Thread).is_none());

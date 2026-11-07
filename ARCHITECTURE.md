@@ -272,7 +272,9 @@ scheduling and results), `reasoning` (reasoning runs and their findings),
 arrives). The groups send to the client through `client::Client`, never
 through the server. One piece of state is shared with a thread: the
 reasoner after its last run (`reasoning::Shared`). Only the reasoning
-thread writes it, and a hover reads it without waiting for a run.
+thread writes it, and a hover reads it without waiting for a run, and only
+the result of the run whose findings the server shows: an edit supersedes
+the run going on, and neither its findings nor its result are shown.
 
 Long work runs on worker threads and comes back as messages: the initial
 index, imports (`imports::worker`), JSON-LD context fetches, SHACL

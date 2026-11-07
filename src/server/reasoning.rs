@@ -5,7 +5,9 @@
 //! `reasoning` field ([`crate::reasoning::Shared`]); this group holds only
 //! what drives the runs. Each run is a job with a generation; a run cannot
 //! be stopped halfway, so a superseded one finishes and its outcome is
-//! dropped. The thread starts with the first job. Embedded (no threads), a
+//! dropped. An edit supersedes the run going on at once, though the next
+//! one starts only once typing pauses; the server marks the current run's
+//! result as the one hover reads (`Shared::show`). The thread starts with the first job. Embedded (no threads), a
 //! job runs at once ([`crate::reasoning::run_inline`]).
 //!
 //! With reasoning off the server holds no state and never calls this
@@ -96,6 +98,12 @@ impl Runs {
             worker.submit(job);
         }
         Ok(())
+    }
+
+    /// The workspace changed and the next job comes later (once typing
+    /// pauses): the job going on is superseded, its outcome dropped.
+    pub(super) fn invalidate(&mut self) {
+        self.generation += 1;
     }
 
     /// `o` is the outcome of the latest job, not of a superseded one.
