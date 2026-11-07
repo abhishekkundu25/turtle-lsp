@@ -964,6 +964,7 @@ dependencies = [
  "mimalloc",
  "oxilangtag",
  "oxiri 0.3.1",
+ "oxrdf",
  "oxrdfxml",
  "rayon",
  "regex",

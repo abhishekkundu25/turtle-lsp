@@ -40,6 +40,10 @@ serde_json = "1.0.154"
 # published 0.2.8, ignore the patch (a warning) and drop the cancellation checks.
 spareval = { version = "=0.2.7", features = ["sparql-12", "sep-0006"] }
 spargebra = { version = "=0.4.7", features = ["sparql-12"] }
+# The RDF terms spargebra re-exports, and their borrowed forms (`TermRef`,
+# `TripleRef`), which it does not: the reasoning base hands TurbOWL borrowed
+# triples. The version spargebra and TurbOWL use.
+oxrdf = { version = "0.3", features = ["rdf-12"] }
 # TurbOWL, the OWL 2 RL reasoner behind `turtle.reasoning` (src/reasoning/): a path
 # dependency on its checkout, which must sit next to this one (its rule program is read
 # from the repository with include_str!). Without its default features: turtle-lsp
@@ -54,7 +58,6 @@ mimalloc = { version = "0.1", default-features = false }
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
-oxrdf = { version = "0.3", features = ["rdf-12"] }
 oxttl = { version = "0.2.4", features = ["rdf-12"] }
 oxjsonld = { version = "0.2.6", features = ["rdf-12"] }
 # The old position conversion, the oracle of `analysis::tests`.

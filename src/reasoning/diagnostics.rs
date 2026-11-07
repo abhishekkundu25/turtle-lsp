@@ -33,7 +33,7 @@ use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, NumberOrString, Range,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use spargebra::term::{NamedOrBlankNode, Term};
+use spargebra::term::Term;
 use std::sync::Arc;
 
 /// Diagnostics per document URI.
@@ -126,10 +126,11 @@ pub(super) fn of(
 }
 
 /// Where the workspace writes the findings' terms: the base triples with
-/// each as subject and as object, by (document, index), in order.
+/// each as subject and as object, by (document, index), in order; by the
+/// term's id in the base.
 struct Mentions {
-    subjects: FxHashMap<NamedOrBlankNode, Vec<(u32, u32)>>,
-    objects: FxHashMap<Term, Vec<(u32, u32)>>,
+    subjects: FxHashMap<u32, Vec<(u32, u32)>>,
+    objects: FxHashMap<u32, Vec<(u32, u32)>>,
 }
 
 /// The terms `d` is about, by the order TurbOWL's `Diagnostic` documents per
@@ -153,12 +154,8 @@ fn at_fault(d: &turbowl::Diagnostic) -> impl Iterator<Item = &Term> {
         .map(|(_, t)| t)
 }
 
-fn as_subject(t: &Term) -> Option<NamedOrBlankNode> {
-    match t {
-        Term::NamedNode(n) => Some(n.clone().into()),
-        Term::BlankNode(b) => Some(b.clone().into()),
-        _ => None,
-    }
+fn is_subject(t: &Term) -> bool {
+    matches!(t, Term::NamedNode(_) | Term::BlankNode(_))
 }
 
 impl Mentions {
@@ -166,17 +163,19 @@ impl Mentions {
     fn of(base: &Base, found: &[turbowl::Diagnostic]) -> Mentions {
         let mut subjects = FxHashMap::default();
         let mut objects = FxHashMap::default();
+        // A term the base does not have is written nowhere.
         for t in found.iter().flat_map(|d| &d.terms) {
-            if let Some(s) = as_subject(t) {
-                subjects.insert(s, Vec::new());
+            let Some(id) = base.id(t) else { continue };
+            if is_subject(t) {
+                subjects.insert(id, Vec::new());
             }
-            objects.insert(t.clone(), Vec::new());
+            objects.insert(id, Vec::new());
         }
-        for (t, place) in base.in_workspace() {
-            if let Some(v) = subjects.get_mut(&t.subject) {
+        for (s, o, place) in base.in_workspace() {
+            if let Some(v) = subjects.get_mut(&s) {
                 v.push(place);
             }
-            if let Some(v) = objects.get_mut(&t.object) {
+            if let Some(v) = objects.get_mut(&o) {
                 v.push(place);
             }
         }
@@ -196,9 +195,10 @@ impl Mentions {
         let mut out = Vec::new();
         let mut statements = FxHashSet::default();
         for (s, place) in at_fault(d)
-            .filter_map(as_subject)
-            .filter_map(|s| Some((Term::from(s.clone()), self.subjects.get(&s)?)))
-            .flat_map(|(s, places)| places.iter().map(move |p| (s.clone(), p)))
+            .filter(|t| is_subject(t))
+            .filter_map(|t| base.id(t))
+            .filter_map(|s| Some((s, self.subjects.get(&s)?)))
+            .flat_map(|(s, places)| places.iter().map(move |p| (s, p)))
         {
             let (a, t) = base.written(*place);
             if !statements.insert((place.0, t.statement)) {
@@ -223,7 +223,7 @@ impl Mentions {
             let literals = at_fault(d).any(|t| matches!(t, Term::Literal(_)));
             for place in at_fault(d)
                 .filter(|t| !literals || matches!(t, Term::Literal(_)))
-                .filter_map(|t| self.objects.get(t))
+                .filter_map(|t| self.objects.get(&base.id(t)?))
                 .flatten()
             {
                 let (a, t) = base.written(*place);

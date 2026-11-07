@@ -110,7 +110,7 @@ impl Proof {
             .steps()
             .iter()
             .map(|s| match s.reason {
-                turbowl::Reason::Base => base.origin(&triple(&s.statement)?),
+                turbowl::Reason::Base => base.origin(triple(&s.statement)?),
                 turbowl::Reason::Rule { .. } => None,
             })
             .collect();
@@ -120,17 +120,18 @@ impl Proof {
 }
 
 /// A proof's statement as an RDF triple, when it is one.
-fn triple(s: &turbowl::Statement) -> Option<Triple> {
-    use spargebra::term::{NamedOrBlankNode, Term};
-    let subject: NamedOrBlankNode = match &s.subject {
-        Term::NamedNode(n) => n.clone().into(),
-        Term::BlankNode(b) => b.clone().into(),
+fn triple(s: &turbowl::Statement) -> Option<oxrdf::TripleRef<'_>> {
+    use oxrdf::NamedOrBlankNodeRef;
+    use spargebra::term::Term;
+    let subject: NamedOrBlankNodeRef = match &s.subject {
+        Term::NamedNode(n) => n.into(),
+        Term::BlankNode(b) => b.into(),
         _ => return None,
     };
     let Term::NamedNode(p) = &s.predicate else {
         return None;
     };
-    Some(Triple::new(subject, p.clone(), s.object.clone()))
+    Some(oxrdf::TripleRef::new(subject, p, &s.object))
 }
 
 impl Shared {

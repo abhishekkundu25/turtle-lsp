@@ -125,7 +125,7 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
         .map(|r| r.reasoner)
         .unwrap_or_else(|| turbowl::Reasoner::with_switches(switches));
     reasoner.set_switches(switches);
-    reasoner.set_base(base.triples().map(|t| t.as_ref()));
+    reasoner.set_base(base.triples());
     reasoner.reason();
     let types = inferred_types(&reasoner);
     let (diagnostics, cache) = if job.findings {

@@ -6,6 +6,7 @@
 
 use super::graph::{GTriple, Graph, Id, Term as GTerm};
 use crate::syntax::{Direction, Iri, Node};
+use oxrdf::{LiteralRef, NamedNodeRef};
 use spareval::{InternalQuad, QueryableDataset};
 use spargebra::term::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple};
 use std::convert::Infallible;
@@ -160,29 +161,7 @@ fn node_term(n: &Node, blank_base: u32) -> Term {
         Node::Blank(b) => {
             BlankNode::new_unchecked(format!("g{}", blank_base.saturating_add(b.0))).into()
         }
-        Node::Literal {
-            value,
-            datatype,
-            lang,
-            dir,
-        } => match (lang, dir) {
-            (Some(l), Some(d)) => Literal::new_directional_language_tagged_literal_unchecked(
-                value.as_ref(),
-                l.as_str(),
-                directions()[*d as usize]
-                    .direction()
-                    .expect("a directional literal"),
-            )
-            .into(),
-            (Some(l), None) => {
-                Literal::new_language_tagged_literal_unchecked(value.as_ref(), l.as_str()).into()
-            }
-            _ => Literal::new_typed_literal(
-                value.as_ref(),
-                NamedNode::new_unchecked(datatype.as_str()),
-            )
-            .into(),
-        },
+        Node::Literal { .. } => literal_ref(n).expect("a literal").into_owned().into(),
         Node::Triple(t) => {
             let s: NamedOrBlankNode = match node_term(&t.0, blank_base) {
                 Term::NamedNode(n) => n.into(),
@@ -196,6 +175,31 @@ fn node_term(n: &Node, blank_base: u32) -> Term {
             )))
         }
     }
+}
+
+/// A literal node as an RDF literal, borrowed from the node; `None` for
+/// another node. [`node_term`] owns the same literal.
+pub(crate) fn literal_ref(n: &Node) -> Option<LiteralRef<'_>> {
+    let Node::Literal {
+        value,
+        datatype,
+        lang,
+        dir,
+    } = n
+    else {
+        return None;
+    };
+    Some(match (lang, dir) {
+        (Some(l), Some(d)) => LiteralRef::new_directional_language_tagged_literal_unchecked(
+            value,
+            l.as_str(),
+            directions()[*d as usize]
+                .direction()
+                .expect("a directional literal"),
+        ),
+        (Some(l), None) => LiteralRef::new_language_tagged_literal_unchecked(value, l.as_str()),
+        _ => LiteralRef::new_typed_literal(value, NamedNodeRef::new_unchecked(datatype.as_str())),
+    })
 }
 
 /// A literal of each base direction, indexed by [`Direction`]. `oxrdf` does not
