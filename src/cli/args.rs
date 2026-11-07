@@ -1,6 +1,7 @@
 //! Command-line arguments of `check`, `format` and `query`, parsed by hand.
 
 use super::output::{self, Format};
+use crate::settings::Reasoning;
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
@@ -70,6 +71,9 @@ pub(crate) struct QueryArgs {
     pub(crate) limit: Option<usize>,
     /// None: no limit.
     pub(crate) max_buffered_rows: Option<usize>,
+    /// The rules whose inferred triples the query also runs over; None:
+    /// `query.reasoning` decides.
+    pub(crate) reasoning: Option<Reasoning>,
 }
 
 /// The default `--timeout`, in seconds.
@@ -284,6 +288,7 @@ pub(crate) fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> 
     let mut timeout = Some(std::time::Duration::from_secs(QUERY_TIMEOUT_SECONDS));
     let mut limit = None;
     let mut max_buffered_rows = Some(crate::settings::QUERY_MAX_BUFFERED_ROWS);
+    let mut reasoning = None;
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
         let flag = match item {
@@ -332,6 +337,19 @@ pub(crate) fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> 
                 let n: usize = it.number(f)?;
                 max_buffered_rows = (n > 0).then_some(n);
             }
+            "--reasoning" => {
+                let v = it.value(f)?;
+                reasoning = Some(match v.as_str() {
+                    "off" => Reasoning::Off,
+                    "default" => Reasoning::Default,
+                    "complete" => Reasoning::Complete,
+                    _ => {
+                        return Err(format!(
+                            "--reasoning must be off, default or complete, not '{v}'"
+                        ));
+                    }
+                });
+            }
             _ => return Err(unknown(f, "query")),
         }
     }
@@ -357,6 +375,7 @@ pub(crate) fn parse_query(args: &[String]) -> Result<Parsed<QueryArgs>, String> 
         timeout,
         limit,
         max_buffered_rows,
+        reasoning,
     }))
 }
 
@@ -467,6 +486,17 @@ mod tests {
         let rows = |s: &str| query(s).unwrap().max_buffered_rows;
         assert_eq!(rows("q.rq --max-buffered-rows 500"), Some(500));
         assert_eq!(rows("q.rq --max-buffered-rows 0"), None);
+        assert_eq!(a.reasoning, None);
+        let rules = |s: &str| query(s).unwrap().reasoning;
+        assert_eq!(rules("q.rq --reasoning default"), Some(Reasoning::Default));
+        assert_eq!(
+            rules("q.rq --reasoning=complete"),
+            Some(Reasoning::Complete)
+        );
+        assert_eq!(
+            rules("q.rq --reasoning complete --reasoning off"),
+            Some(Reasoning::Off)
+        );
     }
 
     #[test]
@@ -483,6 +513,9 @@ mod tests {
         assert!(query("q.rq --max-buffered-rows lots").is_err());
         assert!(query("q.rq --limit 3 --format json").is_err());
         assert!(query("-e a -e b").is_err());
+        let e = query("q.rq --reasoning nope").unwrap_err();
+        assert!(e.contains("off, default or complete"), "{e}");
+        assert!(query("q.rq --reasoning").is_err());
         assert_eq!(query("--help").unwrap_err(), "help");
     }
 }

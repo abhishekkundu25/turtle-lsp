@@ -14,7 +14,8 @@
 use super::args::{QueryArgs, QueryFormat, QuerySource};
 use super::files::{self, Context};
 use crate::batch::{self, BatchFile, Disk};
-use crate::query::{Answer, Limits, QueryError, render};
+use crate::query::{Answer, Inferred, Limits, QueryError, render};
+use crate::settings::Reasoning;
 use serde_json::Value;
 use std::io::Write;
 
@@ -26,7 +27,10 @@ const INLINE: &str = "-e";
 pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
     let cwd = files::current_dir()?;
     let root = files::find_root(a.root.as_deref(), &cwd)?;
-    let settings = files::settings(&root, &Value::Null);
+    let mut settings = files::settings(&root, &Value::Null);
+    if let Some(rules) = a.reasoning {
+        settings.query_reasoning = rules;
+    }
     let q = match &a.query {
         QuerySource::File(p) => {
             let path = files::real(&cwd.join(p));
@@ -78,6 +82,10 @@ pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
         Err(e) => return Err(e.to_string()),
     };
     let (text, code) = render(&answer, a.format, a.limit, &outcome.prefixes)?;
+    // On stderr, so stdout stays the results in every format.
+    if let Some(line) = inferred_note(outcome.inferred) {
+        eprintln!("{line}");
+    }
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => {}
@@ -86,6 +94,33 @@ pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
         Err(e) => return Err(format!("cannot write to stdout: {e}")),
     }
     Ok(code)
+}
+
+/// The line that says what reasoning added to the data, if it was on.
+fn inferred_note(inferred: Inferred) -> Option<String> {
+    match inferred {
+        Inferred::None => None,
+        Inferred::Added {
+            rules,
+            triples,
+            findings,
+        } => {
+            let rules = match rules {
+                // `Added` never carries `Off`; named as what was asked.
+                Reasoning::Off => "no",
+                Reasoning::Default => "default",
+                Reasoning::Complete => "complete",
+            };
+            let mut line = format!("Includes {triples} inferred triples (TurbOWL, {rules} rules)");
+            if findings > 0 {
+                line.push_str(&format!("; TurbOWL reported {findings} findings"));
+            }
+            Some(line)
+        }
+        Inferred::Skipped { triples, limit } => Some(format!(
+            "Inferred triples skipped: the workspace has {triples} triples, over the reasoning limit of {limit}"
+        )),
+    }
 }
 
 /// The text to print and the exit code, or why `format` does not fit the
@@ -120,5 +155,38 @@ fn render(
             QueryFormat::Turtle => Ok((render::turtle(t, prefixes), 0)),
             _ => misfit("a CONSTRUCT or DESCRIBE query", "turtle"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_query_inferred_note() {
+        assert_eq!(inferred_note(Inferred::None), None);
+        let added = |rules, findings| {
+            inferred_note(Inferred::Added {
+                rules,
+                triples: 3,
+                findings,
+            })
+        };
+        assert_eq!(
+            added(Reasoning::Default, 0).unwrap(),
+            "Includes 3 inferred triples (TurbOWL, default rules)"
+        );
+        assert_eq!(
+            added(Reasoning::Complete, 2).unwrap(),
+            "Includes 3 inferred triples (TurbOWL, complete rules); TurbOWL reported 2 findings"
+        );
+        assert_eq!(
+            inferred_note(Inferred::Skipped {
+                triples: 9,
+                limit: 4
+            })
+            .unwrap(),
+            "Inferred triples skipped: the workspace has 9 triples, over the reasoning limit of 4"
+        );
     }
 }
