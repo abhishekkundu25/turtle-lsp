@@ -57,27 +57,38 @@ pub(super) fn request(req: Request, spawn: Spawn, out: Sender<Out>, s: &mut Sess
     if spawn == Spawn::Inline {
         return json(graph(k, enc, params)).map(Some);
     }
-    let sources: Vec<_> = k
-        .sources()
-        .map(|(key, s, a)| (key.to_string(), s, a.clone()))
-        .collect();
+    let sources = Sources::of(k);
     on_thread(out, req.id, "graph", move || {
-        json(graph(&rebuild(sources), enc, params))
+        json(graph(&sources.rebuild(), enc, params))
     })
 }
 
-/// A knowledge index rebuilt from its sources (in order, analyses shared):
-/// equal to the original (`Knowledge`'s `incremental_updates_match_a_rebuild`).
-fn rebuild(sources: Vec<(String, Source, std::sync::Arc<Analysis>)>) -> Knowledge {
-    let mut k = Knowledge::default();
-    for (key, source, a) in sources {
-        if source == Source::External {
-            k.add_external(&key, a);
-        } else {
-            k.set(&key, source, a);
-        }
+/// What a knowledge index is built from, in order, analyses shared: to
+/// rebuild it on another thread.
+pub(super) struct Sources(Vec<(String, Source, std::sync::Arc<Analysis>)>);
+
+impl Sources {
+    pub(super) fn of(k: &Knowledge) -> Sources {
+        Sources(
+            k.sources()
+                .map(|(key, s, a)| (key.to_string(), s, a.clone()))
+                .collect(),
+        )
     }
-    k
+
+    /// The index rebuilt: equal to the original (`Knowledge`'s
+    /// `incremental_updates_match_a_rebuild`).
+    pub(super) fn rebuild(self) -> Knowledge {
+        let mut k = Knowledge::default();
+        for (key, source, a) in self.0 {
+            if source == Source::External {
+                k.add_external(&key, a);
+            } else {
+                k.set(&key, source, a);
+            }
+        }
+        k
+    }
 }
 
 /// A `turtle/graph` answer as JSON text; parameters it cannot answer are
@@ -100,7 +111,7 @@ const MAX_DEPTH: u32 = 32;
 /// A previous position further out than this is not one the layout made.
 const MAX_COORDINATE: f64 = 1e7;
 /// A literal's name shows this many characters of its text.
-const LITERAL_NAME_CHARS: usize = 60;
+pub(crate) const LITERAL_NAME_CHARS: usize = 60;
 
 const SH: &str = "http://www.w3.org/ns/shacl#";
 const SKOS_CONCEPT: &str = "http://www.w3.org/2004/02/skos/core#Concept";
@@ -405,14 +416,14 @@ fn answer(k: &Knowledge, enc: Encoding, q: &Query) -> GraphResult {
 
 /// The prefixes of every workspace document, the first document by URI
 /// winning a name two bind differently.
-struct Names {
+pub(crate) struct Names {
     prefixes: PrefixMap,
     /// Namespace -> its shortest prefix name.
     by_namespace: FxHashMap<String, String>,
 }
 
 impl Names {
-    fn new(docs: &[&Analysis]) -> Names {
+    pub(crate) fn new(docs: &[&Analysis]) -> Names {
         let mut prefixes = PrefixMap::default();
         for a in docs {
             for (name, ns) in a.prefix_map() {
@@ -434,7 +445,7 @@ impl Names {
         }
     }
 
-    fn short(&self, iri: &str) -> String {
+    pub(crate) fn short(&self, iri: &str) -> String {
         short(iri, &self.prefixes)
     }
 
@@ -449,7 +460,7 @@ impl Names {
 // ---- the candidate graph ----
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum Key {
+pub(crate) enum Key {
     Iri(Iri),
     /// The document's index, the node.
     Blank(u32, BlankId),
@@ -458,7 +469,7 @@ enum Key {
 }
 
 impl Key {
-    fn id(self, docs: &[&Analysis]) -> String {
+    pub(crate) fn id(self, docs: &[&Analysis]) -> String {
         match self {
             Key::Iri(i) => i.to_string(),
             Key::Blank(d, b) => format!("_:{d}:{}", b.0),
@@ -1299,11 +1310,7 @@ mod tests {
         let uri = "file:///w/a.ttl";
         let a = Analysis::new(uri.to_string(), &a, Arc::default(), false);
         k.set(uri, Source::Open, Arc::new(a));
-        let copy = rebuild(
-            k.sources()
-                .map(|(key, s, a)| (key.to_string(), s, a.clone()))
-                .collect(),
-        );
+        let copy = Sources::of(&k).rebuild();
         let params = serde_json::json!({
             "types": true,
             "literals": true,

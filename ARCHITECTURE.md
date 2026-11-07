@@ -32,7 +32,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `cli` | `check`, `format` and `query` (not in the browser build) | `main` |
 | `clock` | The time the server's timers read | `server`, `query`, `features` |
 | `ide` | `ide::Session`: every editor request over one workspace, routed by document kind | `server` |
-| `extensions` | The requests beyond the LSP standard (`turtle/graph`, "▶ Run query"): one router entry, one `experimental` capability builder, one off-thread answer | `server`; `features::lens` names Run query |
+| `extensions` | The requests beyond the LSP standard (`turtle/graph`, `turtle/graphDiff`, `turtle/query`, "▶ Run query"): one router entry, one `experimental` capability builder, one off-thread answer | `server`; `features::lens` names Run query |
 | `layout` | What the Turtle and SPARQL formatters share: the layout options, the token document, the triple terms and the printer | `features`, `sparql`, `ide`, `batch`; `jsonld` and `query` take its options |
 
 Core code never names `extensions`, except the router in `server` and the
@@ -210,13 +210,16 @@ target classes.
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |
 | Workspace graph (`turtle/graph`) | `extensions::graph` | |
+| The workspace against a base, for the graph's Changes (`turtle/graphDiff`) | `extensions::graph_diff` | |
 | A query for another extension or tool (`turtle/query`) | `extensions::query` over `query::run` | |
 
-The workspace graph and `turtle/query` are the server's two custom
-requests, listed under `experimental` capabilities. `turtle/query` runs a
+The workspace graph, `turtle/graphDiff` and `turtle/query` are the
+server's custom requests, listed under `experimental` capabilities. `turtle/query` runs a
 query given as text over the workspace's documents, as "▶ Run query" does,
 and answers the results as JSON on a thread of its own; `$/cancelRequest`
-stops it. The thread holds only the map of runs, not the server's state, so
+stops it. `turtle/graphDiff` compares the workspace with a base the
+client sends (each changed file's old text); the server never runs git.
+The thread holds only the map of runs, not the server's state, so
 `shutdown` and the end of the server stop every run. `extensions::graph` reads the knowledge index
 and changes nothing: the query, the filters, the cap and the Barnes-Hut
 layout. The client passes back the positions it has, so the server keeps

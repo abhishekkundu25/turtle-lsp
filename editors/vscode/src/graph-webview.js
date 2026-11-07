@@ -19,10 +19,20 @@ function request(method, params) {
   })
 }
 
+// The files that differ from git HEAD, asked of the extension each time.
+function base() {
+  const id = ++nextId
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject })
+    vscode.postMessage({ type: "base", id })
+  })
+}
+
 const container = document.getElementById("graph")
 const view = createGraphView({
   container,
   request,
+  base,
   reveal: (uri, range) => vscode.postMessage({ type: "reveal", uri, range }),
   diagnostics: (uri) => diagnostics.get(uri) ?? [],
   store: {
@@ -59,6 +69,11 @@ window.addEventListener("message", (event) => {
     for (const [uri, list] of Object.entries(m.diagnostics ?? {})) diagnostics.set(uri, list)
     if (m.error) p.reject(new Error(m.error))
     else p.resolve(m.result)
+  } else if (m?.type === "base") {
+    const p = pending.get(m.id)
+    if (!p) return
+    pending.delete(m.id)
+    p.resolve(m.base)
   } else if (m?.type === "refresh") {
     view.refresh()
   } else if (m?.type === "theme") {

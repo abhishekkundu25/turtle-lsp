@@ -6,8 +6,11 @@
 import * as vscode from "vscode"
 import type { BaseLanguageClient } from "vscode-languageclient"
 import { RDF_GLOB } from "./client"
+import { gitBase, type GitApi } from "./git-base"
 
 export const GRAPH_METHOD = "turtle/graph"
+/** The webview's request for the base (`{type: "base", id}`); the answer is `{type: "base", id, base}`. */
+export const BASE_MESSAGE = "base"
 export const SHOW_GRAPH = "turtle.showGraph"
 const TITLE = "Workspace Graph"
 /** Ask again this long after the last change to a workspace RDF or SPARQL file. */
@@ -125,6 +128,7 @@ class GraphPanel {
     if (typeof message !== "object" || message === null) return
     const m = message as Record<string, unknown>
     if (m.type === "request" && typeof m.id === "number") await this.answer(m.id, m.method, m.params)
+    else if (m.type === BASE_MESSAGE && typeof m.id === "number") await this.post({ type: BASE_MESSAGE, id: m.id, base: await base() })
     else if (m.type === "reveal" && typeof m.uri === "string" && isRange(m.range)) await reveal(m.uri, m.range)
     else if (m.type === "drawn" && typeof m.status === "string") this.probe.status = m.status
   }
@@ -142,6 +146,18 @@ class GraphPanel {
     } catch (err) {
       await this.post({ type: "response", id, error: err instanceof Error ? err.message : String(err) })
     }
+  }
+}
+
+/** The workspace's files that differ from git HEAD, or the reason there are none; the git extension is optional. */
+async function base() {
+  try {
+    const git = vscode.extensions.getExtension<{ getAPI(version: 1): GitApi }>("vscode.git")
+    const exports = git && (git.isActive ? git.exports : await git.activate())
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath)
+    return await gitBase(exports?.getAPI(1), roots)
+  } catch (err) {
+    return `The git extension is not available: ${err instanceof Error ? err.message : String(err)}`
   }
 }
 

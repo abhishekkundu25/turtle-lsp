@@ -81,3 +81,35 @@ export function bigGraph(n, total = n) {
     },
   }
 }
+
+const term = (local, name = `ex:${local}`) => ({ id: `${EX}${local}`, name, literal: false })
+const literal = (id, name) => ({ id, name, literal: true })
+
+/**
+ * A `turtle/graphDiff` answer over smallGraph (docs/specs/graph-diff.md):
+ * in a.ttl ex:hasPart is new and ex:Pump's label changed; in b.ttl the class
+ * ex:OldValve (a subclass of ex:Device) is gone. ex:PumpShape targets
+ * ex:Pump, so it is impacted.
+ */
+export function smallDiff() {
+  const hasPart = term("hasPart")
+  return {
+    files: [
+      { uri: A, rows: [
+        { change: "added", subject: term("Pump"), predicate: hasPart, object: term("Valve"), range: range(4) },
+        { change: "changed", subject: term("Pump"), predicate: { id: "http://www.w3.org/2000/01/rdf-schema#label", name: "rdfs:label", literal: false }, object: literal("lit:new", "\"Pump\""), was: literal("lit:old", "\"Pmp\""), range: range(5), baseRange: range(5) },
+        { change: "added", subject: hasPart, predicate: { id: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", name: "rdf:type", literal: false }, object: term("Prop", "owl:ObjectProperty"), range: range(8) },
+      ] },
+      { uri: B, rows: [
+        { change: "removed", subject: term("OldValve"), predicate: { id: SUBCLASS, name: "rdfs:subClassOf", literal: false }, object: term("Device"), baseRange: range(11) },
+      ] },
+    ],
+    terms: [
+      { ...term("hasPart"), status: "added", uri: A, range: range(8) },
+      { ...term("OldValve"), status: "removed", uri: B, range: range(11) },
+      { ...term("Pump"), status: "changed", uri: A, range: range(3) },
+      { ...term("PumpShape"), status: "impacted", uri: B, range: range(5) },
+    ].map(({ literal: _, ...t }) => t),
+    total: { triplesAdded: 3, triplesRemoved: 2, added: 1, removed: 1, changed: 1, impacted: 1, cut: false },
+  }
+}

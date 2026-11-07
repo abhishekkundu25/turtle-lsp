@@ -126,6 +126,35 @@ function folderList() {
   return all
 }
 
+// The Graph view's Changes base: each file's text as a workspace loaded it
+// (the sample, the browser's kept files, a folder opened), by path. Files
+// added while `recording` is on are loads; any other file is new since.
+const base = new Map()
+let recording = false
+function loading(fn) {
+  recording = true
+  try {
+    return fn()
+  } finally {
+    recording = false
+  }
+}
+// The files that differ from `base`, for the graph's Changes (data files only).
+function changesBase() {
+  // The data files the server reads (src/workspace/kinds.rs); it refuses any other URI.
+  const data = (p) => /\.(ttl|turtle|trig|nt|nq|jsonld)$/i.test(p)
+  const out = []
+  for (const [p, f] of W.files) {
+    if (!data(p)) continue
+    const was = base.get(p)
+    const text = f.model.getValue()
+    if (was === undefined) out.push({ uri: f.model.uri.toString(), text: null })
+    else if (was !== text) out.push({ uri: f.model.uri.toString(), text: was })
+  }
+  for (const [p, text] of base) if (!W.files.has(p) && data(p)) out.push({ uri: monaco.Uri.parse(uriOf(p)).toString(), text })
+  return out
+}
+
 // `disk`: the text on disk, for a file in a folder opened in place.
 function addFile(path, text, { disk } = {}) {
   const existing = W.files.get(path)
@@ -133,6 +162,7 @@ function addFile(path, text, { disk } = {}) {
     // Importing a file again replaces its text (undoable).
     existing.model.pushEditOperations([], [{ range: existing.model.getFullModelRange(), text }], () => null)
     if (disk !== undefined) setDisk(existing, disk)
+    if (recording) base.set(path, existing.model.getValue())
     return
   }
   const uri = monaco.Uri.parse(uriOf(path))
@@ -155,6 +185,7 @@ function addFile(path, text, { disk } = {}) {
   // normalised the line endings of `text`.
   client.notify("textDocument/didOpen", { textDocument: { uri: key, languageId: languageOf(path), version: model.getVersionId(), text: model.getValue() } })
   touch(path)
+  if (recording) base.set(path, model.getValue())
 }
 
 // `keepGroups`: a group left without tabs stays (a move puts the tab back).
@@ -672,7 +703,12 @@ async function openInPlace() {
   }
   const { entries, skipped } = await walkHandle(dir, root)
   W.roots.set(root, dir)
-  await importEntries(entries, "", skipped)
+  recording = true
+  try {
+    await importEntries(entries, "", skipped)
+  } finally {
+    recording = false
+  }
   $("status-storage").textContent = `${root}: Ctrl+S saves to disk`
 }
 
@@ -1035,7 +1071,8 @@ function resetWorkspace(files) {
   W.folded.clear()
   W.expanded = new Set(files.map((f) => dirOf(f.path)).filter(Boolean))
   W.selected = null
-  for (const f of files) addFile(f.path, f.text)
+  base.clear()
+  loading(() => files.forEach((f) => addFile(f.path, f.text)))
   const first = files.find((f) => f.path === "start-here.ttl") ?? files[0]
   if (first) openTab(first.path)
   changed({ tree: true, tabs: true, problems: true, status: true, layout: true })
@@ -1374,6 +1411,7 @@ function showGraph(g, focus) {
       request: (method, params) => client.request(method, params),
       reveal: revealBeside,
       diagnostics: (uri) => W.diags.get(uri) ?? [],
+      base: async () => changesBase(),
       store: {
         get(k) {
           try {
@@ -1458,7 +1496,8 @@ function restoreWorkspace(kept) {
     W.folded.clear()
     W.selected = null
     for (const r of kept.roots ?? []) W.roots.set(r.path, r.handle)
-    for (const f of kept.files) addFile(f.path, f.text, { disk: f.disk })
+    base.clear()
+    loading(() => kept.files.forEach((f) => addFile(f.path, f.text, { disk: f.disk })))
     W.expanded = new Set(kept.expanded ?? [])
     const groups = kept.groups ?? [{ tabs: kept.tabs ?? [], active: kept.active }]
     groups.slice(0, 2).forEach((saved, i) => {

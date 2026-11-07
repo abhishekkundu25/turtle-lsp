@@ -20,9 +20,17 @@
  * @property {Uint8Array} marks diagnostic severity by node index (0 none)
  * @property {number[]} labels node indices to label
  * @property {(i: number) => string} text a node's label
+ * @property {{ status: Uint8Array, added: number[], removed: number[], ghosts: { x: number[], y: number[], text: string[] } }} [changes]
+ *   the Changes overlay (changes.js overlay): with it, unchanged nodes fade,
+ *   added and changed ones take their colour, impacted ones a ring, and
+ *   removed triples and terms are dashed ghosts
  */
 
 const TAU = Math.PI * 2
+// Node colour groups past the palette slots: faded slots, then the status colours.
+const FADED = 16
+const ADDED = 32
+const CHANGED = 33
 
 export function createRenderer(canvas) {
   const g = canvas.getContext("2d")
@@ -101,38 +109,79 @@ export function createRenderer(canvas) {
     }
     g.lineWidth = 1
     g.strokeStyle = colors.edge
-    g.globalAlpha = s.edges.length > 10000 ? 0.2 : 0.45
+    const ch = s.changes
+    g.globalAlpha = s.edges.length > 10000 || ch ? 0.2 : 0.45
     line(s.edges)
     g.globalAlpha = 1
+    if (ch) {
+      g.strokeStyle = colors.removed
+      g.globalAlpha = 0.7
+      g.setLineDash([4, 3])
+      g.beginPath()
+      for (let q = 0; q < ch.removed.length; q += 4) g.moveTo(ch.removed[q] * k + ox, ch.removed[q + 1] * k + oy), g.lineTo(ch.removed[q + 2] * k + ox, ch.removed[q + 3] * k + oy)
+      g.stroke()
+      g.setLineDash([])
+      g.globalAlpha = 1
+      g.strokeStyle = colors.added
+      g.lineWidth = 2
+      line(ch.added)
+      g.lineWidth = 1
+    }
     if (s.strong?.length) {
       g.strokeStyle = colors.focus
       g.lineWidth = 1.5
       line(s.strong)
     }
-    // Nodes: one path per colour, off-screen ones skipped.
+    // Nodes: one path per colour, off-screen ones skipped. With the Changes
+    // overlay: an added or changed node takes its status colour (ADDED,
+    // CHANGED), an unchanged one fades (its slot + FADED).
     const r = radius(k)
     const groups = new Map()
     const pad = r + 2
     for (const i of s.nodes) {
       const x = X(i), y = Y(i)
       if (!(x > -pad && y > -pad && x < w + pad && y < h + pad)) continue
-      const c = s.slot[i]
+      const st = ch?.status[i] ?? 0
+      const c = st === 1 ? ADDED : st === 2 ? CHANGED : ch && st !== 3 ? s.slot[i] + FADED : s.slot[i]
       let list = groups.get(c)
       if (!list) groups.set(c, (list = []))
       list.push(i, x, y)
     }
     for (const [c, list] of groups) {
-      g.fillStyle = colors.palette[c] ?? colors.neutral
+      g.fillStyle = c === ADDED ? colors.added : c === CHANGED ? colors.changed : colors.palette[c % FADED] ?? colors.neutral
+      g.globalAlpha = c >= FADED && c < ADDED ? 0.3 : 1
       g.beginPath()
       for (let q = 0; q < list.length; q += 3) shape(s.kind[list[q]], list[q + 1], list[q + 2], r)
       g.fill()
     }
+    g.globalAlpha = 1
     // Rings: diagnostics, search matches, hover, selection.
     const ring = (i, rr, width) => {
       g.lineWidth = width
       g.beginPath()
       g.arc(X(i), Y(i), rr, 0, TAU)
       g.stroke()
+    }
+    if (ch) {
+      g.strokeStyle = colors.impacted
+      for (const list of groups.values()) for (let q = 0; q < list.length; q += 3) if (ch.status[list[q]] === 3) ring(list[q], r + 2.5, 2)
+      // Ghosts: a dashed outline on the background, so the edges under them stop at the rim.
+      const gr = r * 0.8
+      g.globalAlpha = 0.8
+      g.fillStyle = colors.bg
+      g.strokeStyle = colors.removed
+      g.lineWidth = 1.5
+      g.setLineDash([3, 2])
+      g.beginPath()
+      for (let q = 0; q < ch.ghosts.x.length; q++) {
+        const x = ch.ghosts.x[q] * k + ox, y = ch.ghosts.y[q] * k + oy
+        g.moveTo(x + gr, y)
+        g.arc(x, y, gr, 0, TAU)
+      }
+      g.fill()
+      g.stroke()
+      g.setLineDash([])
+      g.globalAlpha = 1
     }
     for (const list of groups.values())
       for (let q = 0; q < list.length; q += 3) {
@@ -171,6 +220,17 @@ export function createRenderer(canvas) {
       }
     }
     g.textAlign = "left"
+    if (ch) {
+      g.fillStyle = colors.removed
+      for (let q = 0; q < ch.ghosts.text.length; q++) {
+        const x = ch.ghosts.x[q] * k + ox + r + 4, y = ch.ghosts.y[q] * k + oy
+        if (x > w + 4 || y < -8 || y > h + 8) continue
+        const text = ch.ghosts.text[q]
+        if (!free(x, y, g.measureText(text).width)) continue
+        g.strokeText(text, x, y)
+        g.fillText(text, x, y)
+      }
+    }
     g.fillStyle = colors.fg
     for (const i of s.labels) {
       const x = X(i) + r + 4, y = Y(i)

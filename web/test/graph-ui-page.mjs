@@ -1,10 +1,11 @@
 // The graph view's test page (graph-ui.html): mounts createGraphView with a
 // fake `request` that answers from graph-fixture.mjs and records every call,
-// a `reveal` and a `store` that record too. The test drives it through
+// a `reveal` and a `store` that record too; with `base`, a `turtle/graphDiff`
+// answer from the same fixture. The test drives it through
 // window.__graph.
 
 import { createGraphView } from "../app/graph/view.js"
-import { smallGraph, bigGraph } from "./graph-fixture.mjs"
+import { smallGraph, bigGraph, smallDiff } from "./graph-fixture.mjs"
 
 const host = document.getElementById("host")
 document.documentElement.style.height = "100%"
@@ -20,9 +21,10 @@ const T = (window.__graph = {
   stored: {},
   /**
    * Mount a fresh view. `size`: a big graph of that many nodes instead of
-   * the small one; `total`: its node count before the cap; `width`: the host's width.
+   * the small one; `total`: its node count before the cap; `width`: the host's width;
+   * `base`: the host's base, `{ files }` or `{ reason }` (none: no `base` option).
    */
-  mount({ size = 0, total, width, diagnostics = [], stored } = {}) {
+  mount({ size = 0, total, width, diagnostics = [], stored, base } = {}) {
     view?.destroy()
     T.calls = []
     T.reveals = []
@@ -41,8 +43,9 @@ const T = (window.__graph = {
       request: async (method, params) => {
         T.calls.push({ method, params: JSON.parse(JSON.stringify(params)) })
         await new Promise((r) => setTimeout(r, 5))
-        return answer(params)
+        return method === "turtle/graphDiff" ? smallDiff() : answer(params)
       },
+      base: base && (async () => base.reason ?? base.files),
       reveal: (uri, range) => T.reveals.push({ uri, range }),
       diagnostics: (uri) => diagnostics.filter((d) => d.uri === uri),
       store: { get: (k) => T.stored[k], set: (k, v) => (T.stored[k] = JSON.parse(JSON.stringify(v))) },
@@ -58,6 +61,22 @@ const T = (window.__graph = {
     let n = 0
     for (let p = 0; p < d.length; p += 4) if (Math.abs(d[p] - d[0]) + Math.abs(d[p + 1] - d[1]) + Math.abs(d[p + 2] - d[2]) > 30) n++
     return n
+  },
+  /** The canvas pixel at page point (x, y), [r, g, b]. */
+  pixel(x, y) {
+    const c = host.querySelector("canvas")
+    const b = c.getBoundingClientRect()
+    const k = c.width / b.width
+    return [...c.getContext("2d").getImageData(Math.round((x - b.left) * k), Math.round((y - b.top) * k), 1, 1).data.slice(0, 3)]
+  },
+  /** A `--graph-…` colour of the view as [r, g, b]. */
+  color(name) {
+    const probe = document.createElement("span")
+    host.querySelector(".graph").append(probe)
+    probe.style.color = `var(--graph-${name})`
+    const rgb = getComputedStyle(probe).color.match(/\d+/g).slice(0, 3).map(Number)
+    probe.remove()
+    return rgb
   },
   /** The canvas background at its top-left pixel, [r, g, b]. */
   corner() {

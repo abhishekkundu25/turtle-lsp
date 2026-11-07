@@ -1,11 +1,13 @@
 //! The requests beyond the LSP standard, each in a file of its own:
-//! `turtle/graph` ([`graph`]) and `turtle/query` ([`query`]). The server
+//! `turtle/graph` ([`graph`]), `turtle/graphDiff` ([`graph_diff`]) and
+//! `turtle/query` ([`query`]). The server
 //! hands every method [`handles`] to [`request`], and lists them under
 //! `experimental` ([`capabilities`]). "▶ Run query" ([`run_query`]) is two
 //! commands and a state the server drives; so is the [`query::State`] of the
 //! `turtle/query` runs going on.
 
 pub(crate) mod graph;
+pub(crate) mod graph_diff;
 pub(crate) mod query;
 pub(crate) mod run_query;
 
@@ -21,12 +23,12 @@ type Json = Result<String, (ErrorCode, String)>;
 type Answer = Result<Option<String>, (ErrorCode, String)>;
 
 pub(crate) fn handles(method: &str) -> bool {
-    method == graph::METHOD || method == query::METHOD
+    [graph::METHOD, graph_diff::METHOD, query::METHOD].contains(&method)
 }
 
 /// The `experimental` capability: every extension request, by method.
 pub(crate) fn capabilities() -> serde_json::Value {
-    serde_json::json!({ graph::METHOD: true, query::METHOD: true })
+    serde_json::json!({ graph::METHOD: true, graph_diff::METHOD: true, query::METHOD: true })
 }
 
 /// Answer the extension request `req`. `out` is for a thread that answers
@@ -42,6 +44,7 @@ pub(crate) fn request(
 ) -> Answer {
     match req.method.as_str() {
         query::METHOD => query::request(req, queries, root_uris, spawn, out, s),
+        graph_diff::METHOD => graph_diff::request(req, spawn, out, s),
         _ => graph::request(req, spawn, out, s),
     }
 }

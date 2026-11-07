@@ -499,6 +499,63 @@ function vocabulary(n) {
   return t
 }
 
+const PEOPLE = "file:///work/data/people.ttl"
+const changesOn = async (page) => {
+  await host(page).getByRole("button", { name: "Changes", exact: true }).click()
+  await host(page).locator(".graph-changes-sum").waitFor({ timeout: 8000 }).catch(async (e) => {
+    throw new Error(`${e.message}\n${await host(page).innerText()}`)
+  })
+}
+
+test("an edited data file shows its value change in the Changes list, with the counts from the WASM server, and the row opens its line (catches: no base passed, the load-time text lost, a URI the server does not know, a row that opens nothing)", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openGraph(page)
+    await page.evaluate((u) => {
+      const m = window.monaco.editor.getModel(window.monaco.Uri.parse(u))
+      const r = m.findMatches('"Alice"')[0].range
+      m.pushEditOperations([], [{ range: r, text: '"Alicia"' }], () => null)
+    }, PEOPLE)
+    await changesOn(page)
+    const row = host(page).locator(".graph-change-changed")
+    await row.first().waitFor()
+    assert.match(await row.first().textContent(), /"Alice".*→.*"Alicia"/)
+    assert.match(await row.first().textContent(), /~/)
+    assert.match(await host(page).locator(".graph-changes-sum").textContent(), /\+1 −1 triples · 0 added, 0 removed, 1 changed/)
+    await row.first().click()
+    await tab(page, "people.ttl").waitFor()
+    const at = await page.evaluate(() => {
+      const ed = window.monaco.editor.getEditors().find((e) => e.hasTextFocus()) ?? window.monaco.editor.getEditors().find((e) => e.getModel()?.uri.path.endsWith("people.ttl"))
+      return { uri: ed.getModel().uri.toString(), line: ed.getSelection().startLineNumber }
+    })
+    assert.equal(at.uri, PEOPLE)
+    const lines = (await page.evaluate((u) => window.monaco.editor.getModel(window.monaco.Uri.parse(u)).getValue(), PEOPLE)).split("\n")
+    assert.match(lines[at.line - 1], /Alicia/)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
+// Pending: the browser build has no file paths (`file_path_of` is None on wasm32), so the
+// server has no workspace roots and refuses the URI of a file that is no longer open. It needs
+// a change in src/ (accept a base URI under the client's workspace folder without a path).
+test("a deleted data file shows its triples as removed (catches: the server rejecting the deleted file's URI, a base that forgets deleted files)", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openGraph(page)
+    await page.locator('[role=treeitem][data-path="data/people.ttl"]').click({ button: "right" })
+    await page.getByRole("menuitem", { name: "Delete" }).click()
+    await changesOn(page)
+    await host(page).locator(".graph-change-removed").first().waitFor({ timeout: 8000 })
+    assert.match(await host(page).locator(".graph-changes-sum").textContent(), /−[1-9]\d* triples/)
+    assert.equal(await host(page).locator(".graph-changes-note").count(), 0)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("a 17,000-class vocabulary opens in focus mode, and a keystroke waits for the graph request at most (catches: drawing 17,000 nodes first; reports how long the worker is blocked)", async (t) => {
   const { page, errors, close } = await open({ files: { "vocabulary.ttl": vocabulary(17000) }, width: WIDE })
   try {
