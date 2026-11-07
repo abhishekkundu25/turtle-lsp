@@ -3,8 +3,9 @@
 //! the error of a run that failed.
 //!
 //! A finding is shown in each workspace statement that describes a term at
-//! fault, on the statement's subject: the member of two disjoint classes,
-//! not the classes (they are in the proof). Which terms are at fault
+//! fault, on that term: the statement's subject, or the `[ … ]` of a blank
+//! node nested in it; the member of two disjoint classes, not the classes
+//! (they are in the proof). Which terms are at fault
 //! follows TurbOWL's table of terms per code ([`at_fault`]). A finding
 //! about terms no workspace
 //! statement describes (a literal) on the triples whose object is one of
@@ -194,19 +195,27 @@ impl Mentions {
         let enc = base.encoding();
         let mut out = Vec::new();
         let mut statements = FxHashSet::default();
-        for place in at_fault(d)
+        for (s, place) in at_fault(d)
             .filter_map(as_subject)
-            .filter_map(|s| self.subjects.get(&s))
-            .flatten()
+            .filter_map(|s| Some((Term::from(s.clone()), self.subjects.get(&s)?)))
+            .flat_map(|(s, places)| places.iter().map(move |p| (s.clone(), p)))
         {
             let (a, t) = base.written(*place);
             if !statements.insert((place.0, t.statement)) {
                 continue;
             }
             let range = match a.parsed.statements[t.statement as usize].subject {
-                Some((_, span)) => a.range(enc, span),
-                // A blank node subject: the triple.
-                None => base.place(*place).range,
+                Some((iri, span)) if t.s == crate::syntax::Node::Iri(iri) => a.range(enc, span),
+                // A blank node: the `[ … ]` it is written as inside the
+                // statement, else the triple.
+                _ => self
+                    .objects
+                    .get(&s)
+                    .into_iter()
+                    .flatten()
+                    .map(|o| (o, base.written(*o).1))
+                    .find(|(o, w)| o.0 == place.0 && w.statement == t.statement)
+                    .map_or_else(|| base.place(*place).range, |(_, w)| a.range(enc, w.o_span)),
             };
             out.push((a, range));
         }
@@ -530,6 +539,24 @@ mod tests {
         assert_eq!(lines("file:///w/a.ttl"), [2], "{out:#?}");
         assert_eq!(lines("file:///w/b.ttl"), [2, 4], "{out:#?}");
         assert!(lines("file:///w/c.ttl").is_empty(), "{out:#?}");
+    }
+
+    #[test]
+    fn a_finding_about_a_nested_blank_node_is_shown_on_it_not_on_the_subject() {
+        let text = "@prefix ex: <http://example.org/> .\n\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            ex:Cat owl:disjointWith ex:Dog .\n\
+            ex:owner ex:pet [ a ex:Cat , ex:Dog ] .\n";
+        let found = findings(text, true);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        let r = found[0].range;
+        // `[ a ex:Cat , ex:Dog ]`, not `ex:owner`.
+        assert_eq!((r.start.line, r.start.character), (3, 16), "{found:#?}");
+        assert_eq!((r.end.line, r.end.character), (3, 37), "{found:#?}");
+        assert_eq!(
+            found[0].message,
+            "[] is both a ex:Cat and a ex:Dog, which are disjoint."
+        );
     }
 
     #[test]
