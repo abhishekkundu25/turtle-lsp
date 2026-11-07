@@ -436,6 +436,8 @@ const shownFile = () => (W.files.has(W.active) ? W.active : null)
 function openTab(id, { focus = true } = {}) {
   const kind = kindOf(id)
   if (!kind.can(id)) return
+  // Settings covers the editor: opening something shows it, as in VS Code.
+  if (settings?.isOpen()) settings.close()
   if (kind.single) {
     const home = W.groups.findIndex((o) => o.tabs.includes(id))
     if (home >= 0) focusGroup(home)

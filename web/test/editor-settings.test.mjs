@@ -263,3 +263,26 @@ test("reasoning is on with TurbOWL's default rules from the first visit: the edi
     await close()
   }
 })
+
+test("opening a file from the explorer or Quick Open closes Settings and shows the file", async () => {
+  const { page, errors, close } = await open()
+  const tree = (p) => page.locator(`[role=treeitem][data-path="${p}"]`)
+  const shows = (p) => page.locator(`.tab[aria-selected="true"][data-path="${p}"]`).waitFor({ timeout: 5000 })
+  try {
+    await openSettings(page)
+    await tree("ontology/core.ttl").click()
+    await settingsPage(page).waitFor({ state: "hidden", timeout: 5000 })
+    await shows("ontology/core.ttl")
+    assert.equal(await page.locator(".group .monaco-editor").first().isVisible(), true)
+    // Quick Open.
+    await openSettings(page)
+    await page.keyboard.press("ControlOrMeta+KeyP")
+    await page.keyboard.type("people.ttl")
+    await page.keyboard.press("Enter")
+    await settingsPage(page).waitFor({ state: "hidden", timeout: 5000 })
+    await shows("data/people.ttl")
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
