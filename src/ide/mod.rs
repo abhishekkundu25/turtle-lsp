@@ -61,7 +61,6 @@ impl<'w> Session<'w> {
     }
 
     /// The reasoning state; `None` with reasoning off.
-    #[allow(dead_code)] // Until hover reads it (ticket 03).
     pub(crate) fn reasoning(&self) -> Option<&'w Arc<crate::reasoning::Shared>> {
         self.reasoning
     }

@@ -12,6 +12,8 @@
 //!   run at a time, the newest job first, panics caught, as SHACL
 //!   validation's; `run_inline` for the embedded server.
 //! - `diagnostics.rs`: what a run shows in the documents.
+//! - `proof.rs`: a [`Proof`] as hover markdown, a nested list ([`Names`]
+//!   says how the hover writes IRIs and places).
 //!
 //! With reasoning off nothing here is built: the server holds no
 //! [`Shared`] and starts no thread.
@@ -26,12 +28,14 @@
 
 mod base;
 mod diagnostics;
+mod proof;
 mod state;
 mod worker;
 
 use base::Base;
 pub(crate) use base::Origin;
 pub(crate) use diagnostics::{ByUri, CODE_PREFIX, SKIPPED_CODE};
+pub(crate) use proof::Names;
 pub(crate) use state::{HOVER_WAIT, Inferred, Proof, Shared, Types};
 pub(crate) use worker::{Job, Outcome, Worker, run_inline};
 

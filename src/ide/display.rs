@@ -19,12 +19,14 @@ use lsp_types::{
 use std::sync::Arc;
 
 impl Session<'_> {
-    /// `textDocument/hover`.
+    /// `textDocument/hover`; on an RDF document's resource, with reasoning
+    /// on, what it infers of it.
     pub(crate) fn hover(&mut self, uri: &str, pos: Position) -> Option<Hover> {
         let doc = self.doc(uri)?;
+        let reasoning = self.reasoning();
         let k = self.ws.knowledge();
         match doc {
-            Doc::Rdf(a) => hover::hover(&a, k, self.enc, pos),
+            Doc::Rdf(a) => hover::hover_reasoned(&a, k, self.enc, pos, reasoning),
             Doc::Sparql(q) => sparql_features::hover(&q, k, self.enc, pos),
         }
     }
@@ -242,6 +244,80 @@ mod tests {
             s.hover("file:///nowhere.ttl", Position::new(0, 0))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn hover_on_a_resource_adds_its_inferred_types_with_their_proofs() {
+        let dir = Dir::new("hover-inferred");
+        let ttl = format!(
+            "{PREFIXES}ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog ; rdfs:label \"Rex\" .\n"
+        );
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
+        let settings = Settings::default();
+        let pos = at(&ttl, "ex:rex", 4);
+        let today = markdown(
+            &Session::new(&mut ws, Encoding::Utf16, &settings, false)
+                .hover(&uris[0], pos)
+                .unwrap(),
+        )
+        .to_string();
+        assert!(!today.contains("Inferred"), "{today}");
+
+        let shared = Arc::new(crate::reasoning::Shared::new(
+            crate::server::worker::Spawn::Thread,
+        ));
+        let hover = |ws: &mut Workspace| hover_at(ws, &settings, &shared, &uris[0], pos);
+        // No run has finished: today's hover.
+        assert_eq!(hover(&mut ws), today);
+
+        let docs = vec![(
+            crate::knowledge::Source::Open,
+            ws.analysis(&uris[0]).unwrap(),
+        )];
+        crate::reasoning::run_inline(
+            &shared,
+            &crate::reasoning::Job {
+                generation: 1,
+                docs,
+                rules: crate::settings::Reasoning::Default,
+                max_triples: 1000,
+                enc: Encoding::Utf16,
+            },
+        );
+        let md = hover(&mut ws);
+        let link = |line: u32| format!("[data.ttl:{line}]({}#L{line})", uris[0]);
+        assert_eq!(
+            md,
+            format!(
+                "{today}\n\n**Inferred**\n\n\
+                 - **ex:Animal** · _cax-sco_\n  \
+                 - `ex:Dog rdfs:subClassOf ex:Animal` {}\n  \
+                 - `ex:rex a ex:Dog` {}",
+                link(3),
+                link(4)
+            )
+        );
+        // The asserted type is not listed again; a class has nothing inferred.
+        assert!(!md.contains("**ex:Dog**"), "{md}");
+        let class = hover_at(
+            &mut ws,
+            &settings,
+            &shared,
+            &uris[0],
+            at(&ttl, "ex:Animal", 4),
+        );
+        assert!(!class.contains("Inferred"), "{class}");
+    }
+
+    fn hover_at(
+        ws: &mut Workspace,
+        settings: &Settings,
+        shared: &Arc<crate::reasoning::Shared>,
+        uri: &str,
+        pos: Position,
+    ) -> String {
+        let mut s = Session::new(ws, Encoding::Utf16, settings, false).with_reasoning(Some(shared));
+        markdown(&s.hover(uri, pos).unwrap()).to_string()
     }
 
     #[test]
