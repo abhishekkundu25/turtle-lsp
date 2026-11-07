@@ -261,10 +261,10 @@ mod tests {
         let list = &out.diagnostics["file:///w/a.ttl"];
         let code = Some(lsp_types::NumberOrString::String("turbowl/cax-dw".into()));
         let found: Vec<_> = list.iter().filter(|d| d.code == code).collect();
-        // On the individual's statement and on the class's.
+        // On the individual's statement only: the class axiom is in the proof.
         let mut lines: Vec<u32> = found.iter().map(|d| d.range.start.line).collect();
         lines.sort_unstable();
-        assert_eq!(lines, [2, 3], "{list:?}");
+        assert_eq!(lines, [3], "{list:?}");
         assert_eq!(
             found[0].message,
             "ex:tom is both a ex:Cat and a ex:Dog, which are disjoint."
