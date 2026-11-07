@@ -51,9 +51,12 @@ impl Scope {
 /// declarations, or the prefix terms of a JSON-LD `@context`), then with
 /// the project's (`prefixes.ttl` and the `prefixes` setting, which N-Triples
 /// and N-Quads documents only name with), then with a well-known
-/// vocabulary's, else as `<iri>`.
+/// vocabulary's, else as `<iri>`. A prefix name means one namespace: a
+/// project prefix the document declares, or a well-known one either
+/// declares, is not used for its own namespace.
 pub(crate) struct Naming {
     own: PrefixMap,
+    /// The project's prefixes whose names the document does not declare.
     project: Arc<PrefixMap>,
 }
 
@@ -71,6 +74,12 @@ impl Naming {
                 .map(|p| (p.name.clone(), p.iri.to_string()))
                 .collect(),
         };
+        let project = if project.keys().any(|p| own.contains_key(p)) {
+            let rest = project.iter().filter(|(p, _)| !own.contains_key(*p));
+            Arc::new(rest.map(|(p, ns)| (p.clone(), ns.clone())).collect())
+        } else {
+            project
+        };
         Naming { own, project }
     }
 
@@ -78,7 +87,17 @@ impl Naming {
     pub(crate) fn name(&self, iri: &str) -> String {
         shorten(iri, &self.own)
             .or_else(|| shorten(iri, &self.project))
-            .unwrap_or_else(|| crate::features::hover::short(iri, &PrefixMap::default()))
+            .or_else(|| {
+                let (v, local) = crate::vocab::VOCABS.lookup(iri)?;
+                let taken = self.own.contains_key(v.prefix) || self.project.contains_key(v.prefix);
+                (!taken && !local.is_empty()).then(|| {
+                    shorten(
+                        iri,
+                        &PrefixMap::from_iter([(v.prefix.into(), v.namespace.into())]),
+                    )
+                })?
+            })
+            .unwrap_or_else(|| format!("<{iri}>"))
     }
 }
 
@@ -253,6 +272,36 @@ mod tests {
             Arc::new(PrefixMap::default()),
             true,
         )
+    }
+
+    #[test]
+    fn naming_never_writes_a_prefix_the_document_or_project_uses_for_another_namespace() {
+        let a = analysis(
+            "@prefix ex: <http://example.org/new/> .\n\
+             @prefix owl: <http://example.org/mine/> .\n",
+        );
+        let project = PrefixMap::from_iter([
+            ("ex".to_string(), "http://example.org/old/".to_string()),
+            ("rdfs".to_string(), "http://example.org/vocab/".to_string()),
+        ]);
+        let naming = Naming::at(&a, u32::MAX, Arc::new(project));
+        assert_eq!(naming.name("http://example.org/new/a"), "ex:a");
+        // The document's `ex:` is another namespace: no `ex:` for this one.
+        assert_eq!(
+            naming.name("http://example.org/old/b"),
+            "<http://example.org/old/b>"
+        );
+        // A built-in name the document or the project uses otherwise.
+        let owl = "http://www.w3.org/2002/07/owl#Thing";
+        assert_eq!(naming.name(owl), format!("<{owl}>"));
+        let rdfs = "http://www.w3.org/2000/01/rdf-schema#Class";
+        assert_eq!(naming.name(rdfs), format!("<{rdfs}>"));
+        assert_eq!(naming.name("http://example.org/vocab/c"), "rdfs:c");
+        // One nobody uses stays.
+        assert_eq!(
+            naming.name("http://www.w3.org/2004/02/skos/core#Concept"),
+            "skos:Concept"
+        );
     }
 
     #[test]
