@@ -136,7 +136,8 @@ impl Shared {
 
     /// The inferred types of `iri` (an IRI, as written in full), with their
     /// proofs when they are found within `wait`. Inline (no threads), the
-    /// search runs here, without a limit.
+    /// search runs here, without a limit; when its thread cannot start, the
+    /// types are [`Types::Pending`].
     pub(crate) fn inferred_types(self: &Arc<Self>, iri: &str, wait: Duration) -> Types {
         let classes = match self.read(|r| r.types.get(iri).cloned().unwrap_or_default()) {
             Err(t) => return t,
@@ -157,8 +158,9 @@ impl Shared {
                 let _ = tx.send(proved);
             },
         );
+        // No thread to spare: not the search here, which may take long.
         if started.is_err() {
-            return self.prove(iri);
+            return Types::Pending(classes);
         }
         // Inline the search has run already, and the browser has no clock
         // for `recv_timeout` to read.

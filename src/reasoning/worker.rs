@@ -350,6 +350,19 @@ mod tests {
     }
 
     #[test]
+    fn a_proof_search_whose_thread_cannot_start_is_pending_not_run_on_the_hover() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        shown(&shared, &job(1, vec![animals()]));
+        let t = crate::server::worker::failing_starts(|| {
+            shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10))
+        });
+        assert!(
+            matches!(&t, Types::Pending(c) if c == &[format!("{EX}Animal")]),
+            "pending"
+        );
+    }
+
+    #[test]
     fn hover_says_a_run_is_writing_the_state() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
