@@ -2,10 +2,11 @@
 //! one is written.
 //!
 //! The documents (imports included) are put in `(Source, uri)` order, as
-//! SHACL validation sorts them, and made into one [`Graph`]: blank nodes
-//! are kept apart per document and named `g<n>` as the SPARQL dataset names
-//! them ([`Index::term`]), so the same documents give the same base, blank
-//! node names included, whatever order they come in. TriG and N-Quads
+//! SHACL validation sorts them, and read into one base: blank nodes are
+//! kept apart per document, numbered as the graph of SHACL and queries
+//! numbers them ([`blank_max`]) and named `g<n>` as its SPARQL dataset
+//! names them ([`blank_label`], [`node_term`]), so the same documents give
+//! the same base, blank node names included, whatever order they come in. TriG and N-Quads
 //! graphs are merged into that one graph. A triple written twice is one
 //! base triple: proofs link to its first place, and findings are shown at
 //! every place.
@@ -27,9 +28,8 @@
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Source;
-use crate::rdf::dataset::literal_ref;
-use crate::rdf::graph::Term as GTerm;
-use crate::rdf::{Graph, Index};
+use crate::rdf::dataset::{blank_label, literal_ref, node_term};
+use crate::rdf::graph::blank_max;
 use crate::syntax::{Iri, Node, Span};
 use lsp_types::Range;
 use oxrdf::{BlankNodeRef, NamedNodeRef, NamedOrBlankNodeRef, TermRef, TripleRef};
@@ -228,56 +228,51 @@ impl Terms {
     }
 }
 
-/// The ids of the graph's terms, each found once.
-struct FromGraph<'g> {
-    g: &'g Graph<'g>,
-    index: Index<'g>,
-    /// Per graph id, its id in the base plus 1; 0 while it is not found.
-    ids: Vec<u32>,
+/// The base ids of one document's nodes.
+struct Reader<'d> {
+    docs: &'d Docs,
+    /// The number added to the document's blank node numbers
+    /// ([`blank_max`], as the graph numbers them).
+    blank_base: u32,
+    /// Each blank node's id, by its number across the documents.
+    blanks: FxHashMap<u32, u32>,
 }
 
-impl FromGraph<'_> {
-    /// The base id of graph term `id`, read at `place` (where a literal is
-    /// held). `None` for a literal or a triple term in a subject place.
-    fn id(
-        &mut self,
-        terms: &mut Terms,
-        docs: &Docs,
-        id: u32,
-        place: (u32, u32),
-        subject: bool,
-    ) -> Option<u32> {
-        let at = id as usize;
-        if at >= self.ids.len() {
-            self.ids.resize(at + 1, 0);
-        }
-        if let Some(ours) = self.ids[at].checked_sub(1) {
-            return Some(ours);
-        }
-        let ours = match self.g.term(id) {
-            GTerm::Iri(i) => terms.add_iri(i),
-            GTerm::Blank(_) => {
-                let Term::BlankNode(b) = self.index.term(id) else {
-                    unreachable!("a graph blank node is a blank node")
-                };
-                terms.value(docs, b.as_ref().into(), |terms| {
-                    let from = terms.labels.len() as u32;
-                    terms.labels.push_str(b.as_str());
-                    Stored::Blank(from, terms.labels.len() as u32)
-                })
+impl Reader<'_> {
+    /// The id of node `n`, read at `place` (where a literal is held).
+    /// `None` for a literal or a triple term in a subject place.
+    fn id(&mut self, terms: &mut Terms, n: &Node, place: (u32, u32), subject: bool) -> Option<u32> {
+        Some(match n {
+            Node::Iri(i) => terms.add_iri(*i),
+            Node::Blank(b) => {
+                let number = self.blank_base.saturating_add(b.0);
+                match self.blanks.entry(number) {
+                    Entry::Occupied(e) => *e.get(),
+                    Entry::Vacant(e) => {
+                        let label = blank_label(number);
+                        let t = BlankNodeRef::new_unchecked(&label).into();
+                        *e.insert(terms.value(self.docs, t, |terms| {
+                            let from = terms.labels.len() as u32;
+                            terms.labels.push_str(&label);
+                            Stored::Blank(from, terms.labels.len() as u32)
+                        }))
+                    }
+                }
             }
             _ if subject => return None,
-            GTerm::Value(n @ Node::Literal { .. }) => {
+            Node::Literal { .. } => {
                 let literal = literal_ref(n).expect("a literal");
-                terms.value(docs, literal.into(), |_| Stored::Literal(place.0, place.1))
+                terms.value(self.docs, literal.into(), |_| {
+                    Stored::Literal(place.0, place.1)
+                })
             }
-            GTerm::Value(_) => {
-                let Term::Triple(t) = self.index.term(id) else {
-                    unreachable!("a graph value is a literal or a triple term")
+            Node::Triple(_) => {
+                let Term::Triple(t) = node_term(n, self.blank_base) else {
+                    unreachable!("a triple node is a triple term")
                 };
                 let h = hash(TermRef::Triple(&t));
-                match terms.find(docs, TermRef::Triple(&t)) {
-                    Some(ours) => ours,
+                match terms.find(self.docs, TermRef::Triple(&t)) {
+                    Some(id) => id,
                     None => {
                         let k = terms.triple_terms.len() as u32;
                         terms.triple_terms.push(*t);
@@ -285,9 +280,7 @@ impl FromGraph<'_> {
                     }
                 }
             }
-        };
-        self.ids[at] = ours + 1;
-        Some(ours)
+        })
     }
 }
 
@@ -301,26 +294,30 @@ impl Base {
         docs.sort_by(|a, b| (a.0, &a.1.uri).cmp(&(b.0, &b.1.uri)));
         let mut terms = Terms::default();
         let mut cells: FxHashMap<u32, Cell> = FxHashMap::default();
-        let mut rows = {
-            let parses: Vec<&[crate::syntax::Triple]> =
-                docs.iter().map(|d| d.1.parsed.triples.as_slice()).collect();
-            let g = Graph::new(&parses);
-            let mut from = FromGraph {
-                g: &g,
-                index: Index::new(&g, None),
-                ids: Vec::new(),
-            };
-            let (first, rest) = (Iri::intern(RDF_FIRST), Iri::intern(RDF_REST));
-            let mut rows = Vec::with_capacity(g.len());
-            for (at, t) in g.added() {
-                let place = g.origin(at);
+        let (first, rest) = (Iri::intern(RDF_FIRST), Iri::intern(RDF_REST));
+        let total = docs.iter().map(|d| d.1.parsed.triples.len()).sum();
+        let mut rows = Vec::with_capacity(total);
+        let mut reader = Reader {
+            docs: &docs,
+            blank_base: 0,
+            blanks: FxHashMap::default(),
+        };
+        for (d, (_, a)) in docs.iter().enumerate() {
+            let mut max = 0;
+            for (i, t) in a.parsed.triples.iter().enumerate() {
+                if t.unresolved {
+                    continue;
+                }
+                blank_max(&t.s, &mut max);
+                blank_max(&t.o, &mut max);
+                let place = (d as u32, i as u32);
                 // RDF has no other subject.
-                let Some(s) = from.id(&mut terms, &docs, t.s, place, true) else {
+                let Some(s) = reader.id(&mut terms, &t.s, place, true) else {
                     continue;
                 };
                 let p = terms.add_iri(t.p);
-                let o = from
-                    .id(&mut terms, &docs, t.o, place, false)
+                let o = reader
+                    .id(&mut terms, &t.o, place, false)
                     .expect("any term is an object");
                 if (t.p == first || t.p == rest) && terms.is_blank(s) {
                     let cell = cells.entry(s).or_default();
@@ -333,8 +330,9 @@ impl Base {
                 }
                 rows.push(Row { s, p, o, place });
             }
-            rows
-        };
+            reader.blank_base = reader.blank_base.saturating_add(max);
+        }
+        drop(reader);
         // In id order, and a triple's places in document order: its first
         // place leads.
         rows.sort_unstable();
@@ -864,5 +862,45 @@ pub(crate) mod tests {
         assert!(base.is_cell(last));
         assert_eq!(base.list_head(last), head);
         assert_eq!(base.list_head(&head), head);
+    }
+
+    #[test]
+    fn the_base_has_the_triples_and_blank_node_names_of_the_graph_and_its_dataset() {
+        let h = "@prefix ex: <http://example.org/> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n";
+        let texts = [
+            // An unresolved triple's blank node is not counted.
+            "_:a ex:p [ ex:q ( 1 \"two\"@en ) ] .\nnope:x ex:p _:b9 .\n",
+            "ex:a ex:p ex:b .\n",
+            "ex:s ex:says <<( _:x ex:p \"o\"@ar--rtl )>> , <<( ex:a ex:p _:y )>> .\n_:x ex:p \"1\"^^xsd:integer .\n",
+            "[] ex:p _:z .\n_:z ex:q <<( _:z ex:r [] )>> .\n",
+            "ex:c ex:p \"x\" , \"x\"^^xsd:string .\n",
+        ];
+        let docs: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .map(|(k, t)| {
+                doc(
+                    Source::Open,
+                    &format!("file:///w/{k}.ttl"),
+                    &format!("{h}{t}"),
+                )
+            })
+            .collect();
+        let base = Base::new(docs.clone(), Encoding::Utf16);
+        let parses: Vec<&[crate::syntax::Triple]> =
+            docs.iter().map(|d| d.1.parsed.triples.as_slice()).collect();
+        let g = crate::rdf::Graph::new(&parses);
+        let index = crate::rdf::Index::new(&g, None);
+        let graph: std::collections::BTreeSet<String> = g
+            .added()
+            .map(|(_, t)| {
+                let s = index.term(t.s);
+                format!("{s} <{}> {}", t.p.as_str(), index.term(t.o))
+            })
+            .collect();
+        let ours: std::collections::BTreeSet<String> =
+            base.triples().map(|t| t.to_string()).collect();
+        assert_eq!(ours, graph);
+        assert!(ours.iter().any(|t| t.contains("<<( _:g")), "{ours:#?}");
     }
 }

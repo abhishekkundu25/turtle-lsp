@@ -563,7 +563,10 @@ fn has_blank(n: &Node) -> bool {
     }
 }
 
-fn blank_max(n: &Node, max: &mut u32) {
+/// Raise `max` to one past the number of each blank node in `n`, inside a
+/// triple term too: a document's blank nodes are numbered below its
+/// maximum, and the next document's start there.
+pub(crate) fn blank_max(n: &Node, max: &mut u32) {
     match n {
         Node::Triple(t) => {
             blank_max(&t.0, max);

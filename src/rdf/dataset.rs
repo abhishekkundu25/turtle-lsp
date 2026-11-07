@@ -46,7 +46,7 @@ impl<'a> Index<'a> {
     pub(crate) fn term(&self, id: Id) -> Term {
         match self.g.term(id) {
             GTerm::Iri(i) => NamedNode::new_unchecked(i.as_str()).into(),
-            GTerm::Blank(b) => BlankNode::new_unchecked(format!("g{b}")).into(),
+            GTerm::Blank(b) => BlankNode::new_unchecked(blank_label(b)).into(),
             GTerm::Value(n) => node_term(n, self.g.term_blank_base(id)),
         }
     }
@@ -152,14 +152,19 @@ impl<'a> Index<'a> {
     }
 }
 
+/// The name of blank node number `n` of a graph ([`GTerm::Blank`]).
+pub(crate) fn blank_label(n: u32) -> String {
+    format!("g{n}")
+}
+
 /// A literal or triple term of the graph as an RDF term. `blank_base` is added
 /// to the numbers of the blank nodes inside a triple term, which then have the
 /// names the same nodes have outside ([`Index::term`]).
-fn node_term(n: &Node, blank_base: u32) -> Term {
+pub(crate) fn node_term(n: &Node, blank_base: u32) -> Term {
     match n {
         Node::Iri(i) => NamedNode::new_unchecked(i.as_str()).into(),
         Node::Blank(b) => {
-            BlankNode::new_unchecked(format!("g{}", blank_base.saturating_add(b.0))).into()
+            BlankNode::new_unchecked(blank_label(blank_base.saturating_add(b.0))).into()
         }
         Node::Literal { .. } => literal_ref(n).expect("a literal").into_owned().into(),
         Node::Triple(t) => {
