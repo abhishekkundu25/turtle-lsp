@@ -392,6 +392,7 @@ mod tests {
             max_triples: 1000,
             enc: Encoding::Utf16,
             related,
+            findings: true,
         };
         let mut out = run_inline(&shared, &job).diagnostics;
         let mut v = out.remove(URI).unwrap_or_default();

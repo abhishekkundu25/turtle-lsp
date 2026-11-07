@@ -18,9 +18,10 @@ const SETTINGS = [
   {
     key: "turtle.reasoning.rules", group: "turtle-lsp", cat: "Reasoning", title: "Rules", type: "enum", def: "off",
     options: [["off", "No reasoning"], ["default", "TurbOWL's default OWL 2 RL rules"], ["complete", "Every W3C OWL 2 RL rule: slower, and so are its proofs"]],
-    desc: "Reason over the workspace with TurbOWL, an OWL 2 RL reasoner. Hover shows a resource's inferred types with their proofs, and contradictions become diagnostics.",
+    desc: "Reason over the workspace with TurbOWL, an OWL 2 RL reasoner. Hover shows a resource's inferred types with their proofs.",
   },
   { key: "turtle.reasoning.maxTriples", group: "turtle-lsp", cat: "Reasoning", title: "Max Triples", type: "number", def: 2000000, min: 0, max: Number.MAX_SAFE_INTEGER, desc: "Skip reasoning when the workspace holds more triples than this." },
+  { key: "turtle.reasoning.diagnostics", group: "turtle-lsp", cat: "Reasoning", title: "Diagnostics", type: "bool", def: false, desc: "Show TurbOWL's findings (contradictions, ill-typed literals) as diagnostics, each with its proof. Off by default: SHACL shapes often check the same rules." },
   {
     key: LABELS, group: "turtle-lsp", cat: "Inlay Hints", title: "Labels", type: "enum", def: "opaque",
     options: [["opaque", "Only for terms whose IRI does not say what they are, such as ex:P1234"], ["all", "For every term that has a label"], ["off", "No label hints"]],
@@ -89,7 +90,7 @@ export function createSettings({ monaco, client, mount, opener, saved = {}, onCh
           prefixes: get("turtle.prefixes"),
           inlayHints: { labels: get(LABELS) },
           shacl: { enabled: get("turtle.shacl.enabled"), onType: get("turtle.shacl.onType"), maxTriples: get("turtle.shacl.maxTriples") },
-          reasoning: { rules: get("turtle.reasoning.rules"), maxTriples: get("turtle.reasoning.maxTriples") },
+          reasoning: { rules: get("turtle.reasoning.rules"), maxTriples: get("turtle.reasoning.maxTriples"), diagnostics: get("turtle.reasoning.diagnostics") },
           lint: { undescribedTerms: get("turtle.lint.undescribedTerms") },
           format: { lineWidth: get("turtle.format.lineWidth") },
         },

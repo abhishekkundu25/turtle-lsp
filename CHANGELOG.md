@@ -12,8 +12,9 @@
   "Inferred" section: each type the rules infer and no document states,
   with its proof folded under it. Each step names its W3C rule, and each
   triple the proof rests on is a link to its file and line. TurbOWL's
-  findings, such as a member of two disjoint classes, are diagnostics on
-  the statements of their terms (code `turbowl/<rule>`): one sentence in
+  findings, such as a member of two disjoint classes, are diagnostics with
+  `turtle.reasoning.diagnostics` (off by default: SHACL shapes often check
+  the same rules), on the term at fault (code `turbowl/<rule>`): one sentence in
   the file's short names, and each triple of the proof as related
   information at its line (or, in an editor without it, as lines of the
   message). An RDF list, such as an `owl:AllDisjointClasses` list, is one

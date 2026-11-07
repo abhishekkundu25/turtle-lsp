@@ -283,6 +283,7 @@ mod tests {
                 max_triples: 1000,
                 enc: Encoding::Utf16,
                 related: true,
+                findings: false,
             },
         );
         let md = hover(&mut ws);
@@ -337,6 +338,7 @@ mod tests {
                 max_triples: 1000,
                 enc: Encoding::Utf16,
                 related: true,
+                findings: false,
             },
         );
         let integer = hover_at(

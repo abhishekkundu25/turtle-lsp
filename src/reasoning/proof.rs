@@ -139,6 +139,7 @@ mod tests {
                 max_triples: 1000,
                 enc: Encoding::Utf16,
                 related: true,
+                findings: true,
             },
         );
         match shared.inferred_types(&format!("{EX}{local}"), Duration::from_secs(10)) {

@@ -82,7 +82,8 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.inlayHints.labels`: show labels as inlay hints for `opaque` IRIs (default), `all` terms, or `off`.
 - `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation, and the most triples one run validates, the shared triples and every dataset together; above it validation is skipped (default 2,000,000 triples).
 - `turtle.shacl.onType`: also validate while typing, not only on save (default on).
-- `turtle.reasoning.rules`: reason with TurbOWL, an OWL 2 RL reasoner: `off` (default), `default` (TurbOWL's default rules) or `complete` (every W3C OWL 2 RL rule; slower). Hover then lists a resource's inferred types with their proofs, and TurbOWL's findings, such as a member of two disjoint classes, become diagnostics.
+- `turtle.reasoning.rules`: reason with TurbOWL, an OWL 2 RL reasoner: `off` (default), `default` (TurbOWL's default rules) or `complete` (every W3C OWL 2 RL rule; slower). Hover then lists a resource's inferred types with their proofs.
+- `turtle.reasoning.diagnostics`: show TurbOWL's findings, such as a member of two disjoint classes, as diagnostics with their proofs (default off: a project's SHACL shapes often check the same rules).
 - `turtle.reasoning.maxTriples`: the most triples one reasoning run reads, the workspace's and its imports'; above it reasoning is skipped, with a note (default 2,000,000 triples).
 - `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
 - `turtle.lint.ignore`: diagnostic codes never to report, such as `unused-prefix` or `duplicate-label`. Adds to the project's `lint.ignore` in `turtle-lsp.json`.

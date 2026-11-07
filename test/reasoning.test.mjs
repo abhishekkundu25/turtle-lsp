@@ -12,7 +12,7 @@ const HEAD = "@prefix ex: <http://example.org/> .\n@prefix owl: <http://www.w3.o
 // ex:tom is a member of two disjoint classes.
 const CLASH = `${HEAD}ex:Cat owl:disjointWith ex:Dog .\nex:tom a ex:Cat , ex:Dog .\n`
 const CALM = `${HEAD}ex:Cat owl:disjointWith ex:Dog .\nex:tom a ex:Cat .\n`
-const ON = { reasoning: { rules: "default" } }
+const ON = { reasoning: { rules: "default", diagnostics: true } }
 // The test client answers window/workDoneProgress/create with null (success).
 const PROGRESS = { window: { workDoneProgress: true } }
 const TITLE = "TurbOWL: reasoning…"
@@ -197,10 +197,28 @@ test("progress: a run shows TurbOWL's progress, which ends with a count", async 
   }
 })
 
+test("by default (reasoning.diagnostics off) a run publishes no findings; turning it on shows them", async () => {
+  const w = await session({ "a.ttl": CLASH }, { initializationOptions: { reasoning: { rules: "default" } } })
+  const a = w.uri("a.ttl")
+  const diagnostics = (on) =>
+    w.s.notify("workspace/didChangeConfiguration", { settings: { turtle: { reasoning: { rules: "default", diagnostics: on } } } })
+  try {
+    w.s.open(a, CLASH)
+    await sleep(1500)
+    assert.deepEqual(turbowl(await w.s.diagnosticsFor(a)), [])
+    diagnostics(true)
+    await until(w.s, a, (d) => turbowl(d).length > 0)
+    diagnostics(false)
+    await until(w.s, a, (d) => turbowl(d).length === 0)
+  } finally {
+    await w.end()
+  }
+})
+
 test("turning reasoning on and off in the settings shows and clears the findings", async () => {
   const w = await session({ "a.ttl": CLASH })
   const a = w.uri("a.ttl")
-  const rules = (r) => w.s.notify("workspace/didChangeConfiguration", { settings: { turtle: { reasoning: { rules: r } } } })
+  const rules = (r) => w.s.notify("workspace/didChangeConfiguration", { settings: { turtle: { reasoning: { rules: r, diagnostics: true } } } })
   try {
     w.s.open(a, CLASH)
     assert.deepEqual(turbowl(await w.s.diagnosticsFor(a)), [])

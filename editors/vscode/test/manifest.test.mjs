@@ -44,6 +44,7 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.shacl.onType": ["boolean", true],
     "turtle.reasoning.rules": ["string", "off"],
     "turtle.reasoning.maxTriples": ["integer", 2000000],
+    "turtle.reasoning.diagnostics": ["boolean", false],
     "turtle.lint.undescribedTerms": ["boolean", true],
     "turtle.imports.network": ["boolean", false],
     "turtle.imports.unresolved": ["string", "soften"],

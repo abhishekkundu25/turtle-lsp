@@ -171,6 +171,9 @@ pub struct Settings {
     pub(crate) reasoning: Reasoning,
     /// Reasoning is skipped when the workspace has more triples than this.
     pub(crate) reasoning_max_triples: u64,
+    /// TurbOWL's findings as diagnostics (`reasoning.diagnostics`). Off by
+    /// default: a project's SHACL shapes often check the same rules.
+    pub(crate) reasoning_diagnostics: bool,
     pub(crate) lint_undescribed_terms: bool,
     /// `lint.ignore`: diagnostic codes never reported. Unlike other keys, the
     /// layers add up.
@@ -223,6 +226,7 @@ impl Default for Settings {
             shacl_on_type: true,
             reasoning: Reasoning::Off,
             reasoning_max_triples: REASONING_MAX_TRIPLES,
+            reasoning_diagnostics: false,
             lint_undescribed_terms: true,
             lint_ignore: Vec::new(),
             lint_enable: Vec::new(),
@@ -330,6 +334,7 @@ impl Settings {
                     };
                 }
             }
+            ["reasoning", "diagnostics"] => set_bool(&mut self.reasoning_diagnostics, v),
             ["lint", "undescribedTerms"] => set_bool(&mut self.lint_undescribed_terms, v),
             // The file may set these: they only hide or add warnings.
             ["lint", "ignore"] => add_codes(&mut self.lint_ignore, v),
@@ -465,6 +470,7 @@ mod tests {
         assert_eq!(s.shacl_max_triples, 2_000_000);
         assert_eq!(s.reasoning, Reasoning::Off);
         assert_eq!(s.reasoning_max_triples, 2_000_000);
+        assert!(!s.reasoning_diagnostics);
         assert_eq!(s.format_line_width, 100);
         assert!(s.code_lens_references);
         assert!(!s.diagnostics_workspace);
@@ -498,7 +504,7 @@ mod tests {
             "prefixes": {"ex:": "http://example.org/", "bad": 3},
             "inlayHints": {"labels": "all"},
             "shacl": {"enabled": false, "maxTriples": 10, "onType": false},
-            "reasoning": {"rules": "complete", "maxTriples": 20},
+            "reasoning": {"rules": "complete", "maxTriples": 20, "diagnostics": true},
             "lint": {"undescribedTerms": false},
             "imports": {"network": true, "unresolved": "ignore"},
             "format": {"lineWidth": 80},
@@ -516,6 +522,7 @@ mod tests {
             "shacl.onType": false,
             "reasoning.rules": "complete",
             "reasoning.maxTriples": 20,
+            "reasoning.diagnostics": true,
             "lint": {"undescribedTerms": false},
             "imports.network": true,
             "imports.unresolved": "ignore",

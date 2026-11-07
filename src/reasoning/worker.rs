@@ -27,6 +27,9 @@ pub(crate) struct Job {
     /// (`textDocument.publishDiagnostics.relatedInformation`): a finding's
     /// proof goes there instead of into its message.
     pub(crate) related: bool,
+    /// TurbOWL's findings become diagnostics (`reasoning.diagnostics`);
+    /// without, the run gives none and searches no proof for them.
+    pub(crate) findings: bool,
 }
 
 /// What a run gives the server: its diagnostics per document URI (the
@@ -119,7 +122,11 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
     reasoner.set_base(base.triples().map(|t| t.as_ref()));
     reasoner.reason();
     let types = inferred_types(&reasoner);
-    let (diagnostics, cache) = diagnostics::of(&reasoner, &base, job.related);
+    let (diagnostics, cache) = if job.findings {
+        diagnostics::of(&reasoner, &base, job.related)
+    } else {
+        Default::default()
+    };
     *held = Some(Reasoned {
         reasoner,
         base,
@@ -168,6 +175,7 @@ mod tests {
             max_triples: 1000,
             enc: Encoding::Utf16,
             related: true,
+            findings: true,
         }
     }
 

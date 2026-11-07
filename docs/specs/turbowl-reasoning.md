@@ -20,9 +20,11 @@ workspace's triples (imports included) to TurbOWL, the owner's OWL 2 RL
 reasoner, on a thread of its own after open, save and a pause in typing.
 Hover on a resource lists its inferred types, each with its proof: the base
 triples it rests on, one W3C rule per step, each base triple a link to its
-file and line. TurbOWL's findings (contradictions, ill-typed literals)
-become diagnostics on the lines of their terms, with the proof in the
-diagnostic's message. The editor never waits on reasoning: a progress
+file and line. With `turtle.reasoning.diagnostics` on, TurbOWL's findings
+(contradictions, ill-typed literals) become diagnostics on the term at
+fault, each triple of the proof as related information. It is off by
+default: a project's SHACL shapes often check the same rules (owner's
+decision, 2026-11-07). The editor never waits on reasoning: a progress
 indicator shows while it runs, a stale run's result is dropped, and a
 workspace over the size limit is skipped with a note. `off`, the default,
 changes nothing.
@@ -57,7 +59,7 @@ changes nothing.
 ## Implementation Decisions
 
 - **Dependency.** `turbowl` as a path dependency on `../turtle-reasoner/crates/turbowl`, `default-features = false`, with its `rdf-12` feature (TurbOWL ticket `rdf12/01`: a triple term is an opaque term). The browser engine gets it through turtle-lsp, with the same features; TurbOWL runs on one thread there. This branch cannot build in CI until TurbOWL is published; light local checks stand in.
-- **Setting.** `turtle.reasoning.rules`: `off` (default), `default`, `complete`, mapped to `Switches::default()` and `Switches::complete()`. `turtle.reasoning.maxTriples`: the base size above which a run is skipped, default the same as SHACL's cap, clamped in an untrusted `turtle-lsp.json` like SHACL's.
+- **Setting.** `turtle.reasoning.rules`: `off` (default), `default`, `complete`, mapped to `Switches::default()` and `Switches::complete()`. `turtle.reasoning.maxTriples`: the base size above which a run is skipped, default the same as SHACL's cap, clamped in an untrusted `turtle-lsp.json` like SHACL's. `turtle.reasoning.diagnostics` (default `false`): TurbOWL's findings as diagnostics; off, a run searches no proof for them.
 - **A core module `reasoning`.** It owns:
   - the **base**: the workspace's documents (imports included) in a stable order, `(Source, uri)` as SHACL sorts them, made into oxrdf triples with the existing `rdf::Graph` conversion, so blank-node names are fixed for a run, and each base triple maps back to its document and triple (`Graph::origin`) and so to a file and line;
   - the **state** shared between the reasoning thread and hovers: the reasoner, the base's origin map, the explain cache; behind a read-write lock, written only by the reasoning thread;

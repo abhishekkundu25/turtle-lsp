@@ -78,6 +78,7 @@ impl Runs {
             max_triples: settings.reasoning_max_triples,
             enc,
             related: self.related,
+            findings: settings.reasoning_diagnostics,
         }
     }
 
@@ -162,6 +163,7 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             reasoning: crate::settings::Reasoning::Default,
+            reasoning_diagnostics: true,
             ..Settings::default()
         }
     }

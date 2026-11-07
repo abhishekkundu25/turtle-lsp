@@ -248,7 +248,7 @@
             "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
           ],
           "default": "off",
-          "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs, and contradictions become diagnostics.",
+          "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `turtle.reasoning.diagnostics`.",
           "scope": "resource"
         },
         "turtle.reasoning.maxTriples": {
@@ -256,6 +256,12 @@
           "default": 2000000,
           "minimum": 0,
           "markdownDescription": "The most triples reasoning reads: the workspace's and its loaded imports'. Past it, reasoning is skipped, with a note.",
+          "scope": "resource"
+        },
+        "turtle.reasoning.diagnostics": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show TurbOWL's findings (contradictions, ill-typed literals) as diagnostics, each with its proof. Off by default: a project's SHACL shapes often check the same rules, and hover shows the inferred types either way.",
           "scope": "resource"
         },
         "turtle.lint.undescribedTerms": {

@@ -2015,7 +2015,7 @@ mod tests {
         let rules = |r: &str| {
             notify(
                 "workspace/didChangeConfiguration",
-                json!({"settings": {"turtle": {"reasoning": {"rules": r}}}}),
+                json!({"settings": {"turtle": {"reasoning": {"rules": r, "diagnostics": true}}}}),
             )
         };
         let mut e = embedded();
