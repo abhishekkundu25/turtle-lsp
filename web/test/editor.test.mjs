@@ -576,8 +576,10 @@ test("a folder opened in place keeps saving to its disk folder after a rename; d
     const { page } = await open({ context })
     await page.getByRole("button", { name: "Open Folder in Place" }).click()
     await item(page, "proj/a.ttl").waitFor()
-    await item(page, "proj").click()
-    await page.keyboard.press("F2")
+    // From the menu: a click on the folder would fold it, and a rename keeps
+    // it folded, so renamed/a.ttl would show only if a re-render opened it.
+    await item(page, "proj").click({ button: "right" })
+    await page.getByRole("menuitem", { name: "Rename" }).click()
     const name = page.locator(".tree-input")
     await name.fill("renamed")
     await name.press("Enter")
