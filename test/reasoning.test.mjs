@@ -59,16 +59,16 @@ function progressByToken(s) {
   return by
 }
 
-test("a disjointness contradiction is a diagnostic with its proof, on its terms' lines", async () => {
+test("a disjointness contradiction is a diagnostic with its proof, on the member's line only", async () => {
   // On disk the file is consistent: opening it reasons over the unsaved text.
   const w = await session({ "a.ttl": CALM }, { initializationOptions: ON })
   const a = w.uri("a.ttl")
   try {
     w.s.open(a, CLASH)
     const found = turbowl(await until(w.s, a, (d) => turbowl(d).length > 0))
-    assert.deepEqual(found.map((d) => d.code), ["turbowl/cax-dw", "turbowl/cax-dw"], JSON.stringify(found))
-    // On the class axiom and on the member.
-    assert.deepEqual(found.map((d) => d.range.start.line).sort(), [2, 3])
+    assert.deepEqual(found.map((d) => d.code), ["turbowl/cax-dw"], JSON.stringify(found))
+    // On the member, not on the class axiom (line 3): that is in the proof.
+    assert.deepEqual(found.map((d) => d.range.start.line), [3])
     for (const d of found) {
       assert.equal(d.severity, 1)
       // The client shows no related information: the proof's triples are

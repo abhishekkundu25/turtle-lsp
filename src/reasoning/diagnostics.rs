@@ -2,9 +2,11 @@
 //! ill-typed literals) as diagnostics, the note that a run was skipped, and
 //! the error of a run that failed.
 //!
-//! A finding is shown in each workspace statement that describes one of its
-//! terms, on the statement's subject (a member of two disjoint classes: on
-//! the member and on the classes); a finding about terms no workspace
+//! A finding is shown in each workspace statement that describes a term at
+//! fault, on the statement's subject: the member of two disjoint classes,
+//! not the classes (they are in the proof). Which terms are at fault
+//! follows TurbOWL's table of terms per code ([`at_fault`]). A finding
+//! about terms no workspace
 //! statement describes (a literal) on the triples whose object is one of
 //! them (a literal only: an ill-typed literal is shown on itself, not on its
 //! datatype). A finding only about imports is not shown. Its code is
@@ -124,6 +126,27 @@ struct Mentions {
     objects: FxHashMap<Term, Vec<(u32, u32)>>,
 }
 
+/// The terms `d` is about, by the order TurbOWL's `Diagnostic` documents per
+/// code: the individual, literal or pair at fault, not the classes,
+/// properties or axioms that make it a fault (those are in the proof). A
+/// code not listed: every term.
+fn at_fault(d: &turbowl::Diagnostic) -> impl Iterator<Item = &Term> {
+    let at: &[usize] = match d.code {
+        "cax-dw" | "cax-adc" | "cls-nothing2" | "dt-not-type" | "prp-npa1" | "prp-npa2" => &[0],
+        "prp-irp" | "cls-maxc1" | "cls-maxqc1" | "cls-maxqc2" => &[1],
+        "cls-com" | "prp-pdw" | "prp-adp" => &[2],
+        "prp-asyp" | "eq-diff2" | "eq-diff3" => &[1, 2],
+        "eq-diff1" => &[0, 1],
+        _ => &[],
+    };
+    let all = at.is_empty();
+    d.terms
+        .iter()
+        .enumerate()
+        .filter(move |(i, _)| all || at.contains(i))
+        .map(|(_, t)| t)
+}
+
 fn as_subject(t: &Term) -> Option<NamedOrBlankNode> {
     match t {
         Term::NamedNode(n) => Some(n.clone().into()),
@@ -166,9 +189,7 @@ impl Mentions {
         let enc = base.encoding();
         let mut out = Vec::new();
         let mut statements = FxHashSet::default();
-        for place in d
-            .terms
-            .iter()
+        for place in at_fault(d)
             .filter_map(as_subject)
             .filter_map(|s| self.subjects.get(&s))
             .flatten()
@@ -185,10 +206,8 @@ impl Mentions {
             out.push((a, range));
         }
         if out.is_empty() {
-            let literals = d.terms.iter().any(|t| matches!(t, Term::Literal(_)));
-            for place in d
-                .terms
-                .iter()
+            let literals = at_fault(d).any(|t| matches!(t, Term::Literal(_)));
+            for place in at_fault(d)
                 .filter(|t| !literals || matches!(t, Term::Literal(_)))
                 .filter_map(|t| self.objects.get(t))
                 .flatten()
@@ -400,6 +419,22 @@ mod tests {
         \x20 owl:members ( ex:PhysicalObject ex:SoftwareObject ex:Location ex:Position ) .\n\
         ex:Transmitter rdfs:subClassOf ex:PhysicalObject .\n\
         obj:tt a ex:Transmitter , ex:SoftwareObject .\n";
+
+    #[test]
+    fn a_finding_is_shown_on_the_term_at_fault_not_on_its_classes() {
+        let text = format!(
+            "{ALL_DISJOINT}ex:PhysicalObject rdfs:label \"Physical object\" .\n\
+             ex:Position rdfs:label \"Position\" .\n\
+             obj:p a ex:PhysicalObject , ex:Position .\n\
+             ex:manages a owl:IrreflexiveProperty .\n\
+             obj:eve ex:manages obj:eve .\n"
+        );
+        let found = findings(&text, true);
+        let lines: Vec<u32> = found.iter().map(|d| d.range.start.line + 1).collect();
+        // obj:tt (8), obj:p (11), obj:eve (13); never the class lines (9, 10),
+        // the list (5) or the property (12).
+        assert_eq!(lines, [8, 11, 13], "{found:#?}");
+    }
 
     #[test]
     fn a_disjointness_through_a_list_is_one_sentence_with_the_list_as_one_triple() {
