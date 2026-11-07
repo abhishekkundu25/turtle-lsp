@@ -316,6 +316,34 @@ test("with reasoning on, hover shows the inferred type and its proof as natively
   }
 })
 
+test("the sample workspace's reasoning folder shows its long proof, its seven contradictions and, with complete, its identity cascade", async () => {
+  const reasoning = WORKSPACE.filter((f) => f.path.startsWith("reasoning/"))
+  assert.deepEqual(reasoning.map((f) => f.path), ["reasoning/01-long-chain.ttl", "reasoning/02-hidden-contradictions.ttl", "reasoning/03-identity-needs-complete.ttl"])
+  const codes = (w, p) => [...new Set(w.diagnostics(`${WORK}/${p}`).map((d) => d.code).filter((c) => String(c).startsWith("turbowl/")))].sort()
+  const open = async (rules) => {
+    const w = new EmbeddedServer(await createEngine(fs.readFileSync(path.join(here, "..", "app", "engine.wasm"))))
+    await w.initialize({ processId: null, rootUri: null, capabilities: {}, initializationOptions: { reasoning: { rules, diagnostics: true } } })
+    for (const f of WORKSPACE) {
+      w.notify("textDocument/didOpen", { textDocument: { uri: `${WORK}/${f.path}`, languageId: languageOf(f.path), version: 1, text: f.text } })
+    }
+    await w.settle()
+    return w
+  }
+  const w = await open("default")
+  const chain = reasoning[0]
+  const hover = await w.request("textDocument/hover", { textDocument: { uri: `${WORK}/${chain.path}` }, position: positionOf(chain.text, "lab:catalog77 lab:serialNumber", 6) })
+  assert.match(hover.contents.value, /\*\*lab:Thing2Ship\*\*/, hover.contents.value)
+  assert.match(hover.contents.value, /\*\*lab:CertifiedPart\*\*/)
+  assert.deepEqual(codes(w, chain.path), [])
+  const all = ["cls-com", "cls-maxc1", "cls-nothing2", "eq-diff2", "prp-asyp", "prp-npa1", "prp-pdw"].map((c) => `turbowl/${c}`)
+  assert.deepEqual(codes(w, reasoning[1].path), all)
+  assert.deepEqual(codes(w, reasoning[2].path), [])
+  // The rest of the sample has no reasoning findings.
+  for (const f of WORKSPACE.filter((f) => !f.path.startsWith("reasoning/"))) assert.deepEqual(codes(w, f.path), [], f.path)
+  const c = await open("complete")
+  assert.deepEqual(codes(c, reasoning[2].path), ["turbowl/cax-dw"])
+})
+
 // --- the embedded driver --------------------------------------------------------------------
 
 test("an unknown request is the native server's error, and the server keeps answering", async () => {
