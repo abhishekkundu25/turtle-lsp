@@ -1,14 +1,18 @@
 // Builds the Rust server, copies it into server/, bundles the extension and
 // packages a platform-specific .vsix (e.g. turtle-lsp-darwin-arm64-0.1.0.vsix).
+// With VSCE_TARGET=web it builds the engine for the browser instead and
+// packages turtle-lsp-web-<version>.vsix: no server/, out/web/engine.wasm in.
 //
 // Env:
-//   VSCE_TARGET   VS Code platform (darwin-arm64, linux-x64, win32-x64, ...);
-//                 defaults to this machine.
+//   VSCE_TARGET   VS Code platform (darwin-arm64, linux-x64, win32-x64, web,
+//                 ...); defaults to this machine.
 //   CARGO_TARGET  Rust target triple to cross-compile for (CI sets it).
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
+import zlib from "node:zlib"
 import { fileURLToPath } from "node:url"
+import { checkBudget } from "../../../web/build.mjs"
 
 const here = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repo = path.resolve(here, "../..")
@@ -17,18 +21,37 @@ const run = (cmd, args, cwd = here) => execFileSync(cmd, args, { cwd, stdio: "in
 const target = process.env.VSCE_TARGET ?? `${process.platform}-${process.arch}`
 const triple = process.env.CARGO_TARGET
 const exe = target.startsWith("win32") ? "turtle-lsp.exe" : "turtle-lsp"
+const wasm = path.join(here, "out", "web", "engine.wasm")
 
-run("cargo", ["build", "--release", "--locked", ...(triple ? ["--target", triple] : [])], repo)
-const built = path.join(repo, "target", ...(triple ? [triple] : []), "release", exe)
 fs.rmSync(path.join(here, "server"), { recursive: true, force: true })
-fs.mkdirSync(path.join(here, "server"))
-fs.copyFileSync(built, path.join(here, "server", exe))
-fs.chmodSync(path.join(here, "server", exe), 0o755)
+if (target === "web") {
+  // The engine as web/build.mjs builds it (its own profile, size budget), to
+  // web/app/engine.wasm, where `npm run build` copies it from.
+  const engine = path.join(repo, "web", "engine")
+  run("cargo", ["build", "--release", "--locked"], engine)
+  const built = path.join(engine, "target", "wasm32-unknown-unknown", "release", "turtle_lsp_web.wasm")
+  checkBudget(zlib.gzipSync(fs.readFileSync(built), { level: 9 }).length)
+  fs.copyFileSync(built, path.join(repo, "web", "app", "engine.wasm"))
+} else {
+  run("cargo", ["build", "--release", "--locked", ...(triple ? ["--target", triple] : [])], repo)
+  const built = path.join(repo, "target", ...(triple ? [triple] : []), "release", exe)
+  fs.mkdirSync(path.join(here, "server"))
+  fs.copyFileSync(built, path.join(here, "server", exe))
+  fs.chmodSync(path.join(here, "server", exe), 0o755)
+}
 for (const f of ["LICENSE", "CHANGELOG.md"]) fs.copyFileSync(path.join(repo, f), path.join(here, f))
-// The notices for what the server and the bundled npm packages include.
+// The notices for what the server (or engine) and the bundled npm packages include.
 const notices = "THIRD_PARTY_NOTICES.md"
 
 run("npm", ["run", "build"])
+if (target === "web") {
+  if (!fs.existsSync(wasm)) throw new Error(`no ${wasm} after npm run build`)
+} else {
+  // The engine runs only in the browser, which gets the web .vsix; 10 MB a
+  // platform .vsix does not need. Its browser entry (out/web/*.js) stays: small,
+  // never started on the desktop, and the manifest's "browser" names it.
+  fs.rmSync(wasm, { force: true })
+}
 const version = JSON.parse(fs.readFileSync(path.join(here, "package.json"), "utf8")).version
 const out = `turtle-lsp-${target}-${version}.vsix`
 try {

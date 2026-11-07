@@ -61,6 +61,22 @@ impl<'w> Session<'w> {
         (self.ws.knowledge(), self.enc)
     }
 
+    /// The settings in effect.
+    pub(crate) fn settings(&self) -> &Settings {
+        self.settings
+    }
+
+    /// The workspace's root folders (none in the browser build).
+    pub(crate) fn roots(&self) -> &[std::path::PathBuf] {
+        self.ws.roots()
+    }
+
+    /// The prefixes a document at `uri` may use undeclared: its
+    /// `prefixes.ttl` and the `prefixes` setting.
+    pub(crate) fn external_prefixes_for(&mut self, uri: &str) -> Arc<crate::syntax::PrefixMap> {
+        self.ws.external_prefixes_for(uri)
+    }
+
     /// [`Session::doc`] with the URI the workspace keys it by.
     fn find(&mut self, uri: &str) -> Option<(String, Doc)> {
         let u = normalize_uri(uri);

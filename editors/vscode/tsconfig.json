@@ -7,8 +7,13 @@
     "types": ["node", "vscode"],
     "strict": true,
     "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "checkJs": false,
     "skipLibCheck": true,
-    "outDir": "out"
+    "outDir": "out",
+    // src/web imports web/app (the RDF Editor's engine loader and host).
+    "rootDir": "../.."
   },
   "include": ["src"]
 }

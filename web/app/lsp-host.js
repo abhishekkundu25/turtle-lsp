@@ -148,6 +148,13 @@ export class EmbeddedServer {
     return new Promise((r) => this.timerResolvers.push(r))
   }
 
+  // Stops the server's timers, for good: the session is over (the client
+  // shut it down, or a new server takes its place). Waiters of settle()
+  // resolve. Calling it again does nothing.
+  stop() {
+    this.schedule(null)
+  }
+
   // ---- internals ----
 
   track(method, params) {

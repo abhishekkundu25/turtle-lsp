@@ -95,6 +95,27 @@ query in that folder or below can then use those prefixes. Or set
 
 The extension sends the server only the settings you set. A setting you leave unset comes from the project's [`turtle-lsp.json`](https://github.com/abhishekkundu25/turtle-lsp#settings-file-turtle-lspjson), or takes its default. That file cannot turn on `turtle.imports.network` or raise the query and SHACL limits; only your own settings can. In an untrusted workspace, `turtle.server.path`, `turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples` and `turtle.diagnostics.workspace` take your user settings only.
 
+## In the browser (vscode.dev, github.dev)
+
+The extension also runs in VS Code for the Web. Press `.` on a GitHub
+repository, or open a folder in vscode.dev, and the server runs inside the
+browser tab, compiled to WebAssembly. Your files are not uploaded anywhere.
+
+What works: the language features above for every file type; cross-file
+features over the repository's RDF and SPARQL files (definitions,
+references, rename, completion of terms declared in other files, and
+problems in files you have not opened); `prefixes.ttl`; a `turtle-lsp.json`
+at the root of the first folder; SHACL validation; the workspace graph.
+
+What does not work:
+
+- **▶ Run query** is not shown, as it writes its results to disk.
+- `owl:imports` are not fetched from the web, so the terms of a web import stay unknown, as when you are offline.
+- The extension reads at most 2,000 files and 50 MB of RDF. Past either limit it says how many files it read; the rest are not checked or found by references.
+- A folder you add to the workspace after the start is read only after **Turtle: Restart Language Server**.
+
+Your `turtle.*` settings apply, except `turtle.server.path`.
+
 ## Also for Neovim and other editors
 
 The same server works in any editor that speaks the Language Server Protocol.

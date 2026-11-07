@@ -227,6 +227,12 @@ pub(crate) fn display_prefixes(query: &str, external: &PrefixMap) -> PrefixMap {
     out
 }
 
+/// `query` parses with `base` and `prefixes` (a SELECT, ASK, CONSTRUCT or
+/// DESCRIBE without errors).
+pub(crate) fn parses(query: &str, base: Option<&str>, prefixes: &PrefixMap) -> bool {
+    parse(query, base, prefixes).is_ok()
+}
+
 /// Parses `text` as the editor checks it: the same diagnostics, the first
 /// error reported.
 fn parse(text: &str, base: Option<&str>, prefixes: &PrefixMap) -> Result<Query, QueryError> {

@@ -29,8 +29,9 @@
 //! Requests are answered by `ide::Session`, which routes each by document
 //! kind: RDF documents to `features`, SPARQL documents to
 //! `sparql::features`; neither runs on the other.
-//! The requests beyond the standard are in `extensions`, and listed under
-//! `experimental`.
+//! The requests beyond the standard (`turtle/graph`, `turtle/query`) are
+//! in `extensions`, listed under `experimental`; each runs on a thread of
+//! its own and answers from there.
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
@@ -177,6 +178,12 @@ pub(crate) struct Server {
     wsdiag: workspace_diagnostics::State,
     /// The "Run query" runs going on.
     queries: run_query::State,
+    /// The `turtle/query` runs going on (`extensions::query`).
+    query_requests: extensions::query::State,
+    /// The workspace folders as `initialize` named them. The browser build
+    /// has no file paths, so `ws.roots()` is empty there; a request that
+    /// needs a folder of the workspace uses these.
+    root_uris: Vec<String>,
     /// Tests: panic once after the next batch.
     #[cfg(test)]
     fault: bool,
@@ -269,6 +276,13 @@ impl Server {
             .and_then(|c| c.resolve_support.as_ref())
             .is_some_and(|r| r.properties.iter().any(|p| p == "edit"));
 
+        #[allow(deprecated)]
+        let root_uris: Vec<String> = match params.workspace_folders.as_deref() {
+            Some(folders) if !folders.is_empty() => {
+                folders.iter().map(|f| f.uri.to_string()).collect()
+            }
+            _ => params.root_uri.iter().map(|u| u.to_string()).collect(),
+        };
         let mut roots: Vec<PathBuf> = params
             .workspace_folders
             .iter()
@@ -323,6 +337,8 @@ impl Server {
             shacl: Shacl::default(),
             progress: Progress::new(work_done_progress),
             wsdiag,
+            root_uris,
+            query_requests: extensions::query::State::default(),
             spawn,
             #[cfg(test)]
             fault: false,
@@ -790,6 +806,7 @@ impl Server {
         exit_wait: Duration,
     ) -> Result<Ended, Box<dyn std::error::Error + Send + Sync>> {
         self.queries.cancel_all();
+        self.query_requests.cancel_all();
         self.client.send(Response::new_ok(req.id, ()))?;
         let mut rest = rest;
         loop {
@@ -940,6 +957,7 @@ impl Server {
                     };
                     self.queries
                         .on_cancel_request(&id, &mut self.client, &mut self.progress);
+                    self.query_requests.cancel(&id);
                 }
             }
             WorkDoneProgressCancel::METHOD => {
@@ -1584,7 +1602,14 @@ impl Server {
             }
             m if extensions::handles(m) => {
                 let out = self.client.sender();
-                return extensions::request(req, self.spawn, out, &mut self.session());
+                let (queries, roots) = (&self.query_requests, &self.root_uris);
+                let mut session = ide::Session::new(
+                    &mut self.ws,
+                    self.enc,
+                    self.layers.settings(),
+                    self.resolve_edits,
+                );
+                return extensions::request(req, queries, roots, self.spawn, out, &mut session);
             }
             _ => Err((
                 ErrorCode::MethodNotFound,
@@ -1716,8 +1741,12 @@ impl Embedded {
         self.step(None)
     }
 
-    /// Milliseconds until the next timer, if one is pending.
+    /// Milliseconds until the next timer, if one is pending. None once
+    /// the session has ended: [`Embedded::tick`] would not run it.
     pub fn due_in_ms(&self) -> Option<f64> {
+        if self.ended {
+            return None;
+        }
         let due = self.server.next_due()?;
         Some(due.saturating_duration_since(Instant::now()).as_secs_f64() * 1000.0)
     }
@@ -1810,6 +1839,20 @@ mod tests {
             json!({"textDocument": {"uri": uri}}),
         );
         r.as_array().unwrap_or_else(|| panic!("{r}")).len()
+    }
+
+    #[test]
+    fn an_embedded_server_that_has_ended_has_no_timer_due() {
+        let mut e = embedded();
+        open(&mut e, "file:///w/a.ttl", "ex:s ex:p ex:o .\n");
+        assert!(
+            e.due_in_ms().is_some(),
+            "an open document has a timer pending"
+        );
+        ask(&mut e, 1, "shutdown", Value::Null);
+        assert!(e.ended);
+        assert_eq!(e.due_in_ms(), None);
+        assert!(e.tick().is_empty());
     }
 
     #[test]

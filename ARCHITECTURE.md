@@ -210,15 +210,50 @@ target classes.
 | SHACL validation | `features::shacl_validate` over `shacl` | |
 | Type hierarchy | `features::hierarchy` | |
 | Workspace graph (`turtle/graph`) | `extensions::graph` | |
+| A query for another extension or tool (`turtle/query`) | `extensions::query` over `query::run` | |
 
-The workspace graph is the server's one custom request, listed under
-`experimental` capabilities. `extensions::graph` reads the knowledge index
+The workspace graph and `turtle/query` are the server's two custom
+requests, listed under `experimental` capabilities. `turtle/query` runs a
+query given as text over the workspace's documents, as "▶ Run query" does,
+and answers the results as JSON on a thread of its own; `$/cancelRequest`
+stops it. The thread holds only the map of runs, not the server's state, so
+`shutdown` and the end of the server stop every run. `extensions::graph` reads the knowledge index
 and changes nothing: the query, the filters, the cap and the Barnes-Hut
 layout. The client passes back the positions it has, so the server keeps
 no graph state. The native server answers it on a thread of its own over
 a copy of the index; the browser engine answers inline. The drawing is
 `web/app/graph/`, one module the browser editor mounts and the VS Code
 extension bundles into its webview (`editors/vscode/src/graph.ts`).
+
+## The VS Code extension's two entries
+
+The extension in `editors/vscode` has a desktop entry (`main`,
+`src/extension.ts`) and a browser entry for vscode.dev and github.dev
+(`browser`, `src/web/extension.ts`). Both pass a factory for the language
+client to `src/activate.ts`, which holds what they share: the commands, the
+start on the first served document and the settings sent to the server.
+`src/client.ts` holds the parts that need neither `vscode` nor Node. The
+desktop factory finds the binary (`src/server.ts`) and runs it over stdio.
+
+The browser factory starts the server worker (`src/web/worker.ts`), which
+loads the engine's `.wasm` and passes the client's JSON-RPC messages to
+`src/web/handler.ts`. The handler drives the engine through
+`EmbeddedServer` and `plan` from `web/app/lsp-host.js`, loaded with
+`web/app/engine.js`; the bundler includes both, and the RDF Editor's worker
+(`web/app/lsp-worker.js`) uses the same host, so a fix there reaches both.
+The handler adds what the editor's worker does not need:
+
+- **URIs** (`src/web/uris.ts`): the server derives a file's kind, folder
+  and `prefixes.ttl` scope from `file:` URIs, so workspace folder n
+  (`vscode-vfs://github/…` on github.dev) is `file:///workspace/<n>/` to
+  the server, mapped in every message both ways, links in hover text too.
+- **Layers** (`src/web/layers.ts`): the embedded server has no disk, so
+  its workspace is its open documents. The browser entry reads the
+  workspace's files with `vscode.workspace.fs` (`src/web/files.ts`, at most
+  2,000 files and 50 MB) and sends them as `turtle/web/files`, which the
+  handler keeps and never passes to the server. Each URI has a disk layer
+  and, while the editor has it open, an editor layer; the server sees their
+  union, the editor's text winning, and a restart replays it.
 
 ## Threads
 
