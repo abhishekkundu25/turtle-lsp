@@ -144,8 +144,8 @@ const START = `${head([
   "4. The problems in ontology/core.ttl and data/people.ttl are deliberate:",
   "   hover a squiggle, then press Ctrl+. (Cmd+.) for the fix.",
   "5. data/carol.jsonld is JSON-LD: hover its \"name\" key for the term it stands for.",
-  "6. reasoning/ holds OWL reasoning examples: turn reasoning on in the settings",
-  "   (Ctrl+, then Reasoning) and hover, as each file says.",
+  "6. reasoning/ holds OWL reasoning examples, with reasoning on: hover as each",
+  "   file says. Reasoning is in the settings (Ctrl+, then Reasoning).",
   "",
   "ex: and id: need no @prefix here: prefixes.ttl declares them for the",
   "whole workspace, as it does in VS Code.",
@@ -176,7 +176,7 @@ const PREFIXES = `${head(["Prefixes for every file in this folder and below: no 
 
 // Reasoning through TurbOWL (OWL 2 RL): long proofs and hidden
 // contradictions. Off until the settings turn it on (Ctrl+, then Reasoning).
-const REASONING_CHAIN = head(["Reasoning: settings (Ctrl+,) > Reasoning > Rules = default, then hover the terms named below."]) + `@prefix lab: <http://example.org/lab/> .
+const REASONING_CHAIN = head(["Reasoning is on here (settings, Ctrl+, > Reasoning > Rules = default): hover the terms named below."]) + `@prefix lab: <http://example.org/lab/> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 
@@ -266,7 +266,7 @@ lab:serialNumber a owl:InverseFunctionalProperty .
 lab:screw9    lab:serialNumber "S-0009" .
 lab:catalog77 lab:serialNumber "S-0009" .
 `
-const REASONING_CLASH = head(["Reasoning: Rules = default, and Reasoning > Diagnostics on: seven errors, each with its proof."]) + `@prefix hc: <http://example.org/hidden/> .
+const REASONING_CLASH = head(["Turn on Reasoning > Diagnostics in the settings (Ctrl+,) to see seven errors, each with its proof."]) + `@prefix hc: <http://example.org/hidden/> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
@@ -346,7 +346,7 @@ hc:InProduction owl:equivalentClass [
 hc:part88 a hc:Prototype ; hc:line hc:line3 .
 hc:line3 a hc:AssemblyLine .
 `
-const REASONING_IDENTITY = head(["Reasoning: Rules = complete (the identity rules are off in default)."]) + `@prefix id: <http://example.org/identity/> .
+const REASONING_IDENTITY = head(["Set Reasoning > Rules to complete in the settings (Ctrl+,): the identity rules are off in default."]) + `@prefix id: <http://example.org/identity/> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .

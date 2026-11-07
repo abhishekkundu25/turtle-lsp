@@ -16,7 +16,7 @@ const SETTINGS = [
   { key: "turtle.shacl.onType", group: "turtle-lsp", cat: "SHACL", title: "Validate While Typing", type: "bool", def: true, desc: "Also validate about a second after you stop typing, on the unsaved text. When off, validation runs on save only." },
   { key: "turtle.shacl.maxTriples", group: "turtle-lsp", cat: "SHACL", title: "Max Triples", type: "number", def: 2000000, min: 0, max: Number.MAX_SAFE_INTEGER, desc: "Skip SHACL validation when the workspace holds more triples than this." },
   {
-    key: "turtle.reasoning.rules", group: "turtle-lsp", cat: "Reasoning", title: "Rules", type: "enum", def: "off",
+    key: "turtle.reasoning.rules", group: "turtle-lsp", cat: "Reasoning", title: "Rules", type: "enum", def: "default",
     options: [["off", "No reasoning"], ["default", "TurbOWL's default OWL 2 RL rules"], ["complete", "Every W3C OWL 2 RL rule: slower, and so are its proofs"]],
     desc: "Reason over the workspace with TurbOWL, an OWL 2 RL reasoner. Hover shows a resource's inferred types with their proofs.",
   },

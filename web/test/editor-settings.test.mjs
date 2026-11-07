@@ -251,3 +251,15 @@ test("settings survive a reload; Reset and Reset All restore the defaults", asyn
     await close()
   }
 })
+
+test("reasoning is on with TurbOWL's default rules from the first visit: the editor is a showcase", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openSettings(page)
+    assert.equal(await control(page, "Reasoning: Rules").inputValue(), "default")
+    assert.equal(await control(page, "Reasoning: Diagnostics").isChecked(), false)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
