@@ -44,7 +44,11 @@ describe("turtle/graphDiff", () => {
   })
 
   test("is listed under the experimental capabilities", () => {
-    assert.deepEqual(s.init.capabilities.experimental, { "turtle/graph": true, "turtle/graphDiff": true })
+    assert.deepEqual(s.init.capabilities.experimental, {
+      "turtle/graph": true,
+      "turtle/graphDiff": true,
+      "turtle/query": true,
+    })
   })
 
   test("a changed closed file, a new file and a deleted file against the base", async () => {
