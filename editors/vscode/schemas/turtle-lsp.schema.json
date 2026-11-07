@@ -1,0 +1,469 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "turtle-lsp.json",
+  "description": "Project settings for turtle-lsp, read from turtle-lsp.json at the workspace root by every editor, the command line and CI. Keys may be nested or dotted (\"lint.ignore\"), optionally inside a top-level \"turtle\" object.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The JSON Schema this file follows."
+    },
+    "turtle": {
+      "$ref": "#",
+      "description": "The same settings, wrapped in a top-level turtle object like the editor's turtle section."
+    },
+    "prefixes": {
+      "$ref": "#/definitions/prefixes"
+    },
+    "inlayHints": {
+      "$ref": "#/definitions/inlayHints"
+    },
+    "shacl": {
+      "$ref": "#/definitions/shacl"
+    },
+    "reasoning": {
+      "$ref": "#/definitions/reasoning"
+    },
+    "lint": {
+      "$ref": "#/definitions/lint"
+    },
+    "imports": {
+      "$ref": "#/definitions/imports"
+    },
+    "diagnostics": {
+      "$ref": "#/definitions/diagnostics"
+    },
+    "parse": {
+      "$ref": "#/definitions/parse"
+    },
+    "format": {
+      "$ref": "#/definitions/format"
+    },
+    "codeLens": {
+      "$ref": "#/definitions/codeLens"
+    },
+    "query": {
+      "$ref": "#/definitions/query"
+    }
+  },
+  "patternProperties": {
+    "^(turtle\\.)*prefixes\\..+$": {
+      "$ref": "#/definitions/prefixIri"
+    },
+    "^(turtle\\.)+prefixes$": {
+      "$ref": "#/definitions/prefixes"
+    },
+    "^(turtle\\.)*inlayHints\\.labels$": {
+      "$ref": "#/definitions/inlayHints.labels"
+    },
+    "^(turtle\\.)+inlayHints$": {
+      "$ref": "#/definitions/inlayHints"
+    },
+    "^(turtle\\.)*shacl\\.enabled$": {
+      "$ref": "#/definitions/shacl.enabled"
+    },
+    "^(turtle\\.)*shacl\\.maxTriples$": {
+      "$ref": "#/definitions/shacl.maxTriples"
+    },
+    "^(turtle\\.)*shacl\\.onType$": {
+      "$ref": "#/definitions/shacl.onType"
+    },
+    "^(turtle\\.)+shacl$": {
+      "$ref": "#/definitions/shacl"
+    },
+    "^(turtle\\.)*reasoning\\.rules$": {
+      "$ref": "#/definitions/reasoning.rules"
+    },
+    "^(turtle\\.)*reasoning\\.maxTriples$": {
+      "$ref": "#/definitions/reasoning.maxTriples"
+    },
+    "^(turtle\\.)*reasoning\\.diagnostics$": {
+      "$ref": "#/definitions/reasoning.diagnostics"
+    },
+    "^(turtle\\.)+reasoning$": {
+      "$ref": "#/definitions/reasoning"
+    },
+    "^(turtle\\.)*lint\\.undescribedTerms$": {
+      "$ref": "#/definitions/lint.undescribedTerms"
+    },
+    "^(turtle\\.)*lint\\.ignore$": {
+      "$ref": "#/definitions/lint.ignore"
+    },
+    "^(turtle\\.)*lint\\.enable$": {
+      "$ref": "#/definitions/lint.enable"
+    },
+    "^(turtle\\.)+lint$": {
+      "$ref": "#/definitions/lint"
+    },
+    "^(turtle\\.)*imports\\.network$": {
+      "$ref": "#/definitions/imports.network"
+    },
+    "^(turtle\\.)*imports\\.unresolved$": {
+      "$ref": "#/definitions/imports.unresolved"
+    },
+    "^(turtle\\.)+imports$": {
+      "$ref": "#/definitions/imports"
+    },
+    "^(turtle\\.)*diagnostics\\.workspace$": {
+      "$ref": "#/definitions/diagnostics.workspace"
+    },
+    "^(turtle\\.)+diagnostics$": {
+      "$ref": "#/definitions/diagnostics"
+    },
+    "^(turtle\\.)*parse\\.incremental$": {
+      "$ref": "#/definitions/parse.incremental"
+    },
+    "^(turtle\\.)+parse$": {
+      "$ref": "#/definitions/parse"
+    },
+    "^(turtle\\.)*format\\.lineWidth$": {
+      "$ref": "#/definitions/format.lineWidth"
+    },
+    "^(turtle\\.)+format$": {
+      "$ref": "#/definitions/format"
+    },
+    "^(turtle\\.)*codeLens\\.references$": {
+      "$ref": "#/definitions/codeLens.references"
+    },
+    "^(turtle\\.)+codeLens$": {
+      "$ref": "#/definitions/codeLens"
+    },
+    "^(turtle\\.)*query\\.timeoutSeconds$": {
+      "$ref": "#/definitions/query.timeoutSeconds"
+    },
+    "^(turtle\\.)*query\\.maxRows$": {
+      "$ref": "#/definitions/query.maxRows"
+    },
+    "^(turtle\\.)*query\\.maxBufferedRows$": {
+      "$ref": "#/definitions/query.maxBufferedRows"
+    },
+    "^(turtle\\.)+query$": {
+      "$ref": "#/definitions/query"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "prefixIri": {
+      "type": "string",
+      "description": "The namespace IRI of this prefix."
+    },
+    "prefixes": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": {
+        "$ref": "#/definitions/prefixIri"
+      },
+      "markdownDescription": "Prefixes available in every Turtle file, e.g. `{ \"ex\": \"http://example.org/\" }`. A `prefixes.ttl` in the project does the same per folder. An editor `prefixes` object replaces these; a dotted key (`\"prefixes.ex\"`) adds one.",
+      "description": "Prefixes available in every Turtle file, e.g. { \"ex\": \"http://example.org/\" }. An editor prefixes object replaces these; a dotted key (\"prefixes.ex\") adds one."
+    },
+    "inlayHints.labels": {
+      "type": "string",
+      "enum": [
+        "opaque",
+        "all",
+        "off"
+      ],
+      "enumDescriptions": [
+        "Show labels only for terms whose IRI does not say what they are, such as `ex:P1234`.",
+        "Show the label of every term that has one.",
+        "Show no label hints."
+      ],
+      "default": "opaque",
+      "description": "Which terms get their rdfs:label (or skos:prefLabel) shown as an inlay hint.",
+      "markdownDescription": "Which terms get their `rdfs:label` (or `skos:prefLabel`) shown as an inlay hint."
+    },
+    "inlayHints": {
+      "type": "object",
+      "description": "Inlay hints.",
+      "markdownDescription": "Inlay hints.",
+      "properties": {
+        "labels": {
+          "$ref": "#/definitions/inlayHints.labels"
+        }
+      },
+      "additionalProperties": false
+    },
+    "shacl.enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Validate data against the SHACL shapes in the workspace.",
+      "markdownDescription": "Validate data against the SHACL shapes in the workspace."
+    },
+    "shacl.maxTriples": {
+      "type": "integer",
+      "default": 2000000,
+      "minimum": 0,
+      "maximum": 2000000,
+      "description": "The most triples one SHACL run validates: the shared Turtle triples plus every dataset (TriG, N-Triples, N-Quads, JSON-LD with named graphs) checked against them. A dataset that would pass the limit is skipped, with a note. This file can lower it but not raise it past 2,000,000: a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag.",
+      "markdownDescription": "The most triples one SHACL run validates: the shared Turtle triples plus every dataset (TriG, N-Triples, N-Quads, JSON-LD with named graphs) checked against them. A dataset that would pass the limit is skipped, with a note. This file can lower it but not raise it past 2,000,000: a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag."
+    },
+    "shacl.onType": {
+      "type": "boolean",
+      "default": true,
+      "description": "Also validate about a second after you stop typing, on the unsaved text. When off, validation runs on save only.",
+      "markdownDescription": "Also validate about a second after you stop typing, on the unsaved text. When off, validation runs on save only."
+    },
+    "shacl": {
+      "type": "object",
+      "description": "SHACL validation.",
+      "markdownDescription": "SHACL validation.",
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/shacl.enabled"
+        },
+        "maxTriples": {
+          "$ref": "#/definitions/shacl.maxTriples"
+        },
+        "onType": {
+          "$ref": "#/definitions/shacl.onType"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reasoning.rules": {
+      "type": "string",
+      "enum": [
+        "off",
+        "default",
+        "complete"
+      ],
+      "enumDescriptions": [
+        "No reasoning.",
+        "TurbOWL's default OWL 2 RL rules: classes, properties, `owl:sameAs`, property chains and the consistency checks.",
+        "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
+      ],
+      "default": "off",
+      "description": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with reasoning.diagnostics. This file may choose the rules; reasoning.maxTriples still holds.",
+      "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `reasoning.diagnostics`. This file may choose the rules; `reasoning.maxTriples` still holds."
+    },
+    "reasoning.maxTriples": {
+      "type": "integer",
+      "default": 2000000,
+      "minimum": 0,
+      "maximum": 2000000,
+      "description": "The most triples reasoning reads: the workspace's and its loaded imports'. Past it, reasoning is skipped, with a note. This file can lower it but not raise it past 2,000,000: a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag.",
+      "markdownDescription": "The most triples reasoning reads: the workspace's and its loaded imports'. Past it, reasoning is skipped, with a note. This file can lower it but not raise it past 2,000,000: a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag."
+    },
+    "reasoning.diagnostics": {
+      "type": "boolean",
+      "default": false,
+      "description": "Show TurbOWL's findings (contradictions, ill-typed literals) as diagnostics, each with its proof. Off by default: a project's SHACL shapes often check the same rules, and hover shows the inferred types either way.",
+      "markdownDescription": "Show TurbOWL's findings (contradictions, ill-typed literals) as diagnostics, each with its proof. Off by default: a project's SHACL shapes often check the same rules, and hover shows the inferred types either way."
+    },
+    "reasoning": {
+      "type": "object",
+      "description": "OWL 2 RL reasoning with TurbOWL (off by default).",
+      "markdownDescription": "OWL 2 RL reasoning with TurbOWL (off by default).",
+      "properties": {
+        "rules": {
+          "$ref": "#/definitions/reasoning.rules"
+        },
+        "maxTriples": {
+          "$ref": "#/definitions/reasoning.maxTriples"
+        },
+        "diagnostics": {
+          "$ref": "#/definitions/reasoning.diagnostics"
+        }
+      },
+      "additionalProperties": false
+    },
+    "lint.undescribedTerms": {
+      "type": "boolean",
+      "default": true,
+      "description": "Warn about terms in your own namespaces that are used but described nowhere in the workspace. false is the same as listing undescribed-term in lint.ignore.",
+      "markdownDescription": "Warn about terms in your own namespaces that are used but described nowhere in the workspace. `false` is the same as listing `undescribed-term` in `lint.ignore`."
+    },
+    "lint.ignore": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Diagnostic codes never to report, such as unused-prefix or duplicate-label. Adds to the editor's lint.ignore and to --ignore, and wins over lint.enable.",
+      "markdownDescription": "Diagnostic codes never to report, such as `unused-prefix` or `duplicate-label`. Adds to the editor's `lint.ignore` and to `--ignore`, and wins over `lint.enable`."
+    },
+    "lint.enable": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "missing-label",
+          "missing-definition",
+          "multiple-definitions",
+          "duplicate-definition",
+          "lowercase-definition",
+          "missing-ontology-title",
+          "missing-ontology-description",
+          "missing-ontology-license"
+        ]
+      },
+      "default": [],
+      "description": "Off-by-default checks to switch on: missing-label, missing-definition, multiple-definitions, duplicate-definition, lowercase-definition, missing-ontology-title, missing-ontology-description and missing-ontology-license. Adds to the editor's lint.enable. A code in lint.ignore stays off.",
+      "markdownDescription": "Off-by-default checks to switch on: `missing-label`, `missing-definition`, `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. Adds to the editor's `lint.enable`. A code in `lint.ignore` stays off."
+    },
+    "lint": {
+      "type": "object",
+      "description": "Which diagnostics are reported.",
+      "markdownDescription": "Which diagnostics are reported.",
+      "properties": {
+        "undescribedTerms": {
+          "$ref": "#/definitions/lint.undescribedTerms"
+        },
+        "ignore": {
+          "$ref": "#/definitions/lint.ignore"
+        },
+        "enable": {
+          "$ref": "#/definitions/lint.enable"
+        }
+      },
+      "additionalProperties": false
+    },
+    "imports.network": {
+      "type": "boolean",
+      "enum": [
+        false
+      ],
+      "default": false,
+      "description": "Fetch owl:imports and remote JSON-LD contexts that are not in the workspace over the network. This file cannot turn it on: true is ignored with a warning, since any repository you clone can ship the file. Turn it on in the editor's settings or with --network.",
+      "markdownDescription": "Fetch `owl:imports` and remote JSON-LD contexts that are not in the workspace over the network. This file cannot turn it on: `true` is ignored with a warning, since any repository you clone can ship the file. Turn it on in the editor's settings or with `--network`."
+    },
+    "imports.unresolved": {
+      "type": "string",
+      "enum": [
+        "soften",
+        "ignore"
+      ],
+      "enumDescriptions": [
+        "Show SHACL results that the missing data could change as warnings, with a note naming the imports.",
+        "Treat unresolved imports as empty: SHACL results keep their full severity and get no note."
+      ],
+      "default": "soften",
+      "description": "How SHACL validation treats owl:imports that are not loaded. Either way, each unresolved import keeps its information diagnostic.",
+      "markdownDescription": "How SHACL validation treats `owl:imports` that are not loaded. Either way, each unresolved import keeps its information diagnostic."
+    },
+    "imports": {
+      "type": "object",
+      "description": "owl:imports and remote JSON-LD contexts.",
+      "markdownDescription": "`owl:imports` and remote JSON-LD contexts.",
+      "properties": {
+        "network": {
+          "$ref": "#/definitions/imports.network"
+        },
+        "unresolved": {
+          "$ref": "#/definitions/imports.unresolved"
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostics.workspace": {
+      "type": "boolean",
+      "default": false,
+      "description": "Show problems in every workspace file, not only the open ones. Files that are not open are checked in the background, as turtle-lsp check checks them, and again when they change on disk.",
+      "markdownDescription": "Show problems in every workspace file, not only the open ones. Files that are not open are checked in the background, as `turtle-lsp check` checks them, and again when they change on disk."
+    },
+    "diagnostics": {
+      "type": "object",
+      "description": "Where problems are shown.",
+      "markdownDescription": "Where problems are shown.",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/diagnostics.workspace"
+        }
+      },
+      "additionalProperties": false
+    },
+    "parse.incremental": {
+      "type": "boolean",
+      "default": true,
+      "description": "After an edit, parse only the statements around it instead of the whole file. The results are the same either way. The command line always parses whole files.",
+      "markdownDescription": "After an edit, parse only the statements around it instead of the whole file. The results are the same either way. The command line always parses whole files."
+    },
+    "parse": {
+      "type": "object",
+      "description": "Parsing in the editor.",
+      "markdownDescription": "Parsing in the editor.",
+      "properties": {
+        "incremental": {
+          "$ref": "#/definitions/parse.incremental"
+        }
+      },
+      "additionalProperties": false
+    },
+    "format.lineWidth": {
+      "type": "integer",
+      "default": 100,
+      "minimum": 20,
+      "description": "Line width the formatter aims for.",
+      "markdownDescription": "Line width the formatter aims for."
+    },
+    "format": {
+      "type": "object",
+      "description": "The formatter.",
+      "markdownDescription": "The formatter.",
+      "properties": {
+        "lineWidth": {
+          "$ref": "#/definitions/format.lineWidth"
+        }
+      },
+      "additionalProperties": false
+    },
+    "codeLens.references": {
+      "type": "boolean",
+      "default": true,
+      "description": "Show the number of references above each subject a file describes. Click it to list the references.",
+      "markdownDescription": "Show the number of references above each subject a file describes. Click it to list the references."
+    },
+    "codeLens": {
+      "type": "object",
+      "description": "Code lenses.",
+      "markdownDescription": "Code lenses.",
+      "properties": {
+        "references": {
+          "$ref": "#/definitions/codeLens.references"
+        }
+      },
+      "additionalProperties": false
+    },
+    "query.timeoutSeconds": {
+      "type": "number",
+      "default": 30,
+      "exclusiveMinimum": 0,
+      "maximum": 30,
+      "description": "Stop a query run with ▶ Run query or turtle-lsp query after this many seconds. This file can lower it but not raise it past 30 (0, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag.",
+      "markdownDescription": "Stop a query run with **▶ Run query** or `turtle-lsp query` after this many seconds. This file can lower it but not raise it past 30 (`0`, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag."
+    },
+    "query.maxRows": {
+      "type": "integer",
+      "default": 1000,
+      "minimum": 1,
+      "maximum": 1000,
+      "description": "Show at most this many rows (or triples) of a query's results; the total is still counted. This file can lower it but not raise it past 1,000 (0, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag.",
+      "markdownDescription": "Show at most this many rows (or triples) of a query's results; the total is still counted. This file can lower it but not raise it past 1,000 (`0`, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag."
+    },
+    "query.maxBufferedRows": {
+      "type": "integer",
+      "default": 10000000,
+      "minimum": 1,
+      "maximum": 10000000,
+      "description": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (ordinary rows take about 100 bytes each; long text values take more). This file can lower it but not raise it past 10,000,000 (0, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag.",
+      "markdownDescription": "Stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (ordinary rows take about 100 bytes each; long text values take more). This file can lower it but not raise it past 10,000,000 (`0`, no limit, counts as past): a larger value is ignored with a warning, since any repository you clone can ship the file. Raise it in the editor's settings or with a command-line flag."
+    },
+    "query": {
+      "type": "object",
+      "description": "Limits on SPARQL query runs. This file can lower them but not raise them.",
+      "markdownDescription": "Limits on SPARQL query runs. This file can lower them but not raise them.",
+      "properties": {
+        "timeoutSeconds": {
+          "$ref": "#/definitions/query.timeoutSeconds"
+        },
+        "maxRows": {
+          "$ref": "#/definitions/query.maxRows"
+        },
+        "maxBufferedRows": {
+          "$ref": "#/definitions/query.maxBufferedRows"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

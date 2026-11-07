@@ -421,6 +421,15 @@
         }
       }
     },
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "turtle-lsp.json",
+          "**/turtle-lsp.json"
+        ],
+        "url": "./schemas/turtle-lsp.schema.json"
+      }
+    ],
     "semanticTokenScopes": [
       {
         "language": "turtle",

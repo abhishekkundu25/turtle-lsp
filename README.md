@@ -675,6 +675,9 @@ is also accepted.
   editor's settings, or pass `--network` and the other flags.
 - **A file that is not a JSON object,** or is larger than 1 MB, is ignored,
   with one warning.
+- **In VS Code,** the extension completes and checks the file against its
+  JSON schema (`editors/vscode/schemas/turtle-lsp.schema.json`), nested or
+  dotted, and flags a misspelt key, a wrong value or a limit the file cannot raise.
 - **A time limit that cannot be held** (negative, or too large) is ignored
   with a warning, by the editor, `format` and `query`. `check` stops with
   exit code 2 instead, so a CI gate never runs on settings it was not given.

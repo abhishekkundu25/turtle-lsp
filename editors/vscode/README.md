@@ -99,6 +99,8 @@ query in that folder or below can then use those prefixes. Or set
 
 The extension sends the server only the settings you set. A setting you leave unset comes from the project's [`turtle-lsp.json`](https://github.com/abhishekkundu25/turtle-lsp#settings-file-turtle-lspjson), or takes its default. That file cannot turn on `turtle.imports.network` or raise the query, SHACL and reasoning limits; only your own settings can. In an untrusted workspace, `turtle.server.path`, `turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples`, `turtle.reasoning.maxTriples` and `turtle.diagnostics.workspace` take your user settings only.
 
+VS Code completes and checks `turtle-lsp.json` against the extension's JSON schema: each key with its default, its choices and its description, and a warning on a misspelt key, a wrong value, or a limit the file cannot raise.
+
 ## In the browser (vscode.dev, github.dev)
 
 The extension also runs in VS Code for the Web. Press `.` on a GitHub
