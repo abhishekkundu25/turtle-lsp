@@ -202,21 +202,21 @@ test("over turtle.reasoning.maxTriples, the run is skipped with a note", async (
   }
 })
 
-// A class hierarchy 100 deep with 10,000 members of its bottom class: a run
-// that lasts long enough to show progress (about 0.7 s on a laptop).
-function deep() {
-  let text = "@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
-  for (let i = 0; i < 100; i++) text += `ex:C${i} rdfs:subClassOf ex:C${i + 1} .\n`
-  for (let i = 0; i < 10000; i++) text += `ex:m${i} a ex:C0 .\n`
-  return text
-}
-
+// A run shows progress only once it has lasted 200 ms; with
+// TURTLE_LSP_REASONING_PROGRESS_NOW=1 the server shows it at once, so the
+// test does not depend on how long a run takes.
 test("progress: a run shows TurbOWL's progress, which ends with a count", async () => {
-  const w = await session({ "deep.ttl": deep(), "a.ttl": CLASH }, { initializationOptions: ON, capabilities: PROGRESS })
+  process.env.TURTLE_LSP_REASONING_PROGRESS_NOW = "1"
+  let w
+  try {
+    w = await session({ "a.ttl": CLASH }, { initializationOptions: ON, capabilities: PROGRESS })
+  } finally {
+    delete process.env.TURTLE_LSP_REASONING_PROGRESS_NOW
+  }
   const a = w.uri("a.ttl")
   try {
     w.s.open(a, CLASH)
-    await until(w.s, a, (d) => turbowl(d).length > 0, 30000)
+    await until(w.s, a, (d) => turbowl(d).length > 0)
     const ended = () => [...progressByToken(w.s).values()].filter((p) => p.title === TITLE && p.end)
     for (let i = 0; i < 100 && ended().length === 0; i++) await sleep(20)
     const runs = ended()

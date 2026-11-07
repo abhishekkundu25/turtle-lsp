@@ -149,6 +149,14 @@ const REASONING_TYPING_DEBOUNCE: Duration = Duration::from_secs(1);
 /// A reasoning run shows progress only once it has lasted this long.
 const REASONING_PROGRESS_DELAY: Duration = Duration::from_millis(200);
 
+/// The environment variable that, set to `1`, makes a reasoning run show
+/// its progress at once, not after [`REASONING_PROGRESS_DELAY`]: a test of
+/// the progress then does not depend on how long a run takes. For tests.
+const REASONING_PROGRESS_NOW: &str = "TURTLE_LSP_REASONING_PROGRESS_NOW";
+
+/// The title of a reasoning run's progress.
+const REASONING_TITLE: &str = "TurbOWL: reasoning…";
+
 pub(crate) struct Server {
     client: Client,
     /// Every message read so far, queued as the reader reads them, so that
@@ -183,6 +191,8 @@ pub(crate) struct Server {
     reasoning: Option<Arc<crate::reasoning::Shared>>,
     /// The reasoning runs and their findings; idle with reasoning off.
     reasoning_runs: reasoning::Runs,
+    /// A run shows its progress at once ([`REASONING_PROGRESS_NOW`]).
+    reasoning_progress_now: bool,
     progress: Progress,
     /// How the jobs run: on threads, or inline when embedded in a host
     /// without threads (see [`Embedded`]), where the host drives the timers.
@@ -359,6 +369,7 @@ impl Server {
             contexts,
             shacl: Shacl::default(),
             reasoning_runs: reasoning::Runs::new(related_information),
+            reasoning_progress_now: std::env::var(REASONING_PROGRESS_NOW).is_ok_and(|v| v == "1"),
             progress: Progress::new(work_done_progress),
             wsdiag,
             root_uris,
@@ -812,7 +823,7 @@ impl Server {
                 Timer::ReasoningTyping => s.reason(),
                 Timer::ReasoningProgress => {
                     s.progress
-                        .begin(&mut s.client, Work::Reasoning, "TurbOWL: reasoning…");
+                        .begin(&mut s.client, Work::Reasoning, REASONING_TITLE);
                 }
             });
         }
@@ -1826,10 +1837,15 @@ impl Server {
             && !self.progress.is_shown(Work::Reasoning)
             && !self.timers.is_set(Timer::ReasoningProgress)
         {
-            self.timers.set(
-                Timer::ReasoningProgress,
-                Instant::now() + REASONING_PROGRESS_DELAY,
-            );
+            if self.reasoning_progress_now {
+                self.progress
+                    .begin(&mut self.client, Work::Reasoning, REASONING_TITLE);
+            } else {
+                self.timers.set(
+                    Timer::ReasoningProgress,
+                    Instant::now() + REASONING_PROGRESS_DELAY,
+                );
+            }
         }
         if let Err(e) = self.reasoning_runs.submit(job, &shared) {
             self.client.warn(format!(
