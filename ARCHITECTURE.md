@@ -67,6 +67,7 @@ Inside the larger modules, these files hold one part each:
 | `src/shacl/vocab.rs` | The SHACL, RDF, RDFS and OWL IRIs the SHACL code compares against, interned once |
 | `src/reasoning/state.rs` | `Shared`: the reasoner after its last run, with its base and proof cache, behind a lock only the reasoning thread writes; hover reads it without waiting for a run |
 | `src/reasoning/proof.rs` | A TurbOWL proof as hover markdown, each base triple a link to its line |
+| `src/reasoning/turtle.rs` | How hover and diagnostics write a proof: short names, `[]` for a blank node, an RDF list as one `( … )` item |
 | `src/server/{client,progress,shacl,reasoning,refresh,layers,index}.rs` | The server's state groups (see [Threads](#threads)) |
 | `src/server/worker.rs` | `Spawn`, `spawn_guarded` and `Feed`: how jobs start and how their answers come back |
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |

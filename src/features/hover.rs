@@ -89,6 +89,10 @@ pub(crate) fn hover_reasoned(
 /// and no document asserts, with its proof folded under it; while a run is
 /// writing the state, or the proofs are still being searched for, a line
 /// that says so. Empty when there is nothing to add.
+///
+/// A type whose proof rests on no triple of a document (an axiom, as
+/// `dt-type1` types `xsd:integer` an `rdfs:Datatype`) says nothing of the
+/// text: such types are named on one line after the others, without proofs.
 fn inferred(types: Types, iri: &str, k: &Knowledge, prefixes: &PrefixMap) -> String {
     let asserted = k.types(iri);
     let new = |class: &str| !asserted.iter().any(|t| &**t == class);
@@ -99,15 +103,20 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, prefixes: &PrefixMap) -> Str
         place: &place,
     };
     let title = |class: &str| format!("**{}**", iri_name(class));
+    let mut built_in = Vec::new();
     let (items, note): (Vec<String>, _) = match types {
         Types::Unknown => return String::new(),
         Types::Running => return "\n\n**Inferred:** _reasoning is running_".into(),
         Types::Proved(v) => (
             v.iter()
                 .filter(|t| new(&t.class))
-                .map(|t| match &t.proof {
-                    Some(p) => p.markdown(&title(&t.class), &names),
-                    None => format!("- {} · _no proof found_", title(&t.class)),
+                .filter_map(|t| match &t.proof {
+                    Some(p) if !p.rests_on_documents() => {
+                        built_in.push(iri_name(&t.class));
+                        None
+                    }
+                    Some(p) => Some(p.markdown(&title(&t.class), &names)),
+                    None => Some(format!("- {} · _no proof found_", title(&t.class))),
                 })
                 .collect(),
             "",
@@ -121,17 +130,21 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, prefixes: &PrefixMap) -> Str
             "\n\n_The proof is still being worked out; hover again._",
         ),
     };
-    if items.is_empty() {
+    if items.is_empty() && built_in.is_empty() {
         return String::new();
     }
     let more = items.len().saturating_sub(MAX_INFERRED);
-    let mut out = format!(
-        "\n\n**Inferred**\n\n{}",
-        items[..items.len() - more].join("\n")
-    );
+    let mut lines = items[..items.len() - more].to_vec();
     if more > 0 {
-        out.push_str(&format!("\n- _and {more} more_"));
+        lines.push(format!("- _and {more} more_"));
     }
+    if !built_in.is_empty() {
+        lines.push(format!(
+            "- _From the built-in vocabulary:_ {}",
+            built_in.join(", ")
+        ));
+    }
+    let mut out = format!("\n\n**Inferred**\n\n{}", lines.join("\n"));
     out.push_str(note);
     out
 }
@@ -144,15 +157,20 @@ pub(crate) fn place(uri: &str, imported_from: Option<&str>, line: u32) -> String
     if let Some(origin) = imported_from {
         return format!("{origin}:{line}");
     }
-    let file = uri_to_path(uri)
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .or_else(|| crate::workspace::file_uri_name(uri))
-        .unwrap_or_else(|| uri.to_string());
+    let file = file_label(uri);
     if uri.starts_with("file:") {
         format!("[{file}:{line}]({uri}#L{line})")
     } else {
         format!("{file}:{line}")
     }
+}
+
+/// The name of the document at `uri`: its file's name, else the URI.
+pub(crate) fn file_label(uri: &str) -> String {
+    uri_to_path(uri)
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .or_else(|| crate::workspace::file_uri_name(uri))
+        .unwrap_or_else(|| uri.to_string())
 }
 
 /// `iri` as `prefix:local` with the document's prefixes, else with the

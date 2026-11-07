@@ -14,6 +14,9 @@
 //! - `diagnostics.rs`: what a run shows in the documents.
 //! - `proof.rs`: a [`Proof`] as hover markdown, a nested list ([`Names`]
 //!   says how the hover writes IRIs and places).
+//! - `turtle.rs`: how hover and diagnostics write a proof's terms and base
+//!   triples: short names, `[]` for a blank node, an RDF list as one
+//!   `( … )`.
 //!
 //! With reasoning off nothing here is built: the server holds no
 //! [`Shared`] and starts no thread.
@@ -26,6 +29,7 @@ mod base;
 mod diagnostics;
 mod proof;
 mod state;
+mod turtle;
 mod worker;
 
 use base::Base;

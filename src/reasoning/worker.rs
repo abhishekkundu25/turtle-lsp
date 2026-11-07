@@ -23,6 +23,10 @@ pub(crate) struct Job {
     /// The run is skipped when the sources have more triples than this.
     pub(crate) max_triples: u64,
     pub(crate) enc: Encoding,
+    /// The client shows a diagnostic's related information
+    /// (`textDocument.publishDiagnostics.relatedInformation`): a finding's
+    /// proof goes there instead of into its message.
+    pub(crate) related: bool,
 }
 
 /// What a run gives the server: its diagnostics per document URI (the
@@ -115,7 +119,7 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
     reasoner.set_base(base.triples().map(|t| t.as_ref()));
     reasoner.reason();
     let types = inferred_types(&reasoner);
-    let (diagnostics, cache) = diagnostics::of(&reasoner, &base);
+    let (diagnostics, cache) = diagnostics::of(&reasoner, &base, job.related);
     *held = Some(Reasoned {
         reasoner,
         base,
@@ -163,6 +167,7 @@ mod tests {
             rules: Reasoning::Default,
             max_triples: 1000,
             enc: Encoding::Utf16,
+            related: true,
         }
     }
 
@@ -202,7 +207,11 @@ mod tests {
                 ..
             }
         ));
-        let mut lines: Vec<u32> = proof.origins.iter().flatten().map(|o| o.line).collect();
+        let mut lines: Vec<u32> = proof
+            .leaves()
+            .filter_map(|l| l.origin())
+            .map(|o| o.line)
+            .collect();
         lines.sort_unstable();
         assert_eq!(lines, [3, 4]);
         // An asserted type is not inferred; a term with none has none.
@@ -256,9 +265,12 @@ mod tests {
         let mut lines: Vec<u32> = found.iter().map(|d| d.range.start.line).collect();
         lines.sort_unstable();
         assert_eq!(lines, [2, 3], "{list:?}");
-        let message = &found[0].message;
-        assert!(message.contains("[cax-dw]"), "{message}");
-        assert!(message.contains("[base]"), "{message}");
+        assert_eq!(
+            found[0].message,
+            "ex:tom is both a ex:Cat and a ex:Dog, which are disjoint."
+        );
+        let related = found[0].related_information.as_ref().expect("the proof");
+        assert_eq!(related.len(), 3, "{related:?}");
         assert_eq!(
             found[0].severity,
             Some(lsp_types::DiagnosticSeverity::ERROR)
@@ -328,9 +340,8 @@ mod tests {
             .proof
             .as_ref()
             .unwrap()
-            .origins
-            .iter()
-            .flatten()
+            .leaves()
+            .filter_map(|l| l.origin())
             .map(|o| o.uri.as_str())
             .collect();
         assert!(leaf_uris.contains(&"file:///w/b.ttl"), "{leaf_uris:?}");

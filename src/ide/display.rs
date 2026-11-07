@@ -282,6 +282,7 @@ mod tests {
                 rules: crate::settings::Reasoning::Default,
                 max_triples: 1000,
                 enc: Encoding::Utf16,
+                related: true,
             },
         );
         let md = hover(&mut ws);
@@ -307,6 +308,52 @@ mod tests {
             at(&ttl, "ex:Animal", 4),
         );
         assert!(!class.contains("Inferred"), "{class}");
+    }
+
+    /// A type no triple of a document gives (an axiom of the rules) is
+    /// named on one line, without its proof.
+    #[test]
+    fn hover_folds_the_types_of_the_built_in_vocabulary_into_one_line() {
+        let dir = Dir::new("hover-built-in");
+        let ttl = format!(
+            "{PREFIXES}@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\
+             ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog ;\n  ex:age \"3\"^^xsd:integer .\n"
+        );
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
+        let settings = Settings::default();
+        let shared = Arc::new(crate::reasoning::Shared::new(
+            crate::server::worker::Spawn::Thread,
+        ));
+        let docs = vec![(
+            crate::knowledge::Source::Open,
+            ws.analysis(&uris[0]).unwrap(),
+        )];
+        crate::reasoning::run_inline(
+            &shared,
+            &crate::reasoning::Job {
+                generation: 1,
+                docs,
+                rules: crate::settings::Reasoning::Complete,
+                max_triples: 1000,
+                enc: Encoding::Utf16,
+                related: true,
+            },
+        );
+        let integer = hover_at(
+            &mut ws,
+            &settings,
+            &shared,
+            &uris[0],
+            at(&ttl, "xsd:integer", 5),
+        );
+        let section = &integer[integer.find("\n\n**Inferred**").expect(&integer)..];
+        assert_eq!(
+            section,
+            "\n\n**Inferred**\n\n- _From the built-in vocabulary:_ rdfs:Datatype"
+        );
+        let rex = hover_at(&mut ws, &settings, &shared, &uris[0], at(&ttl, "ex:rex", 4));
+        assert!(rex.contains("- **ex:Animal** · _cax-sco_\n"), "{rex}");
+        assert!(rex.contains("`ex:rex a ex:Dog`"), "{rex}");
     }
 
     fn hover_at(

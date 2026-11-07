@@ -275,6 +275,14 @@ impl Server {
             .pointer("/capabilities/window/showDocument/support")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // The spec's `publishDiagnostics`, and for pull its `diagnostic` (3.18).
+        let related_information = ["publishDiagnostics", "diagnostic"].iter().any(|k| {
+            raw.pointer(&format!(
+                "/capabilities/textDocument/{k}/relatedInformation"
+            ))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        });
         let config_pull = params
             .capabilities
             .workspace
@@ -350,7 +358,7 @@ impl Server {
             imports: crate::imports::Imports::with_spawn(spawn),
             contexts,
             shacl: Shacl::default(),
-            reasoning_runs: reasoning::Runs::default(),
+            reasoning_runs: reasoning::Runs::new(related_information),
             progress: Progress::new(work_done_progress),
             wsdiag,
             root_uris,
@@ -2002,7 +2010,7 @@ mod tests {
             ex:tom a ex:Cat , ex:Dog .\n";
         let uri = "file:///w/a.ttl";
         let found = |sent: &[Message]| {
-            published(sent, uri).map(|m| m.iter().any(|m| m.contains("[cax-dw]")))
+            published(sent, uri).map(|m| m.iter().any(|m| m.contains("which are disjoint")))
         };
         let rules = |r: &str| {
             notify(

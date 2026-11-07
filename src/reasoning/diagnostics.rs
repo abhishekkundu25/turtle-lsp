@@ -6,15 +6,27 @@
 //! terms, on the statement's subject (a member of two disjoint classes: on
 //! the member and on the classes); a finding about terms no workspace
 //! statement describes (a literal) on the triples whose object is one of
-//! them. A finding only about imports is not shown. Its code is
-//! `turbowl/<rule>`, and its message is the finding's proof, as an indented
-//! tree, or its sentence when the proof is not searched for.
+//! them (a literal only: an ill-typed literal is shown on itself, not on its
+//! datatype). A finding only about imports is not shown. Its code is
+//! `turbowl/<rule>`.
+//!
+//! Its message is one sentence, its IRIs written with the prefixes of the
+//! document it is shown in. When its proof is searched for, the base
+//! triples the proof rests on follow, written as `turtle.rs` writes them
+//! (an RDF list as one item), in proof order: as related information, each
+//! at its place, when the client shows it; otherwise as lines of the
+//! message, `file:line  triple`.
 
-use super::Base;
+use super::turtle::{IriName, term};
+use super::{Base, Origin, Proof};
 use crate::analysis::Analysis;
 use crate::features::diagnostics::SOURCE;
+use crate::features::hover::{file_label, short};
 use crate::knowledge::Source;
-use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
+use crate::syntax::PrefixMap;
+use lsp_types::{
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, NumberOrString, Range,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spargebra::term::{NamedOrBlankNode, Term};
 use std::sync::Arc;
@@ -32,8 +44,13 @@ const MAX_EXPLAINED: usize = 100;
 const MAX_PER_DOC: usize = 1000;
 
 /// The diagnostics of `r`'s last run over `base`, and the explainer's
-/// cache their proofs filled.
-pub(super) fn of(r: &turbowl::Reasoner, base: &Base) -> (ByUri, turbowl::ExplainCache) {
+/// cache their proofs filled. With `related`, the proof's triples are
+/// related information; without, lines of the message.
+pub(super) fn of(
+    r: &turbowl::Reasoner,
+    base: &Base,
+    related: bool,
+) -> (ByUri, turbowl::ExplainCache) {
     let mut out = ByUri::default();
     let found = r.diagnostics();
     if found.is_empty() {
@@ -42,6 +59,7 @@ pub(super) fn of(r: &turbowl::Reasoner, base: &Base) -> (ByUri, turbowl::Explain
     let mentions = Mentions::of(base, found);
     let explainer = r.explainer().ok();
     let mut explained = 0;
+    let mut prefixes: FxHashMap<String, PrefixMap> = FxHashMap::default();
     for d in found {
         let places = mentions.places(base, d);
         if places.is_empty() {
@@ -50,20 +68,34 @@ pub(super) fn of(r: &turbowl::Reasoner, base: &Base) -> (ByUri, turbowl::Explain
         let proof = explainer
             .as_ref()
             .filter(|_| explained < MAX_EXPLAINED)
-            .and_then(|e| e.explain_diagnostic(d));
+            .and_then(|e| e.explain_diagnostic(d))
+            .map(|p| Proof::new(p, base));
         explained += 1;
-        let message = proof.map_or_else(|| d.message.clone(), |p| p.to_string().trim_end().into());
         let severity = match d.severity {
             turbowl::Severity::Error => DiagnosticSeverity::ERROR,
             turbowl::Severity::Warning => DiagnosticSeverity::WARNING,
         };
-        for (uri, range) in places {
-            out.entry(uri.to_string()).or_default().push(Diagnostic {
+        // Written once per document, with its prefixes.
+        let mut written: FxHashMap<&str, (String, Option<Vec<DiagnosticRelatedInformation>>)> =
+            FxHashMap::default();
+        for (a, range) in places {
+            let (message, related_information) = written
+                .entry(a.uri.as_str())
+                .or_insert_with(|| {
+                    let prefixes = prefixes
+                        .entry(a.uri.clone())
+                        .or_insert_with(|| a.prefix_map());
+                    let iri = |i: &str| short(i, prefixes);
+                    explained_message(d, proof.as_ref(), &iri, related)
+                })
+                .clone();
+            out.entry(a.uri.clone()).or_default().push(Diagnostic {
                 range,
                 severity: Some(severity),
                 code: Some(NumberOrString::String(format!("{CODE_PREFIX}{}", d.code))),
                 source: Some(SOURCE.into()),
-                message: message.clone(),
+                message,
+                related_information,
                 ..Default::default()
             });
         }
@@ -125,8 +157,12 @@ impl Mentions {
         Mentions { subjects, objects }
     }
 
-    /// The (document URI, range) where `d` is shown, each once, in order.
-    fn places<'b>(&self, base: &'b Base, d: &turbowl::Diagnostic) -> Vec<(&'b str, Range)> {
+    /// The (document, range) where `d` is shown, each once, in order.
+    fn places<'b>(
+        &self,
+        base: &'b Base,
+        d: &turbowl::Diagnostic,
+    ) -> Vec<(&'b Arc<Analysis>, Range)> {
         let enc = base.encoding();
         let mut out = Vec::new();
         let mut statements = FxHashSet::default();
@@ -146,18 +182,131 @@ impl Mentions {
                 // A blank node subject: the triple.
                 None => base.place(*place).range,
             };
-            out.push((a.uri.as_str(), range));
+            out.push((a, range));
         }
         if out.is_empty() {
-            for place in d.terms.iter().filter_map(|t| self.objects.get(t)).flatten() {
+            let literals = d.terms.iter().any(|t| matches!(t, Term::Literal(_)));
+            for place in d
+                .terms
+                .iter()
+                .filter(|t| !literals || matches!(t, Term::Literal(_)))
+                .filter_map(|t| self.objects.get(t))
+                .flatten()
+            {
                 let (a, t) = base.written(*place);
-                out.push((a.uri.as_str(), a.range(enc, t.o_span)));
+                out.push((a, a.range(enc, t.o_span)));
             }
         }
         let mut seen = FxHashSet::default();
-        out.retain(|p| seen.insert(*p));
+        out.retain(|(a, r)| seen.insert((a.uri.as_str(), *r)));
         out
     }
+}
+
+/// The message of `d` and its related information: the sentence, and the
+/// base triples of `proof` as related information (`related`) or as lines
+/// of the message.
+fn explained_message(
+    d: &turbowl::Diagnostic,
+    proof: Option<&Proof>,
+    iri: IriName<'_>,
+    related: bool,
+) -> (String, Option<Vec<DiagnosticRelatedInformation>>) {
+    let mut message = sentence(d, iri);
+    let Some(proof) = proof else {
+        return (message, None);
+    };
+    let leaves: Vec<(&Origin, String)> = proof
+        .leaves()
+        .filter_map(|l| {
+            let text = match l.rule {
+                Some(rule) => format!("{} ({rule})", l.text(iri)),
+                None => l.text(iri),
+            };
+            Some((l.origin()?, text))
+        })
+        .collect();
+    if leaves.is_empty() {
+        return (message, None);
+    }
+    if related {
+        let info = leaves
+            .into_iter()
+            .map(|(o, text)| DiagnosticRelatedInformation {
+                location: Location {
+                    uri: crate::features::navigation::uri(&o.uri),
+                    range: o.range,
+                },
+                message: text,
+            })
+            .collect();
+        return (message, Some(info));
+    }
+    for (o, text) in leaves {
+        let file = o
+            .imported_from
+            .clone()
+            .unwrap_or_else(|| file_label(&o.uri));
+        message.push_str(&format!("\n{file}:{}  {text}", o.line));
+    }
+    (message, None)
+}
+
+/// The sentence of `d`, its terms written with `iri`.
+fn sentence(d: &turbowl::Diagnostic, iri: IriName<'_>) -> String {
+    let names: Vec<String> = d.terms.iter().map(|t| term(t, iri)).collect();
+    match (d.code, names.as_slice()) {
+        ("cax-dw" | "cax-adc", [x, c1, c2]) => {
+            format!("{x} is both a {c1} and a {c2}, which are disjoint.")
+        }
+        ("cls-com", [c1, c2, x]) => format!("{x} is both a {c1} and its complement {c2}."),
+        ("cls-nothing2", [x]) => format!("{x} is an owl:Nothing, which has no instances."),
+        ("prp-pdw" | "prp-adp", [p1, p2, x, y]) => {
+            format!("{x} is linked to {y} by both {p1} and {p2}, which are disjoint.")
+        }
+        ("prp-asyp", [p, x, y]) => {
+            format!("{x} {p} {y} and {y} {p} {x}, but {p} is asymmetric.")
+        }
+        ("prp-irp", [p, x]) => format!("{x} {p} {x}, but {p} is irreflexive."),
+        ("dt-not-type", [literal, datatype]) => {
+            format!("{literal} is not a valid {datatype}.")
+        }
+        ("eq-diff1", [x, y]) | ("eq-diff2" | "eq-diff3", [_, x, y]) => {
+            format!("{x} and {y} are the same, but declared different.")
+        }
+        ("prp-npa1" | "prp-npa2", [x, p, y]) => {
+            format!("{x} {p} {y}, which a negative property assertion denies.")
+        }
+        ("cls-maxc1" | "cls-maxqc1" | "cls-maxqc2", [_, x, y]) => {
+            format!("{x} has the value {y}, but a restriction it is an instance of allows none.")
+        }
+        _ => turbowl_message(d, iri),
+    }
+}
+
+/// TurbOWL's own sentence for `d`, its IRIs written with `iri` and its
+/// blank nodes as `[]`.
+fn turbowl_message(d: &turbowl::Diagnostic, iri: IriName<'_>) -> String {
+    let mut out = String::with_capacity(d.message.len());
+    let mut rest = d.message.as_str();
+    while let Some(open) = rest.find('<') {
+        let Some(len) = rest[open..]
+            .find('>')
+            .filter(|&n| !rest[open + 1..open + n].contains(' '))
+        else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        out.push_str(&iri(&rest[open + 1..open + len]));
+        rest = &rest[open + len + 1..];
+    }
+    out.push_str(rest);
+    for t in &d.terms {
+        if let Term::BlankNode(_) = t {
+            out = out.replace(&t.to_string(), "[]");
+        }
+    }
+    out
 }
 
 /// The note on each open document that the run was skipped: the sources
@@ -201,4 +350,136 @@ fn on_open(docs: &[(Source, Arc<Analysis>)], d: impl Fn() -> Diagnostic) -> ByUr
         .filter(|(s, _)| *s == Source::Open)
         .map(|(_, a)| (a.uri.clone(), vec![d()]))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::base::tests::doc;
+    use super::super::{Job, Shared, run_inline};
+    use super::*;
+    use crate::analysis::Encoding;
+    use crate::server::worker::Spawn;
+    use crate::settings::Reasoning;
+
+    const URI: &str = "file:///w/a.ttl";
+
+    /// The findings in `text`, shown with related information or not.
+    fn findings(text: &str, related: bool) -> Vec<Diagnostic> {
+        let shared = Shared::new(Spawn::Thread);
+        let job = Job {
+            generation: 1,
+            docs: vec![doc(Source::Open, URI, text)],
+            rules: Reasoning::Default,
+            max_triples: 1000,
+            enc: Encoding::Utf16,
+            related,
+        };
+        let mut out = run_inline(&shared, &job).diagnostics;
+        let mut v = out.remove(URI).unwrap_or_default();
+        v.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        v
+    }
+
+    /// Each related information as `line: message`, lines from 1.
+    fn related(d: &Diagnostic) -> Vec<String> {
+        d.related_information
+            .iter()
+            .flatten()
+            .map(|r| {
+                assert_eq!(r.location.uri.as_str(), URI);
+                format!("{}: {}", r.location.range.start.line + 1, r.message)
+            })
+            .collect()
+    }
+
+    const ALL_DISJOINT: &str = "@prefix ex: <http://example.org/> .\n\
+        @prefix obj: <http://example.org/obj/> .\n\
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+        [] a owl:AllDisjointClasses ;\n\
+        \x20 owl:members ( ex:PhysicalObject ex:SoftwareObject ex:Location ex:Position ) .\n\
+        ex:Transmitter rdfs:subClassOf ex:PhysicalObject .\n\
+        obj:tt a ex:Transmitter , ex:SoftwareObject .\n";
+
+    #[test]
+    fn a_disjointness_through_a_list_is_one_sentence_with_the_list_as_one_triple() {
+        let found = findings(ALL_DISJOINT, true);
+        let d = found
+            .iter()
+            .find(|d| d.range.start.line == 7)
+            .unwrap_or_else(|| panic!("{found:#?}"));
+        assert_eq!(
+            d.code,
+            Some(NumberOrString::String("turbowl/cax-adc".into()))
+        );
+        assert_eq!(
+            d.message,
+            "obj:tt is both a ex:PhysicalObject and a ex:SoftwareObject, which are disjoint."
+        );
+        assert_eq!(
+            related(d),
+            [
+                "7: ex:Transmitter rdfs:subClassOf ex:PhysicalObject (cax-sco)",
+                "8: obj:tt a ex:Transmitter (cax-sco)",
+                "8: obj:tt a ex:SoftwareObject",
+                "5: [] a owl:AllDisjointClasses ; owl:members ( ex:PhysicalObject ex:SoftwareObject ex:Location ex:Position )",
+            ]
+        );
+        // The list's item spans its statement, from `a` to the list's end.
+        let list = &d.related_information.as_ref().unwrap()[3].location.range;
+        assert_eq!((list.start.line, list.start.character), (4, 3));
+        assert_eq!((list.end.line, list.end.character), (5, 77));
+    }
+
+    #[test]
+    fn without_related_information_the_triples_are_lines_of_the_message() {
+        let found = findings(ALL_DISJOINT, false);
+        let d = found.iter().find(|d| d.range.start.line == 7).unwrap();
+        assert_eq!(d.related_information, None);
+        assert_eq!(
+            d.message,
+            "obj:tt is both a ex:PhysicalObject and a ex:SoftwareObject, which are disjoint.\n\
+             a.ttl:7  ex:Transmitter rdfs:subClassOf ex:PhysicalObject (cax-sco)\n\
+             a.ttl:8  obj:tt a ex:Transmitter (cax-sco)\n\
+             a.ttl:8  obj:tt a ex:SoftwareObject\n\
+             a.ttl:5  [] a owl:AllDisjointClasses ; owl:members ( ex:PhysicalObject ex:SoftwareObject ex:Location ex:Position )"
+        );
+    }
+
+    #[test]
+    fn names_use_the_prefixes_of_the_document_and_iris_without_one_stay_whole() {
+        let text = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            <http://example.org/Cat> owl:disjointWith <http://example.org/Dog> .\n\
+            <http://example.org/tom> a <http://example.org/Cat> , <http://example.org/Dog> .\n";
+        let found = findings(text, true);
+        assert_eq!(
+            found[0].message,
+            "<http://example.org/tom> is both a <http://example.org/Cat> and a <http://example.org/Dog>, which are disjoint."
+        );
+    }
+
+    #[test]
+    fn an_ill_typed_literal_is_shown_on_itself() {
+        let text = "@prefix ex: <http://example.org/> .\n\
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\
+            ex:box2 ex:hasCount \"twelve\"^^xsd:integer .\n";
+        let found = findings(text, true);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        let d = &found[0];
+        assert_eq!(
+            d.code,
+            Some(NumberOrString::String("turbowl/dt-not-type".into()))
+        );
+        assert_eq!(
+            d.message,
+            "\"twelve\"^^xsd:integer is not a valid xsd:integer."
+        );
+        // The literal.
+        assert_eq!((d.range.start.line, d.range.start.character), (2, 20));
+        assert_eq!((d.range.end.line, d.range.end.character), (2, 41));
+        assert_eq!(
+            related(d),
+            ["3: ex:box2 ex:hasCount \"twelve\"^^xsd:integer"]
+        );
+    }
 }

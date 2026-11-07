@@ -1,13 +1,12 @@
 //! A proof as hover markdown: a nested list under the inferred type, each
 //! rule step naming its W3C rule (`cax-sco`, `eq-rep-s`), each base triple a
-//! link to where it is written. A step the list has shown already is
-//! written again as "shown above", as TurbOWL's own tree writes it, and a
-//! long proof is cut after [`MAX_ITEMS`] items.
+//! link to where it is written. Statements are written as `turtle.rs`
+//! writes them, as the diagnostics are: an RDF list is one item. A step the
+//! list has shown already is written again as "shown above", as TurbOWL's
+//! own tree writes it, and a long proof is cut after [`MAX_ITEMS`] items.
 
 use super::{Origin, Proof};
-use crate::syntax::RDF_TYPE;
-use spargebra::term::Term;
-use turbowl::{Reason, Statement};
+use turbowl::Reason;
 
 /// The most items a proof's list has; the rest are left out, and said so.
 const MAX_ITEMS: usize = 30;
@@ -58,7 +57,7 @@ impl Writer<'_, '_> {
     fn reason(&mut self, i: usize, depth: usize) {
         let step = &self.proof.proof.steps()[i];
         match &step.reason {
-            Reason::Base => match &self.proof.origins[i] {
+            Reason::Base => match self.proof.lead(i).as_ref().and_then(|l| l.origin()) {
                 Some(o) => self.out.push_str(&format!(" {}", (self.names.place)(o))),
                 None => self.out.push_str(" · _base_"),
             },
@@ -75,56 +74,28 @@ impl Writer<'_, '_> {
         }
     }
 
-    /// Step `i` as an item at `depth`.
+    /// Step `i` as an item at `depth`; nothing for a base triple written
+    /// within another one's item.
     fn step(&mut self, i: usize, depth: usize) {
+        let step = &self.proof.proof.steps()[i];
+        let statement = match step.reason {
+            Reason::Base => match self.proof.lead(i) {
+                Some(leaf) => leaf.text(self.names.iri),
+                None => return,
+            },
+            Reason::Rule { .. } => self.proof.statement(&step.statement, self.names.iri),
+        };
         self.items += 1;
         if self.items > MAX_ITEMS {
             return;
         }
-        let statement = statement(&self.proof.proof.steps()[i].statement, self.names);
+        let statement = code(&statement);
         self.out.push_str(&format!(
             "\n{:indent$}- {statement}",
             "",
             indent = 2 * depth
         ));
         self.reason(i, depth);
-    }
-}
-
-/// A statement as code: `ex:rex a ex:Dog`.
-fn statement(s: &Statement, names: &Names<'_>) -> String {
-    let predicate = match &s.predicate {
-        Term::NamedNode(n) if n.as_str() == RDF_TYPE => "a".to_string(),
-        p => term(p, names),
-    };
-    code(&format!(
-        "{} {predicate} {}",
-        term(&s.subject, names),
-        term(&s.object, names)
-    ))
-}
-
-fn term(t: &Term, names: &Names<'_>) -> String {
-    match t {
-        Term::NamedNode(n) => (names.iri)(n.as_str()),
-        // The base's names for blank nodes are its own, not the user's.
-        Term::BlankNode(_) => "[]".into(),
-        Term::Literal(l) => {
-            let lexical = spargebra::term::Literal::new_simple_literal(l.value()).to_string();
-            if let Some(lang) = l.language() {
-                format!("{lexical}@{lang}")
-            } else if l.datatype().as_str() == "http://www.w3.org/2001/XMLSchema#string" {
-                lexical
-            } else {
-                format!("{lexical}^^{}", (names.iri)(l.datatype().as_str()))
-            }
-        }
-        Term::Triple(t) => format!(
-            "<<( {} {} {} )>>",
-            term(&t.subject.clone().into(), names),
-            (names.iri)(t.predicate.as_str()),
-            term(&t.object, names)
-        ),
     }
 }
 
@@ -167,6 +138,7 @@ mod tests {
                 rules: Reasoning::Default,
                 max_triples: 1000,
                 enc: Encoding::Utf16,
+                related: true,
             },
         );
         match shared.inferred_types(&format!("{EX}{local}"), Duration::from_secs(10)) {
@@ -214,6 +186,27 @@ mod tests {
     }
 
     #[test]
+    fn an_rdf_list_in_a_proof_is_one_item() {
+        let d = doc(
+            Source::Open,
+            "file:///w/a.ttl",
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             ex:Pet owl:unionOf ( ex:Cat ex:Dog ex:Fish ) .\n\
+             ex:tom a ex:Dog .\n",
+        );
+        let types = inferred(vec![d], "tom");
+        let pet = types.iter().find(|t| t.class == format!("{EX}Pet"));
+        let md = written(pet.expect("ex:tom a ex:Pet"));
+        assert_eq!(
+            md,
+            "- **ex:Pet** · _cls-uni_\n  \
+             - `ex:Pet owl:unionOf ( ex:Cat ex:Dog ex:Fish )` [file:///w/a.ttl:3]\n  \
+             - `ex:tom a ex:Dog` [file:///w/a.ttl:4]",
+        );
+    }
+
+    #[test]
     fn a_type_through_same_as_shows_the_chain_of_links() {
         let d = doc(
             Source::Open,
@@ -240,27 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn terms_are_written_as_turtle_and_code_spans_hold_backticks() {
-        let iri = |i: &str| format!("<{i}>");
-        let place = |_: &Origin| String::new();
-        let names = Names {
-            iri: &iri,
-            place: &place,
-        };
-        let lit = |l: spargebra::term::Literal| term(&l.into(), &names);
-        use spargebra::term::{Literal, NamedNode};
-        assert_eq!(lit(Literal::new_simple_literal("a\"b")), "\"a\\\"b\"");
-        assert_eq!(
-            lit(Literal::new_language_tagged_literal_unchecked("chat", "fr")),
-            "\"chat\"@fr"
-        );
-        assert_eq!(
-            lit(Literal::new_typed_literal(
-                "1",
-                NamedNode::new_unchecked("http://www.w3.org/2001/XMLSchema#integer")
-            )),
-            "\"1\"^^<http://www.w3.org/2001/XMLSchema#integer>"
-        );
+    fn code_spans_hold_backticks() {
         assert_eq!(code("x"), "`x`");
         assert_eq!(code("a `b` c"), "`` a `b` c ``");
     }

@@ -32,9 +32,19 @@ pub(super) struct Runs {
     generation: u64,
     /// The latest findings per document.
     diagnostics: ByUri,
+    /// The client shows related information (see [`Job::related`]).
+    related: bool,
 }
 
 impl Runs {
+    /// Runs for a client that shows related information (`related`) or not.
+    pub(super) fn new(related: bool) -> Runs {
+        Runs {
+            related,
+            ..Runs::default()
+        }
+    }
+
     /// The latest findings per document.
     pub(super) fn diagnostics(&self) -> &ByUri {
         &self.diagnostics
@@ -67,6 +77,7 @@ impl Runs {
             rules: settings.reasoning,
             max_triples: settings.reasoning_max_triples,
             enc,
+            related: self.related,
         }
     }
 

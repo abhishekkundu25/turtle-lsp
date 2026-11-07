@@ -71,11 +71,50 @@ test("a disjointness contradiction is a diagnostic with its proof, on its terms'
     assert.deepEqual(found.map((d) => d.range.start.line).sort(), [2, 3])
     for (const d of found) {
       assert.equal(d.severity, 1)
-      assert.match(d.message, /\[cax-dw\]/)
-      // The proof, as indented text, rests on the base triples.
-      assert.match(d.message, /\[base\]/)
-      assert.match(d.message, /\n\s+/)
+      // The client shows no related information: the proof's triples are
+      // lines of the message, each with its file and line.
+      assert.equal(
+        d.message,
+        "ex:tom is both a ex:Cat and a ex:Dog, which are disjoint.\n" +
+          "a.ttl:3  ex:Cat owl:disjointWith ex:Dog\n" +
+          "a.ttl:4  ex:tom a ex:Cat\n" +
+          "a.ttl:4  ex:tom a ex:Dog",
+      )
+      assert.equal(d.relatedInformation, undefined)
     }
+  } finally {
+    await w.end()
+  }
+})
+
+test("with related information, each triple of the proof is a location; a list is one", async () => {
+  const text =
+    `${HEAD}[] a owl:AllDisjointClasses ;\n  owl:members ( ex:Cat ex:Dog ex:Fish ) .\n` +
+    "ex:tom a ex:Cat ,\n  ex:Dog .\n"
+  const w = await session(
+    { "a.ttl": text },
+    {
+      initializationOptions: ON,
+      capabilities: { textDocument: { publishDiagnostics: { relatedInformation: true } } },
+    },
+  )
+  const a = w.uri("a.ttl")
+  try {
+    w.s.open(a, text)
+    const found = turbowl(await until(w.s, a, (d) => turbowl(d).length > 0))
+    const d = found.find((d) => d.range.start.line === 4)
+    assert.ok(d, JSON.stringify(found))
+    assert.equal(d.code, "turbowl/cax-adc")
+    assert.equal(d.message, "ex:tom is both a ex:Cat and a ex:Dog, which are disjoint.")
+    assert.deepEqual(
+      d.relatedInformation.map((r) => [r.location.uri, r.location.range.start.line, r.message]),
+      [
+        [a, 4, "ex:tom a ex:Cat"],
+        // A triple's place starts at its predicate.
+        [a, 4, "ex:tom a ex:Dog"],
+        [a, 2, "[] a owl:AllDisjointClasses ; owl:members ( ex:Cat ex:Dog ex:Fish )"],
+      ],
+    )
   } finally {
     await w.end()
   }

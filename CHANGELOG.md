@@ -13,8 +13,12 @@
   with its proof folded under it. Each step names its W3C rule, and each
   triple the proof rests on is a link to its file and line. TurbOWL's
   findings, such as a member of two disjoint classes, are diagnostics on
-  the statements of their terms, with the proof in the message (code
-  `turbowl/<rule>`). `default` runs TurbOWL's default rules; `complete`
+  the statements of their terms (code `turbowl/<rule>`): one sentence in
+  the file's short names, and each triple of the proof as related
+  information at its line (or, in an editor without it, as lines of the
+  message). An RDF list, such as an `owl:AllDisjointClasses` list, is one
+  item, in hover too. Types that rest on no triple of a document, such as
+  `xsd:integer`'s `rdfs:Datatype`, share one line in hover, without proofs. `default` runs TurbOWL's default rules; `complete`
   runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples`
   (default 2,000,000) is the most triples a run reads; past it the run is
   skipped with a note (`reasoning-skipped`), and `turtle-lsp.json` cannot

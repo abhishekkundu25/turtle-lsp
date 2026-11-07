@@ -8,6 +8,9 @@
 //! node names included, whatever order they come in. TriG and N-Quads
 //! graphs are merged into that one graph. A triple written twice keeps its
 //! first place.
+//!
+//! The base also knows its RDF lists (the blank nodes with `rdf:first` and
+//! `rdf:rest`), so that a proof can write a list as one `( … )`.
 
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Source;
@@ -15,7 +18,7 @@ use crate::rdf::{Graph, Index};
 use crate::syntax::Span;
 use lsp_types::Range;
 use rustc_hash::FxHashMap;
-use spargebra::term::{NamedNode, NamedOrBlankNode, Term, Triple};
+use spargebra::term::{BlankNode, NamedNode, NamedOrBlankNode, Term, Triple};
 use std::sync::Arc;
 
 /// Where a base triple is written.
@@ -40,7 +43,21 @@ pub(crate) struct Base {
     enc: Encoding,
     /// Each triple, with (document, index into its parse's triples).
     places: FxHashMap<Triple, (u32, u32)>,
+    /// The RDF list cells: each blank node with `rdf:first` or `rdf:rest`.
+    cells: FxHashMap<BlankNode, Cell>,
 }
+
+/// A blank node of an RDF list: its member, the rest of the list, and the
+/// cell whose rest it is.
+#[derive(Default)]
+struct Cell {
+    first: Option<Term>,
+    rest: Option<Term>,
+    previous: Option<BlankNode>,
+}
+
+pub(super) const RDF_FIRST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
+pub(super) const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";
 
 impl Base {
     /// The base of `docs`, in any order. Triples with an undeclared prefix
@@ -52,6 +69,7 @@ impl Base {
         let g = Graph::new(&parses);
         let terms = Index::new(&g, None);
         let mut places = FxHashMap::default();
+        let mut cells: FxHashMap<BlankNode, Cell> = FxHashMap::default();
         places.reserve(g.len());
         for (at, t) in g.added() {
             let subject: NamedOrBlankNode = match terms.term(t.s) {
@@ -65,9 +83,78 @@ impl Base {
                 NamedNode::new_unchecked(t.p.as_str()),
                 terms.term(t.o),
             );
+            if let NamedOrBlankNode::BlankNode(b) = &triple.subject {
+                let p = triple.predicate.as_str();
+                if p == RDF_FIRST || p == RDF_REST {
+                    let cell = cells.entry(b.clone()).or_default();
+                    let slot = if p == RDF_FIRST {
+                        &mut cell.first
+                    } else {
+                        &mut cell.rest
+                    };
+                    slot.get_or_insert_with(|| triple.object.clone());
+                }
+            }
             places.entry(triple).or_insert_with(|| g.origin(at));
         }
-        Base { docs, enc, places }
+        let links: Vec<(BlankNode, BlankNode)> = cells
+            .iter()
+            .filter_map(|(b, c)| match &c.rest {
+                Some(Term::BlankNode(next)) => Some((next.clone(), b.clone())),
+                _ => None,
+            })
+            .collect();
+        for (next, b) in links {
+            if let Some(c) = cells.get_mut(&next) {
+                c.previous.get_or_insert(b);
+            }
+        }
+        Base {
+            docs,
+            enc,
+            places,
+            cells,
+        }
+    }
+
+    /// `b` is a cell of an RDF list.
+    pub(super) fn is_cell(&self, b: &BlankNode) -> bool {
+        self.cells.contains_key(b)
+    }
+
+    /// The list from cell `b` on: each cell with its member, up to
+    /// `rdf:nil` or a cell that is not well formed. Empty when `b` is not
+    /// a cell.
+    pub(super) fn list(&self, b: &BlankNode) -> Vec<(BlankNode, Term)> {
+        let mut out = Vec::new();
+        let mut at = b;
+        while let Some(cell) = self.cells.get(at) {
+            let Some(first) = &cell.first else { break };
+            // A list that runs into itself ends where it does.
+            if out.iter().any(|(c, _)| c == at) {
+                break;
+            }
+            out.push((at.clone(), first.clone()));
+            match &cell.rest {
+                Some(Term::BlankNode(next)) => at = next,
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// The first cell of the list that cell `b` is in.
+    pub(super) fn list_head(&self, b: &BlankNode) -> BlankNode {
+        let mut at = b;
+        let mut steps = 0;
+        while let Some(previous) = self.cells.get(at).and_then(|c| c.previous.as_ref()) {
+            steps += 1;
+            if previous == b || steps > self.cells.len() {
+                break;
+            }
+            at = previous;
+        }
+        at.clone()
     }
 
     /// Every triple, each once.

@@ -11,6 +11,7 @@
 //! cache, and the next hover has them at once.
 
 use super::base::{Base, Origin};
+use super::turtle::Items;
 use crate::server::worker::Spawn;
 use crate::settings::{Reasoning, Settings};
 use crate::syntax::RDF_TYPE;
@@ -64,16 +65,17 @@ pub(crate) struct Inferred {
     pub(crate) proof: Option<Proof>,
 }
 
-/// A proof, with where each base triple it rests on is written.
+/// A proof, with where each base triple it rests on is written, and how
+/// they are written (`turtle.rs`).
 pub(crate) struct Proof {
     pub(super) proof: turbowl::Proof,
-    /// Per step: where it is written, for a base step in the base.
-    pub(super) origins: Vec<Option<Origin>>,
+    pub(super) written: Items,
 }
 
 impl Proof {
-    fn new(proof: turbowl::Proof, base: &Base) -> Proof {
-        let origins = proof
+    pub(super) fn new(proof: turbowl::Proof, base: &Base) -> Proof {
+        // Per step: where it is written, for a base step in the base.
+        let origins: Vec<Option<Origin>> = proof
             .steps()
             .iter()
             .map(|s| match s.reason {
@@ -81,7 +83,8 @@ impl Proof {
                 turbowl::Reason::Rule { .. } => None,
             })
             .collect();
-        Proof { proof, origins }
+        let written = Items::new(&proof, &origins, base);
+        Proof { proof, written }
     }
 }
 
