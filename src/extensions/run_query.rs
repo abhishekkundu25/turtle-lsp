@@ -674,6 +674,10 @@ fn inferred_line(inferred: Inferred) -> Option<String> {
         Inferred::Skipped { triples, limit } => Some(format!(
             "Inferred triples skipped: the workspace has {triples} triples, over the reasoning limit of {limit}."
         )),
+        Inferred::TooMany { limit } => Some(format!(
+            "Inferred triples skipped: TurbOWL inferred more than {}, over the reasoning limit.",
+            count(limit as usize, "triple")
+        )),
     }
 }
 
@@ -745,6 +749,12 @@ mod tests {
             .as_deref(),
             Some(
                 "Inferred triples skipped: the workspace has 9 triples, over the reasoning limit of 4."
+            )
+        );
+        assert_eq!(
+            inferred_line(Inferred::TooMany { limit: 4 }).as_deref(),
+            Some(
+                "Inferred triples skipped: TurbOWL inferred more than 4 triples, over the reasoning limit."
             )
         );
     }

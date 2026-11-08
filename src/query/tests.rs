@@ -1349,6 +1349,90 @@ fn a_contradiction_still_answers_and_its_findings_are_counted() {
     assert!(shown(&s).contains(&vec!["ex:Animal".to_string()]), "{s:?}");
 }
 
+/// A chain of `n` links on `p`, `ex:<at>0 ex:p ex:<at>1 ...`, after `head`.
+fn linked(uri: &str, head: &str, at: &str, p: &str, n: usize) -> Arc<Analysis> {
+    let mut body = head.to_owned();
+    for i in 0..n {
+        body += &format!("ex:{at}{i} {p} ex:{at}{} .\n", i + 1);
+    }
+    owl(uri, &body)
+}
+
+/// `q` over `d` with the default rules and a cap of `cap` triples: its note
+/// says TurbOWL inferred more than the cap, and its answer is off's.
+fn past_the_cap(d: &Arc<Analysis>, q: &str, cap: u64) {
+    assert!(
+        (d.parsed.triples.len() as u64) < cap,
+        "the input is under the cap"
+    );
+    let small = Inference {
+        max_triples: cap,
+        ..inference(Reasoning::Default)
+    };
+    let o = reasoned(&[d], q, &small);
+    assert_eq!(o.inferred, Inferred::TooMany { limit: cap });
+    assert_eq!(o.answer, run_on(&[d], q).unwrap());
+    // Under a cap it passes, the same data gives inferred rows.
+    let o = reasoned(
+        &[d],
+        q,
+        &Inference {
+            max_triples: 1_000_000,
+            ..small
+        },
+    );
+    assert!(matches!(o.inferred, Inferred::Added { triples, .. } if triples as u64 > cap));
+    assert_ne!(o.answer, run_on(&[d], q).unwrap());
+}
+
+#[test]
+fn a_transitive_closure_past_the_cap_is_left_out_and_the_note_says_so() {
+    let d = linked(
+        "file:///w/chain.ttl",
+        "ex:p a owl:TransitiveProperty .\n",
+        "n",
+        "ex:p",
+        60,
+    );
+    past_the_cap(&d, "SELECT (COUNT(*) AS ?n) WHERE { ex:n0 ex:p ?x }", 500);
+}
+
+#[test]
+fn a_same_as_clique_past_the_cap_is_left_out_and_the_note_says_so() {
+    let d = linked("file:///w/same.ttl", "", "s", "owl:sameAs", 40);
+    past_the_cap(
+        &d,
+        "SELECT (COUNT(*) AS ?n) WHERE { ex:s0 <http://www.w3.org/2002/07/owl#sameAs> ?x }",
+        500,
+    );
+}
+
+#[test]
+fn what_is_inferred_only_among_an_imports_terms_is_left_out() {
+    let import = owl(
+        "file:///cache/onto.ttl",
+        "ex:A rdfs:subClassOf ex:B .\nex:B rdfs:subClassOf ex:C .\n\
+         ex:Dog rdfs:subClassOf ex:Animal .\nex:Animal rdfs:subClassOf ex:Being .\n",
+    );
+    let data = owl("file:///w/data.ttl", "ex:rex a ex:Dog .\n");
+    let with = Inference {
+        imports: vec![import],
+        ..inference(Reasoning::Default)
+    };
+    let rows = |q: &str| match reasoned(&[&data], q, &with).answer {
+        Answer::Solutions(s) => shown(&s),
+        other => panic!("{other:?}"),
+    };
+    let about_import = rows(
+        "SELECT ?s ?o WHERE { ?s <http://www.w3.org/2000/01/rdf-schema#subClassOf> ?o \
+         FILTER (?s != ex:Dog) }",
+    );
+    assert_eq!(about_import, Vec::<Vec<String>>::new());
+    // An imported axiom still types the data's individual.
+    let types = rows("SELECT ?c WHERE { ex:rex a ?c }");
+    assert!(types.contains(&vec!["ex:Being".to_string()]), "{types:?}");
+}
+
 mod dataset {
     use super::run;
     use crate::analysis::Analysis;
@@ -1573,5 +1657,43 @@ fn timing_a_timeout_or_a_cancel_stops_reasoning_partway_through() {
     assert!(
         took < whole / 2,
         "the cancel stopped it after {took:?} of a {whole:?} run"
+    );
+}
+
+/// An import whose `owl:sameAs` chain TurbOWL reasons over quickly but
+/// whose closure, every pair of the chain, is large to read out: nothing of
+/// it is about the data.
+fn same_as_import() -> Arc<Analysis> {
+    linked("file:///cache/same.ttl", "", "i", "owl:sameAs", 2500)
+}
+
+#[test]
+fn timing_a_timeout_that_passes_while_inferred_triples_are_read_stops_near_it() {
+    let data = owl("file:///w/data.ttl", "ex:a ex:p ex:b .\n");
+    let with = Inference {
+        imports: vec![same_as_import()],
+        max_triples: 1_000_000,
+        ..inference(Reasoning::Default)
+    };
+    let q = "ASK { ex:a ex:p ex:b }";
+    let run = |limits: &Limits| {
+        let start = Instant::now();
+        let r = super::run(&[&data], q, None, &ex_prefixes(), limits, &with);
+        (r, start.elapsed())
+    };
+    let (full, whole) = run(&Limits::default());
+    assert_eq!(full.unwrap().answer, Answer::Boolean(true));
+    assert!(
+        whole >= Duration::from_millis(200),
+        "too quick to measure: {whole:?}"
+    );
+    let (r, took) = run(&Limits {
+        timeout: Some(whole / 10),
+        ..Limits::default()
+    });
+    assert_eq!(r, Err(QueryError::Timeout));
+    assert!(
+        took < whole / 2,
+        "the timeout stopped it after {took:?} of a {whole:?} run"
     );
 }

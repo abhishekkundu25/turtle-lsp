@@ -40,7 +40,9 @@
 //! triples added, and how many findings TurbOWL reported, which do not stop
 //! the query), or `{"skipped": {"triples": n, "limit": m}}` when the
 //! documents and imports have more triples than the limit and none were
-//! added. With `off` there is no `inferred`.
+//! added, or `{"skipped": {"inferred": true, "limit": m}}` when TurbOWL
+//! inferred more than the limit about the queried documents' terms and
+//! none were added. With `off` there is no `inferred`.
 //!
 //! A query that is not SPARQL, an UPDATE, a relative IRI without `base`,
 //! an empty `files`, one of `files` that is not a workspace document, or a
@@ -431,6 +433,9 @@ fn inferred_json(inferred: Inferred) -> Option<Value> {
         })),
         Inferred::Skipped { triples, limit } => {
             Some(json!({ "skipped": { "triples": triples, "limit": limit } }))
+        }
+        Inferred::TooMany { limit } => {
+            Some(json!({ "skipped": { "inferred": true, "limit": limit } }))
         }
     }
 }

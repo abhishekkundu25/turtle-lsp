@@ -288,8 +288,9 @@ fn query(files: &[BatchFile], req: &Value, settings: &Settings) -> Result<Value,
 }
 
 /// What reasoning added to the query's data: `{rules, triples, findings}`,
-/// `{skipped: {triples, limit}}` over `reasoning.maxTriples`, or nothing when
-/// reasoning was off.
+/// `{skipped: {triples, limit}}` when the data has more triples than
+/// `reasoning.maxTriples`, `{skipped: {inferred: true, limit}}` when TurbOWL
+/// inferred more than it, or nothing when reasoning was off.
 fn inferred(i: &Inferred) -> Option<Value> {
     match *i {
         Inferred::None => None,
@@ -308,6 +309,9 @@ fn inferred(i: &Inferred) -> Option<Value> {
         }
         Inferred::Skipped { triples, limit } => {
             Some(json!({ "skipped": { "triples": triples, "limit": limit } }))
+        }
+        Inferred::TooMany { limit } => {
+            Some(json!({ "skipped": { "inferred": true, "limit": limit } }))
         }
     }
 }

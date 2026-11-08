@@ -15,7 +15,10 @@
 //!   kept apart per document ([`crate::rdf::Graph`]);
 //! - with inference on, plus TurbOWL's inferred triples from the documents
 //!   and the imports (never the imports' own triples), their blank nodes
-//!   the documents' own; off, nothing is reasoned;
+//!   the documents' own: only those whose subject or object is a term of
+//!   the documents ([`crate::reasoning::infer`]), and none when they are
+//!   more than [`Inference::max_triples`] ([`Inferred::TooMany`]); off,
+//!   nothing is reasoned;
 //! - there are no named graphs: `GRAPH` patterns and `FROM NAMED` match
 //!   nothing;
 //! - `FROM` is ignored (the default graph stays the union).
@@ -29,9 +32,11 @@
 //! reads the data (every quad it asks for), between results, and through the
 //! evaluator's cancellation token, which its joins ask every thousand rows
 //! they combine in memory (a patch of `spareval`, in vendor/spareval), so a
-//! query that runs away stops at the limit. A reasoning run cannot be
-//! stopped halfway: the limits are checked before and right after it, and
-//! a query stopped then is not evaluated. UPDATE is not run.
+//! query that runs away stops at the limit. Reasoning stops partway through
+//! too: natively between TurbOWL's rounds ([`infer_watched`]), and on every
+//! platform as its inferred triples are read; the limits are checked again
+//! once reasoning ends and once the query graph is built, and a query
+//! stopped then is not evaluated. UPDATE is not run.
 //!
 //! The renderers are in [`render`].
 
@@ -41,6 +46,7 @@ use crate::analysis::Analysis;
 use crate::clock::Instant;
 use crate::rdf::dataset::{Index, STerm};
 use crate::rdf::graph::{Graph, NodeTriple};
+use crate::reasoning::{Closure, Halt};
 use crate::settings::Reasoning;
 use crate::sparql::{Document, Level};
 use crate::syntax::{PrefixMap, Triple as DocTriple};
@@ -206,7 +212,8 @@ pub struct Inference {
     /// (the imports). One at the URI of a queried document is left out.
     pub imports: Vec<Arc<Analysis>>,
     /// No reasoning when the queried documents and the imports have more
-    /// triples than this (`turtle.reasoning.maxTriples`).
+    /// triples than this (`turtle.reasoning.maxTriples`), and no inferred
+    /// triples when TurbOWL infers more than this.
     pub max_triples: u64,
 }
 
@@ -225,6 +232,9 @@ pub enum Inferred {
     },
     /// No reasoning: the data had `triples` triples, over the `limit`.
     Skipped { triples: u64, limit: u64 },
+    /// No inferred triples: TurbOWL inferred more than `limit` about the
+    /// queried documents' terms, and they were left out.
+    TooMany { limit: u64 },
 }
 
 /// A query's answer, and what reasoning added to the data it ran over.
@@ -252,15 +262,17 @@ pub fn run(
     let (more, inferred) = reason(docs, inference, &watch)?;
     let triples: Vec<&[DocTriple]> = docs.iter().map(|a| a.parsed.triples.as_slice()).collect();
     let graph = Graph::with_triples(&triples, &more);
+    watch.check_now()?;
     let index = Index::new(&graph, None);
-    watch.check().map_err(QueryError::from)?;
+    watch.check_now()?;
     let answer = evaluate(&index, &parsed, &watch, limits)?;
     Ok(Outcome { answer, inferred })
 }
 
 /// The triples `inference` adds to `docs`, in the query graph's terms, and
-/// the note that says so. Off reads nothing. A run cannot be stopped
-/// halfway: the watch is checked before it and right after it.
+/// the note that says so. Off reads nothing. The watch stops the run
+/// partway through ([`infer_watched`]), and is checked before it and right
+/// after it.
 fn reason(
     docs: &[&Arc<Analysis>],
     inference: &Inference,
@@ -285,8 +297,15 @@ fn reason(
     #[cfg(test)]
     WHILE_REASONING.with(|h| h.borrow_mut().take().map(|f| f()));
     watch.check_now()?;
-    // Only the watch cancels the run, and it has not stopped.
-    let closure = closure.ok_or(Stop::Cancelled)?;
+    let closure = match closure {
+        Ok(c) => c,
+        Err(Halt::TooMany) => {
+            let limit = inference.max_triples;
+            return Ok((Vec::new(), Inferred::TooMany { limit }));
+        }
+        // Only the watch stops the run, and it has not stopped.
+        Err(Halt::Stopped) => return Err(Stop::Cancelled.into()),
+    };
     let inferred = Inferred::Added {
         rules: inference.rules,
         triples: closure.triples.len(),
@@ -296,20 +315,32 @@ fn reason(
 }
 
 /// [`crate::reasoning::infer`], stopped partway through when `watch` stops
-/// (its timeout or its cancel flag): a thread beside the run reads the
+/// (its timeout or its cancel flag): as the inferred triples are read, and
+/// natively also during the run, by a thread beside it that reads the
 /// watch every few milliseconds and trips TurbOWL's cancel handle, which
-/// the run checks before each round. `None` when it was stopped. In the
-/// browser, which has no threads, the run is never stopped partway.
+/// the run checks before each round. In the browser, which has no threads,
+/// TurbOWL's run itself is never stopped partway.
 fn infer_watched(
     inference: &Inference,
     docs: &[&Arc<Analysis>],
     watch: &Watch,
-) -> Option<crate::reasoning::Closure> {
+) -> Result<Closure, Halt> {
     let cancel = turbowl::Cancel::new();
+    let stopped = || watch.check_now().is_err();
+    let infer = |cancel: &turbowl::Cancel| {
+        let (rules, imports) = (inference.rules, &inference.imports);
+        crate::reasoning::infer(
+            rules,
+            docs,
+            imports,
+            inference.max_triples,
+            cancel,
+            &stopped,
+        )
+    };
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = watch;
-        crate::reasoning::infer(inference.rules, docs, &inference.imports, &cancel)
+        infer(&cancel)
     }
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::scope(|s| {
@@ -326,7 +357,7 @@ fn infer_watched(
                 }
             }
         });
-        let closure = crate::reasoning::infer(inference.rules, docs, &inference.imports, &cancel);
+        let closure = infer(&cancel);
         drop(done);
         closure
     })

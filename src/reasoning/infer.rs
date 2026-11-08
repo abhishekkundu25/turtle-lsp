@@ -7,6 +7,13 @@
 //! base's order to the graph's, so it is the graph's node; one of an import
 //! keeps its number, past the queried documents' (imports sort after them),
 //! so it is a node of its own.
+//!
+//! Only the inferred triples about the queried documents are kept: those
+//! whose subject or object is a term in a subject or object of a queried
+//! document's triple (an IRI, a literal, a triple term, or one of its blank
+//! nodes; never an import's blank node). What TurbOWL infers among an
+//! import's terms alone, the imported vocabulary's own closure, is left
+//! out. Past `max` kept triples, reading them stops: they are too many.
 
 use super::{Base, rules};
 use crate::analysis::{Analysis, Encoding};
@@ -14,7 +21,8 @@ use crate::knowledge::Source;
 use crate::rdf::graph::{NodeTriple, blank_max};
 use crate::settings::Reasoning;
 use crate::syntax::{BlankId, Direction, Iri, Node};
-use rustc_hash::FxHashMap;
+use oxrdf::TermRef;
+use rustc_hash::{FxHashMap, FxHashSet};
 use spargebra::term::{NamedOrBlankNode, Term, Triple};
 use std::sync::Arc;
 
@@ -27,18 +35,36 @@ pub(crate) struct Closure {
     pub(crate) findings: usize,
 }
 
+/// Why [`infer`] gave no closure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Halt {
+    /// `cancel` or `stopped` stopped it.
+    Stopped,
+    /// More than the `max` triples to keep were inferred.
+    TooMany,
+}
+
+/// How many inferred triples [`infer`] reads between two calls of its
+/// `stopped`.
+const CHECK_EVERY: usize = 1 << 16;
+
 /// What TurbOWL infers with `rules` from `docs` (the queried documents, in
 /// the order the query graph reads them) and `imports` (an import at a
-/// queried document's URI left out). Off infers nothing. `None` when
-/// `cancel` stopped the run (TurbOWL checks it before each round).
+/// queried document's URI left out), the triples about the queried
+/// documents' terms only, at most `max` of them. Off infers nothing.
+/// `cancel` stops the run (TurbOWL checks it before each round), and
+/// `stopped`, asked every [`CHECK_EVERY`] inferred triples read, the reading
+/// of its result.
 pub(crate) fn infer(
     rules_of: Reasoning,
     docs: &[&Arc<Analysis>],
     imports: &[Arc<Analysis>],
+    max: u64,
     cancel: &turbowl::Cancel,
-) -> Option<Closure> {
+    stopped: &dyn Fn() -> bool,
+) -> Result<Closure, Halt> {
     let Some(switches) = rules(rules_of) else {
-        return Some(Closure::default());
+        return Ok(Closure::default());
     };
     let imports: Vec<&Arc<Analysis>> = imports
         .iter()
@@ -53,10 +79,27 @@ pub(crate) fn infer(
     let base = Base::new(sources, Encoding::Utf16);
     let mut reasoner = turbowl::Reasoner::with_switches(switches);
     reasoner.set_base(base.triples());
-    reasoner.reason_cancellable(cancel).ok()?;
+    reasoner
+        .reason_cancellable(cancel)
+        .map_err(|_| Halt::Stopped)?;
+    // The base's ids of the queried documents' subjects and objects.
+    let queried: FxHashSet<u32> = base.in_workspace().flat_map(|(s, o, _)| [s, o]).collect();
+    let about = |t: TermRef<'_>| base.id(t).is_some_and(|id| queried.contains(&id));
     let mut blanks = Blanks::new(docs, &imports);
-    let triples = reasoner.inferred().map(|t| blanks.triple(&t)).collect();
-    Some(Closure {
+    let mut triples = Vec::new();
+    for (i, t) in reasoner.inferred().enumerate() {
+        if i % CHECK_EVERY == CHECK_EVERY - 1 && stopped() {
+            return Err(Halt::Stopped);
+        }
+        if !about(t.subject.as_ref().into()) && !about(t.object.as_ref()) {
+            continue;
+        }
+        if triples.len() as u64 >= max {
+            return Err(Halt::TooMany);
+        }
+        triples.push(blanks.triple(&t));
+    }
+    Ok(Closure {
         triples,
         findings: reasoner.diagnostics().len(),
     })

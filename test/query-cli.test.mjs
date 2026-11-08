@@ -233,6 +233,21 @@ test("query: --reasoning over the reasoning limit is skipped and says so", (t) =
   assert.equal(r.err, "Inferred triples skipped: the workspace has 2 triples, over the reasoning limit of 1\n")
 })
 
+test("query: --reasoning that infers more than the reasoning limit is skipped and says so", (t) => {
+  // Six triples, under the limit of 6; five links on a transitive property infer ten more.
+  const ws = workspace(t, {
+    ".git/HEAD": "",
+    "prefixes.ttl": PREFIXES + "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n",
+    "turtle-lsp.json": '{ "reasoning": { "maxTriples": 6 } }\n',
+    "data.ttl": "ex:p a owl:TransitiveProperty .\nex:a ex:p ex:b .\nex:b ex:p ex:c .\nex:c ex:p ex:d .\nex:d ex:p ex:e .\nex:e ex:p ex:f .\n",
+    "reach.rq": "SELECT ?x WHERE { ex:a ex:p ?x } ORDER BY ?x\n",
+  })
+  const r = query(ws, ["reach.rq", "--format", "csv", "--reasoning", "default"])
+  assert.equal(r.code, 0, r.err)
+  assert.equal(r.out, "x\r\nhttp://example.org/b\r\n")
+  assert.equal(r.err, "Inferred triples skipped: TurbOWL inferred more than 6 triples, over the reasoning limit\n")
+})
+
 test("query: --reasoning takes off, default or complete", (t) => {
   const ws = workspace(t, REASONING)
   const r = query(ws, ["people.rq", "--reasoning", "nope"])
