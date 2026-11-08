@@ -13,12 +13,12 @@
 //! - the default graph is the union of every triple of every document,
 //!   named-graph triples included (TriG, N-Quads, JSON-LD), with blank nodes
 //!   kept apart per document ([`crate::rdf::Graph`]);
-//! - with inference on, plus TurbOWL's inferred triples from the documents
-//!   and the imports (never the imports' own triples), their blank nodes
-//!   the documents' own: only those whose subject or object is a term of
-//!   the documents ([`crate::reasoning::infer`]), and none when they are
-//!   more than [`Inference::max_triples`] ([`Inferred::TooMany`]); off,
-//!   nothing is reasoned;
+//! - with inference on, plus every triple TurbOWL infers from those same
+//!   documents (the callers add the imports to them), their blank nodes
+//!   the documents' own ([`crate::reasoning::infer`]), and none when they
+//!   are more than [`Inference::max_triples`] ([`Inferred::TooMany`]); the
+//!   documents are then read by URI, as the reasoner reads them. Off,
+//!   nothing is reasoned and the documents are read in the order given;
 //! - there are no named graphs: `GRAPH` patterns and `FROM NAMED` match
 //!   nothing;
 //! - `FROM` is ignored (the default graph stays the union).
@@ -202,18 +202,15 @@ pub struct Limits {
     pub max_buffered_rows: Option<usize>,
 }
 
-/// The inferred triples a query runs over: the rule set, and what reasoning
-/// may read besides the queried documents. The default is off.
-#[derive(Clone, Default)]
+/// The inferred triples a query runs over: TurbOWL's, from the queried
+/// documents. The default is off.
+#[derive(Clone, Copy, Default)]
 pub struct Inference {
     /// `Off` adds none and builds nothing: the query is as without it.
     pub rules: Reasoning,
-    /// Documents whose axioms count but whose own triples are not queried
-    /// (the imports). One at the URI of a queried document is left out.
-    pub imports: Vec<Arc<Analysis>>,
-    /// No reasoning when the queried documents and the imports have more
-    /// triples than this (`turtle.reasoning.maxTriples`), and no inferred
-    /// triples when TurbOWL infers more than this.
+    /// No reasoning when the queried documents have more triples than this
+    /// (`turtle.reasoning.maxTriples`), and no inferred triples when
+    /// TurbOWL infers more than this.
     pub max_triples: u64,
 }
 
@@ -232,9 +229,55 @@ pub enum Inferred {
     },
     /// No reasoning: the data had `triples` triples, over the `limit`.
     Skipped { triples: u64, limit: u64 },
-    /// No inferred triples: TurbOWL inferred more than `limit` about the
-    /// queried documents' terms, and they were left out.
+    /// No inferred triples: TurbOWL inferred more than `limit`, and they
+    /// were left out.
     TooMany { limit: u64 },
+}
+
+impl Inferred {
+    /// The note's text, as the command line and "▶ Run query" show it;
+    /// none when reasoning was off.
+    pub(crate) fn sentence(self) -> Option<String> {
+        let count = |n: u64, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+        match self {
+            Inferred::None => None,
+            Inferred::Added {
+                rules,
+                triples,
+                findings,
+            } => {
+                let mut line = format!(
+                    "Includes {} (TurbOWL, {} rules).",
+                    count(triples as u64, "inferred triple"),
+                    rules_name(rules)
+                );
+                if findings > 0 {
+                    line.push_str(&format!(
+                        " TurbOWL reported {}.",
+                        count(findings as u64, "finding")
+                    ));
+                }
+                Some(line)
+            }
+            Inferred::Skipped { triples, limit } => Some(format!(
+                "Inferred triples skipped: the workspace has {triples} triples, over the reasoning limit of {limit}."
+            )),
+            Inferred::TooMany { limit } => Some(format!(
+                "Inferred triples skipped: TurbOWL inferred more than {}, over the reasoning limit.",
+                count(limit, "triple")
+            )),
+        }
+    }
+}
+
+/// The name of a rule set, as `reasoning` and `turtle.reasoning.rules`
+/// write it.
+pub(crate) fn rules_name(r: Reasoning) -> &'static str {
+    match r {
+        Reasoning::Off => "off",
+        Reasoning::Default => "default",
+        Reasoning::Complete => "complete",
+    }
 }
 
 /// A query's answer, and what reasoning added to the data it ran over.
@@ -245,7 +288,7 @@ pub struct Outcome {
 }
 
 /// Runs `query` over the union of `docs`, and with `inference` on, over
-/// what TurbOWL infers from them and the imports. `base` resolves relative
+/// what TurbOWL infers from them. `base` resolves relative
 /// IRIs; `prefixes` are the prefixes the query may use without declaring
 /// them.
 pub fn run(
@@ -259,7 +302,11 @@ pub fn run(
     let watch = Arc::new(Watch::new(limits));
     let parsed = parse(query, base, prefixes)?;
     check_complexity(&parsed)?;
-    let (more, inferred) = reason(docs, inference, &watch)?;
+    let mut docs = docs.to_vec();
+    if inference.rules != Reasoning::Off {
+        crate::reasoning::base_order(&mut docs);
+    }
+    let (more, inferred) = reason(&docs, inference, &watch)?;
     let triples: Vec<&[DocTriple]> = docs.iter().map(|a| a.parsed.triples.as_slice()).collect();
     let graph = Graph::with_triples(&triples, &more);
     watch.check_now()?;
@@ -269,8 +316,8 @@ pub fn run(
     Ok(Outcome { answer, inferred })
 }
 
-/// The triples `inference` adds to `docs`, in the query graph's terms, and
-/// the note that says so. Off reads nothing. The watch stops the run
+/// The triples `inference` adds to `docs` (in base order), in the query
+/// graph's terms, and the note that says so. Off reads nothing. The watch stops the run
 /// partway through ([`infer_watched`]), and is checked before it and right
 /// after it.
 fn reason(
@@ -282,12 +329,7 @@ fn reason(
         Reasoning::Off => return Ok((Vec::new(), Inferred::None)),
         Reasoning::Default | Reasoning::Complete => {}
     }
-    let triples: u64 = docs
-        .iter()
-        .copied()
-        .chain(&inference.imports)
-        .map(|a| a.parsed.triples.len() as u64)
-        .sum();
+    let triples: u64 = docs.iter().map(|a| a.parsed.triples.len() as u64).sum();
     if triples > inference.max_triples {
         let limit = inference.max_triples;
         return Ok((Vec::new(), Inferred::Skipped { triples, limit }));
@@ -328,15 +370,8 @@ fn infer_watched(
     let cancel = turbowl::Cancel::new();
     let stopped = || watch.check_now().is_err();
     let infer = |cancel: &turbowl::Cancel| {
-        let (rules, imports) = (inference.rules, &inference.imports);
-        crate::reasoning::infer(
-            rules,
-            docs,
-            imports,
-            inference.max_triples,
-            cancel,
-            &stopped,
-        )
+        let (rules, max) = (inference.rules, inference.max_triples);
+        crate::reasoning::infer(rules, docs, max, cancel, &stopped)
     };
     #[cfg(target_arch = "wasm32")]
     {

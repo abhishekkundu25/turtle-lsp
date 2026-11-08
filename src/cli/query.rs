@@ -14,8 +14,7 @@
 use super::args::{QueryArgs, QueryFormat, QuerySource};
 use super::files::{self, Context};
 use crate::batch::{self, BatchFile, Disk};
-use crate::query::{Answer, Inferred, Limits, QueryError, render};
-use crate::settings::Reasoning;
+use crate::query::{Answer, Limits, QueryError, render};
 use serde_json::Value;
 use std::io::Write;
 
@@ -83,7 +82,7 @@ pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
     };
     let (text, code) = render(&answer, a.format, a.limit, &outcome.prefixes)?;
     // On stderr, so stdout stays the results in every format.
-    if let Some(line) = inferred_note(outcome.inferred) {
+    if let Some(line) = outcome.inferred.sentence() {
         eprintln!("{line}");
     }
     let mut out = std::io::stdout().lock();
@@ -94,36 +93,6 @@ pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
         Err(e) => return Err(format!("cannot write to stdout: {e}")),
     }
     Ok(code)
-}
-
-/// The line that says what reasoning added to the data, if it was on.
-fn inferred_note(inferred: Inferred) -> Option<String> {
-    match inferred {
-        Inferred::None => None,
-        Inferred::Added {
-            rules,
-            triples,
-            findings,
-        } => {
-            let rules = match rules {
-                // `Added` never carries `Off`; named as what was asked.
-                Reasoning::Off => "no",
-                Reasoning::Default => "default",
-                Reasoning::Complete => "complete",
-            };
-            let mut line = format!("Includes {triples} inferred triples (TurbOWL, {rules} rules)");
-            if findings > 0 {
-                line.push_str(&format!("; TurbOWL reported {findings} findings"));
-            }
-            Some(line)
-        }
-        Inferred::Skipped { triples, limit } => Some(format!(
-            "Inferred triples skipped: the workspace has {triples} triples, over the reasoning limit of {limit}"
-        )),
-        Inferred::TooMany { limit } => Some(format!(
-            "Inferred triples skipped: TurbOWL inferred more than {limit} triples, over the reasoning limit"
-        )),
-    }
 }
 
 /// The text to print and the exit code, or why `format` does not fit the
@@ -158,42 +127,5 @@ fn render(
             QueryFormat::Turtle => Ok((render::turtle(t, prefixes), 0)),
             _ => misfit("a CONSTRUCT or DESCRIBE query", "turtle"),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cli_query_inferred_note() {
-        assert_eq!(inferred_note(Inferred::None), None);
-        let added = |rules, findings| {
-            inferred_note(Inferred::Added {
-                rules,
-                triples: 3,
-                findings,
-            })
-        };
-        assert_eq!(
-            added(Reasoning::Default, 0).unwrap(),
-            "Includes 3 inferred triples (TurbOWL, default rules)"
-        );
-        assert_eq!(
-            added(Reasoning::Complete, 2).unwrap(),
-            "Includes 3 inferred triples (TurbOWL, complete rules); TurbOWL reported 2 findings"
-        );
-        assert_eq!(
-            inferred_note(Inferred::Skipped {
-                triples: 9,
-                limit: 4
-            })
-            .unwrap(),
-            "Inferred triples skipped: the workspace has 9 triples, over the reasoning limit of 4"
-        );
-        assert_eq!(
-            inferred_note(Inferred::TooMany { limit: 4 }).unwrap(),
-            "Inferred triples skipped: TurbOWL inferred more than 4 triples, over the reasoning limit"
-        );
     }
 }

@@ -403,16 +403,17 @@ ex:p1 a ex:Pump .
     }
   })
 
-  test("an imported axiom infers; the import's own triples are not queried", async () => {
+  test("with reasoning an import is queried: its axioms infer and its own triples are rows; off it is not read", async () => {
     const s = await workspace()
     try {
       const r = await imported(s)
       assert.deepEqual(subjects(r), [EX + "p1"])
-      const a = await s.request("turtle/query", {
-        query: "PREFIX ex: <http://example.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> ASK { ex:Device rdfs:subClassOf ex:Thing }",
-        reasoning: "default",
-      })
-      assert.equal(a.boolean, false)
+      const query =
+        "PREFIX ex: <http://example.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> ASK { ex:Device rdfs:subClassOf ex:Thing }"
+      const on = await s.request("turtle/query", { query, reasoning: "default" })
+      assert.equal(on.boolean, true)
+      const off = await s.request("turtle/query", { query, reasoning: "off" })
+      assert.equal(off.boolean, false)
     } finally {
       await s.stop()
     }
@@ -447,7 +448,7 @@ ex:p1 a ex:Pump .
     }
   })
 
-  test("with files, every other workspace document reasons; its triples are not queried", async () => {
+  test("with files, only those files and the imports are read: other documents neither infer nor answer", async () => {
     const dir = tempDir("turtle-lsp-query-request-files-")
     dirs.push(dir)
     const P = `@prefix ex: <http://example.org/> .
@@ -464,15 +465,21 @@ ex:p1 a ex:Pump .
     try {
       await indexed(s, 6)
       const files = [uriOf(path.join(dir, "data.ttl"))]
+      // onto.ttl's axiom is not read: no inference from it.
       const r = await s.request("turtle/query", { query: OF("Device"), reasoning: "default", files })
-      assert.deepEqual(subjects(r), [EX + "p1"])
+      assert.deepEqual(subjects(r), [])
+      assert.ok("triples" in r.inferred, JSON.stringify(r.inferred))
       const a = await s.request("turtle/query", {
         query: "PREFIX ex: <http://example.org/> ASK { ex:q1 ?p ?o }",
         reasoning: "default",
         files,
       })
       assert.equal(a.boolean, false)
-      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off", files })
+      // Named, it is read.
+      const both = [...files, uriOf(path.join(dir, "onto.ttl"))]
+      const named = await s.request("turtle/query", { query: OF("Device"), reasoning: "default", files: both })
+      assert.deepEqual(subjects(named), [EX + "p1"])
+      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off", files: both })
       assert.deepEqual(subjects(off), [])
     } finally {
       await s.stop()

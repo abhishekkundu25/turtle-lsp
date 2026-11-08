@@ -16,14 +16,12 @@
 //! The dataset is [`query::run`]'s, as "▶ Run query" has it: the default
 //! graph is the union of every triple of every document; there are no named
 //! graphs. `reasoning` (`off`, `default` or `complete`; default the
-//! `query.reasoning` setting) adds the triples TurbOWL infers from those
-//! documents with that rule set, reading for their axioms only, never
-//! querying their triples, the workspace's imports (the knowledge index's
-//! external sources, as background reasoning reads them) and, with
-//! `files`, every workspace document not in `files` (an ontology a queried
-//! file imports may be one), up to `turtle.reasoning.maxTriples`. With
-//! `off` nothing is read or built and the answer is as without the
-//! parameter.
+//! `query.reasoning` setting) adds the workspace's imports (the knowledge
+//! index's external sources, as background reasoning reads them) to the
+//! queried documents, and every triple TurbOWL infers from them all with
+//! that rule set, up to `turtle.reasoning.maxTriples`. With `files`, the
+//! other workspace documents are not read. With `off` no import is read,
+//! nothing is built, and the answer is as without the parameter.
 //!
 //! The answer is one of
 //!
@@ -41,8 +39,7 @@
 //! the query), or `{"skipped": {"triples": n, "limit": m}}` when the
 //! documents and imports have more triples than the limit and none were
 //! added, or `{"skipped": {"inferred": true, "limit": m}}` when TurbOWL
-//! inferred more than the limit about the queried documents' terms and
-//! none were added. With `off` there is no `inferred`.
+//! inferred more than the limit and none were added. With `off` there is no `inferred`.
 //!
 //! A query that is not SPARQL, an UPDATE, a relative IRI without `base`,
 //! an empty `files`, one of `files` that is not a workspace document, or a
@@ -112,36 +109,21 @@ impl From<Rules> for Reasoning {
     }
 }
 
-/// The name of a rule set, as `reasoning` and `turtle.reasoning.rules`
-/// write it.
-pub(super) fn rules_name(r: Reasoning) -> &'static str {
-    match r {
-        Reasoning::Off => "off",
-        Reasoning::Default => "default",
-        Reasoning::Complete => "complete",
-    }
-}
-
-/// The documents a query reads and the ones only its reasoning reads: the
-/// workspace documents (the knowledge index's sources that are not
-/// external) that `keep` accepts, and with `rules` on, every other source:
-/// the workspace documents `keep` refuses and the external imports (none
-/// with `rules` off).
+/// The documents a query reads: the workspace documents (the knowledge
+/// index's sources that are not external) that `keep` accepts, and with
+/// `rules` on, the external imports.
 pub(super) fn sources(
     k: &crate::knowledge::Knowledge,
     rules: Reasoning,
     keep: impl Fn(&Analysis) -> bool,
-) -> (Vec<Arc<Analysis>>, Vec<Arc<Analysis>>) {
-    let mut docs = Vec::new();
-    let mut imports = Vec::new();
-    for (_, source, a) in k.sources() {
-        if source != Source::External && keep(a) {
-            docs.push(a.clone());
-        } else if rules != Reasoning::Off {
-            imports.push(a.clone());
-        }
-    }
-    (docs, imports)
+) -> Vec<Arc<Analysis>> {
+    k.sources()
+        .filter(|&(_, source, a)| match source {
+            Source::External => rules != Reasoning::Off,
+            Source::Open | Source::Disk => keep(a),
+        })
+        .map(|(_, _, a)| a.clone())
+        .collect()
 }
 
 /// The runs going on, by request id: each one's cancellation flag.
@@ -264,7 +246,7 @@ pub(super) fn request(
         .reasoning
         .map_or(s.settings().query_reasoning, Reasoning::from);
     let max_triples = s.settings().reasoning_max_triples;
-    let (docs, imports) = sources(s.knowledge().0, rules, |a| {
+    let docs = sources(s.knowledge().0, rules, |a| {
         wanted.as_ref().is_none_or(|w| w.contains(&a.uri))
     });
     if let Some(w) = &wanted {
@@ -321,11 +303,7 @@ pub(super) fn request(
             max_rows,
             max_buffered_rows: s.settings().query_max_buffered_rows,
         },
-        inference: Inference {
-            rules,
-            imports,
-            max_triples,
-        },
+        inference: Inference { rules, max_triples },
     };
     if spawn == Spawn::Thread {
         return on_thread(runs, out, req.id, job);
@@ -427,7 +405,7 @@ fn inferred_json(inferred: Inferred) -> Option<Value> {
             triples,
             findings,
         } => Some(json!({
-            "rules": rules_name(rules),
+            "rules": query::rules_name(rules),
             "triples": triples,
             "findings": findings,
         })),

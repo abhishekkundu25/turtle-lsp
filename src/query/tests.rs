@@ -1064,7 +1064,6 @@ fn owl(uri: &str, body: &str) -> Arc<Analysis> {
 fn inference(rules: Reasoning) -> Inference {
     Inference {
         rules,
-        imports: Vec::new(),
         max_triples: 1000,
     }
 }
@@ -1160,6 +1159,47 @@ fn the_note_says_how_many_triples_were_added_with_which_rules() {
 }
 
 #[test]
+fn the_note_is_one_sentence_with_counts_in_the_singular_or_plural() {
+    assert_eq!(Inferred::None.sentence(), None);
+    let added = |rules, triples, findings| {
+        Inferred::Added {
+            rules,
+            triples,
+            findings,
+        }
+        .sentence()
+    };
+    assert_eq!(
+        added(Reasoning::Default, 12, 0).as_deref(),
+        Some("Includes 12 inferred triples (TurbOWL, default rules).")
+    );
+    assert_eq!(
+        added(Reasoning::Complete, 1, 1).as_deref(),
+        Some("Includes 1 inferred triple (TurbOWL, complete rules). TurbOWL reported 1 finding.")
+    );
+    assert_eq!(
+        added(Reasoning::Default, 3, 2).as_deref(),
+        Some("Includes 3 inferred triples (TurbOWL, default rules). TurbOWL reported 2 findings.")
+    );
+    let skipped = Inferred::Skipped {
+        triples: 9,
+        limit: 4,
+    };
+    assert_eq!(
+        skipped.sentence().as_deref(),
+        Some(
+            "Inferred triples skipped: the workspace has 9 triples, over the reasoning limit of 4."
+        )
+    );
+    assert_eq!(
+        Inferred::TooMany { limit: 4 }.sentence().as_deref(),
+        Some(
+            "Inferred triples skipped: TurbOWL inferred more than 4 triples, over the reasoning limit."
+        )
+    );
+}
+
+#[test]
 fn off_adds_nothing_and_its_note_is_none() {
     let d = owl(
         "file:///w/model.ttl",
@@ -1195,7 +1235,8 @@ fn an_inferred_triple_joins_a_written_one_through_a_blank_node() {
 }
 
 #[test]
-fn an_imported_axiom_infers_but_the_imports_own_triples_are_not_queried() {
+fn an_imports_own_triples_are_queried_beside_what_it_infers() {
+    // The callers add an import to the queried documents with reasoning on.
     let import = owl(
         "file:///cache/animals.ttl",
         "ex:Dog rdfs:subClassOf ex:Animal .\nex:Dog ex:label \"dog\" .\n_:r ex:about ex:Dog .\n",
@@ -1204,28 +1245,21 @@ fn an_imported_axiom_infers_but_the_imports_own_triples_are_not_queried() {
         "file:///w/data.ttl",
         "_:d ex:about ex:rex .\nex:rex a ex:Dog .\n",
     );
-    let with = Inference {
-        imports: vec![import],
-        ..inference(Reasoning::Default)
-    };
-    let select = |q: &str| match reasoned(&[&data], q, &with).answer {
+    let on = inference(Reasoning::Default);
+    let select = |q: &str| match reasoned(&[&data, &import], q, &on).answer {
         Answer::Solutions(s) => shown(&s),
         other => panic!("{other:?}"),
     };
     assert!(select("SELECT ?c WHERE { ex:rex a ?c }").contains(&vec!["ex:Animal".to_string()]));
-    let ask = |q: &str| reasoned(&[&data], q, &with).answer;
+    let ask = |q: &str| reasoned(&[&data, &import], q, &on).answer;
     assert_eq!(
         ask("ASK { ex:Dog <http://www.w3.org/2000/01/rdf-schema#subClassOf> ex:Animal }"),
-        Answer::Boolean(false)
+        Answer::Boolean(true)
     );
-    assert_eq!(ask("ASK { ex:Dog ex:label ?l }"), Answer::Boolean(false));
-    // The import's blank node is not one of the data's.
-    assert_eq!(ask("ASK { ?b ex:about ex:Dog }"), Answer::Boolean(false));
-    assert_eq!(
-        select("SELECT ?b WHERE { ?b ex:about ?x }").len(),
-        1,
-        "the data's one blank node"
-    );
+    assert_eq!(ask("ASK { ex:Dog ex:label ?l }"), Answer::Boolean(true));
+    // The import's blank node and the data's are two nodes.
+    assert_eq!(ask("ASK { ?b ex:about ex:Dog }"), Answer::Boolean(true));
+    assert_eq!(select("SELECT ?b WHERE { ?b ex:about ?x }").len(), 2);
 }
 
 #[test]
@@ -1263,11 +1297,10 @@ fn over_the_size_limit_nothing_is_added_and_the_note_says_skipped() {
     );
     let q = "SELECT ?x ?c WHERE { ?x a ?c }";
     let small = Inference {
-        imports: vec![import],
         max_triples: 2,
         ..inference(Reasoning::Default)
     };
-    let o = reasoned(&[&d], q, &small);
+    let o = reasoned(&[&d, &import], q, &small);
     assert_eq!(
         o.inferred,
         Inferred::Skipped {
@@ -1275,7 +1308,7 @@ fn over_the_size_limit_nothing_is_added_and_the_note_says_skipped() {
             limit: 2
         }
     );
-    assert_eq!(o.answer, run_on(&[&d], q).unwrap());
+    assert_eq!(o.answer, run_on(&[&import, &d], q).unwrap());
 }
 
 /// `q` over `d` with the default rules and `limits`, `during` run while
@@ -1408,29 +1441,193 @@ fn a_same_as_clique_past_the_cap_is_left_out_and_the_note_says_so() {
 }
 
 #[test]
-fn what_is_inferred_only_among_an_imports_terms_is_left_out() {
+fn what_is_inferred_among_an_imports_terms_alone_is_queried_with_its_premises() {
     let import = owl(
         "file:///cache/onto.ttl",
         "ex:A rdfs:subClassOf ex:B .\nex:B rdfs:subClassOf ex:C .\n\
          ex:Dog rdfs:subClassOf ex:Animal .\nex:Animal rdfs:subClassOf ex:Being .\n",
     );
     let data = owl("file:///w/data.ttl", "ex:rex a ex:Dog .\n");
-    let with = Inference {
-        imports: vec![import],
-        ..inference(Reasoning::Default)
-    };
-    let rows = |q: &str| match reasoned(&[&data], q, &with).answer {
+    let rows = |q: &str| match reasoned(&[&data, &import], q, &inference(Reasoning::Default)).answer
+    {
         Answer::Solutions(s) => shown(&s),
         other => panic!("{other:?}"),
     };
-    let about_import = rows(
-        "SELECT ?s ?o WHERE { ?s <http://www.w3.org/2000/01/rdf-schema#subClassOf> ?o \
-         FILTER (?s != ex:Dog) }",
+    let up = rows(
+        "SELECT ?o WHERE { ex:A <http://www.w3.org/2000/01/rdf-schema#subClassOf> ?o \
+         FILTER (?o != ex:A && !isBlank(?o)) } ORDER BY ?o",
     );
-    assert_eq!(about_import, Vec::<Vec<String>>::new());
-    // An imported axiom still types the data's individual.
+    // `A ⊑ C` comes with `A ⊑ B`, whatever the data mentions.
+    assert!(up.contains(&vec!["ex:B".to_string()]), "{up:?}");
+    assert!(up.contains(&vec!["ex:C".to_string()]), "{up:?}");
     let types = rows("SELECT ?c WHERE { ex:rex a ?c }");
     assert!(types.contains(&vec!["ex:Being".to_string()]), "{types:?}");
+}
+
+/// `t` with each blank node `_:x` named `_:d<k>_x`: blank nodes of
+/// different documents stay apart when one reasoner reads them all.
+fn scoped(t: &Triple, k: usize) -> Triple {
+    let blank = |b: &BlankNode| BlankNode::new_unchecked(format!("d{k}_{}", b.as_str()));
+    let term = |o: &Term| match o {
+        Term::BlankNode(b) => Term::BlankNode(blank(b)),
+        Term::Triple(t) => Term::Triple(Box::new(scoped(t, k))),
+        o => o.clone(),
+    };
+    let subject = match &t.subject {
+        spargebra::term::NamedOrBlankNode::BlankNode(b) => blank(b).into(),
+        s => s.clone(),
+    };
+    Triple::new(subject, t.predicate.clone(), term(&t.object))
+}
+
+/// TurbOWL's closure of `texts` (Turtle, each its own document, parsed by
+/// oxttl, not by turtle-lsp), base and inferred, as one N-Triples document.
+fn closure_doc(texts: &[&str]) -> Arc<Analysis> {
+    let mut base = Vec::new();
+    for (k, text) in texts.iter().enumerate() {
+        for t in oxttl::TurtleParser::new().for_slice(text.as_bytes()) {
+            base.push(scoped(&t.expect("a fixture parses"), k));
+        }
+    }
+    let mut reasoner = turbowl::Reasoner::with_switches(turbowl::Switches::default());
+    reasoner.set_base(base.iter().map(Triple::as_ref));
+    reasoner.reason();
+    let text: String = reasoner.triples().map(|t| format!("{t} .\n")).collect();
+    doc("file:///w/closure.nt", &text)
+}
+
+/// What it shows, its documents (URI, body) and its queries.
+type Case = (
+    &'static str,
+    &'static [(&'static str, &'static str)],
+    &'static [&'static str],
+);
+
+#[test]
+fn reasoning_answers_as_a_query_over_turbowls_closure() {
+    let cases: [Case; 7] = [
+        (
+            "a subclass chain",
+            &[(
+                "file:///w/m.ttl",
+                "ex:Puppy rdfs:subClassOf ex:Dog .\nex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Puppy .\n",
+            )],
+            &["SELECT ?x ?c WHERE { ?x a ?c }"],
+        ),
+        (
+            "an inverse",
+            &[(
+                "file:///w/m.ttl",
+                "ex:parentOf owl:inverseOf ex:childOf .\nex:ann ex:parentOf ex:ben .\n",
+            )],
+            &["SELECT ?x ?y WHERE { ?x ex:childOf ?y }"],
+        ),
+        (
+            "a transitive property",
+            &[(
+                "file:///w/m.ttl",
+                "ex:partOf a owl:TransitiveProperty .\nex:a ex:partOf ex:b .\nex:b ex:partOf ex:c .\nex:c ex:partOf ex:d .\n",
+            )],
+            &["SELECT ?x ?y WHERE { ?x ex:partOf ?y }"],
+        ),
+        (
+            "a property chain",
+            &[(
+                "file:///w/m.ttl",
+                "ex:uncleOf owl:propertyChainAxiom ( ex:brotherOf ex:parentOf ) .\n\
+                 ex:carl ex:brotherOf ex:ann .\nex:ann ex:parentOf ex:ben .\n",
+            )],
+            &["SELECT ?x ?y WHERE { ?x ex:uncleOf ?y }"],
+        ),
+        (
+            "an owl:sameAs merge",
+            &[(
+                "file:///w/m.ttl",
+                "ex:bob owl:sameAs ex:robert .\nex:bob ex:name \"Bob\" .\nex:robert ex:age 30 .\n",
+            )],
+            &["SELECT ?x ?p ?o WHERE { ?x ?p ?o FILTER (?x IN (ex:bob, ex:robert)) }"],
+        ),
+        (
+            "blank nodes of two documents, joined through inference",
+            // Out of URI order, each with blank nodes of the same labels.
+            &[
+                (
+                    "file:///w/z.ttl",
+                    "ex:zed ex:worksFor _:x .\n_:x ex:name \"Zeta\" .\n_:y ex:name \"unused\" .\n\
+                     _:x owl:sameAs _:y .\n",
+                ),
+                (
+                    "file:///w/a.ttl",
+                    "ex:worksFor rdfs:range ex:Organisation .\n\
+                     ex:alice ex:worksFor [ ex:name \"Acme\" ] .\n_:x ex:name \"a-x\" .\n",
+                ),
+            ],
+            &[
+                "SELECT ?p ?n WHERE { ?p ex:worksFor ?o . ?o a ex:Organisation ; ex:name ?n }",
+                "SELECT ?n ?m WHERE { ?b ex:name ?n , ?m FILTER (?n != ?m) }",
+            ],
+        ),
+        (
+            "an import",
+            &[
+                (
+                    "file:///w/data.ttl",
+                    "_:d ex:about ex:rex .\nex:rex a ex:Dog .\n",
+                ),
+                (
+                    "file:///cache/animals.ttl",
+                    "ex:Dog rdfs:subClassOf ex:Animal .\nex:Animal rdfs:subClassOf ex:Being .\n\
+                     _:r ex:about ex:Dog .\n",
+                ),
+            ],
+            &[
+                "SELECT ?x ?c WHERE { ?x a ?c }",
+                "SELECT ?x WHERE { ?b ex:about ?x }",
+            ],
+        ),
+    ];
+    // Every query also asks for every triple without a blank node, and
+    // counts the distinct triples and blank nodes: what a renaming of blank
+    // nodes keeps.
+    let every = [
+        "SELECT ?s ?p ?o WHERE { ?s ?p ?o FILTER (!isBlank(?s) && !isBlank(?o)) }",
+        "SELECT (COUNT(*) AS ?n) WHERE { SELECT DISTINCT ?s ?p ?o WHERE { ?s ?p ?o } }",
+        "SELECT (COUNT(DISTINCT ?b) AS ?n) WHERE { { ?b ?p ?o } UNION { ?s ?p ?b } FILTER isBlank(?b) }",
+    ];
+    let on = Inference {
+        max_triples: 1_000_000,
+        ..inference(Reasoning::Default)
+    };
+    for (what, docs, queries) in cases {
+        let texts: Vec<String> = docs.iter().map(|(_, b)| format!("{OWL_HEAD}{b}")).collect();
+        let analyses: Vec<Arc<Analysis>> = docs
+            .iter()
+            .zip(&texts)
+            .map(|((uri, _), text)| doc(uri, text))
+            .collect();
+        let given: Vec<&Arc<Analysis>> = analyses.iter().collect();
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let closure = closure_doc(&texts);
+        for q in queries.iter().chain(&every) {
+            let sorted = |a: Answer| match a {
+                Answer::Solutions(s) => {
+                    let mut rows = shown(&s);
+                    rows.sort();
+                    rows
+                }
+                other => panic!("{what}: {other:?}"),
+            };
+            let o = reasoned(&given, q, &on);
+            assert!(
+                matches!(o.inferred, Inferred::Added { .. }),
+                "{what}: {:?}",
+                o.inferred
+            );
+            let want = sorted(run_on(&[&closure], q).unwrap());
+            assert!(!want.is_empty(), "{what}: {q} has no rows");
+            assert_eq!(sorted(o.answer), want, "{what}: {q}");
+        }
+    }
 }
 
 mod dataset {
@@ -1660,9 +1857,9 @@ fn timing_a_timeout_or_a_cancel_stops_reasoning_partway_through() {
     );
 }
 
-/// An import whose `owl:sameAs` chain TurbOWL reasons over quickly but
-/// whose closure, every pair of the chain, is large to read out: nothing of
-/// it is about the data.
+/// An import whose `owl:sameAs` chain TurbOWL reasons over in a few
+/// milliseconds but whose closure, every pair of the chain (six million
+/// triples), takes far longer to read out.
 fn same_as_import() -> Arc<Analysis> {
     linked("file:///cache/same.ttl", "", "i", "owl:sameAs", 2500)
 }
@@ -1670,19 +1867,23 @@ fn same_as_import() -> Arc<Analysis> {
 #[test]
 fn timing_a_timeout_that_passes_while_inferred_triples_are_read_stops_near_it() {
     let data = owl("file:///w/data.ttl", "ex:a ex:p ex:b .\n");
+    let import = same_as_import();
+    // Reading stops at the cap, three million triples in: long enough to
+    // measure (they are read at about ten million a second).
     let with = Inference {
-        imports: vec![same_as_import()],
-        max_triples: 1_000_000,
+        max_triples: 3_000_000,
         ..inference(Reasoning::Default)
     };
     let q = "ASK { ex:a ex:p ex:b }";
     let run = |limits: &Limits| {
         let start = Instant::now();
-        let r = super::run(&[&data], q, None, &ex_prefixes(), limits, &with);
+        let r = super::run(&[&data, &import], q, None, &ex_prefixes(), limits, &with);
         (r, start.elapsed())
     };
     let (full, whole) = run(&Limits::default());
-    assert_eq!(full.unwrap().answer, Answer::Boolean(true));
+    let full = full.unwrap();
+    assert_eq!(full.answer, Answer::Boolean(true));
+    assert_eq!(full.inferred, Inferred::TooMany { limit: 3_000_000 });
     assert!(
         whole >= Duration::from_millis(200),
         "too quick to measure: {whole:?}"

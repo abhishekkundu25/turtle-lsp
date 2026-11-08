@@ -9,16 +9,17 @@
 //! imports. The query sees the prefixes the editor gives the document
 //! (prefixes.ttl and the `prefixes` setting).
 //!
-//! With `query.reasoning` on (`default` or `complete`), the query also runs
-//! over the triples TurbOWL infers from that snapshot with that rule set,
-//! reading the workspace's imports (the knowledge index's external sources,
-//! as background reasoning reads them) for their axioms only, up to
+//! With `query.reasoning` on (`default` or `complete`), the query also reads
+//! the workspace's imports (the knowledge index's external sources, as
+//! background reasoning reads them) and runs over every triple TurbOWL
+//! infers from the snapshot and the imports with that rule set, up to
 //! `turtle.reasoning.maxTriples`. The results document then says so in one
-//! line under its heading: "Includes 12 inferred triples (TurbOWL, default
-//! rules)." with "TurbOWL reported 2 findings." when there are any, or
-//! "Inferred triples skipped: the workspace has N triples, over the
-//! reasoning limit of M.". With `off` nothing is read or built and the
-//! document has no such line.
+//! line under its heading ([`Inferred::sentence`], as the command line
+//! writes it): "Includes 12 inferred triples (TurbOWL, default rules)."
+//! with "TurbOWL reported 2 findings." when there are any, or "Inferred
+//! triples skipped: the workspace has N triples, over the reasoning limit
+//! of M.". With `off` no import is read, nothing is built and the document
+//! has no such line.
 //!
 //! The query runs on a thread of its own (never the main loop), with
 //! `query.timeoutSeconds` and `query.maxRows`. The thread renders the
@@ -267,7 +268,7 @@ impl State {
             }
         };
         let rules = settings.query_reasoning;
-        let (docs, imports) = super::query::sources(ws.knowledge(), rules, |_| true);
+        let docs = super::query::sources(ws.knowledge(), rules, |_| true);
         let job = Job {
             name: file_name(&uri),
             text,
@@ -279,7 +280,6 @@ impl State {
             max_buffered_rows: settings.query_max_buffered_rows,
             inference: Inference {
                 rules,
-                imports,
                 max_triples: settings.reasoning_max_triples,
             },
             cancel: Arc::default(),
@@ -613,7 +613,7 @@ fn document(
         duration(elapsed),
         if files == 1 { "" } else { "s" }
     );
-    if let Some(line) = inferred_line(inferred) {
+    if let Some(line) = inferred.sentence() {
         out.push_str(&line);
         out.push_str("\n\n");
     }
@@ -647,40 +647,6 @@ fn document(
     out
 }
 
-/// The results document's line on what reasoning added; none when it was
-/// off.
-fn inferred_line(inferred: Inferred) -> Option<String> {
-    let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
-    match inferred {
-        Inferred::None => None,
-        Inferred::Added {
-            rules,
-            triples,
-            findings,
-        } => {
-            let mut line = format!(
-                "Includes {} (TurbOWL, {} rules).",
-                count(triples, "inferred triple"),
-                super::query::rules_name(rules)
-            );
-            if findings > 0 {
-                line.push_str(&format!(
-                    " TurbOWL reported {}.",
-                    count(findings, "finding")
-                ));
-            }
-            Some(line)
-        }
-        Inferred::Skipped { triples, limit } => Some(format!(
-            "Inferred triples skipped: the workspace has {triples} triples, over the reasoning limit of {limit}."
-        )),
-        Inferred::TooMany { limit } => Some(format!(
-            "Inferred triples skipped: TurbOWL inferred more than {}, over the reasoning limit.",
-            count(limit as usize, "triple")
-        )),
-    }
-}
-
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next()
@@ -712,51 +678,6 @@ mod tests {
         assert_eq!(duration(Duration::from_millis(34)), "34 ms");
         assert_eq!(duration(Duration::from_millis(1234)), "1.2 s");
         assert_eq!(duration(Duration::from_secs(30)), "30 s");
-    }
-
-    #[test]
-    fn the_inferred_line() {
-        use crate::settings::Reasoning;
-        assert_eq!(inferred_line(Inferred::None), None);
-        let added = |rules, triples, findings| {
-            inferred_line(Inferred::Added {
-                rules,
-                triples,
-                findings,
-            })
-        };
-        assert_eq!(
-            added(Reasoning::Default, 12, 0).as_deref(),
-            Some("Includes 12 inferred triples (TurbOWL, default rules).")
-        );
-        assert_eq!(
-            added(Reasoning::Complete, 1, 1).as_deref(),
-            Some(
-                "Includes 1 inferred triple (TurbOWL, complete rules). TurbOWL reported 1 finding."
-            )
-        );
-        assert_eq!(
-            added(Reasoning::Default, 3, 2).as_deref(),
-            Some(
-                "Includes 3 inferred triples (TurbOWL, default rules). TurbOWL reported 2 findings."
-            )
-        );
-        assert_eq!(
-            inferred_line(Inferred::Skipped {
-                triples: 9,
-                limit: 4
-            })
-            .as_deref(),
-            Some(
-                "Inferred triples skipped: the workspace has 9 triples, over the reasoning limit of 4."
-            )
-        );
-        assert_eq!(
-            inferred_line(Inferred::TooMany { limit: 4 }).as_deref(),
-            Some(
-                "Inferred triples skipped: TurbOWL inferred more than 4 triples, over the reasoning limit."
-            )
-        );
     }
 
     #[test]

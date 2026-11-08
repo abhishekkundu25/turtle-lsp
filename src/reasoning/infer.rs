@@ -1,19 +1,13 @@
 //! What TurbOWL infers from a query's documents, in the terms of the query
 //! graph that reads them ([`crate::rdf::Graph::with_triples`]).
 //!
-//! The base reads the documents sorted by URI, the graph in the order the
-//! query gives them, and each numbers blank nodes across its documents in
-//! its own order. A blank node of an inferred triple is renumbered from the
-//! base's order to the graph's, so it is the graph's node; one of an import
-//! keeps its number, past the queried documents' (imports sort after them),
-//! so it is a node of its own.
-//!
-//! Only the inferred triples about the queried documents are kept: those
-//! whose subject or object is a term in a subject or object of a queried
-//! document's triple (an IRI, a literal, a triple term, or one of its blank
-//! nodes; never an import's blank node). What TurbOWL infers among an
-//! import's terms alone, the imported vocabulary's own closure, is left
-//! out. Past `max` kept triples, reading them stops: they are too many.
+//! The documents are the query's, imports included, in the order the base
+//! reads them ([`base_order`]: by URI), and the query graph reads them in
+//! that order too. Both number blank nodes across the documents in that
+//! order, and the base names node `n` `g<n>`, as the graph's dataset does
+//! (the base's equivalence test checks it), so an inferred `g<n>` is the
+//! graph's node `n`. Every inferred triple is kept; past `max` of them,
+//! reading them stops: they are too many.
 
 use super::{Base, rules};
 use crate::analysis::{Analysis, Encoding};
@@ -21,8 +15,7 @@ use crate::knowledge::Source;
 use crate::rdf::graph::{NodeTriple, blank_max};
 use crate::settings::Reasoning;
 use crate::syntax::{BlankId, Direction, Iri, Node};
-use oxrdf::TermRef;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use spargebra::term::{NamedOrBlankNode, Term, Triple};
 use std::sync::Arc;
 
@@ -48,33 +41,32 @@ pub(crate) enum Halt {
 /// `stopped`.
 const CHECK_EVERY: usize = 1 << 16;
 
-/// What TurbOWL infers with `rules` from `docs` (the queried documents, in
-/// the order the query graph reads them) and `imports` (an import at a
-/// queried document's URI left out), the triples about the queried
-/// documents' terms only, at most `max` of them. Off infers nothing.
-/// `cancel` stops the run (TurbOWL checks it before each round), and
-/// `stopped`, asked every [`CHECK_EVERY`] inferred triples read, the reading
-/// of its result.
+/// Puts `docs` in the order the base reads them: by URI, a stable sort, as
+/// `Base::new` sorts documents of one [`Source`].
+pub(crate) fn base_order(docs: &mut [&Arc<Analysis>]) {
+    docs.sort_by(|a, b| a.uri.cmp(&b.uri));
+}
+
+/// What TurbOWL infers with `rules` from `docs` (in [`base_order`]), at
+/// most `max` triples. Off infers nothing. `cancel` stops the run (TurbOWL
+/// checks it before each round), and `stopped`, asked every
+/// [`CHECK_EVERY`] inferred triples read, the reading of its result.
 pub(crate) fn infer(
     rules_of: Reasoning,
     docs: &[&Arc<Analysis>],
-    imports: &[Arc<Analysis>],
     max: u64,
     cancel: &turbowl::Cancel,
     stopped: &dyn Fn() -> bool,
 ) -> Result<Closure, Halt> {
+    debug_assert!(
+        docs.is_sorted_by(|a, b| a.uri <= b.uri),
+        "not in base order"
+    );
     let Some(switches) = rules(rules_of) else {
         return Ok(Closure::default());
     };
-    let imports: Vec<&Arc<Analysis>> = imports
-        .iter()
-        .filter(|i| !docs.iter().any(|d| d.uri == i.uri))
-        .collect();
-    let sources = docs
-        .iter()
-        .map(|d| (Source::Open, Arc::clone(d)))
-        .chain(imports.iter().map(|i| (Source::External, Arc::clone(i))))
-        .collect();
+    // One source for all: the base keeps their order.
+    let sources = docs.iter().map(|d| (Source::Open, Arc::clone(d))).collect();
     // Places are not read: any encoding.
     let base = Base::new(sources, Encoding::Utf16);
     let mut reasoner = turbowl::Reasoner::with_switches(switches);
@@ -82,17 +74,11 @@ pub(crate) fn infer(
     reasoner
         .reason_cancellable(cancel)
         .map_err(|_| Halt::Stopped)?;
-    // The base's ids of the queried documents' subjects and objects.
-    let queried: FxHashSet<u32> = base.in_workspace().flat_map(|(s, o, _)| [s, o]).collect();
-    let about = |t: TermRef<'_>| base.id(t).is_some_and(|id| queried.contains(&id));
-    let mut blanks = Blanks::new(docs, &imports);
+    let mut blanks = Blanks::new(docs);
     let mut triples = Vec::new();
     for (i, t) in reasoner.inferred().enumerate() {
         if i % CHECK_EVERY == CHECK_EVERY - 1 && stopped() {
             return Err(Halt::Stopped);
-        }
-        if !about(t.subject.as_ref().into()) && !about(t.object.as_ref()) {
-            continue;
         }
         if triples.len() as u64 >= max {
             return Err(Halt::TooMany);
@@ -105,55 +91,29 @@ pub(crate) fn infer(
     })
 }
 
-/// One past the highest blank node number of `a`, as the graph and the
-/// base count it.
-fn blank_count(a: &Analysis) -> u32 {
-    let mut max = 0;
-    for t in a.parsed.triples.iter().filter(|t| !t.unresolved) {
-        blank_max(&t.s, &mut max);
-        blank_max(&t.o, &mut max);
-    }
-    max
-}
-
-/// Base blank node numbers to the graph's.
+/// Blank node labels to the graph's numbers: `g<n>`, the base's name of
+/// node `n`, is `n`; another label (TurbOWL's own, which OWL 2 RL never
+/// makes) a new node past the documents'.
 struct Blanks {
-    /// Per document in the base's order: where its blank nodes start in the
-    /// base, and in the graph.
-    starts: Vec<(u32, u32)>,
-    /// Where the imports' blank nodes start: the queried documents' end.
+    /// One past the documents' highest blank node number.
     end: u32,
-    /// The next number for a label the base did not give, and those given.
-    next: u32,
     minted: FxHashMap<String, u32>,
 }
 
 impl Blanks {
-    fn new(docs: &[&Arc<Analysis>], imports: &[&Arc<Analysis>]) -> Blanks {
-        let counts: Vec<u32> = docs.iter().map(|d| blank_count(d)).collect();
-        let mut graph = Vec::with_capacity(docs.len());
-        let mut at = 0u32;
-        for c in &counts {
-            graph.push(at);
-            at = at.saturating_add(*c);
-        }
-        let end = at;
-        // The base's order: by URI, a stable sort, as `Base::new` sorts.
-        let mut order: Vec<usize> = (0..docs.len()).collect();
-        order.sort_by(|&a, &b| docs[a].uri.cmp(&docs[b].uri));
-        let mut starts = Vec::with_capacity(docs.len());
-        let mut at = 0u32;
-        for i in order {
-            starts.push((at, graph[i]));
-            at = at.saturating_add(counts[i]);
-        }
-        let next = imports
-            .iter()
-            .fold(end, |n, i| n.saturating_add(blank_count(i)));
+    fn new(docs: &[&Arc<Analysis>]) -> Blanks {
+        // Each document's blank nodes follow the ones before it.
+        let count = |a: &Analysis| {
+            let mut max = 0;
+            for t in a.parsed.triples.iter().filter(|t| !t.unresolved) {
+                blank_max(&t.s, &mut max);
+                blank_max(&t.o, &mut max);
+            }
+            max
+        };
+        let end = docs.iter().fold(0u32, |n, d| n.saturating_add(count(d)));
         Blanks {
-            starts,
             end,
-            next,
             minted: FxHashMap::default(),
         }
     }
@@ -162,25 +122,12 @@ impl Blanks {
         let given = label
             .strip_prefix('g')
             .filter(|n| !n.starts_with('0') || *n == "0")
-            .and_then(|n| n.parse::<u32>().ok());
-        match given {
-            Some(n) if n < self.end => {
-                // The last document starting at or before `n`: one without
-                // blank nodes starts where the next one does.
-                let k = self.starts.partition_point(|s| s.0 <= n) - 1;
-                let (base, graph) = self.starts[k];
-                graph + (n - base)
-            }
-            Some(n) => n,
-            None => {
-                let next = &mut self.next;
-                *self.minted.entry(label.to_owned()).or_insert_with(|| {
-                    let n = *next;
-                    *next = next.saturating_add(1);
-                    n
-                })
-            }
-        }
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|&n| n < self.end);
+        given.unwrap_or_else(|| {
+            let next = self.end.saturating_add(self.minted.len() as u32);
+            *self.minted.entry(label.to_owned()).or_insert(next)
+        })
     }
 
     fn triple(&mut self, t: &Triple) -> NodeTriple {

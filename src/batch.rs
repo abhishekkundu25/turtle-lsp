@@ -378,7 +378,6 @@ fn query_in(
     // The files given are the data: no imports are loaded.
     let inference = Inference {
         rules: settings.query_reasoning,
-        imports: Vec::new(),
         max_triples: settings.reasoning_max_triples,
     };
     let ran = query::run(
