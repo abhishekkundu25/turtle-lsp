@@ -230,8 +230,9 @@ not by its extension.
   update operation, with its clauses).
 - **▶ Run query**: a code lens above a query runs it over the workspace's
   files as the editor has them, unsaved edits included (and, with
-  `query.reasoning` set to `default` or `complete`, over the triples
-  TurbOWL infers from them too; the results say how many), and opens the
+  `query.reasoning` set to `default` or `complete`, over the workspace's
+  external imports and everything TurbOWL infers from that same list too,
+  without a filter; the results say how many), and opens the
   results as a Markdown document (a table, `true`/`false`, or Turtle for
   `CONSTRUCT` and `DESCRIBE`) with `window/showDocument`; VS Code opens it
   beside the query. The query runs on its own thread with a time limit and
@@ -245,15 +246,21 @@ not by its extension.
   is refused before it runs. While it runs, an editor that shows progress
   shows "Running <file>" with the seconds so far and a cancel button, and
   an editor that can refresh code lenses shows the lens as
-  "■ Cancel query" (the `turtle.cancelQuery` command). Either one stops it.
+  "■ Cancel query" (the `turtle.cancelQuery` command). Either one stops it,
+  including reasoning and reading triples. `turtle.reasoning.maxTriples`
+  caps both the input and inferred triples. Over either limit, the query
+  runs without inferred triples and says so. The CLI and Run query share
+  the note's sentence: "Inferred triples skipped: TurbOWL inferred more
+  than N triples, over the reasoning limit." for the inferred cap.
 
 Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
 queries too. SPARQL files add nothing to the workspace's knowledge, so a
 query never makes a misspelled term look described. A query runs only when
 you ask, over the workspace's own files: the default graph is the union of
 every triple of every file, named graphs included; `GRAPH` and `FROM NAMED`
-match nothing, `FROM` is ignored, imports are not queried, updates are never
-run and no endpoint is contacted.
+match nothing and `FROM` is ignored. With reasoning on, the graph also
+includes the workspace's external imports and all inferred triples.
+Updates are never run and no endpoint is contacted.
 
 ### Queries from another extension or tool: `turtle/query`
 
@@ -264,12 +271,18 @@ server's `experimental` capabilities, with the query as text:
 ```json
 { "query": "SELECT ?s WHERE { ?s a <http://example.org/Pump> }",
   "files": ["file:///w/data.ttl", "file:///w/model.ttl"],
-  "base": "file:///w/", "timeoutSeconds": 10, "maxRows": 1000 }
+  "base": "file:///w/", "timeoutSeconds": 10, "maxRows": 1000,
+  "reasoning": "default" }
 ```
 
 Only `query` is required. `files` limits the data to those documents
 (default: every RDF document of the workspace, open ones as the editor has
-them, imports excluded). `timeoutSeconds` can only lower
+them). `reasoning` is `off`, `default` or `complete`, defaulting to
+`query.reasoning`. With `default` or `complete`, those documents plus the
+workspace's external imports are both the reasoning input and the queried
+data, with all TurbOWL's inferred triples added without a filter. With
+`files`, other workspace documents take no part. With `off`, imports and
+inferred triples are excluded. `timeoutSeconds` can only lower
 `query.timeoutSeconds`: `0` or a higher value is the setting. `maxRows`
 can only lower `query.maxRows` in the same way; `query.maxBufferedRows`
 applies as always. The query can use the prefixes of `prefixes.ttl` and
@@ -283,10 +296,25 @@ rows past `maxRows`), `{"kind": "ask", "head": {}, "boolean": b,
 "elapsedMs": ms}`, or for CONSTRUCT and DESCRIBE `{"kind": "construct",
 "triples": [{"subject", "predicate", "object"}], "omitted": n, "elapsedMs":
 ms}` with the terms in the results JSON's term form. Nothing is shown and no
-file is written. A query that is not SPARQL, an update, a relative IRI
-without `base`, an empty `files`, or a `files` entry that is no workspace
-document is an `InvalidParams` error; a query stopped
-at a limit is a `RequestFailed` error with the reason as its message. The
+file is written.
+
+With reasoning on, the answer also has an `inferred` member:
+
+- `{"rules": "default" | "complete", "triples": n, "findings": k}` gives
+  the inferred triples added and the findings TurbOWL reported. Findings do
+  not stop the query.
+- `{"skipped": {"triples": n, "limit": m}}` means the documents and imports
+  exceeded `turtle.reasoning.maxTriples`; no inferred triples were added.
+- `{"skipped": {"inferred": true, "limit": m}}` means TurbOWL inferred more
+  than that limit; no inferred triples were added.
+
+With `off`, there is no `inferred` member. Time limits and cancellation
+stop reasoning and reading triples as well as evaluation.
+
+A query that is not SPARQL, an update, a relative IRI
+without `base`, an empty `files`, a `files` entry that is no workspace
+document, or an invalid `reasoning` value is an `InvalidParams` error.
+A query stopped at a limit is a `RequestFailed` error with the reason as its message. The
 query runs on a thread of its own, and `$/cancelRequest` stops it (a
 `RequestCanceled` error); `shutdown`, `exit` and a closed connection stop
 every run. At most four queries run at a time; one more is a
@@ -557,7 +585,10 @@ JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.diagnostics.workspace` (check files that are not open; off by
 default), `turtle.parse.incremental` (after an edit, parse only the
 statements around it; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
-`turtle.query.maxBufferedRows` (for ▶ Run query), and `turtle.query.reasoning` (`off`, `default` or `complete`: also query what TurbOWL infers; off by default). Suggestions pop up while
+`turtle.query.maxBufferedRows` (for ▶ Run query), and `turtle.query.reasoning` (`off`, `default` or `complete`; off by default).
+With reasoning on, queries read the queried files plus external imports
+and everything TurbOWL infers, without a filter. Changing `query.*` settings
+re-runs no reasoning, validation or check. Suggestions pop up while
 typing in Turtle and TriG strings, for the SPARQL queries of SHACL shapes
 (`editor.quickSuggestions` for `[turtle]` and `[trig]`; set it back in
 your settings to turn that off).
@@ -603,6 +634,12 @@ In `editors/vscode`, `VSCE_TARGET=web npm run package` builds the engine
 and writes `turtle-lsp-web-<version>.vsix`.
 
 ## Browser editor and toolbox
+
+The query pane has Cancel, a watchdog past the query's time limit and a
+hint to try Inferred off if reasoning crashes the engine. It sends one
+query at a time to the worker; cancelling a waiting query leaves the
+running one alone. The sample's `reasoning/` folder has queries 04–12 to
+try with Inferred off, default and complete.
 
 The [browser editor](https://abhishekkundu25.github.io/turtle-lsp/) and its
 toolbox page run the server compiled to WebAssembly (`web/engine`) in your
@@ -747,9 +784,16 @@ turtle-lsp format                    # format files in place
 turtle-lsp format --check            # list files that would change; change nothing
 turtle-lsp format --diff             # print a unified diff instead
 turtle-lsp query people.rq           # run a query over the workspace's files
-turtle-lsp query --reasoning default people.rq   # ...and over what TurbOWL infers from them
+turtle-lsp query --reasoning default people.rq   # also query everything TurbOWL infers from those files
 turtle-lsp query -e 'SELECT ?s WHERE { ?s a foaf:Person }' data/
 ```
+
+`--reasoning default` or `--reasoning complete` adds all inferred triples
+without a filter. The CLI reads the named files or folders, with no external
+imports added. The input and inferred triples each have the
+`turtle.reasoning.maxTriples` limit; past either, the query runs without
+inferred triples and prints a note. The time limit stops reasoning and
+reading triples too.
 
 The workspace root is `--root DIR`, otherwise the nearest folder above with a
 `.git`, otherwise the current folder. Every file under it is loaded

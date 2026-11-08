@@ -5,11 +5,11 @@ Lock files in **bold**. Integration branch: `feat/turbowl-reasoning`.
 
 | # | Ticket | Status | Blocked by | Files |
 |---|---|---|---|---|
-| 01 | [Cap and filter the inferred triples, limits during conversion](01-cap-filter.md) | open | — | `src/query/mod.rs`, `src/query/tests.rs`, `src/reasoning/infer.rs`, `src/rdf/graph.rs`, `src/cli/query.rs`, **`src/extensions/run_query.rs`** (the note's match only), **`src/extensions/query.rs`** (the `inferred` member's match only), `web/engine/src/api.rs`, `test/query-cli.test.mjs` |
-| 02 | [`files`: every other document reasons](02-files.md) | open | — | **`src/extensions/query.rs`** (`sources` and its call only), `test/query-request.test.mjs` |
-| 03 | [A `query.*` change re-runs nothing](03-settings.md) | open | — | `src/server.rs`, `src/server/*.rs` as needed, a server unit test |
-| 04 | [Browser: Cancel, watchdog, crash hint](04-browser.md) | open | — | `web/app/query-pane.js`, `web/app/worker.js`, `web/app/query.css`, `web/test/editor-query.test.mjs` |
-| 05 | Close-out and arena review | open | 01-04 | `CHANGELOG.md`, `docs/specs/query-inference-fixes.md`, this README |
+| 01 | [Cap and filter the inferred triples, limits during conversion](01-cap-filter.md) | done (af3b10e) | — | `src/query/mod.rs`, `src/query/tests.rs`, `src/reasoning/infer.rs`, `src/rdf/graph.rs`, `src/cli/query.rs`, **`src/extensions/run_query.rs`** (the note's match only), **`src/extensions/query.rs`** (the `inferred` member's match only), `web/engine/src/api.rs`, `test/query-cli.test.mjs` |
+| 02 | [`files`: every other document reasons](02-files.md) | done (17d06bc) | — | **`src/extensions/query.rs`** (`sources` and its call only), `test/query-request.test.mjs` |
+| 03 | [A `query.*` change re-runs nothing](03-settings.md) | done (3ca2f33) | — | `src/server.rs`, `src/server/*.rs` as needed, a server unit test |
+| 04 | [Browser: Cancel, watchdog, crash hint](04-browser.md) | done (32c795e, aeb1d08) | — | `web/app/query-pane.js`, `web/app/worker.js`, `web/app/query.css`, `web/test/editor-query.test.mjs` |
+| 05 | Close-out and arena review | done (this close-out) | 01-04 | `CHANGELOG.md`, `docs/specs/query-inference-fixes.md`, this README |
 
 ## How the lock files stay apart
 

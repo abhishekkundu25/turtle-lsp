@@ -7,7 +7,7 @@ and the blank-node renumbering; the query reads and reasons over one list
 sorts them when reasoning is on. `files` = those files plus external imports.
 The note's sentence written once and used by the CLI and "▶ Run query".
 
-**Blocked by:** none. **Status:** open
+**Blocked by:** none. **Status:** done (51487e2)
 
 - [ ] Oracle test in `src/query/tests.rs`: for several workspaces (subclass chain, inverse, transitive, property chain, sameAs, blank nodes across two documents, an import), reasoning-on rows equal reasoning-off rows over TurbOWL's closure written as Turtle.
 - [ ] Changed tests: an import's own triples are queried with reasoning on and not with off; `files` reads neither other workspace documents' axioms nor data (`test/query-request.test.mjs`).

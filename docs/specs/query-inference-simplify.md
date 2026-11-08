@@ -1,6 +1,6 @@
 # Queries over inferred triples: query what the reasoner saw
 
-Status: in progress. Tickets:
+Status: done. Tickets:
 [../tickets/query-inference-simplify/](../tickets/query-inference-simplify/README.md).
 Supersedes the import and `files` decisions of
 [query-inferences.md](query-inferences.md) and

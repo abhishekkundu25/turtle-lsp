@@ -1,9 +1,10 @@
 # Queries over inferred triples: review fixes
 
-Status: in progress. Tickets:
+Status: done. Tickets:
 [../tickets/query-inference-fixes/](../tickets/query-inference-fixes/README.md).
 Fixes findings of a three-reviewer bug hunt of
 [query-inferences.md](query-inferences.md) (2026-11-08).
+The import, filter and `files` decisions are superseded by [query-inference-simplify.md](query-inference-simplify.md).
 
 ## Problem Statement
 

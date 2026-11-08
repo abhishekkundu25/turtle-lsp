@@ -6,6 +6,7 @@ query feature and its four ways in) and
 [turbowl-reasoning.md](turbowl-reasoning.md) (TurbOWL, the base, the rule
 sets). One of that spec's phase 2 directions ("SHACL with inference" is
 the other); this spec covers queries only.
+The import, filter and `files` decisions are superseded by [query-inference-simplify.md](query-inference-simplify.md).
 
 ## Problem Statement
 

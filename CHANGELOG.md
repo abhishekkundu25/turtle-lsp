@@ -33,13 +33,18 @@
   applies to ▶ Run query, `turtle/query` (its `reasoning` parameter, and an
   `inferred` member in the answer), `turtle-lsp query --reasoning` and the
   browser editor's query pane (an Inferred choice beside Run, on with the
-  default rules there). The results say how many triples TurbOWL added and
-  how many findings it reported, or that the workspace was over
-  `turtle.reasoning.maxTriples`. The editors also count the imports'
-  axioms; the imports' own triples stay out of the data. Updates never see
-  inferred triples. A query's time limit and cancel stop TurbOWL partway
-  through its run, not only after it (not in the browser, which has no
-  threads). Off, queries run exactly as before.
+  default rules there). With reasoning on, the queried files and the
+  workspace's external imports form one graph, with all their triples and
+  everything TurbOWL infers, without a filter. `turtle/query` with `files`
+  reads only those files plus external imports. Results report the inferred
+  count and findings, or that the input or inferred triples exceeded
+  `turtle.reasoning.maxTriples`. The latter note says "TurbOWL inferred more
+  than N triples, over the reasoning limit". The CLI and Run query share
+  the note's sentence. Time limits and cancel stop reasoning and reading
+  triples. The browser pane has Cancel, a watchdog past the time limit,
+  a crash hint and one query at a time to the worker. Its sample's
+  `reasoning/` folder has queries 04–12 to try. Changing `query.*` settings
+  re-runs nothing. Updates never see inferred triples. Off is unchanged.
 
 ### Fixed
 
