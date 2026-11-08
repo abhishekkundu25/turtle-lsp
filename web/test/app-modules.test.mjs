@@ -327,3 +327,182 @@ test("the query pane's note names each kind of answer about inferred triples", a
   assert.equal(inferredNote({ skipped: { triples: 4000, limit: 1000 } }), "Inferred triples skipped: the workspace has 4,000 triples, over the reasoning limit of 1,000")
   assert.equal(inferredNote({ skipped: { inferred: true, limit: 1000 } }), "Inferred triples skipped: TurbOWL inferred more than 1,000 triples, over the reasoning limit")
 })
+
+// The query pane against a fake DOM and a fake worker: each test drives the
+// worker's messages by hand.
+class FakeEl {
+  constructor() {
+    this.parts = new Map()
+    this.listeners = {}
+    this.attrs = {}
+    this.hidden = false
+    this.textContent = ""
+    this.title = ""
+    this.className = ""
+    this.innerHTML = ""
+    this.classList = { toggle() {} }
+  }
+  querySelector(sel) {
+    if (!this.parts.has(sel)) this.parts.set(sel, new FakeEl())
+    return this.parts.get(sel)
+  }
+  setAttribute(k, v) { this.attrs[k] = v }
+  getAttribute(k) { return this.attrs[k] ?? null }
+  removeAttribute(k) { delete this.attrs[k] }
+  addEventListener(type, f) { this.listeners[type] = f }
+  click() { this.listeners.click?.() }
+  append() {}
+  after() {}
+  focus() {}
+}
+class FakeWorker {
+  static made = []
+  static fail = null
+  constructor() {
+    if (FakeWorker.fail) throw FakeWorker.fail
+    this.posted = []
+    this.terminated = false
+    FakeWorker.made.push(this)
+  }
+  postMessage(m) { this.posted.push(m) }
+  terminate() { this.terminated = true }
+  answer(data) { this.onmessage({ data }) }
+}
+async function queryPane({ settings = {}, reasoning = "default" } = {}) {
+  globalThis.document = { createElement: () => new FakeEl(), querySelectorAll: () => [] }
+  globalThis.Worker = FakeWorker
+  FakeWorker.made = []
+  FakeWorker.fail = null
+  const { createQueryPane, watchdog } = await import("../app/query-pane.js")
+  const qp = createQueryPane({ files: () => [], reveal() {}, settings: () => settings, inferred: { get: () => reasoning, set() {} } })
+  const group = (name) => {
+    const g = { el: new FakeEl(), editor: new FakeEl(), active: `${name}.rq` }
+    qp.attach(g, () => qp.run(g))
+    g.status = () => g.run.pane.querySelector(".qpane-status").textContent
+    g.text = () => g.run.pane.querySelector(".qpane-body").innerHTML.replace(/<[^>]*>/g, "")
+    return g
+  }
+  return { qp, group, watchdog }
+}
+const ask = (boolean) => ({ kind: "ask", boolean, elapsedMs: 1 })
+
+test("cancelling or closing a query still queued fails only it: the running query keeps its worker and answers", async () => {
+  const { qp, group } = await queryPane()
+  const [a, b, c] = [group("a"), group("b"), group("c")]
+  const runs = [qp.run(a), qp.run(b), qp.run(c)]
+  const [w] = FakeWorker.made
+  const id = w.posted[0].id
+  w.answer({ id, started: true })
+  b.run.button.click() // Cancel, before b started
+  c.run.pane.querySelector(".ic").click() // Close Results, before c started
+  w.answer({ id, ok: ask(true) })
+  await Promise.all(runs)
+  assert.equal(w.terminated, false)
+  assert.equal(a.status(), "ask · 1 ms")
+  assert.equal(b.status(), "cancelled")
+  // Neither reached the worker, so it never spends time on them.
+  assert.deepEqual(w.posted.map((m) => m.query), ["a.rq"])
+  assert.equal(FakeWorker.made.length, 1)
+  // The next query runs in the same worker.
+  const next = qp.run(b)
+  w.answer({ id: w.posted[1].id, started: true })
+  w.answer({ id: w.posted[1].id, ok: ask(false) })
+  await next
+  assert.equal(b.text(), "false")
+})
+
+test("cancelling a started query ends its worker and fails what is queued behind it", async () => {
+  const { qp, group } = await queryPane()
+  const [a, b] = [group("a"), group("b")]
+  const runs = [qp.run(a), qp.run(b)]
+  const [w] = FakeWorker.made
+  w.answer({ id: w.posted[0].id, started: true })
+  a.run.button.click()
+  await Promise.all(runs)
+  assert.equal(w.terminated, true)
+  assert.equal(a.status(), "cancelled")
+  assert.equal(b.status(), "not run")
+})
+
+test("cancelling a query its worker has not started, while the engine loads, keeps the queue: the next query runs in a new worker", async () => {
+  const { qp, group } = await queryPane()
+  const [a, b] = [group("a"), group("b")]
+  const runs = [qp.run(a), qp.run(b)]
+  const [w] = FakeWorker.made
+  a.run.button.click()
+  assert.equal(w.terminated, true)
+  const w2 = FakeWorker.made[1]
+  assert.deepEqual(w2.posted.map((m) => m.query), ["b.rq"])
+  w2.answer({ id: w2.posted[0].id, started: true })
+  w2.answer({ id: w2.posted[0].id, ok: ask(true) })
+  await Promise.all(runs)
+  assert.equal(a.status(), "cancelled")
+  assert.equal(b.text(), "true")
+})
+
+test("only the query the engine was running when it crashed is told to try Inferred off", async () => {
+  const { qp, group } = await queryPane()
+  const [a, b] = [group("a"), group("b")]
+  const runs = [qp.run(a), qp.run(b)]
+  const [w] = FakeWorker.made
+  const id = w.posted[0].id
+  w.answer({ id, started: true })
+  w.answer({ id, error: "RuntimeError: unreachable", crashed: true })
+  await Promise.all(runs)
+  assert.match(a.text(), /RuntimeError: unreachable\. .*try Inferred off\./)
+  assert.equal(b.status(), "error")
+  assert.doesNotMatch(b.text(), /Inferred off/)
+  // A worker that fails to load is not the inferred triples' doing.
+  const c = group("c")
+  const run = qp.run(c)
+  FakeWorker.made.at(-1).onerror({ message: "Uncaught Error: boom", preventDefault() {} })
+  await run
+  assert.match(c.text(), /the query engine stopped: Uncaught Error: boom/)
+  assert.doesNotMatch(c.text(), /Inferred off/)
+})
+
+test("a query worker that cannot be made shows an error in the pane", async () => {
+  const { qp, group } = await queryPane()
+  const a = group("a")
+  FakeWorker.fail = new Error("Worker is not allowed here")
+  await qp.run(a)
+  assert.equal(a.status(), "error")
+  assert.match(a.text(), /Worker is not allowed here/)
+  assert.equal(a.run.button.querySelector(".qrun-label").textContent, "Run")
+  FakeWorker.fail = null
+  const run = qp.run(a)
+  const [w] = FakeWorker.made
+  w.answer({ id: w.posted[0].id, started: true })
+  w.answer({ id: w.posted[0].id, ok: ask(true) })
+  await run
+  assert.equal(a.text(), "true")
+})
+
+test("the query carries its time limit, read as the engine reads the settings, and the watchdog uses that number", async () => {
+  for (const [settings, timeout] of [
+    [{}, 30],
+    [{ turtle: { query: { timeoutSeconds: 2 } } }, 2],
+    [{ query: { timeoutSeconds: 1 } }, 1],
+    [{ "turtle.query.timeoutSeconds": 0 }, 0],
+    [{ turtle: { "query.timeoutSeconds": 3 } }, 3],
+    [{ query: { timeoutSeconds: -1 } }, 30],
+  ]) {
+    const { qp, group } = await queryPane({ settings })
+    qp.run(group("a"))
+    assert.equal(FakeWorker.made[0].posted[0].timeout, timeout, JSON.stringify(settings))
+  }
+  const { qp, group, watchdog } = await queryPane({ settings: { query: { timeoutSeconds: 1 } } })
+  const a = group("a")
+  const grace = watchdog.graceMs
+  watchdog.graceMs = -950
+  try {
+    const run = qp.run(a)
+    const [w] = FakeWorker.made
+    w.answer({ id: w.posted[0].id, started: true })
+    await run
+    assert.equal(w.terminated, true)
+    assert.match(a.text().trim(), /^Stopped: the query ran past its time limit of 1 second\./)
+  } finally {
+    watchdog.graceMs = grace
+  }
+})

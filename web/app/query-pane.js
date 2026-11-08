@@ -3,9 +3,11 @@
 // breadcrumbs bar when its file is a query (.rq, .sparql), and the results
 // under the editor: a table, true or false, or the constructed graph as
 // Turtle, with a line saying what inference added. The query runs in its own
-// engine worker (worker.js), so typing is never slowed. While it runs, Run is
-// Cancel; Cancel, or a watchdog a grace past the query's time limit, ends the
-// worker, and the next run starts a new one.
+// engine worker (worker.js), so typing is never slowed; the worker gets one
+// query at a time, the others wait here. While it runs, Run is Cancel;
+// Cancel, or a watchdog a grace past the query's time limit, ends the worker,
+// and the next run starts a new one. A query cancelled while it waits only
+// leaves the queue.
 
 import { esc } from "./dom.js"
 import { currentSettings } from "./editor-lsp.js"
@@ -19,12 +21,23 @@ const plural = (n, what) => `${n.toLocaleString("en")} ${what}${n === 1 ? "" : "
 // it cannot stop (or a crash that leaves the worker spinning). Tests shorten it.
 export const watchdog = { graceMs: 5_000 }
 
-// The query's time limit in seconds as the engine reads it from `settings`
-// (`turtle.query.timeoutSeconds`, nested or as one key): 30 unless set, 0 for
-// none.
+// The query's time limit in seconds as the engine reads it from `settings`:
+// `query.timeoutSeconds`, its keys nested or dotted, under `turtle` or not;
+// 30 unless set to seconds a duration holds, 0 for none. The pane sends it
+// with the query, so the engine and the watchdog use the same number.
 function timeLimit(s) {
-  const v = s?.turtle?.query?.timeoutSeconds ?? s?.["turtle.query.timeoutSeconds"]
-  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 30
+  let limit = 30
+  const walk = (v, path) => {
+    const keys = path.flatMap((k) => k.split("."))
+    while (keys[0] === "turtle") keys.shift()
+    const at = keys.join(".")
+    if (at === "query.timeoutSeconds") {
+      if (typeof v === "number" && v >= 0 && v < 2 ** 64) limit = v
+    } else if (v && typeof v === "object" && !Array.isArray(v) && "query.timeoutSeconds".startsWith(at))
+      for (const [k, w] of Object.entries(v)) walk(w, [...path, k])
+  }
+  walk(s, [])
+  return limit
 }
 
 // Why a query has no answer, when it is not the engine's: `status` is
@@ -49,7 +62,43 @@ class Stopped extends Error {
 export function createQueryPane({ files, reveal, settings = currentSettings, inferred }) {
   let worker = null
   let seq = 0
+  // The queries in the order they were asked; only the first is the
+  // worker's (`posted`), the rest wait for it.
   const pending = new Map()
+
+  // Gives the worker the first query, unless it has one: a new worker when
+  // there is none. A worker that cannot be made fails every query.
+  function next() {
+    const p = pending.values().next().value
+    if (!p || p.posted) return
+    if (!worker) {
+      let w
+      try {
+        w = worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" })
+      } catch (e) {
+        for (const q of pending.values()) q.reject(e)
+        pending.clear()
+        return
+      }
+      w.onmessage = ({ data }) => {
+        const p = pending.get(data.id)
+        if (data.started) return p?.start()
+        pending.delete(data.id)
+        clearTimeout(p?.timer)
+        // A crash is the query's: the engine was running it.
+        if ("error" in data) p?.reject(Object.assign(new Error(data.error), { crashed: Boolean(data.crashed) }))
+        else p?.resolve(data.ok)
+        if (data.crashed) drop(w, new Error("the query engine crashed"))
+        else next()
+      }
+      w.onerror = w.onmessageerror = (e) => {
+        e.preventDefault()
+        drop(w, new Error("the query engine stopped" + (e.message ? `: ${e.message}` : "")))
+      }
+    }
+    p.posted = true
+    worker.postMessage(p.message)
+  }
 
   // A worker that failed to load, died, whose engine crashed or that was
   // stopped answers nothing more: fail what waits on it with `error`, and
@@ -64,43 +113,35 @@ export function createQueryPane({ files, reveal, settings = currentSettings, inf
     }
     pending.clear()
   }
-  const crash = (message) => Object.assign(new Error(message), { crashed: true })
 
-  // Ends the worker running query `id`: the query fails with `own`, the
-  // queries queued behind it with `others`.
+  // Ends query `id` with `own`. One the engine started ends its worker, and
+  // the queries queued behind it fail with `others`; one the worker has not
+  // started (it waits for the engine to load) ends the worker, and the queue
+  // goes on in a new one; one still queued only leaves the queue.
   function stop(id, own, others) {
     const p = pending.get(id)
     if (!p) return
     pending.delete(id)
     clearTimeout(p.timer)
     p.reject(own)
-    drop(worker, new Stopped(`Not run: another query ${others} and the query engine was restarted. Run it again.`, "not run"))
+    if (p.started) drop(worker, new Stopped(`Not run: another query ${others} and the query engine was restarted. Run it again.`, "not run"))
+    else if (p.posted) {
+      worker.terminate()
+      worker = null
+      next()
+    }
   }
 
-  // Posts a query; `{ id, answer }`, the answer a promise. The watchdog starts
-  // when the worker starts the query, not while it waits behind another.
+  // Queues a query; `{ id, answer }`, the answer a promise. Its time limit
+  // goes with it as `timeout`, and the watchdog starts on that limit when the
+  // worker starts the query, not while it waits behind another.
   function call(payload) {
-    if (!worker) {
-      const w = (worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" }))
-      w.onmessage = ({ data }) => {
-        const p = pending.get(data.id)
-        if (data.started) return p?.start()
-        pending.delete(data.id)
-        clearTimeout(p?.timer)
-        if ("error" in data) p?.reject(data.crashed ? crash(data.error) : new Error(data.error))
-        else p?.resolve(data.ok)
-        if (data.crashed) drop(w, crash("the query engine crashed"))
-      }
-      w.onerror = w.onmessageerror = (e) => {
-        e.preventDefault()
-        drop(w, crash("the query engine stopped" + (e.message ? `: ${e.message}` : "")))
-      }
-    }
     const id = ++seq
     const limit = timeLimit(payload.settings)
     const answer = new Promise((resolve, reject) => {
-      const p = { resolve, reject, timer: null }
+      const p = { resolve, reject, timer: null, posted: false, started: false, message: { id, announce: true, ...payload, timeout: limit } }
       p.start = () => {
+        p.started = true
         const ms = limit * 1000 + watchdog.graceMs
         // 0 is no limit; past setTimeout's range is as good as none.
         if (limit > 0 && ms < 2 ** 31)
@@ -111,12 +152,12 @@ export function createQueryPane({ files, reveal, settings = currentSettings, inf
           )
       }
       pending.set(id, p)
-      worker.postMessage({ id, announce: true, ...payload })
     })
+    next()
     return { id, answer }
   }
 
-  // Ends group `g`'s running query.
+  // Ends group `g`'s query, running or queued.
   function cancel(g) {
     if (g.query?.running)
       stop(g.query.id, new Stopped("Cancelled.", "cancelled"), "was cancelled")
@@ -188,8 +229,7 @@ export function createQueryPane({ files, reveal, settings = currentSettings, inf
     if (!isQuery(path) || g.query?.running) return
     const { pane } = g.run
     const reasoning = inferred.get()
-    const { id, answer: asked } = call({ op: "query", files: files(), query: path, settings: settings(), reasoning })
-    const ticket = { path, id, running: true }
+    const ticket = { path, id: null, running: true }
     g.query = ticket
     const body = pane.querySelector(".qpane-body")
     pane.querySelector(".qpane-file").textContent = path
@@ -203,7 +243,9 @@ export function createQueryPane({ files, reveal, settings = currentSettings, inf
     update(g)
     let answer
     try {
-      answer = await asked
+      const asked = call({ op: "query", files: files(), query: path, settings: settings(), reasoning })
+      ticket.id = asked.id
+      answer = await asked.answer
     } catch (e) {
       // A crash or a run past the limit with inferred triples: likely theirs.
       const hint = reasoning === "off" ? "" : " Inferred triples can take more time or memory than this tab has: try Inferred off."
