@@ -1,6 +1,6 @@
 # Query results in a panel (VS Code)
 
-Status: in progress. Tickets:
+Status: done. Tickets:
 [../tickets/query-results-panel/](../tickets/query-results-panel/README.md).
 Branch: `feat/query-results-panel` (from `feat/turbowl-reasoning`).
 

@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Query Results panel in VS Code, on desktop and web.** ▶ Run query
+  opens a sortable table beside the query, with rows, time, files read and
+  an inferred-triples note. Each query file has one panel; rerun updates
+  it. Choose inferred rules per run, copy as TSV or export CSV / JSON.
+  Other editors keep the Markdown document.
+
 - **Reasoning, with proofs.** With `turtle.reasoning.rules` set to
   `default` or `complete`, the server runs TurbOWL, an OWL 2 RL reasoner,
   over the workspace and its loaded imports. A run starts when a document

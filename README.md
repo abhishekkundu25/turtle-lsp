@@ -232,10 +232,20 @@ not by its extension.
   files as the editor has them, unsaved edits included (and, with
   `query.reasoning` set to `default` or `complete`, over the workspace's
   external imports and everything TurbOWL infers from that same list too,
-  without a filter; the results say how many), and opens the
-  results as a Markdown document (a table, `true`/`false`, or Turtle for
-  `CONSTRUCT` and `DESCRIBE`) with `window/showDocument`; VS Code opens it
-  beside the query. The query runs on its own thread with a time limit and
+  without a filter; the results say how many). VS Code on desktop and web
+  shows a Query Results panel beside the query. Each query file has one
+  panel; rerun updates it. The header shows rows, time, files read and the
+  inferred-triples note. The Inferred choice starts at
+  `turtle.query.reasoning` and offers Off, Default rules and Complete rules.
+  Use Rerun, Copy (TSV) or Export CSV / JSON. The table sorts by column and
+  shortens IRIs with the query's prefixes, with the full IRI on hover.
+  ASK shows `true` or `false`; CONSTRUCT shows triples. The panel shows
+  errors with line and column, Running… and Cancelled states.
+  Other editors get a Markdown document through `window/showDocument`.
+  The `turtle.runQuery` command takes the query URI as its first argument.
+  Every client can pass an optional second argument
+  `{"reasoning": "off"|"default"|"complete"}` to choose reasoning for one run.
+  The query runs on its own thread with a time limit and
   a row limit (`query.timeoutSeconds`, default 30; `query.maxRows`, default
   1000), so typing never waits for it. A query that keeps more than
   `query.maxBufferedRows` rows in memory to sort, group, deduplicate or join
@@ -619,10 +629,8 @@ file system API (on github.dev, the repository's files).
 The language features work as on the desktop, including cross-file
 features over those files, problems in files that are not open,
 `prefixes.ttl`, `turtle-lsp.json` at the root of the first folder, SHACL
-validation and the workspace graph. These do not:
+validation, the workspace graph and the Query Results panel. These do not:
 
-- ▶ Run query is not shown, as it writes its results to disk. The
-  `turtle/query` request still works.
 - `owl:imports` are not fetched; a web import stays unresolved, as offline.
 - At most 2,000 files and 50 MB of RDF are read; past either limit the
   extension says how many files it read.

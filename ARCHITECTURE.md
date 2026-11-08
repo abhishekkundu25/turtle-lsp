@@ -231,6 +231,13 @@ a copy of the index; the browser engine answers inline. The drawing is
 `web/app/graph/`, one module the browser editor mounts and the VS Code
 extension bundles into its webview (`editors/vscode/src/graph.ts`).
 
+`extensions::run_query` handles `turtle.runQuery`. When the client declares
+`experimental["turtle/queryResults"]`, it answers with a result object
+instead of writing and opening a Markdown document. Other clients keep
+the Markdown document. Every client can pass an optional second argument
+`{"reasoning": "off"|"default"|"complete"}` to override reasoning for one run.
+A `$/cancelRequest` answers RequestCanceled.
+
 ## The VS Code extension's two entries
 
 The extension in `editors/vscode` has a desktop entry (`main`,
@@ -240,6 +247,11 @@ client to `src/activate.ts`, which holds what they share: the commands, the
 start on the first served document and the settings sent to the server.
 `src/client.ts` holds the parts that need neither `vscode` nor Node. The
 desktop factory finds the binary (`src/server.ts`) and runs it over stdio.
+
+Both entries show the Query Results panel through
+`editors/vscode/src/query-results.ts`. It manages one panel per query file
+and handles rerun, copy and export. `editors/vscode/src/query-results-view.js`
+provides rendering, sorting, IRI shortening and CSV / JSON export.
 
 The browser factory starts the server worker (`src/web/worker.ts`), which
 loads the engine's `.wasm` and passes the client's JSON-RPC messages to
