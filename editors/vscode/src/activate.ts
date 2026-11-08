@@ -8,6 +8,7 @@ import * as vscode from "vscode"
 import type { BaseLanguageClient, LanguageClientOptions } from "vscode-languageclient"
 import { configurationChange, layered, RDF_GLOB, ServerHandle, settingsFrom, type DocumentFilter } from "./client"
 import { advertisesGraph, GraphProbe, graphProbe, registerGraphCommand } from "./graph"
+import { QueryResults, queryResultsFeature, type QueryResultsProbe } from "./query-results"
 
 export type { DocumentFilter }
 
@@ -35,6 +36,8 @@ export interface TurtleApi {
   idle(): Promise<void>
   /** The open graph panel, if any. */
   graph(): GraphProbe | undefined
+  /** The Query Results panels. */
+  queryResults(): QueryResultsProbe
 }
 
 /**
@@ -60,8 +63,16 @@ async function sendSettings(context: vscode.ExtensionContext, setup: ClientSetup
   if (client?.isRunning()) await client.sendNotification("workspace/didChangeConfiguration", configurationChange(settingsFor(context, setup)))
 }
 
-/** The client options both entries share; the configuration middleware notifies `client()`. */
-function clientOptions(context: vscode.ExtensionContext, setup: ClientSetup, client: () => BaseLanguageClient | undefined): LanguageClientOptions {
+/**
+ * The client options both entries share; the configuration middleware
+ * notifies `client()`, and `turtle.runQuery`'s answer goes to `results`.
+ */
+function clientOptions(
+  context: vscode.ExtensionContext,
+  setup: ClientSetup,
+  client: () => BaseLanguageClient | undefined,
+  results: QueryResults,
+): LanguageClientOptions {
   return {
     documentSelector: setup.documentSelector,
     initializationOptions: settingsFor(context, setup),
@@ -69,6 +80,8 @@ function clientOptions(context: vscode.ExtensionContext, setup: ClientSetup, cli
     synchronize: { configurationSection: "turtle" },
     outputChannelName: "Turtle",
     middleware: {
+      // Run query's result object opens in the query's Query Results panel.
+      executeCommand: results.middleware,
       workspace: {
         // The client would send the whole section, defaults included, which
         // beats turtle-lsp.json at the server. Send the user's settings instead.
@@ -78,7 +91,8 @@ function clientOptions(context: vscode.ExtensionContext, setup: ClientSetup, cli
           params.items.every((i) => i.section === "turtle") ? params.items.map(() => settingsFor(context, setup)) : next(params, token),
       },
       window: {
-        // Query results open beside the query, which keeps the focus.
+        // A server without the result object writes the results as a
+        // Markdown document: it opens beside the query, which keeps the focus.
         showDocument: async (params, token, next) => {
           if (!/\/query-results\/[^/]+\.md$/.test(params.uri)) return next(params, token)
           await vscode.window.showTextDocument(vscode.Uri.parse(params.uri), {
@@ -136,9 +150,13 @@ let serverHandle: ServerHandle<BaseLanguageClient> | undefined
 export async function activate(context: vscode.ExtensionContext, setup: ClientSetup): Promise<TurtleApi> {
   /** Whether the client sends `doc` to the server. */
   const served = (doc: vscode.TextDocument): boolean => vscode.languages.match(setup.documentSelector, doc) > 0
+  const results = new QueryResults(context)
+  context.subscriptions.push(results)
   const handle = (serverHandle = new ServerHandle<BaseLanguageClient>(() => {
     let created: BaseLanguageClient | undefined
-    created = setup.createClient(clientOptions(context, setup, () => created))
+    created = setup.createClient(clientOptions(context, setup, () => created, results))
+    // Declares experimental["turtle/queryResults"] in initialize.
+    created?.registerFeature(queryResultsFeature)
     return created
   }))
   let wantedServer = false
@@ -193,7 +211,7 @@ export async function activate(context: vscode.ExtensionContext, setup: ClientSe
     })
     context.subscriptions.push(waiting)
   }
-  return { client: () => handle.client(), idle: () => handle.idle(), graph: graphProbe }
+  return { client: () => handle.client(), idle: () => handle.idle(), graph: graphProbe, queryResults: () => results.probe }
 }
 
 export async function deactivate(): Promise<void> {
