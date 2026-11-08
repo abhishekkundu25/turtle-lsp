@@ -414,6 +414,32 @@ SELECT ?a ?b WHERE {
 ORDER BY ?a ?b
 `
 
+const REASONING_Q_ORGS = head(["Who is an organisation? Run it, then flip Inferred beside Run.", "Off: id:acme. Default rules: id:alice too: Bob works for her, and", "whatever someone works for is an Organisation (ex:worksFor's range).", "Complete rules: hc:part88 as well: it is a member of owl:Nothing (a", "contradiction), and with every rule on, owl:Nothing is under every class."]) + `SELECT ?org WHERE { ?org a ex:Organisation } ORDER BY ?org
+`
+const REASONING_Q_SUPPLIED = head(["Where is the widget supplied from? No file says it.", "Off: no rows. Default rules: lab:bavaria, lab:germany, lab:munich, through", "a property chain built on another chain over a transitive locatedIn."]) + `PREFIX lab: <http://example.org/lab/>
+
+SELECT ?place WHERE { lab:widget42 lab:suppliedFrom ?place } ORDER BY ?place
+`
+const REASONING_Q_PARTS = head(["What are the widget's parts, parts of parts included?", "Off: no rows (only gearbox3 partOf widget42 is written).", "Default rules: lab:catalog77, lab:gearbox3, lab:screw9 (inverse, then transitive)."]) + `PREFIX lab: <http://example.org/lab/>
+
+SELECT ?part WHERE { lab:widget42 lab:hasPart ?part } ORDER BY ?part
+`
+const REASONING_Q_TYPES = head(["What is the catalogue entry? It is the same screw, merged by its serial number.", "Off: no rows. Default rules: lab:CertifiedPart, lab:Thing2Ship."]) + `PREFIX lab: <http://example.org/lab/>
+
+SELECT ?type WHERE { lab:catalog77 a ?type FILTER isIRI(?type) } ORDER BY ?type
+`
+const REASONING_Q_REPORTS = head(["Who reports to whom? A contradiction hides here.", "Off: no rows. Default rules: Dana reports to Erin and Erin to Dana, though", "hc:reportsTo is asymmetric: one of the seven contradictions in 02."]) + `PREFIX hc: <http://example.org/hidden/>
+
+SELECT ?a ?b WHERE { ?a hc:reportsTo ?b } ORDER BY ?a
+`
+const REASONING_Q_IDENTITY = head(["Are the two bank records one account? Only the identity rules say so.", "Off: false. Default rules: false. Complete rules: true (a key, then", "\"at most one owner\", then \"at most one home country\")."]) + `PREFIX ident: <http://example.org/identity/>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+
+ASK { ident:rec1 owl:sameAs ident:rec2 }
+`
+const REASONING_Q_COUNT = head(["How many triples does the query see? Run it with Off, Default rules and", "Complete rules: the count grows with each, by what TurbOWL inferred."]) + `SELECT (COUNT(*) AS ?triples) WHERE { ?s ?p ?o }
+`
+
 export const WORKSPACE = [
   { path: "start-here.ttl", text: START },
   { path: "prefixes.ttl", text: PREFIXES },
@@ -431,4 +457,11 @@ export const WORKSPACE = [
   { path: "reasoning/03-identity-needs-complete.ttl", text: REASONING_IDENTITY },
   { path: "reasoning/04-certified-parts.rq", text: REASONING_QUERY_PARTS },
   { path: "reasoning/05-merged-names.rq", text: REASONING_QUERY_SAME },
+  { path: "reasoning/06-organisations.rq", text: REASONING_Q_ORGS },
+  { path: "reasoning/07-supplied-from.rq", text: REASONING_Q_SUPPLIED },
+  { path: "reasoning/08-parts-of-parts.rq", text: REASONING_Q_PARTS },
+  { path: "reasoning/09-catalogue-entry.rq", text: REASONING_Q_TYPES },
+  { path: "reasoning/10-reports-to.rq", text: REASONING_Q_REPORTS },
+  { path: "reasoning/11-one-account.rq", text: REASONING_Q_IDENTITY },
+  { path: "reasoning/12-how-much-added.rq", text: REASONING_Q_COUNT },
 ]
