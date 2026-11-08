@@ -281,10 +281,19 @@ impl Server {
             .pointer("/capabilities/window/workDoneProgress")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let show_document = raw
-            .pointer("/capabilities/window/showDocument/support")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let flag = |pointer: &str| raw.pointer(pointer).and_then(Value::as_bool) == Some(true);
+        // JSON Pointer writes the `/` of `turtle/queryResults` as `~1`.
+        let results_pointer = format!(
+            "/capabilities/experimental/{}",
+            run_query::RESULTS_CAPABILITY.replace('/', "~1")
+        );
+        let delivery = if flag(&results_pointer) {
+            run_query::Delivery::Object
+        } else if flag("/capabilities/window/showDocument/support") {
+            run_query::Delivery::Document
+        } else {
+            run_query::Delivery::Message
+        };
         // The spec's `publishDiagnostics`, and for pull its `diagnostic` (3.18).
         let related_information = ["publishDiagnostics", "diagnostic"].iter().any(|k| {
             raw.pointer(&format!(
@@ -362,7 +371,7 @@ impl Server {
             // Before `layers` moves: `settings` borrows it.
             reasoning: crate::reasoning::Shared::when_on(settings, spawn),
             layers,
-            queries: run_query::State::new(show_document, &display_refresh, spawn),
+            queries: run_query::State::new(delivery, &display_refresh, spawn),
             refresh: Refresh::new(pull, refresh_support, display_refresh),
             timers: Timers::default(),
             imports: crate::imports::Imports::with_spawn(spawn),
@@ -2633,7 +2642,7 @@ mod tests {
 
     /// The Run query commands take one document URI, and are advertised.
     #[test]
-    fn run_query_commands_take_one_uri() {
+    fn run_query_commands_take_a_uri_and_options() {
         let mut e = embedded();
         let run = |e: &mut Embedded, command: &str, arguments: Value| {
             let params = json!({ "command": command, "arguments": arguments });
@@ -2644,8 +2653,23 @@ mod tests {
             panic!("accepted")
         };
         assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
-        assert_eq!(msg, "turtle.runQuery takes one document URI");
+        assert!(
+            msg.starts_with("turtle.runQuery takes a document URI, then"),
+            "{msg}"
+        );
+        let q = "file:///w/q.rq";
+        for bad in [
+            json!([q, { "reasoning": "on" }]),
+            json!([q, {}, {}]),
+            json!([q, "off"]),
+        ] {
+            let Err((code, _)) = run(&mut e, run_query::RUN_QUERY, bad.clone()) else {
+                panic!("accepted {bad}")
+            };
+            assert_eq!(code as i32, ErrorCode::InvalidParams as i32, "{bad}");
+        }
         assert!(run(&mut e, run_query::CANCEL_QUERY, json!([1])).is_err());
+        assert!(run(&mut e, run_query::CANCEL_QUERY, json!([q, {}])).is_err());
         let cancelled = run(&mut e, run_query::CANCEL_QUERY, json!(["file:///w/q.rq"]));
         assert!(matches!(cancelled, Ok(Some(n)) if n == "null"));
         let commands = capabilities(Encoding::Utf16, false).execute_command_provider;

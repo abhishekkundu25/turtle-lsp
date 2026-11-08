@@ -90,10 +90,11 @@ pub(crate) struct Params {
     reasoning: Option<Rules>,
 }
 
-/// The `reasoning` parameter, as written; [`Reasoning`] past the boundary.
+/// The `reasoning` parameter, as written (also "▶ Run query"'s), [`Reasoning`]
+/// past the boundary.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum Rules {
+pub(super) enum Rules {
     Off,
     Default,
     Complete,
@@ -409,7 +410,7 @@ fn execute(job: &Job) -> Result<Value, (ErrorCode, String)> {
 }
 
 /// The answer's `inferred` member; none when reasoning was off.
-fn inferred_json(inferred: Inferred) -> Option<Value> {
+pub(super) fn inferred_json(inferred: Inferred) -> Option<Value> {
     match inferred {
         Inferred::None => None,
         Inferred::Added {
@@ -432,7 +433,7 @@ fn inferred_json(inferred: Inferred) -> Option<Value> {
 
 /// The answer as JSON, with its `kind` and, for rows and triples, the
 /// count `omitted` past `maxRows`.
-fn answer_json(a: &Answer) -> Value {
+pub(super) fn answer_json(a: &Answer) -> Value {
     match a {
         Answer::Boolean(b) => json!({ "kind": "ask", "head": {}, "boolean": b }),
         Answer::Solutions(s) => {
