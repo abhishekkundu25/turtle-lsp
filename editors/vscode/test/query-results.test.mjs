@@ -246,3 +246,13 @@ test("the page while running, cancelled, for ASK, for an error and for a cut tab
   const cut = render({ phase: "done", result: parseAnswer(result({ ...select, omitted: 997 })) })
   assert.match(cut, /3 of 1,000 rows/)
 })
+
+test("the Inferred choice keeps the run's reasoning when no result came back; a result's wins once it does", () => {
+  const selected = (html) => html.match(/<option value="(\w+)" selected>/)?.[1]
+  const read = parseAnswer(result(select))
+  assert.equal(selected(render({ phase: "running", reasoning: "complete" })), "complete")
+  assert.equal(selected(render({ phase: "cancelled", reasoning: "complete" })), "complete")
+  assert.equal(selected(render({ phase: "failed", message: "no", reasoning: "default" })), "default")
+  assert.equal(selected(render({ phase: "cancelled" })), "off")
+  assert.equal(selected(render({ phase: "done", result: { ...read, reasoning: "default" } })), "default")
+})

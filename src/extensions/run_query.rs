@@ -35,8 +35,10 @@
 //! [`super::query::inferred_json`]), or `answer` `{"kind": "error",
 //! "message", "line"?, "column"?}` for a syntax error (with its 1-based
 //! position), an UPDATE, a limit or a failure. A cancelled or replaced run
-//! answers `{"cancelled": true, "uri"}`. Progress, the Cancel lens and
-//! `$/cancelRequest` are as below.
+//! answers `{"cancelled": true, "uri"}`, with one exception: a
+//! `$/cancelRequest` for the run's request answers the standard LSP error
+//! `RequestCanceled`, since the client gave the request up. Progress, the
+//! Cancel lens and `$/cancelRequest` are as below.
 //!
 //! The query runs on a thread of its own (never the main loop), with
 //! `query.timeoutSeconds` and `query.maxRows`. For any other client the
@@ -389,7 +391,7 @@ impl State {
         // A newer run of the same document replaces the one going on.
         if let Some(old) = self.stop(&uri, "Replaced by a newer run", c, p) {
             let answer = self.cancelled(&uri, "cancelled: a newer run replaced it");
-            let _ = c.send(Response::new_ok(old.request, answer));
+            respond(c, old.request, &answer);
         }
         self.next_id += 1;
         let run_id = self.next_id;
@@ -444,7 +446,7 @@ impl State {
         let end = done.report.summary.clone();
         let answer = self.deliver(c, &name, done.report);
         if let Some(run) = self.stop(&done.uri, &end, c, p) {
-            let _ = c.send(Response::new_ok(run.request, answer));
+            respond(c, run.request, &answer);
         }
     }
 
@@ -466,7 +468,7 @@ impl State {
     fn cancel(&mut self, uri: &str, c: &mut Client, p: &mut Progress) {
         if let Some(run) = self.stop(uri, "Cancelled", c, p) {
             let answer = self.cancelled(uri, "cancelled");
-            let _ = c.send(Response::new_ok(run.request, answer));
+            respond(c, run.request, &answer);
         }
     }
 
@@ -573,6 +575,14 @@ impl State {
         }
         Value::String(report.summary)
     }
+}
+
+/// Answer request `id` with `answer`, as JSON text (`server::wire`).
+fn respond(c: &Client, id: RequestId, answer: &Value) {
+    let _ = match json(answer) {
+        Ok(text) => c.respond(id, text),
+        Err((code, message)) => c.send(Response::new_err(id, code as i32, message)),
+    };
 }
 
 /// The last path segment of `uri`, percent-decoded where it can be.

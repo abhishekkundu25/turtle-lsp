@@ -28,8 +28,8 @@ const REASONING_LABELS = { off: "Off", default: "Default rules", complete: "Comp
  * @typedef {Result | { kind: "cancelled", uri: string }} RunAnswer
  * @typedef {{ phase: "running", result?: Result, reasoning?: Reasoning }
  *   | { phase: "done", result: Result }
- *   | { phase: "cancelled", result?: Result }
- *   | { phase: "failed", message: string, result?: Result }} View
+ *   | { phase: "cancelled", result?: Result, reasoning?: Reasoning }
+ *   | { phase: "failed", message: string, result?: Result, reasoning?: Reasoning }} View
  * @typedef {{ text: string, title?: string }} Cell
  * @typedef {{ kind: "table", columns: string[], rows: Cell[][], shown: number, total: number }
  *   | { kind: "boolean", value: boolean }
@@ -224,9 +224,8 @@ function literalText(t, datatype) {
   return bare ? t.value : `${quoted}^^${datatype(dt)}`
 }
 
-/** `t` as shown: IRIs shortened where a prefix applies. */
-function shortText(t, prefixes) {
-  const iri = (i) => shorten(i, prefixes) ?? `<${i}>`
+/** `t` in SPARQL syntax, its IRIs (the datatypes' too) written by `iri`. */
+function termText(t, iri) {
   switch (t.type) {
     case "uri":
       return iri(t.value)
@@ -235,23 +234,15 @@ function shortText(t, prefixes) {
     case "literal":
       return literalText(t, iri)
     case "triple":
-      return `<<( ${shortText(t.value.subject, prefixes)} ${shortText(t.value.predicate, prefixes)} ${shortText(t.value.object, prefixes)} )>>`
+      return `<<( ${termText(t.value.subject, iri)} ${termText(t.value.predicate, iri)} ${termText(t.value.object, iri)} )>>`
   }
 }
 
+/** `t` as shown: IRIs shortened where a prefix applies. */
+const shortText = (t, prefixes) => termText(t, (i) => shorten(i, prefixes) ?? `<${i}>`)
+
 /** `t` in SPARQL syntax with full IRIs (TSV). */
-function fullText(t) {
-  switch (t.type) {
-    case "uri":
-      return `<${t.value}>`
-    case "bnode":
-      return `_:${t.value}`
-    case "literal":
-      return literalText(t, (dt) => `<${dt}>`)
-    case "triple":
-      return `<<( ${fullText(t.value.subject)} ${fullText(t.value.predicate)} ${fullText(t.value.object)} )>>`
-  }
-}
+const fullText = (t) => termText(t, (i) => `<${i}>`)
 
 /** `t` in SPARQL CSV: IRIs in full, literals as their lexical form, blank nodes as `_:label`. */
 function csvText(t) {
@@ -337,6 +328,11 @@ function termRows(answer, ord) {
   return ord ? ord.map((i) => rows[i]).filter(Boolean) : rows
 }
 
+/** `header` and a line per row of `rows`, cells by `cell` (unbound: empty) joined by `sep`, each line ending in `eol`. */
+function delimited(header, rows, cell, sep, eol) {
+  return [header, ...rows.map((r) => r.map((t) => (t ? cell(t) : "")))].map((l) => `${l.join(sep)}${eol}`).join("")
+}
+
 const csvField = (v) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
 
 /**
@@ -348,8 +344,7 @@ export function csvOf(answer, ord) {
   if (answer.kind === "ask") return `boolean\r\n${answer.boolean}\r\n`
   if (answer.kind === "error") return ""
   const columns = answer.kind === "select" ? answer.vars : TRIPLE_COLUMNS
-  const lines = [columns.map(csvField), ...termRows(answer, ord).map((r) => r.map((t) => (t ? csvField(csvText(t)) : "")))]
-  return lines.map((l) => `${l.join(",")}\r\n`).join("")
+  return delimited(columns.map(csvField), termRows(answer, ord), (t) => csvField(csvText(t)), ",", "\r\n")
 }
 
 /**
@@ -361,8 +356,7 @@ export function tsvOf(answer, ord) {
   if (answer.kind === "ask") return `${answer.boolean}\n`
   if (answer.kind === "error") return ""
   const header = answer.kind === "select" ? answer.vars.map((v) => `?${v}`) : TRIPLE_COLUMNS
-  const lines = [header, ...termRows(answer, ord).map((r) => r.map((t) => (t ? fullText(t) : "")))]
-  return lines.map((l) => `${l.join("\t")}\n`).join("")
+  return delimited(header, termRows(answer, ord), fullText, "\t", "\n")
 }
 
 /**
@@ -468,7 +462,8 @@ export function render(view, sort) {
   const table = r && tableOf(r.answer, r.prefixes)
   const running = view.phase === "running"
   const exportable = !running && view.phase === "done" && table?.kind !== "error"
-  const reasoning = (view.phase === "running" && view.reasoning) || r?.reasoning || "off"
+  // The run's reasoning until its result comes back, then the result's.
+  const reasoning = (view.phase !== "done" && view.reasoning) || r?.reasoning || "off"
   const status =
     view.phase === "running" ? "Running…"
     : view.phase === "cancelled" ? "Cancelled."

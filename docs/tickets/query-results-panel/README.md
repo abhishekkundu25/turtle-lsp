@@ -15,3 +15,11 @@ Branch: `feat/query-results-panel`.
 2. **03**.
 
 ## Departures
+
+- Review fixes: Run query's answers go out as JSON text through
+  `Client::respond`, widened from `pub(super)` to `pub(crate)` like
+  `Client::send`. `$/cancelRequest` keeps the standard RequestCanceled
+  error (the one exception to the cancelled object). The panel's Inferred
+  choice starts at `turtle.query.reasoning` even before a result arrives.
+  The extension-host check uses the real server only, with two query
+  documents.

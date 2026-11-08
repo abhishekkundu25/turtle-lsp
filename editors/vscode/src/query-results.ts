@@ -26,8 +26,6 @@ export const queryResultsFeature: StaticFeature = {
 }
 
 type Next = (args: unknown[]) => Promise<unknown>
-/** Stands in for the server's answer in the integration tests. */
-export type AnswerStub = (args: unknown[], next: Next) => Promise<unknown>
 
 /** What the integration tests read of the open panels. */
 export interface QueryResultsProbe {
@@ -35,8 +33,6 @@ export interface QueryResultsProbe {
   count(): number
   /** The panel of the query document `uri`, if open. */
   panel(uri: string): PanelProbe | undefined
-  /** Answers `turtle.runQuery` through `stub` (none: the server). */
-  stub(stub: AnswerStub | undefined): void
 }
 
 export interface PanelProbe {
@@ -54,7 +50,6 @@ const failure = (err: unknown) => (err instanceof Error ? err.message : String(e
 export class QueryResults implements vscode.Disposable {
   private readonly panels = new Map<string, ResultsPanel>()
   private readonly context: vscode.ExtensionContext
-  private answerStub: AnswerStub | undefined
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context
@@ -66,20 +61,23 @@ export class QueryResults implements vscode.Disposable {
   readonly probe: QueryResultsProbe = {
     count: () => this.panels.size,
     panel: (uri) => this.panels.get(uri)?.probe,
-    stub: (stub) => (this.answerStub = stub),
   }
 
   /** Runs `turtle.runQuery` with `args` (`[uri, {reasoning}?]`) and shows a result object in the document's panel. */
   private async run(args: unknown[], next: Next): Promise<unknown> {
     const [uri, options] = args
     if (typeof uri !== "string") return next(args)
-    const reasoning = parseReasoning((options as { reasoning?: unknown } | undefined)?.reasoning)
+    // Without an explicit choice the run uses the setting, so the panel starts there.
+    const reasoning =
+      parseReasoning((options as { reasoning?: unknown } | undefined)?.reasoning) ??
+      parseReasoning(vscode.workspace.getConfiguration("turtle").get("query.reasoning")) ??
+      "off"
     const existing = this.panels.get(uri)
     const panel = existing ?? this.open(uri)
     const run = panel.start(reasoning)
     let answer: unknown
     try {
-      answer = await (this.answerStub ? this.answerStub(args, next) : next(args))
+      answer = await next(args)
     } catch (err) {
       if (existing) panel.fail(run, failure(err))
       else panel.dispose()
@@ -111,6 +109,8 @@ class ResultsPanel {
   private readonly uri: string
   private view: View = { phase: "running" }
   private runs = 0
+  /** The reasoning of the last run started: the Inferred choice until its result comes back. */
+  private reasoning: Reasoning = "off"
   private disposed = false
 
   constructor(context: vscode.ExtensionContext, uri: string, onDispose: () => void) {
@@ -138,7 +138,8 @@ class ResultsPanel {
   }
 
   /** A run starts: "Running…" over the last result. Returns the run's number. */
-  start(reasoning: Reasoning | undefined): number {
+  start(reasoning: Reasoning): number {
+    this.reasoning = reasoning
     this.show({ phase: "running", result: this.view.result, reasoning })
     if (this.runs > 0) this.panel.reveal(undefined, true)
     return ++this.runs
@@ -147,20 +148,20 @@ class ResultsPanel {
   finish(run: number, answer: RunAnswer): void {
     if (run !== this.runs) return
     this.probe.answers++
-    if (answer.kind === "cancelled") return this.show({ phase: "cancelled", result: this.view.result })
+    if (answer.kind === "cancelled") return this.show({ phase: "cancelled", result: this.view.result, reasoning: this.reasoning })
     this.panel.title = titleOf(answer.name)
     this.show({ phase: "done", result: answer })
   }
 
   fail(run: number, message: string): void {
-    if (run === this.runs) this.show({ phase: "failed", message, result: this.view.result })
+    if (run === this.runs) this.show({ phase: "failed", message, result: this.view.result, reasoning: this.reasoning })
   }
 
   /** An answer that is not a result: back to the last one. */
   abandon(run: number): void {
     if (run !== this.runs) return
     const result = this.view.result
-    this.show(result ? { phase: "done", result } : { phase: "failed", message: "The server did not answer with results." })
+    this.show(result ? { phase: "done", result } : { phase: "failed", message: "The server did not answer with results.", reasoning: this.reasoning })
   }
 
   private show(view: View): void {
@@ -191,7 +192,7 @@ class ResultsPanel {
       await vscode.commands.executeCommand(RUN_QUERY, this.uri, { reasoning })
     } catch (err) {
       // A run that reached the middleware already shows its failure.
-      if (this.view.phase !== "failed") this.show({ phase: "failed", message: failure(err), result: this.view.result })
+      if (this.view.phase !== "failed") this.show({ phase: "failed", message: failure(err), result: this.view.result, reasoning: this.reasoning })
     }
   }
 

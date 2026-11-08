@@ -332,62 +332,68 @@ check("a reference lens opens the references view", async () => {
   await vscode.commands.executeCommand("closeReferenceSearch")
 })
 
-// The Query Results panel (src/query-results.ts). A server without the
-// result object (docs/specs/query-results-panel.md, "Server seam") answers a
-// summary, or rejects the reasoning argument: the stub then answers a result
-// object for it, so the panel is tested either way.
+// The Query Results panel (src/query-results.ts), over the real server: the
+// client declares experimental["turtle/queryResults"] and the server answers
+// the result object (docs/specs/query-results-panel.md, "Server seam"); a
+// summary string instead fails the check.
 const queryTabs = () =>
   vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => t.input instanceof vscode.TabInputWebview && t.label.startsWith("Query Results: "))
-const resultObject = async (args, next) => {
-  const answer = await next(args).catch(() => undefined)
-  if (answer && typeof answer === "object" && "uri" in answer) return answer
-  return {
-    uri: args[0],
-    name: "people.rq",
-    files: 1,
-    elapsedMs: 3,
-    summary: "1 row in 3 ms",
-    reasoning: args[1]?.reasoning ?? "off",
-    prefixes: { ex: "https://query.example.org/def/" },
-    answer: { kind: "select", head: { vars: ["person"] }, results: { bindings: [{ person: { type: "uri", value: "https://query.example.org/def/alice" } }] }, omitted: 0 },
-  }
+const header = /^\d[\d,]* rows? · /
+
+/** Runs `doc`'s "▶ Run query" lens; its answer must be a SELECT result object. */
+async function runLens(doc) {
+  await settledDiagnostics(doc)
+  const lenses = await vscode.commands.executeCommand("vscode.executeCodeLensProvider", doc.uri, 100)
+  const lens = lenses.find((l) => l.command?.command === "turtle.runQuery")
+  assert.ok(lens, `lenses: ${JSON.stringify(lenses)}`)
+  assert.equal(lens.command.title, "▶ Run query")
+  assert.equal(lens.range.start.line, posOf(doc, "SELECT", 0).line)
+  const answer = await vscode.commands.executeCommand(lens.command.command, ...lens.command.arguments)
+  assert.equal(answer?.answer?.kind, "select", `the answer: ${JSON.stringify(answer)}`)
+  assert.equal(answer.uri, doc.uri.toString())
 }
 
-check("the Run query lens opens one Query Results panel beside the query, and a rerun reuses it", async () => {
+check("the Run query lens opens one Query Results panel per query beside it, and a rerun reuses that panel", async () => {
   const probe = (await graphApi()).queryResults()
-  probe.stub(resultObject)
+  // Created for this check and removed afterwards (the fixtures stay as they are).
+  const second = path.join(query, "__vscode-second.rq")
+  fs.writeFileSync(second, "PREFIX ex: <https://query.example.org/def/>\n\nSELECT ?person\nWHERE { ?person a ex:Person }\n")
   try {
     const doc = await open(path.join(query, "people.rq"))
-    await settledDiagnostics(doc)
-    const lenses = await vscode.commands.executeCommand("vscode.executeCodeLensProvider", doc.uri, 100)
-    const runLens = lenses.find((l) => l.command?.command === "turtle.runQuery")
-    assert.ok(runLens, `lenses: ${JSON.stringify(lenses)}`)
-    assert.equal(runLens.command.title, "▶ Run query")
-    assert.equal(runLens.range.start.line, posOf(doc, "SELECT", 0).line)
-    const answer = await vscode.commands.executeCommand(runLens.command.command, ...runLens.command.arguments)
-    assert.equal(answer?.answer?.kind, "select", `the answer: ${JSON.stringify(answer)}`)
+    await runLens(doc)
     const uri = doc.uri.toString()
     await until(`a Query Results tab in ${vscode.window.tabGroups.all.flatMap((g) => g.tabs.map((t) => t.label))}`, () => queryTabs().length === 1, 2000)
-    await until("the panel's header after a draw", () => /^\d[\d,]* rows? · /.test(probe.panel(uri)?.status ?? ""))
+    await until("the panel's header after a draw", () => header.test(probe.panel(uri)?.status ?? ""))
     // Beside the query, which keeps the focus.
     const queryEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri)
     assert.ok(queryEditor && queryTabs()[0].group.viewColumn !== queryEditor.viewColumn, "the panel is not beside the query")
     assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), uri)
 
-    const panel = probe.panel(uri)
-    await panel.receive({ type: "rerun", reasoning: "default" })
-    assert.equal(panel.answers, 2, "the rerun's answer did not reach the panel")
-    assert.equal(probe.count(), 1, "a second panel for the same query")
-    assert.equal(queryTabs().length, 1, "a second Query Results tab")
-    await until("the header after the rerun", () => /^\d[\d,]* rows? · /.test(probe.panel(uri)?.status ?? ""))
+    const doc2 = await vscode.workspace.openTextDocument(vscode.Uri.file(second))
+    await vscode.window.showTextDocument(doc2, queryEditor.viewColumn)
+    await runLens(doc2)
+    const uri2 = doc2.uri.toString()
+    await until("a second Query Results tab", () => queryTabs().length === 2, 2000)
+    await until("the second panel's header after a draw", () => header.test(probe.panel(uri2)?.status ?? ""))
+    assert.equal(probe.count(), 2, "not one panel per query")
 
-    await panel.receive({ type: "copy" })
-    assert.match(await vscode.env.clipboard.readText(), /^\?person\t?/)
+    for (const [u, reasoning] of [[uri, "default"], [uri2, "off"]]) {
+      const panel = probe.panel(u)
+      await panel.receive({ type: "rerun", reasoning })
+      assert.equal(panel.answers, 2, `the rerun's answer did not reach the panel of ${u}`)
+      assert.equal(probe.count(), 2, `a new panel on the rerun of ${u}`)
+      assert.equal(queryTabs().length, 2, `a new Query Results tab on the rerun of ${u}`)
+      await until("the header after the rerun", () => header.test(probe.panel(u)?.status ?? ""))
+    }
+    assert.equal(probe.panel(uri2).answers, 2, "the second query's rerun reached the first panel")
+
+    await probe.panel(uri).receive({ type: "copy" })
+    assert.match(await vscode.env.clipboard.readText(), /^\?person\t\?name\t\?org\n/)
   } finally {
-    probe.stub(undefined)
     await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+    fs.rmSync(second, { force: true })
   }
-  await until("the panel to be disposed", () => probe.count() === 0, 2000)
+  await until("the panels to be disposed", () => probe.count() === 0, 2000)
 })
 
 check("saving a file that violates the project shapes shows a SHACL violation", async () => {
