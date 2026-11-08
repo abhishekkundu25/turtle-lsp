@@ -111,18 +111,29 @@ impl From<Rules> for Reasoning {
 
 /// The documents a query reads: the workspace documents (the knowledge
 /// index's sources that are not external) that `keep` accepts, and with
-/// `rules` on, the external imports.
+/// `rules` on, the external imports. An import at a workspace document's
+/// URI (an import that is also open) is read once, as the workspace
+/// document: the editor's text, not the file's.
 pub(super) fn sources(
     k: &crate::knowledge::Knowledge,
     rules: Reasoning,
     keep: impl Fn(&Analysis) -> bool,
 ) -> Vec<Arc<Analysis>> {
+    let workspace = workspace_uris(k);
     k.sources()
         .filter(|&(_, source, a)| match source {
-            Source::External => rules != Reasoning::Off,
+            Source::External => rules != Reasoning::Off && !workspace.contains(a.uri.as_str()),
             Source::Open | Source::Disk => keep(a),
         })
         .map(|(_, _, a)| a.clone())
+        .collect()
+}
+
+/// The URIs of the workspace documents: what `files` may name.
+fn workspace_uris(k: &crate::knowledge::Knowledge) -> FxHashSet<&str> {
+    k.sources()
+        .filter(|&(_, source, _)| source != Source::External)
+        .map(|(_, _, a)| a.uri.as_str())
         .collect()
 }
 
@@ -250,9 +261,10 @@ pub(super) fn request(
         wanted.as_ref().is_none_or(|w| w.contains(&a.uri))
     });
     if let Some(w) = &wanted {
+        let workspace = workspace_uris(s.knowledge().0);
         let missing: Vec<&str> = w
             .iter()
-            .filter(|u| !docs.iter().any(|a| a.uri == **u))
+            .filter(|u| !workspace.contains(u.as_str()))
             .map(String::as_str)
             .collect();
         if !missing.is_empty() {

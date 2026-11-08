@@ -419,6 +419,41 @@ ex:p1 a ex:Pump .
     }
   })
 
+  test("an import that is also open is read once, as the editor has it; files never names an import", async () => {
+    const dir = tempDir("turtle-lsp-query-request-dup-")
+    dirs.push(dir)
+    // An import in a folder the workspace leaves out, so it is an import until opened.
+    fs.mkdirSync(path.join(dir, "node_modules"))
+    const vendor = path.join(dir, "node_modules", "vendor.ttl")
+    const text = '@prefix ex: <http://example.org/> .\n_:x ex:name "one" .\n'
+    fs.writeFileSync(vendor, text)
+    fs.writeFileSync(path.join(dir, "model.ttl"), "<http://example.org/model> <http://www.w3.org/2002/07/owl#imports> <http://example.org/vendor> .\n")
+    fs.writeFileSync(path.join(dir, "catalog-v001.xml"), '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"><uri name="http://example.org/vendor" uri="node_modules/vendor.ttl"/></catalog>')
+    const s = await startServer({ cwd: dir })
+    const names = async (reasoning) =>
+      (await s.request("turtle/query", { query: "SELECT ?n WHERE { ?s <http://example.org/name> ?n }", reasoning })).results.bindings.map((b) => b.n.value).sort()
+    try {
+      for (const end = Date.now() + 10000; (await names("default")).length === 0; ) {
+        if (Date.now() > end) throw new Error("the import never loaded")
+        await new Promise((res) => setTimeout(res, 50))
+      }
+      for (const reasoning of ["off", "default"]) {
+        await assert.rejects(
+          s.request("turtle/query", { query: "ASK {}", reasoning, files: [uriOf(vendor)] }),
+          (e) => e.code === InvalidParams,
+          reasoning,
+        )
+      }
+      s.open(uriOf(vendor), text.replace("one", "edited"))
+      const end = Date.now() + 10000
+      while ((await names("off")).join() !== "edited" && Date.now() < end) await new Promise((res) => setTimeout(res, 50))
+      assert.deepEqual(await names("off"), ["edited"])
+      assert.deepEqual(await names("default"), ["edited"])
+    } finally {
+      await s.stop()
+    }
+  })
+
   test("a bad reasoning value is InvalidParams", async () => {
     const s = await workspace()
     try {
