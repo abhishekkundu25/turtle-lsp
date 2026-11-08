@@ -7,6 +7,7 @@
 .qrun { margin-left: 6px; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px 0 6px; border-radius: 3px; background: var(--focus); color: #fff; font-size: 12px; }
 .qrun:hover { filter: brightness(1.1); }
 .qrun:disabled { opacity: .6; cursor: default; }
+.qrun.running { background: var(--input); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
 .qrun:focus-visible, .qloc:focus-visible, .qpane .ic:focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
 .qrun .codicon { font-size: 14px; }
 
@@ -26,4 +27,7 @@
 .qerror { display: flex; align-items: baseline; gap: 6px; margin: 6px 0; }
 .qerror .codicon-error { color: var(--err); align-self: center; }
 .qerror .msg { white-space: pre-wrap; }
+.qstopped { display: flex; align-items: baseline; gap: 6px; margin: 6px 0; color: var(--muted); }
+.qstopped .codicon { align-self: center; color: var(--warn); }
+.qstopped .msg { white-space: pre-wrap; }
 .qloc { font: 12px var(--mono); color: var(--info); text-decoration: underline; padding: 0; }
