@@ -42,6 +42,7 @@ pub(super) struct SettingsChange {
     settings: Settings,
     prefixes: bool,
     network: bool,
+    queries_only: bool,
 }
 
 impl SettingsChange {
@@ -58,6 +59,12 @@ impl SettingsChange {
     /// `imports.network` changed.
     pub(super) fn network(&self) -> bool {
         self.network
+    }
+
+    /// Only `query.*` settings changed, which queries read when they run
+    /// (see [`Settings::differ_only_in_queries`]).
+    pub(super) fn queries_only(&self) -> bool {
+        self.queries_only
     }
 }
 
@@ -151,6 +158,7 @@ impl Layers {
         Some(SettingsChange {
             prefixes: new.prefixes != self.settings.prefixes,
             network: new.imports_network != self.settings.imports_network,
+            queries_only: new.differ_only_in_queries(&self.settings),
             settings: new,
         })
     }
@@ -248,6 +256,34 @@ mod tests {
         assert_eq!(change, Some((false, false)));
         let change = configure(&mut l, json!({"imports": {"network": true}}));
         assert_eq!(change, Some((true, true)));
+    }
+
+    #[test]
+    fn a_change_to_query_settings_alone_is_queries_only() {
+        let mut l = Layers::new((Value::Null, None), Value::Null, false);
+        let queries_only = |l: &mut Layers, section: Value| {
+            assert!(l.set_config(section));
+            let change = l.relayer().expect("a change");
+            let only = change.queries_only();
+            l.commit(change);
+            only
+        };
+        for query in [
+            json!({"reasoning": "default"}),
+            json!({"reasoning": "default", "maxRows": 5}),
+            json!({"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3}),
+            json!({"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3, "maxBufferedRows": 9}),
+        ] {
+            assert!(queries_only(&mut l, json!({"query": query})), "{query}");
+        }
+        assert!(!queries_only(
+            &mut l,
+            json!({"query": {"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3, "maxBufferedRows": 9}, "reasoning": {"rules": "default"}})
+        ));
+        assert!(!queries_only(
+            &mut l,
+            json!({"query": {"reasoning": "off"}, "reasoning": {"rules": "complete"}})
+        ));
     }
 
     #[test]

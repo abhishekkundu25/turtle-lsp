@@ -1224,7 +1224,12 @@ impl Server {
         let Some(change) = self.layers.relayer() else {
             return;
         };
-        // Any setting can change every document's diagnostics, SHACL's and
+        if change.queries_only() {
+            // Queries read these when they run; no document depends on them.
+            self.layers.commit(change);
+            return;
+        }
+        // Any other setting can change every document's diagnostics, SHACL's and
         // reasoning's.
         let mut fx = Effects {
             data: true,
@@ -2077,6 +2082,65 @@ mod tests {
         assert!(e.server.reasoning.is_none());
         assert!(!e.server.timers.is_set(Timer::ReasoningTyping));
         assert!(e.server.reasoning_runs.diagnostics().is_empty());
+    }
+
+    /// The `query.*` settings are read only when a query runs: changing only
+    /// them stores them and reasons, validates and checks nothing again.
+    /// Any other change still does.
+    #[test]
+    fn a_change_to_query_settings_alone_reruns_nothing() {
+        const DATA: &str = "@prefix ex: <http://example.org/> .\n\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            @prefix sh: <http://www.w3.org/ns/shacl#> .\n\
+            ex:Cat owl:disjointWith ex:Dog .\n\
+            ex:tom a ex:Cat , ex:Dog .\n\
+            ex:S a sh:NodeShape ; sh:targetNode ex:tom ; sh:property [ sh:path ex:name ; sh:minCount 1 ] .\n";
+        let uri = "file:///w/a.ttl";
+        let configure = |e: &mut Embedded, rules: &str, query: Value| {
+            e.handle(vec![notify(
+                "workspace/didChangeConfiguration",
+                json!({"settings": {"turtle": {
+                    "reasoning": {"rules": rules, "diagnostics": true},
+                    "query": query,
+                }}}),
+            )])
+        };
+        let generations = |e: &Embedded| {
+            (
+                e.server.reasoning_runs.generation(),
+                e.server.shacl.generation(),
+            )
+        };
+        let mut e = embedded();
+        open(&mut e, uri, DATA);
+        let sent = configure(&mut e, "default", json!({"reasoning": "off"}));
+        assert!(published(&sent, uri).is_some());
+        let before = generations(&e);
+
+        let sent = configure(
+            &mut e,
+            "default",
+            json!({"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3}),
+        );
+        assert_eq!(published(&sent, uri), None, "nothing is checked again");
+        assert_eq!(generations(&e), before, "no reasoning run, no validation");
+        let s = e.server.layers.settings();
+        assert_eq!(s.query_reasoning, crate::settings::Reasoning::Default);
+        assert_eq!(s.query_max_rows, Some(5));
+        assert_eq!(s.query_timeout, Some(Duration::from_secs(3)));
+        assert!(e.server.dirty.is_empty());
+
+        let sent = configure(
+            &mut e,
+            "complete",
+            json!({"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3}),
+        );
+        assert!(published(&sent, uri).is_some());
+        let after = generations(&e);
+        assert!(
+            after.0 > before.0 && after.1 > before.1,
+            "{before:?} {after:?}"
+        );
     }
 
     /// A run over text since edited (on the thread, it was running when

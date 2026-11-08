@@ -267,6 +267,18 @@ impl Settings {
         (s, ignored)
     }
 
+    /// `self` and `other` differ, if at all, only in the `query.*` settings.
+    /// Those are read only when a query runs, so such a change touches no
+    /// document's diagnostics, SHACL validation or reasoning.
+    pub(crate) fn differ_only_in_queries(&self, other: &Settings) -> bool {
+        let mut s = self.clone();
+        s.query_timeout = other.query_timeout;
+        s.query_max_rows = other.query_max_rows;
+        s.query_max_buffered_rows = other.query_max_buffered_rows;
+        s.query_reasoning = other.query_reasoning;
+        s == *other
+    }
+
     /// Whether diagnostics with `code` are reported: not in `lint.ignore`
     /// (nor `undescribed-term` with `lint.undescribedTerms` off), and an
     /// off-by-default check only when `lint.enable` lists it.

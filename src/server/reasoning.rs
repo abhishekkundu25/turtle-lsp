@@ -106,6 +106,12 @@ impl Runs {
         self.generation += 1;
     }
 
+    /// The latest job's generation.
+    #[cfg(test)]
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// `o` is the outcome of the latest job, not of a superseded one.
     pub(super) fn is_current(&self, o: &Outcome) -> bool {
         o.generation == self.generation
