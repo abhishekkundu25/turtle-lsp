@@ -236,8 +236,9 @@ const INFERRED = [
 
 // The line that says what inference added to the query's data (the answer's
 // `inferred`), or "" when it was off.
-function inferredNote(i) {
+export function inferredNote(i) {
   if (!i) return ""
+  if (i.skipped?.inferred) return `Inferred triples skipped: TurbOWL inferred more than ${plural(i.skipped.limit, "triple")}, over the reasoning limit`
   if (i.skipped) return `Inferred triples skipped: the workspace has ${plural(i.skipped.triples, "triple")}, over the reasoning limit of ${i.skipped.limit.toLocaleString("en")}`
   const line = `Includes ${plural(i.triples, "inferred triple")} (TurbOWL, ${i.rules} rules)`
   return i.findings ? `${line}; TurbOWL reported ${plural(i.findings, "finding")}` : line

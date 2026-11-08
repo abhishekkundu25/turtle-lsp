@@ -318,3 +318,12 @@ test("the dead prototype is gone, and so is the script that served it", () => {
     assert.doesNotMatch(fs.readFileSync(path.join(web, "..", "docs", "specs", spec), "utf8"), /web\/prototype/)
   }
 })
+
+test("the query pane's note names each kind of answer about inferred triples", async () => {
+  const { inferredNote } = await import("../app/query-pane.js")
+  assert.equal(inferredNote(undefined), "")
+  assert.equal(inferredNote({ rules: "default", triples: 1, findings: 0 }), "Includes 1 inferred triple (TurbOWL, default rules)")
+  assert.equal(inferredNote({ rules: "complete", triples: 12, findings: 2 }), "Includes 12 inferred triples (TurbOWL, complete rules); TurbOWL reported 2 findings")
+  assert.equal(inferredNote({ skipped: { triples: 4000, limit: 1000 } }), "Inferred triples skipped: the workspace has 4,000 triples, over the reasoning limit of 1,000")
+  assert.equal(inferredNote({ skipped: { inferred: true, limit: 1000 } }), "Inferred triples skipped: TurbOWL inferred more than 1,000 triples, over the reasoning limit")
+})
