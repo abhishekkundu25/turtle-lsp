@@ -83,7 +83,7 @@ changes nothing.
 
 - Completion ranking by inferred types, inferred links in the type hierarchy, and SHACL with inference: phase 2, a separate spec.
 - A "Show why" command, and hover on an arbitrary inferred non-type triple.
-- Cancelling a run halfway (TurbOWL cannot today); a stale result is dropped instead.
+- Cancelling a background run halfway; a stale result is dropped instead. TurbOWL can now stop a run between rounds (`Reasoner::reason_cancellable`); queries use it ([query-inferences.md](query-inferences.md)), background runs do not yet.
 - `complete`'s slow explanations on Brick (TurbOWL's ticket explain/06).
 - Publishing TurbOWL or pushing either repository.
 

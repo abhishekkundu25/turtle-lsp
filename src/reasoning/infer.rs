@@ -29,14 +29,16 @@ pub(crate) struct Closure {
 
 /// What TurbOWL infers with `rules` from `docs` (the queried documents, in
 /// the order the query graph reads them) and `imports` (an import at a
-/// queried document's URI left out). Off infers nothing.
+/// queried document's URI left out). Off infers nothing. `None` when
+/// `cancel` stopped the run (TurbOWL checks it before each round).
 pub(crate) fn infer(
     rules_of: Reasoning,
     docs: &[&Arc<Analysis>],
     imports: &[Arc<Analysis>],
-) -> Closure {
+    cancel: &turbowl::Cancel,
+) -> Option<Closure> {
     let Some(switches) = rules(rules_of) else {
-        return Closure::default();
+        return Some(Closure::default());
     };
     let imports: Vec<&Arc<Analysis>> = imports
         .iter()
@@ -51,13 +53,13 @@ pub(crate) fn infer(
     let base = Base::new(sources, Encoding::Utf16);
     let mut reasoner = turbowl::Reasoner::with_switches(switches);
     reasoner.set_base(base.triples());
-    reasoner.reason();
+    reasoner.reason_cancellable(cancel).ok()?;
     let mut blanks = Blanks::new(docs, &imports);
     let triples = reasoner.inferred().map(|t| blanks.triple(&t)).collect();
-    Closure {
+    Some(Closure {
         triples,
         findings: reasoner.diagnostics().len(),
-    }
+    })
 }
 
 /// One past the highest blank node number of `a`, as the graph and the

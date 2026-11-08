@@ -37,7 +37,9 @@
   how many findings it reported, or that the workspace was over
   `turtle.reasoning.maxTriples`. The editors also count the imports'
   axioms; the imports' own triples stay out of the data. Updates never see
-  inferred triples. Off, queries run exactly as before.
+  inferred triples. A query's time limit and cancel stop TurbOWL partway
+  through its run, not only after it (not in the browser, which has no
+  threads). Off, queries run exactly as before.
 
 ### Fixed
 

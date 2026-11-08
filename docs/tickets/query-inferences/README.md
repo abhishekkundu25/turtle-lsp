@@ -56,6 +56,11 @@ Lock files are in **bold**. Integration branch: `feat/turbowl-reasoning`
   (`04-certified-parts.rq`, `05-merged-names.rq`) that answer only with
   inferred triples, tested in `web/test/engine.test.mjs`.
 
+- After close-out: TurbOWL's cancellation reached its `main`; a query's
+  timeout or cancel now trips TurbOWL's cancel handle during the run (a
+  watcher thread beside it), so reasoning stops partway. Tested by
+  `timing_a_timeout_or_a_cancel_stops_reasoning_partway_through`.
+
 ## Follow-ups
 
 - `Inferred::Added` carries `settings::Reasoning`, whose `Off` it never

@@ -1515,3 +1515,63 @@ mod dataset {
         ));
     }
 }
+
+/// A model whose reasoning takes many rounds: a long subclass chain with
+/// many members, each round moving the types one class further.
+fn long_chain() -> Arc<Analysis> {
+    let mut body = String::new();
+    for i in 0..700 {
+        body += &format!("ex:C{i} rdfs:subClassOf ex:C{} .\n", i + 1);
+    }
+    for j in 0..100 {
+        body += &format!("ex:m{j} a ex:C0 .\n");
+    }
+    owl("file:///w/chain.ttl", &body)
+}
+
+#[test]
+fn timing_a_timeout_or_a_cancel_stops_reasoning_partway_through() {
+    let d = long_chain();
+    let q = "ASK { ex:m0 a ex:C700 }";
+    let mut big = inference(Reasoning::Default);
+    big.max_triples = 1_000_000;
+    let run = |limits: &Limits| {
+        let start = Instant::now();
+        let r = super::run(&[&d], q, None, &ex_prefixes(), limits, &big);
+        (r, start.elapsed())
+    };
+    let (full, whole) = run(&Limits::default());
+    assert_eq!(full.unwrap().answer, Answer::Boolean(true));
+    assert!(
+        whole >= Duration::from_millis(200),
+        "too quick to measure: {whole:?}"
+    );
+    let (r, took) = run(&Limits {
+        timeout: Some(whole / 10),
+        ..Limits::default()
+    });
+    assert_eq!(r, Err(QueryError::Timeout));
+    assert!(
+        took < whole / 2,
+        "the timeout stopped it after {took:?} of a {whole:?} run"
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let trip = {
+        let flag = flag.clone();
+        let after = whole / 10;
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            flag.store(true, Ordering::Relaxed);
+        })
+    };
+    let (r, took) = run(&Limits {
+        cancel: Some(flag),
+        ..Limits::default()
+    });
+    trip.join().unwrap();
+    assert_eq!(r, Err(QueryError::Cancelled));
+    assert!(
+        took < whole / 2,
+        "the cancel stopped it after {took:?} of a {whole:?} run"
+    );
+}

@@ -39,7 +39,7 @@ mod worker;
 use base::Base;
 pub(crate) use base::Origin;
 pub(crate) use diagnostics::{ByUri, SKIPPED_CODE};
-pub(crate) use infer::infer;
+pub(crate) use infer::{Closure, infer};
 pub(crate) use proof::{Names, Shown};
 pub(crate) use state::Inferred;
 pub(crate) use state::{HOVER_WAIT, Proof, Shared, Types};

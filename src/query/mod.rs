@@ -281,16 +281,55 @@ fn reason(
         return Ok((Vec::new(), Inferred::Skipped { triples, limit }));
     }
     watch.check_now()?;
-    let closure = crate::reasoning::infer(inference.rules, docs, &inference.imports);
+    let closure = infer_watched(inference, docs, watch);
     #[cfg(test)]
     WHILE_REASONING.with(|h| h.borrow_mut().take().map(|f| f()));
     watch.check_now()?;
+    // Only the watch cancels the run, and it has not stopped.
+    let closure = closure.ok_or(Stop::Cancelled)?;
     let inferred = Inferred::Added {
         rules: inference.rules,
         triples: closure.triples.len(),
         findings: closure.findings,
     };
     Ok((closure.triples, inferred))
+}
+
+/// [`crate::reasoning::infer`], stopped partway through when `watch` stops
+/// (its timeout or its cancel flag): a thread beside the run reads the
+/// watch every few milliseconds and trips TurbOWL's cancel handle, which
+/// the run checks before each round. `None` when it was stopped. In the
+/// browser, which has no threads, the run is never stopped partway.
+fn infer_watched(
+    inference: &Inference,
+    docs: &[&Arc<Analysis>],
+    watch: &Watch,
+) -> Option<crate::reasoning::Closure> {
+    let cancel = turbowl::Cancel::new();
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = watch;
+        crate::reasoning::infer(inference.rules, docs, &inference.imports, &cancel)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::scope(|s| {
+        let (done, ended) = std::sync::mpsc::channel::<()>();
+        let cancel_on_stop = cancel.clone();
+        s.spawn(move || {
+            // Ends at once when the run ends (the sender is dropped).
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                ended.recv_timeout(Duration::from_millis(5))
+            {
+                if watch.check_now().is_err() {
+                    cancel_on_stop.cancel();
+                    return;
+                }
+            }
+        });
+        let closure = crate::reasoning::infer(inference.rules, docs, &inference.imports, &cancel);
+        drop(done);
+        closure
+    })
 }
 
 /// Refuses a query whose planning would run for seconds before the first
