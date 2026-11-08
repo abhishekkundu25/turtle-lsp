@@ -17,10 +17,13 @@
 //! graph is the union of every triple of every document; there are no named
 //! graphs. `reasoning` (`off`, `default` or `complete`; default the
 //! `query.reasoning` setting) adds the triples TurbOWL infers from those
-//! documents with that rule set, reading the workspace's imports (the
-//! knowledge index's external sources, as background reasoning reads them)
-//! for their axioms only, up to `turtle.reasoning.maxTriples`. With `off`
-//! nothing is read or built and the answer is as without the parameter.
+//! documents with that rule set, reading for their axioms only, never
+//! querying their triples, the workspace's imports (the knowledge index's
+//! external sources, as background reasoning reads them) and, with
+//! `files`, every workspace document not in `files` (an ontology a queried
+//! file imports may be one), up to `turtle.reasoning.maxTriples`. With
+//! `off` nothing is read or built and the answer is as without the
+//! parameter.
 //!
 //! The answer is one of
 //!
@@ -117,9 +120,11 @@ pub(super) fn rules_name(r: Reasoning) -> &'static str {
     }
 }
 
-/// The documents a query reads and the imports its reasoning reads: the
-/// knowledge index's sources that `keep` accepts, and with `rules` on, its
-/// external ones (none with `rules` off).
+/// The documents a query reads and the ones only its reasoning reads: the
+/// workspace documents (the knowledge index's sources that are not
+/// external) that `keep` accepts, and with `rules` on, every other source:
+/// the workspace documents `keep` refuses and the external imports (none
+/// with `rules` off).
 pub(super) fn sources(
     k: &crate::knowledge::Knowledge,
     rules: Reasoning,
@@ -128,10 +133,8 @@ pub(super) fn sources(
     let mut docs = Vec::new();
     let mut imports = Vec::new();
     for (_, source, a) in k.sources() {
-        if source != Source::External {
-            if keep(a) {
-                docs.push(a.clone());
-            }
+        if source != Source::External && keep(a) {
+            docs.push(a.clone());
         } else if rules != Reasoning::Off {
             imports.push(a.clone());
         }

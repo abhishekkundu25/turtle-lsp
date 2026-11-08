@@ -447,6 +447,38 @@ ex:p1 a ex:Pump .
     }
   })
 
+  test("with files, every other workspace document reasons; its triples are not queried", async () => {
+    const dir = tempDir("turtle-lsp-query-request-files-")
+    dirs.push(dir)
+    const P = `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+`
+    fs.writeFileSync(path.join(dir, "onto.ttl"), P + `<http://example.org/onto> a owl:Ontology .\nex:Pump rdfs:subClassOf ex:Device .\n`)
+    fs.writeFileSync(
+      path.join(dir, "data.ttl"),
+      P + `<http://example.org/data> a owl:Ontology ; owl:imports <http://example.org/onto> .\nex:p1 a ex:Pump .\n`,
+    )
+    fs.writeFileSync(path.join(dir, "other.ttl"), P + `ex:q1 ex:note "other" .\n`)
+    const s = await startServer({ cwd: dir })
+    try {
+      await indexed(s, 6)
+      const files = [uriOf(path.join(dir, "data.ttl"))]
+      const r = await s.request("turtle/query", { query: OF("Device"), reasoning: "default", files })
+      assert.deepEqual(subjects(r), [EX + "p1"])
+      const a = await s.request("turtle/query", {
+        query: "PREFIX ex: <http://example.org/> ASK { ex:q1 ?p ?o }",
+        reasoning: "default",
+        files,
+      })
+      assert.equal(a.boolean, false)
+      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off", files })
+      assert.deepEqual(subjects(off), [])
+    } finally {
+      await s.stop()
+    }
+  })
+
   test("over turtle.reasoning.maxTriples the inferred triples are skipped, and the answer says so", async () => {
     const s = await workspace({ reasoning: { maxTriples: 1 } })
     try {
