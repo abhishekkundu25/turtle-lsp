@@ -398,6 +398,27 @@ check("the Run query lens opens one Query Results panel per query beside it, and
   await until("the panels to be disposed", () => probe.count() === 0, 2000)
 })
 
+check("Run query with the query's URI spelled another way still fills that query's one panel", async () => {
+  const probe = (await graphApi()).queryResults()
+  try {
+    const doc = await open(path.join(query, "people.rq"))
+    const uri = await runLens(doc)
+    await until("the panel's header after a draw", () => header.test(probe.panel(uri)?.status ?? ""))
+    // The same file, one letter percent-encoded, as another caller may spell it
+    // (on Windows, file:///C:/ against file:///c%3A/).
+    const other = uri.replace(/people\.rq$/, "%70eople.rq")
+    assert.notEqual(other, uri)
+    const before = probe.panel(uri).answers
+    const answer = await vscode.commands.executeCommand("turtle.runQuery", other)
+    assert.equal(answer?.answer?.kind, "select", `the answer: ${JSON.stringify(answer)}`)
+    assert.equal(probe.count(), 1, "a second panel for the same query")
+    assert.equal(probe.panel(other)?.answers, before + 1, "the answer did not reach the query's panel")
+  } finally {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+  }
+  await until("the panel to be disposed", () => probe.count() === 0, 2000)
+})
+
 check("saving a file that violates the project shapes shows a SHACL violation", async () => {
   // Created for this check and removed afterwards (the fixtures stay as they are).
   const file = path.join(project, "data", "__vscode-shacl.ttl")

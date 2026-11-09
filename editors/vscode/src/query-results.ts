@@ -46,6 +46,9 @@ export interface PanelProbe {
 
 const failure = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
+/** A query document's URI as VS Code writes it, so that two spellings of one file (on Windows `file:///C:/` and `file:///c%3A/`) are one panel. */
+const same = (uri: string) => vscode.Uri.parse(uri).toString()
+
 /** The panels, by query document URI, and the executeCommand middleware that fills them. */
 export class QueryResults implements vscode.Disposable {
   private readonly panels = new Map<string, ResultsPanel>()
@@ -60,7 +63,7 @@ export class QueryResults implements vscode.Disposable {
 
   readonly probe: QueryResultsProbe = {
     count: () => this.panels.size,
-    panel: (uri) => this.panels.get(uri)?.probe,
+    panel: (uri) => this.panels.get(same(uri))?.probe,
   }
 
   /** Runs `turtle.runQuery` with `args` (`[uri, {reasoning}?]`) and shows a result object in the document's panel. */
@@ -72,7 +75,7 @@ export class QueryResults implements vscode.Disposable {
       parseReasoning((options as { reasoning?: unknown } | undefined)?.reasoning) ??
       parseReasoning(vscode.workspace.getConfiguration("turtle").get("query.reasoning")) ??
       "off"
-    const existing = this.panels.get(uri)
+    const existing = this.panels.get(same(uri))
     const panel = existing ?? this.open(uri)
     const run = panel.start(reasoning)
     let answer: unknown
@@ -84,7 +87,7 @@ export class QueryResults implements vscode.Disposable {
       throw err
     }
     const read = parseAnswer(answer)
-    if (read && read.uri === uri) panel.finish(run, read)
+    if (read && same(read.uri) === same(uri)) panel.finish(run, read)
     else if (existing) panel.abandon(run)
     // A server without the result object writes the Markdown document instead.
     else panel.dispose()
@@ -92,8 +95,8 @@ export class QueryResults implements vscode.Disposable {
   }
 
   private open(uri: string): ResultsPanel {
-    const panel = new ResultsPanel(this.context, uri, () => this.panels.delete(uri))
-    this.panels.set(uri, panel)
+    const panel = new ResultsPanel(this.context, uri, () => this.panels.delete(same(uri)))
+    this.panels.set(same(uri), panel)
     return panel
   }
 

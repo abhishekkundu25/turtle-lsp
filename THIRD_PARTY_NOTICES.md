@@ -31,7 +31,9 @@ platform only: `windows-*` on Windows, and `r-efi`, `wasi`, `wasip2` and
 the browser site. `spareval`
 is vendored with a patch (`vendor/spareval/PATCH.md`). `turbowl` (TurbOWL)
 is a git dependency pinned to its `v0.2.0` tag, built without its `io` feature: the code it ports
-from oxttl (its own third-party notices) is not in the build.
+from oxttl (its own third-party notices) is not in the build. Its engine, which is
+always built, adapts code from datafrog 2.0.1 (`gallop` and the leaper interface),
+which TurbOWL uses under the MIT licence; its copyright is in the row below.
 
 | Crate | Version | Licence | Copyright | In |
 |---|---|---|---|---|
@@ -122,7 +124,7 @@ from oxttl (its own third-party notices) is not in the build.
 | [text-size](https://github.com/rust-analyzer/text-size) | 1.1.1 | MIT OR Apache-2.0 | Aleksey Kladov, Christopher Durham (CAD97) | binary, browser |
 | [thiserror](https://github.com/dtolnay/thiserror) | 2.0.21 | MIT OR Apache-2.0 | David Tolnay | binary, browser |
 | [tinystr](https://github.com/unicode-org/icu4x) | 0.8.4 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. | binary, browser |
-| [turbowl](https://github.com/abhishekkundu25/turbowl) | 0.2.0 | MIT | Abhishek Kundu | binary, browser |
+| [turbowl](https://github.com/abhishekkundu25/turbowl) | 0.2.0 | MIT | Abhishek Kundu; datafrog: Frank McSherry, The Rust Project Developers and the Datafrog Developers | binary, browser |
 | [typenum](https://github.com/paholg/typenum) | 1.20.1 | MIT OR Apache-2.0 | Copyright (c) 2014 Paho Lurie-Gregg | binary, browser |
 | [untrusted](https://github.com/briansmith/untrusted) | 0.9.0 | ISC | Brian Smith | binary |
 | [ureq](https://github.com/algesten/ureq) | 3.4.2 | MIT OR Apache-2.0 | Copyright (c) 2019 Martin Algesten | binary |

@@ -43,9 +43,9 @@ spargebra = { version = "=0.4.7", features = ["sparql-12"] }
 # `TripleRef`), which it does not: the reasoning base hands TurbOWL borrowed
 # triples. The version spargebra and TurbOWL use.
 oxrdf = { version = "0.3", features = ["rdf-12"] }
-# TurbOWL, the OWL 2 RL reasoner behind `turtle.reasoning` (src/reasoning/): a path
-# dependency on its checkout, which must sit next to this one (its rule program is read
-# from the repository with include_str!). Without its default features: turtle-lsp
+# TurbOWL, the OWL 2 RL reasoner behind `turtle.reasoning` (src/reasoning/), from its
+# public repository at a release tag (it is not on crates.io; deny.toml allows that one
+# git source). Without its default features: turtle-lsp
 # parses, so its parsers and its thread pool stay out. `rdf-12` because oxrdf has it
 # here (through spargebra and oxrdfxml), and TurbOWL does not compile otherwise.
 turbowl = { version = "0.2.0", git = "https://github.com/abhishekkundu25/turbowl", tag = "v0.2.0", default-features = false, features = ["rdf-12"] }
