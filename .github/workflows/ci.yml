@@ -248,20 +248,20 @@ jobs:
     name: Minimum Rust version
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Every rustc and cargo call in the job, rust-cache's included, uses 1.91.0
+    # Every rustc and cargo call in the job, rust-cache's included, uses 1.99.0
     # instead of rust-toolchain.toml's compiler.
     env:
-      RUSTUP_TOOLCHAIN: 1.91.0
+      RUSTUP_TOOLCHAIN: 1.99.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup toolchain install 1.91.0 --profile minimal
+      - run: rustup toolchain install 1.99.0 --profile minimal
         timeout-minutes: 5
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - run: cargo +1.91.0 check --locked --all-targets
+      - run: cargo +1.99.0 check --locked --all-targets
         timeout-minutes: 10
 
   audit:

@@ -117,6 +117,7 @@
 //! use turtle_lsp::oracle::change as _; // tests
 //! use turtle_lsp::oracle::check as _; // tests
 //! use turtle_lsp::query::Answer as _; // tests, web/engine
+//! use turtle_lsp::query::Inferred as _; // web/engine
 //! use turtle_lsp::query::Limits as _; // tests, web/engine
 //! use turtle_lsp::query::QueryError as _; // tests, web/engine
 //! use turtle_lsp::query::render::term as _; // web/engine
@@ -130,6 +131,7 @@
 //! use turtle_lsp::server::run as _; // main
 //! use turtle_lsp::settings::InlayLabels as _; // tests
 //! use turtle_lsp::settings::Layer as _; // web/engine
+//! use turtle_lsp::settings::Reasoning as _; // web/engine
 //! use turtle_lsp::settings::Settings as _; // tests, web/engine
 //! use turtle_lsp::settings::seconds as _; // web/engine
 //! use turtle_lsp::shacl::Path as _; // tests
