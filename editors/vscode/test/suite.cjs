@@ -365,9 +365,10 @@ check("the Run query lens opens one Query Results panel per query beside it, and
     await until(`a Query Results tab in ${vscode.window.tabGroups.all.flatMap((g) => g.tabs.map((t) => t.label))}`, () => queryTabs().length === 1, 2000)
     await until("the panel's header after a draw", () => header.test(probe.panel(uri)?.status ?? ""))
     // Beside the query, which keeps the focus.
-    const queryEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri)
+    const queryEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.fsPath === doc.uri.fsPath)
     assert.ok(queryEditor && queryTabs()[0].group.viewColumn !== queryEditor.viewColumn, "the panel is not beside the query")
-    assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), uri)
+    // By path: on Windows the same file can come back as file:///C:/ or file:///c%3A/.
+    assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, doc.uri.fsPath)
 
     const doc2 = await vscode.workspace.openTextDocument(vscode.Uri.file(second))
     await vscode.window.showTextDocument(doc2, queryEditor.viewColumn)
