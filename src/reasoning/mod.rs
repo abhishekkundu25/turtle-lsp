@@ -41,8 +41,8 @@ pub(crate) use base::Origin;
 pub(crate) use diagnostics::{ByUri, SKIPPED_CODE};
 pub(crate) use infer::{Closure, Halt, base_order, infer};
 pub(crate) use proof::{Names, Shown};
+pub(crate) use state::{Budget, Inferred, NoProof};
 pub(crate) use state::{HOVER_WAIT, Proof, Shared, Types};
-pub(crate) use state::{Inferred, Limits, NoProof};
 pub(crate) use worker::{Job, Outcome, Worker, run_inline};
 
 use crate::settings::Reasoning;

@@ -153,7 +153,7 @@ mod tests {
     const EX: &str = "http://example.org/";
 
     /// The inferred types of `ex:<local>` after a run over `docs`.
-    fn inferred(docs: Vec<(Source, Arc<Analysis>)>, local: &str) -> Vec<Inferred> {
+    fn inferred(docs: Vec<(Source, Arc<Analysis>)>, local: &str) -> Arc<Vec<Inferred>> {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
         run_inline(
             &shared,

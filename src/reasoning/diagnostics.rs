@@ -66,20 +66,25 @@ pub(super) fn of(
     }
     let mentions = Mentions::of(base, found);
     let explainer = r.explainer().ok();
-    // One limit for all the run's explanations: past it, the rest of the
-    // findings keep their message without a proof.
-    let cancel = super::Limits::deadline(limit);
+    // One limit for all the run's explanations, shared out among them: a
+    // finding whose proof takes too long keeps its message without it.
+    let budget = super::Budget::new(limit);
     let mut explained = 0;
     let mut naming: FxHashMap<String, Naming> = FxHashMap::default();
-    for d in found {
+    for (i, d) in found.iter().enumerate() {
         let places = mentions.places(base, d);
         if places.is_empty() {
             continue;
         }
         let proof = explainer
             .as_ref()
-            .filter(|_| explained < MAX_EXPLAINED && !cancel.is_cancelled())
-            .and_then(|e| e.explain_diagnostic_cancellable(d, &cancel).ok().flatten())
+            .filter(|_| explained < MAX_EXPLAINED)
+            .and_then(|e| {
+                // The findings this run may still explain, this one first.
+                let left = (found.len() - i).min(MAX_EXPLAINED - explained);
+                let cancel = budget.next(left)?;
+                e.explain_diagnostic_cancellable(d, &cancel).ok().flatten()
+            })
             .map(|p| Proof::new(p, base));
         explained += 1;
         let severity = match d.severity {
