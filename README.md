@@ -536,6 +536,64 @@ To change a setting, extend the config: for example
 `vim.lsp.config("turtle_lsp", { settings = { turtle = { format = { lineWidth = 80 } } } })`
 before `vim.lsp.enable`.
 
+### Reasoning, code lenses and queries in Neovim
+
+Some features need a setting or a few lines of config in Neovim:
+
+- **Inferred types in hover** need reasoning on. Press `K` on a resource:
+  hover lists its inferred types under "Inferred", each with its proof.
+- **Reasoning findings as diagnostics** (contradictions, ill-typed
+  literals) need `reasoning.diagnostics` as well.
+- **Queries with inferred triples** need `query.reasoning`.
+- **Code lenses** ("▶ Run query" above a query, "N references" above a
+  subject) are sent by the server, but Neovim shows them only when your
+  config asks for them. Running "▶ Run query" opens the results as a
+  Markdown document (VS Code shows a results panel instead).
+
+Turn reasoning on in the project's `turtle-lsp.json`, so every editor and
+the command line agree:
+
+```json
+{
+  "reasoning": { "rules": "default", "diagnostics": true },
+  "query": { "reasoning": "default" }
+}
+```
+
+or for you alone, before `vim.lsp.enable`:
+
+```lua
+vim.lsp.config("turtle_lsp", {
+  settings = { turtle = {
+    reasoning = { rules = "default", diagnostics = true },
+    query = { reasoning = "default" },
+  } },
+})
+```
+
+Show the code lenses and run one with a key (here `<leader>cr` runs the
+lens on the cursor's line, such as "▶ Run query"):
+
+```lua
+vim.api.nvim_create_autocmd("LspAttach", {
+  callback = function(ev)
+    local client = vim.lsp.get_client_by_id(ev.data.client_id)
+    if not (client and client.name == "turtle_lsp") then return end
+    local refresh = function() vim.lsp.codelens.refresh({ bufnr = ev.buf }) end
+    refresh()
+    vim.api.nvim_create_autocmd({ "BufEnter", "InsertLeave", "BufWritePost" }, {
+      buffer = ev.buf,
+      callback = refresh,
+    })
+    vim.keymap.set("n", "<leader>cr", vim.lsp.codelens.run,
+      { buffer = ev.buf, desc = "Run the code lens on this line" })
+  end,
+})
+```
+
+`complete` instead of `default` turns on every OWL 2 RL rule and is slower.
+Checked with Neovim 0.11.5.
+
 Without a plugin manager, put the server on your `PATH` (see
 [Install](#install)) and configure it yourself:
 
