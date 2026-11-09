@@ -350,7 +350,10 @@ async function runLens(doc) {
   assert.equal(lens.range.start.line, posOf(doc, "SELECT", 0).line)
   const answer = await vscode.commands.executeCommand(lens.command.command, ...lens.command.arguments)
   assert.equal(answer?.answer?.kind, "select", `the answer: ${JSON.stringify(answer)}`)
-  assert.equal(answer.uri, doc.uri.toString())
+  // By path: on Windows the server may spell the drive file:///C:/ where
+  // VS Code spells it file:///c%3A/. The panel is the server's URI's.
+  assert.equal(vscode.Uri.parse(answer.uri).fsPath, doc.uri.fsPath)
+  return answer.uri
 }
 
 check("the Run query lens opens one Query Results panel per query beside it, and a rerun reuses that panel", async () => {
@@ -360,8 +363,7 @@ check("the Run query lens opens one Query Results panel per query beside it, and
   fs.writeFileSync(second, "PREFIX ex: <https://query.example.org/def/>\n\nSELECT ?person\nWHERE { ?person a ex:Person }\n")
   try {
     const doc = await open(path.join(query, "people.rq"))
-    await runLens(doc)
-    const uri = doc.uri.toString()
+    const uri = await runLens(doc)
     await until(`a Query Results tab in ${vscode.window.tabGroups.all.flatMap((g) => g.tabs.map((t) => t.label))}`, () => queryTabs().length === 1, 2000)
     await until("the panel's header after a draw", () => header.test(probe.panel(uri)?.status ?? ""))
     // Beside the query, which keeps the focus.
@@ -372,8 +374,7 @@ check("the Run query lens opens one Query Results panel per query beside it, and
 
     const doc2 = await vscode.workspace.openTextDocument(vscode.Uri.file(second))
     await vscode.window.showTextDocument(doc2, queryEditor.viewColumn)
-    await runLens(doc2)
-    const uri2 = doc2.uri.toString()
+    const uri2 = await runLens(doc2)
     await until("a second Query Results tab", () => queryTabs().length === 2, 2000)
     await until("the second panel's header after a draw", () => header.test(probe.panel(uri2)?.status ?? ""))
     assert.equal(probe.count(), 2, "not one panel per query")
