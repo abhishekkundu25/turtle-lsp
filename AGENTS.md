@@ -19,7 +19,7 @@ them; each file's `//!` doc says what it owns.
   `Syntax::from_extension` must match it; tests check both.
 - A workspace change: the `Workspace` method returns `Effects`, and
   `Server::apply` acts on them.
-- Server state: the groups in `src/server/{client,progress,shacl,refresh,layers,index}.rs`;
+- Server state: the groups in `src/server/{client,progress,shacl,reasoning,refresh,layers,index}.rs`;
   how jobs run (`Spawn::Thread`, `Spawn::Inline`) in `src/server/worker.rs`;
   what goes out on stdio, written as JSON text, in `src/server/wire.rs`.
 - SHACL shapes and IRIs: `src/shacl/model.rs` and `src/shacl/vocab.rs`,

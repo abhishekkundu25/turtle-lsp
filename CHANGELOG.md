@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Added
+
+- **Query Results panel in VS Code, on desktop and web.** ▶ Run query
+  opens a sortable table beside the query, with rows, time, files read and
+  an inferred-triples note. Each query file has one panel; rerun updates
+  it. Choose inferred rules per run, copy as TSV or export CSV / JSON.
+  Other editors keep the Markdown document.
+
+- **Reasoning, with proofs.** With `turtle.reasoning.rules` set to
+  `default` or `complete`, the server runs TurbOWL, an OWL 2 RL reasoner,
+  over the workspace and its loaded imports. A run starts when a document
+  opens or closes, on save, and after a pause in typing. It runs in the
+  background, and a long run shows progress. Hover on a resource adds an
+  "Inferred" section: each type the rules infer and no document states,
+  with its proof folded under it. Each step names its W3C rule, and each
+  triple the proof rests on is a link to its file and line. TurbOWL's
+  findings, such as a member of two disjoint classes, are diagnostics with
+  `turtle.reasoning.diagnostics` (off by default: SHACL shapes often check
+  the same rules), on the term at fault (code `turbowl/<rule>`): one sentence in
+  the file's short names, and each triple of the proof as related
+  information at its line (or, in an editor without it, as lines of the
+  message). An RDF list, such as an `owl:AllDisjointClasses` list, is one
+  item, in hover too. Types that rest on no triple of a document, such as
+  `xsd:integer`'s `rdfs:Datatype`, share one line in hover, without proofs. `default` runs TurbOWL's default rules; `complete`
+  runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples`
+  (default 2,000,000) is the most triples a run reads; past it the run is
+  skipped with a note (`reasoning-skipped`), and `turtle-lsp.json` cannot
+  raise it. Reasoning is off by default, and while it is off nothing runs.
+  The browser editor reasons too, on its one thread, and has both settings.
+
+- **Queries over inferred triples.** `query.reasoning` (`off`, `default`
+  or `complete`; off by default) makes a query reason over its own snapshot
+  with TurbOWL and run over the written triples plus the inferred ones, so
+  `?x a ex:Organisation` finds what a range or a subclass implies. It
+  applies to ▶ Run query, `turtle/query` (its `reasoning` parameter, and an
+  `inferred` member in the answer), `turtle-lsp query --reasoning` and the
+  browser editor's query pane (an Inferred choice beside Run, on with the
+  default rules there). With reasoning on, the queried files and the
+  workspace's external imports form one graph, with all their triples and
+  everything TurbOWL infers, without a filter. `turtle/query` with `files`
+  reads only those files plus external imports. Results report the inferred
+  count and findings, or that the input or inferred triples exceeded
+  `turtle.reasoning.maxTriples`. The latter note says "TurbOWL inferred more
+  than N triples, over the reasoning limit". The CLI and Run query share
+  the note's sentence. Time limits and cancel stop reasoning and reading
+  triples. The browser pane has Cancel, a watchdog past the time limit,
+  a crash hint and one query at a time to the worker. Its sample's
+  `reasoning/` folder has queries 04–12 to try. Changing `query.*` settings
+  re-runs nothing. Updates never see inferred triples. Off is unchanged.
+
 ### Fixed
 
 - **Accepting a JSON-LD completion no longer breaks a string elsewhere in the

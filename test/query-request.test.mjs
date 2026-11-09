@@ -322,3 +322,215 @@ describe("turtle/query and the end of the server", () => {
 
   test("stdin closing stops a running query", () => endsWithQueryRunning(async (s) => s.proc.stdin.end()))
 })
+
+describe("turtle/query reasoning", () => {
+  // ex:Pump is a subclass of ex:Device here, and ex:Device of ex:Thing in
+  // the imported ontology (RDF/XML: an import, never a workspace document).
+  const MODEL = `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<http://example.org/model> a owl:Ontology ; owl:imports <http://example.org/vendor> .
+ex:Pump rdfs:subClassOf ex:Device .
+ex:p1 a ex:Pump .
+`
+  const VENDOR = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://example.org/vendor"/>
+    <owl:Class rdf:about="http://example.org/Device">
+        <rdfs:subClassOf rdf:resource="http://example.org/Thing"/>
+    </owl:Class>
+</rdf:RDF>
+`
+  const CATALOG = `<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+    <uri name="http://example.org/vendor" uri="vendor/vendor.rdf"/>
+</catalog>
+`
+  const OF = (cls) => `PREFIX ex: <http://example.org/> SELECT ?s WHERE { ?s a ex:${cls} }`
+  const subjects = (r) => r.results.bindings.map((b) => b.s.value)
+  const without = ({ elapsedMs, ...rest }) => rest
+  const dirs = []
+  after(() => dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true })))
+
+  async function workspace(initializationOptions) {
+    const dir = tempDir("turtle-lsp-query-request-reasoning-")
+    dirs.push(dir)
+    fs.mkdirSync(path.join(dir, "vendor"))
+    fs.writeFileSync(path.join(dir, "model.ttl"), MODEL)
+    fs.writeFileSync(path.join(dir, "vendor", "vendor.rdf"), VENDOR)
+    fs.writeFileSync(path.join(dir, "catalog-v001.xml"), CATALOG)
+    const s = await startServer({ cwd: dir, initializationOptions })
+    try {
+      await indexed(s, 4)
+    } catch (e) {
+      await s.stop()
+      throw e
+    }
+    return s
+  }
+
+  // Ask until the import has loaded (imports resolve after the index).
+  async function imported(s) {
+    const end = Date.now() + 10000
+    for (;;) {
+      const r = await s.request("turtle/query", { query: OF("Thing"), reasoning: "default" })
+      if (subjects(r).length > 0) return r
+      if (Date.now() > end) throw new Error("the import never inferred ex:p1 a ex:Thing")
+      await new Promise((res) => setTimeout(res, 50))
+    }
+  }
+
+  test("default and complete add the inferred rows and say so; off answers as before", async () => {
+    const s = await workspace()
+    try {
+      const plain = await s.request("turtle/query", { query: OF("Device") })
+      assert.deepEqual(subjects(plain), [])
+      assert.equal("inferred" in plain, false)
+      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off" })
+      assert.deepEqual(without(off), without(plain))
+      for (const rules of ["default", "complete"]) {
+        const r = await s.request("turtle/query", { query: OF("Device"), reasoning: rules })
+        assert.deepEqual(subjects(r), [EX + "p1"], rules)
+        assert.deepEqual(Object.keys(r.inferred).sort(), ["findings", "rules", "triples"], rules)
+        assert.equal(r.inferred.rules, rules)
+        assert.ok(r.inferred.triples > 0, JSON.stringify(r.inferred))
+        assert.equal(r.inferred.findings, 0)
+      }
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("with reasoning an import is queried: its axioms infer and its own triples are rows; off it is not read", async () => {
+    const s = await workspace()
+    try {
+      const r = await imported(s)
+      assert.deepEqual(subjects(r), [EX + "p1"])
+      const query =
+        "PREFIX ex: <http://example.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> ASK { ex:Device rdfs:subClassOf ex:Thing }"
+      const on = await s.request("turtle/query", { query, reasoning: "default" })
+      assert.equal(on.boolean, true)
+      const off = await s.request("turtle/query", { query, reasoning: "off" })
+      assert.equal(off.boolean, false)
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("an import that is also open is read once, as the editor has it; files never names an import", async () => {
+    const dir = tempDir("turtle-lsp-query-request-dup-")
+    dirs.push(dir)
+    // An import in a folder the workspace leaves out, so it is an import until opened.
+    fs.mkdirSync(path.join(dir, "node_modules"))
+    const vendor = path.join(dir, "node_modules", "vendor.ttl")
+    const text = '@prefix ex: <http://example.org/> .\n_:x ex:name "one" .\n'
+    fs.writeFileSync(vendor, text)
+    fs.writeFileSync(path.join(dir, "model.ttl"), "<http://example.org/model> <http://www.w3.org/2002/07/owl#imports> <http://example.org/vendor> .\n")
+    fs.writeFileSync(path.join(dir, "catalog-v001.xml"), '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"><uri name="http://example.org/vendor" uri="node_modules/vendor.ttl"/></catalog>')
+    const s = await startServer({ cwd: dir })
+    const names = async (reasoning) =>
+      (await s.request("turtle/query", { query: "SELECT ?n WHERE { ?s <http://example.org/name> ?n }", reasoning })).results.bindings.map((b) => b.n.value).sort()
+    try {
+      for (const end = Date.now() + 10000; (await names("default")).length === 0; ) {
+        if (Date.now() > end) throw new Error("the import never loaded")
+        await new Promise((res) => setTimeout(res, 50))
+      }
+      for (const reasoning of ["off", "default"]) {
+        await assert.rejects(
+          s.request("turtle/query", { query: "ASK {}", reasoning, files: [uriOf(vendor)] }),
+          (e) => e.code === InvalidParams,
+          reasoning,
+        )
+      }
+      s.open(uriOf(vendor), text.replace("one", "edited"))
+      const end = Date.now() + 10000
+      while ((await names("off")).join() !== "edited" && Date.now() < end) await new Promise((res) => setTimeout(res, 50))
+      assert.deepEqual(await names("off"), ["edited"])
+      assert.deepEqual(await names("default"), ["edited"])
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("a bad reasoning value is InvalidParams", async () => {
+    const s = await workspace()
+    try {
+      for (const reasoning of ["on", "Default", 1, true]) {
+        await assert.rejects(s.request("turtle/query", { query: OF("Device"), reasoning }), (e) => {
+          assert.equal(e.code, InvalidParams, String(reasoning))
+          assert.ok(e.message, String(reasoning))
+          return true
+        })
+      }
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("the default is query.reasoning", async () => {
+    const s = await workspace({ query: { reasoning: "default" } })
+    try {
+      const r = await s.request("turtle/query", { query: OF("Device") })
+      assert.deepEqual(subjects(r), [EX + "p1"])
+      assert.equal(r.inferred.rules, "default")
+      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off" })
+      assert.deepEqual(subjects(off), [])
+      assert.equal("inferred" in off, false)
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("with files, only those files and the imports are read: other documents neither infer nor answer", async () => {
+    const dir = tempDir("turtle-lsp-query-request-files-")
+    dirs.push(dir)
+    const P = `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+`
+    fs.writeFileSync(path.join(dir, "onto.ttl"), P + `<http://example.org/onto> a owl:Ontology .\nex:Pump rdfs:subClassOf ex:Device .\n`)
+    fs.writeFileSync(
+      path.join(dir, "data.ttl"),
+      P + `<http://example.org/data> a owl:Ontology ; owl:imports <http://example.org/onto> .\nex:p1 a ex:Pump .\n`,
+    )
+    fs.writeFileSync(path.join(dir, "other.ttl"), P + `ex:q1 ex:note "other" .\n`)
+    const s = await startServer({ cwd: dir })
+    try {
+      await indexed(s, 6)
+      const files = [uriOf(path.join(dir, "data.ttl"))]
+      // onto.ttl's axiom is not read: no inference from it.
+      const r = await s.request("turtle/query", { query: OF("Device"), reasoning: "default", files })
+      assert.deepEqual(subjects(r), [])
+      assert.ok("triples" in r.inferred, JSON.stringify(r.inferred))
+      const a = await s.request("turtle/query", {
+        query: "PREFIX ex: <http://example.org/> ASK { ex:q1 ?p ?o }",
+        reasoning: "default",
+        files,
+      })
+      assert.equal(a.boolean, false)
+      // Named, it is read.
+      const both = [...files, uriOf(path.join(dir, "onto.ttl"))]
+      const named = await s.request("turtle/query", { query: OF("Device"), reasoning: "default", files: both })
+      assert.deepEqual(subjects(named), [EX + "p1"])
+      const off = await s.request("turtle/query", { query: OF("Device"), reasoning: "off", files: both })
+      assert.deepEqual(subjects(off), [])
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test("over turtle.reasoning.maxTriples the inferred triples are skipped, and the answer says so", async () => {
+    const s = await workspace({ reasoning: { maxTriples: 1 } })
+    try {
+      const r = await s.request("turtle/query", { query: OF("Device"), reasoning: "default" })
+      assert.deepEqual(subjects(r), [])
+      assert.deepEqual(Object.keys(r.inferred), ["skipped"])
+      assert.equal(r.inferred.skipped.limit, 1)
+      assert.ok(r.inferred.skipped.triples >= 4, JSON.stringify(r.inferred))
+    } finally {
+      await s.stop()
+    }
+  })
+})

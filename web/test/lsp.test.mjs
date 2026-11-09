@@ -278,6 +278,72 @@ test("the lens on id:acme in the published workspace counts its uses in SPARQL t
   }
 })
 
+// --- reasoning -----------------------------------------------------------------------------
+
+test("with reasoning on, hover shows the inferred type and its proof as natively", async () => {
+  const project = {
+    "onto.ttl": "@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\nex:Dog rdfs:subClassOf ex:Animal .\n",
+    "data.ttl": '@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\nex:rex a ex:Dog ;\n  rdfs:label "Rex" .\n',
+  }
+  const rdir = tempDir("turtle-web-reasoning-")
+  for (const [name, text] of Object.entries(project)) fs.writeFileSync(path.join(rdir, name), text)
+  const root = uriOf(rdir)
+  const initializationOptions = { reasoning: { rules: "default" } }
+  const n = await startServer({ cwd: rdir, initializationOptions })
+  const w = new EmbeddedServer(await createEngine(fs.readFileSync(path.join(here, "..", "app", "engine.wasm"))))
+  const params = (base) => ({ textDocument: { uri: `${base}/data.ttl` }, position: positionOf(project["data.ttl"], "ex:rex a", 3) })
+  try {
+    await w.initialize({ processId: null, rootUri: null, capabilities: {}, initializationOptions })
+    for (const [name, text] of Object.entries(project)) {
+      n.open(`${root}/${name}`, text)
+      w.notify("textDocument/didOpen", { textDocument: { uri: `${WORK}/${name}`, languageId: "turtle", version: 1, text } })
+    }
+    await w.settle()
+    // Natively the run and the proof search are in the background.
+    const proved = (h) => h?.contents.value.includes("**Inferred**\n\n- ") && !h.contents.value.includes("still being worked out")
+    let native = await n.request("textDocument/hover", params(root))
+    for (const end = Date.now() + 20_000; !proved(native) && Date.now() < end; ) {
+      await new Promise((r) => setTimeout(r, 100))
+      native = await n.request("textDocument/hover", params(root))
+    }
+    const got = await w.request("textDocument/hover", params(WORK))
+    assert.ok(proved(got), JSON.stringify(got))
+    assert.match(got.contents.value, /- \*\*ex:Animal\*\* · _cax-sco_/)
+    assert.deepEqual(got, JSON.parse(JSON.stringify(native).replaceAll(root, WORK)))
+  } finally {
+    await n.stop()
+    fs.rmSync(rdir, { recursive: true, force: true })
+  }
+})
+
+test("the sample workspace's reasoning folder shows its long proof, its seven contradictions and, with complete, its identity cascade", async () => {
+  const reasoning = WORKSPACE.filter((f) => f.path.startsWith("reasoning/") && f.path.endsWith(".ttl"))
+  assert.deepEqual(reasoning.map((f) => f.path), ["reasoning/01-long-chain.ttl", "reasoning/02-hidden-contradictions.ttl", "reasoning/03-identity-needs-complete.ttl"])
+  const codes = (w, p) => [...new Set(w.diagnostics(`${WORK}/${p}`).map((d) => d.code).filter((c) => String(c).startsWith("turbowl/")))].sort()
+  const open = async (rules) => {
+    const w = new EmbeddedServer(await createEngine(fs.readFileSync(path.join(here, "..", "app", "engine.wasm"))))
+    await w.initialize({ processId: null, rootUri: null, capabilities: {}, initializationOptions: { reasoning: { rules, diagnostics: true } } })
+    for (const f of WORKSPACE) {
+      w.notify("textDocument/didOpen", { textDocument: { uri: `${WORK}/${f.path}`, languageId: languageOf(f.path), version: 1, text: f.text } })
+    }
+    await w.settle()
+    return w
+  }
+  const w = await open("default")
+  const chain = reasoning[0]
+  const hover = await w.request("textDocument/hover", { textDocument: { uri: `${WORK}/${chain.path}` }, position: positionOf(chain.text, "lab:catalog77 lab:serialNumber", 6) })
+  assert.match(hover.contents.value, /\*\*lab:Thing2Ship\*\*/, hover.contents.value)
+  assert.match(hover.contents.value, /\*\*lab:CertifiedPart\*\*/)
+  assert.deepEqual(codes(w, chain.path), [])
+  const all = ["cls-com", "cls-maxc1", "cls-nothing2", "eq-diff2", "prp-asyp", "prp-npa1", "prp-pdw"].map((c) => `turbowl/${c}`)
+  assert.deepEqual(codes(w, reasoning[1].path), all)
+  assert.deepEqual(codes(w, reasoning[2].path), [])
+  // The rest of the sample has no reasoning findings.
+  for (const f of WORKSPACE.filter((f) => !f.path.startsWith("reasoning/"))) assert.deepEqual(codes(w, f.path), [], f.path)
+  const c = await open("complete")
+  assert.deepEqual(codes(c, reasoning[2].path), ["turbowl/cax-dw"])
+})
+
 // --- the embedded driver --------------------------------------------------------------------
 
 test("an unknown request is the native server's error, and the server keeps answering", async () => {

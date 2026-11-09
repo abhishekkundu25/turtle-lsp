@@ -26,7 +26,7 @@ impl Client {
 
     /// Answer request `id` with `json`, its result as JSON text
     /// (`wire::encode`); Err when the connection is gone.
-    pub(super) fn respond(&self, id: RequestId, json: String) -> Result<(), SendError<Out>> {
+    pub(crate) fn respond(&self, id: RequestId, json: String) -> Result<(), SendError<Out>> {
         self.sender.send(Out::Result { id, json })
     }
 

@@ -22,6 +22,7 @@ SPARQL 1.1 and 1.2 syntax 425/426, SHACL Core 98/98, SHACL-SPARQL 23/23.
 - **Error checking as you type**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared, unused and duplicate prefixes, invalid IRIs and language tags.
 - **Vocabulary checks**: unknown or deprecated terms in 80+ well-known vocabularies (rdf, rdfs, owl, skos, sh, dcterms, foaf, schema.org, prov, sosa, qudt and more), with "did you mean" fixes. Matched by namespace IRI, so your own `ex:` or `sd:` prefixes are never checked against the wrong vocabulary. Terms in your own namespaces that nothing describes (often typos) are flagged too.
 - **SHACL validation**: data is checked against the shapes in your workspace about a second after you stop typing, and on save. SHACL Core and SHACL-SPARQL (`sh:sparql` constraints, SPARQL targets and components). SPARQL inside shapes is checked as you type, and mistakes in the shapes themselves are flagged.
+- **Reasoning** (off by default; `turtle.reasoning.rules`): TurbOWL, an OWL 2 RL reasoner, works out what the workspace implies in the background. Hover lists a resource's inferred types, each with its proof, one W3C rule per step and each triple it rests on a link to its line. Contradictions, such as a member of two disjoint classes, are diagnostics.
 - **`owl:imports`**: imported ontologies are resolved from the workspace, a `catalog-v001.xml` or the cache (Turtle, N-Triples, RDF/XML), so their terms complete, hover and validate. An unresolved web import has a quick fix that fetches that one import and caches it; go to definition opens the cached copy.
 - **Completion** of prefixes and terms; type `Pers` to get `foaf:Person`. Classes come first after `a`, properties in predicate position; properties your SHACL shapes require or whose `rdfs:domain` fits come first, and `sh:in` values are offered. Accepting a term adds its `@prefix` line for you.
 - **Hover** with label, comment, types and where a resource is described; **label inlay hints** for opaque IRIs.
@@ -81,6 +82,9 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.inlayHints.labels`: show labels as inlay hints for `opaque` IRIs (default), `all` terms, or `off`.
 - `turtle.shacl.enabled`, `turtle.shacl.maxTriples`: SHACL validation, and the most triples one run validates, the shared triples and every dataset together; above it validation is skipped (default 2,000,000 triples).
 - `turtle.shacl.onType`: also validate while typing, not only on save (default on).
+- `turtle.reasoning.rules`: reason with TurbOWL, an OWL 2 RL reasoner: `off` (default), `default` (TurbOWL's default rules) or `complete` (every W3C OWL 2 RL rule; slower). Hover then lists a resource's inferred types with their proofs.
+- `turtle.reasoning.diagnostics`: show TurbOWL's findings, such as a member of two disjoint classes, as diagnostics with their proofs (default off: a project's SHACL shapes often check the same rules).
+- `turtle.reasoning.maxTriples`: the most triples one reasoning run reads, the workspace's and its imports'; above it reasoning is skipped, with a note (default 2,000,000 triples).
 - `turtle.lint.undescribedTerms`: warn about your own terms that are described nowhere in the workspace.
 - `turtle.lint.ignore`: diagnostic codes never to report, such as `unused-prefix` or `duplicate-label`. Adds to the project's `lint.ignore` in `turtle-lsp.json`.
 - `turtle.lint.enable`: off-by-default checks to switch on: `missing-label`, `missing-definition`, `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, `missing-ontology-title`, `missing-ontology-description`, `missing-ontology-license`. Adds to the project's `lint.enable`; a code in either `lint.ignore` stays off.
@@ -93,7 +97,9 @@ query in that folder or below can then use those prefixes. Or set
 - `turtle.query.timeoutSeconds`, `turtle.query.maxRows`: stop a query run with **▶ Run query** after this many seconds (default 30), and show at most this many rows of its results (default 1000); `0` for no limit.
 - `turtle.query.maxBufferedRows`: stop a query that keeps more than this many rows in memory to sort, group, deduplicate or join them (default 10 000 000; `0` for no limit). It counts rows, not bytes: ordinary rows take about 100 bytes each, long text values take more.
 
-The extension sends the server only the settings you set. A setting you leave unset comes from the project's [`turtle-lsp.json`](https://github.com/abhishekkundu25/turtle-lsp#settings-file-turtle-lspjson), or takes its default. That file cannot turn on `turtle.imports.network` or raise the query and SHACL limits; only your own settings can. In an untrusted workspace, `turtle.server.path`, `turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples` and `turtle.diagnostics.workspace` take your user settings only.
+The extension sends the server only the settings you set. A setting you leave unset comes from the project's [`turtle-lsp.json`](https://github.com/abhishekkundu25/turtle-lsp#settings-file-turtle-lspjson), or takes its default. That file cannot turn on `turtle.imports.network` or raise the query, SHACL and reasoning limits; only your own settings can. In an untrusted workspace, `turtle.server.path`, `turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples`, `turtle.reasoning.maxTriples` and `turtle.diagnostics.workspace` take your user settings only.
+
+VS Code completes and checks `turtle-lsp.json` against the extension's JSON schema: each key with its default, its choices and its description, and a warning on a misspelt key, a wrong value, or a limit the file cannot raise.
 
 ## In the browser (vscode.dev, github.dev)
 

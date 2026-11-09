@@ -22,7 +22,7 @@ use crate::features::{curation, diagnostics, format, lint};
 use crate::imports;
 use crate::knowledge::Source;
 use crate::layout;
-use crate::query::{self, Answer, Limits, QueryError};
+use crate::query::{self, Answer, Inference, Inferred, Limits, QueryError};
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
 use crate::syntax::{PrefixMap, Severity, Syntax};
@@ -317,6 +317,9 @@ fn analyse_in(
 #[derive(Clone, Debug)]
 pub struct QueryOutcome {
     pub answer: Result<Answer, QueryError>,
+    /// What reasoning added to the data (`query.reasoning`); `None` when
+    /// the query failed.
+    pub inferred: Inferred,
     /// The prefixes to show the results with: the project's (prefixes.ttl and
     /// the `prefixes` setting, as the query sees them) and the query's own
     /// `PREFIX` lines.
@@ -371,15 +374,27 @@ fn query_in(
     ws.open_doc_as(q.uri.clone(), q.text.clone(), 1, DocKind::Sparql);
     let sparql = ws.sparql(&q.uri).expect("the query was just opened");
     let analyses: Vec<Arc<Analysis>> = data.iter().filter_map(|f| ws.analysis(&f.uri)).collect();
-    let docs: Vec<&Analysis> = analyses.iter().map(Arc::as_ref).collect();
+    let docs: Vec<&Arc<Analysis>> = analyses.iter().collect();
+    // The files given are the data: no imports are loaded.
+    let inference = Inference {
+        rules: settings.query_reasoning,
+        max_triples: settings.reasoning_max_triples,
+    };
+    let ran = query::run(
+        &docs,
+        &q.text,
+        Some(sparql.base()),
+        &sparql.external,
+        limits,
+        &inference,
+    );
+    let (answer, inferred) = match ran {
+        Ok(o) => (Ok(o.answer), o.inferred),
+        Err(e) => (Err(e), Inferred::None),
+    };
     QueryOutcome {
-        answer: query::run(
-            &docs,
-            &q.text,
-            Some(sparql.base()),
-            &sparql.external,
-            limits,
-        ),
+        answer,
+        inferred,
         prefixes: query::display_prefixes(&q.text, &sparql.external),
     }
 }

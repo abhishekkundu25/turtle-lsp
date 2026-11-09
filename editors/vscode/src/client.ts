@@ -110,7 +110,7 @@ export function configurationChange(settings: Record<string, unknown>): { settin
  * all. As the native server reads `turtle-lsp.json` (`Layer::File` in
  * src/settings.rs): any repository can ship one.
  */
-const FILE_LIMITS = ["query.timeoutSeconds", "query.maxRows", "query.maxBufferedRows", "shacl.maxTriples"]
+const FILE_LIMITS = ["query.timeoutSeconds", "query.maxRows", "query.maxBufferedRows", "shacl.maxTriples", "reasoning.maxTriples"]
 
 /**
  * The settings of a parsed `turtle-lsp.json` (keys nested or dotted,

@@ -25,7 +25,9 @@
 //! SHACL: closed files show the results of the server's own validation runs
 //! (`shacl.enabled`, `shacl.maxTriples`, on save and with `shacl.onType`
 //! after typing pauses, and when files change on disk). A pass never
-//! validates; a run that changes the results starts a pass.
+//! validates; a run that changes the results starts a pass. Reasoning
+//! findings (`turtle.reasoning.rules`) come the same way, from the server's
+//! reasoning runs.
 //!
 //! Results come back in chunks on the main loop, which drops those for files
 //! opened meanwhile and publishes only what changed. Opening a file hands it
@@ -118,6 +120,7 @@ struct Job {
     enc: Encoding,
     imports: FxHashMap<String, Status>,
     shacl: shacl_validate::ByUri,
+    reasoning: crate::reasoning::ByUri,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -313,6 +316,7 @@ fn run(
             let inputs = DiagnosticInputs {
                 import_status: &status,
                 shacl: job.shacl.get(uri).map_or(&[], Vec::as_slice),
+                reasoning: job.reasoning.get(uri).map_or(&[], Vec::as_slice),
                 ..DiagnosticInputs::new(&job.settings)
             };
             Some(diagnose::document(Doc::Rdf(a), k, job.enc, &inputs))
@@ -517,13 +521,14 @@ impl Server {
         if targets.is_empty() && sparql.is_none() {
             return;
         }
-        let shacl = self
-            .shacl
-            .diagnostics()
-            .iter()
-            .filter(|(u, _)| !ws.is_open(u))
-            .map(|(u, d)| (u.clone(), d.clone()))
-            .collect();
+        let closed_only = |by: &FxHashMap<String, Vec<Diagnostic>>| {
+            by.iter()
+                .filter(|(u, _)| !ws.is_open(u))
+                .map(|(u, d)| (u.clone(), d.clone()))
+                .collect()
+        };
+        let shacl = closed_only(self.shacl.diagnostics());
+        let reasoning = closed_only(self.reasoning_runs.diagnostics());
         if self.wsdiag.worker.is_none() {
             match Worker::start() {
                 Ok((w, rx)) => {
@@ -558,6 +563,7 @@ impl Server {
             enc: self.enc,
             imports: self.imports.statuses().clone(),
             shacl,
+            reasoning,
         };
         if let Some(w) = &self.wsdiag.worker {
             w.latest.store(generation, Ordering::Relaxed);

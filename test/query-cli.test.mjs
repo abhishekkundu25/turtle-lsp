@@ -198,3 +198,73 @@ test("query: a scan that stops at its cap fails the run instead of answering fro
   assert.equal(r.stdout, "")
   assert.match(r.stderr, /more than 1 RDF and SPARQL files/)
 })
+
+// Data where only an inference types ex:bob: ex:knows has the range ex:Person.
+const REASONING = {
+  ".git/HEAD": "",
+  "prefixes.ttl": PREFIXES + "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n",
+  "data.ttl": "ex:knows rdfs:range ex:Person .\nex:alice ex:knows ex:bob .\n",
+  "people.rq": "SELECT ?p WHERE { ?p a ex:Person }\n",
+}
+
+test("query: --reasoning default adds inferred rows and notes them on stderr", (t) => {
+  const ws = workspace(t, REASONING)
+  const off = query(ws, ["people.rq", "--format", "csv"])
+  assert.equal(off.code, 0, off.err)
+  assert.equal(off.out, "p\r\n")
+  assert.equal(off.err, "")
+  const on = query(ws, ["people.rq", "--format", "csv", "--reasoning", "default"])
+  assert.equal(on.code, 0, on.err)
+  assert.equal(on.out, "p\r\nhttp://example.org/bob\r\n")
+  assert.match(on.err, /^Includes \d+ inferred triples? \(TurbOWL, default rules\)\.\n$/)
+  const json = query(ws, ["people.rq", "--format", "json", "--reasoning=complete"])
+  assert.equal(json.code, 0, json.err)
+  assert.deepEqual(JSON.parse(json.out).results.bindings, [{ p: { type: "uri", value: "http://example.org/bob" } }])
+  assert.match(json.err, /^Includes \d+ inferred triples? \(TurbOWL, complete rules\)\.\n$/)
+  const explicitOff = query(ws, ["people.rq", "--format", "csv", "--reasoning", "off"])
+  assert.deepEqual([explicitOff.out, explicitOff.err], [off.out, ""])
+})
+
+test("query: --reasoning over the reasoning limit is skipped and says so", (t) => {
+  const ws = workspace(t, { ...REASONING, "turtle-lsp.json": '{ "reasoning": { "maxTriples": 1 } }\n' })
+  const r = query(ws, ["people.rq", "--format", "csv", "--reasoning", "default"])
+  assert.equal(r.code, 0, r.err)
+  assert.equal(r.out, "p\r\n")
+  assert.equal(r.err, "Inferred triples skipped: the workspace has 2 triples, over the reasoning limit of 1.\n")
+})
+
+test("query: --reasoning that infers more than the reasoning limit is skipped and says so", (t) => {
+  // Six triples, under the limit of 6; five links on a transitive property infer ten more.
+  const ws = workspace(t, {
+    ".git/HEAD": "",
+    "prefixes.ttl": PREFIXES + "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n",
+    "turtle-lsp.json": '{ "reasoning": { "maxTriples": 6 } }\n',
+    "data.ttl": "ex:p a owl:TransitiveProperty .\nex:a ex:p ex:b .\nex:b ex:p ex:c .\nex:c ex:p ex:d .\nex:d ex:p ex:e .\nex:e ex:p ex:f .\n",
+    "reach.rq": "SELECT ?x WHERE { ex:a ex:p ?x } ORDER BY ?x\n",
+  })
+  const r = query(ws, ["reach.rq", "--format", "csv", "--reasoning", "default"])
+  assert.equal(r.code, 0, r.err)
+  assert.equal(r.out, "x\r\nhttp://example.org/b\r\n")
+  assert.equal(r.err, "Inferred triples skipped: TurbOWL inferred more than 6 triples, over the reasoning limit.\n")
+})
+
+test("query: --reasoning takes off, default or complete", (t) => {
+  const ws = workspace(t, REASONING)
+  const r = query(ws, ["people.rq", "--reasoning", "nope"])
+  assert.equal(r.code, 2)
+  assert.equal(r.out, "")
+  assert.match(r.err, /--reasoning must be off, default or complete, not 'nope'/)
+  assert.equal(query(ws, ["people.rq", "--reasoning"]).code, 2)
+  assert.match(query(ws, ["--help"]).out, /--reasoning R/)
+})
+
+test("query: turtle-lsp.json's query.reasoning applies without the flag; the flag overrides it", (t) => {
+  const ws = workspace(t, { ...REASONING, "turtle-lsp.json": '{ "query": { "reasoning": "default" } }\n' })
+  const r = query(ws, ["people.rq", "--format", "csv"])
+  assert.equal(r.code, 0, r.err)
+  assert.equal(r.out, "p\r\nhttp://example.org/bob\r\n")
+  assert.match(r.err, /^Includes \d+ inferred triples? \(TurbOWL, default rules\)\.\n$/)
+  const off = query(ws, ["people.rq", "--format", "csv", "--reasoning", "off"])
+  assert.equal(off.code, 0, off.err)
+  assert.deepEqual([off.out, off.err], ["p\r\n", ""])
+})

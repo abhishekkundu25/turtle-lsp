@@ -12,9 +12,9 @@ use std::cell::RefCell;
 use std::time::Duration;
 use turtle_lsp::batch::{self, BatchFile, Columns, FormatOutcome};
 use turtle_lsp::clock::Instant;
-use turtle_lsp::query::{Answer, Limits, QueryError, render};
+use turtle_lsp::query::{Answer, Inferred, Limits, QueryError, render};
 use turtle_lsp::server::Embedded;
-use turtle_lsp::settings::{self, Layer, Settings};
+use turtle_lsp::settings::{self, Layer, Reasoning, Settings};
 
 pub fn handle(request: &str) -> String {
     let req: Value = match serde_json::from_str(request) {
@@ -38,7 +38,7 @@ pub fn handle(request: &str) -> String {
         "version" => Ok(json!({ "version": turtle_lsp::VERSION })),
         "analyse" => settings_of(&req).and_then(|s| files().map(|f| analyse(&f, &s))),
         "fix_all" => settings_of(&req).and_then(|s| files().map(|f| fix_all(f, &s))),
-        "query" => settings_of(&req).and_then(|s| files().and_then(|f| query(&f, &req, &s))),
+        "query" => query_settings(&req).and_then(|s| files().and_then(|f| query(&f, &req, &s))),
         "lsp_start" => lsp_start(req["params"].clone()),
         "lsp" => lsp(&req["messages"]),
         "lsp_tick" => lsp_tick(),
@@ -102,6 +102,24 @@ fn settings_of(req: &Value) -> Result<Settings, String> {
         _ => return Err("settings must be an object".into()),
     }
     Ok(Settings::from_layers([(Layer::Client, given)]))
+}
+
+/// The request's settings, with its `reasoning` as their `query.reasoning`
+/// when it has one: one more layer, as the editor's configuration is.
+fn query_settings(req: &Value) -> Result<Settings, String> {
+    let settings = settings_of(req)?;
+    let reasoning = match &req["reasoning"] {
+        Value::Null => return Ok(settings),
+        v => match v.as_str() {
+            Some(r @ ("off" | "default" | "complete")) => r,
+            _ => return Err(r#"reasoning must be "off", "default" or "complete""#.into()),
+        },
+    };
+    let chosen = json!({ "query": { "reasoning": reasoning } });
+    Ok(Settings::from_layers([
+        (Layer::Client, &req["settings"]),
+        (Layer::Client, &chosen),
+    ]))
 }
 
 /// Positions in UTF-16 units, as JavaScript strings count them.
@@ -191,12 +209,15 @@ fn fix_all(files: Vec<BatchFile>, settings: &Settings) -> Value {
 /// in seconds, and `maxRows`, a whole number; 0 for either means no limit, as
 /// in the settings. A `timeout` that is not a finite number of seconds a
 /// duration can hold, or a `maxRows` that is not a whole number, is a request
-/// error. The answer is one of
+/// error. `reasoning` (`off`, `default` or `complete`; default the settings'
+/// `query.reasoning`) runs it over TurbOWL's inferred triples too; any other
+/// value is a request error. The answer is one of
 /// `{kind: "select", variables, rows, total}` (each row a list of display
 /// strings, null when unbound), `{kind: "ask", boolean}`,
 /// `{kind: "construct", turtle, shown, total}` (the first `shown` triples) or
 /// `{kind: "error", message, line, column}` (line and column 1-based, for a
-/// syntax error only, else null); each with `elapsedMs`.
+/// syntax error only, else null); each with `elapsedMs`, and with `inferred`
+/// when reasoning was on (see [`inferred`]).
 fn query(files: &[BatchFile], req: &Value, settings: &Settings) -> Result<Value, String> {
     let name = req["query"].as_str().ok_or("the request has no query")?;
     let q = files
@@ -259,8 +280,40 @@ fn query(files: &[BatchFile], req: &Value, settings: &Settings) -> Result<Value,
         .saturating_duration_since(start)
         .as_secs_f64()
         * 1000.0;
+    if let Some(inferred) = inferred(&outcome.inferred) {
+        out["inferred"] = inferred;
+    }
     out["elapsedMs"] = json!(ms);
     Ok(out)
+}
+
+/// What reasoning added to the query's data: `{rules, triples, findings}`,
+/// `{skipped: {triples, limit}}` when the data has more triples than
+/// `reasoning.maxTriples`, `{skipped: {inferred: true, limit}}` when TurbOWL
+/// inferred more than it, or nothing when reasoning was off.
+fn inferred(i: &Inferred) -> Option<Value> {
+    match *i {
+        Inferred::None => None,
+        Inferred::Added {
+            rules,
+            triples,
+            findings,
+        } => {
+            let rules = match rules {
+                Reasoning::Default => "default",
+                Reasoning::Complete => "complete",
+                // `query::Inferred` never adds with the rules off.
+                Reasoning::Off => "off",
+            };
+            Some(json!({ "rules": rules, "triples": triples, "findings": findings }))
+        }
+        Inferred::Skipped { triples, limit } => {
+            Some(json!({ "skipped": { "triples": triples, "limit": limit } }))
+        }
+        Inferred::TooMany { limit } => {
+            Some(json!({ "skipped": { "inferred": true, "limit": limit } }))
+        }
+    }
 }
 
 /// A request's `timeout`: seconds, none for 0, read as the settings read

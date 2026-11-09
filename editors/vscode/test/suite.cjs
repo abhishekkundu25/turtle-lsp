@@ -332,29 +332,70 @@ check("a reference lens opens the references view", async () => {
   await vscode.commands.executeCommand("closeReferenceSearch")
 })
 
-check("the Run query lens opens the results document", async () => {
-  const doc = await open(path.join(query, "people.rq"))
+// The Query Results panel (src/query-results.ts), over the real server: the
+// client declares experimental["turtle/queryResults"] and the server answers
+// the result object (docs/specs/query-results-panel.md, "Server seam"); a
+// summary string instead fails the check.
+const queryTabs = () =>
+  vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => t.input instanceof vscode.TabInputWebview && t.label.startsWith("Query Results: "))
+const header = /^\d[\d,]* rows? · /
+
+/** Runs `doc`'s "▶ Run query" lens; its answer must be a SELECT result object. */
+async function runLens(doc) {
   await settledDiagnostics(doc)
   const lenses = await vscode.commands.executeCommand("vscode.executeCodeLensProvider", doc.uri, 100)
-  const runLens = lenses.find((l) => l.command?.command === "turtle.runQuery")
-  assert.ok(runLens, `lenses: ${JSON.stringify(lenses)}`)
-  assert.equal(runLens.command.title, "▶ Run query")
-  assert.equal(runLens.range.start.line, posOf(doc, "SELECT", 0).line)
-  const summary = await vscode.commands.executeCommand(runLens.command.command, ...runLens.command.arguments)
-  assert.match(String(summary), /^\d+ rows? in \d+ ms$/)
-  const isResults = (d) => d.uri.fsPath.endsWith(path.join("query-results", "people.md"))
-  let shown
-  for (let i = 0; i < 100 && !shown; i++) {
-    shown = vscode.window.visibleTextEditors.find((e) => isResults(e.document))
-    if (!shown) await sleep(50)
+  const lens = lenses.find((l) => l.command?.command === "turtle.runQuery")
+  assert.ok(lens, `lenses: ${JSON.stringify(lenses)}`)
+  assert.equal(lens.command.title, "▶ Run query")
+  assert.equal(lens.range.start.line, posOf(doc, "SELECT", 0).line)
+  const answer = await vscode.commands.executeCommand(lens.command.command, ...lens.command.arguments)
+  assert.equal(answer?.answer?.kind, "select", `the answer: ${JSON.stringify(answer)}`)
+  // By path: on Windows the server may spell the drive file:///C:/ where
+  // VS Code spells it file:///c%3A/. The panel is the server's URI's.
+  assert.equal(vscode.Uri.parse(answer.uri).fsPath, doc.uri.fsPath)
+  return answer.uri
+}
+
+check("the Run query lens opens one Query Results panel per query beside it, and a rerun reuses that panel", async () => {
+  const probe = (await graphApi()).queryResults()
+  // Created for this check and removed afterwards (the fixtures stay as they are).
+  const second = path.join(query, "__vscode-second.rq")
+  fs.writeFileSync(second, "PREFIX ex: <https://query.example.org/def/>\n\nSELECT ?person\nWHERE { ?person a ex:Person }\n")
+  try {
+    const doc = await open(path.join(query, "people.rq"))
+    const uri = await runLens(doc)
+    await until(`a Query Results tab in ${vscode.window.tabGroups.all.flatMap((g) => g.tabs.map((t) => t.label))}`, () => queryTabs().length === 1, 2000)
+    await until("the panel's header after a draw", () => header.test(probe.panel(uri)?.status ?? ""))
+    // Beside the query, which keeps the focus.
+    const queryEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.fsPath === doc.uri.fsPath)
+    assert.ok(queryEditor && queryTabs()[0].group.viewColumn !== queryEditor.viewColumn, "the panel is not beside the query")
+    // By path: on Windows the same file can come back as file:///C:/ or file:///c%3A/.
+    assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, doc.uri.fsPath)
+
+    const doc2 = await vscode.workspace.openTextDocument(vscode.Uri.file(second))
+    await vscode.window.showTextDocument(doc2, queryEditor.viewColumn)
+    const uri2 = await runLens(doc2)
+    await until("a second Query Results tab", () => queryTabs().length === 2, 2000)
+    await until("the second panel's header after a draw", () => header.test(probe.panel(uri2)?.status ?? ""))
+    assert.equal(probe.count(), 2, "not one panel per query")
+
+    for (const [u, reasoning] of [[uri, "default"], [uri2, "off"]]) {
+      const panel = probe.panel(u)
+      await panel.receive({ type: "rerun", reasoning })
+      assert.equal(panel.answers, 2, `the rerun's answer did not reach the panel of ${u}`)
+      assert.equal(probe.count(), 2, `a new panel on the rerun of ${u}`)
+      assert.equal(queryTabs().length, 2, `a new Query Results tab on the rerun of ${u}`)
+      await until("the header after the rerun", () => header.test(probe.panel(u)?.status ?? ""))
+    }
+    assert.equal(probe.panel(uri2).answers, 2, "the second query's rerun reached the first panel")
+
+    await probe.panel(uri).receive({ type: "copy" })
+    assert.match(await vscode.env.clipboard.readText(), /^\?person\t\?name\t\?org\n/)
+  } finally {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+    fs.rmSync(second, { force: true })
   }
-  assert.ok(shown, "the results document is not shown")
-  assert.match(shown.document.getText(), /^# people\.rq\n/)
-  // Beside the query, which keeps the focus.
-  const queryEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === doc.uri.toString())
-  assert.ok(queryEditor && shown.viewColumn !== queryEditor.viewColumn, "the results are not beside the query")
-  assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), doc.uri.toString())
-  await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+  await until("the panels to be disposed", () => probe.count() === 0, 2000)
 })
 
 check("saving a file that violates the project shapes shows a SHACL violation", async () => {

@@ -436,6 +436,8 @@ const shownFile = () => (W.files.has(W.active) ? W.active : null)
 function openTab(id, { focus = true } = {}) {
   const kind = kindOf(id)
   if (!kind.can(id)) return
+  // Settings covers the editor: opening something shows it, as in VS Code.
+  if (settings?.isOpen()) settings.close()
   if (kind.single) {
     const home = W.groups.findIndex((o) => o.tabs.includes(id))
     if (home >= 0) focusGroup(home)
@@ -1577,7 +1579,7 @@ async function main() {
     status: $("status-vim"),
     commands: { save: () => save(), saveAll: () => saveAll(), close: () => W.active && closeTab(W.active), open: (path) => W.files.has(path) && (openTab(path), true) },
   })
-  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: keptSettings(kept), onChange: () => changed({ status: true, layout: true }), onClose: () => editor?.focus(), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v) } })
+  settings = createSettings({ monaco, client, mount: document.querySelector(".center"), opener: $("act-settings"), saved: keptSettings(kept), onChange: () => changed({ status: true, layout: true }), onClose: () => editor?.focus(), effects: { "editor.vimMode": (v) => vim.set(v), "workbench.colorTheme": (v) => theme.set(v), "turtle.query.reasoning": (v) => queries?.showInferred(v) } })
   diff = createDiff({ monaco, client, mount: document.querySelector(".center"), toast, options: editorOptions, setup: (ed) => settings.applyTo(ed), onClose: () => editor?.focus() })
 
   // Cross-file navigation (definition, references) opens the file in a tab.
@@ -1598,6 +1600,7 @@ async function main() {
   })
   monaco.editor.registerCommand("turtle.fetchImport", (_accessor, iri) => fetchImport(iri))
   queries = createQueryPane({
+    inferred: { get: () => settings.get("turtle.query.reasoning"), set: (v) => settings.set("turtle.query.reasoning", v) },
     files: () => [...W.files].map(([path, f]) => ({ name: path, text: f.model.getValue() })),
     reveal: (path, line, column) => {
       if (!W.files.has(path)) return

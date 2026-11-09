@@ -23,8 +23,9 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `features` | Completion, hover, diagnostics, formatting and the other editor features of RDF documents | `server`, `ide`, `batch` |
 | `diagnose` | The diagnostics composer: one document's diagnostics, the same for the editor and `check` | `ide`, `server`, `batch` |
 | `shacl` | The shape model, the SHACL vocabulary, SHACL Core and SHACL-SPARQL validation | `features`, `knowledge` |
+| `reasoning` | Reasoning with TurbOWL (`turtle.reasoning.rules`): the base it reads and where each triple is written, the state runs write and hovers read, the reasoning thread, findings as diagnostics, proofs as hover markdown, and TurbOWL's inferred triples for the query graph (`reasoning::infer`) | `server`, `ide`, `features`, `query` |
 | `rdf` | The union of documents' triples as a graph and as a SPARQL dataset | `query`, `shacl` |
-| `query` | Running SPARQL queries and rendering the results | `cli`, `server`, `batch`, the browser engine |
+| `query` | Running SPARQL queries and rendering the results; with `query.reasoning` on, a query reads one list of documents and external imports, reasons over it (`reasoning::infer`) and queries all its triples and inferred triples without a filter | `cli`, `server`, `batch`, the browser engine |
 | `settings` | Client settings and their layers | `server`, `cli` |
 | `commands` | `workspace/executeCommand` commands | `server` |
 | `server` | The LSP main loop, its state groups, its timers, the stdio transport and the worker threads other modules start | `main`, the browser engine |
@@ -41,11 +42,12 @@ Run query lens. The libraries `syntax`, `rdf`, `shacl`, `sparql::lexer` and
 the lexer name only `syntax`. The `boundaries` test in `src/lib.rs` checks
 both rules.
 
-Eight modules are private to the crate: `commands`, `diagnose`,
-`extensions`, `fetch`, `ide`, `layout`, `vocab` and `workspace`. The others are public because a
-consumer uses them: the browser engine, the examples, the integration tests
-or `src/main.rs`. The "Public interface" section of the crate doc lists
-every path those consumers use, one per line, as a doctest, so
+Nine modules are private to the crate: `commands`, `diagnose`,
+`extensions`, `fetch`, `ide`, `layout`, `reasoning`, `vocab` and
+`workspace`. The others are public because a consumer uses them: the
+browser engine, the examples, the integration tests or `src/main.rs`. The
+"Public interface" section of the crate doc lists every path those
+consumers use, one per line, as a doctest, so
 `cargo test --release --locked --doc` fails when one of the paths stops
 being public. An item that no consumer names is `pub(crate)`.
 
@@ -63,7 +65,10 @@ Inside the larger modules, these files hold one part each:
 | `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF, SPARQL, import sources, catalogs or JSON, and in which letter case |
 | `src/shacl/model.rs` | The shapes in a graph, with their paths, targets and parameters |
 | `src/shacl/vocab.rs` | The SHACL, RDF, RDFS and OWL IRIs the SHACL code compares against, interned once |
-| `src/server/{client,progress,shacl,refresh,layers,index}.rs` | The server's state groups (see [Threads](#threads)) |
+| `src/reasoning/state.rs` | `Shared`: the reasoner after its last run, with its base and proof cache, behind a lock only the reasoning thread writes; hover reads it without waiting for a run |
+| `src/reasoning/proof.rs` | A TurbOWL proof as hover markdown, each base triple a link to its line |
+| `src/reasoning/turtle.rs` | How hover and diagnostics write a proof: short names, `[]` for a blank node, an RDF list as one `( … )` item |
+| `src/server/{client,progress,shacl,reasoning,refresh,layers,index}.rs` | The server's state groups (see [Threads](#threads)) |
 | `src/server/worker.rs` | `Spawn`, `spawn_guarded` and `Feed`: how jobs start and how their answers come back |
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
@@ -208,6 +213,7 @@ target classes.
 | Code lenses | `features::lens` (reference counts) | `features::lens` ("▶ Run query"), run by `extensions::run_query` |
 | SPARQL inside SHACL shapes | `features::embedded` | |
 | SHACL validation | `features::shacl_validate` over `shacl` | |
+| Reasoning (inferred types in hover, TurbOWL's findings) | `reasoning`; the hover section in `features::hover` | |
 | Type hierarchy | `features::hierarchy` | |
 | Workspace graph (`turtle/graph`) | `extensions::graph` | |
 | A query for another extension or tool (`turtle/query`) | `extensions::query` over `query::run` | |
@@ -225,6 +231,13 @@ a copy of the index; the browser engine answers inline. The drawing is
 `web/app/graph/`, one module the browser editor mounts and the VS Code
 extension bundles into its webview (`editors/vscode/src/graph.ts`).
 
+`extensions::run_query` handles `turtle.runQuery`. When the client declares
+`experimental["turtle/queryResults"]`, it answers with a result object
+instead of writing and opening a Markdown document. Other clients keep
+the Markdown document. Every client can pass an optional second argument
+`{"reasoning": "off"|"default"|"complete"}` to override reasoning for one run.
+A `$/cancelRequest` answers RequestCanceled.
+
 ## The VS Code extension's two entries
 
 The extension in `editors/vscode` has a desktop entry (`main`,
@@ -234,6 +247,11 @@ client to `src/activate.ts`, which holds what they share: the commands, the
 start on the first served document and the settings sent to the server.
 `src/client.ts` holds the parts that need neither `vscode` nor Node. The
 desktop factory finds the binary (`src/server.ts`) and runs it over stdio.
+
+Both entries show the Query Results panel through
+`editors/vscode/src/query-results.ts`. It manages one panel per query file
+and handles rerun, copy and export. `editors/vscode/src/query-results-view.js`
+provides rendering, sorting, IRI shortening and CSV / JSON export.
 
 The browser factory starts the server worker (`src/web/worker.ts`), which
 loads the engine's `.wasm` and passes the client's JSON-RPC messages to
@@ -260,22 +278,28 @@ The handler adds what the editor's worker does not need:
 The server's main loop owns all state and runs on a thread with a 64 MiB
 stack (`server::MAIN_STACK`). Its state is in groups, each a struct that the
 server drives: `progress` (work-done progress), `shacl` (validation
-scheduling and results), `refresh` (pulled-diagnostics result ids and
-refresh requests), `layers` (the settings and their layers) and `index` (the
-workspace index as it arrives). The groups send to the client through
-`client::Client`, never through the server.
+scheduling and results), `reasoning` (reasoning runs and their findings),
+`refresh` (pulled-diagnostics result ids and refresh requests), `layers`
+(the settings and their layers) and `index` (the workspace index as it
+arrives). The groups send to the client through `client::Client`, never
+through the server. One piece of state is shared with a thread: the
+reasoner after its last run (`reasoning::Shared`). Only the reasoning
+thread writes it, and a hover reads it without waiting for a run, and only
+the result of the run whose findings the server shows: an edit supersedes
+the run going on, and neither its findings nor its result are shown.
 
 Long work runs on worker threads and comes back as messages: the initial
 index, imports (`imports::worker`), JSON-LD context fetches, SHACL
-validation, workspace diagnostics and query runs. `worker::Spawn` says how
-a job runs: `Spawn::Thread` on a thread of its own in the stdio server,
-`Spawn::Inline` on the caller's thread when the server is embedded in a
-host with no threads. Threads start through `server::worker::spawn_guarded`,
-which turns a panic into a message. A SHACL or workspace-diagnostics thread
-that cannot start is reported to the client as a warning, and the server
-goes on. Each job carries a generation, and the main loop drops answers
-from superseded jobs. Every handler and every phase runs under a guard that
-turns a panic into an error report.
+validation, reasoning (`reasoning::Worker`), workspace diagnostics and
+query runs. `worker::Spawn` says how a job runs: `Spawn::Thread` on a
+thread of its own in the stdio server, `Spawn::Inline` on the caller's
+thread when the server is embedded in a host with no threads. Threads start
+through `server::worker::spawn_guarded`, which turns a panic into a
+message. A SHACL, reasoning or workspace-diagnostics thread that cannot
+start is reported to the client as a warning, and the server goes on. Each
+job carries a generation, and the main loop drops answers from superseded
+jobs. Every handler and every phase runs under a guard that turns a panic
+into an error report.
 
 Two more threads carry the connection (`server::wire`). One reads stdin and
 queues the messages, so the server takes them a batch at a time. The other

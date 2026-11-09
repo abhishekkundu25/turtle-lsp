@@ -42,6 +42,7 @@ the full W3C test suites and real public ontologies; see
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
 - **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` (default 2,000,000: the most triples one run validates, the shared triples and every dataset together) and `turtle.shacl.onType` (validate while typing; on by default). What validation could not check is reported, not passed over: a failed SHACL-SPARQL query or a check cut short is a `shacl-failure` warning, and a shape whose `sh:path` cannot be read is a `shacl-invalid-path` error.
+- **Reasoning** (off by default): with `turtle.reasoning.rules` set to `default` or `complete`, TurbOWL, an OWL 2 RL reasoner, works out what the workspace and its imports imply, in the background after open, save and a pause in typing. Hover on a resource lists its inferred types under "Inferred", each with its proof: one W3C rule per step, each triple it rests on a link to its line. With `turtle.reasoning.diagnostics` on (off by default, since SHACL shapes often check the same rules), TurbOWL's findings, such as a member of two disjoint classes, are diagnostics on the term at fault, each triple of the proof a link to its line (`turbowl/<rule>`). `default` runs TurbOWL's default rules; `complete` runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples` (default 2,000,000) is the most triples a run reads; past it, reasoning is skipped with a note.
 
 ## Tested against the real world
 
@@ -228,10 +229,23 @@ not by its extension.
 - **Semantic highlighting, folding and outline** (the query form, or each
   update operation, with its clauses).
 - **▶ Run query**: a code lens above a query runs it over the workspace's
-  files as the editor has them, unsaved edits included, and opens the
-  results as a Markdown document (a table, `true`/`false`, or Turtle for
-  `CONSTRUCT` and `DESCRIBE`) with `window/showDocument`; VS Code opens it
-  beside the query. The query runs on its own thread with a time limit and
+  files as the editor has them, unsaved edits included (and, with
+  `query.reasoning` set to `default` or `complete`, over the workspace's
+  external imports and everything TurbOWL infers from that same list too,
+  without a filter; the results say how many). VS Code on desktop and web
+  shows a Query Results panel beside the query. Each query file has one
+  panel; rerun updates it. The header shows rows, time, files read and the
+  inferred-triples note. The Inferred choice starts at
+  `turtle.query.reasoning` and offers Off, Default rules and Complete rules.
+  Use Rerun, Copy (TSV) or Export CSV / JSON. The table sorts by column and
+  shortens IRIs with the query's prefixes, with the full IRI on hover.
+  ASK shows `true` or `false`; CONSTRUCT shows triples. The panel shows
+  errors with line and column, Running… and Cancelled states.
+  Other editors get a Markdown document through `window/showDocument`.
+  The `turtle.runQuery` command takes the query URI as its first argument.
+  Every client can pass an optional second argument
+  `{"reasoning": "off"|"default"|"complete"}` to choose reasoning for one run.
+  The query runs on its own thread with a time limit and
   a row limit (`query.timeoutSeconds`, default 30; `query.maxRows`, default
   1000), so typing never waits for it. A query that keeps more than
   `query.maxBufferedRows` rows in memory to sort, group, deduplicate or join
@@ -242,15 +256,21 @@ not by its extension.
   is refused before it runs. While it runs, an editor that shows progress
   shows "Running <file>" with the seconds so far and a cancel button, and
   an editor that can refresh code lenses shows the lens as
-  "■ Cancel query" (the `turtle.cancelQuery` command). Either one stops it.
+  "■ Cancel query" (the `turtle.cancelQuery` command). Either one stops it,
+  including reasoning and reading triples. `turtle.reasoning.maxTriples`
+  caps both the input and inferred triples. Over either limit, the query
+  runs without inferred triples and says so. The CLI and Run query share
+  the note's sentence: "Inferred triples skipped: TurbOWL inferred more
+  than N triples, over the reasoning limit." for the inferred cap.
 
 Prefixes from `prefixes.ttl` and `turtle.prefixes` count as declared in
 queries too. SPARQL files add nothing to the workspace's knowledge, so a
 query never makes a misspelled term look described. A query runs only when
 you ask, over the workspace's own files: the default graph is the union of
 every triple of every file, named graphs included; `GRAPH` and `FROM NAMED`
-match nothing, `FROM` is ignored, imports are not queried, updates are never
-run and no endpoint is contacted.
+match nothing and `FROM` is ignored. With reasoning on, the graph also
+includes the workspace's external imports and all inferred triples.
+Updates are never run and no endpoint is contacted.
 
 ### Queries from another extension or tool: `turtle/query`
 
@@ -261,12 +281,18 @@ server's `experimental` capabilities, with the query as text:
 ```json
 { "query": "SELECT ?s WHERE { ?s a <http://example.org/Pump> }",
   "files": ["file:///w/data.ttl", "file:///w/model.ttl"],
-  "base": "file:///w/", "timeoutSeconds": 10, "maxRows": 1000 }
+  "base": "file:///w/", "timeoutSeconds": 10, "maxRows": 1000,
+  "reasoning": "default" }
 ```
 
 Only `query` is required. `files` limits the data to those documents
 (default: every RDF document of the workspace, open ones as the editor has
-them, imports excluded). `timeoutSeconds` can only lower
+them). `reasoning` is `off`, `default` or `complete`, defaulting to
+`query.reasoning`. With `default` or `complete`, those documents plus the
+workspace's external imports are both the reasoning input and the queried
+data, with all TurbOWL's inferred triples added without a filter. With
+`files`, other workspace documents take no part. With `off`, imports and
+inferred triples are excluded. `timeoutSeconds` can only lower
 `query.timeoutSeconds`: `0` or a higher value is the setting. `maxRows`
 can only lower `query.maxRows` in the same way; `query.maxBufferedRows`
 applies as always. The query can use the prefixes of `prefixes.ttl` and
@@ -280,10 +306,25 @@ rows past `maxRows`), `{"kind": "ask", "head": {}, "boolean": b,
 "elapsedMs": ms}`, or for CONSTRUCT and DESCRIBE `{"kind": "construct",
 "triples": [{"subject", "predicate", "object"}], "omitted": n, "elapsedMs":
 ms}` with the terms in the results JSON's term form. Nothing is shown and no
-file is written. A query that is not SPARQL, an update, a relative IRI
-without `base`, an empty `files`, or a `files` entry that is no workspace
-document is an `InvalidParams` error; a query stopped
-at a limit is a `RequestFailed` error with the reason as its message. The
+file is written.
+
+With reasoning on, the answer also has an `inferred` member:
+
+- `{"rules": "default" | "complete", "triples": n, "findings": k}` gives
+  the inferred triples added and the findings TurbOWL reported. Findings do
+  not stop the query.
+- `{"skipped": {"triples": n, "limit": m}}` means the documents and imports
+  exceeded `turtle.reasoning.maxTriples`; no inferred triples were added.
+- `{"skipped": {"inferred": true, "limit": m}}` means TurbOWL inferred more
+  than that limit; no inferred triples were added.
+
+With `off`, there is no `inferred` member. Time limits and cancellation
+stop reasoning and reading triples as well as evaluation.
+
+A query that is not SPARQL, an update, a relative IRI
+without `base`, an empty `files`, a `files` entry that is no workspace
+document, or an invalid `reasoning` value is an `InvalidParams` error.
+A query stopped at a limit is a `RequestFailed` error with the reason as its message. The
 query runs on a thread of its own, and `$/cancelRequest` stops it (a
 `RequestCanceled` error); `shutdown`, `exit` and a closed connection stop
 every run. At most four queries run at a time; one more is a
@@ -495,6 +536,64 @@ To change a setting, extend the config: for example
 `vim.lsp.config("turtle_lsp", { settings = { turtle = { format = { lineWidth = 80 } } } })`
 before `vim.lsp.enable`.
 
+### Reasoning, code lenses and queries in Neovim
+
+Some features need a setting or a few lines of config in Neovim:
+
+- **Inferred types in hover** need reasoning on. Press `K` on a resource:
+  hover lists its inferred types under "Inferred", each with its proof.
+- **Reasoning findings as diagnostics** (contradictions, ill-typed
+  literals) need `reasoning.diagnostics` as well.
+- **Queries with inferred triples** need `query.reasoning`.
+- **Code lenses** ("▶ Run query" above a query, "N references" above a
+  subject) are sent by the server, but Neovim shows them only when your
+  config asks for them. Running "▶ Run query" opens the results as a
+  Markdown document (VS Code shows a results panel instead).
+
+Turn reasoning on in the project's `turtle-lsp.json`, so every editor and
+the command line agree:
+
+```json
+{
+  "reasoning": { "rules": "default", "diagnostics": true },
+  "query": { "reasoning": "default" }
+}
+```
+
+or for you alone, before `vim.lsp.enable`:
+
+```lua
+vim.lsp.config("turtle_lsp", {
+  settings = { turtle = {
+    reasoning = { rules = "default", diagnostics = true },
+    query = { reasoning = "default" },
+  } },
+})
+```
+
+Show the code lenses and run one with a key (here `<leader>cr` runs the
+lens on the cursor's line, such as "▶ Run query"):
+
+```lua
+vim.api.nvim_create_autocmd("LspAttach", {
+  callback = function(ev)
+    local client = vim.lsp.get_client_by_id(ev.data.client_id)
+    if not (client and client.name == "turtle_lsp") then return end
+    local refresh = function() vim.lsp.codelens.refresh({ bufnr = ev.buf }) end
+    refresh()
+    vim.api.nvim_create_autocmd({ "BufEnter", "InsertLeave", "BufWritePost" }, {
+      buffer = ev.buf,
+      callback = refresh,
+    })
+    vim.keymap.set("n", "<leader>cr", vim.lsp.codelens.run,
+      { buffer = ev.buf, desc = "Run the code lens on this line" })
+  end,
+})
+```
+
+`complete` instead of `default` turns on every OWL 2 RL rule and is slower.
+Checked with Neovim 0.11.5.
+
 Without a plugin manager, put the server on your `PATH` (see
 [Install](#install)) and configure it yourself:
 
@@ -543,6 +642,9 @@ Settings: `turtle.server.path` (use another binary), `turtle.prefixes`
 server settings `turtle.inlayHints.labels`, `turtle.shacl.enabled`,
 `turtle.shacl.maxTriples` (the most triples one SHACL run validates: the
 shared triples and every dataset together), `turtle.shacl.onType`,
+`turtle.reasoning.rules` (`off`, `default` or `complete`; off by default),
+`turtle.reasoning.maxTriples` (the most triples one reasoning run reads),
+`turtle.reasoning.diagnostics` (TurbOWL's findings as diagnostics; off by default),
 `turtle.lint.undescribedTerms`, `turtle.lint.ignore` (codes never to
 report), `turtle.lint.enable` (off-by-default checks to switch on),
 `turtle.imports.network` (fetch imports and
@@ -551,7 +653,10 @@ JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.diagnostics.workspace` (check files that are not open; off by
 default), `turtle.parse.incremental` (after an edit, parse only the
 statements around it; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
-`turtle.query.maxBufferedRows` (for ▶ Run query). Suggestions pop up while
+`turtle.query.maxBufferedRows` (for ▶ Run query), and `turtle.query.reasoning` (`off`, `default` or `complete`; off by default).
+With reasoning on, queries read the queried files plus external imports
+and everything TurbOWL infers, without a filter. Changing `query.*` settings
+re-runs no reasoning, validation or check. Suggestions pop up while
 typing in Turtle and TriG strings, for the SPARQL queries of SHACL shapes
 (`editor.quickSuggestions` for `[turtle]` and `[trig]`; set it back in
 your settings to turn that off).
@@ -559,8 +664,9 @@ your settings to turn that off).
 The extension sends the server only the settings you set, so a key you
 leave unset comes from [`turtle-lsp.json`](#settings-file-turtle-lspjson)
 or takes its default. In an untrusted workspace, `turtle.server.path`,
-`turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples` and
-`turtle.diagnostics.workspace` take your user settings only, network
+`turtle.imports.network`, `turtle.query.*`, `turtle.shacl.maxTriples`,
+`turtle.reasoning.maxTriples` and `turtle.diagnostics.workspace` take your
+user settings only, network
 imports are off, and no server inside the workspace is run.
 `turtle.server.path` must be an absolute path to a file that exists.
 
@@ -581,10 +687,8 @@ file system API (on github.dev, the repository's files).
 The language features work as on the desktop, including cross-file
 features over those files, problems in files that are not open,
 `prefixes.ttl`, `turtle-lsp.json` at the root of the first folder, SHACL
-validation and the workspace graph. These do not:
+validation, the workspace graph and the Query Results panel. These do not:
 
-- ▶ Run query is not shown, as it writes its results to disk. The
-  `turtle/query` request still works.
 - `owl:imports` are not fetched; a web import stays unresolved, as offline.
 - At most 2,000 files and 50 MB of RDF are read; past either limit the
   extension says how many files it read.
@@ -596,6 +700,12 @@ In `editors/vscode`, `VSCE_TARGET=web npm run package` builds the engine
 and writes `turtle-lsp-web-<version>.vsix`.
 
 ## Browser editor and toolbox
+
+The query pane has Cancel, a watchdog past the query's time limit and a
+hint to try Inferred off if reasoning crashes the engine. It sends one
+query at a time to the worker; cancelling a waiting query leaves the
+running one alone. The sample's `reasoning/` folder has queries 04–12 to
+try with Inferred off, default and complete.
 
 The [browser editor](https://abhishekkundu25.github.io/turtle-lsp/) and its
 toolbox page run the server compiled to WebAssembly (`web/engine`) in your
@@ -663,12 +773,16 @@ is also accepted.
 - **The file cannot turn on the network or lift a limit**, because any
   repository you clone can ship one. It cannot set `imports.network`, and it
   cannot raise `query.timeoutSeconds`, `query.maxRows`,
-  `query.maxBufferedRows` or `shacl.maxTriples` past their defaults (`0`,
+  `query.maxBufferedRows`, `shacl.maxTriples` or `reasoning.maxTriples`
+  past their defaults (`0`,
   no limit, counts as past); it can lower them. The server and the command
   line ignore such a key with one warning that names it. Set these in the
   editor's settings, or pass `--network` and the other flags.
 - **A file that is not a JSON object,** or is larger than 1 MB, is ignored,
   with one warning.
+- **In VS Code,** the extension completes and checks the file against its
+  JSON schema (`editors/vscode/schemas/turtle-lsp.schema.json`), nested or
+  dotted, and flags a misspelt key, a wrong value or a limit the file cannot raise.
 - **A time limit that cannot be held** (negative, or too large) is ignored
   with a warning, by the editor, `format` and `query`. `check` stops with
   exit code 2 instead, so a CI gate never runs on settings it was not given.
@@ -736,8 +850,16 @@ turtle-lsp format                    # format files in place
 turtle-lsp format --check            # list files that would change; change nothing
 turtle-lsp format --diff             # print a unified diff instead
 turtle-lsp query people.rq           # run a query over the workspace's files
+turtle-lsp query --reasoning default people.rq   # also query everything TurbOWL infers from those files
 turtle-lsp query -e 'SELECT ?s WHERE { ?s a foaf:Person }' data/
 ```
+
+`--reasoning default` or `--reasoning complete` adds all inferred triples
+without a filter. The CLI reads the named files or folders, with no external
+imports added. The input and inferred triples each have the
+`turtle.reasoning.maxTriples` limit; past either, the query runs without
+inferred triples and prints a note. The time limit stops reasoning and
+reading triples too.
 
 The workspace root is `--root DIR`, otherwise the nearest folder above with a
 `.git`, otherwise the current folder. Every file under it is loaded

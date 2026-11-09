@@ -1,7 +1,13 @@
-// SPARQL queries in the editor: a Run button in an editor group's breadcrumbs
-// bar when its file is a query (.rq, .sparql), and the results under the
-// editor: a table, true or false, or the constructed graph as Turtle. The
-// query runs in its own engine worker (worker.js), so typing is never slowed.
+// SPARQL queries in the editor: a Run button and the Inferred choice (whether
+// the query runs over what TurbOWL infers too) in an editor group's
+// breadcrumbs bar when its file is a query (.rq, .sparql), and the results
+// under the editor: a table, true or false, or the constructed graph as
+// Turtle, with a line saying what inference added. The query runs in its own
+// engine worker (worker.js), so typing is never slowed; the worker gets one
+// query at a time, the others wait here. While it runs, Run is Cancel;
+// Cancel, or a watchdog a grace past the query's time limit, ends the worker,
+// and the next run starts a new one. A query cancelled while it waits only
+// leaves the queue.
 
 import { esc } from "./dom.js"
 import { currentSettings } from "./editor-lsp.js"
@@ -10,47 +16,163 @@ export const isQuery = (path) => /\.(rq|sparql)$/i.test(path ?? "")
 
 const plural = (n, what) => `${n.toLocaleString("en")} ${what}${n === 1 ? "" : "s"}`
 
+// How long past its time limit a query runs before the watchdog ends its
+// worker; the engine stops it near the limit itself, so this is for a query
+// it cannot stop (or a crash that leaves the worker spinning). Tests shorten it.
+export const watchdog = { graceMs: 5_000 }
+
+// The query's time limit in seconds as the engine reads it from `settings`:
+// `query.timeoutSeconds`, its keys nested or dotted, under `turtle` or not;
+// 30 unless set to seconds a duration holds, 0 for none. The pane sends it
+// with the query, so the engine and the watchdog use the same number.
+function timeLimit(s) {
+  let limit = 30
+  const walk = (v, path) => {
+    const keys = path.flatMap((k) => k.split("."))
+    while (keys[0] === "turtle") keys.shift()
+    const at = keys.join(".")
+    if (at === "query.timeoutSeconds") {
+      if (typeof v === "number" && v >= 0 && v < 2 ** 64) limit = v
+    } else if (v && typeof v === "object" && !Array.isArray(v) && "query.timeoutSeconds".startsWith(at))
+      for (const [k, w] of Object.entries(v)) walk(w, [...path, k])
+  }
+  walk(s, [])
+  return limit
+}
+
+// Why a query has no answer, when it is not the engine's: `status` is
+// "cancelled", "stopped" (past its time limit) or "not run" (queued behind
+// one of those).
+class Stopped extends Error {
+  constructor(message, status) {
+    super(message)
+    this.status = status
+  }
+}
+
 // `files()`: the workspace as [{ name, text }]; `reveal(path, line, column)`
 // puts the cursor at a 1-based place in `path`'s editor; `settings()`: the
 // user's settings (the object Settings' `values()` gives, or the server's
 // configuration), by default what the page last sent the server. A query
 // runs under them: their prefixes, and `query.timeoutSeconds` and
-// `query.maxRows` (30 seconds and 1000 rows unless set).
-export function createQueryPane({ files, reveal, settings = currentSettings }) {
+// `query.maxRows` (30 seconds and 1000 rows unless set). `inferred`: the
+// setting `query.reasoning` ("off", "default" or "complete") as `get()` and
+// `set(value)`; the query runs with what `get()` gives, and `showInferred(value)`
+// puts a changed value in every Inferred choice.
+export function createQueryPane({ files, reveal, settings = currentSettings, inferred }) {
   let worker = null
   let seq = 0
+  // The queries in the order they were asked; only the first is the
+  // worker's (`posted`), the rest wait for it.
   const pending = new Map()
 
-  // A worker that failed to load, died or whose engine crashed answers nothing
-  // more: fail what waits on it, and start a new one for the next run.
-  function drop(w, message) {
-    if (worker !== w) return
-    worker = null
-    w.terminate()
-    for (const p of pending.values()) p.reject(new Error(message))
-    pending.clear()
-  }
-
-  function call(payload) {
+  // Gives the worker the first query, unless it has one: a new worker when
+  // there is none. A worker that cannot be made fails every query.
+  function next() {
+    const p = pending.values().next().value
+    if (!p || p.posted) return
     if (!worker) {
-      const w = (worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" }))
+      let w
+      try {
+        w = worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" })
+      } catch (e) {
+        for (const q of pending.values()) q.reject(e)
+        pending.clear()
+        return
+      }
       w.onmessage = ({ data }) => {
         const p = pending.get(data.id)
+        if (data.started) return p?.start()
         pending.delete(data.id)
-        if ("error" in data) p?.reject(new Error(data.error))
+        clearTimeout(p?.timer)
+        // A crash is the query's: the engine was running it.
+        if ("error" in data) p?.reject(Object.assign(new Error(data.error), { crashed: Boolean(data.crashed) }))
         else p?.resolve(data.ok)
-        if (data.crashed) drop(w, "the query engine crashed")
+        if (data.crashed) drop(w, new Error("the query engine crashed"))
+        else next()
       }
       w.onerror = w.onmessageerror = (e) => {
         e.preventDefault()
-        drop(w, "the query engine stopped" + (e.message ? `: ${e.message}` : ""))
+        drop(w, new Error("the query engine stopped" + (e.message ? `: ${e.message}` : "")))
       }
     }
+    p.posted = true
+    worker.postMessage(p.message)
+  }
+
+  // A worker that failed to load, died, whose engine crashed or that was
+  // stopped answers nothing more: fail what waits on it with `error`, and
+  // start a new one for the next run.
+  function drop(w, error) {
+    if (worker !== w) return
+    worker = null
+    w.terminate()
+    for (const p of pending.values()) {
+      clearTimeout(p.timer)
+      p.reject(error)
+    }
+    pending.clear()
+  }
+
+  // Ends query `id` with `own`. One the engine started ends its worker, and
+  // the queries queued behind it fail with `others`; one the worker has not
+  // started (it waits for the engine to load) ends the worker, and the queue
+  // goes on in a new one; one still queued only leaves the queue.
+  function stop(id, own, others) {
+    const p = pending.get(id)
+    if (!p) return
+    pending.delete(id)
+    clearTimeout(p.timer)
+    p.reject(own)
+    if (p.started) drop(worker, new Stopped(`Not run: another query ${others} and the query engine was restarted. Run it again.`, "not run"))
+    else if (p.posted) {
+      worker.terminate()
+      worker = null
+      next()
+    }
+  }
+
+  // Queues a query; `{ id, answer }`, the answer a promise. Its time limit
+  // goes with it as `timeout`, and the watchdog starts on that limit when the
+  // worker starts the query, not while it waits behind another.
+  function call(payload) {
     const id = ++seq
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject })
-      worker.postMessage({ id, ...payload })
+    const limit = timeLimit(payload.settings)
+    const answer = new Promise((resolve, reject) => {
+      const p = { resolve, reject, timer: null, posted: false, started: false, message: { id, announce: true, ...payload, timeout: limit } }
+      p.start = () => {
+        p.started = true
+        const ms = limit * 1000 + watchdog.graceMs
+        // 0 is no limit; past setTimeout's range is as good as none.
+        if (limit > 0 && ms < 2 ** 31)
+          p.timer = setTimeout(
+            () =>
+              stop(id, new Stopped(`Stopped: the query ran past its time limit of ${plural(limit, "second")}.`, "stopped"), "ran past its time limit"),
+            Math.max(ms, 0),
+          )
+      }
+      pending.set(id, p)
     })
+    next()
+    return { id, answer }
+  }
+
+  // Ends group `g`'s query, running or queued.
+  function cancel(g) {
+    if (g.query?.running)
+      stop(g.query.id, new Stopped("Cancelled.", "cancelled"), "was cancelled")
+  }
+
+  // Run, or Cancel while the group's query runs.
+  function setButton(g) {
+    const { button } = g.run
+    const running = Boolean(g.query?.running)
+    const name = running ? "Cancel Query" : "Run Query"
+    button.classList.toggle("running", running)
+    button.title = running ? name : "Run Query (Ctrl+Enter)"
+    button.setAttribute("aria-label", name)
+    button.querySelector(".codicon").className = `codicon codicon-${running ? "debug-stop" : "play"}`
+    button.querySelector(".qrun-label").textContent = running ? "Cancel" : "Run"
   }
 
   // Adds the button and the pane to group `g` ({ el, editor }); `run` runs
@@ -63,15 +185,26 @@ export function createQueryPane({ files, reveal, settings = currentSettings }) {
     button.setAttribute("aria-label", "Run Query")
     button.innerHTML = `<span class="codicon codicon-play" aria-hidden="true"></span><span class="qrun-label">Run</span>`
     button.hidden = true
-    button.addEventListener("click", run)
-    crumbs.append(button)
+    button.addEventListener("click", () => (g.query?.running ? cancel(g) : run()))
+    const choice = document.createElement("label")
+    choice.className = "qinfer"
+    choice.title = "Whether the query also runs over what TurbOWL infers from the workspace (the Query: Inferred Triples setting)"
+    choice.innerHTML = `<span class="qinfer-label" aria-hidden="true">Inferred</span><select aria-label="Inferred">${INFERRED.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>`
+    choice.hidden = true
+    const select = choice.querySelector("select")
+    select.value = inferred.get()
+    select.addEventListener("change", () => inferred.set(select.value))
+    crumbs.append(choice, button)
     const pane = document.createElement("section")
     pane.className = "qpane"
     pane.hidden = true
     pane.setAttribute("aria-label", "Query results")
-    pane.innerHTML = `<div class="qpane-hd"><span class="view-title">Results</span><span class="qpane-file"></span><span class="qpane-status" role="status"></span><span class="sp"></span><button class="ic" aria-label="Close Results" title="Close Results"><span class="codicon codicon-close"></span></button></div><div class="qpane-body" tabindex="0"></div>`
+    pane.innerHTML = `<div class="qpane-hd"><span class="view-title">Results</span><span class="qpane-file"></span><span class="qpane-status" role="status"></span><span class="qpane-note" hidden></span><span class="sp"></span><button class="ic" aria-label="Close Results" title="Close Results"><span class="codicon codicon-close"></span></button></div><div class="qpane-body" tabindex="0"></div>`
     pane.querySelector(".ic").addEventListener("click", () => {
+      // Closing the results drops a running query too: nothing would show it.
+      cancel(g)
       g.query = null
+      setButton(g)
       pane.hidden = true
       g.editor.focus()
     })
@@ -80,34 +213,44 @@ export function createQueryPane({ files, reveal, settings = currentSettings }) {
       if (at && g.query) reveal(g.query.path, Number(at.dataset.line), Number(at.dataset.column))
     })
     g.el.querySelector(".editor-host").after(pane)
-    g.run = { button, pane }
+    g.run = { button, choice, select, pane }
   }
 
   // Shows the button when the group's file is a query, and the results when
   // they are its file's.
   function update(g) {
     if (!g.run) return
-    g.run.button.hidden = !isQuery(g.active)
+    g.run.button.hidden = g.run.choice.hidden = !isQuery(g.active)
     g.run.pane.hidden = !g.query || g.query.path !== g.active
   }
 
   async function run(g) {
     const path = g.active
     if (!isQuery(path) || g.query?.running) return
-    const { button, pane } = g.run
-    const ticket = { path, running: true }
+    const { pane } = g.run
+    const reasoning = inferred.get()
+    const ticket = { path, id: null, running: true }
     g.query = ticket
     const body = pane.querySelector(".qpane-body")
     pane.querySelector(".qpane-file").textContent = path
     pane.querySelector(".qpane-status").textContent = "Running…"
+    // The last run's note is not this one's.
+    const note = pane.querySelector(".qpane-note")
+    note.textContent = note.title = ""
+    note.hidden = true
     body.setAttribute("aria-busy", "true")
-    button.disabled = true
+    setButton(g)
     update(g)
     let answer
     try {
-      answer = await call({ op: "query", files: files(), query: path, settings: settings() })
+      const asked = call({ op: "query", files: files(), query: path, settings: settings(), reasoning })
+      ticket.id = asked.id
+      answer = await asked.answer
     } catch (e) {
-      answer = { kind: "error", message: e.message, line: null, column: null }
+      // A crash or a run past the limit with inferred triples: likely theirs.
+      const hint = reasoning === "off" ? "" : " Inferred triples can take more time or memory than this tab has: try Inferred off."
+      if (e instanceof Stopped) answer = { kind: "stopped", status: e.status, message: e.message + (e.status === "stopped" ? hint : "") }
+      else answer = { kind: "error", message: e.crashed && hint ? `${e.message}.${hint}` : e.message, line: null, column: null }
     }
     ticket.running = false
     // Unless the pane was closed, or another run of the group took over.
@@ -115,10 +258,32 @@ export function createQueryPane({ files, reveal, settings = currentSettings }) {
       show(pane, answer)
       body.removeAttribute("aria-busy")
     }
-    button.disabled = Boolean(g.query?.running)
+    setButton(g)
   }
 
-  return { attach, update, run }
+  // The setting changed (here or on the Settings page).
+  function showInferred(value) {
+    for (const select of document.querySelectorAll(".qinfer select")) select.value = value
+  }
+
+  return { attach, update, run, showInferred }
+}
+
+// The Inferred choice's values, as the setting `query.reasoning` has them.
+const INFERRED = [
+  ["off", "Off"],
+  ["default", "Default rules"],
+  ["complete", "Complete rules (slower)"],
+]
+
+// The line that says what inference added to the query's data (the answer's
+// `inferred`), or "" when it was off.
+export function inferredNote(i) {
+  if (!i) return ""
+  if (i.skipped?.inferred) return `Inferred triples skipped: TurbOWL inferred more than ${plural(i.skipped.limit, "triple")}, over the reasoning limit`
+  if (i.skipped) return `Inferred triples skipped: the workspace has ${plural(i.skipped.triples, "triple")}, over the reasoning limit of ${i.skipped.limit.toLocaleString("en")}`
+  const line = `Includes ${plural(i.triples, "inferred triple")} (TurbOWL, ${i.rules} rules)`
+  return i.findings ? `${line}; TurbOWL reported ${plural(i.findings, "finding")}` : line
 }
 
 function show(pane, a) {
@@ -137,12 +302,19 @@ function show(pane, a) {
   } else if (a.kind === "construct") {
     status = a.shown < a.total ? `showing ${a.shown.toLocaleString("en")} of ${plural(a.total, "triple")}` : plural(a.total, "triple")
     html = a.total ? `<pre class="qturtle" aria-label="Constructed graph (Turtle)">${esc(a.turtle)}</pre>` : `<p class="qempty">No triples.</p>`
+  } else if (a.kind === "stopped") {
+    status = a.status
+    const icon = a.status === "cancelled" ? "" : `<span class="codicon codicon-warning" aria-hidden="true"></span> `
+    html = `<p class="qstopped">${icon}<span class="msg">${esc(a.message)}</span></p>`
   } else {
     status = "error"
     const where = a.line != null ? `<button class="qloc" data-line="${a.line}" data-column="${a.column}" title="Go to ${a.line}:${a.column} in the query">${a.line}:${a.column}</button> ` : ""
     html = `<p class="qerror"><span class="codicon codicon-error" aria-hidden="true"></span> ${where}<span class="msg">${esc(a.message)}</span></p>`
   }
   pane.querySelector(".qpane-status").textContent = status + ms
+  const note = pane.querySelector(".qpane-note")
+  note.textContent = note.title = inferredNote(a.inferred)
+  note.hidden = !note.textContent
   body.innerHTML = html
   body.scrollTop = 0
 }

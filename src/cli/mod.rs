@@ -106,6 +106,10 @@ Options:
   --max-buffered-rows N stop the query once it keeps more than N rows in
                         memory to sort, group or join them (default
                         10000000; counts rows, not bytes; 0: never)
+  --reasoning R         off, default or complete: also query the triples
+                        TurbOWL infers with those rules (OWL 2 RL); a line
+                        on stderr says how many (default: query.reasoning,
+                        else off)
 
 Formats:
   SELECT                table (default), json, csv or tsv

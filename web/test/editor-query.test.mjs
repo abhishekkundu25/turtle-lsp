@@ -16,6 +16,22 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 let server, origin, browser
 // Serve a query worker that fails to load, for the next request of it.
 let brokenWorker = false
+// While set, serve the real worker behind one that acts on a marker in the
+// query's text: "#hang" says it started and then keeps the thread busy (a
+// query that runs for minutes), "#crash" answers as an engine panic does.
+let hookedWorker = false
+const HOOKED_WORKER = `import "./worker.js?real"
+const real = self.onmessage
+self.onmessage = (ev) => {
+  const { id, announce, files, query } = ev.data
+  const text = files?.find((f) => f.name === query)?.text ?? ""
+  if (text.includes("#hang")) {
+    if (announce) self.postMessage({ id, started: true })
+    const end = Date.now() + 120_000
+    while (Date.now() < end);
+  } else if (text.includes("#crash")) self.postMessage({ id, error: "RuntimeError: unreachable", crashed: true })
+  else real(ev)
+}`
 before(async () => {
   server = http.createServer((req, res) => {
     const rel = decodeURIComponent(new URL(req.url, "http://x").pathname)
@@ -23,6 +39,7 @@ before(async () => {
       brokenWorker = false
       return res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" }).end('throw new Error("boom")')
     }
+    if (rel === "/worker.js" && hookedWorker && !req.url.includes("?real")) return res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" }).end(HOOKED_WORKER)
     const file = path.join(app, path.normalize(rel))
     if (!file.startsWith(app) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end()
     res.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" })
@@ -120,6 +137,48 @@ test("Ctrl+Enter runs the query: true or false, Turtle, and an error at its line
   }
 })
 
+const inferred = (page) => page.getByRole("combobox", { name: "Inferred", exact: true })
+const note = (page) => pane(page).locator(".qpane-note")
+
+test("on a fresh visit a query includes TurbOWL's inferred triples and says so; Inferred off leaves both out", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    assert.equal(await inferred(page).inputValue(), "default")
+    await runButton(page).click()
+    await pane(page).locator("table").waitFor()
+    assert.match(await note(page).textContent(), /^Includes [\d,]+ inferred triples \(TurbOWL, default rules\)(; TurbOWL reported \d+ findings?)?$/)
+    // Bob works for Alice, and ex:worksFor's range is ex:Organisation: only
+    // inference makes id:alice one.
+    const body = pane(page).locator(".qpane-body")
+    await setText(page, "SELECT ?o WHERE { ?o a ex:Organisation } ORDER BY ?o")
+    await page.keyboard.press("ControlOrMeta+Enter")
+    await body.locator("td", { hasText: "id:alice" }).waitFor()
+    assert.deepEqual(await body.locator("td").allTextContents(), ["id:acme", "id:alice"])
+    await inferred(page).selectOption("off")
+    await runButton(page).click()
+    await page.waitForFunction(() => document.querySelectorAll(".qpane-body td").length === 1)
+    assert.deepEqual(await body.locator("td").allTextContents(), ["id:acme"])
+    assert.equal(await note(page).isVisible(), false)
+    assert.equal(await note(page).textContent(), "")
+    // The choice is the setting `query.reasoning`, both ways.
+    await page.keyboard.press("ControlOrMeta+Comma")
+    const settings = page.getByRole("region", { name: "Settings" })
+    const setting = settings.getByRole("combobox", { name: "Query: Inferred Triples" })
+    assert.equal(await setting.inputValue(), "off")
+    await setting.selectOption("complete")
+    await page.keyboard.press("Escape")
+    await settings.waitFor({ state: "hidden" })
+    assert.equal(await inferred(page).inputValue(), "complete")
+    await runButton(page).click()
+    await body.locator("td", { hasText: "id:alice" }).waitFor()
+    assert.match(await note(page).textContent(), /^Includes [\d,]+ inferred triples \(TurbOWL, complete rules\)/)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("a prefix only Settings declares is known to the query, as it is to the editor", async () => {
   const { page, errors, close } = await open()
   try {
@@ -160,6 +219,93 @@ test("a query worker that fails to load gives an error, and the next run starts 
     await runButton(page).click()
     await pane(page).locator("table").waitFor()
   } finally {
+    await close()
+  }
+})
+
+const cancelButton = (page) => page.getByRole("button", { name: "Cancel Query" })
+
+test("while a query runs, Run turns into Cancel: it ends the query, and the next run answers in a fresh worker", async () => {
+  hookedWorker = true
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    const body = pane(page).locator(".qpane-body")
+    const status = pane(page).getByRole("status")
+    // A run with Inferred on leaves a note; the next run clears it while it runs.
+    await runButton(page).click()
+    await body.locator("table").waitFor()
+    assert.equal(await note(page).isVisible(), true)
+    await setText(page, "#hang\nASK { ?s ?p ?o }")
+    await page.keyboard.press("ControlOrMeta+Enter")
+    await cancelButton(page).waitFor()
+    assert.equal(await status.textContent(), "Running…")
+    assert.equal(await note(page).isVisible(), false)
+    assert.equal(await runButton(page).count(), 0)
+    // By keyboard: the focused Cancel, then Enter.
+    await cancelButton(page).focus()
+    await page.keyboard.press("Enter")
+    await body.getByText("Cancelled.", { exact: true }).waitFor({ timeout: 5_000 })
+    assert.equal(await status.textContent(), "cancelled")
+    assert.equal(await body.getAttribute("aria-busy"), null)
+    // The button is Run again and keeps the focus. The old worker is still
+    // busy for two minutes, so an answer comes from a new one.
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Run Query")
+    await setText(page, "ASK { id:alice a ex:Person }")
+    await runButton(page).click()
+    await body.getByText("true", { exact: true }).waitFor({ timeout: 10_000 })
+    assert.deepEqual(errors, [])
+  } finally {
+    hookedWorker = false
+    await close()
+  }
+})
+
+test("a query past its time limit and the grace after it is stopped, and says so", async () => {
+  hookedWorker = true
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    // The default limit is 30 seconds: a grace of -29.5 s ends it at 0.5 s.
+    await page.evaluate(async () => ((await import("/query-pane.js")).watchdog.graceMs = -29_500))
+    const body = pane(page).locator(".qpane-body")
+    await setText(page, "#hang\nASK { ?s ?p ?o }")
+    await page.keyboard.press("ControlOrMeta+Enter")
+    await cancelButton(page).waitFor()
+    await body.getByText(/^Stopped: the query ran past its time limit of 30 seconds\./).waitFor({ timeout: 10_000 })
+    assert.match(await body.textContent(), /try Inferred off/)
+    assert.equal(await pane(page).getByRole("status").textContent(), "stopped")
+    await runButton(page).waitFor()
+    await setText(page, "ASK { id:alice a ex:Person }")
+    await runButton(page).click()
+    await body.getByText("true", { exact: true }).waitFor({ timeout: 10_000 })
+    assert.deepEqual(errors, [])
+  } finally {
+    hookedWorker = false
+    await close()
+  }
+})
+
+test("an engine crash with Inferred on says to try Inferred off; with it off, it does not", async () => {
+  hookedWorker = true
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "queries/people.rq")
+    const body = pane(page).locator(".qpane-body")
+    await setText(page, "#crash\nASK { ?s ?p ?o }")
+    await runButton(page).click()
+    const error = body.locator(".qerror")
+    await error.waitFor()
+    assert.match(await error.textContent(), /RuntimeError: unreachable/)
+    assert.match(await error.textContent(), /try Inferred off/)
+    await inferred(page).selectOption("off")
+    await runButton(page).click()
+    await page.waitForFunction(() => !document.querySelector(".qpane-body[aria-busy]") && document.querySelector(".qerror"))
+    assert.match(await error.textContent(), /RuntimeError: unreachable/)
+    assert.doesNotMatch(await error.textContent(), /Inferred off/)
+    assert.deepEqual(errors, [])
+  } finally {
+    hookedWorker = false
     await close()
   }
 })

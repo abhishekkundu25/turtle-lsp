@@ -188,6 +188,35 @@ test("query: a row limit past what the engine's memory can count is no limit, no
   for (const maxRows of [-1, 1.5, "ten"]) assert.throws(() => ask(all, { maxRows }), (e) => !e.crashed && /maxRows must be/.test(e.message), String(maxRows))
 })
 
+test("query: `reasoning` adds TurbOWL's inferred triples and says so; off answers as before", () => {
+  // ex:worksFor's range makes id:alice (Bob works for her) an ex:Organisation.
+  const orgs = "SELECT ?o WHERE { ?o a ex:Organisation } ORDER BY ?o"
+  const off = ask(orgs)
+  assert.deepEqual(off.rows, [["id:acme"]])
+  assert.equal("inferred" in off, false)
+  const timeless = ({ elapsedMs, ...a }) => a
+  assert.deepEqual(timeless(ask(orgs, { reasoning: "off" })), timeless(off))
+  const on = ask(orgs, { reasoning: "default" })
+  assert.deepEqual(on.rows, [["id:acme"], ["id:alice"]])
+  assert.equal(on.inferred.rules, "default")
+  assert.ok(Number.isInteger(on.inferred.triples) && on.inferred.triples > 0, JSON.stringify(on.inferred))
+  assert.equal(typeof on.inferred.findings, "number")
+  assert.equal(ask(orgs, { reasoning: "complete" }).inferred.rules, "complete")
+  assert.equal(ask("ASK { id:alice a ex:Organisation }", { reasoning: "default" }).boolean, true)
+  // The default is the settings' `query.reasoning`; the request's wins.
+  assert.equal(ask(orgs, { settings: { "query.reasoning": "default" } }).inferred.rules, "default")
+  assert.equal(ask(orgs, { settings: { turtle: { query: { reasoning: "default" } } } }).inferred.rules, "default")
+  assert.equal("inferred" in ask(orgs, { settings: { "query.reasoning": "default" }, reasoning: "off" }), false)
+  // Over `reasoning.maxTriples` the query runs without them, and says so.
+  const big = ask(orgs, { reasoning: "default", settings: { "reasoning.maxTriples": 1 } })
+  assert.deepEqual(big.rows, [["id:acme"]])
+  assert.equal(big.inferred.skipped.limit, 1)
+  assert.ok(big.inferred.skipped.triples > 1)
+  for (const reasoning of ["on", "Default", true, 1]) {
+    assert.throws(() => ask(orgs, { reasoning }), (e) => !e.crashed && /reasoning must be "off", "default" or "complete"/.test(e.message), String(reasoning))
+  }
+})
+
 test("analyse and fix all use the settings: a prefix they declare needs no fix", () => {
   const files = [{ name: "a.ttl", text: "zz:a zz:b zz:c .\n" }]
   const plain = engine.call("analyse", { files }).files[0]
@@ -619,3 +648,34 @@ for (const [name, set] of Object.entries(SETS)) {
     }
   })
 }
+
+test("query: the sample's reasoning queries answer only with inferred triples", () => {
+  const files = WORKSPACE.map((f) => ({ name: f.path, text: f.text }))
+  const run = (query, reasoning) => engine.call("query", { files, query, reasoning })
+  assert.deepEqual(run("reasoning/04-certified-parts.rq", "off").rows, [])
+  assert.deepEqual(run("reasoning/04-certified-parts.rq", "default").rows.map((r) => r[0]), ["lab:catalog77", "lab:gearbox3", "lab:screw9"])
+  assert.deepEqual(run("reasoning/05-merged-names.rq", "off").rows, [])
+  const pairs = run("reasoning/05-merged-names.rq", "default").rows.map((r) => r.join(" = "))
+  for (const p of ["lab:catalog77 = lab:screw9", "hc:frank = hc:fritz", "hc:sensorA = hc:sensorC"]) assert.ok(pairs.includes(p), JSON.stringify(pairs))
+  assert.ok(run("reasoning/05-merged-names.rq", "complete").rows.length > pairs.length)
+})
+
+test("query: each sample reasoning query answers as its comment says, off, default and complete", () => {
+  const files = WORKSPACE.map((f) => ({ name: f.path, text: f.text }))
+  const run = (query, reasoning) => engine.call("query", { files, query, reasoning })
+  const rows = (q, r) => run(`reasoning/${q}`, r).rows.map((x) => x.join(" "))
+  assert.deepEqual(rows("06-organisations.rq", "off"), ["id:acme"])
+  assert.deepEqual(rows("06-organisations.rq", "default"), ["id:acme", "id:alice"])
+  assert.ok(rows("06-organisations.rq", "complete").some((r) => r.includes("part88")))
+  assert.deepEqual(rows("07-supplied-from.rq", "off"), [])
+  assert.deepEqual(rows("07-supplied-from.rq", "default"), ["lab:bavaria", "lab:germany", "lab:munich"])
+  assert.deepEqual(rows("08-parts-of-parts.rq", "off"), [])
+  assert.deepEqual(rows("08-parts-of-parts.rq", "default"), ["lab:catalog77", "lab:gearbox3", "lab:screw9"])
+  assert.deepEqual(rows("09-catalogue-entry.rq", "off"), [])
+  assert.deepEqual(rows("09-catalogue-entry.rq", "default"), ["lab:CertifiedPart", "lab:Thing2Ship"])
+  assert.deepEqual(rows("10-reports-to.rq", "off"), [])
+  assert.deepEqual(rows("10-reports-to.rq", "default"), ["hc:dana hc:erin", "hc:erin hc:dana"])
+  for (const [r, want] of [["off", false], ["default", false], ["complete", true]]) assert.equal(run("reasoning/11-one-account.rq", r).boolean, want, r)
+  const count = (r) => Number(rows("12-how-much-added.rq", r)[0].match(/\d+/)[0])
+  assert.ok(count("off") < count("default") && count("default") < count("complete"))
+})

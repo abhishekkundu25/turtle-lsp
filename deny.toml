@@ -50,3 +50,5 @@ wildcards = "deny"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# TurbOWL is not on crates.io; it is pinned to a tag of its repository.
+allow-git = ["https://github.com/abhishekkundu25/turbowl"]

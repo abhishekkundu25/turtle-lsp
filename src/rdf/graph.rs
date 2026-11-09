@@ -12,6 +12,10 @@ use std::sync::{Arc, OnceLock};
 /// A term of the graph, numbered densely from 0.
 pub type Id = u32;
 
+/// A triple not from a parse ([`Graph::with_triples`]): subject,
+/// predicate, object.
+pub(crate) type NodeTriple = (Node, Iri, Node);
+
 /// A literal's lexical form, datatype, language tag and base direction.
 pub(crate) type LiteralKey<'a> = (&'a str, Iri, Option<Iri>, Option<Direction>);
 
@@ -220,11 +224,23 @@ impl<'a> Graph<'a> {
     /// another. Triple terms are compared by content. Triples with an
     /// undeclared prefix ([`Triple::unresolved`]) are left out.
     pub fn new(docs: &[&'a [Triple]]) -> Graph<'a> {
-        let total: usize = docs.iter().map(|d| d.len()).sum();
+        Graph::with_triples(docs, &[])
+    }
+
+    /// [`Graph::new`] with `more` triples that are not from a parse (a
+    /// reasoner's): their blank nodes are numbered as the graph numbers
+    /// them, so a number below the documents' end is a blank node of a
+    /// document and one past it a new node. They are document number
+    /// `docs.len()` in [`Graph::origin`].
+    pub(crate) fn with_triples(docs: &[&'a [Triple]], more: &'a [NodeTriple]) -> Graph<'a> {
+        let total: usize = docs.iter().map(|d| d.len()).sum::<usize>() + more.len();
         let mut g = Graph::empty(None, total, docs.len());
         for triples in docs {
             g.add_document::<false>(triples);
         }
+        let rows = more.iter().enumerate().map(|(i, (s, p, o))| (i, s, *p, o));
+        let max = g.add_triples::<false>(0, docs.len() as u32, rows);
+        g.blank_end = g.blank_end.max(max);
         let n = g.terms.len();
         g.by_s = Rows::build(n, g.triples.iter().map(|t| t.s));
         g.by_o = Rows::build(n, g.triples.iter().map(|t| t.o));
@@ -275,25 +291,39 @@ impl<'a> Graph<'a> {
         let base = self.blank_end;
         let d = self.blank_base.len() as u32;
         self.blank_base.push(base);
+        let rows = triples
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.unresolved)
+            .map(|(i, t)| (i, &t.s, t.p, &t.o));
+        let max = self.add_triples::<OVERLAY>(base, d, rows);
+        self.blank_end = base.saturating_add(max);
+    }
+
+    /// Add `rows` (index, subject, predicate, object) as document `d`, its
+    /// blank nodes offset by `base`; one past the highest blank node number.
+    fn add_triples<const OVERLAY: bool>(
+        &mut self,
+        base: u32,
+        d: u32,
+        rows: impl Iterator<Item = (usize, &'a Node, Iri, &'a Node)>,
+    ) -> u32 {
         let mut max = 0u32;
-        for (i, t) in triples.iter().enumerate() {
-            if t.unresolved {
-                continue;
-            }
-            let s = self.add::<OVERLAY>(base, &t.s, &mut max);
-            let o = self.add::<OVERLAY>(base, &t.o, &mut max);
+        for (i, s, p, o) in rows {
+            let s = self.add::<OVERLAY>(base, s, &mut max);
+            let o = self.add::<OVERLAY>(base, o, &mut max);
             let at = self.tri_off + self.triples.len() as u32;
-            self.by_p.entry(t.p).or_default().push(at);
+            self.by_p.entry(p).or_default().push(at);
             if OVERLAY {
                 self.by_s.sparse.entry(s).or_default().push(at);
                 self.by_o.sparse.entry(o).or_default().push(at);
             }
-            self.triples.push(GTriple { s, p: t.p, o });
+            self.triples.push(GTriple { s, p, o });
             self.origin.push((d, i as u32));
             #[cfg(test)]
             INDEXED.with(|c| c.set(c.get() + 1));
         }
-        self.blank_end = base.saturating_add(max);
+        max
     }
 
     fn add<const OVERLAY: bool>(&mut self, base: u32, n: &'a Node, max: &mut u32) -> Id {
@@ -563,7 +593,10 @@ fn has_blank(n: &Node) -> bool {
     }
 }
 
-fn blank_max(n: &Node, max: &mut u32) {
+/// Raise `max` to one past the number of each blank node in `n`, inside a
+/// triple term too: a document's blank nodes are numbered below its
+/// maximum, and the next document's start there.
+pub(crate) fn blank_max(n: &Node, max: &mut u32) {
     match n {
         Node::Triple(t) => {
             blank_max(&t.0, max);

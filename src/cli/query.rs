@@ -26,7 +26,10 @@ const INLINE: &str = "-e";
 pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
     let cwd = files::current_dir()?;
     let root = files::find_root(a.root.as_deref(), &cwd)?;
-    let settings = files::settings(&root, &Value::Null);
+    let mut settings = files::settings(&root, &Value::Null);
+    if let Some(rules) = a.reasoning {
+        settings.query_reasoning = rules;
+    }
     let q = match &a.query {
         QuerySource::File(p) => {
             let path = files::real(&cwd.join(p));
@@ -78,6 +81,10 @@ pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
         Err(e) => return Err(e.to_string()),
     };
     let (text, code) = render(&answer, a.format, a.limit, &outcome.prefixes)?;
+    // On stderr, so stdout stays the results in every format.
+    if let Some(line) = outcome.inferred.sentence() {
+        eprintln!("{line}");
+    }
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => {}

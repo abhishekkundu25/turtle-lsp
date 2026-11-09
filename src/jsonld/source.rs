@@ -282,6 +282,12 @@ impl SourceIndex {
         &self.contexts[scope.context as usize]
     }
 
+    /// Every active context expansion read the document with, each once,
+    /// in text order.
+    pub(crate) fn contexts(&self) -> &[ActiveContext] {
+        &self.contexts
+    }
+
     /// The active context at `offset`: [`SourceIndex::scope_at`]'s.
     pub(crate) fn context_at(&self, offset: u32) -> Option<&ActiveContext> {
         self.scope_at(offset).map(|s| self.context(s))

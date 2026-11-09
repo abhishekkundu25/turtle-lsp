@@ -24,13 +24,13 @@ fn chain(n: usize) -> Analysis {
 }
 
 fn count(q: &str, max_buffered_rows: usize) -> Result<String, QueryError> {
-    let d = chain(200);
+    let d = Arc::new(chain(200));
     let prefixes = PrefixMap::from_iter([("ex".to_string(), EX.to_string())]);
     let limits = Limits {
         max_buffered_rows: Some(max_buffered_rows),
         ..Limits::default()
     };
-    match run(&[&d], q, None, &prefixes, &limits)? {
+    match run(&[&d], q, None, &prefixes, &limits, &Default::default())?.answer {
         Answer::Solutions(s) => Ok(format!("{:?}", s.rows)),
         other => panic!("not solutions: {other:?}"),
     }

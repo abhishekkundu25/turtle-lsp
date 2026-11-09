@@ -29,7 +29,7 @@
 //! (a document opened, edited, saved or closed, files changed on disk, the
 //! settings prefixes, a context fetched) returns [`Effects`], what the change
 //! means beyond itself: which open documents to diagnose again, whether
-//! knowledge outside any one document changed, whether SHACL is due, which
+//! knowledge outside any one document changed, whether SHACL and reasoning are due, which
 //! indexed files to parse again. The workspace decides that; the caller (the
 //! server) only acts on it.
 
@@ -132,8 +132,9 @@ pub(crate) struct Effects {
     /// a context): every open document is due again, whatever `dirty` says,
     /// and so is every closed file shown by workspace diagnostics.
     pub(crate) knowledge: bool,
-    /// The data SHACL validates changed: validate again.
-    pub(crate) shacl: bool,
+    /// The workspace's data changed: SHACL validates it again, and
+    /// reasoning runs over it again.
+    pub(crate) data: bool,
     /// Indexed files whose prefixes changed, to parse again (off the main
     /// loop if the caller can) with [`Workspace::prefix_jobs`].
     pub(crate) reparse: Vec<PathBuf>,
@@ -171,7 +172,7 @@ impl Effects {
             _ => Dirty::AllOpen,
         };
         self.knowledge |= other.knowledge;
-        self.shacl |= other.shacl;
+        self.data |= other.data;
         self.reparse.extend(other.reparse);
         self.on_disk.extend(other.on_disk);
         self.closed_files |= other.closed_files;
@@ -870,7 +871,7 @@ impl Workspace {
     pub(crate) fn set_settings_prefixes(&mut self, prefixes: PrefixMap) -> Effects {
         self.settings_prefixes = prefixes;
         Effects {
-            shacl: true,
+            data: true,
             reparse: self.prefixes_changed(None),
             ..Effects::knowledge()
         }
@@ -990,7 +991,7 @@ impl Workspace {
     pub(crate) fn context_fetched(&mut self, url: &str) -> Effects {
         if self.context_changed(url, true) {
             Effects {
-                shacl: true,
+                data: true,
                 ..Effects::knowledge()
             }
         } else {
@@ -1148,10 +1149,10 @@ impl Workspace {
 
     /// The open document `uri` was saved: a saved prefixes.ttl lists the
     /// indexed files it serves whose prefixes differ now, a saved context
-    /// file parses the indexed files that use it again, and SHACL is due.
+    /// file parses the indexed files that use it again, and SHACL and reasoning are due.
     pub(crate) fn save_doc(&mut self, uri: &str) -> Effects {
         let mut fx = Effects {
-            shacl: true,
+            data: true,
             ..Effects::default()
         };
         if is_prefix_uri(uri) {
@@ -1514,6 +1515,14 @@ impl Workspace {
 
     pub(crate) fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
         self.external_prefixes_as(uri, Syntax::detect(None, uri))
+    }
+
+    /// The project's prefixes where `uri` is, whatever its syntax: those a
+    /// Turtle document there may use undeclared. Reasoning names IRIs with
+    /// them in N-Triples, N-Quads and JSON-LD documents too, which parse
+    /// with none.
+    pub(crate) fn project_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
+        self.external_prefixes_as(uri, Syntax::Turtle)
     }
 
     fn external_prefixes_as(&mut self, uri: &str, syntax: Syntax) -> Arc<PrefixMap> {
@@ -2051,7 +2060,7 @@ impl Workspace {
         fx.reparse = stale;
         if !prefix_files.is_empty() || disk_changed {
             fx.add(Effects {
-                shacl: true,
+                data: true,
                 ..Effects::knowledge()
             });
         }
@@ -3609,10 +3618,10 @@ pub(crate) mod tests {
 
     // ---- effects ----
 
-    /// `Effects` with knowledge changed and SHACL due.
-    fn knowledge_and_shacl() -> Effects {
+    /// `Effects` with knowledge and data changed.
+    fn knowledge_and_data() -> Effects {
         Effects {
-            shacl: true,
+            data: true,
             ..Effects::knowledge()
         }
     }
@@ -3638,7 +3647,7 @@ pub(crate) mod tests {
         assert_eq!(
             ws.save_doc(&uri(&a)),
             Effects {
-                shacl: true,
+                data: true,
                 ..Effects::default()
             }
         );
@@ -3691,7 +3700,7 @@ pub(crate) mod tests {
             fx,
             Effects {
                 reparse: sorted(served),
-                ..knowledge_and_shacl()
+                ..knowledge_and_data()
             }
         );
     }
@@ -3750,7 +3759,7 @@ pub(crate) mod tests {
             fx,
             Effects {
                 reparse: sorted(turtle),
-                ..knowledge_and_shacl()
+                ..knowledge_and_data()
             }
         );
     }
@@ -3790,7 +3799,7 @@ pub(crate) mod tests {
             Effects {
                 reparse: vec![other],
                 on_disk: vec![data, pf],
-                ..knowledge_and_shacl()
+                ..knowledge_and_data()
             }
         );
     }
@@ -3807,7 +3816,7 @@ pub(crate) mod tests {
         ws.index_paths(below.iter().chain([&kept]).cloned().collect());
         std::fs::remove_dir_all(root.0.join("gone")).unwrap();
         let fx = ws.files_changed(&[(root.0.join("gone"), Change::Deleted)]);
-        assert_eq!(fx, knowledge_and_shacl());
+        assert_eq!(fx, knowledge_and_data());
         assert!(below.iter().all(|p| !ws.is_indexed(&uri(p))));
         assert!(ws.is_indexed(&uri(&kept)));
         // Nothing indexed below it: nothing changed.
@@ -3844,14 +3853,14 @@ pub(crate) mod tests {
         fx.add(Effects::one(b));
         assert_eq!(fx.dirty, Dirty::AllOpen);
         fx.add(Effects {
-            shacl: true,
+            data: true,
             ..Effects::default()
         });
         assert_eq!(
             fx,
             Effects {
                 dirty: Dirty::AllOpen,
-                shacl: true,
+                data: true,
                 reparse: vec![PathBuf::from("/w/c.ttl")],
                 ..Effects::default()
             }

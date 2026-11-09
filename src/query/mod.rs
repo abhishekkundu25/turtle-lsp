@@ -4,13 +4,21 @@
 //! [`run`] takes the documents (their analyses, as SHACL validation reads
 //! them), the query text with its base and the prefixes it may use without
 //! declaring them (prefixes.ttl and settings, as the editor gives a `.rq`
-//! file), and [`Limits`]. It returns an [`Answer`] or a [`QueryError`].
+//! file), [`Limits`] and the [`Inference`] to run with. It returns an
+//! [`Outcome`] (the [`Answer`], and what reasoning added, [`Inferred`]) or
+//! a [`QueryError`].
 //!
 //! The dataset:
 //!
 //! - the default graph is the union of every triple of every document,
 //!   named-graph triples included (TriG, N-Quads, JSON-LD), with blank nodes
 //!   kept apart per document ([`crate::rdf::Graph`]);
+//! - with inference on, plus every triple TurbOWL infers from those same
+//!   documents (the callers add the imports to them), their blank nodes
+//!   the documents' own ([`crate::reasoning::infer`]), and none when they
+//!   are more than [`Inference::max_triples`] ([`Inferred::TooMany`]); the
+//!   documents are then read by URI, as the reasoner reads them. Off,
+//!   nothing is reasoned and the documents are read in the order given;
 //! - there are no named graphs: `GRAPH` patterns and `FROM NAMED` match
 //!   nothing;
 //! - `FROM` is ignored (the default graph stays the union).
@@ -24,7 +32,11 @@
 //! reads the data (every quad it asks for), between results, and through the
 //! evaluator's cancellation token, which its joins ask every thousand rows
 //! they combine in memory (a patch of `spareval`, in vendor/spareval), so a
-//! query that runs away stops at the limit. UPDATE is not run.
+//! query that runs away stops at the limit. Reasoning stops partway through
+//! too: natively between TurbOWL's rounds ([`infer_watched`]), and on every
+//! platform as its inferred triples are read; the limits are checked again
+//! once reasoning ends and once the query graph is built, and a query
+//! stopped then is not evaluated. UPDATE is not run.
 //!
 //! The renderers are in [`render`].
 
@@ -33,7 +45,9 @@ pub mod render;
 use crate::analysis::Analysis;
 use crate::clock::Instant;
 use crate::rdf::dataset::{Index, STerm};
-use crate::rdf::graph::Graph;
+use crate::rdf::graph::{Graph, NodeTriple};
+use crate::reasoning::{Closure, Halt};
+use crate::settings::Reasoning;
 use crate::sparql::{Document, Level};
 use crate::syntax::{PrefixMap, Triple as DocTriple};
 use rustc_hash::FxHashSet;
@@ -188,23 +202,200 @@ pub struct Limits {
     pub max_buffered_rows: Option<usize>,
 }
 
-/// Runs `query` over the union of `docs`. `base` resolves relative IRIs;
-/// `prefixes` are the prefixes the query may use without declaring them.
+/// The inferred triples a query runs over: TurbOWL's, from the queried
+/// documents. The default is off.
+#[derive(Clone, Copy, Default)]
+pub struct Inference {
+    /// `Off` adds none and builds nothing: the query is as without it.
+    pub rules: Reasoning,
+    /// No reasoning when the queried documents have more triples than this
+    /// (`turtle.reasoning.maxTriples`), and no inferred triples when
+    /// TurbOWL infers more than this.
+    pub max_triples: u64,
+}
+
+/// What a query added to its data by reasoning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inferred {
+    /// Reasoning was off.
+    None,
+    /// TurbOWL's inferred triples, `triples` of them, were in the default
+    /// graph; it reported `findings` (contradictions and the like), which do
+    /// not stop the query. `rules` is never `Off`.
+    Added {
+        rules: Reasoning,
+        triples: usize,
+        findings: usize,
+    },
+    /// No reasoning: the data had `triples` triples, over the `limit`.
+    Skipped { triples: u64, limit: u64 },
+    /// No inferred triples: TurbOWL inferred more than `limit`, and they
+    /// were left out.
+    TooMany { limit: u64 },
+}
+
+impl Inferred {
+    /// The note's text, as the command line and "▶ Run query" show it;
+    /// none when reasoning was off.
+    pub(crate) fn sentence(self) -> Option<String> {
+        let count = |n: u64, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+        match self {
+            Inferred::None => None,
+            Inferred::Added {
+                rules,
+                triples,
+                findings,
+            } => {
+                let mut line = format!(
+                    "Includes {} (TurbOWL, {} rules).",
+                    count(triples as u64, "inferred triple"),
+                    rules_name(rules)
+                );
+                if findings > 0 {
+                    line.push_str(&format!(
+                        " TurbOWL reported {}.",
+                        count(findings as u64, "finding")
+                    ));
+                }
+                Some(line)
+            }
+            Inferred::Skipped { triples, limit } => Some(format!(
+                "Inferred triples skipped: the workspace has {triples} triples, over the reasoning limit of {limit}."
+            )),
+            Inferred::TooMany { limit } => Some(format!(
+                "Inferred triples skipped: TurbOWL inferred more than {}, over the reasoning limit.",
+                count(limit, "triple")
+            )),
+        }
+    }
+}
+
+/// The name of a rule set, as `reasoning` and `turtle.reasoning.rules`
+/// write it.
+pub(crate) fn rules_name(r: Reasoning) -> &'static str {
+    match r {
+        Reasoning::Off => "off",
+        Reasoning::Default => "default",
+        Reasoning::Complete => "complete",
+    }
+}
+
+/// A query's answer, and what reasoning added to the data it ran over.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outcome {
+    pub answer: Answer,
+    pub inferred: Inferred,
+}
+
+/// Runs `query` over the union of `docs`, and with `inference` on, over
+/// what TurbOWL infers from them. `base` resolves relative
+/// IRIs; `prefixes` are the prefixes the query may use without declaring
+/// them.
 pub fn run(
-    docs: &[&Analysis],
+    docs: &[&Arc<Analysis>],
     query: &str,
     base: Option<&str>,
     prefixes: &PrefixMap,
     limits: &Limits,
-) -> Result<Answer, QueryError> {
+    inference: &Inference,
+) -> Result<Outcome, QueryError> {
     let watch = Arc::new(Watch::new(limits));
     let parsed = parse(query, base, prefixes)?;
     check_complexity(&parsed)?;
+    let mut docs = docs.to_vec();
+    if inference.rules != Reasoning::Off {
+        crate::reasoning::base_order(&mut docs);
+    }
+    let (more, inferred) = reason(&docs, inference, &watch)?;
     let triples: Vec<&[DocTriple]> = docs.iter().map(|a| a.parsed.triples.as_slice()).collect();
-    let graph = Graph::new(&triples);
+    let graph = Graph::with_triples(&triples, &more);
+    watch.check_now()?;
     let index = Index::new(&graph, None);
-    watch.check().map_err(QueryError::from)?;
-    evaluate(&index, &parsed, &watch, limits)
+    watch.check_now()?;
+    let answer = evaluate(&index, &parsed, &watch, limits)?;
+    Ok(Outcome { answer, inferred })
+}
+
+/// The triples `inference` adds to `docs` (in base order), in the query
+/// graph's terms, and the note that says so. Off reads nothing. The watch stops the run
+/// partway through ([`infer_watched`]), and is checked before it and right
+/// after it.
+fn reason(
+    docs: &[&Arc<Analysis>],
+    inference: &Inference,
+    watch: &Watch,
+) -> Result<(Vec<NodeTriple>, Inferred), QueryError> {
+    match inference.rules {
+        Reasoning::Off => return Ok((Vec::new(), Inferred::None)),
+        Reasoning::Default | Reasoning::Complete => {}
+    }
+    let triples: u64 = docs.iter().map(|a| a.parsed.triples.len() as u64).sum();
+    if triples > inference.max_triples {
+        let limit = inference.max_triples;
+        return Ok((Vec::new(), Inferred::Skipped { triples, limit }));
+    }
+    watch.check_now()?;
+    let closure = infer_watched(inference, docs, watch);
+    #[cfg(test)]
+    WHILE_REASONING.with(|h| h.borrow_mut().take().map(|f| f()));
+    watch.check_now()?;
+    let closure = match closure {
+        Ok(c) => c,
+        Err(Halt::TooMany) => {
+            let limit = inference.max_triples;
+            return Ok((Vec::new(), Inferred::TooMany { limit }));
+        }
+        // Only the watch stops the run, and it has not stopped.
+        Err(Halt::Stopped) => return Err(Stop::Cancelled.into()),
+    };
+    let inferred = Inferred::Added {
+        rules: inference.rules,
+        triples: closure.triples.len(),
+        findings: closure.findings,
+    };
+    Ok((closure.triples, inferred))
+}
+
+/// [`crate::reasoning::infer`], stopped partway through when `watch` stops
+/// (its timeout or its cancel flag): as the inferred triples are read, and
+/// natively also during the run, by a thread beside it that reads the
+/// watch every few milliseconds and trips TurbOWL's cancel handle, which
+/// the run checks before each round. In the browser, which has no threads,
+/// TurbOWL's run itself is never stopped partway.
+fn infer_watched(
+    inference: &Inference,
+    docs: &[&Arc<Analysis>],
+    watch: &Watch,
+) -> Result<Closure, Halt> {
+    let cancel = turbowl::Cancel::new();
+    let stopped = || watch.check_now().is_err();
+    let infer = |cancel: &turbowl::Cancel| {
+        let (rules, max) = (inference.rules, inference.max_triples);
+        crate::reasoning::infer(rules, docs, max, cancel, &stopped)
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        infer(&cancel)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::scope(|s| {
+        let (done, ended) = std::sync::mpsc::channel::<()>();
+        let cancel_on_stop = cancel.clone();
+        s.spawn(move || {
+            // Ends at once when the run ends (the sender is dropped).
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                ended.recv_timeout(Duration::from_millis(5))
+            {
+                if watch.check_now().is_err() {
+                    cancel_on_stop.cancel();
+                    return;
+                }
+            }
+        });
+        let closure = infer(&cancel);
+        drop(done);
+        closure
+    })
 }
 
 /// Refuses a query whose planning would run for seconds before the first
@@ -499,6 +690,17 @@ impl Watch {
         Ok(())
     }
 
+    /// [`Watch::check`] with the clock read whatever the count of checks.
+    fn check_now(&self) -> Result<(), Stop> {
+        self.check()?;
+        if let Some(limit) = self.timeout
+            && Instant::now().saturating_duration_since(self.start) >= limit
+        {
+            return self.stop(Stop::Timeout);
+        }
+        Ok(())
+    }
+
     fn stop(&self, s: Stop) -> Result<(), Stop> {
         Err(*self.stopped.get_or_init(|| s))
     }
@@ -575,6 +777,13 @@ impl<'a> QueryableDataset<'a> for Watched<'a> {
             .externalize_term(term)
             .unwrap_or_else(|e| match e {}))
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Run while a query reasons, between the watch's two checks.
+    static WHILE_REASONING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

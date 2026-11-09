@@ -22,13 +22,14 @@ pub(super) enum Work {
     Index,
     Imports,
     Shacl,
+    Reasoning,
 }
 
 pub(crate) struct Progress {
     /// The client declared `window.workDoneProgress`.
     supported: bool,
     /// The token of the progress shown, per kind of work ([`Work`] order).
-    shown: [Option<String>; 3],
+    shown: [Option<String>; 4],
     /// Progress whose create request is unanswered, by that request's id.
     pending: FxHashMap<RequestId, Pending>,
     /// Tokens whose `begin` went out and whose `end` has not.

@@ -252,3 +252,185 @@ test("a run shows cancellable progress and a Cancel lens; both stop it", async (
     await s.stop()
   }
 })
+
+test("with query.reasoning on, the results include the inferred rows and say so; off, they are as before", async () => {
+  const dir = tempDir("turtle-query-reasoning-")
+  const model = `@prefix ex: <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+ex:Pump rdfs:subClassOf ex:Device .
+ex:p1 a ex:Pump .
+`
+  const query = "PREFIX ex: <http://example.org/>\nSELECT ?s WHERE { ?s a ex:Device }\n"
+  fs.writeFileSync(path.join(dir, "model.ttl"), model)
+  fs.writeFileSync(path.join(dir, "devices.rq"), query)
+  const uri = uriOf(path.join(dir, "devices.rq"))
+  const s = await startServer({ cwd: dir, capabilities: showDocument, onRequest })
+  try {
+    const results = () => fs.readFileSync(path.join(s.cacheDir, "query-results", "devices.md"), "utf8")
+    s.open(uri, query, "sparql")
+    assert.match(await run(s, uri), /^0 rows/)
+    const off = results()
+    assert.match(off, /^# devices\.rq\n\nRan in \d+ ms over 1 file\.\n\nNo results\.\n$/)
+    assert.ok(!off.includes("inferred") && !off.includes("TurbOWL"), off)
+
+    for (const rules of ["default", "complete"]) {
+      s.notify("workspace/didChangeConfiguration", { settings: { turtle: { query: { reasoning: rules } } } })
+      assert.match(await run(s, uri), /^1 row in/, rules)
+      const md = results()
+      assert.match(md, new RegExp(`^# devices\\.rq\\n\\nRan in \\d+ ms over 1 file\\.\\n\\nIncludes \\d+ inferred triples? \\(TurbOWL, ${rules} rules\\)\\.\\n\\n1 row\\n`), md)
+      assert.ok(md.includes("| `ex:p1` |"), md)
+      assert.ok(!md.includes("findings"), md)
+    }
+
+    s.notify("workspace/didChangeConfiguration", { settings: { turtle: { query: { reasoning: "default" }, reasoning: { maxTriples: 1 } } } })
+    assert.match(await run(s, uri), /^0 rows/)
+    assert.ok(results().includes("\n\nInferred triples skipped: the workspace has 2 triples, over the reasoning limit of 1.\n\nNo results.\n"), results())
+
+    s.notify("workspace/didChangeConfiguration", { settings: { turtle: {} } })
+    assert.match(await run(s, uri), /^0 rows/)
+    assert.equal(results().replace(/Ran in \d+ ms/, ""), off.replace(/Ran in \d+ ms/, ""))
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A client that shows the results itself (the VS Code panel) declares
+// experimental["turtle/queryResults"]: the command answers a result object.
+const panel = { ...showDocument, experimental: { "turtle/queryResults": true } }
+const runWith = (s, uri, arg) =>
+  s.request("workspace/executeCommand", { command: "turtle.runQuery", arguments: [uri, arg] })
+
+test("a client with turtle/queryResults gets the result object, and no file or showDocument", async () => {
+  fs.writeFileSync(path.join(ws, "pairs.rq"), "PREFIX ex: <http://example.org/>\nCONSTRUCT { ?s ex:called ?n } WHERE { ?s ex:name ?n } ORDER BY ?n\n")
+  const s = await startServer({ cwd: ws, capabilities: panel, onRequest, initializationOptions: { query: { maxRows: 2 } } })
+  try {
+    s.open(at("names.rq"), QUERY, "sparql")
+    const r = await run(s, at("names.rq"))
+    assert.equal(typeof r, "object", JSON.stringify(r))
+    assert.equal(r.uri, at("names.rq"))
+    assert.equal(r.name, "names.rq")
+    assert.equal(typeof r.files, "number")
+    assert.ok(r.files >= 1, JSON.stringify(r))
+    assert.equal(typeof r.elapsedMs, "number")
+    assert.match(r.summary, /^3 rows in \d+ ms$/)
+    assert.equal(r.reasoning, "off")
+    assert.equal(r.prefixes.ex, "http://example.org/")
+    assert.deepEqual(r.answer, {
+      kind: "select",
+      head: { vars: ["name"] },
+      results: { bindings: [{ name: { type: "literal", value: "Alice" } }, { name: { type: "literal", value: "Bob" } }] },
+      omitted: 1,
+    })
+    assert.ok(!("inferred" in r), JSON.stringify(r))
+
+    const ask = await run(s, at("ask.rq"))
+    assert.deepEqual(ask.answer, { kind: "ask", head: {}, boolean: true })
+    assert.match(ask.summary, /^true in \d+ ms$/)
+
+    const c = await run(s, at("pairs.rq"))
+    assert.equal(c.answer.kind, "construct")
+    assert.equal(c.answer.triples.length, 2)
+    assert.equal(c.answer.omitted, 1)
+    assert.deepEqual(c.answer.triples[0].predicate, { type: "uri", value: "http://example.org/called" })
+
+    const err = await run(s, at("broken.rq"))
+    assert.equal(err.answer.kind, "error")
+    assert.equal(err.answer.line, 4)
+    assert.equal(err.answer.column, 1)
+    assert.equal(typeof err.answer.message, "string")
+    assert.ok(!err.answer.message.startsWith("syntax error at"), err.answer.message)
+    assert.match(err.summary, /^syntax error at 4:1: /)
+
+    const upd = await run(s, at("update.ru"))
+    assert.equal(upd.answer.kind, "error")
+    assert.match(upd.answer.message, /UPDATE is not supported/)
+    assert.ok(!("line" in upd.answer), JSON.stringify(upd.answer))
+
+    assert.equal(showDocuments(s).length, 0)
+    assert.deepEqual(s.messages, [])
+    assert.ok(!fs.existsSync(path.join(s.cacheDir, "query-results")))
+  } finally {
+    await s.stop()
+  }
+})
+
+test("a result object for a time limit, and for a cancelled run", async () => {
+  const s = await startServer({
+    cwd: ws,
+    capabilities: { ...panel, window: { ...panel.window, workDoneProgress: true } },
+    onRequest,
+    initializationOptions: { query: { timeoutSeconds: 1 } },
+  })
+  try {
+    const r = await run(s, at("slow.rq"))
+    assert.equal(r.answer.kind, "error")
+    assert.match(r.answer.message, /time limit \(1 s, query\.timeoutSeconds\)/)
+    assert.equal(r.summary, "stopped at the time limit (1 s, query.timeoutSeconds)")
+
+    s.notify("workspace/didChangeConfiguration", { settings: { turtle: { query: { timeoutSeconds: 20 } } } })
+    const first = run(s, at("slow.rq"))
+    await until(() => s.progress.some((p) => p.value.title === "Running slow.rq"), 5000, "the progress")
+    const second = run(s, at("slow.rq"))
+    assert.deepEqual(await first, { cancelled: true, uri: at("slow.rq") })
+    await new Promise((r) => setTimeout(r, 100))
+    assert.equal(await s.request("workspace/executeCommand", { command: "turtle.cancelQuery", arguments: [at("slow.rq")] }), null)
+    assert.deepEqual(await second, { cancelled: true, uri: at("slow.rq") })
+    assert.ok(!fs.existsSync(path.join(s.cacheDir, "query-results")))
+  } finally {
+    await s.stop()
+  }
+})
+
+test("a second argument overrides query.reasoning for one run; a bad one is InvalidParams", async () => {
+  const dir = tempDir("turtle-query-override-")
+  const model = `@prefix ex: <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+ex:Pump rdfs:subClassOf ex:Device .
+ex:p1 a ex:Pump .
+`
+  const query = "PREFIX ex: <http://example.org/>\nSELECT ?s WHERE { ?s a ex:Device }\n"
+  fs.writeFileSync(path.join(dir, "model.ttl"), model)
+  fs.writeFileSync(path.join(dir, "devices.rq"), query)
+  const uri = uriOf(path.join(dir, "devices.rq"))
+  const s = await startServer({ cwd: dir, capabilities: panel, onRequest })
+  try {
+    s.open(uri, query, "sparql")
+    const off = await run(s, uri)
+    assert.equal(off.reasoning, "off")
+    assert.equal(off.answer.results.bindings.length, 0)
+
+    const on = await runWith(s, uri, { reasoning: "default" })
+    assert.equal(on.reasoning, "default")
+    assert.deepEqual(on.answer.results.bindings, [{ s: { type: "uri", value: "http://example.org/p1" } }])
+    assert.equal(on.inferred.rules, "default")
+    assert.ok(on.inferred.triples >= 1, JSON.stringify(on.inferred))
+    assert.equal(on.inferred.findings, 0)
+    // Only that run: the setting is still off.
+    assert.equal((await run(s, uri)).reasoning, "off")
+
+    for (const bad of [{ reasoning: "on" }, { reasoning: 1 }, { rules: "default" }, "default"]) {
+      await assert.rejects(runWith(s, uri, bad), (e) => e.code === -32602, JSON.stringify(bad))
+    }
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("the reasoning argument applies to the Markdown document too", async () => {
+  const dir = tempDir("turtle-query-override-md-")
+  fs.writeFileSync(path.join(dir, "model.ttl"), "@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\nex:Pump rdfs:subClassOf ex:Device .\nex:p1 a ex:Pump .\n")
+  fs.writeFileSync(path.join(dir, "devices.rq"), "PREFIX ex: <http://example.org/>\nSELECT ?s WHERE { ?s a ex:Device }\n")
+  const uri = uriOf(path.join(dir, "devices.rq"))
+  const s = await startServer({ cwd: dir, capabilities: showDocument, onRequest })
+  try {
+    assert.match(await runWith(s, uri, { reasoning: "complete" }), /^1 row in/)
+    const md = fs.readFileSync(path.join(s.cacheDir, "query-results", "devices.md"), "utf8")
+    assert.ok(md.includes("(TurbOWL, complete rules)"), md)
+    assert.equal(showDocuments(s).length, 1)
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

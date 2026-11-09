@@ -102,6 +102,12 @@ impl Shacl {
         Ok(())
     }
 
+    /// The latest job's generation.
+    #[cfg(test)]
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// `o` is the outcome of the latest job, not of a superseded one.
     pub(super) fn is_current(&self, o: &shacl_validate::Outcome) -> bool {
         o.generation == self.generation
@@ -167,10 +173,12 @@ fn shacl_stopped(job: &shacl_validate::Job) -> shacl_validate::ByUri {
         .collect()
 }
 
-/// Counts of a validation's results by severity, e.g. "2 errors, 1 warning
-/// in 2 files", or "No problems". Skip notices are not results.
-pub(super) fn violation_summary(by_uri: &shacl_validate::ByUri) -> String {
-    let is_result = |d: &&Diagnostic| !matches!(&d.code, Some(NumberOrString::String(c)) if c == shacl_validate::SKIPPED_CODE);
+/// Counts of a run's results by severity, e.g. "2 errors, 1 warning in 2
+/// files", or "No problems". Skip notices (code `skipped`) are not results.
+/// For SHACL validation and reasoning alike.
+pub(super) fn violation_summary(by_uri: &shacl_validate::ByUri, skipped: &str) -> String {
+    let is_result =
+        |d: &&Diagnostic| !matches!(&d.code, Some(NumberOrString::String(c)) if c == skipped);
     let (mut errors, mut warnings, mut info, mut files) = (0, 0, 0, 0);
     for diags in by_uri.values() {
         let mut any = false;
@@ -221,11 +229,20 @@ mod tests {
             ..Default::default()
         };
         let mut by = shacl_validate::ByUri::default();
-        assert_eq!(violation_summary(&by), "No problems");
+        assert_eq!(
+            violation_summary(&by, shacl_validate::SKIPPED_CODE),
+            "No problems"
+        );
         by.insert("a".into(), vec![d("shacl-skipped", S::INFORMATION)]);
-        assert_eq!(violation_summary(&by), "No problems");
+        assert_eq!(
+            violation_summary(&by, shacl_validate::SKIPPED_CODE),
+            "No problems"
+        );
         by.insert("b".into(), vec![d("shacl-violation", S::ERROR)]);
-        assert_eq!(violation_summary(&by), "1 error in 1 file");
+        assert_eq!(
+            violation_summary(&by, shacl_validate::SKIPPED_CODE),
+            "1 error in 1 file"
+        );
         by.insert(
             "c".into(),
             vec![
@@ -233,10 +250,13 @@ mod tests {
                 d("shacl-violation", S::WARNING),
             ],
         );
-        assert_eq!(violation_summary(&by), "2 errors, 1 warning in 2 files");
+        assert_eq!(
+            violation_summary(&by, shacl_validate::SKIPPED_CODE),
+            "2 errors, 1 warning in 2 files"
+        );
         by.insert("d".into(), vec![d("shacl-violation", S::INFORMATION)]);
         assert_eq!(
-            violation_summary(&by),
+            violation_summary(&by, shacl_validate::SKIPPED_CODE),
             "2 errors, 1 warning, 1 info in 3 files"
         );
     }
@@ -266,7 +286,7 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
         assert!(d[0].message.contains("stopped") && d[0].message.contains("time limit"));
-        assert!(violation_summary(&stopped) == "No problems");
+        assert!(violation_summary(&stopped, shacl_validate::SKIPPED_CODE) == "No problems");
         // Uncancelled it validates.
         assert!(shacl_validate::run(&job, &|| false).is_some());
     }

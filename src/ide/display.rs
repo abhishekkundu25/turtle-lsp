@@ -19,12 +19,18 @@ use lsp_types::{
 use std::sync::Arc;
 
 impl Session<'_> {
-    /// `textDocument/hover`.
+    /// `textDocument/hover`; on an RDF document's resource, with reasoning
+    /// on, what it infers of it, named with the document's prefixes and the
+    /// project's.
     pub(crate) fn hover(&mut self, uri: &str, pos: Position) -> Option<Hover> {
         let doc = self.doc(uri)?;
+        let reasoning = match (self.reasoning(), &doc) {
+            (Some(shared), Doc::Rdf(a)) => Some((shared, self.ws.project_prefixes_for(&a.uri))),
+            _ => None,
+        };
         let k = self.ws.knowledge();
         match doc {
-            Doc::Rdf(a) => hover::hover(&a, k, self.enc, pos),
+            Doc::Rdf(a) => hover::hover_reasoned(&a, k, self.enc, pos, reasoning),
             Doc::Sparql(q) => sparql_features::hover(&q, k, self.enc, pos),
         }
     }
@@ -242,6 +248,245 @@ mod tests {
             s.hover("file:///nowhere.ttl", Position::new(0, 0))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn hover_on_a_resource_adds_its_inferred_types_with_their_proofs() {
+        let dir = Dir::new("hover-inferred");
+        let ttl = format!(
+            "{PREFIXES}ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog ; rdfs:label \"Rex\" .\n"
+        );
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
+        let settings = Settings::default();
+        let pos = at(&ttl, "ex:rex", 4);
+        let today = markdown(
+            &Session::new(&mut ws, Encoding::Utf16, &settings, false)
+                .hover(&uris[0], pos)
+                .unwrap(),
+        )
+        .to_string();
+        assert!(!today.contains("Inferred"), "{today}");
+
+        let shared = Arc::new(crate::reasoning::Shared::new(
+            crate::server::worker::Spawn::Thread,
+        ));
+        let hover = |ws: &mut Workspace| hover_at(ws, &settings, &shared, &uris[0], pos);
+        // No run has finished: today's hover.
+        assert_eq!(hover(&mut ws), today);
+
+        let docs = vec![(
+            crate::knowledge::Source::Open,
+            ws.analysis(&uris[0]).unwrap(),
+        )];
+        crate::reasoning::run_inline(
+            &shared,
+            &crate::reasoning::Job {
+                generation: 1,
+                docs,
+                rules: crate::settings::Reasoning::Default,
+                max_triples: 1000,
+                enc: Encoding::Utf16,
+                related: true,
+                findings: false,
+                project: Default::default(),
+            },
+        );
+        shared.show(1);
+        let md = hover(&mut ws);
+        let link = |line: u32| format!("[data.ttl:{line}]({}#L{line})", uris[0]);
+        assert_eq!(
+            md,
+            format!(
+                "{today}\n\n**Inferred**\n\n\
+                 - **ex:Animal** · _cax-sco_\n  \
+                 - `ex:Dog rdfs:subClassOf ex:Animal` {}\n  \
+                 - `ex:rex a ex:Dog` {}",
+                link(3),
+                link(4)
+            )
+        );
+        // The asserted type is not listed again; a class has nothing inferred.
+        assert!(!md.contains("**ex:Dog**"), "{md}");
+        let class = hover_at(
+            &mut ws,
+            &settings,
+            &shared,
+            &uris[0],
+            at(&ttl, "ex:Animal", 4),
+        );
+        assert!(!class.contains("Inferred"), "{class}");
+    }
+
+    /// A type no triple of a document gives (an axiom of the rules) is
+    /// named on one line, without its proof.
+    #[test]
+    fn hover_folds_the_types_of_the_built_in_vocabulary_into_one_line() {
+        let dir = Dir::new("hover-built-in");
+        let ttl = format!(
+            "{PREFIXES}@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\
+             ex:Dog rdfs:subClassOf ex:Animal .\nex:rex a ex:Dog ;\n  ex:age \"3\"^^xsd:integer .\n"
+        );
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
+        let settings = Settings::default();
+        let shared = Arc::new(crate::reasoning::Shared::new(
+            crate::server::worker::Spawn::Thread,
+        ));
+        let docs = vec![(
+            crate::knowledge::Source::Open,
+            ws.analysis(&uris[0]).unwrap(),
+        )];
+        crate::reasoning::run_inline(
+            &shared,
+            &crate::reasoning::Job {
+                generation: 1,
+                docs,
+                rules: crate::settings::Reasoning::Complete,
+                max_triples: 1000,
+                enc: Encoding::Utf16,
+                related: true,
+                findings: false,
+                project: Default::default(),
+            },
+        );
+        shared.show(1);
+        let integer = hover_at(
+            &mut ws,
+            &settings,
+            &shared,
+            &uris[0],
+            at(&ttl, "xsd:integer", 5),
+        );
+        let section = &integer[integer.find("\n\n**Inferred**").expect(&integer)..];
+        assert_eq!(
+            section,
+            "\n\n**Inferred**\n\n- _From the built-in vocabulary:_ rdfs:Datatype"
+        );
+        let rex = hover_at(&mut ws, &settings, &shared, &uris[0], at(&ttl, "ex:rex", 4));
+        assert!(rex.contains("- **ex:Animal** · _cax-sco_\n"), "{rex}");
+        assert!(rex.contains("`ex:rex a ex:Dog`"), "{rex}");
+    }
+
+    /// In every RDF syntax, the proofs under an instance of `ex:C`
+    /// (`ex:C ⊑ ex:B ⊑ ex:A`, axioms in another file) name IRIs with the
+    /// document's prefixes, else the project's, else `<iri>`; the closest
+    /// type comes first; and no base triple is written twice.
+    #[test]
+    fn hover_names_inferred_types_short_closest_first_and_each_step_once_in_every_syntax() {
+        const NT_TYPE: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>";
+        let nt = format!("<http://example.org/x> {NT_TYPE} <http://example.org/C> .\n");
+        let nq = format!(
+            "<http://example.org/x> {NT_TYPE} <http://example.org/C> <http://example.org/g> .\n"
+        );
+        let jsonld = "{\n  \"@context\": { \"ex\": \"http://example.org/\" },\n  \
+                      \"@id\": \"ex:x\",\n  \"@type\": \"ex:C\"\n}\n";
+        // (file, text, the instance's local name, has a prefix for ex:, a
+        // prefixes.ttl next to it).
+        let cases: [(&str, &str, &str, bool, bool); 6] = [
+            (
+                "data.ttl",
+                "@prefix ex: <http://example.org/> .\nex:x a ex:C .\n",
+                "x a ex:C",
+                true,
+                false,
+            ),
+            (
+                "data.trig",
+                "PREFIX ex: <http://example.org/>\nex:g {\n  ex:x a ex:C .\n}\n",
+                "x a ex:C",
+                true,
+                false,
+            ),
+            ("data.nt", &nt, "x> <", false, false),
+            ("data.nq", &nq, "x> <", false, false),
+            ("data.jsonld", jsonld, "x\",", true, false),
+            ("data.nt", &nt, "x> <", true, true),
+        ];
+        let onto = format!("{PREFIXES}ex:C rdfs:subClassOf ex:B .\nex:B rdfs:subClassOf ex:A .\n");
+        for (file, text, needle, prefixed, prefix_file) in cases {
+            let dir = Dir::new(&format!(
+                "syntaxes-{}-{prefix_file}",
+                file.replace('.', "-")
+            ));
+            let mut docs = vec![(file, text), ("onto.ttl", onto.as_str())];
+            if prefix_file {
+                docs.push(("prefixes.ttl", "@prefix ex: <http://example.org/> .\n"));
+            }
+            let (mut ws, uris) = workspace(&dir, &docs);
+            let shared = Arc::new(crate::reasoning::Shared::new(
+                crate::server::worker::Spawn::Thread,
+            ));
+            let docs = ws
+                .knowledge()
+                .docs()
+                .map(|(_, s, a)| (s, a.clone()))
+                .collect();
+            crate::reasoning::run_inline(
+                &shared,
+                &crate::reasoning::Job {
+                    generation: 1,
+                    docs,
+                    rules: crate::settings::Reasoning::Default,
+                    max_triples: 1000,
+                    enc: Encoding::Utf16,
+                    related: true,
+                    findings: false,
+                    project: Default::default(),
+                },
+            );
+            shared.show(1);
+            let settings = Settings::default();
+            let md = hover_at(&mut ws, &settings, &shared, &uris[0], at(text, needle, 0));
+            let section = &md[md
+                .find("\n\n**Inferred**")
+                .unwrap_or_else(|| panic!("{file}: {md}"))..];
+            let (b, a, c_b) = if prefixed {
+                ("**ex:B**", "**ex:A**", "`ex:C rdfs:subClassOf ex:B`")
+            } else {
+                (
+                    "**<http://example.org/B>**",
+                    "**<http://example.org/A>**",
+                    "`<http://example.org/C> rdfs:subClassOf <http://example.org/B>`",
+                )
+            };
+            if prefixed {
+                assert!(!section.contains("<http"), "{file}: {section}");
+            }
+            // The closest type first.
+            let (at_b, at_a) = (section.find(b), section.find(a));
+            assert!(
+                at_b.is_some() && at_a.is_some() && at_b < at_a,
+                "{file}: {section}"
+            );
+            // Written once with its link; a later proof refers to it.
+            assert_eq!(
+                section.matches(&format!("{c_b} [")).count(),
+                1,
+                "{file}: {section}"
+            );
+            // Each base triple once: its link, and its text with it.
+            let links: Vec<&str> = section
+                .split("](")
+                .skip(1)
+                .map(|s| &s[..s.find(')').unwrap()])
+                .collect();
+            let mut unique = links.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(links.len(), 3, "{file}: {section}");
+            assert_eq!(unique.len(), 3, "{file}: {section}");
+            assert!(section.contains(" (above)"), "{file}: {section}");
+        }
+    }
+
+    fn hover_at(
+        ws: &mut Workspace,
+        settings: &Settings,
+        shared: &Arc<crate::reasoning::Shared>,
+        uri: &str,
+        pos: Position,
+    ) -> String {
+        let mut s = Session::new(ws, Encoding::Utf16, settings, false).with_reasoning(Some(shared));
+        markdown(&s.hover(uri, pos).unwrap()).to_string()
     }
 
     #[test]

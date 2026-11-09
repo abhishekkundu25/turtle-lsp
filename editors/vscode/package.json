@@ -62,7 +62,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, turtle.query.*, turtle.shacl.maxTriples and turtle.diagnostics.workspace, and network imports are off: nothing is fetched unless you run the quick fix that fetches one unresolved import. A server inside the workspace is never run.",
+      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, the turtle.query limits (timeoutSeconds, maxRows, maxBufferedRows), turtle.shacl.maxTriples, turtle.reasoning.maxTriples and turtle.diagnostics.workspace, and network imports are off: nothing is fetched unless you run the quick fix that fetches one unresolved import. A server inside the workspace is never run.",
       "restrictedConfigurations": [
         "turtle.server.path",
         "turtle.imports.network",
@@ -70,6 +70,7 @@
         "turtle.query.maxRows",
         "turtle.query.maxBufferedRows",
         "turtle.shacl.maxTriples",
+        "turtle.reasoning.maxTriples",
         "turtle.diagnostics.workspace"
       ]
     },
@@ -234,6 +235,35 @@
           "markdownDescription": "Also validate about a second after you stop typing, on the unsaved text. When off, validation runs on save only.",
           "scope": "resource"
         },
+        "turtle.reasoning.rules": {
+          "type": "string",
+          "enum": [
+            "off",
+            "default",
+            "complete"
+          ],
+          "enumDescriptions": [
+            "No reasoning.",
+            "TurbOWL's default OWL 2 RL rules: classes, properties, `owl:sameAs`, property chains and the consistency checks.",
+            "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
+          ],
+          "default": "off",
+          "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `turtle.reasoning.diagnostics`.",
+          "scope": "resource"
+        },
+        "turtle.reasoning.maxTriples": {
+          "type": "integer",
+          "default": 2000000,
+          "minimum": 0,
+          "markdownDescription": "The most triples reasoning reads: the workspace's and its loaded imports'. Past it, reasoning is skipped, with a note.",
+          "scope": "resource"
+        },
+        "turtle.reasoning.diagnostics": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show TurbOWL's findings (contradictions, ill-typed literals) as diagnostics, each with its proof. Off by default: a project's SHACL shapes often check the same rules, and hover shows the inferred types either way.",
+          "scope": "resource"
+        },
         "turtle.lint.undescribedTerms": {
           "type": "boolean",
           "default": true,
@@ -317,6 +347,22 @@
           "markdownDescription": "Show at most this many rows (or triples) of a query's results; the total is still counted. `0` for no limit.",
           "scope": "window"
         },
+        "turtle.query.reasoning": {
+          "type": "string",
+          "enum": [
+            "off",
+            "default",
+            "complete"
+          ],
+          "enumDescriptions": [
+            "Only the written triples, as without reasoning.",
+            "Also the triples TurbOWL infers with its default OWL 2 RL rules.",
+            "Also the triples TurbOWL infers with every W3C OWL 2 RL rule. Slower."
+          ],
+          "default": "off",
+          "markdownDescription": "Run queries with **▶ Run query** over the triples TurbOWL infers from the workspace, imports' axioms included, as well as the written ones. The results say how many inferred triples they include. Apart from `turtle.reasoning.rules`; `turtle.reasoning.maxTriples` still holds.",
+          "scope": "window"
+        },
         "turtle.query.maxBufferedRows": {
           "type": "integer",
           "default": 10000000,
@@ -391,6 +437,15 @@
         }
       }
     },
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "turtle-lsp.json",
+          "**/turtle-lsp.json"
+        ],
+        "url": "./schemas/turtle-lsp.schema.json"
+      }
+    ],
     "semanticTokenScopes": [
       {
         "language": "turtle",
@@ -435,7 +490,7 @@
     ]
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap && esbuild src/graph-webview.js --bundle --format=iife --outfile=out/graph/graph.js --minify --sourcemap && esbuild src/web/extension.ts --bundle --platform=browser --format=cjs --external:vscode --outfile=out/web/extension.js --minify --sourcemap && esbuild src/web/worker.ts --bundle --platform=browser --format=iife --outfile=out/web/worker.js --minify --sourcemap && node -e \"const fs = require('fs'), wasm = '../../web/app/engine.wasm'; if (fs.existsSync(wasm)) fs.copyFileSync(wasm, 'out/web/engine.wasm')\"",
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js --minify --sourcemap && esbuild src/graph-webview.js --bundle --format=iife --outfile=out/graph/graph.js --minify --sourcemap && esbuild src/query-results-view.js --bundle --format=iife --outfile=out/query-results/query-results.js --minify --sourcemap && esbuild src/query-results.css --bundle --outfile=out/query-results/query-results.css --minify && esbuild src/web/extension.ts --bundle --platform=browser --format=cjs --external:vscode --outfile=out/web/extension.js --minify --sourcemap && esbuild src/web/worker.ts --bundle --platform=browser --format=iife --outfile=out/web/worker.js --minify --sourcemap && node -e \"const fs = require('fs'), wasm = '../../web/app/engine.wasm'; if (fs.existsSync(wasm)) fs.copyFileSync(wasm, 'out/web/engine.wasm')\"",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.mjs && node test/run.mjs",
     "test:web": "node test/web/run.mjs",

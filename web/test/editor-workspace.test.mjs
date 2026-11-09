@@ -7,6 +7,7 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { chromium } from "playwright-core"
 import { listen } from "./static-server.mjs"
+import { WORKSPACE } from "../app/samples.js"
 
 let server, origin, browser
 before(async () => {
@@ -70,7 +71,7 @@ test("the workspace is kept as one record per file, each with a revision, and th
     const { page, errors } = await open(ctx)
     await saved(page)
     const kept = await records(page)
-    assert.equal(kept.files.length, 11)
+    assert.equal(kept.files.length, WORKSPACE.length)
     assert.ok(kept.files.every((f) => f.rev === 1 && typeof f.text === "string"))
     assert.deepEqual(Object.keys(kept.layout).sort(), ["expanded", "focused", "folders", "groups", "roots", "settings"])
     assert.equal(kept.layout.groups[0].active, "start-here.ttl")

@@ -6,6 +6,7 @@
 
 use super::graph::{GTriple, Graph, Id, Term as GTerm};
 use crate::syntax::{Direction, Iri, Node};
+use oxrdf::{LiteralRef, NamedNodeRef};
 use spareval::{InternalQuad, QueryableDataset};
 use spargebra::term::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple};
 use std::convert::Infallible;
@@ -45,7 +46,7 @@ impl<'a> Index<'a> {
     pub(crate) fn term(&self, id: Id) -> Term {
         match self.g.term(id) {
             GTerm::Iri(i) => NamedNode::new_unchecked(i.as_str()).into(),
-            GTerm::Blank(b) => BlankNode::new_unchecked(format!("g{b}")).into(),
+            GTerm::Blank(b) => BlankNode::new_unchecked(blank_label(b)).into(),
             GTerm::Value(n) => node_term(n, self.g.term_blank_base(id)),
         }
     }
@@ -151,38 +152,21 @@ impl<'a> Index<'a> {
     }
 }
 
+/// The name of blank node number `n` of a graph ([`GTerm::Blank`]).
+pub(crate) fn blank_label(n: u32) -> String {
+    format!("g{n}")
+}
+
 /// A literal or triple term of the graph as an RDF term. `blank_base` is added
 /// to the numbers of the blank nodes inside a triple term, which then have the
 /// names the same nodes have outside ([`Index::term`]).
-fn node_term(n: &Node, blank_base: u32) -> Term {
+pub(crate) fn node_term(n: &Node, blank_base: u32) -> Term {
     match n {
         Node::Iri(i) => NamedNode::new_unchecked(i.as_str()).into(),
         Node::Blank(b) => {
-            BlankNode::new_unchecked(format!("g{}", blank_base.saturating_add(b.0))).into()
+            BlankNode::new_unchecked(blank_label(blank_base.saturating_add(b.0))).into()
         }
-        Node::Literal {
-            value,
-            datatype,
-            lang,
-            dir,
-        } => match (lang, dir) {
-            (Some(l), Some(d)) => Literal::new_directional_language_tagged_literal_unchecked(
-                value.as_ref(),
-                l.as_str(),
-                directions()[*d as usize]
-                    .direction()
-                    .expect("a directional literal"),
-            )
-            .into(),
-            (Some(l), None) => {
-                Literal::new_language_tagged_literal_unchecked(value.as_ref(), l.as_str()).into()
-            }
-            _ => Literal::new_typed_literal(
-                value.as_ref(),
-                NamedNode::new_unchecked(datatype.as_str()),
-            )
-            .into(),
-        },
+        Node::Literal { .. } => literal_ref(n).expect("a literal").into_owned().into(),
         Node::Triple(t) => {
             let s: NamedOrBlankNode = match node_term(&t.0, blank_base) {
                 Term::NamedNode(n) => n.into(),
@@ -196,6 +180,31 @@ fn node_term(n: &Node, blank_base: u32) -> Term {
             )))
         }
     }
+}
+
+/// A literal node as an RDF literal, borrowed from the node; `None` for
+/// another node. [`node_term`] owns the same literal.
+pub(crate) fn literal_ref(n: &Node) -> Option<LiteralRef<'_>> {
+    let Node::Literal {
+        value,
+        datatype,
+        lang,
+        dir,
+    } = n
+    else {
+        return None;
+    };
+    Some(match (lang, dir) {
+        (Some(l), Some(d)) => LiteralRef::new_directional_language_tagged_literal_unchecked(
+            value,
+            l.as_str(),
+            directions()[*d as usize]
+                .direction()
+                .expect("a directional literal"),
+        ),
+        (Some(l), None) => LiteralRef::new_language_tagged_literal_unchecked(value, l.as_str()),
+        _ => LiteralRef::new_typed_literal(value, NamedNodeRef::new_unchecked(datatype.as_str())),
+    })
 }
 
 /// A literal of each base direction, indexed by [`Direction`]. `oxrdf` does not

@@ -35,7 +35,7 @@
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
-//! and results), `refresh` (pulled-diagnostics result ids and refresh
+//! and results), `reasoning` (reasoning runs and their findings), `refresh` (pulled-diagnostics result ids and refresh
 //! requests), `layers` (the settings and their layers) and `index` (the
 //! workspace index as it arrives). They send to the client through
 //! `client::Client`, the connection's sender and request ids.
@@ -64,7 +64,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::PathBuf;
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,6 +71,7 @@ pub(crate) mod client;
 mod index;
 mod layers;
 pub(crate) mod progress;
+mod reasoning;
 mod refresh;
 mod shacl;
 mod timers;
@@ -143,6 +143,20 @@ const CHECK_INCREMENTAL: &str = "TURTLE_LSP_CHECK_INCREMENTAL";
 /// A SHACL run shows progress only once it has lasted this long.
 const SHACL_PROGRESS_DELAY: Duration = Duration::from_millis(200);
 
+/// Pause after the last edit before reasoning runs again.
+const REASONING_TYPING_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// A reasoning run shows progress only once it has lasted this long.
+const REASONING_PROGRESS_DELAY: Duration = Duration::from_millis(200);
+
+/// The environment variable that, set to `1`, makes a reasoning run show
+/// its progress at once, not after [`REASONING_PROGRESS_DELAY`]: a test of
+/// the progress then does not depend on how long a run takes. For tests.
+const REASONING_PROGRESS_NOW: &str = "TURTLE_LSP_REASONING_PROGRESS_NOW";
+
+/// The title of a reasoning run's progress.
+const REASONING_TITLE: &str = "TurbOWL: reasoning…";
+
 pub(crate) struct Server {
     client: Client,
     /// Every message read so far, queued as the reader reads them, so that
@@ -162,14 +176,23 @@ pub(crate) struct Server {
     layers: Layers,
     refresh: Refresh,
     /// What waits for a time to come: acting on a described-set change (see
-    /// `check_described`), validating after typing stops (`shacl.onType`;
-    /// each edit pushes it back), showing a long SHACL run's progress.
+    /// `check_described`), validating and reasoning after typing stops
+    /// (`shacl.onType`; each edit pushes it back), showing a long SHACL or
+    /// reasoning run's progress.
     timers: Timers,
     imports: crate::imports::Imports,
     /// JSON-LD contexts fetched in the background (with `imports.network`),
     /// by URL, once each has arrived or failed.
     contexts: Feed<String>,
     shacl: Shacl,
+    /// The reasoning state, which the reasoning thread writes and hovers
+    /// read; `None` with reasoning off (`turtle.reasoning.rules`). Created
+    /// and dropped as the setting turns reasoning on and off.
+    reasoning: Option<Arc<crate::reasoning::Shared>>,
+    /// The reasoning runs and their findings; idle with reasoning off.
+    reasoning_runs: reasoning::Runs,
+    /// A run shows its progress at once ([`REASONING_PROGRESS_NOW`]).
+    reasoning_progress_now: bool,
     progress: Progress,
     /// How the jobs run: on threads, or inline when embedded in a host
     /// without threads (see [`Embedded`]), where the host drives the timers.
@@ -258,10 +281,27 @@ impl Server {
             .pointer("/capabilities/window/workDoneProgress")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let show_document = raw
-            .pointer("/capabilities/window/showDocument/support")
+        let flag = |pointer: &str| raw.pointer(pointer).and_then(Value::as_bool) == Some(true);
+        // JSON Pointer writes the `/` of `turtle/queryResults` as `~1`.
+        let results_pointer = format!(
+            "/capabilities/experimental/{}",
+            run_query::RESULTS_CAPABILITY.replace('/', "~1")
+        );
+        let delivery = if flag(&results_pointer) {
+            run_query::Delivery::Object
+        } else if flag("/capabilities/window/showDocument/support") {
+            run_query::Delivery::Document
+        } else {
+            run_query::Delivery::Message
+        };
+        // The spec's `publishDiagnostics`, and for pull its `diagnostic` (3.18).
+        let related_information = ["publishDiagnostics", "diagnostic"].iter().any(|k| {
+            raw.pointer(&format!(
+                "/capabilities/textDocument/{k}/relatedInformation"
+            ))
             .and_then(Value::as_bool)
-            .unwrap_or(false);
+            .unwrap_or(false)
+        });
         let config_pull = params
             .capabilities
             .workspace
@@ -328,13 +368,17 @@ impl Server {
             index: Index::new(),
             watch_dynamic,
             resolve_edits,
+            // Before `layers` moves: `settings` borrows it.
+            reasoning: crate::reasoning::Shared::when_on(settings, spawn),
             layers,
-            queries: run_query::State::new(show_document, &display_refresh, spawn),
+            queries: run_query::State::new(delivery, &display_refresh, spawn),
             refresh: Refresh::new(pull, refresh_support, display_refresh),
             timers: Timers::default(),
             imports: crate::imports::Imports::with_spawn(spawn),
             contexts,
             shacl: Shacl::default(),
+            reasoning_runs: reasoning::Runs::new(related_information),
+            reasoning_progress_now: std::env::var(REASONING_PROGRESS_NOW).is_ok_and(|v| v == "1"),
             progress: Progress::new(work_done_progress),
             wsdiag,
             root_uris,
@@ -650,6 +694,14 @@ impl Server {
                     }
                     None
                 }
+                recv(self.reasoning_runs.rx()) -> got => {
+                    match self.reasoning_runs.take(got) {
+                        Fed::Got(o) => self.guarded("reasoning", |s| s.reasoning_outcome(o)),
+                        // The thread is gone.
+                        Fed::Gone => self.guarded("reasoning", |s| s.reasoning_gone()),
+                    }
+                    None
+                }
             };
             if let Some(ended) = self.step(first)? {
                 return Ok(ended);
@@ -677,6 +729,14 @@ impl Server {
         self.timers.clear(Timer::ShaclProgress);
         self.progress
             .end(&self.client, Work::Shacl, "Validation stopped".into());
+    }
+
+    /// The reasoning thread is gone, or could not start.
+    fn reasoning_gone(&mut self) {
+        self.reasoning_runs.gone();
+        self.timers.clear(Timer::ReasoningProgress);
+        self.progress
+            .end(&self.client, Work::Reasoning, "Reasoning stopped".into());
     }
 
     /// Before the first message: register file watchers, show indexing.
@@ -768,6 +828,11 @@ impl Server {
                 Timer::ShaclProgress => {
                     s.progress
                         .begin(&mut s.client, Work::Shacl, "Validating SHACL shapes");
+                }
+                Timer::ReasoningTyping => s.reason(),
+                Timer::ReasoningProgress => {
+                    s.progress
+                        .begin(&mut s.client, Work::Reasoning, REASONING_TITLE);
                 }
             });
         }
@@ -896,6 +961,7 @@ impl Server {
                         .open_doc_as(uri.clone(), doc.text, doc.version, kind);
                     self.wsdiag_opened(&uri);
                     self.after_edit(fx);
+                    self.reason_on_open_or_close();
                     self.workspace_changed_inline();
                 }
             }
@@ -914,6 +980,8 @@ impl Server {
                         self.timers
                             .set(Timer::ShaclTyping, Instant::now() + SHACL_TYPING_DEBOUNCE);
                     }
+                    // So do the reasoning findings.
+                    self.reason_after_typing();
                 }
             }
             DidSaveTextDocument::METHOD => {
@@ -933,6 +1001,7 @@ impl Server {
                         self.send_diagnostics(&uri, vec![], None);
                     }
                     self.spelling.remove(&uri);
+                    self.reason_on_open_or_close();
                     self.workspace_changed_inline();
                 }
             }
@@ -974,11 +1043,35 @@ impl Server {
 
     /// Embedded, the open documents are the whole workspace (there is no
     /// disk to index): opening or closing one changes the data SHACL
-    /// validates, so validate once the host pauses, as after typing.
+    /// validates and reasoning reads, so run both once the host pauses, as
+    /// after typing.
     fn workspace_changed_inline(&mut self) {
         if self.spawn == Spawn::Inline {
             self.timers
                 .set(Timer::ShaclTyping, Instant::now() + SHACL_TYPING_DEBOUNCE);
+            self.reason_after_typing();
+        }
+    }
+
+    /// Opening or closing a document can change the data reasoning reads
+    /// (unsaved text, a file outside the workspace) and the documents its
+    /// notes go on: reason again now. Embedded, once the host pauses
+    /// ([`Server::workspace_changed_inline`]).
+    fn reason_on_open_or_close(&mut self) {
+        if self.spawn == Spawn::Thread {
+            self.reason();
+        }
+    }
+
+    /// Reason again once typing pauses, with reasoning on. The run going on
+    /// reads the text before the change: its outcome is dropped.
+    fn reason_after_typing(&mut self) {
+        if self.reasoning.is_some() {
+            self.reasoning_runs.invalidate();
+            self.timers.set(
+                Timer::ReasoningTyping,
+                Instant::now() + REASONING_TYPING_DEBOUNCE,
+            );
         }
     }
 
@@ -1047,7 +1140,7 @@ impl Server {
             Ok(files) => {
                 if self.ws.add_reparsed(files) > 0 {
                     self.apply(Effects {
-                        shacl: true,
+                        data: true,
                         ..Effects::knowledge()
                     });
                 }
@@ -1061,6 +1154,7 @@ impl Server {
         let fx = self.ws.save_doc(uri);
         self.imports.retry();
         self.timers.clear(Timer::ShaclTyping);
+        self.timers.clear(Timer::ReasoningTyping);
         self.apply(fx);
     }
 
@@ -1090,9 +1184,10 @@ impl Server {
     fn imports_done(&mut self, done: crate::imports::Done) {
         if self.imports.apply(done, self.ws.knowledge_mut()) {
             self.knowledge_changed();
-            // Loaded ontologies are data for SHACL, and unresolved imports
-            // soften its results.
+            // Loaded ontologies are data for SHACL and reasoning, and
+            // unresolved imports soften SHACL's results.
             self.validate_shacl();
+            self.reason();
         }
         self.track_imports_progress();
     }
@@ -1138,9 +1233,15 @@ impl Server {
         let Some(change) = self.layers.relayer() else {
             return;
         };
-        // Any setting can change every document's diagnostics, and SHACL's.
+        if change.queries_only() {
+            // Queries read these when they run; no document depends on them.
+            self.layers.commit(change);
+            return;
+        }
+        // Any other setting can change every document's diagnostics, SHACL's and
+        // reasoning's.
         let mut fx = Effects {
-            shacl: true,
+            data: true,
             ..Effects::knowledge()
         };
         if change.prefixes() {
@@ -1158,6 +1259,7 @@ impl Server {
             self.contexts = use_network(&mut self.ws, network, self.spawn);
         }
         self.layers.commit(change);
+        self.reasoning_setting();
         self.wsdiag_setting();
         self.ws
             .set_incremental(incremental(self.layers.settings(), self.spawn));
@@ -1175,7 +1277,7 @@ impl Server {
         let Effects {
             dirty,
             knowledge,
-            shacl,
+            data,
             reparse,
             on_disk,
             closed_files,
@@ -1197,8 +1299,9 @@ impl Server {
         if knowledge || closed_files {
             self.wsdiag.invalidate_all();
         }
-        if shacl {
+        if data {
             self.validate_shacl();
+            self.reason();
         }
     }
 
@@ -1233,7 +1336,7 @@ impl Server {
         self.ws.merge_initial_index(files);
         self.index.set_merged();
         self.apply(Effects {
-            shacl: true,
+            data: true,
             ..Effects::knowledge()
         });
     }
@@ -1263,6 +1366,11 @@ impl Server {
             let inputs = DiagnosticInputs {
                 import_status: &status,
                 shacl: self.shacl.diagnostics().get(uri).map_or(&[], Vec::as_slice),
+                reasoning: self
+                    .reasoning_runs
+                    .diagnostics()
+                    .get(uri)
+                    .map_or(&[], Vec::as_slice),
                 indexed: self.index.merged(),
                 cached_import,
                 ..DiagnosticInputs::new(self.layers.settings())
@@ -1396,6 +1504,7 @@ impl Server {
             self.layers.settings(),
             self.resolve_edits,
         )
+        .with_reasoning(self.reasoning.as_ref())
     }
 
     /// The answer to `req`, its result as JSON text: None when it is
@@ -1672,10 +1781,108 @@ impl Server {
         }
         self.timers.clear(Timer::ShaclProgress);
         if self.progress.is_shown(Work::Shacl) {
-            let summary = shacl::violation_summary(&o.diagnostics);
+            let summary = shacl::violation_summary(&o.diagnostics, shacl_validate::SKIPPED_CODE);
             self.progress.end(&self.client, Work::Shacl, summary);
         }
         if self.shacl.set_results(o.diagnostics) {
+            self.knowledge_changed();
+        }
+    }
+
+    /// `turtle.reasoning.rules` changed: turning reasoning on creates its
+    /// state, turning it off drops the state, the thread and the findings.
+    /// A change of rules or size limit reruns it, as any setting does.
+    fn reasoning_setting(&mut self) {
+        let settings = self.layers.settings();
+        if self.reasoning.is_none() {
+            self.reasoning = crate::reasoning::Shared::when_on(settings, self.spawn);
+            return;
+        }
+        if settings.reasoning != crate::settings::Reasoning::Off {
+            return;
+        }
+        self.reasoning = None;
+        self.timers.clear(Timer::ReasoningTyping);
+        self.timers.clear(Timer::ReasoningProgress);
+        self.progress
+            .end(&self.client, Work::Reasoning, "Reasoning off".into());
+        if self.reasoning_runs.stop() {
+            self.knowledge_changed();
+        }
+    }
+
+    /// Start reasoning over the workspace in the background (once indexed,
+    /// with reasoning on); embedded, here and now.
+    fn reason(&mut self) {
+        let Some(shared) = self.reasoning.clone() else {
+            return;
+        };
+        if !self.index.merged() {
+            return;
+        }
+        let docs: Vec<_> = self
+            .ws
+            .knowledge()
+            .docs()
+            .map(|(_, s, a)| (s, a.clone()))
+            .collect();
+        let mut job = self
+            .reasoning_runs
+            .job(docs, self.layers.settings(), self.enc);
+        if job.findings {
+            // What the findings in a document without prefixes of its own
+            // are named with.
+            job.project = job
+                .docs
+                .iter()
+                .filter(|(s, a)| {
+                    *s != crate::knowledge::Source::External && !a.parsed.syntax.has_prefixes()
+                })
+                .map(|(_, a)| (a.uri.clone(), self.ws.project_prefixes_for(&a.uri)))
+                .collect();
+        }
+        if self.spawn == Spawn::Inline {
+            let outcome = crate::reasoning::run_inline(&shared, &job);
+            self.reasoning_outcome(outcome);
+            return;
+        }
+        // A superseded run counts as the same run going on.
+        if self.progress.supported()
+            && !self.progress.is_shown(Work::Reasoning)
+            && !self.timers.is_set(Timer::ReasoningProgress)
+        {
+            if self.reasoning_progress_now {
+                self.progress
+                    .begin(&mut self.client, Work::Reasoning, REASONING_TITLE);
+            } else {
+                self.timers.set(
+                    Timer::ReasoningProgress,
+                    Instant::now() + REASONING_PROGRESS_DELAY,
+                );
+            }
+        }
+        if let Err(e) = self.reasoning_runs.submit(job, &shared) {
+            self.client.warn(format!(
+                "turtle-lsp could not start its reasoning thread: {e}"
+            ));
+            self.reasoning_gone();
+        }
+    }
+
+    fn reasoning_outcome(&mut self, o: crate::reasoning::Outcome) {
+        if !self.reasoning_runs.is_current(&o) {
+            return;
+        }
+        // Hover reads this run's result now.
+        if let Some(shared) = &self.reasoning {
+            shared.show(o.generation);
+        }
+        self.timers.clear(Timer::ReasoningProgress);
+        if self.progress.is_shown(Work::Reasoning) {
+            let summary = reasoning::summary(&o.diagnostics);
+            self.progress.end(&self.client, Work::Reasoning, summary);
+        }
+        if self.reasoning_runs.set_results(o.diagnostics) {
             self.knowledge_changed();
         }
     }
@@ -1839,6 +2046,181 @@ mod tests {
             json!({"textDocument": {"uri": uri}}),
         );
         r.as_array().unwrap_or_else(|| panic!("{r}")).len()
+    }
+
+    /// Embedded, reasoning runs inline; turning it on creates its state,
+    /// turning it off drops the state and the findings.
+    #[test]
+    fn reasoning_turned_on_and_off_by_the_settings() {
+        const DISJOINT: &str = "@prefix ex: <http://example.org/> .\n\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            ex:Cat owl:disjointWith ex:Dog .\n\
+            ex:tom a ex:Cat , ex:Dog .\n";
+        let uri = "file:///w/a.ttl";
+        let found = |sent: &[Message]| {
+            published(sent, uri).map(|m| m.iter().any(|m| m.contains("which are disjoint")))
+        };
+        let rules = |r: &str| {
+            notify(
+                "workspace/didChangeConfiguration",
+                json!({"settings": {"turtle": {"reasoning": {"rules": r, "diagnostics": true}}}}),
+            )
+        };
+        let mut e = embedded();
+        let sent = open(&mut e, uri, DISJOINT);
+        assert_eq!(found(&sent), Some(false));
+        assert!(e.server.reasoning.is_none());
+        assert!(!e.server.timers.is_set(Timer::ReasoningTyping));
+
+        let sent = e.handle(vec![rules("default")]);
+        assert_eq!(found(&sent), Some(true));
+        // An edit reasons again once typing pauses.
+        e.handle(vec![notify(
+            "textDocument/didChange",
+            json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": DISJOINT}]}),
+        )]);
+        assert!(e.server.timers.is_set(Timer::ReasoningTyping));
+        // Another rule set reruns over the same state.
+        let shared = e.server.reasoning.clone().unwrap();
+        let sent = e.handle(vec![rules("complete")]);
+        assert!(Arc::ptr_eq(&shared, e.server.reasoning.as_ref().unwrap()));
+        assert_eq!(found(&sent), Some(true));
+
+        let sent = e.handle(vec![rules("off")]);
+        assert_eq!(found(&sent), Some(false));
+        assert!(e.server.reasoning.is_none());
+        assert!(!e.server.timers.is_set(Timer::ReasoningTyping));
+        assert!(e.server.reasoning_runs.diagnostics().is_empty());
+    }
+
+    /// The `query.*` settings are read only when a query runs: changing only
+    /// them stores them and reasons, validates and checks nothing again.
+    /// Any other change still does.
+    #[test]
+    fn a_change_to_query_settings_alone_reruns_nothing() {
+        const DATA: &str = "@prefix ex: <http://example.org/> .\n\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            @prefix sh: <http://www.w3.org/ns/shacl#> .\n\
+            ex:Cat owl:disjointWith ex:Dog .\n\
+            ex:tom a ex:Cat , ex:Dog .\n\
+            ex:S a sh:NodeShape ; sh:targetNode ex:tom ; sh:property [ sh:path ex:name ; sh:minCount 1 ] .\n";
+        let uri = "file:///w/a.ttl";
+        let configure = |e: &mut Embedded, rules: &str, query: Value| {
+            e.handle(vec![notify(
+                "workspace/didChangeConfiguration",
+                json!({"settings": {"turtle": {
+                    "reasoning": {"rules": rules, "diagnostics": true},
+                    "query": query,
+                }}}),
+            )])
+        };
+        let generations = |e: &Embedded| {
+            (
+                e.server.reasoning_runs.generation(),
+                e.server.shacl.generation(),
+            )
+        };
+        let mut e = embedded();
+        open(&mut e, uri, DATA);
+        let sent = configure(&mut e, "default", json!({"reasoning": "off"}));
+        assert!(published(&sent, uri).is_some());
+        let before = generations(&e);
+
+        let sent = configure(
+            &mut e,
+            "default",
+            json!({"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3}),
+        );
+        assert_eq!(published(&sent, uri), None, "nothing is checked again");
+        assert_eq!(generations(&e), before, "no reasoning run, no validation");
+        let s = e.server.layers.settings();
+        assert_eq!(s.query_reasoning, crate::settings::Reasoning::Default);
+        assert_eq!(s.query_max_rows, Some(5));
+        assert_eq!(s.query_timeout, Some(Duration::from_secs(3)));
+        assert!(e.server.dirty.is_empty());
+
+        let sent = configure(
+            &mut e,
+            "complete",
+            json!({"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3}),
+        );
+        assert!(published(&sent, uri).is_some());
+        let after = generations(&e);
+        assert!(
+            after.0 > before.0 && after.1 > before.1,
+            "{before:?} {after:?}"
+        );
+    }
+
+    /// A run over text since edited (on the thread, it was running when
+    /// the edit came) lands after the edit: neither its findings nor the
+    /// state it wrote are shown.
+    #[test]
+    fn a_run_that_lands_after_an_edit_shows_nothing() {
+        const AXIOMS: &str = "@prefix ex: <http://example.org/> .\n\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+            ex:Cat owl:disjointWith ex:Dog .\n\
+            ex:Kitten rdfs:subClassOf ex:Cat .\n";
+        let clean = format!("{AXIOMS}ex:tom a ex:Dog .\n");
+        let clash = format!("{AXIOMS}ex:tom a ex:Kitten , ex:Dog .\n");
+        let uri = "file:///w/a.ttl";
+        let change = |version: i32, text: &str| {
+            notify(
+                "textDocument/didChange",
+                json!({"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]}),
+            )
+        };
+        let hover = |e: &mut Embedded, id: i32| {
+            let r = ask(
+                e,
+                id,
+                "textDocument/hover",
+                json!({"textDocument": {"uri": uri}, "position": {"line": 5, "character": 4}}),
+            );
+            r["contents"]["value"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut e = embedded();
+        open(&mut e, uri, &clean);
+        e.handle(vec![notify(
+            "workspace/didChangeConfiguration",
+            json!({"settings": {"turtle": {"reasoning": {"rules": "default", "diagnostics": true}}}}),
+        )]);
+        assert!(e.server.reasoning_runs.diagnostics().is_empty());
+        // The run that starts once typing pauses after the first edit.
+        e.handle(vec![change(2, &clash)]);
+        let docs: Vec<_> = e
+            .server
+            .ws
+            .knowledge()
+            .docs()
+            .map(|(_, s, a)| (s, a.clone()))
+            .collect();
+        let old = e
+            .server
+            .reasoning_runs
+            .job(docs, e.server.layers.settings(), e.server.enc);
+        let shared = e.server.reasoning.clone().unwrap();
+        // The text changes back while it runs; then it lands.
+        e.handle(vec![change(3, &clean)]);
+        let landed = crate::reasoning::run_inline(&shared, &old);
+        assert!(!landed.diagnostics.is_empty(), "the old text has a finding");
+        e.server.reasoning_outcome(landed);
+        assert!(
+            e.server.reasoning_runs.diagnostics().is_empty(),
+            "{:?}",
+            e.server.reasoning_runs.diagnostics()
+        );
+        let md = hover(&mut e, 10);
+        assert!(!md.contains("ex:Cat"), "{md}");
+        // The run once typing pauses shows what the text says.
+        e.server.reason();
+        assert!(e.server.reasoning_runs.diagnostics().is_empty());
+        let md = hover(&mut e, 11);
+        assert!(!md.contains("Inferred"), "{md}");
     }
 
     #[test]
@@ -2260,7 +2642,7 @@ mod tests {
 
     /// The Run query commands take one document URI, and are advertised.
     #[test]
-    fn run_query_commands_take_one_uri() {
+    fn run_query_commands_take_a_uri_and_options() {
         let mut e = embedded();
         let run = |e: &mut Embedded, command: &str, arguments: Value| {
             let params = json!({ "command": command, "arguments": arguments });
@@ -2271,8 +2653,23 @@ mod tests {
             panic!("accepted")
         };
         assert_eq!(code as i32, ErrorCode::InvalidParams as i32);
-        assert_eq!(msg, "turtle.runQuery takes one document URI");
+        assert!(
+            msg.starts_with("turtle.runQuery takes a document URI, then"),
+            "{msg}"
+        );
+        let q = "file:///w/q.rq";
+        for bad in [
+            json!([q, { "reasoning": "on" }]),
+            json!([q, {}, {}]),
+            json!([q, "off"]),
+        ] {
+            let Err((code, _)) = run(&mut e, run_query::RUN_QUERY, bad.clone()) else {
+                panic!("accepted {bad}")
+            };
+            assert_eq!(code as i32, ErrorCode::InvalidParams as i32, "{bad}");
+        }
         assert!(run(&mut e, run_query::CANCEL_QUERY, json!([1])).is_err());
+        assert!(run(&mut e, run_query::CANCEL_QUERY, json!([q, {}])).is_err());
         let cancelled = run(&mut e, run_query::CANCEL_QUERY, json!(["file:///w/q.rq"]));
         assert!(matches!(cancelled, Ok(Some(n)) if n == "null"));
         let commands = capabilities(Encoding::Utf16, false).execute_command_provider;

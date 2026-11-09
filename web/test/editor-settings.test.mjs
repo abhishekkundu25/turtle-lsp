@@ -62,11 +62,12 @@ test("Ctrl+, opens Settings, the search box filters, Escape closes", async () =>
     const search = page.getByRole("searchbox", { name: "Search settings" })
     assert.equal(await search.evaluate((el) => el === document.activeElement), true, "Ctrl+, focuses the search box")
     const all = await settingsPage(page).locator(".stg-item:visible").count()
-    assert.equal(all, 15)
+    assert.equal(all, 19)
     await search.fill("shacl")
     const titles = await settingsPage(page).locator(".stg-item:visible .stg-title b").allTextContents()
-    assert.deepEqual(titles, ["Enabled", "Validate While Typing", "Max Triples"])
-    assert.equal(await settingsPage(page).locator(".stg-count").textContent(), "3 Settings Found")
+    // Reasoning's Diagnostics too: its description names SHACL shapes.
+    assert.deepEqual(titles, ["Enabled", "Validate While Typing", "Max Triples", "Diagnostics"])
+    assert.equal(await settingsPage(page).locator(".stg-count").textContent(), "4 Settings Found")
     assert.equal(await settingsPage(page).getByRole("heading", { name: "Editor" }).isVisible(), false)
     await search.fill("zzzz")
     await settingsPage(page).getByText("No settings found.").waitFor()
@@ -245,6 +246,41 @@ test("settings survive a reload; Reset and Reset All restore the defaults", asyn
     assert.equal(await control(page, "Minimap: Enabled").isChecked(), true)
     assert.equal(await page.evaluate(() => window.monaco.editor.getEditors()[0].getOption(window.monaco.editor.EditorOption.minimap).enabled), true)
     await labelsIs(page, "Labels: Opaque")
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
+test("reasoning is on with TurbOWL's default rules from the first visit: the editor is a showcase", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openSettings(page)
+    assert.equal(await control(page, "Reasoning: Rules").inputValue(), "default")
+    assert.equal(await control(page, "Reasoning: Diagnostics").isChecked(), false)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
+test("opening a file from the explorer or Quick Open closes Settings and shows the file", async () => {
+  const { page, errors, close } = await open()
+  const tree = (p) => page.locator(`[role=treeitem][data-path="${p}"]`)
+  const shows = (p) => page.locator(`.tab[aria-selected="true"][data-path="${p}"]`).waitFor({ timeout: 5000 })
+  try {
+    await openSettings(page)
+    await tree("ontology/core.ttl").click()
+    await settingsPage(page).waitFor({ state: "hidden", timeout: 5000 })
+    await shows("ontology/core.ttl")
+    assert.equal(await page.locator(".group .monaco-editor").first().isVisible(), true)
+    // Quick Open.
+    await openSettings(page)
+    await page.keyboard.press("ControlOrMeta+KeyP")
+    await page.keyboard.type("people.ttl")
+    await page.keyboard.press("Enter")
+    await settingsPage(page).waitFor({ state: "hidden", timeout: 5000 })
+    await shows("data/people.ttl")
     assert.deepEqual(errors, [])
   } finally {
     await close()

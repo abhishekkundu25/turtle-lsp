@@ -146,6 +146,18 @@ pub(crate) enum UnresolvedImports {
     Ignore,
 }
 
+/// Which rules reasoning runs (`reasoning.rules`), as TurbOWL's switches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reasoning {
+    /// No reasoning: no thread, no state, every answer as without it.
+    #[default]
+    Off,
+    /// TurbOWL's default switches.
+    Default,
+    /// Every W3C OWL 2 RL rule: slower, and its proofs can be slow.
+    Complete,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Prefixes available in every file (on top of any `prefixes.ttl`).
@@ -156,6 +168,12 @@ pub struct Settings {
     pub(crate) shacl_max_triples: u64,
     /// Validate about a second after typing stops, not only on save.
     pub(crate) shacl_on_type: bool,
+    pub(crate) reasoning: Reasoning,
+    /// Reasoning is skipped when the workspace has more triples than this.
+    pub(crate) reasoning_max_triples: u64,
+    /// TurbOWL's findings as diagnostics (`reasoning.diagnostics`). Off by
+    /// default: a project's SHACL shapes often check the same rules.
+    pub(crate) reasoning_diagnostics: bool,
     pub(crate) lint_undescribed_terms: bool,
     /// `lint.ignore`: diagnostic codes never reported. Unlike other keys, the
     /// layers add up.
@@ -184,6 +202,9 @@ pub struct Settings {
     /// memory (to sort, deduplicate, group or join them); `None` (0) for no
     /// limit.
     pub query_max_buffered_rows: Option<usize>,
+    /// The inferred triples a query runs over by default
+    /// (`query.reasoning`), apart from `reasoning.rules`.
+    pub(crate) query_reasoning: Reasoning,
 }
 
 /// The default `query.maxBufferedRows`: about 1 GB of ordinary rows (about 100
@@ -195,6 +216,8 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const QUERY_MAX_ROWS: usize = 1000;
 /// The default `shacl.maxTriples`.
 const SHACL_MAX_TRIPLES: u64 = 2_000_000;
+/// The default `reasoning.maxTriples`: SHACL's.
+const REASONING_MAX_TRIPLES: u64 = SHACL_MAX_TRIPLES;
 
 impl Default for Settings {
     fn default() -> Settings {
@@ -204,6 +227,9 @@ impl Default for Settings {
             shacl_enabled: true,
             shacl_max_triples: SHACL_MAX_TRIPLES,
             shacl_on_type: true,
+            reasoning: Reasoning::Off,
+            reasoning_max_triples: REASONING_MAX_TRIPLES,
+            reasoning_diagnostics: false,
             lint_undescribed_terms: true,
             lint_ignore: Vec::new(),
             lint_enable: Vec::new(),
@@ -216,6 +242,7 @@ impl Default for Settings {
             query_timeout: Some(QUERY_TIMEOUT),
             query_max_rows: Some(QUERY_MAX_ROWS),
             query_max_buffered_rows: Some(QUERY_MAX_BUFFERED_ROWS),
+            query_reasoning: Reasoning::Off,
         }
     }
 }
@@ -238,6 +265,18 @@ impl Settings {
             s.apply_layer(layer, v, &mut ignored);
         }
         (s, ignored)
+    }
+
+    /// `self` and `other` differ, if at all, only in the `query.*` settings.
+    /// Those are read only when a query runs, so such a change touches no
+    /// document's diagnostics, SHACL validation or reasoning.
+    pub(crate) fn differ_only_in_queries(&self, other: &Settings) -> bool {
+        let mut s = self.clone();
+        s.query_timeout = other.query_timeout;
+        s.query_max_rows = other.query_max_rows;
+        s.query_max_buffered_rows = other.query_max_buffered_rows;
+        s.query_reasoning = other.query_reasoning;
+        s == *other
     }
 
     /// Whether diagnostics with `code` are reported: not in `lint.ignore`
@@ -293,6 +332,25 @@ impl Settings {
                 }
             }
             ["shacl", "onType"] => set_bool(&mut self.shacl_on_type, v),
+            // The file may set the rules: its limit below still holds.
+            ["reasoning", "rules"] => {
+                if let Some(r) = v.as_str().and_then(parse_reasoning) {
+                    self.reasoning = r;
+                }
+            }
+            ["reasoning", "maxTriples"] => {
+                if let Some(n) = v.as_u64() {
+                    if file && n > REASONING_MAX_TRIPLES {
+                        ig.untrusted("reasoning.maxTriples");
+                    }
+                    self.reasoning_max_triples = if file {
+                        n.min(REASONING_MAX_TRIPLES)
+                    } else {
+                        n
+                    };
+                }
+            }
+            ["reasoning", "diagnostics"] => set_bool(&mut self.reasoning_diagnostics, v),
             ["lint", "undescribedTerms"] => set_bool(&mut self.lint_undescribed_terms, v),
             // The file may set these: they only hide or add warnings.
             ["lint", "ignore"] => add_codes(&mut self.lint_ignore, v),
@@ -320,6 +378,12 @@ impl Settings {
                 }
             }
             ["codeLens", "references"] => set_bool(&mut self.code_lens_references, v),
+            // The file may set it: `reasoning.maxTriples` still bounds it.
+            ["query", "reasoning"] => {
+                if let Some(r) = v.as_str().and_then(parse_reasoning) {
+                    self.query_reasoning = r;
+                }
+            }
             ["query", "timeoutSeconds"] => {
                 let Some(n) = v.as_f64() else { return };
                 let Some(d) = seconds(n) else {
@@ -381,6 +445,15 @@ fn parse_labels(s: &str) -> Option<InlayLabels> {
     }
 }
 
+fn parse_reasoning(s: &str) -> Option<Reasoning> {
+    match s {
+        "off" => Some(Reasoning::Off),
+        "default" => Some(Reasoning::Default),
+        "complete" => Some(Reasoning::Complete),
+        _ => None,
+    }
+}
+
 fn parse_unresolved(s: &str) -> Option<UnresolvedImports> {
     match s {
         "soften" => Some(UnresolvedImports::Soften),
@@ -417,6 +490,9 @@ mod tests {
         assert!(s.lint_undescribed_terms && !s.imports_network);
         assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(s.shacl_max_triples, 2_000_000);
+        assert_eq!(s.reasoning, Reasoning::Off);
+        assert_eq!(s.reasoning_max_triples, 2_000_000);
+        assert!(!s.reasoning_diagnostics);
         assert_eq!(s.format_line_width, 100);
         assert!(s.code_lens_references);
         assert!(!s.diagnostics_workspace);
@@ -450,6 +526,7 @@ mod tests {
             "prefixes": {"ex:": "http://example.org/", "bad": 3},
             "inlayHints": {"labels": "all"},
             "shacl": {"enabled": false, "maxTriples": 10, "onType": false},
+            "reasoning": {"rules": "complete", "maxTriples": 20, "diagnostics": true},
             "lint": {"undescribedTerms": false},
             "imports": {"network": true, "unresolved": "ignore"},
             "format": {"lineWidth": 80},
@@ -465,6 +542,9 @@ mod tests {
             "shacl.enabled": false,
             "shacl.maxTriples": 10,
             "shacl.onType": false,
+            "reasoning.rules": "complete",
+            "reasoning.maxTriples": 20,
+            "reasoning.diagnostics": true,
             "lint": {"undescribedTerms": false},
             "imports.network": true,
             "imports.unresolved": "ignore",
@@ -486,6 +566,10 @@ mod tests {
         assert_eq!(a.imports_unresolved, UnresolvedImports::Ignore);
         assert!(!a.code_lens_references);
         assert_eq!((a.shacl_max_triples, a.format_line_width), (10, 80));
+        assert_eq!(
+            (a.reasoning, a.reasoning_max_triples),
+            (Reasoning::Complete, 20)
+        );
         assert!(a.diagnostics_workspace && !a.parse_incremental);
         assert_eq!(a.query_timeout, Some(Duration::from_millis(2500)));
         assert_eq!((a.query_max_rows, a.query_max_buffered_rows), (None, None));
@@ -498,11 +582,44 @@ mod tests {
     }
 
     #[test]
+    fn query_reasoning_is_off_by_default_and_set_by_the_editor_or_the_file() {
+        assert_eq!(Settings::default().query_reasoning, Reasoning::Off);
+        for layer in [Layer::File, Layer::Client] {
+            for (v, want) in [
+                ("default", Reasoning::Default),
+                ("complete", Reasoning::Complete),
+                ("off", Reasoning::Off),
+            ] {
+                let nested = Settings::from_layers([(layer, &json!({"query": {"reasoning": v}}))]);
+                let dotted =
+                    Settings::from_layers([(layer, &json!({"turtle.query.reasoning": v}))]);
+                assert_eq!(
+                    (nested.query_reasoning, dotted.query_reasoning),
+                    (want, want)
+                );
+            }
+        }
+        // Apart from the editor's reasoning, and an unknown value is ignored.
+        let s = Settings::from_layers([
+            (Layer::File, &json!({"query.reasoning": "complete"})),
+            (
+                Layer::Client,
+                &json!({"query.reasoning": "rdfs", "reasoning.rules": "default"}),
+            ),
+        ]);
+        assert_eq!(
+            (s.query_reasoning, s.reasoning),
+            (Reasoning::Complete, Reasoning::Default)
+        );
+    }
+
+    #[test]
     fn later_layers_override_and_bad_values_are_ignored() {
         let init = json!({"prefixes": {"ex": "http://a/"}, "format": {"lineWidth": 120}});
         let config = json!({
             "inlayHints": {"labels": "sometimes"},
             "shacl": {"enabled": "no", "maxTriples": -1},
+            "reasoning": {"rules": "rdfs", "maxTriples": "many"},
             "imports": {"unresolved": "drop"},
             "format": {"lineWidth": 90},
             "query": {"timeoutSeconds": -1, "maxRows": 2.5, "maxBufferedRows": -1},
@@ -513,6 +630,8 @@ mod tests {
         assert_eq!(s.inlay_hint_labels, InlayLabels::Opaque);
         assert!(s.shacl_enabled);
         assert_eq!(s.shacl_max_triples, 2_000_000);
+        assert_eq!(s.reasoning, Reasoning::Off);
+        assert_eq!(s.reasoning_max_triples, 2_000_000);
         assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(s.query_timeout, Some(Duration::from_secs(30)));
         assert_eq!(s.query_max_rows, Some(1000));
@@ -648,9 +767,13 @@ mod tests {
         let file = json!({
             "query": {"timeoutSeconds": 0, "maxRows": 0, "maxBufferedRows": 99_999_999_999u64},
             "shacl": {"maxTriples": 50_000_000},
+            "reasoning": {"rules": "complete", "maxTriples": 50_000_000},
         });
         let (s, ig) = layered(Layer::File, file.clone());
         let d = Settings::default();
+        // The rules it may choose; the size limit stays the default.
+        assert_eq!(s.reasoning, Reasoning::Complete);
+        assert_eq!(s.reasoning_max_triples, d.reasoning_max_triples);
         assert_eq!(s.query_timeout, d.query_timeout);
         assert_eq!(s.query_max_rows, d.query_max_rows);
         assert_eq!(s.query_max_buffered_rows, d.query_max_buffered_rows);
@@ -663,6 +786,7 @@ mod tests {
                 "query.maxBufferedRows",
                 "query.maxRows",
                 "query.timeoutSeconds",
+                "reasoning.maxTriples",
                 "shacl.maxTriples"
             ]
         );
@@ -686,6 +810,7 @@ mod tests {
         assert_eq!((s.query_timeout, s.query_max_rows), (None, None));
         assert_eq!(s.query_max_buffered_rows, Some(99_999_999_999));
         assert_eq!(s.shacl_max_triples, 50_000_000);
+        assert_eq!(s.reasoning_max_triples, 50_000_000);
         assert!(ig.is_empty());
     }
 
@@ -694,6 +819,7 @@ mod tests {
         let file = json!({
             "query": {"timeoutSeconds": 5, "maxRows": 10, "maxBufferedRows": 100},
             "shacl": {"maxTriples": 1000},
+            "reasoning": {"maxTriples": 500},
         });
         let (s, ig) = layered(Layer::File, file.clone());
         assert_eq!(s.query_timeout, Some(Duration::from_secs(5)));
@@ -702,6 +828,7 @@ mod tests {
             (Some(10), Some(100))
         );
         assert_eq!(s.shacl_max_triples, 1000);
+        assert_eq!(s.reasoning_max_triples, 500);
         assert!(ig.is_empty());
         let editor = json!({"query": {"maxRows": 50_000}, "imports": {"network": true}});
         let s = Settings::from_layers([(Layer::File, &file), (Layer::Client, &editor)]);
