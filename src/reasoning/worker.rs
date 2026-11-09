@@ -573,6 +573,73 @@ mod tests {
         assert!(near.proof.is_ok(), "the direct superclass has no proof");
     }
 
+    /// A list of 32,000 members (`ex:K0` to `ex:K31999`) after `head`, with
+    /// `tail` after it: TurbOWL before 0.2.2 took 17 to 55 s and gigabytes
+    /// to build a proof through it, past any time limit.
+    fn long_list(head: &str, tail: &str) -> Job {
+        let members: Vec<String> = (0..32_000).map(|i| format!("ex:K{i}")).collect();
+        let text = format!(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             {head} ( {} ) .\n{tail}\n",
+            members.join(" ")
+        );
+        let mut job = job(1, vec![doc(Source::Open, "file:///w/list.ttl", &text)]);
+        job.max_triples = 1_000_000;
+        job
+    }
+
+    #[test]
+    fn timing_a_hover_through_a_long_list_keeps_its_limit() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        shown(
+            &shared,
+            &long_list("ex:U owl:unionOf", "ex:x a ex:K31999 ."),
+        );
+        let start = std::time::Instant::now();
+        let types = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(60)));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        let union = types
+            .iter()
+            .find(|t| t.class == format!("{EX}U"))
+            .expect("ex:U");
+        assert!(union.proof.is_ok());
+    }
+
+    #[test]
+    fn timing_a_finding_through_a_long_list_keeps_its_limit() {
+        let shared = Shared::new(crate::server::worker::Spawn::Thread);
+        let start = std::time::Instant::now();
+        let mut out = run_inline(
+            &shared,
+            &long_list(
+                "[] a owl:AllDisjointClasses ; owl:members",
+                "ex:x a ex:K0 , ex:K1 .",
+            ),
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        let found = out
+            .diagnostics
+            .remove("file:///w/list.ttl")
+            .unwrap_or_default();
+        // Within the limit now, with its proof.
+        assert!(
+            found.iter().any(|d| d
+                .related_information
+                .as_ref()
+                .is_some_and(|r| !r.is_empty())),
+            "{found:#?}"
+        );
+    }
+
     #[test]
     fn inline_every_hover_has_its_proofs_at_once() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Inline));

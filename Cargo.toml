@@ -48,7 +48,7 @@ oxrdf = { version = "0.3", features = ["rdf-12"] }
 # git source). Without its default features: turtle-lsp
 # parses, so its parsers and its thread pool stay out. `rdf-12` because oxrdf has it
 # here (through spargebra and oxrdfxml), and TurbOWL does not compile otherwise.
-turbowl = { version = "0.2.1", git = "https://github.com/abhishekkundu25/turbowl", tag = "v0.2.1", default-features = false, features = ["rdf-12"] }
+turbowl = { version = "0.2.2", git = "https://github.com/abhishekkundu25/turbowl", tag = "v0.2.2", default-features = false, features = ["rdf-12"] }
 url = "2.5.8"
 
 # Not in the browser build (web/engine): no C allocator, no network client.

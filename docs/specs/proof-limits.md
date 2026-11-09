@@ -1,6 +1,6 @@
 # Time limits on proof searches
 
-Status: in progress (the list case needs TurbOWL 0.2.2). Builds on [turbowl-reasoning.md](turbowl-reasoning.md)
+Status: done. Builds on [turbowl-reasoning.md](turbowl-reasoning.md)
 (hover proofs, reasoning findings) and needs TurbOWL 0.2.1
 (`Cancel::with_check`).
 
@@ -59,7 +59,8 @@ and in the browser.
 - **Hover**: the reasoning state's proof search uses `explain_cancellable` with one 2 s limit for all of the term's types, shared out: it proves the types in their sorted order, each with its own handle that trips at an equal share of the time left, so what a quick proof leaves goes to the next and a costly one stops only itself. Once the time is up the remaining types are marked as stopped without a search. A finished search, stopped or not, is kept as the answer for later hovers of that term in that result, until the next search: the result cannot change, and a search stopped at its limit would only stop there again.
 - **An inferred type's proof** has three states, not two: found, not found (a bug in the explainer, as today), and stopped at the time limit. Hover writes the third as "proof search stopped at its time limit" and sorts it with the types that have no proof.
 - **Findings**: one run's explanations share one 1 s limit through `explain_diagnostic_cancellable`, shared out in the same way among the findings the run may still explain. A finding whose share runs out, and every finding after the time is up, gets no proof, as the findings past the hundredth.
-- **Lists**: TurbOWL 0.2.1 builds a proof through an RDF list after its search's last cancel check, in time quadratic in the list's length (a 32,000-member list took 17 to 30 s and 7 to 8 GB). TurbOWL 0.2.2 checks the handle there; turtle-lsp pins it.
+- **Lists**: TurbOWL 0.2.1 builds a proof through an RDF list after its search's last cancel check, in time quadratic in the list's length (a 32,000-member list took 17 to 30 s and 7 to 8 GB). TurbOWL 0.2.2 checks the handle there and builds such a proof in linear time (0.09 to 0.12 s and at most 140 MB at 32,000 members); turtle-lsp pins it.
+- **Shares on a slow machine**: a term with hundreds of costly types can still use up its 2 s before reaching cheap types that sort late, since each stopped search takes a little time past its deadline to stop. Tests of that case run under the real limit.
 - **The limits** are constants in the reasoning module, beside the existing caps (findings explained per run, findings per document, types listed per hover). The function that searches takes the limit as a parameter, so tests can pass a short one.
 
 ## Testing Decisions
