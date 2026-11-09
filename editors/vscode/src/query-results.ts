@@ -47,7 +47,14 @@ export interface PanelProbe {
 const failure = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 /** A query document's URI as VS Code writes it, so that two spellings of one file (on Windows `file:///C:/` and `file:///c%3A/`) are one panel. */
-const same = (uri: string) => vscode.Uri.parse(uri).toString()
+const same = (uri: string) => {
+  try {
+    return vscode.Uri.parse(uri).toString()
+  } catch {
+    // Not a URI VS Code reads: the server answers for it as written.
+    return uri
+  }
+}
 
 /** The panels, by query document URI, and the executeCommand middleware that fills them. */
 export class QueryResults implements vscode.Disposable {

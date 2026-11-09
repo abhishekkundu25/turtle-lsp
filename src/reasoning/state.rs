@@ -18,8 +18,9 @@
 //! on another term says its proofs are still being worked out. A search
 //! itself stops at its time limit ([`Limits::hover`]), shared out among the
 //! term's types. Its answer, stopped or not, is kept for the later hovers
-//! of the term until the next search, and what it found is in the cache
-//! for the next.
+//! of the term until the next search. A finished search leaves what it
+//! found in the cache for the next; a stopped one leaves only the
+//! explainer's indexes.
 
 use super::base::{Base, Origin};
 use super::turtle::Items;
@@ -56,13 +57,19 @@ impl Default for Limits {
 }
 
 /// One limit for searches made one after another (a term's types, a run's
-/// findings): each gets an equal share of the time left, and what a quick
-/// one leaves goes to the next, so one costly search stops only itself.
+/// findings). A search may use the time left less [`Budget::RESERVE`] for
+/// each search still to come, and never less than an equal share of it:
+/// cheap searches after a costly one keep their time, a costly one can use
+/// what nothing else needs, and what a quick one leaves goes to the next.
 pub(crate) struct Budget {
     end: crate::clock::Instant,
 }
 
 impl Budget {
+    /// The time kept for each search still to come: enough for a cheap
+    /// proof once the explainer's indexes are built.
+    const RESERVE: Duration = Duration::from_millis(5);
+
     pub(crate) fn new(limit: Duration) -> Budget {
         Budget {
             end: crate::clock::Instant::now() + limit,
@@ -70,7 +77,7 @@ impl Budget {
     }
 
     /// A cancel handle for the next of `left` searches, which trips at its
-    /// share of the time left, by the server's clock (the page's in the
+    /// part of the time left, by the server's clock (the page's in the
     /// browser, which has no threads to trip it); `None` once the time is
     /// up.
     pub(crate) fn next(&self, left: usize) -> Option<turbowl::Cancel> {
@@ -79,7 +86,10 @@ impl Budget {
         if rest.is_zero() {
             return None;
         }
-        let deadline = now + rest / u32::try_from(left.max(1)).unwrap_or(u32::MAX);
+        let later = u32::try_from(left.max(1)).unwrap_or(u32::MAX);
+        let kept = Self::RESERVE.saturating_mul(later - 1);
+        let part = rest.saturating_sub(kept).max(rest / later);
+        let deadline = now + part;
         Some(turbowl::Cancel::with_check(move || {
             crate::clock::Instant::now() >= deadline
         }))

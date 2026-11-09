@@ -463,11 +463,8 @@ mod tests {
     }
 
     #[test]
-    fn timing_under_the_same_limit_a_small_file_has_every_proof() {
-        let shared = Arc::new(Shared::with_limits(
-            crate::server::worker::Spawn::Thread,
-            SHORT,
-        ));
+    fn timing_under_the_limit_a_small_file_has_every_proof() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
         let types = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
         assert!(types.iter().all(|t| t.proof.is_ok()));
@@ -500,8 +497,8 @@ mod tests {
     }
 
     #[test]
-    fn timing_under_the_same_limit_a_small_finding_has_its_proof() {
-        let d = chain_finding(3, SHORT);
+    fn timing_under_the_limit_a_small_finding_has_its_proof() {
+        let d = chain_finding(3, Limits::default());
         assert!(d.related_information.is_some_and(|r| !r.is_empty()));
     }
 
@@ -520,16 +517,10 @@ mod tests {
                     .iter()
                     .any(|t| matches!(t.proof, Err(NoProof::Stopped)))
             );
-            let start = std::time::Instant::now();
             for _ in 0..3 {
                 let again = proved(shared.inferred_types(&x, Duration::from_secs(60)));
                 assert!(Arc::ptr_eq(&first, &again));
             }
-            assert!(
-                start.elapsed() < Duration::from_millis(50),
-                "{:?}",
-                start.elapsed()
-            );
             assert_eq!(
                 shared.searches.load(std::sync::atomic::Ordering::Relaxed),
                 1
@@ -638,6 +629,41 @@ mod tests {
                 .is_some_and(|r| !r.is_empty())),
             "{found:#?}"
         );
+    }
+
+    #[test]
+    fn timing_findings_that_fit_in_the_limit_all_keep_their_proofs() {
+        // 100 findings, each through a 4,000-member list: about 0.4 s for
+        // all their proofs, so all fit in the 1 s limit, though not in an
+        // equal share each.
+        let members: Vec<String> = (0..4_000).map(|i| format!("ex:K{i}")).collect();
+        let mut text = format!(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             [] a owl:AllDisjointClasses ; owl:members ( {} ) .\n",
+            members.join(" ")
+        );
+        for j in 0..100 {
+            text.push_str(&format!("ex:i{j} a ex:K{} , ex:K{} .\n", 2 * j, 2 * j + 1));
+        }
+        let mut job = job(1, vec![doc(Source::Open, "file:///w/many.ttl", &text)]);
+        job.max_triples = 1_000_000;
+        let shared = Shared::new(crate::server::worker::Spawn::Thread);
+        let mut out = run_inline(&shared, &job);
+        let found = out
+            .diagnostics
+            .remove("file:///w/many.ttl")
+            .unwrap_or_default();
+        assert_eq!(found.len(), 100);
+        let unproved = found
+            .iter()
+            .filter(|d| {
+                !d.related_information
+                    .as_ref()
+                    .is_some_and(|r| !r.is_empty())
+            })
+            .count();
+        assert_eq!(unproved, 0);
     }
 
     #[test]

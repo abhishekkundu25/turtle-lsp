@@ -69,24 +69,26 @@ pub(super) fn of(
     // One limit for all the run's explanations, shared out among them: a
     // finding whose proof takes too long keeps its message without it.
     let budget = super::Budget::new(limit);
-    let mut explained = 0;
     let mut naming: FxHashMap<String, Naming> = FxHashMap::default();
-    for (i, d) in found.iter().enumerate() {
-        let places = mentions.places(base, d);
-        if places.is_empty() {
-            continue;
-        }
+    // Only the findings shown in the workspace's documents are explained,
+    // so only they share the limit.
+    let placed: Vec<_> = found
+        .iter()
+        .map(|d| (d, mentions.places(base, d)))
+        .filter(|(_, places)| !places.is_empty())
+        .collect();
+    let total = placed.len();
+    for (i, (d, places)) in placed.into_iter().enumerate() {
         let proof = explainer
             .as_ref()
-            .filter(|_| explained < MAX_EXPLAINED)
+            .filter(|_| i < MAX_EXPLAINED)
             .and_then(|e| {
                 // The findings this run may still explain, this one first.
-                let left = (found.len() - i).min(MAX_EXPLAINED - explained);
+                let left = (total - i).min(MAX_EXPLAINED - i);
                 let cancel = budget.next(left)?;
                 e.explain_diagnostic_cancellable(d, &cancel).ok().flatten()
             })
             .map(|p| Proof::new(p, base));
-        explained += 1;
         let severity = match d.severity {
             turbowl::Severity::Error => DiagnosticSeverity::ERROR,
             turbowl::Severity::Warning => DiagnosticSeverity::WARNING,
