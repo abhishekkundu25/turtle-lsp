@@ -633,9 +633,10 @@ mod tests {
 
     #[test]
     fn timing_findings_that_fit_in_the_limit_all_keep_their_proofs() {
-        // 100 findings, each through a 4,000-member list: about 0.4 s for
-        // all their proofs, so all fit in the 1 s limit, though not in an
-        // equal share each.
+        // 100 findings, each through a 4,000-member list. Their proofs take
+        // some time T on this machine (about 0.4 s on an M-series Mac, more
+        // on CI): under a limit they all fit in, with room, each keeps its
+        // proof, though a cold first search would not fit an equal share.
         let members: Vec<String> = (0..4_000).map(|i| format!("ex:K{i}")).collect();
         let mut text = format!(
             "@prefix ex: <http://example.org/> .\n\
@@ -648,7 +649,21 @@ mod tests {
         }
         let mut job = job(1, vec![doc(Source::Open, "file:///w/many.ttl", &text)]);
         job.max_triples = 1_000_000;
-        let shared = Shared::new(crate::server::worker::Spawn::Thread);
+        let unlimited = Limits {
+            findings: Duration::from_secs(600),
+            ..Limits::default()
+        };
+        let start = std::time::Instant::now();
+        run_inline(
+            &Shared::with_limits(crate::server::worker::Spawn::Thread, unlimited),
+            &job,
+        );
+        let room = start.elapsed() * 2 + super::super::state::Budget::RESERVE * 100;
+        let limits = Limits {
+            findings: room,
+            ..Limits::default()
+        };
+        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, limits);
         let mut out = run_inline(&shared, &job);
         let found = out
             .diagnostics

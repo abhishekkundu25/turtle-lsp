@@ -68,7 +68,7 @@ pub(crate) struct Budget {
 impl Budget {
     /// The time kept for each search still to come: enough for a cheap
     /// proof once the explainer's indexes are built.
-    const RESERVE: Duration = Duration::from_millis(5);
+    pub(super) const RESERVE: Duration = Duration::from_millis(5);
 
     pub(crate) fn new(limit: Duration) -> Budget {
         Budget {
