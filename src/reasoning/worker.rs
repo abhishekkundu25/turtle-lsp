@@ -551,17 +551,25 @@ mod tests {
         }
         let shared = Arc::new(Shared::with_limits(
             crate::server::worker::Spawn::Thread,
-            SHORT,
+            // The limit users get: a far shorter one leaves no time for
+            // the types after a hundred stopped ones on a slow machine.
+            Limits::default(),
         ));
         shown(
             &shared,
             &job(1, vec![doc(Source::Open, "file:///w/down.ttl", &text)]),
         );
+        let start = std::time::Instant::now();
         let types = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(60)));
         let near = types
             .iter()
             .find(|t| t.class == format!("{EX}C399"))
             .expect("ex:C399");
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            start.elapsed()
+        );
         assert!(near.proof.is_ok(), "the direct superclass has no proof");
     }
 
