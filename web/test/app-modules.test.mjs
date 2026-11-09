@@ -379,10 +379,16 @@ async function queryPane({ settings = {}, reasoning = "default" } = {}) {
     const g = { el: new FakeEl(), editor: new FakeEl(), active: `${name}.rq` }
     qp.attach(g, () => qp.run(g))
     g.status = () => g.run.pane.querySelector(".qpane-status").textContent
+    // The body's text: every character outside a tag.
     g.text = () => {
-      let html = g.run.pane.querySelector(".qpane-body").innerHTML
-      for (let prev; prev !== html; ) [prev, html] = [html, html.replace(/<[^>]*>/g, "")]
-      return html
+      let text = ""
+      let inTag = false
+      for (const ch of g.run.pane.querySelector(".qpane-body").innerHTML) {
+        if (ch === "<") inTag = true
+        else if (ch === ">") inTag = false
+        else if (!inTag) text += ch
+      }
+      return text
     }
     return g
   }
