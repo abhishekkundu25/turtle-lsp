@@ -225,9 +225,12 @@ impl Shared {
                 // Defence in depth, as the reasoning thread's.
                 16 << 20,
                 move || shared.prove(&subject),
+                // Done before the answer is sent: a hover that reads the
+                // answer and returns must not leave the next hover (of
+                // another term) seeing this search as still going on.
                 move |proved| {
-                    let _ = tx.send(proved);
                     ended.store(true, Ordering::Release);
+                    let _ = tx.send(proved);
                 },
             )
             .ok()?;
