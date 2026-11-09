@@ -57,6 +57,7 @@ pub(super) fn of(
     base: &Base,
     related: bool,
     project: &FxHashMap<String, Arc<PrefixMap>>,
+    limit: std::time::Duration,
 ) -> (ByUri, turbowl::ExplainCache) {
     let mut out = ByUri::default();
     let found = r.diagnostics();
@@ -65,6 +66,9 @@ pub(super) fn of(
     }
     let mentions = Mentions::of(base, found);
     let explainer = r.explainer().ok();
+    // One limit for all the run's explanations: past it, the rest of the
+    // findings keep their message without a proof.
+    let cancel = super::Limits::deadline(limit);
     let mut explained = 0;
     let mut naming: FxHashMap<String, Naming> = FxHashMap::default();
     for d in found {
@@ -74,8 +78,8 @@ pub(super) fn of(
         }
         let proof = explainer
             .as_ref()
-            .filter(|_| explained < MAX_EXPLAINED)
-            .and_then(|e| e.explain_diagnostic(d))
+            .filter(|_| explained < MAX_EXPLAINED && !cancel.is_cancelled())
+            .and_then(|e| e.explain_diagnostic_cancellable(d, &cancel).ok().flatten())
             .map(|p| Proof::new(p, base));
         explained += 1;
         let severity = match d.severity {

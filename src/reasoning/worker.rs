@@ -129,7 +129,13 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
     reasoner.reason();
     let types = inferred_types(&reasoner);
     let (diagnostics, cache) = if job.findings {
-        diagnostics::of(&reasoner, &base, job.related, &job.project)
+        diagnostics::of(
+            &reasoner,
+            &base,
+            job.related,
+            &job.project,
+            shared.limits.findings,
+        )
     } else {
         Default::default()
     };
@@ -168,7 +174,7 @@ fn inferred_types(r: &turbowl::Reasoner) -> FxHashMap<String, Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::super::base::tests::doc;
-    use super::super::state::Types;
+    use super::super::state::{Limits, NoProof, Types};
     use super::*;
     use std::time::Duration;
 
@@ -322,7 +328,7 @@ mod tests {
         loop {
             match shared.inferred_types(&rex, Duration::from_secs(10)) {
                 Types::Proved(v) => {
-                    assert!(v[0].proof.is_some());
+                    assert!(v[0].proof.is_ok());
                     break;
                 }
                 _ if std::time::Instant::now() < deadline => {}
@@ -399,15 +405,89 @@ mod tests {
         }
         // The search ends: its answer is the next hover's.
         let long = Duration::from_secs(10);
-        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_some());
+        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_ok());
         assert_eq!(searches(), 1);
-        assert!(
-            proved(shared.inferred_types(&fido, long))[0]
-                .proof
-                .is_some()
-        );
-        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_some());
+        assert!(proved(shared.inferred_types(&fido, long))[0].proof.is_ok());
+        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_ok());
         assert_eq!(searches(), 3);
+    }
+
+    /// `ex:x` at the start of an `rdfs:subClassOf` chain of `links` links,
+    /// with a class at its end disjoint from one `ex:x` has: a hover on
+    /// `ex:x` lists `links` inferred types, and their proofs, as the finding
+    /// about `ex:x`, take long to search (seconds at 200 links, minutes at
+    /// 400, without a limit).
+    fn chain(links: usize) -> (Source, Arc<Analysis>) {
+        let mut text = String::from(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+             ex:x a ex:C0 , ex:D .\n",
+        );
+        for i in 0..links {
+            text.push_str(&format!("ex:C{i} rdfs:subClassOf ex:C{} .\n", i + 1));
+        }
+        text.push_str(&format!("ex:C{links} owl:disjointWith ex:D .\n"));
+        doc(Source::Open, "file:///w/chain.ttl", &text)
+    }
+
+    const SHORT: Limits = Limits {
+        hover: Duration::from_millis(100),
+        findings: Duration::from_millis(100),
+    };
+
+    #[test]
+    fn a_hover_search_stops_at_its_time_limit_and_still_lists_every_type() {
+        for spawn in [
+            crate::server::worker::Spawn::Thread,
+            crate::server::worker::Spawn::Inline,
+        ] {
+            let shared = Arc::new(Shared::with_limits(spawn, SHORT));
+            shown(&shared, &job(1, vec![chain(400)]));
+            let start = std::time::Instant::now();
+            let types = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(120)));
+            // A generous bound: without the limit this takes minutes.
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "{:?}",
+                start.elapsed()
+            );
+            assert_eq!(types.len(), 400);
+            assert!(
+                types
+                    .iter()
+                    .any(|t| matches!(t.proof, Err(NoProof::Stopped))),
+                "no type was stopped"
+            );
+        }
+    }
+
+    #[test]
+    fn under_the_same_limit_a_small_file_has_every_proof() {
+        let shared = Arc::new(Shared::with_limits(
+            crate::server::worker::Spawn::Thread,
+            SHORT,
+        ));
+        shown(&shared, &job(1, vec![animals()]));
+        let types = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
+        assert!(types.iter().all(|t| t.proof.is_ok()));
+    }
+
+    #[test]
+    fn findings_past_the_time_limit_keep_their_message_without_a_proof() {
+        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, SHORT);
+        let start = std::time::Instant::now();
+        let out = run_inline(&shared, &job(1, vec![chain(400)]));
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            start.elapsed()
+        );
+        let found = &out.diagnostics["file:///w/chain.ttl"];
+        assert!(
+            found.iter().any(|d| d.message.contains("disjoint")),
+            "{found:#?}"
+        );
     }
 
     #[test]
@@ -416,7 +496,7 @@ mod tests {
         shown(&shared, &job(1, vec![animals()]));
         for _ in 0..2 {
             let t = proved(shared.inferred_types(&format!("{EX}rex"), Duration::ZERO));
-            assert!(t[0].proof.is_some());
+            assert!(t[0].proof.is_ok());
         }
     }
 

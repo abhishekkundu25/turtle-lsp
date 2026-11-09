@@ -946,8 +946,8 @@ dependencies = [
 
 [[package]]
 name = "turbowl"
-version = "0.2.0"
-source = "git+https://github.com/abhishekkundu25/turbowl?tag=v0.2.0#1275f58a1b3e79f20518fd7ae8f550ee8863f1c2"
+version = "0.2.1"
+source = "git+https://github.com/abhishekkundu25/turbowl?tag=v0.2.1#c238d6e2aea52f2fb4d94f0bc3e80406ae7101bb"
 dependencies = [
  "oxrdf",
  "oxrdfxml",

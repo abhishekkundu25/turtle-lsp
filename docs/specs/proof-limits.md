@@ -1,6 +1,6 @@
 # Time limits on proof searches
 
-Status: in progress. Builds on [turbowl-reasoning.md](turbowl-reasoning.md)
+Status: done. Builds on [turbowl-reasoning.md](turbowl-reasoning.md)
 (hover proofs, reasoning findings) and needs TurbOWL 0.2.1
 (`Cancel::with_check`).
 

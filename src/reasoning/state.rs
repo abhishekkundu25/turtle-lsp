@@ -32,6 +32,36 @@ use std::time::Duration;
 /// How long a hover waits for proofs.
 pub(crate) const HOVER_WAIT: Duration = Duration::from_millis(200);
 
+/// How long proof searches may run: a search stops at its limit and keeps
+/// what it found. Without a limit, a long class chain in a small file takes
+/// minutes and gigabytes to explain.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limits {
+    /// All the proofs of one hover's term.
+    pub(crate) hover: Duration,
+    /// All the explanations of one run's findings.
+    pub(crate) findings: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            hover: Duration::from_secs(2),
+            findings: Duration::from_secs(1),
+        }
+    }
+}
+
+impl Limits {
+    /// A cancel handle that trips once `limit` has passed from now, by the
+    /// server's clock (the page's in the browser, which has no threads to
+    /// trip it).
+    pub(crate) fn deadline(limit: Duration) -> turbowl::Cancel {
+        let deadline = crate::clock::Instant::now() + limit;
+        turbowl::Cancel::with_check(move || crate::clock::Instant::now() >= deadline)
+    }
+}
+
 /// The reasoning state of a server with reasoning on.
 pub(crate) struct Shared {
     /// How a proof search runs: on a thread of its own, or inline (the
@@ -43,6 +73,8 @@ pub(crate) struct Shared {
     shown: AtomicU64,
     /// The proof search started last, going on or done.
     search: Mutex<Option<Search>>,
+    /// How long proof searches may run.
+    pub(super) limits: Limits,
     /// Tests: how many proof searches have started.
     #[cfg(test)]
     pub(super) searches: std::sync::atomic::AtomicUsize,
@@ -91,9 +123,17 @@ pub(crate) enum Types {
 pub(crate) struct Inferred {
     /// The class IRI.
     pub(crate) class: String,
-    /// `None` when the explainer found none (it finds one for every
-    /// inferred triple, so this is a bug in it).
-    pub(crate) proof: Option<Proof>,
+    pub(crate) proof: Result<Proof, NoProof>,
+}
+
+/// Why an inferred type has no proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoProof {
+    /// The explainer found none. It finds one for every inferred triple, so
+    /// this is a bug in it.
+    NotFound,
+    /// The search reached its time limit ([`Limits::hover`]) first.
+    Stopped,
 }
 
 /// A proof, with where each base triple it rests on is written, and how
@@ -136,11 +176,17 @@ fn triple(s: &turbowl::Statement) -> Option<oxrdf::TripleRef<'_>> {
 
 impl Shared {
     pub(crate) fn new(spawn: Spawn) -> Shared {
+        Shared::with_limits(spawn, Limits::default())
+    }
+
+    /// A state whose proof searches run at most `limits`.
+    pub(crate) fn with_limits(spawn: Spawn, limits: Limits) -> Shared {
         Shared {
             spawn,
             held: RwLock::new(None),
             shown: AtomicU64::new(0),
             search: Mutex::new(None),
+            limits,
             #[cfg(test)]
             searches: Default::default(),
         }
@@ -254,6 +300,9 @@ impl Shared {
             let Ok(explainer) = r.reasoner.explainer_with(std::mem::take(&mut *cache)) else {
                 return Types::Unknown;
             };
+            // One limit for all the term's types: past it, the rest are
+            // listed without their proofs.
+            let cancel = Limits::deadline(self.limits.hover);
             let proved = classes
                 .iter()
                 .map(|c| {
@@ -262,11 +311,15 @@ impl Shared {
                         rdf_type.clone(),
                         NamedNode::new_unchecked(c),
                     );
+                    let proof = match explainer.explain_cancellable(t.as_ref(), &cancel) {
+                        Ok(Some(p)) => Ok(Proof::new(p, &r.base)),
+                        Ok(None) => Err(NoProof::NotFound),
+                        Err(turbowl::Error::Cancelled) => Err(NoProof::Stopped),
+                        Err(_) => Err(NoProof::NotFound),
+                    };
                     Inferred {
                         class: c.clone(),
-                        proof: explainer
-                            .explain(t.as_ref())
-                            .map(|p| Proof::new(p, &r.base)),
+                        proof,
                     }
                 })
                 .collect();
