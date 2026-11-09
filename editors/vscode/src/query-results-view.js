@@ -446,7 +446,7 @@ function bodyHtml(table, sort) {
     case "table":
       return tableHtml(table, sort)
     case "boolean":
-      return `<p class="boolean" aria-label="ASK answer">${table.value}</p>`
+      return `<p class="boolean" aria-label="ASK answer">${esc(table.value)}</p>`
     case "error":
       return `<p class="error" role="alert">${esc(table.at ? `Syntax error at ${table.at}: ${table.message}` : table.message)}</p>`
   }
