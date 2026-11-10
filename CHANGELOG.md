@@ -11,8 +11,14 @@
   reference lens of every term the file uses, in every file, and Find
   References, Go to Definition, rename and workspace symbols. `check --fix`
   applied no fix to such a file. The URI now escapes them, as VS Code's
-  does. A URI that does not parse no longer panics a request: its location
-  is left out, and an edit that needs it is refused.
+  does.
+
+- **Go to Definition into an import whose IRI has a letter outside ASCII no
+  longer fails.** An import fetched while the import cache cannot be written
+  is named by the IRI its importer wrote, and an IRI may hold what a URI
+  may not. Its location is now that IRI as a URI, the URL it was fetched
+  from. A name that is no URI even so no longer panics a request: its
+  location is left out, and an edit that needs it is refused.
 
 ## 0.16.0 — 2026-11-10
 

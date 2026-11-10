@@ -8,7 +8,7 @@ use crate::features::refactor::text_edits;
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::names::is_pn_prefix;
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
-use crate::workspace::{PREFIX_FILE, uri_to_path};
+use crate::workspace::{PREFIX_FILE, as_uri, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
 use std::collections::HashMap;
@@ -51,15 +51,15 @@ pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     Some((Target::Iri(r.iri), r.span))
 }
 
-/// `s` as the protocol's URI; `None` when it is not one. A document's URI
-/// is one: the client's, or [`crate::workspace::path_to_uri`]'s. An import
-/// read without a cache is named by the IRI its importer wrote, and a string
-/// a client sends back in a request's `data` is whatever it sent: neither
-/// need be one.
+/// `s` as the protocol's URI. A document's URI is one: the client's, or
+/// [`crate::workspace::path_to_uri`]'s. An import read without a cache is
+/// named by the IRI its importer wrote, which may hold what a URI may not
+/// (a letter outside ASCII): its URI is that IRI escaped ([`as_uri`]), the
+/// URL it was fetched from. `None` when `s` is no URI even so.
 pub(crate) fn uri(s: &str) -> Option<Uri> {
     #[cfg(test)]
     URIS_PARSED.with(|c| c.set(c.get() + 1));
-    Uri::from_str(s).ok()
+    Uri::from_str(s).or_else(|_| Uri::from_str(&as_uri(s))).ok()
 }
 
 /// [`uri`] for an edit: `Err` refuses the whole edit, as one without this
@@ -696,10 +696,11 @@ mod tests {
     }
 
     /// An import read without a cache is named by its IRI, and an IRI may
-    /// have letters a URI must escape: such a document has no location, and
-    /// asking for one panicked.
+    /// hold letters a URI must escape: asking for a location in it panicked.
+    /// Its URI is the IRI escaped; a name that is no URI even so has no
+    /// location, and an edit of it is refused.
     #[test]
-    fn a_document_whose_uri_is_not_one_is_left_out_of_locations_and_refuses_edits() {
+    fn a_document_named_by_an_iri_has_an_escaped_uri_and_one_that_is_no_uri_has_none() {
         let text = "@prefix ex: <http://example.org/> .\nex:a a ex:C .\nex:b ex:p ex:a .\n";
         let doc = |uri: &str| {
             Arc::new(Analysis::new(
@@ -709,25 +710,37 @@ mod tests {
                 true,
             ))
         };
-        let (good, bad) = ("file:///w/a.ttl", "http://example.org/données.ttl");
-        assert!(uri(good).is_some());
-        for not_one in [bad, "file:///w/a[1].ttl", "file:///w/a b.ttl"] {
+        let good = "file:///w/a.ttl";
+        let (import, escaped) = (
+            "http://example.org/données.ttl",
+            "http://example.org/donn%C3%A9es.ttl",
+        );
+        let no_uri = "http://example.org/a#b#c";
+        assert_eq!(uri(good).unwrap().as_str(), good);
+        assert_eq!(uri(import).unwrap().as_str(), escaped);
+        assert_eq!(
+            uri("file:///w/a [1].ttl").unwrap().as_str(),
+            "file:///w/a%20%5B1%5D.ttl"
+        );
+        for not_one in [no_uri, "http://[x/a", "1:a"] {
             assert_eq!(uri(not_one), None, "{not_one}");
         }
         let mut k = Knowledge::default();
         k.set(good, Source::Open, doc(good));
-        k.set(bad, Source::Disk, doc(bad));
+        k.add_external(import, doc(import));
+        k.set(no_uri, Source::Disk, doc(no_uri));
         let iri = "http://example.org/a";
         let enc = Encoding::Utf16;
         let files = |locations: Vec<Location>| -> Vec<String> {
             locations.iter().map(|l| l.uri.to_string()).collect()
         };
+        // References leave imports out; definitions list them.
         assert_eq!(files(term_references(&k, enc, iri, false)), [good]);
-        assert_eq!(files(descriptions(&k, enc, iri, good)), [good]);
+        assert_eq!(files(descriptions(&k, enc, iri, good)), [good, escaped]);
         let a = k.get(good).unwrap().clone();
         let at = a.position(enc, text.find("ex:a a").unwrap() as u32 + 3);
         assert_eq!(files(references(&a, &k, enc, at, false)), [good]);
-        assert_eq!(files(implementations(&a, &k, enc, at)), [] as [&str; 0]);
+        assert_eq!(files(definition(&a, &k, enc, at, None)), [good, escaped]);
 
         let mut changes = HashMap::new();
         let refused = rename_term(&k, enc, iri, "http://example.org/z", &mut changes);

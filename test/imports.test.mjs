@@ -36,6 +36,9 @@ before(async () => {
     } else if (req.url === "/onto.ttl") {
       res.writeHead(200, { "content-type": "text/turtle" })
       res.end(ONTO)
+    } else if (req.url === "/donn%C3%A9es.ttl") {
+      res.writeHead(200, { "content-type": "text/turtle" })
+      res.end(VOCAB)
     } else {
       res.writeHead(404)
       res.end()
@@ -45,6 +48,11 @@ before(async () => {
   base = `http://127.0.0.1:${web.address().port}`
 })
 after(() => web.close())
+
+// Absolute IRIs: they do not depend on the URL the document is read from.
+const VOCAB = `@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<http://example.org/vocab#Thing> a rdfs:Class ; rdfs:label "Vocab thing" .
+`
 
 const temps = []
 after(() => temps.forEach((d) => fs.rmSync(d, { recursive: true, force: true })))
@@ -375,6 +383,40 @@ async function startStrict(cwd, cache, initializationOptions) {
     else process.env.TURTLE_LSP_ALLOW_PRIVATE_HOSTS = prev
   }
 }
+
+// Without a cache an import is named by the IRI its importer wrote. An IRI
+// may hold a letter outside ASCII, which a URI may not: Go to Definition on a
+// term of such an import failed with "valid uri: ParseError".
+test("an import read without a cache is located at its IRI as a URI", async () => {
+  const root = tempDir("no-cache")
+  const ws = path.join(root, "ws")
+  fs.mkdirSync(ws)
+  // The cache folder cannot be made below a file.
+  fs.writeFileSync(path.join(root, "file"), "")
+  const iri = `${base}/données.ttl`
+  const text = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix v: <http://example.org/vocab#> .
+<http://example.com/ont/app> a owl:Ontology ;
+    owl:imports <${iri}> .
+<http://example.com/ont/app#x> a v:Thing .
+`
+  fs.writeFileSync(path.join(ws, "app.ttl"), text)
+  const uri = uriOf(path.join(ws, "app.ttl"))
+  const pos = positionOf(text, "v:Thing", 3)
+  const s = await start(ws, path.join(root, "file", "cache"), { imports: { network: true } })
+  try {
+    s.open(uri, text)
+    await hoverUntil(s, uri, pos, "Vocab thing")
+    const found = await s.request("textDocument/definition", { textDocument: { uri }, position: pos })
+    assert.deepEqual(found.map((l) => l.uri), [`${base}/donn%C3%A9es.ttl`])
+    // A reference lens lists no location in an import.
+    const lenses = await s.request("textDocument/codeLens", { textDocument: { uri } })
+    const resolved = await Promise.all(lenses.map((l) => s.request("codeLens/resolve", l)))
+    assert.deepEqual(resolved.map((l) => l.command.title), ["0 references", "0 references"])
+  } finally {
+    await s.stop()
+  }
+})
 
 test("by default an import is not fetched from a loopback address, even when the network is on", async () => {
   const before = hits.length
