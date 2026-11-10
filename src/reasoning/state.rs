@@ -15,8 +15,12 @@
 //! search at a time (they take turns on the explainer's cache), and the
 //! hover waits for it at most a given time. Past it the search goes on: a
 //! hover on the same term waits for that search and has its answer, a hover
-//! on another term says its proofs are still being worked out, and once the
-//! search is done its findings are in the cache for the next.
+//! on another term says its proofs are still being worked out. A search
+//! itself stops at its time limit ([`Limits::hover`]), shared out among the
+//! term's types. Its answer, stopped or not, is kept for the later hovers
+//! of the term until the next search. A finished search leaves what it
+//! found in the cache for the next; a stopped one leaves only the
+//! explainer's indexes.
 
 use super::base::{Base, Origin};
 use super::turtle::Items;
@@ -32,6 +36,66 @@ use std::time::Duration;
 /// How long a hover waits for proofs.
 pub(crate) const HOVER_WAIT: Duration = Duration::from_millis(200);
 
+/// How long proof searches may run: a search stops at its limit and keeps
+/// what it found. Without a limit, a long class chain in a small file takes
+/// minutes and gigabytes to explain.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limits {
+    /// All the proofs of one hover's term.
+    pub(crate) hover: Duration,
+    /// All the explanations of one run's findings.
+    pub(crate) findings: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            hover: Duration::from_secs(2),
+            findings: Duration::from_secs(1),
+        }
+    }
+}
+
+/// One limit for searches made one after another (a term's types, a run's
+/// findings). A search may use the time left less [`Budget::RESERVE`] for
+/// each search still to come, and never less than an equal share of it:
+/// cheap searches after a costly one keep their time, a costly one can use
+/// what nothing else needs, and what a quick one leaves goes to the next.
+pub(crate) struct Budget {
+    end: crate::clock::Instant,
+}
+
+impl Budget {
+    /// The time kept for each search still to come: enough for a cheap
+    /// proof once the explainer's indexes are built.
+    pub(super) const RESERVE: Duration = Duration::from_millis(5);
+
+    pub(crate) fn new(limit: Duration) -> Budget {
+        Budget {
+            end: crate::clock::Instant::now() + limit,
+        }
+    }
+
+    /// A cancel handle for the next of `left` searches, which trips at its
+    /// part of the time left, by the server's clock (the page's in the
+    /// browser, which has no threads to trip it); `None` once the time is
+    /// up.
+    pub(crate) fn next(&self, left: usize) -> Option<turbowl::Cancel> {
+        let now = crate::clock::Instant::now();
+        let rest = self.end.saturating_duration_since(now);
+        if rest.is_zero() {
+            return None;
+        }
+        let later = u32::try_from(left.max(1)).unwrap_or(u32::MAX);
+        let kept = Self::RESERVE.saturating_mul(later - 1);
+        let part = rest.saturating_sub(kept).max(rest / later);
+        let deadline = now + part;
+        Some(turbowl::Cancel::with_check(move || {
+            crate::clock::Instant::now() >= deadline
+        }))
+    }
+}
+
 /// The reasoning state of a server with reasoning on.
 pub(crate) struct Shared {
     /// How a proof search runs: on a thread of its own, or inline (the
@@ -43,6 +107,8 @@ pub(crate) struct Shared {
     shown: AtomicU64,
     /// The proof search started last, going on or done.
     search: Mutex<Option<Search>>,
+    /// How long proof searches may run.
+    pub(super) limits: Limits,
     /// Tests: how many proof searches have started.
     #[cfg(test)]
     pub(super) searches: std::sync::atomic::AtomicUsize,
@@ -70,6 +136,10 @@ struct Search {
     answer: crossbeam_channel::Receiver<Result<Types, String>>,
     /// The search has ended: its answer has been sent.
     done: Arc<AtomicBool>,
+    /// Its answer once a hover has taken it, for the later hovers of the
+    /// term: the result it was searched in cannot change, and a search
+    /// stopped at its limit would only stop there again.
+    kept: Option<Arc<Vec<Inferred>>>,
 }
 
 /// What reasoning says of a term's types.
@@ -80,8 +150,9 @@ pub(crate) enum Types {
     /// A run is writing the state, or the result there is of a run
     /// superseded while it ran: the next run's is coming.
     Running,
-    /// Each inferred type, with its proof.
-    Proved(Vec<Inferred>),
+    /// Each inferred type, with its proof. Shared: a search's answer is
+    /// kept for the later hovers of its term.
+    Proved(Arc<Vec<Inferred>>),
     /// The inferred types, whose proofs were not found in time. The search
     /// goes on, so asking again soon gives them.
     Pending(Vec<String>),
@@ -91,9 +162,17 @@ pub(crate) enum Types {
 pub(crate) struct Inferred {
     /// The class IRI.
     pub(crate) class: String,
-    /// `None` when the explainer found none (it finds one for every
-    /// inferred triple, so this is a bug in it).
-    pub(crate) proof: Option<Proof>,
+    pub(crate) proof: Result<Proof, NoProof>,
+}
+
+/// Why an inferred type has no proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoProof {
+    /// The explainer found none. It finds one for every inferred triple, so
+    /// this is a bug in it.
+    NotFound,
+    /// The search reached its time limit ([`Limits::hover`]) first.
+    Stopped,
 }
 
 /// A proof, with where each base triple it rests on is written, and how
@@ -136,11 +215,17 @@ fn triple(s: &turbowl::Statement) -> Option<oxrdf::TripleRef<'_>> {
 
 impl Shared {
     pub(crate) fn new(spawn: Spawn) -> Shared {
+        Shared::with_limits(spawn, Limits::default())
+    }
+
+    /// A state whose proof searches run at most `limits`.
+    pub(crate) fn with_limits(spawn: Spawn, limits: Limits) -> Shared {
         Shared {
             spawn,
             held: RwLock::new(None),
             shown: AtomicU64::new(0),
             search: Mutex::new(None),
+            limits,
             #[cfg(test)]
             searches: Default::default(),
         }
@@ -160,7 +245,7 @@ impl Shared {
 
     /// The inferred types of `iri` (an IRI, as written in full), with their
     /// proofs when they are found within `wait`. Inline (no threads), the
-    /// search runs here, without a limit. They are [`Types::Pending`] when
+    /// search runs here, within its time limit. They are [`Types::Pending`] when
     /// the search's thread cannot start, or a search for another term is
     /// going on.
     pub(crate) fn inferred_types(self: &Arc<Self>, iri: &str, wait: Duration) -> Types {
@@ -170,10 +255,17 @@ impl Shared {
             Ok(c) => c,
         };
         if classes.is_empty() {
-            return Types::Proved(Vec::new());
+            return Types::Proved(Arc::default());
         }
         let mut search = self.search.lock().unwrap_or_else(PoisonError::into_inner);
         let answer = match search.as_ref() {
+            // That search's answer, taken already.
+            Some(Search {
+                iri: i,
+                generation: g,
+                kept: Some(kept),
+                ..
+            }) if i == iri && *g == generation => return Types::Proved(Arc::clone(kept)),
             // That search's answer, or wait for it.
             Some(s)
                 if s.iri == iri
@@ -202,6 +294,16 @@ impl Shared {
             Err(_) => answer.recv_timeout(wait),
         };
         match answer {
+            Ok(Ok(Types::Proved(v))) => {
+                let mut search = self.search.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(s) = search
+                    .as_mut()
+                    .filter(|s| s.iri == iri && s.generation == generation)
+                {
+                    s.kept = Some(Arc::clone(&v));
+                }
+                Types::Proved(v)
+            }
             Ok(Ok(types)) => types,
             // A bug in the search: no proofs rather than no hover.
             Ok(Err(_)) => Types::Unknown,
@@ -239,6 +341,7 @@ impl Shared {
             generation,
             answer,
             done,
+            kept: None,
         })
     }
 
@@ -248,30 +351,41 @@ impl Shared {
         let subject = NamedNode::new_unchecked(iri);
         let read = |r: &Reasoned| {
             let Some(classes) = r.types.get(iri) else {
-                return Types::Proved(Vec::new());
+                return Types::Proved(Arc::default());
             };
             let mut cache = r.cache.lock().unwrap_or_else(PoisonError::into_inner);
             let Ok(explainer) = r.reasoner.explainer_with(std::mem::take(&mut *cache)) else {
                 return Types::Unknown;
             };
+            // One limit for all the term's types, shared out among them: a
+            // type whose proof takes too long is listed without it.
+            let budget = Budget::new(self.limits.hover);
             let proved = classes
                 .iter()
-                .map(|c| {
+                .enumerate()
+                .map(|(i, c)| {
                     let t = Triple::new(
                         subject.clone(),
                         rdf_type.clone(),
                         NamedNode::new_unchecked(c),
                     );
+                    let proof = match budget
+                        .next(classes.len() - i)
+                        .map(|cancel| explainer.explain_cancellable(t.as_ref(), &cancel))
+                    {
+                        Some(Ok(Some(p))) => Ok(Proof::new(p, &r.base)),
+                        Some(Ok(None)) => Err(NoProof::NotFound),
+                        None | Some(Err(turbowl::Error::Cancelled)) => Err(NoProof::Stopped),
+                        Some(Err(_)) => Err(NoProof::NotFound),
+                    };
                     Inferred {
                         class: c.clone(),
-                        proof: explainer
-                            .explain(t.as_ref())
-                            .map(|p| Proof::new(p, &r.base)),
+                        proof,
                     }
                 })
                 .collect();
             *cache = explainer.into_cache();
-            Types::Proved(proved)
+            Types::Proved(Arc::new(proved))
         };
         self.read(read).unwrap_or_else(|t| t)
     }

@@ -129,7 +129,13 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
     reasoner.reason();
     let types = inferred_types(&reasoner);
     let (diagnostics, cache) = if job.findings {
-        diagnostics::of(&reasoner, &base, job.related, &job.project)
+        diagnostics::of(
+            &reasoner,
+            &base,
+            job.related,
+            &job.project,
+            shared.limits.findings,
+        )
     } else {
         Default::default()
     };
@@ -168,7 +174,7 @@ fn inferred_types(r: &turbowl::Reasoner) -> FxHashMap<String, Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::super::base::tests::doc;
-    use super::super::state::Types;
+    use super::super::state::{Limits, NoProof, Types};
     use super::*;
     use std::time::Duration;
 
@@ -206,7 +212,7 @@ mod tests {
         out
     }
 
-    fn proved(t: Types) -> Vec<super::super::state::Inferred> {
+    fn proved(t: Types) -> Arc<Vec<super::super::state::Inferred>> {
         match t {
             Types::Proved(v) => v,
             _ => panic!("not proved"),
@@ -322,7 +328,7 @@ mod tests {
         loop {
             match shared.inferred_types(&rex, Duration::from_secs(10)) {
                 Types::Proved(v) => {
-                    assert!(v[0].proof.is_some());
+                    assert!(v[0].proof.is_ok());
                     break;
                 }
                 _ if std::time::Instant::now() < deadline => {}
@@ -399,15 +405,280 @@ mod tests {
         }
         // The search ends: its answer is the next hover's.
         let long = Duration::from_secs(10);
-        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_some());
+        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_ok());
         assert_eq!(searches(), 1);
-        assert!(
-            proved(shared.inferred_types(&fido, long))[0]
-                .proof
-                .is_some()
-        );
-        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_some());
+        assert!(proved(shared.inferred_types(&fido, long))[0].proof.is_ok());
+        assert!(proved(shared.inferred_types(&rex, long))[0].proof.is_ok());
         assert_eq!(searches(), 3);
+    }
+
+    /// `ex:x` at the start of an `rdfs:subClassOf` chain of `links` links,
+    /// with a class at its end disjoint from one `ex:x` has: a hover on
+    /// `ex:x` lists `links` inferred types, and their proofs, as the finding
+    /// about `ex:x`, take long to search (seconds at 200 links, minutes at
+    /// 400, without a limit).
+    fn chain(links: usize) -> (Source, Arc<Analysis>) {
+        let mut text = String::from(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+             ex:x a ex:C0 , ex:D .\n",
+        );
+        for i in 0..links {
+            text.push_str(&format!("ex:C{i} rdfs:subClassOf ex:C{} .\n", i + 1));
+        }
+        text.push_str(&format!("ex:C{links} owl:disjointWith ex:D .\n"));
+        doc(Source::Open, "file:///w/chain.ttl", &text)
+    }
+
+    const SHORT: Limits = Limits {
+        hover: Duration::from_millis(100),
+        findings: Duration::from_millis(100),
+    };
+
+    #[test]
+    fn timing_a_hover_search_stops_at_its_time_limit_and_still_lists_every_type() {
+        for spawn in [
+            crate::server::worker::Spawn::Thread,
+            crate::server::worker::Spawn::Inline,
+        ] {
+            let shared = Arc::new(Shared::with_limits(spawn, SHORT));
+            shown(&shared, &job(1, vec![chain(400)]));
+            let start = std::time::Instant::now();
+            let types = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(120)));
+            // A generous bound: without the limit this takes minutes.
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "{:?}",
+                start.elapsed()
+            );
+            assert_eq!(types.len(), 400);
+            assert!(
+                types
+                    .iter()
+                    .any(|t| matches!(t.proof, Err(NoProof::Stopped))),
+                "no type was stopped"
+            );
+        }
+    }
+
+    #[test]
+    fn timing_under_the_limit_a_small_file_has_every_proof() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        shown(&shared, &job(1, vec![animals()]));
+        let types = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
+        assert!(types.iter().all(|t| t.proof.is_ok()));
+    }
+
+    /// The finding about `ex:x` in [`chain`]`(links)`, run under `limits`.
+    fn chain_finding(links: usize, limits: Limits) -> lsp_types::Diagnostic {
+        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, limits);
+        let start = std::time::Instant::now();
+        let mut out = run_inline(&shared, &job(1, vec![chain(links)]));
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            start.elapsed()
+        );
+        let found = out
+            .diagnostics
+            .remove("file:///w/chain.ttl")
+            .unwrap_or_default();
+        let mut disjoint = found.into_iter().filter(|d| d.message.contains("disjoint"));
+        let d = disjoint.next().expect("the disjointness finding");
+        assert!(disjoint.next().is_none());
+        d
+    }
+
+    #[test]
+    fn timing_findings_past_the_time_limit_keep_their_message_without_a_proof() {
+        let d = chain_finding(400, SHORT);
+        assert!(d.related_information.is_none(), "{d:#?}");
+    }
+
+    #[test]
+    fn timing_under_the_limit_a_small_finding_has_its_proof() {
+        let d = chain_finding(3, Limits::default());
+        assert!(d.related_information.is_some_and(|r| !r.is_empty()));
+    }
+
+    #[test]
+    fn timing_a_stopped_hover_is_the_answer_again_without_a_new_search() {
+        for spawn in [
+            crate::server::worker::Spawn::Thread,
+            crate::server::worker::Spawn::Inline,
+        ] {
+            let shared = Arc::new(Shared::with_limits(spawn, SHORT));
+            shown(&shared, &job(1, vec![chain(400)]));
+            let x = format!("{EX}x");
+            let first = proved(shared.inferred_types(&x, Duration::from_secs(60)));
+            assert!(
+                first
+                    .iter()
+                    .any(|t| matches!(t.proof, Err(NoProof::Stopped)))
+            );
+            for _ in 0..3 {
+                let again = proved(shared.inferred_types(&x, Duration::from_secs(60)));
+                assert!(Arc::ptr_eq(&first, &again));
+            }
+            assert_eq!(
+                shared.searches.load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn timing_a_costly_type_stops_only_itself() {
+        // ex:x a ex:C400, each ex:C<i+1> a subclass of ex:C<i>: the farthest
+        // class, ex:C0, sorts first and its proof is the longest.
+        let mut text = String::from(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+             ex:x a ex:C400 .\n",
+        );
+        for i in 0..400 {
+            text.push_str(&format!("ex:C{} rdfs:subClassOf ex:C{i} .\n", i + 1));
+        }
+        let shared = Arc::new(Shared::with_limits(
+            crate::server::worker::Spawn::Thread,
+            // The limit users get: a far shorter one leaves no time for
+            // the types after a hundred stopped ones on a slow machine.
+            Limits::default(),
+        ));
+        shown(
+            &shared,
+            &job(1, vec![doc(Source::Open, "file:///w/down.ttl", &text)]),
+        );
+        let start = std::time::Instant::now();
+        let types = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(60)));
+        let near = types
+            .iter()
+            .find(|t| t.class == format!("{EX}C399"))
+            .expect("ex:C399");
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(near.proof.is_ok(), "the direct superclass has no proof");
+    }
+
+    /// A list of 32,000 members (`ex:K0` to `ex:K31999`) after `head`, with
+    /// `tail` after it: TurbOWL before 0.2.2 took 17 to 55 s and gigabytes
+    /// to build a proof through it, past any time limit.
+    fn long_list(head: &str, tail: &str) -> Job {
+        let members: Vec<String> = (0..32_000).map(|i| format!("ex:K{i}")).collect();
+        let text = format!(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             {head} ( {} ) .\n{tail}\n",
+            members.join(" ")
+        );
+        let mut job = job(1, vec![doc(Source::Open, "file:///w/list.ttl", &text)]);
+        job.max_triples = 1_000_000;
+        job
+    }
+
+    #[test]
+    fn timing_a_hover_through_a_long_list_keeps_its_limit() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        shown(
+            &shared,
+            &long_list("ex:U owl:unionOf", "ex:x a ex:K31999 ."),
+        );
+        let start = std::time::Instant::now();
+        let types = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(60)));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        let union = types
+            .iter()
+            .find(|t| t.class == format!("{EX}U"))
+            .expect("ex:U");
+        assert!(union.proof.is_ok());
+    }
+
+    #[test]
+    fn timing_a_finding_through_a_long_list_keeps_its_limit() {
+        let shared = Shared::new(crate::server::worker::Spawn::Thread);
+        let start = std::time::Instant::now();
+        let mut out = run_inline(
+            &shared,
+            &long_list(
+                "[] a owl:AllDisjointClasses ; owl:members",
+                "ex:x a ex:K0 , ex:K1 .",
+            ),
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        let found = out
+            .diagnostics
+            .remove("file:///w/list.ttl")
+            .unwrap_or_default();
+        // Within the limit now, with its proof.
+        assert!(
+            found.iter().any(|d| d
+                .related_information
+                .as_ref()
+                .is_some_and(|r| !r.is_empty())),
+            "{found:#?}"
+        );
+    }
+
+    #[test]
+    fn timing_findings_that_fit_in_the_limit_all_keep_their_proofs() {
+        // 100 findings, each through a 4,000-member list. Their proofs take
+        // some time T on this machine (about 0.4 s on an M-series Mac, more
+        // on CI): under a limit they all fit in, with room, each keeps its
+        // proof, though a cold first search would not fit an equal share.
+        let members: Vec<String> = (0..4_000).map(|i| format!("ex:K{i}")).collect();
+        let mut text = format!(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+             [] a owl:AllDisjointClasses ; owl:members ( {} ) .\n",
+            members.join(" ")
+        );
+        for j in 0..100 {
+            text.push_str(&format!("ex:i{j} a ex:K{} , ex:K{} .\n", 2 * j, 2 * j + 1));
+        }
+        let mut job = job(1, vec![doc(Source::Open, "file:///w/many.ttl", &text)]);
+        job.max_triples = 1_000_000;
+        let unlimited = Limits {
+            findings: Duration::from_secs(600),
+            ..Limits::default()
+        };
+        let start = std::time::Instant::now();
+        run_inline(
+            &Shared::with_limits(crate::server::worker::Spawn::Thread, unlimited),
+            &job,
+        );
+        let room = start.elapsed() * 2 + super::super::state::Budget::RESERVE * 100;
+        let limits = Limits {
+            findings: room,
+            ..Limits::default()
+        };
+        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, limits);
+        let mut out = run_inline(&shared, &job);
+        let found = out
+            .diagnostics
+            .remove("file:///w/many.ttl")
+            .unwrap_or_default();
+        assert_eq!(found.len(), 100);
+        let unproved = found
+            .iter()
+            .filter(|d| {
+                !d.related_information
+                    .as_ref()
+                    .is_some_and(|r| !r.is_empty())
+            })
+            .count();
+        assert_eq!(unproved, 0);
     }
 
     #[test]
@@ -416,7 +687,7 @@ mod tests {
         shown(&shared, &job(1, vec![animals()]));
         for _ in 0..2 {
             let t = proved(shared.inferred_types(&format!("{EX}rex"), Duration::ZERO));
-            assert!(t[0].proof.is_some());
+            assert!(t[0].proof.is_ok());
         }
     }
 

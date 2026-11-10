@@ -31,6 +31,12 @@
   skipped with a note (`reasoning-skipped`), and `turtle-lsp.json` cannot
   raise it. Reasoning is off by default, and while it is off nothing runs.
   The browser editor reasons too, on its one thread, and has both settings.
+  Proof searches have time limits, natively and in the browser: a hover's
+  proofs stop after 2 s in all, and a run's explanations of its findings
+  after 1 s in all, shared out so that one costly proof stops only itself.
+  A type whose proof was stopped says "proof search stopped at its time
+  limit", and a finding keeps its message without a proof. Hovering the
+  same term again answers at once.
 
 - **Queries over inferred triples.** `query.reasoning` (`off`, `default`
   or `complete`; off by default) makes a query reason over its own snapshot

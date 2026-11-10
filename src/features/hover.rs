@@ -3,7 +3,7 @@
 use super::prefixes::{Naming, Scope, declaration_at};
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
-use crate::reasoning::{HOVER_WAIT, Inferred, Names, Origin, Shared, Shown, Types};
+use crate::reasoning::{HOVER_WAIT, Inferred, Names, NoProof, Origin, Shared, Shown, Types};
 use crate::syntax::names::shorten;
 use crate::syntax::{Form, Iri, PrefixMap};
 use crate::vocab::{TermKind, VOCABS};
@@ -116,10 +116,10 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, naming: &Naming) -> String {
         Types::Unknown => return String::new(),
         Types::Running => return "\n\n**Inferred:** _reasoning is running_".into(),
         Types::Proved(v) => {
-            let mut listed: Vec<(Inferred, String)> = Vec::new();
-            for t in v.into_iter().filter(|t| new(&t.class)) {
+            let mut listed: Vec<(&Inferred, String)> = Vec::new();
+            for t in v.iter().filter(|t| new(&t.class)) {
                 match &t.proof {
-                    Some(p) if !p.rests_on_documents() => built_in.push(iri_name(&t.class)),
+                    Ok(p) if !p.rests_on_documents() => built_in.push(iri_name(&t.class)),
                     _ => {
                         let title = title(&t.class);
                         listed.push((t, title));
@@ -138,8 +138,11 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, naming: &Naming) -> String {
                 match &t.proof {
                     // Not written, only counted.
                     _ if n >= MAX_INFERRED => String::new(),
-                    Some(p) => p.markdown(title, &names, &mut shown),
-                    None => format!("- {title} · _no proof found_"),
+                    Ok(p) => p.markdown(title, &names, &mut shown),
+                    Err(NoProof::NotFound) => format!("- {title} · _no proof found_"),
+                    Err(NoProof::Stopped) => {
+                        format!("- {title} · _proof search stopped at its time limit_")
+                    }
                 }
             });
             (written.collect(), "")
@@ -348,7 +351,7 @@ mod tests {
         let naming = Naming::at(&a, 0, Arc::new(prefixes));
         let section = |t: Types| inferred(t, &ex("rex"), &k, &naming);
         assert_eq!(section(Types::Unknown), "");
-        assert_eq!(section(Types::Proved(Vec::new())), "");
+        assert_eq!(section(Types::Proved(Default::default())), "");
         assert_eq!(
             section(Types::Running),
             "\n\n**Inferred:** _reasoning is running_"
@@ -368,13 +371,21 @@ mod tests {
             "{md}"
         );
         assert!(!md.contains("ex:C20"), "{md}");
-        let none = section(Types::Proved(vec![crate::reasoning::Inferred {
+        let none = section(Types::Proved(Arc::new(vec![crate::reasoning::Inferred {
             class: ex("Animal"),
-            proof: None,
-        }]));
+            proof: Err(crate::reasoning::NoProof::NotFound),
+        }])));
         assert_eq!(
             none,
             "\n\n**Inferred**\n\n- **ex:Animal** · _no proof found_"
+        );
+        let stopped = section(Types::Proved(Arc::new(vec![crate::reasoning::Inferred {
+            class: ex("Animal"),
+            proof: Err(crate::reasoning::NoProof::Stopped),
+        }])));
+        assert_eq!(
+            stopped,
+            "\n\n**Inferred**\n\n- **ex:Animal** · _proof search stopped at its time limit_"
         );
     }
 
