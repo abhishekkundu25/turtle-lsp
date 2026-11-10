@@ -2354,6 +2354,31 @@ pub(crate) mod tests {
         assert!(uri.ends_with("/a%20%5Bb%5D%5Ec%7Cd.ttl"), "{uri}");
     }
 
+    /// `a[1].ttl` and a file named `a%5B1%5D.ttl` are two files: the
+    /// second's `%` is escaped too, so their URIs differ and each comes back
+    /// to its own path. A URI that is one already is left as it is.
+    #[test]
+    fn a_bracket_and_its_escape_written_out_are_two_files() {
+        let dir = std::env::temp_dir();
+        let bracket = path_to_uri(&dir.join("a[1].ttl")).unwrap();
+        let written = path_to_uri(&dir.join("a%5B1%5D.ttl")).unwrap();
+        assert!(bracket.ends_with("/a%5B1%5D.ttl"), "{bracket}");
+        assert!(written.ends_with("/a%255B1%255D.ttl"), "{written}");
+        for (uri, name) in [(&bracket, "a[1].ttl"), (&written, "a%5B1%5D.ttl")] {
+            assert_eq!(normalize_uri(uri), *uri);
+            let back = uri_to_path(uri).unwrap();
+            assert_eq!(back.file_name().unwrap().to_str(), Some(name), "{uri}");
+        }
+        for uri in [
+            "vscode-remote://ssh-remote%2Bhost/home/u/a%5B1%5D.ttl",
+            "file:///c%3A/w/a%5B1%5D.ttl",
+            "untitled:Untitled-1",
+        ] {
+            assert!(uri.parse::<lsp_types::Uri>().is_ok(), "{uri}");
+            assert_eq!(as_uri(uri), uri, "{uri}");
+        }
+    }
+
     #[test]
     fn as_uri_escapes_what_a_uri_may_not_hold() {
         for (iri, uri) in [
