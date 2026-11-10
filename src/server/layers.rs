@@ -278,11 +278,11 @@ mod tests {
         }
         assert!(!queries_only(
             &mut l,
-            json!({"query": {"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3, "maxBufferedRows": 9}, "reasoning": {"rules": "default"}})
+            json!({"query": {"reasoning": "default", "maxRows": 5, "timeoutSeconds": 3, "maxBufferedRows": 9}, "reasoning": {"rules": "complete"}})
         ));
         assert!(!queries_only(
             &mut l,
-            json!({"query": {"reasoning": "off"}, "reasoning": {"rules": "complete"}})
+            json!({"query": {"reasoning": "off"}, "reasoning": {"rules": "off"}})
         ));
     }
 

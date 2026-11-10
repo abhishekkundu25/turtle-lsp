@@ -2070,6 +2070,9 @@ mod tests {
             )
         };
         let mut e = embedded();
+        // On by default: the state is there, and findings stay off.
+        assert!(e.server.reasoning.is_some());
+        e.handle(vec![rules("off")]);
         let sent = open(&mut e, uri, DISJOINT);
         assert_eq!(found(&sent), Some(false));
         assert!(e.server.reasoning.is_none());

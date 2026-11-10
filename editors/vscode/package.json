@@ -247,7 +247,7 @@
             "TurbOWL's default OWL 2 RL rules: classes, properties, `owl:sameAs`, property chains and the consistency checks.",
             "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
           ],
-          "default": "off",
+          "default": "default",
           "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `turtle.reasoning.diagnostics`.",
           "scope": "resource"
         },

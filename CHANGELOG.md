@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Reasoning is on by default**, with TurbOWL's default rules
+  (`turtle.reasoning.rules` = `default`): hover shows a resource's inferred
+  types with their proofs without setting anything. Its findings stay off
+  (`turtle.reasoning.diagnostics`), and so does reasoning in queries
+  (`turtle.query.reasoning`). On most workspaces a run takes milliseconds
+  and a few MB, in the background after a pause in typing. To turn it
+  off: `turtle.reasoning.rules` = `off`, in the editor's settings or in
+  `turtle-lsp.json` (`"reasoning": { "rules": "off" }`).
+
 ## 0.16.1 — 2026-11-10
 
 ### Fixed
