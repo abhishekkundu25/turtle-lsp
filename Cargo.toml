@@ -1,6 +1,6 @@
 [package]
 name = "turtle-lsp"
-version = "0.15.1"
+version = "0.16.0"
 edition = "2024"
 # 1.99: the highest `rust-version` among the dependencies is TurbOWL's (1.99). Without
 # it, `str::floor_char_boundary` (src/query/mod.rs, 1.91) would be the floor. CI builds
