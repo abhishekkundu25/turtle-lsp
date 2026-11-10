@@ -227,7 +227,7 @@ impl Default for Settings {
             shacl_enabled: true,
             shacl_max_triples: SHACL_MAX_TRIPLES,
             shacl_on_type: true,
-            reasoning: Reasoning::Off,
+            reasoning: Reasoning::Default,
             reasoning_max_triples: REASONING_MAX_TRIPLES,
             reasoning_diagnostics: false,
             lint_undescribed_terms: true,
@@ -490,7 +490,7 @@ mod tests {
         assert!(s.lint_undescribed_terms && !s.imports_network);
         assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(s.shacl_max_triples, 2_000_000);
-        assert_eq!(s.reasoning, Reasoning::Off);
+        assert_eq!(s.reasoning, Reasoning::Default);
         assert_eq!(s.reasoning_max_triples, 2_000_000);
         assert!(!s.reasoning_diagnostics);
         assert_eq!(s.format_line_width, 100);
@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(s.inlay_hint_labels, InlayLabels::Opaque);
         assert!(s.shacl_enabled);
         assert_eq!(s.shacl_max_triples, 2_000_000);
-        assert_eq!(s.reasoning, Reasoning::Off);
+        assert_eq!(s.reasoning, Reasoning::Default);
         assert_eq!(s.reasoning_max_triples, 2_000_000);
         assert_eq!(s.imports_unresolved, UnresolvedImports::Soften);
         assert_eq!(s.query_timeout, Some(Duration::from_secs(30)));

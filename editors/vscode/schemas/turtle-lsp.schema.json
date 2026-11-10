@@ -235,7 +235,7 @@
         "TurbOWL's default OWL 2 RL rules: classes, properties, `owl:sameAs`, property chains and the consistency checks.",
         "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
       ],
-      "default": "off",
+      "default": "default",
       "description": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with reasoning.diagnostics. This file may choose the rules; reasoning.maxTriples still holds.",
       "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `reasoning.diagnostics`. This file may choose the rules; `reasoning.maxTriples` still holds."
     },
@@ -255,8 +255,8 @@
     },
     "reasoning": {
       "type": "object",
-      "description": "OWL 2 RL reasoning with TurbOWL (off by default).",
-      "markdownDescription": "OWL 2 RL reasoning with TurbOWL (off by default).",
+      "description": "OWL 2 RL reasoning with TurbOWL (on by default, with its default rules).",
+      "markdownDescription": "OWL 2 RL reasoning with TurbOWL (on by default, with its default rules).",
       "properties": {
         "rules": {
           "$ref": "#/definitions/reasoning.rules"

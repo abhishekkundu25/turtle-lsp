@@ -27,7 +27,8 @@ before(async () => {
   ontoUri = uriOf(path.join(ws, "onto.ttl"))
   dataUri = uriOf(path.join(ws, "data.ttl"))
   on = await startServer({ cwd: ws, initializationOptions: { reasoning: { rules: "default" } } })
-  off = await startServer({ cwd: ws })
+  // Reasoning is on by default: "off" is asked for.
+  off = await startServer({ cwd: ws, initializationOptions: { reasoning: { rules: "off" } } })
   for (const s of [on, off]) {
     await s.request("workspace/symbol", { query: "" })
     s.open(dataUri, DATA)

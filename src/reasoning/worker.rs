@@ -750,7 +750,13 @@ mod tests {
         };
         assert!(shown(&shared, &off).diagnostics.is_empty());
         assert!(shared.read_for_test().is_none());
+        // On by default; off builds nothing.
         let settings = crate::settings::Settings::default();
-        assert!(Shared::when_on(&settings, crate::server::worker::Spawn::Thread).is_none());
+        assert!(Shared::when_on(&settings, crate::server::worker::Spawn::Thread).is_some());
+        let off = crate::settings::Settings {
+            reasoning: Reasoning::Off,
+            ..settings
+        };
+        assert!(Shared::when_on(&off, crate::server::worker::Spawn::Thread).is_none());
     }
 }
