@@ -91,11 +91,12 @@ pub(super) fn scope_at(q: &SparqlAnalysis, offset: u32) -> PrefixMap {
     m
 }
 
-fn loc(q: &SparqlAnalysis, enc: Encoding, span: Span) -> Location {
-    Location {
-        uri: uri(&q.uri),
+/// `None` when the document's URI is not one ([`uri`]).
+fn loc(q: &SparqlAnalysis, enc: Encoding, span: Span) -> Option<Location> {
+    Some(Location {
+        uri: uri(&q.uri)?,
         range: q.range(enc, span),
-    }
+    })
 }
 
 /// The prefix spans (`ex` of each `ex:a`) of prefix `name`.
@@ -131,7 +132,7 @@ pub(crate) fn definition(
     match target_at(q, offset) {
         Some(Target::Var(v)) => occurrences(q, v)
             .first()
-            .map(|first| loc(q, enc, first.span))
+            .and_then(|first| loc(q, enc, first.span))
             .into_iter()
             .collect(),
         Some(Target::Prefix { name, span }) => {
@@ -143,13 +144,13 @@ pub(crate) fn definition(
             }
             .or_else(|| st.prefixes.iter().find(|p| p.name == name));
             if let Some(p) = decl {
-                return vec![loc(q, enc, p.name_span)];
+                return loc(q, enc, p.name_span).into_iter().collect();
             }
             prefix_file
                 .and_then(|pf| {
                     let p = pf.parsed.prefixes.iter().find(|p| p.name == name)?;
                     Some(Location {
-                        uri: uri(&pf.uri),
+                        uri: uri(&pf.uri)?,
                         range: pf.range(enc, p.name_span),
                     })
                 })
@@ -170,7 +171,7 @@ fn uses_in(docs: &[&SparqlAnalysis], iri: &str, enc: Encoding) -> Vec<Location> 
     for d in docs {
         for r in &d.doc.structure().refs {
             if r.iri.as_deref() == Some(iri) {
-                out.push(loc(d, enc, r.span));
+                out.extend(loc(d, enc, r.span));
             }
         }
     }
@@ -202,14 +203,14 @@ pub(crate) fn references(
         Some(Target::Var(v)) => occurrences(q, v)
             .iter()
             .skip(usize::from(!include_declaration))
-            .map(|o| loc(q, enc, o.span))
+            .filter_map(|o| loc(q, enc, o.span))
             .collect(),
         Some(Target::Prefix { name, .. }) => {
             let mut out: Vec<Location> = Vec::new();
             if include_declaration {
-                out.extend(prefix_decls(q, &name).map(|s| loc(q, enc, s)));
+                out.extend(prefix_decls(q, &name).filter_map(|s| loc(q, enc, s)));
             }
-            out.extend(prefix_uses(q, &name).map(|s| loc(q, enc, s)));
+            out.extend(prefix_uses(q, &name).filter_map(|s| loc(q, enc, s)));
             out
         }
         Some(Target::Term(r)) => {

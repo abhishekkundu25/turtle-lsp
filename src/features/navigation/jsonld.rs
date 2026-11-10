@@ -75,12 +75,12 @@ pub(crate) fn definition_location(
 ) -> Option<Location> {
     let spells = |text: &str| text.get(d.key.start as usize..d.key.end as usize) == Some(&d.term);
     match &d.origin {
-        Origin::Document => Some(super::loc(a, enc, d.key)),
+        Origin::Document => super::loc(a, enc, d.key),
         Origin::Remote(_) => None,
         Origin::File(url) => {
             let uri = normalize_uri(url);
             if let Some(file) = k.get(&uri).filter(|f| spells(&f.text)) {
-                return Some(super::loc(file, enc, d.key));
+                return super::loc(file, enc, d.key);
             }
             let text = std::fs::read_to_string(uri_to_path(&uri)?).ok()?;
             if !spells(&text) {
@@ -89,7 +89,7 @@ pub(crate) fn definition_location(
             let lines = crate::analysis::LineIndex::new(&text);
             let pos = |o| crate::analysis::position_in(&lines, &text, enc, o);
             Some(Location {
-                uri: super::uri(&uri),
+                uri: super::uri(&uri)?,
                 range: lsp_types::Range::new(pos(d.key.start), pos(d.key.end)),
             })
         }
@@ -129,11 +129,17 @@ pub(crate) struct Changes {
 }
 
 impl Changes {
-    pub(crate) fn push(&mut self, uri: &str, range: lsp_types::Range, new_text: String) {
-        let edits = self.by_uri.entry(super::uri(uri)).or_default();
+    pub(crate) fn push(
+        &mut self,
+        uri: &str,
+        range: lsp_types::Range,
+        new_text: String,
+    ) -> Result<(), String> {
+        let edits = self.by_uri.entry(super::edited_uri(uri)?).or_default();
         if !edits.iter().any(|e| e.range == range) {
             edits.push(TextEdit { range, new_text });
         }
+        Ok(())
     }
 
     /// `edits` (byte spans) of `text`, the text of `uri`. `Err` when one is
@@ -173,7 +179,7 @@ impl Changes {
                 uri,
                 lsp_types::Range::new(pos(span.start), pos(span.end)),
                 t,
-            );
+            )?;
         }
         Ok(())
     }

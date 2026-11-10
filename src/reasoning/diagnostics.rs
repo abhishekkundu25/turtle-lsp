@@ -276,12 +276,14 @@ fn explained_message(
     if related {
         let info = leaves
             .into_iter()
-            .map(|(o, text)| DiagnosticRelatedInformation {
-                location: Location {
-                    uri: crate::features::navigation::uri(&o.uri),
-                    range: o.range,
-                },
-                message: text,
+            .filter_map(|(o, text)| {
+                Some(DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: crate::features::navigation::uri(&o.uri)?,
+                        range: o.range,
+                    },
+                    message: text,
+                })
             })
             .collect();
         return (message, Some(info));

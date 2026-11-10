@@ -566,8 +566,35 @@ pub(crate) fn normalize_uri(uri: &str) -> String {
         .unwrap_or_else(|| uri.to_string())
 }
 
+/// The `file:` URI of `path`, one the protocol's `Uri` parses.
 pub(crate) fn path_to_uri(path: &Path) -> Option<String> {
-    file_url_of(path, false).map(|u| u.to_string())
+    file_url_of(path, false).map(|u| escaped(u.into()))
+}
+
+/// `url` with the `[`, `]`, `^` and `|` of its path as percent escapes. The
+/// `url` crate writes them as they are, which the URL standard allows in a
+/// path; RFC 3986 does not, so the protocol's `Uri` refuses the URL, and
+/// VS Code sends them escaped.
+fn escaped(url: String) -> String {
+    let path = url
+        .find("://")
+        .and_then(|i| Some(i + 3 + url[i + 3..].find('/')?))
+        .unwrap_or(0);
+    if !url[path..].contains(['[', ']', '^', '|']) {
+        return url;
+    }
+    let mut out = String::with_capacity(url.len() + 8);
+    out.push_str(&url[..path]);
+    for c in url[path..].chars() {
+        match c {
+            '[' => out.push_str("%5B"),
+            ']' => out.push_str("%5D"),
+            '^' => out.push_str("%5E"),
+            '|' => out.push_str("%7C"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// `path` without symbolic links (and on Windows without `\\?\`), or as it is
@@ -2293,6 +2320,28 @@ pub(crate) mod tests {
         assert_eq!(normalize_uri(&uri), uri);
         assert_eq!(normalize_uri(&normalize_uri(&uri)), uri);
         assert_eq!(normalize_uri("untitled:Untitled-1"), "untitled:Untitled-1");
+    }
+
+    /// The `url` crate leaves the `[`, `]`, `^` and `|` of a path as they
+    /// are, and the protocol's `Uri` refuses them: a file with one in its
+    /// name had a URI no location could carry.
+    #[test]
+    fn path_to_uri_is_a_uri_the_protocol_parses() {
+        let dir = std::env::temp_dir();
+        let ascii = (b' '..=b'~')
+            .map(char::from)
+            .filter(|c| !['/', '\\', ':'].contains(c))
+            .map(|c| format!("a{c}b.ttl"));
+        for name in ascii.chain(["données.ttl".to_string(), "数据.ttl".to_string()]) {
+            let uri = path_to_uri(&dir.join(&name)).unwrap();
+            assert!(uri.parse::<lsp_types::Uri>().is_ok(), "{name}: {uri}");
+            assert_eq!(normalize_uri(&uri), uri, "{name}");
+            let back = uri_to_path(&uri).unwrap();
+            assert_eq!(back.file_name().unwrap().to_str(), Some(&*name), "{uri}");
+        }
+        // As VS Code writes them, so an open file and its copy on disk have one URI.
+        let uri = path_to_uri(&dir.join("a [b]^c|d.ttl")).unwrap();
+        assert!(uri.ends_with("/a%20%5Bb%5D%5Ec%7Cd.ttl"), "{uri}");
     }
 
     #[test]

@@ -231,7 +231,7 @@ fn add_all_missing(q: &SparqlAnalysis, k: &Knowledge, enc: Encoding) -> Option<C
         title: format!("Add all missing prefixes ({})", all.len()),
         kind: Some(CodeActionKind::QUICKFIX),
         edit: Some(workspace_edit(
-            &crate::features::navigation::uri(&q.uri),
+            &crate::features::navigation::uri(&q.uri)?,
             vec![fix],
         )),
         ..Default::default()

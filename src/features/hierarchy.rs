@@ -81,7 +81,7 @@ fn locate(
     asking: Option<&Analysis>,
 ) -> Option<(Uri, Range, Range)> {
     let at = |a: &Analysis, range: Span, sel: Span| {
-        Some((uri(&a.uri), a.range(enc, range), a.range(enc, sel)))
+        Some((uri(&a.uri)?, a.range(enc, range), a.range(enc, sel)))
     };
     if let Some(d) = k
         .descriptions(&iri)
