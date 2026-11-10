@@ -81,31 +81,36 @@ fn locate(
     asking: Option<&Analysis>,
 ) -> Option<(Uri, Range, Range)> {
     let at = |a: &Analysis, range: Span, sel: Span| {
-        Some((uri(&a.uri), a.range(enc, range), a.range(enc, sel)))
+        Some((uri(&a.uri)?, a.range(enc, range), a.range(enc, sel)))
     };
-    if let Some(d) = k
+    // The first place that has a location: a document whose name is no URI
+    // has none, and the next place is tried.
+    let described = k
         .descriptions(&iri)
         .into_iter()
-        .find(|d| d.source != Source::External)
-    {
-        let sel = *d.spans.first()?;
-        let parsed = &d.analysis.parsed;
-        let range = parsed
-            .statement_at(sel)
-            .map(|i| parsed.statements[i].span)
-            .filter(|s| s.start <= sel.start && sel.end <= s.end)
-            .unwrap_or(sel);
-        return at(d.analysis, range, sel);
+        .filter(|d| d.source != Source::External)
+        .find_map(|d| {
+            let sel = *d.spans.first()?;
+            let parsed = &d.analysis.parsed;
+            let range = parsed
+                .statement_at(sel)
+                .map(|i| parsed.statements[i].span)
+                .filter(|s| s.start <= sel.start && sel.end <= s.end)
+                .unwrap_or(sel);
+            at(d.analysis, range, sel)
+        });
+    if described.is_some() {
+        return described;
     }
     if let Some(a) = asking
         && let Some(r) = a.refs_of(&iri).next()
+        && let Some(found) = at(a, r.span, r.span)
     {
-        return at(a, r.span, r.span);
+        return Some(found);
     }
     k.docs_referencing(&iri)
         .filter(|(_, s, _)| *s != Source::External)
-        .find_map(|(_, _, a)| a.refs_of(&iri).next().map(|r| (a, r.span)))
-        .and_then(|(a, span)| at(a, span, span))
+        .find_map(|(_, _, a)| a.refs_of(&iri).next().and_then(|r| at(a, r.span, r.span)))
 }
 
 /// The asking document's prefixes: those it declares win over those it gets
@@ -309,5 +314,24 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    #[test]
+    fn a_class_described_under_a_name_that_is_no_uri_is_shown_where_it_has_one() {
+        let mut ws = Workspace::default();
+        let text = "@prefix ex: <http://ex.org/> .\n\
+                    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                    ex:Thing a rdfs:Class .\n";
+        // A name no escaping makes a URI, beside documents that have one.
+        for name in ["1:a", "file:///w/b.ttl", "http://[x/a"] {
+            ws.open_doc(name.into(), text.into(), 1);
+        }
+        let uses = "@prefix ex: <http://ex.org/> .\nex:x a ex:Thing .\n";
+        ws.open_doc("file:///w/uses.ttl".into(), uses.into(), 1);
+        let a = ws.analysis("file:///w/uses.ttl").unwrap();
+        let col = uses.lines().nth(1).unwrap().find("ex:Thing").unwrap() as u32 + 1;
+        let items =
+            prepare(&a, ws.knowledge(), Encoding::Utf8, Position::new(1, col)).expect("an item");
+        assert_eq!(items[0].uri.as_str(), "file:///w/b.ttl");
     }
 }

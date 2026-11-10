@@ -566,8 +566,45 @@ pub(crate) fn normalize_uri(uri: &str) -> String {
         .unwrap_or_else(|| uri.to_string())
 }
 
+/// The `file:` URI of `path`, one the protocol's `Uri` parses.
 pub(crate) fn path_to_uri(path: &Path) -> Option<String> {
-    file_url_of(path, false).map(|u| u.to_string())
+    file_url_of(path, false).map(|u| as_uri(u.as_str()).into_owned())
+}
+
+/// `s`, a URL or an IRI, as a URI (RFC 3986): each character a URI may not
+/// hold becomes the percent escapes of its UTF-8 bytes (RFC 3987, 3.1). The
+/// `url` crate leaves the `[`, `]`, `^` and `|` of a path as they are, which
+/// the URL standard allows, and an IRI may hold letters outside ASCII. The
+/// protocol's `Uri` refuses both, and VS Code sends them escaped. `[` and
+/// `]` stay where an IPv6 host has them, and `%` where it starts an escape.
+pub(crate) fn as_uri(s: &str) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write;
+    let host_end = s.find("://").map_or(0, |i| {
+        let rest = &s[i + 3..];
+        i + 3 + rest.find(['/', '?', '#']).unwrap_or(rest.len())
+    });
+    let kept = |i: usize, c: char| match c {
+        '[' | ']' => i < host_end,
+        '%' => s
+            .as_bytes()
+            .get(i + 1..i + 3)
+            .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)),
+        c => c.is_ascii_alphanumeric() || "-._~:/?#@!$&'()*+,;=".contains(c),
+    };
+    if s.char_indices().all(|(i, c)| kept(i, c)) {
+        return s.into();
+    }
+    let mut out = String::with_capacity(s.len() + 16);
+    for (i, c) in s.char_indices() {
+        if kept(i, c) {
+            out.push(c);
+        } else {
+            for b in c.encode_utf8(&mut [0; 4]).bytes() {
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out.into()
 }
 
 /// `path` without symbolic links (and on Windows without `\\?\`), or as it is
@@ -2293,6 +2330,83 @@ pub(crate) mod tests {
         assert_eq!(normalize_uri(&uri), uri);
         assert_eq!(normalize_uri(&normalize_uri(&uri)), uri);
         assert_eq!(normalize_uri("untitled:Untitled-1"), "untitled:Untitled-1");
+    }
+
+    /// The `url` crate leaves the `[`, `]`, `^` and `|` of a path as they
+    /// are, and the protocol's `Uri` refuses them: a file with one in its
+    /// name had a URI no location could carry.
+    #[test]
+    fn path_to_uri_is_a_uri_the_protocol_parses() {
+        let dir = std::env::temp_dir();
+        let ascii = (b' '..=b'~')
+            .map(char::from)
+            .filter(|c| !['/', '\\', ':'].contains(c))
+            .map(|c| format!("a{c}b.ttl"));
+        for name in ascii.chain(["données.ttl".to_string(), "数据.ttl".to_string()]) {
+            let uri = path_to_uri(&dir.join(&name)).unwrap();
+            assert!(uri.parse::<lsp_types::Uri>().is_ok(), "{name}: {uri}");
+            assert_eq!(normalize_uri(&uri), uri, "{name}");
+            let back = uri_to_path(&uri).unwrap();
+            assert_eq!(back.file_name().unwrap().to_str(), Some(&*name), "{uri}");
+        }
+        // As VS Code writes them, so an open file and its copy on disk have one URI.
+        let uri = path_to_uri(&dir.join("a [b]^c|d.ttl")).unwrap();
+        assert!(uri.ends_with("/a%20%5Bb%5D%5Ec%7Cd.ttl"), "{uri}");
+    }
+
+    /// `a[1].ttl` and a file named `a%5B1%5D.ttl` are two files: the
+    /// second's `%` is escaped too, so their URIs differ and each comes back
+    /// to its own path. A URI that is one already is left as it is.
+    #[test]
+    fn a_bracket_and_its_escape_written_out_are_two_files() {
+        let dir = std::env::temp_dir();
+        let bracket = path_to_uri(&dir.join("a[1].ttl")).unwrap();
+        let written = path_to_uri(&dir.join("a%5B1%5D.ttl")).unwrap();
+        assert!(bracket.ends_with("/a%5B1%5D.ttl"), "{bracket}");
+        assert!(written.ends_with("/a%255B1%255D.ttl"), "{written}");
+        for (uri, name) in [(&bracket, "a[1].ttl"), (&written, "a%5B1%5D.ttl")] {
+            assert_eq!(normalize_uri(uri), *uri);
+            let back = uri_to_path(uri).unwrap();
+            assert_eq!(back.file_name().unwrap().to_str(), Some(name), "{uri}");
+        }
+        for uri in [
+            "vscode-remote://ssh-remote%2Bhost/home/u/a%5B1%5D.ttl",
+            "file:///c%3A/w/a%5B1%5D.ttl",
+            "untitled:Untitled-1",
+        ] {
+            assert!(uri.parse::<lsp_types::Uri>().is_ok(), "{uri}");
+            assert_eq!(as_uri(uri), uri, "{uri}");
+        }
+    }
+
+    #[test]
+    fn as_uri_escapes_what_a_uri_may_not_hold() {
+        for (iri, uri) in [
+            ("http://example.org/a#b", "http://example.org/a#b"),
+            (
+                "http://example.org/données/été",
+                "http://example.org/donn%C3%A9es/%C3%A9t%C3%A9",
+            ),
+            (
+                "http://example.org/a b|c^d`e{f}\"<g>\\h",
+                "http://example.org/a%20b%7Cc%5Ed%60e%7Bf%7D%22%3Cg%3E%5Ch",
+            ),
+            // Brackets belong to the host only.
+            (
+                "http://[::1]:8080/a[1]?q=[x]#f[y]",
+                "http://[::1]:8080/a%5B1%5D?q=%5Bx%5D#f%5By%5D",
+            ),
+            // An escape stays; a `%` that starts none is escaped.
+            (
+                "http://example.org/a%2Fb/100%/%zz",
+                "http://example.org/a%2Fb/100%25/%25zz",
+            ),
+            ("urn:example:a[1]", "urn:example:a%5B1%5D"),
+        ] {
+            assert_eq!(as_uri(iri), uri);
+            assert!(uri.parse::<lsp_types::Uri>().is_ok(), "{uri}");
+            assert_eq!(as_uri(uri), uri, "an escaped one stays as it is");
+        }
     }
 
     #[test]

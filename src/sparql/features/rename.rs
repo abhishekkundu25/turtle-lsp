@@ -7,7 +7,7 @@
 use super::actions::text_edits;
 use super::navigation::{Target, occurrences, prefix_of, scope_at, target_at, with_others};
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
-use crate::features::navigation::{self as rdf, shown, uri};
+use crate::features::navigation::{self as rdf, edited_uri, shown};
 use crate::knowledge::Knowledge;
 use crate::sparql::{Form, PrefixSource, VarOcc};
 use crate::syntax::Span;
@@ -47,11 +47,11 @@ pub(crate) fn rename(
     let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
     match target {
         Target::Var(v) => {
-            changes.insert(uri(&q.uri), rename_var(q, enc, v, new_name)?);
+            changes.insert(edited_uri(&q.uri)?, rename_var(q, enc, v, new_name)?);
         }
         Target::Prefix { name, .. } => {
             changes.insert(
-                uri(&q.uri),
+                edited_uri(&q.uri)?,
                 rename_prefix(q, enc, &name, new_name, prefix_file)?,
             );
         }
@@ -246,7 +246,10 @@ fn sparql_term_edits(
             .collect();
         if !reps.is_empty() {
             let edits = kept(d, text_edits(d, enc, reps))?;
-            changes.entry(uri(&d.uri)).or_default().extend(edits);
+            changes
+                .entry(edited_uri(&d.uri)?)
+                .or_default()
+                .extend(edits);
         }
     }
     Ok(())

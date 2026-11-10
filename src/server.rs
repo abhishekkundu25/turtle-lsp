@@ -1458,8 +1458,11 @@ impl Server {
     }
 
     fn send_diagnostics(&self, uri: &str, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+        let Some(uri) = navigation::uri(self.spelling.get(uri).map_or(uri, String::as_str)) else {
+            return;
+        };
         let params = PublishDiagnosticsParams {
-            uri: navigation::uri(self.spelling.get(uri).map_or(uri, String::as_str)),
+            uri,
             diagnostics,
             version,
         };

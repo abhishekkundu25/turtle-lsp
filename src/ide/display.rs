@@ -588,6 +588,48 @@ mod tests {
         assert_eq!(command.title, "3 references");
     }
 
+    /// A file name with `[`, `]`, `^` or `|` had a URI the protocol's parser
+    /// refuses, and resolving a lens whose term the file uses panicked.
+    #[test]
+    fn a_reference_lens_lists_a_file_whose_name_a_uri_must_escape() {
+        let dir = Dir::new("lens-escaped");
+        let ttl = format!("{PREFIXES}ex:a rdfs:label \"A\" .\n");
+        let user = format!("{PREFIXES}ex:b rdfs:seeAlso ex:a .\n");
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
+        let on_disk = dir.0.join("notes [draft]^2.ttl");
+        std::fs::write(&on_disk, &user).unwrap();
+        assert!(ws.reindex_disk_file(&on_disk));
+        // An open one, under the URI VS Code sends for it.
+        let folder = path_to_uri(&dir.0).unwrap();
+        let open = format!("{folder}/open%20%5B1%5D.ttl");
+        std::fs::write(dir.0.join("open [1].ttl"), &user).unwrap();
+        let open = crate::workspace::normalize_uri(&open);
+        ws.open_doc(open.clone(), user.clone(), 1);
+
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let lens = s.code_lenses(&uris[0]).unwrap().remove(0);
+        let command = s.resolve_code_lens(lens).command.unwrap();
+        assert_eq!(command.title, "2 references");
+        let listed: Vec<lsp_types::Location> =
+            serde_json::from_value(command.arguments.unwrap()[2].clone()).unwrap();
+        let mut files: Vec<&str> = listed.iter().map(|l| l.uri.as_str()).collect();
+        files.sort_unstable();
+        assert_eq!(
+            files,
+            [
+                format!("{folder}/notes%20%5Bdraft%5D%5E2.ttl"),
+                format!("{folder}/open%20%5B1%5D.ttl"),
+            ]
+        );
+        // Its own lens resolves too.
+        let own = s.code_lenses(&open).unwrap().remove(0);
+        assert_eq!(
+            s.resolve_code_lens(own).command.unwrap().title,
+            "0 references"
+        );
+    }
+
     #[test]
     fn supertypes_are_named_with_the_prefixes_of_the_asking_document() {
         let dir = Dir::new("supertypes");

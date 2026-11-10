@@ -8,7 +8,7 @@ use crate::features::refactor::text_edits;
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::names::is_pn_prefix;
 use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
-use crate::workspace::{PREFIX_FILE, uri_to_path};
+use crate::workspace::{PREFIX_FILE, as_uri, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
 use std::collections::HashMap;
@@ -51,10 +51,21 @@ pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     Some((Target::Iri(r.iri), r.span))
 }
 
-pub(crate) fn uri(s: &str) -> Uri {
+/// `s` as the protocol's URI. A document's URI is one: the client's, or
+/// [`crate::workspace::path_to_uri`]'s. An import read without a cache is
+/// named by the IRI its importer wrote, which may hold what a URI may not
+/// (a letter outside ASCII): its URI is that IRI escaped ([`as_uri`]), the
+/// URL it was fetched from. `None` when `s` is no URI even so.
+pub(crate) fn uri(s: &str) -> Option<Uri> {
     #[cfg(test)]
     URIS_PARSED.with(|c| c.set(c.get() + 1));
-    Uri::from_str(s).expect("valid uri")
+    Uri::from_str(s).or_else(|_| Uri::from_str(&as_uri(s))).ok()
+}
+
+/// [`uri`] for an edit: `Err` refuses the whole edit, as one without this
+/// document's part would change only some of the uses.
+pub(crate) fn edited_uri(s: &str) -> Result<Uri, String> {
+    uri(s).ok_or_else(|| format!("can't edit {s}: it is not a valid URI"))
 }
 
 #[cfg(test)]
@@ -68,8 +79,8 @@ pub(crate) fn shown(uri: &str) -> String {
     uri_to_path(uri).map_or_else(|| uri.to_string(), |p| p.display().to_string())
 }
 
-fn loc(a: &Analysis, enc: Encoding, span: Span) -> Location {
-    DocLocs::new(a).at(enc, span)
+fn loc(a: &Analysis, enc: Encoding, span: Span) -> Option<Location> {
+    Some(DocLocs::new(a)?.at(enc, span))
 }
 
 /// Locations in one document, its URI parsed once: a result with tens of
@@ -81,11 +92,13 @@ struct DocLocs<'a> {
 }
 
 impl<'a> DocLocs<'a> {
-    fn new(a: &'a Analysis) -> Self {
-        DocLocs {
+    /// `None` for a document whose URI is not one ([`uri`]): it has no
+    /// location a client could open, and a result leaves it out.
+    fn new(a: &'a Analysis) -> Option<Self> {
+        Some(DocLocs {
             a,
-            uri: uri(&a.uri),
-        }
+            uri: uri(&a.uri)?,
+        })
     }
 
     fn at(&self, enc: Encoding, span: Span) -> Location {
@@ -123,7 +136,7 @@ pub fn definition(
                 .find(|p| p.name_span.contains(offset))
                 .or_else(|| declaration_at(a, &name, offset))
             {
-                return vec![loc(a, enc, p.name_span)];
+                return loc(a, enc, p.name_span).into_iter().collect();
             }
             prefix_file
                 .and_then(|pf| {
@@ -131,7 +144,7 @@ pub fn definition(
                         .prefixes
                         .iter()
                         .find(|p| p.name == name)
-                        .map(|p| loc(&pf, enc, p.name_span))
+                        .and_then(|p| loc(&pf, enc, p.name_span))
                 })
                 .into_iter()
                 .collect()
@@ -151,7 +164,9 @@ pub(crate) fn descriptions<K: IriKey + ?Sized>(
 ) -> Vec<Location> {
     let mut out = Vec::new();
     for d in k.descriptions(iri) {
-        let here = DocLocs::new(d.analysis);
+        let Some(here) = DocLocs::new(d.analysis) else {
+            continue;
+        };
         for span in d.spans {
             out.push(here.at(enc, *span));
         }
@@ -177,7 +192,9 @@ pub fn type_definition(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position
     let mut out = Vec::new();
     for ty in k.types(&iri) {
         for d in k.descriptions(&ty) {
-            let here = DocLocs::new(d.analysis);
+            let Some(here) = DocLocs::new(d.analysis) else {
+                continue;
+            };
             for span in d.spans {
                 out.push(here.at(enc, *span));
             }
@@ -198,7 +215,9 @@ pub fn implementations(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position
     let mut out = Vec::new();
     for (doc, related) in k.related_by_doc(&iri) {
         let other = k.doc(doc);
-        let here = DocLocs::new(other);
+        let Some(here) = DocLocs::new(other) else {
+            continue;
+        };
         for s in related {
             for span in other.defs.get(&s).into_iter().flatten() {
                 out.push(here.at(enc, *span));
@@ -224,7 +243,9 @@ pub fn references(
     let mut out = Vec::new();
     match target_at(a, offset) {
         Some((Target::Prefix(name), _)) => {
-            let here = DocLocs::new(a);
+            let Some(here) = DocLocs::new(a) else {
+                return out;
+            };
             if include_decl {
                 out.extend(
                     a.parsed
@@ -267,8 +288,9 @@ fn jsonld_references(
     if include_decl {
         out.extend(jsonld::definition_location(a, k, enc, d));
     }
-    let here = DocLocs::new(a);
-    out.extend(jsonld::use_spans(a, t.definition).map(|s| here.at(enc, s)));
+    if let Some(here) = DocLocs::new(a) {
+        out.extend(jsonld::use_spans(a, t.definition).map(|s| here.at(enc, s)));
+    }
     if let Some(iri) = d.iri.as_deref() {
         out.extend(term_references(k, enc, iri, include_decl));
     }
@@ -299,7 +321,9 @@ pub(crate) fn term_references<K: IriKey + ?Sized>(
         .docs_referencing(iri)
         .filter(|(_, src, _)| *src != Source::External)
     {
-        let here = DocLocs::new(other);
+        let Some(here) = DocLocs::new(other) else {
+            continue;
+        };
         let mut seen = FxHashSet::default();
         for r in other.refs_of(iri) {
             if (include_decl || !r.role.is_definition()) && seen.insert(r.span) {
@@ -509,7 +533,7 @@ pub fn rename(
                 );
                 let edits = text_edits(d, enc, reps);
                 if !edits.is_empty() || std::ptr::eq(d, a) {
-                    changes.insert(uri(&d.uri), edits);
+                    changes.insert(edited_uri(&d.uri)?, edits);
                 }
             }
         }
@@ -624,7 +648,7 @@ pub(crate) fn rename_term(
             reps.push((span, text));
         }
         if !reps.is_empty() {
-            changes.insert(uri(&other.uri), text_edits(other, enc, reps));
+            changes.insert(edited_uri(&other.uri)?, text_edits(other, enc, reps));
         }
     }
     Ok(())
@@ -669,6 +693,58 @@ mod tests {
                 .unwrap_err()
                 .contains("not declared")
         );
+    }
+
+    /// An import read without a cache is named by its IRI, and an IRI may
+    /// hold letters a URI must escape: asking for a location in it panicked.
+    /// Its URI is the IRI escaped; a name that is no URI even so has no
+    /// location, and an edit of it is refused.
+    #[test]
+    fn a_document_named_by_an_iri_has_an_escaped_uri_and_one_that_is_no_uri_has_none() {
+        let text = "@prefix ex: <http://example.org/> .\nex:a a ex:C .\nex:b ex:p ex:a .\n";
+        let doc = |uri: &str| {
+            Arc::new(Analysis::new(
+                uri.into(),
+                text,
+                Arc::new(PrefixMap::default()),
+                true,
+            ))
+        };
+        let good = "file:///w/a.ttl";
+        let (import, escaped) = (
+            "http://example.org/données.ttl",
+            "http://example.org/donn%C3%A9es.ttl",
+        );
+        let no_uri = "http://example.org/a#b#c";
+        assert_eq!(uri(good).unwrap().as_str(), good);
+        assert_eq!(uri(import).unwrap().as_str(), escaped);
+        assert_eq!(
+            uri("file:///w/a [1].ttl").unwrap().as_str(),
+            "file:///w/a%20%5B1%5D.ttl"
+        );
+        for not_one in [no_uri, "http://[x/a", "1:a"] {
+            assert_eq!(uri(not_one), None, "{not_one}");
+        }
+        let mut k = Knowledge::default();
+        k.set(good, Source::Open, doc(good));
+        k.add_external(import, doc(import));
+        k.set(no_uri, Source::Disk, doc(no_uri));
+        let iri = "http://example.org/a";
+        let enc = Encoding::Utf16;
+        let files = |locations: Vec<Location>| -> Vec<String> {
+            locations.iter().map(|l| l.uri.to_string()).collect()
+        };
+        // References leave imports out; definitions list them.
+        assert_eq!(files(term_references(&k, enc, iri, false)), [good]);
+        assert_eq!(files(descriptions(&k, enc, iri, good)), [good, escaped]);
+        let a = k.get(good).unwrap().clone();
+        let at = a.position(enc, text.find("ex:a a").unwrap() as u32 + 3);
+        assert_eq!(files(references(&a, &k, enc, at, false)), [good]);
+        assert_eq!(files(definition(&a, &k, enc, at, None)), [good, escaped]);
+
+        let mut changes = HashMap::new();
+        let refused = rename_term(&k, enc, iri, "http://example.org/z", &mut changes);
+        assert!(refused.unwrap_err().contains("not a valid URI"));
     }
 
     /// A result with a location per use parsed the document's URI for each

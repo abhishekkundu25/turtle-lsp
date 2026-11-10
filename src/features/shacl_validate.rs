@@ -798,14 +798,13 @@ impl Placer<'_, '_, '_> {
         }
         let (pd, ptr) = self.origin(r.param);
         let param_span = Span::new(ptr.p_span.start, ptr.o_span.end.max(ptr.p_span.end));
-        let related = if self.in_workspace(pd) {
-            let pa = self.doc(pd).clone();
+        let related = if self.in_workspace(pd)
+            && let Some(uri) = navigation::uri(&self.doc(pd).uri)
+        {
+            let range = self.doc(pd).range(self.enc, param_span);
             let shape = self.name(pd, r.shape);
             Some(vec![DiagnosticRelatedInformation {
-                location: Location {
-                    uri: navigation::uri(&pa.uri),
-                    range: pa.range(self.enc, param_span),
-                },
+                location: Location { uri, range },
                 message: format!("Constraint of shape {shape}"),
             }])
         } else {

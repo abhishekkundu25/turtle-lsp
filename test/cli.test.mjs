@@ -213,6 +213,16 @@ test("check: --fix applies the safe fixes, --unsafe-fixes the renames too", (t) 
   assert.notEqual(read(ws2, "a.ttl"), text)
 })
 
+// Its URI was written with the brackets as they are, which is not a URI:
+// the file was checked, and no fix was offered for it.
+test("check --fix: a file whose name a URI must escape is fixed too", (t) => {
+  const ws = workspace(t, { "notes [draft]^2.ttl": "<http://example.org/a> rdfs:label \"a\" .\n" })
+  const r = run(ws, ["check", "--fix"])
+  assert.match(r.err, /Applied 1 fix in 1 file/)
+  assert.equal(r.code, 0, r.out)
+  assert.match(read(ws, "notes [draft]^2.ttl"), /^@prefix rdfs: /)
+})
+
 test("check: columns count code points", (t) => {
   // "é" is 2 UTF-8 bytes and 1 UTF-16 unit; "😀" 4 bytes and 2 units.
   const ws = workspace(t, { "prefixes.ttl": PREFIXES, "a.ttl": "<http://x/é😀> rdfs:labl \"a\" .\n" })

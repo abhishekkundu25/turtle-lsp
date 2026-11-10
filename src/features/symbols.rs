@@ -285,13 +285,16 @@ pub fn workspace_symbols(k: &Knowledge, enc: Encoding, query: &str) -> Vec<Symbo
             {
                 continue;
             }
+            let Some(file) = uri(&a.uri) else {
+                continue;
+            };
             out.push(SymbolInformation {
                 name,
                 kind: *kind.get_or_insert_with(|| kind_of(&k.types(&iri))),
                 tags: None,
                 deprecated: None,
                 location: Location {
-                    uri: uri(&a.uri),
+                    uri: file,
                     range: a.range(enc, d.spans[0]),
                 },
                 container_name: label.map(str::to_string),

@@ -134,6 +134,48 @@ test("SPARQL documents get no reference lenses, only Run query", async () => {
   assert.deepEqual(ls.map((l) => l.command?.command), ["turtle.runQuery"])
 })
 
+// A file name with `[`, `]`, `^` or `|`: its URI escapes them, as VS Code's
+// does. Unescaped, the URI is not one, and every lens whose term the file
+// uses failed with "valid uri: ParseError".
+test("a file whose name a URI must escape is counted, listed and has lenses", async () => {
+  const dir = tempDir("turtle-lens-")
+  // As VS Code writes a file's URI: everything but letters, digits and -._~!'()* escaped.
+  const escaped = (name) => `${uriOf(dir)}/${encodeURIComponent(name)}`
+  const uses = "@prefix ex: <http://example.org/> .\nex:dan ex:knows ex:alice .\n"
+  fs.writeFileSync(path.join(dir, "vocab.ttl"), VOCAB)
+  fs.writeFileSync(path.join(dir, "notes [draft]^2.ttl"), uses)
+  fs.writeFileSync(path.join(dir, "open [1].ttl"), uses.replace("ex:dan", "ex:eve"))
+  const srv = await startServer({ cwd: dir })
+  try {
+    const vocab = uriOf(path.join(dir, "vocab.ttl"))
+    srv.open(vocab, VOCAB)
+    await srv.diagnosticsFor(vocab)
+    const open = escaped("open [1].ttl")
+    srv.open(open, uses.replace("ex:dan", "ex:eve"))
+    await srv.diagnosticsFor(open)
+
+    const ls = await srv.request("textDocument/codeLens", { textDocument: { uri: vocab } })
+    const alice = await srv.request("codeLens/resolve", ls.find((l) => l.data.iri === "http://example.org/alice"))
+    assert.equal(alice.command.title, "2 references")
+    assert.deepEqual(alice.command.arguments[2].map((l) => l.uri).sort(), [escaped("notes [draft]^2.ttl"), open])
+
+    const own = await srv.request("textDocument/codeLens", { textDocument: { uri: open } })
+    assert.deepEqual(
+      (await Promise.all(own.map((l) => srv.request("codeLens/resolve", l)))).map((l) => l.command.title),
+      ["0 references"],
+    )
+    const refs = await srv.request("textDocument/references", {
+      textDocument: { uri: vocab },
+      position: { line: 8, character: 4 },
+      context: { includeDeclaration: false },
+    })
+    assert.equal(refs.length, 2)
+  } finally {
+    await srv.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("codeLens.references off gives no lenses", async () => {
   const off = await startServer({ cwd: ws, initializationOptions: { codeLens: { references: false } } })
   try {
