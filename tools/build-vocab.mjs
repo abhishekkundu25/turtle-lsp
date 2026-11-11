@@ -17,7 +17,6 @@
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { gzipSync } from "node:zlib"
 import { buildVocab, parseManifest, SIZE_BUDGET } from "./vocab-lib.mjs"
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -55,16 +54,16 @@ const relative = (file) => path.relative(root, file)
 function locate(rows) {
   const seen = new Map()
   return rows.map((row) => {
-    if (row.format === "tsv") return path.join(FROZEN, `${row.prefix}.tsv`)
+    if (row.frozen) return path.join(FROZEN, `${row.prefix}.tsv`)
     const n = (seen.get(row.prefix) ?? 0) + 1
     seen.set(row.prefix, n)
     return path.join(sourcesDir, `${row.prefix}.${n}.${row.format}`)
   })
 }
 
-// The library's refusals name the row or line; a stack trace adds nothing.
-const refused = (e) => {
-  console.error(e.message)
+// A refusal names the row, line or file; a stack trace adds nothing.
+const refuse = (message) => {
+  console.error(message)
   process.exit(1)
 }
 
@@ -73,47 +72,41 @@ let rows
 try {
   rows = parseManifest(manifest)
 } catch (e) {
-  refused(e)
+  refuse(e.message)
 }
 const files = locate(rows)
 
 if (fetched) {
   rows.forEach((row, i) => {
-    if (row.format !== "tsv") console.log([files[i], row.url, row.sha256, `manifest line ${row.line} (${row.prefix})`].join("\t"))
+    if (!row.frozen) console.log([files[i], row.url, row.sha256, `manifest line ${row.line} (${row.prefix})`].join("\t"))
   })
   process.exit(0)
 }
 
-// Every frozen extract has its row: a file under data/vocab-frozen/ that no
-// row reads would be a vocabulary nobody ships.
-const frozen = new Set(rows.filter((r) => r.format === "tsv").map((r) => `${r.prefix}.tsv`))
+// Every frozen extract has its row: a .tsv file under data/vocab-frozen/ that
+// no row reads would be a vocabulary nobody ships.
+const frozen = new Set(rows.filter((r) => r.frozen).map((r) => `${r.prefix}.tsv`))
 for (const name of fs.readdirSync(FROZEN)) {
-  if (!frozen.has(name)) {
-    console.error(`${relative(path.join(FROZEN, name))}: no frozen row of the manifest reads it`)
-    process.exit(1)
-  }
+  if (name.endsWith(".tsv") && !frozen.has(name)) refuse(`${relative(path.join(FROZEN, name))}: no frozen row of the manifest reads it`)
 }
 
 const sources = rows.map((row, i) => {
   try {
     return fs.readFileSync(files[i])
   } catch {
-    const hint = row.format === "tsv" ? "" : "; tools/check-vocab.sh downloads it"
-    console.error(`manifest line ${row.line} (${row.prefix}): ${relative(files[i])} is missing${hint}`)
-    process.exit(1)
+    const hint = row.frozen ? "" : "; tools/check-vocab.sh downloads it"
+    return refuse(`manifest line ${row.line} (${row.prefix}): ${relative(files[i])} is missing${hint}`)
   }
 })
 const previous = fs.existsSync(LIST) ? fs.readFileSync(LIST, "utf8") : ""
 
-const { text, summary } = await buildVocab({ manifest, corrections: fs.readFileSync(CORRECTIONS, "utf8"), sources, previous }).catch(refused)
+const { text, summary, vocabularies, terms, gzipped } =
+  await buildVocab({ manifest, corrections: fs.readFileSync(CORRECTIONS, "utf8"), sources, previous }).catch((e) => refuse(e.message))
 
 for (const { prefix, added, removed } of summary) {
   console.log(`${prefix}: ${added.length} added, ${removed.length} removed`)
   if (removed.length) console.log(`  removed: ${removed.join(" ")}`)
 }
-const terms = text.split("\n").filter((l) => l.startsWith("term\t")).length
-const vocabularies = new Set(rows.map((r) => r.prefix)).size
-const gzipped = gzipSync(Buffer.from(text), { level: 9 }).length
 console.log(`${vocabularies} vocabularies, ${terms} terms, ${Buffer.byteLength(text)} bytes, ${gzipped} gzipped (budget ${SIZE_BUDGET})`)
 
 if (text === previous) {
@@ -122,6 +115,5 @@ if (text === previous) {
   fs.writeFileSync(LIST, text)
   console.log("wrote data/vocab.tsv")
 } else {
-  console.error("data/vocab.tsv differs from what the sources give; run npm run vocab")
-  process.exit(1)
+  refuse("data/vocab.tsv differs from what the sources give; run npm run vocab")
 }

@@ -180,6 +180,8 @@ fn load() -> Vocabularies {
     // (alias, index in `all`): the fields of an `@ns` line after the
     // namespace, other spellings of it.
     let mut aliases = Vec::new();
+    // Where the last vocabulary's terms start in DATA.
+    let mut body_start = 0;
     let mut offset = 0;
     for line in DATA.split_inclusive('\n') {
         let start = offset;
@@ -189,15 +191,16 @@ fn load() -> Vocabularies {
         };
         // The previous vocabulary's terms end where this line starts.
         if let Some(prev) = all.last_mut() {
-            prev.body = &prev.body[..prev.body.len() - (DATA.len() - start)];
+            prev.body = &DATA[body_start..start];
         }
+        body_start = offset;
         let mut f = rest.trim_end().split('\t');
         let (prefix, namespace) = (f.next().unwrap_or(""), f.next().unwrap_or(""));
         aliases.extend(f.map(|alias| (alias, all.len())));
         all.push(Vocabulary {
             prefix,
             namespace,
-            body: &DATA[offset..],
+            body: &DATA[body_start..],
             terms: OnceLock::new(),
             index: OnceLock::new(),
             names: OnceLock::new(),
@@ -741,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn dbo_names_are_ascii_and_shacl_keeps_its_js_terms() {
+    fn dbo_names_are_ascii() {
         let dbo = VOCABS.by_prefix("dbo").unwrap();
         let odd: Vec<_> = dbo
             .terms()
@@ -750,10 +753,33 @@ mod tests {
             .map(|t| &t.local)
             .collect();
         assert!(odd.is_empty(), "{odd:?}");
+    }
+
+    #[test]
+    fn shacl_keeps_its_js_terms() {
         let sh = VOCABS.by_prefix("sh").unwrap();
-        for local in ["js", "JSConstraint", "jsFunctionName", "jsLibraryURL"] {
+        let js = [
+            "js",
+            "JSConstraint",
+            "JSConstraint-js",
+            "JSConstraintComponent",
+            "JSExecutable",
+            "JSFunction",
+            "jsFunctionName",
+            "jsLibrary",
+            "JSLibrary",
+            "jsLibraryURL",
+            "JSRule",
+            "JSTarget",
+            "JSTargetType",
+            "JSValidator",
+        ];
+        for local in js {
             assert!(sh.term(local).is_some(), "sh:{local}");
         }
+        // And no other: a new one would be missing from the list above.
+        let named = |t: &&Term| t.local.to_ascii_lowercase().starts_with("js");
+        assert_eq!(sh.terms().iter().filter(named).count(), js.len());
     }
 
     #[test]

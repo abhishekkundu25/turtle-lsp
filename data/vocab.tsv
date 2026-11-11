@@ -1002,7 +1002,7 @@ term	E20_Biological_Object	C		Biological Object	This class comprises individual 
 term	E21_Person	C		Person	This class comprises real persons who live or are assumed to have lived.	E20_Biological_Object E39_Actor
 term	E22_Human-Made_Object	C		Human-Made Object	This class comprises all persistent physical objects of any size that are purposely created by human activity and have physical boundaries that separate them…	E19_Physical_Object E24_Physical_Human-Made_Thing
 term	E24_Physical_Human-Made_Thing	C		Physical Human-Made Thing	This class comprises all persistent physical items of any size that are purposely created by human activity.	E18_Physical_Thing E71_Human-Made_Thing
-term	E25_Human-Made_Feature	C		Human-Made Feature	This class comprises physical features that are purposely created by human activity, such as scratches, artificial caves, artificial water channels, etc.	E24_Physical_Human-Made_Thing E26_Physical_Feature
+term	E25_Human-Made_Feature	C		Human-Made Feature	This class comprises physical features that are purposely created by human activity, such as scratches, artificial caves, artificial water channels, etc. In…	E24_Physical_Human-Made_Thing E26_Physical_Feature
 term	E26_Physical_Feature	C		Physical Feature	This class comprises identifiable features that are physically attached in an integral way to particular physical objects.	E18_Physical_Thing
 term	E27_Site	C		Site	This class comprises pieces of land or sea floor.	E26_Physical_Feature
 term	E28_Conceptual_Object	C		Conceptual Object	This class comprises non-material products of our minds and other human produced data that have become objects of a discourse about their identity,…	E71_Human-Made_Thing
@@ -1028,7 +1028,7 @@ term	E54_Dimension	C		Dimension	This class comprises quantifiable properties tha
 term	E55_Type	C		Type	This class comprises concepts denoted by terms from thesauri and controlled vocabularies used to characterize and classify instances of CIDOC CRM classes.	E28_Conceptual_Object
 term	E56_Language	C		Language	This class is a specialization of E55 Type and comprises the natural languages in the sense of concepts.	E55_Type
 term	E57_Material	C		Material	This class is a specialization of E55 Type and comprises the concepts of materials.	E55_Type
-term	E58_Measurement_Unit	C		Measurement Unit	This class is a specialization of E55 Type and comprises the types of measurement units: feet, inches, centimetres, litres, lumens, etc.	E55_Type
+term	E58_Measurement_Unit	C		Measurement Unit	This class is a specialization of E55 Type and comprises the types of measurement units: feet, inches, centimetres, litres, lumens, etc. This type is used…	E55_Type
 term	E5_Event	C		Event	This class comprises distinct, delimited and coherent processes and interactions of a material nature, in cultural, social or physical systems, involving and…	E4_Period
 term	E63_Beginning_of_Existence	C		Beginning of Existence	This class comprises events that bring into existence any instance of E77 Persistent Item.	E5_Event
 term	E64_End_of_Existence	C		End of Existence	This class comprises events that end the existence of any instance of E77 Persistent Item.	E5_Event
@@ -1325,7 +1325,7 @@ term	P71_lists	P		lists	This property associates an instance of E32 Authority Do
 term	P71i_is_listed_in	P		is listed in		P67i_is_referred_to_by	E1_CRM_Entity	E32_Authority_Document
 term	P72_has_language	P		has language	This property associates an instance(s) of E33 Linguistic Object with an instance of E56 Language in which it is, at least partially, expressed.		E33_Linguistic_Object	E56_Language
 term	P72i_is_language_of	P		is language of			E56_Language	E33_Linguistic_Object
-term	P73_has_translation	P		has translation	This property links an instance of E33 Linguistic Object (A), to another instance of E33 Linguistic Object (B) which is the translation of A.	P130i_features_are_also_found_on	E33_Linguistic_Object	E33_Linguistic_Object
+term	P73_has_translation	P		has translation	This property links an instance of E33 Linguistic Object (A), to another instance of E33 Linguistic Object (B) which is the translation of A. When an instance…	P130i_features_are_also_found_on	E33_Linguistic_Object	E33_Linguistic_Object
 term	P73i_is_translation_of	P		is translation of		P130_shows_features_of	E33_Linguistic_Object	E33_Linguistic_Object
 term	P74_has_current_or_former_residence	P		has current or former residence	This property describes the current or former place of residence (an instance of E53 Place) of an instance of E39 Actor.		E39_Actor	E53_Place
 term	P74i_is_current_or_former_residence_of	P		is current or former residence of			E53_Place	E39_Actor
@@ -1398,7 +1398,7 @@ term	datatype	P		datatype	An object property that contains either a single strin
 term	decimalChar	P		decimal character	A string whose value is used to represent a decimal point within the number.		NumericFormat	xsd:string
 term	default	P		default	An atomic property holding a single string that is used to create a default value for the cell in cases where the original string value is an empty string.			xsd:string
 term	delimiter	P		delimiter	An atomic property that sets the delimiter flag to the single provided value, which MUST be a string.		Dialect	xsd:string
-term	describes	P		describes	From IANA describes: The relationship A 'describes' B asserts that resource A provides a description of resource B.		Row
+term	describes	P		describes	From IANA describes: The relationship A 'describes' B asserts that resource A provides a description of resource B. There are no constraints on the format or…		Row
 term	dialect	P		dialect	An object property that provides a single dialect description.			Dialect
 term	doubleQuote	P		double quote	A boolean atomic property that, if `true`, sets the escape character flag to `"`.		Dialect	xsd:boolean
 term	encoding	P		encoding	An atomic property that sets the encoding flag to the single provided string value, which MUST be a defined in [[encoding]]. The default is "utf-8".		Dialect	xsd:string
@@ -1459,7 +1459,7 @@ term	virtual	P		virtual	A boolean atomic property taking a single value which in
 @ns	dash	http://datashapes.org/dash#
 term	APIStatus	C		API Status	The class of possible values for dash:apiStatus.	rdfs:Resource
 term	Action	C		Action	An executable command triggered by an agent, backed by a Script implementation. Actions may get deactivated using sh:deactivated.	Script sh:Parameterizable
-term	ActionGroup	C		Action group	A group of ResourceActions, used to arrange items in menus etc.	rdfs:Resource
+term	ActionGroup	C		Action group	A group of ResourceActions, used to arrange items in menus etc. Similar to sh:PropertyGroups, they may have a sh:order and should have labels (in multiple…	rdfs:Resource
 term	ActionTestCase	C		Action test case	A test case that evaluates a dash:Action using provided input parameters.	TestCase
 term	AllObjects	I		All objects	A reusable instance of dash:AllObjectsTarget.
 term	AllObjectsTarget	C		All objects target	A target containing all objects in the data graph as focus nodes.	sh:Target
@@ -2784,9 +2784,9 @@ term	budget	P		budget ($)				xsd:double
 term	budgetYear	P		budget year			Place	xsd:string
 term	builder	P		builder		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>
 term	building	P		building		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isLocationOf>	Island	Building
-term	buildingEndDate	P		building end date	Building end date of an ArchitecturalStructure, man-made Lake, etc.			xsd:string
+term	buildingEndDate	P		building end date	Building end date of an ArchitecturalStructure, man-made Lake, etc. For older structures this can be just a year or century, for newer structures an exact date…			xsd:string
 term	buildingEndYear	P		building end year			ArchitecturalStructure	xsd:gYear
-term	buildingStartDate	P		building start date	Building start date of an ArchitecturalStructure, man-made Lake, etc.			xsd:string
+term	buildingStartDate	P		building start date	Building start date of an ArchitecturalStructure, man-made Lake, etc. For older structures this can be just a year or century, for newer structures an exact…			xsd:string
 term	buildingStartYear	P		building start year			ArchitecturalStructure	xsd:gYear
 term	buildingType	P		buildingType	Type is too general. We should be able to distinguish types of music from types of architecture	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isClassifiedBy>	Building
 term	bustSize	P		bust size (μ)			Person	xsd:double
@@ -3129,7 +3129,7 @@ term	demographicsAsOf	P		demographics as of			PopulatedPlace	xsd:date
 term	demolitionDate	P		demolition date	The date the building was demolished.		ArchitecturalStructure	xsd:date
 term	demolitionYear	P		demolition year	The year the building was demolished.		ArchitecturalStructure	xsd:gYear
 term	demonym	P		demonym				rdf:langString
-term	denomination	P		denomination	Religious denomination of a church, religious school, etc.	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isExpressedBy>	Agent
+term	denomination	P		denomination	Religious denomination of a church, religious school, etc. Examples: Haredi_Judaism, Sunni_Islam, Seventh-day_Adventist_Church, Non-Denominational,…	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isExpressedBy>	Agent
 term	density	P		density (μ3)				xsd:double
 term	department	P		department		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isPartOf>	PopulatedPlace	Department
 term	departmentCode	P		محکمہ کا کوڈ			Municipality	xsd:string
@@ -4344,7 +4344,7 @@ term	openingTheme	P		opening theme		<http://www.ontologydesignpatterns.org/ont/d
 term	openingYear	P		opening year				xsd:gYear
 term	operatingIncome	P		operating income ($)			Company	xsd:double
 term	operatingSystem	P		operating system		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasParticipant>	Software
-term	operator	P		operator	Organisation or City who is the operator of an ArchitecturalStructure, PublicTransitSystem, ConcentrationCamp, etc.	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>
+term	operator	P		operator	Organisation or City who is the operator of an ArchitecturalStructure, PublicTransitSystem, ConcentrationCamp, etc. Not to confuse with builder, owner or…	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>
 term	opponent	P		opponent		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>	Person	Person
 term	opponents	P		opponents	"opponent in a military conflict, an organisation, country, or group of countries. "	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasParticipant>	MilitaryConflict
 term	orbitalEccentricity	P		orbital eccentricity			CelestialBody	xsd:float
@@ -8115,7 +8115,7 @@ term	resolutionUnit	P		ResolutionUnit	The unit for measuring XResolution and YRe
 term	rowsPerStrip	P		RowsPerStrip	The number of rows per strip. This is the number of rows in the image of one strip when an image is divided into strips.	recOffset
 term	samplesPerPixel	P		SamplesPerPixel	The number of components per pixel. Since this standard applies to RGB and YCbCr images, the value set for this tag is 3.	imageDataStruct
 term	saturation	P		Saturation	The direction of saturation processing applied by the camera when the image was shot.	pictTaking
-term	sceneCaptureType	P		SceneCaptureType	The type of scene that was shot. It can also be used to record the mode in which the image was shot, such as Landscape, Portrait etc.	pictTaking
+term	sceneCaptureType	P		SceneCaptureType	The type of scene that was shot.	pictTaking
 term	sceneType	P		SceneType	The type of scene. If a DSC recorded the image, this tag value shall always be set to 1, indicating that the image was directly photographed.	pictTaking
 term	seconds	P		Seconds	a mesurement of time length with unit of second
 term	sensingMethod	P		SensingMethod	The image sensor type on the camera or input device, such as One-chip color area sensor etc.	pictTaking
@@ -9113,7 +9113,7 @@ term	DeliveryModeFreight	I		Delivery mode freight (delivery method)	Delivery by 
 term	DeliveryModeMail	I		Delivery mode mail (delivery method)	Delivery via regular mail service (private or public postal services).
 term	DeliveryModeOwnFleet	I		Delivery mode own fleet (delivery method)	Delivery of the goods by using a fleet of vehicles either owned and operated or subcontracted by the gr:BusinessEntity.
 term	DeliveryModeParcelService	C		Delivery mode parcel service	A private parcel service as the delivery mode available for a certain offering. Examples: UPS, DHL	DeliveryMethod
-term	DeliveryModePickUp	I		Delivery mode pick up (delivery method)	Delivery of the goods by picking them up at one of the stores etc.
+term	DeliveryModePickUp	I		Delivery mode pick up (delivery method)	Delivery of the goods by picking them up at one of the stores etc. (gr:Location) during the opening hours as specified by respective instances of…
 term	DinersClub	I		Diners Club (payment method)	Payment by credit or debit cards issued by the Diner's Club network.
 term	DirectDebit	I		Direct debit (payment method)	Payment by direct debit, i.e., the buying party will inform the offering gr:BusinessEntity about its bank account details and authorizes the gr:BusinessEntity…
 term	Discover	I		Discover (payment method)	Payment by credit or debit cards issued by the Discover network.
@@ -9226,7 +9226,7 @@ term	hasOpeningHoursSpecification	P		has opening hours specification (0..*)	This
 term	hasPOS	P		has POS (0..*)	This property states that the respective gr:Location is a point of sale for the respective gr:BusinessEntity.			Location
 term	hasPrevious	P		has previous (0..1)	This ordering relation for gr:DayOfWeek indicates that the subject is directly preceeded by the object.		DayOfWeek	DayOfWeek
 term	hasPriceSpecification	P		has price specification (0..*)	This links a gr:Offering to a gr:PriceSpecification or specifications.			PriceSpecification
-term	hasStockKeepingUnit	P		has Stock Keeping Unit (0..*)	The Stock Keeping Unit, or SKU is a unique identifier for a product, service, or bundle from the perspective of a particular supplier, i.e.	schema:productID		xsd:string
+term	hasStockKeepingUnit	P		has Stock Keeping Unit (0..*)	The Stock Keeping Unit, or SKU is a unique identifier for a product, service, or bundle from the perspective of a particular supplier, i.e. SKUs are mostly…	schema:productID		xsd:string
 term	hasUnitOfMeasurement	P		has unit of measurement (1..1)	The unit of measurement for a gr:QuantitativeValue, a gr:UnitPriceSpecification, or a gr:TypeAndQuantityNode given using the UN/CEFACT Common Code (3…			xsd:string
 term	hasValue	P		has value (0..1)	This subproperty specifies that the upper and lower limit of the given gr:QuantitativeValue are identical and have the respective value.	hasMaxValue hasMinValue	QuantitativeValue	rdfs:Literal
 term	hasValueFloat	P		has value float (0..1)	This subproperty specifies that the upper and lower limit of the given gr:QuantitativeValueFloat are identical and have the respective float value.	hasMaxValueFloat hasMinValueFloat	QuantitativeValueFloat	xsd:float
@@ -9366,7 +9366,7 @@ term	AllergenTypeCode-BASS	I	D	Bass and its Derivatives	Refers to the presence o
 term	AllergenTypeCode-BB	I		Benzyl Benzoate	Refers to the presence of Benzyl Benzoate in the product.
 term	AllergenTypeCode-BC	I		Celery and its derivatives	Refers to the presence of celery or its derivatives in the product, as listed in in the product. - Family/Genus/Species: Apium graveolens.
 term	AllergenTypeCode-BE	I		2 (4-tert-Butylbenzyl)	Refers to the presence of 2 (4-tert-Butylbenzyl) in the product.
-term	AllergenTypeCode-BEECH_NUTS	I	D	Beech Nuts and Their Derivatives	Refers to the presence of Beech nuts [Fagus spp.
+term	AllergenTypeCode-BEECH_NUTS	I	D	Beech Nuts and Their Derivatives	Refers to the presence of Beech nuts [Fagus spp. (Fagaceae)] and their derivatives in the product, as listed as listed in the regulations specified in…
 term	AllergenTypeCode-BEEF	I	D	Beef and its Derivatives	Refers to the presence of beef and its derivative in the product, as listed in the regulations specified in AllergenSpecificationAgency and…
 term	AllergenTypeCode-BENZYL_ALCOHOL	I	D	Benzyl Alcohol	Refers to the presence of Benzyl Alcohol as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName.
 term	AllergenTypeCode-BENZYL_BENZOATE	I	D	Benzyl Benzoate	Refers to the presence of Benzyl Benzoate as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName.
@@ -9404,7 +9404,7 @@ term	AllergenTypeCode-CFD	I		Cutlassfish and its derivatives	Refers to the prese
 term	AllergenTypeCode-CFH	I		Croaker fish and its derivatives	Refers to the presence of Croaker and its Derivatives in the product.
 term	AllergenTypeCode-CHAR	I	D	Char and its Derivatives	Refers to the presence of Char and its derivatives in the product, as listed in the regulations specified in AllergenSpecificationAgency and…
 term	AllergenTypeCode-CHB	I		Chub and its derivatives	Refers to the presence of Chub and its derivates in the product.
-term	AllergenTypeCode-CHESTNUTS	I	D	Chestnuts and Their Derivatives	Refers to the presence of Chestnuts [Castanea spp.
+term	AllergenTypeCode-CHESTNUTS	I	D	Chestnuts and Their Derivatives	Refers to the presence of Chestnuts [Castanea spp. (Fagaceae)] and their derivatives in the product, as listed as listed in the regulations specified in…
 term	AllergenTypeCode-CHICKEN_MEAT	I	D	Chicken Meat and its Derivatives	Refers to the presence of chicken meat and its derivative in the product, as listed in the regulations specified in AllergenSpecificationAgency and…
 term	AllergenTypeCode-CHINQUAPINS	I	D	Chinquapins and Their Derivatives	Refers to the presence of Chinquapins [Castanea pumila (Fagaceae)] and their derivatives in the product, as listed as listed in the regulations specified in…
 term	AllergenTypeCode-CHR	I		Char and its derivatives	Refers to the presence of Char and its derivates in the product.
@@ -9462,7 +9462,7 @@ term	AllergenTypeCode-FT	I		4-Amino-3-nitrophenol	Refers to the presence of 4-Am
 term	AllergenTypeCode-GB	I		Barley and its derivatives	Refers to the presence of barley and its derivatives in the product. - Family/Genus/Species: Hordeum vulgare.
 term	AllergenTypeCode-GE	I		Geraniol	Refers to the presence of Geraniol in the product.
 term	AllergenTypeCode-GERANIOL	I	D	Geraniol	Refers to the presence of Geraniol as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName.
-term	AllergenTypeCode-GINKGO_NUTS	I	D	Ginkgo Nuts and Their Derivatives	Refers to the presence of Ginkgo nuts [Ginkgo biloba L.
+term	AllergenTypeCode-GINKGO_NUTS	I	D	Ginkgo Nuts and Their Derivatives	Refers to the presence of Ginkgo nuts [Ginkgo biloba L. (Ginkgoaceae)] and their derivatives in the product, as listed as listed in the regulations specified…
 term	AllergenTypeCode-GK	I		Kamut and its derivatives	Refers to the presence of kamut and its derivatives in the product. - Family/Genus/Species: Triticum turanicum. - Also known as: Khorasan wheat, Oriental wheat.
 term	AllergenTypeCode-GL	I		Glutamate and its derivatives	Refers to the presence of Glutamate and its derivatives in the product. - Family/Genus/Species: - Also known as: Glutamic acid.
 term	AllergenTypeCode-GLUTAMATE	I	D	Glutamate and Their Derivatives	Refers to the presence of glutamate and its derivative in the product, as listed in the regulations specified in AllergenSpecificationAgency and…
@@ -9485,7 +9485,7 @@ term	AllergenTypeCode-HE	I		Hydroxybenzomorpholine	Refers to the presence of Hyd
 term	AllergenTypeCode-HERRING	I	D	Herring and its Derivatives	Refers to the presence of Herring and their derivatives in the product, as listed as listed in the regulations specified in AllergenSpecificationAgency and…
 term	AllergenTypeCode-HEXYL_CINNAMAL	I	D	Hexyl Cinnamal	Refers to the presence of Hexyl Cinnamal as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName.
 term	AllergenTypeCode-HH	I		Hydroxypropyl bis(N-hydroxyethyl-p-phenyldiamine) HCl	Refers to the presence of Hydroxypropyl bis(N-hydroxyethyl-p-phenylenediamine) HCl in the product.
-term	AllergenTypeCode-HICKORY_NUTS	I	D	Hickory Nuts and Their Derivatives	Refers to the presence of hickory nuts [Carya spp.
+term	AllergenTypeCode-HICKORY_NUTS	I	D	Hickory Nuts and Their Derivatives	Refers to the presence of hickory nuts [Carya spp. (Junglandacease)] and their derivatives in the product, as listed as listed in the regulations specified in…
 term	AllergenTypeCode-HN	I		Hydroxyethyl-2-nitro-p-toluidine	Refers to the presence of Hydroxyethyl-2-nitro-p-toluidine in the product.
 term	AllergenTypeCode-HP	I		2-Hydroxyethyl-picramic Acid	Refers to the presence of 2-Hydroxyethyl-picramic acid in the product.
 term	AllergenTypeCode-HX	I		Hexyl Cinnamaldehyde	Refers to the presence of Hexyl Cinnamaldehyde in the product.
@@ -9504,7 +9504,7 @@ term	AllergenTypeCode-KWD	I		Kiwi and its derivatives	Refers to the presence of 
 term	AllergenTypeCode-LACTOSE	I	D	Lactose	Refers to the presence of lactose as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName.
 term	AllergenTypeCode-LAND	I	D	Land and sea snails (Escargot) and its Derivatives	Refers to the presence of Land and sea snails (Escargot) and its derivatives in the product, as listed in the regulations specified in…
 term	AllergenTypeCode-LGD	I		Lingcod and its derivatives	Refers to the presence of Lingcod and its Derivatives in the product.
-term	AllergenTypeCode-LICHEE_NUTS	I	D	Lichee Nuts and Their Derivatives	Refers to the presence of Lichee nuts [Litchi chinensis Sonn.
+term	AllergenTypeCode-LICHEE_NUTS	I	D	Lichee Nuts and Their Derivatives	Refers to the presence of Lichee nuts [Litchi chinensis Sonn. (Sapindaceae)] and their derivatives in the product, as listed as listed in the regulations…
 term	AllergenTypeCode-LIMPETS	I	D	Limpets and its Derivatives	Refers to the presence of Limpets and its derivatives in the product, as listed in the regulations specified in AllergenSpecificationAgency and…
 term	AllergenTypeCode-LINALOOL	I	D	Linalool	Refers to the presence of Linalool as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName
 term	AllergenTypeCode-LMT	I		Limpets and its derivatives	Refers to the presence of Limpets and its derivates in the product.
@@ -9613,7 +9613,7 @@ term	AllergenTypeCode-SG	I		Ginkgo Nuts and its derivatives	Refers to the presen
 term	AllergenTypeCode-SH	I		Hazelnuts and its derivatives	Refers to the presence of Hazelnuts and its derivatives in the product. - Family/Genus/Species: Corylus. - Also known as: Cobnuts, Filberts.
 term	AllergenTypeCode-SHARK	I	D	Shark and its Derivatives	Refers to the presence of Shark and its derivatives in the product, as listed in the regulations specified in AllergenSpecificationAgency and…
 term	AllergenTypeCode-SHD	I		Sheephead fish and its derivatives	Refers to the presence of Sheephead and its Derivatives in the product.
-term	AllergenTypeCode-SHEA_NUTS	I	D	Shea Nuts and Their Derivatives	Refers to the presence of Shea nuts [Vitellaria paradoxa C.F. Gaertn.
+term	AllergenTypeCode-SHEA_NUTS	I	D	Shea Nuts and Their Derivatives	Refers to the presence of Shea nuts [Vitellaria paradoxa C.F. Gaertn. (Sapotaceae)] and their derivatives in the product, as listed as listed in the…
 term	AllergenTypeCode-SHELLFISH	I	D	Shellfish and its Derivatives	Refers to the presence of shellfish and its derivatives as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName.
 term	AllergenTypeCode-SHK	I		Shark and its derivatives	Refers to the presence of Shark and its derivates in the product.
 term	AllergenTypeCode-SHRIMP	I	D	Shrimp and its Derivatives	Refers to the presence of Shrimp and their derivatives in the product, as listed as listed in the regulations specified in AllergenSpecificationAgency and…
@@ -10244,7 +10244,7 @@ term	OrganicClaimAgencyCode-12	I		Naturland	Naturland - Naturland is active the 
 term	OrganicClaimAgencyCode-13	I		Biopark	Biopark - Biopark is an organic farmers' association based in the North of Germany, in Mecklenburg-Vorpommerania.
 term	OrganicClaimAgencyCode-14	I		Ecovin	Ecovin - ECOVIN Federation Organic Viticulture Association: ECOVIN largest merger in 1985 as ecologically-working wine estates in Germany was founded.
 term	OrganicClaimAgencyCode-15	I		IFOAM	IFOAM - The International Federation of Organic Agriculture Movements (IFOAM) is a grassroots and democratic organisation that currently unites 750 member…
-term	OrganicClaimAgencyCode-16	I		Demeter International	Demeter International Demeter-International e.
+term	OrganicClaimAgencyCode-16	I		Demeter International	Demeter International Demeter-International e. V. is a non profit organisation and its member organisations work together in the spirit of an international…
 term	OrganicClaimAgencyCode-17	I		Bioland	Bioland: The leading organic farmers' association in Germany for the economy of organic-based businesses without synthetic pesticides and synthetic chemical…
 term	OrganicClaimAgencyCode-19	I		QCS	Quality Certification Services. Note: this value will be deleted in the future and should not be used.
 term	OrganicClaimAgencyCode-2	I		FSA	FSA - UK Food Standards Agency
@@ -10274,7 +10274,7 @@ term	OrganicClaimAgencyCode-999	I		Unspecified Agency	Unspecified Agency
 term	OrganicClaimAgencyCode-BFA	I	D	Biological Farmers of Australia	Biological Farmers of Australia
 term	OrganicClaimAgencyCode-BIOLAND	I	D	Bioland	Bioland: The leading organic farmers' association in Germany for the economy of organic-based businesses without synthetic pesticides and synthetic chemical…
 term	OrganicClaimAgencyCode-DEMETER_BUND	I	D	Demeter-Bund	The Demeter movement as an entrepreneurial network promotes the development of bio-dynamic economy, to secure the livelihoods of the world and to strengthen…
-term	OrganicClaimAgencyCode-DEMETER_INTERNATIONAL	I	D	Demeter International	Demeter International Demeter-International e.
+term	OrganicClaimAgencyCode-DEMETER_INTERNATIONAL	I	D	Demeter International	Demeter International Demeter-International e. V. is a non profit organisation and its member organisations work together in the spirit of an international…
 term	OrganicClaimAgencyCode-ECOLAND	I	D	Ecoland	Ecoland is a membership organisation whose members elect a governing Board which is responsible for the design and implementation of the organic certification…
 term	OrganicClaimAgencyCode-ECOVIN	I	D	Ecovin	ECOVIN Federation Organic Viticulture Association: ECOVIN largest merger in 1985 as ecologically-working wine estates in Germany was founded.
 term	OrganicClaimAgencyCode-EPA	I	D	US Environmental Protection Agency	US Environmental Protection Agency. Same as GS1 Code 1
@@ -10334,12 +10334,12 @@ term	OrganizationID_Type-US_498_ID	I		Service Provider and Billed Entity Identif
 term	OrganizationID_Type-US_499_FILER_ID	I		499 Filer ID	The FCC Form 499 Filer Database is an identification system for all interstate telecommunications carriers, all interconnected VoIP providers, and certain…
 term	OrganizationID_Type-US_BEA_ID	I		BEA Foreign Direct Investment Identification Number	The BEA foreign direct investment identification number is assigned to a new U.S. affiliate after their initial report has been accepted by the BEA.
 term	OrganizationID_Type-US_CAGE	I		Commercial and Government Entity	The Defense Logistics Agency (DLA) Commercial and Government Entity.
-term	OrganizationID_Type-US_CID	I		Company Identifier (CID)	A company identification number, or CID, is given to a company when it is formed and the articles of organization or incorporation are approved by the U.S.
+term	OrganizationID_Type-US_CID	I		Company Identifier (CID)	A company identification number, or CID, is given to a company when it is formed and the articles of organization or incorporation are approved by the U.S.…
 term	OrganizationID_Type-US_CRD	I		Central Registration Depository (CRD) Numbers	Every stockbroker (registered representative) licensed to sell securities in the U.S. must have a CRD number, which is administered by the Financial Industry…
 term	OrganizationID_Type-US_DEA	I		Drug Enforcement Administration (DEA) Number	A DEA number (DEA Registration Number) is an identifier assigned to a health care provider (such as a physician, physician assistant, nurse practitioner,…
 term	OrganizationID_Type-US_DODAAC	I		Department of Defense Activity Address Code	Is a six position code that uniquely identifies a Department of Defense unit, activity, or organization that has the authority to requisition, contract for,…
-term	OrganizationID_Type-US_EIN	I		Employer Identification Number (EIN)	The U.S.
-term	OrganizationID_Type-US_EPA_ID	I		EPA Identification Number	This number, issued either by the U. S. Environmental Protection Agency (U.S.
+term	OrganizationID_Type-US_EIN	I		Employer Identification Number (EIN)	The U.S. Employer Identification Number, also known as the Federal Employer Identification Number or the Federal Tax Identification Number, is a unique…
+term	OrganizationID_Type-US_EPA_ID	I		EPA Identification Number	This number, issued either by the U. S. Environmental Protection Agency (U.S. EPA ID Number), or by DTSC (California ID Number), identifies each handler of…
 term	OrganizationID_Type-US_FCC_FRN	I		FCC Registration Number (FRN)	An FRN, or FCC registration number, is a 10-digit number that is assigned to a business or individual registering with the FCC.
 term	OrganizationID_Type-US_FDIC	I		Federal Deposit Insurance Corporation (FDIC) Certificate Number	The FDIC Certificate ID is a unique number assigned to each depository institution by the Federal Deposit Insurance Corporation (FDIC).
 term	OrganizationID_Type-US_FHFA_ID	I		FHFA ID Number	FHFA ID number is the number assigned to a member by FHFA and used by FHFA and the Banks to identify a particular member.
@@ -10841,7 +10841,7 @@ term	PreparationTypeCode-REFRIGERATE	I		Refrigerate	Convert the product from roo
 term	PreparationTypeCode-ROAST	I		Roast.	Cooking method that uses dry heat, whether an open flame, oven, or other heat source.
 term	PreparationTypeCode-ROTISSERIE	I		Rotisserie	Style of roasting where meat is skewered on a spit and revolves over a flame
 term	PreparationTypeCode-SAUTE	I		Saute	Cooking food using a small amount of fat in a shallow pan over relatively high heat
-term	PreparationTypeCode-SEAR	I		Sear	Technique used in grilling, roasting, braising, sauteing, etc.
+term	PreparationTypeCode-SEAR	I		Sear	Technique used in grilling, roasting, braising, sauteing, etc. That cooks the surface of the food (usually meat, poultry or fish) at high temperature so that a…
 term	PreparationTypeCode-SIMMER	I		Simmer	Cook food by heating it in water kept just below the boiling point (same as coddling)
 term	PreparationTypeCode-SMOKE	I		Smoke	Process of curing, cooking, or seasoning food by exposing it for long periods of time to the smoke from a wood fire
 term	PreparationTypeCode-STEAM	I		Steam	Cooking by first boiling the water so it will evaporate into steam, then the steam will carry heat to the food, thus achieving heating the food
@@ -10899,7 +10899,7 @@ term	ReferencedFileTypeCode-ASSEMBLY_INSTRUCTIONS	I		Assembly Instructions	Link 
 term	ReferencedFileTypeCode-AUDIO	I		Audio	Link to a file containing an audio clip which is relevant to the product. Examples are commercials, or instructional/ how to use audio files.
 term	ReferencedFileTypeCode-AWARD_CERTIFICATE	I		Award certificate	The award certificate is a written document created by the Award Committee that describes the terms and conditions of the Award.
 term	ReferencedFileTypeCode-BARCODE	I		Barcode	Link to a file containing a visual representation of the barcode which is on the product or its packaging.
-term	ReferencedFileTypeCode-CERTIFICATION	I		Certification	Document which contains a special certification by a third party (e.g.
+term	ReferencedFileTypeCode-CERTIFICATION	I		Certification	Document which contains a special certification by a third party (e.g. International Food Standard [IFS], QS-Approval Mark for meat product, sausage, fruit,…
 term	ReferencedFileTypeCode-CHEMICAL_ASSESSMENT_SUMMARY	I		Chemical Assessment Summary	Link to a file containing the chemical ingredient information sent to the supplier from a third party as a result of the assessment.
 term	ReferencedFileTypeCode-CHEMICAL_SAFETY_REPORT	I		Chemical Safety Report	Link to the file containing a report detailing the risks arising from the manufacture and/or use of a substance and to ensure that they are adequately…
 term	ReferencedFileTypeCode-CHILD_NUTRITION_LABEL	I		Child Nutrition Label	Link to a file containing the Child Nutrition Label as formatted according to regulations and rules of an appropriate regulatory body for the target market.
@@ -10978,7 +10978,7 @@ term	RegulationTypeCode-BATTERY_DIRECTIVE	I		Battery Directive	Directive describ
 term	RegulationTypeCode-BIOCIDE_REGULATION	I		Biocide Regulation	Regulation (e.g., EU Reg 528/2012) harmonising the rules on making available on the market and using biocidal products whilst ensuring a high level of…
 term	RegulationTypeCode-BPA_REGULATION	I		BPA Regulation	Indicates the product has a regulatory requirement to show to the consumer that it may or may not contain Bisphenol A (BPA).
 term	RegulationTypeCode-BUY_AMERICAN_ACT	I		Buy American Act	The Buy American Act - requires the United States government to prefer U.S.-made products in its purchases.
-term	RegulationTypeCode-BUY_AMERICAN_PROVISION_USDA	I		Buy American Provision USDA	The Buy American Provision in accordance with the USDA is Section 104(d) of the William F.
+term	RegulationTypeCode-BUY_AMERICAN_PROVISION_USDA	I		Buy American Provision USDA	The Buy American Provision in accordance with the USDA is Section 104(d) of the William F. Goodling Child Nutrition Reauthorization Act of 1998 (Public Law…
 term	RegulationTypeCode-CE	I		CE	The CE marking is the manufacturer's, distributor's or EU authorised representative's declaration that the product meets EU standards for health, safety,…
 term	RegulationTypeCode-COMPLIANT_WITH_FAIR_LABOR_STANDARDS_ACT	I		Compliant With Fair Labor Standards Act	The FLSA established a national minimum wage guaranteed 'time-and-a-half' for overtime in certain jobs, and prohibited most employment of minors in "oppressive…
 term	RegulationTypeCode-COMPLIANT_WITH_FLAMMABILITY_ACT	I		Compliant With Flammability Act	Compliant With Flammability Act.
@@ -11030,14 +11030,14 @@ term	RegulationTypeCode-REGULATED_BY_AGENCY	I		Regulated by Agency	The trade ite
 term	RegulationTypeCode-RETURNING_OF_ELECTRONICAL_PRODUCT_DIRECTIVE	I		Returning of Electronic Product Directive	Directive of the returning of electronic products ensuring a high degree of protection of the environment.
 term	RegulationTypeCode-ROHS_DIRECTIVE	I		ROHS Directive	Is not a quality mark but a European directive 2002/95/EC (stands for Restriction of Hazardous Substances).
 term	RegulationTypeCode-SAFETY_DATA_SHEET_REQUIRED	I		Safety data sheet required	A Safety Data Sheet (SDS) is legally required. See target market regulations for applicability.
-term	RegulationTypeCode-SCATTERED_POLLUTION_REGULATION	I		Scattered pollution regulation	Decree No.
+term	RegulationTypeCode-SCATTERED_POLLUTION_REGULATION	I		Scattered pollution regulation	Decree No. 2011-1650 of 25 November 2011 on the procedures for declaring and paying back the non-point pollution charge and for keeping the registers referred…
 term	RegulationTypeCode-SECURITY_OF_ELECTRONIC_PRODUCTS_DIRECTIVE	I		Security of Electronic Products Directive	Directive on the safety of electronic products covering consumer health as well as environmental aspects (e.g. German law on product safety ProdSG).
 term	RegulationTypeCode-SMALL_PARTS	I		Small Parts Regulation	A small part is any object that fits completely into a specified size by regulation that approximates the size of the fully expanded throat of a child of age…
 term	RegulationTypeCode-TEXTILE_LABELLING_REGULATION	I		Textile labelling regulation	Regulation (EU Reg 1007/2011).
 term	RegulationTypeCode-TOBACCO_DIRECTIVE	I		Tobacco Directive	The directive or regulation aims to improve the functioning of tobacco products within a market while ensuring a high level of public health protection.
 term	RegulationTypeCode-TOY_SAFETY_DIRECTIVE	I		Toy safety directive	Directive, which applies to products designed or intended, whether or not exclusively, for use in play by children under 14 years of age.
 term	RegulationTypeCode-TRACEABILITY_REGULATION	I		Traceability Regulation	Indicates that a trade item is subject to government rules and regulations regarding traceability.
-term	RegulationTypeCode-TRADE_ITEM_CONSIDERED_UNPACKED	I		Trade item considered unpacked	The trade item is considered as unpacked by regulation, even if physical packaging may exist. (E.g.
+term	RegulationTypeCode-TRADE_ITEM_CONSIDERED_UNPACKED	I		Trade item considered unpacked	The trade item is considered as unpacked by regulation, even if physical packaging may exist.
 term	RegulationTypeCode-TRADE_ITEM_TESTED_DIRECTIVE	I		Trade Item Tested Directive	The product has conformed to testing requirements to meet regulation needs.
 term	RegulationTypeCode-TREATED_WITH_BIOCIDE_REGULATION	I		Biocide regulation treated article	Regulation (e.g., EU Reg 528/2012) harmonising the rules on making available on the market and trade items treated with biocidal products ('treated articles'),…
 term	RegulationTypeCode-TREATED_WITH_HERBICIDE_REGULATION	I		Treated with Herbicide Regulation	Trade item has been treated with herbicide(s) that are subject to regulation.
@@ -11271,7 +11271,7 @@ term	additionalProductClassification	P		Has Additional Product Classification	Re
 term	additionalProductClassificationCode	P		Additional Product Classification Code	Code specifying the applied additional product classification scheme.		AdditionalProductClassificationDetails	xsd:string
 term	additionalProductClassificationCodeDescription	P		Additional Product Classification Code Description	A description related to the additional product classification code value.		AdditionalProductClassificationDetails	rdf:langString
 term	additionalProductClassificationValue	P		Additional Product Classification Value	Code specifying an additional product classification other than the GS1 Global Product Classification.		AdditionalProductClassificationDetails	xsd:string
-term	additionalProductDescription	P		Additional Product Description	Additional variants necessary to communicate to the industry to help define the product. Multiple variants can be established for each GTIN for e.g.		Product	rdf:langString
+term	additionalProductDescription	P		Additional Product Description	Additional variants necessary to communicate to the industry to help define the product.		Product	rdf:langString
 term	additive	P		Has Additive	Relates to details about any additives that a product may contain.		Product	AdditiveDetails
 term	additiveLevelOfContainment	P		Additive Level Of Containment	Code indicating the level of presence of the additive.		AdditiveDetails	LevelOfContainmentCode
 term	additiveName	P		Additive Name	The name of any additive or genetic modification contained or not contained in the product .		AdditiveDetails	rdf:langString
@@ -11344,7 +11344,7 @@ term	certificationType	P		Certification Type	Indicates the type of certification
 term	certificationURI	P		Certification URI	If gs1:certificationURI is present, it should point to data about this individual certificate within a repository maintained by the certification agency.		CertificationDetails	xsd:anyURI
 term	certificationValue	P		Certification Value	The certification's standard value. Example: '4'.		CertificationDetails	rdf:langString
 term	cheeseFirmness	P		Cheese Firmness	The firmness of the cheese product for example EXTRA_HARD.		MilkButterCreamYogurtCheeseEggsSubstitutes	CheeseFirmnessCode
-term	cheeseMaturationPeriodDescription	P		Cheese Maturation Period Description	A descriptive way to specify a date range as some cheeses are matured over a period of time, but not an exact period. For example 3 to 4 weeks, over 1 year etc.		MilkButterCreamYogurtCheeseEggsSubstitutes	rdf:langString
+term	cheeseMaturationPeriodDescription	P		Cheese Maturation Period Description	A descriptive way to specify a date range as some cheeses are matured over a period of time, but not an exact period.		MilkButterCreamYogurtCheeseEggsSubstitutes	rdf:langString
 term	chloridePerNutrientBasis	P		Chloride Per Nutrient Basis Quantity	Chloride per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	cholesterolPerNutrientBasis	P		Cholesterol Per Nutrient Basis Quantity	Cholesterol per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	chromiumPerNutrientBasis	P		Chromium Per Nutrient Basis Quantity	Chromium per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
@@ -11488,7 +11488,7 @@ term	ingredientSequence	P		Ingredient Sequence	Integer (1, 2, 3...) indicating t
 term	ingredientStatement	P		Ingredient Statement	Information on the constituent ingredient make up of the product specified as one string.		FoodBeverageTobaccoProduct	rdf:langString
 term	ingredientsInfo	P		Ingredients information	A link to facts about ingredients.	linkType	owl:Thing	xsd:anyURI
 term	initialCertificationDate	P		Initial Certification Date	The date when the certification was originally issued. May differ from the certificationStartDate of the current recertification cycle.		CertificationDetails	xsd:date
-term	instructions	P		Instructions	A link to instructions, such as assembly instructions, usage tips etc.	linkType	owl:Thing	xsd:anyURI
+term	instructions	P		Instructions	A link to instructions, such as assembly instructions, usage tips etc. It is not appropriate to use this link type for healthcare regulated content…	linkType	owl:Thing	xsd:anyURI
 term	instructionsForUse	P		Has Instructions For Use	Link to a file containing the Instructions For Use.		Product	ReferencedFileDetails
 term	iodinePerNutrientBasis	P		Iodine Per Nutrient Basis Quantity	Iodine per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	ironPerNutrientBasis	P		Iron Per Nutrient Basis Quantity	Iron per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
@@ -11771,7 +11771,7 @@ term	streetAddressLine2	P		Street Address Line 2	The second line of the street a
 term	streetAddressLine3	P		Street Address Line 3	The third line of the street address, expressed as free form text. The street address is printed on paper as the first lines below the name.		PostalAddress	rdf:langString
 term	streetAddressLine4	P		Street Address Line 4	The fourth line of the street address, expressed as free form text. The street address is printed on paper as the first lines below the name.		PostalAddress	rdf:langString
 term	styleDescription	P		Style Description	An attribute that classifies products that share many of the same characteristics (attribute values) that does NOT vary by GTIN, and are presented by the…		WearableProduct	rdf:langString
-term	subBrandName	P		Sub-brand Name	Second level of brand. Can be a trademark. It is the primary differentiating factor that a brand owner wants to communicate to the consumer or buyer. E.g.	schema:name	Brand	rdf:langString
+term	subBrandName	P		Sub-brand Name	Second level of brand. Can be a trademark. It is the primary differentiating factor that a brand owner wants to communicate to the consumer or buyer.	schema:name	Brand	rdf:langString
 term	subOrganization	P		Sub-Organization	Designates a legal entity or function directly below the organisation/party being identified in a hierarchy.		Organization	Organization
 term	subscribe	P		Subscribe	A link to a subscription form	linkType	owl:Thing	xsd:anyURI
 term	sugarsPerNutrientBasis	P		Sugars Per Nutrient Basis Quantity	Sugars per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
@@ -11797,7 +11797,7 @@ term	transactionDate	P		Transaction Date	The date associated with a business tra
 term	transactionID	P		Transaction Reference	An identifier for a business transactions		Transaction	xsd:string
 term	transactionType	P		Transaction Reference	The code indicating the type of business transactions		Transaction	TransactionType
 term	tutorial	P		Tutorial	A link to a tutorial or set of tutorials, such as online classes, how-to videos etc.	linkType	owl:Thing	xsd:anyURI
-term	unitCode	P		Measurement Unit	A string value indicating a Measurement Unit from UN/ECE Recommendation 20, Units of Measure used in International Trade e.g.		QuantitativeValue	xsd:string
+term	unitCode	P		Measurement Unit	A string value indicating a Measurement Unit from UN/ECE Recommendation 20, Units of Measure used in International Trade e.g. GRM = gram - see…		QuantitativeValue	xsd:string
 term	upperMaterialType	P		Has Upper Material	The material(s) used for the upper part of the footwear product.		Footwear	TextileMaterialDetails
 term	userAgreement	P		Sign waiver/agreement/document	A link to an agreement or waiver.	linkType	owl:Thing	xsd:anyURI
 term	usesManagedLocation	P		Uses managed location	Links to the place(s) that this organisation uses as a managed space.		Organization	Place
@@ -13954,7 +13954,7 @@ term	MolarThermodynamicEnergy	I		Molar Thermodynamic Energy	energy in relation t
 term	MolarVolume	I		Molar Volume	The molar volume, symbol $V_m$, is the volume occupied by one mole of a substance (chemical element or chemical compound) at a given temperature and pressure.
 term	MoleFraction	I		Mole Fraction	In chemistry, the mole fraction of a component in a mixture is the relative proportion of molecules belonging to the component to those in the mixture, by…
 term	MolecularConcentration	I		Molecular Concentration	The "Molecular Concentration" of substance B is defined as the number of molecules of B divided by the volume of the mixture
-term	MolecularMass	I		Molecular Mass	The molecular mass, or molecular weight of a chemical compound is the mass of one molecule of that compound, relative to the unified atomic mass unit, u.
+term	MolecularMass	I		Molecular Mass	The molecular mass, or molecular weight of a chemical compound is the mass of one molecule of that compound, relative to the unified atomic mass unit, u.…
 term	MolecularViscosity	I		Molecular Viscosity	Molecules in a fluid close to a solid boundary sometime strike the boundary and transfer momentum to it.
 term	MomentOfForce	I		Moment of Force	Moment of force (often just moment) is the tendency of a force to twist or rotate an object.
 term	MomentOfInertia	I		Moment of Inertia	The rotational inertia or resistance to change in direction or speed of rotation about a defined axis.
@@ -14484,7 +14484,7 @@ term	WebTimeAverageThrust	I		Web Time Average Thrust	Web Time Avg Thrust (Mlbf)
 term	Weight	I		Weight	The force with which a body is attracted toward an astronomical body. Or, the product of the mass of a body and the acceleration acting on a body.
 term	WetBulbTemperature	I		Wet Bulb Temperature	The temperature of a parcel of air cooled to saturation (100% relative humidity) by the evaporation of water into it, with the latent heat supplied by the…
 term	Width	I		Width	"Width" is the middle of three dimensions: length, width, thickness.
-term	Work	I		Work	$\\textit{Work}$ or $net\\ work$ is equal to the change in kinetic energy. This relationship is called the work-energy theorem: $$Wnet = K. E._f K.
+term	Work	I		Work	$\\textit{Work}$ or $net\\ work$ is equal to the change in kinetic energy.
 term	WorkFunction	I		Work Function	"Work Function" is the energy difference between an electron at rest at infinity and an electron at a certain energy level.
 term	ZenithAngle	I		Zenith Angle	
 @ns	qudt	http://qudt.org/schema/qudt/
@@ -17610,7 +17610,7 @@ term	HowToItem	C		HowToItem	An item used as either a tool or supply when perform
 term	HowToSection	C		HowToSection	A sub-grouping of steps in the instructions for how to achieve a result (e.g. steps for making a pie crust within a pie recipe).	CreativeWork ItemList ListItem
 term	HowToStep	C		HowToStep	A step in the instructions for how to achieve a result. It is an ordered list with HowToDirection and/or HowToTip items.	CreativeWork ItemList ListItem
 term	HowToSupply	C		HowToSupply	A supply consumed when performing the instructions for how to achieve a result.	HowToItem
-term	HowToTip	C		HowToTip	An explanation in the instructions for how to achieve a result. It provides supplementary information about a technique, supply, author's preference, etc.	CreativeWork ListItem
+term	HowToTip	C		HowToTip	An explanation in the instructions for how to achieve a result.	CreativeWork ListItem
 term	HowToTool	C		HowToTool	A tool used (but not consumed) when performing instructions for how to achieve a result.	HowToItem
 term	HyperToc	C		HyperToc	A HyperToc represents a hypertext table of contents for complex media objects, such as [[VideoObject]], [[AudioObject]].	CreativeWork
 term	HyperTocEntry	C		HyperTocEntry	A HyperToEntry is an item within a [[HyperToc]], which represents a hypertext table of contents for complex media objects, such as [[VideoObject]],…	CreativeWork
@@ -17620,12 +17620,12 @@ term	ITAmateurSportsClubCharity	I		ITAmateurSportsClubCharity	ITAmateurSportsClu
 term	ITAssociativeNetworkCharity	I		ITAssociativeNetworkCharity	ITAssociativeNetworkCharity: Non-profit type referring to Italian associative networks (Ital. rete associativa), associations grouping a large number of Third…
 term	ITCooperativeCharity	I	D	ITCooperativeCharity	ITCooperativeCharity: Non-profit type referring to Italian social cooperatives (Ital. cooperativa sociale), governed primarily by Law 381 of 8 November 1991.
 term	ITMutualAidCharity	I		ITMutualAidCharity	ITMutualAidCharity: Non-profit type referring to Italian mutual aid societies (Ital. società di mutuo soccorso or SOMS), governed by Law 3818 of 15 April 1886,…
-term	ITNonprofitType	C		ITNonprofitType	ITNonprofitType: Non-profit organization type originating from Italy. Most categories are drawn from the Italian Third Sector Code (Legislative Decree No.	NonprofitType
-term	ITOtherThirdSectorEntityCharity	I		ITOtherThirdSectorEntityCharity	ITOtherThirdSectorEntityCharity: Non-profit type referring to other Italian Third Sector entities (Ital.
+term	ITNonprofitType	C		ITNonprofitType	ITNonprofitType: Non-profit organization type originating from Italy.	NonprofitType
+term	ITOtherThirdSectorEntityCharity	I		ITOtherThirdSectorEntityCharity	ITOtherThirdSectorEntityCharity: Non-profit type referring to other Italian Third Sector entities (Ital. Ente del Terzo settore or ETS) registered in the…
 term	ITPhilanthropicEntityCharity	I		ITPhilanthropicEntityCharity	ITPhilanthropicEntityCharity: Non-profit type referring to Italian philanthropic entities (Ital. ente filantropico), constituted as recognized associations or…
-term	ITSocialCompanyCharity	I	D	ITSocialCompanyCharity	ITSocialCompanyCharity: Non-profit type referring to Italian social enterprises (Ital. impresa sociale), a status governed by Legislative Decree No.
+term	ITSocialCompanyCharity	I	D	ITSocialCompanyCharity	ITSocialCompanyCharity: Non-profit type referring to Italian social enterprises (Ital. impresa sociale), a status governed by Legislative Decree No. 112 of 3…
 term	ITSocialCooperativeCharity	I		ITSocialCooperativeCharity	ITSocialCooperativeCharity: Non-profit type referring to Italian social cooperatives (Ital. cooperativa sociale), governed primarily by Law 381 of 8 November…
-term	ITSocialEnterpriseCharity	I		ITSocialEnterpriseCharity	ITSocialEnterpriseCharity: Non-profit type referring to Italian social enterprises (Ital. impresa sociale), a status governed by Legislative Decree No.
+term	ITSocialEnterpriseCharity	I		ITSocialEnterpriseCharity	ITSocialEnterpriseCharity: Non-profit type referring to Italian social enterprises (Ital. impresa sociale), a status governed by Legislative Decree No. 112 of…
 term	ITSocialPromotionCharity	I		ITSocialPromotionCharity	ITSocialPromotionCharity: Non-profit type referring to Italian social promotion associations (Ital. associazione di promozione sociale or APS), governed…
 term	ITSportCompanyCharity	I	D	ITSportCompanyCharity	ITSportCompanyCharity: Non-profit type referring to Italian amateur sports clubs organized in corporate form (Ital. società sportiva dilettantistica or SSD),…
 term	ITVolunteerAssociationCharity	I		ITVolunteerAssociationCharity	ITVolunteerAssociationCharity: Non-profit type referring to Italian volunteer organizations (Ital. organizzazione di volontariato or ODV), governed primarily…
@@ -17695,7 +17695,7 @@ term	LaboratoryScience	I		LaboratoryScience	A medical science pertaining to chem
 term	LakeBodyOfWater	C		LakeBodyOfWater	A lake (for example, Lake Pontrachain).	BodyOfWater
 term	Landform	C		Landform	A landform or physical feature.	Place
 term	LandmarksOrHistoricalBuildings	C		LandmarksOrHistoricalBuildings	An historical landmark or building.	Place
-term	Language	C		Language	Natural languages such as Spanish, Tamil, Hindi, English, etc.	Intangible
+term	Language	C		Language	Natural languages such as Spanish, Tamil, Hindi, English, etc. Formal language code tags expressed in [BCP 47](https://en.wikipedia.org/wiki/IETF_language_tag)…	Intangible
 term	LaserDiscFormat	I		LaserDiscFormat	LaserDiscFormat.
 term	LearningResource	C		LearningResource	The LearningResource type can be used to indicate [[CreativeWork]]s (whether physical or digital) that have a particular and explicit orientation towards…	CreativeWork
 term	LeaveAction	C		LeaveAction	An agent leaves an event / group with participants/friends at a location.\\n\\nRelated actions:\\n\\n* [[JoinAction]]: The antonym of LeaveAction.\\n*…	InteractAction
@@ -18552,7 +18552,7 @@ term	accessibilityControl	P		accessibilityControl	Identifies input methods that 
 term	accessibilityFeature	P		accessibilityFeature	Content features of the resource, such as accessible media, alternatives and supported enhancements for accessibility.		CreativeWork	Text
 term	accessibilityHazard	P		accessibilityHazard	A characteristic of the described resource that is physiologically dangerous to some users. Related to WCAG 2.0 guideline 2.3.		CreativeWork	Text
 term	accessibilitySummary	P		accessibilitySummary	A human-readable summary of specific accessibility features or deficiencies, consistent with the other accessibility metadata but expressing subtleties such as…		CreativeWork	Text
-term	accommodationCategory	P		accommodationCategory	Category of an [[Accommodation]], following real estate conventions, e.g.	category	Accommodation	Text
+term	accommodationCategory	P		accommodationCategory	Category of an [[Accommodation]], following real estate conventions, e.g. RESO (see…	category	Accommodation	Text
 term	accommodationFloorPlan	P		accommodationFloorPlan	A floorplan of some [[Accommodation]].		Accommodation Residence	FloorPlan
 term	accountId	P		accountId	The identifier for the account the payment will be applied to.	identifier	Invoice	Text
 term	accountMinimumInflow	P		accountMinimumInflow	A minimum amount that has to be paid in every month.		BankAccount	MonetaryAmount
@@ -18641,7 +18641,7 @@ term	arrivalStation	P		arrivalStation	The station where the train trip ends.		Tr
 term	arrivalTerminal	P		arrivalTerminal	Identifier of the flight's arrival terminal.		Flight	Text
 term	arrivalTime	P		arrivalTime	The expected arrival time.		Trip	DateTime Time
 term	artEdition	P		artEdition	The number of copies when multiple copies of a piece of artwork are produced - e.g. for a limited edition of 20 prints, 'artEdition' refers to the total number…		VisualArtwork	Integer Text
-term	artMedium	P		artMedium	The material used. (E.g.	material	VisualArtwork	Text URL
+term	artMedium	P		artMedium	The material used.	material	VisualArtwork	Text URL
 term	arterialBranch	P		arterialBranch	The branches that comprise the arterial structure.		Artery	AnatomicalStructure
 term	artform	P		artform	e.g. Painting, Drawing, Sculpture, Print, Photograph, Assemblage, Collage, etc.		VisualArtwork	Text URL
 term	articleBody	P		articleBody	The actual body of the article.		Article	Text
@@ -18854,7 +18854,7 @@ term	countryOfLastProcessing	P		countryOfLastProcessing	The place where the item
 term	countryOfOrigin	P		countryOfOrigin	The country of origin of something, including products as well as creative works such as movie and TV content.		CreativeWork Movie Product TVEpisode TVSeason TVSeries	Country
 term	course	P	D	course	A sub property of location. The course where this action was taken.	location	ExerciseAction	Place
 term	courseCode	P		courseCode	The identifier for the [[Course]] used by the course [[provider]] (e.g. CS101 or 6.001).		Course	Text
-term	courseMode	P		courseMode	The medium or means of delivery of the course instance or the mode of study, either as a text label (e.g.		CourseInstance	Text URL
+term	courseMode	P		courseMode	The medium or means of delivery of the course instance or the mode of study, either as a text label (e.g. "online", "onsite" or "blended"; "synchronous" or…		CourseInstance	Text URL
 term	coursePrerequisites	P		coursePrerequisites	Requirements for taking the Course. May be completion of another [[Course]] or a textual description like "permission of instructor".		Course	AlignmentObject Course Text
 term	courseSchedule	P		courseSchedule	Represents the length and pace of a course, expressed as a [[Schedule]].		CourseInstance	Schedule
 term	courseWorkload	P		courseWorkload	The amount of work expected of students taking the course, often provided as a figure per week or per month, and may be broken down by type.		CourseInstance	Text
@@ -18866,8 +18866,8 @@ term	credentialCategory	P		credentialCategory	The category or type of credential
 term	creditText	P		creditText	Text that can be used to credit person(s) and/or organization(s) associated with a published Creative Work.		CreativeWork	Text
 term	creditedTo	P		creditedTo	The group the release is credited to if different than the byArtist. For example, Red and Blue is credited to "Stefani Germanotta Band", but by Lady Gaga.		MusicRelease	Organization Person
 term	cssSelector	P		cssSelector	A CSS selector, e.g. of a [[SpeakableSpecification]] or [[WebPageElement]].		SpeakableSpecification WebPageElement	CssSelectorType
-term	currenciesAccepted	P		currenciesAccepted	The currency accepted.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g.		LocalBusiness	Text
-term	currency	P		currency	The currency in which the monetary amount is expressed.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g.		DatedMoneySpecification ExchangeRateSpecification LoanOrCredit MonetaryAmount MonetaryAmountDistribution	Text
+term	currenciesAccepted	P		currenciesAccepted	The currency accepted.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g. "USD"; [Ticker…		LocalBusiness	Text
+term	currency	P		currency	The currency in which the monetary amount is expressed.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g. "USD";…		DatedMoneySpecification ExchangeRateSpecification LoanOrCredit MonetaryAmount MonetaryAmountDistribution	Text
 term	currentExchangeRate	P		currentExchangeRate	The current price of a currency.		ExchangeRateSpecification	UnitPriceSpecification
 term	customer	P		customer	Party placing the order or paying the invoice.		Invoice Order	Organization Person
 term	customerRemorseReturnFees	P		customerRemorseReturnFees	The type of return fees if the product is returned due to customer remorse.		MerchantReturnPolicy	ReturnFeesEnumeration
@@ -18939,7 +18939,7 @@ term	directors	P	D	directors	A director of e.g. TV, radio, movie, video games et
 term	disambiguatingDescription	P		disambiguatingDescription	A sub property of description. A short description of the item used to disambiguate from other, similar items.	description	Thing	Text
 term	discount	P		discount	Any discount applied (to an Order).		Order	Number Text
 term	discountCode	P		discountCode	Code used to redeem a discount.		Order	Text
-term	discountCurrency	P		discountCurrency	The currency of the discount.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g.		Order	Text
+term	discountCurrency	P		discountCurrency	The currency of the discount.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g. "USD"; [Ticker…		Order	Text
 term	discusses	P		discusses	Specifies the CreativeWork associated with the UserComment.		UserComments	CreativeWork
 term	discussionUrl	P		discussionUrl	A link to the page containing the comments of the CreativeWork.		CreativeWork	URL
 term	diseasePreventionInfo	P		diseasePreventionInfo	Information about disease prevention.		SpecialAnnouncement	URL WebContent
@@ -18984,7 +18984,7 @@ term	educationalAlignment	P		educationalAlignment	An alignment to an established
 term	educationalCredentialAwarded	P		educationalCredentialAwarded	A description of the qualification, award, certificate, diploma or other educational credential awarded as a consequence of successful completion of this…		Course EducationalOccupationalProgram	EducationalOccupationalCredential Text URL
 term	educationalFramework	P		educationalFramework	The framework to which the resource being described is aligned.		AlignmentObject	Text
 term	educationalLevel	P		educationalLevel	The level in terms of progression through an educational or training context.		CreativeWork EducationEvent EducationalOccupationalCredential LearningResource	DefinedTerm Text URL
-term	educationalProgramMode	P		educationalProgramMode	Similar to courseMode, the medium or means of delivery of the program as a whole. The value may either be a text label (e.g.		EducationalOccupationalProgram	Text URL
+term	educationalProgramMode	P		educationalProgramMode	Similar to courseMode, the medium or means of delivery of the program as a whole.		EducationalOccupationalProgram	Text URL
 term	educationalRole	P		educationalRole	An educationalRole of an EducationalAudience.		EducationalAudience	Text
 term	educationalUse	P		educationalUse	The purpose of a work in the context of education; for example, 'assignment', 'group work'.		CreativeWork LearningResource	DefinedTerm Text
 term	elevation	P		elevation	The elevation of a location ([WGS 84](https://en.wikipedia.org/wiki/World_Geodetic_System)).		GeoCoordinates GeoShape	Number Text
@@ -19106,7 +19106,7 @@ term	gameLocation	P		gameLocation	Real or fictional location of the game (or par
 term	gamePlatform	P		gamePlatform	The electronic systems used to play <a href="http://en.wikipedia.org/wiki/Category:Video_game_platforms">video games</a>.		VideoGame VideoGameSeries	Text Thing URL
 term	gameServer	P		gameServer	The server on which it is possible to play the game.		VideoGame	GameServer
 term	gameTip	P		gameTip	Links to tips, tactics, etc.		VideoGame	CreativeWork
-term	gender	P		gender	Gender of something, typically a [[Person]], but possibly also fictional characters, animals, etc.		Person SportsTeam	GenderType Text
+term	gender	P		gender	Gender of something, typically a [[Person]], but possibly also fictional characters, animals, etc. While http://schema.org/Male and http://schema.org/Female…		Person SportsTeam	GenderType Text
 term	genre	P		genre	Genre of the creative work, broadcast channel or group.		BroadcastChannel CreativeWork MusicGroup	DefinedTerm Text URL
 term	geo	P		geo	The geo coordinates of the place.		Place	GeoCoordinates GeoShape
 term	geoContains	P		geoContains	Represents a relationship between two geometries (or the places they represent), relating a containing geometry to a contained geometry.		GeospatialGeometry Place	GeospatialGeometry Place
@@ -19131,7 +19131,7 @@ term	grantee	P		grantee	The person, organization, contact point, or audience tha
 term	greater	P		greater	This ordering relation for qualitative values indicates that the subject is greater than the object.		QualitativeValue	QualitativeValue
 term	greaterOrEqual	P		greaterOrEqual	This ordering relation for qualitative values indicates that the subject is greater than or equal to the object.		QualitativeValue	QualitativeValue
 term	gtin	P		gtin	A Global Trade Item Number ([GTIN](https://www.gs1.org/standards/id-keys/gtin)).	identifier	Demand Offer Product	Text URL
-term	gtin12	P		gtin12	The GTIN-12 code of the product, or the product to which the offer refers. The GTIN-12 is the 12-digit GS1 Identification Key composed of a U.P.C.	gtin identifier	Demand Offer Product	Text
+term	gtin12	P		gtin12	The GTIN-12 code of the product, or the product to which the offer refers.	gtin identifier	Demand Offer Product	Text
 term	gtin13	P		gtin13	The GTIN-13 code of the product, or the product to which the offer refers. This is equivalent to 13-digit ISBN codes and EAN UCC-13.	gtin identifier	Demand Offer Product	Text
 term	gtin14	P		gtin14	The GTIN-14 code of the product, or the product to which the offer refers.	gtin identifier	Demand Offer Product	Text
 term	gtin8	P		gtin8	The GTIN-8 code of the product, or the product to which the offer refers. This code is also known as EAN/UCC-8 or 8-digit EAN.	gtin identifier	Demand Offer Product	Text
@@ -19209,7 +19209,7 @@ term	howPerformed	P		howPerformed	How the procedure is performed.		MedicalProced
 term	httpMethod	P		httpMethod	An HTTP method that specifies the appropriate HTTP method for a request to an HTTP EntryPoint. Values are capitalized strings as used in HTTP.		EntryPoint	Text
 term	iataCode	P		iataCode	IATA identifier for an airline or airport.		Airline Airport	Text
 term	icaoCode	P		icaoCode	ICAO identifier for an airport.		Airport	Text
-term	identifier	P		identifier	The identifier property represents any kind of identifier for any kind of [[Thing]], such as ISBNs, GTIN codes, UUIDs etc.		Thing	PropertyValue Text URL
+term	identifier	P		identifier	The identifier property represents any kind of identifier for any kind of [[Thing]], such as ISBNs, GTIN codes, UUIDs etc. Schema.org provides dedicated…		Thing	PropertyValue Text URL
 term	identifyingExam	P		identifyingExam	A physical examination that can identify this sign.		MedicalSign	PhysicalExam
 term	identifyingTest	P		identifyingTest	A diagnostic test that can identify this sign.		MedicalSign	MedicalTest
 term	illustrator	P		illustrator	The illustrator of the book.		Book	Person
@@ -19304,10 +19304,10 @@ term	itemCondition	P		itemCondition	A predefined value from OfferItemCondition s
 term	itemDefectReturnFees	P		itemDefectReturnFees	The type of return fees for returns of defect products.		MerchantReturnPolicy	ReturnFeesEnumeration
 term	itemDefectReturnLabelSource	P		itemDefectReturnLabelSource	The method (from an enumeration) by which the customer obtains a return shipping label for a defect product.		MerchantReturnPolicy	ReturnLabelSourceEnumeration
 term	itemDefectReturnShippingFeesAmount	P		itemDefectReturnShippingFeesAmount	Amount of shipping costs for defect product returns. Applicable when property [[itemDefectReturnFees]] equals [[ReturnShippingFees]].		MerchantReturnPolicy	MonetaryAmount
-term	itemListElement	P		itemListElement	For itemListElement values, you can use simple strings (e.g.		ItemList	ListItem Text Thing
+term	itemListElement	P		itemListElement	For itemListElement values, you can use simple strings (e.g. "Peter", "Paul", "Mary"), existing entities, or use ListItem.\\n\\nText values are best if the…		ItemList	ListItem Text Thing
 term	itemListOrder	P		itemListOrder	Type of ordering (e.g. Ascending, Descending, Unordered).		ItemList	ItemListOrderType Text
 term	itemLocation	P		itemLocation	Current location of the item.	location	ArchiveComponent	Place PostalAddress Text
-term	itemOffered	P		itemOffered	An item being offered (or demanded). The transactional nature of the offer or demand is documented using [[businessFunction]], e.g. sell, lease etc.		Demand Offer	AggregateOffer CreativeWork Event MenuItem Product Service Trip
+term	itemOffered	P		itemOffered	An item being offered (or demanded).		Demand Offer	AggregateOffer CreativeWork Event MenuItem Product Service Trip
 term	itemPopularity	P		itemPopularity	A measure of the relative popularity or sales rank of the offer within a marketplace, catalog, or platform (e.g. a platform-specific bestseller ranking or…		Offer	Number QuantitativeValue
 term	itemReviewed	P		itemReviewed	The item that is being reviewed/rated.		AggregateRating Review	Thing
 term	itemShipped	P		itemShipped	Item(s) being shipped.	<https://spec.edmcouncil.org/fibo/ontology/FND/ProductsAndServices/ProductsAndServices/hasProduct>	ParcelDelivery	Product
@@ -19397,7 +19397,7 @@ term	marginOfError	P		marginOfError	A [[marginOfError]] for an [[Observation]].	
 term	masthead	P		masthead	For a [[NewsMediaOrganization]], a link to the masthead page or a page listing top editorial management.	publishingPrinciples	NewsMediaOrganization	CreativeWork URL
 term	material	P		material	A material that something is made from, e.g. leather, wool, cotton, paper.		CreativeWork Product	Product Text URL
 term	materialExtent	P		materialExtent	The quantity of the materials being described or an expression of the physical space they occupy.		CreativeWork	QuantitativeValue Text
-term	mathExpression	P		mathExpression	A mathematical expression (e.g. 'x^2-3x=0') that may be solved for a specific variable, simplified, or transformed. This can take many formats, e.g.		MathSolver	SolveMathAction Text
+term	mathExpression	P		mathExpression	A mathematical expression (e.g. 'x^2-3x=0') that may be solved for a specific variable, simplified, or transformed.		MathSolver	SolveMathAction Text
 term	maxPrice	P		maxPrice	The highest price if the price is a range.	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasMonetaryAmount> <https://www.omg.org/spec/Commons/Quantities/hasUpperBound>	PriceSpecification	Number
 term	maxValue	P		maxValue	The upper value of some characteristic or property.	<https://www.omg.org/spec/Commons/Quantities/hasUpperBound>	MonetaryAmount PropertyValue PropertyValueSpecification QuantitativeValue	Number
 term	maximumAttendeeCapacity	P		maximumAttendeeCapacity	The total number of individuals that may attend an event or venue.	<https://www.omg.org/spec/Commons/Quantities/hasUpperBound>	Event Place	Integer
@@ -19857,7 +19857,7 @@ term	softwareVersion	P		softwareVersion	Version of the software instance.		Softw
 term	source	P		source	The source or cause of the event.		InstantaneousEvent	Thing
 term	sourceOrganization	P		sourceOrganization	The Organization on whose behalf the creator was working.		CreativeWork	Organization
 term	sourcedFrom	P		sourcedFrom	The neurological pathway that originates the neurons.		Nerve	BrainStructure
-term	spatial	P		spatial	The "spatial" property can be used in cases when more specific properties (e.g.		CreativeWork	Place
+term	spatial	P		spatial	The "spatial" property can be used in cases when more specific properties (e.g. [[locationCreated]], [[spatialCoverage]], [[contentLocation]]) are not known to…		CreativeWork	Place
 term	spatialCoverage	P		spatialCoverage	The spatialCoverage of a CreativeWork indicates the place(s) which are the focus of the content.	contentLocation	CreativeWork	Place
 term	speakable	P		speakable	Indicates sections of a Web page that are particularly 'speakable' in the sense of being highlighted as being especially appropriate for text-to-speech…		Article WebPage	SpeakableSpecification URL
 term	specialCommitments	P		specialCommitments	Any special commitments associated with this job posting. Valid entries include VeteranCommit, MilitarySpouseCommit, etc.		JobPosting	Text
@@ -19879,7 +19879,7 @@ term	starRating	P		starRating	An official rating for a lodging business or food 
 term	startDate	P		startDate	The start date and time of the item (in [ISO 8601 date format](http://en.wikipedia.org/wiki/ISO_8601)).		CreativeWorkSeason CreativeWorkSeries DatedMoneySpecification EducationalOccupationalProgram Event MerchantReturnPolicySeasonalOverride Role Schedule	Date DateTime
 term	startOffset	P		startOffset	The start time of the clip expressed as the number of seconds from the beginning of the work.		Clip SeekToAction	HyperTocEntry Number
 term	startTime	P		startTime	The startTime of something. For a reserved event or service (e.g. FoodEstablishmentReservation), the time that it is expected to start.		Action FoodEstablishmentReservation InteractionCounter MediaObject Schedule	DateTime Time
-term	statType	P		statType	Indicates the kind of statistic represented by a [[StatisticalVariable]], e.g. mean, count etc.		StatisticalVariable	Property Text URL
+term	statType	P		statType	Indicates the kind of statistic represented by a [[StatisticalVariable]], e.g. mean, count etc. The value of statType is a property, either from within…		StatisticalVariable	Property Text URL
 term	status	P		status	The status of the study (enumerated).		MedicalCondition MedicalProcedure MedicalStudy	EventStatusType MedicalStudyStatus Text
 term	steeringPosition	P		steeringPosition	The position of the steering wheel or similar device (mostly for cars).		Vehicle	SteeringPositionValue
 term	step	P		step	A single step item (as HowToStep, text, document, video, etc.) or a HowToSection.		HowTo	CreativeWork HowToSection HowToStep Text
@@ -19934,7 +19934,7 @@ term	taxonRank	P		taxonRank	The taxonomic rank of this taxon given preferably as
 term	taxonomicRange	P		taxonomicRange	The taxonomic grouping of the organism that expresses, encodes, or in some way related to the BioChemEntity.		BioChemEntity	DefinedTerm Taxon Text URL
 term	teaches	P		teaches	The item being described is intended to help a person learn the competency or learning outcome defined by the referenced term.		CreativeWork EducationEvent LearningResource	DefinedTerm Text
 term	telephone	P		telephone	The telephone number.		ContactPoint Organization Person Place	Text
-term	temporal	P		temporal	The "temporal" property can be used in cases where more specific properties (e.g.		CreativeWork	DateTime Text
+term	temporal	P		temporal	The "temporal" property can be used in cases where more specific properties (e.g. [[temporalCoverage]], [[dateCreated]], [[dateModified]], [[datePublished]])…		CreativeWork	DateTime Text
 term	temporalCoverage	P		temporalCoverage	The temporalCoverage of a CreativeWork indicates the period that the content applies to, i.e. that it describes, either as a DateTime or as a textual string…		CreativeWork	DateTime Text URL
 term	termCode	P		termCode	A code that identifies this [[DefinedTerm]] within a [[DefinedTermSet]].		DefinedTerm	Text
 term	termDuration	P		termDuration	The amount of time in a term as defined by the institution. A term is a length of time where students take one or more classes.		EducationalOccupationalProgram	Duration
@@ -20027,7 +20027,7 @@ term	valueReference	P		valueReference	A secondary value that provides additional
 term	valueRequired	P		valueRequired	Whether the property must be filled in to complete the action. Default is false.		PropertyValueSpecification	Boolean
 term	variableMeasured	P		variableMeasured	The variableMeasured property can indicate (repeated as necessary) the variables that are measured in some dataset, either described as text or as pairs of…		Dataset Observation	Property PropertyValue StatisticalVariable Text
 term	variantCover	P		variantCover	A description of the variant cover for the issue, if the issue is a variant printing. For example, "Bryan Hitch Variant Cover" or "2nd Printing Variant".		ComicIssue	Text
-term	variesBy	P		variesBy	Indicates the property or properties by which the variants in a [[ProductGroup]] vary, e.g. their size, color etc.		ProductGroup	DefinedTerm PropertyValue Text
+term	variesBy	P		variesBy	Indicates the property or properties by which the variants in a [[ProductGroup]] vary, e.g. their size, color etc. Schema.org properties can be referenced by…		ProductGroup	DefinedTerm PropertyValue Text
 term	vatID	P		vatID	The value-added Tax ID of the organization or person with national prefix (for example IT123456789).		Organization Person	Text
 term	vehicleConfiguration	P		vehicleConfiguration	A short text indicating the configuration of the vehicle, e.g. '5dr hatchback ST 2.5 MT 225 hp' or 'limited edition'.		Vehicle	Text
 term	vehicleEngine	P		vehicleEngine	Information about the engine or engines of the vehicle.		Vehicle	EngineSpecification
@@ -20065,7 +20065,7 @@ term	workHours	P		workHours	The typical working hours for this job (e.g. 1st shi
 term	workLocation	P		workLocation	A contact location for a person's place of work.	location	Person	ContactPoint Place
 term	workPerformed	P		workPerformed	A work performed in some event, for example a play performed in a TheaterEvent.	workFeatured	Event	CreativeWork
 term	workPresented	P		workPresented	The movie presented during this event.	workFeatured	ScreeningEvent	Movie
-term	workTranslation	P		workTranslation	A work that is a translation of the content of this work. E.g.		CreativeWork	CreativeWork
+term	workTranslation	P		workTranslation	A work that is a translation of the content of this work.		CreativeWork	CreativeWork
 term	workload	P		workload	Quantitative measure of the physiologic output of the exercise; also referred to as energy expenditure.		ExercisePlan	Energy QuantitativeValue
 term	worksFor	P		worksFor	Organizations that the person works for.		Person	Organization
 term	worstRating	P		worstRating	The lowest value allowed in this rating system.		Rating	Number Text
@@ -20726,7 +20726,7 @@ term	TemporalPosition	C		Temporal position	A position on a time-line
 term	TemporalUnit	C		Temporal unit	A standard duration, which provides a scale factor for a time extent, or the granularity or precision for a time position.	TemporalDuration
 term	Thursday	I		Thursday	
 term	TimePosition	C		Time position	A temporal position described using either a (nominal) value from an ordinal reference system, or a (numeric) value in a temporal coordinate system.	TemporalPosition
-term	TimeZone	C		Time Zone	A Time Zone specifies the amount by which the local time is offset from UTC. A time zone is usually denoted geographically (e.g.
+term	TimeZone	C		Time Zone	A Time Zone specifies the amount by which the local time is offset from UTC.
 term	Tuesday	I		Tuesday	
 term	Wednesday	I		Wednesday	
 term	Year	C	D	Year	Year duration	DurationDescription
@@ -20879,7 +20879,7 @@ term	BARN-PER-SR-EV	I		Barn per Steradian Electron Volt	unit for the representat
 term	BARYE	I		Barye	<p>The barye, or sometimes barad, barrie, bary, baryd, baryed, or barie, is the centimetre-gram-second (CGS) unit of pressure.
 term	BAR_A	I		Bar Absolute	The same as a Bar, however the Absolute is added when there is a mixture of gauge and absolute measurements to ensure there is a clear distinction
 term	BAUD	I		Baud	unit for the symbol rate in communications engineering and telecommunication, at which 1 baud corresponds to the speed, at which 1 symbol (defined measurable…
-term	BBL	I		Barrel	A barrel is one of several units of volume, with dry barrels, fluid barrels (UK beer barrel, U.S. beer barrel), oil barrel, etc.
+term	BBL	I		Barrel	A barrel is one of several units of volume, with dry barrels, fluid barrels (UK beer barrel, U.S. beer barrel), oil barrel, etc. The volume of some barrel…
 term	BBL_UK_PET	I		Barrel (UK Petroleum)	unit of the volume for crude oil according to the Imperial system of units
 term	BBL_UK_PET-PER-DAY	I		Barrel (UK Petroleum) per Day	unit of the volume barrel (UK petroleum) for crude oil according to the Imperial system of units divided by the unit day
 term	BBL_UK_PET-PER-HR	I		Barrel (UK Petroleum) per Hour	unit of the volume barrel (UK petroleum) for crude oil according to the Imperial system of units divided by the unit hour

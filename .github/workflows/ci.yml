@@ -321,8 +321,18 @@ jobs:
         env:
           FORCE: ${{ github.event_name == 'schedule' && '-f' || '' }}
         run: |
-          # One retry: w3.org and the other hosts throttle runners now and then.
-          tools/check-vocab.sh $FORCE || { sleep 15; tools/check-vocab.sh $FORCE; }
+          # One retry, and only of a failed download (status 3): w3.org and the
+          # other hosts throttle runners now and then. A changed hash or a list
+          # that differs fails at once. The retry runs without -f: it downloads
+          # only what the first run did not verify.
+          status=0
+          tools/check-vocab.sh $FORCE || status=$?
+          if [ "$status" -eq 3 ]; then
+            sleep 15
+            tools/check-vocab.sh
+          else
+            exit "$status"
+          fi
       # The extension ships only its runtime dependencies; dev tools stay local.
       - working-directory: editors/vscode
         run: npm audit --omit=dev --audit-level=moderate

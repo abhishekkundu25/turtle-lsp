@@ -105,6 +105,35 @@ test("a comment is its first paragraph, whitespace collapsed, cut at a sentence 
   assert.equal(commentOf(text, "longWord"), "x".repeat(COMMENT_CAP - 1) + "…")
 })
 
+test("a comment is not cut after an abbreviation or inside a bracket", async () => {
+  const words = Array(COMMENT_CAP).fill("word").join(" ")
+  // Each is followed by a word that does not start in lower case, as a new
+  // sentence would be.
+  const abbreviations = ["e.g. Oil", "E.g. Oil", "i.e. SKUs", "Decree No. 12", "the U.S. Secretary", "tips, etc. Then", "one vs. Another",
+    "Example Inc. Then", "cf. Section 2", "Jane Q. Example", "Example e. V. Then", "p. 12", "(e.g. Oil)", "(Ital. Ente)", "[Fagus spp. (Fagaceae)]"]
+  const comments = {}
+  abbreviations.forEach((a, i) => {
+    comments[`after${i}`] = `A whole sentence. Then ${a} and ${words}`
+    comments[`only${i}`] = `With ${a} and ${words}`
+  })
+  // A bracket that closed stops nothing, and "?" and "!" end a sentence after any word.
+  comments.closed = `One (e.g. this) is whole. Then (as before) another. Next ${words}`
+  comments.question = `Is it in the U.S? Is it at No! Next ${words}`
+  comments.bracketed = `The material used. (E.g. Oil, ${words})`
+  const { text } = await build([row("ex", "nt", commented(comments))])
+
+  abbreviations.forEach((a, i) => {
+    // The sentence before the abbreviation's, when there is one.
+    assert.equal(commentOf(text, `after${i}`), "A whole sentence.", a)
+    // Else the last whole word inside the cap, marked as a cut.
+    const cut = commentOf(text, `only${i}`)
+    assert.ok(cut.startsWith(`With ${a} and word`) && cut.endsWith("word…") && cut.length <= COMMENT_CAP, `${a}: ${cut}`)
+  })
+  assert.equal(commentOf(text, "closed"), "One (e.g. this) is whole. Then (as before) another.")
+  assert.equal(commentOf(text, "question"), "Is it in the U.S? Is it at No!")
+  assert.equal(commentOf(text, "bracketed"), "The material used.")
+})
+
 test("a subject in an alias namespace is a term; a local name with whitespace, # or / is not", async () => {
   const { text } = await build([row("ex", "ttl", source("terms.ttl"), { aliases: "https://example.org/ns#" })])
   assert.deepEqual(locals(text, "ex"), ["plain", "viaAlias"])
@@ -178,6 +207,16 @@ test("each failure stops the build and names the row or line", async (t) => {
     ["rows that disagree",
       () => build([animals, row("ex", "ttl", source("part1.ttl"), { namespace: "http://example.org/ns/" })]),
       /^manifest lines 2 and 3 \(ex\) disagree: namespace/],
+    ["two prefixes with one namespace",
+      () => build([animals, row("again", "ttl", source("part1.ttl"))]),
+      /^manifest lines 2 and 3: ex and again share http:\/\/example\.org\/ns#$/],
+    ["an alias that is another vocabulary's namespace",
+      () => build([animals, OTHER, row("third", "ttl", source("part1.ttl"), { namespace: "http://example.org/third#", aliases: `http://example.org/old# ${OTHER_NS}` })]),
+      /^manifest lines 3 and 4: other and third share http:\/\/example\.org\/other#$/],
+    ["an alias that is another vocabulary's alias",
+      () => build([row("ex", "ttl", source("animals.ttl"), { aliases: "http://example.org/old#" }),
+        row("other", "tsv", source("other.tsv"), { namespace: OTHER_NS, aliases: "http://example.org/old#" })]),
+      /^manifest lines 2 and 3: ex and other share http:\/\/example\.org\/old#$/],
     ["a correction with an unknown prefix",
       () => build([animals, OTHER], { corrections: "# comment\nadd\tnope\tThing\tSome reason.\tC\n" }),
       /^corrections line 2: unknown prefix "nope"$/],

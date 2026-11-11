@@ -27,8 +27,8 @@ import { RdfXmlParser } from "rdfxml-streaming-parser"
 // The longest comment the list keeps, in UTF-16 code units. Comment text is
 // what limits the list's size: this is the largest of 400, 300, 240, 200 and
 // 160 that keeps it within SIZE_BUDGET. Measured on the pinned sources
-// (2026-11-12), gzipped: 240 gives 790,529 bytes, 200 gives 759,524, 160
-// gives 724,421.
+// (2026-11-12), gzipped: 240 gives 790,582 bytes, 200 gives 759,927, 160
+// gives 724,999.
 export const COMMENT_CAP = 160
 // The most data/vocab.tsv may weigh gzipped at level 9: its size before the
 // sources were pinned.
@@ -90,24 +90,32 @@ const byCodePoint = (a, b) => {
 const records = (text) =>
   text.split(/\r?\n/).flatMap((line, i) => (line.trim() === "" || line.startsWith("#") ? [] : [[i + 1, line]]))
 
-const clean = (s) => s.replace(/\s+/g, " ").trim()
-const field = (s) => s.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n")
-const unfield = (s) => s.replace(/\\(.)/g, (_, e) => ({ t: "\t", n: "\n" })[e] ?? e)
+const collapseSpaces = (s) => s.replace(/\s+/g, " ").trim()
+const escapeColumn = (s) => s.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n")
+const unescapeColumn = (s) => s.replace(/\\(.)/g, (_, e) => ({ t: "\t", n: "\n" })[e] ?? e)
 
 // A sentence end: `.`, `!` or `?`, maybe closing quotes or brackets, then a
-// space and a word that does not start in lower case (so "e.g. the" is not one).
-const SENTENCE_END = /[.!?]["'’”)\]]*(?= +(?!\p{Ll}))/gu
+// space and a word that does not start in lower case (so "e.g. the" is not
+// one). A `.` after an abbreviation is not one either: after a single letter
+// ("e.g. Oil", "the U.S. Secretary", "William F. Smith", "p. 12") or after
+// cf, etc, vs, No or Inc.
+const SENTENCE_END = /(?:(?<!(?<![^ .(\[])(?:[Cc]f|[Ee]tc|[Vv]s|No|Inc|\p{L}))\.|[!?])["'’”)\]]*(?= +(?!\p{Ll}))/gu
+// Whether the text stops inside a round or square bracket it opened.
+const insideBracket = (s) => s.split(/[(\[]/).length > s.split(/[)\]]/).length
 
 // The first paragraph, whitespace collapsed, at most COMMENT_CAP long: cut
-// after the last sentence end inside the cap, else after the last word with "…".
+// after the last sentence end inside the cap that is not inside a bracket,
+// else after the last word with "…". The two refusals (abbreviations and
+// brackets) can only miss a sentence end: the cut is then an earlier one or
+// says "…".
 const commentOf = (text) => {
-  const comment = clean(text.trim().split(/\n\s*\n/)[0])
+  const comment = collapseSpaces(text.trim().split(/\n\s*\n/)[0])
   if (comment.length <= COMMENT_CAP) return comment
   let end = 0
   for (const m of comment.matchAll(SENTENCE_END)) {
     const e = m.index + m[0].length
     if (e > COMMENT_CAP) break
-    end = e
+    if (!insideBracket(comment.slice(0, e))) end = e
   }
   if (end > 0) return comment.slice(0, end)
   let cut = comment.lastIndexOf(" ", COMMENT_CAP - 1)
@@ -121,13 +129,15 @@ const commentOf = (text) => {
 
 /**
  * Reads the source manifest. Returns one row per record, in file order:
- * `{ line, prefix, namespace, aliases, format, url, version, licence, sha256 }`,
- * `aliases` an array (empty for `-`). Throws, naming the line, on a row with
- * the wrong number of columns, an empty column, an unknown format, a fetched
- * source whose url is not https, or a malformed hash.
+ * `{ line, prefix, namespace, aliases, format, frozen, url, version, licence, sha256 }`,
+ * `aliases` an array (empty for `-`), `frozen` true for a frozen extract
+ * (format `tsv`). Throws, naming the line, on a row with the wrong number of
+ * columns, an empty column, an unknown format, a fetched source whose url is
+ * not https, or a malformed hash; and, naming both lines, on two prefixes
+ * that share a namespace or an alias.
  */
 export function parseManifest(text) {
-  return records(text).map(([line, record]) => {
+  const rows = records(text).map(([line, record]) => {
     const where = `manifest line ${line}`
     const cols = record.split("\t")
     if (cols.length !== MANIFEST_COLUMNS.length) {
@@ -138,10 +148,22 @@ export function parseManifest(text) {
     const [prefix, namespace, aliases, format, url, version, licence, sha256] = cols
     if (!PREFIX.test(prefix)) fail(`${where}: "${prefix}" is not a prefix`)
     if (!FORMATS.has(format)) fail(`${where} (${prefix}): format "${format}" is not one of ${[...FORMATS].join(", ")}`)
-    if (format !== "tsv" && !url.startsWith("https://")) fail(`${where} (${prefix}): a fetched source's url must be https: ${url}`)
+    const frozen = format === "tsv"
+    if (!frozen && !url.startsWith("https://")) fail(`${where} (${prefix}): a fetched source's url must be https: ${url}`)
     if (!/^[0-9a-f]{64}$/.test(sha256)) fail(`${where} (${prefix}): "${sha256}" is not a sha256 in lower-case hex`)
-    return { line, prefix, namespace, aliases: aliases === "-" ? [] : aliases.split(" ").filter(Boolean), format, url, version, licence, sha256 }
+    return { line, prefix, namespace, aliases: aliases === "-" ? [] : aliases.split(" ").filter(Boolean), format, frozen, url, version, licence, sha256 }
   })
+  // A namespace or alias belongs to one prefix: the list could not say whose
+  // term an IRI under it is.
+  const owners = new Map()
+  for (const row of rows) {
+    for (const ns of [row.namespace, ...row.aliases]) {
+      const owner = owners.get(ns) ?? row
+      if (owner.prefix !== row.prefix) fail(`manifest lines ${owner.line} and ${row.line}: ${owner.prefix} and ${row.prefix} share ${ns}`)
+      owners.set(ns, owner)
+    }
+  }
+  return rows
 }
 
 /**
@@ -155,9 +177,10 @@ export function parseManifest(text) {
  * - `previous`: the list to compare with, usually the committed one.
  * - `budget`: the most the output may weigh gzipped at level 9.
  *
- * Resolves to `{ text, summary }`, `summary` holding one
- * `{ prefix, added, removed }` (local names, code-point order) per vocabulary
- * whose terms differ from `previous`. Rejects with a message naming the row
+ * Resolves to `{ text, summary, vocabularies, terms, gzipped }`: `summary`
+ * holds one `{ prefix, added, removed }` (local names, code-point order) per
+ * vocabulary whose terms differ from `previous`; the rest are the list's
+ * counts of vocabularies and terms and its size gzipped at level 9. Rejects with a message naming the row
  * or line when a hash differs (checked for every row before any parsing), a
  * source does not parse or yields no term, a vocabulary's rows disagree, a
  * frozen extract or a correction is malformed or uses an unknown prefix, a
@@ -173,11 +196,11 @@ export async function buildVocab({ manifest, corrections = "", sources, previous
   })
 
   const vocabs = vocabularies(rows)
-  const names = namespaces(vocabs)
+  const namespaces = indexNamespaces(vocabs)
   for (const vocab of vocabs.values()) {
     const [first] = vocab.rows
-    if (first.format === "tsv") {
-      vocab.terms = frozenTerms(decode(first, sources[rows.indexOf(first)]), vocab, names, first)
+    if (first.frozen) {
+      vocab.terms = frozenTerms(decode(first, sources[rows.indexOf(first)]), vocab, namespaces, first)
       continue
     }
     const triples = new Map()
@@ -186,7 +209,7 @@ export async function buildVocab({ manifest, corrections = "", sources, previous
       if (!quads.some((q) => q.subject.termType === "NamedNode" && localOf(vocab, q.subject.value) !== undefined)) {
         fail(`manifest line ${row.line} (${vocab.prefix}): the source has no term in ${[vocab.namespace, ...vocab.aliases].join(" or ")}`)
       }
-      for (const q of quads) triples.set(`${key(q.subject)} ${key(q.predicate)} ${key(q.object)}`, q)
+      for (const q of quads) triples.set(`${ntriples(q.subject)} ${ntriples(q.predicate)} ${ntriples(q.object)}`, q)
     }
     // Triples in code-point order of their N-Triples form, so the first label
     // or hint seen does not depend on the source's order.
@@ -194,18 +217,19 @@ export async function buildVocab({ manifest, corrections = "", sources, previous
     vocab.terms = fetchedTerms(sorted, vocab)
   }
 
-  applyCorrections(corrections, vocabs, names)
+  applyCorrections(corrections, vocabs, namespaces)
 
   let text = ""
   for (const vocab of [...vocabs.values()].sort((a, b) => byCodePoint(a.prefix, b.prefix))) {
     text += ["@ns", vocab.prefix, vocab.namespace, ...vocab.aliases].join("\t") + "\n"
     for (const term of [...vocab.terms.values()].sort((a, b) => byCodePoint(a.local, b.local))) {
-      text += termLine(term, vocab, names) + "\n"
+      text += termLine(term, vocab, namespaces) + "\n"
     }
   }
-  const size = gzipSync(Buffer.from(text), { level: 9 }).length
-  if (size > budget) fail(`the output is ${size} bytes gzipped, over its budget of ${budget}`)
-  return { text, summary: summarize(previous, text) }
+  const gzipped = gzipSync(Buffer.from(text), { level: 9 }).length
+  if (gzipped > budget) fail(`the output is ${gzipped} bytes gzipped, over its budget of ${budget}`)
+  const terms = [...vocabs.values()].reduce((n, vocab) => n + vocab.terms.size, 0)
+  return { text, summary: summarize(previous, text), vocabularies: vocabs.size, terms, gzipped }
 }
 
 // The vocabularies by prefix, each with its rows. Rows of one prefix must
@@ -222,7 +246,7 @@ function vocabularies(rows) {
     const disagree = (what) => fail(`manifest lines ${first.line} and ${row.line} (${row.prefix}) disagree: ${what}`)
     if (row.namespace !== first.namespace) disagree(`namespace ${first.namespace} or ${row.namespace}`)
     if (row.aliases.join(" ") !== first.aliases.join(" ")) disagree(`aliases ${first.aliases.join(" ") || "-"} or ${row.aliases.join(" ") || "-"}`)
-    if (row.format === "tsv" || first.format === "tsv") disagree("a frozen extract must be the vocabulary's only row")
+    if (row.frozen || first.frozen) disagree("a frozen extract must be the vocabulary's only row")
     vocab.rows.push(row)
   }
   return vocabs
@@ -230,7 +254,7 @@ function vocabularies(rows) {
 
 // Every spelling of every namespace, longest first, for writing and reading
 // `prefix:local`.
-function namespaces(vocabs) {
+function indexNamespaces(vocabs) {
   const spellings = [...vocabs.values()].flatMap((v) => [v.namespace, ...v.aliases].map((ns) => [v.prefix, ns]))
   spellings.sort(([pa, a], [pb, b]) => b.length - a.length || byCodePoint(pa, pb))
   return { spellings, byPrefix: new Map([...vocabs.values()].map((v) => [v.prefix, v.namespace])) }
@@ -265,7 +289,7 @@ function parseRdfXml(text, baseIRI) {
 }
 
 // A term's N-Triples form, for ordering and deduplicating triples.
-function key(term) {
+function ntriples(term) {
   switch (term.termType) {
     case "NamedNode":
       return `<${term.value}>`
@@ -278,7 +302,7 @@ function key(term) {
       return `"${text}"${tag}`
     }
     default:
-      return `<<${key(term.subject)} ${key(term.predicate)} ${key(term.object)}>>`
+      return `<<${ntriples(term.subject)} ${ntriples(term.predicate)} ${ntriples(term.object)}>>`
   }
 }
 
@@ -326,42 +350,42 @@ function fetchedTerms(triples, vocab) {
     const kind = types.some((x) => CLASS_TYPES.has(x)) ? "C"
       : types.some((x) => PROP_TYPES.has(x)) ? "P"
       : t.hint || (types.length ? "I" : /^[A-Z]/.test(local) ? "C" : "P")
-    terms.set(local, { local, kind, dep: t.dep, label: clean(t.label.text ?? ""), comment: t.comment.text ?? "",
+    terms.set(local, { local, kind, dep: t.dep, label: collapseSpaces(t.label.text ?? ""), comment: t.comment.text ?? "",
       supers: t.supers, domains: t.domains, ranges: t.ranges })
   }
   return terms
 }
 
 // The columns of a `term` line from local on, read back into a term.
-function readTerm(cols, vocab, names, where) {
+function readTerm(cols, vocab, namespaces, where) {
   if (cols.length < 2 || cols.length > 8) fail(`${where}: ${cols.length} term columns, expected 2 to 8 (local, kind, flags, label, comment, supers, domains, ranges)`)
   const [local, kind, flags = "", label = "", comment = "", supers = "", domains = "", ranges = ""] = cols
-  const name = unfield(local)
+  const name = unescapeColumn(local)
   if (!isTermLocal(name)) fail(`${where}: "${local}" is not a local name`)
   if (!["C", "P", "I"].includes(kind)) fail(`${where}: kind "${kind}" is not C, P or I`)
   if (flags !== "" && flags !== "D") fail(`${where}: flags "${flags}" are not empty or D`)
-  const iris = (list) => new Set(list.split(" ").filter(Boolean).map((token) => expand(token, vocab, names, where)))
-  return { local: name, kind, dep: flags === "D", label: unfield(label), comment: unfield(comment),
+  const iris = (list) => new Set(list.split(" ").filter(Boolean).map((token) => expand(token, vocab, namespaces, where)))
+  return { local: name, kind, dep: flags === "D", label: unescapeColumn(label), comment: unescapeColumn(comment),
     supers: iris(supers), domains: iris(domains), ranges: iris(ranges) }
 }
 
-function expand(token, vocab, names, where) {
+function expand(token, vocab, namespaces, where) {
   if (token.startsWith("<") && token.endsWith(">")) return token.slice(1, -1)
   const colon = token.indexOf(":")
   if (colon < 0) return vocab.namespace + token
   const prefix = token.slice(0, colon)
-  const ns = names.byPrefix.get(prefix)
+  const ns = namespaces.byPrefix.get(prefix)
   if (ns === undefined) fail(`${where}: unknown prefix "${prefix}" in ${token}`)
   return ns + token.slice(colon + 1)
 }
 
-function frozenTerms(text, vocab, names, row) {
+function frozenTerms(text, vocab, namespaces, row) {
   const terms = new Map()
   for (const [line, record] of records(text)) {
     const where = `frozen extract of ${vocab.prefix} (manifest line ${row.line}), line ${line}`
     const [tag, ...cols] = record.split("\t")
     if (tag !== "term") fail(`${where}: not a term line`)
-    const term = readTerm(cols, vocab, names, where)
+    const term = readTerm(cols, vocab, namespaces, where)
     if (terms.has(term.local)) fail(`${where}: ${term.local} is there twice`)
     terms.set(term.local, term)
   }
@@ -369,7 +393,7 @@ function frozenTerms(text, vocab, names, row) {
   return terms
 }
 
-function applyCorrections(text, vocabs, names) {
+function applyCorrections(text, vocabs, namespaces) {
   const added = new Map()
   for (const [line, record] of records(text)) {
     const where = `corrections line ${line}`
@@ -378,7 +402,7 @@ function applyCorrections(text, vocabs, names) {
     const vocab = vocabs.get(prefix)
     if (!vocab) fail(`${where}: unknown prefix "${prefix}"`)
     if (!reason?.trim()) fail(`${where}: no reason`)
-    const term = readTerm([local, ...cols], vocab, names, where)
+    const term = readTerm([local, ...cols], vocab, namespaces, where)
     const id = `${prefix}:${term.local}`
     if (added.has(id)) fail(`${where}: ${id} is already added on line ${added.get(id)}`)
     if (vocab.terms.has(term.local)) fail(`${where}: ${id} is already in the source (manifest line ${vocab.rows[0].line}); delete the correction`)
@@ -387,19 +411,19 @@ function applyCorrections(text, vocabs, names) {
   }
 }
 
-function compact(iri, vocab, names) {
+function compact(iri, vocab, namespaces) {
   for (const ns of [vocab.namespace, ...vocab.aliases]) {
     if (iri.startsWith(ns) && SIMPLE.test(iri.slice(ns.length))) return iri.slice(ns.length)
   }
-  for (const [prefix, ns] of names.spellings) {
+  for (const [prefix, ns] of namespaces.spellings) {
     if (iri.startsWith(ns) && SIMPLE.test(iri.slice(ns.length))) return `${prefix}:${iri.slice(ns.length)}`
   }
   return `<${iri}>`
 }
 
-function termLine(term, vocab, names) {
-  const list = (set) => [...new Set([...set].map((iri) => compact(iri, vocab, names)))].sort(byCodePoint).join(" ")
-  const cols = [field(term.local), term.kind, term.dep ? "D" : "", field(term.label), field(commentOf(term.comment)),
+function termLine(term, vocab, namespaces) {
+  const list = (set) => [...new Set([...set].map((iri) => compact(iri, vocab, namespaces)))].sort(byCodePoint).join(" ")
+  const cols = [escapeColumn(term.local), term.kind, term.dep ? "D" : "", escapeColumn(term.label), escapeColumn(commentOf(term.comment)),
     list(term.supers), list(term.domains), list(term.ranges)]
   while (cols.length > 5 && cols[cols.length - 1] === "") cols.pop()
   return `term\t${cols.join("\t")}`
