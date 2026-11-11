@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- **The VS Code Marketplace page no longer says reasoning is off by
+  default.** It has been on since 0.17.0, with TurbOWL's default rules. The
+  page now describes the Query Results panel and its Inferred choice
+  instead of the Markdown table, and lists `turtle.query.reasoning`.
+- **Reasoning near the top of both READMEs**: inferred types on hover with
+  their proofs, contradictions as diagnostics, and SPARQL over inferred
+  triples, with demos of the browser editor (`assets/hover-proof`,
+  `sparql-reasoning` and `graph-view`, each as GIF and MP4).
+  `node web/demo/record.mjs` records them again.
+- The extension's description and keywords mention reasoning.
+
 ## 0.17.0 — 2026-11-11
 
 ### Changed

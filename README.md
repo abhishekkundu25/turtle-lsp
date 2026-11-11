@@ -15,6 +15,18 @@ WebAssembly, in an editor that runs entirely in the tab. Nothing is uploaded.
 
 <p align="center"><img src="assets/demo.gif" alt="Editing RDF in the browser: SHACL errors as you type, completion from the shapes, rename across files, a quick fix, and a SPARQL query with its results" width="900"></p>
 
+**Reasoning**: [TurbOWL](https://github.com/abhishekkundu25/turbowl), an OWL 2 RL
+reasoner, works out what the workspace implies, in the background; it is on
+by default. Hover on a resource lists its inferred types, each with its
+proof: one W3C rule per step, each triple it rests on a link to its line.
+With `turtle.reasoning.diagnostics` on, contradictions such as a member of two
+disjoint classes are diagnostics. With `turtle.query.reasoning` set to
+`default` or `complete`, SPARQL queries run over the inferred triples too.
+
+<p align="center"><img src="assets/hover-proof.gif" alt="Hovering ex:rex in a Turtle file in the browser editor: its inferred types ex:Mammal and ex:Animal, each proved by the W3C rule cax-sco from triples linked to their lines; then ex:alice, an ex:Person by the domain of ex:owns, and a click on a proof's link that goes to its line" width="760"></p>
+
+<p align="center"><a href="assets/hover-proof.mp4">Watch as MP4</a></p>
+
 It is the only Turtle language server we know of that checks itself against
 the full W3C test suites and real public ontologies; see
 [Tested against the real world](#tested-against-the-real-world).
@@ -201,6 +213,10 @@ language-server features of Turtle files, built on the same knowledge of the
 workspace and the vocabularies. Queries and updates, SPARQL 1.1 and 1.2, are
 accepted in any of these files: the server checks a document as what it holds,
 not by its extension.
+
+<p align="center"><img src="assets/sparql-reasoning.gif" alt="A SPARQL query in the browser editor for the resources of type ex:Animal: with Inferred off it returns no rows, as no file says so; with TurbOWL's default rules it returns ex:polly, ex:rex and ex:tom, and the results say they include 12 inferred triples" width="760"></p>
+
+<p align="center"><a href="assets/sparql-reasoning.mp4">Watch as MP4</a></p>
 
 - **Diagnostics** as you type: syntax errors at the token where the query
   stops making sense, undeclared, unused and duplicate prefixes, unknown or
@@ -730,6 +746,10 @@ browser. Files never leave the tab.
   itself. The editor may connect to other `http` and `https` sites, for the
   "Fetch" quick fix; the toolbox connects to none.
 
+<p align="center"><img src="assets/graph-view.gif" alt="The workspace graph in the browser editor, for a small class hierarchy: rdf:type edges turned on, zoom and pan, a search that selects ex:rex and lists its links, its focus view, and the class tree" width="760"></p>
+
+<p align="center"><a href="assets/graph-view.mp4">Watch as MP4</a></p>
+
 ## Settings file (turtle-lsp.json)
 
 An optional `turtle-lsp.json` at the workspace root holds settings for
@@ -1135,6 +1155,7 @@ npm run vocab   # regenerate data/vocab.tsv from @zazuko/rdf-vocabularies
 npm run corpus  # download the public corpus and compare the parser and formatter on it
 npm run web:test     # build the browser engine and run the web tests
 npm run test:vscode  # VS Code extension: grammar tests, then checks inside a downloaded VS Code
+node web/demo/record.mjs  # after web:build: record the README's demos (assets/*.gif, *.mp4); needs Chrome and ffmpeg
 ```
 
 [AGENTS.md](AGENTS.md) lists the commands to run one test file, and the rules
