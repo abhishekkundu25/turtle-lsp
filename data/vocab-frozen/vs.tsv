@@ -1,0 +1,3 @@
+term	moreinfo	P		more info	more information about the status etc of a term, typically human oriented
+term	term_status	P		term status	the status of a vocabulary term, expressed as a short symbolic string; known values include 'unstable','testing', 'stable' and 'archaic'
+term	userdocs	P		user docs	human-oriented documentation, examples etc for use of this term

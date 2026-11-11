@@ -1,0 +1,21 @@
+term	code	P		code				xsd:anySimpleType
+term	CodeList	C		Codelist		Enumeration
+term	CompositeCodeList	C		Composite Code List		CodeList
+term	compositeOf	P		composite of	
+term	defaultValue	P		default value	
+term	DerivedCodeList	C		Derived Code List		CodeList
+term	derivedFrom	P		derived from	
+term	EnumeratedValue	C		DTYPE Enumerated value	The base class for datatypes that have values that are restriced to a set of literals or tokens. The members of the restriction may themselve be restriced by facets that apply to scalar data types.	owl:Thing
+term	Enumeration	C		DTYPE Enumeration		owl:Thing
+term	hasMember	P		has member	
+term	isInvalid	P		is invalid				xsd:boolean
+term	literal	P		literal				xsd:string
+term	numericUnion	C		numeric union	A datatype that is the union of numeric xsd data types. "numericUnion" is equivalent to the xsd specification that uses an xsd:union of memberTypes="xsd:decimal xsd:double xsd:float xsd:integer".	rdfs:Resource
+term	order	P		order				xsd:nonNegativeInteger
+term	orderIndex	P		order index				xsd:nonNegativeInteger
+term	position	P		position				xsd:nonNegativeInteger
+term	refersTo	P		refers to	
+term	SimpleCodeList	C		Simple Code List		CodeList
+term	type	P		datatype	
+term	value	P		value	
+term	ValueReference	C		Value Reference		owl:Thing

@@ -1,0 +1,976 @@
+term	abrigedTitle	P		Abridged title	An abridged title.	alternativeTitle	Asset	xsd:string
+term	abstract	P		Abstract	To provide an abstract.	description	Asset	xsd:string
+term	AccessConditions	C		Access conditions	The conditions under which content can be accessed.	Rights
+term	Action	C		Action	A class to log Actions.	owl:Thing
+term	Action_Type	C		Action type	To define a type of Action.	skos:Concept
+term	actionDescription	P		Action description	The description of an Action.		Action	xsd:string
+term	actionId	P		Action identifier	An identifier attributed to an Action.		Action	Identifier xsd:anyURI xsd:string
+term	actionName	P		Action name	The name of an Action.		Action	xsd:string
+term	actionTimestamp	P		Action timestamp	The time when the Action occurs.		Action	xsd:string
+term	actionTimestampEditUnits	P		Action edit unit number	The edit unit number at which the Action occurs.	actionTimestamp	Action	xsd:long
+term	actionTimestampNormalPlayTime	P		Action normal play time	The normal play time at which the Action occurs.	actionTimestamp	Action	xsd:time
+term	actionTimestampTimecode	P		Action timecode	The timecode at which the Action occurs.	actionTimestamp	Action	xsd:string
+term	actionTimestampTimecodeDropFrame	P		Action timecode (dropframe)	The timecode (dropframe) at which the Action occurs.	actionTimestamp	Action	xsd:string
+term	actionType	P		Action type	A type of Action.		Action	Action_Type xsd:anyURI xsd:string
+term	ActiveFormatDescriptorCode	C		Active format descriptor code	To define an active format code.	Format
+term	activityEndDate	P		Activity end date	To provide the end date of activity of an Organisation.		Organisation	xsd:string
+term	activityStartDate	P		Activity start date	To provide the start date of activity of an Organisation.		Organisation	xsd:string
+term	adultContent	P		Adult content flag	A flag to indiucate adult content.		Asset	xsd:boolean
+term	Affiliation	C		Affiliation	An Organisation to which a Contact is affiliated (with period of validity).	Organisation
+term	affiliationEndDate	P		Affiliation end date	The date of end of Affiliation.		Affiliation	xsd:string
+term	affiliationStartDate	P		Affiliation start date	The date of Affiliation.		Affiliation	xsd:string
+term	age	P		Age	The age of a Contact/Person.		Person	xsd:integer
+term	Agent	C		Agent	A person / contact or organisation.	owl:Thing
+term	agentDbpedia	P		DBPedia	A link to a DBPedia page.	agentLinkedData	Agent	xsd:anyURI
+term	agentDescription	P		Description	To provide a description of an Agent.		Agent	xsd:string
+term	agentEmailAddress	P		email	To provide an email address.		Agent	xsd:string
+term	agentFacebook	P		Facebook		agentSocialMedia	Agent	xsd:anyURI
+term	agentFee	P		Agent fee	The fee of an Agent.		Agent	xsd:string
+term	agentFlickr	P		Flickr		agentSocialMedia	Agent	xsd:anyURI
+term	agentId	P		Agent identifier	An identifier attributed to an Agent.		Agent	Identifier xsd:anyURI xsd:string
+term	agentImdb	P		Wikidata	A link to an imdb page.	agentLinkedData	Agent	xsd:anyURI
+term	agentInstagram	P		Instagram		agentSocialMedia	Agent	xsd:anyURI
+term	agentLinkedData	P		Agent linked data	Range: a URL or URI.		Agent	xsd:anyURI
+term	agentLinkedIn	P		LinkedIn		agentSocialMedia	Agent	xsd:anyURI
+term	agentMobileTelephoneNumber	P		Mobile	To provide the mobile telephone number of an Agent (Contact/Person or organisation)	agentTelephoneNumber	Agent	xsd:string
+term	agentName	P		Name	To provide a name of an Agent.		Agent	xsd:string
+term	agentNickname	P		Nickname	To provide a nickname of a Contact/Person.		Agent	xsd:string
+term	agentPreviousName	P		Previous name	To provide the previous name of a Contact/Person.		Agent	xsd:string
+term	agentRelatedInformationLink	P		Related information link	To provide a link to a web resource containing information related to an Agent (Contact/Person or Organisation).	agentRelatedLink	Agent	xsd:anyURI
+term	agentRelatedLink	P		Related link	To provide a link to e.g. a web resource related to an Agent.		Agent	xsd:anyURI
+term	agentRelatedPressLink	P		Related press link	To provide a link to a web resource containing information related to an Agent (Contact/Person or Organisation).	agentRelatedLink	Agent	xsd:anyURI
+term	agentSocialMedia	P		Socail media	Links to an Agent's social media.		Agent	xsd:anyURI
+term	agentTelephoneNumber	P		Telephone	To provide the telephone number of an Agent (Contact/Person or Organisation).		Agent	xsd:string
+term	agentTwitter	P		Twitter		agentSocialMedia	Agent	xsd:anyURI
+term	agentType	P		Agent type	Range: string or anyURI or Concept.		Agent	xsd:anyURI xsd:string
+term	agentWebHomepage	P		Homepage	To provide the address of the webpage of an Agent (Contact/Person or Organisation).		Agent	xsd:anyURI
+term	agentWikidata	P		Wikidata	A link to a wikidata page.	agentLinkedData	Agent	xsd:anyURI
+term	agentWikipedia	P		Wikipedia		agentSocialMedia	Agent	xsd:anyURI
+term	alternativeTitle	P		Alternative title.	To provide an alternative title.		Asset	xsd:string
+term	AncillaryData	C		Ancillary data	Any ancillary data provided with the content other than captioning and subtitling.	DataTrack
+term	AncillaryDataFormat	C		Ancillary data format	To define the format of AncillaryData such as legacy data used to be carried in vertical blanking intervals. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	DataFormat
+term	Animal	C		Animal	To identify an animal.	owl:Thing
+term	animalBirthYear	P		Animal birth year	To year of birth of an animal.		Animal	xsd:date
+term	AnimalBreedCode	C		Animal breed code	To provide a breed code for an animal..	skos:Concept
+term	animalCharacterName	P		Animal character name	To associate a fictitious character name with an animal.		Animal	xsd:string
+term	animalCode	P		Animal code	To associate a code with an animal.		Animal	xsd:string
+term	AnimalColourCode	C		Animal colour code	To provide a colour code for an animal..	skos:Concept
+term	animalDescription	P		Animal description	To describe an animal.		Animal	xsd:string
+term	animalGender	P		Animal gender	To give the gender of an animal.		Animal	xsd:string
+term	animalId	P		Animal Id	To associate an Id with an animal.		Animal	xsd:anyURI
+term	animalName	P		Animal name	To name an animal.		Animal	xsd:string
+term	animalPassport	P		Animal passport	To replicate the passport of an animal.		Animal	xsd:string
+term	Annotation	C		Annotation	A class used to annotate Assets.	owl:Thing
+term	Annotation_Type	C		Annotation type	To define a type of Annotation.	skos:Concept
+term	annotationConfidence	P		Annotation confidence	To estimate the confidence in an Annotation.		Annotation	xsd:string
+term	annotationCurationDateTime	P		Annotation curation date & time	To provide the date and time when an Annotation has been reviewed.		Annotation	xsd:dateTime
+term	annotationDescription	P		Annotation description	To describe an Annotation.		Annotation	xsd:string
+term	annotationId	P		Annotation Id	To identify an Annotation.		Annotation	xsd:anyURI
+term	annotationName	P		Annotation name	To name an Annotation.		Annotation	xsd:string
+term	annotationSaliency	P		Annotation saliency	To estimate the saliency of an Annotation.		Annotation	xsd:string
+term	annotationType	P		Annotation type	Range: string, anyURI or Concept.		Annotation	Annotation_Type xsd:anyURI xsd:string
+term	appliesOutOf	P		Exclusion area	Range: string or CountryCode.		Rating	CountryCode
+term	appliesTo	P		Media resource	To identify the media resource to which the Rating applies.		Rating	Asset
+term	applyTo	P		Asset	The Asset to which Rights apply.		Rights	Asset
+term	approvedBy	P		Agent	Range: Agent or string		EditorialObject	Agent
+term	Artefact	C		Artefact	To identify and describe artefacts used in a production (on and behind the stage).	owl:Thing
+term	Artefact_Type	C		Artefact type	To define a type of artefact.	skos:Concept
+term	artefactAvailability	P		Artefact availability flag	To flag the availability of an Artefact.		Artefact	xsd:boolean
+term	artefactBoxHeight	P		Artefact box height.	The height of the box containing the Artefact.		TextLine	xsd:nonNegativeInteger
+term	artefactBoxTopLeftCornerLineNumber	P		Artefact box top left corner Y position.	The coordinates on a vertical axis of the position of the top left corner of the box containing the Artefact.		TextLine	xsd:nonNegativeInteger
+term	artefactBoxTopLeftCornerPixelNumber	P		Artefact box top left corner X position.	The coordinates on an horizontal axis of the position of the top left corner of the box containing the Artefact.		TextLine	xsd:nonNegativeInteger
+term	artefactBoxWidth	P		Artefact box width.	The width of the box containing the Artefact.		TextLine	xsd:nonNegativeInteger
+term	artefactBrand	P		Artefact brand	To specify the brand of an Artefact.		Artefact	xsd:string
+term	artefactColour	P		Artefact colour(s)	To provide the clour(s) of an Artefact.		Artefact	xsd:string
+term	artefactComment	P		Artefact comment	To provide a contextual comment about an Artefact.		Artefact	xsd:string
+term	artefactDateOfPurchase	P		Artefact date of purchase	The date when an Artefact was purchased. .		Artefact	xsd:string
+term	artefactDateOfSell	P		Artefact date of sell	The date when an Artefact was sold.		Artefact	xsd:string
+term	artefactDescription	P		Artefact description	A description of an Artefact.		Artefact	xsd:string
+term	artefactId	P		Artefact Identifier	Range: string or Identifier.		Artefact	Identifier xsd:anyURI xsd:string
+term	artefactModel	P		Artefact model	To specify a model of an Artefact.		Artefact	xsd:string
+term	artefactName	P		Artefact name	A name associated with an Artefact.		Artefact	xsd:string
+term	artefactPeriod	P		Artefact period	To specify the period associated with an Artefact.		Artefact	xsd:string
+term	artefactPriceAmount	P		Artefact price	To specifythe price of an Artefact.		Artefact	xsd:string
+term	artefactReference	P		Artefact reference	To specify a reference of an Artefact.		Artefact	xsd:string
+term	artefactStyle	P		Artefact style	To specify the style associated with an Artefact.		Artefact	xsd:string
+term	artefactType	P		Artefact type	Range: string or Artefact_type.		Artefact	Artefact_Type xsd:anyURI xsd:string
+term	artefactUsageHistory	P		Artefact usage history	To provide information on the usage history of an Artefact.		Artefact	xsd:string
+term	artefactWebsite	P		Artefact website	To specify a website where more information can be found on the Artefact.		Artefact	xsd:anyURI
+term	aspectRatio	P		Aspect ratio	To specify the aspect ratio.		Asset	xsd:string
+term	Asset	C		Asset	The Class "Asset" is an object to which an identifier will be associated at commissioning. It will serve as a central reference point to manage rights associated to EditorialObjects, Resources, MediaResources or Essences, and PublicationEvents (distribution and exploitation conditions).	owl:Thing
+term	Asset_Type	C		Asset type	To define a type of asset.	skos:Concept
+term	assetDescription	P		Description	To provide a description of an Asset.		Asset	xsd:string
+term	assetId	P		Asset identifier	An identifier attributed to an Asset.		Asset	Identifier xsd:anyURI xsd:string
+term	assetName	P		Name	To provide a name of an Asset.		Asset	xsd:string
+term	assetType	P		Asset type	Range: string or anyURI or Concept.		Asset	xsd:anyURI xsd:string
+term	Atmosphere	C		Atmosphere	To describe a feeling summarising the atmosphere.	Type
+term	AudienceLevel	C		Target audience	The target audience (target region, target audience category but also parental guidance recommendation) for which the media resource is intended.	Rating
+term	AudienceRating	C		Audience rating	The audience by which the Resource can be seen according to ratings like MPAA (http://en.wikipedia.org/wiki/Motion_picture_rating_system) or other organisational / national / local standards.	Rating
+term	AudienceScoreRecordingTechnique	C		Audience score recording technique	To define the technique use to measure an audience score.	skos:Concept
+term	audioBitRate	P		Audio bitrate	The audio bitrate.	bitRate	MediaResource	xsd:nonNegativeInteger
+term	audioBitRateMax	P		Audio bitrate	The max audio bitrate.	bitRateMax	MediaResource	xsd:nonNegativeInteger
+term	audioBitRateMode	P		Audio bitrate mode	The audio bitrate mode.	bitRateMode	MediaResource	xsd:string
+term	AudioChannelFunction	C		Audio channel function	To define the function of an AudioChannel.	skos:Concept
+term	audioChannelNumber	P		Audio channel number	The total number of audio channels contained in the MediaResource.		MediaResource	xsd:nonNegativeInteger
+term	AudioChannelPurpose	C		Audio channel purpose	To define the purpose of an AudioChannel.	skos:Concept
+term	AudioCodec	C		Audio codec	To provide information about an audio codec.	Codec
+term	AudioContent	C		Audio content	An audioContent defines one component of a programme (e.g. background music), its association with an audioGroup (e.g. a 2.0 audioPackFormat of audioChannelFormats for stereo reproduction), its association with an audioStreamFormat, and its set of loudness parameters.	Programme
+term	AudioContent_Type	C		Audio content type	to define a type of AudioContent.	skos:Concept
+term	AudioDescription	C		Audio description	A Track containing audio description.	AudioTrack
+term	AudioEncodingFormat	C		Audio encoding format	The encoding format for the audio.	EncodingFormat
+term	audioEncodingLevel	P		Audio encoding level	The encoding level as defined in specifications.	encodingLevel	MediaResource	xsd:string
+term	audioEncodingProfile	P		Audio encoding profile	The encoding profile as defined in specifications.	encodingProfile	MediaResource	xsd:string
+term	AudioFormat	C		Audio format	To define an AudioFormat.	Format
+term	AudioObject	C		Audio object	To define an audio object in reference to the Audio Definition Model (ADM)	MediaResource
+term	AudioProgramme	C		Audio programme	A set of one or more audioContent that derive from the same material, i.e. an audioMultiplex, and the definition of its multiplexed audioContents (e.g. foreground and commentary, background music).	Programme
+term	AudioProgramme_Type	C		Audio programme type	to define a type of AudioProgramme.	skos:Concept
+term	AudioStream	C		Audio stream	An audioStreamFormat describes a decodable signal - PCM signal or a Dolby E stream for example. It is composed of one or more AudioTracks.	Stream
+term	AudioTrack	C		Audio track	An audioTrack is the basic audio data container of a medium. Attribute is an unambiguous reference to this container in a given medium.	Track
+term	audioTrackConfiguration	P		Audio track configuration	The configuration of audio tracks contained in the MediaResource.		MediaResource	xsd:string
+term	audioTrackNumber	P		Audio track number	The total number of audio tracks contained in the MediaResource.		MediaResource	xsd:nonNegativeInteger
+term	AudioTrackPurpose	C		Audio track purpose	To describe the purpose of an AudioTrack e.g. dubbing.	skos:Concept
+term	Award	C		Award	To describe an Award and associated information.	owl:Thing
+term	Award_Type	C		Award type	To define a type of Award.	skos:Concept
+term	awardCeremony	P		Award ceremony	To provide an Award ceremony name.		Award	xsd:string
+term	awardDate	P		Award date	To provide an date when an Award was delivered.		Award	xsd:string
+term	awardDescription	P		Award description	To provide a description for an Award.		Award	xsd:string
+term	awardId	P		Award identifier	Range: string or Identifier		Award	Identifier xsd:anyURI xsd:string
+term	awardName	P		Award name	To provide the name of an Award.		Award	xsd:string
+term	awardType	P		Award type	Range: string or Award_Type		Award	Award_Type xsd:anyURI xsd:string
+term	BibliographicalObject	C		Bibliographical object	Documents of various nature.	BusinessObject
+term	Biography	C		Biography	To record a biography.	BibliographicalObject
+term	bitDepth	P		Bit depth	To provide the bitdepth at which the MediaResource has been encoded.		MediaResource	xsd:nonNegativeInteger
+term	bitRate	P		Bitrate	To provide the bitrate at which the MediaResource can be played in bits/second. Current bitrate if constant, and average bitrate if variable.		MediaResource	xsd:nonNegativeInteger
+term	bitRateMax	P		Maximum bitrate	The maximum bitrate when variable, in bits per second.		MediaResource	xsd:nonNegativeInteger
+term	bitRateMode	P		Bitrate mode	A flag to indicate if the bit rate is fixed or variable.		MediaResource	xsd:string
+term	bitRateOverall	P		Overall bitrate	To provide the overall bitrate at which the MediaResource can be played in bits/second. Current bitrate if constant, and average bitrate if variable.		MediaResource	xsd:nonNegativeInteger
+term	BMContent	C		BMContent	The FIMS BMContent.	EditorialObject
+term	BMEssence	C		BMEssence	The FIMS Essence	Essence
+term	BMTemplate	C		BMTemplate	A template describe as a BMEssence.	Template
+term	bookmark	P		Bookmark	To provide a bookmark.	description	Asset	xsd:string
+term	Brand	C		Brand	A group of EditorialObjects having a Brand as a common denominator.	Group
+term	BreakingNewsItem	C		Breaking news item	To describe a breaking news.	Item
+term	BusinessObject	C		Business Object	An image, a document, an annotation (descriptive textual metadata or audio/video tag), a tag (time related in audiovisual media resources), or an audiovisual media resource (optionally composed of one or more fragment / part and / or audio, video data tracks). Other types of BusinessObjects may be defined as subclasses.	Asset
+term	BusinessObject_Type	C		Business object type	To define a type of business object.	skos:Concept
+term	businessObjectDescription	P		Description	To provide a description of an BusinessObject.		BusinessObject	xsd:string
+term	businessObjectId	P		BusinessObject identifier	An identifier attributed to an BusinessObject.		BusinessObject	Identifier xsd:anyURI xsd:string
+term	businessObjectName	P		Name	To provide a name of an BusinessObject.		BusinessObject	xsd:string
+term	businessObjectType	P		Business Object type	A type attributed to a BusinessObject.		BusinessObject	BusinessObject_Type xsd:anyURI xsd:string
+term	Captioning	C		Captioning	To signal the presence of hard of hearing captioning.	Track
+term	CaptioningFormat	C		Captioning format	To define the format of captioning. Captioning's main use isfor hard of hearing transcription. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	DataFormat
+term	Cast	C		Cast member	A member of the cast list (a list of performers/actors and associated fictitious characters).	Agent
+term	Character	C		Character	E.g. a fictitious contact / person.	Person
+term	characterDescription	P		Character description	To provide the description of a Character.		Character	xsd:string
+term	characterEndIndex	P		Annotation character start index	To identify the end character index of the portion of text to which the Annotation applies.		TextAnnotation	xsd:integer
+term	characterName	P		Character name.	To specify the name of a Character.		Character	xsd:string
+term	characterStartIndex	P		Annotation text character start index	To identify the start character index of the portion of text to which the Annotation applies.		TextAnnotation	xsd:integer
+term	CityCode	C		City code	To allocate a city code.	skos:Concept
+term	Clip	C		Clip	For use in models where Clip is common.	EditorialObject
+term	clonedTo	P		Cloned to	Identifies relationship between a digital instantiation of a Resource and its direct copy, with no generational loss.		MediaResource	MediaResource
+term	ClosedCaptions	C		Closed caption	Closed captioning is provided as separate content.	Captioning
+term	ClosedSubtitling	C		Closed subtitling	Closed subtitles are provided as separate content.	Subtitling
+term	Codec	C		Codec	To provide information on a codec.	owl:Thing
+term	codecFamily	P		Codec family	To provide information on the product family of the Codec.		Codec	xsd:string
+term	codecId	P		Codec Identifier	Range: string or Identifier.		Codec	Identifier xsd:anyURI xsd:string
+term	codecName	P		Codec name	To provide a name for the Codec, e.g. a product name.		Codec	xsd:string
+term	codecVersion	P		Codec version	To provide information on the version of the Codec.		Codec	xsd:string
+term	Collection	C		Collection	A group of EditorialObjects. There can be many types of collections for which specific sub-classes should be defined. In the worl of archives, A collection corresponds to all items belonging to an individual / collector.	Group
+term	ColourSpace	C		Colour space	The CoulourSpace of a VideoResource. A ColourSpace is defined as free text in an annotation label or as an identifier pointing to a term in a classification scheme such as http://www.ebu.ch/metadata/ontologies/skos/ebu_ColourCodeCS.rdf.	Format
+term	comments	P		Comments	To provide a comment.	description	Asset	xsd:string
+term	CommercialCode	C		Commercial code	To identify a type of commercial content.	Type
+term	Component	C		Component	A component e.g. audio, video, data or else or a MediaResource or Essence.	MediaResource
+term	Contact	C		Contact	A physical person.	Person
+term	ContainerCodec	C		Container codec	To identify an container codec, e.g. MXF	Codec
+term	ContainerEncodingFormat	C		Container encoding format	To define the conatiner encoding format.	EncodingFormat
+term	ContainerMimeType	C		Container Mime type	The definition of the container if available as a MIME type. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme. For more information: http://www.iana.org/assignments/media-types/application/index.html.	Format
+term	ContentAlert	C		Content alert	To provide information about a particular type of content potentially sensitive.	Type
+term	ContentEditorialCode	C		Editorial code	To define a code of EditorialFormat	Type
+term	ContentEditorialFormat	C		Editorial format	To define an EditorialFormat	Type
+term	ContractType	C		Contract type	To define a type of contract.	skos:Concept
+term	Copyright	C		Copyright	To provide a copyright statement.	Rights
+term	Costume	C		Costume	To identify and describe Costumes used in productions.	Artefact
+term	costumeGender	P		Costume gender	To specify the gender associated with a Costume.		Costume	xsd:string
+term	costumeSizeInformation	P		Costume size information	To collect all information available useful to determine the size of a Costume.		Costume	xsd:string
+term	costumeTexture	P		Costume texture	Range: a string or a Concept code from a vocabulary, e.g. Getty		Costume	xsd:string
+term	costumeType	P		Costume type	To specify a type of Costume.		Costume	CostumeType xsd:string
+term	CostumeType	C		Costume type	To define a costume type.	skos:Concept
+term	CountryCode	C		Country code	To identify a country by its ISO code.	skos:Concept
+term	CoverageRestrictions	C		Coverage restrictions	To provide information on possible restrictions regarding the temporal and spatial coverage for publication.	Rights
+term	CreativeCommons	C		Creative commons	A set of creative commons rights.	Rights
+term	Crew	C		Crew member	A member of the Crew.	Agent
+term	CuisineStyle	C		Cuisine style	To identify a style of Cuisine.	skos:Concept
+term	CurrencyCode	C		Currency code	To identify a currency by its ISO code.	skos:Concept
+term	DataFormat	C		Data format	To provide addtional technical information on the characteristics of data streams in a MediaResource including but not limited to AncillaryData, Subtilting and Captioning. Additional specific data format may be defined as subclasses of DataFormat.	Format
+term	DataTrack	C		Data track	Ancillary data track e.g. Â¨captioning" or "subtitling" in addition to video and audio tracks.	Track
+term	date	P		Date	A date associated to an Asset.		Asset	xsd:string
+term	dateArchived	P		Archiving date	The date when the Asset was archived.	date	Asset	xsd:string
+term	dateBroadcast	P		Broadcast date	The date when the Asset was first broadcast publicly on television or radio or via streaming.	date	Asset	xsd:string
+term	dateCreated	P		Creation date/time	The date of creation of the Asset.	date	Asset	xsd:string
+term	dateDeleted	P		Deletion date	The date when the Resource was deleted.	date	Asset	xsd:string
+term	dateDigitised	P		Digitisation date	The date when the Resource was digitised.	date	MediaResource	xsd:string
+term	dateDistributed	P		Distribution date	The date when the Resource was first made available to the public for purchase, download, or online access.	date	MediaResource	xsd:string
+term	dateIngested	P		Ingest date	The date when the Resource was ingested/acquired in institutional holdings.	date	MediaResource	xsd:string
+term	dateIssued	P		Archiving date	The date when the Asset was issued.	date	Asset	xsd:string
+term	datelicensed	P		Licence start date	The date when the licence for the Asset begins.	date	Asset	xsd:string
+term	datelicenseEnd	P		Licence end date	The date when the licence for the Asset ends.	date	Asset	xsd:string
+term	dateMigrated	P		Migration date	The date when the Resource was copied or converted from an obsolete or endangered original format to a more updated format for preservation.	date	MediaResource	xsd:string
+term	dateModified	P		Modification date/time	To indicate the date at which the Asset has been modified.	date	Asset	xsd:string
+term	dateNormalized	P		Normalization date	The date when the Resource was converted from its original format into a format pre-selected by the institution for preservation.	date	MediaResource	xsd:string
+term	dateOfBirth	P		Date of birth	The date when a Contact/Person is born.		Person	xsd:string
+term	dateOfDeath	P		Date of death	The date when a Contact/Person has passed away.		Person	xsd:string
+term	dateOfRetirement	P		Date of retirement	The date when a Contact/Person has retired.		Person	xsd:string
+term	dateProduced	P		production date	The date of production of the Asset.	date	Asset	xsd:string
+term	dateReleased	P		Release date	The date when the Resource was first made available to the public for purchase, download, or online access.	date	Asset	xsd:string
+term	dateTransferred	P		Transfer date	The date when the Asset was moved from one digital or physical location to another.	date	MediaResource	xsd:string
+term	dateValidated	P		Validation date	The most recent date when the Resource was confirmed to be valid through manual or digital QC.	date	Asset	xsd:string
+term	Department	C		Department	A department within and organisation.	Organisation
+term	DepictedEvent	C		Depicted Event	A DepictedEVent is fictitious or historical or other sort of Event that the content of the BusinessObject or resource relates to.	Event
+term	derivedTo	P		Derivation target	To identify a new version derived from the original.		Asset	Asset
+term	description	P		Description	This can be specialised by using sub-properties like defined in http://www.ebu.ch/metadata/cs/web/ebu_DescriptionTypeCodeCS_p.xml.htm implemented as examples as e.g. 'summary' or 'script'.		Asset	xsd:string
+term	DID	P		DID	The Data Identifier word (along with the SDID, if used), indicates the type of ancillary data that the packet corresponds to.		AncillaryData	xsd:integer
+term	dimensions	P		Dimensions	Describes the physical dimensions of a MediaResource, with units of measure concatenated to become part of the value.		MediaResource	xsd:string
+term	Disclaimer	C		Disclaimer	To provide a disclaimer of any form.	Rights
+term	dishDescription	P		Dish description	The description of a Dish.		Food	xsd:string
+term	dishName	P		Dish name	The name of a Dish.		Food	xsd:string
+term	displayAspectRatio	P		Display aspect ratio	The aspect ratio when displayed.	aspectRatio	Asset	ActiveFormatDescriptorCode xsd:anyURI xsd:string
+term	displayOrder	P		Display order	The order in which an Agent appears in a scene.		Agent	xsd:string
+term	Document	C		Document	To describe a publication in the form of a document e.g. a html webpage (news item) or a pdf document e.g. a script.	Resource
+term	DocumentFormat	C		Document format	To provide technical information about the format of a document such as the orientation. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	Format
+term	Dopesheet	C		Dopesheet	Provides additional information about a NewsItem, e.g. date and place, subject.	Document
+term	dubbedTo	P		Dubbed to	Range: string or Language.		MediaResource	Language
+term	duration	P		Duration	To provide information on the duration of an EditorialObject or MediaResource.		Asset	xsd:string
+term	durationEditUnits	P		Duration (edit units)	To provide a duration in edit units.	duration	Asset	xsd:nonNegativeInteger
+term	durationNormalPlayTime	P		Duration (time)	To provide a duration as normal time.	duration	Asset	xsd:string
+term	durationPublished	P		Published Duration	To provide information on the published / announced duration of an EditorialObject.		Asset	xsd:string
+term	durationPublishedNormalPlayTime	P		Published duration (play time)	To provide a published duration as normal play time.	durationPublished	Asset	xsd:time
+term	durationTimecode	P		Duration (timecode)	The duration expressed as a timecode.	duration	Asset	xsd:string
+term	durationTimecodeDropFrame	P		Duration (timecode, drop frame)	The duration expressed as a timecode with drop frames.	duration	Asset	xsd:string
+term	EditorialObject	C		Editorial Object	In the audiovisual domain, the Class EditorialObject transforms a commissioned concept into an editorial definition of a MediaResource before fabrication (in the Production Domain) and Distribution (in the Distribution Domain). An EditorialObject is a set of descriptive metadata summarising e.g. editing decisions. An EditorialObject can also be a part of an EditorialObject, which is defined by its start time and duration. An EditorialObject can also be a group of EditorialObjects. For example a series composed of episodes is defined as an EditorialObject.	BusinessObject
+term	EditorialObject_Type	C		Editorial object type	To define a type of editorial object.	skos:Concept
+term	editorialObjectDescription	P		Description	To provide a description of an EditorialObject.		EditorialObject	xsd:string
+term	editorialObjectId	P		Editorial object identifier	An identifier attributed to an EditorialObject.		EditorialObject	Identifier xsd:anyURI xsd:string
+term	editorialObjectName	P		Editorial Object name	A name attributed to an EditorialObject.		EditorialObject	xsd:string
+term	editorialObjectType	P		Editorial Object type	A type attributed to an EditorialObject.		EditorialObject	EditorialObject_Type xsd:anyURI xsd:string
+term	editUnit	P		Edit unit	The edit unit is e.g. the inverse of the audio sample rate or video frame rate.		Asset	xsd:float
+term	education	P		Education	To provide information on the education.		Person	xsd:string
+term	Emotion	C		Emotion	A class to log Emotions.	owl:Thing
+term	Emotion_Type	C		Emotion type	To define a type of emotion.	skos:Concept
+term	emotionDescription	P		Emotion description	The description of an Emotion.		Emotion	xsd:string
+term	emotionEditUnit	P		Emotion edit unit number	The edit unit number at which the Emotion occurs.	emotionTimestamp	Emotion	xsd:long
+term	emotionId	P		Emotion identifier	An identifier attributed to an Emotion.		Emotion	Identifier xsd:anyURI xsd:string
+term	emotionName	P		Emotion name	A name attributed to an Emotion.		Emotion	xsd:string
+term	emotionNormalPlayTime	P		Emotion normal play time	The normal play time at which the Emotion occurs.	emotionTimestamp	Emotion	xsd:time
+term	emotionTimecode	P		Emotion timecode	The timecode at which the Emotion occurs.	emotionTimestamp	Emotion	xsd:string
+term	emotionTimecodeDropFrame	P		Emotion timecode (dropframe)	The timecode (dropframe) at which the Emotion occurs.	emotionTimestamp	Emotion	xsd:string
+term	emotionTimestamp	P		Emotion timestamp	To identify a timestamp at which an Emotion can be seen.		Emotion	xsd:string
+term	emotionType	P		Emotion type	A type of Emotion.		Emotion	Emotion_Type xsd:anyURI xsd:string
+term	EncodingFormat	C		Encoding	To provide a definition of the encoding format for audio and video. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme e.g. http://www.ebu.ch/metadata/ontologies/skos/ebu_AudioCompressionCodeCS.rdf or http://www.ebu.ch/metadata/ontologies/skos/ebu_VideoCompressionCodeCS.rdf.	Format
+term	encodingLevel	P		Encoding level	To define an encoding level.		MediaResource	xsd:string
+term	encodingProfile	P		Encoding profile	The encoding profile as defined in specifications.		MediaResource	xsd:string
+term	end	P		End	To define an end timestamp, e.g. the end point of a MediaResource.		Asset	xsd:string
+term	endEditUnits	P		End time (edit units)	The end time in edit units.	end	Asset	xsd:double
+term	endNormalPlayTime	P		End time (time)	The end time expressed using a time expression.	end	Asset	xsd:time
+term	endOffsetEditUnits	P		Offset end time (edit units)	The offset end time in edit units.	end	Asset	xsd:double
+term	endOffsetNormalPlayTime	P		Offset end time (normal play time)	The offset end time in normal play time.	end	Asset	xsd:time
+term	endOffsetTimecode	P		Offset end timecode	The offset end timecode.	end	Asset	xsd:string
+term	endOffsetTimecodedropframe	P		Offset end timecode (dropframe)	The offset end timecode dropframe.	end	Asset	xsd:string
+term	endTimecode	P		End time (timecode)	An end time expressed as timecode.	end	Asset	xsd:string
+term	endTimecodeDropFrame	P		End time (timecode dropframe)	An end time expressed as timecode with drop frames.	end	Asset	xsd:string
+term	Episode	C		Episode	To describe an episode in a series.	EditorialObject
+term	episodeNumber	P		Episode number	The Episode Number		Asset	xsd:string
+term	episodeNumberInSeason	P		Episode number in season	The Episode Number in a season		Asset	xsd:string
+term	episodeNumberInSeries	P		Episode number in series	The Episode Number in a series		Asset	xsd:string
+term	Essence	C		Essence	Essence is content ready for distribution. Essence can become a MediaResource in further production processes.	MediaResource
+term	Event	C		Event	Additional types of event shall be defined as new sub-classes of event.	owl:Thing
+term	eventDescription	P		Event description	To provide a description for an Event.		Event	xsd:string
+term	eventDuration	P		Duration	The duration of an Event.		Event	xsd:string
+term	eventEndDate	P		Event end date	The end date of an Event.		Event	xsd:string
+term	eventEndDateTime	P		Event end date & time	The end date and time of an Event.		Event	xsd:string
+term	eventEndTime	P		Event end time	The end time of an Event.		Event	xsd:time
+term	eventId	P		Event identifier	An identifier attributed to an Event.		Event	Identifier xsd:anyURI xsd:string
+term	eventName	P		Event name	To provide a name for an Event.		Event	xsd:string
+term	eventPeriod	P		Event period	The period of time during which an Event has occured.		Event	xsd:string
+term	eventStartDate	P		Event start date	The start date of an Event.		Event	xsd:string
+term	eventStartDateTime	P		Event start date & time	The start date and time of an Event.		Event	xsd:string
+term	eventStartTime	P		Event start time	The start time of an Event.		Event	xsd:time
+term	eventType	P		Event type	Range: Event or string		Event	EventType xsd:anyURI xsd:string
+term	EventType	C		Event type	To define a type of event.	skos:Concept
+term	ExclusivityType	C		Exclusivity type	To define a type of exclusity rights.	skos:Concept
+term	ExploitationIssues	C		Exploitation issues	To highlight potential exploitation issues.	Rights
+term	familyInformation	P		Family information	To provide information on the family of a Person.		Person	xsd:string
+term	familyName	P		Family name	The family name of a Person.		Person	xsd:string
+term	Feature	C		Feature	The editorial object for a feature film.	EditorialObject
+term	FictionalEvent	C		Fictional event	To describe a fictional Event.	Event
+term	FictionalLocation	C		Fictional location	To describe a fictional Location.	Location
+term	FictionalOrganisation	C		Fictional organisation	To define a fictional Organisation.	Organisation
+term	FictionalPerson	C		Fictional person	To describe a fictional Person, e.g. a character in a drama.	Person
+term	FileFormat	C		File format	A file format for Resources other than audiovisual resources. The format is defined as free text or pointing at a term in a classification scheme e.g. http://www.ebu.ch/metadata/ontologies/skos/ebu_FileFormatCS.rdf.	Format
+term	fileSize	P		File size	Provides the size of a MediaResource in bytes.		MediaResource	xsd:double
+term	firstShowing	P		First showing flag	To flag this is a first showing PublicationEvent.		PublicationEvent	xsd:boolean
+term	firstShowingThisService	P		First showing on service flag	To falg this is a first showing PublicationEvent on this service.		PublicationEvent	xsd:boolean
+term	folksonomy	P		Folksonomy	Provides a user/audience-generated description, tag, or label for resource content.		MediaResource	xsd:string
+term	followsInSequence	P		Preceding	A link to an Asset precedinging the current Asset in an ordered sequence.		Asset	Asset
+term	Food	C		Food	To describe Food shown or consumed in productions.	Artefact
+term	foodCategory	P		Food category	To define a category of Food.		Food	xsd:string
+term	foodIngredient	P		Food ingredient	The Food ingredients or Food items.		Food	xsd:string
+term	FoodStyle	C		Food style	To define a style of food.	skos:Concept
+term	Format	C		Format	The format provides technical information on the format of a Resource. A BusinessObject can be instantiated in a variety of Resources each in a particular Format. Other specific data formats may be defined as subclasses of format.	skos:Concept
+term	formatId	P		Format version identifier	A version identifier attributed to a Format.		Format	Identifier xsd:anyURI xsd:string
+term	formatVersionId	P		Format version identifier	A version identifier attributed to a Format.		Format	Identifier xsd:anyURI xsd:string
+term	frameHeight	P		Frame height	The height of a video frame.	height	MediaResource	xsd:integer
+term	frameHeightUnit	P		Frame height unit	The unit used to measure the height of a frame.	heightUnit	MediaResource	xsd:string
+term	frameRate	P		Frame rate	The unit used to express the frame rate of a MediaResource in frames/second.		MediaResource	xsd:string
+term	frameSizeUnit	P		Frame size unit	The unit used to express the frame width or height. The unit by default is 'pixel'.		MediaResource	xsd:string
+term	frameWidth	P		Frame width	The width of a video frame.	width	MediaResource	xsd:integer
+term	frameWidthUnit	P		Frame width unit	The unit used to measure the width of a frame.	widthUnit	MediaResource	xsd:string
+term	free	P		Free access	A flag to indicate that the access to the PublicationEvent is 'free'.		PublicationEvent	xsd:boolean
+term	gender	P		Gender	The gender of a Person e.g. male or female.		Person	xsd:string
+term	Generation	C		Generation	Identifies the generation of a version of a resource, i.e. master, edit master, distribution copy, etc.	Format
+term	Genre	C		Genre	This class shall be used to provide information on the genre of the BusinessObject or Resource. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme e.g. http://www.ebu.ch/metadata/ontologies/skos/ebu_ContentGenreCS.rdf or http://www.ebu.ch/metadata/ontologies/skos/ebu_EditorialFormatCodeCS.rdf.	Type
+term	geoBlocking	P		Geographical blocking	To identify geographical areas where content cannor be accessed.		AccessConditions	xsd:string
+term	givenName	P		Given name	The given name of a Person.		Person	xsd:string
+term	Group	C		Group	To define a collection / group of media resources, for example a series made of episodes.	Asset
+term	groupDescription	P		Group description	A textual description of a Group.		Group	xsd:string
+term	groupId	P		Group identifier	An identifier attributed to a Group.		Group xsd:anyURI xsd:string	Identifier
+term	groupName	P		Group name	The name attributed to a Group.		Group	xsd:string
+term	groupType	P		Group identifier	A type attributed to a Group.		Group xsd:anyURI xsd:string	Identifier
+term	hasAccessConditions	P		Access conditions	Range: string or AccessConditions.	isCoveredBy	Asset PublicationEvent	AccessConditions xsd:string
+term	hasActionRelatedAgent	P		Action related agent	Range: string or Agent.		Action	Agent xsd:string
+term	hasActionRelatedScene	P		Action related scene	Range: string or Scene.		Action	Scene
+term	hasAffiliation	P		Affiliation	A property to establish the relation between a Contact/Person and an Organisation.		Person	Affiliation xsd:string
+term	hasAgentBiography	P		Biography	Range: a string or an anyURI (e,g, a URL to a webpage) or a Biography.		Agent	Biography xsd:string
+term	hasAgentCountryOfResidence	P		Country of residence	Range: string or CountryCode		Agent	CountryCode xsd:string
+term	hasAgentLanguage	P		Language	Range: a string or Language.		Agent	Language xsd:string
+term	hasAgentMember	P		Agent member	Range: string or Agent.		Agent	Agent
+term	hasAgentNationality	P		Nationality	Range: a string or CountryCode.		Agent	CountryCode xsd:string
+term	hasAgentPlaceOfResidence	P		Place of residence	Range: string or Location		Agent	Location xsd:string
+term	hasAgentRelatedPicture	P		Related picture	A link/locator to a picture related to an Agent.		Agent	Picture
+term	hasAncillaryData	P		Ancillary data	To identify ancillary data in the media resource.		Asset	AncillaryData
+term	hasAncillaryDataFormat	P		Ancillary data format	Range: string or AncillaryDataFormat	hasFormat xsd:string	MediaResource	AncillaryDataFormat
+term	hasAnimalBreedCode	P		Animal breed code	To associate a breed code with an animal.		Animal	AnimalBreedCode xsd:anyURI xsd:string
+term	hasAnimalColourCode	P		Animal colour code	To associate a colour code with an animal.		Animal	AnimalColourCode xsd:anyURI xsd:string
+term	hasAnimalRole	P		Animal role	To identify the role of an animal.		Animal	Role xsd:anyURI xsd:string
+term	hasAnnotationBody	P		Annotation body	To define the Annotation has a string or instance of an EBUCore class.		Annotation	xsd:anyURI xsd:string
+term	hasAnnotationPurpose	P		Annotation confidence	To define the purpose of an Annotation.		Annotation	xsd:anyURI xsd:string
+term	hasAnnotationRelatedAgent	P		Annotation related agent	To identify an Agent subject of the Annotation.	hasAnnotationPurpose	Annotation	xsd:anyURI xsd:string
+term	hasAnnotationRelatedArtefact	P		Annotation related artefact	To identify an Artefact subject of the Annotation.	hasAnnotationPurpose	Annotation	xsd:anyURI xsd:string
+term	hasAnnotationRelatedEvent	P		Annotation related event	To identify an Event subject of the Annotation.	hasAnnotationPurpose	Annotation	xsd:anyURI xsd:string
+term	hasAnnotationRelatedLocation	P		Annotation related location	To identify a Location subject of the Annotation.	hasAnnotationPurpose	Annotation	xsd:anyURI xsd:string
+term	hasAnnotationTarget	P		Annotation target	To define the target object to which the Annotation applies.		Annotation	xsd:anyURI
+term	hasArtefactBuyer	P		Buyer	Range: string or Agent		Artefact	Agent xsd:string
+term	hasArtefactCreator	P		Creator	Range: string or Agent		Artefact	Agent xsd:string
+term	hasArtefactLocation	P		Location	Range: string or Location		Artefact	Location xsd:string
+term	hasArtefactOwner	P		Owner	Range: string or Agent		Artefact	Agent xsd:string
+term	hasArtefactPriceCurrency	P		Artefact price currency	Range: string or CurrencyCode		Artefact	CurrencyCode xsd:string
+term	hasArtefactRelatedAgent	P		Associated agent	Range: string or Agent		Artefact	Agent xsd:string
+term	hasArtefactRelatedEditorialObject	P		Associated editorial object	Range: string or EditorialObject		Artefact	EditorialObject
+term	hasArtefactRelatedLocation	P		Associated location	Range: string or Location		Artefact	Location xsd:string
+term	hasArtefactRelatedPhysicalResource	P		Associated physical resource	Range: string or PhysicalResource		Artefact	PhysicalResource
+term	hasArtefactRelatedResource	P		Associated resource	Range: string or Resource		Artefact	MediaResource
+term	hasArtefactRetailer	P		Retailer	Range: string or Agent		Artefact	Agent xsd:string
+term	hasArtefactSupplier	P		Supplier	Range: string or Agent		Artefact	Agent xsd:string
+term	hasAssetRelatedBusinessObject	P		Related business object	To associate a BusinessObject with an Asset.		Asset	BusinessObject
+term	hasAssetRelatedEditorialObject	P		Related editorial object	To associate an EditorialObject with an Asset.		Asset	EditorialObject
+term	hasAssetRelatedMediaResource	P		Asset related media resource	To identify a related MediaResource.		Asset	MediaResource
+term	hasAssetRelatedResource	P		Asset related resource	To identify a related Resource.		Asset	Resource
+term	hasAssociatedArtefact	P		Related Artefact	An Artefact related to an Agent.		Agent	Artefact xsd:string
+term	hasAssociatedAsset	P		Associated asset	To identify an associated asset.		PublicationPlan	Asset
+term	hasAssociatedRelation	P		Relation	To define a Relation.		Asset	Relation
+term	hasAudienceScoreRecordingTechnique	P		Audience score recording technique	Range: string or AudienceScorerecordingTechnique.		AudienceRating	Agent xsd:string
+term	hasAudioCodec	P		Audio codec	Range:string or AudioCodec	hasCodec	MediaResource	AudioCodec
+term	hasAudioContentType	P		Audio content type	Range:string or AudioContent_Type.		AudioContent	AudioContent_Type xsd:string
+term	hasAudioDescription	P		Audio description	To signal the presence of AudioDescription.		Asset	AudioDescription
+term	hasAudioEncodingFormat	P		Audio encoding format	Range: string or AudioEncodingFormat	hasFormat xsd:string	MediaResource	AudioEncodingFormat
+term	hasAudioProgrammeType	P		Audio programme type.	Range:string or AudioProgramme_Type		AudioProgramme	AudioProgramme_Type xsd:string
+term	hasAudioTrack	P		Audio track	To identify AudioTracks in the Resource.		MediaResource	AudioTrack
+term	hasAwardRelatedAgent	P		Agent	Range: string or Agent.		Award	Agent xsd:string
+term	hasAwardRelatedBusinessObject	P		Business object	To link a BusinessObject to an Award.		Award	BusinessObject
+term	hasAwardRelatedEvent	P		Event	An Event e.g. a ceremony, associated to an Award.		Award	Event xsd:string
+term	hasBeenAwarded	P		Agent	Range: a string or an Award.		Agent	Award xsd:string
+term	hasCaptioning	P		Captioning	To signal the presence of Captioning.		Asset	Captioning
+term	hasCaptioningFormat	P		Captioning format	Range: string or CaptioningFormat	hasFormat xsd:string	MediaResource	CaptioningFormat
+term	hasCaptioningSource	P		Captioning source	Range: string or Agent		MediaResource	Agent xsd:string
+term	hasCastMember	P		Cast member	A member of the cast.		Asset	Cast xsd:string
+term	hasCastRole	P		Cast role	Range: a string or a Role/Concept from a controlled vocabulary.		Agent	Role xsd:string
+term	hasChannelLogo	P		Channel logo	The logo of a Publication Channel	hasLogo	PublicationChannel	Logo
+term	hasChannelPublicationEvent	P		Publication event	To associate PublicationEvents with PublicationChannels.		PublicationChannel	PublicationEvent
+term	hasCharacter	P		Character	Range: a string or a "fictitious" person - Character.		Asset	Character xsd:string
+term	hasCodec	P		Codec	Range: string or Codec		MediaResource	Codec xsd:string
+term	hasCodecVendor	P		Codec vendor	Range: string or Agent.		Codec	Agent xsd:string
+term	hasColourSpace	P		Colour space	Range: string or Concept	hasFormat xsd:string	MediaResource	ColourSpace
+term	hasContact	P		Contact	Range: a link to a Contact or a string.		Agent	Contact xsd:string
+term	hasContainerCodec	P		Container codec	Range: string or ContainerCodec	hasCodec	MediaResource	ContainerCodec
+term	hasContainerEncodingFormat	P		Container encoding format	Range: string or ContainerEncodingFormat	hasFormat xsd:string	MediaResource	ContainerEncodingFormat
+term	hasContainerMimeType	P		Mime type	Range: string or MimeType	hasFormat xsd:string	MediaResource	MimeType
+term	hasContentEditorialFormat	P		Editorial format	Range: string or ContentEditorialFormat.		EditorialObject	ContentEditorialFormat xsd:string
+term	hasContributor	P		Contributor	Range: string or Agent		Asset	Agent xsd:string
+term	hasCopyright	P		Copyright	Range: string or Copyright.	isCoveredBy	Asset	Copyright xsd:string
+term	hasCostumeType	P		Costume type	Range: a string or Costume_type e.g. a Concept code from a vocabulary, e.g. Getty.		Costume	CostumeType xsd:string
+term	hasCountryOfBirth	P		Country of birth	Range: string or CountryCode		Person	CountryCode xsd:string
+term	hasCountryOfDeath	P		Country of death	Range: string or CountryCode		Person	CountryCode xsd:string
+term	hasCoverage	P		Coverage	Range: string or Event or Location		Asset	Event Location xsd:string
+term	hasCoverageRestrictions	P		Coverage restrictions	Range: string or CoverageRestrictions.	isCoveredBy	Asset PublicationEvent	CoverageRestrictions xsd:string
+term	hasCreationLocation	P		Creation location	Range: string or Location.		MediaResource	Location xsd:string
+term	hasCreativeCommons	P		Creative Commons	Range: string or Creative Commons.	isCoveredBy	Asset	CreativeCommons xsd:string
+term	hasCreator	P		Creator	Range: string or Agent.		Asset	Agent xsd:string
+term	hasCrewMember	P		Crew member	A member of the crew.		Asset	Cast xsd:string
+term	hasCrewRole	P		Crew role	Range: a string or a Role/Concept from a controlled vocabulary.		Agent	Role xsd:string
+term	hasCuisineOrigin	P		Cuisine origin	Range: a string or CountryCode		Food	CountryCode xsd:string
+term	hasCuisineStyle	P		Cuisine style	Range: a string or CuisineStyle		Food	CuisineStyle xsd:string
+term	hasDataFormat	P		Data format	Range: string or DataFormat	hasFormat xsd:string	DataTrack	DataFormat
+term	hasDataTrack	P		Data track	To identify DataTracks in the Resource.		MediaResource	DataTrack
+term	hasDepartment	P		Department	Range: string or Department.		Organisation	Department xsd:string
+term	hasDisclaimer	P		Disclaimer	Range: string or Disclaimer.	isCoveredBy	Asset	Disclaimer xsd:string
+term	hasDocumentFormat	P		Document format	Range: string or Document format	hasFormat xsd:string	Document	DocumentFormat
+term	hasDopesheet	P		Dopesheet	Range: string or Dopesheet.		NewsItem	Dopesheet xsd:string
+term	hasDubbedLanguage	P		Dubbed language	Range: string or Language.	hasLanguage	Asset	Language xsd:string
+term	hasEidrIdentifier	P		EIDR	Range: string or Identifier.	hasIdentifier	Asset	Identifier xsd:string
+term	hasEmotionRelatedAgent	P		Emotion related agent	Range: String or Agent		Emotion	Agent xsd:string
+term	hasEmotionRelatedScene	P		Emotion related scene	Range: string or Scene		Emotion	Scene xsd:string
+term	hasEncodingFormat	P		Encoding format	Range: string or Encoding format	hasFormat	Document MediaResource Picture	EncodingFormat xsd:string
+term	hasEpisode	P		Episode	Range: string or Episode.		Season Series	Episode xsd:string
+term	hasEventRelatedAgent	P		Agent	An Agent relates to an Event.		Event	Agent xsd:string
+term	hasEventRelatedArtefact	P		Artefact	An artefact related to an Event.		Event	Artefact xsd:string
+term	hasEventRelatedBusinessObject	P		Business object	A BusinessObject relates to an Event.		Event	BusinessObject
+term	hasEventRelatedEvent	P		Event	An Event relates to an Event.		Event	Event xsd:string
+term	hasEventRelatedLocation	P		Location	Range: a Location or a string		Event	Location xsd:string
+term	hasEventRelatedResource	P		Resource	A Resource relates to an Event.		Event	MediaResource
+term	hasEventType	P		Agent	Range: string or EventType		Event	EventType xsd:string
+term	hasExploitationIssues	P		Exploitation Issues	Range: string or Exploitation Issues.	isCoveredBy	Asset	ExploitationIssues xsd:string
+term	hasFileFormat	P		File format	Range: string or FileFormat.		MediaResource	FileFormat xsd:string
+term	hasFoodStyle	P		Food style	Range: string or FoodStyle.		Food	FoodStyle xsd:string
+term	hasFormat	P		Format	Range: string, Format or any Format-related Concept		MediaResource	Format xsd:string
+term	hasFormatId	P		Format identifier	An identifier attributed to a Format.		Format	Identifier xsd:anyURI xsd:string
+term	hasGeneration	P		Generation	Identifies the generation of a version of a resource, i.e. master, edit master, distribution copy, etc.		MediaResource	MediaResource
+term	hasGenre	P		Genre	To define a Genre/category associated to the BusinesssObject.		Asset	Genre xsd:string
+term	hashValue	P		Hash code	The hash value associated to a Resource. There are different methods / algorithms to calculate hash values, which can be defined as subproperties.		MediaResource	xsd:string
+term	hasIdentifier	P		Identifier	Range: string or Identifier.		Asset	Identifier xsd:anyURI xsd:string
+term	hasIdentifierType	P		Identifier type	Range: Concept or string		Identifier	IdentifierType xsd:anyURI xsd:string
+term	hasIdPicture	P		Identification picture	A locator / URI or a Picture.		Person	xsd:anyURI
+term	hasImageCodec	P		Image codec	Range: string or Codec		MediaResource	ImageCodec xsd:string
+term	hasImageFormat	P		Image format	Range: string or ImageFormat		MediaResource	ImageFormat xsd:string
+term	hasIMediaIdentifier	P		IMedia Id	Range: string or Identifier.	hasIdentifier	Asset	Identifier xsd:string
+term	hasIPRRestrictions	P		IPR restrictions	Range: string or IPR Restrictions.	isCoveredBy	Asset	IPRRestrictions xsd:string
+term	hasIsanIdentifier	P		ISAN	Range: string or Identifier.	hasIdentifier	Asset	Identifier xsd:string
+term	hasKeyCareerEvent	P		Career event	Range: string or KeyCareerEvent		Person	KeyCareerEvent xsd:string
+term	hasKeyPersonalEvent	P		Personal event	Range: string or KeyPersonalEvent		Person	KeyPersonalEvent xsd:string
+term	hasKeyword	P		Keyword	Range: Keyword or string or any URI from a controlled vocabulary	hasSubject	Asset	Keyword xsd:string
+term	hasLanguage	P		Language	Range: string or Language.		Asset	Language xsd:string
+term	hasLicensing	P		Licensing	Range: string or Licensing.	isCoveredBy	Asset	Licensing xsd:string
+term	hasLocationCode	P		Locationcode	Range: string or LocationCode.		Location	LocationCode xsd:string
+term	hasLocationPicture	P		Picture	A picture associated with a Location.		Location	Picture
+term	hasLocationRelatedArtefact	P		Artefact	Range: a string or an Artefact.		Location xsd:string	Artefact
+term	hasLocationRelatedEvent	P		Event	Range: a string or an Event.		Location	Event xsd:string
+term	hasLocationRelatedResource	P		Related resource	To identify a Resource associated with a Location.		Location	MediaResource
+term	hasLocationType	P		Locationcode	Range: string or LocationType.		Location	LocationType xsd:string
+term	hasLocator	P		Locator	A locator from where the MediaResource can be accessed.		MediaResource	Locator xsd:string
+term	hasLogo	P		Logo	Logos can be used in a variety of contexts. Logo can be associated with an Organisation or a Service or a PublicationChannel.		Award Organisation Rating Service	Logo
+term	hasManifestation	P		Manifestation	A manifestation is the physical embodiment of work e.g. a tape, a file...		Asset	MediaResource
+term	hasMaster	P		Master	To identify the master of a Resource		MediaResource	MediaResource
+term	hasMediaFragment	P		Fragment	To define relation to MediaFragments withiin a MediaResource.		MediaResource	MediaFragment
+term	hasMedium	P		Medium	Range: string or Medium	hasFormat	MediaResource	Medium xsd:string
+term	hasMember	P		Member.	To establish group/collection relationship between EditorialObjects.		Group	EditorialObject
+term	hasMemberPublicationPlan	P		Publication plan member	To identify a PublicationPlan that forms part of another PublicationPlan.		PublicationPlan	PublicationPlan
+term	hasMetadataTrack	P		Metadata track	To identify MetadataTracks in the Resource.		MediaResource	MetadataTrack
+term	hasMimeType	P		Mime type	Range: string or MimeType	hasFormat	MediaResource	MimeType xsd:string
+term	hasObjectType	P		Object/asset type	Range: string or ObjectType.		EditorialObject	ObjectType xsd:anyURI xsd:string
+term	hasOrganisationLogo	P		Organisation logo	The logo representing an Organisation	hasLogo	Organisation	Logo
+term	hasOrganisationStaff	P		Staff	Range: string or Staff.		Organisation	Staff xsd:string
+term	hasOriginalLanguage	P		Original language	Range: string or Language.	hasLanguage	Asset	Language xsd:string
+term	hasParentEditorialObject	P		Parent editorial object	To link a EditorialOject to a parent.		EditorialObject	EditorialObject
+term	hasParentMediaResource	P		Parent resource	To link a MediaResource to a parent.		MediaResource	MediaResource
+term	hasPart	P		Part	To define Parts (segments, fragments, shots, etc.) within an EditorialObject.		Asset	Part
+term	hasParticipatingAgent	P		Participating agent	To identify participating Agents.		Asset	Agent xsd:string
+term	hasPartType	P		Part type	A type of Part.		Part	Part_Type xsd:anyURI xsd:string
+term	hasPictogram	P		Pictogram	Range: a locator/URI or a Picture.		Rating	Picture
+term	hasPlaceOfBirth	P		Birth place	To identify the place of birth.		Person	Location xsd:string
+term	hasPlaceOfDeath	P		Death place	To identify the place of death.		Person	Location xsd:string
+term	hasProducer	P		Producer	Range: string or Agent.		Asset	Agent xsd:string
+term	hasProductionLocation	P		Production location	Range: a Location or string		Asset	Location xsd:string
+term	hasProvenance	P		Provenance	Range: string, anyURI or Concept.		owl:Thing	Provenance xsd:string
+term	hasProvenanceTarget	P		Provenance target	The instance of an object sourced by the Provenance.		Provenance	xsd:anyURI xsd:string
+term	hasPublicationEvent	P		Publication event	To associate PublicationEvents with PublicationChannels or as elements of a PublicationHistory or PublicationPlanning.		PublicationChannel PublicationHistory PublicationPlan	PublicationEvent
+term	hasPublicationHistory	P		Publication history	To provide the history of publication of an EditorailObject or MediaResource.		Asset	PublicationHistory
+term	hasPublicationMedium	P		Publication medium	Range: string or PublicationMedium.		PublicationEvent	PublicationMedium xsd:string
+term	hasPublicationPlanMember	P		Publication plan member.	To identify a subplan of a publication plan.		PublicationPlan	PublicationPlan
+term	hasPublicationPlanType	P		Publication plan type	Range: string or PublicationPlan_type.		PublicationPlan	PublicationPlan_Type xsd:anyURI xsd:string
+term	hasPublicationRegion	P		Publication region	Range: string or Location		PublicationEvent	Location xsd:string
+term	hasPublisher	P		Publisher	To identify an Agent involved in the publication of the Resource or BusinessObject.		Asset	Agent xsd:string
+term	hasRating	P		Rating	Range: a string or a Rating.		Asset	Rating xsd:string
+term	hasRatingProvider	P		Rating source / agent	Range: string or Agent.		Rating	Agent xsd:string
+term	hasRatingSource	P		Rating source / agent	Range: string or Agent.		Rating	Agent xsd:string
+term	hasRelatedAnimal	P		Related animal	To identify animals associate with an Asset.		Asset	Animal xsd:anyURI xsd:string
+term	hasRelatedArtefact	P		Related artefact	Range: string or Artefact.		Asset	Artefact xsd:string
+term	hasRelatedAsset	P		Related asset	To identify related Assets.		Asset	Asset
+term	hasRelatedAudioContent	P		Audio content	To identify related Audio Content		Asset	AudioContent
+term	hasRelatedAudioObject	P		Audio object	To identify related Audio Objects		MediaResource	AudioObject
+term	hasRelatedAudioProgramme	P		Audio programme	A related audio programme		Asset	AudioProgramme
+term	hasRelatedAudioTrack	P		Audio track	To identify related Audio Tracks		MediaResource	AudioTrack
+term	hasRelatedAward	P		Related award	Range: string or Award.		Asset	Award xsd:string
+term	hasRelatedEditorialObject	P		Related editorial object	To identify related EditorialObjects.		Asset	EditorialObject
+term	hasRelatedEssence	P		Related essence	To establish a relation between a MediaResource and an Essence.		MediaResource	Essence
+term	hasRelatedEvent	P		Event	A property to identify the Events, all real or fictional, covered by the EditorialObject.	hasCoverage	Asset	Event xsd:string
+term	hasRelatedImage	P		Image	To associate an Image with a BusinessObject.		Asset	Image
+term	hasRelatedLocation	P		Location	A property to identify the Locations, all real or fictional, covered by the EditorialObject.	hasCoverage	Asset	Location xsd:string
+term	hasRelatedMediaFragment	P		Media fragment	To associate a Part of an Asset with a MediaFragment within the association MediaResource instantiating the Asset.		Asset	MediaFragment
+term	hasRelatedMediaResource	P		Related media resource	To identify a MediaResource associated with an Asset or a BusinessObject or a PublicationEvent or another Resource.		Asset	MediaResource
+term	hasRelatedPicture	P		Picture	To associate a Picture with a BusinessObject or a Resource.		Asset	Picture
+term	hasRelatedPublicationChannel	P		Publication channel	Range: string or PublicationChannel		PublicationEvent	PublicationChannel xsd:string
+term	hasRelatedPublicationEvent	P		Publication event	To identify the PublicationEvent associated with a MediaResource (manifestation of an EditorialObject).		PublicationEvent	PublicationEvent
+term	hasRelatedRecord	P		Related record	Range, a string a URI or a Record.		Asset	Record xsd:anyURI xsd:string
+term	hasRelatedResource	P		Related resource	To identify a Resource associated with an Asset or a BusinessObject or a PublicationEvent or another Resource.		Asset	Resource
+term	hasRelatedService	P		Related Service	Range: string or Service.		Service	Service xsd:string
+term	hasRelatedTextLine	P		Related text line	A TextLine or free text related to an EditorialObject.		Asset	TextLine xsd:string
+term	hasRelationSource	P		Relation source	Range: string or Agent.		Relation	Agent xsd:string
+term	hasResourceLocator	P		Locator	A locator from where the Resource can be accessed.		Resource	Locator xsd:string
+term	hasReview	P		Review	Range: string or Review.		Asset	Review xsd:string
+term	hasRightsClearance	P		Rights clearance	Range: string or Rights Clearance.	isCoveredBy	Asset	RightsClearance xsd:string
+term	hasRightsContact	P		Contact	Range: a string or a Contact.		Rights	Contact xsd:string
+term	hasRightsHolder	P		Rights holder	Range: a string or an Agent.		Rights	Agent xsd:string
+term	hasRole	P		Role	Range: a string or a Role/Concept from a controlled vocabulary.		Agent	Role xsd:string
+term	hasSeason	P		Season	To identiify Seasons in a Series.		Series	Season
+term	hasServiceGenre	P		Service genre	Range: string or Genre		Service	Genre xsd:string
+term	hasServiceLogo	P		Service logo	The Logo characterising a Service	hasLogo	Service	Logo
+term	hasShootingLocation	P		Shooting location	Range: Location or string		MediaResource	Location xsd:string
+term	hasSigning	P		Accessibility - signing	A locator/URI to a resource or a Signing resource.		Asset	Signing
+term	hasSigningFormat	P		Signing format	Range: string or SigningFormat.		Signing	SigningFormat xsd:string
+term	hasSigningSource	P		Signing source	Range: string or Agent.		Signing	Agent xsd:string
+term	hasSource	P		Source	To identify the source of a MediaResource.		MediaResource	MediaResource
+term	hasStaffMember	P		member of Staff	Range: string or Staff.		Organisation	Staff xsd:string
+term	hasStaffRole	P		Staff role	Range: a string or a Role/Concept from a controlled vocabulary.		Agent	Role xsd:string
+term	hasStakeholder	P		Publication plan stakeholder	An Agent related to the PublicationPlan.		PublicationPlan	Agent xsd:string
+term	hasStandard	P		Standard	Identifies the technical video standard of a MediaResource, i.e. NTSC or PAL.	hasFormat	MediaResource	Standard xsd:string
+term	hasStorageId	P		Storage identifier	Range: Identifier, anyURI, string		MediaResource	Identifier xsd:anyURI xsd:string
+term	hasStorageType	P		Storage type	Range:; string or Storage_Type		MediaResource	Storage_Type xsd:anyURI xsd:string
+term	hasSubject	P		Subject	Range: string, anyURI or Subject		Asset	Subject xsd:anyURI xsd:string
+term	hasSubtitling	P		Subtitling	Range: string or Subtitling		Asset	Subtitling xsd:string
+term	hasSubtitlingFormat	P		Subtitling format	Range: string or SubtitlingFormat	hasFormat	MediaResource	SubtitlingFormat xsd:string
+term	hasSubtitlingSource	P		Subtitling source	Range: a string or an Agent.		Subtitling	Agent xsd:string
+term	hasTargetAudience	P		Target audience	Range: string or TargetAudience.		Asset	TargetAudience xsd:string
+term	hasTargetPlatform	P		Target platform	Range: string or TargetPlatform.		Asset	TargetPlatform xsd:string
+term	hasTeamMember	P		Team member	Range: a Person or a string		Team	Person xsd:string
+term	hasTextLineId	P		Text line identifier.	Range: string or Identifier.		TextLine	TextLine_Type xsd:string
+term	hasTextLineRelatedAgent	P		Text line related agent	Range: string or Agent.		TextLine	Agent xsd:string
+term	hasTextLineRelatedCharacter	P		Text line related character	Range: string or Character.		TextLine	Character xsd:string
+term	hasTextLineRelatedScene	P		Text line related scene	Range: string or Scene.		TextLine	Scene xsd:string
+term	hasTextLineSource	P		Text line source	Range: string or Agent.		TextLine	Agent xsd:string
+term	hasTextLineType	P		Text line type	Range: string or TextLine_Type		TextLine	TextLine_Type xsd:string
+term	hasTheme	P		Theme	Range: a Concept, anyURI or a string	hasSubject	Asset	Theme xsd:anyURI xsd:string
+term	hasTimecodeTrack	P		Timecode track	To identify a timecode track with a MediaResource.		MediaResource	TimecodeTrack
+term	hasTimelineTrack	P		Timeline track	To associate a TimelineTrack with an EditorialObject		EditorialObject	TimelineTrack
+term	hasTimelineTrackPart	P		Timeline track part	To associate an EditorialObject to a TimelineTrackPart		TimelineTrack	EditorialObject
+term	hasTimelineTrackType	P		Timeline track type	Range: string or anyURI or TimelineTrack_Type.		TimelineTrack	TimelineTrack_Type xsd:anyURI xsd:string
+term	hasTopic	P		Topic	Range: a Topic, anyURI or a string	hasSubject	Asset	Topic xsd:anyURI xsd:string
+term	hasTrack	P		Track	To associate audio/data/video tracks with a MediaResource.		MediaResource	Track
+term	hasTrackPart	P		Track part source	An element to identify a part of a track by a title, a start time and an end time in both the media source and media destinationn.		Track	MediaResource
+term	hasTrackPurpose	P		Track purpose	Range: string or TrackPurpose.		Track	TrackPurpose xsd:string
+term	hasType	P		Asset type	An type of Asset.		Asset	Type xsd:string
+term	hasUsageRestrictions	P		Usage restrictions	Range: string or UsageRestrictions.	isCoveredBy	Asset PublicationEvent	UsageRestrictions xsd:string
+term	hasUsageRights	P		Usage rights	Range: string or UsageRights.	isCoveredBy	Asset	UsageRights xsd:string
+term	hasVersion	P		Version	To identify another version of an Asset, BusinessObject or Resource.		MediaResource	MediaResource
+term	hasVideoCodec	P		Video codec	Range: string or VideoCodec	hasCodec	MediaResource	VideoCodec
+term	hasVideoEncodingFormat	P		Audio encoding format	Range: string or VideoEncodingFormat	hasFormat	MediaResource	VideoEncodingFormat xsd:string
+term	hasVideoTrack	P		Video track	To identify VideoTracks in the Resource.		MediaResource	VideoTrack
+term	hasWrappingType	P		Wrapping type	Range: string or WrappingType.		AncillaryData	WrappingType xsd:anyURI xsd:string
+term	height	P		Height	The height of e.g. a video frame typically expressed as a number of lines or the height of a picture/image expressed in millimeters or else.		MediaResource	xsd:integer
+term	heightUnit	P		Height unit	To specify a unit to express height.		MediaResource	xsd:string
+term	highlights	P		Highlights	To provide highlights.	description	Asset	xsd:string
+term	hobbies	P		Hobbies	The hobbies of a Person.		Person	xsd:string
+term	idDateOfCreation	P		Date of creation	The date when the identifier was generated.		Identifier	xsd:string
+term	Identifier	C		Identifier	To support the use of structured identifiers.	owl:Thing
+term	IdentifierType	C		Identifier type	To define a type of identifier.	skos:Concept
+term	identifierValue	P		Identifier value	Range: string or anyURI.		Identifier	xsd:string
+term	iFrameSize	P		I-frame/Gop size	The distance between 2 I-frames also known as the gop size.		MediaResource	xsd:int
+term	Image	C		Image	A still image / thumbnail / key frame / logo related to the media resource or being the media resource itself.	BusinessObject
+term	ImageCodec	C		Image codec	to identify a codec for images	Codec
+term	ImageFormat	C		Image format	To provide technical information about the format of an image such as the orientation. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	Format
+term	inchesPerSecond	P		Inches per second	Identifies the inches per second at which an analog audio tape should be played back for human consumption.	playbackSpeed	MediaResource	xsd:double
+term	instantiates	P		Business object	To link a particular manifestation of a BusinessObject to the corresponding Resource.		MediaResource	EditorialObject
+term	IntentionCode	C		Intention code	To indicate the purpose for which content was created.	Type
+term	IPRRestrictions	C		IPR restrictions	To provide information on intellectual property.	Rights
+term	isAgent	P			Range: string or Agent.		Agent	Agent xsd:string
+term	isAnimalGroom	P		Animal groom	To identify the groom / care taker of an animal.		Animal	Agent xsd:anyURI xsd:string
+term	isAnimalOwner	P		Animal owner	To identify the owner of an animal.		Animal	Agent xsd:anyURI xsd:string
+term	isAnnotatedMediaResource	P		Media resource	To link an Annotation to a MediaResource.		Annotation	MediaResource
+term	isAnnotationBy	P		Agent	To link an Annotation to an Agent who created it.		Annotation	Agent xsd:string
+term	isAttributedTo	P		Provenance target	Tassociate an Agent with a Provenance instance.		Provenance	Agent xsd:anyURI xsd:string
+term	isBrand	P		Brand	Range: a string or Brand		EditorialObject	Brand xsd:string
+term	isCharacter	P		Fictional character.	Range: string or Agent.		Agent	Character xsd:string
+term	isChildOf	P		Parent	To link a BusinessOject or Resource to a parent.		MediaResource	MediaResource
+term	isClonedFrom	P		Clone source	To identify the source of a clone Editorial Object or Resource		MediaResource	MediaResource
+term	isComposedOf	P		Media Resource	To identify mediaResources used to compose an Essence.		MediaResource	MediaResource
+term	isCoveredBy	P		Rights	Range: a link to Rights or open text (string).		Asset PublicationEvent	Rights xsd:string
+term	isDerivedFrom	P		Derived from	Identifies a content-based relationship between two resources.		MediaResource	MediaResource
+term	isDistributedOn	P		Platform/Service/PublicationChannel	Range: Service or string.		EditorialObject	Service xsd:string
+term	isDubbedFrom	P		Dubbed from	the origin of a dubbed MediaResource.		MediaResource	MediaResource
+term	isEditorialFormatOf	P		Same editorial format	To identify an Editorial Object based on the same Editorial format		EditorialObject	EditorialObject
+term	isEpisodeOf	P		Parent season / series	Range: Series or string.		Asset	Series xsd:string
+term	isEpisodeOfSeason	P		Parent season / series	Range: string or Season.		Asset	Season xsd:string
+term	isEpisodeOfSeries	P		Parent season / series	Range: string or Series.		Asset	Series xsd:string
+term	isFictitiousPerson	P		Fictitious contact	Range: a string or a FictitiousPerson.		Character	Person xsd:string
+term	isInstantiatedBy	P		Media Resource	To identify a MediaResource instantiating an EditorialObject.		EditorialObject	MediaResource
+term	isIssuedBy	P		Issuer	Range: Agent or String		Identifier	Agent xsd:string
+term	isMasterOf	P		Derived media resource	To identify the master of a derived media resource.		MediaResource	MediaResource
+term	isMediaFragmentOf	P		Media fragment source	To identify the Media Resource to which a Media Fragment belongs to		MediaFragment	MediaResource
+term	isMemberOf	P		Member of	Range: string or Group.		Asset	Group
+term	isMemberOfPublicationPlan	P		Parent publication plan	To identify a parent Publication Plan		PublicationPlan	PublicationPlan
+term	isNextInSequence	P		Next	A link to an Asset following the current Asset in an ordered sequence.		Asset	Asset
+term	isOperatedBy	P		Operator, owner	Range: string or Service.		PublicationChannel	Service xsd:string
+term	isOwnedBy	P		Owner	Range: string or Agent.		Service	Agent xsd:string
+term	isParentOf	P		Child	To link a Asset to a parent Asset.		MediaResource	MediaResource
+term	isPartOf	P		Editorial object	To identify the editorial object to which belongs a part.		Part	EditorialObject
+term	isPictureIdLocator	P		Identification picture locator	Range: e.g. a string, URL or Locator.		Person	Locator xsd:string
+term	isRatingRelatedToBusinessObject	P		Rated business object	To identify the BusinessObject associated with a Rating.		Rating	BusinessObject
+term	isRatingRelatedToResource	P		Rated Resource	To identify the resource associated with a Rating.		Rating	MediaResource
+term	isReferencedBy	P		Reference source	To described references between assets.		MediaResource	EditorialObject
+term	isReleasedBy	P		Service	Range: Service or string		PublicationEvent	Service xsd:string
+term	isReplacedBy	P		Replacement	To identify substitutions.		MediaResource	MediaResource
+term	isRequiredBy	P		Required	To express strong relations between Assets, BusinessObjects or Resources.		MediaResource	MediaResource
+term	isScheduledOn	P		Publication event	To associatre a PublicationEvent with an EditorialObject.		EditorialObject	PublicationEvent
+term	isSeasonOf	P		Series	Range: Series or string.		Season	Series xsd:string
+term	isSeriesOf	P		Brand	Range: Brand or string.		Series	Brand xsd:string
+term	isTimelineTrackPartOf	P		Editorial Object	To associate an EditorialObject with a part of the TimelineTrack.		EditorialObject	TimelineTrack
+term	isTrackPartOf	P		Track part source	An element to identify a part of a track by a title, a start time and an end time in both the media source and media destination.		MediaResource	Track
+term	isVersionOf	P		Version of	To identify related versions.		MediaResource	MediaResource
+term	Item	C		Item	An item e.g. newsItem or sportItem	EditorialObject
+term	KeyCareerEvent	C		Key career event	To describe a key career Event of a Contact.	KeyEvent
+term	KeyEvent	C		Key event	To describe a significant event.	Event
+term	Keyframe	C		key frame	A key frame is a frame extarcted from video, e.g. representative of a part of a MediaResource.	Picture
+term	KeyPersonalEvent	C		Key personal event	A key personal Event of a Contact.	KeyEvent
+term	Keyword	C		Keyword	To proivde keywords and define key concepts illustrating the content of the Resource or EditorialObject. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	skos:Concept
+term	Language	C		Language	To provide information on languages present in the BusinessObject and its purpose. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.Other language specific types may be added as subclasses of language.	skos:Concept
+term	Licensing	C		Licensing	To define the licensing terms associated with an Asset.	Rights
+term	lineNumber	P		Line number	To provide the number of the line on which ancillary data is being carried and the equivalent in the digital domain.		AncillaryData	xsd:integer
+term	Link	C		Link	To define a custom link.	owl:Thing
+term	linkToLogo	P		Link to logo	Range: string or Logo		Costume	Logo
+term	linkToSticker	P		Link to Sticker	Range: anyURI or Sticker.		Costume	Sticker
+term	live	P		live	A flag to signal that content is live		PublicationEvent	xsd:boolean
+term	localFamiliyName	P		Local familiy name	To provide a family name in its local expression.		Person	xsd:string
+term	localGivenName	P		Local given name	To provide a given name in its local expression.		Person	xsd:string
+term	Location	C		Location	A location related to the media resource, e.g. depicted in the resource (possibly fictional) or where the resource was created (shooting location), etc.	owl:Thing
+term	locationAddress	P		Address	To provide the address of a Location.		Location	xsd:string
+term	locationAddressArea	P		Area	To provide the Area part of an Adrress.	locationAddress	Location	xsd:string
+term	locationAddressCountry	P		Country	To provide the country name and or country code.	locationAddress	Location	xsd:string
+term	locationAddressLine	P		Adress line	To provide an address line.	locationAddress	Location	xsd:string
+term	locationAddressLocality	P		Locality	To provide the name of a city, village, etc.	locationAddress	Location	xsd:string
+term	locationAddressPostalCode	P		Postal code	To provide an address postal code.	locationAddress	Location	xsd:string
+term	locationAltitude	P		Altitude	To define the altitude of a Location in meters.		Location	xsd:float
+term	LocationCode	C		Location code.	A code given to a Location.	skos:Concept
+term	locationCoordinateSystemName	P		Coordinate system	To specify the name of the gps coordinate system used for the Location.		Location	xsd:string
+term	locationDescription	P		Location description	To provide a description of a particular Location.		Location	xsd:string
+term	locationId	P		Location identifier	An identifier attributed to a Location.		Location	Identifier xsd:string
+term	locationLatitude	P		Latitude	The latitude of the Location.		Location	xsd:float
+term	locationLongitude	P		Longitude	To define the longitude of the Location.		Location	xsd:float
+term	locationName	P		Location name	To provide a namefor a particular Location.		Location	xsd:string
+term	locationRegion	P		Region	Range: string or RegionCode		Location	RegionCode xsd:string
+term	locationTimeType	P		Location type	A type of time at a Location.		Location	LocationTimeType xsd:string
+term	LocationTimeType	C		Location time type	To define a type of time at a location.	skos:Concept
+term	locationType	P		Location type	A type of Location.		Location	LocationType xsd:string
+term	LocationType	C		Location type	To define a type of location.	skos:Concept
+term	Locator	C		Locator	Custom attributes are to be associated by implementers.	owl:Thing
+term	locatorTargetInformation	P		Locator target information	Information on the locator target.		MediaResource	xsd:string
+term	log	P		Log	To log everything in the content following predefined rules and criterias, as a neutral sequence of (possibly timed) textual descriptions.	description	Asset	xsd:string
+term	Logo	C		Logo	A Logo allows to visually identify an organisation, publicationService, publicationChannel, or ratings / parentalGuidance	Picture
+term	loudnessIntegratedLoudness	P		Integrated loudness	The value for integrated loudness measured at AudioProgramme or AudioContent level.	loudnessParameters	AudioContent AudioProgramme	xsd:float
+term	loudnessMaxMomentary	P		Max momentary loudness	The value for maximum momentary loudness measured at AudioProgramme or AudioContent level.	loudnessParameters	AudioContent AudioProgramme	xsd:float
+term	loudnessMaxShortTerm	P		Max short term loudness	The value for maximum max short term loudness measured at AudioProgramme or AudioContent level.	loudnessParameters	AudioContent AudioProgramme	xsd:float
+term	loudnessMaxTruepeak	P		Max true peak loudness	The value for maximum true peak loudness measured at AudioProgramme or AudioContent level.	loudnessParameters	AudioContent AudioProgramme	xsd:float
+term	loudnessMethod	P		Loudness method	The method for loudness measurement at AudioProgramme or AudioContent level.	loudnessParameters	AudioContent AudioProgramme	xsd:string
+term	loudnessParameters	P		Loudness parameters	To provide loudness parameters.		AudioContent AudioProgramme	xsd:float
+term	loudnessRange	P		Loudness range	The loudness range measured at AudioProgramme or AudioContent level.	loudnessParameters	AudioContent AudioProgramme	xsd:float
+term	mainTitle	P		Main title	Specifies the main title or name given to the EditorialObject.	title	Asset	xsd:string
+term	maritalStatus	P		Marital Status	To identify the marital status of a Person.		Person	xsd:string
+term	MediaFragment	C		Media Fragment	A MediaFragment is a temporal or spatial segment of a resource identified by a MediaGragment URI (http://www.w3.org/2008/WebVideo/Fragments/WD-media-fragments-spec/).	MediaResource
+term	MediaResource	C		Media Resource	The use of MediaResource is reserved to audiovisual content. In a production process, several MediaResources can be edited and assembled to realsie an Essence ready for distribution (see IMF package and OPL)	Asset
+term	MediaResource_Type	C		Media resource type	To define a type of MediaResource.	skos:Concept
+term	mediaResourceDescription	P		MediaResource description	A description of a MediaResource.		MediaResource	xsd:string
+term	mediaResourceId	P		Media resource Id	Range: Identifier or string		MediaResource	Identifier xsd:anyURI xsd:string
+term	mediaResourceType	P		Media resource type	Range: MediaResource_Type or string		MediaResource	MediaResource_Type xsd:anyURI xsd:string
+term	MediaType	C		Media type	To provide additional information on the type of media.	Format
+term	Medium	C		Medium	To provide information on the medium formats in which the resource is available. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	Format
+term	MetadataTrack	C		Metadata track	A Track on which metadata is embedded (e.g. MXF).	Track
+term	middleName	P		Middle name	To provide one or more middle names for a Person.		Person	xsd:string
+term	midRollAdAllowed	P		Midroll ad allowed	A flag to indicate whether it is allowed to insert ad breaks in mid-roll.		MediaResource	xsd:boolean
+term	MimeType	C		Mime type	The definition of the container if available as a MIME type. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme. For more information: http://www.iana.org/assignments/media-types/index.html.	Format
+term	NewsItem	C		News Item	A NewsItem aggregates all information about a particular news event.	Item
+term	nickName	P		Nickname	The nickname of a Person.		Person	xsd:string
+term	noiseFilter	P		Noise filter	A flag to signal that a noise filter has been used.		MediaResource	xsd:boolean
+term	notRated	P		Not rated	A flag to indicate that the EditorialObejct has not been rated.		Rating	xsd:boolean
+term	numberOfAudioTracks	P		Number of audio tracks	To provide the number of audio tracks.	numberOfTracks	MediaResource	xsd:integer
+term	numberOfTracks	P		Number of tracks	The number of Tracks composing the MediaResource.		MediaResource	xsd:integer
+term	numberOfVideoTracks	P		Number of video tracks	To provide the number of video tracks.	numberOfTracks	MediaResource	xsd:integer
+term	ObjectType	C		Object type	To specify the type of BusinessObject e.g. and EditorialObject of type "programme" or clip". This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme e.g. http://www.ebu.ch/metadata/ontologies/skos/ebu_ObjectTypeCodeCS.rdf.	Type
+term	occupation	P		Occupation	The job / occupation name of a Person.		Person	xsd:string
+term	offers	P		PublicationEvent	To identify the PublicationEvents provided through a Service.		Service	PublicationEvent
+term	officeEmailAddress	P		Office email	To provide the professional/office email address of an Agent (Contact/Person or Organisation).	agentEmailAddress	Person	xsd:string
+term	officeMobileTelephoneNumber	P		Telephone (private)	To provide the office mobile telephone number of an Agent (Contact/Person).	agentTelephoneNumber	Person	xsd:string
+term	officeTelephoneNumber	P		Telephone (private)	To provide the office telephone number of an Agent (Contact/Person).	agentTelephoneNumber	Person	xsd:string
+term	OpenCaptions	C		Open captions	Open Captions are burned in the image.	Captioning
+term	OpenSubtitling	C		Open subtitling	Open subtitles are burned in the image.	Subtitling
+term	orderedFlag	P		Ordered flag	A flag to indicate that a EditorialObject is member of an ordered group or is an ordered group (e.g. Series)		EditorialObject	xsd:boolean
+term	Organisation	C		Organisation	An organisation (business, corporation, federation, etc.) or moral agent (government body).	Agent
+term	organisationDescription	P		Organisation description	To provide a description of an Organisation.		Organisation	xsd:string
+term	organisationId	P		Organisation identifier	Range: string or Identifier		Organisation	Identifier xsd:anyURI xsd:string
+term	organisationName	P		Organisation name	To provide the full name of an Organisation.		Organisation	xsd:string
+term	organisationType	P		Asset type	Range: string or anyURI or Concept.		Organisation	xsd:anyURI xsd:string
+term	orientation	P		Orientation	The orientation of a Document or an Image i.e. landscape or portrait.		BusinessObject	xsd:string
+term	OriginalLanguage	C		Language	The original language in which the BusinessObject or Resource has been created and released. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	Language
+term	originalTitle	P		Original title.	The original title used to identify the work.	title	Asset	xsd:string
+term	packageByteSize	P		Package size (in bytes)	The size of a media package in Bytes.		MediaResource	xsd:long
+term	packageName	P		Package name	The name of a media package in Bytes.		MediaResource	xsd:string
+term	Part	C		Part, Fragment, Segment	A Fragment is a particular section of a MediaResource identified by a start and end time or duration. Fragment can also be called segment or part.	EditorialObject
+term	Part_Type	C		Part type	To define a type or part.	skos:Concept
+term	partDefinition	P		Part definition	A definition associated with the Part.		Part	xsd:string
+term	partDescription	P		Part definition	A description associated with the Part.		Part	xsd:string
+term	partId	P		Part identifier	Range: a string or Identifier		Part	Identifier xsd:anyURI xsd:string
+term	partName	P		Part name	A name associated with the Part.		Part	xsd:string
+term	partNumber	P		Part number	The number associated to a Part as one among many.		Part	xsd:integer
+term	partTotalNumber	P		Part total number	The total number of Parts associated with an EditorialObject.		EditorialObject	xsd:integer
+term	Party	C		Party	To identify a Party intervening in a transaction or contractual agreement.	Agent
+term	Person	C		Person	To describe a Person.	Agent
+term	personDescription	P		Description	To provide a description of a Person.		Person	xsd:string
+term	personHeight	P		Person height	To indicate the height of a person.		Person	xsd:string
+term	personId	P		Person identifier	An identifier attributed to a Person.		Person	Identifier xsd:anyURI xsd:string
+term	personName	P		Person name	To provide e.g. compound names.		Person	xsd:string
+term	personType	P		Person type	A type attributed to a Person.		Person	Identifier xsd:anyURI xsd:string
+term	personWeight	P		Person weight	To indicate the weight of a person.		Person	xsd:string
+term	PhysicalResource	C		Physical resource	To describe a physical resource e.g. a tape.	MediaResource
+term	Pictogram	C		Pictogram	A visual / graphical representation of a concept.	Picture
+term	Picture	C		Picture	A photography, a logo, a pictogram, etc.	Resource
+term	PictureDisplayFormat	C		Picture display format code	To define a picture display format code.	Format
+term	Platform	C		Platform	A platform like a network or operator platform.	Service
+term	playbackSpeed	P		Playback speed	Identifies the rate of units against time at which the resource should be played back for human consumption. If the unit of measure is known, use sub-properties framesPerSecond or inchesPerSecond.		MediaResource	xsd:double
+term	playlist	P		Playlist	To provide a playlist.	description	Asset	xsd:string
+term	playsOut	P		Essence	To identify the Essence used in a PublicationEvent		PublicationEvent	Essence
+term	position	P		Position	To indicate the position of an EditorialObject in an ordered group.		EditorialObject	xsd:string
+term	privateEmailAddress	P		Private email	To provide the private email address of an Agent (Contact/Person)	agentEmailAddress	Person	xsd:string
+term	privateHomepage	P		Homepage (private)	To provide an private web homepage of an Agent (Contact/Person).	agentWebHomepage	Person	xsd:anyURI
+term	privateMobileTelephoneNumber	P		Telephone (private)	To provide the private mobile telephone number of an Agent (Contact/Person).	agentTelephoneNumber	Person	xsd:string
+term	privateTelephoneNumber	P		Telephone (private)	To provide the private telephone number of an Agent (Contact/Person).	agentTelephoneNumber	Person	xsd:string
+term	productionSynopsis	P		Production synopsis	A synopsis or summary provided by the producer at the time of production.	description
+term	Programme	C		Programme	An EditorialObject corresponding to a MediaResource ready for publication.	EditorialObject
+term	promotionalInformation	P		Promotional information	To provide textual promotional information.	description	Asset	xsd:string
+term	Props	C		Props	To identify and describe Props used in productions (e.g. vehicles, objects of various shapes and brand and purpose, etc.).	Artefact
+term	Provenance	C				owl:Thing
+term	provenanceDateCreated	P		Provenance creation date & time	The date of creation of a Provenance instance.		Provenance	xsd:dateTime
+term	provenanceDateModified	P		Provenance modification date & time	The date of modification of a Provenance instance.		Provenance	xsd:dateTime
+term	provenanceDescription	P		Provenance description	To describe a Provenance.		Provenance	xsd:string
+term	provenanceId	P		Provenance Id	To identify a Provenance.		Provenance	xsd:anyURI
+term	provenanceName	P		Provenance name	To name a Provenance.		Provenance	xsd:string
+term	provenanceType	P		Provenance type	Range: string, anyURI or Concept.		Provenance	xsd:anyURI xsd:string
+term	PublicationChannel	C		Publication Channel	The name of the channel through which a Resource has been published as a PublicationEvent. A PublicationChannel can use a variety of medias e.g. broadcast or online.	Service
+term	PublicationChannel_Type	C		Publication channel type	To define a type of publication channel.	skos:Concept
+term	publicationChannelDescription	P		PublicationChannel description	To provide a description of a PublicationChannel e.g. a TV channel or website.		PublicationChannel	xsd:string
+term	publicationChannelId	P		Publication channel identifier	An identifier attributed to a PublicationChannel.		PublicationChannel	Identifier xsd:anyURI xsd:string
+term	publicationChannelName	P		PublicationChannel name	To provide a name to a PublicationChannel e.g. a TV channel or website.		PublicationChannel	xsd:string
+term	publicationChannelType	P		Publication Channel type	Range: string or PublicationChannel_Type.		PublicationChannel	skos:Concept xsd:anyURI xsd:string
+term	publicationDuration	P		PublicationEvent duration	The actual duration of a PublicationEvent.		PublicationEvent	xsd:string
+term	publicationEndDateTime	P		PublicationEvent end date & time	The actual end date and time of a PublicationEvent.		PublicationEvent	xsd:string
+term	PublicationEvent	C		Publication Event	To describe any manifestation of a media resource on any media (live, on demand, catch-up TV, etc.) and the appropriate PublciationChannel.	owl:Thing
+term	PublicationEvent_Type	C		Publication event type	To define a type of publication event.	skos:Concept
+term	publicationEventAbstract	P		PublicationEvent abstract	To provide an abstract for a PublicationEvent.		PublicationEvent	xsd:string
+term	publicationEventDescription	P		PublicationEvent description	To provide the description of a PublicationEvent.		PublicationEvent	xsd:string
+term	publicationEventId	P		Publication event identifier	An identifier attributed to a PublicationEvent.		PublicationEvent	Identifier xsd:anyURI xsd:string
+term	publicationEventName	P		PublicationEvent name	To provide a name to a PublicationEvent.		PublicationEvent	xsd:string
+term	publicationEventTitle	P		PublicationEvent title	To provide a title for a PublicationEvent.		PublicationEvent	xsd:string
+term	publicationEventType	P		Publication event type	A type of PublicationEvent.		PublicationEvent	PublicationEvent_Type xsd:anyURI xsd:string
+term	PublicationHistory	C		Publication History	A collection of PublicationEvents through which a resource has been published.	owl:Thing
+term	PublicationMedium	C		Publication medium		skos:Concept
+term	PublicationPlan	C		Publication History	A collection of PublicationEvents organised as a PublicationPlanning.	owl:Thing
+term	PublicationPlan_Type	C		Publication plan type	To define a type of publication plan.	skos:Concept
+term	publicationPlanDescription	P		PublicationPlan description	A description of a PublicationPlan.		PublicationPlan	xsd:string
+term	publicationPlanEndDate	P		PublicationPlan end date	The end date of a PublicationPlan		PublicationPlan	xsd:string
+term	publicationPlanId	P		Publication plan identifier	An identifier attributed to a PublicationPlan.		PublicationPlan	Identifier xsd:anyURI xsd:string
+term	publicationPlanName	P		Publication plan name	A name attributed to a PublicationPlan.		PublicationPlan	xsd:string
+term	publicationPlanStartDate	P		PublicationPlan start date	The start date of a PublicationPlan		PublicationPlan	xsd:string
+term	publicationPlanStatus	P		PublicationPlan status	To provide a status regarding the PublicationPlan.		PublicationPlan	xsd:string
+term	publicationScheduleDate	P		Schedule date	To express specifically the schedule date to which a PublicationEvent is related in particular if the broacdast time is after midnight. For example, the schedule date would be May 29th and the programme is published at 1 am on May 30th, while still associated in the schedule with the night of May 29th.		PublicationEvent	xsd:string
+term	publicationStartDateTime	P		Publication start date & time	The actual start date and time of a PublicationEvent.		PublicationEvent	xsd:string
+term	publishedEndDateTime	P		Publication end date & time	The end date and time of a PublicationEvent as scheduled.		PublicationEvent	xsd:string
+term	publishedStartDateTime	P		Publication start date & time	The start date and time of a PublicationEvent as scheduled.		PublicationEvent	xsd:string
+term	publishedTitle	P		Published title.	The title used to identify the work at publication time.	title	Asset	xsd:string
+term	publishes	P		Editorial object	The editorial object associated to a PublicationEvent.		PublicationEvent	EditorialObject
+term	pubStatus	P		Publication status	To indicate a publication status.	description	Asset	xsd:string
+term	RadioProgramme	C		Radio Programme	A programme for distribution on radio channels.	Programme
+term	Rating	C		Rating	All the information about the rating/evaluation given to a media resource by an Agent i.e. a person/Contact or Organisation.	owl:Thing
+term	ratingDescription	P		Rating name	To associate a description with a Rating.		Rating	xsd:string
+term	ratingId	P		Rating Id	Range: string or anyURI or Identifier.		Rating	Identifier xsd:anyURI xsd:string
+term	ratingName	P		Rating name	To associate a name with a Rating.		Rating	xsd:string
+term	ratingScaleMax	P		Rating scale (top value)	The maximum value of the scale used for the Rating of a MediaResource.		Rating	xsd:string
+term	ratingScaleMin	P		Rating scale (min. value)	The minimum value of the scale used for rating a MediaResource.		Rating	xsd:string
+term	ratingSystemEnvironment	P		Rating environment	To identify the environment in which rating applies.		Rating	xsd:string
+term	ratingSystemName	P		Rating system	To identify a Rating system by its name.		Rating	xsd:string
+term	ratingType	P		Rating type	Range: string or anyURI or Concept.		Rating	xsd:anyURI xsd:string
+term	ratingValue	P		Rating	To express a free text Rating value defined in a rating classification scheme.		Rating	xsd:string
+term	readyForPublication	P		Ready for publication	A flag to indicate that the Essence is ready for publication.		Essence	xsd:boolean
+term	reason	P		Reason	A reason given for a rating.		Rating	xsd:string
+term	Record	C		Record	The record the description of an Asset.	BibliographicalObject
+term	references	P		References	To express a reference between Assets, BusinessObjects or Resources.		EditorialObject	MediaResource
+term	RegionCode	C		Region code	To define a region.(@en}	skos:Concept
+term	regionDelimX	P		Region delimiter (x-axis)	To define the top left corner of a zone on the x-axis. If present with regionDelimy, the zone definition is complemented by the associated values of the height and width.		MediaResource	xsd:integer
+term	regionDelimY	P		Region delimiter (y-axis)	To define the bottom right corner of a zone on the y-axis. If present with regionDelimX, the zone definition is complemented by the associated values of the height and width.		MediaResource	xsd:integer
+term	Relation	C		Relation	To define links and relations.	owl:Thing
+term	Relation_Type	C		Relation type	To specify a type of relation.	skos:Concept
+term	relationIdentifier	P		Relation Type	Range: string or Identifier.		Relation	Identifier xsd:anyURI xsd:string
+term	relationLink	P		Link	To define a link in a Relation.		Relation	xsd:anyURI
+term	relationNote	P		Relation Note	A note to provide additional information about a Relation.		Relation	xsd:string
+term	relationOrderedGroupFlag	P		Relation Ordered group flag	A boolean to define if a Relation is defined within and ordered group.		Relation	xsd:boolean
+term	relationRunningOrderNumber	P		Relation Running Order Number	The order number in a list.		Relation	xsd:string
+term	relationTotalNumberOfGroupMembers	P		Total number of group members.	Total number of group members in a Relation.		Relation	xsd:string
+term	relationType	P		Relation Type	Range: string or Relation_Type.		Relation	Relation_Type xsd:anyURI xsd:string
+term	replaces	P		Replaces	To identify substitution.		MediaResource	MediaResource
+term	represents	P		Related asset	To establish a relation between a BusinessObject and an Asset.		EditorialObject	Asset
+term	requires	P		Requires	To express dependency.		MediaResource	MediaResource
+term	resolution	P		Resolution	To define the resolution of an Asset e.g. video, image...		Asset	xsd:string
+term	Resource	C		Resource	To describe a Resource.	Asset
+term	Resource_Type	C		Resource type	To define a type of resource.	skos:Concept
+term	resourceDescription	P		Resource description	A desciprtion of a Resource.		Resource	xsd:string
+term	resourceFilename	P		File name	The name of the file containing the Resource.		Resource	xsd:string
+term	resourceFileSize	P		File size	Provides the size of a Resource in bytes.		Resource	xsd:double
+term	resourceId	P		Resource id	An identifier associated to a Resource.		MediaResource	Identifier xsd:anyURI xsd:string
+term	resourceIdType	P		Resource id	Range: Resource_type or anyURI or string		MediaResource	Resource_Type xsd:anyURI xsd:string
+term	resourceLocatorTargetInformation	P		Locator target information	Information on the Resource locator target.		Resource	xsd:string
+term	resourceName	P		Resource name	The name given to a Resource.		Resource	xsd:string
+term	resourceOffset	P		Resource offset	The start offset within a Resource.		MediaResource	xsd:string
+term	resourceOffsetNormalPlaytime	P		Resource offset normal playtime	The resource offset in normal play time	resourceOffset	MediaResource	xsd:time
+term	resourceOffsetNumberEditUnit	P		Resource offset number edit units	The resource offset in edit units	resourceOffset	MediaResource	xsd:long
+term	resourceOffsetTimecode	P		Resource offset timecode.	The resource offset in timecode	resourceOffset	MediaResource	xsd:string
+term	resourceOffsetTimecodedropframe	P		Resource offset timecode (dropframe).	The resource offset in timecode dropframe	resourceOffset	MediaResource	xsd:string
+term	Review	C		Review	To provide a Review.	Item
+term	Rights	C		Rights	To provide information on the rights, including intellectual property, related to a BusinessObject or Resource.	owl:Thing
+term	RightsClearance	C		Rights Clearance	To signal that rights have been cleared (or not)	Rights
+term	rightsClearanceFlag	P		Rights clearance flag	A flag to indicate that righst have been cleared		BusinessObject	xsd:boolean
+term	rightsDuration	P		Rights duration	To define the duration of the period when Rights are applicable.		Rights	xsd:string
+term	rightsEndDateTime	P		Rights end date time	To define the end time until when Rights are applicable.		Rights	xsd:string
+term	rightsExpression	P		Rights	To express an expression of Rights.		Rights	xsd:string
+term	rightsId	P		Rights identifier	An identifier attributed to a set of Rights.		Rights	Identifier xsd:anyURI xsd:string
+term	rightsLink	P		Rights web resource	A link to e.g. a webpage where an expression of the rights can be found and consulted.		Rights	xsd:anyURI
+term	rightsStartDateTime	P		Rights start date time	To define the start time since when Rights are applicable.		Rights	xsd:string
+term	rightsTerritoryExcludes	P		Excluded territories	A list of country or region codes to which Rights do not apply.		Rights	CountryCode xsd:string
+term	rightsTerritoryIncludes	P		Included territories	A list of country or region codes to which Rights apply.		Rights	CountryCode xsd:string
+term	rightsType	P		Rights type	Range: a string or a Rights_Type or a ContractType.		Rights	ContractType ExclusivityType RightsType xsd:anyURI xsd:string
+term	RightsType	C		Rights type	To define a type of Rights.	skos:Concept
+term	Role	C		Role	To define the role / action of an agent. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	skos:Concept
+term	roleId	P		role Id	Range: string or anyURI.		Role	xsd:anyURI xsd:string
+term	roleType	P		Role type	To define a type of Role (not the Role itself).		Role	xsd:anyURI xsd:string
+term	salutationTitle	P		Salutation title	To provide a salutation title e.g M. Ms, Dr, Pr.		Person	xsd:string
+term	sampleRate	P		Sample Rate	The frequency at which audio is sampled per second. Also called sampling rate.		MediaResource	xsd:integer
+term	sampleSize	P		Sample size	The size of an audio sample in bits. Also called bit depth.		MediaResource	xsd:integer
+term	sampleType	P		Sample type	The type of audio sample.		MediaResource	xsd:string
+term	scanningFormat	P		Scanning format	To define the scanning format for a MediaResource. For video, the two main values are "interlaced" or "progressive".		MediaResource	xsd:string
+term	Scene	C		Scene	A specifc type of Part.	Part
+term	script	P		Script	To provide a script.	description	Asset	xsd:string
+term	SDID	P		SDID	Secondary data identification word for ancillary data. Send mode identifier. An identifier which indicates the transmission timing for closed caption data.		AncillaryData	xsd:integer
+term	Season	C		Season	A series can be composed of one or more seasons clustering a certain number of episodes. Fro this reason, seasons are related to series using the isRelatedTo property.	Group
+term	seasonNumber	P		Season number	To provide a Season number.		Asset	xsd:string
+term	Series	C		Series	Series is a particular type of collection. TV or Radio Series are composed of Episodes.	Group
+term	Service	C		Service	A service is the umbrella under which one or more PublicationChannel is operated.	owl:Thing
+term	Service_Type	C		Service type	To define a type of service.	skos:Concept
+term	serviceDescription	P		Service description	A description of the Service.		Service	xsd:string
+term	serviceId	P		Service identiifier	Range: string or Identifier.		Service	Identifier xsd:anyURI xsd:string
+term	serviceName	P		Service name	The name of the Service.		Service	xsd:string
+term	serviceType	P		Service type	Range: string or Service_type		Service	Service_Type xsd:anyURI xsd:string
+term	Shot	C		Shot	A specifc type of Part.	Part
+term	shotLog	P		Shot log	Provides a shot-by-shot description of a MediaResource.	description	Asset	xsd:string
+term	Signing	C		Signing	To signal the presence of Signing for hard of hearing users. The type of Signing (e.g. incursted in or else) or language of Signing can be specified using the appropriate properties.	VideoTrack
+term	SigningFormat	C		Signing format	To provide additional information on the signing format. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	skos:Concept
+term	SignLanguageCode	C		Sign language code	To identify a sign language by its code.	skos:Concept
+term	SportItem	C		Sport item	A SportItem aggregates all information about a sport event.	Item
+term	Staff	C		Staff member.	A member of Staff.	Person
+term	Standard	C		Standard	identifies the technical video standard of a resource, i.e. NTSC or PAL.	Format
+term	start	P		Start time	Start timestamp e.g. the start time for a MediaResource.		Asset	xsd:string
+term	startEditUnits	P		Start time (edit units)	A start time expressed as a number of edit units.	start	Asset	xsd:double
+term	startNormalPlayTime	P		Start time (normal play time)	A start time expressed as a normal play time.	start	Asset	xsd:time
+term	startOffsetEditUnit	P		Startoffset time (edit units)	A start offset time expressed as a number of edit units.	start	Asset	xsd:double
+term	startOffsetNormalPlayTime	P		Startoffset time (edit units)	A start offset time expressed as normal play time.	start	Asset	xsd:double
+term	startOffsetTimecode	P		Start offset time (timecode)	A start offset time expressed as timecode.	start	Asset	xsd:string
+term	startOffsetTimecodeDropFrame	P		Start offset time (timecode, drop frames)	A start offset time expressed as timecode with drop frames.	start	Asset	xsd:string
+term	startTimecode	P		Start time (timecode)	A start time expressed as timecode.	start	Asset	xsd:string
+term	startTimecodeDropFrame	P		Start time (timecode, drop frames)	A start time expressed as timecode with drop frames.	start	Asset	xsd:string
+term	Sticker	C		Sticker	A sticker associated with a Costume.	Picture
+term	Storage_Type	C		Storage type	The type of storage used for the repository. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	skos:Concept
+term	Stream	C		Stream	A continuous stream of bits.	Component
+term	Subject	C		Subject	A term describing the topic covered by the BusinessObject or resource. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	skos:Concept
+term	subtitle	P		Subtitle	A complementary subtitle.	alternativeTitle	Asset	xsd:string
+term	Subtitling	C		Subtitling	To signal the presence of subtitles for translation in alternative languages.	Track
+term	SubtitlingFormat	C		Subtitling format	To define the format of subtitling. subtitling's main use isfor translation. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	DataFormat
+term	suffix	P		Suffix	To provide a suffix associated with a Person name e.g. Jr.		Person	xsd:string
+term	summary	P		Summary	To provide a summary.	description	Asset	xsd:string
+term	synopsis	P		Synopsis	To provide a summary.	description	Asset	xsd:string
+term	tableOfContent	P		Table of content	to provide a table of content.	description	Asset	xsd:string
+term	tag	P		Tag	To provide a list of tags.	description	Asset	xsd:string
+term	TargetAudience	C		Target audience	To identify the audience for which the content was created.	Type
+term	targetAudienceSystem	P		Target audience system	To define the system used to provide a TargetAudience.		AudienceLevel	xsd:string
+term	TargetPlatform	C		Target Platform	To specify a target platform.	skos:Concept
+term	Team	C		Team	To define a Team.	Agent
+term	Template	C		Template	An Essence defined as a Template with all associated technical parameters.	MediaResource
+term	TerritoryCode	C		Territory code	To identify a territory e.g. by its UN code.	skos:Concept
+term	TextAnnotation	C		Text Annotation	A class specific to the annotation of a text or portions of text.	Annotation
+term	TextLine	C		Text line	To provide lines of text extracted from or additional to the resource.	owl:Thing
+term	TextLine_Type	C		Text line type	To define a TextLine type.	skos:Concept
+term	textLineBoxHeight	P		Text line box height.	The height of the text box containing the TextLine.		TextLine	xsd:nonNegativeInteger
+term	textLineBoxTopLeftCornerLineNumber	P		Text line box top left corner Y position.	The coordinates on a vertical axis of the position of the top left corner of the text box containing the TextLine.		TextLine	xsd:nonNegativeInteger
+term	textLineBoxTopLeftCornerPixelNumber	P		Text line box top left Coner X position.	The coordinates on an horizontal axis of the position of the top left corner of the text box containing the TextLine.		TextLine	xsd:nonNegativeInteger
+term	textLineBoxWidth	P		Text line box width.	The width of the text box containing the TextLine.		TextLine	xsd:nonNegativeInteger
+term	textLineContent	P		Text line	To provide the content of a text line.		TextLine	xsd:string
+term	textLineEndEditUnits	P		Text line end in edit units	The end time of a TextLine expressed as a number of edit units.	textLineEndTime	TextLine	xsd:long
+term	textLineEndNormalPlayTime	P		Text line end in normal play time	The end time of a TextLine expressed as a normal play time.	textLineEndTime	TextLine	xsd:time
+term	textLineEndTime	P		Text line end time	The end time point of a TextLine in a Scene.		TextLine	xsd:string
+term	textLineEndTimecode	P		Text line end timecode	The end time of a TextLine expressed as timecode.	textLineEndTime	TextLine	xsd:string
+term	textLineEndTimecodeDropFrame	P		Text line end timecode drop frames	The end time of a TextLine expressed as timecode with drop frames.	textLineEndTime	TextLine	xsd:string
+term	textLineOrder	P		Text line order	The order in which a text line can be found e.g. in a scene.		TextLine	xsd:string
+term	textLineStartEditUnits	P		Text line start in edit units	The start time of a TextLine expressed as a number of edit units.	textLineStartTime	TextLine	xsd:long
+term	textLineStartNormalPlayTime	P		Text line start in normal play time	The start time of a TextLine expressed as a normal play time.	textLineStartTime	TextLine	xsd:time
+term	textLineStartTime	P		Text line start time	The start time point of a TextLine in a Scene.		TextLine	xsd:string
+term	textLineStartTimecode	P		Text line start timecode	The start time of a TextLine expressed as timecode.	textLineStartTime	TextLine	xsd:string
+term	textLineStartTimecodeDropFrame	P		Text line start timecode drop frames	The start time of a TextLine expressed as timecode with drop frames.	textLineStartTime	TextLine	xsd:string
+term	TextUsageType	C		Text usage type	To specify the usage of a text.	skos:Concept
+term	Theme	C		Theme	To define a Theme associated with an Asset.	skos:Concept
+term	Thumbnail	C		Thumbnail	A thumbnail is a low resolution picture that can be associated with EditorialObjects or e.g. MediaResources or Contacts.	Picture
+term	TimecodeTrack	C		Timecode track	A track with timecode information e.g. in MXF.	Track
+term	timeCreated	P		Time created.	the tie of creation of an Asset.		Asset	xsd:string
+term	TimedTextAuthoringTechnique	C		Timed text authoring technique	To define a timed text authoring technique.	Format
+term	TimedTextContentType	C		Timed text content type	To define a type of timed text.	Format
+term	TimedTextSubtitleTargetFormat	C		Timed text subtitle target format	To define a timed text subtitle format.	Format
+term	TimelineTrack	C		Timeline track	To define a time sequence of EditorialObjects.	owl:Thing
+term	TimelineTrack_Type	C		Timeline track type	To specify a type or TimelineTrack.	skos:Concept
+term	timelineTrackDuration	P		TimelineTrack duration	To express the duration of a TimelineTrack.		TimelineTrack	xsd:string
+term	timelineTrackDurationEditUnits	P		Duration (edit unit)	To provide a duration as a number of edit units.	timelineTrackDuration	TimelineTrack	xsd:time
+term	timelineTrackDurationNormalPlayTime	P		Duration (time)	To provide a duration as normal time.	timelineTrackDuration	TimelineTrack	xsd:time
+term	timelineTrackDurationTimecode	P		Duration (timecode)	The duration expressed as a timecode.	timelineTrackDuration	TimelineTrack	xsd:string
+term	timelineTrackDurationTimecodeDropFrame	P		Duration (timecode, drop frame)	The duration expressed as a timecode with drop frames.	timelineTrackDuration	TimelineTrack	xsd:string
+term	title	P		Title	All value of the EBU title status classification scheme (http://www.ebu.ch/metadata/cs/web/ebu_TitleStatusCodeCS_p.xml.htm) are candidates subproperties of the title property as implemented for an example with alternativeTitle.		Asset	xsd:string
+term	Topic	C		Topic	A type subject for use in some contexts. This is provided as free text in an annotation label or as an identifier pointing to a term in a classification scheme.	skos:Concept
+term	totalNumberOfEpisodes	P		Total number of episodes	To provide the total number of episodes in a Series or a Season.		Group	xsd:string
+term	totalNumberOfGroupMembers	P		Total number of Group members	To provide the total number of members in a Group.		Group	xsd:string
+term	Track	C		Track	Audiovisual content can be composed of audio, video and data Tracks (including captioning and subtitling).	MediaResource
+term	Track_Type	C		Track type	To define a type of track.	skos:Concept
+term	trackDefinition	P		Definition	To provide a definition associated to a Track.		Track	xsd:string
+term	trackId	P		Track identifier	An Identifier attributed to a Track.		Track	Identifier xsd:anyURI xsd:string
+term	trackName	P		Track name	To provide name of a Track.		Track	xsd:string
+term	TrackPurpose	C		Track purpose	To define the prupose of a track.	skos:Concept
+term	trackType	P		Track name	Range: string or Track_Type		Track	Track_Type xsd:anyURI xsd:string
+term	translationTitle	P		Translation title	A translated version of the title.	alternativeTitle	EditorialObject MediaResource	xsd:string
+term	TVProgramme	C		TV Programme	A programme for distribution on television channels.	Programme
+term	Type	C		Type	An expression of type in textual form or as a term from a classification scheme.	skos:Concept
+term	UsageRestrictions	C		Usage restrictions	To define a set of UsageRestrictions.	Rights
+term	UsageRights	C		Usage rights	Usage rights associated with content.	Rights
+term	username	P		Username	The username by which a Person is known e.g. when attributing a rating value.		Person	xsd:string
+term	version	P		Version	To provide information on the current version of an EditorialObject.		Asset	xsd:string
+term	Version	C		Version	To specifically identify a Version of an EditorialObject.	EditorialObject
+term	versionTitle	P		Version title	An alternative title specific to a verison of content.	alternativeTitle	Asset	xsd:string
+term	videoBitRate	P		Video bitrate	The video bitrate. To provide the bitrate at which the MediaResource can be played in bits/second. Current bitrate if constant, and average bitrate if variable.	bitRate	MediaResource	xsd:nonNegativeInteger
+term	videoBitRateMax	P		Video bitrate max	The maximum video bitrate.	bitRateMax	MediaResource	xsd:nonNegativeInteger
+term	videoBitRateMode	P		Video bitrate mode	The video bitrate mode.	bitRateMode	MediaResource	xsd:string
+term	VideoCodec	C		Video codec	To provide information about a video codec.	Codec
+term	VideoEncodingFormat	C		Video encoding format	The encoding format of the video.	EncodingFormat
+term	videoEncodingLevel	P		Video encoding level	The encoding level as defined in specifications.	encodingLevel	MediaResource	xsd:string
+term	videoEncodingProfile	P		Video encoding profile	The encoding level as defined in specifications.	encodingProfile	MediaResource	xsd:string
+term	VideoFormat	C		Video format	To define an VideoFormat.	Format
+term	VideoStream	C		Video stream	A decodable video stream of bits.	Stream
+term	VideoTrack	C		Video track	A specialisation of Track for Video to provide a link to specific data properties such as frameRate, etc. Signing is another possible example of video track. Specific VideoTracks such as Signing can be defined as sub VideoTracks.. In advanced systems, different VideoTracks can be used to provide e.g. different viewing angles.	Track
+term	width	P		Width	The width of e.g. a video frame typically expressed as a number of pixels, or picture/image in millimeters.		MediaResource	xsd:integer
+term	widthUnit	P		Width unit	The unit used to measure a width e.g. in pixels or number of lines or millimeters or else.		MediaResource	xsd:string
+term	wordCount	P		Word count	The number of words contained in a document.		Document	xsd:integer
+term	workingTitle	P		Working title	A title used while content is not complete.	alternativeTitle	Asset	xsd:string
+term	WrappingType	C		Wrapping type	To define a type of wrapping.	skos:Concept

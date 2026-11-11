@@ -1,0 +1,20 @@
+term	context	P			provides extra context for the error, eg, http response, an XPointer/XPath information, or simply the URI that created the error		PGClass
+term	copy	P			identifies the resource (i.e., pattern) whose properties and values should be copied to replace the current triple (retaining the subject of the triple).
+term	DocumentError	C			error condition; to be used when the document fails to be fully processed as a result of non-conformant host language markup	Error
+term	Error	C			is the class for all error conditions	PGClass
+term	Info	C			is the class for all informations	PGClass
+term	Pattern	C			Class to identify an (RDF) resource whose properties are to be copied to another resource
+term	PGClass	C			is the top level class of the hierarchy
+term	prefix	P			defines a prefix mapping for a URI; the value is supposed to be a NMTOKEN		PrefixMapping
+term	PrefixMapping	C			is the class for prefix mappings	PrefixOrTermMapping
+term	PrefixOrTermMapping	C			is the top level class for prefix or term mappings
+term	PrefixRedefinition	C			warning; to be used when a prefix, either from the initial context or inherited from an ancestor node, is redefined in an element	Warning
+term	term	P			defines a term mapping for a URI; the value is supposed to be a NMTOKEN		TermMapping
+term	TermMapping	C			is the class for term mappings	PrefixOrTermMapping
+term	UnresolvedCURIE	C			warning; to be used when a CURIE prefix fails to be resolved	Warning
+term	UnresolvedTerm	C			warning; to be used when a Term fails to be resolved	Warning
+term	uri	P			defines the URI for either a prefix or a term mapping; the value is supposed to be an absolute URI		PrefixOrTermMapping
+term	usesVocabulary	P			provides a relationship between the host document and a vocabulary defined using the @vocab facility of RDFa1.1
+term	VocabReferenceError	C			warning; to be used when the value of a @vocab attribute cannot be dereferenced, hence the vocabulary expansion cannot be completed	Warning
+term	vocabulary	P			defines an absolute URI to be used as a default vocabulary; the value is can be any string; for documentation purposes it is advised to use the string 'true' or 'True'.
+term	Warning	C			is the class for all warnings	PGClass

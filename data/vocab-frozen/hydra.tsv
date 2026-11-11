@@ -1,0 +1,68 @@
+term	apiDocumentation	P		apiDocumentation	A link to the API documentation		Resource	ApiDocumentation
+term	ApiDocumentation	C		ApiDocumentation	The Hydra API documentation class	Resource
+term	BaseUriSource	C		Base Uri source	Provides a base abstract for base Uri source for Iri template resolution.	Resource
+term	BasicRepresentation	I		BasicRepresentation	A representation that serializes just the lexical form of a variable value, but omits language and type information.
+term	Class	C		Hydra Class	The class of Hydra classes.	rdfs:Class
+term	closedSet	P		closed set	Determines whether the provided set of header values is closed or not.		HeaderSpecification	xsd:boolean
+term	collection	P		collection	Collections somehow related to this resource.			Collection
+term	Collection	C		Collection	A collection holding references to a number of related resources.	Resource
+term	description	P		description	A description.	rdfs:comment	ApiDocumentation Class Link Operation Status SupportedProperty TemplatedLink	xsd:string
+term	entrypoint	P		entrypoint	A link to main entry point of the Web API		ApiDocumentation	Resource
+term	Error	C		Error	A runtime error, used to report information beyond the returned status code.	Status
+term	expects	P		expects	The information expected by the Web API.		Operation	Class Resource rdfs:Class rdfs:Resource
+term	expectsHeader	P		expects header	Specification of the header expected by the operation.		Operation	HeaderSpecification xsd:string
+term	ExplicitRepresentation	I		ExplicitRepresentation	A representation that serializes a variable value including its language and type information and thus differentiating between IRIs and literals.
+term	extension	P		extension	Hint on what kind of extensions are in use.		ApiDocumentation
+term	first	P		first	The first resource of an interlinked set of resources.		Resource	Resource
+term	freetextQuery	P		freetext query	A property representing a freetext query.		Resource	xsd:string
+term	headerName	P		header name	Name of the header.		HeaderSpecification	xsd:string
+term	HeaderSpecification	C		Header specification	Specifies a possible either expected or returned header values	Resource
+term	IriTemplate	I		IRI Template	The class of IRI templates.
+term	IriTemplateMapping	I		IriTemplateMapping	A mapping from an IRI template variable to a property.
+term	last	P		last	The last resource of an interlinked set of resources.		Resource	Resource
+term	limit	P		take	Instructs to limit set only to N elements.			xsd:nonNegativeInteger
+term	Link	C		Link	The class of properties representing links.	Resource rdf:Property
+term	LinkContext	I		Link context	States that the link's context IRI, as defined in RFC 5988, should be used as the base Uri
+term	manages	P		manages	This predicate is left for compatibility purposes and hydra:memberAssertion should be used instead.	memberAssertion
+term	mapping	P		mapping	A variable-to-property mapping of the IRI template.		IriTemplate	IriTemplateMapping
+term	member	P		member	A member of the collection		Collection
+term	memberAssertion	P		member assertion	Semantics of each member provided by the collection.		Collection
+term	method	P		method	The HTTP method.		Operation	xsd:string
+term	next	P		next	The resource following the current instance in an interlinked set of resources.		Resource	Resource
+term	object	P		object	The object.
+term	offset	P		skip	Instructs to skip N elements of the set.			xsd:nonNegativeInteger
+term	operation	P		operation	An operation supported by the Hydra resource		Resource	Operation
+term	Operation	I		Operation	An operation.
+term	pageIndex	P		page index	Instructs to provide a specific page of the collection at a given index.	pageReference		xsd:nonNegativeInteger
+term	pageReference	P		page reference	Instructs to provide a specific page reference of the collection.
+term	PartialCollectionView	C		PartialCollectionView	A PartialCollectionView describes a partial view of a Collection. Multiple PartialCollectionViews can be connected with the the next/previous properties to allow a client to retrieve all members of the collection.	Resource
+term	possibleStatus	P		possible status	A status that might be returned by the Web API (other statuses should be expected and properly handled as well)		ApiDocumentation Operation	Status
+term	possibleValue	P		possible header value	Possible value of the header.		HeaderSpecification	xsd:string
+term	previous	P		previous	The resource preceding the current instance in an interlinked set of resources.		Resource	Resource
+term	property	P		property	A property		IriTemplateMapping SupportedProperty	rdf:Property
+term	readable	P		readable	True if the client can retrieve the property's value, false otherwise.		SupportedProperty	xsd:boolean
+term	required	P		required	True if the property is required, false otherwise.		IriTemplateMapping SupportedProperty	xsd:boolean
+term	resolveRelativeUsing	P		relative Uri resolution			IriTemplate	BaseUriSource
+term	Resource	I		Hydra Resource	The class of dereferenceable resources by means a client can attempt to dereference; however, the received responses should still be verified.
+term	returns	P		returns	The information returned by the Web API on success		Operation	Class Resource rdfs:Class rdfs:Resource
+term	returnsHeader	P		returns header	Name of the header returned by the operation.		Operation	HeaderSpecification xsd:string
+term	Rfc3986	I		RFC 3986 based	States that the base Uri should be established using RFC 3986 reference resolution algorithm specified in section 5.
+term	Rfc6570Template	C		RFC6570 IRI template	An IRI template as defined by RFC6570.			xsd:string
+term	search	P		search	A IRI template that can be used to query a collection.		Resource	IriTemplate
+term	Status	I		Status code description	Additional information about a status code that might be returned.
+term	statusCode	P		status code	The HTTP status code. Please note it may happen this value will be different to actual status code received.		Status	xsd:integer
+term	subject	P		subject	The subject.
+term	supportedClass	P		supported classes	A class known to be supported by the Web API		ApiDocumentation	rdfs:Class
+term	supportedOperation	P		supported operation	An operation supported by instances of the specific Hydra class, or the target of the Hydra link, or IRI template.		Class Link SupportedProperty TemplatedLink rdfs:Class	Operation
+term	supportedProperty	P		supported properties	The properties known to be supported by a Hydra class		rdfs:Class	SupportedProperty
+term	SupportedProperty	I		Supported Property	A property known to be supported by a Hydra class.
+term	template	P		template	A templated string with placeholders. The literal's datatype indicates the template syntax; if not specified, hydra:Rfc6570Template is assumed.		IriTemplate	Rfc6570Template
+term	TemplatedLink	C		Templated Link	A templated link.	Resource rdf:Property
+term	title	P		title	A title, often used along with a description.	rdfs:label	ApiDocumentation Class Link Operation Status SupportedProperty TemplatedLink	xsd:string
+term	totalItems	P		total items	The total number of items referenced by a collection.		Collection	xsd:integer
+term	variable	P		variable	An IRI template variable		IriTemplateMapping	xsd:string
+term	variableRepresentation	P		variable representation	The representation format to use when expanding the IRI template.		IriTemplateMapping	VariableRepresentation
+term	VariableRepresentation	I		VariableRepresentation	A representation specifies how to serialize variable values into strings.
+term	view	I		view	A specific view of a resource.
+term	writable	P		writable	True if the client can change the property's value, false otherwise.		SupportedProperty	xsd:boolean
+term	writeable	P		writable	This property is left for compatibility purposes and hydra:writable should be used instead.	writable

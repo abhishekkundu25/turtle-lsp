@@ -1,0 +1,41 @@
+term	broader	P		broader	The property of having a broader, more generic concept.
+term	Character	C		character	An abstract character as defined by the Unicode Standard, Version 5, in Chapter 3.4.
+term	characterRadical	P		translation	The property of a CJK character being conventionally associated with a CJK character radical.		Character	CJKRadical
+term	CJKRadical	C		radical	A CJK character radical.
+term	containsCharacter	P		contains character	The property of a term containing a specific character.		Term	Character
+term	evokes	P		evokes	The property of conceptually evoking some object.
+term	GeographicRegion	C		geographic region	Geographic regions on Earth or elsewhere.
+term	hasCharacterComponent	P		character component	The property of a character being composed of another character.		Character	Character
+term	hasMember	P		has member	The property of having a member.
+term	inScript	P		in script	The property of a document being written in a specific script, or a language being written or having being written in a specific script by a considerable group of language users.			Script
+term	involvedIn	P		involved in	The property of being involved in something, e.g. for semantic participants' involvement in a semantic frame.
+term	involves	P		involves	The property of involving some entity, e.g. for semantic participants involved in a semantic frame.
+term	isFocusOf	P		is focus of	
+term	iso15924Alphacode	P		ISO 15924 alphabetic code			Script
+term	iso639P1Code	P		ISO 639-1 code			Language
+term	iso639P2BCode	P		ISO 639-2 Bibliographical code			Language
+term	iso639P2TCode	P		ISO 639-2 Terminological code			Language
+term	iso639P3Code	P		ISO 639-3 code			Language
+term	iso639P5Code	P		ISO 639-5 code			Language
+term	label	P		has label	If C lvont:Label L and L skosxl:literalForm V, then X rdfs:label V.	representedBy		skosxl:Label
+term	language	P		in language	The property of a resource being mainly encoded in a specific language.	dc11:language dcterms:language		Language
+term	Language	C		language	Groups of human language variants that are or were spoken, written, or signed at some point in time.	dcterms:LinguisticSystem
+term	lexicalCategory	P		lexical category	A lexical category that a term can be used in.
+term	marcCode	P		MARC 21 / USMARC code			Language
+term	means	P		means	the semiotic property of a natural language word meaning something, i.e. a relationship between words and resources that they represent (or represented) to a considerable number of humans	represents
+term	memberOf	P		member of	The property of being a member of a group.
+term	narrower	P		narrower	The property of having a narrower, less generic concept.
+term	nearlySameAs	P		nearly same as	The property of being at least nearly the same as something else. For instance, the geographical area comprising the island of Malta is nearly the same as the island of Malta.	somewhatSameAs
+term	nonRadicalStrokes	P		non-radical strokes	The property of a character conventionally being written with a specific number strokes, excluding the strokes of its radical.		Character	xsd:nonNegativeInteger
+term	representedBy	P		represented by	
+term	represents	P		represents	the semiotic property of semantically representing something, i.e. a relationship between words and other signs and resources that they represent (or represented) to a considerable number of humans
+term	Script	C		script	A writing system considered abstractly, i.e. independent of language-specific variations.
+term	scriptFor	P		script for	The property of a script being used for a particular language by a considerable of language users (but not necessarily the majority of all language users).		Script	Language
+term	somewhatSameAs	P		somewhat same as	The property of being at least somewhat the same as something else. For instance, the City of Los Angeles is somewhat the same as the Greater Los Angeles area.
+term	strength	P		strength	The strength of an rdf:Statement, given is a value in [0,1].		rdf:Statement
+term	strictlySameAs	P		same as	The property of genuine identity in the Leibnizian sense.	nearlySameAs
+term	Term	C		term	A term in a specific language.
+term	translation	P		translation	translational equivalence between words and other signs and resources that they represent to or represented to a considerable number of humans
+term	usedIn	P		used in	The property of a language or writing system being used somewhat extensively in a particular geographical region at some point in time.			GeographicRegion
+term	usesScript	P		uses script	The property of a language being written or having being written in a specific script by a considerable group of language users.			Script
+term	variant	P		variant	The property of being a variant of another resource.

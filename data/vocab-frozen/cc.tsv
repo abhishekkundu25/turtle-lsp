@@ -1,0 +1,29 @@
+term	Attribution	I		Attribution	credit be given to copyright holder and/or author
+term	attributionName	P					Work	rdfs:Literal
+term	attributionURL	P					Work	rdfs:Resource
+term	CommercialUse	I		Commercial Use	exercising rights for commercial purposes
+term	Copyleft	I		Copyleft	derivative and combined works must be licensed under specified terms, similar to those on the original work
+term	deprecatedOn	P		deprecated on			License	<http://www.w3.org/2001/XMLSchema-datatypes#date>
+term	DerivativeWorks	I		Derivative Works	distribution of derivative works
+term	Distribution	I		Distribution	distribution, public display, and publicly performance
+term	HighIncomeNationUse	I		High Income Nation Use	use in a non-developing country
+term	jurisdiction	P		jurisdiction			License	Jurisdiction
+term	Jurisdiction	C		Jurisdiction	the legal jurisdiction of a license
+term	legalcode	P					License	rdfs:Resource
+term	LesserCopyleft	I		Lesser Copyleft	derivative works must be licensed under specified terms, with at least the same conditions as the original work; combinations with the work may be licensed under different terms
+term	license	P		has license		dcterms:license	Work	License
+term	License	C		License	a set of requests/permissions to users of a Work, e.g. a copyright license, the public domain, information for distributors	dcterms:LicenseDocument
+term	morePermissions	P				dcterms:relation	Work	rdfs:Resource
+term	Notice	I		Notice	copyright and license notices be kept intact
+term	Permission	C		Permission	an action that may or may not be allowed or desired
+term	permits	P		permits			License	Permission
+term	Prohibition	C		Prohibition	something you may be asked not to do
+term	prohibits	P		prohibits			License	Prohibition
+term	Reproduction	I		Reproduction	making multiple copies
+term	Requirement	C		Requirement	an action that may or may not be requested of you
+term	requires	P		requires			License	Requirement
+term	ShareAlike	I		Share Alike	derivative works be licensed under the same terms or compatible terms as the original work
+term	Sharing	I		Sharing	permits commercial derivatives, but only non-commercial distribution
+term	SourceCode	I		Source Code	source code (the preferred form for making modifications) must be provided when exercising some rights granted by the license.
+term	useGuidelines	P				dcterms:relation	Work	rdfs:Resource
+term	Work	C		Work	a potentially copyrightable work

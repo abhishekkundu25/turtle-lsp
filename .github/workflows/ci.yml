@@ -304,6 +304,25 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             editors/vscode/package-lock.json
+      - run: npm ci
+        timeout-minutes: 5
+      # data/vocab.tsv must be what the pinned sources of data/vocab-sources.tsv
+      # and the corrections give. The downloads are cached under the manifest's
+      # hash, so a run that does not change it downloads nothing; the nightly
+      # run downloads every source again (-f), so a publisher's change to an
+      # unversioned file fails it first.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/vocab-sources
+          key: vocab-sources-${{ hashFiles('data/vocab-sources.tsv') }}
+      - name: data/vocab.tsv is what its pinned sources give
+        shell: bash
+        timeout-minutes: 10
+        env:
+          FORCE: ${{ github.event_name == 'schedule' && '-f' || '' }}
+        run: |
+          # One retry: w3.org and the other hosts throttle runners now and then.
+          tools/check-vocab.sh $FORCE || { sleep 15; tools/check-vocab.sh $FORCE; }
       # The extension ships only its runtime dependencies; dev tools stay local.
       - working-directory: editors/vscode
         run: npm audit --omit=dev --audit-level=moderate

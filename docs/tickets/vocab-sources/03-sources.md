@@ -30,7 +30,7 @@ the comment cap; the aliases in the server; CI.
 
 **Blocked by:** 01, 02.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The manifest has 81 vocabularies: the 22 fetched and 59 frozen of the spec. `geof` and `geor` have no row. Every fetched URL is `https` and names a release, tag, commit or versioned file where the publisher has one. Every row has a licence. A fetched row that cannot be fetched or parsed becomes a frozen row plus corrections, with the reason under Departures in the README.
 - [ ] The frozen extracts are cut from the committed list by a script, not by hand. For every frozen vocabulary, the regenerated terms equal today's in every column but the comment, and each changed comment is the old one cut by the new rule. The comparison's output is in the report.

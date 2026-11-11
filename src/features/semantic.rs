@@ -356,7 +356,8 @@ fn meta_type(t: &str) -> Option<u32> {
     }
 }
 
-/// Built-in datatypes: XSD's, rdf's literal types and rdfs:Literal.
+/// Built-in datatypes: XSD's, rdf's literal types, rdfs:Literal, and the two
+/// the OWL 2 datatype map adds, owl:real and owl:rational.
 fn is_datatype(iri: &str) -> bool {
     if let Some(local) = iri.strip_prefix(XSD) {
         return local.chars().next().is_some_and(char::is_alphabetic)
@@ -369,6 +370,7 @@ fn is_datatype(iri: &str) -> bool {
         iri.strip_prefix(RDF),
         Some("langString" | "dirLangString" | "HTML" | "XMLLiteral" | "JSON" | "PlainLiteral")
     ) || iri.strip_prefix(RDFS) == Some("Literal")
+        || matches!(iri.strip_prefix(OWL), Some("real" | "rational"))
 }
 
 /// What `iri` denotes, from the workspace and the vocabularies.
@@ -530,6 +532,23 @@ mod tests {
             find("<http://www.w3.org/2001/XMLSchema#int>"),
             [(DATATYPE, DEFAULT_LIBRARY)]
         );
+    }
+
+    #[test]
+    fn owl_real_and_rational_are_datatypes() {
+        let text = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                    <http://example.org/ns#size> rdfs:range owl:real .\n\
+                    <http://example.org/ns#ratio> rdfs:range owl:rational .\n";
+        let t = tokens(text, Encoding::Utf16);
+        for local in ["real", "rational"] {
+            let found: Vec<_> = t
+                .iter()
+                .filter(|x| x.0 == local)
+                .map(|x| (x.1, x.2))
+                .collect();
+            assert_eq!(found, [(DATATYPE, DEFAULT_LIBRARY)], "owl:{local}");
+        }
     }
 
     #[test]

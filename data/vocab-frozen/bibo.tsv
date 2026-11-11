@@ -1,0 +1,128 @@
+term	abstract	P		abstract	A summary of the resource.		rdfs:Resource	rdfs:Literal
+term	AcademicArticle	C		Academic Article	A scholarly academic article, typically published in a journal.	Article
+term	affirmedBy	P			A legal decision that affirms a ruling.	subsequentLegalDecision	LegalDecision	LegalDecision
+term	annotates	P		annotates	Critical or explanatory note for a Document.	dcterms:relation	Note	rdfs:Resource
+term	argued	P		date argued	The date on which a legal case is argued before a court. Date is of format xsd:date		LegalDocument	rdfs:Literal
+term	Article	C		Article	A written composition in prose, usually nonfiction, on a specific topic, forming an independent part of a book or other publication, as a newspaper or magazine.	Document
+term	asin	P				identifier		rdfs:Literal
+term	AudioDocument	C		audio document	An audio document; aka record.	Document
+term	AudioVisualDocument	C		audio-visual document	An audio-visual document; film, video, and so forth.	Document
+term	authorList	P		list of authors	An ordered list of authors. Normally, this list is seen as a priority list that order authors by importance.	contributorList	Document
+term	bdarcus	I			
+term	Bill	C		Bill	Draft legislation presented for discussion to a legal body.	Legislation
+term	Book	C		Book	A written or printed work of fiction or nonfiction, usually on sheets of paper fastened or bound together within covers.	Document
+term	BookSection	C		Book Section	A section of a book.	DocumentPart
+term	Brief	C		Brief	A written argument submitted to a court.	LegalCaseDocument
+term	chapter	P		chapter	An chapter number	locator	BookSection	rdfs:Literal
+term	Chapter	C		Chapter	A chapter of a book.	BookSection
+term	citedBy	P		cited by	Relates a document to another document that cites the first document.		Document	Document
+term	cites	P		cites	Relates a document to another document that is cited by the first document as reference, comment, review, quotation or for another purpose.	dcterms:references	Document	Document
+term	Code	C		Code	A collection of statutes.	Periodical
+term	coden	P				identifier		rdfs:Literal
+term	CollectedDocument	C		Collected Document	A document that simultaneously contains other documents.	Document
+term	Collection	C		Collection	A collection of Documents or Collections
+term	Conference	C		Conference	A meeting for consultation or discussion.	<http://purl.org/NET/c4dm/event.owl#Event>
+term	content	P	D	content	This property is for a plain-text rendering of the content of a Document. While the plain-text content of an entire document could be described by this property.		Document	rdfs:Literal
+term	contributorList	P		list of contributors	An ordered list of contributors. Normally, this list is seen as a priority list that order contributors by importance.		Document
+term	court	P		court	A court associated with a legal document; for example, that which issues a decision.		LegalDocument	foaf:Organization
+term	CourtReporter	C		Court Reporter	A collection of legal cases.	Periodical
+term	degree	P		degree	The thesis degree.		Thesis	ThesisDegree
+term	director	P		director	A Film director.	dcterms:contributor	AudioVisualDocument	foaf:Agent
+term	distributor	P		distributor	Distributor of a document or a collection of documents.			foaf:Agent
+term	Document	C		Document	A document (noun) is a bounded physical representation of body of information designed with the capacity (and usually intent) to communicate. A document may manifest symbolic, diagrammatic or sensory-representational information.
+term	DocumentPart	C		document part	a distinct part of a larger document or collected document.	Document
+term	DocumentStatus	C		Document Status	The status of the publication of a document.
+term	doi	P				identifier		rdfs:Literal
+term	eanucc13	P				identifier		rdfs:Literal
+term	EditedBook	C		Edited Book	An edited book.	CollectedDocument
+term	edition	P		edition	The name defining a special edition of a document. Normally its a literal value composed of a version number and words.		Document	rdfs:Literal
+term	editor	P		editor	A person having managerial and sometimes policy-making responsibility for the editorial part of a publishing firm or of a newspaper, magazine, or other publication.	dcterms:contributor		foaf:Agent
+term	editorList	P		list of editors	An ordered list of editors. Normally, this list is seen as a priority list that order editors by importance.	contributorList	Document
+term	eissn	P				identifier	Collection	rdfs:Literal
+term	Email	C		EMail	A written communication addressed to a person or organization and transmitted electronically.	PersonalCommunicationDocument
+term	Event	C			
+term	Excerpt	C		Excerpt	A passage selected from a larger work.	DocumentPart
+term	fgiasson	I			
+term	Film	C		Film	aka movie.	AudioVisualDocument
+term	gtin14	P				identifier		rdfs:Literal
+term	handle	P				identifier		rdfs:Literal
+term	Hearing	C		Hearing	An instance or a session in which testimony and arguments are presented, esp. before an official, as a judge in a lawsuit.	<http://purl.org/NET/c4dm/event.owl#Event>
+term	identifier	P						rdfs:Literal
+term	Image	C		Image	A document that presents visual or diagrammatic information.	Document
+term	Interview	C		Interview	A formalized discussion between two or more people.	<http://purl.org/NET/c4dm/event.owl#Event>
+term	interviewee	P		interviewee	An agent that is interviewed by another agent.	dcterms:contributor	foaf:Agent	foaf:Agent
+term	interviewer	P		interviewer	An agent that interview another agent.	dcterms:contributor	foaf:Agent	foaf:Agent
+term	isbn	P				identifier
+term	isbn10	P				isbn		rdfs:Literal
+term	isbn13	P				isbn		rdfs:Literal
+term	issn	P				identifier	Collection	rdfs:Literal
+term	issue	P		issue	An issue number	locator	Issue	rdfs:Literal
+term	Issue	C		Issue	something that is printed or published and distributed, esp. a given number of a periodical	CollectedDocument
+term	issuer	P		issuer	An entity responsible for issuing often informally published documents such as press releases, reports, etc.	dcterms:publisher		foaf:Agent
+term	Journal	C		Journal	A periodical of scholarly journal Articles.	Periodical
+term	lccn	P				identifier		rdfs:Literal
+term	LegalCaseDocument	C		Legal Case Document	A document accompanying a legal case.	LegalDocument
+term	LegalDecision	C		Decision	A document containing an authoritative determination (as a decree or judgment) made after consideration of facts or law.	LegalCaseDocument
+term	LegalDocument	C		Legal Document	A legal document; for example, a court decision, a brief, and so forth.	Document
+term	Legislation	C		Legislation	A legal document proposing or enacting a law or a group of laws.	LegalDocument
+term	Letter	C		Letter	A written or printed communication addressed to a person or organization and usually transmitted by mail.	PersonalCommunicationDocument
+term	locator	P		locator	A description (often numeric) that locates an item within a containing document or collection.		Document	rdfs:Literal
+term	Magazine	C		Magazine	A periodical of magazine Articles. A magazine is a publication that is issued periodically, usually bound in a paper cover, and typically contains essays, stories, poems, etc., by many writers, and often photographs and drawings, frequently specializing in a particular subject or area, as hobbies, news, or sports.	Periodical
+term	Manual	C		Manual	A small reference book, especially one giving instructions.	Document
+term	Manuscript	C		Manuscript	An unpublished Document, which may also be submitted to a publisher for publication.	Document
+term	Map	C		Map	A graphical depiction of geographic features.	Image
+term	MultiVolumeBook	C		Multivolume Book	A loose, thematic, collection of Documents, often Books.	Collection
+term	Newspaper	C		Newspaper	A periodical of documents, usually issued daily or weekly, containing current news, editorials, feature articles, and usually advertising.	Periodical
+term	Note	C		Note	Notes or annotations about a resource.	Document
+term	number	P		number	A generic item or document number. Not to be confused with issue number.		Document	rdfs:Literal
+term	numPages	P		number of pages	The number of pages contained in a document		Document	rdfs:Literal
+term	numVolumes	P		number of volumes	The number of volumes contained in a collection of documents (usually a series, periodical, etc.).		Collection	rdfs:Literal
+term	oclcnum	P				identifier		rdfs:Literal
+term	organizer	P		organizer	The organizer of an event; includes conference organizers, but also government agencies or other bodies that are responsible for conducting hearings.		<http://purl.org/NET/c4dm/event.owl#Event>	foaf:Agent
+term	owner	P		owner	Owner of a document or a collection of documents.			foaf:Agent
+term	pageEnd	P		page end	Ending page number within a continuous page range.	locator	Document	rdfs:Literal
+term	pages	P		pages	A string of non-contiguous page spans that locate a Document within a Collection. Example: 23-25, 34, 54-56. For continuous page ranges, use the pageStart and pageEnd properties.	locator	Document	rdfs:Literal
+term	pageStart	P		page start	Starting page number within a continuous page range.	locator	Document	rdfs:Literal
+term	Patent	C		Patent	A document describing the exclusive right granted by a government to an inventor to manufacture, use, or sell an invention for a certain number of years.	Document
+term	Performance	C		Performance	A public performance.	<http://purl.org/NET/c4dm/event.owl#Event>
+term	performer	P		performer		dcterms:contributor	Performance	foaf:Agent
+term	Periodical	C		Periodical	A group of related documents issued at regular intervals.	Collection
+term	PersonalCommunication	C		Personal Communication	A communication between an agent and one or more specific recipients.	<http://purl.org/NET/c4dm/event.owl#Event>
+term	PersonalCommunicationDocument	C		Personal Communication Document	A personal communication manifested in some document.	Document
+term	pmid	P				identifier		rdfs:Literal
+term	prefixName	P		prefix name	The prefix of a name		foaf:Agent	rdfs:Literal
+term	presentedAt	P		presented at	Relates a document to an event; for example, a paper to a conference.	<http://purl.org/NET/c4dm/event.owl#produced_in>	Document	Event
+term	presents	P		presents	Relates an event to associated documents; for example, conference to a paper.	<http://purl.org/NET/c4dm/event.owl#product>	Event	Document
+term	Proceedings	C		Proceedings	A compilation of documents published from an event, such as a conference.	Book
+term	producer	P		producer	Producer of a document or a collection of documents.			foaf:Agent
+term	Quote	C		Quote	An excerpted collection of words.	Excerpt
+term	recipient	P		recipient	An agent that receives a communication document.		PersonalCommunicationDocument	foaf:Agent
+term	ReferenceSource	C		Reference Source	A document that presents authoritative reference information, such as a dictionary or encylopedia .	Document
+term	Report	C		Report	A document describing an account or statement describing in detail an event, situation, or the like, usually as the result of observation, inquiry, etc..	Document
+term	reproducedIn	P			The resource in which another resource is reproduced.	dcterms:isPartOf	Document	Document
+term	reversedBy	P			A legal decision that reverses a ruling.	subsequentLegalDecision	LegalDecision	LegalDecision
+term	reviewOf	P		review of	Relates a review document to a reviewed thing (resource, item, etc.).	dcterms:relation	Document	rdfs:Resource
+term	section	P		section	A section number	locator	Document	rdfs:Literal
+term	Series	C		Series	A loose, thematic, collection of Documents, often Books.	Collection
+term	shortDescription	P					Document	rdfs:Literal
+term	shortTitle	P		short title	The abbreviation of a title.		Document	rdfs:Literal
+term	sici	P				identifier		rdfs:Literal
+term	Slide	C		Slide	A slide in a slideshow	DocumentPart
+term	Slideshow	C		Slideshow	A presentation of a series of slides, usually presented in front of an audience with written text and images.	Document
+term	Specification	C		Specification	A document describing a specification.	Document
+term	Standard	C		Standard	A document describing a standard: a specification organized through a standards body.	Specification
+term	status	P		status	The publication status of (typically academic) content.		Document	DocumentStatus
+term	Statute	C		Statute	A bill enacted into law.	Legislation
+term	subsequentLegalDecision	P			A legal decision on appeal that takes action on a case (affirming it, reversing it, etc.).	dcterms:isReferencedBy	LegalDecision	LegalDecision
+term	suffixName	P		suffix name	The suffix of a name		foaf:Agent	rdfs:Literal
+term	Thesis	C		Thesis	A document created to summarize research findings associated with the completion of an academic degree.	Document
+term	ThesisDegree	C		Thesis degree	The academic degree of a Thesis
+term	transcriptOf	P		transcript of	Relates a document to some transcribed original.	dcterms:relation	Document	rdfs:Resource
+term	translationOf	P		translation of	Relates a translated document to the original document.	dcterms:isVersionOf	Document	Document
+term	translator	P		translator	A person who translates written document from one language to another.	dcterms:contributor		foaf:Agent
+term	upc	P				identifier		rdfs:Literal
+term	uri	P		uri	Universal Resource Identifier of a document	identifier		rdfs:Literal
+term	volume	P		volume	A volume number	locator	Document	rdfs:Literal
+term	Webpage	C		Webpage	A web page is an online document available (at least initially) on the world wide web. A web page is written first and foremost to appear on the web, as distinct from other online resources such as books, manuscripts or audio documents which use the web primarily as a distribution mechanism alongside other more traditional methods such as print.	Document
+term	Website	C		Website	A group of Webpages accessible on the Web.	Collection
+term	Workshop	C		Workshop	A seminar, discussion group, or the like, that emphasizes zxchange of ideas and the demonstration and application of techniques, skills, etc.	<http://purl.org/NET/c4dm/event.owl#Event>

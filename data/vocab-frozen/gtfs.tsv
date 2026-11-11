@@ -1,0 +1,102 @@
+term	agency	P		agency	links to an agency that this is part of.			Agency
+term	Agency	C		Agency	An agency operates a certain schedule based transport mode	foaf:Agent
+term	arrivalTime	P		Arrival time	Check the original specification for special cases		StopTime	xsd:duration
+term	BeforeBoarding	I		Before Boarding	Ticket should be bought before boarding
+term	bikesAllowed	P		Bikes allowed				xsd:boolean
+term	block	P		Block	Identifies the block to which the trip within this feed belongs. A block consists of two or more sequential trips made using the same vehicle, where a passenger can transfer from one trip to the next just by staying in the vehicle.		Trip	xsd:nonNegativeInteger
+term	Bus	I		Bus	Used for short- and long-distance bus routes.
+term	CableCar	I		Cable car	Used for street-level cable cars where the cable runs beneath the car.
+term	CalendarDateRule	C		Calendar date rule	Defines service availability for a specific date	ServiceRule
+term	CalendarRule	C		Calendar rule	Defines on which days of the week for a certain period the service is available.	ServiceRule
+term	CheckParentStation	I		Check the parent station	Check the (parent) station for accessibility information.
+term	code	P		Stop Code	A gtfs:code predicate defines the stop code for a stop.
+term	color	P		Color	A 6 character hexidecimal color (without #)			xsd:string
+term	comment	P		Mapping comment	A comment on the relation between the RDFS ontology and the CSV specification.	rdfs:comment
+term	dateAddition	P		Date Addition	A boolean whether to add (true) or remove (false) a date		CalendarDateRule	xsd:boolean
+term	departureTime	P		Departure time	Check the original specification for special cases		StopTime	xsd:duration
+term	destinationStop	P		Destination Stop	Link to gtfs:Stop to go to			Stop
+term	destinationZone	P		Destination Zone	La zona de destino donde una clase tarifaria se aplica
+term	direction	P		Direction	A binary property to indicate the direction the trip is going (e.g., outbound/inbound, center/airport)			xsd:boolean
+term	distanceTraveled	P		Distance Traveled	Positions a stop as a distance from the first shape point. It represents a real distance traveled along the route in units such as feet or kilometers. This information allows the trip planner to determine how much of the shape to draw when showing part of a trip on the map. The values used for gtfs:distanceTraveled must increase along with gtfs:stopSequence: they cannot be used to show reverse travel along a route.		Shape StopTime	xsd:nonNegativeInteger
+term	dropOffType	P		Drop off type	Which type of drop off			DropOffType
+term	DropOffType	C		Drop Off Type	Instances of this class can be used by gtfs:dropOffType
+term	endTime	P		End Time	Indicates the time at which service changes to a different frequency (or ceases) at the first stop in the trip.		Frequency	xsd:string
+term	EnsuredTransfer	I		Ensured Transfer	This is a timed transfer point between two routes. The departing vehicle is expected to wait for the arriving one, with sufficient time for a passenger to transfer between routes.
+term	FareClass	C		Fare Class	A class describing how the fare is calculated.	schema:PriceSpecification
+term	FareRule	C		Fare Rule	A rule which binds a gtfs:FareClass to a part of the network.
+term	fareUrl	P		fare URL	The URL of a web page that allows a rider to purchase tickets or other fare instruments for that agency online	foaf:page	Agency
+term	Feed	C		GTFS Feed	An instance of a gtfs:Feed is a linked GTFS feed that complies to this specification.	dcat:Dataset
+term	Ferry	I		Ferry	Used for short- and long-distance boat service.
+term	Frequency	C		Frequency	An alternative to defining departures and arrivals as StopTimes: define frequencies for transit vehicle
+term	friday	P		Friday	Service is available on Friday			xsd:boolean
+term	Funicular	I		Funicular	Any rail system designed for steep inclines.
+term	Gondola	I		Gondola, Suspended cable car	Gondola, Suspended cable car. Typically used for aerial cable cars where the car is suspended from the cable.
+term	headsign	P		Headsign	The gtfs:headsign property contains the text that appears on a sign that identifies the trip's destination to passengers.			xsd:string
+term	headwaySeconds	P		Headway Seconds	Indicates the time between departures from the same stop (headway) for this trip type, during the time interval specified by gtfs:startTime and gtfs:endTime.		Frequency	xsd:nonNegativeInteger
+term	LightRail	I		Tram, Streetcar, Light rail	Any light rail or street level system within a metropolitan area.
+term	longName	P		Long name	Long name given to a route	dcterms:title	Route
+term	MinimumTimeTransfer	I		Minimum Time Transfer	This transfer requires a minimum amount of time between arrival and departure to ensure a connection. The time required to transfer is specified by gtfs:minimumTransferTime
+term	minimumTransferTime	P		Minimum Transfer Time	The minimum transfer time when the gtfs:transferType is gtfs:MinimumTimeTransfer.		TransferRule	xsd:nonNegativeInteger
+term	monday	P		Monday	Service is available on Monday			xsd:boolean
+term	MustCoordinateWithDriver	I		Must coordinate with driver to arrange pickup or drop off	
+term	MustPhone	I		Must phone agency to arrange pickup or drop off	
+term	NotAvailable	I		Pickup or drop off not available	
+term	NoTransfer	I		No Transfer	Transfers are not possible between routes at this location.
+term	NoTransfersAllowed	I		No transfers allowed	Indicate that a passenger should buy a new ticket when transferring
+term	NotWheelchairAccessible	I		Not wheelchair accessible	No riders in wheelchairs can be accommodated on this trip or wheelchair boarding is not possible at this stop and/or there exists no accessible path from outside the station to the specific stop.
+term	OnBoard	I		On Board	Fare should be bought on board
+term	OneTransfersAllowed	I		One transfer allowed	Indicate that a passenger should buy a new ticket when transferring a second time
+term	originStop	P		Origin Stop	Link to gtfs:Stop to start from			Stop
+term	originZone	P		Origin Zone	The origin zone where this applies
+term	parentStation	P		Parent Station	gtfs:parentStation identifies the station associated with the stop		Stop	Station
+term	paymentMethod	P		Payment method	The payment method		FareClass	PaymentMethod
+term	PaymentMethod	C		Payment Method	Method to pay for the public transit service
+term	pickupType	P		Pickup type	Which type of pickup			PickupType
+term	PickupType	C		Pickup Type	Instances of this class can be used by gtfs:pickupType
+term	pointSequence	P		Point Sequence	The shape_pt_sequence field associates the latitude and longitude of a shape point with its sequence order along the shape. The values for shape_pt_sequence must be non-negative integers, and they must increase along the trip.		ShapePoint	xsd:nonNegativeInteger
+term	Rail	I		Rail	Used for intercity or long-distance travel.
+term	RecommendedTransfer	I		Recommended Transfer	This is a recommended transfer point between two routes
+term	Regular	I		Regularly scheduled pickup or drop off	
+term	route	P		Route	This thing is applicable to this gtfs:Route		Trip	FareRule Route
+term	Route	C		Route	A gtfs:Route is a commercial route followed entirely or partly by gtfs:Trips
+term	routeType	P		Route type	Links to the type of vehicle operating on this route		Route	RouteType
+term	RouteType	C		Route type	Describes the type of transportation used on a route
+term	saturday	P		Saturday	Service is available on Saturday			xsd:boolean
+term	service	P		Service	Follows this gtfs:Service.			Service
+term	Service	C		Service	A gtfs:Service identifies a set of dates when a service is available for one or more routes
+term	serviceRule	P		Service rule	Service rules which define together a set of dates		Service	ServiceRule
+term	ServiceRule	C		Service rule	One or more service rules define a set of dates
+term	shape	P		Shape	a link to a shape the trip follows.			Shape
+term	Shape	C		Shape	A polygon formed by gtfs:ShapePoints
+term	shapePoint	P		Shape Point	Links to a gtfs:ShapePoint		Shape	ShapePoint
+term	ShapePoint	C		Shape Point	A geographic point within a gtfs:Shape
+term	shortName	P		Short name	Short name given to a route or a trip	dcterms:title	Route Trip
+term	startTime	P		Start Time	Specifies the time at which service begins with the specified frequency		Frequency	xsd:string
+term	Station	C		Station	A physical structure or area that contains one or more stop.
+term	stop	P		Stop	Indicates that this has a certain stop.			Stop
+term	Stop	C		Stop	A location where passengers board or disembark from a transit vehicle.
+term	stopSequence	P		Stop sequence	The stopSequence property identifies the order of the stops for a particular trip. The values must increase along the gtfs:Trip referenced in the gtfs:trip property.		StopTime	xsd:nonNegativeInteger
+term	StopTime	C		Stop time	Describes a stop time as part of a trip
+term	Subway	I		Subway, Metro	Any underground rail system within a metropolitan area.
+term	sunday	P		Sunday	Service is available on Sunday			xsd:boolean
+term	textColor	P		Text color	A 6 character hexidecimal color (without #) asigned to a text label.			xsd:string
+term	thursday	P		Thursday	Service is available on Thursday			xsd:boolean
+term	timeZone	P		Time zone	The timezone where a person or organisation is located.
+term	transferExpiryTime	P		Transfer Expiry Time	The time a ticket remains valid when having left the previous vehicle
+term	TransferRule	C		Transfer Rule	Define additional rules for making connections between routes.
+term	transfers	P		Transfers	The validity of the ticket when transferring		FareClass	TransfersAllowedType
+term	TransfersAllowedType	C		Transfers Allowed Type	Instances of this class describe whether tickets remain valid when transferring
+term	transferType	P		Transfer Type			Transfer	TransferType
+term	TransferType	C		Transfer Type	Instances of this class can be used to describe how to handle a transfer rule
+term	trip	P		Trip	Indicates that this is part of a certain gtfs:Trip			Trip
+term	Trip	C		Trip	A collection of gtfs:StopTimes followed by a transit vehicle
+term	tuesday	P		Tuesday	Service is available on Tuesday			xsd:boolean
+term	TwoTransfersAllowed	I		Two transfers allowed	Indicate that a passenger should buy a new ticket when transferring for the third time
+term	UnlimitedTransfersAllowed	I		Unlimited transfers allowed	Indicate that unlimited transfers are permitted
+term	usesExactTimes	P		Frequency uses exact times			Frequency	xsd:boolean
+term	wednesday	P		Wednesday	Service is available on Wednesday			xsd:boolean
+term	wheelchairAccessible	P		wheelchair boarding	Wheelchair boardings are possible from the specified stop or station. If this stop is part of a station, there is also a wheelchair accessible path from outside the station towards the stop.		Station Stop	WheelchairBoardingStatus
+term	WheelchairAccessible	I		Wheelchair accessible	Indicates that the vehicle being used on this particular trip can accommodate at least one rider in a wheelchair, or identifies that wheelchair boardings are possible from the specified stop, some trips at this stop are accessible by wheelchair and if this stop has a parentStation, there exists some accessible path from outside the station to the specific stop.
+term	WheelchairBoardingStatus	C		Wheelchair Boarding Information	A class whom's instances indicate how accessible a gtfs:Trip, gtfs:Stop or gtfs:Station is.
+term	zone	P		Zone	A gtfs:Stop defines the fare zone. Zones are required if you want to provide fare information using gtfs:FareClass.			Zone
+term	Zone	C		Zone	Zones are required if you want to provide fare information using gtfs:FareClass

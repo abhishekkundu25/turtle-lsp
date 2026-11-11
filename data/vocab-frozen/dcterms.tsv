@@ -1,0 +1,98 @@
+term	abstract	P		Abstract	A summary of the resource.	dc11:description description
+term	accessRights	P		Access Rights	Access Rights may include information regarding access or restrictions based on privacy, security, or other policies.	dc11:rights rights
+term	accrualMethod	P		Accrual Method	Recommended practice is to use a value from the Collection Description Accrual Method Vocabulary [[DCMI-ACCRUALMETHOD](https://dublincore.org/groups/collections/accrual-method/)].		dcmitype:Collection
+term	accrualPeriodicity	P		Accrual Periodicity	Recommended practice is to use a value from the Collection Description Frequency Vocabulary [[DCMI-COLLFREQ](https://dublincore.org/groups/collections/frequency/)].		dcmitype:Collection
+term	accrualPolicy	P		Accrual Policy	Recommended practice is to use a value from the Collection Description Accrual Policy Vocabulary [[DCMI-ACCRUALPOLICY](https://dublincore.org/groups/collections/accrual-policy/)].		dcmitype:Collection
+term	Agent	C		Agent	A resource that acts or has the power to act.
+term	AgentClass	C		Agent Class	A group of agents.	rdfs:Class
+term	alternative	P		Alternative Title	The distinction between titles and alternative titles is application-specific.	dc11:title title		rdfs:Literal
+term	audience	P		Audience	Recommended practice is to use this property with non-literal values from a vocabulary of audience types.
+term	available	P		Date Available	Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty.	date dc11:date		rdfs:Literal
+term	bibliographicCitation	P		Bibliographic Citation	Recommended practice is to include sufficient bibliographic detail to identify the resource as unambiguously as possible.	dc11:identifier identifier		rdfs:Literal
+term	BibliographicResource	C		Bibliographic Resource	A book, article, or other documentary resource.
+term	Box	C		DCMI Box	The set of regions in space defined by their geographic coordinates according to the DCMI Box Encoding Scheme.
+term	conformsTo	P		Conforms To	An established standard to which the described resource conforms.	dc11:relation relation
+term	contributor	P		Contributor	The guidelines for using names of persons or organizations as creators apply to contributors.	dc11:contributor
+term	coverage	P		Coverage	Spatial topic and spatial applicability may be a named place or a location specified by its geographic coordinates. Temporal topic may be a named period, date, or date range. A jurisdiction may be a named administrative entity or a geographic place to which the resource applies. Recommended practice is to use a controlled vocabulary such as the Getty Thesaurus of Geographic Names [[TGN](https://www.getty.edu/research/tools/vocabulary/tgn/index.html)]. Where appropriate, named places or time periods may be used in preference to numeric identifiers such as sets of coordinates or date ranges. Bec	dc11:coverage
+term	created	P		Date Created	Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty.	date dc11:date		rdfs:Literal
+term	creator	P		Creator	Recommended practice is to identify the creator with a URI. If this is not possible or feasible, a literal value that identifies the creator may be provided.	contributor dc11:creator
+term	date	P		Date	Date may be used to express temporal information at any level of granularity. Recommended practice is to express the date, date/time, or period of time according to ISO 8601-1 [[ISO 8601-1](https://www.iso.org/iso-8601-date-and-time-format.html)] or a published profile of the ISO standard, such as the W3C Note on Date and Time Formats [[W3CDTF](https://www.w3.org/TR/NOTE-datetime)] or the Extended Date/Time Format Specification [[EDTF](http://www.loc.gov/standards/datetime/)]. If the full date is unknown, month and year (YYYY-MM) or just year (YYYY) may be used. Date ranges may be specified us	dc11:date		rdfs:Literal
+term	dateAccepted	P		Date Accepted	Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty. Examples of resources to which a date of acceptance may be relevant are a thesis (accepted by a university department) or an article (accepted by a journal).	date dc11:date		rdfs:Literal
+term	dateCopyrighted	P		Date Copyrighted	Typically a year. Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty.	date dc11:date		rdfs:Literal
+term	dateSubmitted	P		Date Submitted	Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty. Examples of resources to which a 'Date Submitted' may be relevant include a thesis (submitted to a university department) or an article (submitted to a journal).	date dc11:date		rdfs:Literal
+term	DCMIType	I		DCMI Type Vocabulary	The set of classes specified by the DCMI Type Vocabulary, used to categorize the nature or genre of the resource.
+term	DDC	I		DDC	The set of conceptual resources specified by the Dewey Decimal Classification.
+term	description	P		Description	Description may include but is not limited to: an abstract, a table of contents, a graphical representation, or a free-text account of the resource.	dc11:description
+term	educationLevel	P		Audience Education Level	A class of agents, defined in terms of progression through an educational or training context, for which the described resource is intended.	audience
+term	extent	P		Extent	Recommended practice is to specify the file size in megabytes and duration in ISO 8601 format.	dc11:format format
+term	FileFormat	C		File Format	A digital resource format.	MediaType
+term	format	P		Format	Recommended practice is to use a controlled vocabulary where available. For example, for file formats one could use the list of Internet Media Types [[MIME](https://www.iana.org/assignments/media-types/media-types.xhtml)]. Examples of dimensions include size and duration.	dc11:format
+term	Frequency	C		Frequency	A rate at which something recurs.
+term	hasFormat	P		Has Format	This property is intended to be used with non-literal values. This property is an inverse property of Is Format Of.	dc11:relation relation
+term	hasPart	P		Has Part	This property is intended to be used with non-literal values. This property is an inverse property of Is Part Of.	dc11:relation relation
+term	hasVersion	P		Has Version	Changes in version imply substantive changes in content rather than differences in format. This property is intended to be used with non-literal values. This property is an inverse property of Is Version Of.	dc11:relation relation
+term	identifier	P		Identifier	Recommended practice is to identify the resource by means of a string conforming to an identification system. Examples include International Standard Book Number (ISBN), Digital Object Identifier (DOI), and Uniform Resource Name (URN). Persistent identifiers should be provided as HTTP URIs.	dc11:identifier		rdfs:Literal
+term	IMT	I		IMT	The set of media types specified by the Internet Assigned Numbers Authority.
+term	instructionalMethod	P		Instructional Method	Instructional Method typically includes ways of presenting instructional materials or conducting instructional activities, patterns of learner-to-learner and learner-to-instructor interactions, and mechanisms by which group and individual levels of learning are measured. Instructional methods include all aspects of the instruction and learning processes from planning and implementation through evaluation and feedback.
+term	isFormatOf	P		Is Format Of	This property is intended to be used with non-literal values. This property is an inverse property of Has Format.	dc11:relation relation
+term	ISO3166	C		ISO 3166	The set of codes listed in ISO 3166-1 for the representation of names of countries.
+term	ISO639-2	C		ISO 639-2	The three-letter alphabetic codes listed in ISO639-2 for the representation of names of languages.
+term	ISO639-3	C		ISO 639-3	The set of three-letter codes listed in ISO 639-3 for the representation of names of languages.
+term	isPartOf	P		Is Part Of	This property is intended to be used with non-literal values. This property is an inverse property of Has Part.	dc11:relation relation
+term	isReferencedBy	P		Is Referenced By	This property is intended to be used with non-literal values. This property is an inverse property of References.	dc11:relation relation
+term	isReplacedBy	P		Is Replaced By	This property is intended to be used with non-literal values. This property is an inverse property of Replaces.	dc11:relation relation
+term	isRequiredBy	P		Is Required By	This property is intended to be used with non-literal values. This property is an inverse property of Requires.	dc11:relation relation
+term	issued	P		Date Issued	Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty.	date dc11:date		rdfs:Literal
+term	isVersionOf	P		Is Version Of	Changes in version imply substantive changes in content rather than differences in format. This property is intended to be used with non-literal values. This property is an inverse property of Has Version.	dc11:relation relation
+term	Jurisdiction	C		Jurisdiction	The extent or range of judicial, law enforcement, or other authority.	LocationPeriodOrJurisdiction
+term	language	P		Language	Recommended practice is to use either a non-literal value representing a language from a controlled vocabulary such as ISO 639-2 or ISO 639-3, or a literal value consisting of an IETF Best Current Practice 47 [[IETF-BCP47](https://tools.ietf.org/html/bcp47)] language tag.	dc11:language
+term	LCC	I		LCC	The set of conceptual resources specified by the Library of Congress Classification.
+term	LCSH	I		LCSH	The set of labeled concepts specified by the Library of Congress Subject Headings.
+term	license	P		License	Recommended practice is to identify the license document with a URI. If this is not possible or feasible, a literal value that identifies the license may be provided.	dc11:rights rights
+term	LicenseDocument	C		License Document	A legal document giving official permission to do something with a resource.	RightsStatement
+term	LinguisticSystem	C		Linguistic System	Written, spoken, sign, and computer languages are linguistic systems.
+term	Location	C		Location	A spatial region or named place.	LocationPeriodOrJurisdiction
+term	LocationPeriodOrJurisdiction	C		Location, Period, or Jurisdiction	A location, period of time, or jurisdiction.
+term	mediator	P		Mediator	In an educational context, a mediator might be a parent, teacher, teaching assistant, or care-giver.	audience
+term	MediaType	C		Media Type	A file format or physical medium.	MediaTypeOrExtent
+term	MediaTypeOrExtent	C		Media Type or Extent	A media type or extent.
+term	medium	P		Medium	The material or physical carrier of the resource.	dc11:format format
+term	MESH	I		MeSH	The set of labeled concepts specified by the Medical Subject Headings.
+term	MethodOfAccrual	C		Method of Accrual	A method by which resources are added to a collection.
+term	MethodOfInstruction	C		Method of Instruction	A process that is used to engender knowledge, attitudes, and skills.
+term	modified	P		Date Modified	Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty.	date dc11:date		rdfs:Literal
+term	NLM	I		NLM	The set of conceptual resources specified by the National Library of Medicine Classification.
+term	Period	C		DCMI Period	The set of time intervals defined by their limits according to the DCMI Period Encoding Scheme.
+term	PeriodOfTime	C		Period of Time	An interval of time that is named or defined by its start and end dates.	LocationPeriodOrJurisdiction
+term	PhysicalMedium	C		Physical Medium	Examples include paper, canvas, or DVD.	MediaType
+term	PhysicalResource	C		Physical Resource	A material thing.
+term	Point	C		DCMI Point	The set of points in space defined by their geographic coordinates according to the DCMI Point Encoding Scheme.
+term	Policy	C		Policy	A plan or course of action by an authority, intended to influence and determine decisions, actions, and other matters.
+term	provenance	P		Provenance	The statement may include a description of any changes successive custodians made to the resource.
+term	ProvenanceStatement	C		Provenance Statement	Any changes in ownership and custody of a resource since its creation that are significant for its authenticity, integrity, and interpretation.
+term	publisher	P		Publisher	An entity responsible for making the resource available.	dc11:publisher
+term	references	P		References	This property is intended to be used with non-literal values. This property is an inverse property of Is Referenced By.	dc11:relation relation
+term	relation	P		Relation	Recommended practice is to identify the related resource by means of a URI. If this is not possible or feasible, a string conforming to a formal identification system may be provided.	dc11:relation
+term	replaces	P		Replaces	This property is intended to be used with non-literal values. This property is an inverse property of Is Replaced By.	dc11:relation relation
+term	requires	P		Requires	This property is intended to be used with non-literal values. This property is an inverse property of Is Required By.	dc11:relation relation
+term	RFC1766	C		RFC 1766	The set of tags, constructed according to RFC 1766, for the identification of languages.
+term	RFC3066	C		RFC 3066	RFC 3066 has been obsoleted by RFC 4646.
+term	RFC4646	C		RFC 4646	RFC 4646 obsoletes RFC 3066.
+term	RFC5646	C		RFC 5646	RFC 5646 obsoletes RFC 4646.
+term	rights	P		Rights	Typically, rights information includes a statement about various property rights associated with the resource, including intellectual property rights. Recommended practice is to refer to a rights statement with a URI. If this is not possible or feasible, a literal value (name, label, or short text) may be provided.	dc11:rights
+term	rightsHolder	P		Rights Holder	Recommended practice is to refer to the rights holder with a URI. If this is not possible or feasible, a literal value that identifies the rights holder may be provided.
+term	RightsStatement	C		Rights Statement	A statement about the intellectual property rights (IPR) held in or over a resource, a legal document giving official permission to do something with a resource, or a statement about access rights.
+term	SizeOrDuration	C		Size or Duration	Examples include a number of pages, a specification of length, width, and breadth, or a period in hours, minutes, and seconds.	MediaTypeOrExtent
+term	source	P		Source	This property is intended to be used with non-literal values. The described resource may be derived from the related resource in whole or in part. Best practice is to identify the related resource by means of a URI or a string conforming to a formal identification system.	dc11:source relation
+term	spatial	P		Spatial Coverage	Spatial characteristics of the resource.	coverage dc11:coverage
+term	Standard	C		Standard	A reference point against which other things can be evaluated or compared.
+term	subject	P		Subject	Recommended practice is to refer to the subject with a URI. If this is not possible or feasible, a literal value that identifies the subject may be provided. Both should preferably refer to a subject in a controlled vocabulary.	dc11:subject
+term	tableOfContents	P		Table Of Contents	A list of subunits of the resource.	dc11:description description
+term	temporal	P		Temporal Coverage	Temporal characteristics of the resource.	coverage dc11:coverage
+term	TGN	I		TGN	The set of places specified by the Getty Thesaurus of Geographic Names.
+term	title	P		Title	A name given to the resource.	dc11:title		rdfs:Literal
+term	type	P		Type	Recommended practice is to use a controlled vocabulary such as the DCMI Type Vocabulary [[DCMI-TYPE](http://dublincore.org/documents/dcmi-type-vocabulary/)]. To describe the file format, physical medium, or dimensions of the resource, use the property Format.	dc11:type
+term	UDC	I		UDC	The set of conceptual resources specified by the Universal Decimal Classification.
+term	URI	C		URI	The set of identifiers constructed according to the generic syntax for Uniform Resource Identifiers as specified by the Internet Engineering Task Force.
+term	valid	P		Date Valid	Recommended practice is to describe the date, date/time, or period of time as recommended for the property Date, of which this is a subproperty.	date dc11:date		rdfs:Literal
+term	W3CDTF	C		W3C-DTF	The set of dates and times constructed according to the W3C Date and Time Formats Specification.

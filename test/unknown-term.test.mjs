@@ -178,3 +178,64 @@ test("hover names the vocabulary only for a term it has", async () => {
   assert.match(member, /^\*\*rdf:_3\*\* · property/)
   assert.match(member, /RDF Schema/)
 })
+
+test("GS1 is checked in https://ref.gs1.org/voc/ and its two older namespaces", async () => {
+  // gs1:Altitude is newer than GS1 1.3; GS1 still answers for it under both older spellings.
+  const text = `@prefix gs1: <https://ref.gs1.org/voc/> .
+@prefix old: <https://gs1.org/voc/> .
+@prefix www: <https://www.gs1.org/voc/> .
+@prefix ex: <http://example.org/> .
+ex:a a gs1:Product ; ex:m gs1:Altitude .
+ex:b a old:Product ; ex:m old:Altitude .
+ex:c a www:Product ; ex:m www:Altitude .
+ex:d a gs1:Prodcut .
+`
+  const uri = uriOf(path.join(ws, "gs1.ttl"))
+  s.open(uri, text)
+  const w = unknown(await s.diagnosticsFor(uri))
+  assert.deepEqual(
+    w.map((d) => [d.range.start.line, d.message]),
+    [[7, "'Prodcut' is not defined in the gs1 vocabulary <https://ref.gs1.org/voc/>. Did you mean 'Product'?"]],
+  )
+})
+
+test("DPV 2 is checked in https://w3id.org/dpv#", async () => {
+  const text = `@prefix dpv: <https://w3id.org/dpv#> .\n@prefix ex: <http://example.org/> .\nex:a a dpv:Anonymisation , dpv:AIGovernance .\nex:b a dpv:Anonymization .\n`
+  const uri = uriOf(path.join(ws, "dpv.ttl"))
+  s.open(uri, text)
+  const w = unknown(await s.diagnosticsFor(uri))
+  assert.deepEqual(w.map((d) => [d.range.start.line, d.message.split(" is ")[0]]), [[3, "'Anonymization'"]])
+})
+
+test("QUDT 3 terms are known: qudt:applicableSystem and a unit newer than 2.1.18", async () => {
+  const text = `@prefix qudt: <http://qudt.org/schema/qudt/> .
+@prefix unit: <http://qudt.org/vocab/unit/> .
+@prefix sou: <http://qudt.org/vocab/sou/> .
+@prefix ex: <http://example.org/> .
+ex:p qudt:hasUnit unit:BAR_A .
+unit:BAR_A qudt:applicableSystem sou:SI .
+`
+  const uri = uriOf(path.join(ws, "qudt.ttl"))
+  s.open(uri, text)
+  assert.deepEqual(unknown(await s.diagnosticsFor(uri)), [])
+})
+
+test("a superseded schema.org term and a deprecated QUDT unit get the deprecated-term hint", async () => {
+  const text = `@prefix schema: <http://schema.org/> .
+@prefix unit: <http://qudt.org/vocab/unit/> .
+@prefix ex: <http://example.org/> .
+ex:a a schema:UserComments .
+ex:b ex:unit unit:CHF-PER-KiloGM .
+ex:c a schema:Comment ; ex:unit unit:BAR_A .
+`
+  const uri = uriOf(path.join(ws, "deprecated.ttl"))
+  s.open(uri, text)
+  const hints = (await s.diagnosticsFor(uri)).filter((d) => d.code === "deprecated-term")
+  assert.deepEqual(
+    hints.map((d) => [d.range.start.line, d.message]),
+    [
+      [3, "'schema:UserComments' is deprecated"],
+      [4, "'unit:CHF-PER-KiloGM' is deprecated"],
+    ],
+  )
+})

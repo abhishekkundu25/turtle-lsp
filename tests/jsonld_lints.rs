@@ -276,20 +276,43 @@ const EXPECTED: &[(&str, &str, &str, &str)] = &[
         "dcterms:lastModified",
         "not a Dublin Core term",
     ),
-    // Terms newer than the bundled vocabulary snapshot (data/vocab.tsv): not
-    // a JSON-LD matter (Turtle gets the same), but false positives until the
-    // snapshot is refreshed.
+    // Terms the bundled vocabulary (data/vocab.tsv) marks deprecated, used
+    // by the vocabularies' own files (true positives).
+    (
+        "gs1/gs1Voc-1.16.jsonld",
+        DEPRECATED,
+        "gs1:*",
+        GS1_DEPRECATED,
+    ),
+    (
+        "gs1/gs1Voc-1.16.jsonld",
+        DEPRECATED,
+        "https://gs1.org/voc/*",
+        GS1_DEPRECATED,
+    ),
+    (
+        "gs1/gs1Voc-1.16.jsonld",
+        DEPRECATED,
+        "https://www.gs1.org/voc/*",
+        GS1_DEPRECATED,
+    ),
+    (
+        "schemaorg/schemaorg-current-https.jsonld",
+        DEPRECATED,
+        "schema:*",
+        "schema.org's own file describes its superseded terms and names them as the objects of schema:supersededBy and others; the bundled schema.org marks each superseded term deprecated",
+    ),
     (
         "gs1/gs1Voc-1.16.jsonld",
         UNKNOWN,
-        "https://gs1.org/voc/*",
-        "GS1 Web Vocabulary 1.16 maps each of its terms to https://gs1.org/voc/ with owl:equivalentClass or owl:equivalentProperty; the snapshot has an older GS1 vocabulary",
+        "gs1:AllergenTypeCode-SQ",
+        GS1_DANGLING,
     ),
     (
-        "dcat-us/dataset-series.jsonld",
+        "gs1/gs1Voc-1.16.jsonld",
         UNKNOWN,
-        "dcat:next",
-        "a DCAT 3 term; the snapshot has DCAT 2",
+        "gs1:AllergenTypeCode-TN",
+        GS1_DANGLING,
     ),
     // Compact IRIs whose prefix no context defines: JSON-LD reads them as
     // IRIs with the prefix as scheme (true positives).
@@ -317,6 +340,9 @@ const UNDEFINED: &str = "jsonld-undefined-term";
 const UNDEFINED_PREFIX: &str = "jsonld-undefined-prefix";
 const INVALID_IRI: &str = "invalid-iri";
 const UNKNOWN: &str = "unknown-term";
+const DEPRECATED: &str = "deprecated-term";
+const GS1_DEPRECATED: &str = "GS1 1.18, the bundled GS1, deprecates (owl:deprecated) terms that this 1.16 file defines, in each of their three spellings";
+const GS1_DANGLING: &str = "a replacement code that GS1 names (owl:deprecated here, dct:isReplacedBy in 1.18) but defines in neither 1.16 nor 1.18";
 const DCAT_US_SCOPED: &str = "the DCAT-US 3.0 context defines it only in the type-scoped contexts of other types than the node's";
 const PROV_LABEL: &str = "not a PROV-O term (rdfs:label, dcterms:description)";
 const SCHEMA_VOCAB: &str = "a word the context's @vocab https://schema.org/ expands that schema.org does not define (true positive; https://schema.org/ is the schema vocabulary since the alias)";

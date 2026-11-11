@@ -1,0 +1,95 @@
+term	after	P		after	Gives directionality to time. If a temporal entity T1 is after another temporal entity T2, then the beginning of T1 is after the end of T2.		TemporalEntity	TemporalEntity
+term	before	P		before	Gives directionality to time. If a temporal entity T1 is before another temporal entity T2, then the end of T1 is before the beginning of T2. Thus, "before" can be considered to be basic to instants and derived for intervals.		TemporalEntity	TemporalEntity
+term	DateTimeDescription	C		Date-Time description	Description of date and time structured with separate values for the various elements of a calendar-clock system. The temporal reference system is fixed to Gregorian Calendar, and the range of year, month, day properties restricted to corresponding XML Schema types xsd:gYear, xsd:gMonth and xsd:gDay, respectively.	GeneralDateTimeDescription
+term	DateTimeInterval	C		Date-time interval	DateTimeInterval is a subclass of ProperInterval, defined using the multi-element DateTimeDescription.	ProperInterval
+term	day	P		day	Day position in a calendar-clock system. The range of this property is not specified, so can be replaced by any specific representation of a calendar day from any calendar.		GeneralDateTimeDescription
+term	dayOfWeek	P		day of week	El día de la semana, cuyo valor es un miembro de la clase 'día de la semana'.		GeneralDateTimeDescription	DayOfWeek
+term	DayOfWeek	C		Day of week	The day of week	owl:Thing
+term	dayOfYear	P		day of year	The number of the day within the year		GeneralDateTimeDescription	xsd:nonNegativeInteger
+term	days	P		days duration	length of, or element of the length of, a temporal extent expressed in days		GeneralDurationDescription	xsd:decimal
+term	Duration	C		Time duration	Duration of a temporal extent expressed as a number scaled by a temporal unit	TemporalDuration
+term	DurationDescription	C		Duration description	Description of temporal extent structured with separate values for the various elements of a calendar-clock system. The temporal reference system is fixed to Gregorian Calendar, and the range of each of the numeric properties is restricted to xsd:decimal	GeneralDurationDescription
+term	Friday	I		Friday	
+term	GeneralDateTimeDescription	C		Generalized date-time description	Description of date and time structured with separate values for the various elements of a calendar-clock system	TemporalPosition
+term	generalDay	C		Generalized day	Day of month - formulated as a text string with a pattern constraint to reproduce the same lexical form as gDay, except that values up to 99 are permitted, in order to support calendars with more than 31 days in a month. Note that the value-space is not defined, so a generic OWL2 processor cannot compute ordering relationships of values of this type.
+term	GeneralDurationDescription	C		Generalized duration description	Description of temporal extent structured with separate values for the various elements of a calendar-clock system.	TemporalDuration
+term	generalMonth	C		Generalized month	Month of year - formulated as a text string with a pattern constraint to reproduce the same lexical form as gMonth, except that values up to 20 are permitted, in order to support calendars with more than 12 months in the year. Note that the value-space is not defined, so a generic OWL2 processor cannot compute ordering relationships of values of this type.
+term	generalYear	C		Generalized year	Year number - formulated as a text string with a pattern constraint to reproduce the same lexical form as gYear, but not restricted to values from the Gregorian calendar. Note that the value-space is not defined, so a generic OWL2 processor cannot compute ordering relationships of values of this type.
+term	hasBeginning	P		has beginning	Beginning of a temporal entity	hasTime	TemporalEntity	Instant
+term	hasDateTimeDescription	P		has Date-Time description	Value of DateTimeInterval expressed as a structured value. The beginning and end of the interval coincide with the limits of the shortest element in the description.		DateTimeInterval	GeneralDateTimeDescription
+term	hasDuration	P		has duration	Duration of a temporal entity, expressed as a scaled value or nominal value	hasTemporalDuration		Duration
+term	hasDurationDescription	P		has duration description	Duration of a temporal entity, expressed using a structured description	hasTemporalDuration		GeneralDurationDescription
+term	hasEnd	P		has end	End of a temporal entity.	hasTime	TemporalEntity	Instant
+term	hasTemporalDuration	P		has temporal duration	Duration of a temporal entity.		TemporalEntity	TemporalDuration
+term	hasTime	P		has time	Supports the association of a temporal entity (instant or interval) to any thing			TemporalEntity
+term	hasTRS	P		Temporal reference system used	The temporal reference system used by a temporal position or extent description.			TRS
+term	hasXSDDuration	P		has XSD duration	Extent of a temporal entity, expressed using xsd:duration		TemporalEntity	xsd:duration
+term	hour	P		hour	Hour position in a calendar-clock system.		GeneralDateTimeDescription	xsd:nonNegativeInteger
+term	hours	P		hours duration	length of, or element of the length of, a temporal extent expressed in hours		GeneralDurationDescription	xsd:decimal
+term	inDateTime	P		in date-time description	Position of an instant, expressed using a structured description	inTemporalPosition	Instant	GeneralDateTimeDescription
+term	inside	P		has time instant inside	An instant that falls inside the interval. It is not intended to include beginnings and ends of intervals.		Interval	Instant
+term	Instant	C		Time instant	A temporal entity with zero extent or duration	TemporalEntity
+term	inTemporalPosition	P		Temporal position	Position of a time instant		Instant	TemporalPosition
+term	Interval	C		Time interval	A temporal entity with an extent or duration	TemporalEntity
+term	intervalAfter	P		interval after	If a proper interval T1 is intervalAfter another proper interval T2, then the beginning of T1 is after the end of T2.	after intervalDisjoint	ProperInterval	ProperInterval
+term	intervalBefore	P		interval before	If a proper interval T1 is intervalBefore another proper interval T2, then the end of T1 is before the beginning of T2.	before intervalDisjoint	ProperInterval	ProperInterval
+term	intervalContains	P		interval contains	If a proper interval T1 is intervalContains another proper interval T2, then the beginning of T1 is before the beginning of T2, and the end of T1 is after the end of T2.		ProperInterval	ProperInterval
+term	intervalDisjoint	P		interval disjoint	If a proper interval T1 is intervalDisjoint another proper interval T2, then the beginning of T1 is after the end of T2, or the end of T1 is before the beginning of T2, i.e. the intervals do not overlap in any way, but their ordering relationship is not known.		ProperInterval	ProperInterval
+term	intervalDuring	P		interval during	If a proper interval T1 is intervalDuring another proper interval T2, then the beginning of T1 is after the beginning of T2, and the end of T1 is before the end of T2.	intervalIn	ProperInterval	ProperInterval
+term	intervalEquals	P		interval equals	If a proper interval T1 is intervalEquals another proper interval T2, then the beginning of T1 is coincident with the beginning of T2, and the end of T1 is coincident with the end of T2.		ProperInterval	ProperInterval
+term	intervalFinishedBy	P		interval finished by	If a proper interval T1 is intervalFinishedBy another proper interval T2, then the beginning of T1 is before the beginning of T2, and the end of T1 is coincident with the end of T2.		ProperInterval	ProperInterval
+term	intervalFinishes	P		interval finishes	If a proper interval T1 is intervalFinishes another proper interval T2, then the beginning of T1 is after the beginning of T2, and the end of T1 is coincident with the end of T2.	intervalIn	ProperInterval	ProperInterval
+term	intervalIn	P		interval in	If a proper interval T1 is intervalIn another proper interval T2, then the beginning of T1 is after the beginning of T2 or is coincident with the beginning of T2, and the end of T1 is before the end of T2, or is coincident with the end of T2, except that end of T1 may not be coincident with the end of T2 if the beginning of T1 is coincident with the beginning of T2.		ProperInterval	ProperInterval
+term	intervalMeets	P		interval meets	If a proper interval T1 is intervalMeets another proper interval T2, then the end of T1 is coincident with the beginning of T2.		ProperInterval	ProperInterval
+term	intervalMetBy	P		interval met by	If a proper interval T1 is intervalMetBy another proper interval T2, then the beginning of T1 is coincident with the end of T2.		ProperInterval	ProperInterval
+term	intervalOverlappedBy	P		interval overlapped by	If a proper interval T1 is intervalOverlappedBy another proper interval T2, then the beginning of T1 is after the beginning of T2, the beginning of T1 is before the end of T2, and the end of T1 is after the end of T2.		ProperInterval	ProperInterval
+term	intervalOverlaps	P		interval overlaps	If a proper interval T1 is intervalOverlaps another proper interval T2, then the beginning of T1 is before the beginning of T2, the end of T1 is after the beginning of T2, and the end of T1 is before the end of T2.		ProperInterval	ProperInterval
+term	intervalStartedBy	P		interval started by	If a proper interval T1 is intervalStarted another proper interval T2, then the beginning of T1 is coincident with the beginning of T2, and the end of T1 is after the end of T2.		ProperInterval	ProperInterval
+term	intervalStarts	P		interval starts	If a proper interval T1 is intervalStarts another proper interval T2, then the beginning of T1 is coincident with the beginning of T2, and the end of T1 is before the end of T2.	intervalIn	ProperInterval	ProperInterval
+term	inTimePosition	P		Time position	Position of an instant, expressed as a temporal coordinate or nominal value	inTemporalPosition	Instant	TimePosition
+term	inXSDDate	P		in XSD date	Position of an instant, expressed using xsd:date		Instant	xsd:date
+term	inXSDDateTime	P	D	in XSD Date-Time	Position of an instant, expressed using xsd:dateTime		Instant	xsd:dateTime
+term	inXSDDateTimeStamp	P		in XSD Date-Time-Stamp	Position of an instant, expressed using xsd:dateTimeStamp		Instant	xsd:dateTimeStamp
+term	inXSDgYear	P		in XSD g-Year	Position of an instant, expressed using xsd:gYear		Instant	xsd:gYear
+term	inXSDgYearMonth	P		in XSD g-YearMonth	Position of an instant, expressed using xsd:gYearMonth		Instant	xsd:gYearMonth
+term	January	C	D	January		DateTimeDescription
+term	minute	P		minute	Minute position in a calendar-clock system.		GeneralDateTimeDescription	xsd:nonNegativeInteger
+term	minutes	P		minutes	length, or element of, a temporal extent expressed in minutes		GeneralDurationDescription	xsd:decimal
+term	Monday	I		Monday	
+term	month	P		month	Month position in a calendar-clock system. The range of this property is not specified, so can be replaced by any specific representation of a calendar month from any calendar.		GeneralDateTimeDescription
+term	monthOfYear	P		month of year	The month of the year, whose value is a member of the class time:MonthOfYear		GeneralDateTimeDescription	MonthOfYear
+term	MonthOfYear	C		Month of year	The month of the year	DateTimeDescription
+term	months	P		months duration	length of, or element of the length of, a temporal extent expressed in months		GeneralDurationDescription	xsd:decimal
+term	nominalPosition	P		Name of temporal position	The (nominal) value indicating temporal position in an ordinal reference system		TimePosition	xsd:string
+term	numericDuration	P		Numeric value of temporal duration	Value of a temporal extent expressed as a decimal number scaled by a temporal unit		Duration	xsd:decimal
+term	numericPosition	P		Numeric value of temporal position	The (numeric) value indicating position within a temporal coordinate system		TimePosition	xsd:decimal
+term	ProperInterval	C		Proper interval	A temporal entity with non-zero extent or duration, i.e. for which the value of the beginning and end are different	Interval
+term	Saturday	I		Saturday	
+term	second	P		second	Second position in a calendar-clock system.		GeneralDateTimeDescription	xsd:decimal
+term	seconds	P		seconds duration	length of, or element of the length of, a temporal extent expressed in seconds		GeneralDurationDescription	xsd:decimal
+term	Sunday	I		Sunday	
+term	TemporalDuration	C		Temporal duration	Time extent; duration of a time interval separate from its particular start position
+term	TemporalEntity	C		Temporal entity	A temporal interval or instant.	owl:Thing
+term	TemporalPosition	C		Temporal position	A position on a time-line
+term	TemporalUnit	C		Temporal unit	A standard duration, which provides a scale factor for a time extent, or the granularity or precision for a time position.	TemporalDuration
+term	Thursday	I		Thursday	
+term	TimePosition	C		Time position	A temporal position described using either a (nominal) value from an ordinal reference system, or a (numeric) value in a temporal coordinate system.	TemporalPosition
+term	timeZone	P		in time zone	The time zone for clock elements in the temporal position		GeneralDateTimeDescription	TimeZone
+term	TimeZone	C		Time Zone	A Time Zone specifies the amount by which the local time is offset from UTC. A time zone is usually denoted geographically (e.g. Australian Eastern Daylight Time), with a constant value in a given region. The region where it applies and the offset from UTC are specified by a locally recognised governing authority.
+term	TRS	C		Temporal Reference System	A temporal reference system, such as a temporal coordinate system (with an origin, direction, and scale), a calendar-clock combination, or a (possibly hierarchical) ordinal system. This is a stub class, representing the set of all temporal reference systems.
+term	Tuesday	I		Tuesday	
+term	unitDay	I		Day (unit of temporal duration)	
+term	unitHour	I		Hour (unit of temporal duration)	
+term	unitMinute	I		Minute (unit of temporal duration)	
+term	unitMonth	I		Month (unit of temporal duration)	
+term	unitSecond	I		Second (unit of temporal duration)	
+term	unitType	P		temporal unit type	The temporal unit which provides the precision of a date-time value or scale of a temporal extent			TemporalUnit
+term	unitWeek	I		Week (unit of temporal duration)	
+term	unitYear	I		Year (unit of temporal duration)	
+term	Wednesday	I		Wednesday	
+term	week	P		week	Week number within the year.		GeneralDateTimeDescription	xsd:nonNegativeInteger
+term	weeks	P		weeks duration	length of, or element of the length of, a temporal extent expressed in weeks		GeneralDurationDescription	xsd:decimal
+term	xsdDateTime	P	D	has XSD date-time	Value of DateTimeInterval expressed as a compact value.		DateTimeInterval	xsd:dateTime
+term	year	P		year	Year position in a calendar-clock system. The range of this property is not specified, so can be replaced by any specific representation of a calendar year from any calendar.		GeneralDateTimeDescription
+term	Year	C	D	Year	Year duration	DurationDescription
+term	years	P		years duration	length of, or element of the length of, a temporal extent expressed in years		GeneralDurationDescription	xsd:decimal

@@ -1,0 +1,22 @@
+term	Alt	C		Alt	The class of containers of alternatives.	rdfs:Container
+term	Bag	C		Bag	The class of unordered containers.	rdfs:Container
+term	CompoundLiteral	C		CompoundLiteral	A class representing a compound literal.	rdfs:Resource
+term	direction	P		direction	The base direction component of a CompoundLiteral.		CompoundLiteral
+term	first	P		first	The first item in the subject RDF list.		List	rdfs:Resource
+term	HTML	C		HTML	The datatype of RDF literals storing fragments of HTML content	rdfs:Literal
+term	JSON	C		JSON	The datatype of RDF literals storing JSON content.	rdfs:Literal
+term	langString	C		langString	The datatype of language-tagged string values	rdfs:Literal
+term	language	P		language	The language component of a CompoundLiteral.		CompoundLiteral
+term	List	C		List	The class of RDF Lists.	rdfs:Resource
+term	nil	I		nil	The empty list, with no items in it. If the rest of a list is nil then the list has no more items in it.
+term	object	P		object	The object of the subject RDF statement.		Statement	rdfs:Resource
+term	PlainLiteral	C		PlainLiteral	The class of plain (i.e. untyped) literal values, as used in RIF and OWL 2	rdfs:Literal
+term	predicate	P		predicate	The predicate of the subject RDF statement.		Statement	rdfs:Resource
+term	Property	C		Property	The class of RDF properties.	rdfs:Resource
+term	rest	P		rest	The rest of the subject RDF list after the first item.		List	List
+term	Seq	C		Seq	The class of ordered containers.	rdfs:Container
+term	Statement	C		Statement	The class of RDF statements.	rdfs:Resource
+term	subject	P		subject	The subject of the subject RDF statement.		Statement	rdfs:Resource
+term	type	P		type	The subject is an instance of a class.		rdfs:Resource	rdfs:Class
+term	value	P		value	Idiomatic property used for structured values.		rdfs:Resource	rdfs:Resource
+term	XMLLiteral	C		XMLLiteral	The datatype of XML literal values.	rdfs:Literal

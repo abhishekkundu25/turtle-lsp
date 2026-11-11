@@ -1,11 +1,14 @@
 //! The bundled vocabularies (`data/vocab.tsv`, made by
 //! `tools/build-vocab.mjs`) against the specifications: every term of the
 //! core W3C vocabularies is known, and the W3C test suites under `tests/w3c`
-//! get no `unknown-term` but the listed ones.
+//! and three files of the public corpus get no `unknown-term` but the listed
+//! ones. The corpus files are downloaded by `tools/corpus/fetch.sh`; without
+//! them that test prints `skipped`, and fails when `CI=true`.
 //!
 //!     cargo test --release --test vocabulary -- --nocapture
 
 use lsp_types::NumberOrString;
+use std::collections::BTreeMap;
 use std::path::Path;
 use turtle_lsp::batch::{self, BatchFile, Options};
 use turtle_lsp::settings::Settings;
@@ -542,28 +545,85 @@ fn w3c_files(dir: &Path, root: &Path, out: &mut Vec<BatchFile>) {
     }
 }
 
-#[test]
-fn the_w3c_suites_get_only_the_listed_unknown_terms() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/w3c");
-    let mut files = Vec::new();
-    w3c_files(&root, &root, &mut files);
-    let found = unknown_terms(&files);
-    let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
-    for (file, term) in &found {
-        eprintln!("{file}: {term}");
-        *counts.entry(term).or_default() += 1;
-    }
+/// Fails unless `counts` (each term found, with its number of uses) holds
+/// exactly the `expected` terms, each with its number.
+fn assert_listed(counts: &BTreeMap<String, usize>, expected: &[(String, usize)]) {
     let unexpected: Vec<_> = counts
         .iter()
-        .filter(|(term, n)| !W3C_EXPECTED.iter().any(|e| e.0 == **term && e.1 == **n))
+        .filter(|(term, n)| !expected.iter().any(|e| e.0 == **term && e.1 == **n))
         .collect();
-    let missing: Vec<_> = W3C_EXPECTED
+    let missing: Vec<_> = expected
         .iter()
-        .filter(|e| counts.get(e.0) != Some(&e.1))
-        .map(|e| (e.0, e.1))
+        .filter(|e| counts.get(&e.0) != Some(&e.1))
         .collect();
     assert!(
         unexpected.is_empty() && missing.is_empty(),
         "found, not as listed: {unexpected:?}\nlisted, not found: {missing:?}"
     );
+}
+
+#[test]
+fn the_w3c_suites_get_only_the_listed_unknown_terms() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/w3c");
+    let mut files = Vec::new();
+    w3c_files(&root, &root, &mut files);
+    let mut counts = BTreeMap::new();
+    for (file, term) in unknown_terms(&files) {
+        eprintln!("{file}: {term}");
+        *counts.entry(term).or_default() += 1;
+    }
+    let expected: Vec<_> = W3C_EXPECTED
+        .iter()
+        .map(|e| (e.0.to_string(), e.1))
+        .collect();
+    assert_listed(&counts, &expected);
+}
+
+include!("support/corpus.rs");
+
+/// The three files of the public corpus that CI downloads, each analysed
+/// alone (no workspace describes what it uses).
+const CORPUS_FILES: &[&str] = &["brick.ttl", "dcat-ap-shacl.ttl", "w3c-shacl.ttl"];
+
+/// What they are expected to get: (file, the term, how many uses, why).
+/// Brick's QUDT terms are all known since QUDT 3.5.3 is bundled, but these.
+const CORPUS_EXPECTED: &[(&str, &str, usize, &str)] = &[
+    (
+        "brick.ttl",
+        "rdf:Class",
+        4,
+        "Brick 1.5.0 types rec:TeamRoom, rec:Wing and rec:Lobby rdf:Class; the class of classes is rdfs:Class",
+    ),
+    (
+        "brick.ttl",
+        "unit:CentiM_H20_4DEG_C",
+        12,
+        "Brick spells H2O with a zero in one of its pressure units; QUDT's unit is unit:CentiM_H2O_4DEG_C, which the same lists name too",
+    ),
+    (
+        "brick.ttl",
+        "unit:Kilo-FT3",
+        2,
+        "not a unit of QUDT 3.5.3, nor of the 2.1.18 data bundled before; Brick 1.5.0 lists it among its volume units",
+    ),
+];
+
+#[test]
+fn three_corpus_files_get_only_the_listed_unknown_terms() {
+    let mut counts = BTreeMap::new();
+    for name in CORPUS_FILES {
+        let Some(path) = corpus_path(name) else {
+            return;
+        };
+        let text = std::fs::read_to_string(path).unwrap();
+        for (_, term) in unknown_terms(&[BatchFile::named(name, text, false)]) {
+            eprintln!("{name}: {term}");
+            *counts.entry(format!("{name} {term}")).or_default() += 1;
+        }
+    }
+    let expected: Vec<_> = CORPUS_EXPECTED
+        .iter()
+        .map(|e| (format!("{} {}", e.0, e.1), e.2))
+        .collect();
+    assert_listed(&counts, &expected);
 }

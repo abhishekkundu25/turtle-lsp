@@ -1,0 +1,32 @@
+term	altLabel	P		alternative label	The range of skos:altLabel is the class of RDF plain literals.	rdfs:label
+term	broader	P		has broader	Broader concepts are typically rendered as parents in a concept hierarchy (tree).	broaderTransitive
+term	broaderTransitive	P		has broader transitive	skos:broaderTransitive is a transitive superproperty of skos:broader.	semanticRelation
+term	broadMatch	P		has broader match	skos:broadMatch is used to state a hierarchical mapping link between two conceptual resources in different concept schemes.	broader mappingRelation
+term	changeNote	P		change note	A note about a modification to a concept.	note
+term	closeMatch	P		has close match	skos:closeMatch is used to link two concepts that are sufficiently similar that they can be used interchangeably in some information retrieval applications. In order to avoid the possibility of "compound errors" when combining mappings across more than two concept schemes, skos:closeMatch is not declared to be a transitive property.	mappingRelation
+term	Collection	C		Collection	A meaningful collection of concepts.
+term	Concept	C		Concept	An idea or notion; a unit of thought.
+term	ConceptScheme	C		Concept Scheme	A set of concepts, optionally including statements about semantic relationships between those concepts.
+term	definition	P		definition	A statement or formal explanation of the meaning of a concept.	note
+term	editorialNote	P		editorial note	A note for an editor, translator or maintainer of the vocabulary.	note
+term	exactMatch	P		has exact match	skos:exactMatch is disjoint with each of the properties skos:broadMatch and skos:relatedMatch.	closeMatch
+term	example	P		example	An example of the use of a concept.	note
+term	hasTopConcept	P		has top concept	Relates, by convention, a concept scheme to a concept which is topmost in the broader/narrower concept hierarchies for that scheme, providing an entry point to these hierarchies.		ConceptScheme	Concept
+term	hiddenLabel	P		hidden label	The range of skos:hiddenLabel is the class of RDF plain literals.	rdfs:label
+term	historyNote	P		history note	A note about the past state/use/meaning of a concept.	note
+term	inScheme	P		is in scheme	Relates a resource (for example a concept) to a concept scheme in which it is included.			ConceptScheme
+term	mappingRelation	P		is in mapping relation with	These concept mapping relations mirror semantic relations, and the data model defined below is similar (with the exception of skos:exactMatch) to the data model defined for semantic relations. A distinct vocabulary is provided for concept mapping relations, to provide a convenient way to differentiate links within a concept scheme from links between concept schemes. However, this pattern of usage is not a formal requirement of the SKOS data model, and relies on informal definitions of best practice.	semanticRelation
+term	member	P		has member	Relates a collection to one of its members.		Collection
+term	memberList	P		has member list	For any resource, every item in the list given as the value of the skos:memberList property is also a value of the skos:member property.		OrderedCollection	rdf:List
+term	narrower	P		has narrower	Narrower concepts are typically rendered as children in a concept hierarchy (tree).	narrowerTransitive
+term	narrowerTransitive	P		has narrower transitive	skos:narrowerTransitive is a transitive superproperty of skos:narrower.	semanticRelation
+term	narrowMatch	P		has narrower match	skos:narrowMatch is used to state a hierarchical mapping link between two conceptual resources in different concept schemes.	mappingRelation narrower
+term	notation	P		notation	A notation, also known as classification code, is a string of characters such as "T58.5" or "303.4833" used to uniquely identify a concept within the scope of a given concept scheme.
+term	note	P		note	A general note, for any purpose.
+term	OrderedCollection	C		Ordered Collection	An ordered collection of concepts, where both the grouping and the ordering are meaningful.	Collection
+term	prefLabel	P		preferred label	A resource has no more than one value of skos:prefLabel per language tag, and no more than one value of skos:prefLabel without language tag.	rdfs:label
+term	related	P		has related	skos:related is disjoint with skos:broaderTransitive	semanticRelation
+term	relatedMatch	P		has related match	skos:relatedMatch is used to state an associative mapping link between two conceptual resources in different concept schemes.	mappingRelation related
+term	scopeNote	P		scope note	A note that helps to clarify the meaning and/or the use of a concept.	note
+term	semanticRelation	P		is in semantic relation with	Links a concept to a concept related by meaning.		Concept	Concept
+term	topConceptOf	P		is top concept in scheme	Relates a concept to the concept scheme that it is a top level concept of.	inScheme	Concept	ConceptScheme

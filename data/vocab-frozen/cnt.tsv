@@ -1,0 +1,18 @@
+term	bytes	P		Base64 encoded byte sequence	The Base64 encoded byte sequence of the content.		ContentAsBase64	xsd:base64Binary
+term	characterEncoding	P		Character encoding	The character encoding used to create a character sequence from a byte sequence or vice versa.		Content	rdfs:Literal
+term	chars	P		Character sequence	The character sequence of the text content.		ContentAsText	rdfs:Literal
+term	Content	C		Content	The content.
+term	ContentAsBase64	C		Base64 content	The base64 encoded content (can be used for binary content).	Content
+term	ContentAsText	C		Text content	The text content (can be used for text content).	Content
+term	ContentAsXML	C		XML content	The XML content (can only be used for XML-wellformed content).	Content
+term	declaredEncoding	P		XML character encoding	The character encoding declared in the XML declaration.		ContentAsXML	rdfs:Literal
+term	DoctypeDecl	C		Document type declaration	The document type declaration.
+term	doctypeName	P		Document type name	The document type name.		DoctypeDecl	rdfs:Literal
+term	dtDecl	P		Document type declaration	The document type declaration.		ContentAsXML	DoctypeDecl
+term	internalSubset	P		Internal DTD subset	The internal document type definition subset within the document type declarations.		DoctypeDecl	rdfs:Literal
+term	leadingMisc	P		XML leading misc	The XML content preceding the document type declaration.		ContentAsXML	rdfs:XMLLiteral
+term	publicId	P		Public ID	The document type declarations's public identifier.		DoctypeDecl	rdfs:Literal
+term	rest	P		XML rest	The XML content following the document type declaration.		ContentAsXML	rdfs:XMLLiteral
+term	standalone	P		XML standalone document declaration	The standalone declaration in the XML declaration.		ContentAsXML	rdfs:Literal
+term	systemId	P		System ID	The document type declarations's system identifier (typed: xsd:anyURI)		DoctypeDecl	xsd:anyURI
+term	version	P		XML version	The XML version declared in the XML declaration.		ContentAsXML	rdfs:Literal

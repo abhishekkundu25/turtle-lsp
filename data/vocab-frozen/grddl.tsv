@@ -1,0 +1,13 @@
+term	danc	P			
+term	grddl-wg	P			
+term	grddlProject	P			
+term	InformationResource	C		InformationResource	A resource which has the property that all of its essential characteristics can be conveyed in a message
+term	namespaceTransformation	P		namespaceTransformation	relates a namespace to a transformation for all documents in that namespace			Transformation
+term	profileTransformation	P		profileTransformation	relates a profile document to a transformation for all documents bearing that profile			Transformation
+term	RDFGraph	C		RDF graphs	a set of RDF triples
+term	result	P		result	an RDF graph obtained from an information resource by directly parsing a representation in the standard RDF/XML syntax or indirectly by parsing some other dialect using a transformation nominated by the document		InformationResource	RDFGraph
+term	RootNode	C		RootNode	the root of the tree in the XPath data model
+term	transformation	P		transformation	relates a source document to a transformation, usually represented in XSLT, that relates the source document syntax to the RDF graph syntax		RootNode	Transformation
+term	Transformation	C		Transformation	an InformationResource that specifies a transformation from a set of XML documents to RDF graphs	InformationResource
+term	transformationProperty	P		transformationProperty	relates a transformation to the algorithm specified by the property that computes an RDF graph from an XML document node		Transformation	TransformationProperty
+term	TransformationProperty	C		TransformationProperty	a FunctionalProperty that relates XML document root nodes to RDF graphs	owl:FunctionalProperty	RootNode	RDFGraph

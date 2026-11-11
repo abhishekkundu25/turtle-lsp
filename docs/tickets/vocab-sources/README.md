@@ -61,3 +61,43 @@ validation.
   package's `schema:supersededBy` marks 82 terms, not 83.
 - 02: the RDA `regap` status namespace and IRI shape come from memory; 03
   checks them against the RDA files.
+- 03: the comment cap is 160, not the 240 the spec estimated. Measured on
+  the pinned sources (24,140 terms), the list weighs, gzipped at level 9:
+  877,143 bytes at 400, 827,175 at 300, 790,529 at 240, 759,524 at 200 and
+  724,421 at 160. Only 160 meets the budget of 733,090. The estimate assumed
+  today's bytes per term; the added GS1, QUDT and DPV terms carry longer
+  comments (comment text grows from 1.66 MB to 1.88 MB at 240). The list is
+  3,055,418 bytes, 724,421 gzipped, 81 vocabularies and 24,140 terms; 4,418
+  of its 18,473 comments are cut.
+- 03: every fetched row of the spec fetched and parsed; none became frozen.
+  The term counts added and removed equal the spec's table for all 22. Two
+  deprecation counts differ from its "Deprecated after" column: `gs1` has
+  204, not 87 (87 is how many of the 1.3 terms 1.18 deprecates; 1.18
+  deprecates 204 in all), and `as` has 10, not 11 (the W3C file marks ten
+  terms `owl:DeprecatedProperty`, `as:id` among them; `as:OrderedItems` is
+  not marked).
+- 03: the QUDT rows read the files under `src/main/rdf/` at tag `v3.5.3`, as
+  the spec says, not the release zip the audit read; the term counts agree.
+- 03: the RDA marker 02 wrote from memory is right: `u.nt` at `v5.5.2` uses
+  `http://metadataregistry.org/uri/profile/regap/status` with
+  `http://metadataregistry.org/uri/RegStatus/1008` on 129 terms and
+  `RegStatus/1001` on the other 1,085. Nothing changed.
+- 03: `owl:real` and `owl:rational` are datatypes in semantic tokens again
+  (`is_datatype` knows the OWL 2 datatype map's two), with a unit test.
+- 03: the JSON-LD corpus gets new true positives, listed in
+  `tests/jsonld_lints.rs`: `deprecated-term` on the terms GS1 1.18 deprecates
+  in GS1's own 1.16 file (in its three spellings) and on schema.org's
+  superseded terms in schema.org's own file, and `unknown-term` on
+  `gs1:AllergenTypeCode-SQ` and `-TN`, replacements GS1 names but never
+  defines.
+- 03: `brick.ttl` keeps three `unknown-term`s, listed in
+  `tests/vocabulary.rs` with their reasons: `rdf:Class`,
+  `unit:CentiM_H20_4DEG_C` (a zero for the letter O) and `unit:Kilo-FT3`.
+  `dcat-ap-shacl.ttl` and `w3c-shacl.ttl` get none.
+- 03: the loader no longer skips a vocabulary without terms: the generator
+  refuses a source that yields none, and `geof` and `geor` have no row.
+- 03: 11 rows have no licence in the publisher's file and none known
+  otherwise; their licence column says "not stated in the file": `bibo`,
+  `cc`, `dash`, `hydra`, `lvont`, `mads`, `rss`, `sdmx`, `sem`, `sioc` and
+  `void`. The W3C-hosted files that state none say "W3C Document License".
+  04 checks these before the notices file lists them.

@@ -1,0 +1,18 @@
+term	accepted	I		accepted	the item has gone through a first review, which shows it as valid for further processing
+term	approved	I		approved	the item has gone through the review process and was approved
+term	assigned	I		assigned	a more specific review of the item has been assigned to someone
+term	expectedResults	P		expected results	The results that a conformant implementation is expected to produce when this test is executed		TestCase
+term	informationResourceInput	P		information resource as input	Information Resource (e.g. a file) used as input for the test case	input		<http://www.w3.org/2001/tag/fdesc54/webarch#InformationResource>
+term	informationResourceResults	P		information resource as expected results	Information Resource (e.g. a file) that contains the expected results for the test case	expectedResults		<http://www.w3.org/2001/tag/fdesc54/webarch#InformationResource>
+term	input	P		input	Parameters or data that are needed for the test execution.		TestCase
+term	onhold	I		on hold	the item had already gone through the review process, but the results of the review need to be re-assessed due to new input
+term	preCondition	P		precondition	a condition that must be met before the test is executed		TestCase	rdfs:Literal
+term	purpose	P		purpose			TestCase	rdfs:Literal
+term	rejected	I		rejected	the item has gone through the review process and was rejected
+term	reviewStatus	P		status of review				ReviewStatus
+term	ReviewStatus	C		Status in a review process	A particular stage in a review process
+term	SimpleReviewStatus	C		A status for a simple review process containing 6 possible stages		ReviewStatus
+term	specificationReference	P		reference in specification	a description or a link of what part of which specification lead to the creation of this test case		TestCase	rdfs:Literal
+term	SpecificationTestCase	C		A Test Case based on a specification	A test case which relates to a requirement set in a specification	TestCase
+term	TestCase	C		A Test Case	A set of test inputs, execution conditions, and expected results developed for a particular objective, such as to exercise a particular program path or to verify compliance with a specific requirement
+term	unreviewed	I		unreviewed	the item has been proposed, but hasn't been reviewed (e.g. for completeness) yet
