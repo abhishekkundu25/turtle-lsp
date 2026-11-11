@@ -286,7 +286,10 @@ through the server. One piece of state is shared with a thread: the
 reasoner after its last run (`reasoning::Shared`). Only the reasoning
 thread writes it, and a hover reads it without waiting for a run, and only
 the result of the run whose findings the server shows: an edit supersedes
-the run going on, and neither its findings nor its result are shown.
+the run going on, which stops at its next check (as at its time limit),
+and neither its findings nor its result are shown. A run reasons on a
+reasoner of its own and swaps its result in only when it finishes, so
+hover reads the last result while it runs.
 
 Long work runs on worker threads and comes back as messages: the initial
 index, imports (`imports::worker`), JSON-LD context fetches, SHACL

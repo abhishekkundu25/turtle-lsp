@@ -1,15 +1,17 @@
 //! The state the reasoning thread and hovers share: the reasoner after its
-//! last run, that run's base, each IRI's inferred types and the
-//! explainer's cache.
+//! last run that finished, that run's base, each IRI's inferred types and
+//! the explainer's cache.
 //!
-//! Only the reasoning thread writes it, and it holds the write lock for a
-//! whole run (the reasoner reuses its last run's work, so the run changes
-//! it in place). A reader never waits for a run: it tries the lock and, when
-//! a run holds it, says so ([`Types::Running`]). A result carries its run's
-//! generation, and the server marks the run whose findings it shows
-//! ([`Shared::show`]): a reader reads no other run's result, so a run
-//! superseded while it ran (its findings dropped) shows nothing in hover
-//! either, until the next run's result is shown ([`Types::Running`]).
+//! Only the reasoning thread writes it. A run reasons on a reasoner of its
+//! own and takes the write lock only to swap its result in, so hover reads
+//! the previous result while a run goes on, and a run that stops (newer
+//! work, its time limit) leaves it as it was. A reader never waits for the
+//! lock: it tries it and, while the result is being swapped, says so
+//! ([`Types::Running`]). A result carries its run's generation, and the
+//! server marks the run whose result it shows ([`Shared::show`]): a reader
+//! reads no other run's result, so a run superseded while it ran (its
+//! findings dropped) shows nothing in hover either, until the next run's
+//! result is shown ([`Types::Running`]).
 //!
 //! A proof is searched on a thread of its own under the read lock, one
 //! search at a time (they take turns on the explainer's cache), and the
@@ -36,11 +38,16 @@ use std::time::Duration;
 /// How long a hover waits for proofs.
 pub(crate) const HOVER_WAIT: Duration = Duration::from_millis(200);
 
-/// How long proof searches may run: a search stops at its limit and keeps
-/// what it found. Without a limit, a long class chain in a small file takes
-/// minutes and gigabytes to explain.
+/// How long reasoning and proof searches may run: a run stops at its
+/// limit and leaves the previous result; a search stops at its limit and
+/// keeps what it found. Without a limit, a long class chain in a small file
+/// takes minutes and gigabytes to explain, and a long `owl:sameAs` chain
+/// minutes to reason over.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
+    /// One reasoning run: TurbOWL's rounds and the reading of the inferred
+    /// types (not the explanations of its findings, which have their own).
+    pub(crate) run: Duration,
     /// All the proofs of one hover's term.
     pub(crate) hover: Duration,
     /// All the explanations of one run's findings.
@@ -50,6 +57,7 @@ pub(crate) struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Limits {
+            run: Duration::from_secs(10),
             hover: Duration::from_secs(2),
             findings: Duration::from_secs(1),
         }
@@ -112,16 +120,25 @@ pub(crate) struct Shared {
     /// Tests: how many proof searches have started.
     #[cfg(test)]
     pub(super) searches: std::sync::atomic::AtomicUsize,
+    /// Tests: how many runs have started TurbOWL's rounds.
+    #[cfg(test)]
+    pub(super) reasoned: std::sync::atomic::AtomicUsize,
 }
 
 /// The result of the last run that finished.
 pub(super) struct Reasoned {
     /// The generation of the job the run was.
     pub(super) generation: u64,
+    /// The rules and the limit on inferred triples it ran with.
+    pub(super) rules: Reasoning,
+    pub(super) max_triples: u64,
     pub(super) reasoner: turbowl::Reasoner,
     pub(super) base: Base,
     /// Each IRI's inferred types that are IRIs, sorted.
     pub(super) types: FxHashMap<String, Vec<String>>,
+    /// The reading of the inferred types stopped past `max_triples`
+    /// inferred triples: `types` holds those read so far.
+    pub(super) cut: bool,
     /// The explainer's indexes and what its searches found, for this
     /// reasoner: an explanation takes it and gives it back.
     pub(super) cache: Mutex<turbowl::ExplainCache>,
@@ -147,7 +164,7 @@ pub(crate) enum Types {
     /// No result to read: no run has finished, or the last one was skipped
     /// or failed.
     Unknown,
-    /// A run is writing the state, or the result there is of a run
+    /// A run is swapping its result in, or the result there is of a run
     /// superseded while it ran: the next run's is coming.
     Running,
     /// Each inferred type, with its proof. Shared: a search's answer is
@@ -228,6 +245,8 @@ impl Shared {
             limits,
             #[cfg(test)]
             searches: Default::default(),
+            #[cfg(test)]
+            reasoned: Default::default(),
         }
     }
 
@@ -388,6 +407,19 @@ impl Shared {
             Types::Proved(Arc::new(proved))
         };
         self.read(read).unwrap_or_else(|t| t)
+    }
+
+    /// The limit on inferred triples, when the reading of the inferred types
+    /// of the result shown stopped at it: a term's list may be incomplete.
+    pub(crate) fn cut(&self) -> Option<u64> {
+        self.read(|r| r.cut.then_some(r.max_triples)).ok().flatten()
+    }
+
+    /// The generation of the result held, shown or not; `None` when there
+    /// is none. Waits for a swap going on.
+    pub(super) fn held(&self) -> Option<u64> {
+        let held = self.held.read().unwrap_or_else(PoisonError::into_inner);
+        held.as_ref().map(|r| r.generation)
     }
 
     /// `f` of the result shown, without waiting: Err with what to say when

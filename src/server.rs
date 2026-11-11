@@ -961,13 +961,15 @@ impl Server {
                         .open_doc_as(uri.clone(), doc.text, doc.version, kind);
                     self.wsdiag_opened(&uri);
                     self.after_edit(fx);
-                    self.reason_on_open_or_close();
-                    self.workspace_changed_inline();
+                    let rdf = feeds_reasoning(Some(kind));
+                    self.reason_on_open_or_close(rdf);
+                    self.workspace_changed_inline(rdf);
                 }
             }
             DidChangeTextDocument::METHOD => {
                 if let Some(p) = parse::<DidChangeTextDocumentParams>(n.params) {
                     let uri = normalize_uri(p.text_document.uri.as_str());
+                    let rdf = feeds_reasoning(self.ws.doc_kind(&uri));
                     let fx = self.ws.change_doc(
                         &uri,
                         p.text_document.version,
@@ -980,8 +982,11 @@ impl Server {
                         self.timers
                             .set(Timer::ShaclTyping, Instant::now() + SHACL_TYPING_DEBOUNCE);
                     }
-                    // So do the reasoning findings.
-                    self.reason_after_typing();
+                    // So do the reasoning findings; a SPARQL document adds no
+                    // triples to reason over.
+                    if rdf {
+                        self.reason_after_typing();
+                    }
                 }
             }
             DidSaveTextDocument::METHOD => {
@@ -992,6 +997,7 @@ impl Server {
             DidCloseTextDocument::METHOD => {
                 if let Some(p) = parse::<DidCloseTextDocumentParams>(n.params) {
                     let uri = normalize_uri(p.text_document.uri.as_str());
+                    let rdf = feeds_reasoning(self.ws.doc_kind(&uri));
                     let fx = self.ws.close_doc(&uri);
                     self.dirty.remove(&uri);
                     self.apply(fx);
@@ -1001,8 +1007,8 @@ impl Server {
                         self.send_diagnostics(&uri, vec![], None);
                     }
                     self.spelling.remove(&uri);
-                    self.reason_on_open_or_close();
-                    self.workspace_changed_inline();
+                    self.reason_on_open_or_close(rdf);
+                    self.workspace_changed_inline(rdf);
                 }
             }
             DidChangeConfiguration::METHOD => {
@@ -1043,22 +1049,24 @@ impl Server {
 
     /// Embedded, the open documents are the whole workspace (there is no
     /// disk to index): opening or closing one changes the data SHACL
-    /// validates and reasoning reads, so run both once the host pauses, as
-    /// after typing.
-    fn workspace_changed_inline(&mut self) {
+    /// validates and, for an RDF document (`rdf`), reasoning reads, so run
+    /// them once the host pauses, as after typing.
+    fn workspace_changed_inline(&mut self, rdf: bool) {
         if self.spawn == Spawn::Inline {
             self.timers
                 .set(Timer::ShaclTyping, Instant::now() + SHACL_TYPING_DEBOUNCE);
-            self.reason_after_typing();
+            if rdf {
+                self.reason_after_typing();
+            }
         }
     }
 
-    /// Opening or closing a document can change the data reasoning reads
-    /// (unsaved text, a file outside the workspace) and the documents its
-    /// notes go on: reason again now. Embedded, once the host pauses
-    /// ([`Server::workspace_changed_inline`]).
-    fn reason_on_open_or_close(&mut self) {
-        if self.spawn == Spawn::Thread {
+    /// Opening or closing an RDF document (`rdf`) can change the data
+    /// reasoning reads (unsaved text, a file outside the workspace) and the
+    /// documents its notes go on: reason again now. Embedded, once the host
+    /// pauses ([`Server::workspace_changed_inline`]).
+    fn reason_on_open_or_close(&mut self, rdf: bool) {
+        if rdf && self.spawn == Spawn::Thread {
             self.reason();
         }
     }
@@ -1873,14 +1881,30 @@ impl Server {
     }
 
     fn reasoning_outcome(&mut self, o: crate::reasoning::Outcome) {
-        if !self.reasoning_runs.is_current(&o) {
+        use crate::reasoning::Stopped;
+        let current = self.reasoning_runs.is_current(&o);
+        if !current || o.stopped == Some(Stopped::Superseded) {
+            // Dropped. Without a newer run going on, nothing runs until
+            // typing pauses: the progress ends.
+            if !self.reasoning_runs.newer_submitted(&o) {
+                self.timers.clear(Timer::ReasoningProgress);
+                self.progress.end(
+                    &self.client,
+                    Work::Reasoning,
+                    "Stopped: the text changed".into(),
+                );
+            }
+            return;
+        }
+        self.timers.clear(Timer::ReasoningProgress);
+        if let Some(Stopped::TimeLimit { limit, kept }) = o.stopped {
+            self.reasoning_stopped(limit, kept);
             return;
         }
         // Hover reads this run's result now.
         if let Some(shared) = &self.reasoning {
             shared.show(o.generation);
         }
-        self.timers.clear(Timer::ReasoningProgress);
         if self.progress.is_shown(Work::Reasoning) {
             let summary = reasoning::summary(&o.diagnostics);
             self.progress.end(&self.client, Work::Reasoning, summary);
@@ -1889,6 +1913,59 @@ impl Server {
             self.knowledge_changed();
         }
     }
+
+    /// The current run stopped at its time limit, `limit`: the findings
+    /// shown stay, hover reads the result the state kept (`kept`), and the
+    /// user is told: in the progress and the log each time, and in a
+    /// message only on the first stop since a run last finished, so that a
+    /// workspace too large for the limit raises no message on every pause in
+    /// typing.
+    fn reasoning_stopped(&mut self, limit: Duration, kept: Option<u64>) {
+        if let (Some(shared), Some(kept)) = (&self.reasoning, kept) {
+            shared.show(kept);
+        }
+        let limit = if limit.subsec_nanos() == 0 {
+            format!("{} s", limit.as_secs())
+        } else {
+            format!("{} ms", limit.as_millis())
+        };
+        let shown = if self.layers.settings().reasoning_diagnostics {
+            "hover and the findings show"
+        } else {
+            "hover shows"
+        };
+        let (end, last) = match kept {
+            Some(_) => (
+                format!("; {shown} the last result"),
+                format!(" Until a run finishes, {shown} the last result that did."),
+            ),
+            None => (String::new(), String::new()),
+        };
+        self.progress.end(
+            &self.client,
+            Work::Reasoning,
+            format!("Stopped at the {limit} time limit{end}"),
+        );
+        let message = format!(
+            "TurbOWL stopped reasoning at its time limit of {limit}: this workspace takes \
+             longer than that.{last} To turn reasoning off, set turtle.reasoning.rules to off."
+        );
+        let typ = if self.reasoning_runs.first_stop() {
+            self.client.warn(message.clone());
+            MessageType::WARNING
+        } else {
+            MessageType::INFO
+        };
+        let params = LogMessageParams { typ, message };
+        self.client
+            .notify(lsp_types::notification::LogMessage::METHOD, params);
+    }
+}
+
+/// Whether a document of `kind` feeds reasoning: RDF does, a SPARQL query
+/// or update adds no triples. Unknown (`None`) counts as RDF.
+fn feeds_reasoning(kind: Option<DocKind>) -> bool {
+    kind != Some(DocKind::Sparql)
 }
 
 /// A server driven by its host instead of its own loop, for a host with no
@@ -2158,9 +2235,10 @@ mod tests {
         );
     }
 
-    /// A run over text since edited (on the thread, it was running when
-    /// the edit came) lands after the edit: neither its findings nor the
-    /// state it wrote are shown.
+    /// A run over text since edited (on the thread, it finished just as the
+    /// edit came, before the edit's cancel reached it) lands after the edit:
+    /// neither its findings nor the state it wrote are shown. Had the
+    /// cancel reached it first, it would have stopped.
     #[test]
     fn a_run_that_lands_after_an_edit_shows_nothing() {
         const AXIOMS: &str = "@prefix ex: <http://example.org/> .\n\
@@ -2210,10 +2288,13 @@ mod tests {
             .reasoning_runs
             .job(docs, e.server.layers.settings(), e.server.enc);
         let shared = e.server.reasoning.clone().unwrap();
-        // The text changes back while it runs; then it lands.
-        e.handle(vec![change(3, &clean)]);
+        // It finishes as the text changes back; then it lands.
         let landed = crate::reasoning::run_inline(&shared, &old);
         assert!(!landed.diagnostics.is_empty(), "the old text has a finding");
+        e.handle(vec![change(3, &clean)]);
+        assert!(old.cancel.is_cancelled(), "the edit stops the run");
+        let again = crate::reasoning::run_inline(&shared, &old);
+        assert_eq!(again.stopped, Some(crate::reasoning::Stopped::Superseded));
         e.server.reasoning_outcome(landed);
         assert!(
             e.server.reasoning_runs.diagnostics().is_empty(),
@@ -2227,6 +2308,170 @@ mod tests {
         assert!(e.server.reasoning_runs.diagnostics().is_empty());
         let md = hover(&mut e, 11);
         assert!(!md.contains("Inferred"), "{md}");
+    }
+
+    /// A SPARQL document adds no triples: opening, editing and closing one
+    /// supersedes no run and schedules none. An RDF document does.
+    #[test]
+    fn a_sparql_document_does_not_rerun_reasoning() {
+        let mut e = embedded();
+        open(&mut e, "file:///w/a.ttl", TTL);
+        assert!(e.server.timers.is_set(Timer::ReasoningTyping));
+        e.server.timers.clear(Timer::ReasoningTyping);
+        let before = e.server.reasoning_runs.generation();
+        let q = "file:///w/q.rq";
+        e.handle(vec![
+            notify(
+                "textDocument/didOpen",
+                json!({"textDocument": {"uri": q, "languageId": "sparql", "version": 1, "text": "SELECT * { ?s ?p ?o }"}}),
+            ),
+            notify(
+                "textDocument/didChange",
+                json!({"textDocument": {"uri": q, "version": 2}, "contentChanges": [{"text": "ASK { ?s ?p ?o }"}]}),
+            ),
+            notify(
+                "textDocument/didClose",
+                json!({"textDocument": {"uri": q}}),
+            ),
+        ]);
+        assert_eq!(e.server.reasoning_runs.generation(), before);
+        assert!(!e.server.timers.is_set(Timer::ReasoningTyping));
+        e.handle(vec![notify(
+            "textDocument/didChange",
+            json!({"textDocument": {"uri": "file:///w/a.ttl", "version": 2}, "contentChanges": [{"text": TTL}]}),
+        )]);
+        assert!(e.server.reasoning_runs.generation() > before);
+        assert!(e.server.timers.is_set(Timer::ReasoningTyping));
+    }
+
+    /// A server on threads, with progress, and its client's end.
+    fn threaded() -> (Server, wire::Outbox) {
+        let (here, host) = wire::memory();
+        let (server, _, _) = Server::configure(
+            here,
+            json!({"capabilities": {"window": {"workDoneProgress": true}}}),
+            Spawn::Thread,
+        )
+        .unwrap();
+        (server, host)
+    }
+
+    /// A reasoning job over nothing, submitted to the thread with its
+    /// progress begun, as `reason` does.
+    fn submitted(server: &mut Server) -> u64 {
+        let job = server
+            .reasoning_runs
+            .job(Vec::new(), server.layers.settings(), server.enc);
+        let generation = job.generation;
+        let shared = server.reasoning.clone().unwrap();
+        server.reasoning_runs.submit(job, &shared).unwrap();
+        if !server.progress.is_shown(Work::Reasoning) {
+            server
+                .progress
+                .begin(&mut server.client, Work::Reasoning, REASONING_TITLE);
+        }
+        generation
+    }
+
+    fn outcome(
+        generation: u64,
+        stopped: Option<crate::reasoning::Stopped>,
+    ) -> crate::reasoning::Outcome {
+        crate::reasoning::Outcome {
+            generation,
+            diagnostics: Default::default(),
+            stopped,
+        }
+    }
+
+    #[test]
+    fn a_dropped_outcome_ends_the_progress_unless_a_newer_run_is_going_on() {
+        use crate::reasoning::Stopped;
+        let (mut server, _host) = threaded();
+        // An edit stops the run; the next starts once typing pauses.
+        let first = submitted(&mut server);
+        server.reasoning_runs.invalidate();
+        server.reasoning_outcome(outcome(first, Some(Stopped::Superseded)));
+        assert!(!server.progress.is_shown(Work::Reasoning));
+        assert!(!server.timers.is_set(Timer::ReasoningProgress));
+        // A run that finished before the edit's cancel reached it.
+        let second = submitted(&mut server);
+        server.reasoning_runs.invalidate();
+        server.reasoning_outcome(outcome(second, None));
+        assert!(!server.progress.is_shown(Work::Reasoning));
+        // A newer run is going on: its progress goes on.
+        let third = submitted(&mut server);
+        let fourth = submitted(&mut server);
+        server.reasoning_outcome(outcome(third, Some(Stopped::Superseded)));
+        assert!(server.progress.is_shown(Work::Reasoning));
+        server.reasoning_outcome(outcome(fourth, None));
+        assert!(!server.progress.is_shown(Work::Reasoning));
+    }
+
+    #[test]
+    fn a_run_stopped_at_its_time_limit_keeps_the_findings_and_warns_once_until_one_finishes() {
+        use crate::reasoning::Stopped;
+        let (mut server, host) = threaded();
+        let uri = "file:///w/a.ttl".to_string();
+        let finding = Diagnostic {
+            message: "ex:tom is both a ex:Cat and a ex:Dog, which are disjoint.".into(),
+            ..Default::default()
+        };
+        let findings: crate::reasoning::ByUri =
+            [(uri.clone(), vec![finding])].into_iter().collect();
+        let first = submitted(&mut server);
+        server.reasoning_outcome(crate::reasoning::Outcome {
+            diagnostics: findings.clone(),
+            ..outcome(first, None)
+        });
+        let messages = |host: &wire::Outbox| {
+            let mut shown = Vec::new();
+            let mut logged = Vec::new();
+            for m in host.try_iter() {
+                if let Message::Notification(n) = m {
+                    let text = n.params["message"].as_str().unwrap_or_default().to_string();
+                    match n.method.as_str() {
+                        "window/showMessage" => shown.push(text),
+                        "window/logMessage" => logged.push(text),
+                        _ => {}
+                    }
+                }
+            }
+            (shown, logged)
+        };
+        messages(&host);
+        let stop = |server: &mut Server| {
+            let g = submitted(server);
+            let limit = Duration::from_secs(10);
+            server.reasoning_outcome(outcome(
+                g,
+                Some(Stopped::TimeLimit {
+                    limit,
+                    kept: Some(first),
+                }),
+            ));
+            assert!(!server.progress.is_shown(Work::Reasoning));
+            assert_eq!(server.reasoning_runs.diagnostics(), &findings);
+        };
+        stop(&mut server);
+        let (shown, logged) = messages(&host);
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(shown[0].contains("time limit of 10 s"), "{shown:?}");
+        assert!(shown[0].contains("turtle.reasoning.rules"), "{shown:?}");
+        assert_eq!(logged, shown);
+        // Each stop after it is logged only.
+        stop(&mut server);
+        let (shown, logged) = messages(&host);
+        assert!(shown.is_empty(), "{shown:?}");
+        assert_eq!(logged.len(), 1);
+        // Once a run finishes, the next stop is shown again.
+        let g = submitted(&mut server);
+        server.reasoning_outcome(crate::reasoning::Outcome {
+            diagnostics: findings.clone(),
+            ..outcome(g, None)
+        });
+        stop(&mut server);
+        assert_eq!(messages(&host).0.len(), 1);
     }
 
     #[test]

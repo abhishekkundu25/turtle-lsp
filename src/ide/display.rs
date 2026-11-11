@@ -289,6 +289,7 @@ mod tests {
                 related: true,
                 findings: false,
                 project: Default::default(),
+                cancel: Default::default(),
             },
         );
         shared.show(1);
@@ -346,6 +347,7 @@ mod tests {
                 related: true,
                 findings: false,
                 project: Default::default(),
+                cancel: Default::default(),
             },
         );
         shared.show(1);
@@ -431,6 +433,7 @@ mod tests {
                     related: true,
                     findings: false,
                     project: Default::default(),
+                    cancel: Default::default(),
                 },
             );
             shared.show(1);

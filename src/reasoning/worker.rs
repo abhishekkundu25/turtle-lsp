@@ -1,19 +1,25 @@
 //! The reasoning thread: one job at a time, the newest queued one first, as
-//! SHACL validation's ([`crate::features::shacl_validate::Worker`]). A run
-//! cannot be stopped halfway, so a superseded run finishes and the server
-//! drops its outcome by generation; hover does not read the state it wrote
-//! (see [`Shared::show`]), which the next run's replaces.
+//! SHACL validation's ([`crate::features::shacl_validate::Worker`]).
+//!
+//! A run stops when the server trips its job's [`Cancel`] (newer work
+//! superseded it) or at its time limit ([`Limits::run`]): TurbOWL checks
+//! before each round, and the run again as it reads the inferred types. A
+//! run reasons on a reasoner of its own and swaps its result into the state
+//! only when it finishes, so a stopped run leaves the previous result for
+//! hover. When the triples, the rules and the limit are those of the result
+//! held, the run keeps that reasoner and reasons no round.
 
 use super::diagnostics::{self, ByUri};
-use super::state::{Reasoned, Shared};
+use super::state::{Limits, Reasoned, Shared};
 use super::{Base, rules};
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Source;
 use crate::settings::Reasoning;
 use crate::syntax::PrefixMap;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// One run: the workspace's sources (the knowledge index's, imports
 /// included) and the settings it runs with.
@@ -21,7 +27,8 @@ pub(crate) struct Job {
     pub(crate) generation: u64,
     pub(crate) docs: Vec<(Source, Arc<Analysis>)>,
     pub(crate) rules: Reasoning,
-    /// The run is skipped when the sources have more triples than this.
+    /// The run is skipped when the sources have more triples than this, and
+    /// reads at most this many inferred triples for the inferred types.
     pub(crate) max_triples: u64,
     pub(crate) enc: Encoding,
     /// The client shows a diagnostic's related information
@@ -36,6 +43,24 @@ pub(crate) struct Job {
     /// them after the document's own. A Turtle or TriG document has them as
     /// its `external`.
     pub(crate) project: FxHashMap<String, Arc<PrefixMap>>,
+    /// Stops the run: the server trips it when newer work supersedes it.
+    pub(crate) cancel: Cancel,
+}
+
+/// The handle that stops a job's run from another thread. Clones share it;
+/// once tripped it stays tripped.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Cancel(turbowl::Cancel);
+
+impl Cancel {
+    /// Stop the run at its next check.
+    pub(crate) fn cancel(&self) {
+        self.0.cancel();
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
 }
 
 /// What a run gives the server: its diagnostics per document URI (the
@@ -43,6 +68,20 @@ pub(crate) struct Job {
 pub(crate) struct Outcome {
     pub(crate) generation: u64,
     pub(crate) diagnostics: ByUri,
+    /// Why the run stopped before it finished, with no diagnostics; `None`
+    /// when it finished, was skipped or crashed.
+    pub(crate) stopped: Option<Stopped>,
+}
+
+/// Why a run stopped before it finished. It left the state as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stopped {
+    /// Newer work superseded it (its job's [`Cancel`]).
+    Superseded,
+    /// It reached its time limit, `limit`. `kept` is the generation of the
+    /// result the state still holds, for hover to read; `None` when it
+    /// holds none.
+    TimeLimit { limit: Duration, kept: Option<u64> },
 }
 
 /// The reasoning thread. It blocks on its channel while idle and ends when
@@ -85,27 +124,71 @@ impl Worker {
     }
 }
 
-/// Run `job` here and now, writing `shared`. A panic is caught: the state
-/// is left with no result, the open documents say so, and the next job
-/// starts afresh.
+/// Run `job` here and now, writing `shared`, within the state's time limit
+/// ([`Limits::run`]). A panic is caught: the state is left with no result,
+/// the open documents say so, and the next job starts afresh.
 pub(crate) fn run_inline(shared: &Shared, job: &Job) -> Outcome {
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared, job)));
-    let diagnostics = ran.unwrap_or_else(|e| {
-        *shared.write() = None;
-        diagnostics::crashed(&job.docs, &*e)
-    });
+    let (diagnostics, stopped) = match ran {
+        Ok(Ok(diagnostics)) => (diagnostics, None),
+        Ok(Err(stopped)) => (ByUri::default(), Some(stopped)),
+        Err(e) => {
+            *shared.write() = None;
+            (diagnostics::crashed(&job.docs, &*e), None)
+        }
+    };
     Outcome {
         generation: job.generation,
         diagnostics,
+        stopped,
     }
 }
 
-/// Reason over `job`'s sources, reusing the last run's reasoner, and write
-/// the result into `shared`.
-fn run(shared: &Shared, job: &Job) -> ByUri {
+/// When a run must stop: its job was cancelled, or its deadline passed by
+/// the server's clock (the page's in the browser, which has no thread to
+/// trip a handle).
+#[derive(Clone)]
+struct Until {
+    cancel: Cancel,
+    deadline: crate::clock::Instant,
+}
+
+impl Until {
+    fn new(job: &Job, limit: Duration) -> Until {
+        Until {
+            cancel: job.cancel.clone(),
+            deadline: crate::clock::Instant::now() + limit,
+        }
+    }
+
+    fn passed(&self) -> bool {
+        self.cancel.is_cancelled() || crate::clock::Instant::now() >= self.deadline
+    }
+
+    /// A TurbOWL handle that trips when this says so.
+    fn handle(&self) -> turbowl::Cancel {
+        let until = self.clone();
+        turbowl::Cancel::with_check(move || until.passed())
+    }
+}
+
+/// Reason over `job`'s sources and write the result into `shared`; Err when
+/// the run stopped first, leaving `shared` as it was.
+fn run(shared: &Shared, job: &Job) -> Result<ByUri, Stopped> {
+    let limits = shared.limits;
+    let stopped = || {
+        if job.cancel.is_cancelled() {
+            Stopped::Superseded
+        } else {
+            Stopped::TimeLimit {
+                limit: limits.run,
+                kept: shared.held(),
+            }
+        }
+    };
     let Some(switches) = rules(job.rules) else {
         *shared.write() = None;
-        return ByUri::default();
+        return Ok(ByUri::default());
     };
     let total: u64 = job
         .docs
@@ -115,45 +198,111 @@ fn run(shared: &Shared, job: &Job) -> ByUri {
     if total > job.max_triples {
         // A stale result would answer for text it was not run on.
         *shared.write() = None;
-        return diagnostics::skipped(&job.docs, total, job.max_triples);
+        return Ok(diagnostics::skipped(&job.docs, total, job.max_triples));
     }
+    let until = Until::new(job, limits.run);
     // Built before the lock is taken: hovers go on reading the last result.
     let base = Base::new(job.docs.clone(), job.enc);
-    let mut held = shared.write();
-    let mut reasoner = held
-        .take()
-        .map(|r| r.reasoner)
-        .unwrap_or_else(|| turbowl::Reasoner::with_switches(switches));
-    reasoner.set_switches(switches);
+    if let Some(r) = shared.write().as_mut().filter(|r| unchanged(r, job, &base)) {
+        return rerun(r, job, base, limits);
+    }
+    let mut reasoner = turbowl::Reasoner::with_switches(switches);
     reasoner.set_base(base.triples());
-    reasoner.reason();
-    let types = inferred_types(&reasoner);
-    let (diagnostics, cache) = if job.findings {
-        diagnostics::of(
-            &reasoner,
-            &base,
-            job.related,
-            &job.project,
-            shared.limits.findings,
-        )
-    } else {
-        Default::default()
+    #[cfg(test)]
+    shared
+        .reasoned
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if reasoner.reason_cancellable(&until.handle()).is_err() {
+        return Err(stopped());
+    }
+    let Some((types, cut)) = inferred_types(&reasoner, job.max_triples, &until) else {
+        return Err(stopped());
     };
-    *held = Some(Reasoned {
+    // Superseded: its findings would be dropped.
+    if job.cancel.is_cancelled() {
+        return Err(Stopped::Superseded);
+    }
+    let (diagnostics, cache) = findings(&reasoner, &base, job, limits);
+    *shared.write() = Some(Reasoned {
         generation: job.generation,
+        rules: job.rules,
+        max_triples: job.max_triples,
         reasoner,
         base,
         types,
+        cut,
         cache: Mutex::new(cache),
     });
-    diagnostics
+    Ok(diagnostics)
 }
 
-/// Each IRI's inferred types that are IRIs, sorted.
-fn inferred_types(r: &turbowl::Reasoner) -> FxHashMap<String, Vec<String>> {
+/// `r` ran with the same rules and limit over the same triples as `job`
+/// would.
+fn unchanged(r: &Reasoned, job: &Job, base: &Base) -> bool {
+    r.rules == job.rules && r.max_triples == job.max_triples && same_triples(&r.base, base)
+}
+
+/// `r`, [`unchanged`], for `job`: with `base` (the new places of its
+/// triples) and its findings, and no round reasoned.
+fn rerun(r: &mut Reasoned, job: &Job, base: Base, limits: Limits) -> Result<ByUri, Stopped> {
+    if job.cancel.is_cancelled() {
+        return Err(Stopped::Superseded);
+    }
+    let (diagnostics, cache) = findings(&r.reasoner, &base, job, limits);
+    r.generation = job.generation;
+    r.base = base;
+    r.cache = Mutex::new(cache);
+    Ok(diagnostics)
+}
+
+/// `a` and `b` hold the same triples (each holds a triple once).
+fn same_triples(a: &Base, b: &Base) -> bool {
+    let a: FxHashSet<_> = a.triples().collect();
+    let mut n = 0;
+    for t in b.triples() {
+        if !a.contains(&t) {
+            return false;
+        }
+        n += 1;
+    }
+    n == a.len()
+}
+
+/// The run's findings, with the explainer's cache their proofs filled; none
+/// unless the job asks for them.
+fn findings(
+    reasoner: &turbowl::Reasoner,
+    base: &Base,
+    job: &Job,
+    limits: Limits,
+) -> (ByUri, turbowl::ExplainCache) {
+    if !job.findings {
+        return Default::default();
+    }
+    diagnostics::of(reasoner, base, job.related, &job.project, limits.findings)
+}
+
+/// Each IRI's inferred types that are IRIs, sorted, read from at most `max`
+/// inferred triples, and whether reading stopped there; `None` when `until`
+/// passed, asked every [`super::infer::CHECK_EVERY`] triples.
+#[allow(clippy::type_complexity)]
+fn inferred_types(
+    r: &turbowl::Reasoner,
+    max: u64,
+    until: &Until,
+) -> Option<(FxHashMap<String, Vec<String>>, bool)> {
+    use super::infer::CHECK_EVERY;
     use spargebra::term::{NamedOrBlankNode, Term};
     let mut types: FxHashMap<String, Vec<String>> = FxHashMap::default();
-    for t in r.inferred() {
+    let mut cut = false;
+    for (i, t) in r.inferred().enumerate() {
+        if i % CHECK_EVERY == CHECK_EVERY - 1 && until.passed() {
+            return None;
+        }
+        if i as u64 >= max {
+            cut = true;
+            break;
+        }
         if t.predicate.as_str() != crate::syntax::RDF_TYPE {
             continue;
         }
@@ -168,7 +317,7 @@ fn inferred_types(r: &turbowl::Reasoner) -> FxHashMap<String, Vec<String>> {
         classes.sort_unstable();
         classes.dedup();
     }
-    types
+    Some((types, cut))
 }
 
 #[cfg(test)]
@@ -176,7 +325,7 @@ mod tests {
     use super::super::base::tests::doc;
     use super::super::state::{Limits, NoProof, Types};
     use super::*;
-    use std::time::Duration;
+    use std::sync::atomic::Ordering;
 
     const EX: &str = "http://example.org/";
 
@@ -185,11 +334,12 @@ mod tests {
             generation,
             docs,
             rules: Reasoning::Default,
-            max_triples: 1000,
+            max_triples: 1_000_000,
             enc: Encoding::Utf16,
             related: true,
             findings: true,
             project: Default::default(),
+            cancel: Default::default(),
         }
     }
 
@@ -432,6 +582,7 @@ mod tests {
     }
 
     const SHORT: Limits = Limits {
+        run: Duration::from_secs(600),
         hover: Duration::from_millis(100),
         findings: Duration::from_millis(100),
     };
@@ -650,6 +801,7 @@ mod tests {
         let mut job = job(1, vec![doc(Source::Open, "file:///w/many.ttl", &text)]);
         job.max_triples = 1_000_000;
         let unlimited = Limits {
+            run: Duration::from_secs(600),
             findings: Duration::from_secs(600),
             ..Limits::default()
         };
@@ -709,7 +861,7 @@ mod tests {
         let out = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(out.generation, 1);
         assert!(shared.read_for_test().is_some());
-        // An edit: the same reasoner runs again over the new base.
+        // An edit: a new run over the new base.
         let more = doc(
             Source::Disk,
             "file:///w/b.ttl",
@@ -758,5 +910,196 @@ mod tests {
             ..settings
         };
         assert!(Shared::when_on(&off, crate::server::worker::Spawn::Thread).is_none());
+    }
+
+    /// A long `rdfs:subClassOf` chain with members at its start: TurbOWL
+    /// takes hundreds of milliseconds over it, in many rounds.
+    fn slow() -> (Source, Arc<Analysis>) {
+        let mut text = String::from(
+            "@prefix ex: <http://example.org/> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n",
+        );
+        for i in 0..700 {
+            text.push_str(&format!("ex:C{i} rdfs:subClassOf ex:C{} .\n", i + 1));
+        }
+        for j in 0..100 {
+            text.push_str(&format!("ex:m{j} a ex:C0 .\n"));
+        }
+        doc(Source::Open, "file:///w/slow.ttl", &text)
+    }
+
+    /// How long a run over [`animals`] and [`slow`] takes here, with no
+    /// time limit.
+    fn whole_run() -> Duration {
+        let unlimited = Limits {
+            run: Duration::from_secs(600),
+            ..Limits::default()
+        };
+        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, unlimited);
+        let start = std::time::Instant::now();
+        let out = run_inline(&shared, &job(1, vec![animals(), slow()]));
+        let whole = start.elapsed();
+        assert_eq!(out.stopped, None);
+        assert!(
+            whole >= Duration::from_millis(200),
+            "too quick to measure: {whole:?}"
+        );
+        whole
+    }
+
+    fn animal_of_rex(shared: &Arc<Shared>) {
+        let rex = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
+        assert_eq!(rex.len(), 1);
+        assert_eq!(rex[0].class, format!("{EX}Animal"));
+        assert!(rex[0].proof.is_ok());
+    }
+
+    #[test]
+    fn timing_a_run_stops_at_its_time_limit_and_hover_keeps_the_last_result() {
+        let whole = whole_run();
+        let limit = whole / 10;
+        let shared = Arc::new(Shared::with_limits(
+            crate::server::worker::Spawn::Thread,
+            Limits {
+                run: limit,
+                ..Limits::default()
+            },
+        ));
+        shown(&shared, &job(1, vec![animals()]));
+        let start = std::time::Instant::now();
+        let out = run_inline(&shared, &job(2, vec![animals(), slow()]));
+        let took = start.elapsed();
+        assert_eq!(
+            out.stopped,
+            Some(Stopped::TimeLimit {
+                limit,
+                kept: Some(1)
+            })
+        );
+        assert!(out.diagnostics.is_empty());
+        assert!(
+            took < whole / 2,
+            "the limit stopped it after {took:?} of a {whole:?} run"
+        );
+        // The state holds the last result, which hover reads.
+        assert_eq!(shared.held(), Some(1));
+        animal_of_rex(&shared);
+        // With no result before it, a stopped run leaves none.
+        let shared = Arc::new(Shared::with_limits(
+            crate::server::worker::Spawn::Inline,
+            Limits {
+                run: limit,
+                ..Limits::default()
+            },
+        ));
+        let out = run_inline(&shared, &job(1, vec![animals(), slow()]));
+        assert_eq!(out.stopped, Some(Stopped::TimeLimit { limit, kept: None }));
+        assert_eq!(shared.held(), None);
+    }
+
+    #[test]
+    fn timing_a_cancel_stops_the_run_and_hover_reads_the_last_result_meanwhile() {
+        let whole = whole_run();
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        shown(&shared, &job(1, vec![animals()]));
+        let next = job(2, vec![animals(), slow()]);
+        let cancel = next.cancel.clone();
+        let start = std::time::Instant::now();
+        let running = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || run_inline(&shared, &next))
+        };
+        std::thread::sleep(whole / 10);
+        // While it runs, hover reads the last result, not "running".
+        animal_of_rex(&shared);
+        cancel.cancel();
+        let out = running.join().unwrap();
+        let took = start.elapsed();
+        assert_eq!(out.stopped, Some(Stopped::Superseded));
+        assert!(
+            took < whole / 2,
+            "the cancel stopped it after {took:?} of a {whole:?} run"
+        );
+        assert_eq!(shared.held(), Some(1));
+        animal_of_rex(&shared);
+    }
+
+    #[test]
+    fn the_inferred_types_are_read_up_to_max_triples_and_hover_is_told() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        // Six triples, and more inferred.
+        let tight = Job {
+            max_triples: 6,
+            ..job(1, vec![chain(3)])
+        };
+        let out = shown(&shared, &tight);
+        assert_eq!(out.stopped, None);
+        assert_eq!(shared.cut(), Some(6));
+        let x = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(10)));
+        assert!(x.len() <= 3, "{}", x.len());
+        // The findings do not read the inferred types: they are all there.
+        assert!(
+            out.diagnostics["file:///w/chain.ttl"]
+                .iter()
+                .any(|d| d.message.contains("disjoint"))
+        );
+        shown(&shared, &job(2, vec![chain(3)]));
+        assert_eq!(shared.cut(), None);
+        let x = proved(shared.inferred_types(&format!("{EX}x"), Duration::from_secs(10)));
+        assert_eq!(x.len(), 3);
+    }
+
+    #[test]
+    fn a_run_over_the_same_triples_reasons_no_round_and_takes_their_new_places() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let reasoned = || shared.reasoned.load(Ordering::Relaxed);
+        shown(&shared, &job(1, vec![animals()]));
+        assert_eq!(reasoned(), 1);
+        // A blank line first: the same triples, each a line lower.
+        let moved = doc(
+            Source::Open,
+            "file:///w/a.ttl",
+            "\n@prefix ex: <http://example.org/> .\n\
+             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+             ex:Dog rdfs:subClassOf ex:Animal .\n\
+             ex:rex a ex:Dog .\n",
+        );
+        shown(&shared, &job(2, vec![moved.clone()]));
+        assert_eq!(reasoned(), 1);
+        let rex = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
+        let mut lines: Vec<u32> = rex[0]
+            .proof
+            .as_ref()
+            .unwrap()
+            .leaves()
+            .filter_map(|l| l.origin())
+            .map(|o| o.line)
+            .collect();
+        lines.sort_unstable();
+        assert_eq!(lines, [4, 5]);
+        // Other rules, another limit or other triples reason again.
+        let complete = Job {
+            rules: Reasoning::Complete,
+            ..job(3, vec![moved.clone()])
+        };
+        shown(&shared, &complete);
+        assert_eq!(reasoned(), 2);
+        let lower = Job {
+            max_triples: 500_000,
+            rules: Reasoning::Complete,
+            ..job(4, vec![moved])
+        };
+        shown(&shared, &lower);
+        assert_eq!(reasoned(), 3);
+        shown(&shared, &job(5, vec![animals(), chain(3)]));
+        assert_eq!(reasoned(), 4);
+        // A cancelled job changes nothing, though it reasons no round.
+        let cancelled = job(6, vec![animals(), chain(3)]);
+        cancelled.cancel.cancel();
+        assert_eq!(
+            run_inline(&shared, &cancelled).stopped,
+            Some(Stopped::Superseded)
+        );
+        assert_eq!(shared.held(), Some(5));
     }
 }

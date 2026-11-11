@@ -3,12 +3,14 @@
 //!
 //! The state the runs write and hovers read is the server's
 //! `reasoning` field ([`crate::reasoning::Shared`]); this group holds only
-//! what drives the runs. Each run is a job with a generation; a run cannot
-//! be stopped halfway, so a superseded one finishes and its outcome is
-//! dropped. An edit supersedes the run going on at once, though the next
-//! one starts only once typing pauses; the server marks the current run's
-//! result as the one hover reads (`Shared::show`). The thread starts with the first job. Embedded (no threads), a
-//! job runs at once ([`crate::reasoning::run_inline`]).
+//! what drives the runs. Each run is a job with a generation and a cancel
+//! handle. A newer job, an edit (though the next run starts only once
+//! typing pauses) and turning reasoning off supersede the run going on:
+//! its handle is tripped, it stops at its next check, and its outcome, or
+//! that of a run that finished first, is dropped. The server marks the
+//! current run's result as the one hover reads (`Shared::show`). The thread
+//! starts with the first job. Embedded (no threads), a job runs at once
+//! ([`crate::reasoning::run_inline`]).
 //!
 //! With reasoning off the server holds no state and never calls this
 //! group: no thread, no job.
@@ -18,7 +20,7 @@ use super::worker::Fed;
 use super::worker::Feed;
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Source;
-use crate::reasoning::{ByUri, Job, Outcome, SKIPPED_CODE, Shared, Worker};
+use crate::reasoning::{ByUri, Cancel, Job, Outcome, SKIPPED_CODE, Shared, Worker};
 use crate::settings::Settings;
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{Receiver, RecvError};
@@ -32,6 +34,12 @@ pub(super) struct Runs {
     feed: Feed<Outcome>,
     /// The latest job; older outcomes are dropped.
     generation: u64,
+    /// The cancel handle of the latest job.
+    cancel: Cancel,
+    /// The generation of the latest job submitted to the thread.
+    submitted: u64,
+    /// A run has stopped at its time limit since a run last finished.
+    stopped: bool,
     /// The latest findings per document.
     diagnostics: ByUri,
     /// The client shows related information (see [`Job::related`]).
@@ -72,7 +80,7 @@ impl Runs {
         settings: &Settings,
         enc: Encoding,
     ) -> Job {
-        self.generation += 1;
+        self.invalidate();
         Job {
             generation: self.generation,
             docs,
@@ -82,6 +90,7 @@ impl Runs {
             related: self.related,
             findings: settings.reasoning_diagnostics,
             project: Default::default(),
+            cancel: self.cancel.clone(),
         }
     }
 
@@ -95,15 +104,31 @@ impl Runs {
             self.feed = Feed::open(rx);
         }
         if let Some(worker) = &self.worker {
+            self.submitted = job.generation;
             worker.submit(job);
         }
         Ok(())
     }
 
     /// The workspace changed and the next job comes later (once typing
-    /// pauses): the job going on is superseded, its outcome dropped.
+    /// pauses): the job going on is superseded, its run stopped and its
+    /// outcome dropped.
     pub(super) fn invalidate(&mut self) {
         self.generation += 1;
+        self.cancel.cancel();
+        self.cancel = Cancel::default();
+    }
+
+    /// A job newer than `o`'s was submitted, so a run is still to come:
+    /// the progress goes on.
+    pub(super) fn newer_submitted(&self, o: &Outcome) -> bool {
+        self.submitted > o.generation
+    }
+
+    /// A run stopped at its time limit: whether it is the first since a
+    /// run last finished (or since the start).
+    pub(super) fn first_stop(&mut self) -> bool {
+        !std::mem::replace(&mut self.stopped, true)
     }
 
     /// The latest job's generation.
@@ -117,9 +142,10 @@ impl Runs {
         o.generation == self.generation
     }
 
-    /// Show `diagnostics` as the latest findings: whether they differ from
-    /// those shown.
+    /// Show `diagnostics`, a finished run's, as the latest findings:
+    /// whether they differ from those shown.
     pub(super) fn set_results(&mut self, diagnostics: ByUri) -> bool {
+        self.stopped = false;
         if diagnostics == self.diagnostics {
             return false;
         }
@@ -131,7 +157,7 @@ impl Runs {
     /// outcome is not listened for, and the findings are cleared. Whether
     /// there were any.
     pub(super) fn stop(&mut self) -> bool {
-        self.generation += 1;
+        self.invalidate();
         self.gone();
         self.feed.close();
         let shown = !self.diagnostics.is_empty();
@@ -217,5 +243,20 @@ mod tests {
             runs.rx().recv_timeout(Duration::from_millis(10)),
             Err(RecvTimeoutError::Timeout)
         ));
+    }
+
+    #[test]
+    fn a_newer_job_an_edit_or_turning_off_stops_the_run_going_on() {
+        let mut runs = Runs::default();
+        let job = |runs: &mut Runs| runs.job(vec![doc(DISJOINT)], &settings(), Encoding::Utf16);
+        let first = job(&mut runs);
+        assert!(!first.cancel.is_cancelled());
+        let second = job(&mut runs);
+        assert!(first.cancel.is_cancelled() && !second.cancel.is_cancelled());
+        runs.invalidate();
+        assert!(second.cancel.is_cancelled());
+        let third = job(&mut runs);
+        runs.stop();
+        assert!(third.cancel.is_cancelled());
     }
 }

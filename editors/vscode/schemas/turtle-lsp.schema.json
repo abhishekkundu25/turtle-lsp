@@ -236,8 +236,8 @@
         "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
       ],
       "default": "default",
-      "description": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with reasoning.diagnostics. This file may choose the rules; reasoning.maxTriples still holds.",
-      "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `reasoning.diagnostics`. This file may choose the rules; `reasoning.maxTriples` still holds."
+      "description": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with reasoning.diagnostics. This file may choose the rules, except in an untrusted VS Code workspace; reasoning.maxTriples and a 10 s time limit per run still hold.",
+      "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `reasoning.diagnostics`. This file may choose the rules, except in an untrusted VS Code workspace; `reasoning.maxTriples` and a 10 s time limit per run still hold."
     },
     "reasoning.maxTriples": {
       "type": "integer",
