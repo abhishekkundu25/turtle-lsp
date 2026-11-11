@@ -245,8 +245,15 @@ test("a SPARQL file's open, edits and close start no run; an RDF file's edit doe
   try {
     w.s.open(a, CLASH)
     await until(w.s, a, (d) => turbowl(d).length > 0)
-    await settled()
-    const before = runs().length
+    // Opening a.ttl can start a second run after the first one's findings
+    // land (a slow runner sees it late): wait past the pause in typing until
+    // no new run starts, so the count below is only the SPARQL file's.
+    let before = -1
+    while (runs().length !== before) {
+      before = runs().length
+      await settled()
+      await sleep(1500)
+    }
     w.s.open(q, "SELECT * WHERE { ?s ?p ?o }", "sparql")
     w.s.change(q, "ASK { ?s ?p ?o }")
     w.s.close(q)
