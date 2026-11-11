@@ -115,3 +115,66 @@ test("https://schema.org/ is the schema vocabulary", async () => {
     ],
   )
 })
+
+test("the terms only the specifications define are known (issue #106)", async () => {
+  const text = `@prefix ex: <http://example.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:Small a rdfs:Datatype ;
+  owl:onDatatype xsd:integer ;
+  owl:withRestrictions ( [ xsd:maxExclusive 10 ] [ xsd:pattern "[0-9]+" ] ) .
+ex:ratio rdfs:range owl:rational .
+ex:claim rdf:reifies ex:x .
+`
+  const uri = uriOf(path.join(ws, "issue-106.ttl"))
+  s.open(uri, text)
+  assert.deepEqual(unknown(await s.diagnosticsFor(uri)), [])
+})
+
+test("rdf:_1 and every later membership property are known, in Turtle and SPARQL; rdf:_0, rdf:_01 and rdf:_x are not", async () => {
+  const ttl = uriOf(path.join(ws, "container.ttl"))
+  s.open(ttl, `${header}ex:c a rdf:Bag ; rdf:_1 ex:a ; rdf:_12 ex:b ; rdf:_0 ex:c ; rdf:_01 ex:d ; rdf:_x ex:e .\n`)
+  assert.deepEqual(
+    unknown(await s.diagnosticsFor(ttl)).map((d) => d.message.split(" is ")[0]),
+    ["'_0'", "'_01'", "'_x'"],
+  )
+  const rq = uriOf(path.join(ws, "container.rq"))
+  s.open(rq, `PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\nSELECT * WHERE { ?c rdf:_1 ?a ; rdf:_12 ?b ; rdf:_0 ?z }\n`, "sparql")
+  assert.deepEqual(unknown(await s.diagnosticsFor(rq)).map((d) => d.message.split(" is ")[0]), ["'_0'"])
+})
+
+test("EARL is checked in http://www.w3.org/ns/earl#", async () => {
+  const text = `@prefix earl: <http://www.w3.org/ns/earl#> .\n@prefix ex: <http://example.org/> .\nex:a a earl:Assertion .\nex:b a earl:Asertion .\n`
+  const uri = uriOf(path.join(ws, "earl.ttl"))
+  s.open(uri, text)
+  const w = unknown(await s.diagnosticsFor(uri))
+  assert.deepEqual(
+    w.map((d) => [d.range.start.line, d.message]),
+    [[3, "'Asertion' is not defined in the earl vocabulary <http://www.w3.org/ns/earl#>. Did you mean 'Assertion'?"]],
+  )
+  assert.deepEqual(w[0].data, { replace: "earl:Assertion" })
+})
+
+test("hover names the vocabulary only for a term it has", async () => {
+  const text = `${header}ex:a rdfs:label "a" ; rdfs:lable "b" ; rdf:_3 ex:c .\n`
+  const uri = uriOf(path.join(ws, "hover-vocab.ttl"))
+  s.open(uri, text)
+  await s.diagnosticsFor(uri)
+  const lines = text.split("\n")
+  const hover = async (word) => {
+    const line = lines.findIndex((l) => l.includes(word))
+    const h = await s.request("textDocument/hover", {
+      textDocument: { uri },
+      position: { line, character: lines[line].indexOf(word) + word.length - 1 },
+    })
+    return h.contents.value
+  }
+  assert.match(await hover("rdfs:label"), /_From the rdfs vocabulary_/)
+  assert.doesNotMatch(await hover("rdfs:lable"), /vocabulary/)
+  const member = await hover("rdf:_3")
+  assert.match(member, /^\*\*rdf:_3\*\* · property/)
+  assert.match(member, /RDF Schema/)
+})

@@ -1,4 +1,8 @@
-// Regenerates data/vocab.tsv from @zazuko/rdf-vocabularies (dev dependency).
+// Regenerates data/vocab.tsv from @zazuko/rdf-vocabularies (dev dependency),
+// then adds the corrections of data/vocab-patches.tsv: one per line, the
+// columns `action` (only `add`), `prefix`, `local`, `reason`, then the
+// columns of a `term` line from `kind` on. The run stops on a correction for
+// a prefix the package lacks or a term the package already has.
 // Format, UTF-8, one record per line, tab-separated:
 //   @ns <TAB> prefix <TAB> namespace
 //   term <TAB> local <TAB> kind(C|P|I) <TAB> flags(D=deprecated) <TAB> label <TAB> comment
@@ -47,6 +51,26 @@ const compact = (iri, ownNs) => {
   }
   return `<${iri}>`
 }
+// Namespaces the package files under a wrong IRI. The terms are read in the
+// package's spelling and written under the right one.
+const NAMESPACE = { earl: "http://www.w3.org/ns/earl#" }
+
+const PATCHES = "data/vocab-patches.tsv"
+const fail = (line, msg) => {
+  console.error(`${PATCHES}:${line}: ${msg}`)
+  process.exit(1)
+}
+// prefix -> local -> { line, cols }, the cols of its `term` line.
+const patches = new Map()
+const bundled = new Set(byNamespace.map(([p]) => p))
+fs.readFileSync(new URL(`../${PATCHES}`, import.meta.url), "utf8").split("\n").forEach((text, i) => {
+  if (!text) return
+  const [action, prefix, local, , ...cols] = text.split("\t")
+  if (action !== "add") fail(i + 1, `unknown action '${action}'`)
+  if (!bundled.has(prefix)) fail(i + 1, `unknown prefix '${prefix}'`)
+  if (!patches.has(prefix)) patches.set(prefix, new Map())
+  patches.get(prefix).set(local, { line: i + 1, cols: [local, ...cols] })
+})
 const LINE = /^<([^>]*)> <([^>]*)> (<([^>]*)>|_:\S+|"((?:[^"\\]|\\.)*)"(?:@([\w-]+)|\^\^<[^>]*>)?)(?: \S+)? \.$/
 
 let out = ""
@@ -77,8 +101,17 @@ for (const [prefix, ns] of Object.entries(prefixes).sort()) {
       }
     }
   }
-  out += `@ns\t${prefix}\t${ns}\n`
-  for (const [local, t] of [...terms].sort(([a], [b]) => a.localeCompare(b))) {
+  const added = patches.get(prefix) ?? new Map()
+  for (const [local, { line }] of added) {
+    if (terms.has(local)) fail(line, `the package already has ${prefix}:${local}`)
+  }
+  out += `@ns\t${prefix}\t${NAMESPACE[prefix] ?? ns}\n`
+  for (const [local, t] of [...terms, ...added].sort(([a], [b]) => a.localeCompare(b))) {
+    if (added.has(local)) {
+      out += `term\t${t.cols.join("\t")}\n`
+      total++
+      continue
+    }
     const kind = [...t.types].some((x) => CLASS_TYPES.has(x)) ? "C" : [...t.types].some((x) => PROP_TYPES.has(x)) ? "P" : t.hint || (t.types.size ? "I" : /^[A-Z]/.test(local) ? "C" : "P")
     const comment = (t.comment.text ?? "").slice(0, 600)
     const list = (set) => [...set].map((x) => compact(x, ns)).sort().join(" ")

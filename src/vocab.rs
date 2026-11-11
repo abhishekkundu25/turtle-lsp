@@ -1,8 +1,10 @@
 //! Well-known RDF vocabularies, embedded at build time (data/vocab.tsv, generated
-//! by tools/build-vocab.mjs from @zazuko/rdf-vocabularies). Vocabularies are
-//! looked up by namespace IRI, never by prefix name, so `sd:` bound to your own
-//! namespace is never checked against SPARQL Service Description.
+//! by tools/build-vocab.mjs from @zazuko/rdf-vocabularies and the corrections
+//! in data/vocab-patches.tsv). Vocabularies are looked up by namespace IRI,
+//! never by prefix name, so `sd:` bound to your own namespace is never checked
+//! against SPARQL Service Description.
 
+use crate::syntax::RDF;
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, OnceLock};
@@ -51,6 +53,8 @@ impl Vocabulary {
         })
     }
 
+    /// The term named `local`. In `rdf`, also a container membership
+    /// property (`_1`, `_2`, ...), which no list can hold: see [`MEMBERSHIP`].
     pub(crate) fn term(&self, local: &str) -> Option<&Term> {
         let index = self.index.get_or_init(|| {
             self.terms()
@@ -59,7 +63,10 @@ impl Vocabulary {
                 .map(|(i, t)| (t.local.clone(), i))
                 .collect()
         });
-        index.get(local).map(|i| &self.terms()[*i])
+        index
+            .get(local)
+            .map(|i| &self.terms()[*i])
+            .or_else(|| (self.namespace == RDF && is_membership(local)).then(|| &*MEMBERSHIP))
     }
 
     /// Closest defined term by edit distance, for "did you mean" fixes.
@@ -104,6 +111,31 @@ impl Vocabularies {
         let (ns, local) = split_namespace(iri);
         self.by_namespace(ns).map(|v| (v, local))
     }
+}
+
+/// `rdf:_1`, `rdf:_2` and every other container membership property, one
+/// term for all of them, answered by [`Vocabulary::term`] and absent from
+/// [`Vocabulary::terms`], so completion and "did you mean" do not offer it.
+/// Its `local` is `_n`.
+static MEMBERSHIP: LazyLock<Term> = LazyLock::new(|| Term {
+    local: "_n".to_string(),
+    kind: TermKind::Property,
+    deprecated: false,
+    label: String::new(),
+    comment: "A container membership property: rdf:_1, rdf:_2 and so on are each a \
+              subproperty of rdfs:member (RDF Schema 1.1, 5.1.6)."
+        .to_string(),
+    supers: Box::new(["http://www.w3.org/2000/01/rdf-schema#member".to_string()]),
+    domain: Box::new([]),
+    range: Box::new([]),
+});
+
+/// `_` and a positive integer without a leading zero: `_1`, `_12`, not
+/// `_0`, `_01` or `_x`.
+fn is_membership(local: &str) -> bool {
+    local.strip_prefix('_').is_some_and(|n| {
+        n.starts_with(|c: char| matches!(c, '1'..='9')) && n.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 /// How many delimiters, counted from the right, [`split_namespace`] tries.
@@ -681,6 +713,24 @@ mod tests {
             VOCABS.lookup("http://schema.org/Person").unwrap().0.prefix,
             "schema"
         );
+    }
+
+    #[test]
+    fn rdf_answers_every_container_membership_property() {
+        let rdf = VOCABS.by_namespace(RDF).unwrap();
+        for local in ["_1", "_12"] {
+            let t = rdf.term(local).unwrap_or_else(|| panic!("rdf:{local}"));
+            assert_eq!(t.kind, TermKind::Property);
+            assert_eq!(&*t.supers, ["http://www.w3.org/2000/01/rdf-schema#member"]);
+        }
+        for local in ["_0", "_01", "_x", "_"] {
+            assert!(rdf.term(local).is_none(), "rdf:{local}");
+        }
+        for v in VOCABS.all.iter().filter(|v| v.namespace != RDF) {
+            assert!(v.term("_1").is_none(), "{}:_1", v.prefix);
+        }
+        // The list does not grow: completion and "did you mean" read it.
+        assert!(rdf.terms().iter().all(|t| !t.local.starts_with('_')));
     }
 
     #[test]
