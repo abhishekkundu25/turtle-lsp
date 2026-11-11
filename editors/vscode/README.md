@@ -6,8 +6,8 @@ Language support for **RDF Turtle (`.ttl`), TriG (`.trig`), N-Triples (`.nt`),
 N-Quads (`.nq`) and SPARQL (`.rq`, `.sparql`, `.ru`)**: ontologies (OWL, RDFS,
 SKOS), SHACL shapes, linked data, and the queries and updates you run on them. Powered
 by [turtle-lsp](https://github.com/abhishekkundu25/turtle-lsp), a language
-server written in Rust: a keystroke in a 30,000-line file gets fresh
-diagnostics in about 5 ms.
+server written in Rust. After a keystroke in a 30,000-line file, fresh
+diagnostics arrive in about 5 ms.
 
 Try it first in your browser, with nothing to install: [RDF Editor](https://abhishekkundu25.github.io/turtle-lsp/).
 
@@ -19,15 +19,13 @@ SPARQL 1.1 and 1.2 syntax 425/426, SHACL Core 98/98, SHACL-SPARQL 23/23.
 ## Reasoning
 
 [TurbOWL](https://github.com/abhishekkundu25/turbowl), an OWL 2 RL reasoner,
-works out in the background what your workspace implies. It is on by default.
+reasons over your workspace in the background. It is on by default.
 
-- **Inferred types on hover**, each with its proof: one W3C rule per step, and each triple it rests on a link to its line.
-- **Contradictions as diagnostics**, such as a member of two disjoint classes, with `turtle.reasoning.diagnostics` on.
-- **SPARQL over inferred triples**: **▶ Run query** also matches what TurbOWL infers, with `turtle.query.reasoning` set to `default` or `complete`, or with the Inferred choice in the results panel.
+- Hover on a resource lists its inferred types. Each has a proof with one W3C rule per step, and each triple in the proof links to its line.
+- With `turtle.reasoning.diagnostics` on, contradictions such as a member of two disjoint classes show as diagnostics.
+- **▶ Run query** can also match inferred triples. Set `turtle.query.reasoning` to `default` or `complete`, or pick a rule set in the results panel's Inferred choice.
 
 <p align="center"><img src="https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/hover-proof.gif" alt="Hovering ex:rex in a Turtle file: its inferred types ex:Mammal and ex:Animal, each proved by the W3C rule cax-sco from triples linked to their lines; then ex:alice, an ex:Person by the domain of ex:owns, and a click on a proof's link that goes to its line" width="760"></p>
-
-<p align="center">Recorded in the <a href="https://abhishekkundu25.github.io/turtle-lsp/">browser editor</a>; <a href="https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/hover-proof.mp4">watch as MP4</a>.</p>
 
 ## Features
 
@@ -35,7 +33,7 @@ works out in the background what your workspace implies. It is on by default.
 - **Error checking as you type**: syntax errors with recovery (one mistake does not hide the rest of the file), undeclared, unused and duplicate prefixes, invalid IRIs and language tags.
 - **Vocabulary checks**: unknown or deprecated terms in 80+ well-known vocabularies (rdf, rdfs, owl, skos, sh, dcterms, foaf, schema.org, prov, sosa, qudt and more), with "did you mean" fixes. Matched by namespace IRI, so your own `ex:` or `sd:` prefixes are never checked against the wrong vocabulary. Terms in your own namespaces that nothing describes (often typos) are flagged too.
 - **SHACL validation**: data is checked against the shapes in your workspace about a second after you stop typing, and on save. SHACL Core and SHACL-SPARQL (`sh:sparql` constraints, SPARQL targets and components). SPARQL inside shapes is checked as you type, and mistakes in the shapes themselves are flagged.
-- **Reasoning** (on by default; `turtle.reasoning.rules`): TurbOWL, an OWL 2 RL reasoner, works out what the workspace implies in the background. Hover lists a resource's inferred types, each with its proof, one W3C rule per step and each triple it rests on a link to its line. With `turtle.reasoning.diagnostics` on, contradictions, such as a member of two disjoint classes, are diagnostics.
+- **Reasoning** with TurbOWL, on by default (`turtle.reasoning.rules`). See [Reasoning](#reasoning) above.
 - **`owl:imports`**: imported ontologies are resolved from the workspace, a `catalog-v001.xml` or the cache (Turtle, N-Triples, RDF/XML), so their terms complete, hover and validate. An unresolved web import has a quick fix that fetches that one import and caches it; go to definition opens the cached copy.
 - **Completion** of prefixes and terms; type `Pers` to get `foaf:Person`. Classes come first after `a`, properties in predicate position; properties your SHACL shapes require or whose `rdfs:domain` fits come first, and `sh:in` values are offered. Accepting a term adds its `@prefix` line for you.
 - **Hover** with label, comment, types and where a resource is described; **label inlay hints** for opaque IRIs.
@@ -46,8 +44,6 @@ works out in the background what your workspace implies. It is on by default.
 - **Workspace graph**: "Turtle: Show Workspace Graph" (or the graph button in the title bar of an RDF file) draws the workspace as one graph, with filters, search, a focus view and a class tree; click a node to go to its definition.
 
   <img src="https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/graph-view.gif" alt="The workspace graph of a small class hierarchy: rdf:type edges turned on, zoom and pan, a search that selects ex:rex and lists its links, its focus view, and the class tree" width="760">
-
-  Recorded in the [browser editor](https://abhishekkundu25.github.io/turtle-lsp/); [watch as MP4](https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/graph-view.mp4).
 
 - **Quick fixes and refactorings**: add a missing prefix (or the `owl:imports` that defines it), add all missing prefixes, remove an unused prefix, fix a misspelled term, organise prefixes, shorten or expand an IRI, extract a prefix for a namespace.
 
@@ -68,8 +64,6 @@ workspace and the vocabularies:
 **▶ Run query** above a query runs it over your workspace's files as the editor has them, unsaved edits included, and shows the results in a Query Results panel beside it: a table you can sort, copy or export as CSV or JSON (or `true`/`false` for `ASK`, triples for `CONSTRUCT`). Its Inferred choice (Off, Default rules or Complete rules; it starts at `turtle.query.reasoning`) reruns the query with or without what TurbOWL infers, and the results say how many inferred triples they include. The query runs in the background with a time limit and a row limit. No endpoint is contacted, and updates are never run.
 
 <p align="center"><img src="https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/sparql-reasoning.gif" alt="A SPARQL query for the resources of type ex:Animal: with Inferred off it returns no rows, as no file says so; with TurbOWL's default rules it returns ex:polly, ex:rex and ex:tom, and the results say they include 12 inferred triples" width="760"></p>
-
-<p align="center">Recorded in the <a href="https://abhishekkundu25.github.io/turtle-lsp/">browser editor</a>; <a href="https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/assets/sparql-reasoning.mp4">watch as MP4</a>.</p>
 
 ## N-Quads
 
