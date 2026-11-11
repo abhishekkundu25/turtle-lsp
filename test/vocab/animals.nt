@@ -1,0 +1,22 @@
+<http://example.org/ns#legs> <http://www.w3.org/2000/01/rdf-schema#seeAlso> <http://example.org/ns#Dog> .
+<http://example.org/ns#Cat> <http://www.w3.org/2000/01/rdf-schema#seeAlso> <http://example.org/ns#Dog> .
+<http://example.org/ns#age> <http://www.w3.org/2000/01/rdf-schema#domain> <http://example.org/ns#Animal> .
+<http://example.org/ns#Puppy> <http://www.w3.org/2000/01/rdf-schema#subClassOf> <http://example.org/ns#Dog> .
+<http://example.org/ns#rex> <http://www.w3.org/2000/01/rdf-schema#label> "Rex" .
+<http://example.org/ns#rex> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/ns#Dog> .
+<http://example.org/ns#owner> <http://www.w3.org/2000/01/rdf-schema#range> <http://example.org/other#Agent> .
+<http://example.org/ns#owner> <http://www.w3.org/2000/01/rdf-schema#range> <http://example.org/people/Person> .
+<http://example.org/ns#owner> <http://www.w3.org/2000/01/rdf-schema#domain> <http://example.org/ns#Dog> .
+<http://example.org/ns#owner> <http://www.w3.org/2004/02/skos/core#definition> "The one\twho owns it." .
+<http://example.org/ns#owner> <http://www.w3.org/2000/01/rdf-schema#label> "owner"@en .
+<http://example.org/ns#owner> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2002/07/owl#ObjectProperty> .
+<http://example.org/ns#Dog> <http://www.w3.org/2004/02/skos/core#prefLabel> "dog" .
+<http://example.org/ns#Dog> <http://www.w3.org/2000/01/rdf-schema#subClassOf> <http://example.org/ns#Animal> .
+<http://example.org/ns#Dog> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2000/01/rdf-schema#Class> .
+<http://example.org/ns#Animal> <http://www.w3.org/2000/01/rdf-schema#subClassOf> <http://example.org/other#Base> .
+<http://example.org/ns#Animal> <http://www.w3.org/2000/01/rdf-schema#comment> "A living thing   that moves.\n\nA second paragraph, which the list drops." .
+<http://example.org/ns#Animal> <http://www.w3.org/2000/01/rdf-schema#label> "animal"@en .
+<http://example.org/ns#Animal> <http://www.w3.org/2000/01/rdf-schema#label> "animal (fr)"@fr .
+<http://example.org/ns#Animal> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2002/07/owl#Class> .
+<http://example.org/ns#> <http://www.w3.org/2000/01/rdf-schema#label> "Animals" .
+<http://example.org/ns#> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2002/07/owl#Ontology> .

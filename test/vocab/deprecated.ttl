@@ -1,0 +1,34 @@
+# One term per deprecation marker, and terms with none.
+@prefix ex: <http://example.org/ns#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix qudt: <http://qudt.org/schema/qudt/> .
+@prefix regap: <http://metadataregistry.org/uri/profile/regap/> .
+
+# owl:deprecated true
+ex:oldOwl a rdf:Property ;
+  owl:deprecated true .
+
+# rdf:type owl:DeprecatedClass or owl:DeprecatedProperty
+ex:OldClass a owl:DeprecatedClass .
+ex:oldProperty a owl:DeprecatedProperty .
+
+# schema:supersededBy, in either spelling of the namespace
+ex:OldHttp <http://schema.org/supersededBy> ex:Current .
+ex:OldHttps <https://schema.org/supersededBy> ex:Current .
+
+# qudt:deprecated true
+ex:OldUnit a qudt:Unit ;
+  qudt:deprecated true .
+
+# regap:status RegStatus/1008
+ex:oldRda a rdf:Property ;
+  regap:status <http://metadataregistry.org/uri/RegStatus/1008> .
+
+# No marker: none of these is flagged.
+ex:Current a rdfs:Class .
+ex:published a rdf:Property ;
+  regap:status <http://metadataregistry.org/uri/RegStatus/1001> .
+ex:notDeprecated a rdf:Property ;
+  owl:deprecated false .

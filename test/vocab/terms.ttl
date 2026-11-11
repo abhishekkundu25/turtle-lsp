@@ -1,0 +1,12 @@
+# What a term is: a subject in the namespace or an alias of it, whose local
+# name has no whitespace, `#` or `/`.
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<http://example.org/ns#plain> rdfs:label "plain" .
+<https://example.org/ns#viaAlias> rdfs:label "via the alias" ;
+  rdfs:range <https://example.org/ns#plain> .
+<http://example.org/ns#with/slash> rdfs:label "not a term" .
+<http://example.org/ns#with#hash> rdfs:label "not a term" .
+<http://example.org/ns#with\u00A0space> rdfs:label "not a term: the local name holds U+00A0" .
+<http://example.org/ns#> rdfs:label "the namespace itself is not a term" .
+<http://example.org/elsewhere#outside> rdfs:label "not in the namespace" .

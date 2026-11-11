@@ -1,0 +1,7 @@
+# The first of two source files of one vocabulary.
+@prefix ex: <http://example.org/ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+ex:First a rdfs:Class ;
+  rdfs:label "first" .
+ex:Shared a rdfs:Class .

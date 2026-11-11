@@ -1,0 +1,8 @@
+term	Animal	C		animal	A living thing that moves.	other:Base
+term	Cat	C			
+term	Dog	C		dog		Animal
+term	Puppy	C				Dog
+term	age	P					Animal
+term	legs	P			
+term	owner	P		owner	The one who owns it.		Dog	<http://example.org/people/Person> other:Agent
+term	rex	I		Rex	
