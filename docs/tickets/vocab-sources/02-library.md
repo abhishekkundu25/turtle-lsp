@@ -21,7 +21,7 @@ library to use.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `n3` and `rdfxml-streaming-parser` are `devDependencies` at exact versions (today `n3` 2.13.12 and `rdfxml-streaming-parser` 3.3.0). `@zazuko/rdf-vocabularies` stays, since 01's generator reads it. `npm audit --audit-level=moderate` passes.
 - [ ] New `test/vocab-build.test.mjs`, on small sources under `test/vocab/` with `ex:` names and `http://example.org/` namespaces. It runs offline and compares text with `\n` line ends, since `npm run test:node` runs it on Linux, macOS and Windows.

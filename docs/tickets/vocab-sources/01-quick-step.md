@@ -18,7 +18,7 @@ DPV stay as they are until 03. This ticket can be released alone.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The file in issue #106 gets no `unknown-term`. `rdf:_1` and `rdf:_12` get none in Turtle and in SPARQL; `rdf:_0`, `rdf:_01` and `rdf:_x` keep theirs. `earl:Assertion` in the `http` namespace is known and `earl:Asertion` is reported with its fix. Cases in `test/unknown-term.test.mjs`.
 - [ ] Hover on `rdfs:label` keeps "From the rdfs vocabulary"; hover on `rdfs:lable` has no vocabulary line; hover on `rdf:_3` says it is a property and cites RDF Schema. Unit tests in the hover module, and one case in `test/unknown-term.test.mjs`.

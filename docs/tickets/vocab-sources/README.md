@@ -50,4 +50,14 @@ validation.
 
 ## Departures
 
-None yet.
+- 01: the list grows by 1,298 bytes gzipped (733,090 to 734,388), over the
+  budget until 03's comment cap applies. Shipping 01 alone would be slightly
+  over it.
+- 01: `owl:real` and `owl:rational` are now tagged `class` in semantic
+  tokens, because `is_datatype` in `src/features/semantic.rs` knows only XSD
+  and fixed `rdf:` names. Moved into 03.
+- 02: triples are sorted by their N-Triples form before reading, and
+  `owl:DeprecatedClass` / `owl:DeprecatedProperty` give kinds C and P. The
+  package's `schema:supersededBy` marks 82 terms, not 83.
+- 02: the RDA `regap` status namespace and IRI shape come from memory; 03
+  checks them against the RDA files.
