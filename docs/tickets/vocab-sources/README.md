@@ -117,8 +117,9 @@ validation.
   the publisher, and the manifest's licence column now names them (no hash
   changes): `bibo` CC-BY-SA-3.0 (DCMI's page for BIBO), `cc` CC-BY-4.0
   (creativecommons.org's content), `dash` Apache-2.0 (the TopQuadrant/shacl
-  repository, which holds `dash.ttl`), `hydra` W3C Software and Document
-  License (the HydraCG/Specifications repository), `lvont` CC-BY-SA-3.0
+  repository, which holds `dash.ttl`), `hydra` CC-BY-4.0 (the file's own
+  `cc:license`; first recorded as the W3C Software and Document License from
+  the HydraCG/Specifications repository, corrected), `lvont` CC-BY-SA-3.0
   (lexvo.org's legal page, for its RDF dump), `mads` public domain
   (id.loc.gov's about page) and `sdmx` CC-BY-SA-4.0 (the `LICENSE.md` beside
   the file, written for the SDMX vocabulary files). Four stay unknown and

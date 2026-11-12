@@ -221,7 +221,7 @@ is the `@ns` line in `data/vocab.tsv`.
 | `gs1` | https://ref.gs1.org/voc/data/gs1Voc.ttl | 1.18 | Apache-2.0 |
 | `gtfs` | https://raw.githubusercontent.com/OpenTransport/linked-gtfs/master/gtfs.ttl | archived copy, vocab.gtfs.org is gone; compared 2026-11-12 | CC-BY-3.0 |
 | `http` | https://www.w3.org/2011/http | compared 2026-11-12 | W3C Document License |
-| `hydra` | https://www.w3.org/ns/hydra/core.jsonld | compared 2026-11-12 | W3C Software and Document License (HydraCG/Specifications) |
+| `hydra` | https://www.w3.org/ns/hydra/core.jsonld | compared 2026-11-12 | CC-BY-4.0 (stated in the file: cc:license) |
 | `ical` | https://www.w3.org/2002/12/cal/icaltzd.rdf | compared 2026-11-12 | W3C Document License |
 | `ldp` | https://www.w3.org/ns/ldp | compared 2026-11-12 | W3C Document License |
 | `locn` | https://www.w3.org/ns/locn | compared 2026-11-12 | ISA Open Metadata Licence v1.1 |

@@ -52,7 +52,7 @@ grddl	http://www.w3.org/2003/g/data-view#	-	tsv	https://www.w3.org/2003/g/data-v
 gs1	https://ref.gs1.org/voc/	https://gs1.org/voc/ https://www.gs1.org/voc/	ttl	https://ref.gs1.org/voc/data/gs1Voc.ttl	1.18	Apache-2.0	b6039ed1b3229853a0aed1eb8568527f2d393925fd163d6fce5fddefe7ea1aa7
 gtfs	http://vocab.gtfs.org/terms#	-	tsv	https://raw.githubusercontent.com/OpenTransport/linked-gtfs/master/gtfs.ttl	archived copy, vocab.gtfs.org is gone; compared 2026-11-12	CC-BY-3.0	e75351e3b1cc4980aa586b09a2be62d25bf5e0f7cbcceb9dab4acae6e6e2821e
 http	http://www.w3.org/2011/http#	-	tsv	https://www.w3.org/2011/http	compared 2026-11-12	W3C Document License	40af59b8a831f588ce904c5b4402f5a173f8c2b1eebf1ee708159b9ed0a8c943
-hydra	http://www.w3.org/ns/hydra/core#	-	tsv	https://www.w3.org/ns/hydra/core.jsonld	compared 2026-11-12	W3C Software and Document License (HydraCG/Specifications)	3febd8c0f7a28c60abdc10d1db94072ecca0e9551cf51a6586780496dc434563
+hydra	http://www.w3.org/ns/hydra/core#	-	tsv	https://www.w3.org/ns/hydra/core.jsonld	compared 2026-11-12	CC-BY-4.0 (stated in the file: cc:license)	3febd8c0f7a28c60abdc10d1db94072ecca0e9551cf51a6586780496dc434563
 ical	http://www.w3.org/2002/12/cal/icaltzd#	-	tsv	https://www.w3.org/2002/12/cal/icaltzd.rdf	compared 2026-11-12	W3C Document License	c08f782b24b4be6da8d1dc801fe626a09ee2a8c6a80005ed6f369c62fedd5754
 ldp	http://www.w3.org/ns/ldp#	-	tsv	https://www.w3.org/ns/ldp	compared 2026-11-12	W3C Document License	6615e5467071f7445f604db5620433f9e074129999f8a6fc3fca38fe111e20d3
 locn	http://www.w3.org/ns/locn#	-	tsv	https://www.w3.org/ns/locn	compared 2026-11-12	ISA Open Metadata Licence v1.1	3430c57079ea117149d20002777825193dab9e46c6aabcbd80760956abc09fd6
