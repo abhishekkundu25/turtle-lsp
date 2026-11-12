@@ -109,7 +109,7 @@ test("a comment is not cut after an abbreviation or inside a bracket", async () 
   const words = Array(COMMENT_CAP).fill("word").join(" ")
   // Each is followed by a word that does not start in lower case, as a new
   // sentence would be.
-  const abbreviations = ["e.g. Oil", "E.g. Oil", "i.e. SKUs", "Decree No. 12", "the U.S. Secretary", "tips, etc. Then", "one vs. Another",
+  const abbreviations = ["e.g. Oil", "E.g. Oil", "i.e. SKUs", "Decree No. 12", "the U.S. Secretary", "one vs. Another",
     "Example Inc. Then", "cf. Section 2", "Jane Q. Example", "Example e. V. Then", "p. 12", "(e.g. Oil)", "(Ital. Ente)", "[Fagus spp. (Fagaceae)]"]
   const comments = {}
   abbreviations.forEach((a, i) => {
@@ -120,6 +120,11 @@ test("a comment is not cut after an abbreviation or inside a bracket", async () 
   comments.closed = `One (e.g. this) is whole. Then (as before) another. Next ${words}`
   comments.question = `Is it in the U.S? Is it at No! Next ${words}`
   comments.bracketed = `The material used. (E.g. Oil, ${words})`
+  // "etc." ends a sentence when a capital follows; a stray ")" opens nothing.
+  comments.etc = `Lumens, watts, etc. This is the rest. Then ${words}`
+  comments.smiley = `Smile :) (note. Then) and ${words}`
+  // schema.org writes its paragraph breaks as the characters \n\n.
+  comments.paragraphs = "The first paragraph.\\n\\nRelated: " + words
   const { text } = await build([row("ex", "nt", commented(comments))])
 
   abbreviations.forEach((a, i) => {
@@ -132,6 +137,9 @@ test("a comment is not cut after an abbreviation or inside a bracket", async () 
   assert.equal(commentOf(text, "closed"), "One (e.g. this) is whole. Then (as before) another.")
   assert.equal(commentOf(text, "question"), "Is it in the U.S? Is it at No!")
   assert.equal(commentOf(text, "bracketed"), "The material used.")
+  assert.equal(commentOf(text, "etc"), "Lumens, watts, etc. This is the rest.")
+  assert.ok(commentOf(text, "smiley").endsWith("word…"), commentOf(text, "smiley"))
+  assert.equal(commentOf(text, "paragraphs"), "The first paragraph.")
 })
 
 test("a subject in an alias namespace is a term; a local name with whitespace, # or / is not", async () => {

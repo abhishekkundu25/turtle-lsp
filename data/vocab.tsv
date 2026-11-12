@@ -1002,7 +1002,7 @@ term	E20_Biological_Object	C		Biological Object	This class comprises individual 
 term	E21_Person	C		Person	This class comprises real persons who live or are assumed to have lived.	E20_Biological_Object E39_Actor
 term	E22_Human-Made_Object	C		Human-Made Object	This class comprises all persistent physical objects of any size that are purposely created by human activity and have physical boundaries that separate them…	E19_Physical_Object E24_Physical_Human-Made_Thing
 term	E24_Physical_Human-Made_Thing	C		Physical Human-Made Thing	This class comprises all persistent physical items of any size that are purposely created by human activity.	E18_Physical_Thing E71_Human-Made_Thing
-term	E25_Human-Made_Feature	C		Human-Made Feature	This class comprises physical features that are purposely created by human activity, such as scratches, artificial caves, artificial water channels, etc. In…	E24_Physical_Human-Made_Thing E26_Physical_Feature
+term	E25_Human-Made_Feature	C		Human-Made Feature	This class comprises physical features that are purposely created by human activity, such as scratches, artificial caves, artificial water channels, etc.	E24_Physical_Human-Made_Thing E26_Physical_Feature
 term	E26_Physical_Feature	C		Physical Feature	This class comprises identifiable features that are physically attached in an integral way to particular physical objects.	E18_Physical_Thing
 term	E27_Site	C		Site	This class comprises pieces of land or sea floor.	E26_Physical_Feature
 term	E28_Conceptual_Object	C		Conceptual Object	This class comprises non-material products of our minds and other human produced data that have become objects of a discourse about their identity,…	E71_Human-Made_Thing
@@ -1028,7 +1028,7 @@ term	E54_Dimension	C		Dimension	This class comprises quantifiable properties tha
 term	E55_Type	C		Type	This class comprises concepts denoted by terms from thesauri and controlled vocabularies used to characterize and classify instances of CIDOC CRM classes.	E28_Conceptual_Object
 term	E56_Language	C		Language	This class is a specialization of E55 Type and comprises the natural languages in the sense of concepts.	E55_Type
 term	E57_Material	C		Material	This class is a specialization of E55 Type and comprises the concepts of materials.	E55_Type
-term	E58_Measurement_Unit	C		Measurement Unit	This class is a specialization of E55 Type and comprises the types of measurement units: feet, inches, centimetres, litres, lumens, etc. This type is used…	E55_Type
+term	E58_Measurement_Unit	C		Measurement Unit	This class is a specialization of E55 Type and comprises the types of measurement units: feet, inches, centimetres, litres, lumens, etc.	E55_Type
 term	E5_Event	C		Event	This class comprises distinct, delimited and coherent processes and interactions of a material nature, in cultural, social or physical systems, involving and…	E4_Period
 term	E63_Beginning_of_Existence	C		Beginning of Existence	This class comprises events that bring into existence any instance of E77 Persistent Item.	E5_Event
 term	E64_End_of_Existence	C		End of Existence	This class comprises events that end the existence of any instance of E77 Persistent Item.	E5_Event
@@ -1459,7 +1459,7 @@ term	virtual	P		virtual	A boolean atomic property taking a single value which in
 @ns	dash	http://datashapes.org/dash#
 term	APIStatus	C		API Status	The class of possible values for dash:apiStatus.	rdfs:Resource
 term	Action	C		Action	An executable command triggered by an agent, backed by a Script implementation. Actions may get deactivated using sh:deactivated.	Script sh:Parameterizable
-term	ActionGroup	C		Action group	A group of ResourceActions, used to arrange items in menus etc. Similar to sh:PropertyGroups, they may have a sh:order and should have labels (in multiple…	rdfs:Resource
+term	ActionGroup	C		Action group	A group of ResourceActions, used to arrange items in menus etc.	rdfs:Resource
 term	ActionTestCase	C		Action test case	A test case that evaluates a dash:Action using provided input parameters.	TestCase
 term	AllObjects	I		All objects	A reusable instance of dash:AllObjectsTarget.
 term	AllObjectsTarget	C		All objects target	A target containing all objects in the data graph as focus nodes.	sh:Target
@@ -2784,9 +2784,9 @@ term	budget	P		budget ($)				xsd:double
 term	budgetYear	P		budget year			Place	xsd:string
 term	builder	P		builder		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>
 term	building	P		building		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isLocationOf>	Island	Building
-term	buildingEndDate	P		building end date	Building end date of an ArchitecturalStructure, man-made Lake, etc. For older structures this can be just a year or century, for newer structures an exact date…			xsd:string
+term	buildingEndDate	P		building end date	Building end date of an ArchitecturalStructure, man-made Lake, etc.			xsd:string
 term	buildingEndYear	P		building end year			ArchitecturalStructure	xsd:gYear
-term	buildingStartDate	P		building start date	Building start date of an ArchitecturalStructure, man-made Lake, etc. For older structures this can be just a year or century, for newer structures an exact…			xsd:string
+term	buildingStartDate	P		building start date	Building start date of an ArchitecturalStructure, man-made Lake, etc.			xsd:string
 term	buildingStartYear	P		building start year			ArchitecturalStructure	xsd:gYear
 term	buildingType	P		buildingType	Type is too general. We should be able to distinguish types of music from types of architecture	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isClassifiedBy>	Building
 term	bustSize	P		bust size (μ)			Person	xsd:double
@@ -3129,7 +3129,7 @@ term	demographicsAsOf	P		demographics as of			PopulatedPlace	xsd:date
 term	demolitionDate	P		demolition date	The date the building was demolished.		ArchitecturalStructure	xsd:date
 term	demolitionYear	P		demolition year	The year the building was demolished.		ArchitecturalStructure	xsd:gYear
 term	demonym	P		demonym				rdf:langString
-term	denomination	P		denomination	Religious denomination of a church, religious school, etc. Examples: Haredi_Judaism, Sunni_Islam, Seventh-day_Adventist_Church, Non-Denominational,…	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isExpressedBy>	Agent
+term	denomination	P		denomination	Religious denomination of a church, religious school, etc.	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isExpressedBy>	Agent
 term	density	P		density (μ3)				xsd:double
 term	department	P		department		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#isPartOf>	PopulatedPlace	Department
 term	departmentCode	P		محکمہ کا کوڈ			Municipality	xsd:string
@@ -4344,7 +4344,7 @@ term	openingTheme	P		opening theme		<http://www.ontologydesignpatterns.org/ont/d
 term	openingYear	P		opening year				xsd:gYear
 term	operatingIncome	P		operating income ($)			Company	xsd:double
 term	operatingSystem	P		operating system		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasParticipant>	Software
-term	operator	P		operator	Organisation or City who is the operator of an ArchitecturalStructure, PublicTransitSystem, ConcentrationCamp, etc. Not to confuse with builder, owner or…	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>
+term	operator	P		operator	Organisation or City who is the operator of an ArchitecturalStructure, PublicTransitSystem, ConcentrationCamp, etc.	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>
 term	opponent	P		opponent		<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#coparticipatesWith>	Person	Person
 term	opponents	P		opponents	"opponent in a military conflict, an organisation, country, or group of countries. "	<http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasParticipant>	MilitaryConflict
 term	orbitalEccentricity	P		orbital eccentricity			CelestialBody	xsd:float
@@ -8115,7 +8115,7 @@ term	resolutionUnit	P		ResolutionUnit	The unit for measuring XResolution and YRe
 term	rowsPerStrip	P		RowsPerStrip	The number of rows per strip. This is the number of rows in the image of one strip when an image is divided into strips.	recOffset
 term	samplesPerPixel	P		SamplesPerPixel	The number of components per pixel. Since this standard applies to RGB and YCbCr images, the value set for this tag is 3.	imageDataStruct
 term	saturation	P		Saturation	The direction of saturation processing applied by the camera when the image was shot.	pictTaking
-term	sceneCaptureType	P		SceneCaptureType	The type of scene that was shot.	pictTaking
+term	sceneCaptureType	P		SceneCaptureType	The type of scene that was shot. It can also be used to record the mode in which the image was shot, such as Landscape, Portrait etc.	pictTaking
 term	sceneType	P		SceneType	The type of scene. If a DSC recorded the image, this tag value shall always be set to 1, indicating that the image was directly photographed.	pictTaking
 term	seconds	P		Seconds	a mesurement of time length with unit of second
 term	sensingMethod	P		SensingMethod	The image sensor type on the camera or input device, such as One-chip color area sensor etc.	pictTaking
@@ -9113,7 +9113,7 @@ term	DeliveryModeFreight	I		Delivery mode freight (delivery method)	Delivery by 
 term	DeliveryModeMail	I		Delivery mode mail (delivery method)	Delivery via regular mail service (private or public postal services).
 term	DeliveryModeOwnFleet	I		Delivery mode own fleet (delivery method)	Delivery of the goods by using a fleet of vehicles either owned and operated or subcontracted by the gr:BusinessEntity.
 term	DeliveryModeParcelService	C		Delivery mode parcel service	A private parcel service as the delivery mode available for a certain offering. Examples: UPS, DHL	DeliveryMethod
-term	DeliveryModePickUp	I		Delivery mode pick up (delivery method)	Delivery of the goods by picking them up at one of the stores etc. (gr:Location) during the opening hours as specified by respective instances of…
+term	DeliveryModePickUp	I		Delivery mode pick up (delivery method)	Delivery of the goods by picking them up at one of the stores etc.
 term	DinersClub	I		Diners Club (payment method)	Payment by credit or debit cards issued by the Diner's Club network.
 term	DirectDebit	I		Direct debit (payment method)	Payment by direct debit, i.e., the buying party will inform the offering gr:BusinessEntity about its bank account details and authorizes the gr:BusinessEntity…
 term	Discover	I		Discover (payment method)	Payment by credit or debit cards issued by the Discover network.
@@ -10841,7 +10841,7 @@ term	PreparationTypeCode-REFRIGERATE	I		Refrigerate	Convert the product from roo
 term	PreparationTypeCode-ROAST	I		Roast.	Cooking method that uses dry heat, whether an open flame, oven, or other heat source.
 term	PreparationTypeCode-ROTISSERIE	I		Rotisserie	Style of roasting where meat is skewered on a spit and revolves over a flame
 term	PreparationTypeCode-SAUTE	I		Saute	Cooking food using a small amount of fat in a shallow pan over relatively high heat
-term	PreparationTypeCode-SEAR	I		Sear	Technique used in grilling, roasting, braising, sauteing, etc. That cooks the surface of the food (usually meat, poultry or fish) at high temperature so that a…
+term	PreparationTypeCode-SEAR	I		Sear	Technique used in grilling, roasting, braising, sauteing, etc.
 term	PreparationTypeCode-SIMMER	I		Simmer	Cook food by heating it in water kept just below the boiling point (same as coddling)
 term	PreparationTypeCode-SMOKE	I		Smoke	Process of curing, cooking, or seasoning food by exposing it for long periods of time to the smoke from a wood fire
 term	PreparationTypeCode-STEAM	I		Steam	Cooking by first boiling the water so it will evaporate into steam, then the steam will carry heat to the food, thus achieving heating the food
@@ -11344,7 +11344,7 @@ term	certificationType	P		Certification Type	Indicates the type of certification
 term	certificationURI	P		Certification URI	If gs1:certificationURI is present, it should point to data about this individual certificate within a repository maintained by the certification agency.		CertificationDetails	xsd:anyURI
 term	certificationValue	P		Certification Value	The certification's standard value. Example: '4'.		CertificationDetails	rdf:langString
 term	cheeseFirmness	P		Cheese Firmness	The firmness of the cheese product for example EXTRA_HARD.		MilkButterCreamYogurtCheeseEggsSubstitutes	CheeseFirmnessCode
-term	cheeseMaturationPeriodDescription	P		Cheese Maturation Period Description	A descriptive way to specify a date range as some cheeses are matured over a period of time, but not an exact period.		MilkButterCreamYogurtCheeseEggsSubstitutes	rdf:langString
+term	cheeseMaturationPeriodDescription	P		Cheese Maturation Period Description	A descriptive way to specify a date range as some cheeses are matured over a period of time, but not an exact period. For example 3 to 4 weeks, over 1 year etc.		MilkButterCreamYogurtCheeseEggsSubstitutes	rdf:langString
 term	chloridePerNutrientBasis	P		Chloride Per Nutrient Basis Quantity	Chloride per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	cholesterolPerNutrientBasis	P		Cholesterol Per Nutrient Basis Quantity	Cholesterol per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	chromiumPerNutrientBasis	P		Chromium Per Nutrient Basis Quantity	Chromium per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
@@ -11488,7 +11488,7 @@ term	ingredientSequence	P		Ingredient Sequence	Integer (1, 2, 3...) indicating t
 term	ingredientStatement	P		Ingredient Statement	Information on the constituent ingredient make up of the product specified as one string.		FoodBeverageTobaccoProduct	rdf:langString
 term	ingredientsInfo	P		Ingredients information	A link to facts about ingredients.	linkType	owl:Thing	xsd:anyURI
 term	initialCertificationDate	P		Initial Certification Date	The date when the certification was originally issued. May differ from the certificationStartDate of the current recertification cycle.		CertificationDetails	xsd:date
-term	instructions	P		Instructions	A link to instructions, such as assembly instructions, usage tips etc. It is not appropriate to use this link type for healthcare regulated content…	linkType	owl:Thing	xsd:anyURI
+term	instructions	P		Instructions	A link to instructions, such as assembly instructions, usage tips etc.	linkType	owl:Thing	xsd:anyURI
 term	instructionsForUse	P		Has Instructions For Use	Link to a file containing the Instructions For Use.		Product	ReferencedFileDetails
 term	iodinePerNutrientBasis	P		Iodine Per Nutrient Basis Quantity	Iodine per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	ironPerNutrientBasis	P		Iron Per Nutrient Basis Quantity	Iron per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
@@ -17056,9 +17056,9 @@ term	AMRadioChannel	C		AMRadioChannel	A radio channel that uses AM.	RadioChannel
 term	APIReference	C		APIReference	Reference documentation for application programming interfaces (APIs).	TechArticle
 term	Abdomen	I		Abdomen	Abdomen clinical examination.
 term	AboutPage	C		AboutPage	Web page type: About page.	WebPage
-term	AcceptAction	C		AcceptAction	The act of committing to/adopting an object.\\n\\nRelated actions:\\n\\n* [[RejectAction]]: The antonym of AcceptAction.	AllocateAction
+term	AcceptAction	C		AcceptAction	The act of committing to/adopting an object.	AllocateAction
 term	Accommodation	C		Accommodation	An accommodation is a place that can accommodate human beings, e.g. a hotel room, a camping pitch, or a meeting room.	Place
-term	AccountingService	C		AccountingService	Accountancy business.\\n\\nAs a [[LocalBusiness]] it can be described as a [[provider]] of one or more [[Service]]\\(s).	FinancialService
+term	AccountingService	C		AccountingService	Accountancy business.	FinancialService
 term	AchieveAction	C		AchieveAction	The act of accomplishing something via previous efforts. It is an instantaneous action rather than an ongoing process.	Action
 term	Action	C		Action	An action performed by a direct agent and indirect participants upon a direct object. Optionally happens at a location with the help of an inanimate instrument.	Thing
 term	ActionAccessSpecification	C		ActionAccessSpecification	A set of requirements that must be fulfilled in order to perform an Action.	Intangible
@@ -17100,7 +17100,7 @@ term	Apartment	C		Apartment	An apartment (in American English) or flat (in Briti
 term	ApartmentComplex	C		ApartmentComplex	Residence type: Apartment complex.	Residence
 term	Appearance	I		Appearance	Appearance assessment with clinical examination.
 term	AppendAction	C		AppendAction	The act of inserting at the end if an ordered collection.	InsertAction
-term	ApplyAction	C		ApplyAction	The act of registering to an organization/service without the guarantee to receive it.\\n\\nRelated actions:\\n\\n* [[RegisterAction]]: Unlike RegisterAction,…	OrganizeAction
+term	ApplyAction	C		ApplyAction	The act of registering to an organization/service without the guarantee to receive it.	OrganizeAction
 term	ApprovedIndication	C		ApprovedIndication	An indication for a medical therapy that has been formally specified or approved by a regulatory body that regulates use of the therapy; for example, the US…	MedicalIndication
 term	Aquarium	C		Aquarium	Aquarium.	CivicStructure
 term	ArchiveComponent	C		ArchiveComponent	An intangible type to be applied to any archive content, carrying with it a set of properties required to describe archival items and collections.	CreativeWork
@@ -17109,12 +17109,12 @@ term	ArriveAction	C		ArriveAction	The act of arriving at a place. An agent arriv
 term	ArtGallery	C		ArtGallery	An art gallery.	EntertainmentBusiness
 term	Artery	C		Artery	A type of blood vessel that specifically carries blood away from the heart.	Vessel
 term	Article	C		Article	An article, such as a news article or piece of investigative report.	CreativeWork
-term	AskAction	C		AskAction	The act of posing a question / favor to someone.\\n\\nRelated actions:\\n\\n* [[ReplyAction]]: Appears generally as a response to AskAction.	CommunicateAction
+term	AskAction	C		AskAction	The act of posing a question / favor to someone.	CommunicateAction
 term	AskPublicNewsArticle	C		AskPublicNewsArticle	A [[NewsArticle]] expressing an open call by a [[NewsMediaOrganization]] asking the public for input, insights, clarifications, anecdotes, documentation, etc.,…	NewsArticle
 term	AssessAction	C		AssessAction	The act of forming one's opinion, reaction or sentiment.	Action
 term	AssignAction	C		AssignAction	The act of allocating an action/event/task to some destination (someone or something).	AllocateAction
 term	Atlas	C		Atlas	A collection or bound volume of maps, charts, plates or tables, physical or in media form illustrating any subject.	CreativeWork
-term	Attorney	C		Attorney	Professional service: Attorney. \\n\\nThis type is deprecated - [[LegalService]] is more inclusive and less ambiguous.	LegalService
+term	Attorney	C		Attorney	Professional service: Attorney.	LegalService
 term	Audience	C		Audience	Intended audience for an item, i.e. the group for whom the item was created.	Intangible
 term	AudioObject	C		AudioObject	An audio file.	MediaObject
 term	AudioObjectSnapshot	C		AudioObjectSnapshot	A specific and exact (byte-for-byte) version of an [[AudioObject]]. Two byte-for-byte identical files, for the purposes of this type, considered identical.	AudioObject
@@ -17148,7 +17148,7 @@ term	BeautySalon	C		BeautySalon	Beauty salon.	HealthAndBeautyBusiness
 term	BedAndBreakfast	C		BedAndBreakfast	Bed and breakfast.	LodgingBusiness
 term	BedDetails	C		BedDetails	An entity holding detailed information about the available bed types, e.g. the quantity of twin beds for a hotel room.	Intangible
 term	BedType	C		BedType	A type of bed. This is used for indicating the bed or beds available in an accommodation.	QualitativeValue
-term	BefriendAction	C		BefriendAction	The act of forming a personal connection with someone (object) mutually/bidirectionally/symmetrically.\\n\\nRelated actions:\\n\\n* [[FollowAction]]: Unlike…	InteractAction
+term	BefriendAction	C		BefriendAction	The act of forming a personal connection with someone (object) mutually/bidirectionally/symmetrically.	InteractAction
 term	BenefitsHealthAspect	I		BenefitsHealthAspect	Content about the benefits and advantages of usage or utilization of topic.
 term	BikeStore	C		BikeStore	A bike store.	Store
 term	BioChemEntity	C		BioChemEntity	Any biological, chemical, or biochemical thing. For example: a protein; a gene; a chemical; a synthetic chemical.	Thing
@@ -17181,7 +17181,7 @@ term	BookSeries	C		BookSeries	A series of books. Included books can be indicated
 term	BookStore	C		BookStore	A bookstore.	Store
 term	BookmarkAction	C		BookmarkAction	An agent bookmarks/flags/labels/tags/marks an object.	OrganizeAction
 term	Boolean	C		Boolean	Boolean: True or False.
-term	BorrowAction	C		BorrowAction	The act of obtaining an object under an agreement to return it at a later date.	TransferAction
+term	BorrowAction	C		BorrowAction	The act of obtaining an object under an agreement to return it at a later date. Reciprocal of LendAction.	TransferAction
 term	BowlingAlley	C		BowlingAlley	A bowling alley.	SportsActivityLocation
 term	BrainStructure	C		BrainStructure	Any anatomical structure which pertains to the soft nervous tissue functioning as the coordinating center of sensation and intellectual and nervous activity.	AnatomicalStructure
 term	Brand	C		Brand	A brand is a name used by an organization or business person for labeling a product, product group, or similar.	<https://www.omg.org/spec/Commons/Classifiers/Classifier> Intangible
@@ -17215,9 +17215,9 @@ term	CT	I		CT	X-ray computed tomography imaging.
 term	CableOrSatelliteService	C		CableOrSatelliteService	A service which provides access to media programming like TV or radio. Access may be via cable or satellite.	Service
 term	CafeOrCoffeeShop	C		CafeOrCoffeeShop	A cafe or coffee shop.	FoodEstablishment
 term	Campground	C		Campground	A camping site, campsite, or [[Campground]] is a place used for overnight stay in the outdoors, typically containing individual [[CampingPitch]] locations.	CivicStructure LodgingBusiness
-term	CampingPitch	C		CampingPitch	A [[CampingPitch]] is an individual place for overnight stay in the outdoors, typically being part of a larger camping site, or [[Campground]].\\n\\n In British…	Accommodation
+term	CampingPitch	C		CampingPitch	A [[CampingPitch]] is an individual place for overnight stay in the outdoors, typically being part of a larger camping site, or [[Campground]].	Accommodation
 term	Canal	C		Canal	A canal, like the Panama Canal.	BodyOfWater
-term	CancelAction	C		CancelAction	The act of asserting that a future event/action is no longer going to happen.\\n\\nRelated actions:\\n\\n* [[ConfirmAction]]: The antonym of CancelAction.	PlanAction
+term	CancelAction	C		CancelAction	The act of asserting that a future event/action is no longer going to happen.	PlanAction
 term	Car	C		Car	A car is a wheeled, self-powered motor vehicle used for transportation.	Vehicle
 term	CarUsageType	C		CarUsageType	A value indicating a special usage of a car, e.g. commercial rental, driving school, or as a taxi.	Enumeration
 term	Cardiovascular	I		Cardiovascular	A specific branch of medical science that pertains to diagnosis and treatment of disorders of heart and vasculature.
@@ -17287,7 +17287,7 @@ term	CompoundPriceSpecification	C		CompoundPriceSpecification	A compound price s
 term	ComputerLanguage	C		ComputerLanguage	This type covers computer programming languages such as Scheme and Lisp, as well as other language-like computer representations.	Intangible
 term	ComputerStore	C		ComputerStore	A computer store.	Store
 term	ConferenceEvent	C		ConferenceEvent	Event type: Conference event.	Event
-term	ConfirmAction	C		ConfirmAction	The act of notifying someone that a future event/action is going to happen as expected.\\n\\nRelated actions:\\n\\n* [[CancelAction]]: The antonym of ConfirmAction.	InformAction
+term	ConfirmAction	C		ConfirmAction	The act of notifying someone that a future event/action is going to happen as expected.	InformAction
 term	Consortium	C		Consortium	A Consortium is a membership [[Organization]] whose members are typically Organizations.	Organization
 term	ConstraintNode	C		ConstraintNode	The ConstraintNode type is provided to support usecases in which a node in a structured data graph is described with properties which appear to describe a…	Intangible
 term	ConsumeAction	C		ConsumeAction	The act of ingesting information/resources/food.	Action
@@ -17472,7 +17472,7 @@ term	EventCancelled	I		EventCancelled	The event has been cancelled. If the event
 term	EventMovedOnline	I		EventMovedOnline	Indicates that the event was changed to allow online participation. See [[eventAttendanceMode]] for specifics of whether it is now fully or partially online.
 term	EventPostponed	I		EventPostponed	The event has been postponed and no new date has been set. The event's previousStartDate should be set.
 term	EventRescheduled	I		EventRescheduled	The event has been rescheduled. The event's previousStartDate should be set to the old date and the startDate should be set to the event's new date.
-term	EventReservation	C		EventReservation	A reservation for an event like a concert, sporting event, or lecture.\\n\\nNote: This type is for information about actual reservations, e.g. in confirmation…	Reservation
+term	EventReservation	C		EventReservation	A reservation for an event like a concert, sporting event, or lecture.	Reservation
 term	EventScheduled	I		EventScheduled	The event is taking place or has taken place on the startDate as scheduled. Use of this value is optional, as it is assumed by default.
 term	EventSeries	C		EventSeries	A series of [[Event]]s. Included events can relate with the series using the [[superEvent]] property.	Event Series
 term	EventStatusType	C		EventStatusType	EventStatusType is an enumeration type whose instances represent several states that an Event may be in.	StatusEnumeration
@@ -17505,17 +17505,17 @@ term	FilmAction	C		FilmAction	The act of capturing sound and moving images on fi
 term	FinancialIncentive	C		FinancialIncentive	<p>Represents financial incentives for goods/services offered by an organization (or individual).</p>	Intangible
 term	FinancialProduct	C		FinancialProduct	A product provided to consumers and businesses by financial institutions such as banks, insurance companies, brokerage firms, consumer finance companies, and…	Service
 term	FinancialService	C		FinancialService	Financial services business.	LocalBusiness
-term	FindAction	C		FindAction	The act of finding an object.\\n\\nRelated actions:\\n\\n* [[SearchAction]]: FindAction is generally lead by a SearchAction, but not necessarily.	Action
+term	FindAction	C		FindAction	The act of finding an object.	Action
 term	FireStation	C		FireStation	A fire station. With firemen.	CivicStructure EmergencyService
 term	Flexibility	I		Flexibility	Physical activity that is engaged in to improve joint and muscle flexibility.
 term	Flight	C		Flight	An airline flight.	Trip
-term	FlightReservation	C		FlightReservation	A reservation for air travel.\\n\\nNote: This type is for information about actual reservations, e.g. in confirmation emails or HTML pages with individual…	Reservation
+term	FlightReservation	C		FlightReservation	A reservation for air travel.	Reservation
 term	Float	C		Float	Data type: Floating number.	Number
 term	FloorPlan	C		FloorPlan	A FloorPlan is an explicit representation of a collection of similar accommodations, allowing the provision of common information (room counts, sizes, layout…	Intangible
 term	Florist	C		Florist	A florist.	Store
-term	FollowAction	C		FollowAction	The act of forming a personal connection with someone/something (object) unidirectionally/asymmetrically to get updates polled from.\\n\\nRelated actions:\\n\\n*…	InteractAction
+term	FollowAction	C		FollowAction	The act of forming a personal connection with someone/something (object) unidirectionally/asymmetrically to get updates polled from.	InteractAction
 term	FoodEstablishment	C		FoodEstablishment	A food-related business.	LocalBusiness
-term	FoodEstablishmentReservation	C		FoodEstablishmentReservation	A reservation to dine at a food-related business.\\n\\nNote: This type is for information about actual reservations, e.g. in confirmation emails or HTML pages…	Reservation
+term	FoodEstablishmentReservation	C		FoodEstablishmentReservation	A reservation to dine at a food-related business.	Reservation
 term	FoodEvent	C		FoodEvent	Event type: Food event.	Event
 term	FoodService	C		FoodService	A food service, like breakfast, lunch, or dinner.	Service
 term	FourWheelDriveConfiguration	I		FourWheelDriveConfiguration	Four-wheel drive is a transmission layout where the engine primarily drives two wheels with a part-time four-wheel drive capability.
@@ -17555,7 +17555,7 @@ term	GeoShape	C		GeoShape	The geographic shape of a place. A GeoShape can be des
 term	GeospatialGeometry	C		GeospatialGeometry	(Eventually to be defined as) a supertype of GeoShape designed to accommodate definitions from Geo-Spatial best practices.	Intangible
 term	Geriatric	C		Geriatric	A specific branch of medical science that is concerned with the diagnosis and treatment of diseases, debilities and provision of care to the aged.	MedicalBusiness
 term	GettingAccessHealthAspect	I		GettingAccessHealthAspect	Content that discusses practical and policy aspects for getting access to specific kinds of healthcare (e.g. distribution mechanisms for vaccines).
-term	GiveAction	C		GiveAction	The act of transferring ownership of an object to a destination.	TransferAction
+term	GiveAction	C		GiveAction	The act of transferring ownership of an object to a destination. Reciprocal of TakeAction.	TransferAction
 term	GlutenFreeDiet	I		GlutenFreeDiet	A diet exclusive of gluten.
 term	GolfCourse	C		GolfCourse	A golf course.	SportsActivityLocation
 term	GovernmentBenefitsType	C		GovernmentBenefitsType	GovernmentBenefitsType enumerates several kinds of government benefits to support the COVID-19 situation.	Enumeration
@@ -17593,7 +17593,7 @@ term	HighSchool	C		HighSchool	A high school.	EducationalOrganization
 term	HinduDiet	I		HinduDiet	A diet conforming to Hindu dietary practices, in particular, beef-free.
 term	HinduTemple	C		HinduTemple	A Hindu temple.	PlaceOfWorship
 term	HobbyShop	C		HobbyShop	A store that sells materials useful or necessary for various hobbies.	Store
-term	HomeAndConstructionBusiness	C		HomeAndConstructionBusiness	A construction business.\\n\\nA HomeAndConstructionBusiness is a [[LocalBusiness]] that provides services around homes and buildings.\\n\\nAs a [[LocalBusiness]]…	LocalBusiness
+term	HomeAndConstructionBusiness	C		HomeAndConstructionBusiness	A construction business.	LocalBusiness
 term	HomeGoodsStore	C		HomeGoodsStore	A home goods store.	Store
 term	Homeopathic	I		Homeopathic	A system of medicine based on the principle that a disease can be cured by a substance that produces similar symptoms in healthy people.
 term	Hospital	C		Hospital	A hospital.	CivicStructure EmergencyService MedicalOrganization
@@ -17610,7 +17610,7 @@ term	HowToItem	C		HowToItem	An item used as either a tool or supply when perform
 term	HowToSection	C		HowToSection	A sub-grouping of steps in the instructions for how to achieve a result (e.g. steps for making a pie crust within a pie recipe).	CreativeWork ItemList ListItem
 term	HowToStep	C		HowToStep	A step in the instructions for how to achieve a result. It is an ordered list with HowToDirection and/or HowToTip items.	CreativeWork ItemList ListItem
 term	HowToSupply	C		HowToSupply	A supply consumed when performing the instructions for how to achieve a result.	HowToItem
-term	HowToTip	C		HowToTip	An explanation in the instructions for how to achieve a result.	CreativeWork ListItem
+term	HowToTip	C		HowToTip	An explanation in the instructions for how to achieve a result. It provides supplementary information about a technique, supply, author's preference, etc.	CreativeWork ListItem
 term	HowToTool	C		HowToTool	A tool used (but not consumed) when performing instructions for how to achieve a result.	HowToItem
 term	HyperToc	C		HyperToc	A HyperToc represents a hypertext table of contents for complex media objects, such as [[VideoObject]], [[AudioObject]].	CreativeWork
 term	HyperTocEntry	C		HyperTocEntry	A HyperToEntry is an item within a [[HyperToc]], which represents a hypertext table of contents for complex media objects, such as [[VideoObject]],…	CreativeWork
@@ -17687,7 +17687,7 @@ term	ItemListUnordered	I		ItemListUnordered	An ItemList ordered with no explicit
 term	ItemPage	C		ItemPage	A page devoted to a single item, such as a particular product or hotel.	WebPage
 term	JewelryStore	C		JewelryStore	A jewelry store.	Store
 term	JobPosting	C		JobPosting	A listing that describes a job opening in a certain organization.	Intangible
-term	JoinAction	C		JoinAction	An agent joins an event/group with participants/friends at a location.\\n\\nRelated actions:\\n\\n* [[RegisterAction]]: Unlike RegisterAction, JoinAction refers to…	InteractAction
+term	JoinAction	C		JoinAction	An agent joins an event/group with participants/friends at a location.	InteractAction
 term	Joint	C		Joint	The anatomical location at which two or more bones make contact.	AnatomicalStructure
 term	KeepProduct	I		KeepProduct	Specifies that the consumer can keep the product, even when receiving a refund or store credit.
 term	KosherDiet	I		KosherDiet	A diet conforming to Jewish dietary practices.
@@ -17695,19 +17695,19 @@ term	LaboratoryScience	I		LaboratoryScience	A medical science pertaining to chem
 term	LakeBodyOfWater	C		LakeBodyOfWater	A lake (for example, Lake Pontrachain).	BodyOfWater
 term	Landform	C		Landform	A landform or physical feature.	Place
 term	LandmarksOrHistoricalBuildings	C		LandmarksOrHistoricalBuildings	An historical landmark or building.	Place
-term	Language	C		Language	Natural languages such as Spanish, Tamil, Hindi, English, etc. Formal language code tags expressed in [BCP 47](https://en.wikipedia.org/wiki/IETF_language_tag)…	Intangible
+term	Language	C		Language	Natural languages such as Spanish, Tamil, Hindi, English, etc.	Intangible
 term	LaserDiscFormat	I		LaserDiscFormat	LaserDiscFormat.
 term	LearningResource	C		LearningResource	The LearningResource type can be used to indicate [[CreativeWork]]s (whether physical or digital) that have a particular and explicit orientation towards…	CreativeWork
-term	LeaveAction	C		LeaveAction	An agent leaves an event / group with participants/friends at a location.\\n\\nRelated actions:\\n\\n* [[JoinAction]]: The antonym of LeaveAction.\\n*…	InteractAction
+term	LeaveAction	C		LeaveAction	An agent leaves an event / group with participants/friends at a location.	InteractAction
 term	LeftHandDriving	I		LeftHandDriving	The steering position is on the left side of the vehicle (viewed from the main direction of driving).
 term	LegalForceStatus	C		LegalForceStatus	A list of possible statuses for the legal force of a legislation.	StatusEnumeration
-term	LegalService	C		LegalService	A LegalService is a business that provides legally-oriented services, advice and representation, e.g. law firms.\\n\\nAs a [[LocalBusiness]] it can be described…	LocalBusiness
+term	LegalService	C		LegalService	A LegalService is a business that provides legally-oriented services, advice and representation, e.g. law firms.	LocalBusiness
 term	LegalValueLevel	C		LegalValueLevel	A list of possible levels for the legal validity of a legislation.	Enumeration
 term	Legislation	C		Legislation	A legal document such as an act, decree, bill, etc. (enforceable or not) or a component of a legal act (like an article).	CreativeWork
 term	LegislationObject	C		LegislationObject	A specific object or file containing a Legislation. Note that the same Legislation can be published in multiple files.	Legislation MediaObject
 term	LegislativeBuilding	C		LegislativeBuilding	A legislative building&#x2014;for example, the state capitol.	GovernmentBuilding
 term	LeisureTimeActivity	I		LeisureTimeActivity	Any physical activity engaged in for recreational purposes. Examples may include ballroom dancing, roller skating, canoeing, fishing, etc.
-term	LendAction	C		LendAction	The act of providing an object under an agreement that it will be returned at a later date.	TransferAction
+term	LendAction	C		LendAction	The act of providing an object under an agreement that it will be returned at a later date. Reciprocal of BorrowAction.	TransferAction
 term	Library	C		Library	A library.	LocalBusiness
 term	LibrarySystem	C		LibrarySystem	A [[LibrarySystem]] is a collaborative system amongst several libraries.	Organization
 term	LifestyleModification	C		LifestyleModification	A process of care involving exercise, changes to diet, fitness routines, and other lifestyle changes aimed at improving a health condition.	MedicalEntity
@@ -17730,7 +17730,7 @@ term	LocationFeatureSpecification	C		LocationFeatureSpecification	Specifies a lo
 term	LockerDelivery	I		LockerDelivery	A DeliveryMethod in which an item is made available via locker.
 term	Locksmith	C		Locksmith	A locksmith.	HomeAndConstructionBusiness
 term	LodgingBusiness	C		LodgingBusiness	A lodging business, such as a motel, hotel, or inn.	LocalBusiness
-term	LodgingReservation	C		LodgingReservation	A reservation for lodging at a hotel, motel, inn, etc.\\n\\nNote: This type is for information about actual reservations, e.g. in confirmation emails or HTML…	Reservation
+term	LodgingReservation	C		LodgingReservation	A reservation for lodging at a hotel, motel, inn, etc.	Reservation
 term	LoginAction	C		LoginAction	The action of logging into a device or application.	ControlAction
 term	Longitudinal	I		Longitudinal	Unlike cross-sectional studies, longitudinal studies track the same people, and therefore the differences observed in those people are less likely to be the…
 term	LoseAction	C		LoseAction	The act of being defeated in a competitive activity.	AchieveAction
@@ -17845,7 +17845,7 @@ term	MotorcycleDealer	C		MotorcycleDealer	A motorcycle dealer.	AutomotiveBusines
 term	MotorcycleRepair	C		MotorcycleRepair	A motorcycle repair shop.	AutomotiveBusiness
 term	MotorizedBicycle	C		MotorizedBicycle	A motorized bicycle is a bicycle with an attached motor used to power the vehicle, or to assist with pedaling.	Vehicle
 term	Mountain	C		Mountain	A mountain, like Mount Whitney or Mount Everest.	Landform
-term	MoveAction	C		MoveAction	The act of an agent relocating to a place.\\n\\nRelated actions:\\n\\n* [[TransferAction]]: Unlike TransferAction, the subject of the move is a living Person or…	Action
+term	MoveAction	C		MoveAction	The act of an agent relocating to a place.	Action
 term	Movie	C		Movie	A movie.	CreativeWork
 term	MovieClip	C		MovieClip	A short segment/part of a movie.	Clip
 term	MovieRentalStore	C		MovieRentalStore	A movie rental store.	Store
@@ -17932,7 +17932,7 @@ term	NotInForce	I		NotInForce	Indicates that a legislation is currently not in f
 term	NotYetRecruiting	I		NotYetRecruiting	Not yet recruiting.
 term	Notary	C		Notary	A notary.	LegalService
 term	NoteDigitalDocument	C		NoteDigitalDocument	A file containing a note, primarily for the author.	DigitalDocument
-term	Number	C		Number	Data type: Number.\\n\\nUsage guidelines:\\n\\n* Use values from 0123456789 (Unicode 'DIGIT ZERO' (U+0030) to 'DIGIT NINE' (U+0039)) rather than superficially…
+term	Number	C		Number	Data type: Number.
 term	Nursing	C		Nursing	A health profession of a person formally educated and trained in the care of the sick or infirm person.	MedicalBusiness
 term	NutritionInformation	C		NutritionInformation	Nutritional information about the recipe.	StructuredValue
 term	OTC	I		OTC	The character of a medical substance, typically a medicine, of being available over the counter or not.
@@ -17967,7 +17967,7 @@ term	OnlineMarketplace	C		OnlineMarketplace	An eCommerce marketplace.	OnlineStor
 term	OnlineOnly	I		OnlineOnly	Indicates that the item is available only online.
 term	OnlineStore	C		OnlineStore	An eCommerce site.	OnlineBusiness
 term	OpenTrial	I		OpenTrial	A trial design in which the researcher knows the full details of the treatment, and so does the patient.
-term	OpeningHoursSpecification	C		OpeningHoursSpecification	A structured value providing information about the opening hours of a place or a certain service inside a place.\\n\\n The place is __open__ if the [[opens]]…	StructuredValue
+term	OpeningHoursSpecification	C		OpeningHoursSpecification	A structured value providing information about the opening hours of a place or a certain service inside a place.	StructuredValue
 term	OperatingSystem	C		OperatingSystem	System software that manages computer hardware and software resources, and provides common services for computer programs.	SoftwareApplication
 term	Ophthalmology	C		Ophthalmology	A specific branch of medical science that pertains to the diagnosis and treatment of disorders of the eye and its associated visual structures, including…	MedicalBusiness
 term	OpinionNewsArticle	C		OpinionNewsArticle	An [[OpinionNewsArticle]] is a [[NewsArticle]] that primarily expresses opinions rather than journalistic reporting of news and events.	NewsArticle
@@ -18004,7 +18004,7 @@ term	PalliativeProcedure	C		PalliativeProcedure	A medical procedure intended pri
 term	Pamphlet	I		Pamphlet	A small, unbound or stapled booklet consisting of few pages with a flexible paper cover, designed for the economical distribution of focused information on a…
 term	Paperback	I		Paperback	A flexible, lightweight book bound with a thick paper or cardstock cover and glued spine, prioritizing portability and affordability over long-term durability.
 term	ParcelDelivery	C		ParcelDelivery	The delivery of a parcel either via the postal service or a commercial service.	Intangible
-term	ParcelService	I		ParcelService	A private parcel service as the delivery mode available for a certain offer.\\n\\nCommonly used values:\\n\\n* http://purl.org/goodrelations/v1#DHL\\n*…
+term	ParcelService	I		ParcelService	A private parcel service as the delivery mode available for a certain offer.
 term	ParentAudience	C		ParentAudience	A set of characteristics describing parents, who can be interested in viewing some content.	PeopleAudience
 term	ParentalSupport	I		ParentalSupport	ParentalSupport: this is a benefit for parental support.
 term	Park	C		Park	A park.	CivicStructure
@@ -18058,7 +18058,7 @@ term	PlaceboControlledTrial	I		PlaceboControlledTrial	A placebo-controlled trial
 term	PlanAction	C		PlanAction	The act of planning the execution of an event/task/action/reservation/plan to a future date.	OrganizeAction
 term	PlasticSurgery	C		PlasticSurgery	A specific branch of medical science that pertains to therapeutic or cosmetic repair or re-formation of missing, injured or malformed tissues or body parts by…	MedicalBusiness
 term	Play	C		Play	A play is a form of literature, usually consisting of dialogue between characters, intended for theatrical performance rather than just reading.	CreativeWork
-term	PlayAction	C		PlayAction	The act of playing/exercising/training/performing for enjoyment, leisure, recreation, competition or exercise.\\n\\nRelated actions:\\n\\n* [[ListenAction]]:…	Action
+term	PlayAction	C		PlayAction	The act of playing/exercising/training/performing for enjoyment, leisure, recreation, competition or exercise.	Action
 term	PlayGameAction	C		PlayGameAction	The act of playing a video game.	ConsumeAction
 term	Playground	C		Playground	A playground.	CivicStructure
 term	Plumber	C		Plumber	A plumbing service.	HomeAndConstructionBusiness
@@ -18101,7 +18101,7 @@ term	ProductReturnNotPermitted	I	D	ProductReturnNotPermitted	ProductReturnNotPer
 term	ProductReturnPolicy	C	D	ProductReturnPolicy	A ProductReturnPolicy provides information about product return policies associated with an [[Organization]] or [[Product]].	Intangible
 term	ProductReturnUnlimitedWindow	I	D	ProductReturnUnlimitedWindow	ProductReturnUnlimitedWindow: there is an unlimited window for product returns.
 term	ProductReturnUnspecified	I	D	ProductReturnUnspecified	ProductReturnUnspecified: a product return policy is not specified here.
-term	ProfessionalService	C		ProfessionalService	Original definition: "provider of professional services."\\n\\nThe general [[ProfessionalService]] type for local businesses was deprecated due to confusion with…	LocalBusiness
+term	ProfessionalService	C		ProfessionalService	Original definition: "provider of professional services."	LocalBusiness
 term	ProfilePage	C		ProfilePage	Web page type: Profile page.	WebPage
 term	PrognosisHealthAspect	I		PrognosisHealthAspect	Typical progression and happenings of life course of the topic.
 term	ProgramMembership	C		ProgramMembership	Used to describe membership in a loyalty programs (e.g. "StarAliance"), traveler clubs (e.g. "AAA"), purchase clubs ("Safeway Club"), etc.	Intangible
@@ -18120,7 +18120,7 @@ term	PublicSwimmingPool	C		PublicSwimmingPool	A public swimming pool.	SportsActi
 term	PublicToilet	C		PublicToilet	A public toilet is a room or small building containing one or more toilets (and possibly also urinals) which is available for use by the general public, or by…	CivicStructure
 term	PublicationEvent	C		PublicationEvent	A PublicationEvent corresponds indifferently to the event of publication for a CreativeWork of any type, e.g. a broadcast event, an on-demand event, a…	Event
 term	PublicationIssue	C		PublicationIssue	A part of a successively published publication such as a periodical or publication volume, often numbered, usually containing a grouping of works such as…	CreativeWork
-term	PublicationVolume	C		PublicationVolume	A part of a successively published publication such as a periodical or multi-volume work, often numbered.	CreativeWork
+term	PublicationVolume	C		PublicationVolume	A part of a successively published publication such as a periodical or multi-volume work, often numbered. It may represent a time span, such as a year.	CreativeWork
 term	Pulmonary	I		Pulmonary	A specific branch of medical science that pertains to the study of the respiratory system and its respective disease states.
 term	PurchaseType	C		PurchaseType	Enumerates a purchase type for an item.	Enumeration
 term	PurchaseTypeLease	I		PurchaseTypeLease	This is a lease of an item.
@@ -18154,7 +18154,7 @@ term	ReadPermission	I		ReadPermission	Permission to read or view the document.
 term	RealEstateAgent	C		RealEstateAgent	A real-estate agent.	LocalBusiness
 term	RealEstateListing	C		RealEstateListing	A [[RealEstateListing]] is a listing that describes one or more real-estate [[Offer]]s (whose [[businessFunction]] is typically to lease out, or to sell).	WebPage
 term	RearWheelDriveConfiguration	I		RearWheelDriveConfiguration	Real-wheel drive is a transmission layout where the engine drives the rear wheels.
-term	ReceiveAction	C		ReceiveAction	The act of physically/electronically taking delivery of an object that has been transferred from an origin to a destination.	TransferAction
+term	ReceiveAction	C		ReceiveAction	The act of physically/electronically taking delivery of an object that has been transferred from an origin to a destination. Reciprocal of SendAction.	TransferAction
 term	Recipe	C		Recipe	A recipe. For dietary restrictions covered by the recipe, a few common restrictions are enumerated via [[suitableForDiet]].	HowTo
 term	Recommendation	C		Recommendation	[[Recommendation]] is a type of [[Review]] that suggests or proposes something as the best option or best course of action.	Review
 term	RecommendedDoseSchedule	C		RecommendedDoseSchedule	A recommended dosing schedule for a drug or supplement as prescribed or recommended by an authority or by the drug/supplement's manufacturer.	DoseSchedule
@@ -18163,20 +18163,20 @@ term	RecyclingCenter	C		RecyclingCenter	A recycling center.	LocalBusiness
 term	ReducedRelevanceForChildrenConsideration	I		ReducedRelevanceForChildrenConsideration	A general code for cases where relevance to children is reduced, e.g. adult education, mortgages, retirement-related products, etc.
 term	RefundTypeEnumeration	C		RefundTypeEnumeration	Enumerates several kinds of product return refund types.	Enumeration
 term	RefurbishedCondition	I		RefurbishedCondition	Indicates that the item is refurbished.
-term	RegisterAction	C		RegisterAction	The act of registering to be a user of a service, product or web page.\\n\\nRelated actions:\\n\\n* [[JoinAction]]: Unlike JoinAction, RegisterAction implies you…	InteractAction
+term	RegisterAction	C		RegisterAction	The act of registering to be a user of a service, product or web page.	InteractAction
 term	Registry	I		Registry	A registry-based study design.
 term	RegularPrice	I		RegularPrice	Represents the regular price of an offered product. This is usually the advertised price before a temporary sale.
 term	ReimbursementCap	I		ReimbursementCap	The drug's cost represents the maximum reimbursement paid by an insurer for the drug.
-term	RejectAction	C		RejectAction	The act of rejecting to/adopting an object.\\n\\nRelated actions:\\n\\n* [[AcceptAction]]: The antonym of RejectAction.	AllocateAction
+term	RejectAction	C		RejectAction	The act of rejecting to/adopting an object.	AllocateAction
 term	RelatedTopicsHealthAspect	I		RelatedTopicsHealthAspect	Other prominent or relevant topics tied to the main topic.
 term	RemixAlbum	I		RemixAlbum	RemixAlbum.
 term	Renal	I		Renal	A specific branch of medical science that pertains to the study of the kidneys and its respective disease states.
 term	RentAction	C		RentAction	The act of giving money in return for temporary use, but not ownership, of an object such as a vehicle or property.	TradeAction
-term	RentalCarReservation	C		RentalCarReservation	A reservation for a rental car.\\n\\nNote: This type is for information about actual reservations, e.g. in confirmation emails or HTML pages with individual…	Reservation
+term	RentalCarReservation	C		RentalCarReservation	A reservation for a rental car.	Reservation
 term	RentalVehicleUsage	I		RentalVehicleUsage	Indicates the usage of the vehicle as a rental car.
 term	RepaymentSpecification	C		RepaymentSpecification	A structured value representing repayment.	StructuredValue
 term	ReplaceAction	C		ReplaceAction	The act of editing a recipient by replacing an old object with a new object.	UpdateAction
-term	ReplyAction	C		ReplyAction	The act of responding to a question/message asked/sent by the object.	CommunicateAction
+term	ReplyAction	C		ReplyAction	The act of responding to a question/message asked/sent by the object. Related to [[AskAction]].	CommunicateAction
 term	Report	C		Report	A Report generated by governmental or non-governmental organization.	Article
 term	ReportageNewsArticle	C		ReportageNewsArticle	The [[ReportageNewsArticle]] type is a subtype of [[NewsArticle]] representing news articles which are the result of journalistic news reporting conventions.	NewsArticle
 term	ReportedDoseSchedule	C		ReportedDoseSchedule	A patient-reported or observed dosing schedule for a drug or supplement.	DoseSchedule
@@ -18190,7 +18190,7 @@ term	ReservationHold	I		ReservationHold	The status of a reservation on hold pend
 term	ReservationPackage	C		ReservationPackage	A group of multiple reservations with common values for all sub-reservations.	Reservation
 term	ReservationPending	I		ReservationPending	The status of a reservation when a request has been sent, but not confirmed.
 term	ReservationStatusType	C		ReservationStatusType	Enumerated status values for Reservation.	StatusEnumeration
-term	ReserveAction	C		ReserveAction	Reserving a concrete object.\\n\\nRelated actions:\\n\\n* [[ScheduleAction]]: Unlike ScheduleAction, ReserveAction reserves concrete objects (e.g. a table, a…	PlanAction
+term	ReserveAction	C		ReserveAction	Reserving a concrete object.	PlanAction
 term	Reserved	I		Reserved	Indicates that the item is reserved and therefore not available.
 term	Reservoir	C		Reservoir	A reservoir of water, typically an artificially created lake, like the Lake Kariba reservoir.	BodyOfWater
 term	ResetPasswordAction	C		ResetPasswordAction	The action of resetting the password of a device or application.	ControlAction
@@ -18240,7 +18240,7 @@ term	SatireOrParodyContent	I		SatireOrParodyContent	Content coded 'satire or par
 term	SatiricalArticle	C		SatiricalArticle	An [[Article]] whose content is primarily [[satirical]](https://en.wikipedia.org/wiki/Satire) in nature, i.e. unlikely to be literally true.	Article
 term	Saturday	I		Saturday	The day of the week between Friday and Sunday.
 term	Schedule	C		Schedule	A schedule defines a repeating time period used to describe a regularly occurring [[Event]].	Intangible
-term	ScheduleAction	C		ScheduleAction	Scheduling future actions, events, or tasks.\\n\\nRelated actions:\\n\\n* [[ReserveAction]]: Unlike ReserveAction, ScheduleAction allocates future actions (e.g. an…	PlanAction
+term	ScheduleAction	C		ScheduleAction	Scheduling future actions, events, or tasks.	PlanAction
 term	ScholarlyArticle	C		ScholarlyArticle	A scholarly article.	Article
 term	School	C		School	A school.	EducationalOrganization
 term	SchoolDistrict	C		SchoolDistrict	A School District is an administrative area for the administration of schools.	AdministrativeArea
@@ -18249,7 +18249,7 @@ term	ScreeningEvent	C		ScreeningEvent	A screening of a movie or other video.	Eve
 term	ScreeningHealthAspect	I		ScreeningHealthAspect	Content about how to screen or further filter a topic.
 term	Sculpture	C		Sculpture	A piece of sculpture.	CreativeWork
 term	SeaBodyOfWater	C		SeaBodyOfWater	A sea (for example, the Caspian sea).	BodyOfWater
-term	SearchAction	C		SearchAction	The act of searching for an object.\\n\\nRelated actions:\\n\\n* [[FindAction]]: SearchAction generally leads to a FindAction, but not necessarily.	Action
+term	SearchAction	C		SearchAction	The act of searching for an object.	Action
 term	SearchRescueOrganization	C		SearchRescueOrganization	A Search and Rescue organization of some kind.	Organization
 term	SearchResultsPage	C		SearchResultsPage	Web page type: Search results page.	WebPage
 term	Season	C	D	Season	A media season, e.g. TV, radio, video game etc.	CreativeWork
@@ -18260,7 +18260,7 @@ term	SeekToAction	C		SeekToAction	This is the [[Action]] of navigating to a spec
 term	SelfCareHealthAspect	I		SelfCareHealthAspect	Self care actions or measures that can be taken to sooth, health or avoid a topic. This may be carried at home and can be carried/managed by the person itself.
 term	SelfStorage	C		SelfStorage	A self-storage facility.	LocalBusiness
 term	SellAction	C		SellAction	The act of taking money from a buyer in exchange for goods or services rendered. An agent sells an object, product, or service to a buyer for a price.	TradeAction
-term	SendAction	C		SendAction	The act of physically/electronically dispatching an object for transfer from an origin to a destination.	TransferAction
+term	SendAction	C		SendAction	The act of physically/electronically dispatching an object for transfer from an origin to a destination. Related actions:	TransferAction
 term	SequentialArt	C		SequentialArt	An art forms that use images deployed in a specific order for the purpose of graphic storytelling (i.e., narration of graphic stories) or conveying information.	Book VisualArtwork
 term	Series	C		Series	A Series in schema.org is a group of related items, typically but not necessarily of the same kind. See also [[CreativeWorkSeries]], [[EventSeries]].	Intangible
 term	Service	C		Service	A service provided by an organization, e.g. delivery service, print services, etc.	Intangible
@@ -18325,7 +18325,7 @@ term	StrengthTraining	I		StrengthTraining	Physical activity that is engaged in t
 term	StrikethroughPrice	I		StrikethroughPrice	Represents the strikethrough price (the previous advertised price) of an offered product.
 term	StructuredValue	C		StructuredValue	Structured values are used when the value of a property has a more complex structure than simply being a textual value or a reference to another thing.	Intangible
 term	StudioAlbum	I		StudioAlbum	StudioAlbum.
-term	SubscribeAction	C		SubscribeAction	The act of forming a personal connection with someone/something (object) unidirectionally/asymmetrically to get updates pushed to.\\n\\nRelated actions:\\n\\n*…	InteractAction
+term	SubscribeAction	C		SubscribeAction	The act of forming a personal connection with someone/something (object) unidirectionally/asymmetrically to get updates pushed to.	InteractAction
 term	Subscription	I		Subscription	Represents the subscription pricing component of the total price for an offered product.
 term	Substance	C		Substance	Any matter of defined composition that has discrete existence, whose origin may be biological, mineral or chemical.	MedicalEntity
 term	SubwayStation	C		SubwayStation	A subway station.	CivicStructure
@@ -18344,10 +18344,10 @@ term	TVEpisode	C		TVEpisode	A TV episode which can be part of a series or season
 term	TVSeason	C		TVSeason	Season dedicated to TV broadcast and associated online delivery.	CreativeWork CreativeWorkSeason
 term	TVSeries	C		TVSeries	CreativeWorkSeries dedicated to TV broadcast and associated online delivery.	CreativeWork CreativeWorkSeries
 term	Table	C		Table	A table on a Web page.	WebPageElement
-term	TakeAction	C		TakeAction	The act of gaining ownership of an object from an origin.	TransferAction
+term	TakeAction	C		TakeAction	The act of gaining ownership of an object from an origin. Reciprocal of GiveAction.	TransferAction
 term	TattooParlor	C		TattooParlor	A tattoo parlor.	HealthAndBeautyBusiness
 term	Taxi	C	D	Taxi	A taxi.	Service
-term	TaxiReservation	C		TaxiReservation	A reservation for a taxi.\\n\\nNote: This type is for information about actual reservations, e.g. in confirmation emails or HTML pages with individual…	Reservation
+term	TaxiReservation	C		TaxiReservation	A reservation for a taxi.	Reservation
 term	TaxiService	C		TaxiService	A service for a vehicle for hire with a driver for local travel. Fares are usually calculated based on distance traveled.	Service
 term	TaxiStand	C		TaxiStand	A taxi stand.	CivicStructure
 term	TaxiVehicleUsage	I		TaxiVehicleUsage	Indicates the usage of the car as a taxi.
@@ -18386,10 +18386,10 @@ term	TouristInformationCenter	C		TouristInformationCenter	A tourist information 
 term	TouristTrip	C		TouristTrip	A tourist trip.	Trip
 term	Toxicologic	I		Toxicologic	A specific branch of medical science that is concerned with poisons, their nature, effects and detection and involved in the treatment of poisoning.
 term	ToyStore	C		ToyStore	A toy store.	Store
-term	TrackAction	C		TrackAction	An agent tracks an object for updates.\\n\\nRelated actions:\\n\\n* [[FollowAction]]: Unlike FollowAction, TrackAction refers to the interest on the location of…	FindAction
+term	TrackAction	C		TrackAction	An agent tracks an object for updates.	FindAction
 term	TradeAction	C		TradeAction	The act of participating in an exchange of goods and services for monetary compensation.	Action
 term	TraditionalChinese	I		TraditionalChinese	A system of medicine based on common theoretical concepts that originated in China and evolved over thousands of years, that uses herbs, acupuncture, exercise,…
-term	TrainReservation	C		TrainReservation	A reservation for train travel.\\n\\nNote: This type is for information about actual reservations, e.g. in confirmation emails or HTML pages with individual…	Reservation
+term	TrainReservation	C		TrainReservation	A reservation for train travel.	Reservation
 term	TrainStation	C		TrainStation	A train station.	CivicStructure
 term	TrainTrip	C		TrainTrip	A trip on a commercial train line.	Trip
 term	TrainedAlgorithmicMediaDigitalSource	I		TrainedAlgorithmicMediaDigitalSource	Content coded as '<a href="https://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia">trained algorithmic media</a>' using the IPTC <a…
@@ -18411,7 +18411,7 @@ term	UKTrust	I		UKTrust	UKTrust: Non-profit type referring to a UK trust.
 term	URL	C		URL	Data type: URL.	Text
 term	USNonprofitType	C		USNonprofitType	USNonprofitType: Non-profit organization type originating from the United States.	NonprofitType
 term	Ultrasound	I		Ultrasound	Ultrasound imaging.
-term	UnRegisterAction	C		UnRegisterAction	The act of un-registering from a service.\\n\\nRelated actions:\\n\\n* [[RegisterAction]]: antonym of UnRegisterAction.\\n* [[LeaveAction]]: Unlike LeaveAction,…	InteractAction
+term	UnRegisterAction	C		UnRegisterAction	The act of un-registering from a service.	InteractAction
 term	UnclassifiedAdultConsideration	I		UnclassifiedAdultConsideration	The item is suitable only for adults, without indicating why.
 term	UnemploymentSupport	I		UnemploymentSupport	UnemploymentSupport: this is a benefit for unemployment support.
 term	UnincorporatedAssociationCharity	I		UnincorporatedAssociationCharity	UnincorporatedAssociationCharity: Non-profit type referring to a charitable company that is not incorporated (UK).
@@ -18464,7 +18464,7 @@ term	WPHeader	C		WPHeader	The header section of the page.	WebPageElement
 term	WPSideBar	C		WPSideBar	A sidebar section of the page.	WebPageElement
 term	WantAction	C		WantAction	The act of expressing a desire about the object. An agent wants an object.	ReactAction
 term	WarrantyPromise	C		WarrantyPromise	A structured value representing the duration and scope of services that will be provided to a customer free of charge in case of a defect or malfunction of a…	<https://spec.edmcouncil.org/fibo/ontology/FND/Agreements/Contracts/MutualContractualAgreement> StructuredValue
-term	WarrantyScope	C		WarrantyScope	A range of services that will be provided to a customer free of charge in case of a defect or malfunction of a product.\\n\\nCommonly used values:\\n\\n*…	Enumeration
+term	WarrantyScope	C		WarrantyScope	A range of services that will be provided to a customer free of charge in case of a defect or malfunction of a product.	Enumeration
 term	WatchAction	C		WatchAction	The act of consuming dynamic/moving visual content.	ConsumeAction
 term	Waterfall	C		Waterfall	A waterfall, like Niagara.	BodyOfWater
 term	WeaponConsideration	I		WeaponConsideration	The item is intended to induce bodily harm, for example guns, mace, combat knives, brass knuckles, nail or other bombs, and spears.
@@ -18539,7 +18539,7 @@ term	Zoo	C		Zoo	A zoo.	CivicStructure
 term	about	P		about	The subject matter of an object.		Certification CommunicateAction CreativeWork DefinedTerm DefinedTermSet Event	Thing
 term	abridged	P		abridged	Indicates whether the book is an abridged edition.		Book	Boolean
 term	abstract	P		abstract	An abstract is a short description that summarizes a [[CreativeWork]].		CreativeWork	Text
-term	accelerationTime	P		accelerationTime	The time needed to accelerate the vehicle from a given start velocity to a given target velocity.\\n\\nTypical unit code(s): SEC for seconds\\n\\n* Note: There are…		Vehicle	QuantitativeValue
+term	accelerationTime	P		accelerationTime	The time needed to accelerate the vehicle from a given start velocity to a given target velocity.		Vehicle	QuantitativeValue
 term	acceptedAnswer	P		acceptedAnswer	The answer(s) that has been accepted as best, typically on a Question/Answer site.	suggestedAnswer	Question	Answer ItemList
 term	acceptedOffer	P		acceptedOffer	The offer(s) -- e.g., product, quantity and price combinations -- included in the order.		Order	Offer
 term	acceptedPaymentMethod	P		acceptedPaymentMethod	The payment method(s) that are accepted in general by an organization, or for some specific demand or offer.		Demand Offer Organization	LoanOrCredit PaymentMethod Text
@@ -18757,7 +18757,7 @@ term	calories	P		calories	The number of calories.		NutritionInformation	Energy
 term	candidate	P		candidate	A sub property of object. The candidate subject of this action.	object	VoteAction	Person
 term	caption	P		caption	The caption for this object. For downloadable machine formats (closed caption, subtitles etc.) use MediaObject and indicate the [[encodingFormat]].		AudioObject ImageObject VideoObject	MediaObject Text
 term	carbohydrateContent	P		carbohydrateContent	The number of grams of carbohydrates.		NutritionInformation	Mass
-term	cargoVolume	P		cargoVolume	The available volume for cargo or luggage.		Vehicle	QuantitativeValue
+term	cargoVolume	P		cargoVolume	The available volume for cargo or luggage. For automobiles, this is usually the trunk volume.		Vehicle	QuantitativeValue
 term	carrier	P	D	carrier	'carrier' is an out-dated term indicating the 'provider' for parcel delivery and flights.		Flight ParcelDelivery	Organization
 term	carrierRequirements	P		carrierRequirements	Specifies specific carrier(s) requirements for the application (e.g. an application may only work on a specific carrier network).		MobileApplication	Text
 term	cashBack	P		cashBack	A cardholder benefit that pays the cardholder a small percentage of their net expenditures.		PaymentCard	Boolean Number
@@ -18866,8 +18866,8 @@ term	credentialCategory	P		credentialCategory	The category or type of credential
 term	creditText	P		creditText	Text that can be used to credit person(s) and/or organization(s) associated with a published Creative Work.		CreativeWork	Text
 term	creditedTo	P		creditedTo	The group the release is credited to if different than the byArtist. For example, Red and Blue is credited to "Stefani Germanotta Band", but by Lady Gaga.		MusicRelease	Organization Person
 term	cssSelector	P		cssSelector	A CSS selector, e.g. of a [[SpeakableSpecification]] or [[WebPageElement]].		SpeakableSpecification WebPageElement	CssSelectorType
-term	currenciesAccepted	P		currenciesAccepted	The currency accepted.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g. "USD"; [Ticker…		LocalBusiness	Text
-term	currency	P		currency	The currency in which the monetary amount is expressed.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g. "USD";…		DatedMoneySpecification ExchangeRateSpecification LoanOrCredit MonetaryAmount MonetaryAmountDistribution	Text
+term	currenciesAccepted	P		currenciesAccepted	The currency accepted.		LocalBusiness	Text
+term	currency	P		currency	The currency in which the monetary amount is expressed.		DatedMoneySpecification ExchangeRateSpecification LoanOrCredit MonetaryAmount MonetaryAmountDistribution	Text
 term	currentExchangeRate	P		currentExchangeRate	The current price of a currency.		ExchangeRateSpecification	UnitPriceSpecification
 term	customer	P		customer	Party placing the order or paying the invoice.		Invoice Order	Organization Person
 term	customerRemorseReturnFees	P		customerRemorseReturnFees	The type of return fees if the product is returned due to customer remorse.		MerchantReturnPolicy	ReturnFeesEnumeration
@@ -18939,7 +18939,7 @@ term	directors	P	D	directors	A director of e.g. TV, radio, movie, video games et
 term	disambiguatingDescription	P		disambiguatingDescription	A sub property of description. A short description of the item used to disambiguate from other, similar items.	description	Thing	Text
 term	discount	P		discount	Any discount applied (to an Order).		Order	Number Text
 term	discountCode	P		discountCode	Code used to redeem a discount.		Order	Text
-term	discountCurrency	P		discountCurrency	The currency of the discount.\\n\\nUse standard formats: [ISO 4217 currency format](http://en.wikipedia.org/wiki/ISO_4217), e.g. "USD"; [Ticker…		Order	Text
+term	discountCurrency	P		discountCurrency	The currency of the discount.		Order	Text
 term	discusses	P		discusses	Specifies the CreativeWork associated with the UserComment.		UserComments	CreativeWork
 term	discussionUrl	P		discussionUrl	A link to the page containing the comments of the CreativeWork.		CreativeWork	URL
 term	diseasePreventionInfo	P		diseasePreventionInfo	Information about disease prevention.		SpecialAnnouncement	URL WebContent
@@ -19018,7 +19018,7 @@ term	endorsers	P		endorsers	People or organizations that endorse the plan.		Diet
 term	energyEfficiencyScaleMax	P		energyEfficiencyScaleMax	Specifies the most energy efficient class on the regulated EU energy consumption scale for the product category a product belongs to.		EnergyConsumptionDetails	EUEnergyEfficiencyEnumeration
 term	energyEfficiencyScaleMin	P		energyEfficiencyScaleMin	Specifies the least energy efficient class on the regulated EU energy consumption scale for the product category a product belongs to.		EnergyConsumptionDetails	EUEnergyEfficiencyEnumeration
 term	engineDisplacement	P		engineDisplacement	The volume swept by all of the pistons inside the cylinders of an internal combustion engine in a single movement.		EngineSpecification	QuantitativeValue
-term	enginePower	P		enginePower	The power of the vehicle's engine.		EngineSpecification	QuantitativeValue
+term	enginePower	P		enginePower	The power of the vehicle's engine. Typical unit code(s): KWT for kilowatt, BHP for brake horsepower, N12 for metric horsepower (PS, with 1 PS = 735,49875 W)		EngineSpecification	QuantitativeValue
 term	engineType	P		engineType	The type of engine or engines powering the vehicle.		EngineSpecification	QualitativeValue Text URL
 term	entertainmentBusiness	P		entertainmentBusiness	A sub property of location. The entertainment business where the action occurred.	location	PerformAction	EntertainmentBusiness
 term	epidemiology	P		epidemiology	The characteristics of associated patients, such as age, gender, race etc.		MedicalCondition PhysicalActivity	Text
@@ -19090,8 +19090,8 @@ term	freeShippingThreshold	P		freeShippingThreshold	A monetary value above (or a
 term	frequency	P		frequency	How often the dose is taken, e.g. 'daily'.		DoseSchedule	Text
 term	fromLocation	P		fromLocation	A sub property of location. The original location of the object or the agent before the action.	location	ExerciseAction MoveAction TransferAction	Place
 term	fuelCapacity	P		fuelCapacity	The capacity of the fuel tank or in the case of electric cars, the battery.		Vehicle	QuantitativeValue
-term	fuelConsumption	P		fuelConsumption	The amount of fuel consumed for traveling a particular distance or temporal duration with the given vehicle (e.g. liters per 100 km).\\n\\n* Note 1: There are…		Vehicle	QuantitativeValue
-term	fuelEfficiency	P		fuelEfficiency	The distance traveled per unit of fuel used; most commonly miles per gallon (mpg) or kilometers per liter (km/L).\\n\\n* Note 1: There are unfortunately no…		Vehicle	QuantitativeValue
+term	fuelConsumption	P		fuelConsumption	The amount of fuel consumed for traveling a particular distance or temporal duration with the given vehicle (e.g. liters per 100 km).		Vehicle	QuantitativeValue
+term	fuelEfficiency	P		fuelEfficiency	The distance traveled per unit of fuel used; most commonly miles per gallon (mpg) or kilometers per liter (km/L).		Vehicle	QuantitativeValue
 term	fuelType	P		fuelType	The type of fuel suitable for the engine or engines of the vehicle. If the vehicle has only one engine, this property can be attached directly to the vehicle.		EngineSpecification Vehicle	QualitativeValue Text URL
 term	fulfillmentType	P		fulfillmentType	Type of fulfillment applicable to the [[ShippingService]].		ShippingService	FulfillmentTypeEnumeration
 term	functionalClass	P		functionalClass	The degree of mobility the joint allows.		Joint	MedicalEntity Text
@@ -19106,7 +19106,7 @@ term	gameLocation	P		gameLocation	Real or fictional location of the game (or par
 term	gamePlatform	P		gamePlatform	The electronic systems used to play <a href="http://en.wikipedia.org/wiki/Category:Video_game_platforms">video games</a>.		VideoGame VideoGameSeries	Text Thing URL
 term	gameServer	P		gameServer	The server on which it is possible to play the game.		VideoGame	GameServer
 term	gameTip	P		gameTip	Links to tips, tactics, etc.		VideoGame	CreativeWork
-term	gender	P		gender	Gender of something, typically a [[Person]], but possibly also fictional characters, animals, etc. While http://schema.org/Male and http://schema.org/Female…		Person SportsTeam	GenderType Text
+term	gender	P		gender	Gender of something, typically a [[Person]], but possibly also fictional characters, animals, etc.		Person SportsTeam	GenderType Text
 term	genre	P		genre	Genre of the creative work, broadcast channel or group.		BroadcastChannel CreativeWork MusicGroup	DefinedTerm Text URL
 term	geo	P		geo	The geo coordinates of the place.		Place	GeoCoordinates GeoShape
 term	geoContains	P		geoContains	Represents a relationship between two geometries (or the places they represent), relating a containing geometry to a contained geometry.		GeospatialGeometry Place	GeospatialGeometry Place
@@ -19195,7 +19195,7 @@ term	healthPlanNetworkTier	P		healthPlanNetworkTier	The tier(s) for this network
 term	healthPlanPharmacyCategory	P		healthPlanPharmacyCategory	The category or type of pharmacy associated with this cost sharing.		HealthPlanCostSharingSpecification	Text
 term	healthcareReportingData	P		healthcareReportingData	Indicates data describing a hospital, e.g. a CDC [[CDCPMDRecord]] or as some kind of [[Dataset]].		Hospital	CDCPMDRecord Dataset
 term	height	P		height	The height of the item.		MediaObject OfferShippingDetails Person Product ShippingConditions VisualArtwork	Distance QuantitativeValue
-term	highPrice	P		highPrice	The highest price of all offers available.\\n\\nUsage guidelines:\\n\\n* Use values from 0123456789 (Unicode 'DIGIT ZERO' (U+0030) to 'DIGIT NINE' (U+0039)) rather…		AggregateOffer	Number Text
+term	highPrice	P		highPrice	The highest price of all offers available.		AggregateOffer	Number Text
 term	hiringOrganization	P		hiringOrganization	Organization or Person offering the job position.		JobPosting	Organization Person
 term	holdingArchive	P		holdingArchive	[[ArchiveOrganization]] that holds, keeps or maintains the [[ArchiveComponent]].		ArchiveComponent	ArchiveOrganization
 term	homeLocation	P		homeLocation	A contact location for a person's residence.	location	Person	ContactPoint Place
@@ -19209,7 +19209,7 @@ term	howPerformed	P		howPerformed	How the procedure is performed.		MedicalProced
 term	httpMethod	P		httpMethod	An HTTP method that specifies the appropriate HTTP method for a request to an HTTP EntryPoint. Values are capitalized strings as used in HTTP.		EntryPoint	Text
 term	iataCode	P		iataCode	IATA identifier for an airline or airport.		Airline Airport	Text
 term	icaoCode	P		icaoCode	ICAO identifier for an airport.		Airport	Text
-term	identifier	P		identifier	The identifier property represents any kind of identifier for any kind of [[Thing]], such as ISBNs, GTIN codes, UUIDs etc. Schema.org provides dedicated…		Thing	PropertyValue Text URL
+term	identifier	P		identifier	The identifier property represents any kind of identifier for any kind of [[Thing]], such as ISBNs, GTIN codes, UUIDs etc.		Thing	PropertyValue Text URL
 term	identifyingExam	P		identifyingExam	A physical examination that can identify this sign.		MedicalSign	PhysicalExam
 term	identifyingTest	P		identifyingTest	A diagnostic test that can identify this sign.		MedicalSign	MedicalTest
 term	illustrator	P		illustrator	The illustrator of the book.		Book	Person
@@ -19304,10 +19304,10 @@ term	itemCondition	P		itemCondition	A predefined value from OfferItemCondition s
 term	itemDefectReturnFees	P		itemDefectReturnFees	The type of return fees for returns of defect products.		MerchantReturnPolicy	ReturnFeesEnumeration
 term	itemDefectReturnLabelSource	P		itemDefectReturnLabelSource	The method (from an enumeration) by which the customer obtains a return shipping label for a defect product.		MerchantReturnPolicy	ReturnLabelSourceEnumeration
 term	itemDefectReturnShippingFeesAmount	P		itemDefectReturnShippingFeesAmount	Amount of shipping costs for defect product returns. Applicable when property [[itemDefectReturnFees]] equals [[ReturnShippingFees]].		MerchantReturnPolicy	MonetaryAmount
-term	itemListElement	P		itemListElement	For itemListElement values, you can use simple strings (e.g. "Peter", "Paul", "Mary"), existing entities, or use ListItem.\\n\\nText values are best if the…		ItemList	ListItem Text Thing
+term	itemListElement	P		itemListElement	For itemListElement values, you can use simple strings (e.g. "Peter", "Paul", "Mary"), existing entities, or use ListItem.		ItemList	ListItem Text Thing
 term	itemListOrder	P		itemListOrder	Type of ordering (e.g. Ascending, Descending, Unordered).		ItemList	ItemListOrderType Text
 term	itemLocation	P		itemLocation	Current location of the item.	location	ArchiveComponent	Place PostalAddress Text
-term	itemOffered	P		itemOffered	An item being offered (or demanded).		Demand Offer	AggregateOffer CreativeWork Event MenuItem Product Service Trip
+term	itemOffered	P		itemOffered	An item being offered (or demanded). The transactional nature of the offer or demand is documented using [[businessFunction]], e.g. sell, lease etc.		Demand Offer	AggregateOffer CreativeWork Event MenuItem Product Service Trip
 term	itemPopularity	P		itemPopularity	A measure of the relative popularity or sales rank of the offer within a marketplace, catalog, or platform (e.g. a platform-specific bestseller ranking or…		Offer	Number QuantitativeValue
 term	itemReviewed	P		itemReviewed	The item that is being reviewed/rated.		AggregateRating Review	Thing
 term	itemShipped	P		itemShipped	Item(s) being shipped.	<https://spec.edmcouncil.org/fibo/ontology/FND/ProductsAndServices/ProductsAndServices/hasProduct>	ParcelDelivery	Product
@@ -19381,7 +19381,7 @@ term	lodgingUnitType	P		lodgingUnitType	Textual description of the unit type (in
 term	logo	P		logo	An associated logo.	image	Brand Certification Organization Place Product Service	ImageObject URL
 term	longitude	P		longitude	The longitude of a location. For example ```-122.08585``` ([WGS 84](https://en.wikipedia.org/wiki/World_Geodetic_System)).	<https://www.omg.org/spec/Commons/Locations/hasLongitude>	GeoCoordinates Place	Number Text
 term	loser	P		loser	A sub property of participant. The loser of the action.	participant	WinAction	Person
-term	lowPrice	P		lowPrice	The lowest price of all offers available.\\n\\nUsage guidelines:\\n\\n* Use values from 0123456789 (Unicode 'DIGIT ZERO' (U+0030) to 'DIGIT NINE' (U+0039)) rather…	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasMonetaryAmount> <https://www.omg.org/spec/Commons/Quantities/hasLowerBound>	AggregateOffer	Number Text
+term	lowPrice	P		lowPrice	The lowest price of all offers available.	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasMonetaryAmount> <https://www.omg.org/spec/Commons/Quantities/hasLowerBound>	AggregateOffer	Number Text
 term	lyricist	P		lyricist	The person who wrote the words.		MusicComposition	Person
 term	lyrics	P		lyrics	The words in the song.		MusicComposition	CreativeWork
 term	mainContentOfPage	P		mainContentOfPage	Indicates if this web page element is the main subject of the page.		WebPage	WebPageElement
@@ -19432,7 +19432,7 @@ term	merchant	P	D	merchant	'merchant' is an out-dated term for 'seller'.		Order	
 term	merchantReturnDays	P		merchantReturnDays	Specifies either a fixed return date or the number of days (from the delivery date) that a product can be returned.		MerchantReturnPolicy MerchantReturnPolicySeasonalOverride	Date DateTime Integer
 term	merchantReturnLink	P		merchantReturnLink	Specifies a Web page or service by URL, for product returns.		MerchantReturnPolicy	URL
 term	messageAttachment	P		messageAttachment	A CreativeWork attached to the message.		Message	CreativeWork
-term	mileageFromOdometer	P		mileageFromOdometer	The total distance travelled by the particular vehicle since its initial production, as read from its odometer.\\n\\nTypical unit code(s): KMT for kilometers,…		Vehicle	QuantitativeValue
+term	mileageFromOdometer	P		mileageFromOdometer	The total distance travelled by the particular vehicle since its initial production, as read from its odometer.		Vehicle	QuantitativeValue
 term	minPrice	P		minPrice	The lowest price if the price is a range.	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasMonetaryAmount> <https://www.omg.org/spec/Commons/Quantities/hasLowerBound>	PriceSpecification	Number
 term	minValue	P		minValue	The lower value of some characteristic or property.	<https://www.omg.org/spec/Commons/Quantities/hasLowerBound>	MonetaryAmount PropertyValue PropertyValueSpecification QuantitativeValue	Number
 term	minimumOrderValue	P		minimumOrderValue	The minimum order value required for this shipping rate to apply.		ShippingRateSettings	MonetaryAmount Number PriceSpecification
@@ -19481,22 +19481,22 @@ term	numTracks	P		numTracks	The number of tracks in this album or playlist.		Mus
 term	numberOfAccommodationUnits	P		numberOfAccommodationUnits	Indicates the total (available plus unavailable) number of accommodation units in an [[ApartmentComplex]], or the number of accommodation units for a specific…		ApartmentComplex FloorPlan	QuantitativeValue
 term	numberOfAirbags	P		numberOfAirbags	The number or type of airbags in the vehicle.		Vehicle	Number Text
 term	numberOfAvailableAccommodationUnits	P		numberOfAvailableAccommodationUnits	Indicates the number of available accommodation units in an [[ApartmentComplex]], or the number of accommodation units for a specific [[FloorPlan]] (within its…		ApartmentComplex FloorPlan	QuantitativeValue
-term	numberOfAxles	P		numberOfAxles	The number of axles.\\n\\nTypical unit code(s): C62.		Vehicle	Number QuantitativeValue
+term	numberOfAxles	P		numberOfAxles	The number of axles.		Vehicle	Number QuantitativeValue
 term	numberOfBathroomsTotal	P		numberOfBathroomsTotal	The total integer number of bathrooms in some [[Accommodation]], following real estate conventions as [documented in…		Accommodation FloorPlan	Integer
 term	numberOfBedrooms	P		numberOfBedrooms	The total integer number of bedrooms in a some [[Accommodation]], [[ApartmentComplex]] or [[FloorPlan]].		Accommodation ApartmentComplex FloorPlan	Number QuantitativeValue
 term	numberOfBeds	P		numberOfBeds	The quantity of the given bed type available in the HotelRoom, Suite, House, or Apartment.		BedDetails	Number
 term	numberOfCredits	P		numberOfCredits	The number of credits or units awarded by a Course or required to complete an EducationalOccupationalProgram.		Course EducationalOccupationalProgram	Integer StructuredValue
-term	numberOfDoors	P		numberOfDoors	The number of doors.\\n\\nTypical unit code(s): C62.		Vehicle	Number QuantitativeValue
+term	numberOfDoors	P		numberOfDoors	The number of doors.		Vehicle	Number QuantitativeValue
 term	numberOfEmployees	P		numberOfEmployees	The number of employees in an organization, e.g. business.		BusinessAudience Organization	QuantitativeValue
 term	numberOfEpisodes	P		numberOfEpisodes	The number of episodes in this season or series.		CreativeWorkSeason RadioSeries TVSeries VideoGameSeries	Integer
-term	numberOfForwardGears	P		numberOfForwardGears	The total number of forward gears available for the transmission system of the vehicle.\\n\\nTypical unit code(s): C62.		Vehicle	Number QuantitativeValue
+term	numberOfForwardGears	P		numberOfForwardGears	The total number of forward gears available for the transmission system of the vehicle.		Vehicle	Number QuantitativeValue
 term	numberOfFullBathrooms	P		numberOfFullBathrooms	Number of full bathrooms - The total number of full and ¾ bathrooms in an [[Accommodation]].		Accommodation FloorPlan	Number
 term	numberOfItems	P		numberOfItems	The number of items in an ItemList.		ItemList	Integer
 term	numberOfLoanPayments	P		numberOfLoanPayments	The number of payments contractually required at origination to repay the loan.		RepaymentSpecification	Number
 term	numberOfPages	P		numberOfPages	The number of pages in the book.		Book	Integer
 term	numberOfPartialBathrooms	P		numberOfPartialBathrooms	Number of partial bathrooms - The total number of half and ¼ bathrooms in an [[Accommodation]].		Accommodation FloorPlan	Number
 term	numberOfPlayers	P		numberOfPlayers	Indicate how many people can play this game (minimum, maximum, or range).		Game VideoGameSeries	QuantitativeValue
-term	numberOfPreviousOwners	P		numberOfPreviousOwners	The number of owners of the vehicle, including the current one.\\n\\nTypical unit code(s): C62.		Vehicle	Number QuantitativeValue
+term	numberOfPreviousOwners	P		numberOfPreviousOwners	The number of owners of the vehicle, including the current one.		Vehicle	Number QuantitativeValue
 term	numberOfRooms	P		numberOfRooms	The number of rooms (excluding bathrooms and closets) of the accommodation or lodging business. Typical unit code(s): ROM for room or C62 for no unit.		Accommodation Apartment FloorPlan House LodgingBusiness SingleFamilyResidence Suite	Number QuantitativeValue
 term	numberOfSeasons	P		numberOfSeasons	The number of seasons in this series.		RadioSeries TVSeries VideoGameSeries	Integer
 term	numberedPosition	P		numberedPosition	A number associated with a role in an organization, for example, the number on an athlete's jersey.		OrganizationRole	Number
@@ -19563,7 +19563,7 @@ term	passengerPriorityStatus	P		passengerPriorityStatus	The priority status assi
 term	passengerSequenceNumber	P		passengerSequenceNumber	The passenger's sequence number as assigned by the airline.		FlightReservation	Text
 term	pathophysiology	P		pathophysiology	Changes in the normal mechanical, physical, and biochemical functions that are associated with this activity or condition.		MedicalCondition PhysicalActivity	Text
 term	pattern	P		pattern	A pattern that something has, for example 'polka dot', 'striped', 'Canadian flag'.		CreativeWork Product	DefinedTerm Text
-term	payload	P		payload	The permitted weight of passengers and cargo, EXCLUDING the weight of the empty vehicle.\\n\\nTypical unit code(s): KGM for kilogram, LBR for pound\\n\\n* Note 1:…		Vehicle	QuantitativeValue
+term	payload	P		payload	The permitted weight of passengers and cargo, EXCLUDING the weight of the empty vehicle.		Vehicle	QuantitativeValue
 term	paymentAccepted	P		paymentAccepted	Cash, Credit Card, Cryptocurrency, Local Exchange Tradings System, etc.		LocalBusiness	Text
 term	paymentDue	P	D	paymentDue	The date that payment is due.	<https://spec.edmcouncil.org/fibo/ontology/FBC/DebtAndEquities/Debt/hasPaymentDueDate>	Invoice Order	DateTime
 term	paymentDueDate	P		paymentDueDate	The date that payment is due.		Invoice Order	Date DateTime
@@ -19622,10 +19622,10 @@ term	prescribingInfo	P		prescribingInfo	Link to prescribing information for the 
 term	prescriptionStatus	P		prescriptionStatus	Indicates the status of drug prescription, e.g. local catalogs classifications or whether the drug is available by prescription or over-the-counter, etc.		Drug	DrugPrescriptionStatus Text
 term	previousItem	P		previousItem	A link to the ListItem that precedes the current one.		ListItem	ListItem
 term	previousStartDate	P		previousStartDate	Used in conjunction with eventStatus for rescheduled or cancelled events. This property contains the previously scheduled start date.		Event	Date DateTime
-term	price	P		price	The offer price of a product, or of a price component when attached to PriceSpecification and its subtypes.\\n\\nUsage guidelines:\\n\\n* Use the [[priceCurrency]]…	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasAmount> <https://www.omg.org/spec/Commons/Quantities/hasNumericValue>	DonateAction Offer PriceSpecification TradeAction	Number Text
+term	price	P		price	The offer price of a product, or of a price component when attached to PriceSpecification and its subtypes.	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasAmount> <https://www.omg.org/spec/Commons/Quantities/hasNumericValue>	DonateAction Offer PriceSpecification TradeAction	Number Text
 term	priceComponent	P		priceComponent	This property links to all [[UnitPriceSpecification]] nodes that apply in parallel for the [[CompoundPriceSpecification]] node.		CompoundPriceSpecification	PriceSpecification
 term	priceComponentType	P		priceComponentType	Identifies a price component (for example, a line item on an invoice), part of the total price for an offer.		UnitPriceSpecification	PriceComponentTypeEnumeration
-term	priceCurrency	P		priceCurrency	The currency of the price, or a price component when attached to [[PriceSpecification]] and its subtypes.\\n\\nUse standard formats: [ISO 4217 currency…	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasCurrency>	DonateAction Offer PriceSpecification Reservation Ticket TradeAction	Text
+term	priceCurrency	P		priceCurrency	The currency of the price, or a price component when attached to [[PriceSpecification]] and its subtypes.	<https://spec.edmcouncil.org/fibo/ontology/FND/Accounting/CurrencyAmount/hasCurrency>	DonateAction Offer PriceSpecification Reservation Ticket TradeAction	Text
 term	priceRange	P		priceRange	The price range of the business, for example ```$$$```.		LocalBusiness	Text
 term	priceSpecification	P		priceSpecification	One or more detailed price specifications, indicating the unit price and delivery or payment charges.		Demand DonateAction Offer TradeAction	PriceSpecification
 term	priceType	P		priceType	Defines the type of a price specified for an offered product, for example a list price, a (temporary) sale price or a manufacturer suggested retail price.	<https://www.omg.org/spec/Commons/Classifiers/isClassifiedBy>	CompoundPriceSpecification UnitPriceSpecification	PriceTypeEnumeration Text
@@ -19686,7 +19686,7 @@ term	question	P		question	A sub property of object. A question.	object	AskAction
 term	rangeIncludes	P		rangeIncludes	Relates a property to a class that constitutes (one of) the expected type(s) for values of the property.		Property	Class
 term	ratingCount	P		ratingCount	The count of total number of ratings.		AggregateRating	Integer
 term	ratingExplanation	P		ratingExplanation	A short explanation (e.g. one to two sentences) providing background context and other information that led to the conclusion expressed in the rating.		Rating	Text
-term	ratingValue	P		ratingValue	The rating for the content.\\n\\nUsage guidelines:\\n\\n* Use values from 0123456789 (Unicode 'DIGIT ZERO' (U+0030) to 'DIGIT NINE' (U+0039)) rather than…		Rating	Number Text
+term	ratingValue	P		ratingValue	The rating for the content.		Rating	Number Text
 term	readBy	P		readBy	A person who reads (performs) the audiobook.	actor	Audiobook	Person
 term	readonlyValue	P		readonlyValue	Whether or not a property is mutable. Default is false.		PropertyValueSpecification	Boolean
 term	realEstateAgent	P		realEstateAgent	A sub property of participant. The real estate agent involved in the action.	participant	RentAction	RealEstateAgent
@@ -19771,7 +19771,7 @@ term	reviews	P	D	reviews	Review of the item.		CreativeWork Offer Organization Pl
 term	riskFactor	P		riskFactor	A modifiable or non-modifiable factor that increases the risk of a patient contracting this condition, e.g. age, coexisting condition.		MedicalCondition	MedicalRiskFactor
 term	risks	P		risks	Specific physiologic risks associated to the diet plan.		Diet	Text
 term	roleName	P		roleName	A role played, performed or filled by a person or organization.		Role	Text URL
-term	roofLoad	P		roofLoad	The permitted total weight of cargo and installations (e.g. a roof rack) on top of the vehicle.\\n\\nTypical unit code(s): KGM for kilogram, LBR for pound\\n\\n*…		BusOrCoach Car	QuantitativeValue
+term	roofLoad	P		roofLoad	The permitted total weight of cargo and installations (e.g. a roof rack) on top of the vehicle.		BusOrCoach Car	QuantitativeValue
 term	rsvpResponse	P		rsvpResponse	The response (yes, no, maybe) to the RSVP.		RsvpAction	RsvpResponseType
 term	runsTo	P		runsTo	The vasculature the lymphatic structure runs, or efferents, to.		LymphaticVessel	Vessel
 term	runtime	P	D	runtime	Runtime platform or script interpreter dependencies (example: Java v1, Python 2.3, .NET Framework 3.0).		SoftwareSourceCode	Text
@@ -19800,7 +19800,7 @@ term	seasons	P	D	seasons	A season in a media series.		RadioSeries TVSeries Video
 term	seatNumber	P		seatNumber	The location of the reserved seat (e.g., 27).		Seat	Text
 term	seatRow	P		seatRow	The row location of the reserved seat (e.g., B).		Seat	Text
 term	seatSection	P		seatSection	The section location of the reserved seat (e.g. Orchestra).		Seat	Text
-term	seatingCapacity	P		seatingCapacity	The number of persons that can be seated (e.g. in a vehicle), both in terms of the physical space available, and in terms of limitations set by law.\\n\\nTypical…		Vehicle	Number QuantitativeValue
+term	seatingCapacity	P		seatingCapacity	The number of persons that can be seated (e.g. in a vehicle), both in terms of the physical space available, and in terms of limitations set by law.		Vehicle	Number QuantitativeValue
 term	seatingType	P		seatingType	The type/class of the seat.		Seat	QualitativeValue Text
 term	secondaryPrevention	P		secondaryPrevention	A preventative therapy used to prevent reoccurrence of the medical condition after an initial episode of the condition.		MedicalCondition	Drug DrugClass LifestyleModification MedicalTherapy
 term	securityClearanceRequirement	P		securityClearanceRequirement	A description of any security clearance requirements of the job.		JobPosting	Text URL
@@ -19861,7 +19861,7 @@ term	spatial	P		spatial	The "spatial" property can be used in cases when more sp
 term	spatialCoverage	P		spatialCoverage	The spatialCoverage of a CreativeWork indicates the place(s) which are the focus of the content.	contentLocation	CreativeWork	Place
 term	speakable	P		speakable	Indicates sections of a Web page that are particularly 'speakable' in the sense of being highlighted as being especially appropriate for text-to-speech…		Article WebPage	SpeakableSpecification URL
 term	specialCommitments	P		specialCommitments	Any special commitments associated with this job posting. Valid entries include VeteranCommit, MilitarySpouseCommit, etc.		JobPosting	Text
-term	specialOpeningHoursSpecification	P		specialOpeningHoursSpecification	The special opening hours of a certain place.\\n\\nUse this to explicitly override general opening hours brought in scope by [[openingHoursSpecification]] or…		Place	OpeningHoursSpecification
+term	specialOpeningHoursSpecification	P		specialOpeningHoursSpecification	The special opening hours of a certain place.		Place	OpeningHoursSpecification
 term	specialty	P		specialty	One of the domain specialities to which this web page's content applies.		WebPage	Specialty
 term	specification	P		specification	A specification of the product, often grouped by a section header/name.		Product	PropertyValue
 term	speechToTextMarkup	P		speechToTextMarkup	Form of markup used. eg. [SSML](https://www.w3.org/TR/speech-synthesis11) or [IPA](https://www.wikidata.org/wiki/Property:P898).		PronounceableText	Text
@@ -19879,7 +19879,7 @@ term	starRating	P		starRating	An official rating for a lodging business or food 
 term	startDate	P		startDate	The start date and time of the item (in [ISO 8601 date format](http://en.wikipedia.org/wiki/ISO_8601)).		CreativeWorkSeason CreativeWorkSeries DatedMoneySpecification EducationalOccupationalProgram Event MerchantReturnPolicySeasonalOverride Role Schedule	Date DateTime
 term	startOffset	P		startOffset	The start time of the clip expressed as the number of seconds from the beginning of the work.		Clip SeekToAction	HyperTocEntry Number
 term	startTime	P		startTime	The startTime of something. For a reserved event or service (e.g. FoodEstablishmentReservation), the time that it is expected to start.		Action FoodEstablishmentReservation InteractionCounter MediaObject Schedule	DateTime Time
-term	statType	P		statType	Indicates the kind of statistic represented by a [[StatisticalVariable]], e.g. mean, count etc. The value of statType is a property, either from within…		StatisticalVariable	Property Text URL
+term	statType	P		statType	Indicates the kind of statistic represented by a [[StatisticalVariable]], e.g. mean, count etc.		StatisticalVariable	Property Text URL
 term	status	P		status	The status of the study (enumerated).		MedicalCondition MedicalProcedure MedicalStudy	EventStatusType MedicalStudyStatus Text
 term	steeringPosition	P		steeringPosition	The position of the steering wheel or similar device (mostly for cars).		Vehicle	SteeringPositionValue
 term	step	P		step	A single step item (as HowToStep, text, document, video, etc.) or a HowToSection.		HowTo	CreativeWork HowToSection HowToStep Text
@@ -19959,13 +19959,13 @@ term	toLocation	P		toLocation	A sub property of location. The final location of 
 term	toRecipient	P		toRecipient	A sub property of recipient. The recipient who was directly sent the message.	recipient	Message	Audience ContactPoint Organization Person
 term	tocContinuation	P		tocContinuation	A [[HyperTocEntry]] can have a [[tocContinuation]] indicated, which is another [[HyperTocEntry]] that would be the default next item to play or render.		HyperTocEntry	HyperTocEntry
 term	tocEntry	P		tocEntry	Indicates a [[HyperTocEntry]] in a [[HyperToc]].	hasPart	HyperToc	HyperTocEntry
-term	tongueWeight	P		tongueWeight	The permitted vertical load (TWR) of a trailer attached to the vehicle.		Vehicle	QuantitativeValue
+term	tongueWeight	P		tongueWeight	The permitted vertical load (TWR) of a trailer attached to the vehicle. Also referred to as Tongue Load Rating (TLR) or Vertical Load Rating (VLR).		Vehicle	QuantitativeValue
 term	tool	P		tool	A sub property of instrument. An object used (but not consumed) when performing instructions or a direction.	instrument	HowTo HowToDirection	HowToTool Text
-term	torque	P		torque	The torque (turning force) of the vehicle's engine.\\n\\nTypical unit code(s): NU for newton metre (N m), F17 for pound-force per foot, or F48 for pound-force…		EngineSpecification	QuantitativeValue
+term	torque	P		torque	The torque (turning force) of the vehicle's engine.		EngineSpecification	QuantitativeValue
 term	totalHistoricalEnrollment	P		totalHistoricalEnrollment	The total number of students that have enrolled in the history of the course.		Course	Integer
 term	totalJobOpenings	P		totalJobOpenings	The number of positions open for this job posting. Use a positive integer. Do not use if the number of positions is unclear or not known.		JobPosting	Integer
 term	totalPaymentDue	P		totalPaymentDue	The total amount due.		Invoice	MonetaryAmount PriceSpecification
-term	totalPrice	P		totalPrice	The total price for the reservation or ticket, including applicable taxes, shipping, etc.\\n\\nUsage guidelines:\\n\\n* Use values from 0123456789 (Unicode 'DIGIT…		Reservation Ticket	Number PriceSpecification Text
+term	totalPrice	P		totalPrice	The total price for the reservation or ticket, including applicable taxes, shipping, etc.		Reservation Ticket	Number PriceSpecification Text
 term	totalTime	P		totalTime	The total time required to perform instructions or a direction (including time to prepare the supplies), in [ISO 8601 duration…		HowTo HowToDirection	Duration
 term	tourBookingPage	P		tourBookingPage	A page providing information on how to book a tour of some [[Place]], such as an [[Accommodation]] or [[ApartmentComplex]] in a real estate setting, as well as…		Accommodation ApartmentComplex Place	URL
 term	touristType	P		touristType	Attraction suitable for type(s) of tourist. E.g. children, visitors from a particular country, etc.		TouristAttraction TouristDestination TouristTrip	Audience Text
@@ -19974,7 +19974,7 @@ term	trackingNumber	P		trackingNumber	Shipper tracking number.		ParcelDelivery	T
 term	trackingUrl	P		trackingUrl	Tracking url for the parcel delivery.		ParcelDelivery	URL
 term	tracks	P	D	tracks	A music recording (track)&#x2014;usually a single song.		MusicGroup MusicPlaylist	MusicRecording
 term	trailer	P		trailer	The trailer of a movie or TV/radio series, season, episode, etc.		CreativeWorkSeason Episode Movie MovieSeries RadioSeries TVSeries VideoGame VideoGameSeries	VideoObject
-term	trailerWeight	P		trailerWeight	The permitted weight of a trailer attached to the vehicle.\\n\\nTypical unit code(s): KGM for kilogram, LBR for pound\\n* Note 1: You can indicate additional…		Vehicle	QuantitativeValue
+term	trailerWeight	P		trailerWeight	The permitted weight of a trailer attached to the vehicle.		Vehicle	QuantitativeValue
 term	trainName	P		trainName	The name of the train (e.g. The Orient Express).		TrainTrip	Text
 term	trainNumber	P		trainNumber	The unique identifier for the train.		TrainTrip	Text
 term	trainingSalary	P		trainingSalary	The estimated salary earned while in the program.		EducationalOccupationalProgram WorkBasedProgram	MonetaryAmountDistribution
@@ -20016,7 +20016,7 @@ term	validFrom	P		validFrom	The date when the item becomes valid.		Certification
 term	validIn	P		validIn	The geographic area where the item is valid. Applies for example to a [[Permit]], a [[Certification]], or an [[EducationalOccupationalCredential]].		Certification Credential Permit	AdministrativeArea
 term	validThrough	P		validThrough	The date after when the item is not valid. For example the end of an offer, salary period, or a period of opening hours.		Demand FinancialIncentive JobPosting LocationFeatureSpecification MonetaryAmount Offer OpeningHoursSpecification PriceSpecification	Date DateTime
 term	validUntil	P		validUntil	The date when the item is no longer valid.		Permit	Date
-term	value	P		value	The value of a [[QuantitativeValue]] (including [[Observation]]) or property value node.\\n\\n* For [[QuantitativeValue]] and [[MonetaryAmount]], the recommended…		MonetaryAmount PropertyValue QuantitativeValue	Boolean Number QualitativeValue StructuredValue Text
+term	value	P		value	The value of a [[QuantitativeValue]] (including [[Observation]]) or property value node.		MonetaryAmount PropertyValue QuantitativeValue	Boolean Number QualitativeValue StructuredValue Text
 term	valueAddedTaxIncluded	P		valueAddedTaxIncluded	Specifies whether the applicable value-added tax (VAT) is included in the price specification or not.		PriceSpecification	Boolean
 term	valueGroup	P		valueGroup	A header or section name for grouping related property values.		PropertyValue	Text
 term	valueMaxLength	P		valueMaxLength	Specifies the allowed range for number of characters in a literal value.		PropertyValueSpecification	Number
@@ -20027,7 +20027,7 @@ term	valueReference	P		valueReference	A secondary value that provides additional
 term	valueRequired	P		valueRequired	Whether the property must be filled in to complete the action. Default is false.		PropertyValueSpecification	Boolean
 term	variableMeasured	P		variableMeasured	The variableMeasured property can indicate (repeated as necessary) the variables that are measured in some dataset, either described as text or as pairs of…		Dataset Observation	Property PropertyValue StatisticalVariable Text
 term	variantCover	P		variantCover	A description of the variant cover for the issue, if the issue is a variant printing. For example, "Bryan Hitch Variant Cover" or "2nd Printing Variant".		ComicIssue	Text
-term	variesBy	P		variesBy	Indicates the property or properties by which the variants in a [[ProductGroup]] vary, e.g. their size, color etc. Schema.org properties can be referenced by…		ProductGroup	DefinedTerm PropertyValue Text
+term	variesBy	P		variesBy	Indicates the property or properties by which the variants in a [[ProductGroup]] vary, e.g. their size, color etc.		ProductGroup	DefinedTerm PropertyValue Text
 term	vatID	P		vatID	The value-added Tax ID of the organization or person with national prefix (for example IT123456789).		Organization Person	Text
 term	vehicleConfiguration	P		vehicleConfiguration	A short text indicating the configuration of the vehicle, e.g. '5dr hatchback ST 2.5 MT 225 hp' or 'limited edition'.		Vehicle	Text
 term	vehicleEngine	P		vehicleEngine	Information about the engine or engines of the vehicle.		Vehicle	EngineSpecification
@@ -20035,7 +20035,7 @@ term	vehicleIdentificationNumber	P		vehicleIdentificationNumber	The Vehicle Iden
 term	vehicleInteriorColor	P		vehicleInteriorColor	The color or color combination of the interior of the vehicle.		Vehicle	Text
 term	vehicleInteriorType	P		vehicleInteriorType	The type or material of the interior of the vehicle (e.g. synthetic fabric, leather, wood, etc.).		Vehicle	Text
 term	vehicleModelDate	P		vehicleModelDate	The release date of a vehicle model (often used to differentiate versions of the same make and model).		Vehicle	Date
-term	vehicleSeatingCapacity	P		vehicleSeatingCapacity	The number of passengers that can be seated in the vehicle, both in terms of the physical space available, and in terms of limitations set by law.\\n\\nTypical…		Vehicle	Number QuantitativeValue
+term	vehicleSeatingCapacity	P		vehicleSeatingCapacity	The number of passengers that can be seated in the vehicle, both in terms of the physical space available, and in terms of limitations set by law.		Vehicle	Number QuantitativeValue
 term	vehicleSpecialUsage	P		vehicleSpecialUsage	Indicates whether the vehicle has been used for special purposes, like commercial rental, driving school, or as a taxi.		Vehicle	CarUsageType Text
 term	vehicleTransmission	P		vehicleTransmission	The type of component used for transmitting the power from a rotating power source to the wheels or other relevant component(s) ("gearbox" for cars).		Vehicle	QualitativeValue Text URL
 term	vendor	P	D	vendor	'vendor' is an earlier term for 'seller'.	participant	BuyAction	Organization Person
@@ -20054,8 +20054,8 @@ term	webCheckinTime	P		webCheckinTime	The time when a passenger can check into t
 term	webFeed	P		webFeed	The URL for a feed, e.g. associated with a podcast series, blog, or series of date-stamped updates. This is usually RSS or Atom.		PodcastSeries SpecialAnnouncement	DataFeed URL
 term	weight	P		weight	The weight of the product or person.		OfferShippingDetails Person Product ShippingConditions VisualArtwork	Mass QuantitativeValue
 term	weightPercentage	P		weightPercentage	Value representing the fraction of the weight that is used to compute the shipping price.		ShippingRateSettings	Number
-term	weightTotal	P		weightTotal	The permitted total weight of the loaded vehicle, including passengers and cargo and the weight of the empty vehicle.\\n\\nTypical unit code(s): KGM for…		Vehicle	QuantitativeValue
-term	wheelbase	P		wheelbase	The distance between the centers of the front and rear wheels.\\n\\nTypical unit code(s): CMT for centimeters, MTR for meters, INH for inches, FOT for foot/feet.		Vehicle	QuantitativeValue
+term	weightTotal	P		weightTotal	The permitted total weight of the loaded vehicle, including passengers and cargo and the weight of the empty vehicle.		Vehicle	QuantitativeValue
+term	wheelbase	P		wheelbase	The distance between the centers of the front and rear wheels.		Vehicle	QuantitativeValue
 term	width	P		width	The width of the item.		MediaObject OfferShippingDetails Product ShippingConditions VisualArtwork	Distance QuantitativeValue
 term	winner	P		winner	A sub property of participant. The winner of the action.	participant	LoseAction	Person
 term	wordCount	P		wordCount	The number of words in the text of the CreativeWork such as an Article, Book, etc.		Article CreativeWork	Integer
@@ -20879,7 +20879,7 @@ term	BARN-PER-SR-EV	I		Barn per Steradian Electron Volt	unit for the representat
 term	BARYE	I		Barye	<p>The barye, or sometimes barad, barrie, bary, baryd, baryed, or barie, is the centimetre-gram-second (CGS) unit of pressure.
 term	BAR_A	I		Bar Absolute	The same as a Bar, however the Absolute is added when there is a mixture of gauge and absolute measurements to ensure there is a clear distinction
 term	BAUD	I		Baud	unit for the symbol rate in communications engineering and telecommunication, at which 1 baud corresponds to the speed, at which 1 symbol (defined measurable…
-term	BBL	I		Barrel	A barrel is one of several units of volume, with dry barrels, fluid barrels (UK beer barrel, U.S. beer barrel), oil barrel, etc. The volume of some barrel…
+term	BBL	I		Barrel	A barrel is one of several units of volume, with dry barrels, fluid barrels (UK beer barrel, U.S. beer barrel), oil barrel, etc.
 term	BBL_UK_PET	I		Barrel (UK Petroleum)	unit of the volume for crude oil according to the Imperial system of units
 term	BBL_UK_PET-PER-DAY	I		Barrel (UK Petroleum) per Day	unit of the volume barrel (UK petroleum) for crude oil according to the Imperial system of units divided by the unit day
 term	BBL_UK_PET-PER-HR	I		Barrel (UK Petroleum) per Hour	unit of the volume barrel (UK petroleum) for crude oil according to the Imperial system of units divided by the unit hour

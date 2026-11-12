@@ -66,9 +66,17 @@ validation.
   877,143 bytes at 400, 827,175 at 300, 790,529 at 240, 759,524 at 200 and
   724,421 at 160. Only 160 meets the budget of 733,090. The estimate assumed
   today's bytes per term; the added GS1, QUDT and DPV terms carry longer
-  comments (comment text grows from 1.66 MB to 1.88 MB at 240). The list is
-  3,055,418 bytes, 724,421 gzipped, 81 vocabularies and 24,140 terms; 4,418
-  of its 18,473 comments are cut.
+  comments (comment text grows from 1.66 MB to 1.88 MB at 240). After the
+  review's sentence-cut and paragraph fixes, the list is 3,051,993 bytes,
+  723,358 gzipped, 81 vocabularies and 24,140 terms.
+- Review: a `.` after a single letter, cf, vs, No or Inc, or inside an open
+  bracket, no longer ends a sentence; "etc." still may. schema.org's
+  paragraph breaks, written as the characters `\n\n`, now end its first
+  paragraph (65 comments carried a second paragraph; `main` has 108).
+  `check-vocab.sh` exits 3 when only downloads failed, and CI retries only
+  then, without `-f`; an HTTP error skips that file only, a connection
+  failure skips the host's other rows. Two shared namespaces or aliases are
+  refused.
 - 03: every fetched row of the spec fetched and parsed; none became frozen.
   The term counts added and removed equal the spec's table for all 22. Two
   deprecation counts differ from its "Deprecated after" column: `gs1` has

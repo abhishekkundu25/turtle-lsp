@@ -98,18 +98,27 @@ const unescapeColumn = (s) => s.replace(/\\(.)/g, (_, e) => ({ t: "\t", n: "\n" 
 // space and a word that does not start in lower case (so "e.g. the" is not
 // one). A `.` after an abbreviation is not one either: after a single letter
 // ("e.g. Oil", "the U.S. Secretary", "William F. Smith", "p. 12") or after
-// cf, etc, vs, No or Inc.
-const SENTENCE_END = /(?:(?<!(?<![^ .(\[])(?:[Cc]f|[Ee]tc|[Vv]s|No|Inc|\p{L}))\.|[!?])["'’”)\]]*(?= +(?!\p{Ll}))/gu
-// Whether the text stops inside a round or square bracket it opened.
-const insideBracket = (s) => s.split(/[(\[]/).length > s.split(/[)\]]/).length
+// cf, vs, No or Inc. ("etc." ends a sentence as often as not, so it may.)
+const SENTENCE_END = /(?:(?<!(?<![^ .(\[])(?:[Cc]f|[Vv]s|No|Inc|\p{L}))\.|[!?])["'’”)\]]*(?= +(?!\p{Ll}))/gu
+// Whether the text stops inside a round or square bracket it opened. A
+// closing bracket with nothing open (a smiley, a list item "a)") is ignored.
+const insideBracket = (s) => {
+  let depth = 0
+  for (const c of s) {
+    if (c === "(" || c === "[") depth++
+    else if ((c === ")" || c === "]") && depth > 0) depth--
+  }
+  return depth > 0
+}
 
-// The first paragraph, whitespace collapsed, at most COMMENT_CAP long: cut
+// The first paragraph (schema.org writes its paragraph breaks as the
+// characters `\n\n`, so those end it too), whitespace collapsed, at most COMMENT_CAP long: cut
 // after the last sentence end inside the cap that is not inside a bracket,
 // else after the last word with "…". The two refusals (abbreviations and
 // brackets) can only miss a sentence end: the cut is then an earlier one or
 // says "…".
 const commentOf = (text) => {
-  const comment = collapseSpaces(text.trim().split(/\n\s*\n/)[0])
+  const comment = collapseSpaces(text.trim().split(/\n\s*\n|\\n\\n/)[0])
   if (comment.length <= COMMENT_CAP) return comment
   let end = 0
   for (const m of comment.matchAll(SENTENCE_END)) {

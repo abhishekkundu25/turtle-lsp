@@ -75,10 +75,14 @@ while IFS=$'\t' read -r file url want where; do
     unreachable=$((unreachable + 1))
     continue
   fi
-  if ! fetch -o "$file.part" "$url"; then
+  status=0
+  fetch -o "$file.part" "$url" || status=$?
+  if [ "$status" -ne 0 ]; then
     printf '%s: download failed: %s\n' "$where" "$url" >&2
     unreachable=$((unreachable + 1))
-    down="$down$host "
+    # An HTTP error (curl's 22, such as a 404) is this file's; anything else
+    # (no connection, a stall) is the host's, so its other rows are skipped.
+    [ "$status" -eq 22 ] || down="$down$host "
     continue
   fi
   got=$(sha256_of "$file.part")
