@@ -109,3 +109,63 @@ validation.
   `cc`, `dash`, `hydra`, `lvont`, `mads`, `rss`, `sdmx`, `sem`, `sioc` and
   `void`. The W3C-hosted files that state none say "W3C Document License".
   04 checks these before the notices file lists them.
+- 04: `test/project.test.mjs` failed on two files of `test/fixtures/project`
+  with `'unit' is not defined in the qudt vocabulary`. The fixture used
+  `qudt:unit`, which QUDT 3 removed in favour of `qudt:hasUnit`; reporting it
+  is what the spec asks for. The fixture now uses `qudt:hasUnit`.
+- 04: of the 11 licences "not stated in the file", 7 are stated elsewhere by
+  the publisher, and the manifest's licence column now names them (no hash
+  changes): `bibo` CC-BY-SA-3.0 (DCMI's page for BIBO), `cc` CC-BY-4.0
+  (creativecommons.org's content), `dash` Apache-2.0 (the TopQuadrant/shacl
+  repository, which holds `dash.ttl`), `hydra` W3C Software and Document
+  License (the HydraCG/Specifications repository), `lvont` CC-BY-SA-3.0
+  (lexvo.org's legal page, for its RDF dump), `mads` public domain
+  (id.loc.gov's about page) and `sdmx` CC-BY-SA-4.0 (the `LICENSE.md` beside
+  the file, written for the SDMX vocabulary files). Four stay unknown and
+  are listed so in `THIRD_PARTY_NOTICES.md`: `rss` and `sioc` (their
+  specifications' notices exclude the format and the ontology terms), `sem`
+  (a copyright line, no licence) and `void` (nothing on the archived page,
+  in the file or in its repository).
+- 04: the comment cap is 240, by the maintainer's choice, not the 160 that
+  03 picked to meet budget 1. It is `COMMENT_CAP` in `tools/vocab-lib.mjs`.
+  At 240 the list is 81 vocabularies, 24,140 terms, 3,280,105 bytes and
+  788,028 gzipped at level 9 (at 160: 3,051,993 and 723,358). The cap cuts
+  2,380 of the 18,473 comments, 397 of them inside a sentence (ending in
+  "…"). The spec's budget 1 (no larger than 733,090 gzipped) is therefore
+  not met: the list grows by 54,938 bytes gzipped against `main`'s, which
+  is the budget.
+  `SIZE_BUDGET` is now 800,000: the list at 240, rounded up to leave room
+  for a publisher's refresh. The limit that matters is the engine's
+  `WASM_GZIP_BUDGET`, unchanged at 3,700,000.
+- 04: the engine (`web/app/engine.wasm`, gzipped at level 9): 3,395,322
+  bytes on `main` (b36468e, 11,610,087 raw), 3,449,894 on this branch at
+  the 240 cap (12,023,568 raw), so 54,572 bytes more; 3,385,401 at the 160
+  cap. The budget leaves 250,106 bytes.
+- 04: the spec's six budgets, measured on this branch at the 240 cap:
+  1. The list at most 733,090 bytes gzipped: **fail**, 788,028, by the
+     maintainer's choice of cap (above).
+  2. `WASM_GZIP_BUDGET` 3,700,000 unchanged and `node web/build.mjs`
+     passes: **pass**, 3,449,894.
+  3. `node bench/perf.mjs --only big-file-peak` passes: **pass**, 54.6 bytes
+     committed per input byte for `format --check` and 41.7 for
+     `check --no-shacl`, budget 64.
+  4. The keystroke rows do not move against `main`: **pass**, but measured
+     on a loaded machine (load average 2.7 to 6 for ten minutes of waiting,
+     3.1 to 5.1 during the runs; nothing of this work was running). Three
+     runs of each tree, alternated; median p50 in ms, branch against `main`
+     (range of the three in brackets): keystroke 1.5 [1.5-1.6] against
+     1.6 [1.6]; Turtle 1.4 [1.4] against 1.4 [1.4]; JSON-LD 5.1 [5.0-5.5]
+     against 5.0 [5.0-5.4]; near-miss 1.6 [1.6] against 1.6 [1.6]; big file
+     5.0 [4.9-5.0] against 5.0 [5.0-5.3]; big vocabulary 7.1 [6.9-7.7]
+     against 7.1 [6.9-7.6]; undeclared prefixes 254.6 [242.9-276.5] against
+     256.6 [232.0-288.5]. Every difference is inside the spread of the runs.
+  5. The root `package-lock.json` holds fewer than 43 packages: **pass**,
+     25.
+  6. `tools/check-vocab.sh`, run twice, downloads nothing the second time
+     and gives the same result: **pass**; `-f` downloaded 25 files, the
+     next run 0, and both found the committed list.
+- 04: the editor extension's Node tests need `npm run build` first
+  (`manifest.test.mjs` checks the built browser entry), so they ran after
+  it. The public corpus file `dbpedia-ontology` could not be downloaded
+  (downloads.dbpedia.org timed out, three tries), so `corpus_edits` ran on
+  the other files without it. No test printed `skipped`.

@@ -21,13 +21,13 @@
 # data/vocab-patches.tsv with its reason, never into a frozen extract.
 acl	http://www.w3.org/ns/auth/acl#	-	tsv	https://www.w3.org/ns/auth/acl	compared 2026-11-12	W3C Document License	4de1eaac854c2d62edf1c7908b650d6a6e50742bec85b9bb59aff133b9dc4185
 as	https://www.w3.org/ns/activitystreams#	-	ttl	https://www.w3.org/ns/activitystreams-owl	current	W3C Document License	e28fd3be62791b42422f2e97c0ab56141238e774be7aa860e5f03da1b2fe158f
-bibo	http://purl.org/ontology/bibo/	-	tsv	https://purl.org/ontology/bibo/	1.3; compared 2026-11-12	not stated in the file	dbffc6ea544e599d1f27d1520c0b694564f581488ba29da9dc0d7b9ff13fe95d
-cc	http://creativecommons.org/ns#	-	tsv	https://creativecommons.org/schema.rdf	compared 2026-11-12	not stated in the file	52d0a4ed177c61b45b839e7fe1e00425107fe138ce435db34a625f0c451f1221
+bibo	http://purl.org/ontology/bibo/	-	tsv	https://purl.org/ontology/bibo/	1.3; compared 2026-11-12	CC-BY-SA-3.0 (stated by DCMI, its publisher)	dbffc6ea544e599d1f27d1520c0b694564f581488ba29da9dc0d7b9ff13fe95d
+cc	http://creativecommons.org/ns#	-	tsv	https://creativecommons.org/schema.rdf	compared 2026-11-12	CC-BY-4.0 (the licence of creativecommons.org's content)	52d0a4ed177c61b45b839e7fe1e00425107fe138ce435db34a625f0c451f1221
 cnt	http://www.w3.org/2011/content#	-	tsv	https://www.w3.org/2011/content	compared 2026-11-12	W3C Document License	2d30484b44864974dca87f030c1c9cc70642f78066556e7b4a839f8ab1858686
 constant	http://qudt.org/vocab/constant/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/constants/VOCAB_QUDT-CONSTANTS.ttl	3.5.3	CC-BY-4.0	c38d17a4addf8193d2a465273a2db6b51343cb26414a1f93a072b0f82a39a6a2
 crm	http://www.cidoc-crm.org/cidoc-crm/	-	tsv	https://www.cidoc-crm.org/rdfs/7.1.3/CIDOC_CRM_v7.1.3.rdfs	7.1.3; compared 2026-11-12	CC-BY-4.0	250cf873d51ce278834e36c25a4a4014b7b09b0afa1a6cfb685485a8a412a284
 csvw	http://www.w3.org/ns/csvw#	-	tsv	https://www.w3.org/ns/csvw	compared 2026-11-12	W3C Document License	2ce577171c008fe23690abd32d5ef861474215f200da5aec4c356d61e7bc2c82
-dash	http://datashapes.org/dash#	-	tsv	https://datashapes.org/dash.ttl	2022-05-27; compared 2026-11-12	not stated in the file	190f37b4774afb9c91787ee0d2f8b795617a0feea96e317c3d80d57aec03338e
+dash	http://datashapes.org/dash#	-	tsv	https://datashapes.org/dash.ttl	2022-05-27; compared 2026-11-12	Apache-2.0 (TopQuadrant/shacl, which holds dash.ttl)	190f37b4774afb9c91787ee0d2f8b795617a0feea96e317c3d80d57aec03338e
 dbo	http://dbpedia.org/ontology/	-	nt	https://raw.githubusercontent.com/dbpedia/ontology-tracker/cba9f43dfa7746098075ae220480cf1b413e6e2f/databus/dbpedia/ontology/dbo-snapshots/dbo-snapshots.nt	2026.07.22	CC-BY-SA-3.0	7eb5d0579efb8dc1b12e150658e4e262e0c55dd1e966675e6a8d9f8513ecbcca
 dc11	http://purl.org/dc/elements/1.1/	-	tsv	https://purl.org/dc/elements/1.1/	compared 2026-11-12	CC-BY-4.0	102b778f01e4ea312c9f48004a1a58df6b957d8a5c529de32dac8e40999ae947
 dcam	http://purl.org/dc/dcam/	-	tsv	https://purl.org/dc/dcam/	compared 2026-11-12	CC-BY-4.0	7630e6e7f854517b9f74d8dd1dfcc2ddf6256b1f7bc0d7ff49a6a6523fb7dda3
@@ -52,13 +52,13 @@ grddl	http://www.w3.org/2003/g/data-view#	-	tsv	https://www.w3.org/2003/g/data-v
 gs1	https://ref.gs1.org/voc/	https://gs1.org/voc/ https://www.gs1.org/voc/	ttl	https://ref.gs1.org/voc/data/gs1Voc.ttl	1.18	Apache-2.0	b6039ed1b3229853a0aed1eb8568527f2d393925fd163d6fce5fddefe7ea1aa7
 gtfs	http://vocab.gtfs.org/terms#	-	tsv	https://raw.githubusercontent.com/OpenTransport/linked-gtfs/master/gtfs.ttl	archived copy, vocab.gtfs.org is gone; compared 2026-11-12	CC-BY-3.0	e75351e3b1cc4980aa586b09a2be62d25bf5e0f7cbcceb9dab4acae6e6e2821e
 http	http://www.w3.org/2011/http#	-	tsv	https://www.w3.org/2011/http	compared 2026-11-12	W3C Document License	40af59b8a831f588ce904c5b4402f5a173f8c2b1eebf1ee708159b9ed0a8c943
-hydra	http://www.w3.org/ns/hydra/core#	-	tsv	https://www.w3.org/ns/hydra/core.jsonld	compared 2026-11-12	not stated in the file	3febd8c0f7a28c60abdc10d1db94072ecca0e9551cf51a6586780496dc434563
+hydra	http://www.w3.org/ns/hydra/core#	-	tsv	https://www.w3.org/ns/hydra/core.jsonld	compared 2026-11-12	W3C Software and Document License (HydraCG/Specifications)	3febd8c0f7a28c60abdc10d1db94072ecca0e9551cf51a6586780496dc434563
 ical	http://www.w3.org/2002/12/cal/icaltzd#	-	tsv	https://www.w3.org/2002/12/cal/icaltzd.rdf	compared 2026-11-12	W3C Document License	c08f782b24b4be6da8d1dc801fe626a09ee2a8c6a80005ed6f369c62fedd5754
 ldp	http://www.w3.org/ns/ldp#	-	tsv	https://www.w3.org/ns/ldp	compared 2026-11-12	W3C Document License	6615e5467071f7445f604db5620433f9e074129999f8a6fc3fca38fe111e20d3
 locn	http://www.w3.org/ns/locn#	-	tsv	https://www.w3.org/ns/locn	compared 2026-11-12	ISA Open Metadata Licence v1.1	3430c57079ea117149d20002777825193dab9e46c6aabcbd80760956abc09fd6
-lvont	http://lexvo.org/ontology#	-	tsv	http://lexvo.org/ontology	0.24; compared 2026-11-12	not stated in the file	72a72ec2d37952bd47c49ea8872a0fc4c5a26d5e5a29e4aeb12846d6ec843d89
+lvont	http://lexvo.org/ontology#	-	tsv	http://lexvo.org/ontology	0.24; compared 2026-11-12	CC-BY-SA-3.0 (stated for Lexvo.org's RDF dump)	72a72ec2d37952bd47c49ea8872a0fc4c5a26d5e5a29e4aeb12846d6ec843d89
 ma	http://www.w3.org/ns/ma-ont#	-	tsv	https://www.w3.org/ns/ma-ont	compared 2026-11-12	W3C Document License	4b50c17f19ece8ccb6f635fc01a8dbdf5250716166b792feeb7017ae3b8e80bf
-mads	http://www.loc.gov/mads/rdf/v1#	-	tsv	https://www.loc.gov/mads/rdf/v1.rdf	1.5.0; compared 2026-11-12	not stated in the file	d51424b1f64c336e81da6b18825f6ae68df64d6760291c0752190dab59a5e489
+mads	http://www.loc.gov/mads/rdf/v1#	-	tsv	https://www.loc.gov/mads/rdf/v1.rdf	1.5.0; compared 2026-11-12	Public domain (Library of Congress, id.loc.gov)	d51424b1f64c336e81da6b18825f6ae68df64d6760291c0752190dab59a5e489
 oa	http://www.w3.org/ns/oa#	-	tsv	https://www.w3.org/ns/oa	compared 2026-11-12	W3C Document License	abb79e5ea1efe59df9d6fadd474f65c3b5e3798885124d6bd1ba9f9c0be2f6d0
 og	http://ogp.me/ns#	-	ttl	https://ogp.me/ns/ogp.me.ttl	current	OWFa 0.9 (stated on ogp.me)	6bf11c8299765cf8db1ff2ed212d52a204dcda10ce7d1f9068b58a0026b1defd
 org	http://www.w3.org/ns/org#	-	tsv	https://www.w3.org/ns/org	compared 2026-11-12	PDDL-1.0	62f1f40c9c5184bd28f9669c17dfdbb9ca2bfb8af7efcb80bca8ae52b8d82f6f
@@ -81,7 +81,7 @@ rr	http://www.w3.org/ns/r2rml#	-	tsv	https://www.w3.org/ns/r2rml	compared 2026-1
 rss	http://purl.org/rss/1.0/	-	tsv	https://purl.org/rss/1.0/schema.rdf	compared 2026-11-12	not stated in the file	c03e2eff7c0316037d039a2a9bf954042aa32ad27c407e883563baa8b9c94346
 schema	http://schema.org/	https://schema.org/	nt	https://schema.org/version/30.1/schemaorg-current-http.nt	30.1	CC-BY-SA-3.0	81471ffa7cb1c703bf107919a4d1af4c596e5828f78f0573b5702ed193f3e8fa
 sd	http://www.w3.org/ns/sparql-service-description#	-	ttl	https://www.w3.org/ns/sparql-service-description.ttl	current	W3C Document License	a4e4ab035c909d4aeb140ab5807a3b49dfa0ecee587dc9109214ecfaff712878
-sdmx	http://purl.org/linked-data/sdmx#	-	tsv	https://raw.githubusercontent.com/UKGovLD/publishing-statistical-data/master/specs/src/main/vocab/sdmx.ttl	0.3, archived copy, purl.org answers 503; compared 2026-11-12	not stated in the file	714e9e20aeff6c074c82809dbe695c1d85ab0eb3b293e1e350a8f15e439025c7
+sdmx	http://purl.org/linked-data/sdmx#	-	tsv	https://raw.githubusercontent.com/UKGovLD/publishing-statistical-data/master/specs/src/main/vocab/sdmx.ttl	0.3, archived copy, purl.org answers 503; compared 2026-11-12	CC-BY-SA-4.0 (the LICENSE.md beside the file)	714e9e20aeff6c074c82809dbe695c1d85ab0eb3b293e1e350a8f15e439025c7
 sem	http://semanticweb.cs.vu.nl/2009/11/sem/	-	tsv	https://semanticweb.cs.vu.nl/2009/11/sem/	certificate expired; compared 2026-11-12	not stated in the file	b2b4f14f4904a45f7df1fd269718529c95579a73a3790fab48e05a325d2eff9f
 sh	http://www.w3.org/ns/shacl#	-	tsv	https://web.archive.org/web/20240403/https://www.w3.org/ns/shacl.ttl	1.0 (2017-07-20), archived 2024-04-03, the namespace now serves the 1.2 draft; compared 2026-11-12	W3C Document License	52e7b6d6e2ec4d1d45c3265de01a888dc47a7913d633628ad6fa08726778d13b
 shex	http://www.w3.org/ns/shex#	-	ttl	https://www.w3.org/ns/shex.ttl	current	W3C Document License	3dd94fb3f96ac3d0e41c665705b5ac90d6fd82aa42ca180f56e4b628fb824206

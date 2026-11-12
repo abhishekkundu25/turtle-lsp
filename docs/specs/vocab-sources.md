@@ -1,6 +1,6 @@
 # Vocabulary sources: pinned publishers, patches and a check
 
-Status: proposed. Fixes #106. Tickets:
+Status: done (unreleased). Fixes #106. Tickets:
 [../tickets/vocab-sources/](../tickets/vocab-sources/README.md).
 
 ## Problem Statement

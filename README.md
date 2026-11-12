@@ -162,10 +162,10 @@ Why it is fast:
   their documentation only when you select one.
 - **Background indexing.** Workspace files are parsed in parallel on a
   separate thread, so start-up does not wait for them.
-- **Embedded vocabularies.** `data/vocab.tsv` has 83 namespaces and 20,993
+- **Embedded vocabularies.** `data/vocab.tsv` has 81 namespaces and 24,140
   terms (`grep -c '^@ns' data/vocab.tsv` counts the namespaces). They are
-  compiled into the binary and parsed only when first used. Two of them,
-  GeoSPARQL's `geof` and `geor`, have no terms and are not checked.
+  compiled into the binary and parsed only when first used. Where each one
+  comes from is under [Vocabulary data](#vocabulary-data).
 
 ## Project prefixes
 
@@ -1151,7 +1151,7 @@ npm install     # test tooling only (LSP client, vocabulary generator)
 npm test        # cargo tests, parser cross-checks against oxttl and oxjsonld, end-to-end LSP tests, Neovim checks
 npm run test:latency  # the wall-clock checks of the end-to-end tests, run one at a time (test:node runs them last)
 npm run bench   # latency benchmark on a 30k-line file in a 200-file workspace, plus stress rows
-npm run vocab   # regenerate data/vocab.tsv from @zazuko/rdf-vocabularies
+npm run vocab   # regenerate data/vocab.tsv from the pinned sources of data/vocab-sources.tsv
 npm run corpus  # download the public corpus and compare the parser and formatter on it
 npm run web:test     # build the browser engine and run the web tests
 npm run test:vscode  # VS Code extension: grammar tests, then checks inside a downloaded VS Code
@@ -1177,6 +1177,36 @@ the modules.
 - `tests/w3c_jsonld.rs`: the W3C JSON-LD 1.1 suites, against the status list `tests/w3c/jsonld/expected-status.tsv`; a regression or a known failure that starts passing fails the run. `tests/jsonld_oracle.rs` and `tests/jsonld_lints.rs` run on the public JSON-LD corpus that `npm run corpus` downloads. Without it they print `skipped`, and with `CI=true` they fail, so a CI run that checked nothing is never reported as passing. `tests/jsonld_budget.rs` holds release builds to the JSON-LD performance budgets.
 - Pending tests (`todo`, tagged with a phase such as `jsonld:phase2`) run, and their failures do not fail the build; `npm test` prints their count per tag. A pending test that starts passing is listed and fails the run, so it gets promoted.
 
+### Vocabulary data
+
+`data/vocab.tsv` is generated; nobody edits it by hand. Its sources:
+
+- `data/vocab-sources.tsv`: one row per source file, with the vocabulary's
+  prefix, namespace and other spellings of it, the publisher's URL, the
+  version, the licence and the SHA-256 of the file. A row in Turtle,
+  N-Triples or RDF/XML is downloaded from its publisher; 22 vocabularies,
+  schema.org, QUDT, GS1, DPV and the DBpedia ontology among them, are read
+  this way. A `tsv` row reads an extract committed under
+  `data/vocab-frozen/`; the other 59 vocabularies are frozen like this,
+  because their publisher's file cannot be fetched or parsed, would change
+  no term, or (SHACL) now serves a draft.
+- `data/vocab-patches.tsv`: the terms a specification defines but its
+  namespace file lacks (the XSD facets, `rdf:reifies`, ...), each with the
+  section that defines it.
+
+`tools/check-vocab.sh` downloads the fetched rows into
+`target/vocab-sources/` (a file with the right hash is not downloaded
+again), checks every hash, regenerates the list and fails when it differs
+from the committed one. CI runs it; the nightly run passes `-f` to download
+everything again, so a publisher's change to an unversioned file shows up
+there first.
+
+To move a vocabulary to a new release, set the row's URL and version and
+run `npm run vocab`. The download fails with the file's new SHA-256: read
+what the publisher changed, copy the hash into the row and run it again. It
+prints, per vocabulary, the terms added and removed; check the removed
+ones against the publisher's release notes.
+
 ### Performance in CI
 
 The CI job "Performance" runs `node bench/perf.mjs --json bench-results.json`
@@ -1188,4 +1218,4 @@ wall-clock gate (`--gate` makes the comparison exit 1 for a local run). The
 memory budget (mimalloc's peak commit, scenario `big-file-peak`) is
 deterministic and gates in the Tests job on Linux and macOS.
 
-Vocabulary data comes from [@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies); each vocabulary keeps its own license. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists the crates, data and packages that the binary, the `.vsix` and the browser site include, with their licences.
+Vocabulary data comes from each vocabulary's publisher, at the version `data/vocab-sources.tsv` names; each vocabulary keeps its publisher's licence. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists the crates, data and packages that the binary, the `.vsix` and the browser site include, with their licences.

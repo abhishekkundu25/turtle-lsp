@@ -24,15 +24,14 @@ import { gzipSync } from "node:zlib"
 import N3 from "n3"
 import { RdfXmlParser } from "rdfxml-streaming-parser"
 
-// The longest comment the list keeps, in UTF-16 code units. Comment text is
-// what limits the list's size: this is the largest of 400, 300, 240, 200 and
-// 160 that keeps it within SIZE_BUDGET. Measured on the pinned sources
-// (2026-11-12), gzipped: 240 gives 790,582 bytes, 200 gives 759,927, 160
-// gives 724,999.
-export const COMMENT_CAP = 160
-// The most data/vocab.tsv may weigh gzipped at level 9: its size before the
-// sources were pinned.
-export const SIZE_BUDGET = 733_090
+// The longest comment the list keeps, in UTF-16 code units, set by the
+// maintainer.
+export const COMMENT_CAP = 240
+// The most data/vocab.tsv may weigh gzipped at level 9: the list measured at
+// the 240 cap the maintainer chose to keep hover comments readable (788,028
+// bytes on 2026-11-12), rounded up to leave room for a publisher's refresh.
+// The real limit is the browser engine's WASM_GZIP_BUDGET in web/build.mjs.
+export const SIZE_BUDGET = 800_000
 
 const RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 const RDFS = "http://www.w3.org/2000/01/rdf-schema#"

@@ -8,7 +8,7 @@ validation.
 
 **Blocked by:** 03.
 
-**Status:** ready-for-agent
+**Status:** done
 
 Documents:
 
