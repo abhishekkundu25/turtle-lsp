@@ -1,0 +1,12 @@
+term	Collection	C		Collection	A collection is described as a group; its parts may also be separately described.
+term	Dataset	C		Dataset	Examples include lists, tables, and databases. A dataset may be useful for direct machine processing.
+term	Event	C		Event	Metadata for an event provides descriptive information that is the basis for discovery of the purpose, location, duration, and responsible agents associated with an event. Examples include an exhibition, webcast, conference, workshop, open day, performance, battle, trial, wedding, tea party, conflagration.
+term	Image	C		Image	Examples include images and photographs of physical objects, paintings, prints, drawings, other images and graphics, animations and moving pictures, film, diagrams, maps, musical notation. Note that Image may include both electronic and physical representations.
+term	InteractiveResource	C		Interactive Resource	Examples include forms on Web pages, applets, multimedia learning objects, chat services, or virtual reality environments.
+term	MovingImage	C		Moving Image	Examples include animations, movies, television programs, videos, zoetropes, or visual output from a simulation. Instances of the type Moving Image must also be describable as instances of the broader type Image.	Image
+term	PhysicalObject	C		Physical Object	Note that digital representations of, or surrogates for, these objects should use Image, Text or one of the other types.
+term	Service	C		Service	Examples include a photocopying service, a banking service, an authentication service, interlibrary loans, a Z39.50 or Web server.
+term	Software	C		Software	Examples include a C source file, MS-Windows .exe executable, or Perl script.
+term	Sound	C		Sound	Examples include a music playback file format, an audio compact disc, and recorded speech or sounds.
+term	StillImage	C		Still Image	Examples include paintings, drawings, graphic designs, plans and maps. Recommended best practice is to assign the type Text to images of textual materials. Instances of the type Still Image must also be describable as instances of the broader type Image.	Image
+term	Text	C		Text	Examples include books, letters, dissertations, poems, newspapers, articles, archives of mailing lists. Note that facsimiles or images of texts are still of the genre Text.

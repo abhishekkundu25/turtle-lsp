@@ -175,12 +175,111 @@ Beihang).
 
 ### Vocabularies (`data/vocab.tsv`)
 
-The names, labels, comments and class and property relations of
-83 vocabularies, extracted by `tools/build-vocab.mjs` from
-[@zazuko/rdf-vocabularies](https://github.com/zazuko/rdf-vocabularies)
-2023.1.19 (MIT, Copyright (c) 2019 Zazuko GmbH). Each vocabulary keeps the
-licence its publisher gives it; the namespace of each is the `@ns` line in
-`data/vocab.tsv`. The prefixes: `acl`, `as`, `bibo`, `cc`, `cnt`, `constant`, `crm`, `csvw`, `dash`, `dbo`, `dc11`, `dcam`, `dcat`, `dcmitype`, `dcterms`, `discipline`, `doap`, `dpv`, `dqv`, `dtype`, `duv`, `earl`, `ebucore`, `exif`, `foaf`, `frbr`, `geo`, `geof`, `geor`, `gn`, `gr`, `grddl`, `gs1`, `gtfs`, `http`, `hydra`, `ical`, `ldp`, `locn`, `lvont`, `ma`, `mads`, `oa`, `og`, `org`, `owl`, `prefix`, `prov`, `qb`, `qkdv`, `quantitykind`, `qudt`, `rdau`, `rdf`, `rdfa`, `rdfs`, `rico`, `rr`, `rss`, `schema`, `sd`, `sdmx`, `sem`, `sh`, `shex`, `sioc`, `skos`, `skosxl`, `sosa`, `sou`, `ssn`, `test`, `time`, `unit`, `vaem`, `vann`, `vcard`, `void`, `vs`, `wgs`, `xhv`, `xkos`, `xsd`.
+The names, labels, comments and class and property relations of 81
+vocabularies, extracted by `tools/build-vocab.mjs` from the publishers'
+files below, and 31 terms that `data/vocab-patches.tsv` adds from the
+specifications that define them (XSD 1.1, OWL 2, RDF 1.2, OWL-Time,
+Activity Streams 2.0, the XHTML vocabulary, MADS/RDF 1.5.0 and the 2023
+`dtype` file). `data/vocab-sources.tsv` pins each file by version and
+SHA-256. A row whose version says "compared" is an extract under
+`data/vocab-frozen/`, compared with the publisher's file on that date. Each
+vocabulary keeps the licence its publisher gives it; the namespace of each
+is the `@ns` line in `data/vocab.tsv`.
+
+| Prefix | Publisher's file | Version | Licence |
+|---|---|---|---|
+| `acl` | https://www.w3.org/ns/auth/acl | compared 2026-11-12 | W3C Document License |
+| `as` | https://www.w3.org/ns/activitystreams-owl | current | W3C Document License |
+| `bibo` | https://purl.org/ontology/bibo/ | 1.3; compared 2026-11-12 | CC-BY-SA-3.0 (stated by DCMI, its publisher) |
+| `cc` | https://creativecommons.org/schema.rdf | compared 2026-11-12 | CC-BY-4.0 (the licence of creativecommons.org's content) |
+| `cnt` | https://www.w3.org/2011/content | compared 2026-11-12 | W3C Document License |
+| `constant` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/constants/VOCAB_QUDT-CONSTANTS.ttl | 3.5.3 | CC-BY-4.0 |
+| `crm` | https://www.cidoc-crm.org/rdfs/7.1.3/CIDOC_CRM_v7.1.3.rdfs | 7.1.3; compared 2026-11-12 | CC-BY-4.0 |
+| `csvw` | https://www.w3.org/ns/csvw | compared 2026-11-12 | W3C Document License |
+| `dash` | https://datashapes.org/dash.ttl | 2022-05-27; compared 2026-11-12 | Apache-2.0 (TopQuadrant/shacl, which holds dash.ttl) |
+| `dbo` | https://raw.githubusercontent.com/dbpedia/ontology-tracker/cba9f43dfa7746098075ae220480cf1b413e6e2f/databus/dbpedia/ontology/dbo-snapshots/dbo-snapshots.nt | 2026.07.22 | CC-BY-SA-3.0 |
+| `dc11` | https://purl.org/dc/elements/1.1/ | compared 2026-11-12 | CC-BY-4.0 |
+| `dcam` | https://purl.org/dc/dcam/ | compared 2026-11-12 | CC-BY-4.0 |
+| `dcat` | https://www.w3.org/ns/dcat3.ttl | 3 | CC-BY-4.0 |
+| `dcmitype` | https://purl.org/dc/dcmitype/ | compared 2026-11-12 | CC-BY-4.0 |
+| `dcterms` | https://purl.org/dc/terms/ | compared 2026-11-12 | CC-BY-4.0 |
+| `discipline` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v2.1.43/vocab/disciplines/VOCAB_QUDT-DISCIPLINES-v2.1.ttl | 2.1.43, withdrawn by QUDT in 2024; compared 2026-11-12 | CC-BY-4.0 |
+| `doap` | https://raw.githubusercontent.com/ewilderj/doap/d164b82d38f7636fe78ff1ef025ef7502fb8538e/schema/doap.rdf | 2022-03-13 (commit d164b82) | Apache-2.0 |
+| `dpv` | https://raw.githubusercontent.com/w3c/dpv/dpv-2.3/2.3/dpv/dpv.ttl | 2.3 | W3C Software and Document License 2023 |
+| `dqv` | https://www.w3.org/ns/dqv | compared 2026-11-12 | W3C Document License |
+| `dtype` | http://www.linkedmodel.org/schema/dtype | 2023-11-14; compared 2026-11-12 | CC-BY-SA-3.0-US |
+| `duv` | https://www.w3.org/ns/duv | compared 2026-11-12 | W3C Document License |
+| `earl` | https://www.w3.org/ns/earl | 1.0; compared 2026-11-12 | W3C Document License |
+| `ebucore` | https://www.ebu.ch/metadata/ontologies/ebucore/ebucore.rdf | 2024-06-06; compared 2026-11-12 | CC-BY-SA-3.0 |
+| `exif` | https://www.w3.org/2003/12/exif/ns | compared 2026-11-12 | W3C Document License |
+| `foaf` | https://xmlns.com/foaf/0.1/ | 0.99; compared 2026-11-12 | CC-BY-1.0 |
+| `frbr` | https://vocab.org/frbr/core.rdf | 2005; compared 2026-11-12 | CC-BY-2.0-UK |
+| `geo` | https://raw.githubusercontent.com/opengeospatial/ogc-geosparql/1.1.0-ghpages/geosparql11/geo.ttl | 1.1 | OGC (https://www.ogc.org/license) |
+| `gn` | https://www.geonames.org/ontology/ontology_v3.3.rdf | 3.3 | CC-BY-3.0 |
+| `gr` | http://www.heppnetz.de/ontologies/goodrelations/v1.owl | 2011; compared 2026-11-12 | CC-BY-3.0 |
+| `grddl` | https://www.w3.org/2003/g/data-view | compared 2026-11-12 | W3C Document License |
+| `gs1` | https://ref.gs1.org/voc/data/gs1Voc.ttl | 1.18 | Apache-2.0 |
+| `gtfs` | https://raw.githubusercontent.com/OpenTransport/linked-gtfs/master/gtfs.ttl | archived copy, vocab.gtfs.org is gone; compared 2026-11-12 | CC-BY-3.0 |
+| `http` | https://www.w3.org/2011/http | compared 2026-11-12 | W3C Document License |
+| `hydra` | https://www.w3.org/ns/hydra/core.jsonld | compared 2026-11-12 | CC-BY-4.0 (stated in the file: cc:license) |
+| `ical` | https://www.w3.org/2002/12/cal/icaltzd.rdf | compared 2026-11-12 | W3C Document License |
+| `ldp` | https://www.w3.org/ns/ldp | compared 2026-11-12 | W3C Document License |
+| `locn` | https://www.w3.org/ns/locn | compared 2026-11-12 | ISA Open Metadata Licence v1.1 |
+| `lvont` | http://lexvo.org/ontology | 0.24; compared 2026-11-12 | CC-BY-SA-3.0 (stated for Lexvo.org's RDF dump) |
+| `ma` | https://www.w3.org/ns/ma-ont | compared 2026-11-12 | W3C Document License |
+| `mads` | https://www.loc.gov/mads/rdf/v1.rdf | 1.5.0; compared 2026-11-12 | Public domain (Library of Congress, id.loc.gov) |
+| `oa` | https://www.w3.org/ns/oa | compared 2026-11-12 | W3C Document License |
+| `og` | https://ogp.me/ns/ogp.me.ttl | current | OWFa 0.9 (stated on ogp.me) |
+| `org` | https://www.w3.org/ns/org | compared 2026-11-12 | PDDL-1.0 |
+| `owl` | https://www.w3.org/2002/07/owl | compared 2026-11-12 | W3C Document License |
+| `prefix` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/prefixes/VOCAB_QUDT-PREFIXES.ttl | 3.5.3 | CC-BY-4.0 |
+| `prov` | https://www.w3.org/ns/prov | compared 2026-11-12 | W3C Document License |
+| `qb` | https://purl.org/linked-data/cube | compared 2026-11-12 | PDDL-1.0 |
+| `qkdv` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/dimensionvectors/VOCAB_QUDT-DIMENSION-VECTORS.ttl | 3.5.3 | CC-BY-4.0 |
+| `quantitykind` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/quantitykinds/VOCAB_QUDT-QUANTITY-KINDS-ALL.ttl | 3.5.3 | CC-BY-4.0 |
+| `quantitykind` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/community/extensions/propulsion/VOCAB_QUDT-PROPULSION-QUANTITY-KINDS.ttl | 3.5.3 | CC-BY-4.0 |
+| `qudt` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/schema/SCHEMA_QUDT.ttl | 3.5.3 | CC-BY-4.0 |
+| `qudt` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/schema/SCHEMA_QUDT-DATATYPE.ttl | 3.5.3 | CC-BY-4.0 |
+| `qudt` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/schema/SCHEMA_QUDT-COORDINATES.ttl | 3.5.3 | CC-BY-4.0 |
+| `rdau` | https://raw.githubusercontent.com/RDARegistry/RDA-Vocabularies/v5.5.2/nt/Elements/u.nt | 5.5.2 | CC-BY-4.0 |
+| `rdf` | https://www.w3.org/1999/02/22-rdf-syntax-ns | compared 2026-11-12 | W3C Document License |
+| `rdfa` | https://www.w3.org/ns/rdfa | compared 2026-11-12 | W3C Document License |
+| `rdfs` | https://www.w3.org/2000/01/rdf-schema | compared 2026-11-12 | W3C Document License |
+| `rico` | https://raw.githubusercontent.com/ICA-EGAD/RiC-O/v1.1/ontology/current-version/RiC-O_1-1.rdf | 1.1 | CC-BY-4.0 |
+| `rr` | https://www.w3.org/ns/r2rml | compared 2026-11-12 | CC-BY-3.0 |
+| `rss` | https://purl.org/rss/1.0/schema.rdf | compared 2026-11-12 | not stated (below) |
+| `schema` | https://schema.org/version/30.1/schemaorg-current-http.nt | 30.1 | CC-BY-SA-3.0 |
+| `sd` | https://www.w3.org/ns/sparql-service-description.ttl | current | W3C Document License |
+| `sdmx` | https://raw.githubusercontent.com/UKGovLD/publishing-statistical-data/master/specs/src/main/vocab/sdmx.ttl | 0.3, archived copy, purl.org answers 503; compared 2026-11-12 | CC-BY-SA-4.0 (the LICENSE.md beside the file) |
+| `sem` | https://semanticweb.cs.vu.nl/2009/11/sem/ | certificate expired; compared 2026-11-12 | not stated (below) |
+| `sh` | https://web.archive.org/web/20240403/https://www.w3.org/ns/shacl.ttl | 1.0 (2017-07-20), archived 2024-04-03, the namespace now serves the 1.2 draft; compared 2026-11-12 | W3C Document License |
+| `shex` | https://www.w3.org/ns/shex.ttl | current | W3C Document License |
+| `sioc` | https://rdfs.org/sioc/ns | 1.36; compared 2026-11-12 | not stated (below) |
+| `skos` | https://www.w3.org/2004/02/skos/core | compared 2026-11-12 | W3C Document License |
+| `skosxl` | https://www.w3.org/2008/05/skos-xl | compared 2026-11-12 | W3C Document License |
+| `sosa` | https://www.w3.org/ns/sosa/ | compared 2026-11-12 | W3C Document License |
+| `sou` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/systems/VOCAB_QUDT-SYSTEM-OF-UNITS-ALL.ttl | 3.5.3 | CC-BY-4.0 |
+| `ssn` | https://www.w3.org/ns/ssn/ | compared 2026-11-12 | W3C Document License |
+| `test` | https://www.w3.org/2006/03/test-description | compared 2026-11-12 | W3C Document License |
+| `time` | https://www.w3.org/2006/time | compared 2026-11-12 | CC-BY-4.0 |
+| `unit` | https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/unit/VOCAB_QUDT-UNITS-ALL.ttl | 3.5.3 | CC-BY-4.0 |
+| `vaem` | http://www.linkedmodel.org/schema/vaem | 2.0; compared 2026-11-12 | CC-BY-SA-3.0-US |
+| `vann` | https://purl.org/vocab/vann/ | compared 2026-11-12 | CC-BY-1.0 |
+| `vcard` | https://www.w3.org/2006/vcard/ns.ttl | current | W3C Document License |
+| `void` | https://web.archive.org/web/20210114/http://vocab.deri.ie/void.ttl | archived 2021-01-14, vocab.deri.ie is gone; compared 2026-11-12 | not stated (below) |
+| `vs` | https://www.w3.org/2003/06/sw-vocab-status/ns | compared 2026-11-12 | W3C Document License |
+| `wgs` | https://www.w3.org/2003/01/geo/wgs84_pos | compared 2026-11-12 | W3C Document License |
+| `xhv` | https://www.w3.org/1999/xhtml/vocab | RDFa only; compared 2026-11-12 | W3C Document License |
+| `xkos` | http://rdf-vocabulary.ddialliance.org/xkos | 1.2; compared 2026-11-12 | CC-BY-4.0 |
+| `xsd` | https://www.w3.org/TR/xmlschema11-2/ | 1.1, no RDF namespace document; compared 2026-11-12 | W3C Document License |
+
+Four publishers state no licence for their vocabulary. RSS 1.0's notice
+covers the specification and its documentation and "does not extend to the
+RSS format itself". The SEM page states "Copyright © 2009 VU Semantic Web
+group" and no licence. The SIOC specification's Creative Commons licence
+"does not apply to SIOC data formats, ontology terms, or technology".
+Neither the archived VoID namespace page and file nor the VoID repository
+(`cygri/void`) states one.
 
 ## npm packages in the VS Code extension
 

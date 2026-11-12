@@ -125,6 +125,12 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
    `tools/check-vendor.sh`, keep the exact `=` pin in `Cargo.toml` (the
    `[patch.crates-io]` entry applies only while it matches), and run
    `tools/check-vendor.sh`.
-4. Push the tag `vX.Y.Z` on a commit of `main` whose CI passed. The release
+4. To refresh a vocabulary, set its row's URL and version in
+   `data/vocab-sources.tsv` and run `tools/check-vocab.sh --write`. It fails
+   and prints the new file's SHA-256: copy it into the row and run the
+   script again. Read the removed terms it prints against the publisher's
+   release notes. A term the publisher's file lacks goes in
+   `data/vocab-patches.tsv` with its reason, never in an extract.
+5. Push the tag `vX.Y.Z` on a commit of `main` whose CI passed. The release
    workflow publishes to the Marketplace from the GitHub environment
    `release`, which must hold the `VSCE_PAT` secret.

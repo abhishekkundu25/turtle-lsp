@@ -1,0 +1,77 @@
+term	AllDifferent	C		AllDifferent	The class of collections of pairwise different individuals.	rdfs:Resource
+term	AllDisjointClasses	C		AllDisjointClasses	The class of collections of pairwise disjoint classes.	rdfs:Resource
+term	AllDisjointProperties	C		AllDisjointProperties	The class of collections of pairwise disjoint properties.	rdfs:Resource
+term	allValuesFrom	P		allValuesFrom	The property that determines the class that a universal property restriction refers to.		Restriction	rdfs:Class
+term	annotatedProperty	P		annotatedProperty	The property that determines the predicate of an annotated axiom or annotated annotation.		rdfs:Resource	rdfs:Resource
+term	annotatedSource	P		annotatedSource	The property that determines the subject of an annotated axiom or annotated annotation.		rdfs:Resource	rdfs:Resource
+term	annotatedTarget	P		annotatedTarget	The property that determines the object of an annotated axiom or annotated annotation.		rdfs:Resource	rdfs:Resource
+term	Annotation	C		Annotation	The class of annotated annotations for which the RDF serialization consists of an annotated subject, predicate and object.	rdfs:Resource
+term	AnnotationProperty	C		AnnotationProperty	The class of annotation properties.	rdf:Property
+term	assertionProperty	P		assertionProperty	The property that determines the predicate of a negative property assertion.		NegativePropertyAssertion	rdf:Property
+term	AsymmetricProperty	C		AsymmetricProperty	The class of asymmetric properties.	ObjectProperty
+term	Axiom	C		Axiom	The class of annotated axioms for which the RDF serialization consists of an annotated subject, predicate and object.	rdfs:Resource
+term	backwardCompatibleWith	P		backwardCompatibleWith	The annotation property that indicates that a given ontology is backward compatible with another ontology.		Ontology	Ontology
+term	bottomDataProperty	P		bottomDataProperty	The data property that does not relate any individual to any data value.		Thing	rdfs:Literal
+term	bottomObjectProperty	P		bottomObjectProperty	The object property that does not relate any two individuals.		Thing	Thing
+term	cardinality	P		cardinality	The property that determines the cardinality of an exact cardinality restriction.		Restriction	xsd:nonNegativeInteger
+term	Class	C		Class	The class of OWL classes.	rdfs:Class
+term	complementOf	P		complementOf	The property that determines that a given class is the complement of another class.		Class	Class
+term	DataRange	C		DataRange	The class of OWL data ranges, which are special kinds of datatypes. Note: The use of the IRI owl:DataRange has been deprecated as of OWL 2. The IRI rdfs:Datatype SHOULD be used instead.	rdfs:Datatype
+term	datatypeComplementOf	P		datatypeComplementOf	The property that determines that a given data range is the complement of another data range with respect to the data domain.		rdfs:Datatype	rdfs:Datatype
+term	DatatypeProperty	C		DatatypeProperty	The class of data properties.	rdf:Property
+term	deprecated	P		deprecated	The annotation property that indicates that a given entity has been deprecated.		rdfs:Resource	rdfs:Resource
+term	DeprecatedClass	C		DeprecatedClass	The class of deprecated classes.	rdfs:Class
+term	DeprecatedProperty	C		DeprecatedProperty	The class of deprecated properties.	rdf:Property
+term	differentFrom	P		differentFrom	The property that determines that two given individuals are different.		Thing	Thing
+term	disjointUnionOf	P		disjointUnionOf	The property that determines that a given class is equivalent to the disjoint union of a collection of other classes.		Class	rdf:List
+term	disjointWith	P		disjointWith	The property that determines that two given classes are disjoint.		Class	Class
+term	distinctMembers	P		distinctMembers	The property that determines the collection of pairwise different individuals in a owl:AllDifferent axiom.		AllDifferent	rdf:List
+term	equivalentClass	P		equivalentClass	The property that determines that two given classes are equivalent, and that is used to specify datatype definitions.		rdfs:Class	rdfs:Class
+term	equivalentProperty	P		equivalentProperty	The property that determines that two given properties are equivalent.		rdf:Property	rdf:Property
+term	FunctionalProperty	C		FunctionalProperty	The class of functional properties.	rdf:Property
+term	hasKey	P		hasKey	The property that determines the collection of properties that jointly build a key.		Class	rdf:List
+term	hasSelf	P		hasSelf	The property that determines the property that a self restriction refers to.		Restriction	rdfs:Resource
+term	hasValue	P		hasValue	The property that determines the individual that a has-value restriction refers to.		Restriction	rdfs:Resource
+term	imports	P		imports	The property that is used for importing other ontologies into a given ontology.		Ontology	Ontology
+term	incompatibleWith	P		incompatibleWith	The annotation property that indicates that a given ontology is incompatible with another ontology.		Ontology	Ontology
+term	intersectionOf	P		intersectionOf	The property that determines the collection of classes or data ranges that build an intersection.		rdfs:Class	rdf:List
+term	InverseFunctionalProperty	C		InverseFunctionalProperty	The class of inverse-functional properties.	ObjectProperty
+term	inverseOf	P		inverseOf	The property that determines that two given properties are inverse.		ObjectProperty	ObjectProperty
+term	IrreflexiveProperty	C		IrreflexiveProperty	The class of irreflexive properties.	ObjectProperty
+term	maxCardinality	P		maxCardinality	The property that determines the cardinality of a maximum cardinality restriction.		Restriction	xsd:nonNegativeInteger
+term	maxQualifiedCardinality	P		maxQualifiedCardinality	The property that determines the cardinality of a maximum qualified cardinality restriction.		Restriction	xsd:nonNegativeInteger
+term	members	P		members	The property that determines the collection of members in either a owl:AllDifferent, owl:AllDisjointClasses or owl:AllDisjointProperties axiom.		rdfs:Resource	rdf:List
+term	minCardinality	P		minCardinality	The property that determines the cardinality of a minimum cardinality restriction.		Restriction	xsd:nonNegativeInteger
+term	minQualifiedCardinality	P		minQualifiedCardinality	The property that determines the cardinality of a minimum qualified cardinality restriction.		Restriction	xsd:nonNegativeInteger
+term	NamedIndividual	C		NamedIndividual	The class of named individuals.	Thing
+term	NegativePropertyAssertion	C		NegativePropertyAssertion	The class of negative property assertions.	rdfs:Resource
+term	Nothing	C		Nothing	This is the empty class.	Thing
+term	ObjectProperty	C		ObjectProperty	The class of object properties.	rdf:Property
+term	onClass	P		onClass	The property that determines the class that a qualified object cardinality restriction refers to.		Restriction	Class
+term	onDataRange	P		onDataRange	The property that determines the data range that a qualified data cardinality restriction refers to.		Restriction	rdfs:Datatype
+term	onDatatype	P		onDatatype	The property that determines the datatype that a datatype restriction refers to.		rdfs:Datatype	rdfs:Datatype
+term	oneOf	P		oneOf	The property that determines the collection of individuals or data values that build an enumeration.		rdfs:Class	rdf:List
+term	onProperties	P		onProperties	The property that determines the n-tuple of properties that a property restriction on an n-ary data range refers to.		Restriction	rdf:List
+term	onProperty	P		onProperty	The property that determines the property that a property restriction refers to.		Restriction	rdf:Property
+term	Ontology	C		Ontology	The class of ontologies.	rdfs:Resource
+term	OntologyProperty	C		OntologyProperty	The class of ontology properties.	rdf:Property
+term	priorVersion	P		priorVersion	The annotation property that indicates the predecessor ontology of a given ontology.		Ontology	Ontology
+term	propertyChainAxiom	P		propertyChainAxiom	The property that determines the n-tuple of properties that build a sub property chain of a given property.		ObjectProperty	rdf:List
+term	propertyDisjointWith	P		propertyDisjointWith	The property that determines that two given properties are disjoint.		rdf:Property	rdf:Property
+term	qualifiedCardinality	P		qualifiedCardinality	The property that determines the cardinality of an exact qualified cardinality restriction.		Restriction	xsd:nonNegativeInteger
+term	ReflexiveProperty	C		ReflexiveProperty	The class of reflexive properties.	ObjectProperty
+term	Restriction	C		Restriction	The class of property restrictions.	Class
+term	sameAs	P		sameAs	The property that determines that two given individuals are equal.		Thing	Thing
+term	someValuesFrom	P		someValuesFrom	The property that determines the class that an existential property restriction refers to.		Restriction	rdfs:Class
+term	sourceIndividual	P		sourceIndividual	The property that determines the subject of a negative property assertion.		NegativePropertyAssertion	Thing
+term	SymmetricProperty	C		SymmetricProperty	The class of symmetric properties.	ObjectProperty
+term	targetIndividual	P		targetIndividual	The property that determines the object of a negative object property assertion.		NegativePropertyAssertion	Thing
+term	targetValue	P		targetValue	The property that determines the value of a negative data property assertion.		NegativePropertyAssertion	rdfs:Literal
+term	Thing	C		Thing	The class of OWL individuals.
+term	topDataProperty	P		topDataProperty	The data property that relates every individual to every data value.		Thing	rdfs:Literal
+term	topObjectProperty	P		topObjectProperty	The object property that relates every two individuals.		Thing	Thing
+term	TransitiveProperty	C		TransitiveProperty	The class of transitive properties.	ObjectProperty
+term	unionOf	P		unionOf	The property that determines the collection of classes or data ranges that build a union.		rdfs:Class	rdf:List
+term	versionInfo	P		versionInfo	The annotation property that provides version information for an ontology or another OWL construct.		rdfs:Resource	rdfs:Resource
+term	versionIRI	P		versionIRI	The property that identifies the version IRI of an ontology.		Ontology	Ontology
+term	withRestrictions	P		withRestrictions	The property that determines the collection of facet-value pairs that define a datatype restriction.		rdfs:Datatype	rdf:List

@@ -1,0 +1,34 @@
+term	assertedBy	P		Asserted By	assertor of an assertion		Assertion	Assertor
+term	Assertion	C		Assertion	a statement that embodies the results of a test
+term	Assertor	C		Assertor	an entity such as a person, a software tool, an organization, or any other grouping that carries out a test collectively
+term	automatic	I		Automatic	where the test was carried out automatically by the software tool and without any human intervention
+term	CannotTell	C		Undetermined	the class of outcomes to denote an undetermined outcome	OutcomeValue
+term	cantTell	I		Cannot tell	it is unclear if the subject passed or failed the test
+term	Fail	C		Fail	the class of outcomes to denote failing a test	OutcomeValue
+term	failed	I		Failed	the subject failed the test
+term	inapplicable	I		Inapplicable	the test is not applicable to the subject
+term	info	P		Info	additional warnings or error messages in a human-readable form		TestResult	rdfs:Literal
+term	mainAssertor	P		Main Assertor	assertor that is primarily responsible for performing the test	<http://xmlns.com/foaf/spec/#term_member>	Assertor	Assertor
+term	manual	I		Manual	where the test was carried out by human evaluators
+term	mode	P		Mode	mode in which the test was performed		Assertion	TestMode
+term	NotApplicable	C		Not applicable	the class of outcomes to denote the test is not applicable	OutcomeValue
+term	NotTested	C		Not tested	the class of outcomes to denote the test has not been carried out	OutcomeValue
+term	outcome	P		Outcome	outcome of performing the test		TestResult	OutcomeValue
+term	OutcomeValue	C		Outcome Value	a discrete value that describes a resulting condition from carrying out the test
+term	Pass	C		Pass	the class of outcomes to denote passing a test	OutcomeValue
+term	passed	I		Passed	the subject passed the test
+term	pointer	P		Pointer	location within a test subject that are most relevant to a test result		<https://www.w3.org/ns/TestResult>	<http://www.w3.org/2009/pointers#Pointer>
+term	result	P		Result	result of an assertion		Assertion	TestResult
+term	semiAuto	I		Semi-Automatic	where the test was partially carried out by software tools, but where human input or judgment was still required to decide or help decide the outcome of the test
+term	Software	C		Software	any piece of software such as an authoring tool, browser, or evaluation tool	doap:Project
+term	subject	P		Subject	test subject of an assertion		Assertion	TestSubject
+term	test	P		Test	test criterion of an assertion		Assertion	TestCriterion
+term	TestCase	C		Test Case	an atomic test, usually one that is a partial test for a requirement	TestCriterion
+term	TestCriterion	C		Test Criterion	a testable statement, usually one that can be passed or failed
+term	TestMode	C		Test Mode	describes how a test was carried out
+term	TestRequirement	C		Test Requirement	a higher-level requirement that is tested by executing one or more sub-tests	TestCriterion
+term	TestResult	C		Test Result	the actual result of performing the test
+term	TestSubject	C		Test Subject	the class of things that have been tested against some test criterion
+term	undisclosed	I		Undisclosed	where the exact testing process is undisclosed
+term	unknownMode	I		Unknown	where the testing process is unknown or undetermined
+term	untested	I		Untested	the test has not been carried out

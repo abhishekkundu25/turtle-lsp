@@ -16,7 +16,7 @@ import path from "node:path"
 import zlib from "node:zlib"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-/** The most the engine may weigh gzipped, in bytes (it weighs about 3.40 MB with TurbOWL and queries over inferred triples; the budget leaves about 9%). */
+/** The most the engine may weigh gzipped, in bytes (it weighs about 3.45 MB with TurbOWL and queries over inferred triples; the budget leaves about 7%). */
 export const WASM_GZIP_BUDGET = 3_700_000
 
 /** Monaco's language services the editor never starts: it opens Turtle, TriG, N-Triples, N-Quads, SPARQL and JSON-LD (JSON). */

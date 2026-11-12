@@ -1,4 +1,4 @@
-# Shared by fetch.sh and fetch-jsonld.sh (sourced, not run).
+# Shared by fetch.sh, fetch-jsonld.sh and tools/check-vocab.sh (sourced, not run).
 
 # One download: https only, redirects included; a time limit per file.
 download() {

@@ -1,5 +1,77 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **No false `unknown-term` warning on a term that only a specification
+  defines** (#106): the 14 XSD constraining facets (`xsd:minInclusive`,
+  `xsd:pattern` and the others, used inside `owl:withRestrictions`),
+  `owl:real` and `owl:rational`, `rdf:reifies`, `rdf:dirLangString` and
+  `rdf:langRange`, `rdfs:Proposition`, the three OWL-Time units its
+  namespace document leaves out, `as:closed` and three XHTML vocabulary
+  terms. Each is listed with its specification section in
+  `data/vocab-patches.tsv`. On the W3C test suites, 160 of the 211
+  `unknown-term` warnings were false; none is left.
+- **`rdf:_1`, `rdf:_2` and every other container membership property are
+  known**, with a hover that cites RDF Schema. `rdf:_0`, `rdf:_01` and
+  `rdf:_x` are still reported.
+- **EARL is checked in its real namespace**, `http://www.w3.org/ns/earl#`.
+  It was bundled under the `https` spelling, so EARL reports got no
+  hover, completion or typo checks.
+- **Hover says "From the X vocabulary" only for a term the vocabulary
+  has.** It said so for any IRI in the namespace, `rdfs:lable` included,
+  beside the warning that the term is unknown.
+- **The DBpedia ontology no longer offers 578 names in Urdu script** in
+  completion and "did you mean". DBpedia never defined them.
+
+### Changed
+
+- **The bundled vocabularies come from their publishers' current
+  releases**, each pinned by URL, version and SHA-256 in
+  `data/vocab-sources.tsv`: schema.org 30.1, QUDT 3.5.3 (`qudt`, `unit`,
+  `quantitykind`, `qkdv`, `constant`, `prefix`, `sou`), the DBpedia
+  ontology snapshot of 2026-07-22, GS1 Web Vocabulary 1.18, DPV 2.3, RDA
+  Unconstrained elements 5.5.2, RiC-O 1.1, GeoNames ontology 3.3,
+  GeoSPARQL 1.1, DCAT 3, DOAP, Open Graph, ShEx, vCard, SPARQL Service
+  Description and Activity Streams. They were the 2022 data of the npm
+  package `@zazuko/rdf-vocabularies` 2023.1.19. The list grows from 20,993
+  to 24,140 terms in 81 vocabularies.
+- **GS1 is checked in `https://ref.gs1.org/voc/`**, its current
+  namespace, and in `https://gs1.org/voc/` (the only one before) and
+  `https://www.gs1.org/voc/`. **DPV is checked in
+  `https://w3id.org/dpv#`**, its current namespace, instead of
+  `http://www.w3.org/ns/dpv#`.
+- **More deprecated terms get the `deprecated-term` hint**, whichever
+  marker their publisher uses: `owl:deprecated`, `owl:DeprecatedClass` and
+  `owl:DeprecatedProperty` (Activity Streams), `schema:supersededBy`
+  (schema.org), `qudt:deprecated` (QUDT 3) and RDA's deprecated status. 688
+  terms carry the hint, up from 74, among them 95 of schema.org, 204 of
+  GS1, 192 of QUDT and 129 of RDA. Completion ranks them below current
+  terms.
+- **Terms their publishers removed are reported as unknown**: the
+  deprecated units and quantity kinds QUDT 3 purged, the RiC-O properties
+  renamed in 1.0, the personal-data categories DPV moved to an extension
+  and the terms DBpedia withdrew.
+- **A vocabulary term's comment in hover and completion is its first
+  paragraph, at most 240 characters**, ending at the end of a sentence, or
+  at a word followed by "…" when no sentence ends in time. It was cut at
+  600 characters, wherever that fell, without a mark.
+- GeoSPARQL's `geof` and `geor`, which had no terms and were not checked,
+  are no longer listed.
+
+### Internal
+
+- **`@zazuko/rdf-vocabularies` is gone**: the root `package-lock.json`
+  holds 25 packages, down from 43, with the two parsers that replace it. `data/vocab.tsv` is built by
+  `tools/check-vocab.sh` from the rows of `data/vocab-sources.tsv`: 22
+  vocabularies downloaded from their publishers, 59 read from extracts
+  under `data/vocab-frozen/`, and the corrections of
+  `data/vocab-patches.tsv`, each with its reason. The script checks every
+  hash and fails when the committed list differs; CI runs it, and the
+  nightly run downloads every source again. `npm run vocab` writes the
+  list.
+
 ## 0.17.1 — 2026-11-11
 
 ### Documentation

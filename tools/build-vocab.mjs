@@ -1,92 +1,119 @@
-// Regenerates data/vocab.tsv from @zazuko/rdf-vocabularies (dev dependency).
-// Format, UTF-8, one record per line, tab-separated:
-//   @ns <TAB> prefix <TAB> namespace
-//   term <TAB> local <TAB> kind(C|P|I) <TAB> flags(D=deprecated) <TAB> label <TAB> comment
-//        <TAB> supers <TAB> domains <TAB> ranges
-// Newlines/tabs inside text are escaped as \n and \t. The last three columns
-// are space-separated term lists (direct rdfs:subClassOf/subPropertyOf,
-// rdfs:domain, rdfs:range; schema:domainIncludes/rangeIncludes count as
-// domain/range), each term written compactly: a bare local name in the same
-// namespace, `prefix:local` in another vocabulary, else `<full IRI>`. Empty
-// trailing columns are omitted.
+// Regenerates data/vocab.tsv from the sources data/vocab-sources.tsv names,
+// through the library tools/vocab-lib.mjs, and the corrections of
+// data/vocab-patches.tsv. Run by tools/check-vocab.sh, which downloads the
+// fetched sources first; `npm run vocab` runs that script with --write.
+//
+//   node tools/build-vocab.mjs [--write] [--sources DIR]
+//       Builds the list. Without --write, compares it with data/vocab.tsv and
+//       fails on a difference; with --write, writes it. Either way prints the
+//       terms each vocabulary gained and lost against data/vocab.tsv.
+//   node tools/build-vocab.mjs --fetched [--sources DIR]
+//       Prints one line per fetched row, tab-separated: the file it is read
+//       from, its url, its sha256 and the manifest line, for the download.
+//
+// A fetched row is read from DIR/<prefix>.<n>.<format>, n counting the rows
+// of its prefix from 1 (DIR is target/vocab-sources by default); a frozen
+// row from data/vocab-frozen/<prefix>.tsv.
 import fs from "node:fs"
 import path from "node:path"
-import { createRequire } from "node:module"
-const require = createRequire(import.meta.url)
-const pkgDir = path.dirname(require.resolve("@zazuko/rdf-vocabularies"))
-const prefixesMod = require("@zazuko/rdf-vocabularies/prefixes")
-const prefixes = prefixesMod.default ?? prefixesMod.prefixes ?? prefixesMod
+import { fileURLToPath } from "node:url"
+import { buildVocab, parseManifest, SIZE_BUDGET } from "./vocab-lib.mjs"
 
-const RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-const RDFS = "http://www.w3.org/2000/01/rdf-schema#"
-const OWL = "http://www.w3.org/2002/07/owl#"
-const CLASS_TYPES = new Set([RDFS + "Class", OWL + "Class", RDFS + "Datatype", "http://www.w3.org/ns/shacl#NodeShape"])
-const PROP_TYPES = new Set([RDF + "Property", OWL + "ObjectProperty", OWL + "DatatypeProperty", OWL + "AnnotationProperty",
-  OWL + "FunctionalProperty", OWL + "InverseFunctionalProperty", OWL + "TransitiveProperty", OWL + "SymmetricProperty",
-  OWL + "AsymmetricProperty", OWL + "ReflexiveProperty", OWL + "IrreflexiveProperty", OWL + "OntologyProperty"])
-const LABELS = [RDFS + "label", "http://www.w3.org/2004/02/skos/core#prefLabel", "http://purl.org/dc/terms/title"]
-const COMMENTS = [RDFS + "comment", "http://www.w3.org/2004/02/skos/core#definition", "http://purl.org/dc/terms/description", "http://purl.org/dc/elements/1.1/description"]
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
+const MANIFEST = path.join(root, "data/vocab-sources.tsv")
+const CORRECTIONS = path.join(root, "data/vocab-patches.tsv")
+const FROZEN = path.join(root, "data/vocab-frozen")
+const LIST = path.join(root, "data/vocab.tsv")
 
-const unescape = (s) => s.replace(/\\(u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.)/g, (_, e) =>
-  e[0] === "u" || e[0] === "U" ? String.fromCodePoint(parseInt(e.slice(1), 16)) : ({ n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" }[e] ?? e))
-const clean = (s) => s.replace(/\s+/g, " ").trim()
-const field = (s) => s.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n")
-const SCHEMA = "https://schema.org/"
-const DOMAIN = new Set([RDFS + "domain", SCHEMA + "domainIncludes", "http://schema.org/domainIncludes"])
-const RANGE = new Set([RDFS + "range", SCHEMA + "rangeIncludes", "http://schema.org/rangeIncludes"])
-const SUPER = new Set([RDFS + "subClassOf", RDFS + "subPropertyOf"])
-// Longest namespace first, so `prefix:local` uses the most specific vocabulary.
-const byNamespace = Object.entries(prefixes)
-  .filter(([p]) => fs.existsSync(path.join(pkgDir, "ontologies", `${p}.nq`)))
-  .sort(([pa, a], [pb, b]) => b.length - a.length || pa.localeCompare(pb))
-const SIMPLE = /^[A-Za-z_][\w.-]*$/
-const compact = (iri, ownNs) => {
-  if (iri.startsWith(ownNs) && SIMPLE.test(iri.slice(ownNs.length))) return iri.slice(ownNs.length)
-  for (const [p, ns] of byNamespace) {
-    if (iri.startsWith(ns) && SIMPLE.test(iri.slice(ns.length))) return `${p}:${iri.slice(ns.length)}`
-  }
-  return `<${iri}>`
+const args = process.argv.slice(2)
+const flag = (name) => {
+  const i = args.indexOf(name)
+  if (i >= 0) args.splice(i, 1)
+  return i >= 0
 }
-const LINE = /^<([^>]*)> <([^>]*)> (<([^>]*)>|_:\S+|"((?:[^"\\]|\\.)*)"(?:@([\w-]+)|\^\^<[^>]*>)?)(?: \S+)? \.$/
-
-let out = ""
-let total = 0
-for (const [prefix, ns] of Object.entries(prefixes).sort()) {
-  const file = path.join(pkgDir, "ontologies", `${prefix}.nq`)
-  if (!fs.existsSync(file)) continue
-  const terms = new Map()
-  const get = (local) => terms.get(local) ?? terms.set(local, { types: new Set(), label: {}, comment: {}, dep: false, hint: "", supers: new Set(), domain: new Set(), range: new Set() }).get(local)
-  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
-    const m = LINE.exec(line)
-    if (!m || !m[1].startsWith(ns) || m[1].length === ns.length) continue
-    const local = m[1].slice(ns.length)
-    if (/[\s#/]/.test(local)) continue
-    const t = get(local)
-    const [, , p, , oIri, lit, lang] = m
-    if (oIri && SUPER.has(p)) t.supers.add(oIri)
-    if (oIri && DOMAIN.has(p)) t.domain.add(oIri)
-    if (oIri && RANGE.has(p)) t.range.add(oIri)
-    if (p === RDF + "type" && oIri) t.types.add(oIri)
-    else if (p === RDFS + "subClassOf") t.hint ||= "C"
-    else if (p === RDFS + "domain" || p === RDFS + "range" || p === RDFS + "subPropertyOf") t.hint ||= "P"
-    else if (p === OWL + "deprecated" && lit === "true") t.dep = true
-    else if (lit !== undefined) {
-      const rank = !lang || lang === "en" || lang.startsWith("en-") ? 0 : 1
-      for (const [list, key] of [[LABELS, "label"], [COMMENTS, "comment"]]) {
-        if (list.includes(p) && (t[key].rank === undefined || rank < t[key].rank)) t[key] = { rank, text: clean(unescape(lit)) }
-      }
-    }
-  }
-  out += `@ns\t${prefix}\t${ns}\n`
-  for (const [local, t] of [...terms].sort(([a], [b]) => a.localeCompare(b))) {
-    const kind = [...t.types].some((x) => CLASS_TYPES.has(x)) ? "C" : [...t.types].some((x) => PROP_TYPES.has(x)) ? "P" : t.hint || (t.types.size ? "I" : /^[A-Z]/.test(local) ? "C" : "P")
-    const comment = (t.comment.text ?? "").slice(0, 600)
-    const list = (set) => [...set].map((x) => compact(x, ns)).sort().join(" ")
-    const cols = [field(local), kind, t.dep ? "D" : "", field(t.label.text ?? ""), field(comment), list(t.supers), list(t.domain), list(t.range)]
-    while (cols.length > 5 && cols[cols.length - 1] === "") cols.pop()
-    out += `term\t${cols.join("\t")}\n`
-    total++
-  }
+const option = (name, fallback) => {
+  const i = args.indexOf(name)
+  if (i < 0) return fallback
+  const [, value] = args.splice(i, 2)
+  if (value === undefined) usage(`${name} needs a value`)
+  return value
 }
-fs.writeFileSync(new URL("../data/vocab.tsv", import.meta.url), out)
-console.log(`wrote ${total} terms, ${(out.length / 1e6).toFixed(1)} MB`)
+function usage(message) {
+  console.error(`${message}\nusage: node tools/build-vocab.mjs [--write | --fetched] [--sources DIR]`)
+  process.exit(2)
+}
+const write = flag("--write")
+const fetched = flag("--fetched")
+const sourcesDir = path.resolve(option("--sources", path.join(root, "target/vocab-sources")))
+if (args.length) usage(`unknown argument ${args[0]}`)
+if (write && fetched) usage("--write and --fetched exclude each other")
+
+const relative = (file) => path.relative(root, file)
+
+// Where each row's bytes are, in manifest order.
+function locate(rows) {
+  const seen = new Map()
+  return rows.map((row) => {
+    if (row.frozen) return path.join(FROZEN, `${row.prefix}.tsv`)
+    const n = (seen.get(row.prefix) ?? 0) + 1
+    seen.set(row.prefix, n)
+    return path.join(sourcesDir, `${row.prefix}.${n}.${row.format}`)
+  })
+}
+
+// A refusal names the row, line or file; a stack trace adds nothing.
+const refuse = (message) => {
+  console.error(message)
+  process.exit(1)
+}
+
+const manifest = fs.readFileSync(MANIFEST, "utf8")
+let rows
+try {
+  rows = parseManifest(manifest)
+} catch (e) {
+  refuse(e.message)
+}
+const files = locate(rows)
+
+if (fetched) {
+  rows.forEach((row, i) => {
+    if (!row.frozen) console.log([files[i], row.url, row.sha256, `manifest line ${row.line} (${row.prefix})`].join("\t"))
+  })
+  process.exit(0)
+}
+
+// Every frozen extract has its row: a .tsv file under data/vocab-frozen/ that
+// no row reads would be a vocabulary nobody ships.
+const frozen = new Set(rows.filter((r) => r.frozen).map((r) => `${r.prefix}.tsv`))
+for (const name of fs.readdirSync(FROZEN)) {
+  if (name.endsWith(".tsv") && !frozen.has(name)) refuse(`${relative(path.join(FROZEN, name))}: no frozen row of the manifest reads it`)
+}
+
+const sources = rows.map((row, i) => {
+  try {
+    return fs.readFileSync(files[i])
+  } catch {
+    const hint = row.frozen ? "" : "; tools/check-vocab.sh downloads it"
+    return refuse(`manifest line ${row.line} (${row.prefix}): ${relative(files[i])} is missing${hint}`)
+  }
+})
+const previous = fs.existsSync(LIST) ? fs.readFileSync(LIST, "utf8") : ""
+
+const { text, summary, vocabularies, terms, gzipped } =
+  await buildVocab({ manifest, corrections: fs.readFileSync(CORRECTIONS, "utf8"), sources, previous }).catch((e) => refuse(e.message))
+
+for (const { prefix, added, removed } of summary) {
+  console.log(`${prefix}: ${added.length} added, ${removed.length} removed`)
+  if (removed.length) console.log(`  removed: ${removed.join(" ")}`)
+}
+console.log(`${vocabularies} vocabularies, ${terms} terms, ${Buffer.byteLength(text)} bytes, ${gzipped} gzipped (budget ${SIZE_BUDGET})`)
+
+if (text === previous) {
+  console.log("data/vocab.tsv is what the sources give")
+} else if (write) {
+  fs.writeFileSync(LIST, text)
+  console.log("wrote data/vocab.tsv")
+} else {
+  refuse("data/vocab.tsv differs from what the sources give; run npm run vocab")
+}

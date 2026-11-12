@@ -1,0 +1,75 @@
+term	account	P		account	Indicates an account held by this agent.		Agent	OnlineAccount
+term	accountName	P		account name	Indicates the name (identifier) associated with this online account.		OnlineAccount	rdfs:Literal
+term	accountServiceHomepage	P		account service homepage	Indicates a homepage of the service provide for this online account.		OnlineAccount	Document
+term	age	P		age	The age in years of some agent.		Agent	rdfs:Literal
+term	Agent	C		Agent	An agent (eg. person, group, software or physical artifact).
+term	aimChatID	P		AIM chat ID	An AIM chat ID	nick	Agent	rdfs:Literal
+term	based_near	P		based near	A location that something is based near, for some broadly human notion of near.		wgs:SpatialThing	wgs:SpatialThing
+term	birthday	P		birthday	The birthday of this Agent, represented in mm-dd string form, eg. '12-31'.		Agent	rdfs:Literal
+term	currentProject	P		current project	A current project this person works on.		Person	owl:Thing
+term	depiction	P		depiction	A depiction of some thing.		owl:Thing	Image
+term	depicts	P		depicts	A thing depicted in this representation.		Image	owl:Thing
+term	dnaChecksum	P		DNA checksum	A checksum for the DNA of some thing. Joke.			rdfs:Literal
+term	Document	C		Document	A document.
+term	family_name	P		family_name	The family name of some person.		Person	rdfs:Literal
+term	familyName	P		familyName	The family name of some person.		Person	rdfs:Literal
+term	firstName	P		firstName	The first name of a person.		Person	rdfs:Literal
+term	focus	P		focus	The underlying or 'focal' entity associated with some SKOS-described concept.		skos:Concept	owl:Thing
+term	fundedBy	P		funded by	An organization funding a project or person.		owl:Thing	owl:Thing
+term	geekcode	P		geekcode	A textual geekcode for this person, see http://www.geekcode.com/geek.html		Person	rdfs:Literal
+term	gender	P		gender	The gender of this Agent (typically but not necessarily 'male' or 'female').		Agent	rdfs:Literal
+term	givenname	P		Given name	The given name of some person.
+term	givenName	P		Given name	The given name of some person.
+term	Group	C		Group	A class of Agents.	Agent
+term	holdsAccount	P		account	Indicates an account held by this agent.		Agent	OnlineAccount
+term	homepage	P		homepage	A homepage for some thing.	isPrimaryTopicOf page	owl:Thing	Document
+term	icqChatID	P		ICQ chat ID	An ICQ chat ID	nick	Agent	rdfs:Literal
+term	Image	C		Image	An image.	Document
+term	img	P		image	An image that can be used to represent some thing (ie. those depictions which are particularly representative of something, eg. one's photo on a homepage).	depiction	Person	Image
+term	interest	P		interest	A page about a topic of interest to this person.		Agent	Document
+term	isPrimaryTopicOf	P		is primary topic of	A document that this thing is the primary topic of.	page	owl:Thing	Document
+term	jabberID	P		jabber ID	A jabber ID for something.		Agent	rdfs:Literal
+term	knows	P		knows	A person known by this person (indicating some level of reciprocated interaction between the parties).		Person	Person
+term	LabelProperty	C		Label Property	A foaf:LabelProperty is any RDF property with texual values that serve as labels.
+term	lastName	P		lastName	The last name of a person.		Person	rdfs:Literal
+term	logo	P		logo	A logo representing some thing.		owl:Thing	owl:Thing
+term	made	P		made	Something that was made by this agent.		Agent	owl:Thing
+term	maker	P		maker	An agent that made this thing.		owl:Thing	Agent
+term	mbox	P		personal mailbox	A personal mailbox, ie. an Internet mailbox associated with exactly one owner, the first owner of this mailbox. This is a 'static inverse functional property', in that there is (across time and change) at most one individual that ever has any particular value for foaf:mbox.		Agent	owl:Thing
+term	mbox_sha1sum	P		sha1sum of a personal mailbox URI name	The sha1sum of the URI of an Internet mailbox associated with exactly one owner, the first owner of the mailbox.		Agent	rdfs:Literal
+term	member	P		member	Indicates a member of a Group		Group	Agent
+term	membershipClass	P		membershipClass	Indicates the class of individuals that are a member of a Group
+term	msnChatID	P		MSN chat ID	An MSN chat ID	nick	Agent	rdfs:Literal
+term	myersBriggs	P		myersBriggs	A Myers Briggs (MBTI) personality classification.		Person	rdfs:Literal
+term	name	P		name	A name for some thing.	rdfs:label	owl:Thing	rdfs:Literal
+term	nick	P		nickname	A short informal nickname characterising an agent (includes login identifiers, IRC and other chat nicknames).
+term	OnlineAccount	C		Online Account	An online account.	owl:Thing
+term	OnlineChatAccount	C		Online Chat Account	An online chat account.	OnlineAccount
+term	OnlineEcommerceAccount	C		Online E-commerce Account	An online e-commerce account.	OnlineAccount
+term	OnlineGamingAccount	C		Online Gaming Account	An online gaming account.	OnlineAccount
+term	openid	P		openid	An OpenID for an Agent.	isPrimaryTopicOf	Agent	Document
+term	Organization	C		Organization	An organization.	Agent
+term	page	P		page	A page or document about this thing.		owl:Thing	Document
+term	pastProject	P		past project	A project this person has previously worked on.		Person	owl:Thing
+term	Person	C		Person	A person.	<http://www.w3.org/2000/10/swap/pim/contact#Person> Agent wgs:SpatialThing
+term	PersonalProfileDocument	C		PersonalProfileDocument	A personal profile RDF document.	Document
+term	phone	P		phone	A phone, specified using fully qualified tel: URI scheme (refs: http://www.w3.org/Addressing/schemes.html#tel).
+term	plan	P		plan	A .plan comment, in the tradition of finger and '.plan' files.		Person	rdfs:Literal
+term	primaryTopic	P		primary topic	The primary topic of some page or document.		Document	owl:Thing
+term	Project	C		Project	A project (a collective endeavour of some kind).
+term	publications	P		publications	A link to the publications of this person.		Person	Document
+term	schoolHomepage	P		schoolHomepage	A homepage of a school attended by the person.		Person	Document
+term	sha1	P		sha1sum (hex)	A sha1sum hash, in hex.		Document
+term	skypeID	P		Skype ID	A Skype ID	nick	Agent	rdfs:Literal
+term	status	P		status	A string expressing what the user is happy for the general public (normally) to know about their current activity.		Agent	rdfs:Literal
+term	surname	P		Surname	The surname of some person.		Person	rdfs:Literal
+term	theme	P		theme	A theme.		owl:Thing	owl:Thing
+term	thumbnail	P		thumbnail	A derived thumbnail image.		Image	Image
+term	tipjar	P		tipjar	A tipjar document for this agent, describing means for payment and reward.	page	Agent	Document
+term	title	P		title	Title (Mr, Mrs, Ms, Dr. etc)
+term	topic	P		topic	A topic of some page or document.		Document	owl:Thing
+term	topic_interest	P		topic_interest	A thing of interest to this person.		Agent	owl:Thing
+term	weblog	P		weblog	A weblog of some thing (whether person, group, company etc.).	page	Agent	Document
+term	workInfoHomepage	P		work info homepage	A work info homepage of some person; a page about their work for some organization.		Person	Document
+term	workplaceHomepage	P		workplace homepage	A workplace homepage of some person; the homepage of an organization they work for.		Person	Document
+term	yahooChatID	P		Yahoo chat ID	A Yahoo chat ID	nick	Agent	rdfs:Literal

@@ -1,0 +1,44 @@
+term	additionalContentNote	P		additional content		inclusionNote
+term	after	P		after		temporal
+term	before	P		before		temporal
+term	belongsTo	P		belongs to			skos:ConceptScheme
+term	caseLaw	P		case law		skos:note
+term	causal	P		has causal		skos:related
+term	causedBy	P		caused by		causal
+term	causes	P		causes		causal
+term	ClassificationLevel	C		Classification level		skos:Collection
+term	classifiedUnder	P		classified under			rdfs:Resource	skos:Concept
+term	compares	P		compares			Correspondence	skos:ConceptScheme
+term	ConceptAssociation	C		Concept association	
+term	coreContentNote	P		core content		inclusionNote
+term	Correspondence	C		Correspondence	
+term	covers	P		covers				skos:Concept
+term	coversExhaustively	P		covers exhaustively		covers
+term	coversMutuallyExclusively	P		covers mutually exclusively		covers
+term	depth	P		depth			ClassificationLevel	xsd:positiveInteger
+term	disjoint	P		disjoint from		skos:related
+term	exclusionNote	P		exclusions		skos:scopeNote
+term	ExplanatoryNote	C		Explanatory note	
+term	follows	P		follows			skos:ConceptScheme	skos:ConceptScheme
+term	generalizes	P		generalizes		skos:narrower
+term	hasPart	P		has part		skos:narrower
+term	inclusionNote	P		inclusions		skos:scopeNote
+term	isPartOf	P		is a part of		skos:broader
+term	levels	P		level list			skos:ConceptScheme	rdf:List
+term	madeOf	P		made of			Correspondence	ConceptAssociation
+term	maxLength	P		maximum length			skosxl:Label	xsd:positiveInteger
+term	next	P		next	immediate successor in the sequence	succeeds
+term	notationPattern	P		code pattern			ClassificationLevel	xsd:string
+term	numberOfLevels	P		number of levels			skos:ConceptScheme	xsd:positiveInteger
+term	organizedBy	P		organized by			ClassificationLevel	skos:Concept
+term	plainText	P		plain text	This property is expected to store plain text literals, without HTML or XML markup.		ExplanatoryNote	rdf:PlainLiteral
+term	precedes	P		precedes	predecessor in the sequence	sequential
+term	previous	P		previous	immediate predecessor in the sequence	precedes
+term	sequential	P		has sequential		skos:related
+term	sourceConcept	P		source concept			ConceptAssociation	skos:Concept
+term	specializes	P		specializes		skos:broader
+term	succeeds	P		succeeds	successeur dans la séquence	sequential
+term	supersedes	P		supersedes		follows
+term	targetConcept	P		target concept			ConceptAssociation	skos:Concept
+term	temporal	P		has temporal		sequential
+term	variant	P		variant			skos:ConceptScheme	skos:ConceptScheme

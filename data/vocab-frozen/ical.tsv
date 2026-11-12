@@ -1,0 +1,99 @@
+term	action	P			This property defines the action to be invoked when an alarm is triggered.			xsd:string
+term	altrep	P			To specify an alternate text representation for the property value.
+term	attach	P			The property provides the capability to associate a document object with a calendar component.
+term	attendee	P		attendee	The property defines an "Attendee" within a calendar component.			Value_CAL-ADDRESS
+term	byday	P		BYDAY	
+term	byhour	P		BYHOUR	
+term	byminute	P		BYMINUTE	
+term	bymonth	P		BYMONTH	
+term	bysecond	P		BYSECOND	
+term	bysetpos	P		BYSETPOS	
+term	byweekno	P		BYWEEKNO	
+term	byyearday	P		BYYEARDAY	
+term	calAddress	P			
+term	calscale	P			This property defines the calendar scale used for the calendar information specified in the iCalendar object.			xsd:string
+term	categories	P			This property defines the categories for a calendar component.			xsd:string
+term	class	P			This property defines the access classification for a calendar component.			xsd:string
+term	cn	P			To specify the common name to be associated with the calendar user specified by the property.
+term	comment	P			This property specifies non-processing information intended to provide a comment to the calendar user.			xsd:string
+term	completed	P			This property defines the date and time that a to-do was actually completed.		Vtodo	Value_DATE-TIME
+term	component	P			
+term	contact	P			The property is used to represent contact information or alternately a reference to contact information associated with the calendar component.			xsd:string
+term	count	P		COUNT	
+term	created	P			This property specifies the date and time that the calendar information was created by the calendar user agent in the calendar store. Note: This is analogous to the creation date and time for a file in the file system.			Value_DATE-TIME
+term	cutype	P			To specify the type of calendar user specified by the property.
+term	dateTime	C			
+term	daylight	P		DAYLIGHT	
+term	delegatedFrom	P			To specify the calendar users that have delegated their participation to the calendar user specified by the property.
+term	delegatedTo	P			To specify the calendar users to whom the calendar user specified by the property has delegated participation.
+term	description	P			This property provides a more complete description of the calendar component, than that provided by the "SUMMARY" property.			xsd:string
+term	dir	P			To specify reference to a directory entry associated with the calendar user specified by the property.
+term	DomainOf_rrule	C			
+term	dtend	P		end	This property specifies the date and time that a calendar component ends.
+term	dtstamp	P			The property indicates the date/time that the instance of the iCalendar object was created.			Value_DATE-TIME
+term	dtstart	P		start	This property specifies when the calendar component begins.
+term	due	P			This property defines the date and time that a to-do is expected to be completed.		Vtodo
+term	duration	P			The property specifies a positive duration of time.			Value_DURATION
+term	encoding	P			To specify an alternate inline encoding for the property value.
+term	exdate	P			This property defines the list of date/time exceptions for a recurring calendar component.		DomainOf_rrule
+term	exrule	P			This property defines a rule or repeating pattern for an exception to a recurrence set.			Value_RECUR
+term	fbtype	P			To specify the free or busy time type.
+term	fmttype	P			To specify the content type of a referenced object.
+term	freebusy	P			The property defines one or more free or busy time intervals.			Value_PERIOD
+term	freq	P		FREQ	
+term	geo	P			This property specifies information related to the global position for the activity specified by a calendar component.			List_of_Float
+term	interval	P		INTERVAL	
+term	language	P			To specify the language for text values in a property or property parameter.
+term	lastModified	P			The property specifies the date and time that the information associated with the calendar component was last revised in the calendar store. Note: This is analogous to the modification date and time for a file in the file system.			Value_DATE-TIME
+term	List_of_Float	C			
+term	location	P		location	The property defines the intended venue for the activity defined by a calendar component.			xsd:string
+term	member	P			To specify the group or list membership of the calendar user specified by the property.
+term	method	P			This property defines the iCalendar object method associated with the calendar object.			xsd:string
+term	organizer	P			The property defines the organizer for a calendar component.			Value_CAL-ADDRESS
+term	partstat	P			To specify the participation status for the calendar user specified by the property.
+term	percentComplete	P			This property is used by an assignee or delegatee of a to-do to convey the percent completion of a to-do to the Organizer.		Vtodo	xsd:integer
+term	priority	P			The property defines the relative priority for a calendar component.			xsd:integer
+term	prodid	P			This property specifies the identifier for the product that created the iCalendar object.			xsd:string
+term	range	P			To specify the effective range of recurrence instances from the instance specified by the recurrence identifier specified by the property.
+term	rdate	P			This property defines the list of date/times for a recurrence set.
+term	recurrenceId	P			This property is used in conjunction with the "UID" and "SEQUENCE" property to identify a specific instance of a recurring "VEVENT", "VTODO" or "VJOURNAL" calendar component. The property value is the effective value of the "DTSTART" property of the recurrence instance.		DomainOf_rrule
+term	related	P			To specify the relationship of the alarm trigger with respect to the start or end of the calendar component.
+term	relatedTo	P			The property is used to represent a relationship or reference between one calendar component and another.			xsd:string
+term	reltype	P			To specify the type of hierarchical relationship associated with the calendar component specified by the property.
+term	repeat	P			This property defines the number of time the alarm should be repeated, after the initial trigger.		Valarm	xsd:integer
+term	requestStatus	P			This property defines the status code returned for a scheduling request.			xsd:string
+term	resources	P			This property defines the equipment or resources anticipated for an activity specified by a calendar entity..			xsd:string
+term	role	P			To specify the participation role for the calendar user specified by the property.
+term	rrule	P			This property defines a rule or repeating pattern for recurring events, to-dos, or time zone definitions.			Value_RECUR
+term	rsvp	P			To specify whether there is an expectation of a favor of a reply from the calendar user specified by the property value.
+term	sentBy	P			To specify the calendar user that is acting on behalf of the calendar user specified by the property.
+term	sequence	P			This property defines the revision sequence number of the calendar component within a sequence of revisions.			xsd:integer
+term	standard	P		STANDARD	
+term	status	P			This property defines the overall status or confirmation for the calendar component.			xsd:string
+term	summary	P		summary	This property defines a short summary or subject for the calendar component.	rdfs:label		xsd:string
+term	transp	P			This property defines whether an event is transparent or not to busy time searches.		Vevent	xsd:string
+term	trigger	P			This property specifies when an alarm will trigger.
+term	tzid	P			This property specifies the text value that uniquely identifies the "VTIMEZONE" calendar component.		Vtimezone	xsd:string
+term	tzname	P			This property specifies the customary designation for a time zone description.		Vtimezone	xsd:string
+term	tzoffsetfrom	P			This property specifies the offset which is in use prior to this time zone observance.			xsd:string
+term	tzoffsetto	P			This property specifies the offset which is in use in this time zone observance.		Vtimezone	xsd:string
+term	tzurl	P			The TZURL provides a means for a VTIMEZONE component to point to a network location that can be used to retrieve an up-to- date version of itself.
+term	uid	P			This property defines the persistent, globally unique identifier for the calendar component.			xsd:string
+term	until	P		UNTIL	
+term	url	P		see also	This property defines a Uniform Resource Locator (URL) associated with the iCalendar object.
+term	Valarm	C			Provide a grouping of component properties that define an alarm.
+term	Value_CAL-ADDRESS	C			
+term	Value_DATE	C			
+term	Value_DATE-TIME	C			
+term	Value_DURATION	C			
+term	Value_PERIOD	C			
+term	Value_RECUR	C			
+term	Vcalendar	C		VCALENDAR	
+term	version	P			This property specifies the identifier corresponding to the highest version number or the minimum and maximum range of the iCalendar specification that is required in order to interpret the iCalendar object.			xsd:string
+term	Vevent	C		Event	Provide a grouping of component properties that describe an event.
+term	Vfreebusy	C			Provide a grouping of component properties that describe either a request for free/busy time, describe a response to a request for free/busy time or describe a published set of busy time.
+term	Vjournal	C			Provide a grouping of component properties that describe a journal entry.
+term	Vtimezone	C			Provide a grouping of component properties that defines a time zone.
+term	Vtodo	C		To-do	Provide a grouping of calendar properties that describe a to-do.
+term	wkst	P		WKST	
+term	X-	P			This class of property provides a framework for defining non-standard properties.			xsd:string

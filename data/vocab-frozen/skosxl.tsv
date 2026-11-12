@@ -1,0 +1,6 @@
+term	altLabel	P		alternative label	If C skosxl:altLabel L and L skosxl:literalForm V, then X skos:altLabel V.			Label
+term	hiddenLabel	P		hidden label	If C skosxl:hiddenLabel L and L skosxl:literalForm V, then C skos:hiddenLabel V.			Label
+term	Label	C		Label	A special class of lexical entities.
+term	labelRelation	P		label relation	The property skosxl:labelRelation is used for representing binary ('direct') relations between instances of the class skosxl:Label.		Label	Label
+term	literalForm	P		literal form	If two instances of the class skosxl:Label have the same literal form, they are not necessarily the same resource.		Label
+term	prefLabel	P		preferred label	If C skosxl:prefLabel L and L skosxl:literalForm V, then X skos:prefLabel V.			Label

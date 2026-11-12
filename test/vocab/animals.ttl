@@ -1,0 +1,38 @@
+# One small vocabulary, written also as animals.nt, animals.rdf and
+# animals.tsv (the frozen extract): each gives the same term lines.
+@prefix ex: <http://example.org/ns#> .
+@prefix other: <http://example.org/other#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+
+<http://example.org/ns#> a owl:Ontology ;
+  rdfs:label "Animals" .
+
+ex:Animal a owl:Class ;
+  rdfs:label "animal (fr)"@fr, "animal"@en ;
+  rdfs:comment """A living thing   that moves.
+
+A second paragraph, which the list drops.""" ;
+  rdfs:subClassOf other:Base .
+
+ex:Dog a rdfs:Class ;
+  rdfs:subClassOf ex:Animal ;
+  skos:prefLabel "dog" .
+
+ex:owner a owl:ObjectProperty ;
+  rdfs:label "owner"@en ;
+  skos:definition "The one\twho owns it." ;
+  rdfs:domain ex:Dog ;
+  rdfs:range <http://example.org/people/Person>, other:Agent .
+
+ex:rex a ex:Dog ;
+  rdfs:label "Rex" .
+
+ex:Puppy rdfs:subClassOf ex:Dog .
+
+ex:age rdfs:domain ex:Animal .
+
+ex:Cat rdfs:seeAlso ex:Dog .
+
+ex:legs rdfs:seeAlso ex:Dog .

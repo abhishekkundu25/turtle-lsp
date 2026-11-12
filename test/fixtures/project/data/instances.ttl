@@ -15,6 +15,6 @@ Replaced the spindle in "2025".''' .
 obj:mp-0517-temp a sd:MeasurementPoint ;
     sd:locatedIn obj:pos-mc2 ;
     sosa:observes obj:spindle-temperature ;
-    qudt:unit unit:DEG_C ;
+    qudt:hasUnit unit:DEG_C ;
     sd:threshold 85.0 , 9.5e1 , 100 ;
     sd:active true .

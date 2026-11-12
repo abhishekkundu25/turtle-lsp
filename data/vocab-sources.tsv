@@ -1,0 +1,105 @@
+# The sources of data/vocab.tsv: one row per source file, tab-separated.
+# tools/check-vocab.sh downloads the fetched rows and checks that the list is
+# what they and data/vocab-patches.tsv give; npm run vocab writes the list.
+#
+# prefix     the vocabulary's prefix; a vocabulary with more than one file
+#            repeats it, and its rows agree on namespace and aliases
+# namespace  the namespace its terms are checked in
+# aliases    other spellings of the namespace, separated by spaces, or -
+# format     ttl, nt or rdfxml: fetched from url; tsv: frozen, read from
+#            data/vocab-frozen/<prefix>.tsv, an extract of the list's term
+#            lines (url then names the publisher's file it was compared with)
+# url        https; a release, tag, commit or versioned file where the
+#            publisher has one, else its current file
+# version    what the publisher calls the release; for a frozen row, also when
+#            it was compared
+# licence    the licence the publisher gives it
+# sha256     the hash of the bytes the generator reads; a publisher's change to
+#            an unversioned file shows as a changed hash
+#
+# A correction (a term the publisher defines elsewhere) goes in
+# data/vocab-patches.tsv with its reason, never into a frozen extract.
+acl	http://www.w3.org/ns/auth/acl#	-	tsv	https://www.w3.org/ns/auth/acl	compared 2026-11-12	W3C Document License	4de1eaac854c2d62edf1c7908b650d6a6e50742bec85b9bb59aff133b9dc4185
+as	https://www.w3.org/ns/activitystreams#	-	ttl	https://www.w3.org/ns/activitystreams-owl	current	W3C Document License	e28fd3be62791b42422f2e97c0ab56141238e774be7aa860e5f03da1b2fe158f
+bibo	http://purl.org/ontology/bibo/	-	tsv	https://purl.org/ontology/bibo/	1.3; compared 2026-11-12	CC-BY-SA-3.0 (stated by DCMI, its publisher)	dbffc6ea544e599d1f27d1520c0b694564f581488ba29da9dc0d7b9ff13fe95d
+cc	http://creativecommons.org/ns#	-	tsv	https://creativecommons.org/schema.rdf	compared 2026-11-12	CC-BY-4.0 (the licence of creativecommons.org's content)	52d0a4ed177c61b45b839e7fe1e00425107fe138ce435db34a625f0c451f1221
+cnt	http://www.w3.org/2011/content#	-	tsv	https://www.w3.org/2011/content	compared 2026-11-12	W3C Document License	2d30484b44864974dca87f030c1c9cc70642f78066556e7b4a839f8ab1858686
+constant	http://qudt.org/vocab/constant/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/constants/VOCAB_QUDT-CONSTANTS.ttl	3.5.3	CC-BY-4.0	c38d17a4addf8193d2a465273a2db6b51343cb26414a1f93a072b0f82a39a6a2
+crm	http://www.cidoc-crm.org/cidoc-crm/	-	tsv	https://www.cidoc-crm.org/rdfs/7.1.3/CIDOC_CRM_v7.1.3.rdfs	7.1.3; compared 2026-11-12	CC-BY-4.0	250cf873d51ce278834e36c25a4a4014b7b09b0afa1a6cfb685485a8a412a284
+csvw	http://www.w3.org/ns/csvw#	-	tsv	https://www.w3.org/ns/csvw	compared 2026-11-12	W3C Document License	2ce577171c008fe23690abd32d5ef861474215f200da5aec4c356d61e7bc2c82
+dash	http://datashapes.org/dash#	-	tsv	https://datashapes.org/dash.ttl	2022-05-27; compared 2026-11-12	Apache-2.0 (TopQuadrant/shacl, which holds dash.ttl)	190f37b4774afb9c91787ee0d2f8b795617a0feea96e317c3d80d57aec03338e
+dbo	http://dbpedia.org/ontology/	-	nt	https://raw.githubusercontent.com/dbpedia/ontology-tracker/cba9f43dfa7746098075ae220480cf1b413e6e2f/databus/dbpedia/ontology/dbo-snapshots/dbo-snapshots.nt	2026.07.22	CC-BY-SA-3.0	7eb5d0579efb8dc1b12e150658e4e262e0c55dd1e966675e6a8d9f8513ecbcca
+dc11	http://purl.org/dc/elements/1.1/	-	tsv	https://purl.org/dc/elements/1.1/	compared 2026-11-12	CC-BY-4.0	102b778f01e4ea312c9f48004a1a58df6b957d8a5c529de32dac8e40999ae947
+dcam	http://purl.org/dc/dcam/	-	tsv	https://purl.org/dc/dcam/	compared 2026-11-12	CC-BY-4.0	7630e6e7f854517b9f74d8dd1dfcc2ddf6256b1f7bc0d7ff49a6a6523fb7dda3
+dcat	http://www.w3.org/ns/dcat#	-	ttl	https://www.w3.org/ns/dcat3.ttl	3	CC-BY-4.0	d1624d3bbf364f6fc1d43b9a188bbb9e67639b1a7d46a5cb7ea3f5d47d02b62f
+dcmitype	http://purl.org/dc/dcmitype/	-	tsv	https://purl.org/dc/dcmitype/	compared 2026-11-12	CC-BY-4.0	663d9e27c6c71b23cf8283bd830b9311438b99d6bb0b3229130f83db2105524d
+dcterms	http://purl.org/dc/terms/	-	tsv	https://purl.org/dc/terms/	compared 2026-11-12	CC-BY-4.0	a9da2bc8a4684924dc4df46a87dee46e4a1f1b4f2f978efcb6ac3e4a7c9f26b7
+discipline	http://qudt.org/vocab/discipline/	-	tsv	https://raw.githubusercontent.com/qudt/qudt-public-repo/v2.1.43/vocab/disciplines/VOCAB_QUDT-DISCIPLINES-v2.1.ttl	2.1.43, withdrawn by QUDT in 2024; compared 2026-11-12	CC-BY-4.0	814e199e6122879799d2880ca6aacde8f05d7548bf7e5e3f292b5d6e68ca1215
+doap	http://usefulinc.com/ns/doap#	-	rdfxml	https://raw.githubusercontent.com/ewilderj/doap/d164b82d38f7636fe78ff1ef025ef7502fb8538e/schema/doap.rdf	2022-03-13 (commit d164b82)	Apache-2.0	ac0ee7a1f393dcd91e3063f75e977d785dd8fb07684ad0042cf5dd5ded14497a
+dpv	https://w3id.org/dpv#	-	ttl	https://raw.githubusercontent.com/w3c/dpv/dpv-2.3/2.3/dpv/dpv.ttl	2.3	W3C Software and Document License 2023	97bc7ce1a4544d39b9e480eeb7990693bee1155fb094f3dd50b9eb1d0c0d578f
+dqv	http://www.w3.org/ns/dqv#	-	tsv	https://www.w3.org/ns/dqv	compared 2026-11-12	W3C Document License	fac9863a2bbb9e6b491b84c2cc685a531bf03871f4c43d032659fc128726ec3f
+dtype	http://www.linkedmodel.org/schema/dtype#	-	tsv	http://www.linkedmodel.org/schema/dtype	2023-11-14; compared 2026-11-12	CC-BY-SA-3.0-US	35d26639833e79a8e92ba8c1c5a4d9921e364d3be8c1ba05c84ad530a6a1ee56
+duv	http://www.w3.org/ns/duv#	-	tsv	https://www.w3.org/ns/duv	compared 2026-11-12	W3C Document License	5d951134b6db3bb2fed3fff3427e3ecaba3a4ec25d93a79461d6d00a011ee302
+earl	http://www.w3.org/ns/earl#	-	tsv	https://www.w3.org/ns/earl	1.0; compared 2026-11-12	W3C Document License	78452549a8d119bdb7e64babc8217c6f498d2fc24f381fa0313fe832f53e0f23
+ebucore	http://www.ebu.ch/metadata/ontologies/ebucore/ebucore#	-	tsv	https://www.ebu.ch/metadata/ontologies/ebucore/ebucore.rdf	2024-06-06; compared 2026-11-12	CC-BY-SA-3.0	894e16df4cd4c3f79e5e5ce541c115224c95f5d98c2874b88d0f3e1fd10343aa
+exif	http://www.w3.org/2003/12/exif/ns#	-	tsv	https://www.w3.org/2003/12/exif/ns	compared 2026-11-12	W3C Document License	32a4be8880ef6fb02ec5fe716ae495fc57f07a1fd1bec9965a684d2c21569c73
+foaf	http://xmlns.com/foaf/0.1/	-	tsv	https://xmlns.com/foaf/0.1/	0.99; compared 2026-11-12	CC-BY-1.0	c65a5700f63c0d6f076ec07506885bedc16e9ce244577e9e23695a0c0f587780
+frbr	http://purl.org/vocab/frbr/core#	-	tsv	https://vocab.org/frbr/core.rdf	2005; compared 2026-11-12	CC-BY-2.0-UK	fc624acdf53bb6db0c2b68e9878ff1f118801d4ddf66be517c918796ccdb1043
+geo	http://www.opengis.net/ont/geosparql#	-	ttl	https://raw.githubusercontent.com/opengeospatial/ogc-geosparql/1.1.0-ghpages/geosparql11/geo.ttl	1.1	OGC (https://www.ogc.org/license)	25e319e0c30c6cf026a5cb1a693ac74a17e7cebc3dcad520b731f77c49719867
+gn	http://www.geonames.org/ontology#	https://www.geonames.org/ontology#	rdfxml	https://www.geonames.org/ontology/ontology_v3.3.rdf	3.3	CC-BY-3.0	dcd85810b10623520567700e4c6ab560ab9e16bd7f53387b893beee238b9f50c
+gr	http://purl.org/goodrelations/v1#	-	tsv	http://www.heppnetz.de/ontologies/goodrelations/v1.owl	2011; compared 2026-11-12	CC-BY-3.0	e1caf79e72533c23b067e781b4b77149b38f0d31e0accfb8b60caf1f823d655b
+grddl	http://www.w3.org/2003/g/data-view#	-	tsv	https://www.w3.org/2003/g/data-view	compared 2026-11-12	W3C Document License	1b7a75f8d7a55a5af27aa0f88b17c05e96eda3a24863bfc83668298cd94ec55d
+gs1	https://ref.gs1.org/voc/	https://gs1.org/voc/ https://www.gs1.org/voc/	ttl	https://ref.gs1.org/voc/data/gs1Voc.ttl	1.18	Apache-2.0	b6039ed1b3229853a0aed1eb8568527f2d393925fd163d6fce5fddefe7ea1aa7
+gtfs	http://vocab.gtfs.org/terms#	-	tsv	https://raw.githubusercontent.com/OpenTransport/linked-gtfs/master/gtfs.ttl	archived copy, vocab.gtfs.org is gone; compared 2026-11-12	CC-BY-3.0	e75351e3b1cc4980aa586b09a2be62d25bf5e0f7cbcceb9dab4acae6e6e2821e
+http	http://www.w3.org/2011/http#	-	tsv	https://www.w3.org/2011/http	compared 2026-11-12	W3C Document License	40af59b8a831f588ce904c5b4402f5a173f8c2b1eebf1ee708159b9ed0a8c943
+hydra	http://www.w3.org/ns/hydra/core#	-	tsv	https://www.w3.org/ns/hydra/core.jsonld	compared 2026-11-12	CC-BY-4.0 (stated in the file: cc:license)	3febd8c0f7a28c60abdc10d1db94072ecca0e9551cf51a6586780496dc434563
+ical	http://www.w3.org/2002/12/cal/icaltzd#	-	tsv	https://www.w3.org/2002/12/cal/icaltzd.rdf	compared 2026-11-12	W3C Document License	c08f782b24b4be6da8d1dc801fe626a09ee2a8c6a80005ed6f369c62fedd5754
+ldp	http://www.w3.org/ns/ldp#	-	tsv	https://www.w3.org/ns/ldp	compared 2026-11-12	W3C Document License	6615e5467071f7445f604db5620433f9e074129999f8a6fc3fca38fe111e20d3
+locn	http://www.w3.org/ns/locn#	-	tsv	https://www.w3.org/ns/locn	compared 2026-11-12	ISA Open Metadata Licence v1.1	3430c57079ea117149d20002777825193dab9e46c6aabcbd80760956abc09fd6
+lvont	http://lexvo.org/ontology#	-	tsv	http://lexvo.org/ontology	0.24; compared 2026-11-12	CC-BY-SA-3.0 (stated for Lexvo.org's RDF dump)	72a72ec2d37952bd47c49ea8872a0fc4c5a26d5e5a29e4aeb12846d6ec843d89
+ma	http://www.w3.org/ns/ma-ont#	-	tsv	https://www.w3.org/ns/ma-ont	compared 2026-11-12	W3C Document License	4b50c17f19ece8ccb6f635fc01a8dbdf5250716166b792feeb7017ae3b8e80bf
+mads	http://www.loc.gov/mads/rdf/v1#	-	tsv	https://www.loc.gov/mads/rdf/v1.rdf	1.5.0; compared 2026-11-12	Public domain (Library of Congress, id.loc.gov)	d51424b1f64c336e81da6b18825f6ae68df64d6760291c0752190dab59a5e489
+oa	http://www.w3.org/ns/oa#	-	tsv	https://www.w3.org/ns/oa	compared 2026-11-12	W3C Document License	abb79e5ea1efe59df9d6fadd474f65c3b5e3798885124d6bd1ba9f9c0be2f6d0
+og	http://ogp.me/ns#	-	ttl	https://ogp.me/ns/ogp.me.ttl	current	OWFa 0.9 (stated on ogp.me)	6bf11c8299765cf8db1ff2ed212d52a204dcda10ce7d1f9068b58a0026b1defd
+org	http://www.w3.org/ns/org#	-	tsv	https://www.w3.org/ns/org	compared 2026-11-12	PDDL-1.0	62f1f40c9c5184bd28f9669c17dfdbb9ca2bfb8af7efcb80bca8ae52b8d82f6f
+owl	http://www.w3.org/2002/07/owl#	-	tsv	https://www.w3.org/2002/07/owl	compared 2026-11-12	W3C Document License	9114c1fc45b79cd7e5457f09b6444fc97076d40767c25d68a655de44b48c67e4
+prefix	http://qudt.org/vocab/prefix/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/prefixes/VOCAB_QUDT-PREFIXES.ttl	3.5.3	CC-BY-4.0	72a1c67723d19ee82216024237d41c7a1f06b17b25d23f77e532be9396d3ae7f
+prov	http://www.w3.org/ns/prov#	-	tsv	https://www.w3.org/ns/prov	compared 2026-11-12	W3C Document License	06d69143ecde32620c4da7eefeeb7aaa1d9a4b2ffedf30ca95a891d857c5c4a6
+qb	http://purl.org/linked-data/cube#	-	tsv	https://purl.org/linked-data/cube	compared 2026-11-12	PDDL-1.0	80774ea5413dac16e5e47cc8dbd268b23f9a168878c86c6a98b3919ad7cb84cc
+qkdv	http://qudt.org/vocab/dimensionvector/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/dimensionvectors/VOCAB_QUDT-DIMENSION-VECTORS.ttl	3.5.3	CC-BY-4.0	8ab482ed8282497379431fe0d05e73e9890bcc1d1ca57e8219d741fab24a5517
+quantitykind	http://qudt.org/vocab/quantitykind/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/quantitykinds/VOCAB_QUDT-QUANTITY-KINDS-ALL.ttl	3.5.3	CC-BY-4.0	b246c2f851e3c9353cafddf9640b18b696c410e176b29735218f7a266bcb9888
+quantitykind	http://qudt.org/vocab/quantitykind/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/community/extensions/propulsion/VOCAB_QUDT-PROPULSION-QUANTITY-KINDS.ttl	3.5.3	CC-BY-4.0	0eb5a2e5c0d193b3ba8421865859ca6614180cd32e255c7eb8a9003c310fff07
+qudt	http://qudt.org/schema/qudt/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/schema/SCHEMA_QUDT.ttl	3.5.3	CC-BY-4.0	628e47d96a00fd535c0ecc49a1ea72418b556e66b20ce9a5d6b998520fcb3c76
+qudt	http://qudt.org/schema/qudt/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/schema/SCHEMA_QUDT-DATATYPE.ttl	3.5.3	CC-BY-4.0	00f2bebb6aa5515ba4564aa1a07862c2fdb1bbb94d56226c0dad05f2162c8273
+qudt	http://qudt.org/schema/qudt/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/schema/SCHEMA_QUDT-COORDINATES.ttl	3.5.3	CC-BY-4.0	8404ef352ee9672b8ecba5a251af3e886a8de7e2efd1fbd10659e501f87d2af6
+rdau	http://rdaregistry.info/Elements/u/	-	nt	https://raw.githubusercontent.com/RDARegistry/RDA-Vocabularies/v5.5.2/nt/Elements/u.nt	5.5.2	CC-BY-4.0	963cb0991defe011d92db3652b2815ec5b96439b69801b7fb42116323167b899
+rdf	http://www.w3.org/1999/02/22-rdf-syntax-ns#	-	tsv	https://www.w3.org/1999/02/22-rdf-syntax-ns	compared 2026-11-12	W3C Document License	1baaf744f99bdb5ac548cf43c3fdf7f601374093a7784dce176a378a5774fe09
+rdfa	http://www.w3.org/ns/rdfa#	-	tsv	https://www.w3.org/ns/rdfa	compared 2026-11-12	W3C Document License	ada8fd387d16e2dc2bd2c5806d5ab1f4faf9b17b4b3d43b59ca428ba9c04c54e
+rdfs	http://www.w3.org/2000/01/rdf-schema#	-	tsv	https://www.w3.org/2000/01/rdf-schema	compared 2026-11-12	W3C Document License	efb02ecb6277acca75aaa58a0063aecc1f074200d50299ff7b632379c819344e
+rico	https://www.ica.org/standards/RiC/ontology#	-	rdfxml	https://raw.githubusercontent.com/ICA-EGAD/RiC-O/v1.1/ontology/current-version/RiC-O_1-1.rdf	1.1	CC-BY-4.0	cf9afc4c01142161d0ee7282dd1c07f361073d12f1f6f4569115707f169b31e9
+rr	http://www.w3.org/ns/r2rml#	-	tsv	https://www.w3.org/ns/r2rml	compared 2026-11-12	CC-BY-3.0	d8bd35b5e7fc1a09fd8290e0805150ceb295a2482a2608c6618c470a600825d6
+rss	http://purl.org/rss/1.0/	-	tsv	https://purl.org/rss/1.0/schema.rdf	compared 2026-11-12	not stated in the file	c03e2eff7c0316037d039a2a9bf954042aa32ad27c407e883563baa8b9c94346
+schema	http://schema.org/	https://schema.org/	nt	https://schema.org/version/30.1/schemaorg-current-http.nt	30.1	CC-BY-SA-3.0	81471ffa7cb1c703bf107919a4d1af4c596e5828f78f0573b5702ed193f3e8fa
+sd	http://www.w3.org/ns/sparql-service-description#	-	ttl	https://www.w3.org/ns/sparql-service-description.ttl	current	W3C Document License	a4e4ab035c909d4aeb140ab5807a3b49dfa0ecee587dc9109214ecfaff712878
+sdmx	http://purl.org/linked-data/sdmx#	-	tsv	https://raw.githubusercontent.com/UKGovLD/publishing-statistical-data/master/specs/src/main/vocab/sdmx.ttl	0.3, archived copy, purl.org answers 503; compared 2026-11-12	CC-BY-SA-4.0 (the LICENSE.md beside the file)	714e9e20aeff6c074c82809dbe695c1d85ab0eb3b293e1e350a8f15e439025c7
+sem	http://semanticweb.cs.vu.nl/2009/11/sem/	-	tsv	https://semanticweb.cs.vu.nl/2009/11/sem/	certificate expired; compared 2026-11-12	not stated in the file	b2b4f14f4904a45f7df1fd269718529c95579a73a3790fab48e05a325d2eff9f
+sh	http://www.w3.org/ns/shacl#	-	tsv	https://web.archive.org/web/20240403/https://www.w3.org/ns/shacl.ttl	1.0 (2017-07-20), archived 2024-04-03, the namespace now serves the 1.2 draft; compared 2026-11-12	W3C Document License	52e7b6d6e2ec4d1d45c3265de01a888dc47a7913d633628ad6fa08726778d13b
+shex	http://www.w3.org/ns/shex#	-	ttl	https://www.w3.org/ns/shex.ttl	current	W3C Document License	3dd94fb3f96ac3d0e41c665705b5ac90d6fd82aa42ca180f56e4b628fb824206
+sioc	http://rdfs.org/sioc/ns#	-	tsv	https://rdfs.org/sioc/ns	1.36; compared 2026-11-12	not stated in the file	69ccf1e7c4aed4ec2fcf692ce9d27bd9fe0095c7114ac35c23367937f05dcfdd
+skos	http://www.w3.org/2004/02/skos/core#	-	tsv	https://www.w3.org/2004/02/skos/core	compared 2026-11-12	W3C Document License	f7c7bedc8724a0552b0d5dd6237279d1f44906bcd0d7e06ee69c5664c5dedbdb
+skosxl	http://www.w3.org/2008/05/skos-xl#	-	tsv	https://www.w3.org/2008/05/skos-xl	compared 2026-11-12	W3C Document License	a79afa84b36d747355b3fcbb8ad6302eeb0ea78634d154fa53b8553e1fe42b47
+sosa	http://www.w3.org/ns/sosa/	-	tsv	https://www.w3.org/ns/sosa/	compared 2026-11-12	W3C Document License	6bc18051899c81ffb676a1bfbc2c6f4d93d91b3b1f87906b03d6fe65242bec80
+sou	http://qudt.org/vocab/sou/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/systems/VOCAB_QUDT-SYSTEM-OF-UNITS-ALL.ttl	3.5.3	CC-BY-4.0	ee38238de6c974ccda97e1398db4d4b4443fd9ce65dc79aa81755b1bacfa24c4
+ssn	http://www.w3.org/ns/ssn/	-	tsv	https://www.w3.org/ns/ssn/	compared 2026-11-12	W3C Document License	0dab52f3e75d638d735a868d8f73eb11dee0b845167119278e598aa8e87162f9
+test	http://www.w3.org/2006/03/test-description#	-	tsv	https://www.w3.org/2006/03/test-description	compared 2026-11-12	W3C Document License	a048874485857edda248a824f340e3ed3e592fc7572c0d40476d2ef5a474bf69
+time	http://www.w3.org/2006/time#	-	tsv	https://www.w3.org/2006/time	compared 2026-11-12	CC-BY-4.0	20ef707b68e10f7b39164880e010f384d499a7e2480e162d194e9e26bf6159a2
+unit	http://qudt.org/vocab/unit/	-	ttl	https://raw.githubusercontent.com/qudt/qudt-public-repo/v3.5.3/src/main/rdf/vocab/unit/VOCAB_QUDT-UNITS-ALL.ttl	3.5.3	CC-BY-4.0	5e84f3e10ae6a3c535e2e7616dc2affee09dd52bea5229822188730493fd4418
+vaem	http://www.linkedmodel.org/schema/vaem#	-	tsv	http://www.linkedmodel.org/schema/vaem	2.0; compared 2026-11-12	CC-BY-SA-3.0-US	2e4502349f5d02e1d6c9f3cea521c898af7a24120d64b38b9cfe2aee2086ce31
+vann	http://purl.org/vocab/vann/	-	tsv	https://purl.org/vocab/vann/	compared 2026-11-12	CC-BY-1.0	45ba4548afb440d0719e3c7a8797e21c88c61d411c9e894337dee5ab5e831ee7
+vcard	http://www.w3.org/2006/vcard/ns#	-	ttl	https://www.w3.org/2006/vcard/ns.ttl	current	W3C Document License	2442baf3d07d660910a0e24dd96b1efe1ec22cb26d12cdfd415195da91b43a0c
+void	http://rdfs.org/ns/void#	-	tsv	https://web.archive.org/web/20210114/http://vocab.deri.ie/void.ttl	archived 2021-01-14, vocab.deri.ie is gone; compared 2026-11-12	not stated in the file	4d9764ac73851d4c8f12b3aa5563a63a52759c128ab7f220314ee1004329be95
+vs	http://www.w3.org/2003/06/sw-vocab-status/ns#	-	tsv	https://www.w3.org/2003/06/sw-vocab-status/ns	compared 2026-11-12	W3C Document License	6b762ae918101864edef78ccbc6b607d00e5e5ed14a8c4a5ee9cce12ea96d192
+wgs	http://www.w3.org/2003/01/geo/wgs84_pos#	-	tsv	https://www.w3.org/2003/01/geo/wgs84_pos	compared 2026-11-12	W3C Document License	040db1e7ce83e74183dcdbc08ff18db5bd37369a88dc8dfc2a49ab82d553484a
+xhv	http://www.w3.org/1999/xhtml/vocab#	-	tsv	https://www.w3.org/1999/xhtml/vocab	RDFa only; compared 2026-11-12	W3C Document License	db032756233c84566102162e8bf77656e4f40f78cac65d53b1463761e8576f2c
+xkos	http://rdf-vocabulary.ddialliance.org/xkos#	-	tsv	http://rdf-vocabulary.ddialliance.org/xkos	1.2; compared 2026-11-12	CC-BY-4.0	5ee08e3f17faeec63bc062406270e125515ce706491628f3a7b0aac111a3b494
+xsd	http://www.w3.org/2001/XMLSchema#	-	tsv	https://www.w3.org/TR/xmlschema11-2/	1.1, no RDF namespace document; compared 2026-11-12	W3C Document License	c05b90cb451bef35e2f67e15737f0dfac59328b2f471bcc89dfdcaf4af39b2c6

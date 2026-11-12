@@ -1,0 +1,15 @@
+term	Class	C		Class	The class of classes.	Resource
+term	comment	P		comment	A description of the subject resource.		Resource	Literal
+term	Container	C		Container	The class of RDF containers.	Resource
+term	ContainerMembershipProperty	C		ContainerMembershipProperty	The class of container membership properties, rdf:_1, rdf:_2, ..., all of which are sub-properties of 'member'.	rdf:Property
+term	Datatype	C		Datatype	The class of RDF datatypes.	Class
+term	domain	P		domain	A domain of the subject property.		rdf:Property	Class
+term	isDefinedBy	P		isDefinedBy	The defininition of the subject resource.	seeAlso	Resource	Resource
+term	label	P		label	A human-readable name for the subject.		Resource	Literal
+term	Literal	C		Literal	The class of literal values, eg. textual strings and integers.	Resource
+term	member	P		member	A member of the subject resource.		Resource	Resource
+term	range	P		range	A range of the subject property.		rdf:Property	Class
+term	Resource	C		Resource	The class resource, everything.
+term	seeAlso	P		seeAlso	Further information about the subject resource.		Resource	Resource
+term	subClassOf	P		subClassOf	The subject is a subclass of a class.		Class	Class
+term	subPropertyOf	P		subPropertyOf	The subject is a subproperty of a property.		rdf:Property	rdf:Property

@@ -1,0 +1,153 @@
+term	activityEndDate	P		Activity End	Latest date in a period of activity.		RWO
+term	activityStartDate	P		Activity Start	Earliest date in a period of activity.		RWO
+term	Address	C		Address	
+term	adminMetadata	P		Administrative Metadata	This relates an Authority or Variant to its administrative metadata, which is, minimimally, a Class defined outside of the MADS/RDF namespace. The RecordInfo Class from the RecordInfo ontology is recommended.
+term	Affiliation	C		Affiliation	A resource that describes an individual's affiliation with an organization or group, such as the nature of the affiliation and the active dates.
+term	affiliationEnd	P		Affiliation Ended	The date an individual ceased to be affiliated with an organization.		Affiliation	xsd:date
+term	affiliationStart	P		Affiliation Started	The date an individual established an affiliation with an organization.		Affiliation	xsd:date
+term	Area	C		Area Type	Describes a resource whose label is a non-jurisdictional geographic entity.	Geographic
+term	associatedLanguage	P		Associated Language	Language that a person, organization, or family uses for publication, communication, etc., or in which a work is expressed.		RWO	Language
+term	associatedLocale	P		Associated Locale	A town, city, province, state, and/or country associated with persons, corporate bodies, families, works, and expressions.		RWO	Geographic
+term	authoritativeLabel	P		Authoritative Label	A lexical string representing a controlled, curated label for the Authority.	rdfs:label skos:prefLabel	Authority
+term	Authority	C		Authority	A concept with a controlled label.	owl:Thing skos:Concept
+term	birthDate	P		Birth Date	The year a person was born. Date of birth may also include the month and day of the person’s birth. (RDA 9.3.2.1)		RWO
+term	birthPlace	P		Place of Birth	The town, city, province, state, and/or country in which a person was born.		RWO	Geographic
+term	changeNote	P		Change Note	A note detailing a modification to an Authority or Variant.	note
+term	citationNote	P		Citation Note	A note about how the madsrdf:Source relates to the resource about which the madsrdf:Source is the information source.		Source
+term	citationSource	P		Citation Source	The cited resource.		Source
+term	citationStatus	P		Citation Status	Should use a standard term - such as 'found' or 'not found' - to indicate whether the cited resource yielded information about the resource related to the madsrdf:Source.		Source	xsd:string
+term	city	P		City	The city component of an address.		Address
+term	City	C		City Type	Describes a resource whose label is an inhabited place incorporated as a city, town, etc.	Geographic
+term	CitySection	C		City Section Type	Describes a resource whose label is a smaller unit within a populated place, e.g., a neighborhood, park, or street.	Geographic
+term	classification	P		Classification	The classification code associated with a madsrdf:Authority.	skos:semanticRelation	Authority
+term	code	P		Code	A code is a string of characters associated with a the authoritative or deprecated label. It may record an historical notation once used to uniquely identify a concept.	skos:notation
+term	ComplexSubject	C		Complex Subject Type	The label of a madsrdf:ComplexSubject is the concatenation of labels from two or more madsrdf:SimpleType descriptions, except that the combination of madsrdf:SimpleType labels for the madsrdf:ComplexSubject does not meet the conditions to be the label of a madsrdf:NameTitle resource or madsrdf:HierarchicalGeographic resource.	ComplexType
+term	ComplexType	C		Complex Type	madsrdf:ComplexType is a resource whose label is the concatenation of labels from two or more Authority descriptions or two or more Variant descriptions or some combination of Authority and Variant descriptions, each of a madsrdf:SimpleType.	MADSType
+term	componentList	P		Component List	madsrdf:componentList organizes the madsrdf:SimpleType resources whose labels are represented in the label of the associated madsrdf:ComplexType resource.		ComplexType
+term	ConferenceName	C		Conference Name Type	Describes a resource whose label represents a conference name.	Name
+term	Continent	C		Continent Type	Describes a resource whose label is one of seven large landmasses on Earth. These are: Asia, Africa, Europe, North America, South America, Australia, and Antarctica.	Geographic
+term	CorporateName	C		Corporate Name Type	Describes a resource whose label is the name of a corporate entity, which may include political or ecclesiastical entities.	Name
+term	country	P		Country	Country associated with an address.		Address
+term	Country	C		Country Type	Describes a resource whose label is a country, i.e. a political entity considered a country.	Geographic
+term	County	C		County Type	Describes a resource whose label is the largest local administrative unit, e.g. Warwickshire, in a country, e.g. England.	Geographic
+term	creationDateEnd	P		Work end	Ending date of the date range for which the beginning date is recorded in madsrdf:creationDateStart.
+term	creationDateStart	P		Work begun	For a work, earliest date (normally the year) associated with a work; that date may be the date the work was created or first published or released. For an expression, the earliest date (normally the year) associated with an expression; that date may be the date of the earliest known manifestation of that expression. In both cases the date may be the starting date of a range or a single date.
+term	DateNameElement	C		Date Name Element		NameElement
+term	deathDate	P		Death Date	The year a person died. Date of death may also include the month and day of the person’s death. (RDA 9.3.3.1)		RWO
+term	deathPlace	P		Place of Death	The town, city, province, state, and/or country in which a person died.		RWO	Geographic
+term	definitionNote	P		Definition Note	An explanation of the meaning of an Authority, DeprecatedAuthority, or Variant description.	note
+term	deletionNote	P		Deletion Note	A note pertaining to the deletion of a resource.	changeNote
+term	DeprecatedAuthority	C		Deprecated Authority	A former Authority.	owl:Thing
+term	deprecatedLabel	P		Deprecated Label	A label once considered authoritative (controlled and curated) but which is no longer.	rdfs:label skos:hiddenLabel	DeprecatedAuthority
+term	editorialNote	P		Editorial Note	A note pertaining to the management of the label associated with the resource.	note
+term	Element	C		Element	madsrdf:Element types describe the various parts of labels.
+term	elementList	P		Element List	The madsrdf:elementList property is used to organize the various parts of labels.
+term	elementValue	P		Element Value			Element	xsd:string
+term	email	P		Email			Affiliation
+term	entityDescriptor	P		Entity Descriptor	Any attribute that serves to characterize a person, family or corporate body or that may be needed for differentiation from other persons. families or corporate bodies and for which separate content designation is not already defined.Or		RWO
+term	establishDate	P		Established	The year a corporate body was established. Date of establishment may also include the month and day of the corporate body’s establishment.		RWO
+term	exampleNote	P		Example Note	A example of how the resource might be used.	note
+term	extendedAddress	P		Extended Address	The second address line, if needed.		Address
+term	extension	P		Extension	
+term	ExtraterrestrialArea	C		Extraterrestrial Area Type	Describes a resource whose label is any extraterrestrial entity or space, including a solar system, a galaxy, a star system, and a planet, including a geographic feature of an individual planet.	Geographic
+term	FamilyName	C		Family Name Type	Describes a resource whose label represents a family name.	Name
+term	FamilyNameElement	C		Family Name Element		NameElement
+term	fax	P		Fax	Fax number		Affiliation
+term	fieldOfActivity	P		Field of Activity	The field of activity associated with an individual.		RWO
+term	fullerName	P		Fuller Name	Full form of name needed to distinguish a person from another person with the same preferred name.			PersonalName
+term	FullNameElement	C		Fullname Element		NameElement
+term	gender	P		Gender	The gender with which a person identifies.		RWO
+term	GenreForm	C		Genre/Form Type	Describes a resource whose label is a genre or form term. Genre terms for textual materials designate specific kinds of materials distinguished by the style or technique of their intellectual contents; for example, biographies, catechisms, essays, hymns, or reviews. Form terms designate historically and functionally specific kinds of materials as distinguished by an examination of their physical character, characteristics of their intellectual content, or the order of information within them; for example, daybooks, diaries, directories, journals, memoranda, questionnaires, syllabi, or time she	SimpleType
+term	GenreFormElement	C		Genre/Form Element		Element
+term	Geographic	C		Geographic Authority	Describes a resource whose label represents a geographic place or feature, especially when a more precise geographic determination (City, Country, Region, etc.) cannot be made.	SimpleType
+term	GeographicElement	C		Geographic Element		Element
+term	GivenNameElement	C		Given Name Element		NameElement
+term	hasAbbreviationVariant	P		Has Abbreviation Variant		hasVariant
+term	hasAcronymVariant	P		Has Acronym Variant		hasVariant
+term	hasAffiliation	P		Has Affiliation	Property to associate an individual, such as a foaf:Agent, to a group or organization with which an individual is or has been affiliated.		RWO	Affiliation
+term	hasAffiliationAddress	P		Has Affiliation Address	The address of the group or organization with which an individual is associated.		Affiliation	Address
+term	hasBroaderAuthority	P		Has Broader Authority		hasRelatedAuthority skos:broader
+term	hasBroaderExternalAuthority	P		Has Broader External Authority	Creates a direct relationship between an Authority and a more broadly defined Authority from a different MADS Scheme.	hasBroaderAuthority skos:broadMatch
+term	hasChararacteristic	P		Other characteristic	A term that specifies a characteristic that differentiates a work or expression from another one.
+term	hasCloseExternalAuthority	P		Has Close External Authority	Records a relationship between an Authority and one that is closely related from a different MADS Scheme.	hasRelatedAuthority skos:closeMatch
+term	hasCorporateParentAuthority	P		Has Parent Organization	Establishes a relationship between a CorporateName Authority and one of the same that is more broadly defined.	hasRelatedAuthority	CorporateName	CorporateName
+term	hasCorporateSubsidiaryAuthority	P		Is Parent Organization Of	Establishes a relationship between a CorporateName Authority and one of the same that is more narrowly defined.	hasRelatedAuthority	CorporateName	CorporateName
+term	hasDemonym	P		Has Demonym	Establishes a relationship between an Authority that represents the demonym - Japanese or Greek, for example - and an Authority that represents the Geographic place - Japan or Greece, respectively - associated with the demonym.
+term	hasEarlierEstablishedForm	P		Has Earlier Established Form	Used to reference a resource that was an earlier form. This is Related type='earlier' in MADS XML.	see
+term	hasExactExternalAuthority	P		Has Exact External Authority	Records a relationship between an Authority and one to which it matches exactly but from a different MADS Scheme.	hasCloseExternalAuthority skos:exactMatch
+term	hasExpansionVariant	P		Has Expansion Variant		hasVariant
+term	hasHiddenVariant	P		Has Hidden Variant	Use for variants that are searchable, but not necessarily for display.	skosxl:hiddenLabel	Authority	Variant
+term	hasIdentifier	P		Has Identifier	Associates a resource with a madsrdf:Identifier.			Identifier
+term	hasLaterEstablishedForm	P		Has Later Established Form	Use to reference the later form of a resource. This is Related type='later' in MADS XML.	see
+term	hasMADSCollectionMember	P		Has MADSCollection Member	Associates an Authority or other Collection with a madsrdf:MADSCollection.	skos:member	MADSCollection
+term	hasMADSSchemeMember	P		Has MADS Scheme Member	Associates an Authority or Collection with a madsrdf:MADSScheme.		MADSScheme
+term	hasNarrowerAuthority	P		Has Narrower Authority	Creates a direct relationship between an Authority and one that is more narrowly defined.	hasRelatedAuthority skos:narrower
+term	hasNarrowerExternalAuthority	P		Has Narrower External Authority	Creates a direct relationship between an Authority and a more narrowly defined Authority from a different MADS Scheme.	hasNarrowerAuthority skos:narrowMatch
+term	hasReciprocalAuthority	P		Has Reciprocal Authority	Establishes a relationship between two Authority resources. It is reciprocal, so the relationship must be shared. This is Related type='equivalent' in MADS XML.	hasRelatedAuthority skos:related
+term	hasReciprocalExternalAuthority	P		Has Reciprocal External Authority	Establishes a relationship between an Authority and one from a different MADS Scheme. It is reciprocal, so the relationship must be shared.	hasReciprocalAuthority skos:relatedMatch
+term	hasRelatedAuthority	P		Has Related Authority	Unless the relationship can be more specifically identified, use 'hasRelatedAuthority.'	skos:semanticRelation	Authority	Authority
+term	hasSource	P		Has Source	Associates a resource description with its Source.			Source
+term	hasTopMemberOfMADSScheme	P		Has Top Member of MADS Scheme	Identifies an Authority that is at the top of the hierarchy of authorities within the MADS Scheme.	hasMADSSchemeMember skos:hasTopConcept	MADSScheme	Authority
+term	hasTranslationVariant	P		Has Translation Variant	A Variant whose label represents a translation of that of the authoritative label.	hasVariant
+term	hasVariant	P		Has Variant	Associates a Variant with an Authority or Deprecrated Authority. Unless the variant type can be more specifically identified, use 'hasVariant.'	skosxl:altLabel	Authority	Variant
+term	hiddenLabel	P		Hidden Label	A label entered for discovery purposes but not shown.	skosxl:literalForm	Variant
+term	HierarchicalGeographic	C		Hierarchical Geographic Type	A madsrdf:HierarchicalGeographic indicates that its label is the concatenation of labels from a sequence of madsrdf:Geographic types taken from one of the madsrdf:Geographic sub-classes such as madsrdf:City, madsrdf:Country, madsrdf:State, madsrdf:Region, madsrdf:Area, etc. The madsrdf:Geographic resources that constitute the madsrdf:HierarchicalGeographic should have a broader to narrower hierarchical relationship between them.	ComplexType
+term	historyNote	P		History Note	A note pertaining to the history of the resource.	note
+term	honoraryTitle	P		Honorary Title	Designation indicative of royalty, nobility, or ecclesiastical rank or office, or a term of address for a person of religious vocation.		RWO
+term	hours	P		Hours			Affiliation
+term	Identifier	C		Other Identifier	A madsrdf:Identifier resource describes an identifier by associating the identifier value with its type. To be used to record identifiers for a resource in the absence of URIs.
+term	identifiesRWO	P		Identifies RWO	Associates a madsrdf:Authority with the Real World Object that is the subject of the authority's label.	foaf:focus	Authority	RWO
+term	idScheme	P		Identifier Scheme	The scheme associated with the identifier. For example, "LCCN" would be used when the Identifier Value (madsrdf:idValue) is a LC Control Number.		Identifier
+term	idValue	P		Identifier Value	The value of the identifier conforming to the Identifier Scheme syntax.		Identifier	xsd:string
+term	isDemonymFor	P		Is Demonym For	Establishes a relationship between an Authority that represents a Geographic place - Japan or Greece, for example - and an Authority that represents the demonym - Japanese or Greek, respectively - associated with the place.
+term	isIdentifiedByAuthority	P		Is Identified By Authority	Associates a Real World Object with its Authority description.		RWO	Authority
+term	Island	C		Island Type	Describes a resource whose label is a tract of land surrounded by water and smaller than a continent but is not itself a separate country.	Geographic
+term	isMemberOfMADSCollection	P		Is Member Of MADSCollection	Associates a Collection with a madsrdf:Authority or another madsrdf:MADSCollection.			MADSCollection
+term	isMemberOfMADSScheme	P		Is Member of MADS Scheme		skos:inScheme		MADSScheme
+term	isTopMemberOfMADSScheme	P		Is Top Member of MADS Scheme	Identifies a MADS Scheme in which the Authority is at the top of the hierarchy.	isMemberOfMADSScheme skos:topConceptOf		MADSScheme
+term	Language	C		Language Type	Describes a resource whose label represents a language.	SimpleType
+term	LanguageElement	C		Language Element		Element
+term	MADSCollection	C		MADS Collection	A madsrdf:Collection is an organizational unit, members of which will have some form of intellectually unifying theme but not to the extent that it defines an independent knowledge organization system. It aggregates madsrdf:Authority descriptions or other madsrdf:MADSCollection resources.	skos:Collection
+term	MADSScheme	C		MADS Scheme	MADS Scheme is an organizational unit that describes a knowledge organization system. It aggregates madsrdf:Authority descriptions and/or madsrdf:MADSCollection resources included in the knowledge organization system. Including a madsrdf:MADSCollection within a madsrdf:MADSScheme should be done with care; when a madsrdf:MADSCollection is part of a madsrdf:MADSScheme, then any madsrdf:Authority within that madsrdf:MADSCollection is effectively also in the madsrdf:MADSScheme.	skos:ConceptScheme
+term	MADSType	C		MADS Type	
+term	MainTitleElement	C		Main Title Element		TitleElement
+term	Name	C		Name Type	Describes a resource whose label represents a name, especially when a more precise Name type (madsrdf:ConferenceName, masdrdf:FamilyName, etc.) cannot be identified.	SimpleType
+term	NameElement	C		Name Element		Element
+term	NameTitle	C		Name/Title Type	The label of a madsrdf:NameTitle resource is the concatenation of a label of a madsrdf:Name description and the label of a madsrdf:Title description. Both description types (madsrdf:Name and madsrdf:Title) are of madsrdf:SimpleType types.	ComplexType
+term	natureOfAffiliation	P		Nature of Affiliation	Records the individual's role or position in the organization with which the individual is affiliated. A "job title" might be appropriate.		Affiliation
+term	NonSortElement	C		Non-sort Element		TitleElement
+term	note	P		Note	A note about the resource.
+term	occupation	P		Occupation	A profession or occupation in which the person works or has worked.		RWO	Occupation
+term	Occupation	C		Occupation Type	Describes a resource whose label represents an occcupation.	SimpleType
+term	organization	P		Organization or Group	The group or organization with which an individual is associated.		Affiliation
+term	PartNameElement	C		Part Name Element		TitleElement
+term	PartNumberElement	C		Part Number Element		TitleElement
+term	PersonalName	C		Personal Name Type	Describes a resource whose label represents a personal name.	Name
+term	phone	P		Phone			Affiliation
+term	postcode	P		Post Code / Zip Code			Address
+term	prominentFamilyMember	P		Prominent Family Member	A well-known individual who is a member of the family.		RWO
+term	Province	C		Province Type	Describes a resource whose label is a first order political division, e.g. Ontario, within a country, e.g. Canada.	Geographic
+term	Region	C		Region Type	Describes a resource whose label is an area that has the status of a jurisdiction, usually incorporating more than one first level jurisdiction.	Geographic
+term	RWO	C		Real World Object	A madsrdf:RWO is an abstract entity and identifies a Real World Object (RWO) identified by the label of a madsrdf:Authority or madsrdf:DeprecatedAuthority.	owl:Thing
+term	scopeNote	P		Scope Note		note
+term	see	P		See Also	Denotes a relationship between an Authority and/or DeprecatedAuthority. The relationship may or may or may not be reciprocated and there is no certainty that the related resource will further illuminate the original resource.	rdfs:seeAlso
+term	SimpleType	C		Simple Type	madsrdf:SimpleType is a resource with a label constituting a single word or phrase.	MADSType
+term	Source	C		Source	A resource that represents the source of information about another resource. madsrdf:Source is a type of citation.
+term	state	P		State	The state associated with an address.		Address
+term	State	C		State Type	Describes a resource whose label is a first order political division, e.g. Montana, within a country, e.g. U.S.	Geographic
+term	streetAddress	P		Street Address	First line of address. For second line, use madsrdf:extendedAddress.		Address
+term	SubTitleElement	C		Subtitle Element		TitleElement
+term	Temporal	C		Temporal Type	Describes a resource whose label represents a time-based notion.	SimpleType
+term	TemporalElement	C		Temporal Element		Element
+term	terminateDate	P		Terminated	The year a corporate body was terminated. Date of termination may also include the month and day of the corporate body’s termination.		RWO
+term	TermsOfAddressNameElement	C		Terms of Address Element		NameElement
+term	Territory	C		Territory Type	Describes a resource whose label is a geographical area belonging to or under the jurisdiction of a governmental authority.	Geographic
+term	Title	C		Title Type	Describes a resource whose label represents a title.	SimpleType
+term	TitleElement	C		Title Element		Element
+term	Topic	C		Topic Type	Describes a resource whose label represents a topic.	SimpleType
+term	TopicElement	C		Topic Element		Element
+term	useFor	P		Use For	"Use [This Resource] For." Traditional "USE FOR" reference.	see
+term	useInstead	P		Use Instead	"Use [This Other Resource] Instead." Traditional "USE" reference.	see
+term	Variant	C		Variant	A resource whose label is the alternate form of an Authority or Deprecated Authority.	owl:Thing skosxl:Label
+term	variantLabel	P		Variant Label	The lexical, variant form of an authoritative label.	skosxl:literalForm	Variant
+term	workOrigin	P		Work locale	The country or other territorial jurisdiction from which a work originated.			Geographic

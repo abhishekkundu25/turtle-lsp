@@ -1,0 +1,39 @@
+term	absolutePath	P		Absolute path	The absolute path sort of request URI.	requestURI
+term	absoluteURI	P		Absolute URI	The absolute request URI.	requestURI
+term	authority	P		Authority	The authority sort of request URI.	requestURI
+term	body	P		Entity Body	The entity body of an HTTP message.		Message	cnt:ContentAsBase64
+term	Connection	C		Connection	A connection used for HTTP transfer.
+term	connectionAuthority	P		Connection authority	The authority of a connection used for the HTTP transfer.		Connection	rdfs:Literal
+term	elementName	P		Header element name	The name of a header element.		HeaderElement	rdfs:Literal
+term	elementValue	P		Header element value	The value of a header element.		HeaderElement	rdfs:Literal
+term	EntityHeader	C		Entity Header	An entity header in an HTTP message.	MessageHeader
+term	fieldName	P		Field name	The name of an HTTP header field.		MessageHeader	rdfs:Literal
+term	fieldValue	P		Field value	The value of an HTTP header field.		MessageHeader	rdfs:Literal
+term	GeneralHeader	C		General Header	A general header in an HTTP message.	MessageHeader
+term	hdrName	P		Header name	The name of an HTTP header.		MessageHeader	HeaderName
+term	HeaderElement	C		Header Element	A part of a deconstructed header value.
+term	headerElements	P		Header elements	The deconstructed parts of an HTTP header value.		MessageHeader
+term	HeaderName	C		Header Name	A header name.
+term	headers	P		Headers	The headers in an HTTP message.		Message
+term	httpVersion	P		HTTP version	The HTTP version of an HTTP message.		Message	rdfs:Literal
+term	Message	C		Message	An HTTP message.
+term	MessageHeader	C		Message Header	A header in an HTTP message.
+term	Method	C		Method	The HTTP method used for the request.
+term	methodName	P		Method name	The HTTP method name used for the HTTP request.		Request	rdfs:Literal
+term	mthd	P		Method	The HTTP method used for the HTTP request.		Request	Method
+term	Parameter	C		Parameter	A parameter for a part of a header value.
+term	paramName	P		Parameter name	The name of a parameter in a part of a deconstructed HTTP header value.		Parameter	rdfs:Literal
+term	params	P		Header parameters	The parameters in a part of a deconstructed HTTP header value.		HeaderElement
+term	paramValue	P		Parameter value	The value of a parameter in a part of a deconstructed HTTP header value.		Parameter	rdfs:Literal
+term	reasonPhrase	P		Reason phrase	The reason phrase (status text) of an HTTP response.		Response	rdfs:Literal
+term	Request	C		Request	An HTTP request.	Message
+term	RequestHeader	C		Request Header	A header in an HTTP request message.	MessageHeader
+term	requests	P		Requests	The HTTP requests made via a connection.		Connection
+term	requestURI	P		Request URI	The request URI of an HTTP request.		Request	rdfs:Literal
+term	resp	P		Response	The HTTP response sent in answer to an HTTP request.		Request	Response
+term	Response	C		Response	An HTTP response.	Message
+term	ResponseHeader	C		Response Header	A header in an HTTP response message.	MessageHeader
+term	sc	P		Status code	The status code of an HTTP response.		Response	StatusCode
+term	StatusCode	C		Status code	The status code of an HTTP response.
+term	statusCodeNumber	P		Status code	The status code number.	dcterms:identifier	StatusCode	xsd:int
+term	statusCodeValue	P		Status code	The status code value of an HTTP response.		Response	rdfs:Literal

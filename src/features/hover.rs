@@ -235,10 +235,13 @@ pub(crate) fn describe_iri(
     let mut comment = None;
     // A workspace file's `owl:deprecated true`, or the vocabulary's flag.
     let mut deprecated = k.deprecated_here(iri);
+    // The vocabulary that has the term, not one that only owns the namespace.
+    let mut vocabulary = None;
 
     if let Some((v, local)) = VOCABS.lookup(iri)
         && let Some(t) = v.term(local)
     {
+        vocabulary = Some(v.prefix);
         kind = Some(match t.kind {
             TermKind::Class => "class",
             TermKind::Property => "property",
@@ -297,8 +300,8 @@ pub(crate) fn describe_iri(
         defined_in.sort();
         defined_in.truncate(5);
         out.push_str(&format!("\n\n_Described in {}_", defined_in.join(", ")));
-    } else if let Some((v, _)) = VOCABS.lookup(iri) {
-        out.push_str(&format!("\n\n_From the {} vocabulary_", v.prefix));
+    } else if let Some(prefix) = vocabulary {
+        out.push_str(&format!("\n\n_From the {prefix} vocabulary_"));
     }
     Some(out)
 }
@@ -412,6 +415,23 @@ mod tests {
         k.add_external("import:http://ex.com/x", Arc::new(a));
         let md = describe_iri("http://ex.com/x#T", "T", &k, &PrefixMap::default()).unwrap();
         assert!(!md.contains("deprecated"), "{md}");
+    }
+
+    #[test]
+    fn the_vocabulary_line_is_for_a_term_the_vocabulary_has() {
+        let rdfs = "http://www.w3.org/2000/01/rdf-schema#";
+        let md = |iri: &str, label: &str| {
+            describe_iri(iri, label, &Knowledge::default(), &PrefixMap::default()).unwrap()
+        };
+        let label = md(&format!("{rdfs}label"), "rdfs:label");
+        assert!(label.contains("_From the rdfs vocabulary_"), "{label}");
+        let typo = md(&format!("{rdfs}lable"), "rdfs:lable");
+        assert!(!typo.contains("vocabulary"), "{typo}");
+        // A container membership property: no list holds it, the lookup does.
+        let member = md(&format!("{}_3", crate::syntax::RDF), "rdf:_3");
+        assert!(member.starts_with("**rdf:_3** · property"), "{member}");
+        assert!(member.contains("RDF Schema"), "{member}");
+        assert!(member.contains("_From the rdf vocabulary_"), "{member}");
     }
 
     #[test]

@@ -1,0 +1,10 @@
+term	channel	C		Channel	An RSS information channel.
+term	description	P		Description	A short text description of the subject.	dc11:description
+term	image	C		Image	An RSS image.
+term	item	C		Item	An RSS item.
+term	items	P		Items	Points to a list of rss:item elements that are members of the subject channel.
+term	link	P		Link	The URL to which an HTML rendering of the subject will link.	dc11:identifier
+term	name	P		Name	The text input field's (variable) name.
+term	textinput	C		Text Input	An RSS text input.
+term	title	P		Title	A descriptive title for the channel.	dc11:title
+term	url	P		URL	The URL of the image to used in the 'src' attribute of the channel's image tag when rendered as HTML.	dc11:identifier

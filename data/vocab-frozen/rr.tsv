@@ -1,0 +1,42 @@
+term	BaseTableOrView	C				LogicalTable
+term	BlankNode	C			Denotes a blank node, used with termType
+term	child	P			Names a column in the child table of a join.		Join	xsd:string
+term	class	P			The subject value generated for a logical table row will be asserted as an instance of this RDFS class.		SubjectMap	rdfs:Class
+term	column	P			Name of a column in the logical table. When generating RDF triples from a logical table row, value from the specified column is used as the subject, predicate, or object (based upon the specific domain).		TermMap	xsd:string
+term	constant	P			
+term	datatype	P			Specifies the datatype of the object component for the generated triple from a logical table row.		ObjectMap	rdfs:Datatype
+term	defaultGraph	I			Denotes a default graph
+term	graph	P			An IRI reference for use as the graph name of all triples generated with the GraphMap.
+term	graphMap	P			Specifies a GraphMap. When used with a SubjectMap element, all the RDF triples generated from a logical row will be stored in the specified named graph. Otherwise, the RDF triple generated using the (predicate, object) pair will be stored in the specified named graph.			GraphMap
+term	GraphMap	C			Represents a graph map.	TermMap
+term	inverseExpression	P			An expression that allows, at query processing time, use of index-based access to the the (underlying) relational tables, instead of simply retrieving the table rows first and then applying a filter. This property is useful for retrieval based on conditions involving subject, predicate, or object generated from logical table column(s) and involves some transformation.		TermMap	xsd:string
+term	IRI	C			Denotes an IRI, used with termpType.
+term	Join	C			Represents a join condition.	owl:Thing
+term	joinCondition	P			Specifies the join condition for joining the child logical table with the parent logical table of the foreign key constraint.		RefObjectMap	Join
+term	language	P			Specified the language for the object component for the generated triple from a logical table row.		ObjectMap	xsd:string
+term	Literal	C			Denotes a Literal, used with termType.	owl:Thing
+term	logicalTable	P			Definition of logical table to be mapped.		TriplesMap	LogicalTable
+term	LogicalTable	C			Represents a logical table.	owl:Thing
+term	object	P			Specifies the object for the generated triple from the logical table row.			rdfs:Resource
+term	objectMap	P			An ObjectMap element to generate the object component of the (predicate, object) pair from a logical table row.		PredicateObjectMap
+term	ObjectMap	C			Represents an object map.	TermMap owl:Thing
+term	parent	P			Names a column in the parent table of a join.		Join	xsd:string
+term	parentTriplesMap	P			Specifies the TriplesMap element corresponding to the parent logical table of the foreign key constraint.		RefObjectMap	TriplesMap
+term	predicate	P			Specifies the predicate for the generated triple from the logical table row.			rdf:Property
+term	predicateMap	P			A PredicateMap element to generate the predicate component of the (predicate, object) pair from a logical table row.		PredicateObjectMap	PredicateMap
+term	PredicateMap	C			Represents a predicate map.	TermMap owl:Thing
+term	predicateObjectMap	P			A PredicateObjectMap element to generate (predicate, object) pair from a logical table row.			PredicateObjectMap
+term	PredicateObjectMap	C			Represents a predicate-object map.	owl:Thing
+term	R2RMLView	C				LogicalTable
+term	RefObjectMap	C			Denotes a reference to an object map.	owl:Thing
+term	SQL2008	I			Core SQL 2008
+term	sqlQuery	P			A valid SQL query.		R2RMLView	xsd:string
+term	sqlVersion	P			An identifier for a SQL version.		R2RMLView
+term	subject	P			An IRI reference for use as subject for all the RDF triples generated from a logical table row.
+term	subjectMap	P			A SubjectMap element to generate a subject from a logical table row.		TriplesMap	SubjectMap
+term	SubjectMap	C			Represents a subject map.	TermMap owl:Thing
+term	tableName	P			Schema-qualified name of a table or view.		BaseTableOrView	xsd:string
+term	template	P			A template (format string) to specify how to generate a value for a subject, predicate, or object, using one or more columns from a logical table row.		TermMap	xsd:string
+term	TermMap	C		Term Map	A function that generates an RDF term from a logical table row.
+term	termType	P			A string indicating whether subject or object generated using the value from column name specified for rr:column should be an IRI reference, blank node, or a literal.		TermMap
+term	TriplesMap	C			Represents a triples map.	owl:Thing
