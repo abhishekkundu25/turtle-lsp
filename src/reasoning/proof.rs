@@ -166,6 +166,7 @@ mod tests {
                 related: true,
                 findings: true,
                 project: Default::default(),
+                cancel: Default::default(),
             },
         );
         shared.show(1);

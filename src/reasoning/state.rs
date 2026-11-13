@@ -1,26 +1,30 @@
-//! The state the reasoning thread and hovers share: the reasoner after its
-//! last run, that run's base, each IRI's inferred types and the
-//! explainer's cache.
+//! The state the reasoning thread and hovers share: the result of the run
+//! whose findings the server shows (the reasoner after that run, its base,
+//! each IRI's inferred types and the explainer's cache), and a finished
+//! run's result until the server shows it or drops the run.
 //!
-//! Only the reasoning thread writes it, and it holds the write lock for a
-//! whole run (the reasoner reuses its last run's work, so the run changes
-//! it in place). A reader never waits for a run: it tries the lock and, when
-//! a run holds it, says so ([`Types::Running`]). A result carries its run's
-//! generation, and the server marks the run whose findings it shows
-//! ([`Shared::show`]): a reader reads no other run's result, so a run
-//! superseded while it ran (its findings dropped) shows nothing in hover
-//! either, until the next run's result is shown ([`Types::Running`]).
+//! It is two slots under one lock, held only to move or copy a result's
+//! handle, never across reasoning, findings or a proof search. A run
+//! reasons on a reasoner of its own and, when it finishes, puts its result
+//! in the slot `fresh` ([`Shared::publish`]); a run that stops (newer work,
+//! its time limit) puts nothing there. The server shows a current run's
+//! findings and moves its result to the slot `shown` ([`Shared::show`]),
+//! or drops a stale run and its result ([`Shared::discard`]). Hovers read
+//! only the result shown: while a run goes on, after one stops and after
+//! the server drops one, they read the last result shown. While no result
+//! is shown and a finished run's waits, they say a run is going on
+//! ([`Types::Running`]).
 //!
-//! A proof is searched on a thread of its own under the read lock, one
-//! search at a time (they take turns on the explainer's cache), and the
-//! hover waits for it at most a given time. Past it the search goes on: a
-//! hover on the same term waits for that search and has its answer, a hover
-//! on another term says its proofs are still being worked out. A search
-//! itself stops at its time limit ([`Limits::hover`]), shared out among the
-//! term's types. Its answer, stopped or not, is kept for the later hovers
-//! of the term until the next search. A finished search leaves what it
-//! found in the cache for the next; a stopped one leaves only the
-//! explainer's indexes.
+//! A proof is searched on a thread of its own, in the result shown when
+//! the hover asked, one search at a time (they take turns on the
+//! explainer's cache), and the hover waits for it at most a given time.
+//! Past it the search goes on: a hover on the same term waits for that
+//! search and has its answer, a hover on another term says its proofs are
+//! still being worked out. A search itself stops at its time limit
+//! ([`Limits::hover`]), shared out among the term's types. Its answer,
+//! stopped or not, is kept for the later hovers of the term until the next
+//! search. A finished search leaves what it found in the cache for the
+//! next; a stopped one leaves only the explainer's indexes.
 
 use super::base::{Base, Origin};
 use super::turtle::Items;
@@ -29,18 +33,23 @@ use crate::settings::{Reasoning, Settings};
 use crate::syntax::RDF_TYPE;
 use rustc_hash::FxHashMap;
 use spargebra::term::{NamedNode, Triple};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard, TryLockError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 /// How long a hover waits for proofs.
 pub(crate) const HOVER_WAIT: Duration = Duration::from_millis(200);
 
-/// How long proof searches may run: a search stops at its limit and keeps
-/// what it found. Without a limit, a long class chain in a small file takes
-/// minutes and gigabytes to explain.
+/// How long reasoning and proof searches may run: a run stops at its
+/// limit and leaves the previous result; a search stops at its limit and
+/// keeps what it found. Without a limit, a long class chain in a small file
+/// takes minutes and gigabytes to explain, and a long `owl:sameAs` chain
+/// minutes to reason over.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
+    /// One reasoning run: TurbOWL's rounds and the reading of the inferred
+    /// types (not the explanations of its findings, which have their own).
+    pub(crate) run: Duration,
     /// All the proofs of one hover's term.
     pub(crate) hover: Duration,
     /// All the explanations of one run's findings.
@@ -50,6 +59,7 @@ pub(crate) struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Limits {
+            run: Duration::from_secs(10),
             hover: Duration::from_secs(2),
             findings: Duration::from_secs(1),
         }
@@ -101,10 +111,7 @@ pub(crate) struct Shared {
     /// How a proof search runs: on a thread of its own, or inline (the
     /// browser, which has no threads, and waits for it).
     spawn: Spawn,
-    held: RwLock<Option<Reasoned>>,
-    /// The generation of the run whose findings the server shows; only
-    /// that run's result is read.
-    shown: AtomicU64,
+    slots: Mutex<Slots>,
     /// The proof search started last, going on or done.
     search: Mutex<Option<Search>>,
     /// How long proof searches may run.
@@ -112,16 +119,37 @@ pub(crate) struct Shared {
     /// Tests: how many proof searches have started.
     #[cfg(test)]
     pub(super) searches: std::sync::atomic::AtomicUsize,
+    /// Tests: how many runs have started TurbOWL's rounds.
+    #[cfg(test)]
+    pub(super) reasoned: std::sync::atomic::AtomicUsize,
 }
 
-/// The result of the last run that finished.
+/// The results the state holds.
+#[derive(Default)]
+struct Slots {
+    /// The result of the run whose findings the server shows; hovers read
+    /// it.
+    shown: Option<Arc<Reasoned>>,
+    /// A finished run's result, until the server shows it or drops the run:
+    /// its generation, and its result (`None` when the run left none).
+    fresh: Option<(u64, Option<Arc<Reasoned>>)>,
+}
+
+/// A finished run's result. A run over the triples of the result shown
+/// shares its reasoner and inferred types.
 pub(super) struct Reasoned {
     /// The generation of the job the run was.
     pub(super) generation: u64,
-    pub(super) reasoner: turbowl::Reasoner,
+    /// The rules and the limit on inferred triples it ran with.
+    pub(super) rules: Reasoning,
+    pub(super) max_triples: u64,
+    pub(super) reasoner: Arc<turbowl::Reasoner>,
     pub(super) base: Base,
     /// Each IRI's inferred types that are IRIs, sorted.
-    pub(super) types: FxHashMap<String, Vec<String>>,
+    pub(super) types: Arc<FxHashMap<String, Vec<String>>>,
+    /// The reading of the inferred types stopped past `max_triples`
+    /// inferred triples: `types` holds those read so far.
+    pub(super) cut: bool,
     /// The explainer's indexes and what its searches found, for this
     /// reasoner: an explanation takes it and gives it back.
     pub(super) cache: Mutex<turbowl::ExplainCache>,
@@ -144,11 +172,11 @@ struct Search {
 
 /// What reasoning says of a term's types.
 pub(crate) enum Types {
-    /// No result to read: no run has finished, or the last one was skipped
-    /// or failed.
+    /// No result to read: no run has finished, or the last one shown was
+    /// skipped or failed.
     Unknown,
-    /// A run is writing the state, or the result there is of a run
-    /// superseded while it ran: the next run's is coming.
+    /// No result is shown yet, and a finished run's waits for the server to
+    /// show it.
     Running,
     /// Each inferred type, with its proof. Shared: a search's answer is
     /// kept for the later hovers of its term.
@@ -222,19 +250,43 @@ impl Shared {
     pub(crate) fn with_limits(spawn: Spawn, limits: Limits) -> Shared {
         Shared {
             spawn,
-            held: RwLock::new(None),
-            shown: AtomicU64::new(0),
+            slots: Mutex::default(),
             search: Mutex::new(None),
             limits,
             #[cfg(test)]
             searches: Default::default(),
+            #[cfg(test)]
+            reasoned: Default::default(),
         }
     }
 
+    /// The run of `generation` finished: `result` waits for the server to
+    /// show it or drop the run. It replaces a result still waiting, whose
+    /// run this one superseded.
+    pub(super) fn publish(&self, generation: u64, result: Option<Reasoned>) {
+        let fresh = Some((generation, result.map(Arc::new)));
+        // Freed once unlocked: freeing a reasoner takes time.
+        let _replaced = std::mem::replace(&mut self.slots().fresh, fresh);
+    }
+
     /// The server shows the findings of the run of `generation`: its
-    /// result is the one to read.
+    /// result, or none when it left none, is the one hovers read. Nothing
+    /// changes unless that run's result waits.
     pub(crate) fn show(&self, generation: u64) {
-        self.shown.store(generation, Ordering::Release);
+        // The result it replaces is freed once unlocked.
+        let _replaced = {
+            let mut slots = self.slots();
+            match slots.fresh.take_if(|(g, _)| *g == generation) {
+                Some((_, result)) => std::mem::replace(&mut slots.shown, result),
+                None => return,
+            }
+        };
+    }
+
+    /// The server dropped the run of `generation` (stale, or superseded):
+    /// its result, if it waits, is freed.
+    pub(crate) fn discard(&self, generation: u64) {
+        let _discarded = self.slots().fresh.take_if(|(g, _)| *g == generation);
     }
 
     /// A state when `settings` turn reasoning on; `None` when it is off, so
@@ -249,11 +301,12 @@ impl Shared {
     /// the search's thread cannot start, or a search for another term is
     /// going on.
     pub(crate) fn inferred_types(self: &Arc<Self>, iri: &str, wait: Duration) -> Types {
-        let read = self.read(|r| (r.generation, r.types.get(iri).cloned().unwrap_or_default()));
-        let (generation, classes) = match read {
+        let r = match self.current() {
             Err(t) => return t,
-            Ok(c) => c,
+            Ok(r) => r,
         };
+        let generation = r.generation;
+        let classes = r.types.get(iri).cloned().unwrap_or_default();
         if classes.is_empty() {
             return Types::Proved(Arc::default());
         }
@@ -276,7 +329,7 @@ impl Shared {
             }
             // Not beside it.
             Some(s) if !s.done.load(Ordering::Acquire) => return Types::Pending(classes),
-            _ => match self.search(iri, generation) {
+            _ => match self.search(iri, r) {
                 Some(started) => {
                     let answer = started.answer.clone();
                     *search = Some(started);
@@ -311,12 +364,13 @@ impl Shared {
         }
     }
 
-    /// Start a search for the proofs of `iri`'s types in the result of
-    /// `generation`; `None` when its thread cannot start.
-    fn search(self: &Arc<Self>, iri: &str, generation: u64) -> Option<Search> {
+    /// Start a search for the proofs of `iri`'s types in `r`; `None` when
+    /// its thread cannot start.
+    fn search(self: &Arc<Self>, iri: &str, r: Arc<Reasoned>) -> Option<Search> {
         let (tx, answer) = crossbeam_channel::bounded(1);
         let done = Arc::new(AtomicBool::new(false));
         let shared = Arc::clone(self);
+        let generation = r.generation;
         let subject = iri.to_string();
         let ended = Arc::clone(&done);
         #[cfg(test)]
@@ -326,7 +380,7 @@ impl Shared {
                 "reasoning-explain",
                 // Defence in depth, as the reasoning thread's.
                 16 << 20,
-                move || shared.prove(&subject),
+                move || shared.prove(&r, &subject),
                 // Done before the answer is sent: a hover that reads the
                 // answer and returns must not leave the next hover (of
                 // another term) seeing this search as still going on.
@@ -345,78 +399,85 @@ impl Shared {
         })
     }
 
-    /// The proofs of `iri`'s inferred types in the state as it is now.
-    fn prove(&self, iri: &str) -> Types {
+    /// The proofs of `iri`'s inferred types in `r`.
+    fn prove(&self, r: &Reasoned, iri: &str) -> Types {
         let rdf_type = NamedNode::new_unchecked(RDF_TYPE);
         let subject = NamedNode::new_unchecked(iri);
-        let read = |r: &Reasoned| {
-            let Some(classes) = r.types.get(iri) else {
-                return Types::Proved(Arc::default());
-            };
-            let mut cache = r.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            let Ok(explainer) = r.reasoner.explainer_with(std::mem::take(&mut *cache)) else {
-                return Types::Unknown;
-            };
-            // One limit for all the term's types, shared out among them: a
-            // type whose proof takes too long is listed without it.
-            let budget = Budget::new(self.limits.hover);
-            let proved = classes
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let t = Triple::new(
-                        subject.clone(),
-                        rdf_type.clone(),
-                        NamedNode::new_unchecked(c),
-                    );
-                    let proof = match budget
-                        .next(classes.len() - i)
-                        .map(|cancel| explainer.explain_cancellable(t.as_ref(), &cancel))
-                    {
-                        Some(Ok(Some(p))) => Ok(Proof::new(p, &r.base)),
-                        Some(Ok(None)) => Err(NoProof::NotFound),
-                        None | Some(Err(turbowl::Error::Cancelled)) => Err(NoProof::Stopped),
-                        Some(Err(_)) => Err(NoProof::NotFound),
-                    };
-                    Inferred {
-                        class: c.clone(),
-                        proof,
-                    }
-                })
-                .collect();
-            *cache = explainer.into_cache();
-            Types::Proved(Arc::new(proved))
+        let Some(classes) = r.types.get(iri) else {
+            return Types::Proved(Arc::default());
         };
-        self.read(read).unwrap_or_else(|t| t)
+        let mut cache = r.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let Ok(explainer) = r.reasoner.explainer_with(std::mem::take(&mut *cache)) else {
+            return Types::Unknown;
+        };
+        // One limit for all the term's types, shared out among them: a type
+        // whose proof takes too long is listed without it.
+        let budget = Budget::new(self.limits.hover);
+        let proved = classes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let t = Triple::new(
+                    subject.clone(),
+                    rdf_type.clone(),
+                    NamedNode::new_unchecked(c),
+                );
+                let proof = match budget
+                    .next(classes.len() - i)
+                    .map(|cancel| explainer.explain_cancellable(t.as_ref(), &cancel))
+                {
+                    Some(Ok(Some(p))) => Ok(Proof::new(p, &r.base)),
+                    Some(Ok(None)) => Err(NoProof::NotFound),
+                    None | Some(Err(turbowl::Error::Cancelled)) => Err(NoProof::Stopped),
+                    Some(Err(_)) => Err(NoProof::NotFound),
+                };
+                Inferred {
+                    class: c.clone(),
+                    proof,
+                }
+            })
+            .collect();
+        *cache = explainer.into_cache();
+        Types::Proved(Arc::new(proved))
     }
 
-    /// `f` of the result shown, without waiting: Err with what to say when
-    /// there is none to read.
-    fn read<T>(&self, f: impl FnOnce(&Reasoned) -> T) -> Result<T, Types> {
-        let held = match self.held.try_read() {
-            Ok(held) => held,
-            // A run that panicked leaves no result (see `write`).
-            Err(TryLockError::Poisoned(e)) => e.into_inner(),
-            Err(TryLockError::WouldBlock) => return Err(Types::Running),
-        };
-        match held.as_ref() {
-            None => Err(Types::Unknown),
-            Some(r) if r.generation != self.shown.load(Ordering::Acquire) => Err(Types::Running),
-            Some(r) => Ok(f(r)),
+    /// The limit on inferred triples, when the reading of the inferred types
+    /// of the result shown stopped at it: a term's list may be incomplete.
+    pub(crate) fn cut(&self) -> Option<u64> {
+        let r = self.current().ok()?;
+        r.cut.then_some(r.max_triples)
+    }
+
+    /// The result shown; `None` when there is none.
+    pub(super) fn shown(&self) -> Option<Arc<Reasoned>> {
+        self.slots().shown.clone()
+    }
+
+    /// The generation of the result shown; `None` when there is none.
+    pub(super) fn shown_generation(&self) -> Option<u64> {
+        self.slots().shown.as_ref().map(|r| r.generation)
+    }
+
+    /// The result shown, for a reader: Err with what to say when there is
+    /// none to read.
+    fn current(&self) -> Result<Arc<Reasoned>, Types> {
+        let slots = self.slots();
+        match (&slots.shown, &slots.fresh) {
+            (Some(r), _) => Ok(Arc::clone(r)),
+            (None, Some((_, Some(_)))) => Err(Types::Running),
+            (None, _) => Err(Types::Unknown),
         }
     }
 
+    /// The result waiting to be shown, with its run's generation.
     #[cfg(test)]
-    pub(super) fn read_for_test(&self) -> std::sync::RwLockReadGuard<'_, Option<Reasoned>> {
-        self.held.read().unwrap()
+    pub(super) fn fresh_for_test(&self) -> Option<(u64, Option<Arc<Reasoned>>)> {
+        self.slots().fresh.clone()
     }
 
-    /// The state, for the reasoning thread to write. A run takes the result
-    /// out before it changes it, so a run that panicked has left none, and
-    /// the lock is usable again.
-    pub(super) fn write(&self) -> RwLockWriteGuard<'_, Option<Reasoned>> {
-        let held = self.held.write().unwrap_or_else(PoisonError::into_inner);
-        self.held.clear_poison();
-        held
+    /// The slots. A panic never leaves them half changed: each change is
+    /// one move.
+    fn slots(&self) -> MutexGuard<'_, Slots> {
+        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }

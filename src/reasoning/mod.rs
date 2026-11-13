@@ -3,14 +3,17 @@
 //!
 //! - [`Base`] (`base.rs`): the workspace's triples, imports included, as
 //!   TurbOWL reads them, each mapped back to its document, range and line.
-//! - [`Shared`] (`state.rs`): the reasoner after its last run, with that
-//!   run's base and the explainer's cache, behind a read-write lock that
-//!   only the reasoning thread writes; and the read hover makes, a term's
-//!   inferred types with their proofs ([`Shared::inferred_types`]), which
-//!   waits at most a given time.
+//! - [`Shared`] (`state.rs`): the result of the run whose findings the
+//!   server shows (the reasoner after it, its base and the explainer's
+//!   cache), and a finished run's result until the server shows it or
+//!   drops the run; and the read hover makes, a term's inferred types with
+//!   their proofs ([`Shared::inferred_types`]), which waits at most a given
+//!   time.
 //! - [`Worker`] and [`run_inline`] (`worker.rs`): the reasoning thread, one
 //!   run at a time, the newest job first, panics caught, as SHACL
-//!   validation's; `run_inline` for the embedded server.
+//!   validation's; `run_inline` for the embedded server. A run stops when
+//!   newer work trips its job's [`Cancel`] and at its time limit, leaving
+//!   the previous result ([`Stopped`]).
 //! - `diagnostics.rs`: what a run shows in the documents.
 //! - [`infer`] (`infer.rs`): what TurbOWL infers from a query's documents,
 //!   in the query graph's terms, for a query over inferred triples.
@@ -43,7 +46,7 @@ pub(crate) use infer::{Closure, Halt, base_order, infer};
 pub(crate) use proof::{Names, Shown};
 pub(crate) use state::{Budget, Inferred, NoProof};
 pub(crate) use state::{HOVER_WAIT, Proof, Shared, Types};
-pub(crate) use worker::{Job, Outcome, Worker, run_inline};
+pub(crate) use worker::{Cancel, Job, Outcome, Stopped, Worker, run_inline};
 
 use crate::settings::Reasoning;
 

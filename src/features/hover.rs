@@ -83,7 +83,7 @@ pub(crate) fn hover_reasoned(
     if let Some((shared, project)) = reasoning {
         let types = shared.inferred_types(&r.iri, HOVER_WAIT);
         let naming = Naming::at(a, r.span.start, project);
-        body.push_str(&inferred(types, &r.iri, k, &naming));
+        body.push_str(&inferred(types, shared.cut(), &r.iri, k, &naming));
     }
     Some(md(body, a.range(enc, r.span)))
 }
@@ -91,8 +91,9 @@ pub(crate) fn hover_reasoned(
 /// The "Inferred" section of a hover on `iri`: each type reasoning infers
 /// and no document asserts, with its proof folded under it; while a run is
 /// writing the state, or the proofs are still being searched for, a line
-/// that says so. Empty when there is nothing to add. IRIs are written by
-/// `naming`.
+/// that says so; and when the run's inferred types were read only up to
+/// `cut` inferred triples, a note that the list may be incomplete. Empty
+/// when there is nothing to add. IRIs are written by `naming`.
 ///
 /// The closest types come first: those whose proofs have fewer steps, then
 /// less depth, then by name. A step an earlier type's proof wrote is not
@@ -101,7 +102,7 @@ pub(crate) fn hover_reasoned(
 /// A type whose proof rests on no triple of a document (an axiom, as
 /// `dt-type1` types `xsd:integer` an `rdfs:Datatype`) says nothing of the
 /// text: such types are named on one line after the others, without proofs.
-fn inferred(types: Types, iri: &str, k: &Knowledge, naming: &Naming) -> String {
+fn inferred(types: Types, cut: Option<u64>, iri: &str, k: &Knowledge, naming: &Naming) -> String {
     let asserted = k.types(iri);
     let new = |class: &str| !asserted.iter().any(|t| &**t == class);
     let iri_name = |i: &str| naming.name(i);
@@ -156,8 +157,14 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, naming: &Naming) -> String {
             "\n\n_The proof is still being worked out; hover again._",
         ),
     };
+    let cut = cut.map(|n| {
+        format!(
+            "TurbOWL inferred more than {n} triples (`turtle.reasoning.maxTriples`): \
+             only those were read, so this list may be incomplete."
+        )
+    });
     if items.is_empty() && built_in.is_empty() {
-        return String::new();
+        return cut.map_or_else(String::new, |c| format!("\n\n**Inferred:** _{c}_"));
     }
     let more = items.len().saturating_sub(MAX_INFERRED);
     let mut lines = items[..items.len() - more].to_vec();
@@ -173,6 +180,9 @@ fn inferred(types: Types, iri: &str, k: &Knowledge, naming: &Naming) -> String {
     }
     let mut out = format!("\n\n**Inferred**\n\n{}", lines.join("\n"));
     out.push_str(note);
+    if let Some(c) = cut {
+        out.push_str(&format!("\n\n_{c}_"));
+    }
     out
 }
 
@@ -352,7 +362,7 @@ mod tests {
         let prefixes = PrefixMap::from_iter([("ex".to_string(), ex(""))]);
         let a = Analysis::new("file:///w/a.ttl".into(), text, Arc::default(), false);
         let naming = Naming::at(&a, 0, Arc::new(prefixes));
-        let section = |t: Types| inferred(t, &ex("rex"), &k, &naming);
+        let section = |t: Types| inferred(t, None, &ex("rex"), &k, &naming);
         assert_eq!(section(Types::Unknown), "");
         assert_eq!(section(Types::Proved(Default::default())), "");
         assert_eq!(
@@ -390,6 +400,23 @@ mod tests {
             stopped,
             "\n\n**Inferred**\n\n- **ex:Animal** · _proof search stopped at its time limit_"
         );
+        // The run read its inferred types only up to the limit.
+        let cut = |t: Types| inferred(t, Some(1000), &ex("rex"), &k, &naming);
+        let note = "TurbOWL inferred more than 1000 triples (`turtle.reasoning.maxTriples`): \
+                    only those were read, so this list may be incomplete.";
+        assert_eq!(
+            cut(Types::Pending(vec![ex("Animal")])),
+            format!(
+                "\n\n**Inferred**\n\n- **ex:Animal**\n\n\
+                 _The proof is still being worked out; hover again._\n\n_{note}_"
+            )
+        );
+        assert_eq!(
+            cut(Types::Proved(Default::default())),
+            format!("\n\n**Inferred:** _{note}_")
+        );
+        assert_eq!(cut(Types::Running), section(Types::Running));
+        assert_eq!(cut(Types::Unknown), "");
     }
 
     #[test]

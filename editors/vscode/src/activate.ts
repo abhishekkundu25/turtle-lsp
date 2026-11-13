@@ -43,8 +43,8 @@ export interface TurtleApi {
 /**
  * The `turtle.*` settings the server reads, as nested objects: the ones the
  * user set (not the defaults the manifest contributes, which would override
- * `turtle-lsp.json`), with network imports off in an untrusted workspace,
- * over the entry's `base` settings.
+ * `turtle-lsp.json`), with network imports off and the reasoning rules the
+ * user's own in an untrusted workspace, over the entry's `base` settings.
  */
 function settingsFor(context: vscode.ExtensionContext, setup: ClientSetup): Record<string, unknown> {
   const manifest = context.extension.packageJSON

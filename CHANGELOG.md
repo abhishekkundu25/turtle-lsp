@@ -11,6 +11,32 @@
   `GRAPHa:g { ... }` passed as a GRAPH pattern on `a:g`, and `GRAPH:g` the
   same with `:` declared; `?s a::p` was read as `a` and `::p`. SPARQL reads
   the longest token, so each is one prefixed name, and now an error there.
+- **Background reasoning stops when newer work comes in, and after 10 s.**
+  An edit or a newer run stops the run going on, between TurbOWL's rounds,
+  instead of letting it finish and queueing the next behind it. A run that
+  takes longer than 10 s stops there. Either way hover keeps showing the
+  last result until a run finishes. A stop at the time limit is said once,
+  as a message, until a run finishes again (and each time in the log and
+  the progress), with how to turn reasoning off. The same limit holds in
+  the browser.
+- **Hover reads the inferred types up to `turtle.reasoning.maxTriples`.**
+  An `owl:sameAs` chain of 30,000 nodes, one property each, infers nearly
+  two billion triples; reading them for hover had not finished after 90 s.
+  Reading now stops at the limit (as queries do), and hover says the list
+  may be incomplete. That chain now takes about 0.2 s.
+- **Editing, opening or closing a SPARQL file no longer reruns reasoning**:
+  a query adds no triples. Opening, closing or saving a file whose triples
+  did not change reasons no round.
+- **The progress "TurbOWL: reasoning…" ends** when an edit drops a run's
+  result and no newer run is going on, instead of staying on until the
+  next run.
+
+### Security
+
+- **`turtle.reasoning.rules` is restricted in untrusted VS Code
+  workspaces.** Only your user setting counts there, or the default
+  (`default`, which stays on now that a run is capped): neither the
+  workspace's settings nor its `turtle-lsp.json` can choose the rules.
 
 ## 0.18.0 — 2026-11-13
 
