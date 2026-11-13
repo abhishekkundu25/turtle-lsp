@@ -7,8 +7,9 @@
 //! handle. A newer job, an edit (though the next run starts only once
 //! typing pauses) and turning reasoning off supersede the run going on:
 //! its handle is tripped, it stops at its next check, and its outcome, or
-//! that of a run that finished first, is dropped. The server marks the
-//! current run's result as the one hover reads (`Shared::show`). The thread
+//! that of a run that finished first, is dropped with its result
+//! (`Shared::discard`). The server shows the current run's result to hover
+//! (`Shared::show`). The thread
 //! starts with the first job. Embedded (no threads), a job runs at once
 //! ([`crate::reasoning::run_inline`]).
 //!

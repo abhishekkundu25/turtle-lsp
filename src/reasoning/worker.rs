@@ -4,10 +4,11 @@
 //! A run stops when the server trips its job's [`Cancel`] (newer work
 //! superseded it) or at its time limit ([`Limits::run`]): TurbOWL checks
 //! before each round, and the run again as it reads the inferred types. A
-//! run reasons on a reasoner of its own and swaps its result into the state
-//! only when it finishes, so a stopped run leaves the previous result for
-//! hover. When the triples, the rules and the limit are those of the result
-//! held, the run keeps that reasoner and reasons no round.
+//! run reasons on a reasoner of its own and hands its result to the state
+//! only when it finishes ([`Shared::publish`]), so hover reads the result
+//! shown while a run goes on, and a stopped run changes nothing. When the
+//! triples, the rules and the limit are those of the result shown, the run
+//! shares that result's reasoner and reasons no round.
 
 use super::diagnostics::{self, ByUri};
 use super::state::{Limits, Reasoned, Shared};
@@ -63,8 +64,9 @@ impl Cancel {
     }
 }
 
-/// What a run gives the server: its diagnostics per document URI (the
-/// state it wrote is read through [`Shared`]).
+/// What a run gives the server: its diagnostics per document URI. A
+/// finished run's result waits in [`Shared`] until the server shows it
+/// ([`Shared::show`]) or drops the run ([`Shared::discard`]).
 pub(crate) struct Outcome {
     pub(crate) generation: u64,
     pub(crate) diagnostics: ByUri,
@@ -79,8 +81,8 @@ pub(crate) enum Stopped {
     /// Newer work superseded it (its job's [`Cancel`]).
     Superseded,
     /// It reached its time limit, `limit`. `kept` is the generation of the
-    /// result the state still holds, for hover to read; `None` when it
-    /// holds none.
+    /// result shown, which hover goes on reading; `None` when none is
+    /// shown.
     TimeLimit { limit: Duration, kept: Option<u64> },
 }
 
@@ -124,16 +126,16 @@ impl Worker {
     }
 }
 
-/// Run `job` here and now, writing `shared`, within the state's time limit
-/// ([`Limits::run`]). A panic is caught: the state is left with no result,
-/// the open documents say so, and the next job starts afresh.
+/// Run `job` here and now, handing its result to `shared`, within the
+/// state's time limit ([`Limits::run`]). A panic is caught: the run leaves
+/// no result, the open documents say so, and the next job starts afresh.
 pub(crate) fn run_inline(shared: &Shared, job: &Job) -> Outcome {
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared, job)));
     let (diagnostics, stopped) = match ran {
         Ok(Ok(diagnostics)) => (diagnostics, None),
         Ok(Err(stopped)) => (ByUri::default(), Some(stopped)),
         Err(e) => {
-            *shared.write() = None;
+            shared.publish(job.generation, None);
             (diagnostics::crashed(&job.docs, &*e), None)
         }
     };
@@ -172,8 +174,9 @@ impl Until {
     }
 }
 
-/// Reason over `job`'s sources and write the result into `shared`; Err when
-/// the run stopped first, leaving `shared` as it was.
+/// Reason over `job`'s sources and hand the result to `shared`
+/// ([`Shared::publish`]); Err when the run stopped first, leaving `shared`
+/// as it was.
 fn run(shared: &Shared, job: &Job) -> Result<ByUri, Stopped> {
     let limits = shared.limits;
     let stopped = || {
@@ -182,12 +185,12 @@ fn run(shared: &Shared, job: &Job) -> Result<ByUri, Stopped> {
         } else {
             Stopped::TimeLimit {
                 limit: limits.run,
-                kept: shared.held(),
+                kept: shared.shown_generation(),
             }
         }
     };
     let Some(switches) = rules(job.rules) else {
-        *shared.write() = None;
+        shared.publish(job.generation, None);
         return Ok(ByUri::default());
     };
     let total: u64 = job
@@ -197,14 +200,14 @@ fn run(shared: &Shared, job: &Job) -> Result<ByUri, Stopped> {
         .sum();
     if total > job.max_triples {
         // A stale result would answer for text it was not run on.
-        *shared.write() = None;
+        shared.publish(job.generation, None);
         return Ok(diagnostics::skipped(&job.docs, total, job.max_triples));
     }
     let until = Until::new(job, limits.run);
-    // Built before the lock is taken: hovers go on reading the last result.
     let base = Base::new(job.docs.clone(), job.enc);
-    if let Some(r) = shared.write().as_mut().filter(|r| unchanged(r, job, &base)) {
-        return rerun(r, job, base, limits);
+    // The result shown, not one waiting: a newer job superseded its run.
+    if let Some(last) = shared.shown().filter(|r| unchanged(r, job, &base)) {
+        return rerun(shared, &last, job, base, limits);
     }
     let mut reasoner = turbowl::Reasoner::with_switches(switches);
     reasoner.set_base(base.triples());
@@ -223,16 +226,17 @@ fn run(shared: &Shared, job: &Job) -> Result<ByUri, Stopped> {
         return Err(Stopped::Superseded);
     }
     let (diagnostics, cache) = findings(&reasoner, &base, job, limits);
-    *shared.write() = Some(Reasoned {
+    let result = Reasoned {
         generation: job.generation,
         rules: job.rules,
         max_triples: job.max_triples,
-        reasoner,
+        reasoner: Arc::new(reasoner),
         base,
-        types,
+        types: Arc::new(types),
         cut,
         cache: Mutex::new(cache),
-    });
+    };
+    shared.publish(job.generation, Some(result));
     Ok(diagnostics)
 }
 
@@ -242,16 +246,32 @@ fn unchanged(r: &Reasoned, job: &Job, base: &Base) -> bool {
     r.rules == job.rules && r.max_triples == job.max_triples && same_triples(&r.base, base)
 }
 
-/// `r`, [`unchanged`], for `job`: with `base` (the new places of its
-/// triples) and its findings, and no round reasoned.
-fn rerun(r: &mut Reasoned, job: &Job, base: Base, limits: Limits) -> Result<ByUri, Stopped> {
+/// `job` over the triples of `last`, the result shown ([`unchanged`]): no
+/// round reasoned, its findings found with `last`'s reasoner, and a result
+/// that shares `last`'s reasoner and inferred types, with `base` (the new
+/// places of its triples) and a cache of its own.
+fn rerun(
+    shared: &Shared,
+    last: &Reasoned,
+    job: &Job,
+    base: Base,
+    limits: Limits,
+) -> Result<ByUri, Stopped> {
     if job.cancel.is_cancelled() {
         return Err(Stopped::Superseded);
     }
-    let (diagnostics, cache) = findings(&r.reasoner, &base, job, limits);
-    r.generation = job.generation;
-    r.base = base;
-    r.cache = Mutex::new(cache);
+    let (diagnostics, cache) = findings(&last.reasoner, &base, job, limits);
+    let result = Reasoned {
+        generation: job.generation,
+        rules: last.rules,
+        max_triples: last.max_triples,
+        reasoner: Arc::clone(&last.reasoner),
+        base,
+        types: Arc::clone(&last.types),
+        cut: last.cut,
+        cache: Mutex::new(cache),
+    };
+    shared.publish(job.generation, Some(result));
     Ok(diagnostics)
 }
 
@@ -375,7 +395,7 @@ mod tests {
         let out = shown(&shared, &job(7, vec![animals()]));
         assert_eq!(out.generation, 7);
         assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
-        assert!(shared.read_for_test().is_some());
+        assert!(shared.shown().is_some());
         let types = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
         assert_eq!(types.len(), 1);
         assert_eq!(types[0].class, format!("{EX}Animal"));
@@ -403,7 +423,7 @@ mod tests {
     fn a_run_over_the_size_limit_is_skipped_and_leaves_no_result() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
-        assert!(shared.read_for_test().is_some());
+        assert!(shared.shown().is_some());
         let small = Job {
             max_triples: 1,
             ..job(2, vec![animals()])
@@ -419,7 +439,7 @@ mod tests {
             ))
         );
         assert!(notes[0].message.contains("turtle.reasoning.maxTriples"));
-        assert!(shared.read_for_test().is_none());
+        assert!(shared.shown().is_none());
         assert!(matches!(
             shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(1)),
             Types::Unknown
@@ -464,15 +484,14 @@ mod tests {
         let rex = format!("{EX}rex");
         {
             // A search that cannot finish yet: the cache is in use.
-            let held = shared.read_for_test();
-            let cache = held.as_ref().unwrap().cache.lock().unwrap();
+            let r = shared.shown().unwrap();
+            let cache = r.cache.lock().unwrap();
             let t = shared.inferred_types(&rex, Duration::from_millis(50));
             assert!(
                 matches!(&t, Types::Pending(c) if c == &[format!("{EX}Animal")]),
                 "pending"
             );
             drop(cache);
-            drop(held);
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -487,22 +506,106 @@ mod tests {
         }
     }
 
+    /// `ex:fido a ex:Dog`, in a document of its own.
+    fn fido() -> (Source, Arc<Analysis>) {
+        doc(
+            Source::Disk,
+            "file:///w/b.ttl",
+            "@prefix ex: <http://example.org/> .\nex:fido a ex:Dog .\n",
+        )
+    }
+
+    /// The inferred types of `ex:fido`, with a proof each.
+    fn types_of_fido(shared: &Arc<Shared>) -> Vec<String> {
+        let fido = proved(shared.inferred_types(&format!("{EX}fido"), Duration::from_secs(10)));
+        assert!(fido.iter().all(|t| t.proof.is_ok()));
+        fido.iter().map(|t| t.class.clone()).collect()
+    }
+
     #[test]
-    fn hover_reads_only_the_result_of_the_run_shown() {
+    fn a_finished_run_is_not_read_before_the_server_shows_it() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
-        let rex = format!("{EX}rex");
         shown(&shared, &job(1, vec![animals()]));
-        // A run the server dropped, superseded while it ran.
-        run_inline(&shared, &job(2, vec![animals()]));
-        assert!(matches!(
-            shared.inferred_types(&rex, Duration::from_secs(10)),
-            Types::Running
-        ));
+        let out = run_inline(&shared, &job(2, vec![animals(), fido()]));
+        assert_eq!(out.stopped, None);
+        // Hover reads the result shown: no ex:fido in it.
+        assert!(types_of_fido(&shared).is_empty());
+        animal_of_rex(&shared);
         shared.show(2);
+        assert_eq!(types_of_fido(&shared), [format!("{EX}Animal")]);
+    }
+
+    #[test]
+    fn timing_a_dropped_run_leaves_the_result_shown_and_is_never_shown() {
+        let whole = whole_run();
+        let limit = whole / 10;
+        let shared = Arc::new(Shared::with_limits(
+            crate::server::worker::Spawn::Thread,
+            Limits {
+                run: limit,
+                ..Limits::default()
+            },
+        ));
+        shown(&shared, &job(1, vec![animals()]));
+        // A run that finished, but an edit made it stale: the server drops
+        // it, and its result goes.
+        let out = run_inline(&shared, &job(2, vec![animals(), fido()]));
+        assert_eq!(out.stopped, None);
+        assert!(matches!(shared.fresh_for_test(), Some((2, Some(_)))));
+        shared.discard(2);
+        assert!(shared.fresh_for_test().is_none());
+        animal_of_rex(&shared);
+        assert!(types_of_fido(&shared).is_empty());
+        // The next run stops at its time limit: the result kept is the one
+        // shown, never the dropped run's.
+        let out = run_inline(&shared, &job(3, vec![animals(), fido(), slow()]));
         assert_eq!(
-            proved(shared.inferred_types(&rex, Duration::from_secs(10))).len(),
-            1
+            out.stopped,
+            Some(Stopped::TimeLimit {
+                limit,
+                kept: Some(1)
+            })
         );
+        assert_eq!(shared.shown_generation(), Some(1));
+        animal_of_rex(&shared);
+        assert!(types_of_fido(&shared).is_empty());
+    }
+
+    #[test]
+    fn timing_a_run_over_the_same_triples_takes_no_lock_hovers_wait_on() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        // A finding whose proof takes long to search: the run's findings
+        // take up to their time limit.
+        let docs = vec![animals(), chain(400)];
+        shown(&shared, &job(1, docs.clone()));
+        let first = shared.shown().unwrap();
+        // Saved again: the same triples, and the findings found again.
+        let rerun = {
+            let shared = Arc::clone(&shared);
+            let again = job(2, docs);
+            std::thread::spawn(move || run_inline(&shared, &again))
+        };
+        let mut during = 0;
+        while !rerun.is_finished() {
+            // The result shown, never "running".
+            animal_of_rex(&shared);
+            during += 1;
+        }
+        assert!(during > 0, "the run ended before the first hover");
+        let out = rerun.join().unwrap();
+        assert_eq!(out.stopped, None);
+        assert_eq!(shared.reasoned.load(Ordering::Relaxed), 1);
+        // Its result shares the reasoner and the inferred types, and waits
+        // for the server to show it.
+        let Some((2, Some(fresh))) = shared.fresh_for_test() else {
+            panic!("no result waits");
+        };
+        assert!(Arc::ptr_eq(&fresh.reasoner, &first.reasoner));
+        assert!(Arc::ptr_eq(&fresh.types, &first.types));
+        assert_eq!(shared.shown_generation(), Some(1));
+        shared.show(2);
+        assert_eq!(shared.shown_generation(), Some(2));
+        animal_of_rex(&shared);
     }
 
     #[test]
@@ -532,8 +635,8 @@ mod tests {
         let short = Duration::from_millis(20);
         {
             // The search cannot finish yet: the cache is in use.
-            let held = shared.read_for_test();
-            let cache = held.as_ref().unwrap().cache.lock().unwrap();
+            let r = shared.shown().unwrap();
+            let cache = r.cache.lock().unwrap();
             assert!(matches!(
                 shared.inferred_types(&rex, short),
                 Types::Pending(_)
@@ -551,7 +654,6 @@ mod tests {
             ));
             assert_eq!(searches(), 1);
             drop(cache);
-            drop(held);
         }
         // The search ends: its answer is the next hover's.
         let long = Duration::from_secs(10);
@@ -844,13 +946,20 @@ mod tests {
     }
 
     #[test]
-    fn hover_says_a_run_is_writing_the_state() {
+    fn hover_says_a_run_is_going_on_while_a_first_result_waits_to_be_shown() {
         let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
-        shown(&shared, &job(1, vec![animals()]));
-        let held = shared.write();
-        let t = shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(1));
-        assert!(matches!(t, Types::Running));
-        drop(held);
+        let rex = format!("{EX}rex");
+        assert!(matches!(
+            shared.inferred_types(&rex, Duration::from_secs(1)),
+            Types::Unknown
+        ));
+        run_inline(&shared, &job(1, vec![animals()]));
+        assert!(matches!(
+            shared.inferred_types(&rex, Duration::from_secs(1)),
+            Types::Running
+        ));
+        shared.show(1);
+        animal_of_rex(&shared);
     }
 
     #[test]
@@ -860,14 +969,9 @@ mod tests {
         worker.submit(job(1, vec![animals()]));
         let out = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(out.generation, 1);
-        assert!(shared.read_for_test().is_some());
+        assert!(matches!(shared.fresh_for_test(), Some((1, Some(_)))));
         // An edit: a new run over the new base.
-        let more = doc(
-            Source::Disk,
-            "file:///w/b.ttl",
-            "@prefix ex: <http://example.org/> .\nex:fido a ex:Dog .\n",
-        );
-        worker.submit(job(2, vec![animals(), more]));
+        worker.submit(job(2, vec![animals(), fido()]));
         let out = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(out.generation, 2);
         shared.show(2);
@@ -901,7 +1005,7 @@ mod tests {
             ..job(2, vec![animals()])
         };
         assert!(shown(&shared, &off).diagnostics.is_empty());
-        assert!(shared.read_for_test().is_none());
+        assert!(shared.shown().is_none());
         // On by default; off builds nothing.
         let settings = crate::settings::Settings::default();
         assert!(Shared::when_on(&settings, crate::server::worker::Spawn::Thread).is_some());
@@ -981,8 +1085,8 @@ mod tests {
             took < whole / 2,
             "the limit stopped it after {took:?} of a {whole:?} run"
         );
-        // The state holds the last result, which hover reads.
-        assert_eq!(shared.held(), Some(1));
+        // The result shown stays, and hover reads it.
+        assert_eq!(shared.shown_generation(), Some(1));
         animal_of_rex(&shared);
         // With no result before it, a stopped run leaves none.
         let shared = Arc::new(Shared::with_limits(
@@ -994,7 +1098,8 @@ mod tests {
         ));
         let out = run_inline(&shared, &job(1, vec![animals(), slow()]));
         assert_eq!(out.stopped, Some(Stopped::TimeLimit { limit, kept: None }));
-        assert_eq!(shared.held(), None);
+        assert_eq!(shared.shown_generation(), None);
+        assert!(shared.fresh_for_test().is_none());
     }
 
     #[test]
@@ -1020,7 +1125,8 @@ mod tests {
             took < whole / 2,
             "the cancel stopped it after {took:?} of a {whole:?} run"
         );
-        assert_eq!(shared.held(), Some(1));
+        assert_eq!(shared.shown_generation(), Some(1));
+        assert!(shared.fresh_for_test().is_none());
         animal_of_rex(&shared);
     }
 
@@ -1100,6 +1206,7 @@ mod tests {
             run_inline(&shared, &cancelled).stopped,
             Some(Stopped::Superseded)
         );
-        assert_eq!(shared.held(), Some(5));
+        assert_eq!(shared.shown_generation(), Some(5));
+        assert!(shared.fresh_for_test().is_none());
     }
 }

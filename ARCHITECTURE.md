@@ -65,7 +65,7 @@ Inside the larger modules, these files hold one part each:
 | `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF, SPARQL, import sources, catalogs or JSON, and in which letter case |
 | `src/shacl/model.rs` | The shapes in a graph, with their paths, targets and parameters |
 | `src/shacl/vocab.rs` | The SHACL, RDF, RDFS and OWL IRIs the SHACL code compares against, interned once |
-| `src/reasoning/state.rs` | `Shared`: the reasoner after its last run, with its base and proof cache, behind a lock only the reasoning thread writes; hover reads it without waiting for a run |
+| `src/reasoning/state.rs` | `Shared`: the result of the run whose findings the server shows (the reasoner, its base and proof cache), and a finished run's result until the server shows or drops it; hover reads the result shown without waiting for a run |
 | `src/reasoning/proof.rs` | A TurbOWL proof as hover markdown, each base triple a link to its line |
 | `src/reasoning/turtle.rs` | How hover and diagnostics write a proof: short names, `[]` for a blank node, an RDF list as one `( … )` item |
 | `src/server/{client,progress,shacl,reasoning,refresh,layers,index}.rs` | The server's state groups (see [Threads](#threads)) |
@@ -283,13 +283,12 @@ scheduling and results), `reasoning` (reasoning runs and their findings),
 (the settings and their layers) and `index` (the workspace index as it
 arrives). The groups send to the client through `client::Client`, never
 through the server. One piece of state is shared with a thread: the
-reasoner after its last run (`reasoning::Shared`). Only the reasoning
-thread writes it, and a hover reads it without waiting for a run, and only
-the result of the run whose findings the server shows: an edit supersedes
-the run going on, which stops at its next check (as at its time limit),
-and neither its findings nor its result are shown. A run reasons on a
-reasoner of its own and swaps its result in only when it finishes, so
-hover reads the last result while it runs.
+reasoner after a run (`reasoning::Shared`). A run reasons on a reasoner of
+its own and hands its result over only when it finishes; the server shows
+it with the run's findings, or drops it with them. A hover reads only the
+result shown, without waiting for a run: an edit supersedes the run going
+on, which stops at its next check (as at its time limit), and neither its
+findings nor its result are shown.
 
 Long work runs on worker threads and comes back as messages: the initial
 index, imports (`imports::worker`), JSON-LD context fetches, SHACL

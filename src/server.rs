@@ -1884,8 +1884,11 @@ impl Server {
         use crate::reasoning::Stopped;
         let current = self.reasoning_runs.is_current(&o);
         if !current || o.stopped == Some(Stopped::Superseded) {
-            // Dropped. Without a newer run going on, nothing runs until
-            // typing pauses: the progress ends.
+            // Dropped, with its result. Without a newer run going on,
+            // nothing runs until typing pauses: the progress ends.
+            if let Some(shared) = &self.reasoning {
+                shared.discard(o.generation);
+            }
             if !self.reasoning_runs.newer_submitted(&o) {
                 self.timers.clear(Timer::ReasoningProgress);
                 self.progress.end(
@@ -1915,15 +1918,12 @@ impl Server {
     }
 
     /// The current run stopped at its time limit, `limit`: the findings
-    /// shown stay, hover reads the result the state kept (`kept`), and the
-    /// user is told: in the progress and the log each time, and in a
-    /// message only on the first stop since a run last finished, so that a
-    /// workspace too large for the limit raises no message on every pause in
-    /// typing.
+    /// shown stay, and so does the result hover reads, that of the run
+    /// `kept` (`None` when none is shown). The user is told: in the progress
+    /// and the log each time, and in a message only on the first stop since
+    /// a run last finished, so that a workspace too large for the limit
+    /// raises no message on every pause in typing.
     fn reasoning_stopped(&mut self, limit: Duration, kept: Option<u64>) {
-        if let (Some(shared), Some(kept)) = (&self.reasoning, kept) {
-            shared.show(kept);
-        }
         let limit = if limit.subsec_nanos() == 0 {
             format!("{} s", limit.as_secs())
         } else {

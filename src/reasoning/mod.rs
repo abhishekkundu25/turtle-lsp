@@ -3,11 +3,12 @@
 //!
 //! - [`Base`] (`base.rs`): the workspace's triples, imports included, as
 //!   TurbOWL reads them, each mapped back to its document, range and line.
-//! - [`Shared`] (`state.rs`): the reasoner after its last run that
-//!   finished, with that run's base and the explainer's cache, behind a
-//!   read-write lock that only the reasoning thread writes; and the read
-//!   hover makes, a term's inferred types with their proofs
-//!   ([`Shared::inferred_types`]), which waits at most a given time.
+//! - [`Shared`] (`state.rs`): the result of the run whose findings the
+//!   server shows (the reasoner after it, its base and the explainer's
+//!   cache), and a finished run's result until the server shows it or
+//!   drops the run; and the read hover makes, a term's inferred types with
+//!   their proofs ([`Shared::inferred_types`]), which waits at most a given
+//!   time.
 //! - [`Worker`] and [`run_inline`] (`worker.rs`): the reasoning thread, one
 //!   run at a time, the newest job first, panics caught, as SHACL
 //!   validation's; `run_inline` for the embedded server. A run stops when
