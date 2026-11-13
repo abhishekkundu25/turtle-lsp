@@ -1762,7 +1762,7 @@ parser! {
             }
         }
 
-        rule Verb() -> NamedNodePattern = VarOrIri() / "a" { rdf::TYPE.into_owned().into() }
+        rule Verb() -> NamedNodePattern = VarOrIri() / "a" keyword_end() { rdf::TYPE.into_owned().into() }
 
         rule ObjectList() -> FocusedTriplePattern<Vec<ReifiedTerm >> = o:ObjectList_item() **<1,> ("," _) {
             o.into_iter().fold(FocusedTriplePattern::<Vec<ReifiedTerm >>::default(), |mut a, b| {
@@ -1896,7 +1896,7 @@ parser! {
 
         rule PathPrimary() -> PropertyPathExpression =
             v:iri() { v.into() } /
-            "a" { rdf::TYPE.into_owned().into() } /
+            "a" keyword_end() { rdf::TYPE.into_owned().into() } /
             "!" _ p:PathNegatedPropertySet() { p } /
             "(" _ p:Path() _ ")" { p }
 
@@ -1931,9 +1931,9 @@ parser! {
 
         rule PathOneInPropertySet() -> Either<NamedNode,NamedNode> =
             "^" _ v:iri() { Either::Right(v) } /
-            "^" _ "a" { Either::Right(rdf::TYPE.into()) } /
+            "^" _ "a" keyword_end() { Either::Right(rdf::TYPE.into()) } /
             v:iri() { Either::Left(v) } /
-            "a" { Either::Left(rdf::TYPE.into()) }
+            "a" keyword_end() { Either::Left(rdf::TYPE.into()) }
 
         rule TriplesNode() -> FocusedTriplePattern<TermPattern> = Collection() / BlankNodePropertyList()
 
@@ -2160,7 +2160,7 @@ parser! {
                 object: o
             })
         }
-        rule TripleTermData_p() -> NamedNode = i: iri() { i } / "a" { rdf::TYPE.into() }
+        rule TripleTermData_p() -> NamedNode = i: iri() { i } / "a" keyword_end() { rdf::TYPE.into() }
 
         rule TripleTermDataSubject() -> GroundTerm = TripleTermDataObject()
 
@@ -2401,8 +2401,7 @@ parser! {
                 }
             }
 
-        // Not the keyword when it starts a prefixed name (`distinct1:x`, `DISTINCT:a`): tokens match longest.
-        rule Distinct() -> bool = i("DISTINCT") !(PN_CHARS()* ("."+ PN_CHARS()+)* ":") _ { true } / { false }
+        rule Distinct() -> bool = i("DISTINCT") _ { true } / { false }
 
         rule iriOrFunction() -> Expression = i: iri() _ a: ArgList()? {?
             if let Some(a) = a {
@@ -2451,8 +2450,8 @@ parser! {
             i:$(INTEGER_NEGATIVE()) { Literal::new_typed_literal(i, xsd::INTEGER) }
 
         rule BooleanLiteral() -> Literal =
-            "true" { Literal::new_typed_literal("true", xsd::BOOLEAN) } /
-            "false" { Literal::new_typed_literal("false", xsd::BOOLEAN) }
+            "true" keyword_end() { Literal::new_typed_literal("true", xsd::BOOLEAN) } /
+            "false" keyword_end() { Literal::new_typed_literal("false", xsd::BOOLEAN) }
 
         rule String() -> String = STRING_LITERAL_LONG1() / STRING_LITERAL_LONG2() / STRING_LITERAL1() / STRING_LITERAL2()
 
@@ -2570,7 +2569,7 @@ parser! {
 
         rule ANON() = "[" WS()* "]"
 
-        rule PN_CHARS_BASE() = ['A' ..= 'Z' | 'a' ..= 'z' | '\u{00C0}'..='\u{00D6}' | '\u{00D8}'..='\u{00F6}' | '\u{00F8}'..='\u{02FF}' | '\u{0370}'..='\u{037D}' | '\u{037F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}' | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}' | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}']
+        rule PN_CHARS_BASE() = ['A' ..= 'Z' | 'a' ..= 'z' | '\u{00C0}'..='\u{00D6}' | '\u{00D8}'..='\u{00F6}' | '\u{00F8}'..='\u{02FF}' | '\u{0370}'..='\u{037D}' | '\u{037F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}' | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}' | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}']
 
         rule PN_CHARS_U() = ['_'] / PN_CHARS_BASE()
 
@@ -2596,7 +2595,12 @@ parser! {
         //comment
         rule comment() = quiet! { ['#'] (!['\r' | '\n'] [_])* }
 
-        rule i(literal: &'static str) = input: $([_]*<{literal.len()}>) {?
+        rule i(literal: &'static str) = keyword_text(literal) keyword_end()
+
+        // Not the keyword when it starts a prefixed name (`GRAPHa:g`, `a::p`, `distinct1:x`): tokens match longest.
+        rule keyword_end() = !(PN_CHARS()* ("."+ PN_CHARS()+)* ":")
+
+        rule keyword_text(literal: &'static str) = input: $([_]*<{literal.len()}>) {?
             if input.eq_ignore_ascii_case(literal) {
                 Ok(())
             } else {

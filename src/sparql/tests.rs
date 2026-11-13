@@ -1392,6 +1392,69 @@ fn a_local_name_that_starts_with_a_colon_is_one_name() {
     );
 }
 
+#[test]
+fn names_may_use_characters_past_the_basic_multilingual_plane() {
+    // PN_CHARS_BASE ends with [#x10000-#xEFFFF] (SPARQL 1.1, production 164);
+    // spargebra 0.4.7 stopped at #xFFFD (vendor/spargebra/supplementary-chars.patch).
+    // A chaos run found it: "Shorten IRI" turned an IRI into a valid
+    // name that the query then failed to parse.
+    let text = "PREFIX ex: <http://example.org/>\n\
+                LOAD ex:\u{1F600}faraway INTO GRAPH ex:copy";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    let text = "PREFIX \u{10000}x: <http://example.org/>\n\
+                SELECT ?\u{EFFFF} { _:\u{1F600} \u{10000}x:\u{1F600}p ?\u{EFFFF} }";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    let query = spargebra::SparqlParser::new().parse_query(text).unwrap();
+    assert!(
+        query
+            .to_string()
+            .contains("<http://example.org/\u{1F600}p>"),
+        "{query}"
+    );
+    // #xF0000 and beyond stay out.
+    assert_eq!(
+        codes("PREFIX ex: <http://e/> SELECT * { ex:\u{F0000} ?p ?o }"),
+        ["syntax"]
+    );
+}
+
+#[test]
+fn a_keyword_that_starts_a_prefixed_name_is_the_name() {
+    // SPARQL tokens match longest (vendor/spargebra/keyword-boundary.patch):
+    // `GRAPHa:g` is one prefixed name, not `GRAPH` and `a:g`. spargebra
+    // split it, so these queries passed with a GRAPH pattern nobody wrote.
+    for text in [
+        "PREFIX a: <http://e/> PREFIX GRAPHa: <http://w/> SELECT * { GRAPHa:g { ?s ?p ?o } }",
+        "PREFIX : <http://e/> PREFIX GRAPH: <http://w/> SELECT * { GRAPH:g { ?s ?p ?o } }",
+        "PREFIX \u{1F600}: <http://e/> PREFIX GRAPH\u{1F600}: <http://w/> \
+         SELECT * { GRAPH\u{1F600}:g { ?s ?p ?o } }",
+        "PREFIX a.b: <http://e/> PREFIX FROMa.b: <http://w/> SELECT * FROMa.b:g { }",
+        // `a`, `true` and `false` are matched apart from the other keywords.
+        // `a::p` names an IRI that does not parse; it was `a` and `::p`.
+        "PREFIX : <http://e/> PREFIX a: <http://www.example.org> SELECT * { ?s a::p }",
+        "PREFIX : <http://e/> SELECT * { ?s ?p (true:x) }",
+        "PREFIX : <http://e/> SELECT * { ?s ^a:x ?o }",
+    ] {
+        // A syntax error, or `undeclared-prefix` for `true:` and `a:`.
+        let errors = diags(text).into_iter().filter(|d| d.1 == Level::Error);
+        assert_eq!(errors.count(), 1, "{text}: {:?}", diags(text));
+    }
+    // As a term, the name is the name.
+    let text = "PREFIX GRAPH: <http://w/> SELECT * { GRAPH:g ?p ?o }";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    let query = spargebra::SparqlParser::new().parse_query(text).unwrap();
+    assert!(query.to_string().contains("<http://w/g> ?p ?o"), "{query}");
+    // A keyword next to anything that cannot make it a name is the keyword.
+    for text in [
+        "SELECT*{GRAPH<http://e/g>{?s ?p ?o}FILTER(?o)}LIMIT 1",
+        "SELECT (COUNT(DISTINCT-1) AS ?c) {}",
+        "SELECT * { ?s ?p ?o . } ORDER BY DESC(?o)",
+        "PREFIX a: <http://e/> SELECT * { ?s a a:C ; a<http://e/D> . ?o ^a ?s ; ?p (true false) }",
+    ] {
+        assert!(diags(text).is_empty(), "{text}: {:?}", diags(text));
+    }
+}
+
 // Parse fuel bounds the work of spargebra's grammar
 // (vendor/spargebra/parse-fuel.patch).
 
