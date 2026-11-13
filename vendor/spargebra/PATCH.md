@@ -1,7 +1,7 @@
 # spargebra 0.4.7, patched
 
 This folder holds spargebra 0.4.7 as published on crates.io (oxigraph commit
-in `.cargo_vcs_info.json`, `lib/spargebra`), with four patches,
+in `.cargo_vcs_info.json`, `lib/spargebra`), with five patches,
 applied in this order. Both `Cargo.toml` files use it through `[patch.crates-io]`. spargebra is licensed
 MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, copied from
 `vendor/spareval`, which has the same oxigraph licence text).
@@ -93,6 +93,24 @@ makes a prefixed name the longest text it can be, as SPARQL tokens are.
 - oxigraph's main branch has the full range in its new lexer.
 - The test is `names_may_use_characters_past_the_basic_multilingual_plane`
   in `src/sparql/tests.rs`.
+
+## A keyword that starts a prefixed name
+
+`keyword-boundary.patch` (on top of the fourth, same tree layout) makes a
+keyword match only where a prefixed name could not go on from it, since
+SPARQL tokens match longest.
+
+- `i(literal)`, the rule every keyword goes through, matched the keyword's
+  letters whatever followed. With `a:` declared, `GRAPHa:g { ... }` was read
+  as `GRAPH` and `a:g`, a GRAPH pattern nobody wrote, and passed; so did
+  `GRAPH:g` with `:` declared, `FROMa.b:g` and the others. The fourth patch
+  widened it to names past U+FFFF (`GRAPH😀:g`).
+- `i` now fails when the text after the keyword continues a PN_PREFIX up to
+  a `:`, the check `Distinct` had alone (the first patch); `Distinct` no
+  longer repeats it. Text after a keyword that cannot make a name
+  (`LIMIT 1`, `FILTER(`, `DISTINCT-1`) is unchanged.
+- The test is `a_keyword_that_starts_a_prefixed_name_is_the_name` in
+  `src/sparql/tests.rs`.
 
 ## Review rule for a patch
 

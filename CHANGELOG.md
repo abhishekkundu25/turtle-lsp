@@ -7,6 +7,10 @@
 - **SPARQL names may use characters past U+FFFF** (#109): `ex:😀a`, `?😀`
   and `_:😀` were syntax errors, although the SPARQL grammar allows them, and
   "Shorten IRI" could turn a valid IRI into such a name and break the query.
+- **A keyword that starts a prefixed name is the name**: with `a:` declared,
+  `GRAPHa:g { ... }` passed as a GRAPH pattern on `a:g`, and `GRAPH:g` the
+  same with `:` declared. SPARQL reads the longest token, so both are a
+  prefixed name and now a syntax error there.
 
 ## 0.18.0 — 2026-11-13
 

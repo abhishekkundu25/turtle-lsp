@@ -1418,6 +1418,35 @@ fn names_may_use_characters_past_the_basic_multilingual_plane() {
     );
 }
 
+#[test]
+fn a_keyword_that_starts_a_prefixed_name_is_the_name() {
+    // SPARQL tokens match longest (vendor/spargebra/keyword-boundary.patch):
+    // `GRAPHa:g` is one prefixed name, not `GRAPH` and `a:g`. spargebra
+    // split it, so these queries passed with a GRAPH pattern nobody wrote.
+    for text in [
+        "PREFIX a: <http://e/> PREFIX GRAPHa: <http://w/> SELECT * { GRAPHa:g { ?s ?p ?o } }",
+        "PREFIX : <http://e/> PREFIX GRAPH: <http://w/> SELECT * { GRAPH:g { ?s ?p ?o } }",
+        "PREFIX \u{1F600}: <http://e/> PREFIX GRAPH\u{1F600}: <http://w/> \
+         SELECT * { GRAPH\u{1F600}:g { ?s ?p ?o } }",
+        "PREFIX a.b: <http://e/> PREFIX FROMa.b: <http://w/> SELECT * FROMa.b:g { }",
+    ] {
+        assert!(codes(text).contains(&"syntax"), "{text}: {:?}", diags(text));
+    }
+    // As a term, the name is the name.
+    let text = "PREFIX GRAPH: <http://w/> SELECT * { GRAPH:g ?p ?o }";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    let query = spargebra::SparqlParser::new().parse_query(text).unwrap();
+    assert!(query.to_string().contains("<http://w/g> ?p ?o"), "{query}");
+    // A keyword next to anything that cannot make it a name is the keyword.
+    for text in [
+        "SELECT*{GRAPH<http://e/g>{?s ?p ?o}FILTER(?o)}LIMIT 1",
+        "SELECT (COUNT(DISTINCT-1) AS ?c) {}",
+        "SELECT * { ?s ?p ?o . } ORDER BY DESC(?o)",
+    ] {
+        assert!(diags(text).is_empty(), "{text}: {:?}", diags(text));
+    }
+}
+
 // Parse fuel bounds the work of spargebra's grammar
 // (vendor/spargebra/parse-fuel.patch).
 

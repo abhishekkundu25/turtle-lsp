@@ -2401,8 +2401,7 @@ parser! {
                 }
             }
 
-        // Not the keyword when it starts a prefixed name (`distinct1:x`, `DISTINCT:a`): tokens match longest.
-        rule Distinct() -> bool = i("DISTINCT") !(PN_CHARS()* ("."+ PN_CHARS()+)* ":") _ { true } / { false }
+        rule Distinct() -> bool = i("DISTINCT") _ { true } / { false }
 
         rule iriOrFunction() -> Expression = i: iri() _ a: ArgList()? {?
             if let Some(a) = a {
@@ -2596,7 +2595,10 @@ parser! {
         //comment
         rule comment() = quiet! { ['#'] (!['\r' | '\n'] [_])* }
 
-        rule i(literal: &'static str) = input: $([_]*<{literal.len()}>) {?
+        // Not the keyword when it starts a prefixed name (`GRAPHa:g`, `distinct1:x`): tokens match longest.
+        rule i(literal: &'static str) = keyword_text(literal) !(PN_CHARS()* ("."+ PN_CHARS()+)* ":")
+
+        rule keyword_text(literal: &'static str) = input: $([_]*<{literal.len()}>) {?
             if input.eq_ignore_ascii_case(literal) {
                 Ok(())
             } else {
