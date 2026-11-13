@@ -1392,6 +1392,32 @@ fn a_local_name_that_starts_with_a_colon_is_one_name() {
     );
 }
 
+#[test]
+fn names_may_use_characters_past_the_basic_multilingual_plane() {
+    // PN_CHARS_BASE ends with [#x10000-#xEFFFF] (SPARQL 1.1, production 164);
+    // spargebra 0.4.7 stopped at #xFFFD (vendor/spargebra/supplementary-chars.patch).
+    // A chaos run found it: "Shorten IRI" turned an IRI into a valid
+    // name that the query then failed to parse.
+    let text = "PREFIX ex: <http://example.org/>\n\
+                LOAD ex:\u{1F600}faraway INTO GRAPH ex:copy";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    let text = "PREFIX \u{10000}x: <http://example.org/>\n\
+                SELECT ?\u{EFFFF} { _:\u{1F600} \u{10000}x:\u{1F600}p ?\u{EFFFF} }";
+    assert!(diags(text).is_empty(), "{:?}", diags(text));
+    let query = spargebra::SparqlParser::new().parse_query(text).unwrap();
+    assert!(
+        query
+            .to_string()
+            .contains("<http://example.org/\u{1F600}p>"),
+        "{query}"
+    );
+    // #xF0000 and beyond stay out.
+    assert_eq!(
+        codes("PREFIX ex: <http://e/> SELECT * { ex:\u{F0000} ?p ?o }"),
+        ["syntax"]
+    );
+}
+
 // Parse fuel bounds the work of spargebra's grammar
 // (vendor/spargebra/parse-fuel.patch).
 

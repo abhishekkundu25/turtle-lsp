@@ -1,7 +1,7 @@
 # spargebra 0.4.7, patched
 
 This folder holds spargebra 0.4.7 as published on crates.io (oxigraph commit
-in `.cargo_vcs_info.json`, `lib/spargebra`), with three patches,
+in `.cargo_vcs_info.json`, `lib/spargebra`), with four patches,
 applied in this order. Both `Cargo.toml` files use it through `[patch.crates-io]`. spargebra is licensed
 MIT OR Apache-2.0; we use it under MIT (`LICENSE-MIT`, copied from
 `vendor/spareval`, which has the same oxigraph licence text).
@@ -79,6 +79,20 @@ makes a prefixed name the longest text it can be, as SPARQL tokens are.
   `src/sparql/tests.rs` and `iri_name_and_less_than_boundaries_agree_with_spargebra`
   in `tests/w3c_sparql.rs`, which now also replaces each prefixed name with
   an IRI.
+
+## Characters past U+FFFF in names
+
+`supplementary-chars.patch` (on top of the third, same tree layout) adds
+`'\u{10000}'..='\u{EFFFF}'` to `PN_CHARS_BASE`, the last range of SPARQL
+1.1's production 164.
+
+- Unpatched, the rule stopped at `#xFFFD`, so `ex:😀a`, `?😀` and `_:😀`
+  were syntax errors. The lexer (`syntax/names.rs`) has the full range, so
+  "Shorten IRI" turned `<http://example.org/😀a>` into a name the query then
+  failed to parse (issue #109).
+- oxigraph's main branch has the full range in its new lexer.
+- The test is `names_may_use_characters_past_the_basic_multilingual_plane`
+  in `src/sparql/tests.rs`.
 
 ## Review rule for a patch
 
