@@ -25,8 +25,6 @@ disjoint classes are diagnostics. With `turtle.query.reasoning` set to
 
 <p align="center"><img src="assets/hover-proof.gif" alt="Hovering ex:rex in a Turtle file in the browser editor: its inferred types ex:Mammal and ex:Animal, each proved by the W3C rule cax-sco from triples linked to their lines; then ex:alice, an ex:Person by the domain of ex:owns, and a click on a proof's link that goes to its line" width="760"></p>
 
-<p align="center"><a href="assets/hover-proof.mp4">Watch as MP4</a></p>
-
 It is the only Turtle language server we know of that checks itself against
 the full W3C test suites and real public ontologies; see
 [Tested against the real world](#tested-against-the-real-world).
@@ -215,8 +213,6 @@ accepted in any of these files: the server checks a document as what it holds,
 not by its extension.
 
 <p align="center"><img src="assets/sparql-reasoning.gif" alt="A SPARQL query in the browser editor for the resources of type ex:Animal: with Inferred off it returns no rows, as no file says so; with TurbOWL's default rules it returns ex:polly, ex:rex and ex:tom, and the results say they include 12 inferred triples" width="760"></p>
-
-<p align="center"><a href="assets/sparql-reasoning.mp4">Watch as MP4</a></p>
 
 - **Diagnostics** as you type: syntax errors at the token where the query
   stops making sense, undeclared, unused and duplicate prefixes, unknown or
@@ -747,8 +743,6 @@ browser. Files never leave the tab.
   "Fetch" quick fix; the toolbox connects to none.
 
 <p align="center"><img src="assets/graph-view.gif" alt="The workspace graph in the browser editor, for a small class hierarchy: rdf:type edges turned on, zoom and pan, a search that selects ex:rex and lists its links, its focus view, and the class tree" width="760"></p>
-
-<p align="center"><a href="assets/graph-view.mp4">Watch as MP4</a></p>
 
 ## Settings file (turtle-lsp.json)
 
