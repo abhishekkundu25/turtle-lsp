@@ -105,10 +105,13 @@ SPARQL tokens match longest.
   as `GRAPH` and `a:g`, a GRAPH pattern nobody wrote, and passed; so did
   `GRAPH:g` with `:` declared, `FROMa.b:g` and the others. The fourth patch
   widened it to names past U+FFFF (`GRAPH😀:g`).
-- `i` now fails when the text after the keyword continues a PN_PREFIX up to
-  a `:`, the check `Distinct` had alone (the first patch); `Distinct` no
-  longer repeats it. Text after a keyword that cannot make a name
-  (`LIMIT 1`, `FILTER(`, `DISTINCT-1`) is unchanged.
+- The new rule `keyword_end` fails when the text after a keyword continues
+  a PN_PREFIX up to a `:`, the check `Distinct` had alone (the first
+  patch). `i` ends with it, and so do `a`, `true` and `false`, which the
+  grammar matches as plain strings because they are case-sensitive: with
+  `:` declared, `?s a::p` was `?s rdf:type :p` although `a::p` is one name.
+  `Distinct` no longer repeats the check. Text after a keyword that cannot
+  make a name (`LIMIT 1`, `FILTER(`, `DISTINCT-1`, `a<x>`) is unchanged.
 - The test is `a_keyword_that_starts_a_prefixed_name_is_the_name` in
   `src/sparql/tests.rs`.
 

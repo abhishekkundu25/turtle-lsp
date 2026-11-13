@@ -9,8 +9,8 @@
   "Shorten IRI" could turn a valid IRI into such a name and break the query.
 - **A keyword that starts a prefixed name is the name**: with `a:` declared,
   `GRAPHa:g { ... }` passed as a GRAPH pattern on `a:g`, and `GRAPH:g` the
-  same with `:` declared. SPARQL reads the longest token, so both are a
-  prefixed name and now a syntax error there.
+  same with `:` declared; `?s a::p` was read as `a` and `::p`. SPARQL reads
+  the longest token, so each is one prefixed name, and now an error there.
 
 ## 0.18.0 — 2026-11-13
 

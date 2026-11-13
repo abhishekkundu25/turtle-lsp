@@ -1429,8 +1429,15 @@ fn a_keyword_that_starts_a_prefixed_name_is_the_name() {
         "PREFIX \u{1F600}: <http://e/> PREFIX GRAPH\u{1F600}: <http://w/> \
          SELECT * { GRAPH\u{1F600}:g { ?s ?p ?o } }",
         "PREFIX a.b: <http://e/> PREFIX FROMa.b: <http://w/> SELECT * FROMa.b:g { }",
+        // `a`, `true` and `false` are matched apart from the other keywords.
+        // `a::p` names an IRI that does not parse; it was `a` and `::p`.
+        "PREFIX : <http://e/> PREFIX a: <http://www.example.org> SELECT * { ?s a::p }",
+        "PREFIX : <http://e/> SELECT * { ?s ?p (true:x) }",
+        "PREFIX : <http://e/> SELECT * { ?s ^a:x ?o }",
     ] {
-        assert!(codes(text).contains(&"syntax"), "{text}: {:?}", diags(text));
+        // A syntax error, or `undeclared-prefix` for `true:` and `a:`.
+        let errors = diags(text).into_iter().filter(|d| d.1 == Level::Error);
+        assert_eq!(errors.count(), 1, "{text}: {:?}", diags(text));
     }
     // As a term, the name is the name.
     let text = "PREFIX GRAPH: <http://w/> SELECT * { GRAPH:g ?p ?o }";
@@ -1442,6 +1449,7 @@ fn a_keyword_that_starts_a_prefixed_name_is_the_name() {
         "SELECT*{GRAPH<http://e/g>{?s ?p ?o}FILTER(?o)}LIMIT 1",
         "SELECT (COUNT(DISTINCT-1) AS ?c) {}",
         "SELECT * { ?s ?p ?o . } ORDER BY DESC(?o)",
+        "PREFIX a: <http://e/> SELECT * { ?s a a:C ; a<http://e/D> . ?o ^a ?s ; ?p (true false) }",
     ] {
         assert!(diags(text).is_empty(), "{text}: {:?}", diags(text));
     }
