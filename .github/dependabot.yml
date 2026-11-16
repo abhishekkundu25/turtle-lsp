@@ -20,6 +20,14 @@ updates:
     directory: /
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
+    # Monaco 0.57.0 pulls in dompurify <= 3.4.16, under a critical DOM XSS
+    # advisory (GHSA-p98j-92pf-mc4p), and moves the files the browser build
+    # copies. Dependabot opened it three times (#12, #41, #84): an ignore
+    # comment does not hold for a grouped update. Remove this when a Monaco
+    # release depends on a patched dompurify.
+    ignore:
+      - dependency-name: "monaco-editor"
+        versions: ["0.57.x"]
     groups:
       # Shipped to users in the browser editor: a blocked Monaco update (0.x
       # minors break) must not hold back the test tooling, or the other way round.
