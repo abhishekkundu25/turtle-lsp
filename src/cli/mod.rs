@@ -59,7 +59,13 @@ Options:
                         stdin.ttl): its syntax, its root and the path its
                         problems are reported under; a file there is
                         replaced by the text
-  --format F            concise (default), json, github or sarif
+  --format F            concise (default), json, github or sarif; json is
+                        one line: {\"version\": 1, \"files\": [{\"path\",
+                        \"diagnostics\": [{\"range\", \"severity\", \"code\",
+                        \"message\", \"fixes\"}]}], \"summary\": {\"errors\",
+                        \"warnings\", \"infos\", \"hints\", \"filesWithProblems\",
+                        \"filesChecked\", \"notShown\"}}; lines and columns
+                        start at 1
   --output-file PATH    write the report to a file instead of stdout
   --fix                 apply the safe fixes, then report what is left
   --unsafe-fixes        with --fix, also apply \"did you mean\" renames
