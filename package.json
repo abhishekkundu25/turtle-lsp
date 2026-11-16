@@ -22,6 +22,6 @@
     "n3": "2.13.12",
     "playwright-core": "1.64.1",
     "rdfxml-streaming-parser": "3.3.0",
-    "vscode-jsonrpc": "9.0.3"
+    "vscode-jsonrpc": "10.0.0"
   }
 }

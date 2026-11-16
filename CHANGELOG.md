@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- **The VS Code extension uses `vscode-languageclient` 11** (was 10.1.2).
+  It needs VS Code 1.91 or later, the extension's minimum already.
+
 ### Fixed
 
 - **SPARQL names may use characters past U+FFFF** (#109): `ex:😀a`, `?😀`
