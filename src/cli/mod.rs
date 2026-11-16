@@ -27,6 +27,20 @@ Usage:
 
 Run 'turtle-lsp help COMMAND' (or give the command --help) for its
 options.
+
+Examples:
+  turtle-lsp check --min-severity error
+      report only the errors
+  cat new.ttl | turtle-lsp check - --stdin-filename data/new.ttl
+      check text that is not saved, as if it were data/new.ttl
+  cat new.ttl | turtle-lsp format -
+      print the text formatted
+  turtle-lsp explain unused-prefix
+      what a code means, and how to turn it off in turtle-lsp.json
+  turtle-lsp query -e 'SELECT (COUNT(?s) AS ?n) WHERE { ?s a ex:Person }'
+      run a query (prefixes come from prefixes.ttl)
+  turtle-lsp check --format json
+      the report, or why the run failed, as one JSON line
 ";
 
 const CHECK_USAGE: &str = "\

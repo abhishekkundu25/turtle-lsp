@@ -209,12 +209,12 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     let (kept, not_shown) = budget(&checked, per_file, max_problems);
     let shown: Vec<CheckedFile> = checked
         .iter()
-        .zip(&kept)
-        .map(|(c, problems)| CheckedFile {
+        .enumerate()
+        .map(|(i, c)| CheckedFile {
             path: c.shown,
             root_relative: c.root_relative,
             uri: c.uri,
-            problems,
+            problems: kept.as_ref().map_or(&c.problems[..], |k| &k[i]),
         })
         .collect();
     summary.not_shown = not_shown.count;
@@ -275,12 +275,23 @@ fn severity(p: &Problem) -> super::args::Severity {
 /// severe, then over the run the `total` most severe, ties in report order,
 /// printed in report order; and what that left out. None: no cap. Choosing
 /// by severity keeps an error from hiding behind hints in earlier files.
+/// `None` when no cap leaves anything out: every problem is printed as it is.
 fn budget(
     checked: &[Checked],
     per_file: Option<usize>,
     total: Option<usize>,
-) -> (Vec<Vec<Problem>>, output::NotShown) {
+) -> (Option<Vec<Vec<Problem>>>, output::NotShown) {
     let mut not_shown = output::NotShown::default();
+    let per_file_cap = per_file.unwrap_or(usize::MAX);
+    let within: usize = checked
+        .iter()
+        .map(|c| c.problems.len().min(per_file_cap))
+        .sum();
+    if within == checked.iter().map(|c| c.problems.len()).sum::<usize>()
+        && within <= total.unwrap_or(usize::MAX)
+    {
+        return (None, not_shown);
+    }
     // (severity, file, index): sorted, the most severe first, then report order.
     let mut pool = Vec::new();
     for (f, c) in checked.iter().enumerate() {
@@ -320,5 +331,5 @@ fn budget(
         not_shown.by_severity[s as usize] -= 1;
     }
     not_shown.count = not_shown.by_severity.iter().sum();
-    (kept, not_shown)
+    (Some(kept), not_shown)
 }
