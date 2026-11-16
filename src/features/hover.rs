@@ -15,19 +15,35 @@ use std::sync::Arc;
 const MAX_INFERRED: usize = 20;
 
 pub fn hover(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Option<Hover> {
-    hover_reasoned(a, k, enc, pos, None)
+    hover_or_wait(a, k, enc, pos, None).0
 }
 
 /// [`hover`], and on a resource, with `reasoning` on, the types reasoning
 /// infers for it after what [`hover`] says (see [`inferred`]); `reasoning`
 /// holds the project's prefixes for `a` too, which the proofs are named
-/// with after `a`'s own ([`Naming`]).
-pub(crate) fn hover_reasoned(
+/// with after `a`'s own ([`Naming`]). When the proofs are still being
+/// searched for, also what ends when that search does
+/// ([`Shared::search_ended`]): asked again then, the hover has them, or
+/// starts their search.
+pub(crate) fn hover_or_wait(
     a: &Analysis,
     k: &Knowledge,
     enc: Encoding,
     pos: Position,
     reasoning: Option<(&Arc<Shared>, Arc<PrefixMap>)>,
+) -> (Option<Hover>, Option<crossbeam_channel::Receiver<()>>) {
+    let mut wait = None;
+    let hover = hover_with(a, k, enc, pos, reasoning, &mut wait);
+    (hover, wait)
+}
+
+fn hover_with(
+    a: &Analysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+    reasoning: Option<(&Arc<Shared>, Arc<PrefixMap>)>,
+    wait: &mut Option<crossbeam_channel::Receiver<()>>,
 ) -> Option<Hover> {
     let offset = a.offset(enc, pos)?;
     if let Some(h) = super::embedded::hover(a, k, enc, offset) {
@@ -82,6 +98,9 @@ pub(crate) fn hover_reasoned(
     let mut body = describe_iri(&r.iri, &label, k, &prefixes)?;
     if let Some((shared, project)) = reasoning {
         let types = shared.inferred_types(&r.iri, HOVER_WAIT);
+        if matches!(types, Types::Pending(_)) {
+            *wait = shared.search_ended();
+        }
         let naming = Naming::at(a, r.span.start, project);
         body.push_str(&inferred(types, shared.cut(), &r.iri, k, &naming));
     }

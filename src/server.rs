@@ -35,7 +35,7 @@
 //!
 //! The server's state is in groups, each a struct of its own that the server
 //! drives: `progress` (work-done progress), `shacl` (validation scheduling
-//! and results), `reasoning` (reasoning runs and their findings), `refresh` (pulled-diagnostics result ids and refresh
+//! and results), `reasoning` (reasoning runs and their findings), `hovers` (hovers held until their proofs are found), `refresh` (pulled-diagnostics result ids and refresh
 //! requests), `layers` (the settings and their layers) and `index` (the
 //! workspace index as it arrives). They send to the client through
 //! `client::Client`, the connection's sender and request ids.
@@ -68,6 +68,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) mod client;
+mod hovers;
 mod index;
 mod layers;
 pub(crate) mod progress;
@@ -203,6 +204,8 @@ pub(crate) struct Server {
     queries: run_query::State,
     /// The `turtle/query` runs going on (`extensions::query`).
     query_requests: extensions::query::State,
+    /// The hovers held until their proofs are found (`hovers`).
+    hovers: hovers::Hovers,
     /// The workspace folders as `initialize` named them. The browser build
     /// has no file paths, so `ws.roots()` is empty there; a request that
     /// needs a folder of the workspace uses these.
@@ -383,6 +386,7 @@ impl Server {
             wsdiag,
             root_uris,
             query_requests: extensions::query::State::default(),
+            hovers: hovers::Hovers::default(),
             spawn,
             #[cfg(test)]
             fault: false,
@@ -579,6 +583,15 @@ fn internal_error_diagnostic(msg: &str) -> Diagnostic {
 }
 
 /// `result` as JSON text, for the answer to a request.
+/// The answer to a request the client cancelled.
+fn cancelled(id: RequestId) -> Response {
+    Response::new_err(
+        id,
+        ErrorCode::RequestCanceled as i32,
+        "request cancelled".into(),
+    )
+}
+
 pub(crate) fn json(result: &impl serde::Serialize) -> Result<String, (ErrorCode, String)> {
     wire::encode(result).map_err(|e| (ErrorCode::InternalError, e.to_string()))
 }
@@ -694,6 +707,12 @@ impl Server {
                     }
                     None
                 }
+                recv(self.hovers.woken()) -> id => {
+                    if let Ok(id) = id {
+                        self.guarded("a held hover", |s| s.held_hover_woken(id));
+                    }
+                    None
+                }
                 recv(self.reasoning_runs.rx()) -> got => {
                     match self.reasoning_runs.take(got) {
                         Fed::Got(o) => self.guarded("reasoning", |s| s.reasoning_outcome(o)),
@@ -713,6 +732,31 @@ impl Server {
     /// has printed the details to stderr (stdout carries the protocol).
     fn guarded(&mut self, what: &str, f: impl FnOnce(&mut Server)) {
         let _ = guard(what, || f(self));
+    }
+
+    /// A held hover's proof search ended, or its deadline came: answer it
+    /// again, now with the proofs, or hold it for its own search when it
+    /// waited on another term's; past its deadline, answer it as it is.
+    fn held_hover_woken(&mut self, id: RequestId) {
+        // Cancelled meanwhile: answered already.
+        let Some(held) = self.hovers.take(&id) else {
+            return;
+        };
+        // As for a request: it sees the current text.
+        self.publish_dirty();
+        self.ensure_indexed();
+        let (hover, wait) = self.session().hover_or_wait(&held.uri, held.pos);
+        if let Some(ended) = wait
+            && self.hovers.hold(id.clone(), held, ended)
+        {
+            return;
+        }
+        let _ = match json(&hover) {
+            Ok(json) => self.client.respond(id, json),
+            Err((code, message)) => self
+                .client
+                .send(Response::new_err(id, code as i32, message)),
+        };
     }
 
     /// The initial index arrived, or its thread ended without one.
@@ -872,6 +916,9 @@ impl Server {
     ) -> Result<Ended, Box<dyn std::error::Error + Send + Sync>> {
         self.queries.cancel_all();
         self.query_requests.cancel_all();
+        for id in self.hovers.ids() {
+            self.client.send(cancelled(id.clone()))?;
+        }
         self.client.send(Response::new_ok(req.id, ()))?;
         let mut rest = rest;
         loop {
@@ -1033,6 +1080,9 @@ impl Server {
                     self.queries
                         .on_cancel_request(&id, &mut self.client, &mut self.progress);
                     self.query_requests.cancel(&id);
+                    if self.hovers.take(&id).is_some() {
+                        let _ = self.client.send(cancelled(id));
+                    }
                 }
             }
             WorkDoneProgressCancel::METHOD => {
@@ -1541,11 +1591,25 @@ impl Server {
             HoverRequest::METHOD => {
                 let p = params!(HoverParams);
                 let at = p.text_document_position_params;
-                json(
-                    &self
-                        .session()
-                        .hover(at.text_document.uri.as_str(), at.position),
-                )
+                let uri = at.text_document.uri.as_str();
+                // From when it was asked, before the wait for its proofs.
+                let deadline = self
+                    .reasoning
+                    .as_ref()
+                    .filter(|_| self.spawn == Spawn::Thread)
+                    .map(|r| hovers::Hovers::deadline(r.hover_limit()));
+                let (hover, wait) = self.session().hover_or_wait(uri, at.position);
+                if let (Some(ended), Some(deadline)) = (wait, deadline) {
+                    let held = hovers::Held {
+                        uri: uri.to_string(),
+                        pos: at.position,
+                        deadline,
+                    };
+                    if self.hovers.hold(req.id.clone(), held, ended) {
+                        return Ok(None);
+                    }
+                }
+                json(&hover)
             }
             GotoDefinition::METHOD => {
                 let p = params!(GotoDefinitionParams);

@@ -664,6 +664,49 @@ mod tests {
         assert_eq!(searches(), 3);
     }
 
+    #[test]
+    fn what_a_pending_hover_waits_on_ends_when_its_search_does() {
+        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        shown(&shared, &job(1, vec![animals()]));
+        let rex = format!("{EX}rex");
+        assert!(shared.search_ended().is_none(), "no search yet");
+        let ended = {
+            // The search cannot finish yet: the cache is in use.
+            let r = shared.shown().unwrap();
+            let cache = r.cache.lock().unwrap();
+            let short = Duration::from_millis(20);
+            assert!(matches!(
+                shared.inferred_types(&rex, short),
+                Types::Pending(_)
+            ));
+            let ended = shared.search_ended().unwrap();
+            assert!(
+                matches!(
+                    ended.try_recv(),
+                    Err(crossbeam_channel::TryRecvError::Empty)
+                ),
+                "ended while it cannot finish"
+            );
+            drop(cache);
+            ended
+        };
+        assert!(matches!(
+            ended.recv_timeout(Duration::from_secs(10)),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+        ));
+        // Asked again, the hover has the proofs without waiting.
+        assert!(
+            proved(shared.inferred_types(&rex, Duration::ZERO))[0]
+                .proof
+                .is_ok()
+        );
+        // Once it has ended, what a hover waits on has ended already.
+        assert!(matches!(
+            shared.search_ended().unwrap().try_recv(),
+            Err(crossbeam_channel::TryRecvError::Disconnected)
+        ));
+    }
+
     /// `ex:x` at the start of an `rdfs:subClassOf` chain of `links` links,
     /// with a class at its end disjoint from one `ex:x` has: a hover on
     /// `ex:x` lists `links` inferred types, and their proofs, as the finding

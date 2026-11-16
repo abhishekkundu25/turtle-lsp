@@ -10,6 +10,7 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
+import { createRequire } from "node:module"
 import { startServer, tempDir, uriOf, positionOf } from "./lsp-client.mjs"
 
 const HEADER =
@@ -133,6 +134,58 @@ test("in a JSON-LD document the proofs are named with its @context, the closest 
     assert.equal(links.length, 3, section)
     assert.equal(new Set(links).size, 3, section)
     assert.ok(section.includes(" (above)"), section)
+  } finally {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// `ex:x` and `ex:y` at the start of a long rdfs:subClassOf chain, each with
+// a type disjoint from its end: their proofs take longer than the hover's
+// first wait (200 ms), up to the search's time limit (2 s). `ex:z`, near
+// its end, has a quick proof.
+function slowChain(links) {
+  let text = `${HEADER}ex:x a ex:C0 , ex:D .\nex:y a ex:C0 , ex:D .\nex:z a ex:C${links - 1} .\n`
+  for (let i = 0; i < links; i++) text += `ex:C${i} rdfs:subClassOf ex:C${i + 1} .\n`
+  return text + `ex:C${links} owl:disjointWith ex:D .\n`
+}
+
+test("a hover whose proofs take long is answered once they are found, not told to hover again", async () => {
+  const dir = tempDir("turtle-reasoning-hover-slow-")
+  const text = slowChain(200)
+  fs.writeFileSync(path.join(dir, "chain.ttl"), text)
+  const uri = uriOf(path.join(dir, "chain.ttl"))
+  const s = await startServer({ cwd: dir, initializationOptions: { reasoning: { rules: "default" } } })
+  const hoverOn = (needle, token) =>
+    s.request("textDocument/hover", { textDocument: { uri }, position: positionOf(text, needle, 3) }, token)
+  try {
+    await s.request("workspace/symbol", { query: "" })
+    s.open(uri, text)
+    await s.diagnosticsFor(uri)
+    // Until the run's result is shown: a cheap proof's hover lists it.
+    for (const end = Date.now() + 20000; ; ) {
+      const md = (await hoverOn("ex:z a")).contents.value
+      if (md.includes("**Inferred**\n\n- ")) break
+      if (Date.now() > end) throw new Error(`no run shown:\n${md}`)
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    // Cancelled while its proofs are searched for: answered as cancelled.
+    const { CancellationTokenSource } = createRequire(import.meta.url)("vscode-jsonrpc/node")
+    const source = new CancellationTokenSource()
+    const cancelled = hoverOn("ex:y a", source.token)
+    setTimeout(() => source.cancel(), 300)
+    await assert.rejects(cancelled, (e) => e.code === -32800)
+
+    // One hover, held until its proofs are found or the search stops at
+    // its limit: never "hover again". It may wait for ex:y's search first.
+    const start = Date.now()
+    const md = (await hoverOn("ex:x a")).contents.value
+    const took = Date.now() - start
+    assert.ok(!md.includes("still being worked out"), md)
+    assert.ok(md.includes("**Inferred**\n\n- "), md)
+    assert.ok(took > 200, `answered in ${took} ms: the proofs were not slow`)
+    assert.ok(took < 8000, `answered in ${took} ms`)
   } finally {
     await s.stop()
     fs.rmSync(dir, { recursive: true, force: true })
