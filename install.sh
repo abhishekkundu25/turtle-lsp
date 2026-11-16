@@ -48,9 +48,10 @@ asset() {
 
 fetch() { # url file
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 2 -o "$2" "$1" </dev/null || die "could not download $1"
+    curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 -o "$2" "$1" </dev/null ||
+      die "could not download $1"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1" </dev/null || die "could not download $1"
+    wget -q -T 60 -t 3 -O "$2" "$1" </dev/null || die "could not download $1"
   else
     die "neither curl nor wget is installed"
   fi
@@ -105,9 +106,15 @@ main() {
   installed=$("$tmp/x/turtle-lsp" --version </dev/null) || die "the downloaded turtle-lsp does not run on this machine"
 
   mkdir -p "$dir" || die "cannot create $dir"
-  # Renamed into place, never written over: a running copy keeps its file.
-  cp "$tmp/x/turtle-lsp" "$dir/.turtle-lsp.new" || die "cannot write to $dir"
-  mv -f "$dir/.turtle-lsp.new" "$dir/turtle-lsp" || die "cannot replace $dir/turtle-lsp"
+  [ ! -d "$dir/turtle-lsp" ] || die "$dir/turtle-lsp is a folder; remove it or choose another TURTLE_LSP_INSTALL_DIR"
+  # A new file of our own beside the target (mktemp makes it, so no link or
+  # other installer's file is written through), then renamed into place,
+  # never written over: a running copy keeps its file.
+  new=$(mktemp "$dir/.turtle-lsp.XXXXXX") || die "cannot write to $dir"
+  if ! cp "$tmp/x/turtle-lsp" "$new" || ! chmod 755 "$new" || ! mv -f "$new" "$dir/turtle-lsp"; then
+    rm -f "$new"
+    die "cannot replace $dir/turtle-lsp"
+  fi
 
   say "installed $installed"
   case ":$PATH:" in

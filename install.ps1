@@ -49,9 +49,9 @@
   New-Item -ItemType Directory -Path $tmp | Out-Null
   try {
     $sumsFile = Join-Path $tmp 'SHA256SUMS'
-    try { Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS" -OutFile $sumsFile }
+    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -Uri "$base/SHA256SUMS" -OutFile $sumsFile }
     catch { throw "turtle-lsp install: could not download $base/SHA256SUMS: $($_.Exception.Message)" }
-    $sums = Get-Content $sumsFile
+    $sums = Get-Content -LiteralPath $sumsFile
 
     # The first name SHA256SUMS lists, by its exact name.
     $name = $null; $want = $null
@@ -67,9 +67,9 @@
 
     $zip = Join-Path $tmp $name
     Say "downloading $name from $base"
-    try { Invoke-WebRequest -UseBasicParsing -Uri "$base/$name" -OutFile $zip }
+    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -Uri "$base/$name" -OutFile $zip }
     catch { throw "turtle-lsp install: could not download $base/$name`: $($_.Exception.Message)" }
-    $got = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+    $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
     if ($got -ne $want) { throw "turtle-lsp install: $name does not match SHA256SUMS (got $got, expected $want)" }
 
     if ($env:TURTLE_LSP_VERIFY -eq 'attestation') {
@@ -80,21 +80,26 @@
     }
 
     $x = Join-Path $tmp 'x'
-    Expand-Archive -Path $zip -DestinationPath $x -Force
+    Expand-Archive -LiteralPath $zip -DestinationPath $x -Force
     $exe = Join-Path $x 'turtle-lsp.exe'
-    if (-not (Test-Path $exe)) { throw "turtle-lsp install: $name has no turtle-lsp.exe" }
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "turtle-lsp install: $name has no turtle-lsp.exe" }
     # --version only: a bare turtle-lsp starts the language server.
     $installed = & $exe --version
     if ($LASTEXITCODE -ne 0) { throw 'turtle-lsp install: the downloaded turtle-lsp.exe does not run on this machine' }
 
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $target = Join-Path $dir 'turtle-lsp.exe'
-    # Copied beside the old one, then moved over it: a running copy cannot be
-    # replaced on Windows, and the error then names the reason.
-    $new = Join-Path $dir '.turtle-lsp.new.exe'
-    Copy-Item -Force $exe $new
-    try { Move-Item -Force $new $target }
-    catch { Remove-Item -Force $new -ErrorAction SilentlyContinue; throw "turtle-lsp install: cannot replace $target (is turtle-lsp running? stop it and try again)" }
+    if (Test-Path -LiteralPath $target -PathType Container) {
+      throw "turtle-lsp install: $target is a folder; remove it or choose another TURTLE_LSP_INSTALL_DIR"
+    }
+    # Copied beside the old one under a name of its own, then moved over it:
+    # a running copy cannot be replaced on Windows, and the error then names
+    # the reason. -LiteralPath: [ and ] in a folder name are not wildcards.
+    $new = Join-Path $dir (".turtle-lsp." + [Guid]::NewGuid() + ".exe")
+    Copy-Item -Force -LiteralPath $exe -Destination $new
+    try { Move-Item -Force -LiteralPath $new -Destination $target }
+    catch { Remove-Item -Force -LiteralPath $new -ErrorAction SilentlyContinue; throw "turtle-lsp install: cannot replace $target (is turtle-lsp running? stop it and try again)" }
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "turtle-lsp install: $target was not written" }
 
     Say "installed $installed"
     $onPath = ($env:PATH -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $dir.TrimEnd('\')) }
@@ -106,6 +111,6 @@
     Write-Output $target
   }
   finally {
-    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
   }
 }

@@ -92,10 +92,39 @@ test("installs the release's binary, checked against SHA256SUMS, and prints its 
   assert.match(r.err, /installed turtle-lsp \d/)
   // Only the binary: no temporary file is left beside it.
   assert.deepEqual(fs.readdirSync(dir), [EXE])
-  // Run again, it replaces the installed binary.
-  const again = await install("good", dir)
-  assert.equal(again.code, 0, again.out + again.err)
+})
+
+test("running it again replaces an older binary with the release's", { skip }, async () => {
+  const dir = path.join(home, "update")
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, EXE), "an older turtle-lsp\n")
+  const r = await install("good", dir)
+  assert.equal(r.code, 0, r.out + r.err)
+  assert.ok(fs.readFileSync(path.join(dir, EXE)).equals(fs.readFileSync(serverPath)), "the binary was not replaced")
   assert.deepEqual(fs.readdirSync(dir), [EXE])
+})
+
+test("a folder where the binary goes is an error, not a success", { skip }, async () => {
+  const dir = path.join(home, "folder")
+  fs.mkdirSync(path.join(dir, EXE), { recursive: true })
+  const r = await install("good", dir)
+  assert.notEqual(r.code, 0, r.out + r.err)
+  assert.match(r.err, /is a folder/)
+  assert.ok(fs.statSync(path.join(dir, EXE)).isDirectory())
+  assert.deepEqual(fs.readdirSync(path.join(dir, EXE)), [], "something was moved into the folder")
+})
+
+test("a link with an old temporary name is not written through", { skip: skip || (windows && "symbolic links need rights on Windows") }, async () => {
+  const dir = path.join(home, "link")
+  fs.mkdirSync(dir, { recursive: true })
+  const victim = path.join(home, "victim.txt")
+  fs.writeFileSync(victim, "keep me\n")
+  fs.symlinkSync(victim, path.join(dir, ".turtle-lsp.new"))
+  const r = await install("good", dir)
+  assert.equal(r.code, 0, r.out + r.err)
+  assert.equal(fs.readFileSync(victim, "utf8"), "keep me\n")
+  assert.ok(fs.readFileSync(path.join(dir, EXE)).equals(fs.readFileSync(serverPath)))
+  assert.ok(!fs.lstatSync(path.join(dir, EXE)).isSymbolicLink())
 })
 
 test("a wrong checksum, a missing download or a SHA256SUMS without the archive installs nothing", { skip }, async () => {
