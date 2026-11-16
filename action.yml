@@ -1,0 +1,50 @@
+# Installs turtle-lsp in a GitHub Actions job and puts it on PATH:
+#
+#   - uses: abhishekkundu25/turtle-lsp@vX.Y.Z
+#
+# The action's own install.sh (Linux, macOS) or install.ps1 (Windows) runs:
+# it downloads the release archive for the runner, checks it against the
+# release's SHA256SUMS, and installs the binary in the job's temporary folder.
+name: Install turtle-lsp
+description: Install the turtle-lsp command line (check, format, query) from a GitHub release and add it to PATH.
+branding:
+  icon: check-circle
+  color: green
+inputs:
+  version:
+    description: "A release tag, such as v0.19.0. Default: the latest release."
+    required: false
+    default: ""
+  verify-attestation:
+    description: "true: also check the archive's build attestation with gh (gh is on GitHub's runners; it needs GH_TOKEN in the step's env)."
+    required: false
+    default: "false"
+outputs:
+  path:
+    description: The installed binary.
+    value: ${{ steps.unix.outputs.path || steps.windows.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - id: unix
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        TURTLE_LSP_VERSION: ${{ inputs.version }}
+        TURTLE_LSP_VERIFY: ${{ inputs.verify-attestation == 'true' && 'attestation' || '' }}
+        TURTLE_LSP_INSTALL_DIR: ${{ runner.temp }}/turtle-lsp/bin
+      run: |
+        exe=$(sh "$GITHUB_ACTION_PATH/install.sh" | tail -n 1)
+        echo "$TURTLE_LSP_INSTALL_DIR" >> "$GITHUB_PATH"
+        echo "path=$exe" >> "$GITHUB_OUTPUT"
+    - id: windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        TURTLE_LSP_VERSION: ${{ inputs.version }}
+        TURTLE_LSP_VERIFY: ${{ inputs.verify-attestation == 'true' && 'attestation' || '' }}
+        TURTLE_LSP_INSTALL_DIR: ${{ runner.temp }}\turtle-lsp\bin
+      run: |
+        $exe = & "$env:GITHUB_ACTION_PATH\install.ps1" | Select-Object -Last 1
+        Add-Content -Path $env:GITHUB_PATH -Value $env:TURTLE_LSP_INSTALL_DIR
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "path=$exe"

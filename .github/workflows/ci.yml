@@ -535,6 +535,37 @@ jobs:
   # The one check the ruleset requires: it passes when every job it needs
   # passed, so a renamed or added matrix entry needs no ruleset change. Not
   # Performance, which reports only.
+  # The action (action.yml) on each runner, against a real release: the one
+  # place install.sh and install.ps1 download from GitHub. Not in "CI passed":
+  # a GitHub download that fails is not a fault of this code.
+  install-action:
+    name: Install action (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: install
+        uses: ./
+        with:
+          version: v0.18.0
+          verify-attestation: "true"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: The installed turtle-lsp is on PATH
+        shell: bash
+        env:
+          INSTALLED: ${{ steps.install.outputs.path }}
+        run: |
+          turtle-lsp --version | tee version.txt
+          grep -qx 'turtle-lsp 0.18.0' version.txt
+          test -f "$INSTALLED"
+
   ci-ok:
     name: CI passed
     if: always()

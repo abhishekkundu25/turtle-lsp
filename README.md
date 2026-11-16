@@ -485,10 +485,43 @@ and vocabulary lints listed there, each checked by hand.
 - **VS Code:** install "Turtle RDF & SPARQL Language Server" from the
   [Marketplace](https://marketplace.visualstudio.com/items?itemName=abhishekkundu25.turtle-language-server).
 - **Neovim:** see [Neovim](#neovim-011) below (lazy.nvim installs the server for you).
-- **Any other editor:** download the server for your machine from the
+- **Any other editor, the command line, or a coding agent:** one command
+  installs the server from the latest release.
+
+  macOS and Linux:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.sh | sh
+  ```
+
+  Windows (PowerShell):
+
+  ```powershell
+  irm https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.ps1 | iex
+  ```
+
+  It downloads the archive for your machine and the release's `SHA256SUMS`,
+  checks the archive against it, and installs `turtle-lsp` in `~/.local/bin`
+  (Windows: `%LOCALAPPDATA%\Programs\turtle-lsp`). It asks nothing and
+  changes no `PATH` or shell profile: it says when the folder is not on
+  `PATH`, and prints the installed binary's path as its last line. Running it
+  again updates the binary. Settings, as environment variables of the
+  script (on `sh`, not on `curl`):
+
+  | Variable | Effect |
+  |---|---|
+  | `TURTLE_LSP_VERSION` | a release tag, such as `v0.19.0` (default: the latest) |
+  | `TURTLE_LSP_INSTALL_DIR` | the folder to install into |
+  | `TURTLE_LSP_VERIFY=attestation` | also check the build attestation with `gh attestation verify` (needs `gh`, signed in); a failure stops the install |
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.sh | TURTLE_LSP_VERSION=v0.19.0 sh
+  ```
+
+  Or download the archive yourself from the
   [latest release](https://github.com/abhishekkundu25/turtle-lsp/releases/latest)
   (`turtle-lsp-<platform>.tar.gz`, or `.zip` on Windows; checksums in
-  `SHA256SUMS`), put `turtle-lsp` on your `PATH`, and point your editor's LSP
+  `SHA256SUMS`) and put `turtle-lsp` on your `PATH`. Point your editor's LSP
   client at it (it speaks LSP over stdio). The same binary is the command-line
   checker and formatter; see [Check from the command line](#check-from-the-command-line).
 - **From source:** `cargo build --release --locked` (binary:
@@ -1019,9 +1052,10 @@ Exit code 2 is what makes Claude Code show the hook's stderr to Claude.
 
 ## In CI
 
-This GitHub workflow downloads the Linux binary from the latest release,
-checks it against `SHA256SUMS`, and annotates the pull request at the lines
-with problems:
+This GitHub workflow installs turtle-lsp with the repository's action, and
+annotates the pull request at the lines with problems. The action runs the
+install script on any runner (Linux, macOS, Windows), checks the archive
+against the release's `SHA256SUMS`, and puts `turtle-lsp` on `PATH`:
 
 ```yaml
 name: RDF
@@ -1035,22 +1069,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install turtle-lsp
-        working-directory: ${{ runner.temp }}
-        run: |
-          base=https://github.com/abhishekkundu25/turtle-lsp/releases/latest/download
-          curl -fsSLO "$base/turtle-lsp-linux-x64.tar.gz"
-          curl -fsSLO "$base/SHA256SUMS"
-          sha256sum --check --ignore-missing SHA256SUMS
-          tar -xzf turtle-lsp-linux-x64.tar.gz
-          echo "$PWD" >> "$GITHUB_PATH"
+      - uses: abhishekkundu25/turtle-lsp@vX.Y.Z # a release tag, v0.19.0 or later
       - run: turtle-lsp check --format github
       - run: turtle-lsp format --check
 ```
 
-To pin a version, replace `latest/download` with `download/vX.Y.Z`, where
-`vX.Y.Z` is a release tag. The actions are pinned to full commit SHAs,
-because a tag can be moved; Dependabot can keep the SHAs current.
+The action installs the latest release; `with: { version: vX.Y.Z }` pins one,
+and `with: { verify-attestation: "true" }` also checks the build attestation
+(give the step `env: { GH_TOKEN: ${{ github.token }} }`). Pin the action
+itself to a full commit SHA, as the other actions here, because a tag can be
+moved; Dependabot can keep the SHAs current.
 
 GitHub shows at most 10 annotations of each severity per step. For a large
 repository, upload SARIF to code scanning instead: the problems appear in the
@@ -1122,8 +1150,10 @@ vim.api.nvim_create_autocmd("LspAttach", {
 
 Push a tag `vX.Y.Z` on a commit of `main`. The release workflow
 (`.github/workflows/release.yml`) builds the server for macOS (arm64, x64),
-Linux (x64, arm64, Alpine) and Windows (x64), attaches a `.vsix` per
-platform, the server on its own (`.tar.gz`, `.zip` on Windows),
+Linux (x64, arm64, Alpine) and Windows (x64, arm64), attaches a `.vsix` per
+platform (none for Windows arm64 yet), the server on its own (`.tar.gz`,
+`.zip` on Windows; each also under a name with its version, such as
+`turtle-lsp-linux-x64-0.19.0.tar.gz`),
 `SHA256SUMS` and build attestations to a GitHub Release, and publishes the
 `.vsix` files to the VS Code Marketplace. Nothing is released unless:
 
