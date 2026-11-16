@@ -1,11 +1,15 @@
 //! `turtle-lsp format`: format files in place, or say what would change;
-//! standard input goes to stdout.
+//! standard input goes to stdout. With `--format json`, stdout is one line:
+//! `{"version": 1, "files": [{"path", "status", "reason"?}], "summary":
+//! {"changed", "notFormatted", "filesChecked"}}`, a file's `status` being
+//! `formatted`, `would-format` or `not-formatted` (with its `reason`).
+//! Unchanged files are counted, not listed.
 
 use super::args::FormatArgs;
 use super::diff;
 use super::files::{self, Context};
 use crate::batch::{self, Columns, Disk, FormatOutcome, Options};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::io::Write;
 
 /// Runs the formatter; the exit code.
@@ -34,8 +38,11 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
 
     let dry = a.check || a.diff;
     let (mut changed, mut skipped, mut unwritten) = (0, ws.unread.len(), 0);
+    // The files `--format json` lists.
+    let mut listed: Vec<Value> = Vec::new();
     for u in &ws.unread {
         eprintln!("{}: not formatted: {}", u.shown, u.message);
+        listed.push(not_formatted(&u.shown, &u.message));
     }
     // Files left out of the run (warned about already) are skipped files.
     if ws.incomplete {
@@ -49,6 +56,7 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
             FormatOutcome::Unchanged => continue,
             FormatOutcome::Refused(reason) => {
                 eprintln!("{}: not formatted: {reason}", file.shown);
+                listed.push(not_formatted(&file.shown, &reason));
                 skipped += 1;
                 continue;
             }
@@ -56,15 +64,23 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
                 let shown = &file.shown;
                 if !dry && !stdin {
                     match files::write_back(&file.path, file.stamp, &text) {
-                        Ok(()) => changed += 1,
+                        Ok(()) => {
+                            changed += 1;
+                            listed.push(json!({ "path": shown, "status": "formatted" }));
+                        }
                         Err(e) => {
                             eprintln!("{shown}: not formatted: {e}");
+                            listed.push(not_formatted(shown, &e));
                             unwritten += 1;
                         }
                     }
                     continue;
                 }
                 changed += 1;
+                if a.json {
+                    listed.push(json!({ "path": shown, "status": "would-format" }));
+                    continue;
+                }
                 if a.diff {
                     // Like git: `a/abs/x.ttl`, not `a//abs/x.ttl`.
                     let label = shown.trim_start_matches('/');
@@ -85,6 +101,23 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
             }
         };
         to_stdout(written)?;
+    }
+    if a.json {
+        listed.sort_by(|x, y| x["path"].as_str().cmp(&y["path"].as_str()));
+        let refused = listed
+            .iter()
+            .filter(|f| f["status"] == "not-formatted")
+            .count();
+        let report = json!({
+            "version": 1,
+            "files": listed,
+            "summary": {
+                "changed": changed,
+                "notFormatted": refused,
+                "filesChecked": ws.files.len() + ws.unread.len(),
+            },
+        });
+        to_stdout(writeln!(out, "{report}"))?;
     }
     // Standard input's text is the output: losing its end is a failure.
     to_stdout(out.flush())?;
@@ -107,6 +140,11 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
     } else {
         0
     })
+}
+
+/// A file `--format json` lists as not formatted, and why.
+fn not_formatted(path: &str, reason: &str) -> Value {
+    json!({ "path": path, "status": "not-formatted", "reason": reason })
 }
 
 /// A write to stdout; a reader that stopped early (`| head`) is not a failure.

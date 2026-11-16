@@ -11,6 +11,7 @@ pub(crate) mod output;
 mod query;
 
 use args::Parsed;
+use std::io::Write;
 
 pub const USAGE: &str = "\
 Usage:
@@ -79,6 +80,10 @@ not changed since it was read.
 Exit codes: 0 clean, 1 errors or too many warnings, 2 the tool failed or
 did not cover everything: a file could not be read or written (--fix), a
 file was skipped, or the scan stopped at its limit.
+
+With --format json, a failure that leaves no report prints
+{\"version\": 1, \"error\": {\"message\": M}} on one line on stdout, M
+being the message on stderr, and exits 2.
 ";
 
 const FORMAT_USAGE: &str = "\
@@ -101,10 +106,21 @@ Options:
   --check               change nothing; list the files that would change
                         (with -, print nothing)
   --diff                change nothing; print a unified diff
+  --format F            text (default) or json: one line, {\"version\": 1,
+                        \"files\": [{\"path\", \"status\", \"reason\"}],
+                        \"summary\": {\"changed\", \"notFormatted\",
+                        \"filesChecked\"}}; status is formatted,
+                        would-format (--check) or not-formatted (with its
+                        reason); unchanged files are only counted (not with
+                        --diff or -)
 
 Exit codes: 0 done, 1 with --check or --diff when a file would change,
 2 the tool failed, or a file could not be read, formatted or written, or was
 left out.
+
+With --format json, a failure that leaves no report prints
+{\"version\": 1, \"error\": {\"message\": M}} on one line on stdout, M
+being the message on stderr, and exits 2.
 ";
 
 const QUERY_USAGE: &str = "\
@@ -143,6 +159,10 @@ json (SPARQL 1.1 results JSON), csv and tsv give full IRIs.
 Exit codes: 0 the query ran (an ASK answered true), 1 an ASK answered false,
 2 a syntax error (printed as FILE:LINE:COL: message), a time-out, an
 unsupported query or format, or another failure.
+
+With --format json, a failure that leaves no result prints
+{\"version\": 1, \"error\": {\"message\": M}} on one line on stdout, M
+being the message on stderr, and exits 2.
 ";
 
 const CODES_USAGE: &str = "\
@@ -158,6 +178,10 @@ Options:
                 \"description\", \"default\": \"on\" or \"off\"}]}
 
 Exit codes: 0 done, 2 a bad option.
+
+With --format json, a failure that leaves no list prints
+{\"version\": 1, \"error\": {\"message\": M}} on one line on stdout, M
+being the message on stderr, and exits 2.
 ";
 
 const EXPLAIN_USAGE: &str = "\
@@ -175,11 +199,17 @@ Options:
 
 Exit codes: 0 done, 2 an unknown code (the closest known code is named) or
 a bad option.
+
+With --format json, a failure that leaves no answer prints
+{\"version\": 1, \"error\": {\"message\": M}} on one line on stdout, M
+being the message on stderr, and exits 2.
 ";
 
 /// Run the subcommand in `args[0]` (`check`, `format`, `query`, `codes`,
 /// `explain` or `help`) with the rest of `args`; the process exit code. Any
-/// other word is an error.
+/// other word is an error. Failures are printed here and nowhere else: on
+/// stderr, and also as a JSON error object on stdout when the command was
+/// given `--format json`.
 pub fn run(args: &[String]) -> i32 {
     // Parsing runs on rayon threads; give them room beyond the 2 MB default,
     // as the server does.
@@ -190,48 +220,147 @@ pub fn run(args: &[String]) -> i32 {
         Some((c, rest)) => (c.as_str(), rest),
         None => ("", args),
     };
-    let result = match command {
-        "check" => args::parse_check(rest).and_then(|p| match p {
-            Parsed::Run(a) => check::run(a),
-            Parsed::Help => help(CHECK_USAGE),
-        }),
-        "format" => args::parse_format(rest).and_then(|p| match p {
-            Parsed::Run(a) => format::run(a),
-            Parsed::Help => help(FORMAT_USAGE),
-        }),
-        "query" => args::parse_query(rest).and_then(|p| match p {
-            Parsed::Run(a) => query::run(a),
-            Parsed::Help => help(QUERY_USAGE),
-        }),
-        "codes" => codes::parse_codes(rest).and_then(|p| match p {
-            Parsed::Run(f) => codes::run_codes(f),
-            Parsed::Help => help(CODES_USAGE),
-        }),
-        "explain" => codes::parse_explain(rest, EXPLAIN_USAGE).and_then(|p| match p {
-            Parsed::Run(a) => codes::run_explain(a),
-            Parsed::Help => help(EXPLAIN_USAGE),
-        }),
-        "help" => match rest.first().map(String::as_str) {
-            None => help(USAGE),
-            Some("check") => help(CHECK_USAGE),
-            Some("format") => help(FORMAT_USAGE),
-            Some("query") => help(QUERY_USAGE),
-            Some("codes") => help(CODES_USAGE),
-            Some("explain") => help(EXPLAIN_USAGE),
-            Some(other) => Err(format!("no help for '{other}'\n\n{USAGE}")),
-        },
-        _ => Err(format!("unknown command '{command}'\n\n{USAGE}")),
+    let failure = match dispatch(command, rest) {
+        Ok(code) => return code,
+        Err(f) => f,
     };
-    match result {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("turtle-lsp: {e}");
-            2
+    if failure.placed {
+        eprintln!("{}", failure.message);
+    } else {
+        eprintln!("turtle-lsp: {}", failure.message);
+    }
+    let reports = matches!(command, "check" | "format" | "query" | "codes" | "explain");
+    if reports && asks_json(rest) {
+        let line = serde_json::json!({ "version": 1, "error": { "message": failure.message } });
+        // As for a report: a reader that stopped early is not a failure.
+        let _ = writeln!(std::io::stdout().lock(), "{line}");
+    }
+    2
+}
+
+/// Why a command failed. On stderr it follows `turtle-lsp: `, unless it
+/// starts with its own place in a file.
+#[derive(Debug)]
+pub(crate) struct Failure {
+    message: String,
+    /// The message starts with `FILE:LINE:COL: `.
+    placed: bool,
+}
+
+impl Failure {
+    /// A failure at `place` (`FILE:LINE:COL`) in a file.
+    pub(crate) fn at(place: &str, message: &str) -> Failure {
+        Failure {
+            message: format!("{place}: {message}"),
+            placed: true,
         }
     }
 }
 
-fn help(text: &str) -> Result<i32, String> {
+impl From<String> for Failure {
+    fn from(message: String) -> Failure {
+        Failure {
+            message,
+            placed: false,
+        }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Failure {
+        message.to_string().into()
+    }
+}
+
+/// Whether `args` ask for `--format json` (or `--format=json`): the last
+/// `--format` before `--` counts, as in the parsers. Read from the raw
+/// arguments, so that an argument error is reported as JSON too.
+fn asks_json(args: &[String]) -> bool {
+    let mut json = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--" {
+            break;
+        }
+        if a == "--format" {
+            json = it.next().is_some_and(|v| v == "json");
+        } else if let Some(v) = a.strip_prefix("--format=") {
+            json = v == "json";
+        }
+    }
+    json
+}
+
+/// Runs `command` with `rest`; the exit code, or why it failed.
+fn dispatch(command: &str, rest: &[String]) -> Result<i32, Failure> {
+    Ok(match command {
+        "check" => match args::parse_check(rest)? {
+            Parsed::Run(a) => check::run(a)?,
+            Parsed::Help => help(CHECK_USAGE),
+        },
+        "format" => match args::parse_format(rest)? {
+            Parsed::Run(a) => format::run(a)?,
+            Parsed::Help => help(FORMAT_USAGE),
+        },
+        "query" => match args::parse_query(rest)? {
+            Parsed::Run(a) => query::run(a)?,
+            Parsed::Help => help(QUERY_USAGE),
+        },
+        "codes" => match codes::parse_codes(rest)? {
+            Parsed::Run(f) => codes::run_codes(f)?,
+            Parsed::Help => help(CODES_USAGE),
+        },
+        "explain" => match codes::parse_explain(rest, EXPLAIN_USAGE)? {
+            Parsed::Run(a) => codes::run_explain(a)?,
+            Parsed::Help => help(EXPLAIN_USAGE),
+        },
+        "help" => help(match rest.first().map(String::as_str) {
+            None => USAGE,
+            Some("check") => CHECK_USAGE,
+            Some("format") => FORMAT_USAGE,
+            Some("query") => QUERY_USAGE,
+            Some("codes") => CODES_USAGE,
+            Some("explain") => EXPLAIN_USAGE,
+            Some(other) => return Err(format!("no help for '{other}'\n\n{USAGE}").into()),
+        }),
+        _ => return Err(format!("unknown command '{command}'\n\n{USAGE}").into()),
+    })
+}
+
+fn help(text: &str) -> i32 {
     print!("{text}");
-    Ok(0)
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::asks_json;
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn cli_asks_json_reads_format_as_the_parsers_do() {
+        for yes in [
+            "--format json",
+            "--format=json",
+            "a.ttl --format json --bogus",
+            "--format concise --format json",
+        ] {
+            assert!(asks_json(&args(yes)), "{yes}");
+        }
+        for no in [
+            "",
+            "--format",
+            "--format concise",
+            "--format=sarif",
+            "--format json --format=concise",
+            "-- --format json",
+            "json",
+            "--formats json",
+        ] {
+            assert!(!asks_json(&args(no)), "{no}");
+        }
+    }
 }

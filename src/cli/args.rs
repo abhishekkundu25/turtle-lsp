@@ -38,6 +38,8 @@ pub(crate) struct FormatArgs {
     pub(crate) stdin_filename: Option<PathBuf>,
     pub(crate) check: bool,
     pub(crate) diff: bool,
+    /// `--format json`: the files as one JSON object instead of text.
+    pub(crate) json: bool,
 }
 
 /// The output of `query`.
@@ -333,6 +335,14 @@ pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String
             "-h" | "--help" => return Ok(Parsed::Help),
             "--root" => out.root = Some(PathBuf::from(it.value(f)?)),
             "--stdin-filename" => stdin_filename = Some(PathBuf::from(it.value(f)?)),
+            "--format" => {
+                let v = it.value(f)?;
+                out.json = match v.as_str() {
+                    "text" => false,
+                    "json" => true,
+                    _ => return Err(format!("--format must be text or json, not '{v}'")),
+                };
+            }
             "--check" | "--diff" => {
                 if f == "--check" {
                     out.check = true;
@@ -344,7 +354,17 @@ pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String
             _ => return Err(unknown(f, "format")),
         }
     }
+    if out.json && out.diff {
+        return Err("--format json does not work with --diff (a diff is text)".to_string());
+    }
     out.stdin_filename = stdin(&mut out.paths, stdin_filename)?;
+    if out.json && out.stdin_filename.is_some() {
+        return Err(
+            "--format json does not work with '-' (standard input): the formatted text is the \
+             output"
+                .to_string(),
+        );
+    }
     Ok(Parsed::Run(out))
 }
 
@@ -611,7 +631,19 @@ mod tests {
         };
         assert!(a.check && a.diff);
         assert_eq!(a.paths, [PathBuf::from("x.ttl")]);
+        assert!(!a.json);
         assert!(parse_format(&args("--fix")).is_err());
+        assert!(format("--format json --check").unwrap().json);
+        assert!(!format("--format=json --format text").unwrap().json);
+        let e = format("--format yaml").unwrap_err();
+        assert!(e.contains("text or json"), "{e}");
+        assert!(
+            format("--format json --diff")
+                .unwrap_err()
+                .contains("--diff")
+        );
+        let e = format("- --format=json").unwrap_err();
+        assert!(e.contains("standard input"), "{e}");
     }
 
     fn query(s: &str) -> Result<QueryArgs, String> {
