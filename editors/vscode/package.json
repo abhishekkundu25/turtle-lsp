@@ -66,7 +66,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, the turtle.query limits (timeoutSeconds, maxRows, maxBufferedRows), turtle.shacl.maxTriples, turtle.reasoning.maxTriples and turtle.diagnostics.workspace, and network imports are off: nothing is fetched unless you run the quick fix that fetches one unresolved import. A server inside the workspace is never run.",
+      "description": "In untrusted workspaces only your own user settings count for turtle.server.path, turtle.imports.network, the turtle.query limits (timeoutSeconds, maxRows, maxBufferedRows), turtle.shacl.maxTriples, turtle.reasoning.rules, turtle.reasoning.maxTriples and turtle.diagnostics.workspace, and the workspace's turtle-lsp.json cannot choose the reasoning rules. Network imports are off: nothing is fetched unless you run the quick fix that fetches one unresolved import. A server inside the workspace is never run.",
       "restrictedConfigurations": [
         "turtle.server.path",
         "turtle.imports.network",
@@ -74,6 +74,7 @@
         "turtle.query.maxRows",
         "turtle.query.maxBufferedRows",
         "turtle.shacl.maxTriples",
+        "turtle.reasoning.rules",
         "turtle.reasoning.maxTriples",
         "turtle.diagnostics.workspace"
       ]
@@ -252,7 +253,7 @@
             "Every W3C OWL 2 RL rule. Slower: reasoning takes longer, and so can the proofs hover shows."
           ],
           "default": "default",
-          "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `turtle.reasoning.diagnostics`.",
+          "markdownDescription": "Reason over the workspace's triples, imports included, with TurbOWL, an OWL 2 RL reasoner, in the background. Hover shows a resource's inferred types with their proofs. Its findings become diagnostics with `turtle.reasoning.diagnostics`. A run stops after 10 s, and hover keeps the last result. In an untrusted workspace only your user setting counts, not the workspace's settings or `turtle-lsp.json`.",
           "scope": "resource"
         },
         "turtle.reasoning.maxTriples": {

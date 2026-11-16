@@ -39,7 +39,7 @@ pub(crate) enum Halt {
 
 /// How many inferred triples [`infer`] reads between two calls of its
 /// `stopped`.
-const CHECK_EVERY: usize = 1 << 16;
+pub(super) const CHECK_EVERY: usize = 1 << 16;
 
 /// Puts `docs` in the order the base reads them: by URI, a stable sort, as
 /// `Base::new` sorts documents of one [`Source`].

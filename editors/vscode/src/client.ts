@@ -69,10 +69,19 @@ const entries = (o: Record<string, unknown>): [string, unknown][] => Object.entr
 const isClientSetting = (key: string): boolean => key.startsWith("server.") || key.startsWith("trace.")
 
 /**
+ * Restricted settings that `turtle-lsp.json` may set: in an untrusted
+ * workspace the user's value, or the default, is always sent, so that the
+ * workspace's file does not decide them either (the server reads the file
+ * itself, and the user's settings go over it).
+ */
+const USER_ONLY_WHEN_UNTRUSTED = ["reasoning.rules"]
+
+/**
  * The `turtle.*` settings to send the server, as nested objects. Only values
  * the user set go: an unset setting is left out, so `turtle-lsp.json` (which the
  * server reads first) decides it, not the default the manifest contributes. In
- * an untrusted workspace a restricted setting takes the user's value only, and
+ * an untrusted workspace a restricted setting takes the user's value only,
+ * `reasoning.rules` is always sent (the user's value or the default), and
  * network imports are off.
  */
 export function settingsFrom(src: SettingsSource): Record<string, unknown> {
@@ -82,11 +91,14 @@ export function settingsFrom(src: SettingsSource): Record<string, unknown> {
     const key = full.slice("turtle.".length)
     if (isClientSetting(key)) continue
     const seen = src.inspect(key)
-    if (!seen) continue
-    const layers = [seen.globalValue]
-    if (src.trusted || !src.restricted.includes(full)) layers.push(seen.workspaceValue, seen.workspaceFolderValue)
+    const layers = [seen?.globalValue]
+    if (src.trusted || !src.restricted.includes(full)) layers.push(seen?.workspaceValue, seen?.workspaceFolderValue)
     const set = layers.filter((v) => v !== undefined)
-    if (set.length === 0) continue
+    if (set.length === 0) {
+      const property = src.properties[full]
+      if (!src.trusted && USER_ONLY_WHEN_UNTRUSTED.includes(key) && isObject(property)) put(out, key.split("."), property.default)
+      continue
+    }
     // Objects (the prefixes) merge across scopes; anything else takes the narrowest.
     const value = set.every(isObject) ? Object.fromEntries(set.flatMap(entries)) : set[set.length - 1]
     put(out, key.split("."), value)

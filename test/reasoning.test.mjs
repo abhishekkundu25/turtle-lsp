@@ -227,6 +227,49 @@ test("progress: a run shows TurbOWL's progress, which ends with a count", async 
   }
 })
 
+test("a SPARQL file's open, edits and close start no run; an RDF file's edit does", async () => {
+  process.env.TURTLE_LSP_REASONING_PROGRESS_NOW = "1"
+  let w
+  try {
+    w = await session({ "a.ttl": CLASH }, { initializationOptions: ON, capabilities: PROGRESS })
+  } finally {
+    delete process.env.TURTLE_LSP_REASONING_PROGRESS_NOW
+  }
+  const a = w.uri("a.ttl")
+  const q = w.uri("q.rq")
+  const runs = () => [...progressByToken(w.s).values()].filter((p) => p.title === TITLE)
+  const settled = async () => {
+    for (let i = 0; i < 250 && runs().some((p) => !p.end); i++) await sleep(20)
+    assert.ok(runs().every((p) => p.end), JSON.stringify(runs()))
+  }
+  try {
+    w.s.open(a, CLASH)
+    await until(w.s, a, (d) => turbowl(d).length > 0)
+    // Opening a.ttl can start a second run after the first one's findings
+    // land (a slow runner sees it late): wait past the pause in typing until
+    // no new run starts, so the count below is only the SPARQL file's.
+    let before = -1
+    while (runs().length !== before) {
+      before = runs().length
+      await settled()
+      await sleep(1500)
+    }
+    w.s.open(q, "SELECT * WHERE { ?s ?p ?o }", "sparql")
+    w.s.change(q, "ASK { ?s ?p ?o }")
+    w.s.close(q)
+    // Past the pause in typing that would start a run.
+    await sleep(1500)
+    assert.equal(runs().length, before, JSON.stringify(runs()))
+    w.s.change(a, CALM)
+    await until(w.s, a, (d) => turbowl(d).length === 0)
+    assert.ok(runs().length > before, JSON.stringify(runs()))
+    // No progress is left on.
+    await settled()
+  } finally {
+    await w.end()
+  }
+})
+
 test("by default (reasoning.diagnostics off) a run publishes no findings; turning it on shows them", async () => {
   const w = await session({ "a.ttl": CLASH }, { initializationOptions: { reasoning: { rules: "default" } } })
   const a = w.uri("a.ttl")

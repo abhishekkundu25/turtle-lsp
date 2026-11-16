@@ -421,6 +421,7 @@ mod tests {
             related,
             findings: true,
             project: Default::default(),
+            cancel: Default::default(),
         };
         let mut out = run_inline(&shared, &job).diagnostics;
         let mut v = out.remove(URI).unwrap_or_default();
@@ -537,6 +538,7 @@ mod tests {
             related: true,
             findings: true,
             project: Default::default(),
+            cancel: Default::default(),
         };
         let out = run_inline(&Shared::new(Spawn::Thread), &job).diagnostics;
         let lines = |uri: &str| {

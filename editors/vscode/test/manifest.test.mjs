@@ -157,6 +157,7 @@ test("settings the server limits or fetches with are restricted in untrusted wor
     "turtle.query.maxRows",
     "turtle.query.maxBufferedRows",
     "turtle.shacl.maxTriples",
+    "turtle.reasoning.rules",
     "turtle.reasoning.maxTriples",
     "turtle.diagnostics.workspace",
   ]) {
@@ -186,9 +187,26 @@ test("an untrusted workspace turns network imports off and ignores workspace val
     return {}
   }
   const untrusted = settingsFrom({ properties: settings, restricted, inspect, trusted: false })
-  assert.deepEqual(untrusted, { imports: { network: false }, query: { maxRows: 50 }, format: { lineWidth: 60 } })
+  assert.deepEqual(untrusted, { imports: { network: false }, query: { maxRows: 50 }, format: { lineWidth: 60 }, reasoning: { rules: "default" } })
   const trusted = settingsFrom({ properties: settings, restricted, inspect, trusted: true })
   assert.deepEqual(trusted, { imports: { network: true }, query: { maxRows: 99999999 }, format: { lineWidth: 60 } })
+})
+
+test("in an untrusted workspace only the user's reasoning rules count, or the default, never turtle-lsp.json's", () => {
+  // Sent even when unset, so the server's turtle-lsp.json (and, in the
+  // browser, the file layered under these) cannot choose the rules.
+  const sent = (inspect, trusted) => settingsFrom({ properties: settings, restricted, inspect, trusted }).reasoning
+  assert.deepEqual(sent(() => ({}), false), { rules: "default" })
+  assert.deepEqual(sent(() => undefined, false), { rules: "default" })
+  assert.equal(settings["turtle.reasoning.rules"].default, "default")
+  const workspace = (key) => (key === "reasoning.rules" ? { workspaceValue: "complete" } : {})
+  assert.deepEqual(sent(workspace, false), { rules: "default" })
+  const user = (key) => (key === "reasoning.rules" ? { globalValue: "off", workspaceValue: "complete" } : {})
+  assert.deepEqual(sent(user, false), { rules: "off" })
+  // Trusted, an unset setting is left to turtle-lsp.json.
+  assert.equal(sent(() => ({}), true), undefined)
+  assert.deepEqual(sent(workspace, true), { rules: "complete" })
+  assert.match(pkg.capabilities.untrustedWorkspaces.description, /turtle\.reasoning\.rules/)
 })
 
 test("a setting left at its default is not sent, so turtle-lsp.json can decide (format.lineWidth)", () => {

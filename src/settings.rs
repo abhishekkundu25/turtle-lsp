@@ -332,7 +332,9 @@ impl Settings {
                 }
             }
             ["shacl", "onType"] => set_bool(&mut self.shacl_on_type, v),
-            // The file may set the rules: its limit below still holds.
+            // The file may set the rules: its limit below and the time limit
+            // of a run still hold. In an untrusted VS Code workspace the
+            // extension sends the user's own rules, which go over the file's.
             ["reasoning", "rules"] => {
                 if let Some(r) = v.as_str().and_then(parse_reasoning) {
                     self.reasoning = r;
