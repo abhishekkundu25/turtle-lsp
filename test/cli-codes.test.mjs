@@ -57,7 +57,9 @@ test("explain: an off-by-default code says so and how to turn it on with lint.en
   const r = run(["explain", "missing-label"])
   assert.equal(r.code, 0, r.err)
   assert.match(r.out, /^Default: off$/m)
-  assert.match(r.out, /^Turn on: Add "missing-label" to "lint\.enable" in turtle-lsp\.json\.$/m)
+  assert.match(r.out, /^Turn on: Add "missing-label" to "lint\.enable" in turtle-lsp\.json at the workspace root: /m)
+  // The whole file, so an agent can write it as it is.
+  assert.ok(r.out.includes('{"lint": {"enable": ["missing-label"]}}'), r.out)
 })
 
 test("explain --format json: one codes entry plus enable and disable", () => {

@@ -101,7 +101,7 @@ test("check: the concise format prints 50 problems by default, and says how to s
   assert.ok(r.lines.every((l, i) => l.startsWith(`a.ttl:${i + 1}:`)), r.lines.slice(0, 3).join("\n"))
   assert.deepEqual(r.errLines, [
     "150 errors, 0 warnings in 1 file",
-    "100 more problems not shown (--max-problems 50); narrow the run with a path, --select or --min-severity, or pass --max-problems 0",
+    "100 more problems not shown (100 errors; --max-problems 50); narrow the run with a path, --select or --min-severity, or pass --max-problems 0",
   ])
   assert.equal(run(ws, ["check"]).out, r.out, "the same problems on every run")
 
@@ -113,7 +113,7 @@ test("check: the concise format prints 50 problems by default, and says how to s
   const ten = run(ws, ["check", "--max-problems=10"])
   assert.equal(ten.code, 1)
   assert.deepEqual(ten.lines, r.lines.slice(0, 10))
-  assert.match(ten.errLines.at(-1), /^140 more problems not shown \(--max-problems 10\);/)
+  assert.match(ten.errLines.at(-1), /^140 more problems not shown \(140 errors; --max-problems 10\);/)
 
   const stats = run(ws, ["check", "--statistics"])
   assert.deepEqual(stats.lines, ["  150  undeclared-prefix", "  150  total"])
@@ -146,7 +146,7 @@ test("check --format json: no cap by default; with --max-problems, summary.notSh
   assert.equal(ten.summary.errors, 150)
   assert.equal(capped.code, r.code)
   assert.equal(capped.code, 1)
-  assert.match(capped.err, /^140 more problems not shown \(--max-problems 10\);/)
+  assert.match(capped.err, /^140 more problems not shown \(140 errors; --max-problems 10\);/)
 })
 
 test("check: --max-problems caps the run after --max-diagnostics caps each file", (t) => {
@@ -159,14 +159,14 @@ test("check: --max-problems caps the run after --max-diagnostics caps each file"
   )
   assert.deepEqual(r.errLines, [
     "12 errors, 0 warnings in 3 files",
-    "7 more problems not shown (--max-diagnostics 2, --max-problems 5); narrow the run with a path, --select or --min-severity, or drop --max-diagnostics and pass --max-problems 0",
+    "7 more problems not shown (7 errors; --max-diagnostics 2, --max-problems 5); narrow the run with a path, --select or --min-severity, or drop --max-diagnostics and pass --max-problems 0",
   ])
 
   const perFile = run(ws, ["check", "--max-diagnostics", "2"])
   assert.equal(perFile.lines.length, 6)
   assert.equal(
     perFile.errLines.at(-1),
-    "6 more problems not shown (--max-diagnostics 2); narrow the run with a path, --select or --min-severity, or drop --max-diagnostics",
+    "6 more problems not shown (6 errors; --max-diagnostics 2); narrow the run with a path, --select or --min-severity, or drop --max-diagnostics",
   )
 })
 

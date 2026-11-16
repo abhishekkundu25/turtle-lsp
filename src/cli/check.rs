@@ -311,7 +311,14 @@ fn budget(
     for &(_, f, i) in &pool {
         kept[f].push(checked[f].problems[i].clone());
     }
-    let all: usize = checked.iter().map(|c| c.problems.len()).sum();
-    not_shown.count = all - pool.len();
+    for c in checked {
+        for p in &c.problems {
+            not_shown.by_severity[severity(p) as usize] += 1;
+        }
+    }
+    for &(s, _, _) in &pool {
+        not_shown.by_severity[s as usize] -= 1;
+    }
+    not_shown.count = not_shown.by_severity.iter().sum();
     (kept, not_shown)
 }

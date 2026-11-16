@@ -59,23 +59,30 @@ Options:
                         (public addresses only, unless
                         TURTLE_LSP_ALLOW_PRIVATE_HOSTS=1); turtle-lsp.json
                         cannot turn this on
-  --max-diagnostics N   print at most N problems per file, the most severe
-                        first
-  --max-problems N      print at most N problems in all, the most severe
-                        first (default: 50 in the concise format on stdout,
-                        no cap otherwise; 0: no cap); a line on stderr says
-                        how many were not printed
+  --max-diagnostics N   print at most N problems per file: the most severe
+                        are kept, then printed in file order
+  --max-problems N      print at most N problems in all: the most severe are
+                        kept, then printed in file order, so an error is
+                        never left out for a hint (default: 50 in the
+                        concise format on stdout, no cap otherwise; 0: no
+                        cap); a line on stderr counts what was not printed,
+                        by severity
   --min-severity S      error, warning, info or hint: report only problems at
                         least this severe (default: hint, every problem); a
                         skipped SHACL run is always reported
   --statistics          print a count per code instead of the problems
                         (not with --format; no cap applies)
 
-A file that cannot be read or is not UTF-8 is reported as an error with the
-code io or encoding. A folder scan takes at most 20000 files; a file over
-50 MB is skipped. TURTLE_LSP_MAX_FILES=N changes the first limit. --fix
-replaces a file through a temporary file in its folder, and only if it has
-not changed since it was read.
+A path that does not exist fails the run (exit 2, no report). A file that
+cannot be read or is not UTF-8 is reported as an error with the code io or
+encoding. A folder scan takes at most 20000 files; a file over 50 MB is
+skipped. TURTLE_LSP_MAX_FILES=N changes the first limit. --fix replaces a
+file through a temporary file in its folder, and only if it has not
+changed since it was read.
+
+Settings come from turtle-lsp.json at the workspace root, for example
+{\"lint\": {\"ignore\": [\"unused-prefix\"]}}; 'turtle-lsp explain CODE'
+says which key turns a code on or off.
 
 Exit codes: 0 clean, 1 errors or too many warnings, 2 the tool failed or
 did not cover everything: a file could not be read or written (--fix), a

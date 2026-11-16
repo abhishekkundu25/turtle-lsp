@@ -51,6 +51,9 @@ pub(crate) struct NotShown {
     pub(crate) max_diagnostics: Option<usize>,
     /// `--max-problems` or its default, when it left a problem out.
     pub(crate) max_problems: Option<usize>,
+    /// Of `count`: errors, warnings, infos and hints, so a reader knows
+    /// whether an error was left out.
+    pub(crate) by_severity: [usize; 4],
 }
 
 /// The SARIF 2.1.0 schema the `sarif` format declares.
@@ -181,8 +184,19 @@ pub(crate) fn not_shown_line(n: &NotShown) -> Option<String> {
             "drop --max-diagnostics and pass --max-problems 0",
         ),
     };
+    let kinds: Vec<String> = ["error", "warning", "info", "hint"]
+        .iter()
+        .zip(n.by_severity)
+        .filter(|(_, k)| *k > 0)
+        .map(|(word, k)| plural(k, word))
+        .collect();
+    let kinds = if kinds.is_empty() {
+        String::new()
+    } else {
+        format!("{}; ", kinds.join(", "))
+    };
     Some(format!(
-        "{} not shown ({caps}); narrow the run with a path, --select or --min-severity, or {see_all}",
+        "{} not shown ({kinds}{caps}); narrow the run with a path, --select or --min-severity, or {see_all}",
         plural(n.count, "more problem")
     ))
 }
@@ -1106,28 +1120,29 @@ mod tests {
 
     #[test]
     fn not_shown_lines_name_the_cap_and_the_way_out() {
-        let n = |count, max_diagnostics, max_problems| NotShown {
-            count,
+        let n = |by_severity: [usize; 4], max_diagnostics, max_problems| NotShown {
+            count: by_severity.iter().sum(),
             max_diagnostics,
             max_problems,
+            by_severity,
         };
         assert_eq!(
-            not_shown_line(&n(50, None, Some(100))).unwrap(),
-            "50 more problems not shown (--max-problems 100); narrow the run with a path, \
-             --select or --min-severity, or pass --max-problems 0"
+            not_shown_line(&n([0, 0, 0, 50], None, Some(100))).unwrap(),
+            "50 more problems not shown (50 hints; --max-problems 100); narrow the run with a \
+             path, --select or --min-severity, or pass --max-problems 0"
         );
         assert_eq!(
-            not_shown_line(&n(1, Some(2), None)).unwrap(),
-            "1 more problem not shown (--max-diagnostics 2); narrow the run with a path, \
-             --select or --min-severity, or drop --max-diagnostics"
+            not_shown_line(&n([1, 0, 0, 0], Some(2), None)).unwrap(),
+            "1 more problem not shown (1 error; --max-diagnostics 2); narrow the run with a \
+             path, --select or --min-severity, or drop --max-diagnostics"
         );
         assert_eq!(
-            not_shown_line(&n(7, Some(2), Some(5))).unwrap(),
-            "7 more problems not shown (--max-diagnostics 2, --max-problems 5); narrow the run \
-             with a path, --select or --min-severity, or drop --max-diagnostics and pass \
-             --max-problems 0"
+            not_shown_line(&n([2, 0, 1, 4], Some(2), Some(5))).unwrap(),
+            "7 more problems not shown (2 errors, 1 info, 4 hints; --max-diagnostics 2, \
+             --max-problems 5); narrow the run with a path, --select or --min-severity, or drop \
+             --max-diagnostics and pass --max-problems 0"
         );
-        assert_eq!(not_shown_line(&n(0, None, None)), None);
+        assert_eq!(not_shown_line(&n([0; 4], None, None)), None);
         assert_eq!(not_shown_line(&NotShown::default()), None);
     }
 }

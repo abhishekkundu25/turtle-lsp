@@ -138,7 +138,10 @@ fn enable(code: &str) -> String {
     if on_by_default(code) {
         "It is on by default.".to_string()
     } else {
-        format!("Add \"{code}\" to \"lint.enable\" in turtle-lsp.json.")
+        format!(
+            "Add \"{code}\" to \"lint.enable\" in turtle-lsp.json at the workspace root: \
+             {{\"lint\": {{\"enable\": [\"{code}\"]}}}}."
+        )
     }
 }
 
@@ -150,8 +153,10 @@ fn disable(code: &str) -> String {
              incomplete, and 'turtle-lsp check' exits 2. --ignore {code} hides the line only."
         );
     }
-    let ignore =
-        format!("\"lint.ignore\" in turtle-lsp.json, or run 'turtle-lsp check --ignore {code}'");
+    let ignore = format!(
+        "\"lint.ignore\" in turtle-lsp.json at the workspace root \
+             ({{\"lint\": {{\"ignore\": [\"{code}\"]}}}}), or run 'turtle-lsp check --ignore {code}'"
+    );
     if on_by_default(code) {
         format!("Add \"{code}\" to {ignore}.")
     } else {
