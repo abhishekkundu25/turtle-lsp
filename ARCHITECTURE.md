@@ -292,8 +292,10 @@ findings nor its result are shown.
 
 Long work runs on worker threads and comes back as messages: the initial
 index, imports (`imports::worker`), JSON-LD context fetches, SHACL
-validation, reasoning (`reasoning::Worker`), workspace diagnostics and
-query runs. `worker::Spawn` says how a job runs: `Spawn::Thread` on a
+validation, reasoning (`reasoning::Worker`), workspace diagnostics,
+query runs, and the end of a proof search a hover is held for
+(`server::hovers`: a `hover-wait` thread wakes the main loop, which answers
+the hover again). `worker::Spawn` says how a job runs: `Spawn::Thread` on a
 thread of its own in the stdio server, `Spawn::Inline` on the caller's
 thread when the server is embedded in a host with no threads. Threads start
 through `server::worker::spawn_guarded`, which turns a panic into a

@@ -5,12 +5,12 @@
 ### Changed
 
 - **A hover whose proof is slow waits for it**, instead of saying "The
-  proof is still being worked out; hover again". The editor shows the hover
-  as loading, usually under 2 s (a few seconds when another term's search
-  runs first), and it arrives with the proofs, or with what the search found
-  by its time limit. Hovering another term drops it, and in VS Code so does
-  moving away. In Neovim, where the hover window stays open, hovering again
-  meant closing it and coming back.
+  proof is still being worked out; hover again". It arrives usually under
+  2 s, a few seconds when another term's search runs first (VS Code shows
+  it as loading; Neovim opens it when it arrives), with the proofs or with
+  what the search found by its time limit. Hovering another term drops it,
+  and in VS Code so does moving away. In Neovim, where the hover window
+  stays open, hovering again meant closing it and coming back.
 - **The VS Code extension uses `vscode-languageclient` 11** (was 10.1.2).
   It needs VS Code 1.91 or later, the extension's minimum already.
 
