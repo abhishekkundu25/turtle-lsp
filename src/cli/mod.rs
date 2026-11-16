@@ -1,8 +1,9 @@
-//! The command line: `turtle-lsp check`, `turtle-lsp format` and
-//! `turtle-lsp query`.
+//! The command line: `turtle-lsp check`, `format`, `query`, `codes` and
+//! `explain`.
 
 mod args;
 mod check;
+mod codes;
 mod diff;
 mod files;
 mod format;
@@ -18,11 +19,13 @@ Usage:
   turtle-lsp format [PATHS...]    format files in place
   turtle-lsp query (FILE.rq | -e QUERY) [PATHS...]
                                   run a SPARQL query over RDF files
+  turtle-lsp codes                list the diagnostic codes
+  turtle-lsp explain CODE         describe a code and how to turn it on or off
   turtle-lsp help [COMMAND]       show this text, or the options of a command
   turtle-lsp --version            print the version
 
-Run 'turtle-lsp help check', 'turtle-lsp help format' or
-'turtle-lsp help query' (or give the command --help) for options.
+Run 'turtle-lsp help COMMAND' (or give the command --help) for its
+options.
 ";
 
 const CHECK_USAGE: &str = "\
@@ -123,8 +126,41 @@ Exit codes: 0 the query ran (an ASK answered true), 1 an ASK answered false,
 unsupported query or format, or another failure.
 ";
 
-/// Run the subcommand in `args[0]` (`check`, `format`, `query` or `help`) with
-/// the rest of `args`; the process exit code. Any other word is an error.
+const CODES_USAGE: &str = "\
+Usage: turtle-lsp codes [OPTIONS]
+
+List every diagnostic code turtle-lsp reports, one per line: the code, on or
+off (whether it is reported by default) and what it means. These are the
+codes that --select and --ignore of 'turtle-lsp check', and lint.ignore and
+lint.enable in turtle-lsp.json, take.
+
+Options:
+  --format F    text (default) or json: {\"version\": 1, \"codes\": [{\"code\",
+                \"description\", \"default\": \"on\" or \"off\"}]}
+
+Exit codes: 0 done, 2 a bad option.
+";
+
+const EXPLAIN_USAGE: &str = "\
+Usage: turtle-lsp explain [OPTIONS] CODE
+
+Describe one diagnostic code: what it means, whether it is reported by
+default, and how to turn it on (lint.enable in turtle-lsp.json, for a code
+that is off by default), turn it off (lint.ignore in turtle-lsp.json, or
+'turtle-lsp check --ignore CODE') or show only it ('turtle-lsp check
+--select CODE'). 'turtle-lsp codes' lists the codes.
+
+Options:
+  --format F    text (default) or json: the fields of one 'codes --format
+                json' entry, and \"enable\" and \"disable\"
+
+Exit codes: 0 done, 2 an unknown code (the closest known code is named) or
+a bad option.
+";
+
+/// Run the subcommand in `args[0]` (`check`, `format`, `query`, `codes`,
+/// `explain` or `help`) with the rest of `args`; the process exit code. Any
+/// other word is an error.
 pub fn run(args: &[String]) -> i32 {
     // Parsing runs on rayon threads; give them room beyond the 2 MB default,
     // as the server does.
@@ -148,11 +184,21 @@ pub fn run(args: &[String]) -> i32 {
             Parsed::Run(a) => query::run(a),
             Parsed::Help => help(QUERY_USAGE),
         }),
+        "codes" => codes::parse_codes(rest).and_then(|p| match p {
+            Parsed::Run(f) => codes::run_codes(f),
+            Parsed::Help => help(CODES_USAGE),
+        }),
+        "explain" => codes::parse_explain(rest, EXPLAIN_USAGE).and_then(|p| match p {
+            Parsed::Run(a) => codes::run_explain(a),
+            Parsed::Help => help(EXPLAIN_USAGE),
+        }),
         "help" => match rest.first().map(String::as_str) {
             None => help(USAGE),
             Some("check") => help(CHECK_USAGE),
             Some("format") => help(FORMAT_USAGE),
             Some("query") => help(QUERY_USAGE),
+            Some("codes") => help(CODES_USAGE),
+            Some("explain") => help(EXPLAIN_USAGE),
             Some(other) => Err(format!("no help for '{other}'\n\n{USAGE}")),
         },
         _ => Err(format!("unknown command '{command}'\n\n{USAGE}")),
