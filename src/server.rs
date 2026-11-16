@@ -916,7 +916,7 @@ impl Server {
     ) -> Result<Ended, Box<dyn std::error::Error + Send + Sync>> {
         self.queries.cancel_all();
         self.query_requests.cancel_all();
-        for id in self.hovers.ids() {
+        if let Some(id) = self.hovers.held_id() {
             self.client.send(cancelled(id.clone()))?;
         }
         self.client.send(Response::new_ok(req.id, ()))?;
@@ -963,7 +963,7 @@ impl Server {
                 let result = guard(&method, || self.request(req))
                     .unwrap_or_else(|msg| Err((ErrorCode::InternalError, msg)));
                 match result {
-                    // Answered later (a query run).
+                    // Answered later (a query run, a held hover).
                     Ok(None) => {}
                     Ok(Some(json)) => self.client.respond(id, json)?,
                     Err((code, message)) => {
@@ -1569,7 +1569,8 @@ impl Server {
     }
 
     /// The answer to `req`, its result as JSON text: None when it is
-    /// answered later (a query run).
+    /// answered later (a query run, a hover held until its proofs are
+    /// found).
     fn request(&mut self, req: Request) -> Result<Option<String>, (ErrorCode, String)> {
         use lsp_types::request::*;
         let bad = |e: serde_json::Error| (ErrorCode::InvalidParams, e.to_string());
@@ -1592,6 +1593,10 @@ impl Server {
                 let p = params!(HoverParams);
                 let at = p.text_document_position_params;
                 let uri = at.text_document.uri.as_str();
+                // The user hovers elsewhere now (`hovers`).
+                if let Some(old) = self.hovers.supersede() {
+                    let _ = self.client.send(cancelled(old));
+                }
                 // From when it was asked, before the wait for its proofs.
                 let deadline = self
                     .reasoning

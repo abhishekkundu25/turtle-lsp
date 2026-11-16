@@ -1,4 +1,4 @@
-//! Hovers held until their proofs are found.
+//! The hover held until its proofs are found.
 //!
 //! A hover on a resource waits a short time for the proofs of its inferred
 //! types (`reasoning::HOVER_WAIT`); past it, the proof search goes on in the
@@ -10,16 +10,19 @@
 //! is held again for its own, until its deadline; past it, it is answered
 //! as it is.
 //!
-//! `$/cancelRequest` answers a held hover with `RequestCancelled`, as an
-//! editor does when the cursor moves away. Only on threads: inline (the
-//! browser build) the search runs within the hover, which never waits.
+//! One hover is held at a time: a newer hover request answers the one held
+//! as cancelled ([`Hovers::supersede`]). Neovim sends no `$/cancelRequest`
+//! when the cursor moves, so a held hover would otherwise open late, about
+//! the term left behind; and two held hovers would race for one search's
+//! answer. `$/cancelRequest` answers it as cancelled too, as VS Code sends
+//! when the cursor moves away. Only on threads: inline (the browser build)
+//! the search runs within the hover, which never waits.
 
 use crate::clock::Instant;
-use crate::server::worker::spawn_guarded;
+use crate::server::worker::Spawn;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_server::RequestId;
 use lsp_types::Position;
-use rustc_hash::FxHashMap;
 use std::time::Duration;
 
 /// The stack of a thread that only waits on a channel.
@@ -32,10 +35,10 @@ pub(super) struct Held {
     pub(super) deadline: Instant,
 }
 
-/// The hovers held, by request id, and the channel on which their waiting
-/// threads wake the main loop.
+/// The hover held, by request id, and the channel on which the threads
+/// waiting for searches wake the main loop.
 pub(super) struct Hovers {
-    held: FxHashMap<RequestId, Held>,
+    held: Option<(RequestId, Held)>,
     tx: Sender<RequestId>,
     rx: Receiver<RequestId>,
 }
@@ -43,11 +46,7 @@ pub(super) struct Hovers {
 impl Default for Hovers {
     fn default() -> Self {
         let (tx, rx) = unbounded();
-        Hovers {
-            held: FxHashMap::default(),
-            tx,
-            rx,
-        }
+        Hovers { held: None, tx, rx }
     }
 }
 
@@ -60,16 +59,17 @@ impl Hovers {
     }
 
     /// Hold `held` as request `id` until `ended` disconnects (its search
-    /// ended) or its deadline passes, whichever comes first. False when it
-    /// cannot be held: its deadline has passed, or no thread could start to
-    /// wait.
+    /// ended) or its deadline passes, whichever comes first, in place of
+    /// any hover held ([`Hovers::supersede`] answers that one first). False
+    /// when it cannot be held: its deadline has passed, or no thread could
+    /// start to wait.
     pub(super) fn hold(&mut self, id: RequestId, held: Held, ended: Receiver<()>) -> bool {
         let left = held.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return false;
         }
         let (tx, woken) = (self.tx.clone(), id.clone());
-        let waited = spawn_guarded(
+        let waited = Spawn::Thread.run(
             "hover-wait",
             WAITER_STACK,
             move || {
@@ -83,24 +83,31 @@ impl Hovers {
         if waited.is_err() {
             return false;
         }
-        self.held.insert(id, held);
+        self.held = Some((id, held));
         true
     }
 
-    /// Where the waiting threads say a held hover can be answered.
+    /// Where the waiting threads say a held hover can be answered. A woken
+    /// id that is no longer held was answered already.
     pub(super) fn woken(&self) -> &Receiver<RequestId> {
         &self.rx
     }
 
-    /// The held hover `id`, no longer held; `None` when it was answered
-    /// already (cancelled).
+    /// The held hover `id`, no longer held; `None` when it is not the one
+    /// held (answered already).
     pub(super) fn take(&mut self, id: &RequestId) -> Option<Held> {
-        self.held.remove(id)
+        self.held.take_if(|(held, _)| held == id).map(|(_, h)| h)
     }
 
-    /// The ids of every hover held.
-    pub(super) fn ids(&self) -> impl Iterator<Item = &RequestId> {
-        self.held.keys()
+    /// The id of the hover held.
+    pub(super) fn held_id(&self) -> Option<&RequestId> {
+        self.held.as_ref().map(|(id, _)| id)
+    }
+
+    /// The id of the hover held, no longer held: a newer hover request
+    /// came. Its caller answers it as cancelled.
+    pub(super) fn supersede(&mut self) -> Option<RequestId> {
+        self.held.take().map(|(id, _)| id)
     }
 }
 
@@ -148,10 +155,36 @@ mod tests {
     }
 
     #[test]
-    fn a_hover_past_its_deadline_is_not_held() {
+    fn a_hover_past_its_deadline_or_without_a_thread_is_not_held() {
         let mut h = Hovers::default();
         let (_end, ended) = crossbeam_channel::bounded::<()>(0);
-        assert!(!h.hold(1.into(), held(Instant::now()), ended));
-        assert_eq!(h.ids().count(), 0);
+        assert!(!h.hold(1.into(), held(Instant::now()), ended.clone()));
+        let later = Hovers::deadline(Duration::from_secs(5));
+        assert!(!crate::server::worker::failing_starts(|| h.hold(
+            2.into(),
+            held(later),
+            ended
+        )));
+        assert_eq!(h.supersede(), None);
+    }
+
+    #[test]
+    fn a_newer_hover_supersedes_the_one_held_whose_wake_is_then_ignored() {
+        let mut h = Hovers::default();
+        let (end, ended) = crossbeam_channel::bounded::<()>(0);
+        let later = Hovers::deadline(Duration::from_secs(5));
+        assert!(h.hold(1.into(), held(later), ended.clone()));
+        assert_eq!(h.supersede(), Some(RequestId::from(1)));
+        assert!(h.hold(2.into(), held(later), ended));
+        drop(end);
+        // Both waiting threads wake; only the one held is answered.
+        let mut woken = [
+            h.woken().recv_timeout(Duration::from_secs(5)).unwrap(),
+            h.woken().recv_timeout(Duration::from_secs(5)).unwrap(),
+        ];
+        woken.sort_by_key(|id| id.to_string());
+        assert_eq!(woken, [RequestId::from(1), RequestId::from(2)]);
+        assert!(h.take(&1.into()).is_none());
+        assert!(h.take(&2.into()).is_some());
     }
 }

@@ -140,12 +140,15 @@ test("in a JSON-LD document the proofs are named with its @context, the closest 
   }
 })
 
-// `ex:x` and `ex:y` at the start of a long rdfs:subClassOf chain, each with
-// a type disjoint from its end: their proofs take longer than the hover's
-// first wait (200 ms), up to the search's time limit (2 s). `ex:z`, near
-// its end, has a quick proof.
+// `ex:x`, `ex:y`, `ex:w` and `ex:v` at the start of a long rdfs:subClassOf
+// chain, each with a type disjoint from its end: their proofs take longer
+// than the hover's first wait (200 ms), up to the search's time limit (2 s).
+// `ex:z`, near its end, has a quick proof. The test needs these proofs to
+// be slow: when TurbOWL explains a long chain quickly (turbowl#6), make the
+// chain longer or find another slow proof.
 function slowChain(links) {
-  let text = `${HEADER}ex:x a ex:C0 , ex:D .\nex:y a ex:C0 , ex:D .\nex:z a ex:C${links - 1} .\n`
+  let text = `${HEADER}ex:z a ex:C${links - 1} .\n`
+  for (const t of ["x", "y", "w", "v"]) text += `ex:${t} a ex:C0 , ex:D .\n`
   for (let i = 0; i < links; i++) text += `ex:C${i} rdfs:subClassOf ex:C${i + 1} .\n`
   return text + `ex:C${links} owl:disjointWith ex:D .\n`
 }
@@ -186,6 +189,17 @@ test("a hover whose proofs take long is answered once they are found, not told t
     assert.ok(md.includes("**Inferred**\n\n- "), md)
     assert.ok(took > 200, `answered in ${took} ms: the proofs were not slow`)
     assert.ok(took < 8000, `answered in ${took} ms`)
+
+    // A newer hover cancels the one held: Neovim sends no $/cancelRequest
+    // when the cursor moves, and the older hover would open late, about
+    // the term left behind.
+    const older = hoverOn("ex:w a")
+    await new Promise((r) => setTimeout(r, 300))
+    const newer = hoverOn("ex:v a")
+    await assert.rejects(older, (e) => e.code === -32800)
+    const latest = (await newer).contents.value
+    assert.ok(!latest.includes("still being worked out"), latest)
+    assert.ok(latest.includes("**Inferred**\n\n- "), latest)
   } finally {
     await s.stop()
     fs.rmSync(dir, { recursive: true, force: true })
