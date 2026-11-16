@@ -854,14 +854,20 @@ sites that allow other pages to read them (CORS) answer.
 included, without an editor. `turtle-lsp format` formats files. With no
 subcommand, `turtle-lsp` is the language server, as before. A word that is
 not a command is an error (exit 2); it does not start the server.
-`turtle-lsp help check` (or `format`, `query`), or the command with
-`--help`, prints that command's options, and `turtle-lsp --version` prints
-the version to stdout.
+`turtle-lsp help check` (or `format`, `query`, `codes`, `explain`), or the
+command with `--help`, prints that command's options, and `turtle-lsp
+--version` prints the version to stdout. `turtle-lsp --help` ends with
+examples of the common tasks.
 
 ```sh
 turtle-lsp check                     # every RDF (JSON-LD included) and SPARQL file under the workspace root
 turtle-lsp check data/people.ttl     # only this file, with the whole workspace as context
 turtle-lsp check --fix               # also apply the safe fixes
+turtle-lsp check --min-severity error   # only the errors
+cat new.ttl | turtle-lsp check - --stdin-filename data/new.ttl   # check text that is not saved
+cat new.ttl | turtle-lsp format -    # print the text formatted
+turtle-lsp codes                     # every diagnostic code, on or off by default
+turtle-lsp explain unused-prefix     # what a code means, and how to turn it off
 turtle-lsp format                    # format files in place
 turtle-lsp format --check            # list files that would change; change nothing
 turtle-lsp format --diff             # print a unified diff instead
@@ -881,7 +887,17 @@ The workspace root is `--root DIR`, otherwise the nearest folder above with a
 `.git`, otherwise the current folder. Every file under it is loaded
 (`prefixes.ttl`, shapes, cached imports), so checking one file gives the same
 results as the editor. Only the files you name are reported. Paths are
-files or folders; `-` (standard input) is not supported.
+files or folders. A path that does not exist fails the run (exit 2).
+
+**Standard input.** `check -` and `format -` read the text from standard
+input. `--stdin-filename PATH` (default `stdin.ttl`) names it: its syntax
+comes from the extension, its problems are reported under that path, and it
+replaces a file at that path for the run, with the rest of the workspace as
+context, so checking an edit before saving gives the result you will get
+after. Its root is the nearest folder with a `.git` above that path. `format
+-` prints the formatted text (`--check` and `--diff` work too); text with
+syntax errors gives exit 2 and nothing on stdout. `-` cannot be mixed with
+other paths or with `--fix`.
 
 A folder scan takes at most 20,000 files, in path order, and skips files
 over 50 MB. `TURTLE_LSP_MAX_FILES=N` changes the first limit. A scan that
@@ -889,7 +905,17 @@ stops at the limit, or skips a file, prints a warning and makes the run
 exit 2, so a CI gate never passes on files it did not check.
 
 Output is one line per problem, sorted by file and position, with lines and
-columns starting at 1. A summary goes to stderr.
+columns starting at 1. A summary goes to stderr. The concise format prints
+at most 50 problems unless `--max-problems` says otherwise (`0`: all): the
+most severe are kept, so an error never gives way to a hint, and are printed
+in the usual order. A last line on stderr counts what was not printed, by
+severity, and says how to see it:
+
+```
+35 more problems not shown (35 hints; --max-problems 50); narrow the run with a path, --select or --min-severity, or pass --max-problems 0
+```
+
+The exit code and the summary count every problem, printed or not.
 
 ```
 data/people.ttl:3:5: warning[undescribed-term] 'ex:lable' is not described anywhere in the workspace. Did you mean 'ex:label'?
@@ -918,6 +944,7 @@ read, and a read-only file, are left alone and reported.
 | Option | Effect |
 |---|---|
 | `--root DIR` | the workspace root |
+| `--stdin-filename PATH` | with `-`: the path of the text from standard input (default `stdin.ttl`) |
 | `--format F` | `concise` (default), `json`, `github` (workflow annotations) or `sarif` (GitHub code scanning) |
 | `--output-file PATH` | write the report to a file instead of stdout |
 | `--fix` | apply the safe fixes (add a missing prefix, remove an unused one), then report what is left |
@@ -928,10 +955,20 @@ read, and a read-only file, are left alone and reported.
 | `--ignore CODE,...` | do not report these codes (an unknown code is an error) |
 | `--no-shacl` | skip SHACL validation |
 | `--network` | fetch `owl:imports` and JSON-LD contexts that are not in the cache (off by default) |
-| `--max-diagnostics N` | print at most N problems per file; the summary still counts all |
+| `--max-diagnostics N` | print at most N problems per file, the most severe kept; the summary still counts all |
+| `--max-problems N` | print at most N problems in all, the most severe kept (default 50 for the concise format on stdout, no cap otherwise; `0`: no cap) |
+| `--min-severity S` | `error`, `warning`, `info` or `hint`: leave out less severe problems, as `--ignore` does (a skipped SHACL run is always reported) |
 | `--statistics` | print a count per code instead of the problems (not with `--format`) |
 
-`format` takes `--root DIR`, `--check` and `--diff`.
+`format` takes `--root DIR`, `--check`, `--diff`, `-` with
+`--stdin-filename PATH`, and `--format text|json`. JSON lists each file
+`formatted`, `would-format` (with `--check`) or `not-formatted` with its
+reason, and a summary; unchanged files are only counted.
+
+**JSON when a run fails.** With `--format json`, a command that fails
+before its report (a bad flag, a missing path, a query syntax error)
+prints `{"error":{"message":"..."},"version":1}` on stdout, besides the
+message on stderr, and exits 2. So stdout is always one JSON value.
 
 `query` runs a SELECT, ASK, CONSTRUCT or DESCRIBE query (from a file, or
 inline with `-e`) over the RDF files under the paths given (default: the
@@ -956,8 +993,10 @@ Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
 `shacl-violation`, `shacl-failure`, `shacl-invalid-path`, `io` and
 `encoding`, and for JSON-LD `json-syntax`, `jsonld-context`,
 `jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and
-`invalid-language-tag`. An unknown code in `--select` or `--ignore` prints
-the full list. `--format json` gives each problem's range, severity, code,
+`invalid-language-tag`. `turtle-lsp codes` lists them all, with whether each
+is on by default (`--format json` too), and `turtle-lsp explain CODE` says
+what one means and how to turn it on or off in `turtle-lsp.json`. An unknown
+code in `--select` or `--ignore` prints the full list. `--format json` gives each problem's range, severity, code,
 message and fixes, in an object with `"version": 1`. SARIF reports give
 each file as a percent-encoded path relative to the root, or as an absolute
 `file:` URI for a file outside it.
@@ -989,8 +1028,16 @@ to `AGENTS.md` or `CLAUDE.md`:
   exit 2 means the command itself failed or did not check every file.
 - `turtle-lsp check --fix <files>` applies the safe fixes (missing and
   unused prefixes).
+- To check text before saving it, pipe it to
+  `turtle-lsp check - --stdin-filename <path>`.
+- `turtle-lsp check --min-severity error` shows only the errors;
+  `turtle-lsp explain <code>` says what a code means.
 - Run `turtle-lsp format <files>` on the files you changed.
 ```
+
+`--format json` gives one JSON value on stdout whatever happens: the report,
+or `{"error": ...}` when the run failed. `turtle-lsp codes --format json`
+lists the codes.
 
 In Claude Code, a `PostToolUse` hook runs the check after every edit of an RDF
 or SPARQL file and shows the problems to Claude. Add it to
@@ -1005,7 +1052,7 @@ or SPARQL file and shows the problems to Claude. Add it to
         "hooks": [
           {
             "type": "command",
-            "command": "f=$(jq -r '.tool_input.file_path'); case \"$f\" in *.ttl|*.trig|*.nt|*.nq|*.jsonld|*.rq|*.ru|*.sparql) turtle-lsp check --max-diagnostics 30 \"$f\" 1>&2 || exit 2;; esac"
+            "command": "f=$(jq -r '.tool_input.file_path'); case \"$f\" in *.ttl|*.trig|*.nt|*.nq|*.jsonld|*.rq|*.ru|*.sparql) turtle-lsp check --max-problems 30 \"$f\" 1>&2 || exit 2;; esac"
           }
         ]
       }
@@ -1015,7 +1062,8 @@ or SPARQL file and shows the problems to Claude. Add it to
 ```
 
 Exit code 2 is what makes Claude Code show the hook's stderr to Claude.
-`--max-diagnostics` keeps a badly broken file from filling the context.
+`--max-problems` keeps a badly broken file from filling the context; the
+most severe problems are the ones kept.
 
 ## In CI
 

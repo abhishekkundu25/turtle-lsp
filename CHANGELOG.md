@@ -2,8 +2,42 @@
 
 ## Unreleased
 
+### Added
+
+- **The command line reads standard input.** `check -` and `format -`
+  take the text from standard input; `--stdin-filename PATH` (default
+  `stdin.ttl`) gives its path, so it is checked as that file, with the
+  rest of the workspace as context, without saving it. `format -` prints
+  the formatted text.
+- **`check --min-severity error|warning|info|hint`** leaves out less severe
+  problems, as `--ignore` does, and **`--max-problems N`** caps the
+  problems printed over the whole run. A last line on stderr counts what
+  was not printed, by severity, and says how to see it; JSON
+  `summary.notShown` counts it too.
+- **`turtle-lsp codes`** lists every diagnostic code with whether it is on
+  by default, and **`turtle-lsp explain CODE`** says what one means and how
+  to turn it on or off in `turtle-lsp.json`. Both take `--format json`.
+- **`format --format json`** lists each file formatted, would-format or not
+  formatted with its reason.
+- **With `--format json`, a failure is JSON too**: a bad flag, a missing
+  path or a query syntax error prints `{"error": {"message": ...},
+  "version": 1}` on stdout besides the message on stderr. stdout is always
+  one JSON value.
+- **`turtle-lsp --help` ends with examples** of the common tasks; a test
+  runs each.
+
 ### Changed
 
+- **The concise output of `check` stops at 50 problems** unless
+  `--max-problems` says otherwise (`0`: all), so a large workspace does not
+  fill an agent's context. The most severe problems are kept, then printed
+  in the usual order, and a line on stderr says how many were left out. A
+  report written with `--output-file`, and the `json`, `github` and
+  `sarif` formats, are not capped unless asked.
+- **`--max-diagnostics` keeps each file's most severe problems**, not its
+  first ones, and says on stderr how many it left out.
+- **`format` exits 2 when it cannot write to stdout**, except when the
+  reader stopped early (`| head`).
 - **The VS Code extension uses `vscode-languageclient` 11** (was 10.1.2).
   It needs VS Code 1.91 or later, the extension's minimum already.
 

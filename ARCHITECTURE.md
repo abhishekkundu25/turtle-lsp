@@ -30,7 +30,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `commands` | `workspace/executeCommand` commands | `server` |
 | `server` | The LSP main loop, its state groups, its timers, the stdio transport and the worker threads other modules start | `main`, the browser engine |
 | `batch` | Files analysed as one workspace without the event loop | `cli`, the browser engine |
-| `cli` | `check`, `format` and `query` (not in the browser build) | `main` |
+| `cli` | `check`, `format`, `query`, `codes` and `explain` (not in the browser build) | `main` |
 | `clock` | The time the server's timers read | `server`, `query`, `features` |
 | `ide` | `ide::Session`: every editor request over one workspace, routed by document kind | `server` |
 | `extensions` | The requests beyond the LSP standard (`turtle/graph`, "▶ Run query"): one router entry, one `experimental` capability builder, one off-thread answer | `server`; `features::lens` names Run query |
