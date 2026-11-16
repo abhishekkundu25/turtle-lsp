@@ -2,12 +2,15 @@
 
 use super::output::{self, Format};
 use crate::settings::Reasoning;
+use crate::workspace::{is_rdf_file, is_sparql_path};
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
 pub(crate) struct CheckArgs {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) root: Option<PathBuf>,
+    /// `-`: check standard input as the file at this path.
+    pub(crate) stdin_filename: Option<PathBuf>,
     pub(crate) format: Option<Format>,
     pub(crate) output_file: Option<PathBuf>,
     pub(crate) fix: bool,
@@ -31,6 +34,8 @@ pub(crate) struct CheckArgs {
 pub(crate) struct FormatArgs {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) root: Option<PathBuf>,
+    /// `-`: format standard input as the file at this path, to stdout.
+    pub(crate) stdin_filename: Option<PathBuf>,
     pub(crate) check: bool,
     pub(crate) diff: bool,
 }
@@ -193,12 +198,35 @@ fn codes(flag: &str, v: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// `-` would be standard input, which no command reads.
+/// `-` would be standard input, which `query` does not read.
 fn no_stdin(paths: &[PathBuf]) -> Result<(), String> {
     if paths.iter().any(|p| p.as_os_str() == "-") {
         return Err("'-' (standard input) is not supported; name a file or folder".to_string());
     }
     Ok(())
+}
+
+/// The name of the text on standard input when `paths` is `-` (then taken
+/// out of `paths`): `name` (`--stdin-filename`), else `stdin.ttl`.
+fn stdin(paths: &mut Vec<PathBuf>, name: Option<PathBuf>) -> Result<Option<PathBuf>, String> {
+    if !paths.iter().any(|p| p.as_os_str() == "-") {
+        return match name {
+            Some(_) => Err("--stdin-filename works only with '-' (standard input)".to_string()),
+            None => Ok(None),
+        };
+    }
+    if paths.len() > 1 {
+        return Err("'-' (standard input) cannot be combined with other paths".to_string());
+    }
+    paths.clear();
+    let name = name.unwrap_or_else(|| PathBuf::from("stdin.ttl"));
+    if !is_rdf_file(&name) && !is_sparql_path(&name) {
+        return Err(format!(
+            "--stdin-filename {}: not the name of an RDF or SPARQL file",
+            name.display()
+        ));
+    }
+    Ok(Some(name))
 }
 
 fn unknown(flag: &str, command: &str) -> String {
@@ -208,6 +236,7 @@ fn unknown(flag: &str, command: &str) -> String {
 /// Arguments of `check`, without the subcommand itself.
 pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
     let mut out = CheckArgs::default();
+    let mut stdin_filename = None;
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
         let flag = match item {
@@ -221,6 +250,7 @@ pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> 
         match f {
             "-h" | "--help" => return Ok(Parsed::Help),
             "--root" => out.root = Some(PathBuf::from(it.value(f)?)),
+            "--stdin-filename" => stdin_filename = Some(PathBuf::from(it.value(f)?)),
             "--format" => {
                 let v = it.value(f)?;
                 out.format = Some(match v.as_str() {
@@ -276,13 +306,17 @@ pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> 
     if out.statistics && out.format.is_some() {
         return Err("--statistics prints counts in its own layout; drop --format".to_string());
     }
-    no_stdin(&out.paths)?;
+    out.stdin_filename = stdin(&mut out.paths, stdin_filename)?;
+    if out.fix && out.stdin_filename.is_some() {
+        return Err("--fix writes files; it does not work with '-' (standard input)".to_string());
+    }
     Ok(Parsed::Run(out))
 }
 
 /// Arguments of `format`, without the subcommand itself.
 pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String> {
     let mut out = FormatArgs::default();
+    let mut stdin_filename = None;
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
         let flag = match item {
@@ -296,6 +330,7 @@ pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String
         match f {
             "-h" | "--help" => return Ok(Parsed::Help),
             "--root" => out.root = Some(PathBuf::from(it.value(f)?)),
+            "--stdin-filename" => stdin_filename = Some(PathBuf::from(it.value(f)?)),
             "--check" | "--diff" => {
                 if f == "--check" {
                     out.check = true;
@@ -307,7 +342,7 @@ pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String
             _ => return Err(unknown(f, "format")),
         }
     }
-    no_stdin(&out.paths)?;
+    out.stdin_filename = stdin(&mut out.paths, stdin_filename)?;
     Ok(Parsed::Run(out))
 }
 
@@ -498,20 +533,73 @@ mod tests {
         assert!(check("--statistics").is_ok());
     }
 
+    fn format(s: &str) -> Result<FormatArgs, String> {
+        match parse_format(&args(s))? {
+            Parsed::Run(a) => Ok(a),
+            Parsed::Help => Err("help".into()),
+        }
+    }
+
     #[test]
-    fn cli_standard_input_is_rejected_by_every_command() {
+    fn cli_standard_input_is_rejected_by_query() {
         for e in [
-            check("-").unwrap_err(),
-            match parse_format(&args("-")) {
-                Err(e) => e,
-                Ok(_) => panic!("accepted"),
-            },
             query("q.rq -").unwrap_err(),
+            query("-e ASK{} -").unwrap_err(),
         ] {
             assert!(e.contains("standard input"), "{e}");
         }
-        // Also after --.
-        assert!(check("-- -").is_err());
+    }
+
+    #[test]
+    fn cli_check_and_format_read_standard_input_alone() {
+        let a = check("-").unwrap();
+        assert_eq!(a.stdin_filename, Some(PathBuf::from("stdin.ttl")));
+        assert!(a.paths.is_empty());
+        let a = format("--check - --stdin-filename=data/x.trig").unwrap();
+        assert_eq!(a.stdin_filename, Some(PathBuf::from("data/x.trig")));
+        assert!(a.paths.is_empty() && a.check);
+        // After --, `-` is still standard input.
+        assert!(check("-- -").unwrap().stdin_filename.is_some());
+        let named = |s: &str| check(s).unwrap().stdin_filename.unwrap();
+        assert_eq!(named("- --stdin-filename q.rq"), PathBuf::from("q.rq"));
+        assert_eq!(
+            named("--stdin-filename d.jsonld -"),
+            PathBuf::from("d.jsonld")
+        );
+        // Without `-`, nothing is read.
+        assert_eq!(check("a.ttl").unwrap().stdin_filename, None);
+        assert_eq!(format("a.ttl").unwrap().stdin_filename, None);
+    }
+
+    #[test]
+    fn cli_standard_input_combinations_are_errors() {
+        for e in [
+            check("- a.ttl").unwrap_err(),
+            check("a.ttl -").unwrap_err(),
+            check("- -").unwrap_err(),
+            format("- a.ttl").unwrap_err(),
+        ] {
+            assert!(e.contains("cannot be combined with other paths"), "{e}");
+        }
+        assert!(check("- --fix").unwrap_err().contains("--fix"));
+        for e in [
+            check("- --stdin-filename").unwrap_err(),
+            format("- --stdin-filename").unwrap_err(),
+        ] {
+            assert!(e.contains("--stdin-filename needs a value"), "{e}");
+        }
+        for e in [
+            check("--stdin-filename x.ttl a.ttl").unwrap_err(),
+            format("--stdin-filename x.ttl").unwrap_err(),
+        ] {
+            assert!(e.contains("only with '-'"), "{e}");
+        }
+        for e in [
+            check("- --stdin-filename notes.txt").unwrap_err(),
+            format("- --stdin-filename data").unwrap_err(),
+        ] {
+            assert!(e.contains("not the name of an RDF or SPARQL file"), "{e}");
+        }
     }
 
     #[test]

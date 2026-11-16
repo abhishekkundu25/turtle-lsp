@@ -31,7 +31,8 @@ struct Checked<'a> {
 /// Runs the check; the exit code.
 pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     let cwd = files::current_dir()?;
-    let root = files::find_root(a.root.as_deref(), &cwd)?;
+    let targets = files::Targets::read(&cwd, &a.paths, a.stdin_filename.as_deref())?;
+    let root = targets.root(a.root.as_deref(), &cwd)?;
     let mut flags = serde_json::Map::new();
     if a.no_shacl {
         flags.insert("shacl.enabled".into(), json!(false));
@@ -40,7 +41,7 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
         flags.insert("imports.network".into(), json!(true));
     }
     let settings = files::settings_strict(&root, &flags.into())?;
-    let ws = files::load_lenient(root, cwd, &a.paths, Context::Workspace)?;
+    let ws = files::load_lenient(root, cwd, targets, Context::Workspace)?;
     let disk = Disk {
         roots: vec![ws.root.clone()],
         network: settings.imports_network,

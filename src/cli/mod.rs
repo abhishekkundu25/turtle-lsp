@@ -38,6 +38,12 @@ RDF file under the root is loaded as context.
 Options:
   --root DIR            the workspace root (default: the nearest folder with
                         a .git, else the current folder)
+  -                     as the only path: check the text on standard input
+                        (not with --fix)
+  --stdin-filename PATH with -, the file the text stands for (default:
+                        stdin.ttl): its syntax, its root and the path its
+                        problems are reported under; a file there is
+                        replaced by the text
   --format F            concise (default), json, github or sarif
   --output-file PATH    write the report to a file instead of stdout
   --fix                 apply the safe fixes, then report what is left
@@ -84,10 +90,15 @@ read. A folder scan takes at most 20000 files (TURTLE_LSP_MAX_FILES=N changes
 that); a file over 50 MB is skipped.
 
 Options:
-  --root DIR    the workspace root (default: the nearest folder with a .git,
-                else the current folder)
-  --check       change nothing; list the files that would change
-  --diff        change nothing; print a unified diff
+  --root DIR            the workspace root (default: the nearest folder with
+                        a .git, else the current folder)
+  -                     as the only path: print the text on standard input
+                        formatted (as it is when already formatted)
+  --stdin-filename PATH with -, the file the text stands for (default:
+                        stdin.ttl): its syntax, and the label of --diff
+  --check               change nothing; list the files that would change
+                        (with -, print nothing)
+  --diff                change nothing; print a unified diff
 
 Exit codes: 0 done, 1 with --check or --diff when a file would change,
 2 the tool failed, or a file could not be read, formatted or written, or was

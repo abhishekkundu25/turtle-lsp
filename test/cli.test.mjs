@@ -724,16 +724,14 @@ test("--version prints to stdout; help COMMAND shows that command's options", ()
   assert.match(bad.stderr, /no help for 'nothing'/)
 })
 
-test("check: --statistics cannot be combined with --format; '-' (standard input) is rejected", (t) => {
+test("check: --statistics cannot be combined with --format; query rejects '-' (standard input)", (t) => {
   const ws = workspace(t, { "a.ttl": CLEAN })
   const s = run(ws, ["check", "--statistics", "--format", "json"])
   assert.equal(s.code, 2)
   assert.match(s.err, /--statistics .*drop --format/)
-  for (const args of [["check", "-"], ["format", "-"]]) {
-    const r = run(ws, args)
-    assert.equal(r.code, 2, args.join(" "))
-    assert.match(r.err, /'-' \(standard input\) is not supported/)
-  }
+  const r = run(ws, ["query", "-e", "ASK {}", "-"])
+  assert.equal(r.code, 2)
+  assert.match(r.err, /'-' \(standard input\) is not supported/)
 })
 
 test("format --diff: a file outside the current folder is labelled a/abs/path, not a//abs/path", (t) => {
