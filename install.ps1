@@ -25,6 +25,14 @@
   $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is slow with it on
   $repo = 'abhishekkundu25/turtle-lsp'
   function Say($text) { [Console]::Error.WriteLine("turtle-lsp install: $text") }
+  # .NET, not Get-FileHash and Expand-Archive: Windows PowerShell 5.1 started
+  # from PowerShell 7 (PSModulePath set by 7) cannot load those cmdlets.
+  function Sha256($path) {
+    $stream = [IO.File]::OpenRead($path)
+    try { -join ([Security.Cryptography.SHA256]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) }
+    finally { $stream.Dispose() }
+  }
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
 
   # TLS 1.2 for Windows PowerShell 5.1 on older Windows.
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -69,7 +77,7 @@
     Say "downloading $name from $base"
     try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -Uri "$base/$name" -OutFile $zip }
     catch { throw "turtle-lsp install: could not download $base/$name`: $($_.Exception.Message)" }
-    $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+    $got = Sha256 $zip
     if ($got -ne $want) { throw "turtle-lsp install: $name does not match SHA256SUMS (got $got, expected $want)" }
 
     if ($env:TURTLE_LSP_VERIFY -eq 'attestation') {
@@ -80,7 +88,7 @@
     }
 
     $x = Join-Path $tmp 'x'
-    Expand-Archive -LiteralPath $zip -DestinationPath $x -Force
+    [IO.Compression.ZipFile]::ExtractToDirectory($zip, $x)
     $exe = Join-Path $x 'turtle-lsp.exe'
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "turtle-lsp install: $name has no turtle-lsp.exe" }
     # --version only: a bare turtle-lsp starts the language server.

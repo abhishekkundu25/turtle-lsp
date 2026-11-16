@@ -39,11 +39,12 @@ before(async () => {
   server = http.createServer((req, res) => {
     // /good/<file> serves the release; /bad/ the same with a wrong checksum;
     // /other/ a SHA256SUMS without this machine's archive; /gone/ nothing.
+    // Only these files: a path is never made from the request.
     const [, kind, name] = req.url.split("/")
-    if (kind === "gone") return res.writeHead(404).end()
-    const stand = name === "SHA256SUMS" ? { bad: "BAD", other: "OTHER" }[kind] ?? name : name
-    const file = path.join(release, stand)
-    if (!fs.existsSync(file)) return res.writeHead(404).end()
+    const sums = { bad: "BAD", other: "OTHER" }[kind] ?? "SHA256SUMS"
+    const files = { SHA256SUMS: path.join(release, sums), [ASSET]: path.join(release, ASSET) }
+    const file = kind === "gone" ? undefined : files[name]
+    if (!file) return res.writeHead(404).end()
     res.writeHead(200)
     fs.createReadStream(file).pipe(res)
   })
