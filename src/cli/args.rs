@@ -19,6 +19,11 @@ pub(crate) struct CheckArgs {
     pub(crate) no_shacl: bool,
     pub(crate) network: bool,
     pub(crate) max_diagnostics: Option<usize>,
+    /// The problems below it are not reported.
+    pub(crate) min_severity: Severity,
+    /// None: the format's default ([`DEFAULT_MAX_PROBLEMS`] for the concise
+    /// format, else no cap); `Some(0)`: no cap.
+    pub(crate) max_problems: Option<usize>,
     pub(crate) statistics: bool,
 }
 
@@ -78,6 +83,19 @@ pub(crate) struct QueryArgs {
 
 /// The default `--timeout`, in seconds.
 pub(crate) const QUERY_TIMEOUT_SECONDS: u64 = 30;
+
+/// `check --min-severity`, from the most severe to the least.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Severity {
+    Error,
+    Warning,
+    Info,
+    #[default]
+    Hint,
+}
+
+/// The problems the concise format prints at most without `--max-problems`.
+pub(crate) const DEFAULT_MAX_PROBLEMS: usize = 100;
 
 /// What the command line asks for.
 #[derive(Debug)]
@@ -220,6 +238,21 @@ pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> 
             "--output-file" => out.output_file = Some(PathBuf::from(it.value(f)?)),
             "--max-warnings" => out.max_warnings = Some(it.number(f)?),
             "--max-diagnostics" => out.max_diagnostics = Some(it.number(f)?),
+            "--max-problems" => out.max_problems = Some(it.number(f)?),
+            "--min-severity" => {
+                let v = it.value(f)?;
+                out.min_severity = match v.as_str() {
+                    "error" => Severity::Error,
+                    "warning" => Severity::Warning,
+                    "info" => Severity::Info,
+                    "hint" => Severity::Hint,
+                    _ => {
+                        return Err(format!(
+                            "--min-severity must be error, warning, info or hint, not '{v}'"
+                        ));
+                    }
+                };
+            }
             "--select" => out.select.extend(codes(f, &it.value(f)?)?),
             "--ignore" => out.ignore.extend(codes(f, &it.value(f)?)?),
             _ => {
@@ -408,6 +441,35 @@ mod tests {
         let a = check("-- --fix").unwrap();
         assert_eq!(a.paths, [PathBuf::from("--fix")]);
         assert!(!a.fix);
+    }
+
+    #[test]
+    fn cli_check_output_budget() {
+        let a = check("").unwrap();
+        assert_eq!((a.min_severity, a.max_problems), (Severity::Hint, None));
+        let a = check("--min-severity warning --max-problems=0").unwrap();
+        assert_eq!(
+            (a.min_severity, a.max_problems),
+            (Severity::Warning, Some(0))
+        );
+        let a = check("--min-severity=error --max-problems 10").unwrap();
+        assert_eq!(
+            (a.min_severity, a.max_problems),
+            (Severity::Error, Some(10))
+        );
+        assert_eq!(
+            check("--min-severity info").unwrap().min_severity,
+            Severity::Info
+        );
+        assert!(Severity::Error < Severity::Warning && Severity::Info < Severity::Hint);
+        let e = check("--min-severity fatal").unwrap_err();
+        assert!(
+            e.contains("error, warning, info or hint") && e.contains("'fatal'"),
+            "{e}"
+        );
+        assert!(check("--min-severity").is_err());
+        assert!(check("--max-problems -1").is_err());
+        assert!(check("--max-problems lots").is_err());
     }
 
     #[test]

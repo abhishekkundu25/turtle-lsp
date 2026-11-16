@@ -881,7 +881,8 @@ scenario("undeclared-prefix", "a 20,000-line file full of undeclared prefixes", 
       record("prefix-keystroke", `undeclared prefixes: keystroke -> diagnostics (${lines} lines)`, keys, { gate: true })
       recordRss("rss-prefix", "undeclared prefixes: server RSS at the end", rssMb(s.proc.pid))
     })
-    const r = runCheck(ws, ["--no-shacl"], 3)
+    // Every problem, as before the concise format's default cap.
+    const r = runCheck(ws, ["--no-shacl", "--max-problems", "0"], 3)
     record("check-prefix", `check: ${lines}-line undeclared-prefix file`, r.samples, {
       notes: `exit ${r.status}, ${(r.outBytes / 1024).toFixed(0)} KB of report`,
     })

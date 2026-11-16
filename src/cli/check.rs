@@ -130,6 +130,8 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
                 }
                 p
             })
+            // A skipped SHACL run says the check is incomplete: never hidden.
+            .filter(|p| severity(p) <= a.min_severity || code(p) == SHACL_SKIPPED)
             .collect();
         if !file.reported && problems.is_empty() {
             continue;
@@ -188,28 +190,29 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
         }
     }
 
-    let limit = a.max_diagnostics.unwrap_or(usize::MAX);
-    let view = |all: bool| -> Vec<CheckedFile> {
-        checked
-            .iter()
-            .map(|c| CheckedFile {
-                path: c.shown,
-                root_relative: c.root_relative,
-                uri: c.uri,
-                problems: if all {
-                    &c.problems
-                } else {
-                    &c.problems[..c.problems.len().min(limit)]
-                },
-            })
-            .collect()
+    // The statistics count every problem; neither cap applies to them. The
+    // default cap is for a reader's screen or context, not for a file.
+    let (per_file, max_problems) = if a.statistics {
+        (None, None)
+    } else {
+        let total = match a.max_problems {
+            Some(0) => None,
+            Some(n) => Some(n),
+            None if format == Format::Concise && a.output_file.is_none() => {
+                Some(super::args::DEFAULT_MAX_PROBLEMS)
+            }
+            None => None,
+        };
+        (a.max_diagnostics, total)
     };
+    let (shown, not_shown) = budget(&checked, per_file, max_problems);
+    summary.not_shown = not_shown.count;
 
     let write = |out: &mut dyn Write| -> std::io::Result<()> {
         if a.statistics {
-            output::statistics(&view(true), out)?;
+            output::statistics(&shown, out)?;
         } else {
-            output::render(format, &view(false), &summary, out)?;
+            output::render(format, &shown, &summary, out)?;
         }
         out.flush()
     };
@@ -232,6 +235,9 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     if (format == Format::Concise || a.statistics || a.output_file.is_some()) && problems > 0 {
         eprintln!("{}", output::summary_line(&summary));
     }
+    if let Some(line) = output::not_shown_line(&not_shown) {
+        eprintln!("{line}");
+    }
 
     let failed = summary.errors > 0 || a.max_warnings.is_some_and(|m| summary.warnings > m);
     Ok(if failed_run {
@@ -241,4 +247,48 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     } else {
         0
     })
+}
+
+/// A problem's severity as `--min-severity` names it; none is an error.
+fn severity(p: &Problem) -> super::args::Severity {
+    use super::args::Severity;
+    match p.diagnostic.severity {
+        Some(DiagnosticSeverity::WARNING) => Severity::Warning,
+        Some(DiagnosticSeverity::INFORMATION) => Severity::Info,
+        Some(DiagnosticSeverity::HINT) => Severity::Hint,
+        _ => Severity::Error,
+    }
+}
+
+/// What the report prints: each file's first `per_file` problems, then the
+/// first `total` over the run, files and problems in report order; and what
+/// that left out. None: no cap.
+fn budget<'a>(
+    checked: &'a [Checked],
+    per_file: Option<usize>,
+    total: Option<usize>,
+) -> (Vec<CheckedFile<'a>>, output::NotShown) {
+    let mut left = total.unwrap_or(usize::MAX);
+    let mut not_shown = output::NotShown::default();
+    let mut shown = Vec::with_capacity(checked.len());
+    for c in checked {
+        let all = c.problems.len();
+        let in_file = all.min(per_file.unwrap_or(usize::MAX));
+        if in_file < all {
+            not_shown.max_diagnostics = per_file;
+        }
+        let n = in_file.min(left);
+        if n < in_file {
+            not_shown.max_problems = total;
+        }
+        left -= n;
+        not_shown.count += all - n;
+        shown.push(CheckedFile {
+            path: c.shown,
+            root_relative: c.root_relative,
+            uri: c.uri,
+            problems: &c.problems[..n],
+        });
+    }
+    (shown, not_shown)
 }

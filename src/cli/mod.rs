@@ -53,8 +53,14 @@ Options:
                         TURTLE_LSP_ALLOW_PRIVATE_HOSTS=1); turtle-lsp.json
                         cannot turn this on
   --max-diagnostics N   print at most N problems per file
+  --max-problems N      print at most N problems in all (default: 100 in the
+                        concise format on stdout, no cap otherwise; 0: no
+                        cap); a line on stderr says how many were not printed
+  --min-severity S      error, warning, info or hint: report only problems at
+                        least this severe (default: hint, every problem); a
+                        skipped SHACL run is always reported
   --statistics          print a count per code instead of the problems
-                        (not with --format)
+                        (not with --format; no cap applies)
 
 A file that cannot be read or is not UTF-8 is reported as an error with the
 code io or encoding. A folder scan takes at most 20000 files; a file over

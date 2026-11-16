@@ -75,7 +75,7 @@ test("check: every syntax error is reported, past the editor's 1,000 (text, --fo
   let text = ""
   for (let i = 0; i < 1500; i++) text += `<http://e/s${i}> <http://e/p> <http://e/o${i}> . <http://e/t${i}> <http://e/p> .\n`
   const ws = workspace(t, { "broken.ttl": text })
-  const r = run(ws, ["check"])
+  const r = run(ws, ["check", "--max-problems", "0"])
   assert.equal(r.code, 1)
   assert.equal(r.lines.length, 1500)
   assert.ok(r.lines.every((l, i) => l.startsWith(`broken.ttl:${i + 1}:`) && l.endsWith("error[syntax] Expected an object, found '.'")), r.lines.slice(0, 3).join("\n"))
