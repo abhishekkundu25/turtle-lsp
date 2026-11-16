@@ -206,7 +206,17 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
         };
         (a.max_diagnostics, total)
     };
-    let (shown, not_shown) = budget(&checked, per_file, max_problems);
+    let (kept, not_shown) = budget(&checked, per_file, max_problems);
+    let shown: Vec<CheckedFile> = checked
+        .iter()
+        .zip(&kept)
+        .map(|(c, problems)| CheckedFile {
+            path: c.shown,
+            root_relative: c.root_relative,
+            uri: c.uri,
+            problems,
+        })
+        .collect();
     summary.not_shown = not_shown.count;
 
     let write = |out: &mut dyn Write| -> std::io::Result<()> {
@@ -261,35 +271,47 @@ fn severity(p: &Problem) -> super::args::Severity {
     }
 }
 
-/// What the report prints: each file's first `per_file` problems, then the
-/// first `total` over the run, files and problems in report order; and what
-/// that left out. None: no cap.
-fn budget<'a>(
-    checked: &'a [Checked],
+/// Which problems the report prints: in each file the `per_file` most
+/// severe, then over the run the `total` most severe, ties in report order,
+/// printed in report order; and what that left out. None: no cap. Choosing
+/// by severity keeps an error from hiding behind hints in earlier files.
+fn budget(
+    checked: &[Checked],
     per_file: Option<usize>,
     total: Option<usize>,
-) -> (Vec<CheckedFile<'a>>, output::NotShown) {
-    let mut left = total.unwrap_or(usize::MAX);
+) -> (Vec<Vec<Problem>>, output::NotShown) {
     let mut not_shown = output::NotShown::default();
-    let mut shown = Vec::with_capacity(checked.len());
-    for c in checked {
-        let all = c.problems.len();
-        let in_file = all.min(per_file.unwrap_or(usize::MAX));
-        if in_file < all {
+    // (severity, file, index): sorted, the most severe first, then report order.
+    let mut pool = Vec::new();
+    for (f, c) in checked.iter().enumerate() {
+        let mut ranked: Vec<_> = c
+            .problems
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (severity(p), f, i))
+            .collect();
+        ranked.sort_unstable();
+        if let Some(n) = per_file
+            && ranked.len() > n
+        {
             not_shown.max_diagnostics = per_file;
+            ranked.truncate(n);
         }
-        let n = in_file.min(left);
-        if n < in_file {
-            not_shown.max_problems = total;
-        }
-        left -= n;
-        not_shown.count += all - n;
-        shown.push(CheckedFile {
-            path: c.shown,
-            root_relative: c.root_relative,
-            uri: c.uri,
-            problems: &c.problems[..n],
-        });
+        pool.extend(ranked);
     }
-    (shown, not_shown)
+    pool.sort_unstable();
+    if let Some(n) = total
+        && pool.len() > n
+    {
+        not_shown.max_problems = total;
+        pool.truncate(n);
+    }
+    pool.sort_unstable_by_key(|&(_, f, i)| (f, i));
+    let mut kept = vec![Vec::new(); checked.len()];
+    for &(_, f, i) in &pool {
+        kept[f].push(checked[f].problems[i].clone());
+    }
+    let all: usize = checked.iter().map(|c| c.problems.len()).sum();
+    not_shown.count = all - pool.len();
+    (kept, not_shown)
 }

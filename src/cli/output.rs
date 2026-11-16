@@ -165,8 +165,8 @@ pub(crate) fn summary_line(summary: &Summary) -> String {
 }
 
 /// The last line for stderr when a cap left problems out: how many, the
-/// caps, and how to see them, e.g. "50 more problems not shown
-/// (--max-problems 100); narrow the run with a path, --select or
+/// caps, and how to see them, e.g. "100 more problems not shown
+/// (--max-problems 50); narrow the run with a path, --select or
 /// --min-severity, or pass --max-problems 0". None when nothing was left out.
 pub(crate) fn not_shown_line(n: &NotShown) -> Option<String> {
     if n.count == 0 {

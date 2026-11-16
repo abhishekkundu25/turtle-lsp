@@ -241,3 +241,25 @@ test("check and format --help describe - and --stdin-filename", () => {
     assert.match(help, /^ {2}--stdin-filename PATH /m, command)
   }
 })
+
+test("check - --stdin-filename P reports what check P reports, from the repository and from a subfolder", (t) => {
+  // The file on disk, with the workspace around it: prefixes and a shape.
+  const ws = workspace(t, {
+    ".git/HEAD": "",
+    "prefixes.ttl": PREFIXES,
+    "shapes.ttl": SHAPES,
+    "data/x.ttl": NAMELESS + "ex:bob a ex:Person ; ex:name 1, foo:x .\n",
+  })
+  const text = read(ws, "data/x.ttl")
+  for (const [cwd, name] of [
+    [ws, "data/x.ttl"],
+    [path.join(ws, "data"), "x.ttl"],
+  ]) {
+    const disk = run(ws, ["check", name], "", { cwd })
+    const piped = run(ws, ["check", "-", "--stdin-filename", name], text, { cwd })
+    assert.equal(disk.code, 1, disk.out + disk.err)
+    assert.equal(piped.code, disk.code)
+    assert.equal(piped.out, disk.out)
+    assert.ok(disk.lines.length >= 2, disk.out)
+  }
+})

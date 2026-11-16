@@ -58,10 +58,12 @@ Options:
                         (public addresses only, unless
                         TURTLE_LSP_ALLOW_PRIVATE_HOSTS=1); turtle-lsp.json
                         cannot turn this on
-  --max-diagnostics N   print at most N problems per file
-  --max-problems N      print at most N problems in all (default: 100 in the
-                        concise format on stdout, no cap otherwise; 0: no
-                        cap); a line on stderr says how many were not printed
+  --max-diagnostics N   print at most N problems per file, the most severe
+                        first
+  --max-problems N      print at most N problems in all, the most severe
+                        first (default: 50 in the concise format on stdout,
+                        no cap otherwise; 0: no cap); a line on stderr says
+                        how many were not printed
   --min-severity S      error, warning, info or hint: report only problems at
                         least this severe (default: hint, every problem); a
                         skipped SHACL run is always reported

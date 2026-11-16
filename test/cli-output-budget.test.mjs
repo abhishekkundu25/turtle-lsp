@@ -93,15 +93,15 @@ test("check --min-severity: an unknown severity is an error naming the four", (t
   assert.match(r.err, /--min-severity must be error, warning, info or hint, not 'fatal'/)
 })
 
-test("check: the concise format prints 100 problems by default, and says how to see the rest", (t) => {
+test("check: the concise format prints 50 problems by default, and says how to see the rest", (t) => {
   const ws = workspace(t, { "a.ttl": errors(150) })
   const r = run(ws, ["check"])
   assert.equal(r.code, 1)
-  assert.equal(r.lines.length, 100)
+  assert.equal(r.lines.length, 50)
   assert.ok(r.lines.every((l, i) => l.startsWith(`a.ttl:${i + 1}:`)), r.lines.slice(0, 3).join("\n"))
   assert.deepEqual(r.errLines, [
     "150 errors, 0 warnings in 1 file",
-    "50 more problems not shown (--max-problems 100); narrow the run with a path, --select or --min-severity, or pass --max-problems 0",
+    "100 more problems not shown (--max-problems 50); narrow the run with a path, --select or --min-severity, or pass --max-problems 0",
   ])
   assert.equal(run(ws, ["check"]).out, r.out, "the same problems on every run")
 
@@ -168,4 +168,22 @@ test("check: --max-problems caps the run after --max-diagnostics caps each file"
     perFile.errLines.at(-1),
     "6 more problems not shown (--max-diagnostics 2); narrow the run with a path, --select or --min-severity, or drop --max-diagnostics",
   )
+})
+
+test("check: the cap keeps the most severe problems, so an error is never hidden behind hints", (t) => {
+  // 120 unused prefixes (hints) in a.ttl come before z.ttl's one error.
+  let a = "@prefix ex: <http://example.org/> .\n"
+  for (let i = 1; i <= 120; i++) a += `@prefix u${i}: <http://example.org/u${i}/> .\n`
+  a += "ex:a ex:p ex:b .\n"
+  const ws = workspace(t, { "a.ttl": a, "z.ttl": "@prefix ex: <http://example.org/> .\nex:z ex:p bad:x .\n" })
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 1)
+  assert.equal(r.lines.length, 50)
+  // The error is printed, last, in its usual place in the report.
+  assert.match(r.lines.at(-1), /^z\.ttl:2:\d+: error\[undeclared-prefix\]/)
+  assert.ok(r.lines.slice(0, -1).every((l) => l.startsWith("a.ttl:")), r.lines.slice(0, 3).join("\n"))
+  // Per file too: --max-diagnostics keeps a file's errors before its hints.
+  const one = run(ws, ["check", "--max-diagnostics", "1", "z.ttl", "a.ttl"])
+  assert.equal(one.lines.filter((l) => l.startsWith("z.ttl:")).length, 1)
+  assert.match(one.lines.find((l) => l.startsWith("z.ttl:")), /error\[undeclared-prefix\]/)
 })

@@ -99,8 +99,10 @@ pub(crate) enum Severity {
     Hint,
 }
 
-/// The problems the concise format prints at most without `--max-problems`.
-pub(crate) const DEFAULT_MAX_PROBLEMS: usize = 100;
+/// The problems the concise format prints at most without `--max-problems`:
+/// about 6,000 characters, inside the 10,000 Claude Code keeps of a
+/// command's output.
+pub(crate) const DEFAULT_MAX_PROBLEMS: usize = 50;
 
 /// What the command line asks for.
 #[derive(Debug)]
