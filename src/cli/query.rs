@@ -11,6 +11,7 @@
 //! A graph prints as Turtle when no format is given. Exit codes: 0 the query
 //! ran (an ASK answered true), 1 an ASK answered false, 2 an error.
 
+use super::Failure;
 use super::args::{QueryArgs, QueryFormat, QuerySource};
 use super::files::{self, Context};
 use crate::batch::{self, BatchFile, Disk};
@@ -22,8 +23,9 @@ use std::io::Write;
 /// (in the current folder: its base IRI and where its prefixes.ttl is found).
 const INLINE: &str = "-e";
 
-/// Runs the query; the exit code.
-pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
+/// Runs the query; the exit code. The answer is rendered whole before any of
+/// it is written, so a failure never follows half a result.
+pub(crate) fn run(a: QueryArgs) -> Result<i32, Failure> {
     let cwd = files::current_dir()?;
     let root = files::find_root(a.root.as_deref(), &cwd)?;
     let mut settings = files::settings(&root, &Value::Null);
@@ -64,21 +66,25 @@ pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
             column,
             ..
         }) => {
-            eprintln!("{}:{line}:{column}: {message}", q.name);
-            return Ok(2);
+            return Err(Failure::at(
+                &format!("{}:{line}:{column}", q.name),
+                &message,
+            ));
         }
         Err(QueryError::Timeout) => {
             let secs = a.timeout.map_or(0.0, |t| t.as_secs_f64());
             return Err(format!(
                 "the query was stopped at the time limit ({secs} s; see --timeout)"
-            ));
+            )
+            .into());
         }
         Err(QueryError::TooManyRows(n)) => {
             return Err(format!(
                 "the query was stopped: it kept more than {n} rows in memory (see --max-buffered-rows)"
-            ));
+            )
+            .into());
         }
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(e.to_string().into()),
     };
     let (text, code) = render(&answer, a.format, a.limit, &outcome.prefixes)?;
     // On stderr, so stdout stays the results in every format.
@@ -90,7 +96,7 @@ pub(crate) fn run(a: QueryArgs) -> Result<i32, String> {
         Ok(()) => {}
         // A reader that stopped early (`| head`) is not a failure.
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-        Err(e) => return Err(format!("cannot write to stdout: {e}")),
+        Err(e) => return Err(format!("cannot write to stdout: {e}").into()),
     }
     Ok(code)
 }
