@@ -134,3 +134,9 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
 5. Push the tag `vX.Y.Z` on a commit of `main` whose CI passed. The release
    workflow publishes to the Marketplace from the GitHub environment
    `release`, which must hold the `VSCE_PAT` secret.
+
+## Talking to the maintainer
+
+- Write your replies to the maintainer in ASD-STE100 (Simplified
+  Technical English). Code, commits, docs and PR descriptions keep their
+  usual style.

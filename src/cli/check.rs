@@ -31,7 +31,8 @@ struct Checked<'a> {
 /// Runs the check; the exit code.
 pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     let cwd = files::current_dir()?;
-    let root = files::find_root(a.root.as_deref(), &cwd)?;
+    let targets = files::Targets::read(&cwd, &a.paths, a.stdin_filename.as_deref())?;
+    let root = targets.root(a.root.as_deref(), &cwd)?;
     let mut flags = serde_json::Map::new();
     if a.no_shacl {
         flags.insert("shacl.enabled".into(), json!(false));
@@ -40,7 +41,7 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
         flags.insert("imports.network".into(), json!(true));
     }
     let settings = files::settings_strict(&root, &flags.into())?;
-    let ws = files::load_lenient(root, cwd, &a.paths, Context::Workspace)?;
+    let ws = files::load_lenient(root, cwd, targets, Context::Workspace)?;
     let disk = Disk {
         roots: vec![ws.root.clone()],
         network: settings.imports_network,
@@ -130,6 +131,8 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
                 }
                 p
             })
+            // A skipped SHACL run says the check is incomplete: never hidden.
+            .filter(|p| severity(p) <= a.min_severity || code(p) == SHACL_SKIPPED)
             .collect();
         if !file.reported && problems.is_empty() {
             continue;
@@ -188,28 +191,39 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
         }
     }
 
-    let limit = a.max_diagnostics.unwrap_or(usize::MAX);
-    let view = |all: bool| -> Vec<CheckedFile> {
-        checked
-            .iter()
-            .map(|c| CheckedFile {
-                path: c.shown,
-                root_relative: c.root_relative,
-                uri: c.uri,
-                problems: if all {
-                    &c.problems
-                } else {
-                    &c.problems[..c.problems.len().min(limit)]
-                },
-            })
-            .collect()
+    // The statistics count every problem; neither cap applies to them. The
+    // default cap is for a reader's screen or context, not for a file.
+    let (per_file, max_problems) = if a.statistics {
+        (None, None)
+    } else {
+        let total = match a.max_problems {
+            Some(0) => None,
+            Some(n) => Some(n),
+            None if format == Format::Concise && a.output_file.is_none() => {
+                Some(super::args::DEFAULT_MAX_PROBLEMS)
+            }
+            None => None,
+        };
+        (a.max_diagnostics, total)
     };
+    let (kept, not_shown) = budget(&checked, per_file, max_problems);
+    let shown: Vec<CheckedFile> = checked
+        .iter()
+        .enumerate()
+        .map(|(i, c)| CheckedFile {
+            path: c.shown,
+            root_relative: c.root_relative,
+            uri: c.uri,
+            problems: kept.as_ref().map_or(&c.problems[..], |k| &k[i]),
+        })
+        .collect();
+    summary.not_shown = not_shown.count;
 
     let write = |out: &mut dyn Write| -> std::io::Result<()> {
         if a.statistics {
-            output::statistics(&view(true), out)?;
+            output::statistics(&shown, out)?;
         } else {
-            output::render(format, &view(false), &summary, out)?;
+            output::render(format, &shown, &summary, out)?;
         }
         out.flush()
     };
@@ -232,6 +246,9 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     if (format == Format::Concise || a.statistics || a.output_file.is_some()) && problems > 0 {
         eprintln!("{}", output::summary_line(&summary));
     }
+    if let Some(line) = output::not_shown_line(&not_shown) {
+        eprintln!("{line}");
+    }
 
     let failed = summary.errors > 0 || a.max_warnings.is_some_and(|m| summary.warnings > m);
     Ok(if failed_run {
@@ -241,4 +258,78 @@ pub(crate) fn run(a: CheckArgs) -> Result<i32, String> {
     } else {
         0
     })
+}
+
+/// A problem's severity as `--min-severity` names it; none is an error.
+fn severity(p: &Problem) -> super::args::Severity {
+    use super::args::Severity;
+    match p.diagnostic.severity {
+        Some(DiagnosticSeverity::WARNING) => Severity::Warning,
+        Some(DiagnosticSeverity::INFORMATION) => Severity::Info,
+        Some(DiagnosticSeverity::HINT) => Severity::Hint,
+        _ => Severity::Error,
+    }
+}
+
+/// Which problems the report prints: in each file the `per_file` most
+/// severe, then over the run the `total` most severe, ties in report order,
+/// printed in report order; and what that left out. None: no cap. Choosing
+/// by severity keeps an error from hiding behind hints in earlier files.
+/// `None` when no cap leaves anything out: every problem is printed as it is.
+fn budget(
+    checked: &[Checked],
+    per_file: Option<usize>,
+    total: Option<usize>,
+) -> (Option<Vec<Vec<Problem>>>, output::NotShown) {
+    let mut not_shown = output::NotShown::default();
+    let per_file_cap = per_file.unwrap_or(usize::MAX);
+    let within: usize = checked
+        .iter()
+        .map(|c| c.problems.len().min(per_file_cap))
+        .sum();
+    if within == checked.iter().map(|c| c.problems.len()).sum::<usize>()
+        && within <= total.unwrap_or(usize::MAX)
+    {
+        return (None, not_shown);
+    }
+    // (severity, file, index): sorted, the most severe first, then report order.
+    let mut pool = Vec::new();
+    for (f, c) in checked.iter().enumerate() {
+        let mut ranked: Vec<_> = c
+            .problems
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (severity(p), f, i))
+            .collect();
+        ranked.sort_unstable();
+        if let Some(n) = per_file
+            && ranked.len() > n
+        {
+            not_shown.max_diagnostics = per_file;
+            ranked.truncate(n);
+        }
+        pool.extend(ranked);
+    }
+    pool.sort_unstable();
+    if let Some(n) = total
+        && pool.len() > n
+    {
+        not_shown.max_problems = total;
+        pool.truncate(n);
+    }
+    pool.sort_unstable_by_key(|&(_, f, i)| (f, i));
+    let mut kept = vec![Vec::new(); checked.len()];
+    for &(_, f, i) in &pool {
+        kept[f].push(checked[f].problems[i].clone());
+    }
+    for c in checked {
+        for p in &c.problems {
+            not_shown.by_severity[severity(p) as usize] += 1;
+        }
+    }
+    for &(s, _, _) in &pool {
+        not_shown.by_severity[s as usize] -= 1;
+    }
+    not_shown.count = not_shown.by_severity.iter().sum();
+    (Some(kept), not_shown)
 }

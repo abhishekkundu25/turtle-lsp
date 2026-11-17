@@ -5,12 +5,13 @@ use super::output::{ENCODING_CODE, IO_CODE};
 use crate::batch::BatchFile;
 use crate::settings::{Ignored, Layer, SETTINGS_FILE, Settings, read_settings_file};
 use crate::workspace::{
-    MAX_FILE_BYTES, MAX_FILES, Scan, is_rdf_file, is_sparql_path, path_to_uri, scan_roots_capped,
+    MAX_FILE_BYTES, MAX_FILES, Scan, canonical, is_rdf_file, is_sparql_path, path_to_uri,
+    scan_roots_capped,
 };
 use rayon::prelude::*;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
@@ -76,6 +77,56 @@ impl File {
     pub(crate) fn batch(&self) -> BatchFile {
         BatchFile::at_path(&self.path, &self.shown, self.text.clone(), !self.reported)
             .expect("an absolute path has a file URI")
+    }
+}
+
+/// What a run reports.
+pub(crate) enum Targets<'a> {
+    /// The files and folders the user named; none: the root.
+    Paths(&'a [PathBuf]),
+    /// Text from standard input, as the file at `path` (absolute, existing or
+    /// not), which it replaces.
+    Stdin { path: PathBuf, bytes: Vec<u8> },
+}
+
+impl<'a> Targets<'a> {
+    /// `paths`, or, given `stdin` (the name of the text, from `cwd`),
+    /// standard input read to its end.
+    pub(crate) fn read(
+        cwd: &Path,
+        paths: &'a [PathBuf],
+        stdin: Option<&Path>,
+    ) -> Result<Targets<'a>, String> {
+        let Some(name) = stdin else {
+            return Ok(Targets::Paths(paths));
+        };
+        let abs = cwd.join(name);
+        // The folder without symbolic links, as a scan finds it; the name as given.
+        let path = match (abs.parent(), abs.file_name()) {
+            (Some(dir), Some(file)) => canonical(dir).join(file),
+            _ => abs,
+        };
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .lock()
+            .take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("cannot read standard input: {e}"))?;
+        Ok(Targets::Stdin { path, bytes })
+    }
+
+    /// The workspace root: `flag` if given, else the nearest folder with a
+    /// `.git` from standard input's folder, or for paths from `cwd`, else
+    /// `cwd` (see [`find_root`]).
+    pub(crate) fn root(&self, flag: Option<&Path>, cwd: &Path) -> Result<PathBuf, String> {
+        match (self, flag) {
+            (Targets::Stdin { path, .. }, None) => Ok(path
+                .ancestors()
+                .skip(1)
+                .find(|d| d.join(".git").exists())
+                .map_or_else(|| cwd.to_path_buf(), Path::to_path_buf)),
+            _ => find_root(flag, cwd),
+        }
     }
 }
 
@@ -199,7 +250,7 @@ pub(crate) fn load(
     paths: &[PathBuf],
     context: Context,
 ) -> Result<Workspace, String> {
-    let ws = load_lenient(root, cwd, paths, context)?;
+    let ws = load_lenient(root, cwd, Targets::Paths(paths), context)?;
     if ws.unread.is_empty() && !ws.incomplete {
         return Ok(ws);
     }
@@ -214,19 +265,24 @@ pub(crate) fn load(
     Err(messages.join("\n"))
 }
 
-/// Load the files of a run. `paths` are what the user named (default: the
-/// root); the RDF and SPARQL files under them are reported. A named path
-/// that does not exist fails the run. A reported file that cannot be read
+/// Load the files of a run. The RDF and SPARQL files under the paths the
+/// user named (default: the root) are reported, or the text from standard
+/// input alone, in place of a file at its path. A named path that does not
+/// exist fails the run. A reported file that cannot be read
 /// is in [`Workspace::unread`], and the run goes on; what a scan left out
 /// is warned about on stderr and makes the workspace
 /// [`incomplete`](Workspace::incomplete).
 pub(crate) fn load_lenient(
     root: PathBuf,
     cwd: PathBuf,
-    paths: &[PathBuf],
+    named: Targets,
     context: Context,
 ) -> Result<Workspace, String> {
     let cap = max_files()?;
+    let (paths, stdin) = match named {
+        Targets::Paths(paths) => (paths, None),
+        Targets::Stdin { path, bytes } => (&[][..], Some((path, bytes))),
+    };
     let mut targets = Vec::new();
     for p in paths {
         let abs = cwd.join(p);
@@ -235,7 +291,7 @@ pub(crate) fn load_lenient(
         }
         targets.push(real(&abs));
     }
-    if targets.is_empty() {
+    if targets.is_empty() && stdin.is_none() {
         targets.push(root.clone());
     }
     let mut truncated: BTreeSet<PathBuf> = BTreeSet::new();
@@ -285,6 +341,7 @@ pub(crate) fn load_lenient(
         (Context::Workspace, Some(found)) => found
             .into_iter()
             .filter(|p| is_rdf_file(p) && !reported.contains(p))
+            .filter(|p| stdin.as_ref().is_none_or(|(path, _)| p != path))
             .collect(),
         _ => Vec::new(),
     };
@@ -311,13 +368,12 @@ pub(crate) fn load_lenient(
         .map(|p| (p, true))
         .chain(context_paths.into_iter().map(|p| (p, false)))
         .collect();
-    let read: Vec<Result<File, (bool, Unread)>> = jobs
-        .into_par_iter()
-        .map(|(path, reported)| {
+    let entry =
+        |path: PathBuf, reported: bool, read: Result<(String, Stamp), (&'static str, String)>| {
             let shown = shown(&path, &cwd);
             let root_relative = relative(&path, &root);
             let uri = path_to_uri(&path).unwrap_or_default();
-            match read_text(&path) {
+            match read {
                 Ok((text, stamp)) => Ok(File {
                     root_relative,
                     uri,
@@ -338,7 +394,30 @@ pub(crate) fn load_lenient(
                     },
                 )),
             }
-        })
+        };
+    // Standard input is the one reported file, so it comes first.
+    let stdin = stdin.map(|(path, bytes)| {
+        let stamp = Stamp {
+            len: bytes.len() as u64,
+            modified: None,
+        };
+        let text = if stamp.len > MAX_FILE_BYTES {
+            Err(over_the_size_limit())
+        } else {
+            decode(bytes)
+        };
+        entry(path, true, text.map(|t| (t, stamp)))
+    });
+    let read: Vec<Result<File, (bool, Unread)>> = stdin
+        .into_iter()
+        .chain(
+            jobs.into_par_iter()
+                .map(|(path, reported)| {
+                    let text = read_text(&path);
+                    entry(path, reported, text)
+                })
+                .collect::<Vec<_>>(),
+        )
         .collect();
     let mut files = Vec::with_capacity(read.len());
     let mut unread = Vec::new();
@@ -375,26 +454,34 @@ fn read_text(path: &Path) -> Result<(String, Stamp), (&'static str, String)> {
     let mut file = std::fs::File::open(path).map_err(io)?;
     let meta = file.metadata().map_err(io)?;
     if meta.len() > MAX_FILE_BYTES {
-        return Err((
-            IO_CODE,
-            format!(
-                "larger than {} MB, not read",
-                MAX_FILE_BYTES / (1024 * 1024)
-            ),
-        ));
+        return Err(over_the_size_limit());
     }
     let mut bytes = Vec::with_capacity(meta.len() as usize);
-    std::io::Read::read_to_end(&mut file, &mut bytes).map_err(io)?;
-    match String::from_utf8(bytes) {
-        Ok(text) => Ok((text, Stamp::of(&meta))),
-        Err(e) => Err((
+    file.read_to_end(&mut bytes).map_err(io)?;
+    Ok((decode(bytes)?, Stamp::of(&meta)))
+}
+
+fn over_the_size_limit() -> (&'static str, String) {
+    (
+        IO_CODE,
+        format!(
+            "larger than {} MB, not read",
+            MAX_FILE_BYTES / (1024 * 1024)
+        ),
+    )
+}
+
+/// The text in `bytes`, or the `encoding` problem.
+fn decode(bytes: Vec<u8>) -> Result<String, (&'static str, String)> {
+    String::from_utf8(bytes).map_err(|e| {
+        (
             ENCODING_CODE,
             format!(
                 "not valid UTF-8 (first bad byte at offset {})",
                 e.utf8_error().valid_up_to()
             ),
-        )),
-    }
+        )
+    })
 }
 
 /// Replace the contents of the file at `path` with `new`, if it is still as
@@ -586,7 +673,13 @@ mod tests {
         d.write("a.ttl", b"<a> <b> <c> .\n");
         d.write("bad.ttl", b"<a> <b> \xff .\n");
         d.write("z.ttl", b"<d> <e> <f> .\n");
-        let ws = load_lenient(d.0.clone(), d.0.clone(), &[], Context::Workspace).unwrap();
+        let ws = load_lenient(
+            d.0.clone(),
+            d.0.clone(),
+            Targets::Paths(&[]),
+            Context::Workspace,
+        )
+        .unwrap();
         let shown: Vec<&str> = ws.files.iter().map(|f| f.shown.as_str()).collect();
         assert_eq!(shown, ["a.ttl", "z.ttl"]);
         assert_eq!(ws.unread.len(), 1);
@@ -598,5 +691,61 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.contains("bad.ttl") && e.contains("UTF-8"), "{e}");
+    }
+
+    #[test]
+    fn standard_input_replaces_the_file_at_its_path() {
+        let d = Dir::new("stdin");
+        d.write("a.ttl", b"on disk");
+        d.write("b.ttl", b"<d> <e> <f> .\n");
+        let stdin = |bytes: &[u8]| Targets::Stdin {
+            path: d.0.join("a.ttl"),
+            bytes: bytes.to_vec(),
+        };
+        let ws = load_lenient(
+            d.0.clone(),
+            d.0.clone(),
+            stdin(b"piped"),
+            Context::Workspace,
+        )
+        .unwrap();
+        let files: Vec<(&str, &str, bool)> = ws
+            .files
+            .iter()
+            .map(|f| (f.shown.as_str(), f.text.as_str(), f.reported))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("a.ttl", "piped", true),
+                ("b.ttl", "<d> <e> <f> .\n", false)
+            ]
+        );
+        // Without context, standard input is all there is.
+        let ws = load_lenient(d.0.clone(), d.0.clone(), stdin(b"piped"), Context::None).unwrap();
+        assert_eq!(ws.files.len(), 1);
+        let ws = load_lenient(d.0.clone(), d.0.clone(), stdin(b"\xff"), Context::None).unwrap();
+        assert!(ws.files.is_empty());
+        assert_eq!(ws.unread[0].shown, "a.ttl");
+        assert_eq!(ws.unread[0].code, ENCODING_CODE);
+    }
+
+    #[test]
+    fn standard_input_finds_its_root_from_its_folder() {
+        let d = Dir::new("stdin-root");
+        std::fs::create_dir_all(d.0.join("repo/.git")).unwrap();
+        let at = |p: &str| Targets::Stdin {
+            path: d.0.join(p),
+            bytes: Vec::new(),
+        };
+        assert_eq!(
+            at("repo/new/x.ttl").root(None, &d.0).unwrap(),
+            d.0.join("repo")
+        );
+        // No .git above it: the current folder, as for paths.
+        assert_eq!(at("other/x.ttl").root(None, &d.0).unwrap(), d.0);
+        // --root wins.
+        let flag = Some(Path::new("repo"));
+        assert_eq!(at("x.ttl").root(flag, &d.0).unwrap(), d.0.join("repo"));
     }
 }

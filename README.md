@@ -485,10 +485,43 @@ and vocabulary lints listed there, each checked by hand.
 - **VS Code:** install "Turtle RDF & SPARQL Language Server" from the
   [Marketplace](https://marketplace.visualstudio.com/items?itemName=abhishekkundu25.turtle-language-server).
 - **Neovim:** see [Neovim](#neovim-011) below (lazy.nvim installs the server for you).
-- **Any other editor:** download the server for your machine from the
+- **Any other editor, the command line, or a coding agent:** one command
+  installs the server from the latest release.
+
+  macOS and Linux:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.sh | sh
+  ```
+
+  Windows (PowerShell):
+
+  ```powershell
+  irm https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.ps1 | iex
+  ```
+
+  It downloads the archive for your machine and the release's `SHA256SUMS`,
+  checks the archive against it, and installs `turtle-lsp` in `~/.local/bin`
+  (Windows: `%LOCALAPPDATA%\Programs\turtle-lsp`). It asks nothing and
+  changes no `PATH` or shell profile: it says when the folder is not on
+  `PATH`, and prints the installed binary's path as its last line. Running it
+  again updates the binary. Settings, as environment variables of the
+  script (on `sh`, not on `curl`):
+
+  | Variable | Effect |
+  |---|---|
+  | `TURTLE_LSP_VERSION` | a release tag, such as `v0.19.0` (default: the latest) |
+  | `TURTLE_LSP_INSTALL_DIR` | the folder to install into |
+  | `TURTLE_LSP_VERIFY=attestation` | also check the build attestation with `gh attestation verify` (needs `gh`, signed in); a failure stops the install |
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.sh | TURTLE_LSP_VERSION=v0.19.0 sh
+  ```
+
+  Or download the archive yourself from the
   [latest release](https://github.com/abhishekkundu25/turtle-lsp/releases/latest)
   (`turtle-lsp-<platform>.tar.gz`, or `.zip` on Windows; checksums in
-  `SHA256SUMS`), put `turtle-lsp` on your `PATH`, and point your editor's LSP
+  `SHA256SUMS`) and put `turtle-lsp` on your `PATH`. Point your editor's LSP
   client at it (it speaks LSP over stdio). The same binary is the command-line
   checker and formatter; see [Check from the command line](#check-from-the-command-line).
 - **From source:** `cargo build --release --locked` (binary:
@@ -854,14 +887,20 @@ sites that allow other pages to read them (CORS) answer.
 included, without an editor. `turtle-lsp format` formats files. With no
 subcommand, `turtle-lsp` is the language server, as before. A word that is
 not a command is an error (exit 2); it does not start the server.
-`turtle-lsp help check` (or `format`, `query`), or the command with
-`--help`, prints that command's options, and `turtle-lsp --version` prints
-the version to stdout.
+`turtle-lsp help check` (or `format`, `query`, `codes`, `explain`), or the
+command with `--help`, prints that command's options, and `turtle-lsp
+--version` prints the version to stdout. `turtle-lsp --help` ends with
+examples of the common tasks.
 
 ```sh
 turtle-lsp check                     # every RDF (JSON-LD included) and SPARQL file under the workspace root
 turtle-lsp check data/people.ttl     # only this file, with the whole workspace as context
 turtle-lsp check --fix               # also apply the safe fixes
+turtle-lsp check --min-severity error   # only the errors
+cat new.ttl | turtle-lsp check - --stdin-filename data/new.ttl   # check text that is not saved
+cat new.ttl | turtle-lsp format -    # print the text formatted
+turtle-lsp codes                     # every diagnostic code, on or off by default
+turtle-lsp explain unused-prefix     # what a code means, and how to turn it off
 turtle-lsp format                    # format files in place
 turtle-lsp format --check            # list files that would change; change nothing
 turtle-lsp format --diff             # print a unified diff instead
@@ -881,7 +920,17 @@ The workspace root is `--root DIR`, otherwise the nearest folder above with a
 `.git`, otherwise the current folder. Every file under it is loaded
 (`prefixes.ttl`, shapes, cached imports), so checking one file gives the same
 results as the editor. Only the files you name are reported. Paths are
-files or folders; `-` (standard input) is not supported.
+files or folders. A path that does not exist fails the run (exit 2).
+
+**Standard input.** `check -` and `format -` read the text from standard
+input. `--stdin-filename PATH` (default `stdin.ttl`) names it: its syntax
+comes from the extension, its problems are reported under that path, and it
+replaces a file at that path for the run, with the rest of the workspace as
+context, so checking an edit before saving gives the result you will get
+after. Its root is the nearest folder with a `.git` above that path. `format
+-` prints the formatted text (`--check` and `--diff` work too); text with
+syntax errors gives exit 2 and nothing on stdout. `-` cannot be mixed with
+other paths or with `--fix`.
 
 A folder scan takes at most 20,000 files, in path order, and skips files
 over 50 MB. `TURTLE_LSP_MAX_FILES=N` changes the first limit. A scan that
@@ -889,7 +938,17 @@ stops at the limit, or skips a file, prints a warning and makes the run
 exit 2, so a CI gate never passes on files it did not check.
 
 Output is one line per problem, sorted by file and position, with lines and
-columns starting at 1. A summary goes to stderr.
+columns starting at 1. A summary goes to stderr. The concise format prints
+at most 50 problems unless `--max-problems` says otherwise (`0`: all): the
+most severe are kept, so an error never gives way to a hint, and are printed
+in the usual order. A last line on stderr counts what was not printed, by
+severity, and says how to see it:
+
+```
+35 more problems not shown (35 hints; --max-problems 50); narrow the run with a path, --select or --min-severity, or pass --max-problems 0
+```
+
+The exit code and the summary count every problem, printed or not.
 
 ```
 data/people.ttl:3:5: warning[undescribed-term] 'ex:lable' is not described anywhere in the workspace. Did you mean 'ex:label'?
@@ -918,6 +977,7 @@ read, and a read-only file, are left alone and reported.
 | Option | Effect |
 |---|---|
 | `--root DIR` | the workspace root |
+| `--stdin-filename PATH` | with `-`: the path of the text from standard input (default `stdin.ttl`) |
 | `--format F` | `concise` (default), `json`, `github` (workflow annotations) or `sarif` (GitHub code scanning) |
 | `--output-file PATH` | write the report to a file instead of stdout |
 | `--fix` | apply the safe fixes (add a missing prefix, remove an unused one), then report what is left |
@@ -928,10 +988,20 @@ read, and a read-only file, are left alone and reported.
 | `--ignore CODE,...` | do not report these codes (an unknown code is an error) |
 | `--no-shacl` | skip SHACL validation |
 | `--network` | fetch `owl:imports` and JSON-LD contexts that are not in the cache (off by default) |
-| `--max-diagnostics N` | print at most N problems per file; the summary still counts all |
+| `--max-diagnostics N` | print at most N problems per file, the most severe kept; the summary still counts all |
+| `--max-problems N` | print at most N problems in all, the most severe kept (default 50 for the concise format on stdout, no cap otherwise; `0`: no cap) |
+| `--min-severity S` | `error`, `warning`, `info` or `hint`: leave out less severe problems, as `--ignore` does (a skipped SHACL run is always reported) |
 | `--statistics` | print a count per code instead of the problems (not with `--format`) |
 
-`format` takes `--root DIR`, `--check` and `--diff`.
+`format` takes `--root DIR`, `--check`, `--diff`, `-` with
+`--stdin-filename PATH`, and `--format text|json`. JSON lists each file
+`formatted`, `would-format` (with `--check`) or `not-formatted` with its
+reason, and a summary; unchanged files are only counted.
+
+**JSON when a run fails.** With `--format json`, a command that fails
+before its report (a bad flag, a missing path, a query syntax error)
+prints `{"error":{"message":"..."},"version":1}` on stdout, besides the
+message on stderr, and exits 2. So stdout is always one JSON value.
 
 `query` runs a SELECT, ASK, CONSTRUCT or DESCRIBE query (from a file, or
 inline with `-e`) over the RDF files under the paths given (default: the
@@ -956,8 +1026,10 @@ Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
 `shacl-violation`, `shacl-failure`, `shacl-invalid-path`, `io` and
 `encoding`, and for JSON-LD `json-syntax`, `jsonld-context`,
 `jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and
-`invalid-language-tag`. An unknown code in `--select` or `--ignore` prints
-the full list. `--format json` gives each problem's range, severity, code,
+`invalid-language-tag`. `turtle-lsp codes` lists them all, with whether each
+is on by default (`--format json` too), and `turtle-lsp explain CODE` says
+what one means and how to turn it on or off in `turtle-lsp.json`. An unknown
+code in `--select` or `--ignore` prints the full list. `--format json` gives each problem's range, severity, code,
 message and fixes, in an object with `"version": 1`. SARIF reports give
 each file as a percent-encoded path relative to the root, or as an absolute
 `file:` URI for a file outside it.
@@ -989,8 +1061,16 @@ to `AGENTS.md` or `CLAUDE.md`:
   exit 2 means the command itself failed or did not check every file.
 - `turtle-lsp check --fix <files>` applies the safe fixes (missing and
   unused prefixes).
+- To check text before saving it, pipe it to
+  `turtle-lsp check - --stdin-filename <path>`.
+- `turtle-lsp check --min-severity error` shows only the errors;
+  `turtle-lsp explain <code>` says what a code means.
 - Run `turtle-lsp format <files>` on the files you changed.
 ```
+
+`--format json` gives one JSON value on stdout whatever happens: the report,
+or `{"error": ...}` when the run failed. `turtle-lsp codes --format json`
+lists the codes.
 
 In Claude Code, a `PostToolUse` hook runs the check after every edit of an RDF
 or SPARQL file and shows the problems to Claude. Add it to
@@ -1005,7 +1085,7 @@ or SPARQL file and shows the problems to Claude. Add it to
         "hooks": [
           {
             "type": "command",
-            "command": "f=$(jq -r '.tool_input.file_path'); case \"$f\" in *.ttl|*.trig|*.nt|*.nq|*.jsonld|*.rq|*.ru|*.sparql) turtle-lsp check --max-diagnostics 30 \"$f\" 1>&2 || exit 2;; esac"
+            "command": "f=$(jq -r '.tool_input.file_path'); case \"$f\" in *.ttl|*.trig|*.nt|*.nq|*.jsonld|*.rq|*.ru|*.sparql) turtle-lsp check --max-problems 30 \"$f\" 1>&2 || exit 2;; esac"
           }
         ]
       }
@@ -1015,13 +1095,15 @@ or SPARQL file and shows the problems to Claude. Add it to
 ```
 
 Exit code 2 is what makes Claude Code show the hook's stderr to Claude.
-`--max-diagnostics` keeps a badly broken file from filling the context.
+`--max-problems` keeps a badly broken file from filling the context; the
+most severe problems are the ones kept.
 
 ## In CI
 
-This GitHub workflow downloads the Linux binary from the latest release,
-checks it against `SHA256SUMS`, and annotates the pull request at the lines
-with problems:
+This GitHub workflow installs turtle-lsp with the repository's action, and
+annotates the pull request at the lines with problems. The action runs the
+install script on any runner (Linux, macOS, Windows), checks the archive
+against the release's `SHA256SUMS`, and puts `turtle-lsp` on `PATH`:
 
 ```yaml
 name: RDF
@@ -1035,22 +1117,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install turtle-lsp
-        working-directory: ${{ runner.temp }}
-        run: |
-          base=https://github.com/abhishekkundu25/turtle-lsp/releases/latest/download
-          curl -fsSLO "$base/turtle-lsp-linux-x64.tar.gz"
-          curl -fsSLO "$base/SHA256SUMS"
-          sha256sum --check --ignore-missing SHA256SUMS
-          tar -xzf turtle-lsp-linux-x64.tar.gz
-          echo "$PWD" >> "$GITHUB_PATH"
+      - uses: abhishekkundu25/turtle-lsp@vX.Y.Z # a release tag, v0.19.0 or later
       - run: turtle-lsp check --format github
       - run: turtle-lsp format --check
 ```
 
-To pin a version, replace `latest/download` with `download/vX.Y.Z`, where
-`vX.Y.Z` is a release tag. The actions are pinned to full commit SHAs,
-because a tag can be moved; Dependabot can keep the SHAs current.
+The action installs the latest release; `with: { version: vX.Y.Z }` pins one,
+and `with: { verify-attestation: "true" }` also checks the build attestation
+(give the step `env: { GH_TOKEN: ${{ github.token }} }`). Pin the action
+itself to a full commit SHA, as the other actions here, because a tag can be
+moved; Dependabot can keep the SHAs current.
 
 GitHub shows at most 10 annotations of each severity per step. For a large
 repository, upload SARIF to code scanning instead: the problems appear in the
@@ -1122,8 +1198,10 @@ vim.api.nvim_create_autocmd("LspAttach", {
 
 Push a tag `vX.Y.Z` on a commit of `main`. The release workflow
 (`.github/workflows/release.yml`) builds the server for macOS (arm64, x64),
-Linux (x64, arm64, Alpine) and Windows (x64), attaches a `.vsix` per
-platform, the server on its own (`.tar.gz`, `.zip` on Windows),
+Linux (x64, arm64, Alpine) and Windows (x64, arm64), attaches a `.vsix` per
+platform, the server on its own (`.tar.gz`,
+`.zip` on Windows; each also under a name with its version, such as
+`turtle-lsp-linux-x64-0.19.0.tar.gz`),
 `SHA256SUMS` and build attestations to a GitHub Release, and publishes the
 `.vsix` files to the VS Code Marketplace. Nothing is released unless:
 

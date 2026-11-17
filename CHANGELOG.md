@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Added
+
+- **The command line reads standard input.** `check -` and `format -`
+  take the text from standard input; `--stdin-filename PATH` (default
+  `stdin.ttl`) gives its path, so it is checked as that file, with the
+  rest of the workspace as context, without saving it. `format -` prints
+  the formatted text.
+- **`check --min-severity error|warning|info|hint`** leaves out less severe
+  problems, as `--ignore` does, and **`--max-problems N`** caps the
+  problems printed over the whole run. A last line on stderr counts what
+  was not printed, by severity, and says how to see it; JSON
+  `summary.notShown` counts it too.
+- **`turtle-lsp codes`** lists every diagnostic code with whether it is on
+  by default, and **`turtle-lsp explain CODE`** says what one means and how
+  to turn it on or off in `turtle-lsp.json`. Both take `--format json`.
+- **`format --format json`** lists each file formatted, would-format or not
+  formatted with its reason.
+- **With `--format json`, a failure is JSON too**: a bad flag, a missing
+  path or a query syntax error prints `{"error": {"message": ...},
+  "version": 1}` on stdout besides the message on stderr. stdout is always
+  one JSON value.
+- **`turtle-lsp --help` ends with examples** of the common tasks; a test
+  runs each.
+- **One command installs the server**: `curl -fsSL
+  https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.sh
+  | sh` on macOS and Linux, `irm .../install.ps1 | iex` on Windows. It
+  checks the archive against the release's `SHA256SUMS` (and, with
+  `TURTLE_LSP_VERIFY=attestation`, its build attestation), asks nothing, and
+  changes no `PATH`. `TURTLE_LSP_VERSION` pins a release.
+- **A GitHub Action**: `uses: abhishekkundu25/turtle-lsp@vX.Y.Z` installs
+  turtle-lsp on any runner and puts it on `PATH`.
+- **The extension for Windows on ARM** (`win32-arm64` on the Marketplace),
+  with a native ARM server.
+- **A server build for Windows on ARM** (`turtle-lsp-win32-arm64.zip`), and
+  each server archive also under a name with its version. `install.ps1`
+  falls back to the x64 build on ARM for a release without one.
+
 ### Changed
 
 - **A hover whose proof is slow waits for it**, instead of saying "The
@@ -11,6 +48,16 @@
   what the search found by its time limit. Hovering another term drops it,
   and in VS Code so does moving away. In Neovim, where the hover window
   stays open, hovering again meant closing it and coming back.
+- **The concise output of `check` stops at 50 problems** unless
+  `--max-problems` says otherwise (`0`: all), so a large workspace does not
+  fill an agent's context. The most severe problems are kept, then printed
+  in the usual order, and a line on stderr says how many were left out. A
+  report written with `--output-file`, and the `json`, `github` and
+  `sarif` formats, are not capped unless asked.
+- **`--max-diagnostics` keeps each file's most severe problems**, not its
+  first ones, and says on stderr how many it left out.
+- **`format` exits 2 when it cannot write to stdout**, except when the
+  reader stopped early (`| head`).
 - **The VS Code extension uses `vscode-languageclient` 11** (was 10.1.2).
   It needs VS Code 1.91 or later, the extension's minimum already.
 
