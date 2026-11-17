@@ -1199,7 +1199,7 @@ vim.api.nvim_create_autocmd("LspAttach", {
 Push a tag `vX.Y.Z` on a commit of `main`. The release workflow
 (`.github/workflows/release.yml`) builds the server for macOS (arm64, x64),
 Linux (x64, arm64, Alpine) and Windows (x64, arm64), attaches a `.vsix` per
-platform (none for Windows arm64 yet), the server on its own (`.tar.gz`,
+platform, the server on its own (`.tar.gz`,
 `.zip` on Windows; each also under a name with its version, such as
 `turtle-lsp-linux-x64-0.19.0.tar.gz`),
 `SHA256SUMS` and build attestations to a GitHub Release, and publishes the

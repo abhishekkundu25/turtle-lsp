@@ -33,6 +33,8 @@
   changes no `PATH`. `TURTLE_LSP_VERSION` pins a release.
 - **A GitHub Action**: `uses: abhishekkundu25/turtle-lsp@vX.Y.Z` installs
   turtle-lsp on any runner and puts it on `PATH`.
+- **The extension for Windows on ARM** (`win32-arm64` on the Marketplace),
+  with a native ARM server.
 - **A server build for Windows on ARM** (`turtle-lsp-win32-arm64.zip`), and
   each server archive also under a name with its version. `install.ps1`
   falls back to the x64 build on ARM for a release without one.
