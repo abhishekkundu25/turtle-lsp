@@ -25,6 +25,17 @@
   one JSON value.
 - **`turtle-lsp --help` ends with examples** of the common tasks; a test
   runs each.
+- **One command installs the server**: `curl -fsSL
+  https://raw.githubusercontent.com/abhishekkundu25/turtle-lsp/main/install.sh
+  | sh` on macOS and Linux, `irm .../install.ps1 | iex` on Windows. It
+  checks the archive against the release's `SHA256SUMS` (and, with
+  `TURTLE_LSP_VERIFY=attestation`, its build attestation), asks nothing, and
+  changes no `PATH`. `TURTLE_LSP_VERSION` pins a release.
+- **A GitHub Action**: `uses: abhishekkundu25/turtle-lsp@vX.Y.Z` installs
+  turtle-lsp on any runner and puts it on `PATH`.
+- **A server build for Windows on ARM** (`turtle-lsp-win32-arm64.zip`), and
+  each server archive also under a name with its version. `install.ps1`
+  falls back to the x64 build on ARM for a release without one.
 
 ### Changed
 
