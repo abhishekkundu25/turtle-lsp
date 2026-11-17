@@ -41,6 +41,13 @@
 
 ### Changed
 
+- **A hover whose proof is slow waits for it**, instead of saying "The
+  proof is still being worked out; hover again". It arrives usually under
+  2 s, a few seconds when another term's search runs first (VS Code shows
+  it as loading; Neovim opens it when it arrives), with the proofs or with
+  what the search found by its time limit. Hovering another term drops it,
+  and in VS Code so does moving away. In Neovim, where the hover window
+  stays open, hovering again meant closing it and coming back.
 - **The concise output of `check` stops at 50 problems** unless
   `--max-problems` says otherwise (`0`: all), so a large workspace does not
   fill an agent's context. The most severe problems are kept, then printed

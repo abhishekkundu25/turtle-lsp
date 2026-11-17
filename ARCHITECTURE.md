@@ -68,7 +68,7 @@ Inside the larger modules, these files hold one part each:
 | `src/reasoning/state.rs` | `Shared`: the result of the run whose findings the server shows (the reasoner, its base and proof cache), and a finished run's result until the server shows or drops it; hover reads the result shown without waiting for a run |
 | `src/reasoning/proof.rs` | A TurbOWL proof as hover markdown, each base triple a link to its line |
 | `src/reasoning/turtle.rs` | How hover and diagnostics write a proof: short names, `[]` for a blank node, an RDF list as one `( … )` item |
-| `src/server/{client,progress,shacl,reasoning,refresh,layers,index}.rs` | The server's state groups (see [Threads](#threads)) |
+| `src/server/{client,progress,shacl,reasoning,hovers,refresh,layers,index}.rs` | The server's state groups (see [Threads](#threads)) |
 | `src/server/worker.rs` | `Spawn`, `spawn_guarded` and `Feed`: how jobs start and how their answers come back |
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
@@ -292,8 +292,10 @@ findings nor its result are shown.
 
 Long work runs on worker threads and comes back as messages: the initial
 index, imports (`imports::worker`), JSON-LD context fetches, SHACL
-validation, reasoning (`reasoning::Worker`), workspace diagnostics and
-query runs. `worker::Spawn` says how a job runs: `Spawn::Thread` on a
+validation, reasoning (`reasoning::Worker`), workspace diagnostics,
+query runs, and the end of a proof search a hover is held for
+(`server::hovers`: a `hover-wait` thread wakes the main loop, which answers
+the hover again). `worker::Spawn` says how a job runs: `Spawn::Thread` on a
 thread of its own in the stdio server, `Spawn::Inline` on the caller's
 thread when the server is embedded in a host with no threads. Threads start
 through `server::worker::spawn_guarded`, which turns a panic into a

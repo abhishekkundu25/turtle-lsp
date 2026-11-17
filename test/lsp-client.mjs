@@ -230,7 +230,9 @@ export async function startServer({
     get stderr() {
       return stderr
     },
-    request: (method, params) => conn.sendRequest(method, params),
+    // With a CancellationToken, cancelling it sends $/cancelRequest.
+    request: (method, params, token) =>
+      token ? conn.sendRequest(method, params, token) : conn.sendRequest(method, params),
     notify: (method, params) => conn.sendNotification(method, params),
     // Writes the messages in one chunk, so the server reads them together.
     // Requests need string ids; their responses land in rawResponses.

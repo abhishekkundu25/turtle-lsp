@@ -164,6 +164,9 @@ struct Search {
     answer: crossbeam_channel::Receiver<Result<Types, String>>,
     /// The search has ended: its answer has been sent.
     done: Arc<AtomicBool>,
+    /// Disconnected once the search has ended: what a held hover waits on
+    /// ([`Shared::search_ended`]).
+    ended: crossbeam_channel::Receiver<()>,
     /// Its answer once a hover has taken it, for the later hovers of the
     /// term: the result it was searched in cannot change, and a search
     /// stopped at its limit would only stop there again.
@@ -364,10 +367,27 @@ impl Shared {
         }
     }
 
+    /// What a hover told [`Types::Pending`] can wait on: a channel that
+    /// disconnects when the proof search that kept it waiting ends (its
+    /// own, or another term's beside which it could not start one), and is
+    /// disconnected already when that search has ended. Asked again then,
+    /// the hover has the proofs, or starts its own search. `None` when no
+    /// search has started (its thread could not start): nothing will end.
+    pub(crate) fn search_ended(&self) -> Option<crossbeam_channel::Receiver<()>> {
+        let search = self.search.lock().unwrap_or_else(PoisonError::into_inner);
+        search.as_ref().map(|s| s.ended.clone())
+    }
+
+    /// How long one search for a term's proofs may run.
+    pub(crate) fn hover_limit(&self) -> Duration {
+        self.limits.hover
+    }
+
     /// Start a search for the proofs of `iri`'s types in `r`; `None` when
     /// its thread cannot start.
     fn search(self: &Arc<Self>, iri: &str, r: Arc<Reasoned>) -> Option<Search> {
         let (tx, answer) = crossbeam_channel::bounded(1);
+        let (end, on_end) = crossbeam_channel::bounded::<()>(0);
         let done = Arc::new(AtomicBool::new(false));
         let shared = Arc::clone(self);
         let generation = r.generation;
@@ -387,6 +407,8 @@ impl Shared {
                 move |proved| {
                     ended.store(true, Ordering::Release);
                     let _ = tx.send(proved);
+                    // After the answer: a held hover that wakes finds it.
+                    drop(end);
                 },
             )
             .ok()?;
@@ -395,6 +417,7 @@ impl Shared {
             generation,
             answer,
             done,
+            ended: on_end,
             kept: None,
         })
     }

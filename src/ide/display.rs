@@ -21,17 +21,30 @@ use std::sync::Arc;
 impl Session<'_> {
     /// `textDocument/hover`; on an RDF document's resource, with reasoning
     /// on, what it infers of it, named with the document's prefixes and the
-    /// project's.
+    /// project's. The server asks [`Session::hover_or_wait`].
+    #[cfg(test)]
     pub(crate) fn hover(&mut self, uri: &str, pos: Position) -> Option<Hover> {
-        let doc = self.doc(uri)?;
+        self.hover_or_wait(uri, pos).0
+    }
+
+    /// [`Session::hover`], and when its proofs are still being searched
+    /// for, what ends when that search does: hovering again then has them.
+    pub(crate) fn hover_or_wait(
+        &mut self,
+        uri: &str,
+        pos: Position,
+    ) -> (Option<Hover>, Option<crossbeam_channel::Receiver<()>>) {
+        let Some(doc) = self.doc(uri) else {
+            return (None, None);
+        };
         let reasoning = match (self.reasoning(), &doc) {
             (Some(shared), Doc::Rdf(a)) => Some((shared, self.ws.project_prefixes_for(&a.uri))),
             _ => None,
         };
         let k = self.ws.knowledge();
         match doc {
-            Doc::Rdf(a) => hover::hover_reasoned(&a, k, self.enc, pos, reasoning),
-            Doc::Sparql(q) => sparql_features::hover(&q, k, self.enc, pos),
+            Doc::Rdf(a) => hover::hover_or_wait(&a, k, self.enc, pos, reasoning),
+            Doc::Sparql(q) => (sparql_features::hover(&q, k, self.enc, pos), None),
         }
     }
 
