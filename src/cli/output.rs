@@ -29,8 +29,8 @@ pub(crate) struct CheckedFile<'a> {
     pub(crate) problems: &'a [Problem],
 }
 
-/// Counts over every problem found, before `--max-diagnostics` trimmed the
-/// output.
+/// Counts over every problem the filters kept, before `--max-diagnostics`
+/// and `--max-problems` trimmed the output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Summary {
     pub(crate) errors: usize,
@@ -39,6 +39,21 @@ pub(crate) struct Summary {
     pub(crate) hints: usize,
     pub(crate) files_with_problems: usize,
     pub(crate) files_checked: usize,
+    /// The problems kept but not printed.
+    pub(crate) not_shown: usize,
+}
+
+/// The problems kept but not printed, and the caps that left them out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NotShown {
+    pub(crate) count: usize,
+    /// `--max-diagnostics`, when it left a problem out.
+    pub(crate) max_diagnostics: Option<usize>,
+    /// `--max-problems` or its default, when it left a problem out.
+    pub(crate) max_problems: Option<usize>,
+    /// Of `count`: errors, warnings, infos and hints, so a reader knows
+    /// whether an error was left out.
+    pub(crate) by_severity: [usize; 4],
 }
 
 /// The SARIF 2.1.0 schema the `sarif` format declares.
@@ -76,13 +91,13 @@ pub(crate) const INFORMATION_URI: &str = "https://github.com/abhishekkundu25/tur
 ///       }]
 ///     }],
 ///     "summary": {"errors": 0, "warnings": 0, "infos": 0, "hints": 0,
-///                 "filesWithProblems": 0, "filesChecked": 0}
+///                 "filesWithProblems": 0, "filesChecked": 0, "notShown": 0}
 ///   }
 ///   ```
 ///
 ///   Lines and columns start at 1 and count code points; a range's end is
 ///   exclusive. `files` lists only files with problems to show; `summary`
-///   counts every problem. An edit's `path` is the file name the analysis
+///   counts every problem, and `notShown` those a cap left out of `files`. An edit's `path` is the file name the analysis
 ///   gave it. Within version 1, keys are only added, never renamed or removed.
 /// - `sarif`: a SARIF 2.1.0 log with one run, a rule per code, the safe
 ///   fixes, and artifact URIs: percent-encoded paths relative to `%SRCROOT%`
@@ -150,6 +165,40 @@ pub(crate) fn summary_line(summary: &Summary) -> String {
         parts.join(", "),
         plural(summary.files_with_problems, "file")
     )
+}
+
+/// The last line for stderr when a cap left problems out: how many, the
+/// caps, and how to see them, e.g. "100 more problems not shown
+/// (--max-problems 50); narrow the run with a path, --select or
+/// --min-severity, or pass --max-problems 0". None when nothing was left out.
+pub(crate) fn not_shown_line(n: &NotShown) -> Option<String> {
+    if n.count == 0 {
+        return None;
+    }
+    let (caps, see_all) = match (n.max_diagnostics, n.max_problems) {
+        (None, None) => return None,
+        (Some(d), None) => (format!("--max-diagnostics {d}"), "drop --max-diagnostics"),
+        (None, Some(p)) => (format!("--max-problems {p}"), "pass --max-problems 0"),
+        (Some(d), Some(p)) => (
+            format!("--max-diagnostics {d}, --max-problems {p}"),
+            "drop --max-diagnostics and pass --max-problems 0",
+        ),
+    };
+    let kinds: Vec<String> = ["error", "warning", "info", "hint"]
+        .iter()
+        .zip(n.by_severity)
+        .filter(|(_, k)| *k > 0)
+        .map(|(word, k)| plural(k, word))
+        .collect();
+    let kinds = if kinds.is_empty() {
+        String::new()
+    } else {
+        format!("{}; ", kinds.join(", "))
+    };
+    Some(format!(
+        "{} not shown ({kinds}{caps}); narrow the run with a path, --select or --min-severity, or {see_all}",
+        plural(n.count, "more problem")
+    ))
 }
 
 fn plural(n: usize, word: &str) -> String {
@@ -301,6 +350,7 @@ fn json_report(files: &[CheckedFile], summary: &Summary) -> Value {
             "hints": summary.hints,
             "filesWithProblems": summary.files_with_problems,
             "filesChecked": summary.files_checked,
+            "notShown": summary.not_shown,
         },
     })
 }
@@ -715,6 +765,7 @@ mod tests {
             hints: 1,
             files_with_problems: 2,
             files_checked: 3,
+            not_shown: 0,
         }
     }
 
@@ -844,8 +895,16 @@ mod tests {
         assert_eq!(
             v["summary"],
             json!({"errors": 1, "warnings": 1, "infos": 1, "hints": 1,
-                   "filesWithProblems": 2, "filesChecked": 3})
+                   "filesWithProblems": 2, "filesChecked": 3, "notShown": 0})
         );
+        let capped = Summary {
+            not_shown: 140,
+            ..sample_summary()
+        };
+        let v: Value =
+            serde_json::from_str(&render_to_string(Format::Json, &checked(&a, &b), &capped))
+                .unwrap();
+        assert_eq!(v["summary"]["notShown"], 140);
     }
 
     #[test]
@@ -1037,6 +1096,7 @@ mod tests {
             hints,
             files_with_problems: with,
             files_checked: checked,
+            not_shown: 0,
         };
         assert_eq!(
             summary_line(&s(3, 1, 0, 0, 2, 5)),
@@ -1056,5 +1116,33 @@ mod tests {
         );
         assert_eq!(summary_line(&s(0, 0, 0, 0, 0, 5)), "No problems in 5 files");
         assert_eq!(summary_line(&s(0, 0, 0, 0, 0, 1)), "No problems in 1 file");
+    }
+
+    #[test]
+    fn not_shown_lines_name_the_cap_and_the_way_out() {
+        let n = |by_severity: [usize; 4], max_diagnostics, max_problems| NotShown {
+            count: by_severity.iter().sum(),
+            max_diagnostics,
+            max_problems,
+            by_severity,
+        };
+        assert_eq!(
+            not_shown_line(&n([0, 0, 0, 50], None, Some(100))).unwrap(),
+            "50 more problems not shown (50 hints; --max-problems 100); narrow the run with a \
+             path, --select or --min-severity, or pass --max-problems 0"
+        );
+        assert_eq!(
+            not_shown_line(&n([1, 0, 0, 0], Some(2), None)).unwrap(),
+            "1 more problem not shown (1 error; --max-diagnostics 2); narrow the run with a \
+             path, --select or --min-severity, or drop --max-diagnostics"
+        );
+        assert_eq!(
+            not_shown_line(&n([2, 0, 1, 4], Some(2), Some(5))).unwrap(),
+            "7 more problems not shown (2 errors, 1 info, 4 hints; --max-diagnostics 2, \
+             --max-problems 5); narrow the run with a path, --select or --min-severity, or drop \
+             --max-diagnostics and pass --max-problems 0"
+        );
+        assert_eq!(not_shown_line(&n([0; 4], None, None)), None);
+        assert_eq!(not_shown_line(&NotShown::default()), None);
     }
 }

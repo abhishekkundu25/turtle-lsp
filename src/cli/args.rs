@@ -2,12 +2,15 @@
 
 use super::output::{self, Format};
 use crate::settings::Reasoning;
+use crate::workspace::{is_rdf_file, is_sparql_path};
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
 pub(crate) struct CheckArgs {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) root: Option<PathBuf>,
+    /// `-`: check standard input as the file at this path.
+    pub(crate) stdin_filename: Option<PathBuf>,
     pub(crate) format: Option<Format>,
     pub(crate) output_file: Option<PathBuf>,
     pub(crate) fix: bool,
@@ -19,6 +22,11 @@ pub(crate) struct CheckArgs {
     pub(crate) no_shacl: bool,
     pub(crate) network: bool,
     pub(crate) max_diagnostics: Option<usize>,
+    /// The problems below it are not reported.
+    pub(crate) min_severity: Severity,
+    /// None: the format's default ([`DEFAULT_MAX_PROBLEMS`] for the concise
+    /// format, else no cap); `Some(0)`: no cap.
+    pub(crate) max_problems: Option<usize>,
     pub(crate) statistics: bool,
 }
 
@@ -26,8 +34,12 @@ pub(crate) struct CheckArgs {
 pub(crate) struct FormatArgs {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) root: Option<PathBuf>,
+    /// `-`: format standard input as the file at this path, to stdout.
+    pub(crate) stdin_filename: Option<PathBuf>,
     pub(crate) check: bool,
     pub(crate) diff: bool,
+    /// `--format json`: the files as one JSON object instead of text.
+    pub(crate) json: bool,
 }
 
 /// The output of `query`.
@@ -78,6 +90,21 @@ pub(crate) struct QueryArgs {
 
 /// The default `--timeout`, in seconds.
 pub(crate) const QUERY_TIMEOUT_SECONDS: u64 = 30;
+
+/// `check --min-severity`, from the most severe to the least.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Severity {
+    Error,
+    Warning,
+    Info,
+    #[default]
+    Hint,
+}
+
+/// The problems the concise format prints at most without `--max-problems`:
+/// about 6,000 characters, inside the 10,000 Claude Code keeps of a
+/// command's output.
+pub(crate) const DEFAULT_MAX_PROBLEMS: usize = 50;
 
 /// What the command line asks for.
 #[derive(Debug)]
@@ -175,12 +202,35 @@ fn codes(flag: &str, v: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// `-` would be standard input, which no command reads.
+/// `-` would be standard input, which `query` does not read.
 fn no_stdin(paths: &[PathBuf]) -> Result<(), String> {
     if paths.iter().any(|p| p.as_os_str() == "-") {
         return Err("'-' (standard input) is not supported; name a file or folder".to_string());
     }
     Ok(())
+}
+
+/// The name of the text on standard input when `paths` is `-` (then taken
+/// out of `paths`): `name` (`--stdin-filename`), else `stdin.ttl`.
+fn stdin(paths: &mut Vec<PathBuf>, name: Option<PathBuf>) -> Result<Option<PathBuf>, String> {
+    if !paths.iter().any(|p| p.as_os_str() == "-") {
+        return match name {
+            Some(_) => Err("--stdin-filename works only with '-' (standard input)".to_string()),
+            None => Ok(None),
+        };
+    }
+    if paths.len() > 1 {
+        return Err("'-' (standard input) cannot be combined with other paths".to_string());
+    }
+    paths.clear();
+    let name = name.unwrap_or_else(|| PathBuf::from("stdin.ttl"));
+    if !is_rdf_file(&name) && !is_sparql_path(&name) {
+        return Err(format!(
+            "--stdin-filename {}: not the name of an RDF or SPARQL file",
+            name.display()
+        ));
+    }
+    Ok(Some(name))
 }
 
 fn unknown(flag: &str, command: &str) -> String {
@@ -190,6 +240,7 @@ fn unknown(flag: &str, command: &str) -> String {
 /// Arguments of `check`, without the subcommand itself.
 pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> {
     let mut out = CheckArgs::default();
+    let mut stdin_filename = None;
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
         let flag = match item {
@@ -203,6 +254,7 @@ pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> 
         match f {
             "-h" | "--help" => return Ok(Parsed::Help),
             "--root" => out.root = Some(PathBuf::from(it.value(f)?)),
+            "--stdin-filename" => stdin_filename = Some(PathBuf::from(it.value(f)?)),
             "--format" => {
                 let v = it.value(f)?;
                 out.format = Some(match v.as_str() {
@@ -220,6 +272,21 @@ pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> 
             "--output-file" => out.output_file = Some(PathBuf::from(it.value(f)?)),
             "--max-warnings" => out.max_warnings = Some(it.number(f)?),
             "--max-diagnostics" => out.max_diagnostics = Some(it.number(f)?),
+            "--max-problems" => out.max_problems = Some(it.number(f)?),
+            "--min-severity" => {
+                let v = it.value(f)?;
+                out.min_severity = match v.as_str() {
+                    "error" => Severity::Error,
+                    "warning" => Severity::Warning,
+                    "info" => Severity::Info,
+                    "hint" => Severity::Hint,
+                    _ => {
+                        return Err(format!(
+                            "--min-severity must be error, warning, info or hint, not '{v}'"
+                        ));
+                    }
+                };
+            }
             "--select" => out.select.extend(codes(f, &it.value(f)?)?),
             "--ignore" => out.ignore.extend(codes(f, &it.value(f)?)?),
             _ => {
@@ -243,13 +310,17 @@ pub(crate) fn parse_check(args: &[String]) -> Result<Parsed<CheckArgs>, String> 
     if out.statistics && out.format.is_some() {
         return Err("--statistics prints counts in its own layout; drop --format".to_string());
     }
-    no_stdin(&out.paths)?;
+    out.stdin_filename = stdin(&mut out.paths, stdin_filename)?;
+    if out.fix && out.stdin_filename.is_some() {
+        return Err("--fix writes files; it does not work with '-' (standard input)".to_string());
+    }
     Ok(Parsed::Run(out))
 }
 
 /// Arguments of `format`, without the subcommand itself.
 pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String> {
     let mut out = FormatArgs::default();
+    let mut stdin_filename = None;
     let mut it = Args::new(args);
     while let Some(item) = it.next()? {
         let flag = match item {
@@ -263,6 +334,15 @@ pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String
         match f {
             "-h" | "--help" => return Ok(Parsed::Help),
             "--root" => out.root = Some(PathBuf::from(it.value(f)?)),
+            "--stdin-filename" => stdin_filename = Some(PathBuf::from(it.value(f)?)),
+            "--format" => {
+                let v = it.value(f)?;
+                out.json = match v.as_str() {
+                    "text" => false,
+                    "json" => true,
+                    _ => return Err(format!("--format must be text or json, not '{v}'")),
+                };
+            }
             "--check" | "--diff" => {
                 if f == "--check" {
                     out.check = true;
@@ -274,7 +354,17 @@ pub(crate) fn parse_format(args: &[String]) -> Result<Parsed<FormatArgs>, String
             _ => return Err(unknown(f, "format")),
         }
     }
-    no_stdin(&out.paths)?;
+    if out.json && out.diff {
+        return Err("--format json does not work with --diff (a diff is text)".to_string());
+    }
+    out.stdin_filename = stdin(&mut out.paths, stdin_filename)?;
+    if out.json && out.stdin_filename.is_some() {
+        return Err(
+            "--format json does not work with '-' (standard input): the formatted text is the \
+             output"
+                .to_string(),
+        );
+    }
     Ok(Parsed::Run(out))
 }
 
@@ -411,6 +501,35 @@ mod tests {
     }
 
     #[test]
+    fn cli_check_output_budget() {
+        let a = check("").unwrap();
+        assert_eq!((a.min_severity, a.max_problems), (Severity::Hint, None));
+        let a = check("--min-severity warning --max-problems=0").unwrap();
+        assert_eq!(
+            (a.min_severity, a.max_problems),
+            (Severity::Warning, Some(0))
+        );
+        let a = check("--min-severity=error --max-problems 10").unwrap();
+        assert_eq!(
+            (a.min_severity, a.max_problems),
+            (Severity::Error, Some(10))
+        );
+        assert_eq!(
+            check("--min-severity info").unwrap().min_severity,
+            Severity::Info
+        );
+        assert!(Severity::Error < Severity::Warning && Severity::Info < Severity::Hint);
+        let e = check("--min-severity fatal").unwrap_err();
+        assert!(
+            e.contains("error, warning, info or hint") && e.contains("'fatal'"),
+            "{e}"
+        );
+        assert!(check("--min-severity").is_err());
+        assert!(check("--max-problems -1").is_err());
+        assert!(check("--max-problems lots").is_err());
+    }
+
+    #[test]
     fn cli_check_bad_flags() {
         assert!(check("--bogus").unwrap_err().contains("--bogus"));
         assert!(check("--format xml").is_err());
@@ -436,20 +555,73 @@ mod tests {
         assert!(check("--statistics").is_ok());
     }
 
+    fn format(s: &str) -> Result<FormatArgs, String> {
+        match parse_format(&args(s))? {
+            Parsed::Run(a) => Ok(a),
+            Parsed::Help => Err("help".into()),
+        }
+    }
+
     #[test]
-    fn cli_standard_input_is_rejected_by_every_command() {
+    fn cli_standard_input_is_rejected_by_query() {
         for e in [
-            check("-").unwrap_err(),
-            match parse_format(&args("-")) {
-                Err(e) => e,
-                Ok(_) => panic!("accepted"),
-            },
             query("q.rq -").unwrap_err(),
+            query("-e ASK{} -").unwrap_err(),
         ] {
             assert!(e.contains("standard input"), "{e}");
         }
-        // Also after --.
-        assert!(check("-- -").is_err());
+    }
+
+    #[test]
+    fn cli_check_and_format_read_standard_input_alone() {
+        let a = check("-").unwrap();
+        assert_eq!(a.stdin_filename, Some(PathBuf::from("stdin.ttl")));
+        assert!(a.paths.is_empty());
+        let a = format("--check - --stdin-filename=data/x.trig").unwrap();
+        assert_eq!(a.stdin_filename, Some(PathBuf::from("data/x.trig")));
+        assert!(a.paths.is_empty() && a.check);
+        // After --, `-` is still standard input.
+        assert!(check("-- -").unwrap().stdin_filename.is_some());
+        let named = |s: &str| check(s).unwrap().stdin_filename.unwrap();
+        assert_eq!(named("- --stdin-filename q.rq"), PathBuf::from("q.rq"));
+        assert_eq!(
+            named("--stdin-filename d.jsonld -"),
+            PathBuf::from("d.jsonld")
+        );
+        // Without `-`, nothing is read.
+        assert_eq!(check("a.ttl").unwrap().stdin_filename, None);
+        assert_eq!(format("a.ttl").unwrap().stdin_filename, None);
+    }
+
+    #[test]
+    fn cli_standard_input_combinations_are_errors() {
+        for e in [
+            check("- a.ttl").unwrap_err(),
+            check("a.ttl -").unwrap_err(),
+            check("- -").unwrap_err(),
+            format("- a.ttl").unwrap_err(),
+        ] {
+            assert!(e.contains("cannot be combined with other paths"), "{e}");
+        }
+        assert!(check("- --fix").unwrap_err().contains("--fix"));
+        for e in [
+            check("- --stdin-filename").unwrap_err(),
+            format("- --stdin-filename").unwrap_err(),
+        ] {
+            assert!(e.contains("--stdin-filename needs a value"), "{e}");
+        }
+        for e in [
+            check("--stdin-filename x.ttl a.ttl").unwrap_err(),
+            format("--stdin-filename x.ttl").unwrap_err(),
+        ] {
+            assert!(e.contains("only with '-'"), "{e}");
+        }
+        for e in [
+            check("- --stdin-filename notes.txt").unwrap_err(),
+            format("- --stdin-filename data").unwrap_err(),
+        ] {
+            assert!(e.contains("not the name of an RDF or SPARQL file"), "{e}");
+        }
     }
 
     #[test]
@@ -459,7 +631,19 @@ mod tests {
         };
         assert!(a.check && a.diff);
         assert_eq!(a.paths, [PathBuf::from("x.ttl")]);
+        assert!(!a.json);
         assert!(parse_format(&args("--fix")).is_err());
+        assert!(format("--format json --check").unwrap().json);
+        assert!(!format("--format=json --format text").unwrap().json);
+        let e = format("--format yaml").unwrap_err();
+        assert!(e.contains("text or json"), "{e}");
+        assert!(
+            format("--format json --diff")
+                .unwrap_err()
+                .contains("--diff")
+        );
+        let e = format("- --format=json").unwrap_err();
+        assert!(e.contains("standard input"), "{e}");
     }
 
     fn query(s: &str) -> Result<QueryArgs, String> {
