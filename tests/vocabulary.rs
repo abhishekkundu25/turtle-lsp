@@ -522,7 +522,7 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
 /// The files `check --root tests/w3c` reads, as it finds them: RDF in any
 /// letter case, SPARQL only in lower case, no hidden folder.
 fn w3c_files(dir: &Path, root: &Path, out: &mut Vec<BatchFile>) {
-    const RDF_EXTENSIONS: &[&str] = &["ttl", "turtle", "trig", "nt", "nq", "jsonld"];
+    const RDF_EXTENSIONS: &[&str] = &["ttl", "turtle", "trig", "nt", "nq", "jsonld", "rdf", "owl"];
     const SPARQL_EXTENSIONS: &[&str] = &["rq", "sparql", "ru"];
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
