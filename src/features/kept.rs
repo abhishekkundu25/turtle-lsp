@@ -3,7 +3,7 @@
 //! statements the parse splice took again are checked again
 //! ([`Window`]); after a change of the knowledge index, only what its
 //! change set names ([`Changes`]). What this cannot follow (a full parse,
-//! more than one index change, JSON-LD) checks everything again.
+//! more than one index change, JSON-LD, RDF/XML) checks everything again.
 //!
 //! By what each kept check reads ([`Reads`]):
 //! - statement-local, `invalid-literal` and `label-whitespace`: kept per
@@ -81,21 +81,41 @@ pub(crate) struct Checked {
 }
 
 impl Kept {
-    /// The findings of every kept check of `a` with `k`.
+    /// The findings of every kept check of `a` with `k`; none for a check
+    /// that does not run on `a`'s syntax ([`Check::runs_on`]).
     pub(crate) fn of(a: &Analysis, k: &Knowledge) -> Kept {
         let n = a.parsed.triples.len();
-        let (vocab, own) = match a.parsed.syntax {
-            Syntax::JsonLd => diagnostics::jsonld_term_uses(a, k),
-            _ => diagnostics::term_uses(a, k, a.parsed.refs.iter()),
+        let on = |check: Check| check.runs_on(a.parsed.syntax);
+        let (vocab, own) = if on(Check::TermUses) {
+            match a.parsed.syntax {
+                Syntax::JsonLd => diagnostics::jsonld_term_uses(a, k),
+                Syntax::Turtle
+                | Syntax::TriG
+                | Syntax::NTriples
+                | Syntax::NQuads
+                | Syntax::RdfXml => diagnostics::term_uses(a, k, a.parsed.refs.iter()),
+            }
+        } else {
+            Default::default()
         };
         let mut kept = Kept {
             vocab,
             own,
-            literals: literals(a, 0..n),
-            whitespace: curation::whitespace(a, 0..n),
+            literals: if on(Check::Literals) {
+                literals(a, 0..n)
+            } else {
+                Vec::new()
+            },
+            whitespace: if on(Check::LabelWhitespace) {
+                curation::whitespace(a, 0..n)
+            } else {
+                Vec::new()
+            },
             ..Kept::default()
         };
-        kept.check_labels(a, k);
+        if on(Check::DuplicateLabel) || on(Check::MultipleLabels) {
+            kept.check_labels(a, k);
+        }
         kept.count(a.parsed.statements.len(), a.parsed.refs.len(), 0);
         kept
     }
@@ -112,7 +132,14 @@ impl Kept {
             Check::LabelWhitespace => Box::new(by_triple(&self.whitespace)),
             Check::DuplicateLabel => Box::new(by_triple(&self.duplicate)),
             Check::MultipleLabels => Box::new(by_triple(&self.multiple)),
-            _ => Box::new(std::iter::empty()),
+            Check::Syntax
+            | Check::UndeclaredPrefix
+            | Check::PrefixDeclarations
+            | Check::UnusedPrefix
+            | Check::JsonLd
+            | Check::ShaclLint
+            | Check::UndescribedTerms
+            | Check::HouseStyle => Box::new(std::iter::empty()),
         }
     }
 
@@ -149,7 +176,7 @@ impl Kept {
                 generation,
                 triples,
             } if std::ptr::eq(head.as_ptr(), Arc::as_ptr(a))
-                && a.parsed.syntax != Syntax::JsonLd
+                && follows(a.parsed.syntax)
                 && now.checked_sub(generation).is_some_and(|d| d <= 1) =>
             {
                 if let Some(w) = pending {
@@ -322,6 +349,17 @@ impl Kept {
     }
 }
 
+/// Whether the findings of a document of `syntax` are brought up to date
+/// by what changed: the Turtle family's. A JSON-LD or RDF/XML document is
+/// checked again in full ([`Kept::of`]), which runs only the checks of its
+/// syntax.
+fn follows(syntax: Syntax) -> bool {
+    match syntax {
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => true,
+        Syntax::JsonLd | Syntax::RdfXml => false,
+    }
+}
+
 /// `invalid-literal` on the triples `range` of `a`.
 fn literals(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u32, Found)> {
     let code = crate::features::literals::CODE;
@@ -351,4 +389,62 @@ fn replace<'l>(
     v.retain(|(t, _)| !triples.contains(t));
     v.extend(found.filter_map(|(l, f)| Some((l.triple, f?))));
     v.sort_by_key(|(t, _)| *t);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::rdfxml_fixture as fx;
+    use crate::knowledge::Source;
+
+    /// The kept checks are lints: none runs on RDF/XML, whose label,
+    /// literal and term findings would sit at XML tags.
+    #[test]
+    fn rdfxml_keeps_no_finding() {
+        let uri = "file:///w/onto.owl";
+        let (turtle, k) = (fx::turtle(uri), Knowledge::default());
+        let kept = Kept::of(&turtle, &k);
+        let kept_checks = Check::ALL.into_iter().filter(|c| c.kept());
+        let found = |kept: &Kept| -> Vec<Check> {
+            kept_checks
+                .clone()
+                .filter(|&c| kept.findings(c).next().is_some())
+                .collect()
+        };
+        assert_eq!(
+            found(&kept),
+            [Check::TermUses, Check::Literals, Check::LabelWhitespace]
+        );
+        for a in [fx::read(uri), fx::written(uri, fx::TURTLE)] {
+            assert_eq!(found(&Kept::of(&a, &k)), [], "{:?}", a.parsed.refs[0].form);
+        }
+    }
+
+    /// An RDF/XML document is checked again in full on a change of the
+    /// index, not through the change set, so no term check runs on it.
+    #[test]
+    fn rdfxml_is_not_followed_through_the_index() {
+        let uri = "file:///w/onto.owl";
+        // Another document deprecates `ex:b`, which each uses.
+        let other = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+            <http://example.org/b> owl:deprecated true .\n";
+        for (a, followed) in [
+            (fx::turtle(uri), true),
+            (fx::written(uri, fx::TURTLE), false),
+        ] {
+            let a = Arc::new(a);
+            let mut k = Knowledge::default();
+            k.set(uri, Source::Open, a.clone());
+            let mut kept = Kept::default();
+            kept.update(&a, &k);
+            let b = Analysis::new("file:///w/b.ttl".into(), other, Arc::default(), true);
+            k.set("file:///w/b.ttl", Source::Open, Arc::new(b));
+            kept.update(&a, &k);
+            let full = kept.checked.statements == a.parsed.statements.len();
+            assert_eq!(full, !followed);
+            let deprecated = (kept.findings(Check::TermUses))
+                .any(|f| f.diagnostic.message.contains("deprecated"));
+            assert_eq!(deprecated, followed);
+        }
+    }
 }

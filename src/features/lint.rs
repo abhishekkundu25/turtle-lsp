@@ -180,7 +180,13 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
                 bare: None,
             }),
         });
-    let jsonld = a.parsed.syntax == Syntax::JsonLd;
+    let jsonld = match a.parsed.syntax {
+        Syntax::JsonLd => true,
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => false,
+        // Not yet ([`super::diagnostics::Check::runs_on`]); when it runs, its
+        // findings offer no replacement: nothing writes XML.
+        Syntax::RdfXml => return Vec::new(),
+    };
     undescribed_written(
         uses,
         &a.text,
@@ -433,5 +439,34 @@ mod tests {
         let mut s = Suggester::new();
         assert_eq!(s.suggest(&k, ns, "ab"), None);
         assert_eq!(s.searches, MAX_SUGGESTION_SEARCHES);
+    }
+
+    /// `undescribed-term` does not run on RDF/XML yet, whatever the form of
+    /// its references; its fix would write Turtle there.
+    #[test]
+    fn rdfxml_gets_no_undescribed_term() {
+        use crate::features::rdfxml_fixture as fx;
+        use crate::knowledge::Source;
+        let described = "@prefix ex: <http://example.org/> .\n\
+            ex:C a ex:C . ex:Pump a ex:C . ex:Valve a ex:C . ex:Tank a ex:C .\n";
+        let uses = "@prefix ex: <http://example.org/> .\nex:x a ex:Pmup .\n";
+        let found = |a: Analysis| {
+            let a = std::sync::Arc::new(a);
+            let mut k = Knowledge::default();
+            let d = Analysis::new(
+                "file:///w/d.ttl".into(),
+                described,
+                Default::default(),
+                true,
+            );
+            k.set("file:///w/d.ttl", Source::Open, std::sync::Arc::new(d));
+            k.set(&a.uri.clone(), Source::Open, a.clone());
+            undescribed_terms(&a, &k, Encoding::Utf8).len()
+        };
+        let uri = "file:///w/onto.owl";
+        let turtle =
+            Analysis::with_syntax(uri.into(), uses, Default::default(), true, Syntax::Turtle);
+        assert_eq!(found(turtle), 1);
+        assert_eq!(found(fx::written(uri, uses)), 0);
     }
 }

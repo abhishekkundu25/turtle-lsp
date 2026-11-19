@@ -302,9 +302,10 @@ impl<'a> Fixer<'a> {
 
     /// The quick fixes for `d` alone, preferred first among them as the
     /// diagnostic's kind lists them. Nothing here looks at the other
-    /// diagnostics or at the file as a whole.
+    /// diagnostics or at the file as a whole. None in a document that is
+    /// not edited ([`super::writes`]: RDF/XML), whatever `d` says.
     pub(crate) fn for_diagnostic(&self, d: &Diagnostic) -> Vec<CodeAction> {
-        if d.source.as_deref() != Some(SOURCE) {
+        if !super::writes(self.a.parsed.syntax) || d.source.as_deref() != Some(SOURCE) {
             return Vec::new();
         }
         let Some(NumberOrString::String(code)) = &d.code else {
@@ -400,13 +401,16 @@ impl<'a> Fixer<'a> {
                     return Vec::new();
                 };
                 let span = Span::new(start, end);
-                let edits = if a.parsed.syntax == Syntax::JsonLd {
-                    vec![TextEdit {
+                let edits = match a.parsed.syntax {
+                    Syntax::JsonLd => vec![TextEdit {
                         range: a.range(enc, span),
                         new_text: replace,
-                    }]
-                } else {
-                    self.text_edits(vec![(span, replace)])
+                    }],
+                    Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+                        self.text_edits(vec![(span, replace)])
+                    }
+                    // The span is the triple's, not a string written there.
+                    Syntax::RdfXml => return Vec::new(),
                 };
                 vec![self.quick("Trim the label's whitespace".to_string(), d, edits, true)]
             }
@@ -416,12 +420,15 @@ impl<'a> Fixer<'a> {
 
     /// "Add all missing prefixes (n)" when the file has more than one
     /// undeclared prefix with a namespace to add; none for N-Triples and
-    /// N-Quads, which have no prefixes to add. It reads the whole file, so
-    /// it is made once per request, not once per diagnostic.
+    /// N-Quads, which have no prefixes to add, and none for JSON-LD, whose
+    /// prefixes are its context's, and RDF/XML, which is not edited. It reads
+    /// the whole file, so it is made once per request, not once per
+    /// diagnostic.
     pub(crate) fn add_all_missing(&self) -> Option<CodeAction> {
         let a = self.a;
-        if !a.parsed.syntax.has_prefixes() {
-            return None;
+        match a.parsed.syntax {
+            Syntax::Turtle | Syntax::TriG => {}
+            Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd | Syntax::RdfXml => return None,
         }
         let mut all: Vec<(String, String)> = Vec::new();
         for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {
@@ -621,6 +628,64 @@ mod tests {
             let anchored = Analysis::anchored(uri, text, syntax);
             assert_eq!(changes(&anchored), Vec::<String>::new(), "{syntax:?}");
         }
+    }
+
+    /// No quick fix of any kind in an RDF/XML document, whatever the form
+    /// of its references: not even for diagnostics with fix data that a
+    /// client sends from before the document became RDF/XML, and not "add
+    /// all missing prefixes" (which `check --fix` reads from [`Fixer`] too).
+    #[test]
+    fn rdfxml_gets_no_quick_fix() {
+        use crate::features::rdfxml_fixture as fx;
+        let uri = "file:///w/onto.owl";
+        let text = format!("{}ex:a foaf:name \"a\" ; skos:note \"b\" .\n", fx::TURTLE);
+        let ttl = Analysis::with_syntax(uri.into(), &text, Arc::default(), true, Syntax::Turtle);
+        let owl = fx::written(uri, &text);
+        let k = Knowledge::default();
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range::default(),
+            context: CodeActionContext {
+                diagnostics: diagnostics(&ttl, &k, Encoding::Utf8),
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let titles = |a: &Analysis| -> Vec<String> {
+            code_actions(a, &k, Encoding::Utf8, &params)
+                .into_iter()
+                .map(|c| match c {
+                    CodeActionOrCommand::CodeAction(c) => c.title,
+                    CodeActionOrCommand::Command(c) => c.title,
+                })
+                .collect()
+        };
+        let offered = titles(&ttl);
+        for title in [
+            "Add all missing prefixes",
+            "Change to 'rdfs:label'",
+            "Trim the label's whitespace",
+        ] {
+            assert!(
+                offered.iter().any(|t| t.starts_with(title)),
+                "{title}: {offered:?}"
+            );
+        }
+        assert_eq!(titles(&owl), Vec::<String>::new());
+        assert_eq!(titles(&fx::read(uri)), Vec::<String>::new());
+        let doc = uri.parse().unwrap();
+        assert!(
+            Fixer::new(&ttl, &k, Encoding::Utf8, &doc)
+                .add_all_missing()
+                .is_some()
+        );
+        assert_eq!(
+            Fixer::new(&owl, &k, Encoding::Utf8, &doc).add_all_missing(),
+            None
+        );
     }
 
     /// The text after applying the edit of the action titled `title`.

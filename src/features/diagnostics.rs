@@ -342,6 +342,42 @@ impl Check {
         followed && self.costly()
     }
 
+    /// Whether the check runs on a document of `syntax`.
+    pub(crate) fn runs_on(self, syntax: Syntax) -> bool {
+        match syntax {
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
+                true
+            }
+            Syntax::RdfXml => self.runs_on_rdfxml(),
+        }
+    }
+
+    /// Whether the check runs on an RDF/XML document. Its syntax errors do
+    /// (`xml-syntax`, `rdfxml-syntax`, `unsupported-syntax`); SHACL results
+    /// and reasoning findings come from outside these checks. No lint runs
+    /// on RDF/XML yet.
+    fn runs_on_rdfxml(self) -> bool {
+        match self {
+            Check::Syntax => true,
+            // Lints that need no edit, for when references have exact
+            // spans: `invalid-literal`, `undescribed-term`, and the
+            // `deprecated-term` of the term uses (whose `unknown-term`
+            // offers a fix in the document's text). Not yet.
+            Check::Literals | Check::UndescribedTerms | Check::TermUses => false,
+            // Lints of Turtle prefixes or a JSON-LD context, which RDF/XML
+            // has not, the shape lint, and the curation checks.
+            Check::UndeclaredPrefix
+            | Check::PrefixDeclarations
+            | Check::UnusedPrefix
+            | Check::JsonLd
+            | Check::ShaclLint
+            | Check::LabelWhitespace
+            | Check::DuplicateLabel
+            | Check::MultipleLabels
+            | Check::HouseStyle => false,
+        }
+    }
+
     /// The checks [`Check::kept`] picks by their cost.
     fn costly(self) -> bool {
         match self {
@@ -426,7 +462,8 @@ pub fn diagnostics_with(
 }
 
 /// [`diagnostics_with`], with the findings of the [`Check::kept`] checks
-/// from `kept`, which must be up to date with `a` and `k`.
+/// from `kept`, which must be up to date with `a` and `k`. The checks that
+/// do not run on `a`'s syntax ([`Check::runs_on`]) give nothing.
 pub(crate) fn diagnostics_kept(
     a: &Analysis,
     k: &Knowledge,
@@ -439,6 +476,9 @@ pub(crate) fn diagnostics_kept(
         Found::new(span, severity, code, message).into_diagnostic(a, enc)
     };
     for check in Check::ALL {
+        if !check.runs_on(a.parsed.syntax) {
+            continue;
+        }
         if check.kept() {
             out.extend(kept.findings(check).map(|f| f.diagnostic(a, enc)));
             continue;
@@ -448,9 +488,14 @@ pub(crate) fn diagnostics_kept(
             Check::UndeclaredPrefix => undeclared_prefixes(a, k, &mk, &mut out),
             Check::PrefixDeclarations => prefix_declarations(a, &mk, &mut out),
             Check::UnusedPrefix => unused_prefixes(a, &mk, &mut out),
-            Check::JsonLd if a.parsed.syntax == Syntax::JsonLd => {
-                jsonld_lints(a, k, &mk, &mut out);
-            }
+            Check::JsonLd => match a.parsed.syntax {
+                Syntax::JsonLd => jsonld_lints(a, k, &mk, &mut out),
+                Syntax::Turtle
+                | Syntax::TriG
+                | Syntax::NTriples
+                | Syntax::NQuads
+                | Syntax::RdfXml => {}
+            },
             Check::ShaclLint => {
                 for f in crate::features::shacl_lint::lint(a, k) {
                     let sev = if f.error {
@@ -467,7 +512,7 @@ pub(crate) fn diagnostics_kept(
             Check::HouseStyle if opts.house_style => {
                 out.extend(crate::features::curation::house_style(a, k, enc));
             }
-            Check::JsonLd | Check::UndescribedTerms | Check::HouseStyle => {}
+            Check::UndescribedTerms | Check::HouseStyle => {}
             Check::TermUses
             | Check::Literals
             | Check::LabelWhitespace
@@ -488,9 +533,14 @@ fn severity_of(s: Severity) -> DiagnosticSeverity {
 /// The parse's errors and warnings, at most [`Options::max_syntax_errors`].
 fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic>) {
     let errors = &a.parsed.errors;
+    // JSON-LD's errors are not capped; an RDF/XML read stops at its first.
+    let capped = match a.parsed.syntax {
+        Syntax::JsonLd => false,
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => true,
+    };
     let cap = opts
         .max_syntax_errors
-        .filter(|&max| errors.len() > max && a.parsed.syntax != Syntax::JsonLd);
+        .filter(|&max| errors.len() > max && capped);
     let shown = cap.map(|max| first_in_text(errors, max));
     let mut last_end = 0;
     for (i, e) in errors.iter().enumerate() {
@@ -1169,6 +1219,84 @@ mod tests {
         assert_eq!(
             bare_replacement("https://schema.org/Persn", "Persn", schema, "Person"),
             "http://schema.org/Person"
+        );
+    }
+
+    fn codes_of(ds: &[Diagnostic]) -> Vec<String> {
+        ds.iter()
+            .filter_map(|d| match &d.code {
+                Some(NumberOrString::String(c)) => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Decision 8: of the checks, only the syntax errors run on RDF/XML; no
+    /// lint, whatever the form of its references. SHACL results and
+    /// reasoning findings come through the composer as for any document.
+    #[test]
+    fn rdfxml_gets_its_syntax_errors_and_no_lint() {
+        use crate::features::rdfxml_fixture as fx;
+        let uri = "file:///w/onto.owl";
+        let k = Knowledge::default();
+        let opts = Options {
+            lint_undescribed_terms: true,
+            house_style: true,
+            max_syntax_errors: Some(1),
+        };
+        let codes = |a: &Analysis| codes_of(&diagnostics_with(a, &k, Encoding::Utf8, &opts));
+        let linted = codes(&fx::turtle(uri));
+        for code in [
+            "unused-prefix",
+            "unknown-term",
+            "invalid-literal",
+            "label-whitespace",
+        ] {
+            assert!(linted.iter().any(|c| c == code), "{code}: {linted:?}");
+        }
+        assert_eq!(codes(&fx::written(uri, fx::TURTLE)), Vec::<String>::new());
+        assert_eq!(codes(&fx::read(uri)), Vec::<String>::new());
+        let broken = fx::TEXT.replace("</ex:A>", "</ex:B>");
+        for (text, code) in [
+            (broken.as_str(), "xml-syntax"),
+            ("Prefix(:=<http://example.org/o#>)", "unsupported-syntax"),
+        ] {
+            let a = Analysis::with_syntax(uri.into(), text, Arc::default(), true, Syntax::RdfXml);
+            assert_eq!(codes(&a), [code], "{text}");
+        }
+        for check in Check::ALL {
+            assert_eq!(
+                check.runs_on(Syntax::RdfXml),
+                check == Check::Syntax,
+                "{check:?}"
+            );
+            assert!(check.runs_on(Syntax::Turtle), "{check:?}");
+        }
+
+        // Through the composer, with every lint enabled.
+        let settings = crate::settings::Settings {
+            lint_enable: (crate::features::curation::OPT_IN.iter())
+                .map(|c| c.to_string())
+                .collect(),
+            ..Default::default()
+        };
+        let finding = |c: &str| Diagnostic {
+            code: Some(NumberOrString::String(c.into())),
+            ..Default::default()
+        };
+        let (shacl, reasoning) = ([finding("shacl-violation")], [finding("turbowl/cax-dw")]);
+        let inputs = crate::diagnose::DiagnosticInputs {
+            shacl: &shacl,
+            reasoning: &reasoning,
+            ..crate::diagnose::DiagnosticInputs::new(&settings)
+        };
+        let a = Analysis::with_syntax(uri.into(), &broken, Arc::default(), true, Syntax::RdfXml);
+        assert!(!a.parsed.triples.is_empty());
+        let got =
+            crate::diagnose::document(crate::diagnose::Doc::Rdf(&a), &k, Encoding::Utf8, &inputs);
+        assert_eq!(
+            codes_of(&got),
+            ["xml-syntax", "shacl-violation", "turbowl/cax-dw"]
         );
     }
 }
