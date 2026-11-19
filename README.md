@@ -492,8 +492,9 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
 - **Which syntax**: the content decides, not the name. RDF/XML is read as
   RDF/XML; a `.owl` that holds Turtle or JSON-LD is read as that. A `.owl` in
   OWL/XML, Functional or Manchester syntax is not read: it gets one
-  `unsupported-syntax` error that names the format and says how to save it as
-  RDF/XML or Turtle in Protégé (File > Save as).
+  `unsupported-syntax` diagnostic that names the format and says how to save
+  it as RDF/XML or Turtle in Protégé (File > Save as). It is an error when an
+  import is read from the file, else a warning.
 - **One workspace**: classes and properties an RDF/XML file describes count
   in Turtle, JSON-LD and SPARQL files (hover, completion, no
   `undescribed-term`). `check` and `query` read these files, as do reasoning,
@@ -516,10 +517,14 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   `.rdf` files and leave them in the editor's XML language, with its own
   highlighting. In VS Code a `.owl` opened with no folder does not start the
   extension.
-- **Limits**: files over 50 MB are not read (the Gene Ontology's 118 MB
-  `go.owl` is skipped with a warning). A
-  keystroke in PATO (20 MB) takes about 90 ms. The browser editor reads files
-  up to 10 MB.
+- **Limits**: only UTF-8 is read; a file in another encoding gets an
+  `encoding` error, and an import that is not UTF-8 is not read. Files over
+  50 MB are not read (the Gene Ontology's 118 MB `go.owl`): `check` reports
+  them as it does any file over the limit. A keystroke in PATO (20 MB) takes
+  about 90 ms. The browser editor reads files up to 10 MB.
+- **XML as the spec reads it**: line ends and attribute values are
+  normalized and internal entities expand, nested or holding markup, within
+  limits that refuse entity bombs and external entities.
 
 The parser is turtle-lsp's own, so it can place every term and go on after
 an error. It passes the W3C RDF/XML suite (166/166) and reads the same graph

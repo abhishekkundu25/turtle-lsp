@@ -20,15 +20,25 @@
   BFO, RO and PATO. A keystroke in PATO (20 MB) takes about 90 ms.
 - **Imports name what they cannot read.** An import in OWL/XML, Functional or
   Manchester syntax fails with a message naming the format and how to save it
-  as RDF/XML or Turtle in Protégé (`unsupported-syntax` for a workspace file).
+  as RDF/XML or Turtle in Protégé. A workspace file in those syntaxes gets
+  `unsupported-syntax`: an error when an import is read from it, else a
+  warning.
   An RDF/XML import with an error part way through keeps what it could read
   and gets an `import-truncated` warning with the line and column.
 
 ### Changed
 
 - **`check .` reads `.owl` and `.rdf` files**, so a repository that holds
-  copies of other projects' ontologies can get new diagnostics, and a
-  different exit code, from them.
+  copies of other projects' ontologies can get new diagnostics and a
+  different exit code from them. Exit 1 where it was 0: an XML or RDF/XML
+  error (`xml-syntax`, `rdfxml-syntax`), a `.owl` holding broken Turtle or
+  JSON-LD, an OWL/XML, Functional or Manchester file that an import is read
+  from, and with `--max-warnings 0` one that nothing imports. Exit 2 where it
+  was 0: a `.owl` or `.rdf` over 50 MB or not in UTF-8. Leave codes out with
+  `--ignore` or `lint.ignore` in `turtle-lsp.json`.
+- **An import that is not UTF-8 is not read** (any syntax, fetched, cached or
+  local); its `unresolved-import` says where the first bad byte is. It was
+  read with the bad bytes replaced.
 - **Nothing writes RDF/XML**: formatting, rename, completion, quick fixes and
   `check --fix` leave RDF/XML alone; `format .` passes over it, and a
   named `format onto.owl` says "not formatted: RDF/XML". A rename of a term
