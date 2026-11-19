@@ -4,11 +4,23 @@
 //! [`Scanner::next`] gives one [`Event`] at a time: a start tag with its
 //! attributes, an end tag, character data or a processing instruction.
 //! Comments are kept as spans ([`Scanner::finish`]); the XML declaration
-//! and the DOCTYPE are read inside. Every name comes resolved against the
-//! namespace declarations in scope (`xmlns`, `xmlns:p`), and every text
-//! and attribute value comes with its references expanded: the five
-//! predefined entities, character references and the internal entities of
-//! the DOCTYPE, in either quote style.
+//! is read inside. The prolog, with its DOCTYPE, is read first
+//! ([`Prolog::read`]), and the scanner borrows the internal entities it
+//! declares. Every name comes resolved against the namespace declarations
+//! in scope (`xmlns`, `xmlns:p`), and every text and attribute value comes
+//! with its references expanded: the five predefined entities, character
+//! references and the internal entities of the DOCTYPE, in either quote
+//! style.
+//!
+//! As XML 1.0 reads them: line ends are normalized to `\n` (2.11), and
+//! attribute values are normalized (3.3.3: each white space character
+//! becomes a space; a character reference stays the character it names).
+//! An entity's replacement text has its character references expanded and
+//! its entity references kept (4.5); they expand where it is used. Used in
+//! content, an entity whose replacement text holds markup is read as
+//! markup (4.4.2, "included"); in an attribute value, its text is data.
+//! Everything read from an entity's replacement text has the span of the
+//! reference in the document (the outermost one, when references nest).
 //!
 //! Errors are `xml-syntax`, with the span of what is wrong. The scanner
 //! reads on after each one:
@@ -18,22 +30,25 @@
 //! - an end tag that names an open element further out closes the ones
 //!   inside it ([`End::implied`]); one that names no open element is
 //!   skipped;
-//! - at the end of the text, every open element is closed the same way;
+//! - at the end of the text, or of an entity's replacement text, every
+//!   element opened there is closed the same way;
 //! - text outside the root element is dropped.
 //!
 //! What well-formed XML forbids and `oxrdfxml` (through quick-xml) reads
 //! anyway is reported and read the way it reads it: a second root element,
-//! a duplicate attribute. Line ends and attribute values are not
-//! normalized, as quick-xml does not normalize them.
+//! a duplicate attribute (also two names with one namespace and local name,
+//! Namespaces in XML 6.3).
 //!
 //! Limits: elements nest at most [`MAX_DEPTH`] deep (deeper ones are
 //! skipped, with one error); the DOCTYPE declares at most [`MAX_ENTITIES`]
-//! entities whose expanded values total at most [`MAX_ENTITY_BYTES`];
-//! expanding entity references stops after [`EXPANSION_PER_BYTE`] bytes
-//! per byte of text (plus [`MAX_ENTITY_BYTES`]); and at most [`MAX_ERRORS`]
-//! errors are reported. Every step consumes at least one byte, so a scan
-//! ends. Nesting is what bounds triple terms too: each level of one takes
-//! two elements, so they nest at most [`MAX_DEPTH`] / 2 deep.
+//! entities whose full expansions total at most [`MAX_ENTITY_BYTES`] (a
+//! recursive entity is not expanded); expanding entity references stops
+//! after [`EXPANSION_PER_BYTE`] bytes per byte of text (plus
+//! [`MAX_ENTITY_BYTES`]); and at most [`MAX_ERRORS`] errors are reported.
+//! Every step consumes at least one byte of the document or of a
+//! replacement text, so a scan ends. Nesting is what bounds triple terms
+//! too: each level of one takes two elements, so they nest at most
+//! [`MAX_DEPTH`] / 2 deep.
 
 use crate::syntax::{Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
@@ -75,6 +90,9 @@ pub(crate) struct Name<'a> {
     /// The byte length of the prefix of `p:local`; `None` without a colon.
     pub(crate) prefix_len: Option<u32>,
     pub(crate) ns: Ns,
+    /// Read from an entity's replacement text: `span` is the reference's,
+    /// not the name's.
+    pub(crate) entity: bool,
 }
 
 impl<'a> Name<'a> {
@@ -104,7 +122,8 @@ impl<'a> Name<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Refs {
     None,
-    /// Predefined entities (`&amp;`) and character references only.
+    /// Predefined entities (`&amp;`), character references or normalized
+    /// white space only.
     Chars,
     /// At least one entity the DOCTYPE declares.
     Entity,
@@ -157,8 +176,9 @@ pub(crate) enum Event<'a> {
         span: Span,
         text: Cow<'a, str>,
     },
-    /// A processing instruction inside an element, from `<?` to `?>`.
-    Pi(Span),
+    /// A processing instruction inside an element, from `<?` to `?>`: its
+    /// span and its text.
+    Pi(Span, &'a str),
     Eof,
 }
 
@@ -169,10 +189,92 @@ struct Open<'a> {
     ns_len: usize,
 }
 
+/// An internal entity the DOCTYPE declares.
+pub(crate) struct Entity {
+    /// Its replacement text: character references expanded, entity
+    /// references kept (XML 1.0, 4.5).
+    text: Box<str>,
+    /// The bytes of its full expansion, at most.
+    size: usize,
+    /// Its expansion holds `<`: used in content, it is read as markup.
+    markup: bool,
+    /// Recursive, or over [`MAX_ENTITY_BYTES`] (reported at its
+    /// declaration): a reference to it is kept as written.
+    refused: bool,
+}
+
+type Entities = FxHashMap<Box<str>, Entity>;
+
+/// What comes before the root element, read before the rest: where the
+/// root starts, the errors and comments before it, and the internal
+/// entities of the DOCTYPE, which the [`Scanner`] borrows.
+#[derive(Default)]
+pub(crate) struct Prolog {
+    entities: Entities,
+    /// Some entity holds markup.
+    markup: bool,
+    pos: usize,
+    errors: Vec<SyntaxError>,
+    dropped: bool,
+    comments: Vec<Span>,
+}
+
+impl Prolog {
+    pub(crate) fn read(text: &str) -> Prolog {
+        let none = Entities::default();
+        let mut s = Scanner::start(text, &none, false);
+        s.prolog = true;
+        while s.pos < s.b.len() && !s.at_start_tag() {
+            let event = s.step();
+            debug_assert!(event.is_none(), "no event before the root element");
+        }
+        let (entities, markup) = s.entities();
+        Prolog {
+            entities,
+            markup,
+            pos: s.pos,
+            errors: s.errors,
+            dropped: s.dropped,
+            comments: s.comments,
+        }
+    }
+}
+
+/// The input a scanner reads on after an entity's replacement text.
+struct Frame<'a> {
+    text: &'a str,
+    pos: usize,
+    /// The elements open when the entity started: it closes its own.
+    depth: usize,
+    name: &'a str,
+}
+
+/// Where a text to expand is.
+#[derive(Clone, Copy)]
+enum Origin {
+    /// In the current input, at this offset.
+    Input(usize),
+    /// In the replacement text of the entity referenced at this span.
+    Ref(Span),
+}
+
+/// What a text is read as: content, or an attribute value (normalized).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Text,
+    Attr,
+}
+
 pub(crate) struct Scanner<'a> {
+    /// The current input: the document, or the replacement text of the
+    /// entity being read ([`Scanner::frames`]).
     text: &'a str,
     b: &'a [u8],
     pos: usize,
+    /// The inputs to read on in, innermost last, while in an entity.
+    frames: Vec<Frame<'a>>,
+    /// The span of the outermost entity reference, while in an entity.
+    at: Span,
     stack: Vec<Open<'a>>,
     /// The prefixes declared by the open elements, in order (`""` for the
     /// default namespace), and the namespaces each prefix is bound to,
@@ -182,8 +284,15 @@ pub(crate) struct Scanner<'a> {
     xml_ns: Rc<str>,
     xmlns_ns: Rc<str>,
     pending: VecDeque<Event<'a>>,
-    entities: FxHashMap<&'a str, Box<str>>,
-    entity_bytes: usize,
+    entities: &'a Entities,
+    /// Some entity holds markup: content is searched for references to it.
+    markup: bool,
+    /// Reading the prolog: the first DOCTYPE's entities are recorded.
+    prolog: bool,
+    doctypes: usize,
+    /// The entity declarations read, in order: name, its span, replacement
+    /// text.
+    declared: Vec<(&'a str, Span, Box<str>)>,
     expanded: usize,
     budget: usize,
     over_budget: bool,
@@ -239,21 +348,134 @@ pub(crate) fn is_whitespace(s: &str) -> bool {
     s.bytes().all(is_space)
 }
 
+/// The end of the reference that starts at `b[amp]` (`&`): its `;`, before
+/// any space, `&` or `<`, within 256 bytes.
+fn ref_end(b: &[u8], amp: usize) -> Option<usize> {
+    b[amp + 1..]
+        .iter()
+        .take(256)
+        .position(|&c| c == b';' || is_space(c) || c == b'&' || c == b'<')
+        .map(|p| amp + 1 + p)
+        .filter(|&p| b[p] == b';')
+}
+
+/// The character `&#num;` names, if it is an XML character.
+fn char_ref(num: &str) -> Option<char> {
+    match num.strip_prefix('x') {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => num.parse::<u32>().ok(),
+    }
+    .filter(|_| !num.starts_with(['+', '-']) && !num.starts_with("x+"))
+    .and_then(char::from_u32)
+    .filter(|&c| is_xml_char(c))
+}
+
+fn predefined(name: &str) -> Option<char> {
+    match name {
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "amp" => Some('&'),
+        "apos" => Some('\''),
+        "quot" => Some('"'),
+        _ => None,
+    }
+}
+
+/// `text` with its line ends normalized (XML 1.0, 2.11).
+fn lines(text: &str) -> Cow<'_, str> {
+    if text.contains('\r') {
+        Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Walk {
+    New,
+    Open,
+    Done { size: usize, markup: bool },
+    Recursive,
+}
+
+/// The full expansion of declared entity `i`: its size and whether it holds
+/// markup; `None` when it refers to itself, directly or not.
+fn walk(
+    i: usize,
+    declared: &[(&str, Span, Box<str>)],
+    index: &FxHashMap<&str, usize>,
+    seen: &mut [Walk],
+) -> Option<(usize, bool)> {
+    match seen[i] {
+        Walk::Open | Walk::Recursive => return None,
+        Walk::Done { size, markup } => return Some((size, markup)),
+        Walk::New => {}
+    }
+    seen[i] = Walk::Open;
+    let text = &*declared[i].2;
+    let b = text.as_bytes();
+    let (mut size, mut markup, mut recursive) = (0usize, text.contains('<'), false);
+    let mut from = 0;
+    while let Some(amp) = b[from..].iter().position(|&c| c == b'&').map(|p| from + p) {
+        size = size.saturating_add(amp - from);
+        from = amp + 1;
+        let Some(semi) = ref_end(b, amp) else {
+            size = size.saturating_add(1);
+            continue;
+        };
+        from = semi + 1;
+        let name = &text[amp + 1..semi];
+        match index.get(name) {
+            Some(&j) if predefined(name).is_none() => match walk(j, declared, index, seen) {
+                Some((s, m)) => {
+                    size = size.saturating_add(s);
+                    markup |= m;
+                }
+                None => recursive = true,
+            },
+            // Kept as written, or a character no longer than that.
+            _ => size = size.saturating_add(semi + 1 - amp),
+        }
+    }
+    size = size.saturating_add(b.len() - from);
+    seen[i] = if recursive {
+        Walk::Recursive
+    } else {
+        Walk::Done { size, markup }
+    };
+    (!recursive).then_some((size, markup))
+}
+
 impl<'a> Scanner<'a> {
-    pub(crate) fn new(text: &'a str) -> Scanner<'a> {
+    /// The scanner of the document after its prolog.
+    pub(crate) fn new(text: &'a str, prolog: &'a Prolog) -> Scanner<'a> {
+        let mut s = Scanner::start(text, &prolog.entities, prolog.markup);
+        s.pos = prolog.pos.max(s.pos);
+        s.errors.clone_from(&prolog.errors);
+        s.dropped = prolog.dropped;
+        s.comments.clone_from(&prolog.comments);
+        s
+    }
+
+    fn start(text: &'a str, entities: &'a Entities, markup: bool) -> Scanner<'a> {
         let pos = if text.starts_with('\u{FEFF}') { 3 } else { 0 };
         Scanner {
             text,
             b: text.as_bytes(),
             pos,
+            frames: Vec::new(),
+            at: Span::new(0, 0),
             stack: Vec::new(),
             ns: Vec::new(),
             scopes: FxHashMap::default(),
             xml_ns: Rc::from(XML_NS),
             xmlns_ns: Rc::from(XMLNS_NS),
             pending: VecDeque::new(),
-            entities: FxHashMap::default(),
-            entity_bytes: 0,
+            entities,
+            markup,
+            prolog: false,
+            doctypes: 0,
+            declared: Vec::new(),
             expanded: 0,
             budget: text.len().saturating_mul(EXPANSION_PER_BYTE) + MAX_ENTITY_BYTES,
             over_budget: false,
@@ -285,8 +507,124 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn span(start: usize, end: usize) -> Span {
-        Span::new(start as u32, end as u32)
+    /// The span of `start..end` in the current input: in an entity's
+    /// replacement text, the span of the reference to it.
+    fn span(&self, start: usize, end: usize) -> Span {
+        if self.frames.is_empty() {
+            Span::new(start as u32, end as u32)
+        } else {
+            self.at
+        }
+    }
+
+    fn comment(&mut self, span: Span) {
+        // A comment in a replacement text is none in the document.
+        if self.frames.is_empty() {
+            self.comments.push(span);
+        }
+    }
+
+    fn at_start_tag(&self) -> bool {
+        self.b[self.pos] == b'<'
+            && self.text[self.pos + 1..]
+                .chars()
+                .next()
+                .is_some_and(is_name_start_char)
+    }
+
+    /// The entities declared, with their expansions measured: a recursive
+    /// one, and those past [`MAX_ENTITY_BYTES`] in all, are refused.
+    fn entities(&mut self) -> (Entities, bool) {
+        let declared = std::mem::take(&mut self.declared);
+        let index: FxHashMap<&str, usize> =
+            declared.iter().enumerate().map(|(i, d)| (d.0, i)).collect();
+        let mut seen = vec![Walk::New; declared.len()];
+        let measured: Vec<_> = (0..declared.len())
+            .map(|i| walk(i, &declared, &index, &mut seen))
+            .collect();
+        let (mut total, mut any_markup) = (0usize, false);
+        let mut out = Entities::default();
+        for ((name, span, text), measured) in declared.into_iter().zip(measured) {
+            let (size, markup, refused) = match measured {
+                None => {
+                    self.error(
+                        span,
+                        format!("the entity &{name}; refers to itself: it is not expanded"),
+                    );
+                    (0, false, true)
+                }
+                Some((size, _)) if total.saturating_add(size) > MAX_ENTITY_BYTES => {
+                    self.error(
+                        span,
+                        format!(
+                            "the declared entities are over {} KiB: this one is not read",
+                            MAX_ENTITY_BYTES / 1024
+                        ),
+                    );
+                    (0, false, true)
+                }
+                Some((size, markup)) => {
+                    total += size;
+                    (size, markup, false)
+                }
+            };
+            any_markup |= markup;
+            out.insert(
+                name.into(),
+                Entity {
+                    text,
+                    size,
+                    markup,
+                    refused,
+                },
+            );
+        }
+        (out, any_markup)
+    }
+
+    /// Read the replacement text of `entity`, referenced at `amp..=semi`,
+    /// as markup.
+    fn enter(&mut self, name: &'a str, entity: &'a Entity, amp: usize, semi: usize) {
+        if self.frames.is_empty() {
+            self.at = self.span(amp, semi + 1);
+            self.expanded += entity.size;
+        }
+        self.frames.push(Frame {
+            text: self.text,
+            pos: semi + 1,
+            depth: self.stack.len(),
+            name,
+        });
+        self.text = &entity.text;
+        self.b = self.text.as_bytes();
+        self.pos = 0;
+    }
+
+    /// At the end of a replacement text: the elements it opened are
+    /// unclosed; read on after its reference.
+    fn leave(&mut self, frame: Frame<'a>) {
+        // The frame is popped: `self.pos` is in the replacement text still,
+        // and the elements it leaves open end at the reference.
+        let here = self.at;
+        while self.stack.len() > frame.depth {
+            let open = self.stack.pop().expect("deeper than the frame");
+            self.error(
+                open.name_span,
+                format!(
+                    "<{}> is not closed in the entity &{};",
+                    open.raw, frame.name
+                ),
+            );
+            self.unscope(open.ns_len);
+            self.pending.push_back(Event::End(End {
+                span: here,
+                implied: true,
+            }));
+        }
+        self.skip = 0;
+        self.text = frame.text;
+        self.b = frame.text.as_bytes();
+        self.pos = frame.pos;
     }
 
     fn peek(&self) -> Option<u8> {
@@ -325,7 +663,7 @@ impl<'a> Scanner<'a> {
         while self.peek().is_some_and(|c| !ends_name(c)) {
             self.pos += 1;
         }
-        (&self.text[start..self.pos], Self::span(start, self.pos))
+        (&self.text[start..self.pos], self.span(start, self.pos))
     }
 
     /// The next event. After [`Event::Eof`], always [`Event::Eof`].
@@ -338,7 +676,15 @@ impl<'a> Scanner<'a> {
                 return Event::Eof;
             }
             if self.pos >= self.b.len() {
+                if let Some(frame) = self.frames.pop() {
+                    self.leave(frame);
+                    continue;
+                }
                 self.close_all();
+                if self.roots == 0 {
+                    let end = self.span(self.b.len(), self.b.len());
+                    self.error(end, "the document has no root element");
+                }
                 self.done = true;
                 continue;
             }
@@ -350,7 +696,7 @@ impl<'a> Scanner<'a> {
 
     /// At the end of the text: every open element is unclosed.
     fn close_all(&mut self) {
-        let end = Self::span(self.b.len(), self.b.len());
+        let end = self.span(self.b.len(), self.b.len());
         self.skip = 0;
         while let Some(open) = self.stack.pop() {
             self.error(open.name_span, format!("<{}> is not closed", open.raw));
@@ -366,7 +712,14 @@ impl<'a> Scanner<'a> {
     fn step(&mut self) -> Option<Event<'a>> {
         let start = self.pos;
         if self.b[start] != b'<' {
-            let end = self.find(start + 1, b"<").unwrap_or(self.b.len());
+            let mut end = self.find(start + 1, b"<").unwrap_or(self.b.len());
+            if let Some((amp, semi, name, entity)) = self.markup_ref(start, end) {
+                if amp == start {
+                    self.enter(name, entity, amp, semi);
+                    return None;
+                }
+                end = amp;
+            }
             self.pos = end;
             return self.text_event(start, end);
         }
@@ -382,7 +735,7 @@ impl<'a> Scanner<'a> {
                 self.start_tag()
             }
             _ => {
-                self.error(Self::span(start, start + 1), "`<` starts no tag");
+                self.error(self.span(start, start + 1), "`<` starts no tag");
                 let end = self.find(start + 1, b"<").unwrap_or(self.b.len());
                 self.pos = end;
                 self.text_event(start, end)
@@ -399,17 +752,48 @@ impl<'a> Scanner<'a> {
             if !is_whitespace(raw) {
                 let lead = raw.len() - raw.trim_start().len();
                 self.error(
-                    Self::span(start + lead, end),
+                    self.span(start + lead, end),
                     "text outside the root element",
                 );
             }
             return None;
         }
-        let (text, _) = self.decode(start, end);
+        let (text, _) = self.decode(start, end, Mode::Text);
         Some(Event::Text {
-            span: Self::span(start, end),
+            span: self.span(start, end),
             text,
         })
+    }
+
+    /// The first reference in content `start..end` to an entity read as
+    /// markup, within the expansion budget: `&`, `;`, its name and the
+    /// entity.
+    fn markup_ref(&self, start: usize, end: usize) -> Option<(usize, usize, &'a str, &'a Entity)> {
+        if !self.markup || self.skip > 0 || self.stack.is_empty() || self.over_budget {
+            return None;
+        }
+        let entities: &'a Entities = self.entities;
+        let text: &'a str = self.text;
+        let mut from = start;
+        while let Some(amp) = self.b[from..end]
+            .iter()
+            .position(|&c| c == b'&')
+            .map(|p| from + p)
+        {
+            from = amp + 1;
+            let Some(semi) = ref_end(&self.b[..end], amp) else {
+                continue;
+            };
+            let name = &text[amp + 1..semi];
+            match entities.get(name) {
+                Some(e) if e.markup && !e.refused && predefined(name).is_none() => {
+                    let fits = !self.frames.is_empty() || self.expanded + e.size <= self.budget;
+                    return fits.then_some((amp, semi, name, e));
+                }
+                _ => from = semi + 1,
+            }
+        }
+        None
     }
 
     fn bang(&mut self) -> Option<Event<'a>> {
@@ -419,11 +803,11 @@ impl<'a> Scanner<'a> {
             let end = match self.find(start + 4, b"-->") {
                 Some(e) => e + 3,
                 None => {
-                    self.error(Self::span(start, start + 4), "the comment is not closed");
+                    self.error(self.span(start, start + 4), "the comment is not closed");
                     self.b.len()
                 }
             };
-            self.comments.push(Self::span(start, end));
+            self.comment(self.span(start, end));
             self.pos = end;
             None
         } else if rest.starts_with(b"<![CDATA[") {
@@ -431,7 +815,7 @@ impl<'a> Scanner<'a> {
             let (to, end) = match self.find(from, b"]]>") {
                 Some(e) => (e, e + 3),
                 None => {
-                    self.error(Self::span(start, from), "the CDATA section is not closed");
+                    self.error(self.span(start, from), "the CDATA section is not closed");
                     (self.b.len(), self.b.len())
                 }
             };
@@ -442,19 +826,23 @@ impl<'a> Scanner<'a> {
             let raw = &self.text[from..to];
             if self.stack.is_empty() {
                 if !is_whitespace(raw) {
-                    self.error(Self::span(start, end), "text outside the root element");
+                    self.error(self.span(start, end), "text outside the root element");
                 }
                 return None;
             }
             Some(Event::Text {
-                span: Self::span(from, to),
-                text: Cow::Borrowed(raw),
+                span: self.span(from, to),
+                text: if self.frames.is_empty() {
+                    lines(raw)
+                } else {
+                    Cow::Borrowed(raw)
+                },
             })
         } else if rest.starts_with(b"<!DOCTYPE") {
             self.doctype();
             None
         } else {
-            self.error(Self::span(start, start + 2), "unknown markup after `<!`");
+            self.error(self.span(start, start + 2), "unknown markup after `<!`");
             self.pos = start + 2;
             self.skip_decl();
             None
@@ -487,7 +875,7 @@ impl<'a> Scanner<'a> {
             Some(e) => e + 2,
             None => {
                 self.error(
-                    Self::span(start, start + 2),
+                    self.span(start, start + 2),
                     "the processing instruction is not closed",
                 );
                 self.b.len()
@@ -503,18 +891,19 @@ impl<'a> Scanner<'a> {
         }
         if target.eq_ignore_ascii_case("xml") || !is_name(target) {
             self.error(
-                Self::span(start + 2, start + 2 + target_len),
+                self.span(start + 2, start + 2 + target_len),
                 "not a processing instruction target",
             );
         }
-        (self.skip == 0 && !self.stack.is_empty()).then(|| Event::Pi(Self::span(start, end)))
+        (self.skip == 0 && !self.stack.is_empty())
+            .then(|| Event::Pi(self.span(start, end), &self.text[start..end]))
     }
 
     /// `<?xml version="1.0" encoding="..."?>`: only UTF-8 is read.
     fn declaration(&mut self, start: usize, body: &str) {
-        if start != 0 && start != 3 {
+        if (start != 0 && start != 3) || !self.frames.is_empty() {
             self.error(
-                Self::span(start, start + 5),
+                self.span(start, start + 5),
                 "the XML declaration is not at the start of the document",
             );
         }
@@ -535,7 +924,7 @@ impl<'a> Scanner<'a> {
                 ) {
                     let at = start + 2 + i;
                     self.error(
-                        Self::span(at, at + 8),
+                        self.span(at, at + 8),
                         "only UTF-8 is read: the text is read as UTF-8",
                     );
                 }
@@ -543,21 +932,27 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// `<!DOCTYPE name ExternalID? [ internal subset ]? >`; reads the
-    /// internal entity declarations.
+    /// `<!DOCTYPE name ExternalID? [ internal subset ]? >`; the first
+    /// one in the prolog records its internal entity declarations.
     fn doctype(&mut self) {
         let start = self.pos;
         self.pos += 9;
-        if !self.stack.is_empty() || self.roots > 0 {
+        self.doctypes += 1;
+        if !self.prolog {
             self.error(
-                Self::span(start, start + 9),
-                "a DOCTYPE after the root element starts",
+                self.span(start, start + 9),
+                "a DOCTYPE after the root element starts: it is not read",
+            );
+        } else if self.doctypes > 1 {
+            self.error(
+                self.span(start, start + 9),
+                "a second DOCTYPE: it is not read",
             );
         }
         self.skip_space();
         let (name, name_span) = self.read_name();
         if name.is_empty() {
-            self.error(Self::span(start, start + 9), "the DOCTYPE has no name");
+            self.error(self.span(start, start + 9), "the DOCTYPE has no name");
         }
         let _ = name_span;
         self.skip_space();
@@ -579,7 +974,7 @@ impl<'a> Scanner<'a> {
             Some(b'>') => self.pos += 1,
             _ => {
                 self.error(
-                    Self::span(start, start + 9),
+                    self.span(start, start + 9),
                     "the DOCTYPE does not end with `>`",
                 );
                 self.skip_decl();
@@ -598,7 +993,7 @@ impl<'a> Scanner<'a> {
                 Some((from, to))
             }
             None => {
-                self.error(Self::span(self.pos, from), "the quote is not closed");
+                self.error(self.span(self.pos, from), "the quote is not closed");
                 self.pos = self.b.len();
                 None
             }
@@ -611,7 +1006,7 @@ impl<'a> Scanner<'a> {
             let at = self.pos;
             let rest = &self.b[at..];
             if rest.is_empty() {
-                self.error(Self::span(at, at), "the DOCTYPE is not closed");
+                self.error(self.span(at, at), "the DOCTYPE is not closed");
                 return;
             } else if rest[0] == b']' {
                 self.pos += 1;
@@ -621,11 +1016,11 @@ impl<'a> Scanner<'a> {
             } else if rest.starts_with(b"<!--") {
                 match self.find(at + 4, b"-->") {
                     Some(e) => {
-                        self.comments.push(Self::span(at, e + 3));
+                        self.comment(self.span(at, e + 3));
                         self.pos = e + 3;
                     }
                     None => {
-                        self.error(Self::span(at, at + 4), "the comment is not closed");
+                        self.error(self.span(at, at + 4), "the comment is not closed");
                         self.pos = self.b.len();
                     }
                 }
@@ -634,7 +1029,7 @@ impl<'a> Scanner<'a> {
                     Some(e) => self.pos = e + 2,
                     None => {
                         self.error(
-                            Self::span(at, at + 2),
+                            self.span(at, at + 2),
                             "the processing instruction is not closed",
                         );
                         self.pos = self.b.len();
@@ -657,13 +1052,13 @@ impl<'a> Scanner<'a> {
                         self.pos = e + 1;
                     }
                     _ => {
-                        self.error(Self::span(at, at + 1), "a `%` that starts no reference");
+                        self.error(self.span(at, at + 1), "a `%` that starts no reference");
                         self.pos += 1;
                     }
                 }
             } else {
                 self.bump_char();
-                self.error(Self::span(at, self.pos), "unexpected text in the DOCTYPE");
+                self.error(self.span(at, self.pos), "unexpected text in the DOCTYPE");
                 // Up to the next declaration or the end of the subset.
                 while self.peek().is_some_and(|c| !matches!(c, b'<' | b']')) {
                     self.pos += 1;
@@ -687,7 +1082,7 @@ impl<'a> Scanner<'a> {
         if !spaced || !is_nc_name(name) {
             self.error(
                 if name.is_empty() {
-                    Self::span(start, start + 8)
+                    self.span(start, start + 8)
                 } else {
                     name_span
                 },
@@ -700,7 +1095,7 @@ impl<'a> Scanner<'a> {
             _ => {
                 if !parameter {
                     self.error(
-                        Self::span(start, start + 8),
+                        self.span(start, start + 8),
                         "external entities are not read",
                     );
                 }
@@ -713,142 +1108,221 @@ impl<'a> Scanner<'a> {
             self.pos += 1;
         } else {
             self.error(
-                Self::span(start, start + 8),
+                self.span(start, start + 8),
                 "the entity declaration does not end with `>`",
             );
             self.skip_decl();
         }
         let Some((from, to)) = value else { return };
-        if parameter || name.is_empty() {
+        if parameter || name.is_empty() || !self.prolog || self.doctypes > 1 {
             return;
         }
-        if self.entities.contains_key(name) {
+        if self.declared.iter().any(|d| d.0 == name) {
             // The first declaration binds (XML 1.0, 4.2).
             return;
         }
-        if self.entities.len() >= MAX_ENTITIES {
+        if self.declared.len() >= MAX_ENTITIES {
             self.error(
                 name_span,
                 format!("more than {MAX_ENTITIES} entities are declared: this one is not read"),
             );
             return;
         }
-        let (value, _) = self.decode(from, to);
-        if value.contains('%') && self.text[from..to].contains('%') {
+        let value = self.entity_value(from, to);
+        self.declared.push((name, name_span, value));
+    }
+
+    /// The replacement text of the entity value `from..to` (XML 1.0, 4.5):
+    /// line ends normalized, character references expanded, entity
+    /// references kept as written (4.4.7, "bypassed").
+    fn entity_value(&mut self, from: usize, to: usize) -> Box<str> {
+        let raw = &self.text[from..to];
+        if raw.contains('%') {
             // A parameter entity reference in a value: not allowed in the
             // internal subset; kept as written.
             self.error(
-                Self::span(from, to),
+                self.span(from, to),
                 "a parameter entity reference in an entity value",
             );
         }
-        if self.entity_bytes + value.len() > MAX_ENTITY_BYTES {
-            self.error(
-                name_span,
-                format!(
-                    "the declared entities are over {} KiB: this one is not read",
-                    MAX_ENTITY_BYTES / 1024
-                ),
-            );
-            return;
+        let mut out = String::with_capacity(raw.len());
+        let mut i = from;
+        while let Some(j) = self.b[i..to]
+            .iter()
+            .position(|&c| c == b'&' || c == b'\r')
+            .map(|p| i + p)
+        {
+            out.push_str(&self.text[i..j]);
+            if self.b[j] == b'\r' {
+                out.push('\n');
+                i = j + 1 + usize::from(self.b.get(j + 1) == Some(&b'\n') && j + 1 < to);
+                continue;
+            }
+            let Some(semi) = ref_end(&self.b[..to], j) else {
+                self.error(
+                    self.span(j, j + 1),
+                    "`&` starts no reference (write `&amp;`)",
+                );
+                out.push('&');
+                i = j + 1;
+                continue;
+            };
+            i = semi + 1;
+            let name = &self.text[j + 1..semi];
+            match name.strip_prefix('#').map(char_ref) {
+                Some(Some(c)) => out.push(c),
+                Some(None) => {
+                    self.error(
+                        self.span(j, semi + 1),
+                        "not a character reference to an XML character",
+                    );
+                    out.push_str(&self.text[j..=semi]);
+                }
+                None => out.push_str(&self.text[j..=semi]),
+            }
         }
-        self.entity_bytes += value.len();
-        self.entities.insert(name, value.into());
+        out.push_str(&self.text[i..to]);
+        out.into()
     }
 
-    /// The text of `start..end` with its references expanded. Errors are
-    /// reported at each bad reference, which is kept as written.
-    pub(crate) fn decode(&mut self, start: usize, end: usize) -> (Cow<'a, str>, Refs) {
-        let raw = &self.text[start..end];
-        if !raw.contains('&') {
+    /// The text of `start..end` with its references expanded, and, for an
+    /// attribute value, normalized. Errors are reported at each bad
+    /// reference, which is kept as written.
+    fn decode(&mut self, start: usize, end: usize, mode: Mode) -> (Cow<'a, str>, Refs) {
+        let raw: &'a str = &self.text[start..end];
+        // Line ends are normalized in the document; a replacement text
+        // already is, and a `\r` in it comes from a character reference.
+        let document = self.frames.is_empty();
+        let plain = !raw.bytes().any(|c| {
+            c == b'&'
+                || (c == b'\r' && document)
+                || (mode == Mode::Attr && matches!(c, b'\t' | b'\n' | b'\r'))
+        });
+        if plain {
             return (Cow::Borrowed(raw), Refs::None);
         }
         let mut out = String::with_capacity(raw.len());
         let mut refs = Refs::None;
-        let mut i = start;
-        while i < end {
-            let Some(amp) = self.b[i..end]
-                .iter()
-                .position(|&c| c == b'&')
-                .map(|p| i + p)
-            else {
-                out.push_str(&self.text[i..end]);
-                break;
-            };
-            out.push_str(&self.text[i..amp]);
-            // The reference ends at `;`, before any space, `&` or `<`.
-            let semi = self.b[amp + 1..end]
-                .iter()
-                .take(256)
-                .position(|&c| c == b';' || is_space(c) || c == b'&' || c == b'<')
-                .map(|p| amp + 1 + p)
-                .filter(|&p| self.b[p] == b';');
-            let Some(semi) = semi else {
-                self.error(
-                    Self::span(amp, amp + 1),
-                    "`&` starts no reference (write `&amp;`)",
-                );
+        self.expand(raw, Origin::Input(start), mode, &mut out, &mut refs);
+        (Cow::Owned(out), refs)
+    }
+
+    /// The span of `i..j` in a text at `origin`.
+    fn place(&self, origin: Origin, i: usize, j: usize) -> Span {
+        match origin {
+            Origin::Input(at) => self.span(at + i, at + j),
+            Origin::Ref(span) => span,
+        }
+    }
+
+    /// Expand `raw`, at `origin`, into `out`.
+    fn expand(
+        &mut self,
+        raw: &'a str,
+        origin: Origin,
+        mode: Mode,
+        out: &mut String,
+        refs: &mut Refs,
+    ) {
+        let b = raw.as_bytes();
+        let input = matches!(origin, Origin::Input(_));
+        let document = input && self.frames.is_empty();
+        let entities: &'a Entities = self.entities;
+        let mut i = 0;
+        while let Some(j) = b[i..]
+            .iter()
+            .position(|&c| {
+                c == b'&'
+                    || (c == b'\r' && document)
+                    || (mode == Mode::Attr && matches!(c, b'\t' | b'\n' | b'\r'))
+            })
+            .map(|p| i + p)
+        {
+            out.push_str(&raw[i..j]);
+            i = j + 1;
+            if b[j] != b'&' {
+                // A line end (`\r\n` or `\r`) is one `\n`; in an attribute
+                // value, white space is a space.
+                if b[j] == b'\r' && document && b.get(i) == Some(&b'\n') {
+                    i += 1;
+                }
+                if mode == Mode::Attr {
+                    out.push(' ');
+                    *refs = (*refs).max(Refs::Chars);
+                } else {
+                    out.push('\n');
+                }
+                continue;
+            }
+            let Some(semi) = ref_end(b, j) else {
+                let at = self.place(origin, j, j + 1);
+                self.error(at, "`&` starts no reference (write `&amp;`)");
                 out.push('&');
-                i = amp + 1;
                 continue;
             };
-            let name = &self.text[amp + 1..semi];
-            let span = Self::span(amp, semi + 1);
             i = semi + 1;
+            let name = &raw[j + 1..semi];
+            let here = self.place(origin, j, semi + 1);
             if let Some(num) = name.strip_prefix('#') {
-                let c = match num.strip_prefix('x') {
-                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
-                    None => num.parse::<u32>().ok(),
-                }
-                .filter(|_| !num.starts_with(['+', '-']) && !num.starts_with("x+"))
-                .and_then(char::from_u32)
-                .filter(|&c| is_xml_char(c));
-                match c {
+                match char_ref(num) {
                     Some(c) => {
                         out.push(c);
-                        refs = refs.max(Refs::Chars);
+                        *refs = (*refs).max(Refs::Chars);
                     }
                     None => {
-                        self.error(span, "not a character reference to an XML character");
-                        out.push_str(&self.text[amp..semi + 1]);
+                        self.error(here, "not a character reference to an XML character");
+                        out.push_str(&raw[j..=semi]);
                     }
                 }
                 continue;
             }
-            let predefined = match name {
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "amp" => Some('&'),
-                "apos" => Some('\''),
-                "quot" => Some('"'),
-                _ => None,
-            };
-            if let Some(c) = predefined {
+            if let Some(c) = predefined(name) {
                 out.push(c);
-                refs = refs.max(Refs::Chars);
+                *refs = (*refs).max(Refs::Chars);
                 continue;
             }
-            let Some(value) = self.entities.get(name) else {
-                self.error(span, format!("the entity &{name}; is not declared"));
-                out.push_str(&self.text[amp..semi + 1]);
-                continue;
-            };
-            if self.over_budget || self.expanded + value.len() > self.budget {
-                if !self.over_budget {
-                    self.over_budget = true;
-                    self.error(
-                        span,
-                        "entity references expand to too much text: the rest are not expanded",
-                    );
+            let entity = match entities.get(name) {
+                None => {
+                    self.error(here, format!("the entity &{name}; is not declared"));
+                    out.push_str(&raw[j..=semi]);
+                    continue;
                 }
-                out.push_str(&self.text[amp..semi + 1]);
-                continue;
+                Some(e) if e.refused => {
+                    self.error(
+                        here,
+                        format!("the entity &{name}; is not expanded: see its declaration"),
+                    );
+                    out.push_str(&raw[j..=semi]);
+                    continue;
+                }
+                Some(e) => e,
+            };
+            // A reference in the document: its whole expansion counts once.
+            if document {
+                if self.over_budget || self.expanded + entity.size > self.budget {
+                    if !self.over_budget {
+                        self.over_budget = true;
+                        self.error(
+                            here,
+                            "entity references expand to too much text: the rest are not expanded",
+                        );
+                    }
+                    out.push_str(&raw[j..=semi]);
+                    continue;
+                }
+                self.expanded += entity.size;
             }
-            self.expanded += value.len();
-            out.push_str(value);
-            refs = Refs::Entity;
+            if input && mode == Mode::Attr && entity.markup {
+                // XML 1.0, 3.1, "No < in Attribute Values".
+                self.error(
+                    here,
+                    format!("the entity &{name}; puts `<` in an attribute value"),
+                );
+            }
+            self.expand(&entity.text, Origin::Ref(here), mode, out, refs);
+            *refs = Refs::Entity;
         }
-        (Cow::Owned(out), refs)
+        out.push_str(&raw[i..]);
     }
 
     fn start_tag(&mut self) -> Option<Event<'a>> {
@@ -866,7 +1340,7 @@ impl<'a> Scanner<'a> {
             let at = self.pos;
             match self.peek() {
                 None => {
-                    self.error(Self::span(start, at), "the tag is not closed");
+                    self.error(self.span(start, at), "the tag is not closed");
                     break;
                 }
                 Some(b'>') => {
@@ -879,7 +1353,7 @@ impl<'a> Scanner<'a> {
                     break;
                 }
                 Some(b'<') => {
-                    self.error(Self::span(start, at), "the tag is not closed");
+                    self.error(self.span(start, at), "the tag is not closed");
                     break;
                 }
                 Some(_) => {}
@@ -887,7 +1361,7 @@ impl<'a> Scanner<'a> {
             let (aname, aspan) = self.read_name();
             if aname.is_empty() {
                 self.bump_char();
-                self.error(Self::span(at, self.pos), "unexpected character in a tag");
+                self.error(self.span(at, self.pos), "unexpected character in a tag");
                 continue;
             }
             if !spaced {
@@ -923,25 +1397,29 @@ impl<'a> Scanner<'a> {
                 Some(p) if self.b[p] == q => (p, true),
                 Some(p) => {
                     self.error(
-                        Self::span(p, p + 1),
+                        self.span(p, p + 1),
                         "`<` in an attribute value (write `&lt;`): the value and its tag end here",
                     );
                     (p, false)
                 }
                 None => {
                     self.error(
-                        Self::span(from - 1, from),
+                        self.span(from - 1, from),
                         "the attribute value is not closed",
                     );
                     (self.b.len(), false)
                 }
             };
             self.pos = if closed { to + 1 } else { to };
-            let (text, refs) = self.decode(from, to);
+            let (text, refs) = self.decode(from, to, Mode::Attr);
             let value = Value {
-                span: Self::span(from, to),
+                span: self.span(from, to),
                 text,
-                refs,
+                refs: if self.frames.is_empty() {
+                    refs
+                } else {
+                    Refs::Entity
+                },
             };
             // A set once a tag has many attributes, so a long tag stays linear.
             let twice = if attrs.len() < 16 {
@@ -959,13 +1437,13 @@ impl<'a> Scanner<'a> {
                 aname,
                 aspan,
                 value,
-                Self::span(aspan.start as usize, self.pos),
+                self.span(aspan.start as usize, self.pos),
             ));
             if !closed {
                 break;
             }
         }
-        let span = Self::span(start, self.pos);
+        let span = self.span(start, self.pos);
         if self.skip > 0 {
             if !empty {
                 self.skip += 1;
@@ -1005,7 +1483,7 @@ impl<'a> Scanner<'a> {
                 .push(Rc::from(&*value.text));
         }
         let name = self.resolve(raw, name_span, false);
-        let attrs = attrs
+        let attrs: Vec<Attr<'a>> = attrs
             .into_iter()
             .map(|(aname, aspan, value, span)| Attr {
                 name: self.resolve(aname, aspan, true),
@@ -1013,6 +1491,7 @@ impl<'a> Scanner<'a> {
                 span,
             })
             .collect();
+        self.one_expanded_name(&attrs);
         let tag = Tag {
             name,
             attrs,
@@ -1033,6 +1512,50 @@ impl<'a> Scanner<'a> {
             });
         }
         Some(Event::Start(tag))
+    }
+
+    /// Namespaces in XML, 6.3: no two attributes of a tag have one
+    /// namespace and local name. Two written alike are reported already.
+    fn one_expanded_name(&mut self, attrs: &[Attr<'a>]) {
+        fn key<'t>(a: &'t Attr<'_>) -> Option<(&'t str, &'t str)> {
+            a.name.prefix_len?;
+            Some((a.name.ns()?, a.name.local()))
+        }
+        // A map once a tag has many attributes, so a long tag stays linear.
+        let mut seen: FxHashMap<(&str, &str), &str> = FxHashMap::default();
+        for (i, a) in attrs.iter().enumerate().skip(1) {
+            let Some(k) = key(a) else { continue };
+            let first = if attrs.len() <= 16 {
+                attrs[..i]
+                    .iter()
+                    .find(|b| key(b) == Some(k))
+                    .map(|b| b.name.raw)
+            } else {
+                if seen.is_empty() {
+                    seen.extend(
+                        attrs[..1]
+                            .iter()
+                            .filter_map(|b| Some((key(b)?, b.name.raw))),
+                    );
+                }
+                match seen.get(&k) {
+                    Some(&first) => Some(first),
+                    None => {
+                        seen.insert(k, a.name.raw);
+                        None
+                    }
+                }
+            };
+            if let Some(first) = first.filter(|&f| f != a.name.raw) {
+                self.error(
+                    a.name.span,
+                    format!(
+                        "the attributes {first} and {} have one namespace and local name",
+                        a.name.raw
+                    ),
+                );
+            }
+        }
     }
 
     /// The namespace `prefix` is bound to; an empty one unbinds it.
@@ -1071,6 +1594,7 @@ impl<'a> Scanner<'a> {
             span,
             prefix_len: colon.map(|i| i as u32),
             ns,
+            entity: !self.frames.is_empty(),
         }
     }
 
@@ -1083,7 +1607,7 @@ impl<'a> Scanner<'a> {
             self.pos += 1;
         } else {
             self.error(
-                Self::span(start, self.pos),
+                self.span(start, self.pos),
                 "the end tag does not end with `>`",
             );
             while self.peek().is_some_and(|c| c != b'>' && c != b'<') {
@@ -1093,12 +1617,18 @@ impl<'a> Scanner<'a> {
                 self.pos += 1;
             }
         }
-        let span = Self::span(start, self.pos);
+        let span = self.span(start, self.pos);
         if self.skip > 0 {
             self.skip -= 1;
             return None;
         }
-        let Some(k) = self.stack.iter().rposition(|o| o.raw == raw) else {
+        // In an entity, only an element it opened.
+        let base = self.frames.last().map_or(0, |f| f.depth);
+        let Some(k) = self.stack[base..]
+            .iter()
+            .rposition(|o| o.raw == raw)
+            .map(|k| base + k)
+        else {
             self.error(
                 if raw.is_empty() { span } else { name_span },
                 format!("</{raw}> closes no open element"),
@@ -1106,7 +1636,7 @@ impl<'a> Scanner<'a> {
             return None;
         };
         // The elements inside the one it closes are unclosed.
-        let here = Self::span(start, start);
+        let here = self.span(start, start);
         while self.stack.len() > k + 1 {
             let open = self.stack.pop().expect("deeper than k");
             self.error(
@@ -1134,7 +1664,8 @@ mod tests {
     use super::*;
 
     fn events(text: &str) -> (Vec<String>, Vec<SyntaxError>) {
-        let mut s = Scanner::new(text);
+        let prolog = Prolog::read(text);
+        let mut s = Scanner::new(text, &prolog);
         let mut out = Vec::new();
         loop {
             match s.next() {
@@ -1154,7 +1685,7 @@ mod tests {
                 }
                 Event::End(e) => out.push(if e.implied { "</?>" } else { "</>" }.into()),
                 Event::Text { text, .. } => out.push(format!("{text:?}")),
-                Event::Pi(span) => out.push(text[span.start as usize..span.end as usize].into()),
+                Event::Pi(_, pi) => out.push(pi.into()),
             }
         }
         (out, s.finish().0)
@@ -1186,7 +1717,8 @@ mod tests {
     #[test]
     fn references_expand_and_keep_their_spans() {
         let text = "<!DOCTYPE r [\n <!ENTITY ex 'http://example.org/'>\n <!ENTITY two \"&ex;two&#37;\">\n]>\n<r a=\"&ex;x\" b='&lt;&#x41;&two;'>&amp;&ex;</r>";
-        let mut s = Scanner::new(text);
+        let prolog = Prolog::read(text);
+        let mut s = Scanner::new(text, &prolog);
         let Event::Start(t) = s.next() else { panic!() };
         assert_eq!(t.attrs[0].value.text, "http://example.org/x");
         assert_eq!(t.attrs[0].value.refs, Refs::Entity);
@@ -1211,7 +1743,8 @@ mod tests {
     #[test]
     fn namespaces_resolve_in_scope() {
         let text = "<r xmlns='http://example.org/d#' xmlns:p='http://example.org/p#'><p:a p:x='1' y='2'><b xmlns:p='http://example.org/q#' p:z=''/></p:a><q:c/></r>";
-        let mut s = Scanner::new(text);
+        let prolog = Prolog::read(text);
+        let mut s = Scanner::new(text, &prolog);
         let Event::Start(r) = s.next() else { panic!() };
         assert_eq!(r.name.ns(), Some("http://example.org/d#"));
         let Event::Start(a) = s.next() else { panic!() };
@@ -1313,7 +1846,8 @@ mod tests {
         let (_, errors) = events(&decl);
         let m = messages(&errors);
         assert!(m.iter().any(|m| m.contains("KiB")), "{m:?}");
-        let mut s = Scanner::new(&decl);
+        let prolog = Prolog::read(&decl);
+        let mut s = Scanner::new(&decl, &prolog);
         let mut total = 0;
         loop {
             match s.next() {

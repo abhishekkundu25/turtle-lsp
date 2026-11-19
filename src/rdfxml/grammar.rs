@@ -22,7 +22,10 @@
 //! - `xml:lang=""` means no language (RDF/XML 2.17); a relative `xml:base`
 //!   resolves against the base in scope (XML Base);
 //! - an empty `rdf:parseType="Literal"` is the empty XML literal;
-//! - text split by a comment or a CDATA section is one literal.
+//! - text split by a comment or a CDATA section is one literal;
+//! - an entity whose replacement text refers to an entity declared after
+//!   it, or holds markup (XML 1.0, 4.4.2 and 4.5; markup in content is
+//!   read as markup).
 //!
 //! On these, `oxrdfxml` reads the text and gives another graph (each is
 //! pinned by `oxrdfxml_departures` and the W3C runner below):
@@ -36,15 +39,27 @@
 //! - a parameter entity (`<!ENTITY % e ...>`) is no general entity, so
 //!   `&e;` is undeclared (reported);
 //! - a `<` in an attribute value is not well-formed XML: reported, and the
-//!   value and its tag end there.
+//!   value and its tag end there;
+//! - an empty property element with `rdf:type` and no other attribute has
+//!   a blank node object of that type (7.2.21); `oxrdfxml` gives the empty
+//!   literal;
+//! - an unknown `rdf:parseType` reads as `"Literal"` (7.2.20); `oxrdfxml`
+//!   gives no triple;
+//! - line ends are normalized (XML 1.0, 2.11) and so are attribute values
+//!   (3.3.3: white space becomes a space); `oxrdfxml` keeps `\r\n` in text
+//!   and line ends and tabs in attribute values. FOAF has two such values
+//!   (`CORPUS_KNOWN`).
 //!
 //! Recovery: an RDF/XML error (code `rdfxml-syntax`) is reported at the
 //! attribute or name that causes it, and the element is read as far as it
 //! can be: an element whose name is no IRI gives no triple of its own but
 //! its content is read; of two attributes that cannot go together, the
 //! first in the order `rdf:about`, `rdf:ID`, `rdf:nodeID` (`rdf:resource`,
-//! `rdf:nodeID` on a property element) is kept; an IRI that does not parse
-//! is kept as written. An element the XML scanner closes for it (an
+//! `rdf:nodeID` on a property element) is kept; an IRI that does not
+//! resolve, or is not absolute, is kept as written in its reference, and a
+//! triple that names it (as subject, predicate, object or datatype) is
+//! dropped, as Turtle and `oxrdfxml` drop it. The IRIs one parse makes are
+//! bounded ([`IRI_BYTES_PER_BYTE`]); past that, new ones give no triple. An element the XML scanner closes for it (an
 //! [`End::implied`] end) gives no triple at its end: a property element
 //! that is not closed has no object yet, which is also what `oxrdfxml`
 //! reads from a text cut short.
@@ -59,7 +74,8 @@
 //! - a [`Statement`] per top-level node element (a child of `rdf:RDF`, or
 //!   the root), from its start tag to its end tag. Nested node elements
 //!   belong to it, as nested blank nodes do in Turtle, so statements never
-//!   overlap;
+//!   overlap. The node elements of one entity reference share its span and
+//!   one statement;
 //! - a [`Ref`] per IRI written in the text: an attribute value is
 //!   [`Form::Iri`] (its value span, without the quotes), a prefixed element
 //!   or attribute name [`Form::PName`] with a [`PrefixUse`]. Where the text
@@ -69,7 +85,9 @@
 //!   are [`Role::Subject`], but for the `rdf:about` of a nested node element
 //!   that gives no triple of its own (a collection item that only names a
 //!   class): [`Role::Object`], as that IRI is in Turtle. Every reference
-//!   inside a triple term is [`Role::Quoted`];
+//!   inside a triple term is [`Role::Quoted`]. Everything read from one
+//!   entity reference has its span, and the first reference stands for
+//!   them all, so references never overlap;
 //! - the comments. No [`PrefixDecl`](crate::syntax::PrefixDecl): XML namespaces are scoped, and a
 //!   redeclared prefix is no mistake there;
 //! - blank nodes numbered in the order they first appear, so two parses of
@@ -85,18 +103,27 @@ use std::rc::Rc;
 
 const ITS: &str = "http://www.w3.org/2005/11/its";
 
+/// The IRIs a parse makes (a namespace and a local name, a reference
+/// resolved against the base) total at most this many bytes per byte of
+/// text, plus [`MIN_IRI_BYTES`]: the interner keeps every IRI for good, and
+/// a long namespace or base used by many short names would otherwise make
+/// it keep far more than the text.
+const IRI_BYTES_PER_BYTE: usize = 16;
+const MIN_IRI_BYTES: usize = 1 << 20;
+
 /// Parse an RDF/XML document. `base` is the document's URL, against which
 /// relative IRIs resolve until an `xml:base` replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
     let mut g = Grammar::new(text, base);
-    let mut scanner = Scanner::new(text);
+    let prolog = xml::Prolog::read(text);
+    let mut scanner = Scanner::new(text, &prolog);
     loop {
         match scanner.next() {
             Event::Eof => break,
             Event::Start(tag) => g.start(&tag),
             Event::End(end) => g.end(end),
             Event::Text { span, text } => g.text(span, &text),
-            Event::Pi(span) => g.pi(span),
+            Event::Pi(_, text) => g.pi(text),
         }
     }
     let (errors, comments) = scanner.finish();
@@ -175,8 +202,6 @@ enum State {
     Literal {
         env: Env,
         prop: Prop,
-        /// `false` for an unknown `parseType`: read, and no triple.
-        emit: bool,
         out: String,
         /// The names of the open elements inside.
         names: Vec<String>,
@@ -247,6 +272,10 @@ struct Grammar<'a> {
     /// oxrdfxml drop it, and the error says why.
     invalid: FxHashSet<Iri>,
     langs: FxHashSet<Iri>,
+    /// The IRIs this parse made, and their bytes: at most `iri_budget`.
+    made: FxHashSet<Iri>,
+    iri_bytes: usize,
+    iri_budget: usize,
     /// The current top-level statement.
     statement: u32,
     /// How many `parseType="Triple"` elements are open.
@@ -269,6 +298,9 @@ struct Vocab {
     string: Iri,
     lang_string: Iri,
     dir_lang_string: Iri,
+    /// Stands for an IRI past the budget: never absolute, so its triples
+    /// are dropped.
+    none: Iri,
 }
 
 impl Vocab {
@@ -288,6 +320,7 @@ impl Vocab {
             string: Iri::intern(&format!("{XSD}string")),
             lang_string: rdf("langString"),
             dir_lang_string: rdf("dirLangString"),
+            none: Iri::intern(""),
         }
     }
 }
@@ -313,6 +346,9 @@ impl<'a> Grammar<'a> {
         let base = document_base
             .and_then(|b| oxiri::Iri::parse(b.to_string()).ok())
             .map(Rc::new);
+        let v = Vocab::new();
+        let mut invalid = FxHashSet::default();
+        invalid.insert(v.none);
         Grammar {
             text,
             out: Parsed {
@@ -332,11 +368,14 @@ impl<'a> Grammar<'a> {
             labels: FxHashMap::default(),
             ids: FxHashSet::default(),
             checked: FxHashSet::default(),
-            invalid: FxHashSet::default(),
+            invalid,
             langs: FxHashSet::default(),
+            made: FxHashSet::default(),
+            iri_bytes: 0,
+            iri_budget: text.len().saturating_mul(IRI_BYTES_PER_BYTE) + MIN_IRI_BYTES,
             statement: 0,
             in_triple: 0,
-            v: Vocab::new(),
+            v,
         }
     }
 
@@ -348,6 +387,11 @@ impl<'a> Grammar<'a> {
         self.out.errors = errors;
         self.out.comments = comments;
         self.out.refs.sort_by_key(|r| (r.span.start, r.span.end));
+        // The names and values read from one entity reference share its
+        // span: the first stands for them.
+        self.out
+            .refs
+            .dedup_by(|r, prev| r.span.start < prev.span.end);
         self.out.prefix_uses.sort_by_key(|u| u.span.start);
         self.out
     }
@@ -451,32 +495,66 @@ impl<'a> Grammar<'a> {
             Node::Triple(t) => {
                 self.names_invalid(&t.0) || self.invalid.contains(&t.1) || self.names_invalid(&t.2)
             }
-            Node::Blank(_) | Node::Literal { .. } => false,
+            Node::Literal { datatype, .. } => self.invalid.contains(datatype),
+            Node::Blank(_) => false,
         }
     }
 
+    /// The interned IRI `s`, unless it is new to this parse and past the
+    /// budget ([`IRI_BYTES_PER_BYTE`]): then `None`, reported once at
+    /// `span`.
+    fn intern(&mut self, s: &str, span: Span) -> Option<Iri> {
+        if self.iri_bytes + s.len() <= self.iri_budget {
+            let iri = Iri::intern(s);
+            if self.made.insert(iri) {
+                self.iri_bytes += s.len();
+            }
+            return Some(iri);
+        }
+        if let Some(iri) = Iri::get(s).filter(|i| self.made.contains(i)) {
+            return Some(iri);
+        }
+        if self.iri_bytes <= self.iri_budget {
+            // Reported once.
+            self.iri_bytes = self.iri_budget + 1;
+            self.error(
+                span,
+                format!(
+                    "the IRIs are over {IRI_BYTES_PER_BYTE} bytes per byte of text: the triples of the rest are dropped"
+                ),
+            );
+        }
+        None
+    }
+
+    /// `s` interned as an IRI that is not one: its triples are dropped.
+    fn intern_invalid(&mut self, s: &str, span: Span) -> Iri {
+        let iri = self.intern(s, span).unwrap_or(self.v.none);
+        self.invalid.insert(iri);
+        iri
+    }
+
     /// An attribute value as an IRI, resolved against `base`, with its
-    /// reference recorded.
+    /// reference recorded. An IRI that does not resolve, or is not
+    /// absolute, is reported and gives no triple.
     fn iri_value(&mut self, base: &Base, v: &Value<'_>, role: Role) -> Iri {
         let raw: &str = &v.text;
         let iri = match base {
-            Some(_) if has_scheme(raw) && !raw.contains("/.") && !raw.contains(":.") => {
-                let iri = Iri::intern(raw);
-                self.check_absolute(iri, v.span);
-                iri
-            }
-            Some(b) => match resolve(b, raw) {
-                Ok(r) => Iri::intern(r.as_str()),
-                Err(e) => {
-                    self.error(v.span, format!("not an IRI: {e}"));
-                    Iri::intern(raw)
+            Some(b) if !has_scheme(raw) || raw.contains("/.") || raw.contains(":.") => {
+                match resolve(b, raw) {
+                    Ok(r) => self.intern(r.as_str(), v.span),
+                    Err(e) => {
+                        self.error(v.span, format!("not an IRI: {e}"));
+                        Some(self.intern_invalid(raw, v.span))
+                    }
                 }
-            },
-            None => {
-                let iri = Iri::intern(raw);
-                self.check_absolute(iri, v.span);
-                iri
             }
+            _ => self
+                .intern(raw, v.span)
+                .inspect(|&iri| self.check_absolute(iri, v.span)),
+        };
+        let Some(iri) = iri.filter(|&i| i != self.v.none) else {
+            return self.v.none;
         };
         let form = if v.refs == Refs::None {
             Form::Iri
@@ -492,7 +570,7 @@ impl<'a> Grammar<'a> {
     fn name_iri(&mut self, name: &Name<'_>) -> Option<Iri> {
         match &name.ns {
             Ns::Bound(ns) => {
-                let iri = Iri::intern(&format!("{ns}{}", name.local()));
+                let iri = self.intern(&format!("{ns}{}", name.local()), name.span)?;
                 self.check_absolute(iri, name.span);
                 Some(iri)
             }
@@ -505,11 +583,13 @@ impl<'a> Grammar<'a> {
             }
             Ns::Unknown => {
                 let prefix = name.prefix().unwrap_or("");
-                self.out.prefix_uses.push(PrefixUse {
-                    name: Iri::intern(prefix),
-                    span: name.span,
-                    resolved: false,
-                });
+                if !name.entity {
+                    self.out.prefix_uses.push(PrefixUse {
+                        name: Iri::intern(prefix),
+                        span: name.span,
+                        resolved: false,
+                    });
+                }
                 self.error(name.span, format!("the prefix {prefix}: is not declared"));
                 None
             }
@@ -519,7 +599,8 @@ impl<'a> Grammar<'a> {
     /// Record the reference a name makes to `iri`.
     fn name_ref(&mut self, name: &Name<'_>, iri: Iri, role: Role) {
         match name.prefix_len {
-            Some(prefix_len) => {
+            // A name read from an entity is not at its span.
+            Some(prefix_len) if !name.entity => {
                 self.out.prefix_uses.push(PrefixUse {
                     name: Iri::intern(name.prefix().unwrap_or("")),
                     span: name.span,
@@ -527,7 +608,7 @@ impl<'a> Grammar<'a> {
                 });
                 self.push_ref(name.span, iri, role, Form::PName { prefix_len });
             }
-            None => self.push_ref(name.span, iri, role, Form::Anchor),
+            _ => self.push_ref(name.span, iri, role, Form::Anchor),
         }
     }
 
@@ -555,9 +636,6 @@ impl<'a> Grammar<'a> {
             if n.is(ITS, "version") {
                 continue;
             }
-            let Some(iri) = self.name_iri(n) else {
-                continue;
-            };
             if n.ns() == Some(RDF) {
                 let slot = match n.local() {
                     "ID" => Some(&mut a.id),
@@ -590,6 +668,9 @@ impl<'a> Grammar<'a> {
                     continue;
                 }
             }
+            let Some(iri) = self.name_iri(n) else {
+                continue;
+            };
             a.props.push((iri, attr));
         }
         a
@@ -688,17 +769,20 @@ impl<'a> Grammar<'a> {
         let fragment = format!("#{}", v.text);
         let iri = match base {
             Some(b) => match resolve(b, &fragment) {
-                Ok(r) => Iri::intern(r.as_str()),
+                Ok(r) => self.intern(r.as_str(), v.span).unwrap_or(self.v.none),
                 Err(e) => {
                     self.error(v.span, format!("not an IRI: {e}"));
-                    Iri::intern(&fragment)
+                    self.intern_invalid(&fragment, v.span)
                 }
             },
             None => {
                 self.error(v.span, "rdf:ID needs a base IRI");
-                Iri::intern(&fragment)
+                self.intern_invalid(&fragment, v.span)
             }
         };
+        if iri == self.v.none {
+            return iri;
+        }
         if !self.ids.insert(iri) {
             self.error(v.span, format!("rdf:ID {} is used twice", v.text));
         }
@@ -795,10 +879,11 @@ impl<'a> Grammar<'a> {
         let mut names = None;
         let subject = if let Some(attr) = a.about {
             subject_span = attr.value.span;
+            let refs = self.out.refs.len();
             let iri = self.iri_value(&env.base, &attr.value, Role::Subject);
             let own = !a.props.is_empty() || a.type_.is_some() || type_.is_some();
-            if !top && !own {
-                names = Some(self.out.refs.len() - 1);
+            if !top && !own && self.out.refs.len() > refs {
+                names = Some(refs);
             }
             Node::Iri(iri)
         } else if let Some(attr) = a.id {
@@ -811,11 +896,18 @@ impl<'a> Grammar<'a> {
             subject_span = name.span;
             self.blank()
         };
-        if top {
+        // The node elements of one entity reference share its span, and one
+        // statement.
+        let shared = self
+            .out
+            .statements
+            .last()
+            .is_some_and(|st| st.span.start == tag.span.start);
+        if top && !shared {
             self.out.statements.push(Statement {
                 span: tag.span,
                 subject: match &subject {
-                    Node::Iri(i) => Some((*i, subject_span)),
+                    Node::Iri(i) if *i != self.v.none => Some((*i, subject_span)),
                     _ => None,
                 },
                 graph: None,
@@ -862,9 +954,11 @@ impl<'a> Grammar<'a> {
         let subject = subject.clone();
         let p = if name.is(RDF, "li") {
             *li += 1;
-            let iri = Iri::intern(&format!("{RDF}_{li}"));
-            self.push_ref(name.span, iri, Role::Predicate, Form::Anchor);
-            Some((iri, name.span))
+            let li = format!("{RDF}_{li}");
+            self.intern(&li, name.span).map(|iri| {
+                self.push_ref(name.span, iri, Role::Predicate, Form::Anchor);
+                (iri, name.span)
+            })
         } else if name.ns() == Some(RDF)
             && (RESERVED_ELEMENTS.contains(&name.local()) || name.local() == "Description")
         {
@@ -934,7 +1028,10 @@ impl<'a> Grammar<'a> {
                 let datatype = a
                     .datatype
                     .map(|attr| self.iri_value(&env.base, &attr.value, Role::Datatype));
-                if a.resource.is_some() || a.node_id.is_some() || !a.props.is_empty() {
+                // emptyPropertyElt (RDF/XML 7.2.21): rdf:type is a
+                // property attribute too.
+                let attributes = !a.props.is_empty() || a.type_.is_some();
+                if a.resource.is_some() || a.node_id.is_some() || attributes {
                     if let (Some(_), Some(n)) = (a.resource, a.node_id) {
                         self.error(
                             n.name.span,
@@ -958,8 +1055,6 @@ impl<'a> Grammar<'a> {
                         dir,
                     }
                 } else {
-                    // As oxrdfxml reads it, rdf:type alone gives no object:
-                    // the object is the empty literal.
                     State::Prop {
                         env,
                         prop,
@@ -969,10 +1064,10 @@ impl<'a> Grammar<'a> {
                     }
                 }
             }
+            // Any other value reads as "Literal" (RDF/XML 7.2.20).
             ParseType::Literal | ParseType::Other => State::Literal {
                 env,
                 prop,
-                emit: parse_type == ParseType::Literal,
                 out: String::new(),
                 names: Vec::new(),
                 written: Written::default(),
@@ -1128,10 +1223,8 @@ impl<'a> Grammar<'a> {
                 let head = cells.first().cloned().unwrap_or(Node::Iri(self.v.nil));
                 self.prop_triple(&prop, head, content(prop.tag));
             }
-            State::Literal {
-                prop, emit, out, ..
-            } => {
-                if end.implied || !emit {
+            State::Literal { prop, out, .. } => {
+                if end.implied {
                     return;
                 }
                 let o = Node::Literal {
@@ -1192,7 +1285,10 @@ impl<'a> Grammar<'a> {
             Some(State::Literal { out, .. }) => escape_text(out, text),
             _ => {
                 if !xml::is_whitespace(text) {
-                    let lead = text.len() - text.trim_start().len();
+                    // The white space the source text starts with: an
+                    // entity's expansion is not in it.
+                    let raw = &self.text[span.start as usize..span.end as usize];
+                    let lead = raw.len() - raw.trim_start().len();
                     let at = Span::new(span.start + lead as u32, span.end);
                     self.error(at, "text where RDF/XML has only elements");
                 }
@@ -1200,9 +1296,10 @@ impl<'a> Grammar<'a> {
         }
     }
 
-    fn pi(&mut self, span: Span) {
+    fn pi(&mut self, text: &str) {
         if let Some(State::Literal { out, .. }) = self.stack.last_mut() {
-            out.push_str(&self.text[span.start as usize..span.end as usize]);
+            // Line ends normalized (XML 1.0, 2.11).
+            out.push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
         }
     }
 
@@ -1459,6 +1556,42 @@ mod tests {
         Some(out)
     }
 
+    /// [`difference`], unless the graphs differ only where `oxrdfxml` keeps
+    /// the white space of an attribute value that XML 1.0 (3.3.3) makes
+    /// spaces: each triple only `oxrdfxml` has is one only ours has, with
+    /// that white space in its literal made spaces.
+    fn difference_past_normalization(ours: &Graph, theirs: &Graph) -> Option<String> {
+        let only_ours: Vec<_> = ours.iter().filter(|t| !theirs.contains(*t)).collect();
+        let only_theirs: Vec<_> = theirs.iter().filter(|t| !ours.contains(*t)).collect();
+        let normalized = |t: &oxrdf::TripleRef<'_>| -> Option<oxrdf::Triple> {
+            let oxrdf::TermRef::Literal(l) = t.object else {
+                return None;
+            };
+            let value = l
+                .value()
+                .replace("\r\n", " ")
+                .replace(['\t', '\n', '\r'], " ");
+            let o = match l.language() {
+                Some(lang) => Literal::new_language_tagged_literal_unchecked(value, lang),
+                None => Literal::new_typed_literal(value, l.datatype()),
+            };
+            Some(oxrdf::Triple::new(
+                t.subject.into_owned(),
+                t.predicate.into_owned(),
+                o,
+            ))
+        };
+        let explained = only_ours.len() == only_theirs.len()
+            && only_theirs.iter().all(|t| {
+                normalized(t).is_some_and(|n| only_ours.iter().any(|o| o.into_owned() == n))
+            });
+        if explained {
+            None
+        } else {
+            difference(ours, theirs)
+        }
+    }
+
     /// Our parse of a text `oxrdfxml` reads without error: no error, and
     /// the same graph.
     #[track_caller]
@@ -1700,7 +1833,7 @@ mod tests {
     fn rdf_11_forms_read_as_oxrdfxml_reads_them() {
         for text in [
             // A typed node element as the root, without rdf:RDF.
-            r#"<ex:Thing xmlns:ex="http://example.org/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" rdf:about="a" ex:p="1"><ex:q rdf:type="http://example.org/T"/><ex:r rdf:type="http://example.org/T" ex:s="2"/></ex:Thing>"#,
+            r#"<ex:Thing xmlns:ex="http://example.org/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" rdf:about="a" ex:p="1"><ex:r rdf:type="http://example.org/T" ex:s="2"/></ex:Thing>"#,
             // Nested xml:base and xml:lang, rdf:li, containers, empty and
             // nested collections, rdf:nodeID shared, reification.
             r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/" xml:base="http://example.org/one/" xml:lang="en">
@@ -1815,6 +1948,36 @@ mod tests {
                 "`<` in an attribute value",
                 format!(
                     r#"{head}<rdf:Description rdf:about="http://example.org/a" ex:q="a<b"/></rdf:RDF>"#
+                ),
+            ),
+            (
+                "rdf:type alone on an empty property element",
+                format!(
+                    r#"{head}<rdf:Description rdf:about="http://example.org/a"><ex:p rdf:type="http://example.org/T"/></rdf:Description></rdf:RDF>"#
+                ),
+            ),
+            (
+                "a line end in an attribute value",
+                format!(
+                    "{head}<rdf:Description rdf:about=\"http://example.org/a\" ex:q=\"a\nb\"/></rdf:RDF>"
+                ),
+            ),
+            (
+                "a tab in an attribute value",
+                format!(
+                    "{head}<rdf:Description rdf:about=\"http://example.org/a\" ex:q=\"a\tb\"/></rdf:RDF>"
+                ),
+            ),
+            (
+                "a CR LF line end in text",
+                format!(
+                    "{head}<rdf:Description rdf:about=\"http://example.org/a\"><ex:p>a\r\nb</ex:p></rdf:Description></rdf:RDF>"
+                ),
+            ),
+            (
+                "an unknown rdf:parseType",
+                format!(
+                    r#"{head}<rdf:Description rdf:about="http://example.org/a"><ex:p rdf:parseType="Other"><ex:b>x</ex:b></ex:p></rdf:Description></rdf:RDF>"#
                 ),
             ),
         ];
@@ -1991,8 +2154,12 @@ mod tests {
     }
 
     /// Corpus files where our graph departs from `oxrdfxml`'s on purpose:
-    /// (file, why). None so far.
-    const CORPUS_KNOWN: &[(&str, &str)] = &[];
+    /// (file, why). Only attribute-value normalization may explain it
+    /// ([`difference_past_normalization`]).
+    const CORPUS_KNOWN: &[(&str, &str)] = &[(
+        "foaf.rdf",
+        "two rdfs:comment attribute values hold a line end, which XML 1.0 (3.3.3) makes a space; oxrdfxml keeps it",
+    )];
     const CORPUS: [&str; 4] = ["foaf.rdf", "obo-bfo.rdf", "obo-ro.rdf", "obo-pato.rdf"];
 
     fn corpus(name: &str) -> Option<(String, String)> {
@@ -2015,13 +2182,19 @@ mod tests {
             );
             spans_hold(&text, &p);
             let want = theirs(&text, Some(&base)).unwrap_or_else(|e| panic!("{name}: {e}"));
-            let diff = difference(&graph(&p), &want);
-            let known = CORPUS_KNOWN.iter().any(|k| k.0 == name);
-            match (diff, known) {
-                (None, false) => eprintln!("{name}: ok, {} triples", p.triples.len()),
-                (Some(_), true) => eprintln!("{name}: known difference"),
-                (None, true) => panic!("{name} now agrees: remove it from CORPUS_KNOWN"),
-                (Some(d), false) => panic!("{name}: {d}"),
+            let ours = graph(&p);
+            if let Some(d) = difference_past_normalization(&ours, &want) {
+                panic!("{name}: {d}");
+            }
+            let known = CORPUS_KNOWN.iter().find(|k| k.0 == name);
+            match (ours == want, known) {
+                (true, None) => eprintln!("{name}: ok, {} triples", p.triples.len()),
+                (false, Some((_, why))) => eprintln!("{name}: known difference: {why}"),
+                (true, Some(_)) => panic!("{name} now agrees: remove it from CORPUS_KNOWN"),
+                (false, None) => panic!(
+                    "{name}: attribute values normalized: add it to CORPUS_KNOWN\n{}",
+                    difference(&ours, &want).unwrap_or_default()
+                ),
             }
         }
     }
@@ -2073,7 +2246,7 @@ mod tests {
         let Ok(want) = theirs(text, Some(BASE)) else {
             return false;
         };
-        if let Some(d) = difference(&graph(&p), &want) {
+        if let Some(d) = difference_past_normalization(&graph(&p), &want) {
             panic!("{what}: oxrdfxml reads it, and the graphs differ: {d}");
         }
         true
@@ -2184,6 +2357,327 @@ mod tests {
             assert_eq!(p.triples.len(), triples, "{name}: {:?}", p.errors.first());
             assert!(took < Duration::from_secs(1), "{name}: {took:?}");
         }
+    }
+
+    const HEAD: &str =
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:e="urn:ex:">"#;
+
+    /// The triples of `p` as N-Triples lines, sorted.
+    fn lines_of(p: &Parsed) -> Vec<String> {
+        let mut v: Vec<String> = p
+            .triples
+            .iter()
+            .map(|t| {
+                oxrdf::Triple::new(
+                    subject(&t.s),
+                    NamedNode::new_unchecked(t.p.as_str()),
+                    term(&t.o),
+                )
+                .to_string()
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// RDF/XML 7.2.21: an empty property element with only property
+    /// attributes, `rdf:type` among them, has a blank node object that
+    /// takes them.
+    #[test]
+    fn an_empty_property_element_with_rdf_type_has_a_blank_node_object() {
+        let text = format!(
+            r#"{HEAD}<rdf:Description rdf:about="urn:s"><e:p rdf:type="urn:T"/><e:q rdf:type="urn:T" e:r="v"/></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        spans_hold(&text, &p);
+        assert_eq!(
+            lines_of(&p),
+            [
+                "<urn:s> <urn:ex:p> _:b0",
+                "<urn:s> <urn:ex:q> _:b1",
+                "_:b0 <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <urn:T>",
+                "_:b1 <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <urn:T>",
+                "_:b1 <urn:ex:r> \"v\"",
+            ]
+        );
+    }
+
+    /// XML 1.0 2.11 and 3.3.3: line ends are `\n`; in an attribute value,
+    /// white space is a space, but a character reference stays the
+    /// character. Spans stay over the text as written.
+    #[test]
+    fn line_ends_and_attribute_values_are_normalized() {
+        let text = format!(
+            "{HEAD}<rdf:Description rdf:about=\"urn:s\" e:a=\"a\nb\" e:b=\"a\r\nb\" e:c=\"a\tb&#10;c&#9;\"><e:t>a\r\nb\rc&#13;</e:t><e:d><![CDATA[x\r\ny]]></e:d></rdf:Description></rdf:RDF>"
+        );
+        let p = parse(&text, None);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        spans_hold(&text, &p);
+        let value = |iri: &str| {
+            let t = p.triples.iter().find(|t| t.p.as_str() == iri).unwrap();
+            let Node::Literal { value, .. } = &t.o else {
+                panic!()
+            };
+            (value.to_string(), at(&text, t.o_span))
+        };
+        assert_eq!(value("urn:ex:a"), ("a b".into(), "a\nb"));
+        assert_eq!(value("urn:ex:b"), ("a b".into(), "a\r\nb"));
+        assert_eq!(value("urn:ex:c"), ("a b\nc\t".into(), "a\tb&#10;c&#9;"));
+        assert_eq!(value("urn:ex:t"), ("a\nb\nc\r".into(), "a\r\nb\rc&#13;"));
+        assert_eq!(value("urn:ex:d").0, "x\ny");
+    }
+
+    /// A triple whose subject, predicate or object does not resolve to an
+    /// absolute IRI is dropped, whatever the path; the error stays.
+    #[test]
+    fn a_triple_with_an_iri_that_does_not_resolve_is_dropped() {
+        let text = format!(
+            r#"{HEAD}<rdf:Description rdf:about="bad subject"><e:p>text</e:p></rdf:Description><rdf:Description rdf:about="urn:s"><e:p rdf:resource="bad object"/><e:q rdf:datatype="bad type">1</e:q><e:ok>x</e:ok></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, Some("http://example.org/"));
+        spans_hold(&text, &p);
+        assert_eq!(lines_of(&p), ["<urn:s> <urn:ex:ok> \"x\""]);
+        let errors: Vec<&str> = p.errors.iter().map(|e| at(&text, e.span)).collect();
+        assert_eq!(errors, ["bad subject", "bad object", "bad type"]);
+        // rdf:ID with no base: no IRI, no triple.
+        let text = format!(
+            r#"{HEAD}<rdf:Description rdf:ID="a"><e:p>x</e:p></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        assert!(p.triples.is_empty(), "{:?}", p.triples);
+        assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
+    }
+
+    /// RDF/XML 7.2.20: any other `rdf:parseType` reads as "Literal".
+    #[test]
+    fn an_unknown_parse_type_is_an_xml_literal() {
+        let text = format!(
+            r#"{HEAD}<rdf:Description rdf:about="urn:s"><e:p rdf:parseType="Other"><e:b>x</e:b></e:p></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(
+            lines_of(&p),
+            [
+                r#"<urn:s> <urn:ex:p> "<e:b xmlns:e=\"urn:ex:\">x</e:b>"^^<http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral>"#
+            ]
+        );
+    }
+
+    /// XML 1.0 4.4.2 and 4.5: an entity reference in a replacement text
+    /// expands where the entity is used, and a replacement text with
+    /// markup in content is read as markup. Everything read from it has
+    /// the span of the reference.
+    #[test]
+    fn entities_nest_and_their_markup_is_read() {
+        let text = format!(
+            r#"<!DOCTYPE r [<!ENTITY a "&b;"><!ENTITY b "value"><!ENTITY l "<e:label>hello</e:label>"><!ENTITY two "&l;<e:n>&a;</e:n>"><!ENTITY ltx "&lt;e:x/>"><!ENTITY sixty "&#60;e:y/>">]>{HEAD}<rdf:Description rdf:about="urn:s" e:p="&a;">&l;</rdf:Description><rdf:Description rdf:about="urn:t">&two;<e:q>&lt;</e:q></rdf:Description><rdf:Description rdf:about="urn:u"><e:text>&ltx;</e:text>&sixty;</rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        spans_hold(&text, &p);
+        assert_eq!(
+            lines_of(&p),
+            [
+                "<urn:s> <urn:ex:label> \"hello\"",
+                "<urn:s> <urn:ex:p> \"value\"",
+                "<urn:t> <urn:ex:label> \"hello\"",
+                "<urn:t> <urn:ex:n> \"value\"",
+                "<urn:t> <urn:ex:q> \"<\"",
+                "<urn:u> <urn:ex:text> \"<e:x/>\"",
+                "<urn:u> <urn:ex:y> \"\"",
+            ]
+        );
+        for t in &p.triples {
+            let (pred, obj) = (at(&text, t.p_span), at(&text, t.o_span));
+            match t.p.as_str() {
+                "urn:ex:label" => assert!(pred == "&l;" || pred == "&two;", "{pred}"),
+                "urn:ex:n" => assert_eq!((pred, obj), ("&two;", "&two;")),
+                "urn:ex:y" => assert_eq!(pred, "&sixty;"),
+                _ => {}
+            }
+        }
+        // References inside an entity are anchors at its reference.
+        for r in &p.refs {
+            let s = at(&text, r.span);
+            if s.starts_with('&') {
+                assert_eq!(r.form, Form::Anchor, "{s}");
+            }
+        }
+    }
+
+    /// The entity limits hold with references that nest: a recursive
+    /// entity is refused, markup that does not close is closed at the end
+    /// of its replacement text, and a markup entity in an attribute value
+    /// is reported.
+    #[test]
+    fn nested_entities_keep_their_limits() {
+        for (body, error) in [
+            ("<!ENTITY a \"&b;\"><!ENTITY b \"&a;\">", "refers to itself"),
+            ("<!ENTITY a \"<e:p>x\">", "is not closed in the entity &a;"),
+            (
+                "<!ENTITY a \"</rdf:Description>\">",
+                "closes no open element",
+            ),
+            (
+                "<!ENTITY a \"<e:p>x</e:p>\">",
+                "puts `<` in an attribute value",
+            ),
+        ] {
+            let text = format!(
+                r#"<!DOCTYPE r [{body}]>{HEAD}<rdf:Description rdf:about="urn:s" e:v="&a;">&a;</rdf:Description></rdf:RDF>"#
+            );
+            let p = parse(&text, None);
+            spans_hold(&text, &p);
+            assert!(
+                p.errors.iter().any(|e| e.message().contains(error)),
+                "{body}: {:?}",
+                p.errors
+            );
+            for e in &p.errors {
+                assert_ne!(e.span.start, e.span.end, "{body}: {e:?}");
+            }
+        }
+        // An element the entity leaves open ends at the reference (found by
+        // the chaos test: a collection item's span ended inside the
+        // replacement text).
+        let text = format!(
+            r#"<!DOCTYPE r [<!ENTITY a "x<e:N>">]>{HEAD}<rdf:Description rdf:about="urn:s"><e:list rdf:parseType="Collection">&a;</e:list></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        spans_hold(&text, &p);
+        assert!(!p.triples.is_empty());
+        // A billion laughs in markup: refused past 64 KiB, and the text read
+        // stays within the budget.
+        let mut decl = String::from("<!DOCTYPE r [<!ENTITY a0 \"<e:p>x</e:p>\">");
+        for i in 1..30 {
+            write!(decl, "<!ENTITY a{i} \"&a{0};&a{0};\">", i - 1).unwrap();
+        }
+        let text = format!(
+            r#"{decl}]>{HEAD}<rdf:Description rdf:about="urn:s">{}</rdf:Description></rdf:RDF>"#,
+            "&a12;&a29;".repeat(50)
+        );
+        let started = Instant::now();
+        let p = parse(&text, None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        spans_hold(&text, &p);
+        assert!(
+            p.errors.iter().any(|e| e.message().contains("KiB")),
+            "{:?}",
+            p.errors
+        );
+        assert!(p.triples.len() <= text.len() * xml::EXPANSION_PER_BYTE / 10 + 10_000);
+    }
+
+    /// Every span made inside or after an entity reference is over the
+    /// text, start before end: the white space an entity expands to is not
+    /// in the text (12 spaces from `&pad;`).
+    #[test]
+    fn spans_after_an_entity_are_in_the_text() {
+        let text = format!(
+            r#"<!DOCTYPE r [<!ENTITY pad "            ">]>{HEAD}&pad;x<rdf:Description rdf:about="urn:s"><e:p>&pad;y</e:p>&pad;z</rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        spans_hold(&text, &p);
+        let errors: Vec<&str> = p.errors.iter().map(|e| at(&text, e.span)).collect();
+        assert_eq!(errors, ["&pad;x", "&pad;z"], "{:?}", p.errors);
+    }
+
+    /// Namespaces in XML 6.3: two attributes with one namespace and local
+    /// name are an error; the tag is read on.
+    #[test]
+    fn two_attributes_with_one_expanded_name_are_an_error() {
+        let text = format!(
+            r#"{HEAD}<rdf:Description rdf:about="urn:s" xmlns:z="urn:ex:" e:p="1" z:p="2"><e:q>x</e:q></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        spans_hold(&text, &p);
+        let errors: Vec<(&str, &str)> = p
+            .errors
+            .iter()
+            .map(|e| (e.code, at(&text, e.span)))
+            .collect();
+        assert_eq!(errors, [("xml-syntax", "z:p")]);
+        assert!(lines_of(&p).contains(&"<urn:s> <urn:ex:q> \"x\"".to_string()));
+        // Many attributes: the same, through the map.
+        let many: String = (0..40).map(|i| format!(" e:a{i}=\"v\"")).collect();
+        let text = format!(
+            r#"{HEAD}<rdf:Description rdf:about="urn:s" xmlns:z="urn:ex:"{many} z:a3="w"/></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        let errors: Vec<&str> = p.errors.iter().map(|e| at(&text, e.span)).collect();
+        assert_eq!(errors, ["z:a3"]);
+    }
+
+    /// XML 1.0 2.1: a document has a root element.
+    #[test]
+    fn a_document_without_a_root_element_is_an_error() {
+        for text in [
+            "<?xml version=\"1.0\"?>",
+            "<?xml version=\"1.0\"?>\n<!-- c -->\n",
+            "",
+            "  \n",
+        ] {
+            let p = parse(text, None);
+            spans_hold(text, &p);
+            let errors: Vec<(&str, &str)> =
+                p.errors.iter().map(|e| (e.code, e.message())).collect();
+            assert_eq!(
+                errors,
+                [("xml-syntax", "the document has no root element")],
+                "{text:?}"
+            );
+        }
+    }
+
+    /// The IRIs one parse makes are bounded by its text: a long namespace
+    /// with many short local names does not make the interner keep a copy
+    /// of the namespace per name past [`IRI_BYTES_PER_BYTE`].
+    #[test]
+    fn the_iris_a_parse_makes_are_bounded() {
+        let unique = format!(
+            "{:x}{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let ns = format!("http://example.org/{unique}/{}/", "n".repeat(8 * 1024));
+        let names = 20_000;
+        let mut body = String::new();
+        for i in 0..names {
+            write!(body, "<x:p{i}>v</x:p{i}>").unwrap();
+        }
+        let text = format!(
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:x="{ns}"><rdf:Description rdf:about="urn:s">{body}</rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        spans_hold(&text, &p);
+        let iris: Vec<String> = (0..names).map(|i| format!("{ns}p{i}")).collect();
+        let kept: Vec<&String> = iris.iter().filter(|i| Iri::get(i).is_some()).collect();
+        let kept_bytes: usize = kept.iter().map(|i| i.len()).sum();
+        let unbounded: usize = iris.iter().map(String::len).sum();
+        let kept = kept.len();
+        let budget = text.len() * IRI_BYTES_PER_BYTE + MIN_IRI_BYTES;
+        eprintln!(
+            "text {} bytes; {kept} of {names} IRIs kept, {kept_bytes} bytes (budget {budget}, unbounded {unbounded})",
+            text.len()
+        );
+        assert!(kept_bytes <= budget, "{kept_bytes} > {budget}");
+        assert!(kept < names);
+        assert_eq!(p.triples.len(), kept);
+        assert_eq!(
+            p.errors.len(),
+            1,
+            "{:?}",
+            &p.errors[..p.errors.len().min(3)]
+        );
+        assert!(p.errors[0].message().contains("bytes per byte of text"));
+        // A second parse makes no more.
+        let again = parse(&text, None);
+        assert_eq!(again, p);
     }
 
     /// The release-build parse of PATO (21 MB, 257k triples): 71 ms
