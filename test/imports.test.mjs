@@ -157,6 +157,16 @@ test("an import mapped by a local catalog makes its terms (and its imports') kno
     // RDF/XML.
     const teeth = await hoverUntil(s, uri, positionOf(text, "gear:teeth", 6), "number of teeth")
     assert.match(teeth, /How many teeth the gear has/)
+    // Lines into the RDF/XML file are its own: the start tag that describes
+    // the property, on line 9.
+    assert.match(teeth, /Described in \[gear\.rdf:9\]\(file:[^)]*gear\.rdf#L9\)/)
+    const def = await s.request("textDocument/definition", {
+      textDocument: { uri },
+      position: positionOf(text, "gear:teeth", 6),
+    })
+    assert.equal(def.length, 1, JSON.stringify(def))
+    assert.match(def[0].uri, /\/vendor\/gear\.rdf$/)
+    assert.deepEqual(def[0].range, { start: { line: 8, character: 4 }, end: { line: 8, character: 45 } })
     // Imported terms are described: nothing to report, and imports are never diagnosed.
     const diags = await diagnosticsUntil(s, uri, (d) => d.length === 0)
     assert.deepEqual(diags, [])
@@ -585,9 +595,20 @@ test("an import in an OWL syntax is named and not read; one that stops at an XML
   try {
     s.open(uri, FORMATS)
     // Read up to the error, and in single-quoted entities.
-    await hoverUntil(s, uri, positionOf(FORMATS, "t:Dog", 3), "Truncated dog")
+    const dog = await hoverUntil(s, uri, positionOf(FORMATS, "t:Dog", 3), "Truncated dog")
     await hoverUntil(s, uri, positionOf(FORMATS, "t:Cat", 3), "Truncated cat")
-    await hoverUntil(s, uri, positionOf(FORMATS, "q:Bird", 3), "Quoted bird")
+    const bird = await hoverUntil(s, uri, positionOf(FORMATS, "q:Bird", 3), "Quoted bird")
+    // At the line of each class's start tag in the .owl file, past a byte
+    // order mark and a DOCTYPE.
+    assert.match(dog, /Described in \[truncated\.owl:8\]\(file:[^)]*truncated\.owl#L8\)/)
+    assert.match(bird, /Described in \[quoted\.owl:11\]\(file:[^)]*quoted\.owl#L11\)/)
+    const def = await s.request("textDocument/definition", {
+      textDocument: { uri },
+      position: positionOf(FORMATS, "q:Bird", 3),
+    })
+    assert.equal(def.length, 1, JSON.stringify(def))
+    assert.match(def[0].uri, /\/vendor\/quoted\.owl$/)
+    assert.equal(def[0].range.start.line, 10, JSON.stringify(def))
     const ours = (d) => d.filter((x) => x.code === "unresolved-import" || x.code === "import-truncated")
     const diags = ours(await diagnosticsUntil(s, uri, (d) => ours(d).length === EXPECTED.length))
     for (const [name, severity, code, message] of EXPECTED) {

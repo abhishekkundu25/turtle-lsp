@@ -1,8 +1,8 @@
 //! Randomized robustness test ("fuzzing" on stable Rust).
 //!
 //! Takes real Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with
-//! embedded SPARQL among them), JSON-LD documents and SPARQL queries and
-//! updates, mutates them thousands of times (cuts, unbalanced brackets, stray
+//! embedded SPARQL among them), JSON-LD and RDF/XML documents and SPARQL
+//! queries and updates, mutates them thousands of times (cuts, unbalanced brackets, stray
 //! quotes, multi-byte characters, CRLF and lone CR, truncation, repeated
 //! brackets, huge tokens) and runs the parser and every editor feature on each
 //! result at random positions in both position encodings. Any panic, and any
@@ -1312,7 +1312,7 @@ fn doc_uri(syntax: Syntax) -> &'static str {
         Syntax::NTriples => "file:///chaos/doc.nt",
         Syntax::NQuads => "file:///chaos/doc.nq",
         Syntax::JsonLd => "file:///chaos/doc.jsonld",
-        Syntax::RdfXml => unreachable!("no chaos mode makes RDF/XML yet"),
+        Syntax::RdfXml => "file:///chaos/doc.rdf",
     }
 }
 
@@ -1419,13 +1419,18 @@ fn pick_offset(rng: &mut Rng, text: &str) -> u32 {
     char_boundary(text, rng.below(text.len() + 1)) as u32
 }
 
-/// `text` parsed with its own frontend: JSON-LD with no remote contexts, the
+/// `text` parsed with its own frontend: JSON-LD with no remote contexts,
+/// RDF/XML (through an analysis, against `base` or the document's URL), the
 /// Turtle family with `prefixes` from outside.
 fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>, prefixes: &PrefixMap) -> Parsed {
-    if syntax == Syntax::JsonLd {
-        jsonld::parse(text, base, &jsonld::NoNetwork::default())
-    } else {
-        parse_with_base(text, prefixes, syntax, base)
+    match syntax {
+        Syntax::JsonLd => jsonld::parse(text, base, &jsonld::NoNetwork::default()),
+        Syntax::RdfXml => {
+            let uri = base.unwrap_or(doc_uri(syntax)).to_string();
+            let external = Arc::new(prefixes.clone());
+            Analysis::with_syntax(uri, text, external, false, syntax).parsed
+        }
+        _ => parse_with_base(text, prefixes, syntax, base),
     }
 }
 
@@ -1433,6 +1438,12 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // The parser alone: every span must be inside the text and on char boundaries.
     let p = parse_doc(text, syntax, None, &PrefixMap::default());
     spans_are_inside(text, &p);
+    // RDF/XML's blank nodes are numbered, not named at random: a second read
+    // gives the same parse.
+    if syntax == Syntax::RdfXml {
+        let again = parse_doc(text, syntax, None, &PrefixMap::default());
+        assert!(p == again, "two reads of one RDF/XML text differ");
+    }
 
     // Import sources: catalogs and RDF/XML come from outside too.
     let _ = imports::parse_catalog(text, std::path::Path::new("/chaos"));
@@ -1495,13 +1506,17 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // nothing to format when empty.
     let opts = format::Options::default();
     let formatted = format::format(text, &a.parsed, &a.external, &opts);
-    let refused = if syntax == Syntax::JsonLd {
-        a.parsed.errors.iter().any(|e| e.code == "json-syntax") || text.trim().is_empty()
-    } else {
-        a.parsed
+    // RDF/XML is never formatted.
+    let refused = match syntax {
+        Syntax::JsonLd => {
+            a.parsed.errors.iter().any(|e| e.code == "json-syntax") || text.trim().is_empty()
+        }
+        Syntax::RdfXml => true,
+        _ => a
+            .parsed
             .errors
             .iter()
-            .any(|e| e.severity == Severity::Error)
+            .any(|e| e.severity == Severity::Error),
     };
     if refused {
         assert!(
@@ -1638,8 +1653,12 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         })
     };
     let clean = (!has_errors(text)).then_some(&has_errors as &dyn Fn(&str) -> bool);
-    let name = format!("doc.{}", extension(syntax));
-    fix_all_keeps_the_tokens(rng, &name, text, lexed.lex, clean);
+    // `batch` tells a file's syntax by its name, and no name is RDF/XML's
+    // yet: it would read this text as Turtle.
+    if syntax != Syntax::RdfXml {
+        let name = format!("doc.{}", extension(syntax));
+        fix_all_keeps_the_tokens(rng, &name, text, lexed.lex, clean);
+    }
     // SHACL validation of the document with the corpus, as on save.
     let job = turtle_lsp::features::shacl_validate::Job {
         generation: 1,
@@ -1843,7 +1862,7 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::NTriples => "nt",
         Syntax::NQuads => "nq",
         Syntax::JsonLd => "jsonld",
-        Syntax::RdfXml => unreachable!("no chaos mode makes RDF/XML yet"),
+        Syntax::RdfXml => "rdf",
     }
 }
 
@@ -2647,6 +2666,261 @@ fn mutated_sparql(k: usize) {
     }
 }
 
+/// RDF/XML inputs: documents written here (Protégé-style with a DOCTYPE and
+/// entities, `parseType` Resource, Collection, Literal and Triple, `rdf:li`,
+/// nested and labelled blank nodes, `xml:lang`, a base direction) and the
+/// fixtures' `.rdf` and `.owl` files. Only committed files: a seed picks the
+/// same input on any machine ([`rdfxml_downloaded`] is apart).
+fn rdfxml_corpus() -> Vec<String> {
+    const RDF_NS: &str = "xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"";
+    let mut out: Vec<String> = vec![
+        String::new(),
+        format!("<rdf:RDF {RDF_NS}/>"),
+        format!(
+            "\u{feff}<?xml version=\"1.0\"?>\n<rdf:RDF {RDF_NS} xmlns:ex=\"http://example.org/\">\n  <ex:A rdf:about=\"http://example.org/a\" ex:name=\"a\"/>\n</rdf:RDF>\n"
+        ),
+        format!(
+            r##"<?xml version="1.0"?>
+<!DOCTYPE rdf:RDF [
+    <!ENTITY owl "http://www.w3.org/2002/07/owl#" >
+    <!ENTITY xsd "http://www.w3.org/2001/XMLSchema#" >
+    <!ENTITY rdfs "http://www.w3.org/2000/01/rdf-schema#" >
+    <!ENTITY ex 'http://example.org/onto#' >
+]>
+<rdf:RDF xmlns="http://example.org/onto#"
+     xml:base="http://example.org/onto"
+     {RDF_NS}
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://example.org/onto">
+        <owl:imports rdf:resource="http://example.org/other"/>
+    </owl:Ontology>
+    <!-- http://example.org/onto#partOf -->
+    <owl:ObjectProperty rdf:about="&ex;partOf">
+        <rdfs:domain rdf:resource="&ex;Part"/>
+        <rdfs:range rdf:resource="&owl;Thing"/>
+    </owl:ObjectProperty>
+    <owl:DatatypeProperty rdf:about="#size">
+        <rdfs:range rdf:resource="&xsd;integer"/>
+    </owl:DatatypeProperty>
+    <owl:Class rdf:about="&ex;Part">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="&ex;partOf"/>
+                <owl:someValuesFrom rdf:resource="&ex;Whole"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:label xml:lang="en">part</rdfs:label>
+        <rdfs:comment rdf:datatype="&xsd;string">A part of a whole.</rdfs:comment>
+    </owl:Class>
+    <owl:Class rdf:about="&ex;Whole">
+        <owl:equivalentClass>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="&ex;Part"/>
+                    <rdf:Description rdf:about="&ex;Other"/>
+                </owl:unionOf>
+            </owl:Class>
+        </owl:equivalentClass>
+    </owl:Class>
+    <owl:NamedIndividual rdf:about="&ex;wheel">
+        <rdf:type rdf:resource="&ex;Part"/>
+        <size rdf:datatype="&xsd;integer">12</size>
+    </owl:NamedIndividual>
+</rdf:RDF>
+"##
+        ),
+        format!(
+            r##"<rdf:RDF {RDF_NS} xmlns:ex="http://example.org/" xml:lang="fr">
+  <rdf:Description rdf:about="http://example.org/a" ex:title="Titre">
+    <ex:address rdf:parseType="Resource">
+      <ex:city xml:lang="en">Paris</ex:city>
+      <ex:zip>75001</ex:zip>
+    </ex:address>
+    <ex:members>
+      <rdf:Bag>
+        <rdf:li rdf:resource="http://example.org/m1"/>
+        <rdf:li>second</rdf:li>
+        <rdf:li><ex:Person ex:name="Ann"/></rdf:li>
+      </rdf:Bag>
+    </ex:members>
+    <ex:knows rdf:nodeID="k"/>
+    <ex:note rdf:parseType="Literal"><b xmlns="http://www.w3.org/1999/xhtml">bold</b> text</ex:note>
+    <ex:said rdf:ID="s1">hello</ex:said>
+  </rdf:Description>
+  <rdf:Description rdf:nodeID="k">
+    <ex:name>Bob</ex:name>
+    <ex:friend><rdf:Description><ex:friend><rdf:Description><ex:name>Deep</ex:name></rdf:Description></ex:friend></rdf:Description></ex:friend>
+  </rdf:Description>
+</rdf:RDF>
+"##
+        ),
+        format!(
+            r##"<rdf:RDF {RDF_NS} xmlns:its="http://www.w3.org/2005/11/its" xmlns:ex="http://example.org/" rdf:version="1.2" its:version="2.0">
+  <rdf:Description rdf:about="http://example.org/s">
+    <ex:says rdf:parseType="Triple">
+      <rdf:Description rdf:about="http://example.org/a"><ex:p rdf:resource="http://example.org/b"/></rdf:Description>
+    </ex:says>
+    <ex:name xml:lang="ar" its:dir="rtl">نص</ex:name>
+    <ex:p rdf:resource="http://example.org/o" rdf:annotation="http://example.org/r"/>
+  </rdf:Description>
+</rdf:RDF>
+"##
+        ),
+    ];
+    let files = sorted_files(&root().join("test/fixtures"), true)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rdf" || e == "owl"));
+    for p in files {
+        out.push(fs::read_to_string(p).unwrap());
+    }
+    out
+}
+
+/// FOAF from `test/corpus`, when it was downloaded (`npm run corpus`).
+fn rdfxml_downloaded() -> Option<String> {
+    fs::read_to_string(root().join("test/corpus/foaf.rdf")).ok()
+}
+
+const RDFXML_SNIPPETS: &[&str] = &[
+    "<",
+    ">",
+    "/>",
+    "</",
+    "\"",
+    "'",
+    "&",
+    "&ex;",
+    "&#35;",
+    "&amp;",
+    "<!--",
+    "-->",
+    "<![CDATA[",
+    "]]>",
+    "<?xml version=\"1.0\"?>",
+    "<!DOCTYPE rdf:RDF [<!ENTITY ex 'http://example.org/'>]>",
+    "<!ENTITY a \"&b;\">",
+    "<!ENTITY % p \"x\">",
+    " rdf:about=\"#x\"",
+    " rdf:about=\"&ex;y\"",
+    " rdf:resource=\"\"",
+    " rdf:resource=\"http://example.org/r\"",
+    " rdf:parseType=\"Resource\"",
+    " rdf:parseType=\"Collection\"",
+    " rdf:parseType=\"Literal\"",
+    " rdf:parseType=\"Triple\"",
+    " rdf:nodeID=\"n\"",
+    " rdf:ID=\"i\"",
+    " rdf:datatype=\"http://www.w3.org/2001/XMLSchema#integer\"",
+    " xml:lang=\"en\"",
+    " xml:base=\"http://example.org/b/\"",
+    " xmlns:ex=\"http://example.org/\"",
+    " rdf:version=\"1.2\"",
+    " its:dir=\"rtl\"",
+    "<rdf:Description>",
+    "</rdf:Description>",
+    "<rdf:Description rdf:about=\"http://example.org/d\">",
+    "<ex:p>",
+    "</ex:p>",
+    "<ex:p rdf:parseType=\"Triple\"><rdf:Description rdf:about=\"http://example.org/s\">",
+    "<ex:q rdf:resource=\"http://example.org/o\"/>",
+    "<rdf:li>",
+    "</rdf:li>",
+    "<owl:Class rdf:about=\"#C\"><rdfs:subClassOf><owl:Restriction>",
+    "</owl:Restriction></rdfs:subClassOf></owl:Class>",
+    "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">",
+    "</rdf:RDF>",
+    "\u{feff}",
+    "é",
+    "😀",
+    "\n",
+    "\r\n",
+    "\t",
+    " ",
+    "Prefix(",
+    "Ontology(",
+];
+
+#[test]
+fn mutated_rdfxml_never_panics_1() {
+    mutated_rdfxml(0);
+}
+
+#[test]
+fn mutated_rdfxml_never_panics_2() {
+    mutated_rdfxml(1);
+}
+
+#[test]
+fn mutated_rdfxml_never_panics_3() {
+    mutated_rdfxml(2);
+}
+
+#[test]
+fn mutated_rdfxml_never_panics_4() {
+    mutated_rdfxml(3);
+}
+
+fn mutated_rdfxml(k: usize) {
+    let seed = env_or("CHAOS_SEED", 0x5EED_0019_u64);
+    let iters = env_or("CHAOS_ITERS", 1200usize);
+    let seeds = rdfxml_corpus();
+    // Three times in four, a seed with triples: half the seeds have none on
+    // purpose (an empty root, the OWL syntaxes), and mutations cut the rest.
+    let readable: Vec<&String> = seeds
+        .iter()
+        .filter(|t| {
+            !parse_doc(t, Syntax::RdfXml, None, &PrefixMap::default())
+                .triples
+                .is_empty()
+        })
+        .collect();
+    // One iteration in eight mutates FOAF instead, when it was downloaded. The
+    // draw is made either way, so every other iteration's input is the same
+    // on a machine without it, and FOAF stays out of the workspace.
+    let downloaded = rdfxml_downloaded();
+    // The workspace the RDF/XML document joins: some of the Turtle fixtures,
+    // and the RDF/XML inputs themselves.
+    let mut docs: Vec<(String, Syntax)> = corpus()
+        .into_iter()
+        .filter(|(t, _)| t.len() < 20_000)
+        .step_by(3)
+        .collect();
+    docs.extend(seeds.iter().map(|t| (t.clone(), Syntax::RdfXml)));
+    let mut base = knowledge_of(&docs);
+    let mut dog = Watchdog::new("rdfxml", seed, iters);
+    for i in iterations(iters, k) {
+        let mut rng = Rng::at(seed, i);
+        let foaf = rng.below(8) == 0;
+        let source = if rng.below(4) == 0 {
+            &seeds[rng.below(seeds.len())]
+        } else {
+            readable[rng.below(readable.len())]
+        };
+        let source = match &downloaded {
+            Some(text) if foaf => text,
+            _ => source,
+        };
+        let text = mutate_with(&mut rng, source, RDFXML_SNIPPETS, true, Lexer::Turtle);
+        dog.start(i, &text, "rdf");
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            exercise(
+                &mut Rng(seed ^ i as u64 ^ 0x9E37),
+                &text,
+                Syntax::RdfXml,
+                &mut base,
+            )
+        }));
+        if let Err(e) = r {
+            panic!(
+                "{}",
+                failure_report("rdfxml", seed, iters, i, "rdf", &text, &panic_message(&*e))
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pathological inputs: written down, not found by chance.
 
@@ -3018,6 +3292,35 @@ fn corpora_are_sorted_and_cover_every_input_family() {
         "no JSON-LD shapes with sh:select"
     );
     assert!(json.iter().all(|t| !t.is_empty()) || json[0].is_empty());
+    // RDF/XML: what Protégé writes, and each construct that places triples
+    // apart.
+    let xml = rdfxml_corpus();
+    for needle in [
+        "<!DOCTYPE",
+        "<!ENTITY",
+        "parseType=\"Resource\"",
+        "parseType=\"Collection\"",
+        "parseType=\"Literal\"",
+        "parseType=\"Triple\"",
+        "<rdf:li",
+        "rdf:nodeID",
+        "xml:lang",
+        "its:dir",
+        "<owl:Restriction>",
+    ] {
+        assert!(
+            xml.iter().any(|t| t.contains(needle)),
+            "no {needle} in the RDF/XML corpus"
+        );
+    }
+    assert!(xml.len() >= 13, "{} RDF/XML inputs", xml.len());
+    // The documents written above (after the empty text and the empty
+    // root) read whole, so their mutations start from triples.
+    for text in &xml[2..6] {
+        let p = parse_doc(text, Syntax::RdfXml, None, &PrefixMap::default());
+        assert!(p.errors.is_empty(), "{:?}\n{text}", p.errors);
+        assert!(p.triples.len() >= 2, "{text}");
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@
 //! | [`syntax`] | Turtle, TriG, N-Triples and N-Quads lexer and parser | every feature |
 //! | [`sparql`] | SPARQL documents: tokens, structure, checks, formatting | `ide`, [`analysis`], [`query`], [`shacl`] |
 //! | [`jsonld`] | JSON-LD 1.1 frontend producing the same parse as Turtle | [`analysis`] |
-//! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle (not read yet) | [`analysis`] |
+//! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle | [`analysis`], [`imports`] |
 //! | [`analysis`] | One document's parse, positions and per-IRI indexes | [`features`], `ide`, [`server`] |
 //! | `workspace` | Open documents, indexed files and project prefixes | [`server`], `ide`, [`batch`], [`cli`], [`features`], `diagnose`, [`imports`], [`jsonld`] |
 //! | [`knowledge`] | What the workspace says about each IRI | [`features`] |

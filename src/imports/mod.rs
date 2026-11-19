@@ -19,10 +19,11 @@
 //! below a workspace import, cycles stop) and join the knowledge index as
 //! read-only external sources: hover, completion and lints know their terms,
 //! but they are never diagnosed. Each is read in its own syntax (Turtle, TriG,
-//! N-Triples, N-Quads, JSON-LD) with our parser, chosen by the file's
-//! extension, else by what it starts with, never by the import IRI; RDF/XML is
-//! converted to N-Triples text first, so every source is an [`Analysis`] like
-//! any other. A document in OWL/XML, Functional or Manchester syntax is not
+//! N-Triples, N-Quads, JSON-LD, RDF/XML) with our parser, chosen by the
+//! file's extension, else by what it starts with, never by the import IRI, so
+//! every source is an [`Analysis`] like any other. A local RDF/XML file is
+//! analysed over its own text, so locations point into it; a fetched one is
+//! converted to N-Triples text first, which is what the cache keeps. A document in OWL/XML, Functional or Manchester syntax is not
 //! read, and the import says so; one whose RDF/XML has an error is loaded up to
 //! it, with a warning on the import that says where.
 //!

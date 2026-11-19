@@ -7,12 +7,19 @@
 //! with. A web document's format comes from its content type, else from the
 //! extension of the URL it was finally fetched from, else from what it starts
 //! with. The format never comes from the import IRI.
+//!
+//! A local RDF/XML file is analysed by the RDF/XML frontend over its own
+//! text, so locations point into the file. A fetched one is converted to
+//! N-Triples ([`rdf_xml_to_ntriples`]), and that text is what is cached and
+//! analysed.
 
 use super::catalog::{Catalog, Target};
-use super::rdfxml::{declaration_end, rdf_xml_to_ntriples};
+use super::rdfxml::{rdf_xml_to_ntriples, stopped_at};
 use super::worker::{Memo, Ontology, RETRY_FETCH_AFTER};
 use super::*;
 use crate::syntax::Syntax;
+use crate::syntax::sniff::SNIFF_BYTES;
+pub(crate) use crate::syntax::sniff::Sniffed;
 use std::path::Component;
 
 // ---- files ----
@@ -534,11 +541,12 @@ impl Format {
         }
     }
 
-    /// The syntax the analysis reads it in. RDF/XML is converted to
-    /// N-Triples text first, which is read as Turtle.
+    /// The syntax the analysis reads it in. (A fetched RDF/XML document is
+    /// converted to N-Triples first, and read as Turtle.)
     pub(crate) fn syntax(self) -> Syntax {
         match self {
-            Format::Turtle | Format::RdfXml => Syntax::Turtle,
+            Format::Turtle => Syntax::Turtle,
+            Format::RdfXml => Syntax::RdfXml,
             Format::TriG => Syntax::TriG,
             Format::NTriples => Syntax::NTriples,
             Format::NQuads => Syntax::NQuads,
@@ -577,198 +585,18 @@ pub fn sniff(bytes: &[u8]) -> Result<Format, String> {
     Sniffed::of(&head).format()
 }
 
-/// How far a sniff looks: past an XML declaration, comments and a DOCTYPE
-/// with entities to the root element.
-const SNIFF_BYTES: usize = 64 * 1024;
-
-const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-const OWL_NS: &str = "http://www.w3.org/2002/07/owl#";
-
-/// What a text is written in, as its start tells: RDF/XML, OWL/XML,
-/// Functional, Manchester, JSON-LD, else Turtle (N-Triples is Turtle).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Sniffed {
-    Turtle,
-    JsonLd,
-    RdfXml,
-    OwlXml,
-    Functional,
-    Manchester,
-}
-
 impl Sniffed {
-    /// Read the start of `text`: past a BOM and whitespace; for XML, past
-    /// the declaration, comments and the DOCTYPE to the root element and its
-    /// namespaces; else past `#` comment lines. Looks at most at the first
-    /// [`SNIFF_BYTES`].
-    pub(crate) fn of(text: &str) -> Sniffed {
-        let mut end = text.len().min(SNIFF_BYTES);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        let s = text[..end].trim_start_matches('\u{feff}').trim_start();
-        if let Some(rest) = s.strip_prefix('<') {
-            return if starts_xml(rest) {
-                xml_root(s)
-            } else {
-                Sniffed::Turtle
-            };
-        }
-        // JSON: an object that starts with a key (or is empty), or an array of objects.
-        if let Some(rest) = s.strip_prefix('{') {
-            let rest = rest.trim_start();
-            if rest.starts_with('"') || rest.starts_with('}') {
-                return Sniffed::JsonLd;
-            }
-        }
-        if let Some(rest) = s.strip_prefix('[')
-            && rest.trim_start().starts_with('{')
-        {
-            return Sniffed::JsonLd;
-        }
-        // The first word of an OWL text: `Prefix` or `Ontology`, then `(`
-        // (Functional) or `:` (Manchester). Turtle never starts so: its
-        // `PREFIX` is followed by a prefix name, and `Prefix:` as a name
-        // would need a declaration before it.
-        let s = without_comments(s);
-        let Some(rest) = s
-            .strip_prefix("Prefix")
-            .or_else(|| s.strip_prefix("Ontology"))
-        else {
-            return Sniffed::Turtle;
-        };
-        if rest.starts_with(':') {
-            Sniffed::Manchester
-        } else if rest.trim_start().starts_with('(') {
-            Sniffed::Functional
-        } else {
-            Sniffed::Turtle
-        }
-    }
-
     /// The format turtle-lsp reads it in, or why it reads none: OWL/XML,
     /// Functional and Manchester are OWL syntaxes, not RDF.
     pub(crate) fn format(self) -> Result<Format, String> {
-        let name = match self {
-            Sniffed::Turtle => return Ok(Format::Turtle),
-            Sniffed::JsonLd => return Ok(Format::JsonLd),
-            Sniffed::RdfXml => return Ok(Format::RdfXml),
-            Sniffed::OwlXml => "OWL/XML",
-            Sniffed::Functional => "OWL Functional syntax",
-            Sniffed::Manchester => "OWL Manchester syntax",
-        };
-        Err(format!(
-            "it holds {name}, which turtle-lsp does not read. In Protégé: File > Save as > RDF/XML or Turtle"
-        ))
-    }
-}
-
-/// Whether `<` then `rest` starts XML rather than a Turtle `<iri>`: a
-/// declaration, comment or DOCTYPE, or a name followed by an attribute, an
-/// end of tag and another tag, or `/>`.
-fn starts_xml(rest: &str) -> bool {
-    if rest.starts_with('?') || rest.starts_with('!') {
-        return true;
-    }
-    let name_len = rest
-        .find(|c: char| !(c.is_alphanumeric() || "_-.:".contains(c)))
-        .unwrap_or(rest.len());
-    let after = &rest[name_len..];
-    name_len > 0
-        && (after.starts_with(char::is_whitespace)
-            || after.starts_with("/>")
-            || after
-                .strip_prefix('>')
-                .is_some_and(|t| t.trim_start().starts_with('<')))
-}
-
-/// `s` past `#` comment lines and the whitespace around them.
-fn without_comments(mut s: &str) -> &str {
-    while let Some(comment) = s.strip_prefix('#') {
-        s = comment
-            .split_once('\n')
-            .map_or("", |(_, rest)| rest)
-            .trim_start();
-    }
-    s
-}
-
-/// OWL/XML when the root element of the XML text `s` is `Ontology` in the
-/// OWL namespace (or in none) and has no attribute in the RDF namespace (an
-/// `owl:Ontology rdf:about` root is RDF/XML); RDF/XML otherwise, also when
-/// the root is not found. RDF/XML is the generous answer: the parser then
-/// says what is wrong.
-fn xml_root(s: &str) -> Sniffed {
-    let b = s.as_bytes();
-    let mut i = 0;
-    let after = |i: usize, end: &str| s[i..].find(end).map(|p| i + p + end.len());
-    let root = loop {
-        while b.get(i).is_some_and(u8::is_ascii_whitespace) {
-            i += 1;
+        match self {
+            Sniffed::Turtle => Ok(Format::Turtle),
+            Sniffed::JsonLd => Ok(Format::JsonLd),
+            Sniffed::RdfXml => Ok(Format::RdfXml),
+            Sniffed::OwlXml | Sniffed::Functional | Sniffed::Manchester => {
+                Err(format!("it {}", self.unread().unwrap_or_default()))
+            }
         }
-        if b.get(i) != Some(&b'<') {
-            return Sniffed::RdfXml;
-        }
-        let next = if s[i..].starts_with("<?") {
-            after(i, "?>")
-        } else if s[i..].starts_with("<!--") {
-            after(i, "-->")
-        } else if s[i..].starts_with("<!") {
-            declaration_end(b, i).map(|e| e + 1)
-        } else {
-            break &s[i + 1..];
-        };
-        match next {
-            Some(n) => i = n,
-            None => return Sniffed::RdfXml,
-        }
-    };
-    let name_end = root
-        .find(|c: char| c.is_whitespace() || c == '/' || c == '>')
-        .unwrap_or(root.len());
-    let (prefix, local) = match root[..name_end].split_once(':') {
-        Some((p, l)) => (Some(p), l),
-        None => (None, &root[..name_end]),
-    };
-    let attrs = attributes(&root[name_end..]);
-    let ns = |prefix: Option<&str>| {
-        let decl = prefix.map_or("xmlns".to_string(), |p| format!("xmlns:{p}"));
-        attrs.iter().find(|(n, _)| *n == decl).map(|(_, v)| *v)
-    };
-    let in_rdf = |name: &str| {
-        name.split_once(':')
-            .is_some_and(|(p, _)| p != "xmlns" && ns(Some(p)).map_or(p == "rdf", |v| v == RDF_NS))
-    };
-    let owl = matches!(ns(prefix), None | Some(OWL_NS));
-    if local == "Ontology" && owl && !attrs.iter().any(|(n, _)| in_rdf(n)) {
-        Sniffed::OwlXml
-    } else {
-        Sniffed::RdfXml
-    }
-}
-
-/// The attributes of a start tag from just after its name, up to its end
-/// (or to the first that is not `name="value"` or `name='value'`).
-fn attributes(mut s: &str) -> Vec<(&str, &str)> {
-    let mut out = Vec::new();
-    loop {
-        s = s.trim_start();
-        let Some((name, rest)) = s.split_once('=') else {
-            return out;
-        };
-        let name = name.trim_end();
-        if name.is_empty() || name.contains(|c: char| c.is_whitespace() || c == '>' || c == '/') {
-            return out;
-        }
-        let rest = rest.trim_start();
-        let Some(q) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
-            return out;
-        };
-        let Some((value, tail)) = rest[1..].split_once(q) else {
-            return out;
-        };
-        out.push((name, value));
-        s = tail;
     }
 }
 
@@ -799,6 +627,12 @@ pub(super) fn parse(
     let text = lossy.trim_start_matches('\u{feff}');
     // Whatever the name or the content type says.
     Sniffed::of(text).format()?;
+    // A refusal of the RDF/XML reader has no place: it is about the whole text.
+    if format == Format::RdfXml
+        && let Some(why) = crate::rdfxml::refused(text)
+    {
+        return Err(why);
+    }
     let mut truncated = None;
     let text = match format {
         Format::Turtle | Format::TriG => {
@@ -817,13 +651,9 @@ pub(super) fn parse(
             }
         }
         // N-Triples and N-Quads have absolute IRIs only, no base to declare;
-        // a JSON-LD document's base is the URL the analysis is named by.
-        Format::NTriples | Format::NQuads | Format::JsonLd => text.to_string(),
-        Format::RdfXml => {
-            let (nt, stop) = rdf_xml_to_ntriples(bytes, base)?;
-            truncated = stop;
-            nt
-        }
+        // a JSON-LD or RDF/XML document's base is the URL the analysis is
+        // named by.
+        Format::NTriples | Format::NQuads | Format::JsonLd | Format::RdfXml => text.to_string(),
     };
     let a = Analysis::with_syntax(
         base.to_string(),
@@ -832,10 +662,14 @@ pub(super) fn parse(
         false,
         format.syntax(),
     );
+    if format == Format::RdfXml {
+        // Read up to its first error, which says where it stopped.
+        truncated = a.parsed.errors.first().map(|e| stopped_at(&text, e));
+    }
     if a.parsed.triples.is_empty()
         && let Some(e) = a.parsed.errors.first()
     {
-        return Err(e.message().to_string());
+        return Err(truncated.unwrap_or_else(|| e.message().to_string()));
     }
     if guessed
         && format == Format::Turtle
@@ -892,6 +726,10 @@ mod tests {
         assert_eq!(sniffed(b"{}"), Format::JsonLd);
         // A blank node subject is Turtle, not an array.
         assert_eq!(sniffed(b"[ a <urn:x:C> ] <urn:x:p> 1 ."), Format::Turtle);
+        // Cut inside a character, at the edge of what a sniff looks at.
+        let mut big = "#".repeat(SNIFF_BYTES - 1);
+        big.push('é');
+        assert_eq!(sniff(big.as_bytes()), Ok(Format::Turtle));
         // An `Ontology` root in no namespace is not RDF/XML (whose elements
         // need one): it is taken for OWL/XML.
         let e = sniff(b"<Ontology>\n  <Prefix/>").unwrap_err();
@@ -899,101 +737,6 @@ mod tests {
             e,
             "it holds OWL/XML, which turtle-lsp does not read. In Protégé: File > Save as > RDF/XML or Turtle"
         );
-    }
-
-    const PROTEGE_HEAD: &str = "\u{feff}<?xml version=\"1.0\"?>\n<!-- written by hand -->\n<!DOCTYPE Ontology [\n    <!ENTITY xsd \"http://www.w3.org/2001/XMLSchema#\" >\n    <!ENTITY rdf 'http://www.w3.org/1999/02/22-rdf-syntax-ns#' >\n]>\n\n";
-
-    #[test]
-    fn each_format_is_told_apart_past_a_bom_comments_and_a_doctype() {
-        use Sniffed::*;
-        let owx = format!(
-            "{PROTEGE_HEAD}<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"\n     xml:base=\"http://example.org/o\"\n     xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n     ontologyIRI=\"http://example.org/o\">\n    <Declaration><Class IRI=\"#A\"/></Declaration>\n</Ontology>\n"
-        );
-        let rdf = format!(
-            "{PROTEGE_HEAD}<rdf:RDF xmlns=\"http://example.org/o#\"\n     xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n</rdf:RDF>\n"
-        );
-        let cases: &[(&str, Sniffed)] = &[
-            (&owx, OwlXml),
-            (&rdf, RdfXml),
-            // OWL/XML with a prefix for the OWL namespace.
-            (
-                "<owl:Ontology xmlns:owl='http://www.w3.org/2002/07/owl#' ontologyIRI='http://example.org/o'/>",
-                OwlXml,
-            ),
-            // A node element as root is RDF/XML: an `rdf:` attribute says so.
-            (
-                "<owl:Ontology xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" rdf:about=\"http://example.org/o\"/>",
-                RdfXml,
-            ),
-            (
-                "<owl:Ontology xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:r=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" r:about=\"\"/>",
-                RdfXml,
-            ),
-            // `Ontology` in another namespace, and any other root: RDF/XML.
-            ("<Ontology xmlns=\"http://example.org/ns#\"/>", RdfXml),
-            ("<?xml version='1.0'?>\n<catalog xmlns='urn:x'/>", RdfXml),
-            (
-                "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>)",
-                Functional,
-            ),
-            (
-                "# a comment\n\n  Ontology (<http://example.org/o>\n)",
-                Functional,
-            ),
-            (
-                "\u{feff}Prefix: ex: <http://example.org/o#>\nOntology: <http://example.org/o>",
-                Manchester,
-            ),
-            ("Ontology: <http://example.org/o>\nClass: ex:A", Manchester),
-            // SPARQL-style Turtle prefixes, in any case.
-            ("PREFIX ex: <http://example.org/o#>\nex:a a ex:B .", Turtle),
-            ("Prefix : <http://example.org/o#>\n:a a :B .", Turtle),
-            ("prefix ex: <http://example.org/o#>", Turtle),
-            ("# Prefix(\nex:a a ex:B .", Turtle),
-            ("Ontology", Turtle),
-        ];
-        for (text, want) in cases {
-            assert_eq!(Sniffed::of(text), *want, "{text}");
-        }
-        // Past a DOCTYPE longer than the old 512-byte look.
-        let entities: String = (0..40)
-            .map(|i| format!("<!ENTITY e{i} \"http://example.org/entity/number/{i}#\">\n"))
-            .collect();
-        let long = format!(
-            "<?xml version=\"1.0\"?>\n<!DOCTYPE Ontology [\n{entities}]>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"/>"
-        );
-        assert!(long.find("<Ontology").unwrap() > 1024);
-        assert_eq!(Sniffed::of(&long), OwlXml);
-        assert!(sniff(long.as_bytes()).unwrap_err().contains("OWL/XML"));
-        let e = sniff(b"Prefix(:=<http://e/>)").unwrap_err();
-        assert!(e.contains("OWL Functional syntax"), "{e}");
-        let e = sniff(b"Prefix: : <http://e/>").unwrap_err();
-        assert!(e.contains("OWL Manchester syntax"), "{e}");
-    }
-
-    #[test]
-    fn a_sniff_survives_what_never_ends() {
-        for text in [
-            "<!-- never closed <Ontology xmlns='http://www.w3.org/2002/07/owl#'/>",
-            "<?xml version='1.0'",
-            "<!DOCTYPE x [ <!ENTITY a 'b'> ",
-            "<Ontology xmlns='http://www.w3.org/2002/07/owl#",
-            "<Ontology a=\"1\" b c='2'>",
-            "<Ontology",
-            "<",
-            "<!",
-            "<?",
-            "# only a comment",
-            "#",
-            "\u{feff}",
-        ] {
-            let _ = Sniffed::of(text);
-        }
-        // Cut inside a character, at the edge of what a sniff looks at.
-        let mut big = "#".repeat(SNIFF_BYTES - 1);
-        big.push('é');
-        assert_eq!(Sniffed::of(&big), Sniffed::Turtle);
-        assert_eq!(sniff(big.as_bytes()), Ok(Format::Turtle));
     }
 
     #[test]

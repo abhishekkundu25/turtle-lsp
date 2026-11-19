@@ -2,16 +2,18 @@
 //! recursive-descent parser that records the span of every term, so every
 //! editor feature reads one parse. JSON-LD and RDF/XML have their own
 //! frontends, which build the same [`Parsed`]; this module calls neither.
+//! [`sniff`] tells from a text's start which syntax it is in.
 
 mod iri;
 pub mod lexer;
 pub(crate) mod names;
 mod parser;
+pub(crate) mod sniff;
 pub(crate) mod splice;
 
 pub use iri::Iri;
 pub(crate) use iri::{IriKey, IriMap};
-pub(crate) use parser::has_scheme;
+pub(crate) use parser::{MAX_NESTING, has_scheme};
 pub use parser::{parse, parse_with_base};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -35,8 +37,9 @@ pub enum Syntax {
     /// JSON-LD 1.1 (`.jsonld`). Generic `.json` files are not JSON-LD.
     JsonLd,
     /// RDF/XML 1.1. No language id or extension names it yet: only a caller
-    /// that knows a text is RDF/XML asks for it. Nothing edits it: it has no
-    /// tokens, no formatting and no statement splice.
+    /// that knows a text is RDF/XML asks for it (the import loader, for a
+    /// local RDF/XML import). Nothing edits it: it has no tokens, no
+    /// formatting and no statement splice.
     RdfXml,
 }
 
@@ -306,8 +309,9 @@ pub struct SyntaxError {
     pub(crate) message: Cow<'static, str>,
     pub severity: Severity,
     /// The diagnostic code: `syntax` for Turtle and its relatives,
-    /// `json-syntax` and `jsonld-context` for JSON-LD, `unsupported-syntax`
-    /// for RDF/XML while it is not read.
+    /// `json-syntax` and `jsonld-context` for JSON-LD, `xml-syntax` for
+    /// RDF/XML, and `unsupported-syntax` for a text in an OWL syntax that
+    /// is not RDF.
     pub code: &'static str,
 }
 
