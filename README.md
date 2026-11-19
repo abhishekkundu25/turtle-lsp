@@ -74,7 +74,7 @@ fails. A file whose SHA-256 differs from the checksum recorded in
 | W3C JSON-LD 1.1 suites: toRdf, expand, remote-doc | 443, 365 and 6 pass; 2 known failures; the rest out of scope ³ |
 | JSON-LD on 364 public documents (schema.org examples, ActivityStreams, Verifiable Credentials 1.0 and 2.0, IIIF, DCAT-US, Croissant, GS1, DID) vs. [oxjsonld](https://crates.io/crates/oxjsonld) | Same graph for 339; the other 25 are known differences where oxjsonld departs from JSON-LD 1.1 ⁴ |
 | W3C RDF/XML suite (RDF 1.1) | 166 / 166 |
-| RDF/XML parser vs. [oxrdfxml](https://crates.io/crates/oxrdfxml) on FOAF, BFO, RO and PATO (270,000 triples) | Same graph on all four; where oxrdfxml reads a text otherwise, the case and the spec rule are listed in `src/rdfxml/grammar.rs` |
+| RDF/XML parser vs. [oxrdfxml](https://crates.io/crates/oxrdfxml) on FOAF, BFO, RO and PATO (270,000 triples) | Same graph on BFO, RO and PATO. FOAF differs in two `rdfs:comment` values, where XML 1.0 (3.3.3) makes a line end in an attribute a space and oxrdfxml keeps it. Every such case and its spec rule is listed in `src/rdfxml/grammar.rs` |
 | Parser vs. [Oxigraph](https://github.com/oxigraph/oxigraph) on public files (schema.org, Wikidata, DBpedia, QUDT, Brick, Gene Ontology, W3C vocabularies, a Web Data Commons N-Quads dump) | Same quads in 98 of 99 cases (2.56 million triples) ² |
 | Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
 | SPARQL on 1,317 real queries ([SIB sparql-examples](https://github.com/sib-swiss/sparql-examples): UniProt, Rhea, Bgee, neXtProt, ...) | Same verdict as [spargebra](https://crates.io/crates/spargebra) on all; the formatter kept every query's algebra and comments, and formatting twice changes nothing |
@@ -528,7 +528,9 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
 
 The parser is turtle-lsp's own, so it can place every term and go on after
 an error. It passes the W3C RDF/XML suite (166/166) and reads the same graph
-as [oxrdfxml](https://crates.io/crates/oxrdfxml) from FOAF, BFO, RO and PATO.
+as [oxrdfxml](https://crates.io/crates/oxrdfxml) from BFO, RO and PATO. From
+FOAF it differs in two comments, where it follows the XML rule for line ends
+in attribute values.
 
 ## Install
 

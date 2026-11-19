@@ -16,8 +16,9 @@
   `undescribed-term` and `deprecated-term`. VS Code, Neovim and the browser
   editor attach to these files and keep them in their XML language.
 - **turtle-lsp's own RDF/XML parser**, which keeps the place of every term:
-  166/166 on the W3C RDF/XML suite, and the same graph as oxrdfxml on FOAF,
-  BFO, RO and PATO. A keystroke in PATO (20 MB) takes about 90 ms.
+  166/166 on the W3C RDF/XML suite, and the same graph as oxrdfxml on BFO, RO
+  and PATO (FOAF differs in two comments, where XML makes a line end in an
+  attribute value a space). A keystroke in PATO (20 MB) takes about 90 ms.
 - **Imports name what they cannot read.** An import in OWL/XML, Functional or
   Manchester syntax fails with a message naming the format and how to save it
   as RDF/XML or Turtle in Protégé. A workspace file in those syntaxes gets
@@ -34,8 +35,10 @@
   error (`xml-syntax`, `rdfxml-syntax`), a `.owl` holding broken Turtle or
   JSON-LD, an OWL/XML, Functional or Manchester file that an import is read
   from, and with `--max-warnings 0` one that nothing imports. Exit 2 where it
-  was 0: a `.owl` or `.rdf` over 50 MB or not in UTF-8. Leave codes out with
-  `--ignore` or `lint.ignore` in `turtle-lsp.json`.
+  was 0: a `.owl` or `.rdf` over 50 MB or not in UTF-8. Leave the exit 1
+  codes out with `--ignore` or `lint.ignore` in `turtle-lsp.json`. Exit 2 has
+  no opt-out: keep such files in a hidden folder or in `build/`, `dist/` or
+  `target/`, which `check .` does not read.
 - **An import that is not UTF-8 is not read** (any syntax, fetched, cached or
   local); its `unresolved-import` says where the first bad byte is. It was
   read with the bad bytes replaced.
