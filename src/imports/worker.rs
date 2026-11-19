@@ -27,6 +27,9 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 pub(super) struct Ontology {
     pub(super) analysis: Arc<Analysis>,
     pub(super) imports: Vec<String>,
+    /// Where and why the document stopped being read, if it did before its
+    /// end ("line L, column C: why").
+    pub(super) truncated: Option<String>,
 }
 
 /// An import IRI containing this makes the resolver panic, in tests.
@@ -125,12 +128,21 @@ pub(super) fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool)
                     if depth < MAX_DEPTH {
                         queue.extend(onto.imports.iter().map(|i| (i.clone(), depth + 1)));
                     }
+                    let st = match &onto.truncated {
+                        Some(why) => {
+                            let message = format!(
+                                "Import <{iri}> is loaded only in part: {location} has an error at {why}. Nothing after it is loaded"
+                            );
+                            Status::Truncated(location, message)
+                        }
+                        None => Status::Loaded(location),
+                    };
                     loaded.push(Loaded {
                         key: format!("{KEY_PREFIX}{iri}"),
                         facts: fresh.then(|| DocFacts::new(&onto.analysis)),
                         analysis: onto.analysis,
                     });
-                    Status::Loaded(location)
+                    st
                 }
                 Err(msg) => Status::Unresolved(msg),
             }

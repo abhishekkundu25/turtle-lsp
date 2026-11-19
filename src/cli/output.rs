@@ -427,6 +427,10 @@ pub(crate) const CODES: &[(&str, &str)] = &[
         "An owl:imports target could not be loaded",
     ),
     (
+        "import-truncated",
+        "An owl:imports target was loaded only up to an error in it",
+    ),
+    (
         "unbound-projection",
         "A projected SPARQL variable is never bound",
     ),

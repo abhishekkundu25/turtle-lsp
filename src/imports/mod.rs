@@ -22,7 +22,9 @@
 //! N-Triples, N-Quads, JSON-LD) with our parser, chosen by the file's
 //! extension, else by what it starts with, never by the import IRI; RDF/XML is
 //! converted to N-Triples text first, so every source is an [`Analysis`] like
-//! any other.
+//! any other. A document in OWL/XML, Functional or Manchester syntax is not
+//! read, and the import says so; one whose RDF/XML has an error is loaded up to
+//! it, with a warning on the import that says where.
 //!
 //! All file and network work happens on one background thread, started on the
 //! first import and blocked on its job channel when there is nothing to do.
@@ -63,6 +65,10 @@ const KEY_PREFIX: &str = "import:";
 /// Command that fetches one import (arguments: `[iri]`), offered as a quick fix
 /// on its unresolved-import diagnostic.
 pub(crate) const FETCH_COMMAND: &str = "turtle.fetchImport";
+/// The code of the diagnostic on an import that is not loaded.
+const UNRESOLVED: &str = "unresolved-import";
+/// The code of the diagnostic on an import loaded only up to an error in it.
+const TRUNCATED: &str = "import-truncated";
 
 /// How an import was resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +77,9 @@ pub enum Status {
     Local,
     /// Loaded from this file or URL.
     Loaded(String),
+    /// Loaded from this file or URL up to an error in it; the message says
+    /// where, and that the rest is not loaded.
+    Truncated(String, String),
     /// Not loaded; the message says why and how to fix it.
     Unresolved(String),
 }
@@ -522,8 +531,9 @@ impl Imports {
     }
 }
 
-/// Information diagnostics on the unresolved imports of `a`, with the
-/// status of each import looked up by `status`.
+/// Diagnostics on the imports of `a`: information on one not loaded
+/// (`unresolved-import`), a warning on one loaded only up to an error in it
+/// (`import-truncated`). The status of each import is looked up by `status`.
 pub fn diagnostics_with<'s>(
     a: &Analysis,
     enc: Encoding,
@@ -539,13 +549,15 @@ pub fn diagnostics_with<'s>(
         .filter(|t| t.p == p.imports)
         .filter_map(|t| {
             let Node::Iri(o) = &t.o else { return None };
-            let Some(Status::Unresolved(message)) = status(o) else {
-                return None;
+            let (severity, code, message) = match status(o)? {
+                Status::Unresolved(m) => (DiagnosticSeverity::INFORMATION, UNRESOLVED, m),
+                Status::Truncated(_, m) => (DiagnosticSeverity::WARNING, TRUNCATED, m),
+                Status::Local | Status::Loaded(_) => return None,
             };
             Some(Diagnostic {
                 range: a.range(enc, t.o_span),
-                severity: Some(DiagnosticSeverity::INFORMATION),
-                code: Some(NumberOrString::String("unresolved-import".into())),
+                severity: Some(severity),
+                code: Some(NumberOrString::String(code.into())),
                 source: Some(SOURCE.to_string()),
                 message: message.clone(),
                 ..Default::default()
@@ -569,7 +581,7 @@ pub(crate) fn fetch_actions(
     let mut out = Vec::new();
     for d in &params.context.diagnostics {
         if d.source.as_deref() != Some(SOURCE)
-            || d.code != Some(NumberOrString::String("unresolved-import".into()))
+            || d.code != Some(NumberOrString::String(UNRESOLVED.into()))
         {
             continue;
         }
@@ -750,6 +762,36 @@ mod tests {
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::INFORMATION));
         assert_eq!(d[0].range.start.character, 31);
         assert_eq!(d[0].message, "nope");
+    }
+
+    #[test]
+    fn an_import_loaded_in_part_gets_a_warning_and_no_fetch() {
+        let text =
+            format!("<http://ex.com/me> <{OWL_IMPORTS}> <http://ex.com/x>, <http://ex.com/y> .\n");
+        let a = Analysis::new("file:///d.ttl".into(), &text, Arc::default(), false);
+        let part = Status::Truncated("/w/x.owl".into(), "cut".into());
+        let whole = Status::Loaded("/w/y.owl".into());
+        let d = diagnostics_with(&a, Encoding::Utf16, |i| {
+            Some(if i.ends_with('x') { &part } else { &whole })
+        });
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(d[0].code, Some(NumberOrString::String(TRUNCATED.into())));
+        assert_eq!(d[0].message, "cut");
+        assert_eq!(d[0].range.start.character, 59);
+        let params = CodeActionParams {
+            text_document: lsp_types::TextDocumentIdentifier {
+                uri: "file:///d.ttl".parse().unwrap(),
+            },
+            range: d[0].range,
+            context: lsp_types::CodeActionContext {
+                diagnostics: d,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        assert!(fetch_actions(&a, Encoding::Utf16, &params).is_empty());
     }
 
     #[test]

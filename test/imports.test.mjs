@@ -14,7 +14,8 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import crypto from "node:crypto"
-import { startServer, tempDir as longTempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
+import { spawnSync } from "node:child_process"
+import { startServer, serverPath, tempDir as longTempDir, uriOf, fixtures, positionOf } from "./lsp-client.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 process.env.NO_PROXY = "127.0.0.1,localhost"
@@ -36,6 +37,12 @@ before(async () => {
     } else if (req.url === "/onto.ttl") {
       res.writeHead(200, { "content-type": "text/turtle" })
       res.end(ONTO)
+    } else if (req.url === "/cut.rdf") {
+      res.writeHead(200, { "content-type": "application/rdf+xml" })
+      res.end(CUT_RDF)
+    } else if (req.url === "/onto.owx") {
+      res.writeHead(200, { "content-type": "application/owl+xml" })
+      res.end(`<?xml version="1.0"?>\n<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="${base}/onto.owx"/>\n`)
     } else if (req.url === "/donn%C3%A9es.ttl") {
       res.writeHead(200, { "content-type": "text/turtle" })
       res.end(VOCAB)
@@ -48,6 +55,15 @@ before(async () => {
   base = `http://127.0.0.1:${web.address().port}`
 })
 after(() => web.close())
+
+// RDF/XML with an error on line 5: the first class is read, the second not.
+const CUT_RDF = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+  <rdf:Description rdf:about="http://example.org/cut#First"><rdfs:label>First cut</rdfs:label></rdf:Description>
+  <rdf:Description rdf:about="http://example.org/cut#Second"><rdfs:label>Second cut</rdfs:label></rdf:Descr>
+</rdf:RDF>
+`
 
 // Absolute IRIs: they do not depend on the URL the document is read from.
 const VOCAB = `@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -533,6 +549,111 @@ test("imports in TriG and JSON-LD are read in their own syntax, whatever their I
     await hoverUntil(s, uri, positionOf(text, "j:Json", 3), "Json thing")
     const diags = await diagnosticsUntil(s, uri, (d) => !d.some((x) => x.code === "unresolved-import"))
     assert.ok(!diags.some((x) => x.code === "unresolved-import"), JSON.stringify(diags))
+  } finally {
+    await s.stop()
+  }
+})
+
+// One import per format in test/fixtures/imports/ws/vendor, each mapped by
+// the catalog: what is not read says so, and what is read in part says where.
+const UNREAD = "which turtle-lsp does not read\\. In Protégé: File > Save as > RDF/XML or Turtle"
+const FORMATS = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix t: <http://example.org/onto/truncated#> .
+@prefix q: <http://example.org/onto/quoted#> .
+<http://example.org/app> a owl:Ontology ;
+    owl:imports <http://example.org/onto/owlxml>, <http://example.org/onto/functional>,
+        <http://example.org/onto/manchester>, <http://example.org/onto/frames>,
+        <http://example.org/onto/truncated>, <http://example.org/onto/quoted> .
+<http://example.org/app#x> a t:Dog, t:Cat, t:Cow, q:Bird .
+`
+const EXPECTED = [
+  ["owlxml", 3, "unresolved-import", new RegExp(`vendor[\\\\/]owlxml\\.owl by .*catalog-v001\\.xml, which could not be loaded: it holds OWL/XML, ${UNREAD}$`)],
+  ["functional", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Functional syntax, ${UNREAD}$`)],
+  ["manchester", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Manchester syntax, ${UNREAD}$`)],
+  ["frames", 3, "unresolved-import", /could not be loaded: read as Turtle, none of its triples is usable: each has an undeclared prefix \(first error: .+\)\. In Protégé: File > Save as > RDF\/XML or Turtle$/],
+  ["truncated", 2, "import-truncated", /^Import <http:\/\/example\.org\/onto\/truncated> is loaded only in part: .*vendor[\\/]truncated\.owl has an error at line 13, column \d+: .+\. Nothing after it is loaded$/],
+]
+
+test("an import in an OWL syntax is named and not read; one that stops at an XML error is read up to it, with a warning", async () => {
+  const root = tempDir("formats")
+  fs.cpSync(path.join(fixtures, "imports"), root, { recursive: true })
+  const ws = path.join(root, "ws")
+  const file = path.join(ws, "app.ttl")
+  fs.writeFileSync(file, FORMATS)
+  const uri = uriOf(file)
+  const s = await start(ws, path.join(root, "cache"))
+  try {
+    s.open(uri, FORMATS)
+    // Read up to the error, and in single-quoted entities.
+    await hoverUntil(s, uri, positionOf(FORMATS, "t:Dog", 3), "Truncated dog")
+    await hoverUntil(s, uri, positionOf(FORMATS, "t:Cat", 3), "Truncated cat")
+    await hoverUntil(s, uri, positionOf(FORMATS, "q:Bird", 3), "Quoted bird")
+    const ours = (d) => d.filter((x) => x.code === "unresolved-import" || x.code === "import-truncated")
+    const diags = ours(await diagnosticsUntil(s, uri, (d) => ours(d).length === EXPECTED.length))
+    for (const [name, severity, code, message] of EXPECTED) {
+      const at = positionOf(FORMATS, `<http://example.org/onto/${name}>`, 0)
+      const d = diags.find((x) => x.range.start.line === at.line && x.range.start.character === at.character)
+      assert.ok(d, `${name}: ${JSON.stringify(diags)}`)
+      assert.equal(d.code, code, name)
+      assert.equal(d.severity, severity, name)
+      assert.match(d.message, message, name)
+    }
+    // After the error nothing is known, and the warning above says so.
+    assert.doesNotMatch(await hoverText(s, uri, positionOf(FORMATS, "t:Cow", 3)), /Truncated cow/)
+  } finally {
+    await s.stop()
+  }
+
+  // The command line says the same.
+  const r = spawnSync(serverPath, ["check", "app.ttl"], {
+    cwd: ws,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(root, "cache"), NO_COLOR: "1" },
+  })
+  assert.equal(r.status, 0, r.stderr)
+  const lines = r.stdout.split("\n").filter(Boolean)
+  for (const [name, , code, message] of EXPECTED) {
+    const at = positionOf(FORMATS, `<http://example.org/onto/${name}>`, 0)
+    const kind = code === "import-truncated" ? "warning" : "info"
+    const prefix = `app.ttl:${at.line + 1}:${at.character + 1}: ${kind}[${code}] `
+    const line = lines.find((l) => l.startsWith(prefix))
+    assert.ok(line, `${prefix}\n${r.stdout}`)
+    assert.match(line.slice(prefix.length), message)
+  }
+  assert.equal(lines.length, EXPECTED.length, r.stdout)
+})
+
+test("a fetched RDF/XML that stops at an error warns, from the web and from the cache; a fetched OWL/XML is named", async () => {
+  const w = remoteWorkspace("cut", `${base}/cut.rdf`)
+  const at = positionOf(w.text, `<${base}/cut.rdf>`, 0)
+  const truncated = (d) => d.find((x) => x.code === "import-truncated")
+  for (const network of [true, false]) {
+    const s = await start(w.ws, w.cache, { imports: { network } })
+    try {
+      s.open(w.uri, w.text)
+      const d = truncated(await diagnosticsUntil(s, w.uri, (d) => truncated(d) !== undefined))
+      assert.equal(d.severity, 2)
+      assert.deepEqual(d.range.start, at)
+      assert.match(d.message, /has an error at line 5, column \d+: .+\. Nothing after it is loaded$/)
+      const text = `${w.text}<http://example.org/cut#First> a <http://example.org/cut#Second> .\n`
+      s.change(w.uri, text, 2)
+      await hoverUntil(s, w.uri, positionOf(text, "cut#First", 3), "First cut")
+    } finally {
+      await s.stop()
+    }
+  }
+  const cached = fs.readdirSync(path.join(w.cache, "imports"))
+  assert.equal(cached.length, 1, JSON.stringify(cached))
+  assert.match(fs.readFileSync(path.join(w.cache, "imports", cached[0]), "utf8"), /^# turtle-lsp cache for .*\n# turtle-lsp: the RDF\/XML stops at line 5, /)
+
+  const o = remoteWorkspace("owx", `${base}/onto.owx`)
+  const s = await start(o.ws, o.cache, { imports: { network: true } })
+  try {
+    s.open(o.uri, o.text)
+    const unresolved = (d) => d.find((x) => x.code === "unresolved-import")
+    const d = unresolved(await diagnosticsUntil(s, o.uri, (d) => unresolved(d) !== undefined))
+    assert.match(d.message, new RegExp(`was fetched from ${base}/onto\\.owx but could not be read: it holds OWL/XML, ${UNREAD}$`))
   } finally {
     await s.stop()
   }
