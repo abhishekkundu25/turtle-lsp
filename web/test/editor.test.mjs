@@ -137,7 +137,7 @@ test("a SHACL query in a Turtle string gets SPARQL suggestions as you type; othe
   }
 })
 
-test("an .owl or .rdf file opens with Monaco's XML colouring, named RDF/XML", async () => {
+test("an .owl or .rdf file opens with Monaco's XML colouring, named RDF/XML, with the server's hover and no formatter", async () => {
   const { page, errors, close } = await open()
   try {
     const owl = '<?xml version="1.0"?>\n<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"\n         xmlns:owl="http://www.w3.org/2002/07/owl#">\n  <owl:Class rdf:about="http://example.org/Thing"/>\n</rdf:RDF>\n'
@@ -155,6 +155,11 @@ test("an .owl or .rdf file opens with Monaco's XML colouring, named RDF/XML", as
     assert.equal(await page.locator("#status-lang").textContent(), "RDF/XML")
     // Monaco's XML tokenizer loads (under the page's CSP) and colours the tags.
     await page.waitForFunction(() => window.monaco.editor.tokenize("<a b='c'/>", "xml")[0].some((t) => t.type.endsWith(".xml")), null, { timeout: 10_000 })
+    // The server's hover on the class's IRI; no formatting action for XML.
+    await at(page, 'rdf:about="http://example.org/Thi', 19, "editor.action.showHover")
+    await page.locator(".monaco-hover", { hasText: "example.org/Thing" }).waitFor()
+    const formats = await page.evaluate(() => window.monaco.editor.getEditors()[0].getAction("editor.action.formatDocument").isSupported())
+    assert.equal(formats, false)
     await settled(page)
     assert.deepEqual(errors, [])
   } finally {

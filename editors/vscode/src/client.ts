@@ -11,8 +11,7 @@
  * The workspace's RDF and SPARQL files: the `workspaceContains` activation
  * glob (test/manifest.test.mjs checks they are the same) and the extensions
  * of src/workspace/kinds.rs. `.owl` and `.rdf` (RDF/XML, or whatever syntax
- * their content has) are read and watched as workspace files, but no
- * document selector names them: VS Code's XML language keeps them.
+ * their content has) are read and watched as workspace files.
  */
 export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf}"
 
@@ -23,15 +22,62 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as c
 // server attaches to them by name, and detects JSON-LD from the extension.
 export const JSONLD_PATTERN = "**/*.jsonld"
 
+// RDF/XML files keep VS Code's XML language too. The server reads them by
+// their content and does not write them: asked with OPT_IN, it registers
+// formatting, rename, completion and code actions for the other documents
+// only, so VS Code lists no turtle-lsp formatter for XML files.
+export const RDFXML_PATTERN = "**/*.{owl,rdf}"
+
+/**
+ * The `initializationOptions` key that asks the server for those
+ * registrations (src/server/registrations.rs). It is no setting: it goes in
+ * `initialize` only, beside the settings.
+ */
+export const OPT_IN = "registerOutsideRdfXml"
+
 /** One entry of the client's document selector. */
 export type DocumentFilter = { scheme: string; language: string } | { scheme: string; pattern: string }
 
-/** The documents the server handles, in the URI `schemes` given. An untitled document has no `.jsonld` name. */
+/** The documents the server handles, in the URI `schemes` given. An untitled document has no file name. */
 export function documentSelector(schemes: readonly string[]): DocumentFilter[] {
   return [
     ...LANGUAGES.flatMap((language) => schemes.map((scheme) => ({ scheme, language }))),
-    ...schemes.filter((s) => s !== "untitled").map((scheme) => ({ scheme, pattern: JSONLD_PATTERN })),
+    ...schemes
+      .filter((s) => s !== "untitled")
+      .flatMap((scheme) => [
+        { scheme, pattern: JSONLD_PATTERN },
+        { scheme, pattern: RDFXML_PATTERN },
+      ]),
   ]
+}
+
+/** A document filter as the server sends it in a registration. */
+export type ServerFilter = { language?: string; scheme?: string; pattern?: string }
+
+/**
+ * The server's document selector for a registered feature, in the client's
+ * schemes: the server names no scheme (it cannot know them), and a filter
+ * without one would reach a document in any scheme, a Git diff's for
+ * example. Each of `selector`'s filters stays when a server filter without
+ * a scheme has its language or pattern; a server filter with a scheme stays
+ * as it is.
+ */
+export function inSchemes(server: readonly ServerFilter[], selector: readonly DocumentFilter[]): ServerFilter[] {
+  const bare = server.filter((s) => s.scheme === undefined)
+  const ours = selector.filter((f) =>
+    bare.some((s) => ("language" in f ? s.language === f.language && s.pattern === undefined : s.pattern === f.pattern && s.language === undefined)),
+  )
+  return [...ours, ...server.filter((s) => s.scheme !== undefined)]
+}
+
+/** A `client/registerCapability` request's params, with each document selector in the client's schemes. */
+export function registrationsInSchemes<P extends { registrations: { registerOptions?: unknown }[] }>(params: P, selector: readonly DocumentFilter[]): P {
+  const registrations = params.registrations.map((r) => {
+    const options = r.registerOptions as { documentSelector?: unknown } | undefined
+    if (!Array.isArray(options?.documentSelector)) return r
+    return { ...r, registerOptions: { ...options, documentSelector: inSchemes(options.documentSelector, selector) } }
+  })
+  return { ...params, registrations }
 }
 
 // ---------------------------------------------------------------------------

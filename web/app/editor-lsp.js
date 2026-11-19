@@ -9,9 +9,9 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 
 // The language of a path, as the server and Monaco know it. JSON-LD is
 // Monaco's own JSON (its highlighting); the server knows a `.jsonld` name
-// is JSON-LD. `.owl` and `.rdf` are Monaco's own XML, with no provider of
-// the server's (connect): the server reads them as workspace RDF, its
-// syntax from the content.
+// is JSON-LD. `.owl` and `.rdf` are Monaco's own XML, with the server's
+// providers that read (connect): the server reads them as workspace RDF,
+// its syntax from the content.
 export function languageOf(path) {
   const ext = path.toLowerCase().split(".").pop()
   return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml" }[ext] ?? "turtle"
@@ -228,8 +228,13 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   const legend = capabilities.semanticTokensProvider?.legend ?? { tokenTypes: [], tokenModifiers: [] }
 
   // The server's features also serve JSON-LD files (Monaco's json language;
-  // only `.jsonld` files are ever opened in it).
-  for (const lang of [...LANGUAGES, "json"]) {
+  // only `.jsonld` files are ever opened in it) and RDF/XML files (Monaco's
+  // xml language; only `.owl` and `.rdf` files). Nothing writes RDF/XML: an
+  // xml model gets the features that read, without completion, rename,
+  // formatting, code actions, semantic tokens (Monaco's XML colours stay)
+  // and inlay hints.
+  for (const lang of [...LANGUAGES, "json", "xml"]) {
+    const writable = lang !== "xml"
     monaco.languages.registerHoverProvider(lang, {
       async provideHover(model, position, token) {
         const h = await client.request("textDocument/hover", at(model, position), token)
@@ -238,7 +243,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    monaco.languages.registerCompletionItemProvider(lang, {
+    if (writable) monaco.languages.registerCompletionItemProvider(lang, {
       triggerCharacters: triggers,
       async provideCompletionItems(model, position, context, token) {
         const r = await client.request("textDocument/completion", {
@@ -287,7 +292,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    monaco.languages.registerRenameProvider(lang, {
+    if (writable) monaco.languages.registerRenameProvider(lang, {
       async resolveRenameLocation(model, position, token) {
         const r = await client.request("textDocument/prepareRename", at(model, position), token)
         if (!r) return { range: new monaco.Range(1, 1, 1, 1), text: "", rejectReason: "Nothing to rename here" }
@@ -299,14 +304,14 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    monaco.languages.registerDocumentFormattingEditProvider(lang, {
+    if (writable) monaco.languages.registerDocumentFormattingEditProvider(lang, {
       async provideDocumentFormattingEdits(model, options, token) {
         const r = await client.request("textDocument/formatting", { ...doc(model), options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces } }, token)
         return (r ?? []).map((e) => ({ range: toRange(monaco, e.range), text: e.newText }))
       },
     })
 
-    monaco.languages.registerCodeActionProvider(lang, {
+    if (writable) monaco.languages.registerCodeActionProvider(lang, {
       async provideCodeActions(model, range, _context, token) {
         const wanted = fromRange(range)
         const touches = (d) =>
@@ -341,7 +346,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    monaco.languages.registerDocumentSemanticTokensProvider(lang, {
+    if (writable) monaco.languages.registerDocumentSemanticTokensProvider(lang, {
       onDidChange: semanticChanged.event,
       getLegend: () => legend,
       async provideDocumentSemanticTokens(model, _lastResultId, token) {
@@ -368,7 +373,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    monaco.languages.registerInlayHintsProvider(lang, {
+    if (writable) monaco.languages.registerInlayHintsProvider(lang, {
       onDidChangeInlayHints: inlayChanged.event,
       async provideInlayHints(model, range, token) {
         const r = await client.request("textDocument/inlayHint", { ...doc(model), range: fromRange(range) }, token)

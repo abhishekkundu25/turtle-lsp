@@ -8,6 +8,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createEngine } from "../../../web/app/engine.js"
 import { createHandler } from "../src/web/handler.ts"
+import { OPT_IN } from "../src/client.ts"
 
 const WASM = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "web", "app", "engine.wasm")
 // Skipped without the engine, except where it must be there: CI's Browser job
@@ -70,6 +71,61 @@ test("initialize answers under the client's id, with the server's capabilities",
   assert.ok(r.result.capabilities.hoverProvider, JSON.stringify(r))
   // No watcher registration: the files come in turtle/web/files.
   assert.ok(!c.posted.some((m) => m.method === "client/registerCapability"))
+})
+
+const dynamic = { dynamicRegistration: true }
+const DYNAMIC = { textDocument: { formatting: dynamic, rename: dynamic, completion: dynamic, codeAction: dynamic } }
+
+test("a client that can register features but does not opt in gets them in the initialize answer, and no registration", { skip }, async () => {
+  const c = await client()
+  const r = await c.request("initialize", { processId: null, rootUri: ROOT, workspaceFolders: [{ uri: ROOT, name: "mount" }], capabilities: DYNAMIC })
+  c.open(A, A_TEXT)
+  await c.handler.idle()
+  const caps = r.result.capabilities
+  assert.equal(caps.documentFormattingProvider, true)
+  assert.deepEqual(caps.renameProvider, { prepareProvider: true })
+  assert.equal(caps.completionProvider.resolveProvider, true)
+  assert.equal(caps.codeActionProvider.resolveProvider, true)
+  assert.ok(!c.posted.some((m) => m.method === "client/registerCapability"))
+})
+
+test("the features the server writes with are registered after the initialize answer, once, and leave .owl and .rdf out", { skip }, async () => {
+  const real = await createEngine(bytes)
+  let crashNext = false
+  const engine = {
+    call(op, payload) {
+      if (crashNext && op === "lsp") {
+        crashNext = false
+        throw Object.assign(new Error("unreachable"), { crashed: true })
+      }
+      return real.call(op, payload)
+    },
+  }
+  const c = await client({ engine })
+  const r = await c.request("initialize", {
+    processId: null,
+    rootUri: ROOT,
+    workspaceFolders: [{ uri: ROOT, name: "mount" }],
+    capabilities: DYNAMIC,
+    initializationOptions: { [OPT_IN]: true },
+  })
+  await c.handler.idle()
+  for (const p of ["documentFormattingProvider", "renameProvider", "completionProvider", "codeActionProvider"]) assert.equal(r.result.capabilities[p], undefined, p)
+  const registrations = () => c.posted.filter((m) => m.method === "client/registerCapability")
+  assert.equal(registrations().length, 1)
+  // The client ignores a registration that comes before its initialize answer.
+  assert.ok(c.posted.indexOf(registrations()[0]) > c.posted.indexOf(r), "registered before the initialize answer")
+  const regs = registrations()[0].params.registrations
+  assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
+  for (const x of regs) assert.doesNotMatch(JSON.stringify(x.registerOptions.documentSelector), /owl|rdf|xml/)
+  // A crash restarts the server, which registers again: the client has them.
+  c.open(A, A_TEXT)
+  await c.handler.idle()
+  crashNext = true
+  assert.ok((await c.request("textDocument/hover", c.at(A, A_TEXT, "Thing ."))).error)
+  assert.ok((await c.request("textDocument/hover", c.at(A, A_TEXT, "Thing ."))).result !== undefined)
+  assert.equal(c.posted.filter((m) => m.method === "window/showMessage").length, 1)
+  assert.equal(registrations().length, 1)
 })
 
 test("a request before initialize is refused", { skip }, async () => {

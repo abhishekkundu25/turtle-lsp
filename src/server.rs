@@ -74,6 +74,7 @@ mod layers;
 pub(crate) mod progress;
 mod reasoning;
 mod refresh;
+mod registrations;
 mod shacl;
 mod timers;
 pub(crate) mod wire;
@@ -172,6 +173,9 @@ pub(crate) struct Server {
     spelling: FxHashMap<String, String>,
     index: Index,
     watch_dynamic: bool,
+    /// The features registered dynamically, for the documents the server
+    /// writes: none unless the client opted in (`registrations`).
+    dynamic: registrations::Dynamic,
     /// The client resolves a code action's edit lazily (`codeAction/resolve`).
     resolve_edits: bool,
     layers: Layers,
@@ -238,6 +242,7 @@ impl Server {
         } else {
             Encoding::Utf16
         };
+        let dynamic = registrations::Dynamic::of(&raw);
         let watch_dynamic = params
             .capabilities
             .workspace
@@ -359,7 +364,7 @@ impl Server {
         ws.set_check_incremental(std::env::var(CHECK_INCREMENTAL).is_ok_and(|v| v == "1"));
         let contexts = use_network(&mut ws, settings.imports_network, spawn);
 
-        let result = wire::encode(&Initialized::new(capabilities(enc, pull)))?;
+        let result = wire::encode(&Initialized::new(capabilities(enc, pull, dynamic)))?;
 
         let server = Server {
             client: Client::new(sender),
@@ -370,6 +375,7 @@ impl Server {
             spelling: FxHashMap::default(),
             index: Index::new(),
             watch_dynamic,
+            dynamic,
             resolve_edits,
             // Before `layers` moves: `settings` borrows it.
             reasoning: crate::reasoning::Shared::when_on(settings, spawn),
@@ -491,7 +497,10 @@ where
     Ok(ended.clean())
 }
 
-fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
+/// The capabilities announced in the `initialize` result: those the server
+/// registers dynamically (`dynamic`, only for a client that opts in) are
+/// left out, and registered later for the documents the server writes.
+fn capabilities(enc: Encoding, pull: bool, dynamic: registrations::Dynamic) -> ServerCapabilities {
     ServerCapabilities {
         position_encoding: Some(match enc {
             Encoding::Utf8 => PositionEncodingKind::UTF8,
@@ -515,25 +524,18 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
                 work_done_progress_options: Default::default(),
             })
         }),
-        completion_provider: Some(CompletionOptions {
-            trigger_characters: Some(vec![":".into(), "@".into(), "?".into(), "$".into()]),
-            resolve_provider: Some(true),
-            ..Default::default()
-        }),
+        completion_provider: (!dynamic.completion).then(registrations::completion),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         document_highlight_provider: Some(OneOf::Left(true)),
-        rename_provider: Some(OneOf::Right(RenameOptions {
-            prepare_provider: Some(true),
-            work_done_progress_options: Default::default(),
-        })),
+        rename_provider: (!dynamic.rename).then(|| OneOf::Right(registrations::rename())),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
-        document_formatting_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: (!dynamic.formatting).then_some(OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 legend: ide::Session::semantic_tokens_legend(),
@@ -546,15 +548,8 @@ fn capabilities(enc: Encoding, pull: bool) -> ServerCapabilities {
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(true),
         }),
-        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![
-                CodeActionKind::QUICKFIX,
-                CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
-                CodeActionKind::REFACTOR_REWRITE,
-            ]),
-            resolve_provider: Some(true),
-            ..Default::default()
-        })),
+        code_action_provider: (!dynamic.code_action)
+            .then(|| CodeActionProviderCapability::Options(registrations::code_action())),
         execute_command_provider: Some(ExecuteCommandOptions {
             commands: crate::commands::COMMANDS
                 .iter()
@@ -786,6 +781,11 @@ impl Server {
     /// Before the first message: register file watchers, show indexing.
     fn start(&mut self) {
         self.register_watchers();
+        // Embedded, `initialized` comes after this, and the registrations
+        // wait for it (see `notification`).
+        if self.spawn == Spawn::Thread {
+            self.register_features();
+        }
         if let Some(e) = self.layers.take_file_error() {
             self.client.warn(e);
         }
@@ -1086,6 +1086,11 @@ impl Server {
                         let _ = self.client.send(cancelled(id));
                     }
                 }
+            }
+            // Only an embedded server reads it here (`wire::initialize_finish`
+            // takes it otherwise): the host's client is running now.
+            lsp_types::notification::Initialized::METHOD if self.spawn == Spawn::Inline => {
+                self.register_features()
             }
             WorkDoneProgressCancel::METHOD => {
                 if let Some(p) = parse::<WorkDoneProgressCancelParams>(n.params)
@@ -1559,6 +1564,20 @@ impl Server {
         };
         self.client
             .request(lsp_types::request::RegisterCapability::METHOD, params);
+    }
+
+    /// Register the features registered dynamically (`registrations`; none
+    /// unless the client opted in), on their own request: the watchers have
+    /// theirs.
+    fn register_features(&mut self) {
+        let registrations = self.dynamic.registrations();
+        if registrations.is_empty() {
+            return;
+        }
+        self.client.request(
+            lsp_types::request::RegisterCapability::METHOD,
+            RegistrationParams { registrations },
+        );
     }
 
     /// The editor session over this server's workspace, for one request.
@@ -2189,6 +2208,96 @@ mod tests {
             }
             _ => None,
         })
+    }
+
+    /// Embedded, a client that opts in (`registrations::OPT_IN`) and
+    /// registers formatting, rename, completion and code actions itself gets
+    /// them registered once it is initialized (the host sends `initialized`
+    /// after the result), not in the result. One that registers them itself
+    /// but does not opt in gets the result of a client that cannot, and no
+    /// registration.
+    #[test]
+    fn embedded_dynamic_features_are_registered_after_initialized() {
+        let caps = json!({
+            "formatting": {"dynamicRegistration": true},
+            "rename": {"dynamicRegistration": true},
+            "completion": {"dynamicRegistration": true},
+            "codeAction": {"dynamicRegistration": true},
+        });
+        let params = |options: Value| {
+            json!({
+                "processId": null,
+                "rootUri": null,
+                "capabilities": {"textDocument": caps},
+                "initializationOptions": options,
+            })
+        };
+        let result_of = |sent: &[Message]| {
+            sent.iter()
+                .find_map(|m| match m {
+                    Message::Response(r) => r.response_result.clone().ok(),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (mut e, sent) = Embedded::start(params(json!({registrations::OPT_IN: true}))).unwrap();
+        let result = result_of(&sent);
+        for provider in [
+            "documentFormattingProvider",
+            "renameProvider",
+            "completionProvider",
+            "codeActionProvider",
+        ] {
+            assert!(result["capabilities"].get(provider).is_none(), "{provider}");
+        }
+        assert!(result["capabilities"]["hoverProvider"] == true);
+        let registrations = |sent: &[Message]| -> Vec<Value> {
+            sent.iter()
+                .filter_map(|m| match m {
+                    Message::Request(r) if r.method == "client/registerCapability" => {
+                        Some(r.params["registrations"].as_array().unwrap().clone())
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        };
+        assert!(registrations(&sent).is_empty());
+        let sent = e.handle(vec![notify("initialized", json!({}))]);
+        let regs = registrations(&sent);
+        let methods: Vec<_> = regs.iter().map(|r| r["method"].as_str().unwrap()).collect();
+        assert_eq!(
+            methods,
+            [
+                "textDocument/formatting",
+                "textDocument/rename",
+                "textDocument/completion",
+                "textDocument/codeAction"
+            ]
+        );
+        for r in &regs {
+            let selector = r["registerOptions"]["documentSelector"].to_string();
+            assert!(
+                selector.contains("turtle") && !selector.contains("owl"),
+                "{selector}"
+            );
+        }
+
+        let mut plain = embedded();
+        assert!(registrations(&plain.handle(vec![notify("initialized", json!({}))])).is_empty());
+
+        // Dynamic registration without the opt-in: the static result.
+        let (_, plain_sent) =
+            Embedded::start(json!({"processId": null, "rootUri": null, "capabilities": {}}))
+                .unwrap();
+        let (mut quiet, sent) = Embedded::start(params(json!({}))).unwrap();
+        assert_eq!(result_of(&sent), result_of(&plain_sent));
+        assert_eq!(
+            result_of(&sent)["capabilities"]["renameProvider"],
+            json!({"prepareProvider": true})
+        );
+        let sent = [sent, quiet.handle(vec![notify("initialized", json!({}))])].concat();
+        assert!(registrations(&sent).is_empty());
     }
 
     fn symbols(e: &mut Embedded, id: i32, uri: &str) -> usize {
@@ -2996,7 +3105,8 @@ mod tests {
         assert!(run(&mut e, run_query::CANCEL_QUERY, json!([q, {}])).is_err());
         let cancelled = run(&mut e, run_query::CANCEL_QUERY, json!(["file:///w/q.rq"]));
         assert!(matches!(cancelled, Ok(Some(n)) if n == "null"));
-        let commands = capabilities(Encoding::Utf16, false).execute_command_provider;
+        let commands =
+            capabilities(Encoding::Utf16, false, Default::default()).execute_command_provider;
         assert_eq!(
             commands.unwrap().commands,
             [
@@ -3011,10 +3121,20 @@ mod tests {
     /// gave: lsp-types' result with `typeHierarchyProvider` set in it.
     #[test]
     fn the_initialize_result_is_the_text_its_value_gave() {
+        let all = registrations::Dynamic {
+            formatting: true,
+            rename: true,
+            completion: true,
+            code_action: true,
+        };
         for enc in [Encoding::Utf8, Encoding::Utf16] {
-            for pull in [false, true] {
+            for (pull, dynamic) in [
+                (false, Default::default()),
+                (true, Default::default()),
+                (false, all),
+            ] {
                 let result = InitializeResult {
-                    capabilities: capabilities(enc, pull),
+                    capabilities: capabilities(enc, pull, dynamic),
                     server_info: Some(ServerInfo {
                         name: "turtle-lsp".into(),
                         version: Some(crate::VERSION.into()),
@@ -3022,7 +3142,8 @@ mod tests {
                 };
                 let mut value = serde_json::to_value(result).unwrap();
                 value["capabilities"]["typeHierarchyProvider"] = Value::Bool(true);
-                let ours = wire::encode(&Initialized::new(capabilities(enc, pull))).unwrap();
+                let ours =
+                    wire::encode(&Initialized::new(capabilities(enc, pull, dynamic))).unwrap();
                 assert_eq!(ours, value.to_string());
             }
         }

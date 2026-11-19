@@ -75,6 +75,7 @@ Inside the larger modules, these files hold one part each:
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
 | `src/server/workspace_diagnostics.rs` | The diagnostics of files that are not open |
+| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl` and `.rdf` out |
 
 ## One parse per document version
 

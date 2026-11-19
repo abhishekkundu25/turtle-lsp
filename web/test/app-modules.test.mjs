@@ -113,7 +113,7 @@ test("the toolbox's file picker accepts exactly the extensions a folder contribu
   assert.ok(accept.includes(".owl") && accept.includes(".rdf"), accept.join(","))
 })
 
-test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which no server provider serves", () => {
+test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which the server's providers that read serve", () => {
   for (const name of ["onto.owl", "dir/data.RDF"]) assert.equal(languageOf(name), "xml", name)
   assert.equal(languageOf("carol.jsonld"), "json")
   assert.equal(languageOf("a.ttl"), "turtle")
@@ -121,9 +121,28 @@ test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which no server 
   const editor = fs.readFileSync(path.join(app, "editor.js"), "utf8")
   assert.match(editor, /const ICON = \{[^}]*\bxml: "XML"/)
   assert.match(editor, /xml: "RDF\/XML" \}\[languageOf\(file\)\]/)
-  // connect() registers the server's features on its languages and JSON, never XML.
+  // connect() registers the server's features on its languages, JSON and XML;
+  // on XML, only those that read.
   const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
-  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json"\]\)/)
+  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", "xml"\]\) \{\n\s*const writable = lang !== "xml"\n/)
+  const registered = (guard) => [...lsp.matchAll(new RegExp(`\\n\\s*${guard}monaco\\.languages\\.(register\\w+)\\(lang,`, "g"))].map((m) => m[1]).sort()
+  assert.deepEqual(registered("if \\(writable\\) "), [
+    "registerCodeActionProvider",
+    "registerCompletionItemProvider",
+    "registerDocumentFormattingEditProvider",
+    "registerDocumentSemanticTokensProvider",
+    "registerInlayHintsProvider",
+    "registerRenameProvider",
+  ])
+  assert.deepEqual(registered(""), [
+    "registerCodeLensProvider",
+    "registerDefinitionProvider",
+    "registerDocumentHighlightProvider",
+    "registerDocumentSymbolProvider",
+    "registerFoldingRangeProvider",
+    "registerHoverProvider",
+    "registerReferenceProvider",
+  ])
 })
 
 test("a dropped folder is walked with the limits: hidden folders and node_modules are not entered, unknown files count as skipped", async () => {
