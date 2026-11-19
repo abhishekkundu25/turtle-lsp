@@ -498,6 +498,9 @@ fn load_file(
     {
         return Err(format!("the cache file does not name {origin}"));
     }
+    // Bad bytes win over the syntax, as for a fetched document: the sniff
+    // reads only the head, with bad bytes replaced.
+    utf8(&bytes)?;
     let (format, guessed) = format_of(&path.to_string_lossy(), &bytes)?;
     let mut o = parse(&bytes, format, base, guessed)?;
     // Locations open the file; hover names the URL a cached copy came from.
@@ -871,6 +874,33 @@ mod tests {
         assert!(!fresh);
         assert_eq!(first.truncated.as_deref(), Some(why.as_str()));
         assert_eq!(again.truncated, first.truncated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A local `.owl` in an OWL syntax that is also not UTF-8 is refused
+    /// for its bytes, with the offset, before its syntax is looked at.
+    #[test]
+    fn a_local_import_that_is_not_utf8_says_so_before_naming_its_syntax() {
+        let dir = std::env::temp_dir().join(format!("turtle-local-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let head = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\n";
+        for pad in [0, SNIFF_BYTES] {
+            let mut bytes = head.as_bytes().to_vec();
+            bytes.extend(std::iter::repeat_n(b' ', pad));
+            let at = bytes.len();
+            bytes.extend(b"# a\xFFb\n)\n");
+            let file = dir.join(format!("onto-{pad}.owl"));
+            std::fs::write(&file, &bytes).unwrap();
+            let e = load_file(&file, None, "http://example.org/o", &mut Memo::default())
+                .err()
+                .unwrap();
+            assert_eq!(
+                e,
+                format!("not valid UTF-8 (first bad byte at offset {})", at + 3),
+                "bad byte at {at}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
