@@ -63,6 +63,10 @@ fn local(url: &str) -> PathBuf {
 fn manifests(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
+        // RDF/XML has its own runner, beside the parser (src/rdfxml/grammar.rs).
+        if p.is_dir() && p.file_name().is_some_and(|n| n == "rdf-xml") {
+            continue;
+        }
         if p.is_dir() {
             manifests(&p, out);
         } else if p.file_name().is_some_and(|n| n == "manifest.ttl") {
