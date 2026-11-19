@@ -312,6 +312,20 @@ test("copyMonaco copies the editor without the unused services, with its licence
 const meta = (html) => html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/)?.[1]
 const directives = (csp) => Object.fromEntries(csp.split(";").map((d) => d.trim().split(/\s+/)).map(([name, ...values]) => [name, values]))
 
+// The text of each inline script: what sits between a bare `<script>` and the
+// next `</script>`, as the build writes them. Found with indexOf, not a
+// regular expression: this reads our own pages, it filters no HTML.
+const inlineScripts = (html) => {
+  const out = []
+  for (let at = html.indexOf("<script>"); at >= 0; at = html.indexOf("<script>", at)) {
+    const end = html.indexOf("</script>", at)
+    assert.ok(end >= 0, "every inline script is closed")
+    out.push(html.slice(at + "<script>".length, end))
+    at = end
+  }
+  return out
+}
+
 test("both pages carry a Content-Security-Policy, with the editor page's inline scripts allowed by hash", () => {
   for (const page of ["index.html", "toolbox.html"]) {
     const html = read("app", page)
@@ -327,10 +341,10 @@ test("both pages carry a Content-Security-Policy, with the editor page's inline 
   }
   assert.ok(directives(meta(read("app", "index.html")))["connect-src"].includes("https:"), "the fetch quick fix may read ontologies")
   const html = read("app", "index.html")
-  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${crypto.createHash("sha256").update(m[1]).digest("base64")}'`)
+  const hashes = inlineScripts(html).map((text) => `'sha256-${crypto.createHash("sha256").update(text).digest("base64")}'`)
   assert.equal(hashes.length, 2)
   for (const h of hashes) assert.ok(directives(meta(html))["script-src"].includes(h), `${h} is allowed`)
-  assert.equal(/<script>/.test(read("app", "toolbox.html")), false, "the toolbox has no inline script")
+  assert.equal(read("app", "toolbox.html").includes("<script>"), false, "the toolbox has no inline script")
 })
 
 test("the editor page preloads every module editor.js imports, and nothing else, and the Monaco files it preloads are where the build puts them", () => {

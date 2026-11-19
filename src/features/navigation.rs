@@ -995,6 +995,14 @@ mod tests {
 
     const OWL_URI: &str = "file:///w/onto.owl";
 
+    /// `name` in the folder `/w` (`C:\w` on Windows): its path, and its URI
+    /// as the workspace makes it. A URI with no drive is no path on Windows.
+    fn in_w(name: &str) -> (std::path::PathBuf, String) {
+        let path = std::path::Path::new(if cfg!(windows) { "C:\\w" } else { "/w" }).join(name);
+        let uri = crate::workspace::path_to_uri(&path).unwrap();
+        (path, uri)
+    }
+
     fn turtle_doc(uri: &str, text: &str) -> Arc<Analysis> {
         Arc::new(Analysis::new(uri.into(), text, Arc::default(), true))
     }
@@ -1012,11 +1020,14 @@ mod tests {
         let text = "@prefix ex: <http://example.org/> .\nex:a ex:p ex:zz .\n";
         let ttl = turtle_doc("file:///w/a.ttl", text);
         let at = ttl.position(Encoding::Utf8, offset_of(text, "ex:a", 3));
+        // The message names the document by its path.
+        let (owl_path, owl_uri) = in_w("onto.owl");
+        let owl_shown = owl_path.display().to_string();
         let owls = [
-            ("read", Arc::new(rdfxml_fixture::read(OWL_URI))),
+            ("read", Arc::new(rdfxml_fixture::read(&owl_uri))),
             (
                 "written",
-                Arc::new(rdfxml_fixture::written(OWL_URI, rdfxml_fixture::TURTLE)),
+                Arc::new(rdfxml_fixture::written(&owl_uri, rdfxml_fixture::TURTLE)),
             ),
         ];
         for (how, owl) in owls {
@@ -1026,7 +1037,7 @@ mod tests {
             );
             let mut k = Knowledge::default();
             k.set("file:///w/a.ttl", Source::Open, ttl.clone());
-            k.set(OWL_URI, Source::Disk, owl.clone());
+            k.set(&owl_uri, Source::Disk, owl.clone());
             let err = rename(
                 &ttl,
                 &k,
@@ -1040,7 +1051,8 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(
-                err, "can't rename in /w/onto.owl: an RDF/XML document is not edited",
+                err,
+                format!("can't rename in {owl_shown}: an RDF/XML document is not edited"),
                 "{how}"
             );
             // Nothing is added to the changes a caller already holds.
@@ -1053,7 +1065,7 @@ mod tests {
                 "http://example.org/z",
                 &mut changes,
             );
-            assert!(refused.unwrap_err().contains("/w/onto.owl"), "{how}");
+            assert!(refused.unwrap_err().contains(&owl_shown), "{how}");
             assert!(changes.is_empty(), "{how}");
             // A term it does not use is renamed as before.
             let at_p = ttl.position(Encoding::Utf8, offset_of(text, "ex:zz", 3));
@@ -1160,26 +1172,24 @@ mod tests {
     /// renamed in an RDF/XML document there, though its parse uses it.
     #[test]
     fn a_shared_prefix_is_not_renamed_in_rdfxml() {
+        // The folder's prefixes.ttl is matched by path.
+        let (prefixes_path, prefixes_uri) = in_w("prefixes.ttl");
+        let (_, a_uri) = in_w("a.ttl");
         let decl = "@prefix ex: <http://example.org/> .\n";
-        let prefixes = turtle_doc("file:///w/prefixes.ttl", decl);
+        let prefixes = turtle_doc(&prefixes_uri, decl);
         let external: Arc<PrefixMap> = Arc::new(PrefixMap::from_iter([(
             "ex".to_string(),
             "http://example.org/".to_string(),
         )]));
         let body = "ex:a ex:p ex:b .\n";
-        let ttl = Arc::new(Analysis::new(
-            "file:///w/a.ttl".into(),
-            body,
-            external.clone(),
-            true,
-        ));
+        let ttl = Arc::new(Analysis::new(a_uri.clone(), body, external.clone(), true));
         let owl = Arc::new(rdfxml_fixture::written_with(OWL_URI, body, external));
         assert!(owl.parsed.prefix_uses.iter().any(|u| u.name == "ex"));
         let mut k = Knowledge::default();
-        k.set("file:///w/prefixes.ttl", Source::Open, prefixes.clone());
-        k.set("file:///w/a.ttl", Source::Open, ttl);
+        k.set(&prefixes_uri, Source::Open, prefixes.clone());
+        k.set(&a_uri, Source::Open, ttl);
         k.set(OWL_URI, Source::Disk, owl);
-        let mut file_of = |_: &str| Some(std::path::PathBuf::from("/w/prefixes.ttl"));
+        let mut file_of = |_: &str| Some(prefixes_path.clone());
         let scope = PrefixScope {
             file: Some(prefixes.clone()),
             file_of: &mut file_of,
@@ -1193,7 +1203,7 @@ mod tests {
             .map(|u| u.to_string())
             .collect();
         uris.sort();
-        assert_eq!(uris, ["file:///w/a.ttl", "file:///w/prefixes.ttl"]);
+        assert_eq!(uris, [a_uri, prefixes_uri]);
     }
 
     /// Definition, references, highlights, the type hierarchy and the
