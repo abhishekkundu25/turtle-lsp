@@ -223,16 +223,17 @@ mod tests {
         assert!(out.is_err() || truncated.is_some(), "{out:?}");
     }
 
-    /// An IRI or a language tag that does not parse is kept as written by
-    /// the frontend (with an error); the N-Triples leave its triple out, so
-    /// the cached Turtle reads back as the same graph.
+    /// A triple with an IRI that does not parse is dropped by the frontend,
+    /// and one with a language tag that does not parse is kept as written
+    /// (each with an error); the N-Triples leave both out, so the cached
+    /// Turtle reads back as the same graph.
     #[test]
     fn terms_that_do_not_parse_are_left_out() {
         let xml = format!(
             "<rdf:RDF {RDF} xmlns:ex=\"http://example.org/\">\n  <rdf:Description rdf:about=\"http://example.org/a\">\n    <ex:p rdf:resource=\"http://example.org/x&gt; &lt;y\"/>\n    <ex:q xml:lang=\"not a tag\">v</ex:q>\n    <ex:r>kept</ex:r>\n  </rdf:Description>\n</rdf:RDF>\n"
         );
         let from_xml = crate::rdfxml::parse(&xml, Some("http://example.org/"));
-        assert_eq!(from_xml.triples.len(), 3, "{:?}", from_xml.errors);
+        assert_eq!(from_xml.triples.len(), 2, "{:?}", from_xml.errors);
         assert_eq!(from_xml.errors.len(), 2, "{:?}", from_xml.errors);
         let (nt, truncated) = rdf_xml_to_ntriples(xml.as_bytes(), "http://example.org/").unwrap();
         assert!(truncated.is_some());

@@ -243,6 +243,9 @@ struct Grammar<'a> {
     ids: FxHashSet<Iri>,
     /// IRIs checked to be absolute.
     checked: FxHashSet<Iri>,
+    /// IRIs that are not: a triple naming one is dropped, as Turtle and
+    /// oxrdfxml drop it, and the error says why.
+    invalid: FxHashSet<Iri>,
     langs: FxHashSet<Iri>,
     /// The current top-level statement.
     statement: u32,
@@ -329,6 +332,7 @@ impl<'a> Grammar<'a> {
             labels: FxHashMap::default(),
             ids: FxHashSet::default(),
             checked: FxHashSet::default(),
+            invalid: FxHashSet::default(),
             langs: FxHashSet::default(),
             statement: 0,
             in_triple: 0,
@@ -399,6 +403,9 @@ impl<'a> Grammar<'a> {
 
     /// Emit a triple; its index in the parse, unless a triple term takes it.
     fn emit(&mut self, s: Node, p: Iri, o: Node, p_span: Span, o_span: Span) -> Option<usize> {
+        if self.names_invalid(&s) || self.invalid.contains(&p) || self.names_invalid(&o) {
+            return None;
+        }
         if self.in_triple > 0 {
             for state in self.stack.iter_mut().rev() {
                 if let State::TripleProp { triples, .. } = state {
@@ -429,7 +436,22 @@ impl<'a> Grammar<'a> {
             Ok(_) => {
                 self.checked.insert(iri);
             }
-            Err(e) => self.error(span, format!("not an absolute IRI: {e}")),
+            Err(e) => {
+                self.invalid.insert(iri);
+                self.error(span, format!("not an absolute IRI: {e}"));
+            }
+        }
+    }
+
+    /// Whether `n` is, or a triple term in it names, an IRI that is not
+    /// absolute.
+    fn names_invalid(&self, n: &Node) -> bool {
+        match n {
+            Node::Iri(i) => self.invalid.contains(i),
+            Node::Triple(t) => {
+                self.names_invalid(&t.0) || self.invalid.contains(&t.1) || self.names_invalid(&t.2)
+            }
+            Node::Blank(_) | Node::Literal { .. } => false,
         }
     }
 
@@ -2168,6 +2190,26 @@ mod tests {
     /// measured (2026-11-19, Apple silicon, load average 3.4). The budget
     /// leaves room for CI, which builds without fat LTO on slower runners,
     /// as the JSON-LD frontend's does.
+    /// A triple that names an IRI that is not absolute is dropped, as Turtle
+    /// and oxrdfxml drop it; the error stays.
+    #[test]
+    fn a_triple_with_an_invalid_iri_is_dropped_and_reported() {
+        let text = concat!(
+            "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n",
+            "  <rdf:Description rdf:about=\"http://example.org/a b\">\n",
+            "    <ex:p rdf:resource=\"http://example.org/c\"/>\n",
+            "  </rdf:Description>\n",
+            "  <rdf:Description rdf:about=\"http://example.org/d\">\n",
+            "    <ex:p rdf:resource=\"http://example.org/c\"/>\n",
+            "  </rdf:Description>\n",
+            "</rdf:RDF>\n",
+        );
+        let p = parse(text, Some("http://example.org/"));
+        assert_eq!(p.triples.len(), 1, "{:?}", p.triples);
+        assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
+        assert!(p.errors[0].message.contains("not an absolute IRI"));
+    }
+
     #[test]
     fn timing_rdfxml_parse() {
         let Some((base, text)) = corpus("obo-pato.rdf") else {
