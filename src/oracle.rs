@@ -274,6 +274,7 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::NTriples => "nt",
         Syntax::NQuads => "nq",
         Syntax::JsonLd => "jsonld",
+        Syntax::RdfXml => "owl",
     }
 }
 

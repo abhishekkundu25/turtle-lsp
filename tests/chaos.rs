@@ -1312,6 +1312,7 @@ fn doc_uri(syntax: Syntax) -> &'static str {
         Syntax::NTriples => "file:///chaos/doc.nt",
         Syntax::NQuads => "file:///chaos/doc.nq",
         Syntax::JsonLd => "file:///chaos/doc.jsonld",
+        Syntax::RdfXml => unreachable!("no chaos mode makes RDF/XML yet"),
     }
 }
 
@@ -1842,6 +1843,7 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::NTriples => "nt",
         Syntax::NQuads => "nq",
         Syntax::JsonLd => "jsonld",
+        Syntax::RdfXml => unreachable!("no chaos mode makes RDF/XML yet"),
     }
 }
 

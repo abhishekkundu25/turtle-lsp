@@ -1,7 +1,7 @@
 //! Turtle 1.2, TriG 1.2, N-Triples 1.2 and N-Quads 1.2 syntax: a lexer and a resilient
 //! recursive-descent parser that records the span of every term, so every
-//! editor feature reads one parse. JSON-LD has its own frontend, which builds
-//! the same [`Parsed`]; this module does not call it.
+//! editor feature reads one parse. JSON-LD and RDF/XML have their own
+//! frontends, which build the same [`Parsed`]; this module calls neither.
 
 mod iri;
 pub mod lexer;
@@ -23,8 +23,8 @@ pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 /// The language a document is written in. One parser reads the first four:
 /// TriG adds graph blocks to Turtle, N-Triples is read as Turtle with every
 /// construct N-Triples forbids reported as an error, and N-Quads is N-Triples
-/// with an optional graph label before each line's `.`. JSON-LD has its own
-/// frontend, which builds the same [`Parsed`].
+/// with an optional graph label before each line's `.`. JSON-LD and RDF/XML
+/// have their own frontends, which build the same [`Parsed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Syntax {
     #[default]
@@ -34,6 +34,10 @@ pub enum Syntax {
     NQuads,
     /// JSON-LD 1.1 (`.jsonld`). Generic `.json` files are not JSON-LD.
     JsonLd,
+    /// RDF/XML 1.1. No language id or extension names it yet: only a caller
+    /// that knows a text is RDF/XML asks for it. Nothing edits it: it has no
+    /// tokens, no formatting and no statement splice.
+    RdfXml,
 }
 
 impl Syntax {
@@ -85,7 +89,8 @@ impl Syntax {
 
     /// Whether the document can use `@prefix` / `PREFIX` prefixes and gets
     /// the project's (`prefixes.ttl`): Turtle and TriG. The line-based
-    /// syntaxes have none, and JSON-LD defines its own in `@context`.
+    /// syntaxes have none, JSON-LD defines its own in `@context` and RDF/XML
+    /// in XML namespaces.
     pub(crate) fn has_prefixes(self) -> bool {
         matches!(self, Syntax::Turtle | Syntax::TriG)
     }
@@ -137,6 +142,10 @@ pub enum Form {
     PName { prefix_len: u32 },
     /// The `a` keyword.
     A,
+    /// The span is near the IRI, not its text: the XML tag of the triple it
+    /// is in (RDF/XML), which may spell the IRI through a namespace or an
+    /// entity, or not at all. Nothing slices the text at it or writes there.
+    Anchor,
 }
 
 /// One occurrence of an IRI in the text.
@@ -297,7 +306,8 @@ pub struct SyntaxError {
     pub(crate) message: Cow<'static, str>,
     pub severity: Severity,
     /// The diagnostic code: `syntax` for Turtle and its relatives,
-    /// `json-syntax` and `jsonld-context` for JSON-LD.
+    /// `json-syntax` and `jsonld-context` for JSON-LD, `unsupported-syntax`
+    /// for RDF/XML while it is not read.
     pub code: &'static str,
 }
 

@@ -209,12 +209,18 @@ impl Analysis {
                 loader,
                 crate::jsonld::context::ContextCache::global(),
             ),
-            _ => crate::jsonld::Document {
-                // Relative IRIs resolve against the document's URL, as in JSON-LD:
-                // `<#me>` in two files is two IRIs.
-                parsed: syntax::parse_with_base(text, &external, language, Some(&uri)),
+            Syntax::RdfXml => crate::jsonld::Document {
+                parsed: crate::rdfxml::parse(text, Some(&uri)),
                 ..Default::default()
             },
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+                crate::jsonld::Document {
+                    // Relative IRIs resolve against the document's URL, as in JSON-LD:
+                    // `<#me>` in two files is two IRIs.
+                    parsed: syntax::parse_with_base(text, &external, language, Some(&uri)),
+                    ..Default::default()
+                }
+            }
         };
         Analysis::with_document(uri, text, external, keep_tokens, document, lines)
     }
@@ -262,6 +268,22 @@ impl Analysis {
             ..Default::default()
         };
         Analysis::with_document(uri, text, external, keep_tokens, document, lines)
+    }
+
+    /// A hand-built analysis for the tests of [`Form::Anchor`]: `text` read
+    /// as Turtle, with every reference anchored and the parse's syntax set to
+    /// `syntax` (and its tokens to that syntax's).
+    #[cfg(test)]
+    pub(crate) fn anchored(uri: &str, text: &str, syntax: Syntax) -> Analysis {
+        let mut parsed =
+            syntax::parse_with_base(text, &PrefixMap::default(), Syntax::Turtle, Some(uri));
+        for r in &mut parsed.refs {
+            r.form = crate::syntax::Form::Anchor;
+        }
+        parsed.syntax = syntax;
+        parsed.tokens = syntax.tokens(text);
+        let lines = LineIndex::new(text);
+        Analysis::with_parse(uri.into(), text, Arc::default(), true, parsed, lines)
     }
 
     /// The analysis of `text` from its parse, and JSON-LD's extras.

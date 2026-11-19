@@ -406,7 +406,8 @@ pub fn prepare_rename(
 
 fn prepare_iri_rename(a: &Analysis, enc: Encoding, offset: u32) -> Option<PrepareRenameResponse> {
     let r = a.ref_at(offset);
-    if r.is_some_and(|r| r.form == Form::A) {
+    // `a` has no name to change, and the text at an anchor is not the name.
+    if r.is_some_and(|r| matches!(r.form, Form::A | Form::Anchor)) {
         return None;
     }
     let (_, span) = target_at(a, offset)?;
@@ -603,7 +604,8 @@ fn checked_iri(iri: String) -> Result<String, String> {
 /// prefixed name when a prefix of its document shortens the new IRI. A
 /// JSON-LD document writes each use in its own form, never in angle
 /// brackets ([`jsonld::iri_rename`]). `Err` (the whole rename refused) when
-/// a JSON-LD use cannot be rewritten.
+/// a JSON-LD use cannot be rewritten. An anchored use ([`Form::Anchor`]) is
+/// left as it is: its text is not the IRI.
 pub(crate) fn rename_term(
     k: &Knowledge,
     enc: Encoding,
@@ -628,7 +630,7 @@ pub(crate) fn rename_term(
     {
         let mut uses: Vec<(Span, Form)> = other
             .refs_of(old)
-            .filter(|r| r.form != Form::A)
+            .filter(|r| !matches!(r.form, Form::A | Form::Anchor))
             .map(|r| (r.span, r.form))
             .collect();
         uses.sort_by_key(|(s, _)| s.start);
@@ -884,5 +886,61 @@ mod tests {
         let edit = rename(&open, &k, Encoding::Utf8, at, "t", scope).unwrap();
         assert_eq!(edit.changes.unwrap().len(), 2);
         assert!(!closed.has_tokens());
+    }
+
+    /// A use whose text is not at its span ([`Form::Anchor`]) is never
+    /// written over: a rename from elsewhere leaves it, and none starts at it.
+    #[test]
+    fn an_anchored_use_is_never_renamed() {
+        let text = "@prefix ex: <http://example.org/> .\nex:s ex:p <http://example.org/o> .\n";
+        let at = |a: &Analysis, needle: &str| {
+            a.position(
+                Encoding::Utf8,
+                (text.find(needle).unwrap() + needle.len() - 1) as u32,
+            )
+        };
+        let open = Arc::new(Analysis::new(
+            "file:///w/a.ttl".into(),
+            text,
+            Arc::default(),
+            true,
+        ));
+        let renamed = |other: Arc<Analysis>| -> Vec<String> {
+            let mut k = Knowledge::default();
+            k.set("file:///w/a.ttl", Source::Open, open.clone());
+            k.set("file:///w/b.ttl", Source::Disk, other);
+            let scope = PrefixScope {
+                file: None,
+                file_of: &mut |_| None,
+            };
+            let edit = rename(&open, &k, Encoding::Utf8, at(&open, "ex:s"), "t", scope).unwrap();
+            let mut uris: Vec<String> = edit
+                .changes
+                .unwrap()
+                .into_keys()
+                .map(|u| u.to_string())
+                .collect();
+            uris.sort();
+            uris
+        };
+        let written = Arc::new(Analysis::new(
+            "file:///w/b.ttl".into(),
+            text,
+            Arc::default(),
+            true,
+        ));
+        assert_eq!(renamed(written), ["file:///w/a.ttl", "file:///w/b.ttl"]);
+        for syntax in [Syntax::Turtle, Syntax::RdfXml] {
+            let anchored = Arc::new(Analysis::anchored("file:///w/b.ttl", text, syntax));
+            assert_eq!(renamed(anchored.clone()), ["file:///w/a.ttl"], "{syntax:?}");
+            for needle in ["ex:s", "ex:p", "example.org/o"] {
+                let got = prepare_rename(&anchored, Encoding::Utf8, at(&anchored, needle)).unwrap();
+                assert_eq!(got, None, "{syntax:?} {needle}");
+            }
+        }
+        for needle in ["ex:s", "ex:p", "example.org/o"] {
+            let got = prepare_rename(&open, Encoding::Utf8, at(&open, needle)).unwrap();
+            assert!(got.is_some(), "{needle}");
+        }
     }
 }

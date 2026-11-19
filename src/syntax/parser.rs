@@ -99,9 +99,10 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
 /// [`parse`], with relative IRIs resolved against `base` (the document's own
 /// URL) until an `@base` replaces it. An invalid `base` is ignored.
 ///
-/// For the Turtle family only. It never fails, but it does not read JSON-LD,
-/// which has its own frontend: given [`Syntax::JsonLd`] it returns no triples
-/// and one `syntax` error at offset 0.
+/// For the Turtle family only. It never fails, but it does not read JSON-LD
+/// or RDF/XML, which have their own frontends: given [`Syntax::JsonLd`] or
+/// [`Syntax::RdfXml`] it returns no triples and one `syntax` error at
+/// offset 0.
 pub fn parse_with_base(
     src: &str,
     external: &PrefixMap,
@@ -130,11 +131,12 @@ impl Parsed {
 
 impl Syntax {
     /// The tokens [`parse_with_base`] reads `src` as, comments included:
-    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, which has its
-    /// own frontend.
+    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD and RDF/XML,
+    /// which have their own frontends.
     pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
-        if self == Syntax::JsonLd {
-            return Vec::new();
+        match self {
+            Syntax::JsonLd | Syntax::RdfXml => return Vec::new(),
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
         }
         let mut all = tokenize(src);
         if self != Syntax::TriG {
@@ -157,13 +159,18 @@ fn run(
     base: Option<&str>,
     graph_only: Option<usize>,
 ) -> (Parsed, usize) {
-    if syntax == Syntax::JsonLd {
+    let frontend = match syntax {
+        Syntax::JsonLd => Some("JSON-LD documents are parsed by jsonld::parse"),
+        Syntax::RdfXml => Some("RDF/XML documents are parsed by rdfxml::parse"),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => None,
+    };
+    if let Some(message) = frontend {
         let refused = Parsed {
             syntax,
             document_base: base.map(str::to_string),
             errors: vec![SyntaxError::new(
                 Span::new(0, 0),
-                "JSON-LD documents are parsed by jsonld::parse",
+                message,
                 Severity::Error,
                 "syntax",
             )],

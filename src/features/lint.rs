@@ -163,7 +163,8 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
         .iter()
         .filter(|r| r.role != Role::Subject)
         .filter_map(|r| match r.form {
-            Form::A => None,
+            // The text at an anchor is not the term: nothing to report it at.
+            Form::A | Form::Anchor => None,
             Form::PName { prefix_len } => Some(TermUse {
                 span: r.span,
                 iri: r.iri,

@@ -670,10 +670,11 @@ fn text_at(a: &Analysis, span: Span, len: u32) -> Option<&str> {
 }
 
 /// The use of the term `r` refers to, for the term checks: a prefixed name
-/// with its prefix as written, or an IRI; none for `a`.
+/// with its prefix as written, or an IRI; none for `a`, nor for an anchor,
+/// whose text is not the term's (a fix written there would break the file).
 pub(crate) fn term_use<'a>(a: &'a Analysis, r: &Ref) -> Option<TermUse<'a, Iri>> {
     match r.form {
-        Form::A => None,
+        Form::A | Form::Anchor => None,
         Form::PName { prefix_len } => Some(TermUse {
             span: r.span,
             iri: r.iri,

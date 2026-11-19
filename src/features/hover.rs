@@ -91,7 +91,8 @@ fn hover_with(
             None
         }
         Form::A => Some("a (rdf:type)".to_string()),
-        Form::Iri => None,
+        // The text at an anchor is not the name: the label is the IRI's.
+        Form::Iri | Form::Anchor => None,
     };
     let prefixes = Scope::at(a, r.span.start);
     let label = text_label.unwrap_or_else(|| short(&r.iri, &prefixes));

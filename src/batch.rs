@@ -831,6 +831,7 @@ impl<'a> Input<'a> {
             Some(DocKind::Rdf(Syntax::NTriples)) => "ntriples",
             Some(DocKind::Rdf(Syntax::NQuads)) => "nquads",
             Some(DocKind::Rdf(Syntax::JsonLd)) => "jsonld",
+            Some(DocKind::Rdf(Syntax::RdfXml)) => "rdfxml",
             _ => "turtle",
         }
     }

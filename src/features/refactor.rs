@@ -89,7 +89,8 @@ pub fn code_actions(
                     );
                 }
             }
-            Form::A => {}
+            // Nothing writes at an anchor: its text is not the IRI.
+            Form::A | Form::Anchor => {}
         }
     }
 
@@ -655,7 +656,7 @@ pub fn edits_of(a: &Analysis, enc: Encoding, action: &CodeAction) -> Vec<TextEdi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::PrefixMap;
+    use crate::syntax::{PrefixMap, Syntax};
     use std::sync::Arc;
 
     fn analysis(uri: &str, text: &str) -> Analysis {
@@ -698,6 +699,37 @@ mod tests {
         let out = apply(&a, Encoding::Utf16, &edits_of(&a, Encoding::Utf16, &action));
         assert_eq!(triples(text), triples(&out), "graph changed:\n{out}");
         Some(out)
+    }
+
+    /// A reference whose text is not at its span ([`Form::Anchor`]) is
+    /// neither shortened nor expanded.
+    #[test]
+    fn an_anchored_reference_is_never_rewritten() {
+        let text = "@prefix ex: <http://example.org/> .\nex:s ex:p <http://example.org/o> .\n";
+        let titles = |a: &Analysis, needle: &str| -> Vec<String> {
+            let off = text.find(needle).unwrap() + needle.len() - 1;
+            code_actions(a, Encoding::Utf16, &params(a, off), false)
+                .into_iter()
+                .filter_map(|c| match c {
+                    CodeActionOrCommand::CodeAction(c) => Some(c.title),
+                    _ => None,
+                })
+                .filter(|t| t.starts_with("Shorten IRI") || t.starts_with("Expand"))
+                .collect()
+        };
+        let written = analysis("file:///t/doc.ttl", text);
+        assert_eq!(titles(&written, "ex:p"), ["Expand to full IRI"]);
+        assert_eq!(titles(&written, "example.org/o"), ["Shorten IRI to ex:o"]);
+        for syntax in [Syntax::Turtle, Syntax::RdfXml] {
+            let anchored = Analysis::anchored("file:///t/doc.ttl", text, syntax);
+            for needle in ["ex:p", "example.org/o"] {
+                assert_eq!(
+                    titles(&anchored, needle),
+                    Vec::<String>::new(),
+                    "{syntax:?} {needle}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -500,6 +500,7 @@ impl Format {
             Syntax::NTriples => Format::NTriples,
             Syntax::NQuads => Format::NQuads,
             Syntax::JsonLd => Format::JsonLd,
+            Syntax::RdfXml => Format::RdfXml,
         }
     }
 

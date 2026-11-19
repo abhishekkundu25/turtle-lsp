@@ -28,7 +28,8 @@ pub fn inlay_hints(
     let mut out = Vec::new();
     for r in refs[first..].iter().take_while(|r| r.span.start <= to) {
         let local = match r.form {
-            Form::A => continue,
+            // No name is written at an anchor for the label to stand beside.
+            Form::A | Form::Anchor => continue,
             Form::PName { prefix_len } => {
                 &a.text[(r.span.start + prefix_len + 1) as usize..r.span.end as usize]
             }
@@ -154,7 +155,7 @@ fn is_opaque(local: &str, label: &str) -> bool {
 mod tests {
     use super::*;
     use crate::knowledge::Source;
-    use crate::syntax::PrefixMap;
+    use crate::syntax::{PrefixMap, Syntax};
     use std::sync::Arc;
 
     #[test]
@@ -183,6 +184,24 @@ mod tests {
         assert!(!is_opaque("x", "   "));
         assert_eq!(local_of("http://example.com/things/P1/"), "P1");
         assert_eq!(local_of("urn:x:P2"), "P2");
+    }
+
+    /// No hint stands beside a reference whose text is not at its span
+    /// ([`Form::Anchor`]): no name is written there.
+    #[test]
+    fn an_anchored_reference_gets_no_hint() {
+        let text = "<http://example.com/ns#P0042> <http://www.w3.org/2000/01/rdf-schema#label> \"pump pressure\" .\n\
+                    <http://example.com/ns#x> <http://example.com/ns#p> <http://example.com/ns#P0042> .\n";
+        let uri = "file:///t.ttl";
+        let hints = |a: Analysis| {
+            let a = Arc::new(a);
+            let mut k = Knowledge::default();
+            k.set(uri, Source::Open, a.clone());
+            let all = Range::new(Position::new(0, 0), Position::new(2, 0));
+            inlay_hints(&a, &k, Encoding::Utf16, all, InlayLabels::All).len()
+        };
+        assert!(hints(Analysis::new(uri.into(), text, Arc::default(), true)) > 0);
+        assert_eq!(hints(Analysis::anchored(uri, text, Syntax::Turtle)), 0);
     }
 
     #[test]

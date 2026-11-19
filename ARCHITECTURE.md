@@ -14,6 +14,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `syntax` | Turtle, TriG, N-Triples and N-Quads lexer and parser; `syntax::names`, the rules for writing an IRI in Turtle | every feature |
 | `sparql` | SPARQL documents: tokens, structure, checks, formatting; the SPARQL language features in `sparql::features` | `ide`, `analysis`, `query`, `shacl` |
 | `jsonld` | JSON-LD 1.1: a fault-tolerant JSON parser, context processing, expansion and conversion to the same parse as Turtle | `analysis` |
+| `rdfxml` | RDF/XML 1.1: conversion to the same parse as Turtle (not read yet: one `unsupported-syntax` error) | `analysis` |
 | `analysis` | One document's parse, positions and per-IRI indexes | `features`, `ide`, `server` |
 | `workspace` | Open documents, indexed files and project prefixes; the file-kind table | `server`, `ide`, `batch`, `cli`, `features`, `diagnose`, `imports`, `jsonld` |
 | `knowledge` | What the workspace says about each IRI | `features` |
@@ -39,11 +40,12 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 Core code never names `extensions`, except the router in `server` and the
 Run query lens. The libraries `syntax`, `rdf`, `shacl`, `sparql::lexer` and
 `sparql::spargebra_input` name no module outside that set, and `syntax` and
-the lexer name only `syntax`. The `boundaries` test in `src/lib.rs` checks
-both rules.
+the lexer name only `syntax`. The RDF/XML frontend `rdfxml` names only
+`syntax`, so it can move with the parsers. The `boundaries` test in
+`src/lib.rs` checks these rules.
 
-Nine modules are private to the crate: `commands`, `diagnose`,
-`extensions`, `fetch`, `ide`, `layout`, `reasoning`, `vocab` and
+Ten modules are private to the crate: `commands`, `diagnose`,
+`extensions`, `fetch`, `ide`, `layout`, `rdfxml`, `reasoning`, `vocab` and
 `workspace`. The others are public because a consumer uses them: the
 browser engine, the examples, the integration tests or `src/main.rs`. The
 "Public interface" section of the crate doc lists every path those
@@ -91,7 +93,11 @@ A JSON-LD document produces the same `Parsed` through `jsonld`, so
 knowledge, lints, SHACL and the command line need no JSON-LD-specific code.
 The Turtle-family parser does not call `jsonld`: JSON-LD has its own front
 end, and `syntax::parse_with_base` reads only Turtle, TriG, N-Triples and
-N-Quads. A SPARQL document gets a `SparqlAnalysis` instead, with the same
+N-Quads. RDF/XML (`Syntax::RdfXml`) goes through `rdfxml` the same way. A
+reference whose span is near its IRI and not its text is `Form::Anchor`:
+features that slice the text at a reference or write there (rename, quick
+fixes, refactorings, completion, hover's quoted name, inlay hints, semantic
+tokens) leave it out. A SPARQL document gets a `SparqlAnalysis` instead, with the same
 position helpers; SPARQL documents never feed the knowledge index and RDF
 features never run on them.
 

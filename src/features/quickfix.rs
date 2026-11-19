@@ -572,11 +572,17 @@ mod tests {
     /// The quick fixes offered for every diagnostic of `text`.
     fn fixes(uri: &str, text: &str) -> (Analysis, Vec<CodeAction>) {
         let a = Analysis::new(uri.into(), text, Arc::default(), true);
+        let actions = fixes_of(&a);
+        (a, actions)
+    }
+
+    /// The quick fixes offered for every diagnostic of `a`.
+    fn fixes_of(a: &Analysis) -> Vec<CodeAction> {
         let k = Knowledge::default();
-        let diagnostics = diagnostics(&a, &k, Encoding::Utf8);
+        let diagnostics = diagnostics(a, &k, Encoding::Utf8);
         let params = CodeActionParams {
             text_document: TextDocumentIdentifier {
-                uri: uri.parse().unwrap(),
+                uri: a.uri.parse().unwrap(),
             },
             range: Range::default(),
             context: CodeActionContext {
@@ -586,14 +592,35 @@ mod tests {
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
-        let actions = code_actions(&a, &k, Encoding::Utf8, &params)
+        code_actions(a, &k, Encoding::Utf8, &params)
             .into_iter()
             .filter_map(|c| match c {
                 CodeActionOrCommand::CodeAction(c) => Some(c),
                 _ => None,
             })
-            .collect();
-        (a, actions)
+            .collect()
+    }
+
+    /// A term whose text is not at its span ([`crate::syntax::Form::Anchor`])
+    /// gets no fix written there: a misspelt vocabulary term is fixed when
+    /// it is written, not when it is anchored.
+    #[test]
+    fn an_anchored_term_is_never_quick_fixed() {
+        let text = "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n<http://example.org/a> rdfs:labl \"x\" .\n";
+        let changes = |a: &Analysis| -> Vec<String> {
+            fixes_of(a)
+                .into_iter()
+                .map(|c| c.title)
+                .filter(|t| t.starts_with("Change to"))
+                .collect()
+        };
+        let uri = "file:///t/doc.ttl";
+        let written = Analysis::new(uri.into(), text, Arc::default(), true);
+        assert_eq!(changes(&written), ["Change to 'rdfs:label'"]);
+        for syntax in [Syntax::Turtle, Syntax::RdfXml] {
+            let anchored = Analysis::anchored(uri, text, syntax);
+            assert_eq!(changes(&anchored), Vec::<String>::new(), "{syntax:?}");
+        }
     }
 
     /// The text after applying the edit of the action titled `title`.
