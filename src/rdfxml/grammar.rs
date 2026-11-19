@@ -87,7 +87,9 @@
 //!   class): [`Role::Object`], as that IRI is in Turtle. Every reference
 //!   inside a triple term is [`Role::Quoted`]. Everything read from one
 //!   entity reference has its span, and the first reference stands for
-//!   them all, so references never overlap;
+//!   them all, so references never overlap; the others are only in the
+//!   triples, which is where a rename looks for the IRIs an RDF/XML
+//!   document uses;
 //! - the comments. No [`PrefixDecl`](crate::syntax::PrefixDecl): XML namespaces are scoped, and a
 //!   redeclared prefix is no mistake there;
 //! - blank nodes numbered in the order they first appear, so two parses of
