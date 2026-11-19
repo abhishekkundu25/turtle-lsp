@@ -96,9 +96,10 @@ end, and `syntax::parse_with_base` reads only Turtle, TriG, N-Triples and
 N-Quads. RDF/XML (`Syntax::RdfXml`) goes through `rdfxml` the same way. A
 reference whose span is near its IRI and not its text is `Form::Anchor`:
 features that slice the text at a reference or write there (rename, quick
-fixes, refactorings, completion, hover's quoted name, inlay hints, semantic
-tokens) leave it out. A SPARQL document gets a `SparqlAnalysis` instead, with the same
-position helpers; SPARQL documents never feed the knowledge index and RDF
+fixes, refactorings, hover's quoted name, inlay hints, semantic tokens)
+leave it out. RDF/XML gets no completion, formatting or splice at all. A
+SPARQL document gets a `SparqlAnalysis` instead, with the same position
+helpers; SPARQL documents never feed the knowledge index and RDF
 features never run on them.
 
 The knowledge index (`knowledge::Knowledge`) keeps each source's
