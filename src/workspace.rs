@@ -2449,6 +2449,38 @@ pub(crate) mod tests {
                 .any(|t| &*t.p == "http://www.w3.org/2000/01/rdf-schema#label"
                     && matches!(&t.o, Node::Literal { value, .. } if &**value == "My ontology"))
         );
+        // A processing instruction and a comment before the root, with no
+        // space inside them: XML, not two Turtle IRIs.
+        let a = doc(
+            "file:///w/a.owl",
+            "<?build?>\n<!--ok-->\n<e:C xmlns:e=\"urn:ex:\"/>\n",
+        );
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let t = &a.parsed.triples;
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert_eq!(&*t[0].p, rdf_type);
+        assert!(matches!(&t[0].o, Node::Iri(i) if &**i == "urn:ex:C"));
+        // An `owl:Ontology` whose property is named as an OWL/XML element
+        // but has `rdf:resource`: RDF/XML.
+        let a = doc(
+            "file:///w/a.owl",
+            "<owl:Ontology xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:owl=\"http://www.w3.org/2002/07/owl#\" ><owl:Annotation rdf:resource=\"urn:x\"/></owl:Ontology>\n",
+        );
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let t = &a.parsed.triples;
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(
+            t.iter()
+                .any(|t| &*t.p == "http://www.w3.org/2002/07/owl#Annotation"
+                    && matches!(&t.o, Node::Iri(i) if &**i == "urn:x"))
+        );
+        // N-Triples with no space between the terms.
+        let a = doc("file:///w/a.owl", "<urn:s><urn:p><urn:o>.\n");
+        assert_eq!(a.parsed.syntax, Syntax::Turtle);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(a.parsed.triples.len(), 1);
     }
 
     #[test]

@@ -87,25 +87,20 @@ impl Sniffed {
     }
 }
 
-/// Whether `<` then `rest` starts XML rather than a Turtle `<iri>`. An
-/// XML declaration, comment or DOCTYPE is XML. Then a Turtle IRI
+/// Whether `<` then `rest` starts XML rather than a Turtle `<iri>`. Any
+/// `<?` or `<!` is XML: a declaration, processing instruction, comment or
+/// DOCTYPE, never an IRI a Turtle text starts with. Then a Turtle IRI
 /// reference followed by whitespace and another term (`<urn:s> <urn:p>`,
 /// `<urn:s> a`, `<urn:s> ex:p`, a TriG `<urn:g> {`) is Turtle, even when
-/// the IRI would also be an XML name ([`iri_then_term`]). Else XML is any other
-/// `<?` or `<!`, or an XML name followed by whitespace, `/>`, or `>` and
-/// another tag.
+/// the IRI would also be an XML name ([`iri_then_term`]), and so is a
+/// triple with no space after its subject ([`tight_triple`]). Else XML is
+/// an XML name followed by whitespace, `/>`, or `>` and another tag.
 fn starts_xml(rest: &str) -> bool {
-    if ["?xml", "!--", "!DOCTYPE"]
-        .iter()
-        .any(|p| rest.starts_with(p))
-    {
+    if rest.starts_with(['?', '!']) {
         return true;
     }
-    if iri_then_term(rest) {
+    if iri_then_term(rest) || tight_triple(rest) {
         return false;
-    }
-    if rest.starts_with('?') || rest.starts_with('!') {
-        return true;
     }
     let name = xml_name(rest);
     let after = &rest[name.len()..];
@@ -118,8 +113,9 @@ fn starts_xml(rest: &str) -> bool {
 }
 
 /// Whether `rest`, just after a `<`, is the rest of a Turtle IRI reference,
-/// then whitespace and the start of another term: an IRI reference, `a`, a
-/// prefixed name, or a TriG graph's `{`. An IRI that is an XML name without
+/// then whitespace and the start of another term: an IRI reference (not
+/// `<?` or `<!`, which is markup), `a`, a prefixed name, or a TriG graph's
+/// `{`. An IRI that is an XML name without
 /// a colon (`<Ontology>`, `<s>`) does not count: a root element in no
 /// namespace, then a child, is well-formed XML, and a Turtle text seldom
 /// starts with a relative IRI.
@@ -136,7 +132,7 @@ fn iri_then_term(rest: &str) -> bool {
         return false;
     }
     if let Some(iri) = next.strip_prefix('<') {
-        return iri_ref(iri).is_some();
+        return iri_ref_after_lt(iri).is_some();
     }
     if next.starts_with('{') {
         return true;
@@ -146,6 +142,35 @@ fn iri_then_term(rest: &str) -> bool {
     }
     next.split_once(':')
         .is_some_and(|(prefix, _)| super::names::is_pn_prefix(prefix))
+}
+
+/// Whether `rest`, just after a `<`, is three IRI references, the first
+/// prefixed and with no space after it, then `.` (`<urn:s><urn:p><urn:o>.`).
+/// As XML its first tag would be an element whose prefix nothing declares,
+/// as the tag has no attribute: not namespace-well-formed, unless the
+/// prefix is `xml`, the one bound without a declaration.
+fn tight_triple(rest: &str) -> bool {
+    if xml_name(rest)
+        .split_once(':')
+        .is_none_or(|(prefix, _)| prefix == "xml")
+    {
+        return false;
+    }
+    let mut after = iri_ref(rest);
+    for _ in 0..2 {
+        after = after
+            .and_then(|a| a.trim_start().strip_prefix('<'))
+            .and_then(iri_ref_after_lt);
+    }
+    after.is_some_and(|a| a.trim_start().starts_with('.'))
+}
+
+/// [`iri_ref`], for a term after the first: a `<?` or `<!` there is markup.
+fn iri_ref_after_lt(rest: &str) -> Option<&str> {
+    if rest.starts_with(['?', '!']) {
+        return None;
+    }
+    iri_ref(rest)
 }
 
 /// The text after the `>` of a Turtle IRI reference whose `<` comes just
@@ -184,12 +209,13 @@ fn without_comments(mut s: &str) -> &str {
 }
 
 /// OWL/XML when the root element of the XML text `s` is `Ontology` in the
-/// OWL namespace (or in none), with no attribute in the RDF namespace, and
-/// either an `ontologyIRI` attribute or a first child that is an OWL/XML
-/// element ([`OWL_XML_CHILDREN`]) in the same namespace, or no child and no
-/// prefix (`<Ontology xmlns="…owl#"/>`). RDF/XML otherwise:
-/// an `owl:Ontology` node element is RDF/XML whatever namespaces it
-/// declares (`rdf:about`, or no attribute and properties such as
+/// OWL namespace (or in none), neither it nor its first child has an
+/// attribute in the RDF namespace, and there is either an `ontologyIRI`
+/// attribute or a first child that is an OWL/XML element
+/// ([`OWL_XML_CHILDREN`]) in the same namespace, or no child and no prefix
+/// (`<Ontology xmlns="…owl#"/>`). RDF/XML otherwise: an `owl:Ontology` node
+/// element is RDF/XML whatever namespaces it declares (`rdf:about`, a
+/// property with `rdf:resource`, or no attribute and properties such as
 /// `rdfs:label` or `owl:imports` as children), and so is a root that is not
 /// found. RDF/XML is the generous answer: the parser then says what is
 /// wrong.
@@ -199,25 +225,13 @@ fn xml_root(s: &str) -> Sniffed {
     let Some(root) = s[i..].strip_prefix('<').map(start_tag) else {
         return Sniffed::RdfXml;
     };
-    let in_rdf = |name: &str| {
-        name.split_once(':').is_some_and(|(p, _)| {
-            p != "xmlns" && root.ns(Some(p)).map_or(p == "rdf", |v| v == RDF_NS)
-        })
-    };
     let (prefix, local) = root.name();
     let owl = root.ns(prefix);
-    if local != "Ontology"
-        || !matches!(owl, None | Some(OWL_NS))
-        || root.attrs.iter().any(|(n, _)| in_rdf(n))
-    {
+    if local != "Ontology" || !matches!(owl, None | Some(OWL_NS)) {
         return Sniffed::RdfXml;
     }
-    if root.attrs.iter().any(|(n, _)| *n == "ontologyIRI") {
-        return Sniffed::OwlXml;
-    }
     // The first child element, past whitespace, comments and processing
-    // instructions. With none, the name as written decides: OWL/XML writes
-    // `Ontology` in the default namespace, RDF/XML `owl:Ontology`.
+    // instructions.
     let child = root.content.and_then(|content| {
         let mut j = 0;
         while past_markup(content, &mut j) == Some(true) {}
@@ -226,6 +240,26 @@ fn xml_root(s: &str) -> Sniffed {
             .map(start_tag)
             .filter(|t| !t.name.is_empty())
     });
+    // OWL/XML elements carry no `rdf:` attribute; RDF/XML's node and
+    // property elements do (`rdf:about`, `rdf:resource`, `rdf:parseType`).
+    let in_rdf = |tag: &Tag, name: &str| {
+        name.split_once(':').is_some_and(|(p, _)| {
+            p != "xmlns"
+                && (tag.ns(Some(p)).or_else(|| root.ns(Some(p))))
+                    .map_or(p == "rdf", |v| v == RDF_NS)
+        })
+    };
+    if std::iter::once(&root)
+        .chain(&child)
+        .any(|t| t.attrs.iter().any(|(n, _)| in_rdf(t, n)))
+    {
+        return Sniffed::RdfXml;
+    }
+    if root.attrs.iter().any(|(n, _)| *n == "ontologyIRI") {
+        return Sniffed::OwlXml;
+    }
+    // With no child, the name as written decides: OWL/XML writes `Ontology`
+    // in the default namespace, RDF/XML `owl:Ontology`.
     let Some(child) = child else {
         return if prefix.is_none() {
             Sniffed::OwlXml
@@ -245,7 +279,8 @@ fn xml_root(s: &str) -> Sniffed {
 /// The elements of OWL/XML that an `Ontology` element holds: its
 /// prefixes, imports and annotations, the declarations, every axiom, and
 /// the SWRL rules Protégé writes there. An RDF/XML `owl:Ontology` holds
-/// properties (`owl:imports`, `owl:versionInfo`), none of which is named so.
+/// properties (`owl:imports`, `owl:versionInfo`); one named as here
+/// (`owl:Annotation`) is told by its `rdf:` attributes ([`xml_root`]).
 const OWL_XML_CHILDREN: &[&str] = &[
     "Prefix",
     "Import",
@@ -550,6 +585,170 @@ mod tests {
         for (text, want) in cases {
             assert_eq!(Sniffed::of(text), *want, "{text}");
         }
+    }
+
+    /// Every start a `.owl` or `.rdf` file is seen with, both ways: a fix
+    /// that turns one row must not turn another.
+    #[test]
+    fn each_start_is_read_as_what_it_holds() {
+        use Sniffed::*;
+        const RDF: &str = "<rdf:RDF xmlns=\"http://example.org/o#\"\n     xml:base=\"http://example.org/o\"\n     xmlns:owl=\"http://www.w3.org/2002/07/owl#\"\n     xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n    <owl:Ontology rdf:about=\"http://example.org/o\"/>\n</rdf:RDF>\n";
+        const DOCTYPE: &str = "<!DOCTYPE rdf:RDF [\n    <!ENTITY owl \"http://www.w3.org/2002/07/owl#\" >\n    <!ENTITY rdf \"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" >\n]>\n\n";
+        const NS: &str = "xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"";
+        const OWX: &str = "xmlns=\"http://www.w3.org/2002/07/owl#\"";
+        let rows: Vec<(String, Sniffed)> = vec![
+            // RDF/XML as Protégé writes it, and with what may come before
+            // the root.
+            (format!("<?xml version=\"1.0\"?>\n{DOCTYPE}{RDF}"), RdfXml),
+            (
+                format!("\u{feff}<?xml version=\"1.0\"?>\n{DOCTYPE}{RDF}"),
+                RdfXml,
+            ),
+            (
+                format!("<?xml version=\"1.0\"?>\n<?xml-stylesheet href=\"s.xsl\"?>\n{RDF}"),
+                RdfXml,
+            ),
+            (
+                format!(
+                    "<?xml version=\"1.0\"?>\n<!-- a -->\n<!--b-->\n{DOCTYPE}<!-- c -->\n{RDF}"
+                ),
+                RdfXml,
+            ),
+            (format!("{DOCTYPE}{RDF}"), RdfXml),
+            (RDF.into(), RdfXml),
+            (
+                "<?xml-stylesheet href=\"s.xsl\"?>\n<rdf:RDF/>".into(),
+                RdfXml,
+            ),
+            // A processing instruction or comment first, then a root with
+            // no space inside the markup.
+            (
+                "<?build?>\n<!--ok-->\n<e:C xmlns:e=\"urn:ex:\"/>".into(),
+                RdfXml,
+            ),
+            ("<?build?> <e:C xmlns:e=\"urn:ex:\"/>".into(), RdfXml),
+            ("<!--ok-->\n<e:C xmlns:e=\"urn:ex:\"/>".into(), RdfXml),
+            ("<a:b>\n<!--c--></a:b>".into(), RdfXml),
+            ("<a:b>\n<?p?><a:c/></a:b>".into(), RdfXml),
+            // OWL/XML.
+            (
+                format!(
+                    "<?xml version=\"1.0\"?>\n<Ontology {OWX} ontologyIRI=\"http://example.org/o\"/>"
+                ),
+                OwlXml,
+            ),
+            (
+                format!(
+                    "<Ontology {OWX}>\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n</Ontology>"
+                ),
+                OwlXml,
+            ),
+            (
+                format!(
+                    "<Ontology {OWX}><Declaration><Class IRI=\"#A\"/></Declaration></Ontology>"
+                ),
+                OwlXml,
+            ),
+            (
+                format!(
+                    "<Ontology {OWX}><Annotation><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><Literal>x</Literal></Annotation></Ontology>"
+                ),
+                OwlXml,
+            ),
+            (
+                format!("<owl:Ontology {NS}><owl:Annotation/></owl:Ontology>"),
+                OwlXml,
+            ),
+            // An `rdf:` attribute on the root or its first child: RDF/XML,
+            // whatever the child is named.
+            (
+                format!(
+                    "<owl:Ontology {NS} ><owl:Annotation rdf:resource=\"urn:x\"/></owl:Ontology>"
+                ),
+                RdfXml,
+            ),
+            (
+                format!(
+                    "<owl:Ontology {NS}><owl:Annotation xmlns:r=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" r:resource=\"urn:x\"/></owl:Ontology>"
+                ),
+                RdfXml,
+            ),
+            (
+                format!("<owl:Ontology {NS}><owl:Import rdf:nodeID=\"b\"/></owl:Ontology>"),
+                RdfXml,
+            ),
+            (
+                format!(
+                    "<owl:Ontology {NS}><owl:Annotation rdf:parseType=\"Resource\"/></owl:Ontology>"
+                ),
+                RdfXml,
+            ),
+            (
+                format!(
+                    "<owl:Ontology {NS}><owl:Annotation rdf:datatype=\"urn:d\">1</owl:Annotation></owl:Ontology>"
+                ),
+                RdfXml,
+            ),
+            (
+                format!(
+                    "<owl:Ontology {NS} ontologyIRI=\"urn:o\"><owl:Annotation rdf:about=\"urn:x\"/></owl:Ontology>"
+                ),
+                RdfXml,
+            ),
+            (
+                format!("<owl:Ontology {NS} rdf:about=\"urn:o\"><owl:Annotation/></owl:Ontology>"),
+                RdfXml,
+            ),
+            // Functional and Manchester.
+            (
+                "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\n)".into(),
+                Functional,
+            ),
+            ("Ontology(<http://example.org/o>\n)".into(), Functional),
+            (
+                "Prefix: : <http://example.org/o#>\nOntology: <http://example.org/o>".into(),
+                Manchester,
+            ),
+            // Turtle and N-Triples.
+            ("<urn:s> <urn:p> <urn:o> .".into(), Turtle),
+            (
+                "@prefix ex: <http://example.org/> .\nex:s ex:p ex:o .".into(),
+                Turtle,
+            ),
+            (
+                "PREFIX ex: <http://example.org/>\nex:s ex:p ex:o .".into(),
+                Turtle,
+            ),
+            (
+                "<http://example.org/s> a <http://example.org/C> .".into(),
+                Turtle,
+            ),
+            ("<urn:s><urn:p><urn:o>.".into(), Turtle),
+            ("<urn:s><urn:p> <urn:o> .\n".into(), Turtle),
+            (
+                "<http://example.org/s><http://example.org/p><http://example.org/o>.".into(),
+                Turtle,
+            ),
+            // Relative IRIs, or no `.`, or the `xml` prefix (bound in every
+            // XML text): XML.
+            ("<s> <p> <o> .".into(), RdfXml),
+            ("<s><p><o>.".into(), RdfXml),
+            ("<urn:s><urn:p><urn:o>".into(), RdfXml),
+            ("<a:b><a:c/></a:b>".into(), RdfXml),
+            ("<xml:a><xml:b><xml:c>.".into(), RdfXml),
+            // JSON-LD.
+            (
+                "{\"@context\": {\"ex\": \"http://example.org/\"}}".into(),
+                JsonLd,
+            ),
+            ("[{\"@id\": \"http://example.org/s\"}]".into(), JsonLd),
+        ];
+        let wrong: Vec<_> = rows
+            .iter()
+            .map(|(text, want)| (text, *want, Sniffed::of(text)))
+            .filter(|(_, want, got)| want != got)
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]
