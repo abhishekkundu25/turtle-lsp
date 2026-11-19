@@ -601,11 +601,12 @@ impl Sniffed {
 }
 
 /// The comment line that starts the converted text of an RDF/XML document
-/// that stops at an error, followed by where and why. A cached copy keeps
-/// it, so its next load says so too.
-const TRUNCATED: &str = "# turtle-lsp: the RDF/XML stops at ";
+/// with an error, followed by where the first is and why. A cached copy
+/// keeps it, so its next load says so too.
+const TRUNCATED: &str = "# turtle-lsp: the RDF/XML has an error at ";
 
-/// `nt`, converted from RDF/XML, with the line that says where it stopped.
+/// `nt`, converted from RDF/XML, with the line that says where its first
+/// error is.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn marked(nt: String, truncated: Option<&str>) -> String {
     match truncated {
@@ -627,16 +628,10 @@ pub(super) fn parse(
     let text = lossy.trim_start_matches('\u{feff}');
     // Whatever the name or the content type says.
     Sniffed::of(text).format()?;
-    // A refusal of the RDF/XML reader has no place: it is about the whole text.
-    if format == Format::RdfXml
-        && let Some(why) = crate::rdfxml::refused(text)
-    {
-        return Err(why);
-    }
     let mut truncated = None;
     let text = match format {
         Format::Turtle | Format::TriG => {
-            // A cached copy of an RDF/XML document that stopped early: its
+            // A cached copy of an RDF/XML document with an error: its
             // header line, then this line.
             truncated = text
                 .lines()
@@ -663,7 +658,7 @@ pub(super) fn parse(
         format.syntax(),
     );
     if format == Format::RdfXml {
-        // Read up to its first error, which says where it stopped.
+        // Read on past its errors; the first says where it went wrong.
         truncated = a.parsed.errors.first().map(|e| stopped_at(&text, e));
     }
     if a.parsed.triples.is_empty()

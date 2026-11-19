@@ -1470,7 +1470,13 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // Import sources: catalogs and RDF/XML come from outside too.
     let _ = imports::parse_catalog(text, std::path::Path::new("/chaos"));
     let _ = imports::sniff(text.as_bytes());
-    let _ = imports::rdf_xml_to_ntriples(text.as_bytes(), "http://example.com/chaos");
+    // What the converter gives for the import cache reads back as Turtle,
+    // a triple a line.
+    if let Ok((nt, _)) = imports::rdf_xml_to_ntriples(text.as_bytes(), "http://example.com/chaos") {
+        let back = parse_with_base(&nt, &PrefixMap::default(), Syntax::Turtle, None);
+        assert!(back.errors.is_empty(), "converted: {:?}\n{nt}", back.errors);
+        assert_eq!(back.triples.len(), nt.lines().count(), "converted:\n{nt}");
+    }
 
     let external = Arc::new(if rng.below(8) == 0 {
         common_prefixes()

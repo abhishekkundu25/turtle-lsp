@@ -397,10 +397,11 @@ mod tests {
     use crate::features::rdfxml_fixture as fx;
     use crate::knowledge::Source;
 
-    /// The kept checks are lints: none runs on RDF/XML, whose label,
-    /// literal and term findings would sit at XML tags.
+    /// Of the kept checks, RDF/XML runs the lints that need no edit:
+    /// `invalid-literal`, and of the term uses `deprecated-term` alone (its
+    /// misspelt `rdfs:labl` gives no `unknown-term`); no label check.
     #[test]
-    fn rdfxml_keeps_no_finding() {
+    fn rdfxml_keeps_the_lints_that_need_no_edit() {
         let uri = "file:///w/onto.owl";
         let (turtle, k) = (fx::turtle(uri), Knowledge::default());
         let kept = Kept::of(&turtle, &k);
@@ -416,12 +417,21 @@ mod tests {
             [Check::TermUses, Check::Literals, Check::LabelWhitespace]
         );
         for a in [fx::read(uri), fx::written(uri, fx::TURTLE)] {
-            assert_eq!(found(&Kept::of(&a, &k)), [], "{:?}", a.parsed.refs[0].form);
+            let kept = Kept::of(&a, &k);
+            assert_eq!(
+                found(&kept),
+                [Check::Literals],
+                "{:?}",
+                a.parsed.refs[0].form
+            );
+            let literal = kept.findings(Check::Literals).next().unwrap();
+            assert!(literal.diagnostic.data.is_none());
         }
     }
 
     /// An RDF/XML document is checked again in full on a change of the
-    /// index, not through the change set, so no term check runs on it.
+    /// index, not through the change set (which would run the label checks
+    /// on it); its term uses see the change all the same.
     #[test]
     fn rdfxml_is_not_followed_through_the_index() {
         let uri = "file:///w/onto.owl";
@@ -431,6 +441,7 @@ mod tests {
         for (a, followed) in [
             (fx::turtle(uri), true),
             (fx::written(uri, fx::TURTLE), false),
+            (fx::read(uri), false),
         ] {
             let a = Arc::new(a);
             let mut k = Knowledge::default();
@@ -444,7 +455,7 @@ mod tests {
             assert_eq!(full, !followed);
             let deprecated = (kept.findings(Check::TermUses))
                 .any(|f| f.diagnostic.message.contains("deprecated"));
-            assert_eq!(deprecated, followed);
+            assert!(deprecated);
         }
     }
 }

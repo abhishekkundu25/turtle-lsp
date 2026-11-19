@@ -13,7 +13,7 @@ pub(crate) mod splice;
 
 pub use iri::Iri;
 pub(crate) use iri::{IriKey, IriMap};
-pub(crate) use parser::{MAX_NESTING, has_scheme};
+pub(crate) use parser::has_scheme;
 pub use parser::{parse, parse_with_base};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;

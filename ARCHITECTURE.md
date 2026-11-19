@@ -14,7 +14,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `syntax` | Turtle, TriG, N-Triples and N-Quads lexer and parser; `syntax::names`, the rules for writing an IRI in Turtle; `syntax::sniff`, which syntax a text's start is in | every feature |
 | `sparql` | SPARQL documents: tokens, structure, checks, formatting; the SPARQL language features in `sparql::features` | `ide`, `analysis`, `query`, `shacl` |
 | `jsonld` | JSON-LD 1.1: a fault-tolerant JSON parser, context processing, expansion and conversion to the same parse as Turtle | `analysis` |
-| `rdfxml` | RDF/XML 1.1: the triples `oxrdfxml` reads, placed at the XML tag each ends at, in the same parse as Turtle; the limits on what the XML may ask for | `analysis`, `imports` |
+| `rdfxml` | RDF/XML 1.1: a fault-tolerant XML scanner, with its limits on what the XML may ask for, and the RDF/XML grammar over it, into the same parse as Turtle with the exact span of every term | `analysis`, `imports` |
 | `analysis` | One document's parse, positions and per-IRI indexes | `features`, `ide`, `server` |
 | `workspace` | Open documents, indexed files and project prefixes; the file-kind table | `server`, `ide`, `batch`, `cli`, `features`, `diagnose`, `imports`, `jsonld` |
 | `knowledge` | What the workspace says about each IRI | `features` |
@@ -94,11 +94,16 @@ A JSON-LD document produces the same `Parsed` through `jsonld`, so
 knowledge, lints, SHACL and the command line need no JSON-LD-specific code.
 The Turtle-family parser does not call `jsonld`: JSON-LD has its own front
 end, and `syntax::parse_with_base` reads only Turtle, TriG, N-Triples and
-N-Quads. RDF/XML (`Syntax::RdfXml`) goes through `rdfxml` the same way. A
-reference whose span is near its IRI and not its text is `Form::Anchor`:
-features that slice the text at a reference or write there (rename, quick
-fixes, refactorings, hover's quoted name, inlay hints, semantic tokens)
-leave it out. RDF/XML gets no completion, formatting or splice at all. A
+N-Quads. RDF/XML (`Syntax::RdfXml`) goes through `rdfxml` the same way,
+with exact spans: an attribute value is `Form::Iri`, a qualified name
+`Form::PName`. A reference whose span is near its IRI and not its text (an
+entity reference, `rdf:ID`, `rdf:li`, a name in the default namespace) is
+`Form::Anchor`: features that slice the text at a reference or write there
+(rename, quick fixes, refactorings, hover's quoted name, inlay hints,
+semantic tokens) leave it out. The syntax gates the writing:
+`features::writes` keeps RDF/XML read-only (no rename, quick fix,
+refactoring or formatting), and it gets no completion, splice, semantic
+tokens or inlay hints. A
 SPARQL document gets a `SparqlAnalysis` instead, with the same position
 helpers; SPARQL documents never feed the knowledge index and RDF
 features never run on them.

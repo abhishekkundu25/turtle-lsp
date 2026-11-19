@@ -792,7 +792,9 @@ test("check: a clean .owl is read as RDF/XML and its terms are described (exit 0
   assert.equal(b.code, 1, b.err)
   assert.deepEqual(
     b.lines.map((l) => l.split(" ").slice(0, 2).join(" ")),
-    ["broken.rdf:9:5: error[xml-syntax]", "functional.owl:1:1: error[unsupported-syntax]"],
+    // At the end tag that closes nothing, and at the name of the element
+    // it leaves open.
+    ["broken.rdf:7:6: error[xml-syntax]", "broken.rdf:9:7: error[xml-syntax]", "functional.owl:1:1: error[unsupported-syntax]"],
   )
   assert.match(b.out, /functional\.owl:1:1: error\[unsupported-syntax\] The document holds OWL Functional syntax, which turtle-lsp does not read/)
   assert.doesNotMatch(b.err, /not an RDF or SPARQL file/)

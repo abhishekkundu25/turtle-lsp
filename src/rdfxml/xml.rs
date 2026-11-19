@@ -28,15 +28,12 @@
 //!
 //! Limits: elements nest at most [`MAX_DEPTH`] deep (deeper ones are
 //! skipped, with one error); the DOCTYPE declares at most [`MAX_ENTITIES`]
-//! entities whose expanded values total at most [`MAX_ENTITY_BYTES`]
-//! (`src/imports/rdfxml.rs` has the same two numbers); expanding entity
-//! references stops after [`EXPANSION_PER_BYTE`] bytes per byte of text
-//! (plus [`MAX_ENTITY_BYTES`]); and at most [`MAX_ERRORS`] errors are
-//! reported. Every step consumes at least one byte, so a scan ends.
-
-// Nothing calls the scanner yet: the swap slice wires `rdfxml::parse` to
-// `grammar::parse` and removes this.
-#![cfg_attr(not(test), allow(dead_code))]
+//! entities whose expanded values total at most [`MAX_ENTITY_BYTES`];
+//! expanding entity references stops after [`EXPANSION_PER_BYTE`] bytes
+//! per byte of text (plus [`MAX_ENTITY_BYTES`]); and at most [`MAX_ERRORS`]
+//! errors are reported. Every step consumes at least one byte, so a scan
+//! ends. Nesting is what bounds triple terms too: each level of one takes
+//! two elements, so they nest at most [`MAX_DEPTH`] / 2 deep.
 
 use crate::syntax::{Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;
@@ -665,8 +662,8 @@ impl<'a> Scanner<'a> {
                     }
                 }
             } else {
-                self.error(Self::span(at, at + 1), "unexpected text in the DOCTYPE");
                 self.bump_char();
+                self.error(Self::span(at, self.pos), "unexpected text in the DOCTYPE");
                 // Up to the next declaration or the end of the subset.
                 while self.peek().is_some_and(|c| !matches!(c, b'<' | b']')) {
                     self.pos += 1;
@@ -889,8 +886,8 @@ impl<'a> Scanner<'a> {
             }
             let (aname, aspan) = self.read_name();
             if aname.is_empty() {
-                self.error(Self::span(at, at + 1), "unexpected character in a tag");
                 self.bump_char();
+                self.error(Self::span(at, self.pos), "unexpected character in a tag");
                 continue;
             }
             if !spaced {
@@ -1274,6 +1271,27 @@ mod tests {
         );
         let (ev, _) = events("<r a='x<b/>");
         assert_eq!(ev, ["<r a=\"x\">", "<b/>", "</>", "</?>"]);
+    }
+
+    /// An error at unexpected text in the DOCTYPE spans its whole first
+    /// character (found by the chaos test: a byte order mark after an
+    /// entity declaration).
+    #[test]
+    fn an_error_at_a_wide_character_spans_all_of_it() {
+        for text in [
+            "<!DOCTYPE r [<!ENTITY a 'x'>\u{feff}\n]><r/>",
+            "<!DOCTYPE r [é😀]><r/>",
+        ] {
+            let (_, errors) = events(text);
+            assert!(!errors.is_empty(), "{text}");
+            for e in &errors {
+                let (start, end) = (e.span.start as usize, e.span.end as usize);
+                assert!(
+                    text.is_char_boundary(start) && text.is_char_boundary(end),
+                    "{text}: {e:?}"
+                );
+            }
+        }
     }
 
     #[test]

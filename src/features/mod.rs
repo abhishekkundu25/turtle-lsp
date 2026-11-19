@@ -57,7 +57,8 @@ pub(crate) mod rdfxml_fixture {
         \x20 </ex:A>\n\
         </rdf:RDF>\n";
 
-    /// [`TEXT`] read by the RDF/XML frontend: anchored references.
+    /// [`TEXT`] read by the RDF/XML frontend: references at the exact
+    /// text of their terms (attribute values and qualified names).
     pub(crate) fn read(uri: &str) -> Analysis {
         let a = Analysis::with_syntax(uri.into(), TEXT, Arc::default(), true, Syntax::RdfXml);
         assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
@@ -77,8 +78,8 @@ pub(crate) mod rdfxml_fixture {
     /// `text` read as Turtle (with the project prefixes `external`), then
     /// called RDF/XML: references written as IRIs and prefixed names,
     /// prefix declarations and uses, in a document of syntax
-    /// [`Syntax::RdfXml`]. Nearer what the exact-span parser gives than
-    /// anchors are, so a gate is shown to hold by syntax, not by form.
+    /// [`Syntax::RdfXml`]: Turtle's text and forms, so a gate is shown to
+    /// hold by syntax, not by what the text at a reference is.
     pub(crate) fn written(uri: &str, text: &str) -> Analysis {
         written_with(uri, text, Arc::default())
     }

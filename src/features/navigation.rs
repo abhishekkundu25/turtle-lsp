@@ -1013,7 +1013,7 @@ mod tests {
         let ttl = turtle_doc("file:///w/a.ttl", text);
         let at = ttl.position(Encoding::Utf8, offset_of(text, "ex:a", 3));
         let owls = [
-            ("anchored", Arc::new(rdfxml_fixture::read(OWL_URI))),
+            ("read", Arc::new(rdfxml_fixture::read(OWL_URI))),
             (
                 "written",
                 Arc::new(rdfxml_fixture::written(OWL_URI, rdfxml_fixture::TURTLE)),
@@ -1210,8 +1210,8 @@ mod tests {
             let mut k = Knowledge::default();
             k.set(OWL_URI, Source::Open, owl.clone());
             let class = "http://example.org/A";
-            // A place where the cursor is on the class (an anchor holds
-            // several references; the one found there is the cursor's).
+            // A place where the cursor is on the class (the reference
+            // found there is the cursor's).
             let offset = owl
                 .refs_of(class)
                 .map(|r| r.span.start)

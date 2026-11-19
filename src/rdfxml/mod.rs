@@ -4,26 +4,28 @@
 //! only `syntax`.
 //!
 //! The stages, one module each:
-//! - [`limits`]: what the text may ask of the XML reader (tag length,
-//!   DOCTYPE entities), checked before it is read;
-//! - [`anchor`]: the triples `oxrdfxml` reads, each placed at the XML tag
-//!   it ends at ([`Form::Anchor`](crate::syntax::Form::Anchor) spans), and
-//!   the first error as an `xml-syntax` error;
-//! - [`xml`]: a fault-tolerant XML scanner with spans (not used yet);
-//! - [`grammar`]: the RDF/XML productions over [`xml`], into [`Parsed`]
-//!   (not used yet).
+//! - [`xml`]: a fault-tolerant XML scanner that keeps the span of every
+//!   name, attribute value, text and entity reference, with its own limits
+//!   (nesting, DOCTYPE entities, entity expansion, errors);
+//! - [`grammar`]: the RDF/XML productions over [`xml`], into [`Parsed`],
+//!   with the exact span of every term, read on past each error.
 //!
-//! [`parse`] reads the text with [`anchor`]. A text in an OWL syntax that is
+//! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
 //! not RDF (OWL/XML, Functional, Manchester) gives no triples and one
 //! `unsupported-syntax` error that names it. What a [`Parsed`] of RDF/XML
-//! holds beyond what [`anchor`] says: `syntax` is [`Syntax::RdfXml`],
-//! `document_base` the base passed in; `prefixes`, `prefix_uses`, `graphs`,
-//! `comments` and `tokens` stay empty (XML namespaces are not Turtle
-//! prefixes, and nothing edits RDF/XML).
+//! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
+//! `document_base` the base passed in, and `prefixes`, `graphs` and
+//! `tokens` stay empty (XML namespaces are scoped, not Turtle prefixes, and
+//! nothing edits RDF/XML). References are exact ([`Form::Iri`],
+//! [`Form::PName`]) where the text spells the IRI, and
+//! [`Form::Anchor`] where it does not (an entity, `rdf:ID`, `rdf:li`, a
+//! name in the default namespace).
+//!
+//! [`Form::Iri`]: crate::syntax::Form::Iri
+//! [`Form::PName`]: crate::syntax::Form::PName
+//! [`Form::Anchor`]: crate::syntax::Form::Anchor
 
-mod anchor;
 mod grammar;
-mod limits;
 mod xml;
 
 use crate::syntax::sniff::Sniffed;
@@ -32,32 +34,24 @@ use crate::syntax::{Parsed, Severity, Span, Syntax, SyntaxError};
 /// The diagnostic code of a text in an OWL syntax that is not RDF.
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
-/// Why the limits on what the XML may ask for refuse `text`, if they do:
-/// [`parse`] then reads nothing, and says so in an `xml-syntax` error at
-/// the place. For a caller that reports the refusal as it stands.
-pub(crate) fn refused(text: &str) -> Option<String> {
-    limits::refusal(text.as_bytes())
-}
-
 /// Parse an RDF/XML document into the shared parse model. `base` is the
 /// document's URL, against which relative IRIs resolve until an `xml:base`
 /// replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
-    let mut out = Parsed {
+    let Some(unread) = Sniffed::of(text).unread() else {
+        return grammar::parse(text, base);
+    };
+    Parsed {
         syntax: Syntax::RdfXml,
         document_base: base.map(str::to_string),
-        ..Parsed::default()
-    };
-    match Sniffed::of(text).unread() {
-        Some(unread) => out.errors.push(SyntaxError::new(
+        errors: vec![SyntaxError::new(
             Span::new(0, 0),
             format!("The document {unread}"),
             Severity::Error,
             UNSUPPORTED_SYNTAX,
-        )),
-        None => anchor::read(text, base, &mut out),
+        )],
+        ..Parsed::default()
     }
-    out
 }
 
 #[cfg(test)]
@@ -117,16 +111,102 @@ mod tests {
             p.triples[0].s,
             crate::syntax::Node::Iri(crate::syntax::Iri::intern("http://example.org/onto#a"))
         );
-        let span = p.triples[0].p_span;
+        // The type at the element's name, the subject at its value.
+        let at = |span: Span| &text[span.start as usize..span.end as usize];
+        assert_eq!(at(p.triples[0].p_span), "ex:A");
+        let forms: Vec<_> = p.refs.iter().map(|r| (at(r.span), r.form)).collect();
         assert_eq!(
-            &text[span.start as usize..span.end as usize],
-            "<ex:A rdf:about=\"#a\"/>"
+            forms,
+            [
+                ("ex:A", crate::syntax::Form::PName { prefix_len: 2 }),
+                ("#a", crate::syntax::Form::Iri)
+            ]
         );
         // Turtle given as RDF/XML is an XML error, not a Turtle parse.
         let p = parse(TEXT, Some(URI));
         assert!(p.triples.is_empty());
-        let codes: Vec<_> = p.errors.iter().map(|e| e.code).collect();
-        assert_eq!(codes, ["xml-syntax"]);
+        assert!(!p.errors.is_empty());
+        assert!(
+            p.errors
+                .iter()
+                .all(|e| matches!(e.code, "xml-syntax" | "rdfxml-syntax")),
+            "{:?}",
+            p.errors
+        );
+    }
+
+    /// After a byte order mark, spans are offsets of the text as given.
+    #[test]
+    fn a_byte_order_mark_keeps_the_offsets_of_the_text() {
+        for bom in ["", "\u{feff}"] {
+            let text = format!(
+                "{bom}<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n  <ex:A rdf:about=\"http://example.org/a\"/>\n</rdf:RDF>\n"
+            );
+            let p = parse(&text, Some(URI));
+            assert!(p.errors.is_empty(), "{:?}", p.errors);
+            let at = |s: Span| &text[s.start as usize..s.end as usize];
+            let spans: Vec<_> = p.refs.iter().map(|r| at(r.span)).collect();
+            assert_eq!(spans, ["ex:A", "http://example.org/a"]);
+        }
+    }
+
+    /// Nesting is bounded by the scanner ([`xml::MAX_DEPTH`]): triple terms
+    /// nested far deeper, and elements nested deeper still, are read on the
+    /// 2 MiB stack of the smallest host, through the analysis, its
+    /// diagnostics, the index and the import converter, which recurse on
+    /// triple terms.
+    #[test]
+    fn deep_nesting_is_survived_on_a_small_stack() {
+        const HEAD: &str = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\" rdf:version=\"1.2\">\n<rdf:Description rdf:about=\"http://example.org/s\">";
+        const TAIL: &str = "</rdf:Description></rdf:RDF>\n";
+        let terms = |n: usize| {
+            let open = "<ex:p rdf:parseType=\"Triple\"><rdf:Description rdf:about=\"http://example.org/s\">";
+            let close = "</rdf:Description></ex:p>";
+            format!(
+                "{HEAD}{}<ex:p rdf:resource=\"http://example.org/o\"/>{}{TAIL}",
+                open.repeat(n),
+                close.repeat(n)
+            )
+        };
+        let elements = |n: usize| {
+            format!(
+                "{HEAD}{}<ex:p>x</ex:p>{}{TAIL}",
+                "<ex:p rdf:parseType=\"Resource\">".repeat(n),
+                "</ex:p>".repeat(n)
+            )
+        };
+        fn depth(n: &crate::syntax::Node) -> usize {
+            match n {
+                crate::syntax::Node::Triple(t) => 1 + depth(&t.0).max(depth(&t.2)),
+                _ => 0,
+            }
+        }
+        for text in [terms(50), terms(20_000), elements(100_000)] {
+            let deepest = std::thread::Builder::new()
+                .stack_size(2 << 20)
+                .spawn(move || {
+                    let a = Arc::new(Analysis::with_syntax(
+                        URI.into(),
+                        &text,
+                        Arc::default(),
+                        true,
+                        Syntax::RdfXml,
+                    ));
+                    let mut k = Knowledge::default();
+                    k.set(URI, crate::knowledge::Source::Open, a.clone());
+                    let opts = crate::features::diagnostics::Options::default();
+                    crate::features::diagnostics::diagnostics_with(&a, &k, Encoding::Utf8, &opts);
+                    let _ = crate::imports::rdf_xml_to_ntriples(text.as_bytes(), URI);
+                    a.parsed.triples.iter().map(|t| depth(&t.o)).max()
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            assert!(deepest.unwrap_or(0) <= xml::MAX_DEPTH / 2, "{deepest:?}");
+        }
+        let p = parse(&terms(50), Some(URI));
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(p.triples.iter().map(|t| depth(&t.o)).max(), Some(50));
     }
 
     #[test]

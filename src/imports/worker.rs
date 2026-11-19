@@ -27,8 +27,8 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 pub(super) struct Ontology {
     pub(super) analysis: Arc<Analysis>,
     pub(super) imports: Vec<String>,
-    /// Where and why the document stopped being read, if it did before its
-    /// end ("line L, column C: why").
+    /// Where and why the document has its first error, if it has one
+    /// ("line L, column C: why"): what its errors break is not loaded.
     pub(super) truncated: Option<String>,
 }
 
@@ -131,7 +131,7 @@ pub(super) fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool)
                     let st = match &onto.truncated {
                         Some(why) => {
                             let message = format!(
-                                "Import <{iri}> is loaded only in part: {location} has an error at {why}. Nothing after it is loaded"
+                                "Import <{iri}> is loaded only in part: {location} has an error at {why}. What its errors break is not loaded"
                             );
                             Status::Truncated(location, message)
                         }

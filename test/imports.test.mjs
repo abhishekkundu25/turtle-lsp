@@ -166,7 +166,8 @@ test("an import mapped by a local catalog makes its terms (and its imports') kno
     })
     assert.equal(def.length, 1, JSON.stringify(def))
     assert.match(def[0].uri, /\/vendor\/gear\.rdf$/)
-    assert.deepEqual(def[0].range, { start: { line: 8, character: 4 }, end: { line: 8, character: 45 } })
+    // At the value that names it: `#teeth` of `rdf:about="#teeth"`.
+    assert.deepEqual(def[0].range, { start: { line: 8, character: 37 }, end: { line: 8, character: 43 } })
     // Imported terms are described: nothing to report, and imports are never diagnosed.
     const diags = await diagnosticsUntil(s, uri, (d) => d.length === 0)
     assert.deepEqual(diags, [])
@@ -568,7 +569,7 @@ test("imports in TriG and JSON-LD are read in their own syntax, whatever their I
 // the catalog: what is not read says so. The `.owl` files are workspace files
 // too: truncated.owl and quoted.owl state their ontology IRIs, so their
 // imports resolve in the workspace, with no catalog; truncated.owl's error
-// is its own (an import that stops early from outside the workspace warns:
+// is its own (an import with an error from outside the workspace warns:
 // see the fetched RDF/XML below).
 const UNREAD = "which turtle-lsp does not read\\. In Protégé: File > Save as > RDF/XML or Turtle"
 const FORMATS = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
@@ -587,7 +588,7 @@ const EXPECTED = [
   ["frames", 3, "unresolved-import", /could not be loaded: read as Turtle, none of its triples is usable: each has an undeclared prefix \(first error: .+\)\. In Protégé: File > Save as > RDF\/XML or Turtle$/],
 ]
 
-test("an import in an OWL syntax is named and not read; a workspace .owl that stops at an XML error is read up to it", async () => {
+test("an import in an OWL syntax is named and not read; a workspace .owl with an XML error is read but for what the error breaks", async () => {
   const root = tempDir("formats")
   fs.cpSync(path.join(fixtures, "imports"), root, { recursive: true })
   const ws = path.join(root, "ws")
@@ -597,7 +598,7 @@ test("an import in an OWL syntax is named and not read; a workspace .owl that st
   const s = await start(ws, path.join(root, "cache"))
   try {
     s.open(uri, FORMATS)
-    // Read up to the error, and in single-quoted entities.
+    // Read before the error, and in single-quoted entities.
     const dog = await hoverUntil(s, uri, positionOf(FORMATS, "t:Dog", 3), "Truncated dog")
     await hoverUntil(s, uri, positionOf(FORMATS, "t:Cat", 3), "Truncated cat")
     const bird = await hoverUntil(s, uri, positionOf(FORMATS, "q:Bird", 3), "Quoted bird")
@@ -622,7 +623,8 @@ test("an import in an OWL syntax is named and not read; a workspace .owl that st
       assert.equal(d.severity, severity, name)
       assert.match(d.message, message, name)
     }
-    // After the error nothing is known; the import itself is described in
+    // The class after the error is read as a property of the one the error
+    // leaves open, so it has no label; the import itself is described in
     // the workspace, so it gets no warning.
     assert.doesNotMatch(await hoverText(s, uri, positionOf(FORMATS, "t:Cow", 3)), /Truncated cow/)
     assert.ok(!diags.some((d) => d.code === "import-truncated"), JSON.stringify(diags))
@@ -706,7 +708,7 @@ test("an owl:imports of a workspace .owl that states its ontology IRI needs no c
   assert.equal(r.stdout, "")
 })
 
-test("a fetched RDF/XML that stops at an error warns, from the web and from the cache; a fetched OWL/XML is named", async () => {
+test("a fetched RDF/XML with an error warns, from the web and from the cache; a fetched OWL/XML is named", async () => {
   const w = remoteWorkspace("cut", `${base}/cut.rdf`)
   const at = positionOf(w.text, `<${base}/cut.rdf>`, 0)
   const truncated = (d) => d.find((x) => x.code === "import-truncated")
@@ -717,7 +719,7 @@ test("a fetched RDF/XML that stops at an error warns, from the web and from the 
       const d = truncated(await diagnosticsUntil(s, w.uri, (d) => truncated(d) !== undefined))
       assert.equal(d.severity, 2)
       assert.deepEqual(d.range.start, at)
-      assert.match(d.message, /has an error at line 5, column \d+: .+\. Nothing after it is loaded$/)
+      assert.match(d.message, /has an error at line 5, column \d+: .+\. What its errors break is not loaded$/)
       const text = `${w.text}<http://example.org/cut#First> a <http://example.org/cut#Second> .\n`
       s.change(w.uri, text, 2)
       await hoverUntil(s, w.uri, positionOf(text, "cut#First", 3), "First cut")
@@ -727,7 +729,7 @@ test("a fetched RDF/XML that stops at an error warns, from the web and from the 
   }
   const cached = fs.readdirSync(path.join(w.cache, "imports"))
   assert.equal(cached.length, 1, JSON.stringify(cached))
-  assert.match(fs.readFileSync(path.join(w.cache, "imports", cached[0]), "utf8"), /^# turtle-lsp cache for .*\n# turtle-lsp: the RDF\/XML stops at line 5, /)
+  assert.match(fs.readFileSync(path.join(w.cache, "imports", cached[0]), "utf8"), /^# turtle-lsp cache for .*\n# turtle-lsp: the RDF\/XML has an error at line 5, /)
 
   const o = remoteWorkspace("owx", `${base}/onto.owx`)
   const s = await start(o.ws, o.cache, { imports: { network: true } })

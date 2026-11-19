@@ -24,8 +24,8 @@
 //! every source is an [`Analysis`] like any other. A local RDF/XML file is
 //! analysed over its own text, so locations point into it; a fetched one is
 //! converted to N-Triples text first, which is what the cache keeps. A document in OWL/XML, Functional or Manchester syntax is not
-//! read, and the import says so; one whose RDF/XML has an error is loaded up to
-//! it, with a warning on the import that says where.
+//! read, and the import says so; one whose RDF/XML has errors is loaded but for
+//! what they break, with a warning on the import that says where the first is.
 //!
 //! All file and network work happens on one background thread, started on the
 //! first import and blocked on its job channel when there is nothing to do.
@@ -68,7 +68,7 @@ const KEY_PREFIX: &str = "import:";
 pub(crate) const FETCH_COMMAND: &str = "turtle.fetchImport";
 /// The code of the diagnostic on an import that is not loaded.
 const UNRESOLVED: &str = "unresolved-import";
-/// The code of the diagnostic on an import loaded only up to an error in it.
+/// The code of the diagnostic on an import with an error in it.
 const TRUNCATED: &str = "import-truncated";
 
 /// How an import was resolved.
@@ -78,8 +78,8 @@ pub enum Status {
     Local,
     /// Loaded from this file or URL.
     Loaded(String),
-    /// Loaded from this file or URL up to an error in it; the message says
-    /// where, and that the rest is not loaded.
+    /// Loaded from this file or URL but for what its errors break; the
+    /// message says where the first is.
     Truncated(String, String),
     /// Not loaded; the message says why and how to fix it.
     Unresolved(String),
@@ -533,7 +533,7 @@ impl Imports {
 }
 
 /// Diagnostics on the imports of `a`: information on one not loaded
-/// (`unresolved-import`), a warning on one loaded only up to an error in it
+/// (`unresolved-import`), a warning on one with an error in it
 /// (`import-truncated`). The status of each import is looked up by `status`.
 pub fn diagnostics_with<'s>(
     a: &Analysis,

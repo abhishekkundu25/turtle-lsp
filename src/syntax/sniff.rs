@@ -199,7 +199,7 @@ fn attributes(mut s: &str) -> Vec<(&str, &str)> {
 /// The offset of the `>` that ends the `<!` declaration (a DOCTYPE) at
 /// `start`, found as quick-xml finds it: the first `>` that closes every `<`
 /// after the `<!`, quotes not considered.
-pub(crate) fn declaration_end(bytes: &[u8], start: usize) -> Option<usize> {
+fn declaration_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (i, &b) in bytes.iter().enumerate().skip(start + 2) {
         match b {

@@ -4,7 +4,7 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
 use crate::settings::InlayLabels;
-use crate::syntax::Form;
+use crate::syntax::{Form, Syntax};
 use crate::vocab::VOCABS;
 use lsp_types::{InlayHint, InlayHintLabel, InlayHintTooltip, Position, Range};
 
@@ -18,7 +18,7 @@ pub fn inlay_hints(
     range: Range,
     mode: InlayLabels,
 ) -> Vec<InlayHint> {
-    if mode == InlayLabels::Off {
+    if mode == InlayLabels::Off || !hinted(a.parsed.syntax) {
         return vec![];
     }
     let from = a.offset(enc, range.start).unwrap_or(0);
@@ -40,6 +40,17 @@ pub fn inlay_hints(
         }));
     }
     out
+}
+
+/// Whether a document of `syntax` gets label hints. Not RDF/XML: a hint
+/// after an attribute value would sit inside its quotes, and one after an
+/// element name between it and its attributes; the editor's XML support
+/// owns that text.
+fn hinted(syntax: Syntax) -> bool {
+    match syntax {
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
+        Syntax::RdfXml => false,
+    }
 }
 
 /// The label hint for `iri`, written with local name `local` (the part of
@@ -202,6 +213,32 @@ mod tests {
         };
         assert!(hints(Analysis::new(uri.into(), text, Arc::default(), true)) > 0);
         assert_eq!(hints(Analysis::anchored(uri, text, Syntax::Turtle)), 0);
+    }
+
+    /// RDF/XML gets no hint, whether its references are exact (the
+    /// frontend's) or spelt as in Turtle: the syntax decides, not the form.
+    #[test]
+    fn rdfxml_gets_no_hint() {
+        use crate::features::rdfxml_fixture as fx;
+        let uri = "file:///w/onto.owl";
+        let hints = |a: Analysis| {
+            let a = Arc::new(a);
+            let mut k = Knowledge::default();
+            k.set(uri, Source::Open, a.clone());
+            let all = Range::new(Position::new(0, 0), Position::new(99, 0));
+            inlay_hints(&a, &k, Encoding::Utf16, all, InlayLabels::All).len()
+        };
+        assert!(hints(fx::turtle(uri)) > 0);
+        let read = fx::read(uri);
+        assert!(
+            read.parsed
+                .refs
+                .iter()
+                .any(|r| r.iri.as_str() == "http://example.org/A"
+                    && matches!(r.form, Form::PName { .. }))
+        );
+        assert_eq!(hints(read), 0);
+        assert_eq!(hints(fx::written(uri, fx::TURTLE)), 0);
     }
 
     #[test]

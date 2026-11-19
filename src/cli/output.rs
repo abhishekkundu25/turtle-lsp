@@ -428,7 +428,7 @@ pub(crate) const CODES: &[(&str, &str)] = &[
     ),
     (
         "import-truncated",
-        "An owl:imports target was loaded only up to an error in it",
+        "An owl:imports target has an error: what it breaks is not loaded",
     ),
     (
         "unbound-projection",

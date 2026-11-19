@@ -98,7 +98,8 @@ test("an .owl or .rdf file is read by its content: RDF/XML with blank nodes is d
   const res = engine.call("analyse", { files })
   assert.deepEqual(res.files.map((f) => f.kind), ["rdfxml", "rdfxml", "turtle"])
   assert.deepEqual(fileOf(res, "onto.owl").format, { status: "refused", guarantee: "same graph", reason: "RDF/XML" })
-  assert.deepEqual(withCode(fileOf(res, "data.rdf"), "xml-syntax").map((d) => d.range.start.line), [15])
+  // The element the stray end tag leaves open, and that end tag.
+  assert.deepEqual(withCode(fileOf(res, "data.rdf"), "xml-syntax").map((d) => d.range.start.line), [5, 15])
   const q = (text) => engine.call("query", { files: [{ name: "onto.owl", text: OWL }, { name: "q.rq", text }], query: "q.rq" })
   const members = q("SELECT ?m WHERE { ?c <http://www.w3.org/2002/07/owl#unionOf>/<http://www.w3.org/1999/02/22-rdf-syntax-ns#rest>*/<http://www.w3.org/1999/02/22-rdf-syntax-ns#first> ?m } ORDER BY ?m")
   assert.deepEqual(members.rows, [["<http://example.org/Cat>"], ["<http://example.org/Dog>"]])

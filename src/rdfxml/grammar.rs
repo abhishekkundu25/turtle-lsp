@@ -66,16 +66,14 @@
 //!   is not the IRI, the span is [`Form::Anchor`]: a value with an entity or
 //!   character reference, `rdf:ID` (a fragment), a name in the default
 //!   namespace (no colon), and `rdf:li` (`rdf:_n`). `rdf:about` and `rdf:ID`
-//!   are [`Role::Subject`], and every reference inside a triple term
-//!   [`Role::Quoted`];
+//!   are [`Role::Subject`], but for the `rdf:about` of a nested node element
+//!   that gives no triple of its own (a collection item that only names a
+//!   class): [`Role::Object`], as that IRI is in Turtle. Every reference
+//!   inside a triple term is [`Role::Quoted`];
 //! - the comments. No [`PrefixDecl`](crate::syntax::PrefixDecl): XML namespaces are scoped, and a
 //!   redeclared prefix is no mistake there;
 //! - blank nodes numbered in the order they first appear, so two parses of
 //!   one text are equal.
-
-// Nothing calls the grammar yet: the swap slice wires `rdfxml::parse` to it
-// and removes this.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use super::xml::{self, Attr, End, Event, Name, Ns, Refs, Scanner, Tag, Value};
 use crate::syntax::{
@@ -155,6 +153,11 @@ enum State {
         /// A `parseType="Resource"` blank node: the triple whose object it
         /// is, and where its content starts.
         patch: Option<(usize, u32)>,
+        /// The reference of a nested element's `rdf:about`, while the
+        /// element gives no triple of its own: at its end, it only names
+        /// the object of its property (or a collection item), as an IRI
+        /// written there in Turtle, and is [`Role::Object`].
+        names: Option<usize>,
     },
     Prop {
         env: Env,
@@ -767,9 +770,15 @@ impl<'a> Grammar<'a> {
             }
         }
         let subject_span;
+        let mut names = None;
         let subject = if let Some(attr) = a.about {
             subject_span = attr.value.span;
-            Node::Iri(self.iri_value(&env.base, &attr.value, Role::Subject))
+            let iri = self.iri_value(&env.base, &attr.value, Role::Subject);
+            let own = !a.props.is_empty() || a.type_.is_some() || type_.is_some();
+            if !top && !own {
+                names = Some(self.out.refs.len() - 1);
+            }
+            Node::Iri(iri)
         } else if let Some(attr) = a.id {
             subject_span = attr.value.span;
             Node::Iri(self.id(attr, &env.base))
@@ -809,6 +818,7 @@ impl<'a> Grammar<'a> {
             li: 0,
             top,
             patch: None,
+            names,
         });
     }
 
@@ -819,9 +829,14 @@ impl<'a> Grammar<'a> {
             ..env
         };
         let name = &tag.name;
-        let Some(State::Node { subject, li, .. }) = self.stack.last_mut() else {
+        let Some(State::Node {
+            subject, li, names, ..
+        }) = self.stack.last_mut()
+        else {
             unreachable!("a property element is in a node element")
         };
+        // It gives a triple of its own: `rdf:about` names its subject.
+        *names = None;
         let subject = subject.clone();
         let p = if name.is(RDF, "li") {
             *li += 1;
@@ -950,6 +965,7 @@ impl<'a> Grammar<'a> {
                     li: 0,
                     top: false,
                     patch: patch.map(|i| (i, tag.span.end)),
+                    names: None,
                 });
                 return;
             }
@@ -1028,9 +1044,15 @@ impl<'a> Grammar<'a> {
                 start,
                 top,
                 patch,
+                names,
                 ..
             } => {
                 let span = Span::new(start, end.span.end);
+                if let Some(r) = names.and_then(|i| self.out.refs.get_mut(i))
+                    && r.role == Role::Subject
+                {
+                    r.role = Role::Object;
+                }
                 if top && let Some(st) = self.out.statements.get_mut(self.statement as usize) {
                     st.span.end = end.span.end;
                 }
@@ -1590,6 +1612,48 @@ mod tests {
         assert_eq!(parse(text, None), p);
     }
 
+    /// A nested node element that only names an IRI (a collection item, or
+    /// a property's object) is a use of it, not a description.
+    #[test]
+    fn a_nested_element_that_only_names_an_iri_is_an_object() {
+        let text = concat!(
+            "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" ",
+            "xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:ex=\"http://example.org/\">\n",
+            "  <owl:Class rdf:about=\"http://example.org/A\">\n",
+            "    <owl:unionOf rdf:parseType=\"Collection\">\n",
+            "      <rdf:Description rdf:about=\"http://example.org/B\"/>\n",
+            "      <rdf:Description rdf:about=\"http://example.org/C\" ex:n=\"1\"/>\n",
+            "      <ex:K rdf:about=\"http://example.org/D\"/>\n",
+            "    </owl:unionOf>\n",
+            "    <ex:p><rdf:Description rdf:about=\"http://example.org/E\"></rdf:Description></ex:p>\n",
+            "    <ex:p><rdf:Description rdf:about=\"http://example.org/F\"><ex:q>x</ex:q></rdf:Description></ex:p>\n",
+            "  </owl:Class>\n",
+            "  <rdf:Description rdf:about=\"http://example.org/G\"/>\n",
+            "</rdf:RDF>\n",
+        );
+        let p = agrees(text, None);
+        let role = |iri: &str| {
+            let roles: Vec<Role> = p
+                .refs
+                .iter()
+                .filter(|r| r.iri.as_str() == format!("http://example.org/{iri}"))
+                .map(|r| r.role)
+                .collect();
+            roles
+        };
+        for (iri, want) in [
+            ("A", Role::Subject),
+            ("B", Role::Object),
+            ("C", Role::Subject),
+            ("D", Role::Subject),
+            ("E", Role::Object),
+            ("F", Role::Subject),
+            ("G", Role::Subject),
+        ] {
+            assert_eq!(role(iri), [want], "{iri}");
+        }
+    }
+
     #[test]
     fn rdf_12_terms_read_as_oxrdfxml_reads_them() {
         let head = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:its="http://www.w3.org/2005/11/its" xmlns:ex="http://example.org/""#;
@@ -2029,18 +2093,25 @@ mod tests {
         );
     }
 
+    /// Cut and tag-edited corpus files: each survived, and read as
+    /// `oxrdfxml` reads it when it reads it. `CHAOS_ITERS=n` makes it n
+    /// mutations of FOAF and of BFO and n / 8 of RO (1.2 MB), two thirds of
+    /// them cuts; `CHAOS_SEED` changes the seed.
     #[test]
     fn mutated_corpus_files_are_survived() {
-        for (name, cuts, edits) in [
-            ("foaf.rdf", 200, 100),
-            ("obo-bfo.rdf", 200, 100),
-            ("obo-ro.rdf", 200, 100),
-            ("obo-pato.rdf", 3, 2),
+        let env = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+        let seed = env("CHAOS_SEED").unwrap_or(0x9E37_79B9_7F4A_7C15);
+        let n = env("CHAOS_ITERS").map_or(300, |n| n as usize);
+        for (name, count) in [
+            ("foaf.rdf", n),
+            ("obo-bfo.rdf", n),
+            ("obo-ro.rdf", if n == 300 { n } else { n / 8 }),
+            ("obo-pato.rdf", 5),
         ] {
             let Some((_, text)) = corpus(name) else {
                 continue;
             };
-            fuzz(name, &text, cuts, edits, 0x9E37_79B9_7F4A_7C15);
+            fuzz(name, &text, count * 2 / 3, count - count * 2 / 3, seed);
         }
     }
 

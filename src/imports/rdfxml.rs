@@ -4,18 +4,17 @@
 //! by that frontend directly, over the file's own text.
 
 use crate::rdf::dataset::node_term;
-use crate::syntax::SyntaxError;
+use crate::syntax::{Iri, Node, SyntaxError};
+use oxilangtag::LanguageTag;
 
-/// RDF/XML as N-Triples text, and where and why the XML stopped early: at
-/// its first error, as "line L, column C: why" (columns count characters).
-/// The triples read before that error are kept. Fails when the error comes
-/// before the first triple, or the text is refused before it is read.
+/// RDF/XML as N-Triples text, and its first error, as "line L, column C:
+/// why" (columns count characters). The frontend reads on past an error, so
+/// the triples after it are kept too, except those with an IRI or a
+/// language tag that does not parse (the frontend keeps them as written,
+/// and N-Triples could not hold them). Fails when there is an error and no
+/// triple.
 pub fn rdf_xml_to_ntriples(bytes: &[u8], base: &str) -> Result<(String, Option<String>), String> {
     let text = String::from_utf8_lossy(bytes);
-    // A refusal has no place: it is about the whole text.
-    if let Some(why) = crate::rdfxml::refused(&text) {
-        return Err(why);
-    }
     let parsed = crate::rdfxml::parse(&text, Some(base));
     let stop = parsed.errors.first().map(|e| stopped_at(&text, e));
     if parsed.triples.is_empty()
@@ -24,16 +23,38 @@ pub fn rdf_xml_to_ntriples(bytes: &[u8], base: &str) -> Result<(String, Option<S
         return Err(stop);
     }
     let mut out = String::new();
+    // Only an error can leave a term that does not parse.
+    let check = !parsed.errors.is_empty();
     for t in &parsed.triples {
         use std::fmt::Write;
+        if check && !(is_iri(t.p) && writable(&t.s) && writable(&t.o)) {
+            continue;
+        }
         let (s, o) = (node_term(&t.s, 0), node_term(&t.o, 0));
         let _ = writeln!(out, "{s} <{}> {o} .", t.p);
     }
     Ok((out, stop))
 }
 
-/// Where and why an RDF/XML text stops being read: "line L, column C: why",
-/// at the end of the error's span.
+/// Whether N-Triples can hold `n` as it is: its IRIs are absolute IRIs and
+/// its language tag is one.
+fn writable(n: &Node) -> bool {
+    match n {
+        Node::Iri(i) => is_iri(*i),
+        Node::Blank(_) => true,
+        Node::Literal { datatype, lang, .. } => {
+            is_iri(*datatype) && lang.is_none_or(|l| LanguageTag::parse(l.as_str()).is_ok())
+        }
+        Node::Triple(t) => writable(&t.0) && is_iri(t.1) && writable(&t.2),
+    }
+}
+
+fn is_iri(i: Iri) -> bool {
+    oxiri::Iri::parse(i.as_str()).is_ok()
+}
+
+/// Where and why an RDF/XML text has an error: "line L, column C: why", at
+/// the end of the error's span.
 pub(super) fn stopped_at(text: &str, e: &SyntaxError) -> String {
     let (line, column) = line_column(text.as_bytes(), u64::from(e.span.end));
     format!("line {line}, column {column}: {}", e.message())
@@ -104,23 +125,32 @@ mod tests {
         let nt = ntriples(&xml);
         assert!(nt.contains("<http://example.org/q#S>"), "{nt}");
         assert!(nt.contains("<http://example.org/d#T>"), "{nt}");
-        // A single-quoted value holding `"` is left to the parser, which
-        // refuses it.
-        let quoted = with_doctype("<!ENTITY e 'say \"hi\"'>", "");
-        assert!(rdf_xml_to_ntriples(quoted.as_bytes(), "http://example.org/").is_err());
+        // A single-quoted value may hold `"`.
+        let quoted = with_doctype(
+            "<!ENTITY e 'say \"hi\"'>",
+            "<rdf:Description rdf:about=\"http://example.org/s\"><rdf:value>&e;</rdf:value></rdf:Description>",
+        );
+        let nt = ntriples(&quoted);
+        assert!(nt.contains("\"say \\\"hi\\\"\""), "{nt}");
     }
 
     #[test]
-    fn a_mid_file_error_keeps_the_triples_before_it_and_says_where() {
+    fn a_mid_file_error_keeps_the_triples_around_it_and_says_where() {
         let xml = format!(
-            "<?xml version=\"1.0\"?>\n<rdf:RDF {RDF} xmlns:ex=\"http://example.org/\">\n  <ex:A rdf:about=\"http://example.org/a\"/>\n  <ex:B rdf:about=\"http://example.org/b\"></ex:C>\n  <ex:D rdf:about=\"http://example.org/d\"/>\n</rdf:RDF>\n"
+            "<?xml version=\"1.0\"?>\n<rdf:RDF {RDF} xmlns:ex=\"http://example.org/\">\n  <ex:A rdf:about=\"http://example.org/a\"/>\n  <ex:B rdf:about=\"http://example.org/b\" rdf:nodeID=\"n\"/>\n  <ex:D rdf:about=\"http://example.org/d\"/>\n</rdf:RDF>\n"
         );
         let (nt, truncated) = rdf_xml_to_ntriples(xml.as_bytes(), "http://example.org/").unwrap();
+        // The reading goes on past the error.
         assert!(nt.contains("<http://example.org/a>"), "{nt}");
-        assert!(!nt.contains("<http://example.org/d>"), "{nt}");
+        assert!(nt.contains("<http://example.org/b>"), "{nt}");
+        assert!(nt.contains("<http://example.org/d>"), "{nt}");
         let truncated = truncated.expect("the error is reported");
-        // The end tag on line 4 that closes nothing open: after it.
-        assert!(truncated.starts_with("line 4, column 49: "), "{truncated}");
+        // The first error by place, at the end of its span (the name
+        // `rdf:nodeID`, which is not read).
+        assert_eq!(
+            truncated,
+            "line 4, column 52: rdf:about and rdf:nodeID cannot be on one node element"
+        );
         // Columns count characters, not bytes.
         assert_eq!(line_column("a\né😀x".as_bytes(), 8), (2, 3));
         assert_eq!(line_column(b"ab", 99), (1, 3));
@@ -148,27 +178,71 @@ mod tests {
             Some("Gear \"wheel\"")
         );
         assert!(rdf_xml_to_ntriples(b"<rdf:RDF", "http://ex.com/").is_err());
-        // What the frontend's limits refuse is not converted.
-        let mut long = b"<?xml version='1.0'?><rdf:RDF ".to_vec();
+        // A long start tag is read: no XML reader with a cost per tag that
+        // grows faster than its size is left.
+        let mut long = format!("<?xml version='1.0'?><rdf:RDF {RDF} ").into_bytes();
         long.extend(std::iter::repeat_n(b' ', 70 * 1024));
-        long.extend(b"/>");
-        let e = rdf_xml_to_ntriples(&long, "http://ex.com/").unwrap_err();
-        assert!(e.contains("KiB"), "{e}");
-        assert_eq!(e, "an XML tag is longer than 64 KiB");
-        let laughs = with_doctype("<!ENTITY a \"x\">\n<!ENTITY b \"&a;&a;\">", "");
-        let e = rdf_xml_to_ntriples(laughs.as_bytes(), "http://ex.com/").unwrap_err();
+        long.extend(b"><rdf:Description rdf:about=\"http://ex.com/a\" rdf:value=\"v\"/></rdf:RDF>");
+        let (nt, truncated) = rdf_xml_to_ntriples(&long, "http://ex.com/").unwrap();
         assert_eq!(
-            e,
-            "its DOCTYPE declares an entity that refers to another entity; refused to avoid entity expansion"
+            (nt.as_str(), truncated),
+            (
+                "<http://ex.com/a> <http://www.w3.org/1999/02/22-rdf-syntax-ns#value> \"v\" .\n",
+                None
+            )
         );
-        // A local file says the same.
-        let e = parse(laughs.as_bytes(), Format::RdfXml, "http://ex.com/", true)
-            .err()
-            .unwrap();
+        // Entities that refer to entities expand, within the scanner's
+        // budget, in a fetched import and in a local file alike.
+        let laughs = with_doctype(
+            "<!ENTITY a \"x\">\n<!ENTITY b \"&a;&a;\">",
+            "<rdf:Description rdf:about=\"http://ex.com/s\"><rdf:value>&b;</rdf:value></rdf:Description>",
+        );
+        let nt = ntriples(&laughs);
+        assert!(nt.contains("\"xx\""), "{nt}");
+        let o = parse(laughs.as_bytes(), Format::RdfXml, "http://ex.com/", true).unwrap();
+        assert_eq!(o.analysis.parsed.triples.len(), 1);
+        let mut decls = String::from("<!ENTITY l0 \"lol\">");
+        for i in 1..10 {
+            let p = i - 1;
+            decls.push_str(&format!(
+                "\n<!ENTITY l{i} \"{}\">",
+                format!("&l{p};").repeat(10)
+            ));
+        }
+        let bomb = with_doctype(
+            &decls,
+            "<rdf:Description rdf:about=\"http://ex.com/s\"><rdf:value>&l9;</rdf:value></rdf:Description>",
+        );
+        let out = rdf_xml_to_ntriples(bomb.as_bytes(), "http://ex.com/");
+        let (nt, truncated) = out.clone().unwrap_or_default();
+        assert!(
+            nt.len() < 64 * 16 * 1024 + 64 * 1024 + bomb.len() * 16,
+            "{}",
+            nt.len()
+        );
+        assert!(out.is_err() || truncated.is_some(), "{out:?}");
+    }
+
+    /// An IRI or a language tag that does not parse is kept as written by
+    /// the frontend (with an error); the N-Triples leave its triple out, so
+    /// the cached Turtle reads back as the same graph.
+    #[test]
+    fn terms_that_do_not_parse_are_left_out() {
+        let xml = format!(
+            "<rdf:RDF {RDF} xmlns:ex=\"http://example.org/\">\n  <rdf:Description rdf:about=\"http://example.org/a\">\n    <ex:p rdf:resource=\"http://example.org/x&gt; &lt;y\"/>\n    <ex:q xml:lang=\"not a tag\">v</ex:q>\n    <ex:r>kept</ex:r>\n  </rdf:Description>\n</rdf:RDF>\n"
+        );
+        let from_xml = crate::rdfxml::parse(&xml, Some("http://example.org/"));
+        assert_eq!(from_xml.triples.len(), 3, "{:?}", from_xml.errors);
+        assert_eq!(from_xml.errors.len(), 2, "{:?}", from_xml.errors);
+        let (nt, truncated) = rdf_xml_to_ntriples(xml.as_bytes(), "http://example.org/").unwrap();
+        assert!(truncated.is_some());
         assert_eq!(
-            e,
-            "its DOCTYPE declares an entity that refers to another entity; refused to avoid entity expansion"
+            nt,
+            "<http://example.org/a> <http://example.org/r> \"kept\" .\n"
         );
+        let o = parse(nt.as_bytes(), Format::Turtle, "http://example.org/", false).unwrap();
+        assert!(o.analysis.parsed.errors.is_empty(), "{nt}");
+        assert_eq!(o.analysis.parsed.triples.len(), 1);
     }
 
     #[test]

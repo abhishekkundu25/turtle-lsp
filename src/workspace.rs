@@ -4410,6 +4410,78 @@ pub(crate) mod tests {
         assert!(all * 5 < full * n * 3, "{msg}; {keys} spliced {all:?}");
         assert!(first.as_millis() < 200, "{msg}");
     }
+
+    /// Typing in a label in the middle of PATO (20 MB of RDF/XML, from
+    /// `test/corpus`), one character at a time, as the server does on each
+    /// keystroke: the analysis in full (RDF/XML is not spliced) with the
+    /// knowledge index's facts, then the diagnostics with the lints of
+    /// decision 8 (checked again in full: RDF/XML is not followed). On an
+    /// M-series laptop (load 1.7, medians of 7 keystrokes, three runs): 87
+    /// to 91 ms a keystroke, the analysis 77 to 81 ms of it (the parse about
+    /// 70, `timing_rdfxml_parse`) and the diagnostics 9 to 10 ms; the open
+    /// 103 to 131 ms. That is the cost per megabyte of a Turtle file
+    /// analysed in full (`timing_typing_in_the_middle_of_a_big_file_is_spliced`).
+    /// The bound leaves the room CI runners need (a Windows runner was 2.3
+    /// times slower there) and catches a keystroke gone badly wrong; past
+    /// it, a large open RDF/XML file would be analysed on save only.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn timing_a_keystroke_in_a_large_rdfxml_file() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus/obo-pato.rdf");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("skipped: no {} (npm run corpus)", path.display());
+            return;
+        };
+        let uri = "file:///w/obo-pato.owl";
+        let mut ws = Workspace::default();
+        let t = std::time::Instant::now();
+        ws.open_doc(uri.into(), text.clone(), 1);
+        let a = ws.analysis(uri).unwrap();
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty());
+        let first = kept_diagnostics(&mut ws, uri);
+        let open = t.elapsed();
+        // A label in the middle of the file: type after its first letter.
+        let mid = text[text.len() / 2..].find("<rdfs:label").unwrap() + text.len() / 2;
+        let label = mid + text[mid..].find('>').unwrap() + 2;
+        let line = text[..label].matches('\n').count() as u32;
+        let col0 = (label - text[..label].rfind('\n').map_or(0, |n| n + 1)) as u32;
+        let settings = crate::settings::Settings::default();
+        let inputs = DiagnosticInputs::new(&settings);
+        let (mut analysis, mut diagnostics, mut keystroke) = (Vec::new(), Vec::new(), Vec::new());
+        for (version, col) in (2..9).zip(col0..) {
+            let t = std::time::Instant::now();
+            ws.change_doc(
+                uri,
+                version,
+                vec![ranged((line, col), (line, col), "x")],
+                Encoding::Utf16,
+            );
+            let a = ws.analysis(uri).unwrap();
+            let analysed = t.elapsed();
+            let got = ws.diagnostics(uri, &a, Encoding::Utf16, &inputs);
+            let all = t.elapsed();
+            assert_eq!(got.len(), first.len());
+            analysis.push(analysed);
+            diagnostics.push(all - analysed);
+            keystroke.push(all);
+        }
+        let median = |v: &mut [std::time::Duration]| {
+            v.sort();
+            v[v.len() / 2]
+        };
+        let (analysis, diagnostics, keystroke) = (
+            median(&mut analysis),
+            median(&mut diagnostics),
+            median(&mut keystroke),
+        );
+        eprintln!(
+            "obo-pato.owl: open {open:?} ({} diagnostics); a keystroke {keystroke:?}: analysis {analysis:?}, diagnostics {diagnostics:?}",
+            first.len()
+        );
+        assert!(keystroke.as_millis() < 750, "{keystroke:?}");
+    }
 }
 
 #[cfg(test)]
