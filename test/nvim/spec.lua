@@ -13,7 +13,8 @@ local TIMEOUT = 10000
 
 -- The repository is the plugin under test: its plugin/ (file types, modelines,
 -- the reference-lens command) and lsp/turtle_lsp.lua (filetypes, root markers)
--- are the shipped files, not a copy. Only the server's command is replaced.
+-- are the shipped files, not a copy. Only the server's command is replaced,
+-- and each client's exit is recorded.
 local repo = vim.fs.dirname(vim.fs.dirname(fixtures))
 vim.opt.runtimepath:prepend(repo)
 vim.cmd("filetype on")
@@ -29,7 +30,14 @@ vim.api.nvim_create_autocmd("BufReadPre", {
     vim.opt_local.modeline = false
   end,
 })
-vim.lsp.config("turtle_lsp", { cmd = { server } })
+-- Each client's exit, by id: what Neovim's own exit report says.
+local exited = {}
+vim.lsp.config("turtle_lsp", {
+  cmd = { server },
+  on_exit = function(code, signal, id)
+    exited[id] = { code = code, signal = signal }
+  end,
+})
 vim.lsp.enable("turtle_lsp")
 
 local failed = 0
@@ -56,6 +64,23 @@ vim.notify = function(msg, level, ...)
     table.insert(client_errors, msg)
   end
   return orig_notify(msg, level, ...)
+end
+
+-- Remove from `errors`, after its first `from`, the report Neovim makes of
+-- the exit `e` of a client called `name`, if it makes one: one message, so
+-- another client's exit report stays.
+local function drop_exit_report(errors, from, name, e)
+  -- Neovim reports an exit unless it is code 0 with no signal or SIGTERM.
+  if not e or (e.code == 0 and (e.signal == 0 or e.signal == 15)) then
+    return
+  end
+  local report = string.format("Client %s quit with exit code %s and signal %s.", name, e.code, e.signal)
+  for i = from + 1, #errors do
+    if tostring(errors[i]):sub(1, #report) == report then
+      table.remove(errors, i)
+      return
+    end
+  end
 end
 
 local function open(path)
@@ -388,6 +413,30 @@ check("a .owl buffer's client comes back after vim.lsp.enable's FileType handler
   assert(back, "client not attached after FileType")
 end)
 
+check("a client's exit report is dropped only for that client's own exit", function()
+  local log = ". Check log for errors: lsp.log"
+  local errors = {
+    "an earlier error",
+    "Client turtle_lsp quit with exit code 1 and signal 0" .. log,
+    "Client other quit with exit code 1 and signal 0" .. log,
+    "Client turtle_lsp quit with exit code 2 and signal 0" .. log,
+    "Client turtle_lsp quit with exit code 1 and signal 0" .. log,
+  }
+  drop_exit_report(errors, 0, "turtle_lsp", { code = 1, signal = 0 })
+  local left = table.concat(errors, " || ")
+  assert(#errors == 4 and errors[1] == "an earlier error", left)
+  assert(errors[2]:find("^Client other ") and errors[3]:find("exit code 2 "), left)
+  assert(errors[4]:find("exit code 1 "), "the second report of the same exit stays: " .. left)
+  -- Code 0 and SIGTERM (15) are not reported: nothing is dropped.
+  drop_exit_report(errors, 0, "turtle_lsp", { code = 0, signal = 15 })
+  drop_exit_report(errors, 0, "turtle_lsp", nil)
+  assert(#errors == 4, table.concat(errors, " || "))
+  -- Only after `from`.
+  local before = { "Client turtle_lsp quit with exit code 1 and signal 0" .. log }
+  drop_exit_report(before, 1, "turtle_lsp", { code = 1, signal = 0 })
+  assert(#before == 1, "dropped a report from before")
+end)
+
 check("a .owl buffer's client that exits or is stopped does not come back", function()
   -- No client attached: gone, after its detach has had time to act.
   local function stays_gone(b, what)
@@ -407,11 +456,10 @@ check("a .owl buffer's client that exits or is stopped does not come back", func
     local before = #client_errors
     c.rpc.terminate()
     stays_gone(owl_buf, "exited")
-    for i = #client_errors, before + 1, -1 do
-      if tostring(client_errors[i]):find("quit with exit code", 1, true) then
-        table.remove(client_errors, i)
-      end
-    end
+    assert(vim.wait(TIMEOUT, function()
+      return exited[c.id] ~= nil
+    end, 20), "no exit recorded")
+    drop_exit_report(client_errors, before, c.name, exited[c.id])
     -- Read again, the file gets a new client; stopped, it stays stopped.
     vim.api.nvim_buf_call(owl_buf, function()
       vim.cmd.edit()
