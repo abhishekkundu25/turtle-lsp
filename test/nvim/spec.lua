@@ -402,8 +402,16 @@ check("a .owl buffer's client that exits or is stopped does not come back", func
     local c = vim.lsp.get_clients({ bufnr = owl_buf, name = "turtle_lsp" })[1]
     assert(c and c.id ~= client.id, "the .owl buffer shares the workspace client")
     -- The server exits on its own (as on a crash): the client is not restarted.
+    -- Neovim reports that exit when its code is not 0, as on Windows; that
+    -- one message is this check's own doing, not an error to surface.
+    local before = #client_errors
     c.rpc.terminate()
     stays_gone(owl_buf, "exited")
+    for i = #client_errors, before + 1, -1 do
+      if tostring(client_errors[i]):find("quit with exit code", 1, true) then
+        table.remove(client_errors, i)
+      end
+    end
     -- Read again, the file gets a new client; stopped, it stays stopped.
     vim.api.nvim_buf_call(owl_buf, function()
       vim.cmd.edit()
