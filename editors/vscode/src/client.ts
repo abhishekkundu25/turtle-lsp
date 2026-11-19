@@ -10,9 +10,11 @@
 /**
  * The workspace's RDF and SPARQL files: the `workspaceContains` activation
  * glob (test/manifest.test.mjs checks they are the same) and the extensions
- * of src/workspace/kinds.rs.
+ * of src/workspace/kinds.rs. `.owl` and `.rdf` (RDF/XML, or whatever syntax
+ * their content has) are read and watched as workspace files, but no
+ * document selector names them: VS Code's XML language keeps them.
  */
-export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld}"
+export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf}"
 
 /** The languages the extension contributes; the server handles each. */
 export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as const

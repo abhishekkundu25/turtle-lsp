@@ -13,6 +13,7 @@ import { esc } from "../app/dom.js"
 import { lineStarts, offsetOf, positionAt, lineAt, applyEdits } from "../app/text.js"
 import { dirOf, nameOf, join, under, uriOf, ROOT } from "../app/paths.js"
 import { KNOWN, LIMITS, admit, picked, walkDropped, walkHandle, readTextCapped, limitsNote } from "../app/files.js"
+import { languageOf } from "../app/editor-lsp.js"
 import { resolveIn, listen } from "./static-server.mjs"
 import { wanted, checkBudget, copyMonaco, WASM_GZIP_BUDGET } from "../build.mjs"
 
@@ -98,7 +99,31 @@ test("one set of limits: admit leaves out unknown extensions, big files and what
   assert.equal(admit(entries, { onlyKnown: false }).take.length, 4, "with any extension, only the big one is left out")
   assert.match(limitsNote(), /10 MB.*at most 1000/)
   assert.ok(KNOWN.test("x.TTL") && !KNOWN.test("x.md"))
+  for (const name of ["onto.owl", "data.rdf", "ONTO.OWL"]) assert.ok(KNOWN.test(name), name)
+  for (const name of ["data.xml", "onto.owx", "onto.ofn", "onto.omn"]) assert.ok(!KNOWN.test(name), name)
+  assert.match(limitsNote(), /RDF\/XML \(\.owl, \.rdf\)/)
   assert.deepEqual(picked([{ name: "a.ttl" }, { name: "b.ttl", webkitRelativePath: "dir/b.ttl" }]).map((e) => e.path), ["a.ttl", "dir/b.ttl"])
+})
+
+test("the toolbox's file picker accepts exactly the extensions a folder contributes", () => {
+  const html = fs.readFileSync(path.join(app, "toolbox.html"), "utf8")
+  const accept = html.match(/id="picker"[^>]*accept="([^"]*)"/)[1].split(",")
+  const listed = KNOWN.source.match(/\(([^)]*)\)/)[1].split("|").map((e) => `.${e}`)
+  assert.deepEqual(accept, listed)
+  assert.ok(accept.includes(".owl") && accept.includes(".rdf"), accept.join(","))
+})
+
+test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which no server provider serves", () => {
+  for (const name of ["onto.owl", "dir/data.RDF"]) assert.equal(languageOf(name), "xml", name)
+  assert.equal(languageOf("carol.jsonld"), "json")
+  assert.equal(languageOf("a.ttl"), "turtle")
+  // The file tree's badge and the status bar name the language.
+  const editor = fs.readFileSync(path.join(app, "editor.js"), "utf8")
+  assert.match(editor, /const ICON = \{[^}]*\bxml: "XML"/)
+  assert.match(editor, /xml: "RDF\/XML" \}\[languageOf\(file\)\]/)
+  // connect() registers the server's features on its languages and JSON, never XML.
+  const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
+  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json"\]\)/)
 })
 
 test("a dropped folder is walked with the limits: hidden folders and node_modules are not entered, unknown files count as skipped", async () => {

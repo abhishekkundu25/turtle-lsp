@@ -219,11 +219,12 @@ test("an opened folder adds its RDF and SPARQL files, subfolders included, and s
     fs.writeFileSync(path.join(dir, "people.ttl"), "@prefix ex: <https://e.org/> .\nex:a ex:b ex:c .\n")
     fs.writeFileSync(path.join(dir, "shapes", "people.ttl"), "@prefix ex: <https://e.org/> .\nex:s ex:p ex:o .\n")
     fs.writeFileSync(path.join(dir, "ask.rq"), "ASK { ?s ?p ?o }\n")
+    fs.writeFileSync(path.join(dir, "onto.owl"), '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>\n')
     fs.writeFileSync(path.join(dir, "notes.md"), "# not RDF\n")
     await page.getByRole("button", { name: "Open folder" }).click()
     await page.locator("#folder-picker").setInputFiles(dir)
     await settled(page)
-    for (const name of ["people.ttl", "shapes/people.ttl", "ask.rq"]) {
+    for (const name of ["people.ttl", "shapes/people.ttl", "ask.rq", "onto.owl"]) {
       await page.getByRole("button", { name, exact: true }).waitFor()
     }
     assert.equal(await page.getByRole("button", { name: "notes.md", exact: true }).count(), 0)

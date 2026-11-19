@@ -22,7 +22,7 @@ const SAVE_DELAY_MS = 300
 // A fetched ontology larger than this is refused.
 const MAX_FETCH_BYTES = LIMITS.fileBytes
 const FETCH_TIMEOUT_MS = 30_000
-const ICON = { turtle: "TTL", trig: "TRIG", ntriples: "NT", nquads: "NQ", sparql: "RQ", json: "LD" }
+const ICON = { turtle: "TTL", trig: "TRIG", ntriples: "NT", nquads: "NQ", sparql: "RQ", json: "LD", xml: "XML" }
 
 // ---- state --------------------------------------------------------------------------
 
@@ -381,7 +381,7 @@ function renderStatus() {
   $("status-labels").textContent = settings.labelsText()
   // The language and the cursor of the file shown; none while the graph is.
   const file = shownFile()
-  $("status-lang").textContent = file ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL", json: "JSON-LD" }[languageOf(file)] : ""
+  $("status-lang").textContent = file ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL", json: "JSON-LD", xml: "RDF/XML" }[languageOf(file)] : ""
   const pos = file && editor.getPosition()
   $("status-pos").textContent = pos ? `Ln ${pos.lineNumber}, Col ${pos.column}` : ""
 }

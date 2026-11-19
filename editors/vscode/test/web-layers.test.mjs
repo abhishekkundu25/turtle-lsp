@@ -19,6 +19,14 @@ test("a disk file not in the editor is opened, by its file name's language", () 
   assert.deepEqual(l.diskChanged(A, DISK), [opened(A, 1, DISK)])
 })
 
+test("an .owl or .rdf file read from disk is opened with no language, so the server decides its syntax", () => {
+  const l = new Layers()
+  const xml = '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>\n'
+  for (const uri of ["vscode-test-web://mount/onto.owl", "vscode-test-web://mount/data.rdf"]) {
+    assert.deepEqual(l.diskChanged(uri, xml), [opened(uri, 1, xml)])
+  }
+})
+
 test("a document only the editor has is opened with its language", () => {
   const l = new Layers()
   assert.deepEqual(editorOpen(l), [opened(A, 1, EDITED, "turtle")])

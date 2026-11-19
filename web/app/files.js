@@ -4,7 +4,7 @@
 // under one set of limits so no folder can stall a tab.
 
 /** The files a folder contributes, by extension; anything else is skipped. */
-export const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/i
+export const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld|owl|rdf)$/i
 
 export const LIMITS = {
   files: 1000, // files taken in one import
@@ -100,7 +100,7 @@ export function admit(entries, { limits = LIMITS, have = 0, onlyKnown = true } =
 }
 
 /** Why files are left out, for a note after `admit`. */
-export const limitsNote = (limits = LIMITS) => `only Turtle, TriG, N-Triples, N-Quads, JSON-LD and SPARQL files up to ${limits.fileBytes / 1024 / 1024} MB are read, at most ${limits.files}`
+export const limitsNote = (limits = LIMITS) => `only Turtle, TriG, N-Triples, N-Quads, JSON-LD, RDF/XML (.owl, .rdf) and SPARQL files up to ${limits.fileBytes / 1024 / 1024} MB are read, at most ${limits.files}`
 
 /**
  * The text of a fetch `response`, read as it arrives; null (and the rest not

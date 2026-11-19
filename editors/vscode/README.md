@@ -83,6 +83,10 @@ Editing works as in Turtle:
 
 Their terms count in your Turtle and SPARQL files. Common contexts (schema.org, ActivityStreams, Verifiable Credentials, DID) are bundled; other remote contexts are fetched only with `turtle.imports.network` on.
 
+## RDF/XML (`.owl`, `.rdf`)
+
+`.owl` and `.rdf` files are read as part of the workspace: their triples count in your Turtle and SPARQL files, in Run query, SHACL validation, reasoning and the workspace graph, and an `owl:imports` of one needs no catalog. With `turtle.diagnostics.workspace` on (always in the browser), their problems (broken XML, a syntax the server cannot read) appear in the Problems panel. The file's content decides its syntax: RDF/XML, or Turtle or JSON-LD under that name. They keep VS Code's XML language: hover, completion, rename and formatting do not work inside them yet, and nothing the extension does changes them.
+
 ## Project prefixes
 
 If your Turtle files share a prefix header instead of declaring prefixes

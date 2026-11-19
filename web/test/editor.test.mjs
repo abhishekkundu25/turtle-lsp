@@ -137,6 +137,31 @@ test("a SHACL query in a Turtle string gets SPARQL suggestions as you type; othe
   }
 })
 
+test("an .owl or .rdf file opens with Monaco's XML colouring, named RDF/XML", async () => {
+  const { page, errors, close } = await open()
+  try {
+    const owl = '<?xml version="1.0"?>\n<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"\n         xmlns:owl="http://www.w3.org/2002/07/owl#">\n  <owl:Class rdf:about="http://example.org/Thing"/>\n</rdf:RDF>\n'
+    await page.locator("#files-input").setInputFiles([
+      { name: "onto.owl", mimeType: "application/rdf+xml", buffer: Buffer.from(owl) },
+      { name: "data.rdf", mimeType: "application/rdf+xml", buffer: Buffer.from(owl) },
+    ])
+    for (const p of ["onto.owl", "data.rdf"]) {
+      await item(page, p).waitFor()
+      assert.equal(await item(page, p).locator(".fi").textContent(), "XML", p)
+    }
+    await openFile(page, "onto.owl")
+    const language = await page.evaluate(() => window.monaco.editor.getModel(window.monaco.Uri.parse("file:///work/onto.owl")).getLanguageId())
+    assert.equal(language, "xml")
+    assert.equal(await page.locator("#status-lang").textContent(), "RDF/XML")
+    // Monaco's XML tokenizer loads (under the page's CSP) and colours the tags.
+    await page.waitForFunction(() => window.monaco.editor.tokenize("<a b='c'/>", "xml")[0].some((t) => t.type.endsWith(".xml")), null, { timeout: 10_000 })
+    await settled(page)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("a .jsonld file opens with JSON colouring, and the language server checks and explains it", async () => {
   const { page, errors, close } = await open()
   try {

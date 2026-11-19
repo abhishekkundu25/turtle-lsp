@@ -114,6 +114,30 @@ test("one RDF glob: the workspaceContains activation, the start check, the watch
   }
 })
 
+test(".owl and .rdf files are read and watched, but VS Code's XML language keeps them and no selector attaches the server", () => {
+  // Workspace files: the one glob (activation, watchers, the browser's files) names them.
+  const extensions = RDF_GLOB.match(/\{([^}]*)\}/)[1].split(",")
+  for (const ext of ["owl", "rdf"]) assert.ok(extensions.includes(ext), RDF_GLOB)
+  assert.ok(!extensions.includes("xml") && !extensions.includes("owx"), RDF_GLOB)
+  // No language here claims them or XML, and nothing starts on XML documents.
+  const claimed = pkg.contributes.languages.flatMap((l) => l.extensions ?? [])
+  for (const ext of [".owl", ".rdf", ".xml"]) assert.ok(!claimed.includes(ext), claimed.join(", "))
+  assert.ok(!pkg.contributes.languages.some((l) => l.id === "xml"))
+  assert.ok(!pkg.activationEvents.includes("onLanguage:xml"), pkg.activationEvents.join(", "))
+  // The client sends no .owl or .rdf document: its only pattern is JSON-LD's.
+  const selector = documentSelector(["file", "untitled", "vscode-vfs"])
+  assert.deepEqual([...new Set(selector.filter((f) => "pattern" in f).map((f) => f.pattern))], [JSONLD_PATTERN])
+  assert.ok(!selector.some((f) => "language" in f && f.language === "xml"))
+  // The graph reads the workspace: it is offered on these files from the Explorer and the editor title.
+  const menus = pkg.contributes.menus
+  const explorer = menus["explorer/context"].find((m) => m.command === "turtle.showGraph").when
+  const regex = new RegExp(explorer.match(/resourceExtname =~ \/(.*)\/\)/)[1])
+  for (const name of [".owl", ".rdf", ".ttl", ".jsonld"]) assert.ok(regex.test(name), `${name}: ${explorer}`)
+  for (const name of [".xml", ".owx", ".owl.bak"]) assert.ok(!regex.test(name), `${name}: ${explorer}`)
+  const title = menus["editor/title"].find((m) => m.command === "turtle.showGraph").when
+  for (const ext of [".owl", ".rdf"]) assert.ok(title.includes(`resourceExtname == ${ext}`), title)
+})
+
 test("the browser entry runs in a virtual workspace, with what is off described", () => {
   assert.equal(pkg.browser, "./out/web/extension.js")
   const cap = pkg.capabilities.virtualWorkspaces

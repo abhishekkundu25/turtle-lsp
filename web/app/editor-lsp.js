@@ -9,10 +9,12 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 
 // The language of a path, as the server and Monaco know it. JSON-LD is
 // Monaco's own JSON (its highlighting); the server knows a `.jsonld` name
-// is JSON-LD.
+// is JSON-LD. `.owl` and `.rdf` are Monaco's own XML, with no provider of
+// the server's (connect): the server reads them as workspace RDF, its
+// syntax from the content.
 export function languageOf(path) {
   const ext = path.toLowerCase().split(".").pop()
-  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json" }[ext] ?? "turtle"
+  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml" }[ext] ?? "turtle"
 }
 
 // Monaco's JSON support keeps only what the server does not do: colours,
