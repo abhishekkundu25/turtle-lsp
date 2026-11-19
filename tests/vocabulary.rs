@@ -498,6 +498,11 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
         "JSON-LD c038 (expand and toRdf): Dublin Core has issued and publisher, not published",
     ),
     (
+        "rdf:foo",
+        3,
+        "RDF/XML rdfms-rdf-names-use warn-001 to warn-003 use a name in the rdf namespace that RDF does not define, to test the warning",
+    ),
+    (
         "rdfs:definedBy",
         2,
         "JSON-LD toRdf 0031: the property is rdfs:isDefinedBy",
