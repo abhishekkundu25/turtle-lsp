@@ -312,19 +312,35 @@ test("copyMonaco copies the editor without the unused services, with its licence
 const meta = (html) => html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/)?.[1]
 const directives = (csp) => Object.fromEntries(csp.split(";").map((d) => d.trim().split(/\s+/)).map(([name, ...values]) => [name, values]))
 
-// The text of each inline script: what sits between a bare `<script>` and the
-// next `</script>`, as the build writes them. Found with indexOf, not a
+// The text of each inline script: a `<script` tag, in any letter case, with
+// no `src` attribute, up to the next `</script>`. Found with indexOf, not a
 // regular expression: this reads our own pages, it filters no HTML.
 const inlineScripts = (html) => {
+  const lower = html.toLowerCase()
   const out = []
-  for (let at = html.indexOf("<script>"); at >= 0; at = html.indexOf("<script>", at)) {
-    const end = html.indexOf("</script>", at)
+  for (let at = lower.indexOf("<script"); at >= 0; at = lower.indexOf("<script", at + 1)) {
+    const tagEnd = lower.indexOf(">", at)
+    assert.ok(tagEnd >= 0, "every script tag is closed")
+    const tag = lower.slice(at + "<script".length, tagEnd)
+    if (tag && !/^[\s/]/.test(tag)) continue // `<scripts>`, another element
+    const names = tag.split(/[\s/]+/).map((a) => a.split("=")[0])
+    if (names.includes("src")) continue
+    const end = lower.indexOf("</script", tagEnd)
     assert.ok(end >= 0, "every inline script is closed")
-    out.push(html.slice(at + "<script>".length, end))
+    out.push(html.slice(tagEnd + 1, end))
     at = end
   }
   return out
 }
+
+test("inlineScripts finds every script without a src, whatever its attributes", () => {
+  assert.deepEqual(inlineScripts('<script type="module">a()</script>'), ["a()"])
+  assert.deepEqual(inlineScripts("<SCRIPT>b()</SCRIPT>"), ["b()"])
+  assert.deepEqual(inlineScripts('<script data-src="x.js">c()</script>'), ["c()"])
+  assert.deepEqual(inlineScripts('<script\ntype="module">d()</script>'), ["d()"])
+  assert.deepEqual(inlineScripts('<script type="module" src="app.js"></script><script src=x.js></script>'), [])
+  assert.deepEqual(inlineScripts("<scripts>e</scripts>"), [])
+})
 
 test("both pages carry a Content-Security-Policy, with the editor page's inline scripts allowed by hash", () => {
   for (const page of ["index.html", "toolbox.html"]) {
@@ -344,7 +360,7 @@ test("both pages carry a Content-Security-Policy, with the editor page's inline 
   const hashes = inlineScripts(html).map((text) => `'sha256-${crypto.createHash("sha256").update(text).digest("base64")}'`)
   assert.equal(hashes.length, 2)
   for (const h of hashes) assert.ok(directives(meta(html))["script-src"].includes(h), `${h} is allowed`)
-  assert.equal(read("app", "toolbox.html").includes("<script>"), false, "the toolbox has no inline script")
+  assert.deepEqual(inlineScripts(read("app", "toolbox.html")), [], "the toolbox has no inline script")
 })
 
 test("the editor page preloads every module editor.js imports, and nothing else, and the Monaco files it preloads are where the build puts them", () => {
