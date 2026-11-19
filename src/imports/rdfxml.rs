@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn character_references_in_entity_values_are_expanded_once() {
         let xml = with_doctype(
-            "<!ENTITY ex \"http://example.org/a&#35;\">\n<!ENTITY hex 'http://example.org/b&#x23;'>\n<!ENTITY esc \"x&#38;lol0;y\">",
+            "<!ENTITY ex \"http://example.org/a&#35;\">\n<!ENTITY hex 'http://example.org/b&#x23;'>\n<!ENTITY esc \"x&#38;#38;lol0;y\">",
             "<rdf:Description rdf:about=\"&ex;S\"><rdf:type rdf:resource=\"&hex;T\"/><rdf:value>&esc;</rdf:value></rdf:Description>",
         );
         let nt = ntriples(&xml);
