@@ -7,7 +7,7 @@ import { zip } from "./zip.js"
 import { createWorkspaceStore, claim } from "./workspace-store.js"
 import { $, esc } from "./dom.js"
 import { dirOf, nameOf, join, under, uriOf } from "./paths.js"
-import { LIMITS, picked, walkDropped, walkHandle, admit, limitsNote, readTextCapped } from "./files.js"
+import { LIMITS, picked, walkDropped, walkHandle, admit, limitsNote, readTextCapped, readUtf8 } from "./files.js"
 import { toMonacoRange, fromMonacoRange } from "./text.js"
 import { createSearch } from "./search.js"
 import { createSettings } from "./settings.js"
@@ -631,11 +631,18 @@ async function importEntries(entries, dir = "", skipped = 0) {
   let first = null
   const { take, skipped: refused } = admit(entries, { have: W.files.size })
   skipped += refused
+  const unread = []
   for (const { file, path, onDisk } of take) {
     const dest = join(dir, path)
+    let text
+    try {
+      text = await readUtf8(file)
+    } catch (e) {
+      unread.push(`${dest} not read: ${e.message}`)
+      continue
+    }
     if (W.files.has(dest)) replaced++
     else added++
-    const text = await file.text()
     addFile(dest, text, { disk: onDisk ? text : undefined })
     first ??= dest
     for (let d = dirOf(dest); d; d = dirOf(d)) W.expanded.add(d)
@@ -645,6 +652,7 @@ async function importEntries(entries, dir = "", skipped = 0) {
   const parts = [`${added} file${added === 1 ? "" : "s"} imported`]
   if (replaced) parts.push(`${replaced} replaced`)
   if (skipped) parts.push(`${skipped} skipped (${limitsNote()})`)
+  if (unread.length) parts.push(unread.length > 3 ? `${unread.slice(0, 3).join(", ")} and ${unread.length - 3} more not read` : unread.join(", "))
   toast(parts.join(", "))
 }
 // Items dropped from the desktop, imported into `dir`.
@@ -735,7 +743,7 @@ async function revert(path = shownFile()) {
   const f = W.files.get(path)
   if (!f || f.disk === undefined) return toast("Only files of a folder opened in place can be reverted.")
   try {
-    const text = f.disk === null ? "" : await (await (await fileHandle(path)).getFile()).text()
+    const text = f.disk === null ? "" : await readUtf8(await (await fileHandle(path)).getFile())
     f.model.pushEditOperations([], [{ range: f.model.getFullModelRange(), text }], () => null)
     setDisk(f, f.disk === null ? null : text)
     changed({ tabs: true })

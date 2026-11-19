@@ -322,6 +322,28 @@ test("an imported folder keeps its structure, and its files are analysed", async
   }
 })
 
+test("an imported file that is not UTF-8 is not read: the toast names it, and a file of that name already there is kept", async () => {
+  const { page, errors, close } = await open()
+  try {
+    const ttl = (body) => ({ name: "latin1.ttl", mimeType: "text/plain", buffer: body })
+    await page.locator("#files-input").setInputFiles([ttl(Buffer.from("@prefix ex: <https://e.org/> .\nex:a ex:b \"ok\" .\n"))])
+    await item(page, "latin1.ttl").waitFor()
+    await settled(page)
+    const before = await text(page, "latin1.ttl")
+    await page.locator("#files-input").setInputFiles([
+      ttl(Buffer.concat([Buffer.from('@prefix ex: <https://e.org/> .\nex:a ex:b "caf'), Buffer.from([0xe9]), Buffer.from('" .\n')])),
+      { name: "fine.ttl", mimeType: "text/plain", buffer: Buffer.from("@prefix ex: <https://e.org/> .\nex:c ex:d ex:e .\n") },
+    ])
+    await page.locator("#toast", { hasText: "latin1.ttl not read: not valid UTF-8 (first bad byte at offset 45)" }).waitFor()
+    await item(page, "fine.ttl").waitFor()
+    assert.match(await page.locator("#toast").textContent(), /^1 file imported/)
+    assert.equal(await text(page, "latin1.ttl"), before, "the file already there is not replaced")
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 // The entry names of a zip (its central directory).
 function zipNames(buf) {
   const names = []

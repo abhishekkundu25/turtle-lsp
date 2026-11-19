@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url"
 import { esc } from "../app/dom.js"
 import { lineStarts, offsetOf, positionAt, lineAt, applyEdits } from "../app/text.js"
 import { dirOf, nameOf, join, under, uriOf, ROOT } from "../app/paths.js"
-import { KNOWN, LIMITS, admit, picked, walkDropped, walkHandle, readTextCapped, limitsNote } from "../app/files.js"
+import { KNOWN, LIMITS, admit, picked, walkDropped, walkHandle, readTextCapped, limitsNote, readUtf8 } from "../app/files.js"
 import { languageOf } from "../app/editor-lsp.js"
 import { resolveIn, listen } from "./static-server.mjs"
 import { wanted, checkBudget, copyMonaco, WASM_GZIP_BUDGET } from "../build.mjs"
@@ -143,6 +143,21 @@ test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which the server
     "registerHoverProvider",
     "registerReferenceProvider",
   ])
+})
+
+test("a local file is read as UTF-8, its byte order mark dropped, and refused with the offset of its first bad byte", async () => {
+  const blob = (...parts) => new Blob(parts.map((p) => (typeof p === "string" ? Buffer.from(p) : Uint8Array.from(p))))
+  assert.equal(await readUtf8(blob("ex:a ex:b \"é\" .\n")), 'ex:a ex:b "é" .\n')
+  assert.equal(await readUtf8(blob([0xef, 0xbb, 0xbf], "ex:a .")), "ex:a .", "the BOM is dropped, as file.text() drops it")
+  assert.equal(await readUtf8(blob("")), "")
+  const refused = (bytes) => readUtf8(bytes).then(() => assert.fail("read"), (e) => e.message)
+  assert.equal(await refused(blob("ex:a ", [0xe9], " .")), "not valid UTF-8 (first bad byte at offset 5)")
+  // The offset counts the BOM and characters of several bytes; a U+FFFD
+  // written in the file is not the bad byte.
+  assert.equal(await refused(blob([0xef, 0xbb, 0xbf], "é\uFFFD😀", [0xff])), "not valid UTF-8 (first bad byte at offset 12)")
+  // A sequence cut short, at the end and before more text.
+  assert.equal(await refused(blob("ab", [0xe2, 0x82])), "not valid UTF-8 (first bad byte at offset 2)")
+  assert.equal(await refused(blob("ab", [0xe2, 0x82], "c")), "not valid UTF-8 (first bad byte at offset 2)")
 })
 
 test("a dropped folder is walked with the limits: hidden folders and node_modules are not entered, unknown files count as skipped", async () => {

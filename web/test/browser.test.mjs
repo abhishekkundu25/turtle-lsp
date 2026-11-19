@@ -211,6 +211,23 @@ test("pasted text and opened files join the input", async () => {
   }
 })
 
+test("a chosen file that is not UTF-8 is not added, and the notice names it", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await page.locator("input[type=file]").first().setInputFiles([
+      { name: "latin1.ttl", mimeType: "text/plain", buffer: Buffer.concat([Buffer.from('@prefix ex: <https://e.org/> .\nex:a ex:b "caf'), Buffer.from([0xe9]), Buffer.from('" .\n')]) },
+      { name: "fine.ttl", mimeType: "text/plain", buffer: Buffer.from("@prefix ex: <https://e.org/> .\nex:c ex:d ex:e .\n") },
+    ])
+    await settled(page)
+    await page.getByRole("button", { name: "fine.ttl", exact: true }).waitFor()
+    await page.getByText("latin1.ttl not read: not valid UTF-8 (first bad byte at offset 45)").waitFor()
+    assert.equal(await page.getByRole("button", { name: "latin1.ttl", exact: true }).count(), 0)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("an opened folder adds its RDF and SPARQL files, subfolders included, and skips the rest", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "turtle-web-folder-"))
   const { page, errors, close } = await open()
