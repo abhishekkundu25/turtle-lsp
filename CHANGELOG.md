@@ -30,9 +30,11 @@
   copies of other projects' ontologies can get new diagnostics, and a
   different exit code, from them.
 - **Nothing writes RDF/XML**: formatting, rename, completion, quick fixes and
-  `check --fix` leave these files alone; `format .` passes over them, and a
+  `check --fix` leave RDF/XML alone; `format .` passes over it, and a
   named `format onto.owl` says "not formatted: RDF/XML". A rename of a term
-  that an RDF/XML workspace file uses is refused and names the file.
+  that an RDF/XML workspace file uses is refused and names the file. A `.owl`
+  or `.rdf` that holds Turtle or JSON-LD is read, formatted and fixed as that
+  syntax by the command line and by editors other than VS Code.
 - **VS Code registers formatting, rename, completion and code actions
   dynamically** for every file but `.owl` and `.rdf`, so it lists no
   turtle-lsp formatter for XML. Other editors get the same static
