@@ -257,6 +257,9 @@ struct Attrs<'t, 'a> {
     annotation_node: Option<&'t Attr<'a>>,
     type_: Option<&'t Attr<'a>>,
     props: Vec<(Iri, &'t Attr<'a>)>,
+    /// A property attribute whose name gives no IRI (reported): it gives
+    /// no triple, but the element still has property attributes.
+    refused_prop: bool,
 }
 
 struct Grammar<'a> {
@@ -671,6 +674,7 @@ impl<'a> Grammar<'a> {
                 }
             }
             let Some(iri) = self.name_iri(n) else {
+                a.refused_prop = true;
                 continue;
             };
             a.props.push((iri, attr));
@@ -1031,8 +1035,9 @@ impl<'a> Grammar<'a> {
                     .datatype
                     .map(|attr| self.iri_value(&env.base, &attr.value, Role::Datatype));
                 // emptyPropertyElt (RDF/XML 7.2.21): rdf:type is a
-                // property attribute too.
-                let attributes = !a.props.is_empty() || a.type_.is_some();
+                // property attribute too, and a refused one is still
+                // written: the object is the blank node, not "".
+                let attributes = !a.props.is_empty() || a.type_.is_some() || a.refused_prop;
                 if a.resource.is_some() || a.node_id.is_some() || attributes {
                     if let (Some(_), Some(n)) = (a.resource, a.node_id) {
                         self.error(
@@ -2680,6 +2685,51 @@ mod tests {
         // A second parse makes no more.
         let again = parse(&text, None);
         assert_eq!(again, p);
+    }
+
+    /// A property attribute whose name is refused (past the IRI budget, or
+    /// in no namespace) still makes its element an empty property element
+    /// with attributes: the object is a blank node, never the empty literal
+    /// the text does not say.
+    #[test]
+    fn a_refused_property_attribute_keeps_the_production() {
+        let unique = format!(
+            "{:x}{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let ns = format!("http://example.org/{unique}/{}/", "n".repeat(8 * 1024));
+        let mut body = String::new();
+        for i in 0..20_000 {
+            write!(body, "<x:p{i}>v</x:p{i}>").unwrap();
+        }
+        let text = format!(
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:x="{ns}"><rdf:Description rdf:about="urn:ex:s">{body}</rdf:Description><rdf:Description rdf:about="urn:ex:s"><x:p0 x:fresh="v"/></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        // `urn:ex:s` and `x:p0` were made before the budget was spent.
+        assert!(Iri::get(&format!("{ns}fresh")).is_none());
+        let p0 = format!("{ns}p0");
+        let objects: Vec<&Node> = p
+            .triples
+            .iter()
+            .filter(|t| t.p == p0.as_str())
+            .map(|t| &t.o)
+            .collect();
+        assert_eq!(objects.len(), 2, "{objects:?}");
+        assert!(matches!(objects[1], Node::Blank(_)), "{objects:?}");
+        // A name in no namespace: reported, and the same production.
+        let text = format!(
+            r#"{HEAD}<rdf:Description rdf:about="urn:ex:t"><e:p plain="v"/></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        let errors: Vec<&str> = p.errors.iter().map(|e| at(&text, e.span)).collect();
+        assert_eq!(errors, ["plain"]);
+        assert_eq!(p.triples.len(), 1, "{:?}", p.triples);
+        assert!(matches!(p.triples[0].o, Node::Blank(_)), "{:?}", p.triples);
     }
 
     /// The release-build parse of PATO (21 MB, 257k triples): 71 ms
