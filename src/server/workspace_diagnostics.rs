@@ -119,6 +119,8 @@ struct Job {
     settings: Settings,
     enc: Encoding,
     imports: FxHashMap<String, Status>,
+    /// See [`crate::imports::Imports::files`].
+    import_files: FxHashSet<PathBuf>,
     shacl: shacl_validate::ByUri,
     reasoning: crate::reasoning::ByUri,
 }
@@ -313,8 +315,10 @@ fn run(
         let d = guarded(|| {
             let a = k.get(uri)?;
             let status = |iri: &str| job.imports.get(iri);
+            let imported = |uri: &str| crate::imports::imports_file(&job.import_files, uri);
             let inputs = DiagnosticInputs {
                 import_status: &status,
+                imported: &imported,
                 shacl: job.shacl.get(uri).map_or(&[], Vec::as_slice),
                 reasoning: job.reasoning.get(uri).map_or(&[], Vec::as_slice),
                 ..DiagnosticInputs::new(&job.settings)
@@ -562,6 +566,7 @@ impl Server {
             settings: self.layers.settings().clone(),
             enc: self.enc,
             imports: self.imports.statuses().clone(),
+            import_files: self.imports.files().clone(),
             shacl,
             reasoning,
         };

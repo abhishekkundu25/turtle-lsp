@@ -60,17 +60,19 @@ local function start_rdfxml(buf)
   end
 end
 
+-- In any letter case, also with 'nofileignorecase' (Linux's default).
+local rdfxml_patterns = { "*.[oO][wW][lL]", "*.[rR][dD][fF]" }
 local rdfxml_group = vim.api.nvim_create_augroup("turtle_lsp_rdfxml", { clear = true })
 vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
   group = rdfxml_group,
-  pattern = { "*.owl", "*.rdf" },
+  pattern = rdfxml_patterns,
   callback = function(args)
     start_rdfxml(args.buf)
   end,
 })
 vim.api.nvim_create_autocmd("LspDetach", {
   group = rdfxml_group,
-  pattern = { "*.owl", "*.rdf" },
+  pattern = rdfxml_patterns,
   callback = function(args)
     local client = vim.lsp.get_client_by_id(args.data.client_id)
     if not client or client.name ~= "turtle_lsp" or client:is_stopped() then

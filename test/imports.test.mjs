@@ -40,6 +40,9 @@ before(async () => {
     } else if (req.url === "/cut.rdf") {
       res.writeHead(200, { "content-type": "application/rdf+xml" })
       res.end(CUT_RDF)
+    } else if (req.url === "/latin1.rdf") {
+      res.writeHead(200, { "content-type": "application/rdf+xml" })
+      res.end(LATIN1_RDF)
     } else if (req.url === "/onto.owx") {
       res.writeHead(200, { "content-type": "application/owl+xml" })
       res.end(`<?xml version="1.0"?>\n<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="${base}/onto.owx"/>\n`)
@@ -64,6 +67,18 @@ const CUT_RDF = `<?xml version="1.0"?>
   <rdf:Description rdf:about="http://example.org/cut#Second"><rdfs:label>Second cut</rdfs:label></rdf:Descr>
 </rdf:RDF>
 `
+
+// RDF/XML with a byte that is not UTF-8 (0xFF) in a label: "a\xFFb".
+const LATIN1_RDF = Buffer.concat([
+  Buffer.from(`<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+  <rdf:Description rdf:about="http://example.org/latin1#A"><rdfs:label>a`),
+  Buffer.from([0xff]),
+  Buffer.from(`b</rdfs:label></rdf:Description>
+</rdf:RDF>
+`),
+])
 
 // Absolute IRIs: they do not depend on the URL the document is read from.
 const VOCAB = `@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -143,6 +158,11 @@ test("an import mapped by a local catalog makes its terms (and its imports') kno
   const root = tempDir("catalog")
   fs.cpSync(path.join(fixtures, "imports"), root, { recursive: true })
   const ws = path.join(root, "ws")
+  // The imported files in a folder the index skips: only the catalog loads
+  // them, so what hover and definition show comes from the import.
+  fs.renameSync(path.join(ws, "vendor"), path.join(ws, "node_modules"))
+  const catalog = path.join(ws, "catalog-v001.xml")
+  fs.writeFileSync(catalog, fs.readFileSync(catalog, "utf8").replaceAll('uri="vendor/', 'uri="node_modules/'))
   const s = await start(ws, path.join(root, "cache"))
   try {
     const file = path.join(ws, "main.ttl")
@@ -165,13 +185,16 @@ test("an import mapped by a local catalog makes its terms (and its imports') kno
       position: positionOf(text, "gear:teeth", 6),
     })
     assert.equal(def.length, 1, JSON.stringify(def))
-    assert.match(def[0].uri, /\/vendor\/gear\.rdf$/)
+    assert.match(def[0].uri, /\/node_modules\/gear\.rdf$/)
     // At the value that names it: `#teeth` of `rdf:about="#teeth"`.
     assert.deepEqual(def[0].range, { start: { line: 8, character: 37 }, end: { line: 8, character: 43 } })
     // Imported terms are described: nothing to report, and imports are never diagnosed.
     const diags = await diagnosticsUntil(s, uri, (d) => d.length === 0)
     assert.deepEqual(diags, [])
     assert.equal(hits.length, 0)
+    // Nothing of the imported files is in the index.
+    const symbols = await s.request("workspace/symbol", { query: "teeth" })
+    assert.ok(!symbols.some((x) => x.location.uri.includes("/node_modules/")), JSON.stringify(symbols))
   } finally {
     await s.stop()
   }
@@ -594,6 +617,7 @@ test("an import in an OWL syntax is named and not read; a workspace .owl with an
   const ws = path.join(root, "ws")
   const file = path.join(ws, "app.ttl")
   fs.writeFileSync(file, FORMATS)
+  fs.copyFileSync(path.join(ws, "vendor", "owlxml.owl"), path.join(ws, "copy.owl"))
   const uri = uriOf(file)
   const s = await start(ws, path.join(root, "cache"))
   try {
@@ -628,8 +652,30 @@ test("an import in an OWL syntax is named and not read; a workspace .owl with an
     // the workspace, so it gets no warning.
     assert.doesNotMatch(await hoverText(s, uri, positionOf(FORMATS, "t:Cow", 3)), /Truncated cow/)
     assert.ok(!diags.some((d) => d.code === "import-truncated"), JSON.stringify(diags))
+    // The OWL/XML file an import is read from: an error; a copy nothing
+    // imports: a warning.
+    for (const [name, severity] of [["vendor/owlxml.owl", 1], ["copy.owl", 2]]) {
+      const owl = path.join(ws, name)
+      const doc = uriOf(owl)
+      s.open(doc, fs.readFileSync(owl, "utf8"))
+      const unsupported = (d) => d.find((x) => x.code === "unsupported-syntax")
+      const d = unsupported(await diagnosticsUntil(s, doc, (d) => unsupported(d)?.severity === severity))
+      assert.match(d.message, /holds OWL\/XML/, name)
+    }
   } finally {
     await s.stop()
+  }
+
+  // The same for the closed files, in workspace diagnostics.
+  const w = await start(ws, path.join(root, "cache"), { diagnostics: { workspace: true } })
+  try {
+    for (const [name, severity] of [["vendor/owlxml.owl", 1], ["copy.owl", 2]]) {
+      const doc = uriOf(path.join(ws, name))
+      const unsupported = (d) => d.find((x) => x.code === "unsupported-syntax")
+      await diagnosticsUntil(w, doc, (d) => unsupported(d)?.severity === severity)
+    }
+  } finally {
+    await w.stop()
   }
 
   // The command line says the same.
@@ -741,4 +787,28 @@ test("a fetched RDF/XML with an error warns, from the web and from the cache; a 
   } finally {
     await s.stop()
   }
+})
+
+test("a fetched RDF/XML that is not UTF-8 is not read, and the import says why", async () => {
+  const w = remoteWorkspace("latin1", `${base}/latin1.rdf`)
+  const s = await start(w.ws, w.cache, { imports: { network: true } })
+  try {
+    s.open(w.uri, w.text)
+    const unresolved = (d) => d.find((x) => x.code === "unresolved-import")
+    const d = unresolved(await diagnosticsUntil(s, w.uri, (d) => unresolved(d) !== undefined))
+    assert.deepEqual(d.range.start, positionOf(w.text, `<${base}/latin1.rdf>`, 0))
+    const offset = LATIN1_RDF.indexOf(0xff)
+    assert.match(
+      d.message,
+      new RegExp(`was fetched from ${base}/latin1\\.rdf but could not be read: not valid UTF-8 \\(first bad byte at offset ${offset}\\)`),
+    )
+    // Nothing of it is known, and nothing replaced the bad byte.
+    const text = `${w.text}<http://example.org/latin1#A> a <http://example.org/latin1#A> .\n`
+    s.change(w.uri, text, 2)
+    await sleep(300)
+    assert.doesNotMatch(await hoverText(s, w.uri, positionOf(text, "latin1#A", 3)), /a\uFFFDb/)
+  } finally {
+    await s.stop()
+  }
+  assert.ok(!fs.existsSync(path.join(w.cache, "imports")), "nothing cached")
 })

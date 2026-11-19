@@ -499,6 +499,8 @@ fn fix_all_in(
 struct Unresolved {
     iris: Vec<String>,
     status: HashMap<String, imports::Status>,
+    /// See [`imports::Resolved::files`].
+    files: rustc_hash::FxHashSet<std::path::PathBuf>,
 }
 
 /// The input as an editor workspace.
@@ -585,6 +587,7 @@ impl<'a> Input<'a> {
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
+                    files: r.files.clone(),
                 };
             }
             let iris = imports::unresolved_without_loading(ws.knowledge());
@@ -595,7 +598,11 @@ impl<'a> Input<'a> {
                     (iri.clone(), imports::Status::Unresolved(note))
                 })
                 .collect();
-            Unresolved { iris, status }
+            Unresolved {
+                iris,
+                status,
+                files: Default::default(),
+            }
         })
     }
 
@@ -618,10 +625,12 @@ impl<'a> Input<'a> {
         };
         self.ws.knowledge();
         self.unresolved();
-        let unresolved = &self.unresolved.as_ref().expect("computed above").status;
-        let status = |iri: &str| unresolved.get(iri);
+        let unresolved = self.unresolved.as_ref().expect("computed above");
+        let status = |iri: &str| unresolved.status.get(iri);
+        let imported = |uri: &str| imports::imports_file(&unresolved.files, uri);
         let inputs = DiagnosticInputs {
             import_status: &status,
+            imported: &imported,
             shacl,
             max_syntax_errors: self.max_syntax_errors,
             ..DiagnosticInputs::new(self.settings)

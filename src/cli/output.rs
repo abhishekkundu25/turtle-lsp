@@ -461,7 +461,7 @@ pub(crate) const CODES: &[(&str, &str)] = &[
     ("rdfxml-syntax", "The XML is not valid RDF/XML"),
     (
         "unsupported-syntax",
-        "The file is in an OWL syntax that is not read (OWL/XML, Functional or Manchester)",
+        "The file is in an OWL syntax that is not read (OWL/XML, Functional or Manchester): an error when an import is read from it, else a warning",
     ),
     (
         "shacl-violation",

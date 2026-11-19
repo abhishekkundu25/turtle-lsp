@@ -780,7 +780,7 @@ Declaration(Class(:A))
 `
 const BROKEN_OWL = OWL.replace("</owl:Class>", "</owl:Clas>")
 
-test("check: a clean .owl is read as RDF/XML and its terms are described (exit 0); a broken one is an xml-syntax error, a Functional one unsupported-syntax (exit 1)", (t) => {
+test("check: a clean .owl is read as RDF/XML and its terms are described (exit 0); a broken one is an xml-syntax error (exit 1), a Functional one an unsupported-syntax warning", (t) => {
   const clean = workspace(t, { "onto.owl": OWL, "data.ttl": "@prefix ex: <http://example.org/> .\nex:bob a ex:Person .\n" })
   const r = run(clean, ["check", "--select", "undescribed-term,xml-syntax,unsupported-syntax"])
   assert.equal(r.code, 0, r.out + r.err)
@@ -794,14 +794,46 @@ test("check: a clean .owl is read as RDF/XML and its terms are described (exit 0
     b.lines.map((l) => l.split(" ").slice(0, 2).join(" ")),
     // At the end tag that closes nothing, and at the name of the element
     // it leaves open.
-    ["broken.rdf:7:6: error[xml-syntax]", "broken.rdf:9:7: error[xml-syntax]", "functional.owl:1:1: error[unsupported-syntax]"],
+    ["broken.rdf:7:6: error[xml-syntax]", "broken.rdf:9:7: error[xml-syntax]", "functional.owl:1:1: warning[unsupported-syntax]"],
   )
-  assert.match(b.out, /functional\.owl:1:1: error\[unsupported-syntax\] The document holds OWL Functional syntax, which turtle-lsp does not read/)
+  assert.match(b.out, /functional\.owl:1:1: warning\[unsupported-syntax\] The document holds OWL Functional syntax, which turtle-lsp does not read/)
   assert.doesNotMatch(b.err, /not an RDF or SPARQL file/)
-  // A named file is checked too, not skipped.
+  // A named file is checked too, not skipped; nothing imports it, so it
+  // warns (exit 0).
   const named = run(ws, ["check", "functional.owl"])
-  assert.equal(named.code, 1)
-  assert.equal(named.lines.length, 1)
+  assert.equal(named.code, 0, named.out + named.err)
+  assert.deepEqual(named.lines.map((l) => l.split(" ").slice(0, 2).join(" ")), ["functional.owl:1:1: warning[unsupported-syntax]"])
+  assert.equal(run(ws, ["check", "--max-warnings", "0", "functional.owl"]).code, 1)
+})
+
+test("check: an unsupported-syntax .owl that a workspace file imports is an error (exit 1), through a catalog or a file: IRI", (t) => {
+  const catalog = `<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+    <uri name="http://example.org/f" uri="vendor/functional.owl"/>
+</catalog>
+`
+  const app = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<http://example.org/app> a owl:Ontology ; owl:imports <http://example.org/f> .
+`
+  const ws = workspace(t, { "catalog-v001.xml": catalog, "app.ttl": app, "vendor/functional.owl": FUNCTIONAL, "other.owl": FUNCTIONAL })
+  for (const args of [["check"], ["check", "vendor/functional.owl", "other.owl"]]) {
+    const r = run(ws, args)
+    assert.equal(r.code, 1, args.join(" ") + "\n" + r.out + r.err)
+    const found = r.lines.map((l) => l.split(" ").slice(0, 2).join(" ")).filter((l) => l.includes("unsupported-syntax"))
+    assert.deepEqual(found, ["other.owl:1:1: warning[unsupported-syntax]", "vendor/functional.owl:1:1: error[unsupported-syntax]"], args.join(" "))
+  }
+  // The import is unresolved, and says why.
+  assert.match(run(ws, ["check", "app.ttl"]).out, /app\.ttl:2:\d+: info\[unresolved-import\] .*which could not be loaded: it holds OWL Functional syntax/)
+  // Through a file: IRI, without the catalog.
+  fs.rmSync(path.join(ws, "catalog-v001.xml"))
+  const iri = pathToFileURL(path.join(fs.realpathSync(ws), "other.owl")).href
+  fs.writeFileSync(path.join(ws, "app.ttl"), app.replace("<http://example.org/f>", `<${iri}>`))
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 1, r.out + r.err)
+  const found = r.lines.map((l) => l.split(" ").slice(0, 2).join(" ")).filter((l) => l.includes("unsupported-syntax"))
+  assert.deepEqual(found, ["other.owl:1:1: error[unsupported-syntax]", "vendor/functional.owl:1:1: warning[unsupported-syntax]"])
+  // `--ignore unsupported-syntax` hides it.
+  assert.equal(run(ws, ["check", "--ignore", "unsupported-syntax", "other.owl", "vendor/functional.owl"]).code, 0)
 })
 
 test("format: RDF/XML files in a folder are passed over without a word (exit 0); a named one is not formatted: RDF/XML (exit 2); an .owl that holds Turtle is Turtle", (t) => {

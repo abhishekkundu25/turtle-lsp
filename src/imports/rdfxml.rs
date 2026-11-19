@@ -12,11 +12,11 @@ use oxilangtag::LanguageTag;
 /// the triples after it are kept too, except those with an IRI or a
 /// language tag that does not parse (the frontend keeps them as written,
 /// and N-Triples could not hold them). Fails when there is an error and no
-/// triple.
+/// triple, and when `bytes` are not UTF-8.
 pub fn rdf_xml_to_ntriples(bytes: &[u8], base: &str) -> Result<(String, Option<String>), String> {
-    let text = String::from_utf8_lossy(bytes);
-    let parsed = crate::rdfxml::parse(&text, Some(base));
-    let stop = parsed.errors.first().map(|e| stopped_at(&text, e));
+    let text = super::load::utf8(bytes)?;
+    let parsed = crate::rdfxml::parse(text, Some(base));
+    let stop = parsed.errors.first().map(|e| stopped_at(text, e));
     if parsed.triples.is_empty()
         && let Some(stop) = stop
     {
@@ -157,6 +157,10 @@ mod tests {
         // An error before any triple is a failure, with its place.
         let e = rdf_xml_to_ntriples(b"<rdf:RDF", "http://example.org/").unwrap_err();
         assert!(e.starts_with("line 1, column "), "{e}");
+        // Bytes that are not UTF-8 are a failure, never replaced.
+        let e =
+            rdf_xml_to_ntriples(b"<rdf:RDF ex:p='a\xFFb'/>", "http://example.org/").unwrap_err();
+        assert_eq!(e, "not valid UTF-8 (first bad byte at offset 16)");
     }
 
     #[test]

@@ -1564,9 +1564,7 @@ impl Workspace {
             if !seen.insert(path) {
                 continue;
             }
-            let takes = is_sparql_path(path)
-                && self.in_area(path, false)
-                && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES);
+            let takes = is_sparql_path(path) && self.scan_reaches(path);
             if takes && (files.contains_key(path) || room > 0) {
                 if !files.contains_key(path) {
                     room -= 1;
@@ -1833,9 +1831,26 @@ impl Workspace {
     /// keeps the index within [`MAX_FILES`] files. The scan, a file that
     /// changed on disk and a document that was closed all ask this.
     fn fits(&self, path: &Path) -> bool {
-        is_rdf_file(path)
-            && self.in_area(path, false)
-            && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
+        is_rdf_file(path) && self.scan_reaches(path)
+    }
+
+    /// Whether the scan of the roots reaches the file at `path`: below a
+    /// root, in no hidden or skipped directory, through no symbolic link
+    /// (the scan follows none, so a link in the workspace to a file or
+    /// folder outside it is not read), and a file of at most
+    /// [`MAX_FILE_BYTES`].
+    fn scan_reaches(&self, path: &Path) -> bool {
+        self.roots.iter().any(|root| {
+            let Ok(rel) = path.strip_prefix(root) else {
+                return false;
+            };
+            let mut at = root.clone();
+            Self::below(rel, false)
+                && rel.components().all(|c| {
+                    at.push(c);
+                    std::fs::symlink_metadata(&at).is_ok_and(|m| !m.file_type().is_symlink())
+                })
+        }) && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
     }
 
     /// Whether `path` is somewhere the index looks: below a root, in no
@@ -1852,22 +1867,27 @@ impl Workspace {
     }
 
     fn in_area(&self, path: &Path, include_last: bool) -> bool {
-        use std::path::Component;
         self.roots.iter().any(|root| {
-            let Ok(rel) = path.strip_prefix(root) else {
-                return false;
-            };
-            let parts: Vec<Component> = rel.components().collect();
-            let dirs = if include_last {
-                &parts[..]
-            } else {
-                &parts[..parts.len().saturating_sub(1)]
-            };
-            dirs.iter().all(|c| match c {
-                Component::Normal(name) => !skipped_dir(&name.to_string_lossy()),
-                Component::CurDir => true,
-                _ => false,
-            })
+            path.strip_prefix(root)
+                .is_ok_and(|rel| Self::below(rel, include_last))
+        })
+    }
+
+    /// Whether `rel`, a path below a root, passes through no hidden or
+    /// skipped directory and does not climb out (`..`). With
+    /// `include_last`, its last part is a directory and counts too.
+    fn below(rel: &Path, include_last: bool) -> bool {
+        use std::path::Component;
+        let parts: Vec<Component> = rel.components().collect();
+        let dirs = if include_last {
+            &parts[..]
+        } else {
+            &parts[..parts.len().saturating_sub(1)]
+        };
+        dirs.iter().all(|c| match c {
+            Component::Normal(name) => !skipped_dir(&name.to_string_lossy()),
+            Component::CurDir => true,
+            _ => false,
         })
     }
 
@@ -2385,6 +2405,52 @@ pub(crate) mod tests {
 
     use super::*;
 
+    #[cfg(not(debug_assertions))]
+    include!("../tests/support/corpus.rs");
+
+    /// An `.owl` file read as its content says: N-Triples whose IRIs are
+    /// also XML names, XML whose names hold `·`, and an anonymous
+    /// `owl:Ontology` root in RDF/XML.
+    #[test]
+    fn an_owl_file_is_read_as_what_it_holds() {
+        use crate::syntax::Node;
+        let rdf_type = crate::syntax::RDF_TYPE;
+        let doc = |uri: &str, text: &str| {
+            let mut ws = Workspace::default();
+            ws.open_doc(uri.into(), text.into(), 1);
+            ws.analysis(uri).unwrap()
+        };
+        let a = doc("file:///w/a.owl", "<urn:s> <urn:p> <urn:o> .\n");
+        assert_eq!(a.parsed.syntax, Syntax::Turtle);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(a.parsed.triples.len(), 1);
+        let a = doc("file:///w/a.owl", "<e:C·D xmlns:e=\"urn:ex:\"/>\n");
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(a.parsed.triples.len(), 1);
+        assert_eq!(&*a.parsed.triples[0].p, rdf_type);
+        assert!(matches!(&a.parsed.triples[0].o, Node::Iri(i) if &**i == "urn:ex:C·D"));
+        let a = doc(
+            "file:///w/a.owl",
+            "<owl:Ontology xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"><rdfs:label>My ontology</rdfs:label></owl:Ontology>\n",
+        );
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let t = &a.parsed.triples;
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(
+            t.iter()
+                .all(|x| matches!(x.s, Node::Blank(_)) && x.s == t[0].s)
+        );
+        assert!(t.iter().any(|t| &*t.p == rdf_type
+            && matches!(&t.o, Node::Iri(i) if &**i == "http://www.w3.org/2002/07/owl#Ontology")));
+        assert!(
+            t.iter()
+                .any(|t| &*t.p == "http://www.w3.org/2000/01/rdf-schema#label"
+                    && matches!(&t.o, Node::Literal { value, .. } if &**value == "My ontology"))
+        );
+    }
+
     #[test]
     fn normalize_uri_is_stable() {
         let dir = std::env::temp_dir().join("turtle lsp");
@@ -2732,6 +2798,50 @@ pub(crate) mod tests {
         assert!(ws.watched_dir(&root.0.join("sub")));
         assert!(!ws.watched_dir(&root.0.join("node_modules")));
         assert!(!ws.watched(&root.0.join("node_modules").join("x.json")));
+    }
+
+    /// A link in the workspace is not followed, as the scan does not follow
+    /// it: a file the watcher reports through a link to a file or a folder
+    /// outside the roots is not indexed, and neither is a link to a file
+    /// inside. Symbolic links need privileges on Windows: unix only, as the
+    /// other link tests.
+    #[cfg(unix)]
+    #[test]
+    fn a_watched_change_through_a_link_is_not_indexed_as_the_scan_does_not_follow_it() {
+        use std::os::unix::fs::symlink;
+        let root = TempDir::new("link-watch");
+        let outside = TempDir::new("link-watch-outside");
+        let target = write(&outside.0, "vocab.owl", "<urn:s> <urn:p> <urn:o> .\n");
+        write(&outside.0, "dir/q.rq", "SELECT * WHERE { ?s ?p ?o }\n");
+        let inside = write(&root.0, "real.ttl", TTL);
+        let vocab = root.0.join("vocab.owl");
+        symlink(&target, &vocab).unwrap();
+        symlink(outside.0.join("dir"), root.0.join("dir")).unwrap();
+        symlink(&inside, root.0.join("again.ttl")).unwrap();
+        let via_dir = root.0.join("dir/vocab.owl");
+        symlink(&target, outside.0.join("dir/vocab.owl")).unwrap();
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        assert_eq!(
+            Workspace::scan_roots(&ws.roots),
+            std::slice::from_ref(&inside)
+        );
+        let watched = [vocab.clone(), via_dir.clone(), root.0.join("again.ttl")];
+        for p in &watched {
+            assert!(ws.watched(p), "{}", p.display());
+            assert!(!ws.fits(p), "{}", p.display());
+        }
+        for change in [Change::Created, Change::Changed] {
+            let changes: Vec<_> = watched.iter().map(|p| (p.clone(), change)).collect();
+            ws.files_changed(&changes);
+            assert_eq!(ws.indexed_count(), 0, "{change:?}");
+        }
+        // The real file is indexed; queries through a link are not read.
+        ws.files_changed(&[(inside.clone(), Change::Created)]);
+        assert!(ws.is_indexed(&uri(&inside)));
+        assert_eq!(ws.indexed_count(), 1);
+        let _ = ws.sparql_documents();
+        ws.sparql_files_changed(&[root.0.join("dir/q.rq")]);
+        assert!(ws.sparql_documents().is_empty());
     }
 
     #[test]
@@ -4427,12 +4537,11 @@ pub(crate) mod tests {
     #[cfg(not(debug_assertions))]
     #[test]
     fn timing_a_keystroke_in_a_large_rdfxml_file() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test/corpus/obo-pato.rdf");
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            eprintln!("skipped: no {} (npm run corpus)", path.display());
+        // Absent: skipped, but a failure in CI (`CI=true`).
+        let Some(path) = corpus_path("obo-pato.rdf") else {
             return;
         };
+        let text = std::fs::read_to_string(&path).unwrap();
         let uri = "file:///w/obo-pato.owl";
         let mut ws = Workspace::default();
         let t = std::time::Instant::now();

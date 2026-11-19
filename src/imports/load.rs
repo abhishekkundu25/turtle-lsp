@@ -143,13 +143,15 @@ struct Failure {
     budget: bool,
 }
 
-/// Load one import: (where from, the ontology, freshly parsed).
+/// Load one import: (where from, the ontology, freshly parsed). A file in
+/// the workspace it is read from is added to `files`, loaded or not.
 pub(super) fn load(
     iri: &str,
     req: &Request,
     catalog: &Catalog,
     memo: &mut Memo,
     budget: &mut Budget,
+    files: &mut Vec<PathBuf>,
 ) -> Result<(String, Ontology, bool), String> {
     let base = without_fragment(iri);
     let mut url = base.to_string();
@@ -163,6 +165,7 @@ pub(super) fn load(
                         cat.display()
                     )
                 })?;
+                files.push(path.clone());
                 return load_file(&path, None, base, memo)
                     .map(|(o, fresh)| (path.display().to_string(), o, fresh))
                     .map_err(|e| {
@@ -179,6 +182,7 @@ pub(super) fn load(
     if url::Url::parse(&url).is_ok_and(|u| u.scheme() == "file") {
         let path =
             fs_policy(&url, &req.roots).map_err(|e| format!("Import <{iri}> names {url}: {e}"))?;
+        files.push(path.clone());
         return load_file(&path, None, base, memo)
             .map(|(o, fresh)| (path.display().to_string(), o, fresh))
             .map_err(|e| {
@@ -297,12 +301,12 @@ fn fetch_document(
         ),
         budget: e.budget,
     })?;
-    let lossy = String::from_utf8_lossy(&r.body);
-    let lossy = lossy.trim_start_matches('\u{feff}');
     let unread = |message: String| Failure {
         message: format!("Import <{iri}> was fetched from {url} but could not be read: {message}"),
         budget: false,
     };
+    let lossy = utf8(&r.body).map_err(unread)?;
+    let lossy = lossy.trim_start_matches('\u{feff}');
     // Whatever the content type says: `application/owl+xml` is XML.
     Sniffed::of(lossy).format().map_err(unread)?;
     let by_type = r
@@ -615,6 +619,17 @@ fn marked(nt: String, truncated: Option<&str>) -> String {
     }
 }
 
+/// `bytes` as text, or why they are not: an import is read as UTF-8, as
+/// a workspace file is, and never with its bad bytes replaced.
+pub(super) fn utf8(bytes: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(bytes).map_err(|e| {
+        format!(
+            "not valid UTF-8 (first bad byte at offset {})",
+            e.valid_up_to()
+        )
+    })
+}
+
 /// Read an imported document. `guessed`: its format comes from [`sniff`],
 /// not from an extension or a content type; Turtle then fails when every
 /// triple is unresolved (a text in another syntax that reads as junk).
@@ -624,8 +639,7 @@ pub(super) fn parse(
     base: &str,
     guessed: bool,
 ) -> Result<Ontology, String> {
-    let lossy = String::from_utf8_lossy(bytes);
-    let text = lossy.trim_start_matches('\u{feff}');
+    let text = utf8(bytes)?.trim_start_matches('\u{feff}');
     // Whatever the name or the content type says.
     Sniffed::of(text).format()?;
     let mut truncated = None;
@@ -776,6 +790,49 @@ mod tests {
         assert!(parse(b"", Format::Turtle, base, true).is_ok());
         let some = "ex:a ex:p ex:b .\n<http://example.org/a> a <http://example.org/C> .\n";
         assert!(parse(some.as_bytes(), Format::Turtle, base, true).is_ok());
+    }
+
+    /// Bytes that are not UTF-8 fail the import, in every format, and are
+    /// never read with a replacement character.
+    #[test]
+    fn an_import_that_is_not_utf8_is_not_read() {
+        let base = "http://example.org/o";
+        let xml = b"<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\"><rdf:Description rdf:about=\"http://example.org/a\" ex:p=\"a\xFFb\"/></rdf:RDF>\n";
+        let at = xml.iter().position(|&b| b == 0xFF).unwrap();
+        let want = format!("not valid UTF-8 (first bad byte at offset {at})");
+        for format in [
+            Format::RdfXml,
+            Format::Turtle,
+            Format::NTriples,
+            Format::JsonLd,
+        ] {
+            assert_eq!(
+                parse(xml, format, base, true).err(),
+                Some(want.clone()),
+                "{format:?}"
+            );
+        }
+        let ttl = b"<http://example.org/a> <http://example.org/p> \"a\xFFb\" .\n";
+        let e = parse(ttl, Format::Turtle, base, false).err();
+        assert_eq!(
+            e.as_deref(),
+            Some("not valid UTF-8 (first bad byte at offset 48)")
+        );
+        // Valid UTF-8, with a byte order mark, reads.
+        let fixed = [
+            b"\xEF\xBB\xBF".as_slice(),
+            &String::from_utf8_lossy(xml).into_owned().into_bytes(),
+        ]
+        .concat();
+        assert_eq!(
+            parse(&fixed, Format::RdfXml, base, true)
+                .unwrap()
+                .analysis
+                .parsed
+                .triples
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -421,6 +421,36 @@ check("a .owl buffer's client that exits or is stopped does not come back", func
   assert(ok, err)
 end)
 
+check("a .OWL or .Rdf buffer gets the client in any letter case, with nofileignorecase", function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local was = vim.o.fileignorecase
+  vim.o.fileignorecase = false
+  local ok, err = pcall(function()
+    for _, name in ipairs({ "ONTO.OWL", "Data.Rdf" }) do
+      local file = dir .. "/" .. name
+      vim.fn.writefile({
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
+        '  <rdf:Description rdf:about="http://example.org/a"/>',
+        "</rdf:RDF>",
+      }, file)
+      -- Neovim's own detection gives these names no file type then; the
+      -- client starts by name.
+      local b, c = open(file)
+      wait_diagnostics(b)
+      c:stop()
+      local gone = vim.wait(TIMEOUT, function()
+        return c:is_stopped()
+      end, 20)
+      assert(gone, name .. ": client not stopped")
+      vim.api.nvim_buf_delete(b, { force = true })
+    end
+  end)
+  vim.o.fileignorecase = was
+  vim.fn.delete(dir, "rf")
+  assert(ok, err)
+end)
+
 check("a .rq buffer (filetype sparql) attaches: no warnings, definition into the ontology", function()
   local b = open(query .. "/people.rq")
   assert(vim.bo[b].filetype == "sparql", "filetype " .. vim.bo[b].filetype)

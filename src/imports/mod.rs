@@ -40,7 +40,7 @@ use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::server::worker::Fed;
 use crate::server::worker::{Feed, Spawn};
 use crate::syntax::{self, Iri, Node, PrefixMap};
-use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, path_to_uri};
+use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, canonical, path_to_uri, uri_to_path};
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::RecvError;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -122,6 +122,9 @@ pub(crate) struct Done {
     generation: u64,
     status: Vec<(String, Status)>,
     loaded: Vec<Loaded>,
+    /// The workspace files the imports were read from, or failed to be
+    /// read from (canonical): see [`imports_file`].
+    files: FxHashSet<PathBuf>,
 }
 
 /// What one workspace document says about ontologies.
@@ -195,6 +198,8 @@ pub(crate) fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
 pub(crate) struct Resolved {
     pub(crate) status: FxHashMap<String, Status>,
     pub(crate) loaded: Vec<(String, Arc<Analysis>)>,
+    /// See [`Done::files`].
+    pub(crate) files: FxHashSet<PathBuf>,
 }
 
 impl Resolved {
@@ -247,7 +252,16 @@ pub(crate) fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Re
             .into_iter()
             .map(|l| (l.key, l.analysis))
             .collect(),
+        files: done.files,
     }
+}
+
+/// Whether the workspace file at `uri` is what an import is read from:
+/// `files` is [`Done::files`] (through [`Imports::files`] or
+/// [`Resolved::files`]). A catalog entry or a `file:` IRI names it; an
+/// import, direct or through another import, asks for it.
+pub(crate) fn imports_file(files: &FxHashSet<PathBuf>, uri: &str) -> bool {
+    !files.is_empty() && uri_to_path(uri).is_some_and(|p| files.contains(&canonical(&p)))
 }
 
 #[cfg(test)]
@@ -272,6 +286,8 @@ pub(crate) struct Imports {
     /// Knowledge generation and network setting the last request was built from.
     seen: Option<(u64, bool)>,
     status: FxHashMap<String, Status>,
+    /// See [`Done::files`].
+    files: FxHashSet<PathBuf>,
     /// External source keys registered with the knowledge index.
     registered: FxHashSet<String>,
     /// Workspace URI -> its analysis when [`DocOnto`] was computed.
@@ -311,6 +327,7 @@ impl Imports {
             last: None,
             seen: None,
             status: FxHashMap::default(),
+            files: FxHashSet::default(),
             registered: FxHashSet::default(),
             per_doc: FxHashMap::default(),
             cache: match spawn {
@@ -425,6 +442,7 @@ impl Imports {
                 generation: self.generation,
                 status: vec![],
                 loaded: vec![],
+                files: FxHashSet::default(),
             });
         }
         if self.spawn == Spawn::Inline {
@@ -445,6 +463,7 @@ impl Imports {
                 generation: self.generation,
                 status,
                 loaded: vec![],
+                files: FxHashSet::default(),
             });
         }
         let job = Job {
@@ -523,7 +542,16 @@ impl Imports {
             self.status = status;
             changed = true;
         }
+        if done.files != self.files {
+            self.files = done.files;
+            changed = true;
+        }
         changed
+    }
+
+    /// The workspace files the imports are read from ([`imports_file`]).
+    pub(crate) fn files(&self) -> &FxHashSet<PathBuf> {
+        &self.files
     }
 
     /// The status of every import asked for so far, by IRI.

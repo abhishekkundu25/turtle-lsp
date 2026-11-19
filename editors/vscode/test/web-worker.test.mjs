@@ -118,7 +118,9 @@ test("the features the server writes with are registered after the initialize an
   const regs = registrations()[0].params.registrations
   assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
   for (const x of regs) assert.doesNotMatch(JSON.stringify(x.registerOptions.documentSelector), /owl|rdf|xml/)
-  // A crash restarts the server, which registers again: the client has them.
+  // A crash restarts the server, which registers again: the client accepted
+  // them, so nothing is sent.
+  c.send({ id: registrations()[0].id, result: null })
   c.open(A, A_TEXT)
   await c.handler.idle()
   crashNext = true
@@ -126,6 +128,67 @@ test("the features the server writes with are registered after the initialize an
   assert.ok((await c.request("textDocument/hover", c.at(A, A_TEXT, "Thing ."))).result !== undefined)
   assert.equal(c.posted.filter((m) => m.method === "window/showMessage").length, 1)
   assert.equal(registrations().length, 1)
+})
+
+test("a registration the client rejected or has not answered is sent again when a restarted server registers", { skip }, async () => {
+  const real = await createEngine(bytes)
+  let crashNext = false
+  const engine = {
+    call(op, payload) {
+      if (crashNext && op === "lsp") {
+        crashNext = false
+        throw Object.assign(new Error("unreachable"), { crashed: true })
+      }
+      return real.call(op, payload)
+    },
+  }
+  const c = await client({ engine })
+  await c.request("initialize", {
+    processId: null,
+    rootUri: ROOT,
+    workspaceFolders: [{ uri: ROOT, name: "mount" }],
+    capabilities: DYNAMIC,
+    initializationOptions: { [OPT_IN]: true },
+  })
+  await c.handler.idle()
+  c.open(A, A_TEXT)
+  await c.handler.idle()
+  const registrations = () => c.posted.filter((m) => m.method === "client/registerCapability")
+  const ids = (m) => m.params.registrations.map((x) => x.id).sort()
+  const crash = async () => {
+    crashNext = true
+    assert.ok((await c.request("textDocument/hover", c.at(A, A_TEXT, "Thing ."))).error)
+    assert.ok((await c.request("textDocument/hover", c.at(A, A_TEXT, "Thing ."))).result !== undefined)
+  }
+  assert.equal(registrations().length, 1)
+  const first = registrations()[0]
+  // Rejected: sent again, with the same ids.
+  c.send({ id: first.id, error: { code: -32603, message: "rejected" } })
+  await crash()
+  assert.equal(registrations().length, 2)
+  const second = registrations()[1]
+  assert.notEqual(second.id, first.id)
+  assert.deepEqual(ids(second), ids(first))
+  // Not answered: sent again.
+  await crash()
+  assert.equal(registrations().length, 3)
+  assert.deepEqual(ids(registrations()[2]), ids(first))
+  // Accepted (the late answer to the first of the two counts too): not sent again.
+  c.send({ id: second.id, result: null })
+  await crash()
+  assert.equal(registrations().length, 3)
+  // A new session starts with nothing accepted.
+  assert.ok((await c.request("shutdown", null)).result === null)
+  c.notify("exit")
+  await c.request("initialize", {
+    processId: null,
+    rootUri: ROOT,
+    workspaceFolders: [{ uri: ROOT, name: "mount" }],
+    capabilities: DYNAMIC,
+    initializationOptions: { [OPT_IN]: true },
+  })
+  await c.handler.idle()
+  assert.equal(registrations().length, 4)
 })
 
 test("a request before initialize is refused", { skip }, async () => {

@@ -1430,8 +1430,10 @@ impl Server {
         let cached_import = self.ws.is_cached_import(uri);
         guard("diagnostics", || {
             let status = |iri: &str| self.imports.statuses().get(iri);
+            let imported = |uri: &str| crate::imports::imports_file(self.imports.files(), uri);
             let inputs = DiagnosticInputs {
                 import_status: &status,
+                imported: &imported,
                 shacl: self.shacl.diagnostics().get(uri).map_or(&[], Vec::as_slice),
                 reasoning: self
                     .reasoning_runs

@@ -30,6 +30,10 @@ pub(crate) struct DiagnosticInputs<'a> {
     /// The status of each `owl:imports` target by IRI; an import without one
     /// is not reported.
     pub(crate) import_status: &'a dyn Fn(&str) -> Option<&'a Status>,
+    /// Whether an import of a workspace document is read from the document
+    /// at this URI ([`imports::imports_file`]). Its `unsupported-syntax` is
+    /// an error then, and a warning when nothing imports it.
+    pub(crate) imported: &'a dyn Fn(&str) -> bool,
     /// The SHACL results for the document.
     pub(crate) shacl: &'a [Diagnostic],
     /// The reasoning findings for the document, which come last.
@@ -53,6 +57,7 @@ impl<'a> DiagnosticInputs<'a> {
         DiagnosticInputs {
             settings,
             import_status: &no_status,
+            imported: &|_| false,
             shacl: &[],
             reasoning: &[],
             indexed: true,
@@ -117,6 +122,7 @@ fn compose(
         out.retain(|d| !needs_index(d));
     }
     if let Doc::Rdf(a) = doc {
+        soften_unsupported(&mut out, || (inputs.imported)(&a.uri));
         out.extend(imports::diagnostics_with(a, enc, |iri| {
             (inputs.import_status)(iri)
         }));
@@ -129,6 +135,24 @@ fn compose(
         _ => true,
     });
     out
+}
+
+/// The code of a document in an OWL syntax that is not read (the RDF/XML
+/// frontend's).
+const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
+
+/// An `unsupported-syntax` error becomes a warning unless `imported` says
+/// an import is read from the document: a copy of an ontology in OWL/XML,
+/// Functional or Manchester syntax beside its RDF/XML or Turtle breaks
+/// nothing until something imports it.
+fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
+    let code = lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into());
+    let Some(d) = out.iter_mut().find(|d| d.code.as_ref() == Some(&code)) else {
+        return;
+    };
+    if !imported() {
+        d.severity = Some(lsp_types::DiagnosticSeverity::WARNING);
+    }
 }
 
 #[cfg(test)]
