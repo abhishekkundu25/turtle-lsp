@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) mod kinds;
 
 use kinds::is_watched_file;
-pub(crate) use kinds::{is_import_source, is_rdf_file, is_sparql_name, is_sparql_path};
+pub(crate) use kinds::{is_catalog, is_import_source, is_rdf_file, is_sparql_name, is_sparql_path};
 
 pub(crate) const PREFIX_FILE: &str = "prefixes.ttl";
 pub(crate) const SKIP_DIRS: &[&str] = &[
@@ -71,7 +71,7 @@ pub(crate) const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// What an open document is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DocKind {
-    /// Turtle, TriG, N-Triples, N-Quads or JSON-LD.
+    /// Turtle, TriG, N-Triples, N-Quads, JSON-LD or RDF/XML.
     Rdf(Syntax),
     /// A SPARQL query or update.
     Sparql,
@@ -87,8 +87,8 @@ impl DocKind {
     /// SPARQL when the client says `sparql`, or when it sends no language id,
     /// one this server does not know, or the generic `turtle`, and the name
     /// is a SPARQL file's ([`is_sparql_name`]). Otherwise RDF, as
-    /// [`Syntax::detect`] decides.
-    pub(crate) fn detect(language_id: Option<&str>, uri: &str) -> DocKind {
+    /// [`Syntax::of`] decides from the language id, the name and `text`.
+    pub(crate) fn of(language_id: Option<&str>, uri: &str, text: &str) -> DocKind {
         if language_id.is_some_and(|id| id.eq_ignore_ascii_case("sparql")) {
             return DocKind::Sparql;
         }
@@ -98,7 +98,7 @@ impl DocKind {
         if generic && is_sparql_name(uri) {
             return DocKind::Sparql;
         }
-        DocKind::Rdf(Syntax::detect(language_id, uri))
+        DocKind::Rdf(Syntax::of(language_id, uri, text))
     }
 }
 
@@ -188,6 +188,8 @@ pub(crate) struct Doc {
     pub(crate) text: String,
     pub(crate) version: i32,
     pub(crate) kind: DocKind,
+    /// Where `kind` comes from.
+    from: KindFrom,
     /// For an RDF document: its analysis, or what the next one builds on.
     analyzed: Analyzed,
     /// For a SPARQL document: its parse, until the next edit.
@@ -197,6 +199,16 @@ pub(crate) struct Doc {
     /// For an RDF document: the findings of the checks it keeps between
     /// edits ([`Workspace::diagnostics`]).
     kept: Kept,
+}
+
+/// Where an open document's kind comes from.
+enum KindFrom {
+    /// The caller named it ([`Workspace::open_doc_as`]): it stays.
+    Given,
+    /// [`DocKind::of`] with this language id, the URI and the text: decided
+    /// again whenever the text changes, so an `.owl` whose text turns from
+    /// RDF/XML to Turtle is parsed as Turtle, as a fresh open would.
+    Detected(Option<Box<str>>),
 }
 
 /// An open RDF document's analysis against its text: current, or what the
@@ -436,11 +448,15 @@ impl<'a> DocContexts<'a> {
         }
     }
 
-    /// Record in `uses` what `uri`'s analysis asked for, when it is JSON-LD.
+    /// Record in `uses` what `uri`'s analysis asked for: nothing unless it
+    /// is JSON-LD (a document whose content turned from JSON-LD to another
+    /// syntax uses no context any more).
     fn record(self, uses: &ContextUses, uri: &str, syntax: Syntax) {
-        if syntax == Syntax::JsonLd {
-            record_contexts(uses, uri, self.asked.into_inner().unwrap_or_default());
-        }
+        let asked = match syntax {
+            Syntax::JsonLd => self.asked.into_inner().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        record_contexts(uses, uri, asked);
     }
 
     fn file(&self, url: &str) -> Result<RemoteDocument, LoadError> {
@@ -1066,14 +1082,29 @@ impl Workspace {
 
     // ---- documents ----
 
-    /// The kind comes from the URI's extension.
+    /// The kind comes from the URI and the text ([`DocKind::of`]), and is
+    /// decided again at each change of the text.
     pub(crate) fn open_doc(&mut self, uri: String, text: String, version: i32) -> Effects {
-        let kind = DocKind::detect(None, &uri);
-        self.open_doc_as(uri, text, version, kind)
+        self.open_doc_in(uri, text, version, None)
     }
 
-    /// Open a document. The document is due for diagnostics; opening a
-    /// prefixes.ttl or a context file is an edit of it ([`Workspace::change_doc`]).
+    /// [`Workspace::open_doc`] with the client's language id, which
+    /// [`DocKind::of`] reads too.
+    pub(crate) fn open_doc_in(
+        &mut self,
+        uri: String,
+        text: String,
+        version: i32,
+        language_id: Option<&str>,
+    ) -> Effects {
+        let kind = DocKind::of(language_id, &uri, &text);
+        let from = KindFrom::Detected(language_id.map(Box::from));
+        self.open_doc_from(uri, text, version, kind, from)
+    }
+
+    /// Open a document of the kind `kind`, which stays whatever the text
+    /// becomes. The document is due for diagnostics; opening a prefixes.ttl
+    /// or a context file is an edit of it ([`Workspace::change_doc`]).
     pub(crate) fn open_doc_as(
         &mut self,
         uri: String,
@@ -1081,7 +1112,17 @@ impl Workspace {
         version: i32,
         kind: impl Into<DocKind>,
     ) -> Effects {
-        let kind = kind.into();
+        self.open_doc_from(uri, text, version, kind.into(), KindFrom::Given)
+    }
+
+    fn open_doc_from(
+        &mut self,
+        uri: String,
+        text: String,
+        version: i32,
+        kind: DocKind,
+        from: KindFrom,
+    ) -> Effects {
         let cached_import = kind != DocKind::Sparql
             && self.import_cache.as_ref().is_some_and(|cache| {
                 uri_to_path(&uri).is_some_and(|p| canonical(&p).starts_with(cache))
@@ -1099,6 +1140,7 @@ impl Workspace {
                 text,
                 version,
                 kind,
+                from,
                 analyzed: Analyzed::No,
                 query: None,
                 cached_import,
@@ -1156,6 +1198,15 @@ impl Workspace {
             }
             doc.version = version;
             doc.query = None;
+            // A text whose syntax its content gives may now be in another:
+            // what was analyzed is nothing to build on.
+            if let KindFrom::Detected(id) = &doc.from {
+                let kind = DocKind::of(id.as_deref(), uri, &doc.text);
+                if kind != doc.kind {
+                    doc.kind = kind;
+                    doc.analyzed = Analyzed::No;
+                }
+            }
         }
         self.edited(uri)
     }
@@ -1550,8 +1601,11 @@ impl Workspace {
 
     // ---- prefixes ----
 
+    /// The prefixes a document at `uri` gets, by its name alone: a name whose
+    /// syntax its content gives counts as Turtle here, and a parse whose
+    /// text turns out otherwise drops them ([`parse_files`]).
     pub(crate) fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
-        self.external_prefixes_as(uri, Syntax::detect(None, uri))
+        self.external_prefixes_as(uri, Syntax::of(None, uri, ""))
     }
 
     /// The project's prefixes where `uri` is, whatever its syntax: those a
@@ -1740,7 +1794,7 @@ impl Workspace {
             .collect();
         let mut stale = Vec::new();
         for (uri, a) in indexed {
-            let now = self.external_prefixes_for(&uri);
+            let now = self.external_prefixes_as(&uri, a.parsed.syntax);
             if !Arc::ptr_eq(&now, &a.external)
                 && *now != *a.external
                 && let Some(path) = uri_to_path(&uri)
@@ -1930,7 +1984,7 @@ impl Workspace {
             };
             if self.open.contains_key(&uri)
                 || !unchanged
-                || *self.external_prefixes_for(&uri) != *analysis.external
+                || *self.external_prefixes_as(&uri, analysis.parsed.syntax) != *analysis.external
             {
                 continue;
             }
@@ -2026,8 +2080,9 @@ impl Workspace {
     /// context files count wherever they are (a context may name a skipped
     /// or hidden folder); for the index, only what the scan would have
     /// looked at is of concern: nothing in a skipped or hidden directory,
-    /// nothing outside the roots. Catalogs and imported RDF/XML files are
-    /// the caller's (imports), and so is the settings file.
+    /// nothing outside the roots. Catalogs are the caller's (imports), and
+    /// so is the settings file; an `.owl` or `.rdf` file is indexed here and
+    /// is the caller's too, as a catalog target.
     ///
     /// A changed prefixes.ttl is taken first, so the files of the same
     /// change are parsed once, with the new prefixes; the indexed files it
@@ -2048,7 +2103,7 @@ impl Workspace {
                 }
                 continue;
             }
-            if is_import_source(path) {
+            if is_catalog(path) {
                 continue;
             }
             let key = path_to_uri(path).unwrap_or_default();
@@ -2162,7 +2217,14 @@ fn parse_files(
                     return None;
                 }
                 let text = std::fs::read_to_string(&path).ok()?;
-                let syntax = Syntax::from_extension(&uri).unwrap_or_default();
+                let syntax = Syntax::of(None, &uri, &text);
+                // The job's prefixes are by name: a text in a syntax without
+                // prefixes gets none, as when it is open.
+                let external = if syntax.has_prefixes() {
+                    external
+                } else {
+                    Arc::new(PrefixMap::default())
+                };
                 let loader = DocContexts::new(open, roots, contexts);
                 let a = analyze(uri.clone(), &text, external, false, syntax, &loader);
                 loader.record(uses, &uri, syntax);
@@ -2443,7 +2505,7 @@ pub(crate) mod tests {
     #[test]
     fn jsonld_documents_are_rdf_and_parse_without_turtle_errors() {
         assert_eq!(
-            DocKind::detect(Some("json"), "file:///w/a.jsonld"),
+            DocKind::of(Some("json"), "file:///w/a.jsonld", ""),
             DocKind::Rdf(Syntax::JsonLd)
         );
         assert!(is_rdf_file(Path::new("/w/a.jsonld")) && !is_rdf_file(Path::new("/w/a.json")));
@@ -2572,21 +2634,21 @@ pub(crate) mod tests {
     #[test]
     fn sparql_documents_are_recognised_and_never_feed_the_index() {
         assert_eq!(
-            DocKind::detect(Some("sparql"), "file:///a.txt"),
+            DocKind::of(Some("sparql"), "file:///a.txt", ""),
             DocKind::Sparql
         );
         for id in [None, Some("turtle"), Some("plaintext")] {
             for name in ["a.rq", "a.sparql", "a.ru"] {
                 let uri = format!("file:///x/{name}");
-                assert_eq!(DocKind::detect(id, &uri), DocKind::Sparql, "{id:?} {name}");
+                assert_eq!(DocKind::of(id, &uri, ""), DocKind::Sparql, "{id:?} {name}");
             }
         }
         assert_eq!(
-            DocKind::detect(Some("trig"), "file:///a.rq"),
+            DocKind::of(Some("trig"), "file:///a.rq", ""),
             DocKind::Rdf(Syntax::TriG)
         );
         assert_eq!(
-            DocKind::detect(None, "file:///a.nq"),
+            DocKind::of(None, "file:///a.nq", ""),
             DocKind::Rdf(Syntax::NQuads)
         );
 
@@ -3339,6 +3401,39 @@ pub(crate) mod tests {
             range_length: None,
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn an_owl_document_takes_its_kind_from_its_text_at_each_change() {
+        let xml = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+            <rdf:Description rdf:about=\"http://example.org/a\">\
+            <rdf:type rdf:resource=\"http://example.org/C\"/>\
+            </rdf:Description></rdf:RDF>\n";
+        let ttl = "<http://example.org/a> a <http://example.org/C> , <http://example.org/D> .\n";
+        let mut ws = Workspace::default();
+        let uri = "file:///w/onto.owl";
+        // The web editor's language id for an `.owl` file.
+        ws.open_doc_in(uri.into(), xml.into(), 1, Some("xml"));
+        assert_eq!(ws.doc_kind(uri), Some(DocKind::Rdf(Syntax::RdfXml)));
+        let a = ws.analysis(uri).unwrap();
+        assert_eq!(
+            (a.parsed.syntax, a.parsed.triples.len()),
+            (Syntax::RdfXml, 1)
+        );
+        ws.change_doc(uri, 2, vec![full(ttl)], Encoding::Utf16);
+        assert_eq!(ws.doc_kind(uri), Some(DocKind::Rdf(Syntax::Turtle)));
+        let a = ws.analysis(uri).unwrap();
+        assert_eq!(
+            (a.parsed.syntax, a.parsed.triples.len()),
+            (Syntax::Turtle, 2)
+        );
+        ws.change_doc(uri, 3, vec![full(xml)], Encoding::Utf16);
+        assert_eq!(ws.analysis(uri).unwrap().parsed.syntax, Syntax::RdfXml);
+        // A kind the caller names stays, whatever the text becomes.
+        let given = "file:///w/given.owl";
+        ws.open_doc_as(given.into(), ttl.into(), 1, Syntax::Turtle);
+        ws.change_doc(given, 2, vec![full(xml)], Encoding::Utf16);
+        assert_eq!(ws.doc_kind(given), Some(DocKind::Rdf(Syntax::Turtle)));
     }
 
     #[test]

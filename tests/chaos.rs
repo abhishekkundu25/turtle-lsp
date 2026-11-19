@@ -843,6 +843,28 @@ fn fix_all_keeps_the_tokens(
     }
 }
 
+/// `batch::fix_all` on `text` as the `.rdf` file `name`, for one input in
+/// four: nothing writes RDF/XML, so a text whose content is RDF/XML (as
+/// `Syntax::of` decides for the name) comes back byte for byte. A mutation
+/// that made the text Turtle or JSON-LD is fixed as such, unchecked here.
+fn fix_all_leaves_rdf_xml(rng: &mut Rng, name: &str, text: &str) {
+    let unsafe_too = match rng.below(8) {
+        0 => false,
+        1 => true,
+        _ => return,
+    };
+    let file = batch::BatchFile::named(name, text.to_string(), false);
+    let out = batch::fix_all(&[file], &Settings::default(), unsafe_too);
+    if Syntax::of(None, name, text) == Syntax::RdfXml {
+        let after = &out.files[0].text;
+        assert!(
+            after == text,
+            "fix all changed an RDF/XML text: {}",
+            first_difference(text, after)
+        );
+    }
+}
+
 /// `n` with IRI `from` read as `to`, in triple terms and datatypes too.
 fn merged(n: &Node, (from, to): (Iri, Iri)) -> Node {
     match n {
@@ -1653,10 +1675,10 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         })
     };
     let clean = (!has_errors(text)).then_some(&has_errors as &dyn Fn(&str) -> bool);
-    // `batch` tells a file's syntax by its name, and no name is RDF/XML's
-    // yet: it would read this text as Turtle.
-    if syntax != Syntax::RdfXml {
-        let name = format!("doc.{}", extension(syntax));
+    let name = format!("doc.{}", extension(syntax));
+    if syntax == Syntax::RdfXml {
+        fix_all_leaves_rdf_xml(rng, &name, text);
+    } else {
         fix_all_keeps_the_tokens(rng, &name, text, lexed.lex, clean);
     }
     // SHACL validation of the document with the corpus, as on save.
@@ -1978,6 +2000,33 @@ fn hazard(rng: &mut Rng, e: &mut Edited) {
     }
 }
 
+/// What [`flip`] puts before an `.owl` text: a line of Turtle, JSON-LD or
+/// an OWL syntax, or XML again.
+const FLIPS: &[&str] = &[
+    "@prefix ex: <http://example.org/> .\n",
+    "ex:a ex:b ex:c .\n",
+    "<http://example.org/a> <http://example.org/b> <http://example.org/c> .\n",
+    "{\"@id\": \"http://example.org/a\"}\n",
+    "[{\"@id\": \"http://example.org/a\"}]",
+    "Prefix(:=<http://example.org/>)\n",
+    "Ontology: <http://example.org/o>\n",
+    "<?xml version=\"1.0\"?>\n",
+    "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">",
+    "#",
+    "<",
+];
+
+/// An edit of the first bytes of an `.owl` text, where its syntax is read:
+/// a line of another syntax put before it, or its start cut.
+fn flip(rng: &mut Rng, e: &mut Edited) {
+    if rng.below(3) == 0 {
+        let end = char_boundary(&e.text, rng.below(40));
+        e.replace(0..end, "");
+    } else {
+        e.insert(0, FLIPS[rng.below(FLIPS.len())]);
+    }
+}
+
 #[test]
 fn edits_match_a_fresh_open_1() {
     edits_match_a_fresh_open(0);
@@ -2023,13 +2072,15 @@ fn edits_match_a_fresh_open(k: usize) {
     let iters = env_or("CHAOS_ITERS", 2000usize);
     let corpus = corpus();
     let json = jsonld_corpus();
+    let xml = rdfxml_corpus();
     let mut dog = Watchdog::new("edits", seed, iters);
     let mut paths: std::collections::BTreeMap<String, usize> = Default::default();
-    let (mut spliced, mut edited) = (0, 0);
+    let (mut spliced, mut edited, mut xml_sessions) = (0, 0, 0);
     for i in iterations(iters, k) {
         let mut rng = Rng::at(seed, i);
-        let (source, mut syntax) = match rng.below(8) {
-            0 => (&json[rng.below(json.len())], Syntax::JsonLd),
+        let (source, mut syntax) = match rng.below(16) {
+            0 | 1 => (&json[rng.below(json.len())], Syntax::JsonLd),
+            2 => (&xml[rng.below(xml.len())], Syntax::RdfXml),
             _ => {
                 let (t, s) = &corpus[rng.below(corpus.len())];
                 (t, *s)
@@ -2041,13 +2092,16 @@ fn edits_match_a_fresh_open(k: usize) {
         let enc = [Encoding::Utf8, Encoding::Utf16][rng.below(2)];
         let (snippets, wide) = match syntax {
             Syntax::JsonLd => (JSON_SNIPPETS, false),
+            Syntax::RdfXml => (RDFXML_SNIPPETS, true),
             _ => (SNIPPETS, true),
         };
         let mut e = Edited::new(source, Some(enc));
         let mut batches = Vec::new();
         for _ in 0..1 + rng.below(4) {
             for _ in 0..1 + rng.below(4) {
-                if syntax == Syntax::JsonLd || rng.below(2) == 0 {
+                if syntax == Syntax::RdfXml && rng.below(3) == 0 {
+                    flip(&mut rng, &mut e);
+                } else if matches!(syntax, Syntax::JsonLd | Syntax::RdfXml) || rng.below(2) == 0 {
                     mutation(&mut rng, &mut e, snippets, wide, Lexer::of(syntax));
                 } else {
                     hazard(&mut rng, &mut e);
@@ -2075,10 +2129,15 @@ fn edits_match_a_fresh_open(k: usize) {
                 first_difference(&e.text, &report.text)
             ),
             Ok(Ok(report)) => {
-                for p in report.paths {
-                    *paths.entry(format!("{p:?}")).or_default() += 1;
-                    spliced += usize::from(p == ParsePath::Spliced);
-                    edited += usize::from(p != ParsePath::Whole);
+                // RDF/XML is never spliced: its analyses would only dilute
+                // the share the floor checks.
+                xml_sessions += usize::from(syntax == Syntax::RdfXml);
+                if syntax != Syntax::RdfXml {
+                    for p in report.paths {
+                        *paths.entry(format!("{p:?}")).or_default() += 1;
+                        spliced += usize::from(p == ParsePath::Spliced);
+                        edited += usize::from(p != ParsePath::Whole);
+                    }
                 }
                 continue;
             }
@@ -2090,7 +2149,8 @@ fn edits_match_a_fresh_open(k: usize) {
     }
     let share = spliced as f64 / edited.max(1) as f64;
     eprintln!(
-        "edits shard {k}: spliced {spliced} of {edited} analyses after an edit ({:.1}%); {paths:?}",
+        "edits shard {k}: spliced {spliced} of {edited} analyses after an edit ({:.1}%), \
+         RDF/XML sessions apart: {xml_sessions}; {paths:?}",
         share * 100.0
     );
     assert!(

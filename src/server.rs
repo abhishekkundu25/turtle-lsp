@@ -1002,13 +1002,15 @@ impl Server {
                     } else {
                         self.spelling.insert(uri.clone(), doc.uri.to_string());
                     }
-                    let kind = DocKind::detect(Some(&doc.language_id), &uri);
-                    let fx = self
-                        .ws
-                        .open_doc_as(uri.clone(), doc.text, doc.version, kind);
+                    let fx = self.ws.open_doc_in(
+                        uri.clone(),
+                        doc.text,
+                        doc.version,
+                        Some(&doc.language_id),
+                    );
                     self.wsdiag_opened(&uri);
                     self.after_edit(fx);
-                    let rdf = feeds_reasoning(Some(kind));
+                    let rdf = feeds_reasoning(self.ws.doc_kind(&uri));
                     self.reason_on_open_or_close(rdf);
                     self.workspace_changed_inline(rdf);
                 }
@@ -1149,7 +1151,9 @@ impl Server {
                 continue;
             }
             if is_import_source(&path) {
-                // A catalog or an imported RDF/XML ontology changed.
+                // A catalog, or an `.owl` or `.rdf` file a catalog may map
+                // an import to (an indexed file too: the workspace reads it
+                // below).
                 self.imports.retry();
             }
             let change = match ch.typ {

@@ -64,7 +64,7 @@ Inside the larger modules, these files hold one part each:
 | `src/syntax/splice.rs` | The statement splice: the parse after one edit, from the parse before it and the statements around the edit, or a `Fallback` that says why the caller parses in full |
 | `src/features/kept.rs` | `Kept`: the findings an open document keeps between edits, for the checks that keep them, and what each update checks again |
 | `src/oracle.rs` | The incremental oracle: a document edited through the workspace must give what a fresh workspace opened on the final text gives (public, hidden from the docs, for the tests) |
-| `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF, SPARQL, import sources, catalogs or JSON, and in which letter case |
+| `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF, RDF whose syntax its content gives (`.owl`, `.rdf`), SPARQL, catalogs or JSON, and in which letter case |
 | `src/shacl/model.rs` | The shapes in a graph, with their paths, targets and parameters |
 | `src/shacl/vocab.rs` | The SHACL, RDF, RDFS and OWL IRIs the SHACL code compares against, interned once |
 | `src/reasoning/state.rs` | `Shared`: the result of the run whose findings the server shows (the reasoner, its base and proof cache), and a finished run's result until the server shows or drops it; hover reads the result shown without waiting for a run |
@@ -193,9 +193,13 @@ what a change means; `Server::apply` acts on it in one place.
 One table in `src/workspace/kinds.rs` says what kind of file a path names,
 for the workspace, the server and the command line's file scan
 (`src/cli/files.rs`). The file-watcher glob (`server::WATCHED_FILES`) lists
-every row, and a test checks it. `Syntax::from_extension` keeps its own
-list, because `syntax` cannot read `workspace`, and a test checks it
-against the table's RDF rows.
+every row, and a test checks it. `Syntax::from_extension` and
+`Syntax::by_content` keep their own lists, because `syntax` cannot read
+`workspace`, and a test checks them against the table's RDF and ontology
+rows. `Syntax::of` (language id, URI, text) is the one place that decides
+a document's syntax: for an `.owl` or `.rdf` name, the text's start says
+Turtle, JSON-LD or else RDF/XML. An open document's kind is decided again
+at each change of its text, so a change of syntax parses it in full.
 
 The shape lint and the validator read one shape model (`shacl::model`) and
 one vocabulary (`shacl::vocab`). The completion index (`knowledge`) uses

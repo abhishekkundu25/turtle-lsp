@@ -48,6 +48,9 @@ const RENAME_CODES: [&str; 2] = ["unknown-term", lint::CODE];
 /// Diagnostic codes whose fixes rewrite a literal's value, so are unsafe too.
 const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 
+/// Why an RDF/XML file is not formatted: nothing writes RDF/XML.
+const RDF_XML_NOT_FORMATTED: &str = "RDF/XML";
+
 /// One input file.
 #[derive(Clone, Debug)]
 pub struct BatchFile {
@@ -366,7 +369,7 @@ fn query_in(
     ws.set_keep_tokens(false);
     let data: Vec<&BatchFile> = files
         .iter()
-        .filter(|f| f.uri != q.uri && DocKind::detect(None, &f.uri) != DocKind::Sparql)
+        .filter(|f| f.uri != q.uri && DocKind::of(None, &f.uri, &f.text) != DocKind::Sparql)
         .collect();
     for f in &data {
         ws.open_doc(f.uri.clone(), f.text.clone(), 1);
@@ -407,7 +410,8 @@ fn query_in(
 ///
 /// Files marked context are part of the workspace but are not fixed: their
 /// own problems are skipped, a fix that would edit one is not applied, and
-/// they are left out of the outcome.
+/// they are left out of the outcome. RDF/XML files are not fixed either,
+/// in the same way, and come back as they were given.
 pub fn fix_all(files: &[BatchFile], settings: &Settings, include_unsafe: bool) -> FixOutcome {
     fix_all_in(files, settings, include_unsafe, None)
 }
@@ -441,7 +445,14 @@ fn fix_all_in(
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
         let lines = LineIndexes::new(&files);
-        for f in files.iter().filter(|f| !f.context) {
+        // Nothing writes RDF/XML: such a file is neither fixed nor edited by
+        // another file's fix.
+        let read_only: Vec<bool> = files.iter().map(|f| input.is_rdf_xml(&f.uri)).collect();
+        for (f, _) in files
+            .iter()
+            .zip(&read_only)
+            .filter(|(f, ro)| !f.context && !**ro)
+        {
             let diags = input.diagnostics(&f.uri, &[]);
             for fixes in input.fixes(&f.uri, &diags) {
                 let Some(fix) = fixes
@@ -453,7 +464,10 @@ fn fix_all_in(
                 let Some(edits) = edits_of(&fix, &files, &lines, enc) else {
                     continue;
                 };
-                if edits.iter().any(|(i, ..)| files[*i].context) {
+                if edits
+                    .iter()
+                    .any(|(i, ..)| files[*i].context || read_only[*i])
+                {
                     continue;
                 }
                 let clash = edits.iter().any(|(i, s, e, _)| {
@@ -773,6 +787,13 @@ impl<'a> Input<'a> {
             return Some(Formatted { guarantee, outcome });
         }
         let a = self.ws.analysis(uri)?;
+        if a.parsed.syntax == Syntax::RdfXml {
+            // Nothing writes RDF/XML, whatever it holds.
+            return Some(Formatted {
+                guarantee: "same graph",
+                outcome: FormatOutcome::Refused(RDF_XML_NOT_FORMATTED.to_string()),
+            });
+        }
         let jsonld = a.parsed.syntax == Syntax::JsonLd;
         let opts = if jsonld {
             // JSON convention; the editor passes its own indent.
@@ -822,6 +843,12 @@ impl<'a> Input<'a> {
         } else {
             self.ws.analysis(uri).map(Held::Rdf)
         }
+    }
+
+    /// Whether the file at `uri` is RDF/XML (an `.owl` or `.rdf` file whose
+    /// text is not Turtle or JSON-LD).
+    fn is_rdf_xml(&self, uri: &str) -> bool {
+        self.ws.doc_kind(uri) == Some(DocKind::Rdf(Syntax::RdfXml))
     }
 
     fn kind(&self, uri: &str) -> &'static str {

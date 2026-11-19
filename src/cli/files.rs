@@ -71,6 +71,10 @@ pub(crate) struct File {
     pub(crate) uri: String,
     pub(crate) text: String,
     pub(crate) reported: bool,
+    /// Named by the user (a file path, or standard input), not found in a
+    /// folder: `format` says why it leaves such a file alone, even when it
+    /// passes over that kind of file in a folder without a word.
+    pub(crate) named: bool,
 }
 
 impl File {
@@ -322,6 +326,7 @@ pub(crate) fn load_lenient(
             )
         });
     let mut reported: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut named: BTreeSet<PathBuf> = BTreeSet::new();
     for t in &targets {
         if t.is_dir() {
             match &root_files {
@@ -330,6 +335,7 @@ pub(crate) fn load_lenient(
             }
         } else if is_rdf_or_sparql(t) {
             reported.insert(t.clone());
+            named.insert(t.clone());
         } else {
             eprintln!(
                 "turtle-lsp: warning: {}: not an RDF or SPARQL file, skipped",
@@ -368,10 +374,14 @@ pub(crate) fn load_lenient(
         .map(|p| (p, true))
         .chain(context_paths.into_iter().map(|p| (p, false)))
         .collect();
+    if let Some((path, _)) = &stdin {
+        named.insert(path.clone());
+    }
     let entry =
         |path: PathBuf, reported: bool, read: Result<(String, Stamp), (&'static str, String)>| {
             let shown = shown(&path, &cwd);
             let root_relative = relative(&path, &root);
+            let named = named.contains(&path);
             let uri = path_to_uri(&path).unwrap_or_default();
             match read {
                 Ok((text, stamp)) => Ok(File {
@@ -382,6 +392,7 @@ pub(crate) fn load_lenient(
                     stamp,
                     text,
                     reported,
+                    named,
                 }),
                 Err((code, message)) => Err((
                     reported,

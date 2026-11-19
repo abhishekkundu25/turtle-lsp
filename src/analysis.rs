@@ -157,9 +157,10 @@ fn prefer(map: &mut IriMap<u32>, triples: &[syntax::Triple], s: Iri, i: u32) {
 }
 
 impl Analysis {
-    /// The syntax comes from the URI's extension (Turtle if it has none of ours).
+    /// The syntax comes from the URI and the text ([`Syntax::of`]): the
+    /// extension, or, for an `.owl` or `.rdf` name, the content.
     pub fn new(uri: String, text: &str, external: Arc<PrefixMap>, keep_tokens: bool) -> Analysis {
-        let syntax = Syntax::from_extension(&uri).unwrap_or_default();
+        let syntax = Syntax::of(None, &uri, text);
         Analysis::with_syntax(uri, text, external, keep_tokens, syntax)
     }
 

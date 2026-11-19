@@ -36,10 +36,10 @@ pub enum Syntax {
     NQuads,
     /// JSON-LD 1.1 (`.jsonld`). Generic `.json` files are not JSON-LD.
     JsonLd,
-    /// RDF/XML 1.1. No language id or extension names it yet: only a caller
-    /// that knows a text is RDF/XML asks for it (the import loader, for a
-    /// local RDF/XML import). Nothing edits it: it has no tokens, no
-    /// formatting and no statement splice.
+    /// RDF/XML 1.1. No language id or extension names it: a `.owl` or
+    /// `.rdf` text is RDF/XML when its content says so ([`Syntax::of`]).
+    /// Nothing edits it: it has no tokens, no formatting and no statement
+    /// splice.
     RdfXml,
 }
 
@@ -72,14 +72,48 @@ impl Syntax {
         }
     }
 
-    /// A `trig`, `ntriples`, `nquads` or `jsonld` language id wins; otherwise
-    /// (no id, an unknown one such as `json`, or the generic `turtle`) the
-    /// extension decides; else Turtle.
-    pub(crate) fn detect(language_id: Option<&str>, uri: &str) -> Syntax {
+    /// Whether a path or URI names a file whose syntax its content gives:
+    /// `.owl` or `.rdf`, in any letter case. Such a name is RDF/XML, or
+    /// Turtle or JSON-LD written under it ([`Syntax::of_content`]).
+    pub fn by_content(path: &str) -> bool {
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        name.rsplit_once('.').is_some_and(|(_, ext)| {
+            ext.eq_ignore_ascii_case("owl") || ext.eq_ignore_ascii_case("rdf")
+        })
+    }
+
+    /// The syntax of a text whose name does not fix one, from how it
+    /// starts ([`sniff::Sniffed`]): Turtle (N-Triples too) or JSON-LD when
+    /// it is that, else RDF/XML. A text in an OWL syntax that is not RDF
+    /// (OWL/XML, Functional, Manchester) is RDF/XML here too: the RDF/XML
+    /// frontend names it in an `unsupported-syntax` error.
+    pub(crate) fn of_content(text: &str) -> Syntax {
+        match sniff::Sniffed::of(text) {
+            sniff::Sniffed::Turtle => Syntax::Turtle,
+            sniff::Sniffed::JsonLd => Syntax::JsonLd,
+            sniff::Sniffed::RdfXml
+            | sniff::Sniffed::OwlXml
+            | sniff::Sniffed::Functional
+            | sniff::Sniffed::Manchester => Syntax::RdfXml,
+        }
+    }
+
+    /// The syntax of a document, the one place that decides it. A `trig`,
+    /// `ntriples`, `nquads` or `jsonld` language id wins. Otherwise (no id,
+    /// one this server does not know, such as `json` or `xml`, or the
+    /// generic `turtle`) the name decides: its extension, or, for a name
+    /// whose syntax its content gives ([`Syntax::by_content`]), `text`
+    /// ([`Syntax::of_content`]); else Turtle. A caller that has no text yet
+    /// passes `""`, which reads as Turtle.
+    pub fn of(language_id: Option<&str>, uri: &str, text: &str) -> Syntax {
         match language_id.and_then(Syntax::from_language_id) {
             // `turtle` is what editors send when they lump RDF files together:
             // a `.trig`, `.nt`, `.nq` or `.jsonld` name is the better witness then.
-            Some(Syntax::Turtle) | None => Syntax::from_extension(uri).unwrap_or_default(),
+            Some(Syntax::Turtle) | None => match Syntax::from_extension(uri) {
+                Some(s) => s,
+                None if Syntax::by_content(uri) => Syntax::of_content(text),
+                None => Syntax::Turtle,
+            },
             Some(specific) => specific,
         }
     }
@@ -399,9 +433,57 @@ mod tests {
         }
         assert_eq!(Syntax::from_extension("a.JSON"), None);
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///W/DATA.NQ"),
+            Syntax::of(Some("turtle"), "file:///W/DATA.NQ", ""),
             Syntax::NQuads
         );
+    }
+
+    #[test]
+    fn an_owl_or_rdf_name_takes_its_syntax_from_its_content() {
+        let xml = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>";
+        let functional = "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>)\n";
+        let turtle = "@prefix ex: <http://example.org/> .\nex:a ex:b ex:c .\n";
+        let json = "{\"@id\": \"http://example.org/a\"}";
+        for uri in [
+            "file:///w/onto.owl",
+            "file:///w/DATA.RDF",
+            "C:\\w\\x.Owl",
+            "onto.owl",
+        ] {
+            assert!(Syntax::by_content(uri), "{uri}");
+            assert_eq!(Syntax::from_extension(uri), None, "{uri}");
+            for id in [
+                None,
+                Some("xml"),
+                Some(""),
+                Some("turtle"),
+                Some("plaintext"),
+            ] {
+                assert_eq!(Syntax::of(id, uri, xml), Syntax::RdfXml, "{uri} {id:?}");
+                assert_eq!(
+                    Syntax::of(id, uri, functional),
+                    Syntax::RdfXml,
+                    "{uri} {id:?}"
+                );
+                assert_eq!(Syntax::of(id, uri, turtle), Syntax::Turtle, "{uri} {id:?}");
+                assert_eq!(Syntax::of(id, uri, json), Syntax::JsonLd, "{uri} {id:?}");
+                // Nothing typed yet is Turtle.
+                assert_eq!(Syntax::of(id, uri, ""), Syntax::Turtle, "{uri} {id:?}");
+            }
+            // A language id that names a syntax wins over the content.
+            assert_eq!(Syntax::of(Some("trig"), uri, xml), Syntax::TriG);
+        }
+        // Any other name keeps the syntax its extension gives, whatever the text.
+        for uri in [
+            "file:///w/a.ttl",
+            "file:///w/a.xml",
+            "file:///w/a.owx",
+            "untitled:1",
+        ] {
+            assert!(!Syntax::by_content(uri), "{uri}");
+            assert_eq!(Syntax::of(None, uri, xml), Syntax::Turtle, "{uri}");
+        }
+        assert_eq!(Syntax::of(None, "file:///w/a.jsonld", xml), Syntax::JsonLd);
     }
 
     #[test]

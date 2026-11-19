@@ -2469,43 +2469,43 @@ mod tests {
 
     #[test]
     fn syntax_detection() {
-        assert_eq!(Syntax::detect(Some("trig"), "file:///a.ttl"), Syntax::TriG);
+        assert_eq!(Syntax::of(Some("trig"), "file:///a.ttl", ""), Syntax::TriG);
         assert_eq!(
-            Syntax::detect(Some("n-triples"), "file:///a"),
+            Syntax::of(Some("n-triples"), "file:///a", ""),
             Syntax::NTriples
         );
         assert_eq!(
-            Syntax::detect(Some("ntriples"), "file:///a"),
+            Syntax::of(Some("ntriples"), "file:///a", ""),
             Syntax::NTriples
         );
         assert_eq!(
-            Syntax::detect(Some("plaintext"), "file:///a.trig"),
+            Syntax::of(Some("plaintext"), "file:///a.trig", ""),
             Syntax::TriG
         );
-        assert_eq!(Syntax::detect(None, "file:///x/a.nt"), Syntax::NTriples);
-        assert_eq!(Syntax::detect(None, "file:///x/a.nq"), Syntax::NQuads);
-        assert_eq!(Syntax::detect(Some("n-quads"), "file:///a"), Syntax::NQuads);
+        assert_eq!(Syntax::of(None, "file:///x/a.nt", ""), Syntax::NTriples);
+        assert_eq!(Syntax::of(None, "file:///x/a.nq", ""), Syntax::NQuads);
+        assert_eq!(Syntax::of(Some("n-quads"), "file:///a", ""), Syntax::NQuads);
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.nq"),
+            Syntax::of(Some("turtle"), "file:///a.nq", ""),
             Syntax::NQuads
         );
         assert!(Syntax::NQuads.is_line_based() && !Syntax::NQuads.has_prefixes());
         assert_eq!(
-            Syntax::detect(None, "file:///x.trig/a.turtle"),
+            Syntax::of(None, "file:///x.trig/a.turtle", ""),
             Syntax::Turtle
         );
-        assert_eq!(Syntax::detect(None, "untitled:Untitled-1"), Syntax::Turtle);
+        assert_eq!(Syntax::of(None, "untitled:Untitled-1", ""), Syntax::Turtle);
         // An editor that calls every RDF file "turtle".
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.trig"),
+            Syntax::of(Some("turtle"), "file:///a.trig", ""),
             Syntax::TriG
         );
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.nt"),
+            Syntax::of(Some("turtle"), "file:///a.nt", ""),
             Syntax::NTriples
         );
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.ttl"),
+            Syntax::of(Some("turtle"), "file:///a.ttl", ""),
             Syntax::Turtle
         );
         assert_eq!(Syntax::from_extension("C:\\x\\a.trig"), Some(Syntax::TriG));
@@ -2521,17 +2521,17 @@ mod tests {
         // Editors that call `.jsonld` files `json` (VS Code) or `turtle`.
         for id in [None, Some("json"), Some("turtle"), Some("jsonld")] {
             assert_eq!(
-                Syntax::detect(id, "file:///a.jsonld"),
+                Syntax::of(id, "file:///a.jsonld", ""),
                 Syntax::JsonLd,
                 "{id:?}"
             );
         }
         assert_eq!(
-            Syntax::detect(Some("jsonld"), "untitled:Untitled-1"),
+            Syntax::of(Some("jsonld"), "untitled:Untitled-1", ""),
             Syntax::JsonLd
         );
         assert_eq!(
-            Syntax::detect(Some("json"), "file:///a.json"),
+            Syntax::of(Some("json"), "file:///a.json", ""),
             Syntax::Turtle
         );
         assert!(!Syntax::JsonLd.is_line_based() && !Syntax::JsonLd.has_prefixes());

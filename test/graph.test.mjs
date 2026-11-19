@@ -179,3 +179,39 @@ describe("turtle/graph on a big workspace", () => {
     assert.ok(hoverDone - t0 < 1000, `hover took ${Math.round(hoverDone - t0)} ms`)
   })
 })
+
+describe("turtle/graph with an .owl file", () => {
+  let s, dir
+  const owl = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <rdfs:Class rdf:about="http://example.org/Pump">
+        <rdfs:label>Pump</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://example.org/Machine"/>
+    </rdfs:Class>
+</rdf:RDF>
+`
+  before(async () => {
+    dir = tempDir("turtle-lsp-graph-owl-")
+    fs.writeFileSync(path.join(dir, "onto.owl"), owl)
+    fs.writeFileSync(path.join(dir, "data.ttl"), data)
+    s = await startServer({ cwd: dir })
+    await indexed(s, 4)
+  })
+  after(async () => {
+    await s?.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("its triples are nodes and edges of the workspace graph, placed in the .owl file", async () => {
+    const r = await s.request("turtle/graph", { layout: { iterations: 0 } })
+    assert.ok(edges(r).includes(`${EX}Pump ${SUBCLASS} ${EX}Machine`), JSON.stringify(edges(r)))
+    const pump = r.nodes.find((n) => n.id === EX + "Pump")
+    assert.equal(pump.label, "Pump")
+    assert.equal(pump.kind, "class")
+    const owlUri = uriOf(path.join(dir, "onto.owl"))
+    assert.equal(pump.uri, owlUri)
+    assert.equal(pump.range.start.line, 3)
+    assert.ok(r.facets.files.some((f) => f.uri === owlUri), JSON.stringify(r.facets.files))
+  })
+})

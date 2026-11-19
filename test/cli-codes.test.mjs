@@ -112,3 +112,16 @@ test("help lists codes and explain; each prints its usage", () => {
     assert.match(r.out, /--format F/, args.join(" "))
   }
 })
+
+test("explain: the RDF/XML codes are known codes, on by default", () => {
+  for (const [code, description] of [
+    ["xml-syntax", /^xml-syntax: The XML is malformed/m],
+    ["rdfxml-syntax", /^rdfxml-syntax: The XML is not valid RDF\/XML$/m],
+    ["unsupported-syntax", /^unsupported-syntax: The file is in an OWL syntax that is not read \(OWL\/XML, Functional or Manchester\)$/m],
+  ]) {
+    const r = run(["explain", code])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, description)
+    assert.match(r.out, /^Default: on$/m)
+  }
+})

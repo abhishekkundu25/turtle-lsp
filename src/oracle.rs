@@ -53,7 +53,10 @@ pub struct Report {
 
 /// Apply `batches` to a `syntax` document opened on `start`, positions in
 /// `enc`, and compare the result with a fresh workspace opened on the text
-/// they leave. `Err` names the first field that differs.
+/// they leave. `Err` names the first field that differs. An RDF/XML
+/// document is an `.owl` file: its syntax is what its text gives
+/// ([`Syntax::of`]), at each change and in the fresh workspace, so an edit
+/// can turn it into Turtle or JSON-LD and back.
 pub fn check(
     syntax: Syntax,
     start: &str,
@@ -77,7 +80,7 @@ fn check_against(
     let settings = settings();
     let mut ws = Workspace::new(Vec::new(), PrefixMap::default());
     ws.set_check_incremental(true);
-    ws.open_doc_as(uri.clone(), start.to_string(), 0, syntax);
+    open(&mut ws, &uri, start.to_string(), syntax);
     ws.open_doc_as(OTHER.into(), other.clone(), 0, Syntax::Turtle);
     // As a client asks on open: the edits then have an analysis to go stale.
     kept_diagnostics(&mut ws, &uri, enc, &settings);
@@ -97,7 +100,7 @@ fn check_against(
     let got_other = kept_diagnostics(&mut ws, OTHER, enc, &settings);
     let mut fresh_ws = Workspace::new(Vec::new(), PrefixMap::default());
     let want_text = fresh.unwrap_or(&text).to_string();
-    fresh_ws.open_doc_as(uri.clone(), want_text, 0, syntax);
+    open(&mut fresh_ws, &uri, want_text, syntax);
     fresh_ws.open_doc_as(OTHER.into(), other, 0, Syntax::Turtle);
     let want_diags = diagnostics(&mut fresh_ws, &uri, enc, &settings);
     let want_other = diagnostics(&mut fresh_ws, OTHER, enc, &settings);
@@ -122,6 +125,17 @@ fn check_against(
         paths.push(record.path);
     }
     Ok(Report { text, paths })
+}
+
+/// Open the document at `uri`: of `syntax`, or, for RDF/XML, of the syntax
+/// its text gives (its name is an `.owl` file's), decided again at each
+/// change, as a client's `.owl` is.
+fn open(ws: &mut Workspace, uri: &str, text: String, syntax: Syntax) {
+    if syntax == Syntax::RdfXml {
+        ws.open_doc(uri.to_string(), text, 0);
+    } else {
+        ws.open_doc_as(uri.to_string(), text, 0, syntax);
+    }
 }
 
 /// Apply `ch` to `text` the plain way, finding the lines again for each
@@ -454,6 +468,46 @@ mod tests {
     fn edit(text: &str, old: &str, new: &str, enc: Encoding) -> TextDocumentContentChangeEvent {
         let at = text.find(old).unwrap();
         change(text, at..at + old.len(), new, enc)
+    }
+
+    const XML: &str = "<?xml version=\"1.0\"?>\n\
+        <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+        \x20        xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\">\n\
+        \x20 <rdfs:Class rdf:about=\"http://example.org/A\">\n\
+        \x20   <rdfs:label>A</rdfs:label>\n\
+        \x20   <rdfs:subClassOf><rdf:Description/></rdfs:subClassOf>\n\
+        \x20 </rdfs:Class>\n\
+        </rdf:RDF>\n";
+
+    #[test]
+    fn an_rdf_xml_document_whose_first_bytes_change_syntax_matches_a_fresh_open() {
+        for enc in [Encoding::Utf8, Encoding::Utf16] {
+            // Into Turtle (a broken one), then back to RDF/XML; into JSON-LD.
+            let prefix = "@prefix ex: <http://example.org/> .\n";
+            let turtle = change(XML, 0..0, prefix, enc);
+            let after = format!("{prefix}{XML}");
+            let back = change(&after, 0..prefix.len(), "", enc);
+            let r = check(
+                Syntax::RdfXml,
+                XML,
+                vec![batch(vec![turtle.clone()]), batch(vec![back])],
+                enc,
+            )
+            .unwrap();
+            assert_eq!(r.text, XML);
+            let r = check(Syntax::RdfXml, XML, vec![batch(vec![turtle])], enc).unwrap();
+            assert_eq!(r.text, after);
+            let json = check(
+                Syntax::RdfXml,
+                XML,
+                vec![batch(vec![full("{\"@id\": \"x\"}")])],
+                enc,
+            );
+            assert_eq!(json.unwrap().text, "{\"@id\": \"x\"}");
+            // A cut in the middle of the XML, analysed between keystrokes.
+            let cut = edit(XML, "</rdfs:label>", "</rdfs:lab", enc);
+            check(Syntax::RdfXml, XML, vec![batch(vec![cut])], enc).unwrap();
+        }
     }
 
     #[test]

@@ -455,6 +455,15 @@ pub(crate) const CODES: &[(&str, &str)] = &[
         "A JSON-LD language tag is not valid",
     ),
     (
+        "xml-syntax",
+        "The XML is malformed, or asks more of the reader than it allows",
+    ),
+    ("rdfxml-syntax", "The XML is not valid RDF/XML"),
+    (
+        "unsupported-syntax",
+        "The file is in an OWL syntax that is not read (OWL/XML, Functional or Manchester)",
+    ),
+    (
         "shacl-violation",
         "The data does not conform to a SHACL shape",
     ),

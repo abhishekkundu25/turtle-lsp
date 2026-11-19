@@ -268,3 +268,32 @@ test("query: turtle-lsp.json's query.reasoning applies without the flag; the fla
   assert.equal(off.code, 0, off.err)
   assert.deepEqual([off.out, off.err], ["p\r\n", ""])
 })
+
+test("query: .owl and .rdf files are data, as their content gives it; a broken one up to its error, a Functional one none", (t) => {
+  const owl = (name) => `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/">
+    <ex:Person rdf:about="http://example.org/${name}">
+        <ex:name>${name}</ex:name>
+    </ex:Person>
+    <rdf:Description rdf:about="http://example.org/${name}-friend"><ex:name>${name}'s friend</ex:name></rdf:Description>
+</rdf:RDF>
+`
+  const ws = workspace(t, {
+    ...FILES,
+    "onto/carol.owl": owl("carol"),
+    "onto/dave.rdf": owl("dave").replace("</ex:Person>", "</ex:Persn>"),
+    "onto/erin.owl": 'ex:erin ex:name "Erin" .\n',
+    "onto/functional.owl": "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/f>\nDeclaration(Class(:Person))\n)\n",
+  })
+  const r = query(ws, ["names.rq", "--format", "csv"])
+  assert.equal(r.code, 0, r.err)
+  assert.equal(
+    r.out.replaceAll("\r\n", "\n"),
+    // Ordered by name: upper case first. Dave's friend is after the error.
+    "s,name\nhttp://example.org/alice,\"Alice, A\"\nhttp://example.org/bob,Bob\nhttp://example.org/erin,Erin\nhttp://example.org/carol,carol\nhttp://example.org/carol-friend,carol's friend\nhttp://example.org/dave,dave\n",
+  )
+  // A query on one .owl file reads that file alone.
+  const one = query(ws, ["-e", "ASK { ex:carol a ex:Person }", "onto/carol.owl"])
+  assert.equal(one.code, 0, one.err)
+  assert.equal(one.out, "true\n")
+})

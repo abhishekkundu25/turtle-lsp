@@ -565,7 +565,11 @@ test("imports in TriG and JSON-LD are read in their own syntax, whatever their I
 })
 
 // One import per format in test/fixtures/imports/ws/vendor, each mapped by
-// the catalog: what is not read says so, and what is read in part says where.
+// the catalog: what is not read says so. The `.owl` files are workspace files
+// too: truncated.owl and quoted.owl state their ontology IRIs, so their
+// imports resolve in the workspace, with no catalog; truncated.owl's error
+// is its own (an import that stops early from outside the workspace warns:
+// see the fetched RDF/XML below).
 const UNREAD = "which turtle-lsp does not read\\. In Protégé: File > Save as > RDF/XML or Turtle"
 const FORMATS = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix t: <http://example.org/onto/truncated#> .
@@ -581,10 +585,9 @@ const EXPECTED = [
   ["functional", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Functional syntax, ${UNREAD}$`)],
   ["manchester", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Manchester syntax, ${UNREAD}$`)],
   ["frames", 3, "unresolved-import", /could not be loaded: read as Turtle, none of its triples is usable: each has an undeclared prefix \(first error: .+\)\. In Protégé: File > Save as > RDF\/XML or Turtle$/],
-  ["truncated", 2, "import-truncated", /^Import <http:\/\/example\.org\/onto\/truncated> is loaded only in part: .*vendor[\\/]truncated\.owl has an error at line 13, column \d+: .+\. Nothing after it is loaded$/],
 ]
 
-test("an import in an OWL syntax is named and not read; one that stops at an XML error is read up to it, with a warning", async () => {
+test("an import in an OWL syntax is named and not read; a workspace .owl that stops at an XML error is read up to it", async () => {
   const root = tempDir("formats")
   fs.cpSync(path.join(fixtures, "imports"), root, { recursive: true })
   const ws = path.join(root, "ws")
@@ -619,8 +622,10 @@ test("an import in an OWL syntax is named and not read; one that stops at an XML
       assert.equal(d.severity, severity, name)
       assert.match(d.message, message, name)
     }
-    // After the error nothing is known, and the warning above says so.
+    // After the error nothing is known; the import itself is described in
+    // the workspace, so it gets no warning.
     assert.doesNotMatch(await hoverText(s, uri, positionOf(FORMATS, "t:Cow", 3)), /Truncated cow/)
+    assert.ok(!diags.some((d) => d.code === "import-truncated"), JSON.stringify(diags))
   } finally {
     await s.stop()
   }
@@ -643,6 +648,62 @@ test("an import in an OWL syntax is named and not read; one that stops at an XML
     assert.match(line.slice(prefix.length), message)
   }
   assert.equal(lines.length, EXPECTED.length, r.stdout)
+  // The error is in the .owl file's own report, at its line.
+  const own = spawnSync(serverPath, ["check", "vendor/truncated.owl"], {
+    cwd: ws,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(root, "cache"), NO_COLOR: "1" },
+  })
+  assert.equal(own.status, 1, own.stderr)
+  assert.match(own.stdout, /^vendor\/truncated\.owl:13:\d+: error\[xml-syntax\] /m)
+})
+
+test("an owl:imports of a workspace .owl that states its ontology IRI needs no catalog", async () => {
+  const root = tempDir("no-catalog")
+  const ws = path.join(root, "ws")
+  fs.mkdirSync(path.join(ws, "onto"), { recursive: true })
+  fs.writeFileSync(
+    path.join(ws, "onto", "animals.owl"),
+    `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     xml:base="http://example.org/animals">
+    <owl:Ontology rdf:about="http://example.org/animals"/>
+    <owl:Class rdf:about="#Horse">
+        <rdfs:label>Horse</rdfs:label>
+    </owl:Class>
+</rdf:RDF>
+`,
+  )
+  const text = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix a: <http://example.org/animals#> .
+<http://example.org/app> a owl:Ontology ;
+    owl:imports <http://example.org/animals> .
+<http://example.org/app#h> a a:Horse .
+`
+  const file = path.join(ws, "app.ttl")
+  fs.writeFileSync(file, text)
+  const uri = uriOf(file)
+  const s = await start(ws, path.join(root, "cache"))
+  try {
+    s.open(uri, text)
+    const horse = await hoverUntil(s, uri, positionOf(text, "a:Horse", 3), "Horse")
+    assert.match(horse, /Described in \[animals\.owl:7\]\(file:[^)]*animals\.owl#L7\)/)
+    const diags = await diagnosticsUntil(s, uri, (d) => d.length === 0)
+    assert.deepEqual(diags, [])
+  } finally {
+    await s.stop()
+  }
+  const r = spawnSync(serverPath, ["check", "app.ttl"], {
+    cwd: ws,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(root, "cache"), NO_COLOR: "1" },
+  })
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(r.stdout, "")
 })
 
 test("a fetched RDF/XML that stops at an error warns, from the web and from the cache; a fetched OWL/XML is named", async () => {
