@@ -262,6 +262,9 @@ test("a SPARQL file's open, edits and close start no run; an RDF file's edit doe
     assert.equal(runs().length, before, JSON.stringify(runs()))
     w.s.change(a, CALM)
     await until(w.s, a, (d) => turbowl(d).length === 0)
+    // The edit clears the old findings at once; the run starts after the
+    // pause in typing, so a slow runner sees it later.
+    for (let i = 0; i < 250 && runs().length <= before; i++) await sleep(20)
     assert.ok(runs().length > before, JSON.stringify(runs()))
     // No progress is left on.
     await settled()
