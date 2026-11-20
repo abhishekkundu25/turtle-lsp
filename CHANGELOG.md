@@ -20,15 +20,23 @@
   editor attach to these files and keep them in their XML language.
 - **Rename in RDF/XML.** A rename of an IRI, from any file, edits the
   RDF/XML workspace files that use it too, and a rename can start inside
-  one. Each use keeps its form (a value relative to its `xml:base`,
-  `&ex;local`, a prefixed or default-namespace name in both tags, an
-  `rdf:ID`), and the edited file must give the same triples with the new
-  IRI. A use that cannot be rewritten exactly (read from an entity, written
-  with character references, implied by the syntax, a new namespace with no
-  prefix in scope, a file with a syntax error) refuses the whole rename
-  with the file, line and reason. A client that supports change
-  annotations (VS Code) shows the RDF/XML edits to confirm first. The new
-  setting `rename.rdfXml` (on by default) turns it off.
+  one, on a start or an end tag. Each use keeps its form (a relative value
+  as the shortest relative reference that resolves to the new IRI, in its
+  own style when one does; `&ex;local`; a value with `&amp;` or `&apos;`
+  written again whole; a prefixed or default-namespace name in both tags;
+  an `rdf:ID`), and the edited file must give the same triples with the
+  new IRI. A use that cannot be rewritten exactly (read from an entity,
+  written with character references, implied by the syntax, a new
+  namespace with no prefix in scope) refuses the whole rename with the
+  file, line and reason; for an IRI the syntax implies, the line and
+  column of the element or attribute that implies it. An RDF/XML file
+  with a syntax error, or with `<!ATTLIST>` default values, refuses any
+  rename of an IRI its text may spell (the IRI, or its local name), at its
+  first error: the parser may not read every use there. prepareRename
+  refuses where every new name would be refused, with rename's message. A
+  client that supports change annotations (VS Code) shows the RDF/XML
+  edits to confirm first, with each open file's version. The new setting
+  `rename.rdfXml` (on by default) turns it off.
 - **turtle-lsp's own RDF/XML parser**, which keeps the place of every term:
   166/166 on the W3C RDF/XML suite, and the same graph as oxrdfxml on BFO, RO
   and PATO (FOAF differs in two comments, where XML makes a line end in an
@@ -81,11 +89,20 @@
   capabilities as before. The RDF Editor and Neovim offer rename in `.owl`
   and `.rdf` files too.
 - oxrdfxml is now only a test dependency.
+- **A new name reads the same in every file.** `<iri>` is that IRI; a bare
+  name with `://`, or whose part before `:` is no declared prefix but could
+  be a scheme (`urn:ex:a`), is an absolute IRI; else a prefixed or a local
+  name. An empty name is refused. From Turtle, `nope:x` with no `nope:`
+  prefix was refused as an undeclared prefix; it is now the IRI `nope:x`.
 
 ### Fixed
 
 - **Definition, hover and proof links into a catalog-mapped `.owl` import open
   the right line.** They pointed at the lines of a converted copy.
+- **A closed file that starts with a byte order mark is read as the editor
+  reads it.** A rename's edits in such a `.rdf` landed one column off on
+  its first line, and such a `.ttl` was not parsed at all, so a rename left
+  its uses out.
 - An RDF/XML import with an error part way through lost everything after it
   without a word; a Manchester `.owl` loaded as empty Turtle; an OWL/XML one
   failed with an RDF/XML error; a single-quoted `<!ENTITY>` value failed.

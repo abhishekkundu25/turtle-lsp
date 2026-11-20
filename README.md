@@ -35,7 +35,7 @@ the full W3C test suites and real public ontologies; see
 - **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file; past 1,000 in one file, the editor shows the first 1,000 and one error that says there are more, and `turtle-lsp check` reports them all), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags, and ill-typed literals (`"twelve"^^xsd:integer`, `"2021-02-29"^^xsd:date`: a value not valid for its XSD datatype or `rdf:JSON`). With `diagnostics.workspace` on, files that are not open are checked too, in the background, as `turtle-lsp check` checks them.
 - **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Properties a SHACL shape requires for the subject's class come first ("required by …"), then properties whose `rdfs:domain` fits; after a property, instances of its range (or `sh:class`) come first and `sh:in` values are offered. Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
 - **Hover**: label, comment, types and where a term is described.
-- **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix. "N references" above each subject a file describes (code lenses; `codeLens.references` turns them off).
+- **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix. A rename's new name reads the same in every file: a local name, `prefix:local`, `<IRI>`, or a bare absolute IRI (with `://`, or a scheme that is no declared prefix, as `urn:ex:a`). "N references" above each subject a file describes (code lenses; `codeLens.references` turns them off).
 - **Semantic highlighting and label hints**: IRIs are coloured by what they denote (class, property, individual, datatype), and an opaque name such as `ex:P0042` can show its label after it.
 - **Outline and search**: document symbols, workspace symbols, folding.
 - **Formatting**: one consistent layout for Turtle, TriG, N-Triples and N-Quads, built from the tokens: comments and statement order are kept, the graph never changes, and formatting twice changes nothing. Files with syntax errors are left alone.
@@ -511,18 +511,30 @@ reads `.owl` and `.rdf` files as workspace files. Only a rename edits them.
   `deprecated-term`).
 - **Rename edits RDF/XML**: renaming an IRI, from any file, edits the
   RDF/XML workspace files that use it too, and a rename can start inside
-  one (on an element or attribute name, an `rdf:about`, `rdf:resource` or
-  `rdf:datatype` value, or an `rdf:ID`). Each use keeps its form: a value
-  relative to its `xml:base` stays relative, `&ex;local` keeps its entity, a
-  name keeps its prefix (or takes another prefix in scope for the new
-  namespace), and an element's start and end tags change together. After
-  the edits, the file must give the same triples with the new IRI, or the
-  rename is refused. A use that cannot be rewritten exactly refuses the
-  whole rename, with the file, the line and the reason: a use read from an
-  entity's replacement text, a value with character references, an IRI
-  the syntax implies (`rdf:li`, `rdf:first`, `rdf:nil`, `rdf:Statement`),
-  a new namespace with no prefix in scope (a rename adds no `xmlns`), and a
-  file with a syntax error. Namespace prefixes (`xmlns:p`) are not renamed.
+  one (on an element name in its start or end tag, an attribute name, an
+  `rdf:about`, `rdf:resource` or `rdf:datatype` value, or an `rdf:ID`).
+  References and highlights list end tags too. Each use keeps its form: a
+  relative value stays relative when the new IRI can be reached from the
+  `xml:base` in scope (on the same scheme and host): the shortest relative
+  reference that resolves to it, in the old value's style (`#x`, `x`,
+  `./x`, `../x`, `/x`, `?q`, `""`) when one does; `&ex;local` keeps its
+  entity; a value written with `&amp;` or `&apos;` is written again whole,
+  escaped for its quotes; a name keeps its prefix (or takes another prefix
+  in scope for the new namespace), and an element's start and end tags
+  change together. After the edits, the file must give the same triples
+  with the new IRI, or the rename is refused. A use that cannot be
+  rewritten exactly refuses the whole rename, with the file, the line and
+  the reason: a use read from an entity's replacement text, a value with
+  character references (`&#58;`), an IRI the syntax implies (`rdf:li`,
+  `rdf:first`, `rdf:nil`, `rdf:Statement`; the message gives the line and
+  column of what implies it), and a new namespace with no prefix in scope
+  (a rename adds no `xmlns`). A file with a syntax error, or whose DOCTYPE
+  gives attributes default values (`<!ATTLIST ... "value">`, which the
+  parser does not add), refuses any rename of an IRI its text may spell
+  (the full IRI, or its local name), at its first error: the parser may
+  not read every use in it. Where a rename could never succeed, whatever
+  the new name, prepareRename says so with the same message. Namespace
+  prefixes (`xmlns:p`) are not renamed.
   An editor that supports change annotations (VS Code) shows the RDF/XML
   edits for you to confirm first. `rename.rdfXml: false` turns this off: a
   rename that would edit an RDF/XML file is then refused and names it.

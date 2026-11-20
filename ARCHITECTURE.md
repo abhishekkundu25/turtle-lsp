@@ -112,8 +112,13 @@ base and entity, `rdf:ID`, an element name with its end tag, a property
 attribute name, with the namespaces in scope), writes each in its form,
 then parses the edited text and requires the same graph with the new IRI
 and no error. Anything else (a use from an entity, character references,
-an IRI a production implies, a document with errors) refuses the whole
-rename before anything is written. `rename.rdfXml` off restores the old
+an IRI a production implies) refuses the whole rename before anything is
+written. A document with a syntax error or `<!ATTLIST>` defaults is not
+edited at all, and `rdfxml::rename::blocked` makes it refuse any rename
+of an IRI its text may spell: the grammar may not read every use there.
+The grammar records an end tag's name as a reference of its element's IRI
+(`Analysis::is_end_tag`), so navigation and rename find it; the checks of
+a term's uses and the use counts leave it out. `rename.rdfXml` off restores the old
 refusal. `ide::Session` marks the RDF/XML edits with a change annotation
 that needs confirmation, for a client that takes them. A
 SPARQL document gets a `SparqlAnalysis` instead, with the same position
