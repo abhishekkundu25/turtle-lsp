@@ -108,7 +108,10 @@
 //!   entity reference has its span, and the first reference stands for
 //!   them all, so references never overlap; the others are only in the
 //!   triples, which is where a rename looks for the IRIs an RDF/XML
-//!   document uses;
+//!   document uses. The name in an element's end tag repeats its start
+//!   tag's reference (IRI, role and form; no [`PrefixUse`]), unless the
+//!   element is empty, its end is implied by an error, or its name comes
+//!   from an entity;
 //! - the comments. No [`PrefixDecl`](crate::syntax::PrefixDecl): XML namespaces are scoped, and a
 //!   redeclared prefix is no mistake there;
 //! - blank nodes numbered in the order they first appear, so two parses of

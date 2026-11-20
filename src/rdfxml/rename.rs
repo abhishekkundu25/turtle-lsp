@@ -287,7 +287,10 @@ pub(crate) fn plan(
     edits.dedup_by_key(|(s, _)| *s);
     let after = apply(text, &edits);
     let reparsed = grammar::parse(&after, base);
-    if let Some(r) = implied(text, base, &uses, old) {
+    // Only a text that still names the old IRI may imply it.
+    if reparsed.triples.iter().any(|t| naming(t, old).is_some())
+        && let Some(r) = implied(text, base, &uses, old)
+    {
         refused.push((1, r.line, r.column, r.reason));
     }
     if let Some((_, line, column, reason)) = refused.into_iter().min_by_key(|r| (r.0, r.1)) {
@@ -496,7 +499,11 @@ fn fixed(text: &str, u: &Use) -> Option<String> {
                     .then(|| ENTITY_REFS.into())
             }
         },
-        UseKind::Id { refs, .. } => (*refs != Refs::None).then(|| CHAR_REFS.into()),
+        // An `rdf:ID` with any reference is no XML name as written.
+        UseKind::Id { refs, .. } => (*refs != Refs::None).then(|| {
+            escapes(&text[u.span.start as usize..u.span.end as usize])
+                .unwrap_or_else(|| CHAR_REFS.into())
+        }),
         UseKind::Element { end, .. } => match end {
             Some(e) if !e.implied => None,
             _ => {
@@ -815,30 +822,35 @@ pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Result<Option<A
         return Err(r);
     }
     // The use there: its span, and its index among all the uses of its IRI.
-    let (span, all, i) =
-        match uses.into_iter().min_by_key(|u| u.span.end - u.span.start) {
-            Some(u) => {
-                if let UseKind::Namespace = u.kind {
-                    return Ok(Some(At::Namespace));
-                }
-                let (_, all) = grammar::uses(text, base, Want::Iri(u.iri));
-                let i = all.iter().position(|w| w.span == u.span);
-                (u.span, all, i)
+    let (span, all, i) = match uses.into_iter().min_by_key(|u| u.span.end - u.span.start) {
+        Some(u) => {
+            if let UseKind::Namespace = u.kind {
+                return Ok(Some(At::Namespace));
             }
-            // An end tag's name: the use of its start tag, at the end tag.
-            None => {
-                let Some(r) = fresh.refs.iter().find(|r| {
-                    r.span.contains(offset) && text[..r.span.start as usize].ends_with("</")
-                }) else {
-                    return Ok(None);
-                };
-                let (_, all) = grammar::uses(text, base, Want::Iri(r.iri));
-                let i = all.iter().position(|u| {
-                matches!(&u.kind, UseKind::Element { end: Some(e), .. } if e.name == Some(r.span))
-            });
-                (r.span, all, i)
-            }
-        };
+            let (_, all) = grammar::uses(text, base, Want::Iri(u.iri));
+            let i = all.iter().position(|w| w.span == u.span);
+            (u.span, all, i)
+        }
+        // An end tag's name: the use of its start tag, at the end tag.
+        None => {
+            let Some(r) = fresh
+                .refs
+                .iter()
+                .find(|r| r.span.contains(offset) && text[..r.span.start as usize].ends_with("</"))
+            else {
+                return Ok(None);
+            };
+            let (_, all) = grammar::uses(text, base, Want::Iri(r.iri));
+            // `</rdf:li>`: the last `rdf:li` before it.
+            let element = |u: &Use| matches!(&u.kind, UseKind::Element { end: Some(e), .. } if e.name == Some(r.span));
+            let li = |u: &Use| matches!(u.kind, UseKind::Li) && u.span.end <= r.span.start;
+            let i = all
+                .iter()
+                .position(element)
+                .or_else(|| all.iter().rposition(li));
+            (r.span, all, i)
+        }
+    };
     let Some(u) = i.map(|i| &all[i]) else {
         return Ok(None);
     };
@@ -1320,6 +1332,13 @@ mod tests {
         assert!(r.reason.contains("character references (&#"), "{r:?}");
         let text = doc("<rdf:Description rdf:about=\"urn:ex:a&amp;b\"/>");
         assert!(renamed_in(&text, None, "urn:ex:a&b", "urn:ex:t").is_ok());
+        // rdf:ID: an entity is called an entity, a character reference one.
+        let text = "<!DOCTYPE r [<!ENTITY e \"i\">]>\n".to_string()
+            + &rooted("<rdf:Description rdf:ID=\"&e;d\"/>\n<rdf:Description rdf:ID=\"&#105;c\"/>");
+        let r = refused(&text, Some(URI), &format!("{URI}#id"), &format!("{URI}#z"));
+        assert!(r.reason.contains("entity references"), "{r:?}");
+        let r = refused(&text, Some(URI), &format!("{URI}#ic"), &format!("{URI}#z"));
+        assert!(r.reason.contains("character references (&#"), "{r:?}");
     }
 
     #[test]
@@ -1684,6 +1703,7 @@ mod tests {
         let text = doc("<rdf:Seq rdf:about=\"urn:ex:q\"><rdf:li>1</rdf:li></rdf:Seq>");
         let r = refused_at(&text, "rdf:li", 2);
         assert!(r.reason.contains("rdf:li stands for"), "{r:?}");
+        assert_eq!(refused_at(&text, "</rdf:li", 4), r);
         // An IRI a production implies elsewhere in the document: refused
         // where it is written, as rename refuses it, whatever the new name.
         let text = doc(
