@@ -82,7 +82,7 @@ pub(crate) fn definition_location(
             if let Some(file) = k.get(&uri).filter(|f| spells(&f.text)) {
                 return super::loc(file, enc, d.key);
             }
-            let text = std::fs::read_to_string(uri_to_path(&uri)?).ok()?;
+            let text = crate::workspace::read_text(&uri_to_path(&uri)?)?;
             if !spells(&text) {
                 return None;
             }
@@ -104,7 +104,7 @@ pub(crate) fn context_file(k: &Knowledge, url: &str) -> Option<(String, Arc<str>
         let text = f.text.clone();
         return Some((uri, text));
     }
-    let text = std::fs::read_to_string(uri_to_path(&uri)?).ok()?;
+    let text = crate::workspace::read_text(&uri_to_path(&uri)?)?;
     Some((uri, Arc::from(text)))
 }
 

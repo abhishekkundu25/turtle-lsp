@@ -68,6 +68,18 @@ pub(crate) const MAX_FILES: usize = 20_000;
 /// Files larger than this are not indexed (an open file is still analyzed).
 pub(crate) const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
+/// The text of a file on disk as an editor holds it: UTF-8, without a
+/// leading byte order mark, which VS Code and Neovim take off when they
+/// open it. Positions in a closed file are then the ones the client sees
+/// once it opens it, and a Turtle parser need not read the mark.
+pub(crate) fn read_text(path: &Path) -> Option<String> {
+    let mut text = std::fs::read_to_string(path).ok()?;
+    if text.starts_with('\u{feff}') {
+        text.drain(..'\u{feff}'.len_utf8());
+    }
+    Some(text)
+}
+
 /// What an open document is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DocKind {
@@ -1535,7 +1547,7 @@ impl Workspace {
                 if stamp.is_some_and(|s| s.len > MAX_FILE_BYTES) {
                     return None;
                 }
-                let text = std::fs::read_to_string(&path).ok()?;
+                let text = read_text(&path)?;
                 let analysis = Arc::new(SparqlAnalysis::new(uri.clone(), &text, ext));
                 Some((
                     path,
@@ -1665,7 +1677,7 @@ impl Workspace {
             .open
             .get(&file_uri)
             .map(|d| d.text.clone())
-            .or_else(|| std::fs::read_to_string(file).ok());
+            .or_else(|| read_text(file));
         let mut map = self.settings_prefixes.clone();
         if let Some(text) = text {
             let parsed = crate::syntax::parse(&text, &PrefixMap::default(), Syntax::Turtle);
@@ -2241,7 +2253,7 @@ fn parse_files(
                 if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
                     return None;
                 }
-                let text = std::fs::read_to_string(&path).ok()?;
+                let text = read_text(&path)?;
                 let syntax = Syntax::of(None, &uri, &text);
                 // The job's prefixes are by name: a text in a syntax without
                 // prefixes gets none, as when it is open.
