@@ -1567,11 +1567,16 @@ mod tests {
     /// the white space of an attribute value that XML 1.0 (3.3.3) makes
     /// spaces: each triple only `oxrdfxml` has is, with its tabs and line
     /// ends made spaces, a triple only ours has, each of ours used once,
-    /// whose object is the value of an attribute of `text` that holds a
-    /// tab or a line end (a character reference is not normalized).
+    /// and one of our triples with that subject (when an IRI), predicate
+    /// and value has as object the value of an attribute of `text` that
+    /// holds a tab or a line end (a character reference is not normalized).
     fn difference_past_normalization(text: &str, p: &Parsed, theirs: &Graph) -> Option<String> {
         let ours = &graph(p);
-        let normalized_values: FxHashSet<&str> = p
+        let iri = |n: &Node| match n {
+            Node::Iri(i) => Some(i.as_str()),
+            _ => None,
+        };
+        let normalized_values: FxHashSet<(Option<&str>, &str, &str)> = p
             .triples
             .iter()
             .filter_map(|t| {
@@ -1582,7 +1587,8 @@ mod tests {
                 let quote = text[..from].chars().next_back()?;
                 let quoted = matches!(quote, '"' | '\'') && text[to..].starts_with(quote);
                 let raw = &text[from..to];
-                (quoted && raw.contains(['\t', '\n', '\r'])).then_some(&**value)
+                let key = (iri(&t.s), t.p.as_str(), &**value);
+                (quoted && raw.contains(['\t', '\n', '\r'])).then_some(key)
             })
             .collect();
         let mut only_ours: Vec<oxrdf::Triple> = ours
@@ -1598,7 +1604,11 @@ mod tests {
                 .value()
                 .replace("\r\n", " ")
                 .replace(['\t', '\n', '\r'], " ");
-            if !normalized_values.contains(value.as_str()) {
+            let s = match t.subject {
+                oxrdf::NamedOrBlankNodeRef::NamedNode(n) => Some(n.as_str()),
+                oxrdf::NamedOrBlankNodeRef::BlankNode(_) => None,
+            };
+            if !normalized_values.contains(&(s, t.predicate.as_str(), value.as_str())) {
                 return None;
             }
             let o = match l.language() {
