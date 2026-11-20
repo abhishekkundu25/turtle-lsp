@@ -1259,9 +1259,10 @@ mod tests {
                     if syntax == Syntax::RdfXml && rdfxml == RdfXml::Edit {
                         let err = got.unwrap_err();
                         assert!(
-                            err.starts_with(
-                                "can't rename in /w/b.ttl: line 1: the document has a syntax error"
-                            ),
+                            err.starts_with(&format!(
+                                "can't rename in {}: line 1: the document has a syntax error",
+                                shown("file:///w/b.ttl")
+                            )),
                             "{needle}: {err}"
                         );
                     } else {
@@ -1630,10 +1631,13 @@ mod tests {
                 let got = prepare_rename(&owl, Encoding::Utf8, at, RdfXml::Refuse).unwrap();
                 assert_eq!(got, None, "{offset} in {text}");
                 // Turtle text is no XML: a syntax error refuses it there.
-                let broken = "can't rename in /w/onto.owl: line 1: the document has a syntax error";
+                let broken = format!(
+                    "can't rename in {}: line 1: the document has a syntax error",
+                    shown("file:///w/onto.owl")
+                );
                 if written {
                     let got = prepare_rename(&owl, Encoding::Utf8, at, RdfXml::Edit).unwrap_err();
-                    assert!(got.starts_with(broken), "{offset} in {text}: {got}");
+                    assert!(got.starts_with(&broken), "{offset} in {text}: {got}");
                 }
                 for k in [&k, &without] {
                     let err = rename(
@@ -1657,7 +1661,7 @@ mod tests {
                         };
                         let err = rename(&owl, k, Encoding::Utf8, at, "z", scope, RdfXml::Edit);
                         let err = err.unwrap_err();
-                        assert!(err.starts_with(broken), "{offset}: {err}");
+                        assert!(err.starts_with(&broken), "{offset}: {err}");
                     }
                 }
             }
