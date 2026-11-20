@@ -89,7 +89,7 @@ test("a client that can register features but does not opt in gets them in the i
   assert.ok(!c.posted.some((m) => m.method === "client/registerCapability"))
 })
 
-test("the features the server writes with are registered after the initialize answer, once, and leave .owl and .rdf out", { skip }, async () => {
+test("the features the server writes with are registered after the initialize answer, once, and leave .owl and .rdf out but for rename", { skip }, async () => {
   const real = await createEngine(bytes)
   let crashNext = false
   const engine = {
@@ -117,7 +117,11 @@ test("the features the server writes with are registered after the initialize an
   assert.ok(c.posted.indexOf(registrations()[0]) > c.posted.indexOf(r), "registered before the initialize answer")
   const regs = registrations()[0].params.registrations
   assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
-  for (const x of regs) assert.doesNotMatch(JSON.stringify(x.registerOptions.documentSelector), /owl|rdf|xml/)
+  for (const x of regs) {
+    const selector = x.registerOptions.documentSelector
+    if (x.method !== "textDocument/rename") assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, x.method)
+    else assert.deepEqual(selector.filter((f) => /owl|rdf|xml/.test(JSON.stringify(f))), [{ pattern: "**/*.{owl,rdf}" }])
+  }
   // A crash restarts the server, which registers again: the client accepted
   // them, so nothing is sent.
   c.send({ id: registrations()[0].id, result: null })
