@@ -97,8 +97,11 @@ pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Co
         return CompletionResponse::Array(vec![]);
     };
     let offset = offset as usize;
-    if a.parsed.syntax == Syntax::JsonLd {
-        return jsonld::complete(a, k, enc, offset);
+    match a.parsed.syntax {
+        Syntax::JsonLd => return jsonld::complete(a, k, enc, offset),
+        // Nothing writes RDF/XML.
+        Syntax::RdfXml => return CompletionResponse::Array(vec![]),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {
         return r;

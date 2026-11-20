@@ -7,12 +7,19 @@
 //! with. A web document's format comes from its content type, else from the
 //! extension of the URL it was finally fetched from, else from what it starts
 //! with. The format never comes from the import IRI.
+//!
+//! A local RDF/XML file is analysed by the RDF/XML frontend over its own
+//! text, so locations point into the file. A fetched one is converted to
+//! N-Triples ([`rdf_xml_to_ntriples`]), and that text is what is cached and
+//! analysed.
 
 use super::catalog::{Catalog, Target};
-use super::rdfxml::rdf_xml_to_ntriples;
+use super::rdfxml::{rdf_xml_to_ntriples, stopped_at};
 use super::worker::{Memo, Ontology, RETRY_FETCH_AFTER};
 use super::*;
 use crate::syntax::Syntax;
+use crate::syntax::sniff::SNIFF_BYTES;
+pub(crate) use crate::syntax::sniff::Sniffed;
 use std::path::Component;
 
 // ---- files ----
@@ -136,13 +143,15 @@ struct Failure {
     budget: bool,
 }
 
-/// Load one import: (where from, the ontology, freshly parsed).
+/// Load one import: (where from, the ontology, freshly parsed). A file in
+/// the workspace it is read from is added to `files`, loaded or not.
 pub(super) fn load(
     iri: &str,
     req: &Request,
     catalog: &Catalog,
     memo: &mut Memo,
     budget: &mut Budget,
+    files: &mut Vec<PathBuf>,
 ) -> Result<(String, Ontology, bool), String> {
     let base = without_fragment(iri);
     let mut url = base.to_string();
@@ -156,6 +165,7 @@ pub(super) fn load(
                         cat.display()
                     )
                 })?;
+                files.push(path.clone());
                 return load_file(&path, None, base, memo)
                     .map(|(o, fresh)| (path.display().to_string(), o, fresh))
                     .map_err(|e| {
@@ -172,6 +182,7 @@ pub(super) fn load(
     if url::Url::parse(&url).is_ok_and(|u| u.scheme() == "file") {
         let path =
             fs_policy(&url, &req.roots).map_err(|e| format!("Import <{iri}> names {url}: {e}"))?;
+        files.push(path.clone());
         return load_file(&path, None, base, memo)
             .map(|(o, fresh)| (path.display().to_string(), o, fresh))
             .map_err(|e| {
@@ -213,7 +224,7 @@ pub(super) fn load(
             (Instant::now(), url.clone(), msg.to_string()),
         );
     };
-    let (text, format, final_url) = match fetch_document(iri, &url, req.allow_private, budget) {
+    let fetched = match fetch_document(iri, &url, req.allow_private, budget) {
         Ok(v) => v,
         Err(f) => {
             if !f.budget {
@@ -222,12 +233,18 @@ pub(super) fn load(
             return Err(f.message);
         }
     };
+    let Fetched {
+        text,
+        format,
+        final_url,
+        guessed,
+    } = fetched;
     // What the cache holds is what is parsed, so its lines are the file's.
     let text = match format {
         Format::JsonLd => text,
         _ => stamped(&url, &text),
     };
-    let mut parsed = match parse(text.as_bytes(), format, base) {
+    let mut parsed = match parse(text.as_bytes(), format, base, guessed) {
         Ok(p) => p,
         Err(e) => {
             let msg = format!("Import <{iri}> was fetched from {url} but could not be read: {e}");
@@ -254,17 +271,27 @@ pub(super) fn load(
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8";
 
-/// Fetch `url` and bring it to text that [`parse`] reads in the returned
-/// format (RDF/XML becomes N-Triples, read as Turtle), whose relative IRIs,
-/// if any, resolve against where the document was finally found, after
-/// redirects. Also that final URL.
+/// A fetched document, as [`parse`] reads it.
+struct Fetched {
+    /// Its text, whose relative IRIs, if any, resolve against where the
+    /// document was finally found; RDF/XML becomes N-Triples ([`marked`]).
+    text: String,
+    /// The format the text is read in: RDF/XML is read as Turtle.
+    format: Format,
+    /// Where the document was finally found, after redirects.
+    final_url: String,
+    /// The format was sniffed, not given by the content type.
+    guessed: bool,
+}
+
+/// Fetch `url` and bring it to text that [`parse`] reads.
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_document(
     iri: &str,
     url: &str,
     allow_private: bool,
     budget: &mut Budget,
-) -> Result<(String, Format, String), Failure> {
+) -> Result<Fetched, Failure> {
     use crate::fetch;
     let policy = fetch::Policy { allow_private };
     let r = fetch::get(url, ACCEPT, policy, budget).map_err(|e| Failure {
@@ -274,35 +301,49 @@ fn fetch_document(
         ),
         budget: e.budget,
     })?;
+    let unread = |message: String| Failure {
+        message: format!("Import <{iri}> was fetched from {url} but could not be read: {message}"),
+        budget: false,
+    };
+    let lossy = utf8(&r.body).map_err(unread)?;
+    let lossy = lossy.trim_start_matches('\u{feff}');
+    // Whatever the content type says: `application/owl+xml` is XML.
+    Sniffed::of(lossy).format().map_err(unread)?;
     let by_type = r
         .content_type
         .as_deref()
         .and_then(|ct| format_of_type(&ct.to_ascii_lowercase()));
-    let format = by_type.unwrap_or_else(|| {
-        let path = url::Url::parse(&r.final_url)
-            .map(|u| u.path().to_string())
-            .unwrap_or_default();
-        format_of(&path, &r.body)
-    });
-    let lossy = String::from_utf8_lossy(&r.body);
-    let lossy = lossy.trim_start_matches('\u{feff}');
+    let (format, guessed) = match by_type {
+        Some(format) => (format, false),
+        None => {
+            let path = url::Url::parse(&r.final_url)
+                .map(|u| u.path().to_string())
+                .unwrap_or_default();
+            format_of(&path, &r.body).map_err(unread)?
+        }
+    };
     let text = match format {
         Format::Turtle | Format::TriG => match oxiri::Iri::parse(r.final_url.as_str()) {
             Ok(_) => format!("@base <{}> .\n{lossy}", r.final_url),
             Err(_) => lossy.to_string(),
         },
         Format::NTriples | Format::NQuads | Format::JsonLd => lossy.to_string(),
-        Format::RdfXml => rdf_xml_to_ntriples(&r.body, &r.final_url).map_err(|e| Failure {
-            message: format!("Import <{iri}> was fetched from {url} but could not be read: {e}"),
-            budget: false,
-        })?,
+        Format::RdfXml => {
+            let (nt, truncated) = rdf_xml_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
+            marked(nt, truncated.as_deref())
+        }
     };
     let format = if format == Format::RdfXml {
         Format::Turtle
     } else {
         format
     };
-    Ok((text, format, r.final_url))
+    Ok(Fetched {
+        text,
+        format,
+        final_url: r.final_url,
+        guessed,
+    })
 }
 
 /// The browser build fetches nothing.
@@ -312,7 +353,7 @@ fn fetch_document(
     url: &str,
     _allow_private: bool,
     _budget: &mut Budget,
-) -> Result<(String, Format, String), Failure> {
+) -> Result<Fetched, Failure> {
     Err(Failure {
         message: format!(
             "Import <{iri}> could not be fetched from {url}: the browser build does not fetch"
@@ -457,8 +498,11 @@ fn load_file(
     {
         return Err(format!("the cache file does not name {origin}"));
     }
-    let format = format_of(&path.to_string_lossy(), &bytes);
-    let mut o = parse(&bytes, format, base)?;
+    // Bad bytes win over the syntax, as for a fetched document: the sniff
+    // reads only the head, with bad bytes replaced.
+    utf8(&bytes)?;
+    let (format, guessed) = format_of(&path.to_string_lossy(), &bytes)?;
+    let mut o = parse(&bytes, format, base, guessed)?;
     // Locations open the file; hover names the URL a cached copy came from.
     let a = Arc::get_mut(&mut o.analysis).expect("fresh analysis");
     match path_to_uri(path) {
@@ -500,14 +544,16 @@ impl Format {
             Syntax::NTriples => Format::NTriples,
             Syntax::NQuads => Format::NQuads,
             Syntax::JsonLd => Format::JsonLd,
+            Syntax::RdfXml => Format::RdfXml,
         }
     }
 
-    /// The syntax the analysis reads it in. RDF/XML is converted to
-    /// N-Triples text first, which is read as Turtle.
+    /// The syntax the analysis reads it in. (A fetched RDF/XML document is
+    /// converted to N-Triples first, and read as Turtle.)
     pub(crate) fn syntax(self) -> Syntax {
         match self {
-            Format::Turtle | Format::RdfXml => Syntax::Turtle,
+            Format::Turtle => Syntax::Turtle,
+            Format::RdfXml => Syntax::RdfXml,
             Format::TriG => Syntax::TriG,
             Format::NTriples => Syntax::NTriples,
             Format::NQuads => Syntax::NQuads,
@@ -529,54 +575,86 @@ impl Format {
 }
 
 /// The format of the document called `name` (a path or URL path) whose bytes
-/// are `bytes`: by the extension if it is one of ours, else by [`sniff`].
-pub(crate) fn format_of(name: &str, bytes: &[u8]) -> Format {
+/// are `bytes`: by the extension if it is one of ours, else by [`sniff`]; and
+/// whether it was sniffed. An error says the content is in an OWL syntax that
+/// is not read.
+pub(crate) fn format_of(name: &str, bytes: &[u8]) -> Result<(Format, bool), String> {
     match Syntax::from_extension(name) {
-        Some(syntax) => Format::of_syntax(syntax),
-        None => sniff(bytes),
+        Some(syntax) => Ok((Format::of_syntax(syntax), false)),
+        None => sniff(bytes).map(|f| (f, true)),
     }
 }
 
-/// RDF/XML, JSON-LD or Turtle (N-Triples is Turtle), from the first bytes.
-pub fn sniff(bytes: &[u8]) -> Format {
-    let s = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]);
-    let s = s.trim_start_matches('\u{feff}').trim_start();
-    if s.starts_with("<?xml") || s.starts_with("<!") {
-        return Format::RdfXml;
-    }
-    // JSON: an object that starts with a key (or is empty), or an array of objects.
-    if let Some(rest) = s.strip_prefix('{') {
-        let rest = rest.trim_start();
-        if rest.starts_with('"') || rest.starts_with('}') {
-            return Format::JsonLd;
+/// The format to read a document in, from its first bytes ([`Sniffed`]), or
+/// why it is not read.
+pub fn sniff(bytes: &[u8]) -> Result<Format, String> {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(SNIFF_BYTES)]);
+    Sniffed::of(&head).format()
+}
+
+impl Sniffed {
+    /// The format turtle-lsp reads it in, or why it reads none: OWL/XML,
+    /// Functional and Manchester are OWL syntaxes, not RDF.
+    pub(crate) fn format(self) -> Result<Format, String> {
+        match self {
+            Sniffed::Turtle => Ok(Format::Turtle),
+            Sniffed::JsonLd => Ok(Format::JsonLd),
+            Sniffed::RdfXml => Ok(Format::RdfXml),
+            Sniffed::OwlXml | Sniffed::Functional | Sniffed::Manchester => {
+                Err(format!("it {}", self.unread().unwrap_or_default()))
+            }
         }
     }
-    if let Some(rest) = s.strip_prefix('[')
-        && rest.trim_start().starts_with('{')
-    {
-        return Format::JsonLd;
-    }
-    let Some(rest) = s.strip_prefix('<') else {
-        return Format::Turtle;
-    };
-    let name_len = rest
-        .find(|c: char| !(c.is_alphanumeric() || "_-.:".contains(c)))
-        .unwrap_or(rest.len());
-    let after = &rest[name_len..];
-    let xml = name_len > 0
-        && (after.starts_with(char::is_whitespace)
-            || after.starts_with("/>")
-            || after
-                .strip_prefix('>')
-                .is_some_and(|t| t.trim_start().starts_with('<')));
-    if xml { Format::RdfXml } else { Format::Turtle }
 }
 
-pub(super) fn parse(bytes: &[u8], format: Format, base: &str) -> Result<Ontology, String> {
-    let lossy = String::from_utf8_lossy(bytes);
-    let text = lossy.trim_start_matches('\u{feff}');
+/// The comment line that starts the converted text of an RDF/XML document
+/// with an error, followed by where the first is and why. A cached copy
+/// keeps it, so its next load says so too.
+const TRUNCATED: &str = "# turtle-lsp: the RDF/XML has an error at ";
+
+/// `nt`, converted from RDF/XML, with the line that says where its first
+/// error is.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn marked(nt: String, truncated: Option<&str>) -> String {
+    match truncated {
+        Some(why) => format!("{TRUNCATED}{}\n{nt}", why.replace(['\r', '\n'], " ")),
+        None => nt,
+    }
+}
+
+/// `bytes` as text, or why they are not: an import is read as UTF-8, as
+/// a workspace file is, and never with its bad bytes replaced.
+pub(super) fn utf8(bytes: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(bytes).map_err(|e| {
+        format!(
+            "not valid UTF-8 (first bad byte at offset {})",
+            e.valid_up_to()
+        )
+    })
+}
+
+/// Read an imported document. `guessed`: its format comes from [`sniff`],
+/// not from an extension or a content type; Turtle then fails when every
+/// triple is unresolved (a text in another syntax that reads as junk).
+pub(super) fn parse(
+    bytes: &[u8],
+    format: Format,
+    base: &str,
+    guessed: bool,
+) -> Result<Ontology, String> {
+    let text = utf8(bytes)?.trim_start_matches('\u{feff}');
+    // Whatever the name or the content type says.
+    Sniffed::of(text).format()?;
+    let mut truncated = None;
     let text = match format {
         Format::Turtle | Format::TriG => {
+            // A cached copy of an RDF/XML document with an error: its
+            // header line, then this line.
+            truncated = text
+                .lines()
+                .take(2)
+                .find_map(|l| l.strip_prefix(TRUNCATED))
+                .map(str::to_string);
             // Relative IRIs resolve against the import IRI; on the first line,
             // so line numbers stay those of the file.
             match oxiri::Iri::parse(base) {
@@ -585,9 +663,9 @@ pub(super) fn parse(bytes: &[u8], format: Format, base: &str) -> Result<Ontology
             }
         }
         // N-Triples and N-Quads have absolute IRIs only, no base to declare;
-        // a JSON-LD document's base is the URL the analysis is named by.
-        Format::NTriples | Format::NQuads | Format::JsonLd => text.to_string(),
-        Format::RdfXml => rdf_xml_to_ntriples(bytes, base)?,
+        // a JSON-LD or RDF/XML document's base is the URL the analysis is
+        // named by.
+        Format::NTriples | Format::NQuads | Format::JsonLd | Format::RdfXml => text.to_string(),
     };
     let a = Analysis::with_syntax(
         base.to_string(),
@@ -596,10 +674,26 @@ pub(super) fn parse(bytes: &[u8], format: Format, base: &str) -> Result<Ontology
         false,
         format.syntax(),
     );
+    if format == Format::RdfXml {
+        // Read on past its errors; the first says where it went wrong.
+        truncated = a.parsed.errors.first().map(|e| stopped_at(&text, e));
+    }
     if a.parsed.triples.is_empty()
         && let Some(e) = a.parsed.errors.first()
     {
-        return Err(e.message().to_string());
+        return Err(truncated.unwrap_or_else(|| e.message().to_string()));
+    }
+    if guessed
+        && format == Format::Turtle
+        && !a.parsed.triples.is_empty()
+        && a.parsed.triples.iter().all(|t| t.unresolved)
+    {
+        let first = a.parsed.errors.first().map_or(String::new(), |e| {
+            format!(" (first error: {})", e.message())
+        });
+        return Err(format!(
+            "read as Turtle, none of its triples is usable: each has an undeclared prefix{first}. In Protégé: File > Save as > RDF/XML or Turtle"
+        ));
     }
     let p = preds();
     let imports = a
@@ -615,49 +709,218 @@ pub(super) fn parse(bytes: &[u8], format: Format, base: &str) -> Result<Ontology
     Ok(Ontology {
         analysis: Arc::new(a),
         imports,
+        truncated,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::imports::worker::Memo;
 
     #[test]
     fn formats_are_sniffed() {
-        assert_eq!(sniff(b"<?xml version='1.0'?><rdf:RDF/>"), Format::RdfXml);
+        let sniffed = |b: &[u8]| sniff(b).unwrap();
+        assert_eq!(sniffed(b"<?xml version='1.0'?><rdf:RDF/>"), Format::RdfXml);
         assert_eq!(
-            sniff(b"\xEF\xBB\xBF  <rdf:RDF xmlns:rdf='x'>"),
+            sniffed(b"\xEF\xBB\xBF  <rdf:RDF xmlns:rdf='x'>"),
             Format::RdfXml
         );
-        assert_eq!(sniff(b"<Ontology>\n  <Prefix/>"), Format::RdfXml);
         assert_eq!(
-            sniff(b"<http://ex.com/a> <http://ex.com/p> \"x\" ."),
+            sniffed(b"<http://ex.com/a> <http://ex.com/p> \"x\" ."),
             Format::Turtle
         );
-        assert_eq!(sniff(b"<urn:x:a> a <urn:x:C> ."), Format::Turtle);
-        assert_eq!(sniff(b"@prefix ex: <http://ex.com/> ."), Format::Turtle);
-        assert_eq!(sniff(b""), Format::Turtle);
-        assert_eq!(sniff(b" {\n \"@id\": \"x\"}"), Format::JsonLd);
-        assert_eq!(sniff(b"[ {\"@id\": \"x\"} ]"), Format::JsonLd);
-        assert_eq!(sniff(b"{}"), Format::JsonLd);
+        assert_eq!(sniffed(b"<urn:x:a> a <urn:x:C> ."), Format::Turtle);
+        assert_eq!(sniffed(b"@prefix ex: <http://ex.com/> ."), Format::Turtle);
+        assert_eq!(sniffed(b""), Format::Turtle);
+        assert_eq!(sniffed(b" {\n \"@id\": \"x\"}"), Format::JsonLd);
+        assert_eq!(sniffed(b"[ {\"@id\": \"x\"} ]"), Format::JsonLd);
+        assert_eq!(sniffed(b"{}"), Format::JsonLd);
         // A blank node subject is Turtle, not an array.
-        assert_eq!(sniff(b"[ a <urn:x:C> ] <urn:x:p> 1 ."), Format::Turtle);
+        assert_eq!(sniffed(b"[ a <urn:x:C> ] <urn:x:p> 1 ."), Format::Turtle);
+        // Cut inside a character, at the edge of what a sniff looks at.
+        let mut big = "#".repeat(SNIFF_BYTES - 1);
+        big.push('é');
+        assert_eq!(sniff(big.as_bytes()), Ok(Format::Turtle));
+        // An `Ontology` root in no namespace is not RDF/XML (whose elements
+        // need one): it is taken for OWL/XML.
+        let e = sniff(b"<Ontology>\n  <Prefix/>").unwrap_err();
+        assert_eq!(
+            e,
+            "it holds OWL/XML, which turtle-lsp does not read. In Protégé: File > Save as > RDF/XML or Turtle"
+        );
+    }
+
+    #[test]
+    fn owl_syntaxes_are_not_read_whatever_the_name_says() {
+        let base = "http://example.org/o";
+        for (text, name) in [
+            (
+                "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"/>",
+                "OWL/XML",
+            ),
+            ("Prefix(:=<http://example.org/o#>)", "OWL Functional syntax"),
+            (
+                "Prefix: ex: <http://example.org/o#>",
+                "OWL Manchester syntax",
+            ),
+        ] {
+            for format in [Format::Turtle, Format::RdfXml, Format::NTriples] {
+                let e = parse(text.as_bytes(), format, base, false).err().unwrap();
+                assert!(e.starts_with(&format!("it holds {name}, ")), "{e}");
+            }
+        }
+    }
+
+    #[test]
+    fn sniffed_turtle_with_no_usable_triple_is_refused() {
+        let base = "http://example.org/o";
+        // Manchester the sniff does not know (a frame without a header).
+        let junk = "Class: ex:Dog\n    SubClassOf: ex:Animal\n";
+        let e = parse(junk.as_bytes(), Format::Turtle, base, true)
+            .err()
+            .unwrap();
+        assert!(
+            e.starts_with("read as Turtle, none of its triples is usable"),
+            "{e}"
+        );
+        assert!(
+            e.ends_with(". In Protégé: File > Save as > RDF/XML or Turtle"),
+            "{e}"
+        );
+        // Named Turtle, empty Turtle, and Turtle with one usable triple load.
+        assert!(parse(junk.as_bytes(), Format::Turtle, base, false).is_ok());
+        assert!(parse(b"", Format::Turtle, base, true).is_ok());
+        let some = "ex:a ex:p ex:b .\n<http://example.org/a> a <http://example.org/C> .\n";
+        assert!(parse(some.as_bytes(), Format::Turtle, base, true).is_ok());
+    }
+
+    /// Bytes that are not UTF-8 fail the import, in every format, and are
+    /// never read with a replacement character.
+    #[test]
+    fn an_import_that_is_not_utf8_is_not_read() {
+        let base = "http://example.org/o";
+        let xml = b"<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\"><rdf:Description rdf:about=\"http://example.org/a\" ex:p=\"a\xFFb\"/></rdf:RDF>\n";
+        let at = xml.iter().position(|&b| b == 0xFF).unwrap();
+        let want = format!("not valid UTF-8 (first bad byte at offset {at})");
+        for format in [
+            Format::RdfXml,
+            Format::Turtle,
+            Format::NTriples,
+            Format::JsonLd,
+        ] {
+            assert_eq!(
+                parse(xml, format, base, true).err(),
+                Some(want.clone()),
+                "{format:?}"
+            );
+        }
+        let ttl = b"<http://example.org/a> <http://example.org/p> \"a\xFFb\" .\n";
+        let e = parse(ttl, Format::Turtle, base, false).err();
+        assert_eq!(
+            e.as_deref(),
+            Some("not valid UTF-8 (first bad byte at offset 48)")
+        );
+        // Valid UTF-8, with a byte order mark, reads.
+        let fixed = [
+            b"\xEF\xBB\xBF".as_slice(),
+            &String::from_utf8_lossy(xml).into_owned().into_bytes(),
+        ]
+        .concat();
+        assert_eq!(
+            parse(&fixed, Format::RdfXml, base, true)
+                .unwrap()
+                .analysis
+                .parsed
+                .triples
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_truncated_rdf_xml_says_so_fresh_from_the_memo_and_from_the_cache() {
+        let xml = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n  <ex:A rdf:about=\"http://example.org/a\"/>\n  <ex:B rdf:about=\"http://example.org/b\"></ex:C>\n</rdf:RDF>\n";
+        let base = "http://example.org/o";
+        let o = parse(xml.as_bytes(), Format::RdfXml, base, true).unwrap();
+        let why = o.truncated.clone().expect("truncated");
+        assert!(why.starts_with("line 4, column "), "{why}");
+        // `ex:A`, and the type of `ex:B`, from its start tag.
+        assert_eq!(o.analysis.parsed.triples.len(), 2);
+        // A whole document is not.
+        let whole = xml.replace("</ex:C>", "</ex:B>");
+        let o = parse(whole.as_bytes(), Format::RdfXml, base, true).unwrap();
+        assert_eq!(o.truncated, None);
+        // A cached copy carries the line that says so.
+        let (nt, stop) = rdf_xml_to_ntriples(xml.as_bytes(), base).unwrap();
+        let cached = format!(
+            "# turtle-lsp cache for {base}\n{}",
+            marked(nt, stop.as_deref())
+        );
+        let o = parse(cached.as_bytes(), Format::Turtle, base, false).unwrap();
+        assert_eq!(o.truncated.as_deref(), Some(why.as_str()));
+        assert_eq!(o.analysis.parsed.triples.len(), 2);
+        assert!(o.analysis.parsed.errors.is_empty());
+        // From the memo, as fresh.
+        let dir = std::env::temp_dir().join(format!("turtle-truncated-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("onto.owl");
+        std::fs::write(&file, xml).unwrap();
+        let mut memo = Memo::default();
+        let (first, fresh) = load_file(&file, None, base, &mut memo).unwrap();
+        assert!(fresh);
+        let (again, fresh) = load_file(&file, None, base, &mut memo).unwrap();
+        assert!(!fresh);
+        assert_eq!(first.truncated.as_deref(), Some(why.as_str()));
+        assert_eq!(again.truncated, first.truncated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A local `.owl` in an OWL syntax that is also not UTF-8 is refused
+    /// for its bytes, with the offset, before its syntax is looked at.
+    #[test]
+    fn a_local_import_that_is_not_utf8_says_so_before_naming_its_syntax() {
+        let dir = std::env::temp_dir().join(format!("turtle-local-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let head = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\n";
+        for pad in [0, SNIFF_BYTES] {
+            let mut bytes = head.as_bytes().to_vec();
+            bytes.extend(std::iter::repeat_n(b' ', pad));
+            let at = bytes.len();
+            bytes.extend(b"# a\xFFb\n)\n");
+            let file = dir.join(format!("onto-{pad}.owl"));
+            std::fs::write(&file, &bytes).unwrap();
+            let e = load_file(&file, None, "http://example.org/o", &mut Memo::default())
+                .err()
+                .unwrap();
+            assert_eq!(
+                e,
+                format!("not valid UTF-8 (first bad byte at offset {})", at + 3),
+                "bad byte at {at}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_format_comes_from_the_extension_first_then_the_content_never_the_iri() {
         let ttl = b"<urn:x:a> a <urn:x:C> .";
         let xml = b"<?xml version='1.0'?><rdf:RDF/>";
-        assert_eq!(format_of("/w/a.trig", ttl), Format::TriG);
-        assert_eq!(format_of("/w/a.nq", ttl), Format::NQuads);
-        assert_eq!(format_of("/w/a.nt", ttl), Format::NTriples);
-        assert_eq!(format_of("/w/a.jsonld", ttl), Format::JsonLd);
-        assert_eq!(format_of("C:\\w\\a.ttl", xml), Format::Turtle);
+        let of = |name: &str, b: &[u8]| format_of(name, b).unwrap();
+        assert_eq!(of("/w/a.trig", ttl), (Format::TriG, false));
+        assert_eq!(of("/w/a.nq", ttl), (Format::NQuads, false));
+        assert_eq!(of("/w/a.nt", ttl), (Format::NTriples, false));
+        assert_eq!(of("/w/a.jsonld", ttl), (Format::JsonLd, false));
+        assert_eq!(of("C:\\w\\a.ttl", xml), (Format::Turtle, false));
         // No extension of ours: what the document starts with decides.
-        assert_eq!(format_of("/w/a.owl", xml), Format::RdfXml);
-        assert_eq!(format_of("/w/a.owl", ttl), Format::Turtle);
-        assert_eq!(format_of("/w/a", b"{\"@id\": \"x\"}"), Format::JsonLd);
-        assert_eq!(format_of("", ttl), Format::Turtle);
+        assert_eq!(of("/w/a.owl", xml), (Format::RdfXml, true));
+        assert_eq!(of("/w/a.owl", ttl), (Format::Turtle, true));
+        assert_eq!(of("/w/a", b"{\"@id\": \"x\"}"), (Format::JsonLd, true));
+        assert_eq!(of("", ttl), (Format::Turtle, true));
+        assert!(format_of("/w/a.owl", b"Ontology(<http://e/>)").is_err());
+        assert!(format_of("/w/a.ttl", b"Ontology(<http://e/>)").is_ok());
         assert_eq!(format_of_type("application/trig"), Some(Format::TriG));
         assert_eq!(format_of_type("application/ld+json"), Some(Format::JsonLd));
         assert_eq!(

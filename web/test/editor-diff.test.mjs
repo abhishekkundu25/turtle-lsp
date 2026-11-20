@@ -164,3 +164,25 @@ test("Compare with Saved shows the disk text against the edited text; a browser-
     await context.close()
   }
 })
+
+test("Revert File refuses a disk text that is not UTF-8, names the file, and keeps the editor text", async () => {
+  const context = await inPlaceContext({ "a.ttl": A })
+  try {
+    const { page, errors } = await open({ context })
+    await page.getByRole("button", { name: "Open Folder in Place" }).click()
+    await openFile(page, "proj/a.ttl")
+    // Another program writes Latin-1 to the file.
+    await page.evaluate(async () => {
+      const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("proj")
+      const w = await (await root.getFileHandle("a.ttl")).createWritable()
+      await w.write(new Uint8Array([0x23, 0x20, 0x63, 0x61, 0x66, 0xe9, 0x0a]))
+      await w.close()
+    })
+    await run(page, "file.revert")
+    await toastSays(page, "Could not read proj/a.ttl: not valid UTF-8 (first bad byte at offset 5)")
+    assert.equal(await text(page, "proj/a.ttl"), A)
+    assert.deepEqual(errors, [])
+  } finally {
+    await context.close()
+  }
+})

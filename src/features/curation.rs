@@ -140,7 +140,9 @@ impl<'a> Checks<'a> {
         let a = self.a;
         let prefixes = self.prefixes.get_or_insert_with(|| match a.parsed.syntax {
             Syntax::JsonLd => crate::features::lint::jsonld_prefixes(a),
-            _ => a.prefix_map(),
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => {
+                a.prefix_map()
+            }
         });
         shorten(iri, prefixes).unwrap_or_else(|| format!("<{iri}>"))
     }
@@ -643,7 +645,13 @@ pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u3
             LABEL_WHITESPACE,
             message.to_string(),
         );
-        let json = a.parsed.syntax == Syntax::JsonLd;
+        // RDF/XML has no string token ([`string_token`]), so no fix.
+        let json = match a.parsed.syntax {
+            Syntax::JsonLd => true,
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => {
+                false
+            }
+        };
         if let Some(s) = string
             && let Some(replace) = trimmed(&a.text[s.start as usize..s.end as usize], json)
         {
@@ -657,14 +665,19 @@ pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u3
 /// The span of the quoted string that gives the literal at `o_span` its
 /// `value`: the literal's first token in the Turtle family, the JSON string
 /// itself or a value object's string whose value is `value` in JSON-LD.
-/// `None` for a malformed string or one not found.
+/// `None` for a malformed string or one not found, and in RDF/XML, whose
+/// text is XML, not a quoted string.
 fn string_token(a: &Analysis, o_span: Span, value: &str) -> Option<Span> {
     let text = a.text.get(o_span.start as usize..o_span.end as usize)?;
     let at = |s: Span| Span::new(o_span.start + s.start, o_span.start + s.end);
-    if a.parsed.syntax != Syntax::JsonLd {
-        let t = *lexer::tokenize(text).first()?;
-        return (t.kind == Kind::String && t.error().is_none())
-            .then(|| at(Span::new(t.start, t.end)));
+    match a.parsed.syntax {
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+            let t = *lexer::tokenize(text).first()?;
+            return (t.kind == Kind::String && t.error().is_none())
+                .then(|| at(Span::new(t.start, t.end)));
+        }
+        Syntax::RdfXml => return None,
+        Syntax::JsonLd => {}
     }
     if text.starts_with('"') {
         return Some(o_span);
@@ -1509,5 +1522,22 @@ mod tests {
                 "Label \"pump\" is also the label of ex:A"
             )]
         );
+    }
+
+    /// `label-whitespace` in RDF/XML would carry no fix: the text there is
+    /// XML, not a quoted string.
+    #[test]
+    fn a_label_in_rdfxml_has_no_string_to_trim() {
+        use crate::features::rdfxml_fixture as fx;
+        let uri = "file:///w/onto.owl";
+        let fixes = |a: &Analysis| -> Vec<bool> {
+            whitespace(a, 0..a.parsed.triples.len())
+                .into_iter()
+                .map(|(_, f)| f.diagnostic.data.is_some())
+                .collect()
+        };
+        assert_eq!(fixes(&fx::turtle(uri)), [true]);
+        assert_eq!(fixes(&fx::written(uri, fx::TURTLE)), [false]);
+        assert_eq!(fixes(&fx::read(uri)), [false]);
     }
 }

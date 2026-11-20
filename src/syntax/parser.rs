@@ -99,9 +99,10 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
 /// [`parse`], with relative IRIs resolved against `base` (the document's own
 /// URL) until an `@base` replaces it. An invalid `base` is ignored.
 ///
-/// For the Turtle family only. It never fails, but it does not read JSON-LD,
-/// which has its own frontend: given [`Syntax::JsonLd`] it returns no triples
-/// and one `syntax` error at offset 0.
+/// For the Turtle family only. It never fails, but it does not read JSON-LD
+/// or RDF/XML, which have their own frontends: given [`Syntax::JsonLd`] or
+/// [`Syntax::RdfXml`] it returns no triples and one `syntax` error at
+/// offset 0.
 pub fn parse_with_base(
     src: &str,
     external: &PrefixMap,
@@ -130,11 +131,12 @@ impl Parsed {
 
 impl Syntax {
     /// The tokens [`parse_with_base`] reads `src` as, comments included:
-    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, which has its
-    /// own frontend.
+    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD and RDF/XML,
+    /// which have their own frontends.
     pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
-        if self == Syntax::JsonLd {
-            return Vec::new();
+        match self {
+            Syntax::JsonLd | Syntax::RdfXml => return Vec::new(),
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
         }
         let mut all = tokenize(src);
         if self != Syntax::TriG {
@@ -157,13 +159,18 @@ fn run(
     base: Option<&str>,
     graph_only: Option<usize>,
 ) -> (Parsed, usize) {
-    if syntax == Syntax::JsonLd {
+    let frontend = match syntax {
+        Syntax::JsonLd => Some("JSON-LD documents are parsed by jsonld::parse"),
+        Syntax::RdfXml => Some("RDF/XML documents are parsed by rdfxml::parse"),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => None,
+    };
+    if let Some(message) = frontend {
         let refused = Parsed {
             syntax,
             document_base: base.map(str::to_string),
             errors: vec![SyntaxError::new(
                 Span::new(0, 0),
-                "JSON-LD documents are parsed by jsonld::parse",
+                message,
                 Severity::Error,
                 "syntax",
             )],
@@ -2462,43 +2469,43 @@ mod tests {
 
     #[test]
     fn syntax_detection() {
-        assert_eq!(Syntax::detect(Some("trig"), "file:///a.ttl"), Syntax::TriG);
+        assert_eq!(Syntax::of(Some("trig"), "file:///a.ttl", ""), Syntax::TriG);
         assert_eq!(
-            Syntax::detect(Some("n-triples"), "file:///a"),
+            Syntax::of(Some("n-triples"), "file:///a", ""),
             Syntax::NTriples
         );
         assert_eq!(
-            Syntax::detect(Some("ntriples"), "file:///a"),
+            Syntax::of(Some("ntriples"), "file:///a", ""),
             Syntax::NTriples
         );
         assert_eq!(
-            Syntax::detect(Some("plaintext"), "file:///a.trig"),
+            Syntax::of(Some("plaintext"), "file:///a.trig", ""),
             Syntax::TriG
         );
-        assert_eq!(Syntax::detect(None, "file:///x/a.nt"), Syntax::NTriples);
-        assert_eq!(Syntax::detect(None, "file:///x/a.nq"), Syntax::NQuads);
-        assert_eq!(Syntax::detect(Some("n-quads"), "file:///a"), Syntax::NQuads);
+        assert_eq!(Syntax::of(None, "file:///x/a.nt", ""), Syntax::NTriples);
+        assert_eq!(Syntax::of(None, "file:///x/a.nq", ""), Syntax::NQuads);
+        assert_eq!(Syntax::of(Some("n-quads"), "file:///a", ""), Syntax::NQuads);
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.nq"),
+            Syntax::of(Some("turtle"), "file:///a.nq", ""),
             Syntax::NQuads
         );
         assert!(Syntax::NQuads.is_line_based() && !Syntax::NQuads.has_prefixes());
         assert_eq!(
-            Syntax::detect(None, "file:///x.trig/a.turtle"),
+            Syntax::of(None, "file:///x.trig/a.turtle", ""),
             Syntax::Turtle
         );
-        assert_eq!(Syntax::detect(None, "untitled:Untitled-1"), Syntax::Turtle);
+        assert_eq!(Syntax::of(None, "untitled:Untitled-1", ""), Syntax::Turtle);
         // An editor that calls every RDF file "turtle".
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.trig"),
+            Syntax::of(Some("turtle"), "file:///a.trig", ""),
             Syntax::TriG
         );
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.nt"),
+            Syntax::of(Some("turtle"), "file:///a.nt", ""),
             Syntax::NTriples
         );
         assert_eq!(
-            Syntax::detect(Some("turtle"), "file:///a.ttl"),
+            Syntax::of(Some("turtle"), "file:///a.ttl", ""),
             Syntax::Turtle
         );
         assert_eq!(Syntax::from_extension("C:\\x\\a.trig"), Some(Syntax::TriG));
@@ -2514,17 +2521,17 @@ mod tests {
         // Editors that call `.jsonld` files `json` (VS Code) or `turtle`.
         for id in [None, Some("json"), Some("turtle"), Some("jsonld")] {
             assert_eq!(
-                Syntax::detect(id, "file:///a.jsonld"),
+                Syntax::of(id, "file:///a.jsonld", ""),
                 Syntax::JsonLd,
                 "{id:?}"
             );
         }
         assert_eq!(
-            Syntax::detect(Some("jsonld"), "untitled:Untitled-1"),
+            Syntax::of(Some("jsonld"), "untitled:Untitled-1", ""),
             Syntax::JsonLd
         );
         assert_eq!(
-            Syntax::detect(Some("json"), "file:///a.json"),
+            Syntax::of(Some("json"), "file:///a.json", ""),
             Syntax::Turtle
         );
         assert!(!Syntax::JsonLd.is_line_based() && !Syntax::JsonLd.has_prefixes());

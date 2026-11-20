@@ -262,6 +262,9 @@ test("a SPARQL file's open, edits and close start no run; an RDF file's edit doe
     assert.equal(runs().length, before, JSON.stringify(runs()))
     w.s.change(a, CALM)
     await until(w.s, a, (d) => turbowl(d).length === 0)
+    // The edit clears the old findings at once; the run starts after the
+    // pause in typing, so a slow runner sees it later.
+    for (let i = 0; i < 250 && runs().length <= before; i++) await sleep(20)
     assert.ok(runs().length > before, JSON.stringify(runs()))
     // No progress is left on.
     await settled()
@@ -325,5 +328,38 @@ test("off: the diagnostics are exactly those without reasoning, and nothing runs
   } finally {
     await off.end()
     await on.end()
+  }
+})
+
+test("an .owl file's axioms and members are reasoned over; a finding in it shows at its element's line", async () => {
+  const owl = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#">
+    <owl:Class rdf:about="http://example.org/Cat">
+        <owl:disjointWith rdf:resource="http://example.org/Dog"/>
+    </owl:Class>
+    <rdf:Description rdf:about="http://example.org/rex">
+        <rdf:type rdf:resource="http://example.org/Cat"/>
+        <rdf:type rdf:resource="http://example.org/Dog"/>
+    </rdf:Description>
+</rdf:RDF>
+`
+  const w = await session(
+    { "onto.owl": owl, "a.ttl": `${HEAD}ex:tom a ex:Cat .\n` },
+    { initializationOptions: { ...ON, diagnostics: { workspace: true } } },
+  )
+  const a = w.uri("a.ttl")
+  try {
+    w.s.open(a, `${HEAD}ex:tom a ex:Cat , ex:Dog .\n`)
+    const found = turbowl(await until(w.s, a, (d) => turbowl(d).length > 0))
+    assert.deepEqual(found.map((d) => [d.code, d.range.start.line]), [["turbowl/cax-dw", 2]])
+    // The axiom is cited at the line of its element in the .owl file.
+    assert.match(found[0].message, /^onto\.owl:5 {2}ex:Cat owl:disjointWith ex:Dog$/m)
+    // The member described in the .owl file: its finding is the file's own.
+    const inOwl = turbowl(await until(w.s, w.uri("onto.owl"), (d) => turbowl(d).length > 0))
+    assert.ok(inOwl.every((d) => d.code === "turbowl/cax-dw"), JSON.stringify(inOwl))
+    assert.ok(inOwl.every((d) => d.range.start.line >= 6 && d.range.start.line <= 8), JSON.stringify(inOwl))
+  } finally {
+    await w.end()
   }
 })

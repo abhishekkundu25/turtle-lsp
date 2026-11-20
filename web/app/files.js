@@ -4,7 +4,7 @@
 // under one set of limits so no folder can stall a tab.
 
 /** The files a folder contributes, by extension; anything else is skipped. */
-export const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld)$/i
+export const KNOWN = /\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld|owl|rdf)$/i
 
 export const LIMITS = {
   files: 1000, // files taken in one import
@@ -100,7 +100,7 @@ export function admit(entries, { limits = LIMITS, have = 0, onlyKnown = true } =
 }
 
 /** Why files are left out, for a note after `admit`. */
-export const limitsNote = (limits = LIMITS) => `only Turtle, TriG, N-Triples, N-Quads, JSON-LD and SPARQL files up to ${limits.fileBytes / 1024 / 1024} MB are read, at most ${limits.files}`
+export const limitsNote = (limits = LIMITS) => `only Turtle, TriG, N-Triples, N-Quads, JSON-LD, RDF/XML (.owl, .rdf) and SPARQL files up to ${limits.fileBytes / 1024 / 1024} MB are read, at most ${limits.files}`
 
 /**
  * The text of a fetch `response`, read as it arrives; null (and the rest not
@@ -133,4 +133,31 @@ export async function readTextCapped(response, max = LIMITS.fileBytes) {
   let at = 0
   for (const c of chunks) (bytes.set(c, at), (at += c.byteLength))
   return new TextDecoder().decode(bytes)
+}
+
+/**
+ * The text of a local `file` (a Blob) as UTF-8, its byte order mark dropped
+ * as `file.text()` drops it. Throws when the bytes are not UTF-8, as the
+ * native checker refuses such a file, where `file.text()` would put U+FFFD
+ * in place of the bad bytes.
+ */
+export async function readUtf8(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    throw new Error(`not valid UTF-8 (first bad byte at offset ${firstBadByte(bytes)})`)
+  }
+}
+
+// The offset of the first byte not in valid UTF-8: the lossy text up to its
+// first U+FFFD that the bytes do not spell out, measured in UTF-8 bytes.
+function firstBadByte(bytes) {
+  let at = 0
+  for (const ch of new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes)) {
+    const cp = ch.codePointAt(0)
+    if (cp === 0xfffd && !(bytes[at] === 0xef && bytes[at + 1] === 0xbf && bytes[at + 2] === 0xbd)) return at
+    at += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+  }
+  return at
 }

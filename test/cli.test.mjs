@@ -759,3 +759,140 @@ test("the pre-commit hooks match every extension the tool reads, and format's he
   assert.match(help, /\.turtle/)
   assert.match(help, /JSON-LD/)
 })
+
+// ---- .owl and .rdf: read, never written ----
+
+const OWL = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     xml:base="http://example.org/onto">
+    <owl:Ontology rdf:about="http://example.org/onto"/>
+    <owl:Class rdf:about="http://example.org/Person">
+        <rdfs:label>Person</rdfs:label>
+    </owl:Class>
+</rdf:RDF>
+`
+const FUNCTIONAL = `Prefix(:=<http://example.org/f#>)
+Ontology(<http://example.org/f>
+Declaration(Class(:A))
+)
+`
+const BROKEN_OWL = OWL.replace("</owl:Class>", "</owl:Clas>")
+
+test("check: a clean .owl is read as RDF/XML and its terms are described (exit 0); a broken one is an xml-syntax error (exit 1), a Functional one an unsupported-syntax warning", (t) => {
+  const clean = workspace(t, { "onto.owl": OWL, "data.ttl": "@prefix ex: <http://example.org/> .\nex:bob a ex:Person .\n" })
+  const r = run(clean, ["check", "--select", "undescribed-term,xml-syntax,unsupported-syntax"])
+  assert.equal(r.code, 0, r.out + r.err)
+  assert.equal(r.out, "")
+  assert.equal(run(clean, ["check", "onto.owl"]).code, 0)
+
+  const ws = workspace(t, { "onto.owl": OWL, "broken.rdf": BROKEN_OWL, "functional.owl": FUNCTIONAL })
+  const b = run(ws, ["check"])
+  assert.equal(b.code, 1, b.err)
+  assert.deepEqual(
+    b.lines.map((l) => l.split(" ").slice(0, 2).join(" ")),
+    // At the end tag that closes nothing, and at the name of the element
+    // it leaves open.
+    ["broken.rdf:7:6: error[xml-syntax]", "broken.rdf:9:7: error[xml-syntax]", "functional.owl:1:1: warning[unsupported-syntax]"],
+  )
+  assert.match(b.out, /functional\.owl:1:1: warning\[unsupported-syntax\] The document holds OWL Functional syntax, which turtle-lsp does not read/)
+  assert.doesNotMatch(b.err, /not an RDF or SPARQL file/)
+  // A named file is checked too, not skipped; nothing imports it, so it
+  // warns (exit 0).
+  const named = run(ws, ["check", "functional.owl"])
+  assert.equal(named.code, 0, named.out + named.err)
+  assert.deepEqual(named.lines.map((l) => l.split(" ").slice(0, 2).join(" ")), ["functional.owl:1:1: warning[unsupported-syntax]"])
+  assert.equal(run(ws, ["check", "--max-warnings", "0", "functional.owl"]).code, 1)
+})
+
+test("check: an unsupported-syntax .owl that a workspace file imports is an error (exit 1), through a catalog or a file: IRI", (t) => {
+  const catalog = `<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+    <uri name="http://example.org/f" uri="vendor/functional.owl"/>
+</catalog>
+`
+  const app = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<http://example.org/app> a owl:Ontology ; owl:imports <http://example.org/f> .
+`
+  const ws = workspace(t, { "catalog-v001.xml": catalog, "app.ttl": app, "vendor/functional.owl": FUNCTIONAL, "other.owl": FUNCTIONAL })
+  for (const args of [["check"], ["check", "vendor/functional.owl", "other.owl"]]) {
+    const r = run(ws, args)
+    assert.equal(r.code, 1, args.join(" ") + "\n" + r.out + r.err)
+    const found = r.lines.map((l) => l.split(" ").slice(0, 2).join(" ")).filter((l) => l.includes("unsupported-syntax"))
+    assert.deepEqual(found, ["other.owl:1:1: warning[unsupported-syntax]", "vendor/functional.owl:1:1: error[unsupported-syntax]"], args.join(" "))
+  }
+  // The import is unresolved, and says why.
+  assert.match(run(ws, ["check", "app.ttl"]).out, /app\.ttl:2:\d+: info\[unresolved-import\] .*which could not be loaded: it holds OWL Functional syntax/)
+  // Through a file: IRI, without the catalog.
+  fs.rmSync(path.join(ws, "catalog-v001.xml"))
+  const iri = pathToFileURL(path.join(fs.realpathSync(ws), "other.owl")).href
+  fs.writeFileSync(path.join(ws, "app.ttl"), app.replace("<http://example.org/f>", `<${iri}>`))
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 1, r.out + r.err)
+  const found = r.lines.map((l) => l.split(" ").slice(0, 2).join(" ")).filter((l) => l.includes("unsupported-syntax"))
+  assert.deepEqual(found, ["other.owl:1:1: error[unsupported-syntax]", "vendor/functional.owl:1:1: warning[unsupported-syntax]"])
+  // `--ignore unsupported-syntax` hides it.
+  assert.equal(run(ws, ["check", "--ignore", "unsupported-syntax", "other.owl", "vendor/functional.owl"]).code, 0)
+})
+
+test("format: RDF/XML files in a folder are passed over without a word (exit 0); a named one is not formatted: RDF/XML (exit 2); an .owl that holds Turtle is Turtle", (t) => {
+  const ws = workspace(t, { "onto.owl": OWL, "broken.rdf": BROKEN_OWL, "functional.owl": FUNCTIONAL, "a.ttl": UNFORMATTED })
+  for (const args of [["format", "--check"], ["format", "--diff"]]) {
+    const r = run(ws, args)
+    assert.equal(r.code, 1, args.join(" "))
+    assert.doesNotMatch(r.out + r.err, /owl|rdf/, args.join(" "))
+  }
+  const j = run(ws, ["format", "--check", "--format", "json"])
+  const v = JSON.parse(j.out)
+  assert.deepEqual(v.files.map((f) => f.path), ["a.ttl"])
+  assert.deepEqual(v.summary, { changed: 1, notFormatted: 0, filesChecked: 1 })
+  const r = run(ws, ["format", "."])
+  assert.equal(r.code, 0, r.err)
+  assert.equal(r.out, "")
+  assert.equal(r.err, "1 file formatted\n")
+  assert.equal(run(ws, ["format"]).code, 0)
+  const named = run(ws, ["format", "onto.owl", "broken.rdf"])
+  assert.equal(named.code, 2)
+  assert.equal(named.err, "broken.rdf: not formatted: RDF/XML\nonto.owl: not formatted: RDF/XML\n")
+  assert.equal(read(ws, "onto.owl"), OWL)
+  assert.equal(read(ws, "broken.rdf"), BROKEN_OWL)
+  assert.equal(read(ws, "functional.owl"), FUNCTIONAL)
+  // The content decides: Turtle under an .owl name is formatted as Turtle.
+  fs.writeFileSync(path.join(ws, "turtle.owl"), UNFORMATTED)
+  const turtle = run(ws, ["format", "--check"])
+  assert.equal(turtle.code, 1)
+  assert.deepEqual(turtle.lines, ["turtle.owl"])
+})
+
+test("check --fix and format leave an .owl byte for byte, while they change the Turtle beside it", (t) => {
+  // The .owl uses ex:Thing only as an rdf:resource, and has a label with
+  // whitespace, a fix of which would rewrite it.
+  const owl = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <rdf:Description rdf:about="http://example.org/item">
+        <rdfs:seeAlso rdf:resource="http://example.org/Thing"/>
+        <rdfs:label> item </rdfs:label>
+    </rdf:Description>
+</rdf:RDF>
+`
+  const ttl = `@prefix ex: <http://example.org/> .
+@prefix unused: <http://example.org/unused#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+ex:Thing a rdfs:Class ; rdfs:label " Thing " .
+`
+  const ws = workspace(t, { "onto.owl": owl, "data.rdf": owl, "model.ttl": ttl })
+  const bytes = (name) => fs.readFileSync(path.join(ws, name))
+  const before = bytes("onto.owl")
+  const fixed = run(ws, ["check", "--fix", "--unsafe-fixes", "."])
+  assert.notEqual(read(ws, "model.ttl"), ttl, "the fixes change the Turtle")
+  assert.doesNotMatch(read(ws, "model.ttl"), /unused/)
+  assert.match(fixed.err, /in 1 file/)
+  const fixedTtl = read(ws, "model.ttl")
+  const f = run(ws, ["format", "."])
+  assert.equal(f.code, 0, f.err)
+  assert.notEqual(read(ws, "model.ttl"), fixedTtl, "format changes the Turtle")
+  assert.ok(bytes("onto.owl").equals(before))
+  assert.ok(bytes("data.rdf").equals(before))
+})

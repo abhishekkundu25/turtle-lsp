@@ -13,12 +13,17 @@ use turtle_lsp::settings::Settings;
 
 /// What the server publishes for `text` opened at `file:///work/{name}`.
 fn published(name: &str, text: &str) -> Vec<Value> {
+    published_as(name, text, "turtle")
+}
+
+/// [`published`], with the client's language id.
+fn published_as(name: &str, text: &str, language_id: &str) -> Vec<Value> {
     let (mut server, _) =
         Embedded::start(json!({"processId": null, "rootUri": null, "capabilities": {}})).unwrap();
     let uri = format!("file:///work/{name}");
     let open = Message::Notification(Notification::new(
         "textDocument/didOpen".into(),
-        json!({"textDocument": {"uri": uri, "languageId": "turtle", "version": 1, "text": text}}),
+        json!({"textDocument": {"uri": uri, "languageId": language_id, "version": 1, "text": text}}),
     ));
     let sent = server.handle(vec![open]);
     sent.into_iter()
@@ -71,5 +76,36 @@ fn an_open_document_has_the_diagnostics_check_reports() {
         let (server, check) = (published(name, text), batched(name, text));
         assert!(check.len() >= 3, "{name}: {check:?}");
         assert_eq!(server, check, "{name}");
+    }
+}
+
+/// An `.owl` or `.rdf` file's syntax is its content's, the same for the
+/// server, whatever language id the client sends (none, VS Code for the
+/// Web; `xml`, the web editor; `turtle`), and for `check`.
+#[test]
+fn an_owl_file_has_the_diagnostics_check_reports_whatever_its_content() {
+    let xml = "<?xml version=\"1.0\"?>\n\
+        <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+        \x20        xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\">\n\
+        \x20 <rdf:Description rdf:about=\"http://example.org/a\">\n\
+        \x20   <rdfs:label>a</rdfs:label>\n\
+        \x20   <rdfs:seeAlso><rdf:Description><rdfs:label>b</rdfs:label></rdf:Description></rdfs:seeAlso>\n\
+        \x20 </rdf:Description>\n\
+        </rdf:RDF>\n";
+    let broken = xml.replace("</rdf:Description>\n</rdf:RDF>", "</rdf:Descr>\n</rdf:RDF>");
+    let functional = "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>)\n";
+    let turtle = "@prefix ex: <http://example.org/> .\nex:a ex:b ex:c ; ex:d \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> , \"x\"^^<http://www.w3.org/2001/XMLSchema#integer> .\n";
+    for (name, text, code) in [
+        ("onto.owl", xml, None),
+        ("broken.rdf", broken.as_str(), Some("xml-syntax")),
+        ("functional.owl", functional, Some("unsupported-syntax")),
+        ("turtle.owl", turtle, Some("invalid-literal")),
+    ] {
+        let check = batched(name, text);
+        let codes: Vec<&str> = check.iter().filter_map(|d| d["code"].as_str()).collect();
+        assert_eq!(codes.first().copied(), code, "{name}: {check:?}");
+        for id in ["turtle", "", "xml"] {
+            assert_eq!(published_as(name, text, id), check, "{name} as {id:?}");
+        }
     }
 }

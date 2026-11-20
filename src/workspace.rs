@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) mod kinds;
 
 use kinds::is_watched_file;
-pub(crate) use kinds::{is_import_source, is_rdf_file, is_sparql_name, is_sparql_path};
+pub(crate) use kinds::{is_catalog, is_import_source, is_rdf_file, is_sparql_name, is_sparql_path};
 
 pub(crate) const PREFIX_FILE: &str = "prefixes.ttl";
 pub(crate) const SKIP_DIRS: &[&str] = &[
@@ -71,7 +71,7 @@ pub(crate) const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// What an open document is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DocKind {
-    /// Turtle, TriG, N-Triples, N-Quads or JSON-LD.
+    /// Turtle, TriG, N-Triples, N-Quads, JSON-LD or RDF/XML.
     Rdf(Syntax),
     /// A SPARQL query or update.
     Sparql,
@@ -87,8 +87,8 @@ impl DocKind {
     /// SPARQL when the client says `sparql`, or when it sends no language id,
     /// one this server does not know, or the generic `turtle`, and the name
     /// is a SPARQL file's ([`is_sparql_name`]). Otherwise RDF, as
-    /// [`Syntax::detect`] decides.
-    pub(crate) fn detect(language_id: Option<&str>, uri: &str) -> DocKind {
+    /// [`Syntax::of`] decides from the language id, the name and `text`.
+    pub(crate) fn of(language_id: Option<&str>, uri: &str, text: &str) -> DocKind {
         if language_id.is_some_and(|id| id.eq_ignore_ascii_case("sparql")) {
             return DocKind::Sparql;
         }
@@ -98,7 +98,7 @@ impl DocKind {
         if generic && is_sparql_name(uri) {
             return DocKind::Sparql;
         }
-        DocKind::Rdf(Syntax::detect(language_id, uri))
+        DocKind::Rdf(Syntax::of(language_id, uri, text))
     }
 }
 
@@ -188,6 +188,8 @@ pub(crate) struct Doc {
     pub(crate) text: String,
     pub(crate) version: i32,
     pub(crate) kind: DocKind,
+    /// Where `kind` comes from.
+    from: KindFrom,
     /// For an RDF document: its analysis, or what the next one builds on.
     analyzed: Analyzed,
     /// For a SPARQL document: its parse, until the next edit.
@@ -197,6 +199,16 @@ pub(crate) struct Doc {
     /// For an RDF document: the findings of the checks it keeps between
     /// edits ([`Workspace::diagnostics`]).
     kept: Kept,
+}
+
+/// Where an open document's kind comes from.
+enum KindFrom {
+    /// The caller named it ([`Workspace::open_doc_as`]): it stays.
+    Given,
+    /// [`DocKind::of`] with this language id, the URI and the text: decided
+    /// again whenever the text changes, so an `.owl` whose text turns from
+    /// RDF/XML to Turtle is parsed as Turtle, as a fresh open would.
+    Detected(Option<Box<str>>),
 }
 
 /// An open RDF document's analysis against its text: current, or what the
@@ -436,11 +448,15 @@ impl<'a> DocContexts<'a> {
         }
     }
 
-    /// Record in `uses` what `uri`'s analysis asked for, when it is JSON-LD.
+    /// Record in `uses` what `uri`'s analysis asked for: nothing unless it
+    /// is JSON-LD (a document whose content turned from JSON-LD to another
+    /// syntax uses no context any more).
     fn record(self, uses: &ContextUses, uri: &str, syntax: Syntax) {
-        if syntax == Syntax::JsonLd {
-            record_contexts(uses, uri, self.asked.into_inner().unwrap_or_default());
-        }
+        let asked = match syntax {
+            Syntax::JsonLd => self.asked.into_inner().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        record_contexts(uses, uri, asked);
     }
 
     fn file(&self, url: &str) -> Result<RemoteDocument, LoadError> {
@@ -1066,14 +1082,29 @@ impl Workspace {
 
     // ---- documents ----
 
-    /// The kind comes from the URI's extension.
+    /// The kind comes from the URI and the text ([`DocKind::of`]), and is
+    /// decided again at each change of the text.
     pub(crate) fn open_doc(&mut self, uri: String, text: String, version: i32) -> Effects {
-        let kind = DocKind::detect(None, &uri);
-        self.open_doc_as(uri, text, version, kind)
+        self.open_doc_in(uri, text, version, None)
     }
 
-    /// Open a document. The document is due for diagnostics; opening a
-    /// prefixes.ttl or a context file is an edit of it ([`Workspace::change_doc`]).
+    /// [`Workspace::open_doc`] with the client's language id, which
+    /// [`DocKind::of`] reads too.
+    pub(crate) fn open_doc_in(
+        &mut self,
+        uri: String,
+        text: String,
+        version: i32,
+        language_id: Option<&str>,
+    ) -> Effects {
+        let kind = DocKind::of(language_id, &uri, &text);
+        let from = KindFrom::Detected(language_id.map(Box::from));
+        self.open_doc_from(uri, text, version, kind, from)
+    }
+
+    /// Open a document of the kind `kind`, which stays whatever the text
+    /// becomes. The document is due for diagnostics; opening a prefixes.ttl
+    /// or a context file is an edit of it ([`Workspace::change_doc`]).
     pub(crate) fn open_doc_as(
         &mut self,
         uri: String,
@@ -1081,7 +1112,17 @@ impl Workspace {
         version: i32,
         kind: impl Into<DocKind>,
     ) -> Effects {
-        let kind = kind.into();
+        self.open_doc_from(uri, text, version, kind.into(), KindFrom::Given)
+    }
+
+    fn open_doc_from(
+        &mut self,
+        uri: String,
+        text: String,
+        version: i32,
+        kind: DocKind,
+        from: KindFrom,
+    ) -> Effects {
         let cached_import = kind != DocKind::Sparql
             && self.import_cache.as_ref().is_some_and(|cache| {
                 uri_to_path(&uri).is_some_and(|p| canonical(&p).starts_with(cache))
@@ -1099,6 +1140,7 @@ impl Workspace {
                 text,
                 version,
                 kind,
+                from,
                 analyzed: Analyzed::No,
                 query: None,
                 cached_import,
@@ -1156,6 +1198,15 @@ impl Workspace {
             }
             doc.version = version;
             doc.query = None;
+            // A text whose syntax its content gives may now be in another:
+            // what was analyzed is nothing to build on.
+            if let KindFrom::Detected(id) = &doc.from {
+                let kind = DocKind::of(id.as_deref(), uri, &doc.text);
+                if kind != doc.kind {
+                    doc.kind = kind;
+                    doc.analyzed = Analyzed::No;
+                }
+            }
         }
         self.edited(uri)
     }
@@ -1513,9 +1564,7 @@ impl Workspace {
             if !seen.insert(path) {
                 continue;
             }
-            let takes = is_sparql_path(path)
-                && self.in_area(path, false)
-                && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES);
+            let takes = is_sparql_path(path) && self.scan_reaches(path);
             if takes && (files.contains_key(path) || room > 0) {
                 if !files.contains_key(path) {
                     room -= 1;
@@ -1550,8 +1599,16 @@ impl Workspace {
 
     // ---- prefixes ----
 
+    /// The prefixes a document at `uri` gets, by its name alone: a name whose
+    /// syntax its content gives counts as Turtle here, and a parse whose
+    /// text turns out otherwise drops them ([`parse_files`]).
     pub(crate) fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
-        self.external_prefixes_as(uri, Syntax::detect(None, uri))
+        let syntax = if Syntax::by_content(uri) {
+            Syntax::Turtle
+        } else {
+            Syntax::of(None, uri, "")
+        };
+        self.external_prefixes_as(uri, syntax)
     }
 
     /// The project's prefixes where `uri` is, whatever its syntax: those a
@@ -1740,7 +1797,7 @@ impl Workspace {
             .collect();
         let mut stale = Vec::new();
         for (uri, a) in indexed {
-            let now = self.external_prefixes_for(&uri);
+            let now = self.external_prefixes_as(&uri, a.parsed.syntax);
             if !Arc::ptr_eq(&now, &a.external)
                 && *now != *a.external
                 && let Some(path) = uri_to_path(&uri)
@@ -1779,9 +1836,26 @@ impl Workspace {
     /// keeps the index within [`MAX_FILES`] files. The scan, a file that
     /// changed on disk and a document that was closed all ask this.
     fn fits(&self, path: &Path) -> bool {
-        is_rdf_file(path)
-            && self.in_area(path, false)
-            && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
+        is_rdf_file(path) && self.scan_reaches(path)
+    }
+
+    /// Whether the scan of the roots reaches the file at `path`: below a
+    /// root, in no hidden or skipped directory, through no symbolic link
+    /// (the scan follows none, so a link in the workspace to a file or
+    /// folder outside it is not read), and a file of at most
+    /// [`MAX_FILE_BYTES`].
+    fn scan_reaches(&self, path: &Path) -> bool {
+        self.roots.iter().any(|root| {
+            let Ok(rel) = path.strip_prefix(root) else {
+                return false;
+            };
+            let mut at = root.clone();
+            Self::below(rel, false)
+                && rel.components().all(|c| {
+                    at.push(c);
+                    std::fs::symlink_metadata(&at).is_ok_and(|m| !m.file_type().is_symlink())
+                })
+        }) && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
     }
 
     /// Whether `path` is somewhere the index looks: below a root, in no
@@ -1798,22 +1872,27 @@ impl Workspace {
     }
 
     fn in_area(&self, path: &Path, include_last: bool) -> bool {
-        use std::path::Component;
         self.roots.iter().any(|root| {
-            let Ok(rel) = path.strip_prefix(root) else {
-                return false;
-            };
-            let parts: Vec<Component> = rel.components().collect();
-            let dirs = if include_last {
-                &parts[..]
-            } else {
-                &parts[..parts.len().saturating_sub(1)]
-            };
-            dirs.iter().all(|c| match c {
-                Component::Normal(name) => !skipped_dir(&name.to_string_lossy()),
-                Component::CurDir => true,
-                _ => false,
-            })
+            path.strip_prefix(root)
+                .is_ok_and(|rel| Self::below(rel, include_last))
+        })
+    }
+
+    /// Whether `rel`, a path below a root, passes through no hidden or
+    /// skipped directory and does not climb out (`..`). With
+    /// `include_last`, its last part is a directory and counts too.
+    fn below(rel: &Path, include_last: bool) -> bool {
+        use std::path::Component;
+        let parts: Vec<Component> = rel.components().collect();
+        let dirs = if include_last {
+            &parts[..]
+        } else {
+            &parts[..parts.len().saturating_sub(1)]
+        };
+        dirs.iter().all(|c| match c {
+            Component::Normal(name) => !skipped_dir(&name.to_string_lossy()),
+            Component::CurDir => true,
+            _ => false,
         })
     }
 
@@ -1930,7 +2009,7 @@ impl Workspace {
             };
             if self.open.contains_key(&uri)
                 || !unchanged
-                || *self.external_prefixes_for(&uri) != *analysis.external
+                || *self.external_prefixes_as(&uri, analysis.parsed.syntax) != *analysis.external
             {
                 continue;
             }
@@ -2026,8 +2105,9 @@ impl Workspace {
     /// context files count wherever they are (a context may name a skipped
     /// or hidden folder); for the index, only what the scan would have
     /// looked at is of concern: nothing in a skipped or hidden directory,
-    /// nothing outside the roots. Catalogs and imported RDF/XML files are
-    /// the caller's (imports), and so is the settings file.
+    /// nothing outside the roots. Catalogs are the caller's (imports), and
+    /// so is the settings file; an `.owl` or `.rdf` file is indexed here and
+    /// is the caller's too, as a catalog target.
     ///
     /// A changed prefixes.ttl is taken first, so the files of the same
     /// change are parsed once, with the new prefixes; the indexed files it
@@ -2048,7 +2128,7 @@ impl Workspace {
                 }
                 continue;
             }
-            if is_import_source(path) {
+            if is_catalog(path) {
                 continue;
             }
             let key = path_to_uri(path).unwrap_or_default();
@@ -2162,7 +2242,14 @@ fn parse_files(
                     return None;
                 }
                 let text = std::fs::read_to_string(&path).ok()?;
-                let syntax = Syntax::from_extension(&uri).unwrap_or_default();
+                let syntax = Syntax::of(None, &uri, &text);
+                // The job's prefixes are by name: a text in a syntax without
+                // prefixes gets none, as when it is open.
+                let external = if syntax.has_prefixes() {
+                    external
+                } else {
+                    Arc::new(PrefixMap::default())
+                };
                 let loader = DocContexts::new(open, roots, contexts);
                 let a = analyze(uri.clone(), &text, external, false, syntax, &loader);
                 loader.record(uses, &uri, syntax);
@@ -2323,6 +2410,84 @@ pub(crate) mod tests {
 
     use super::*;
 
+    #[cfg(not(debug_assertions))]
+    include!("../tests/support/corpus.rs");
+
+    /// An `.owl` file read as its content says: N-Triples whose IRIs are
+    /// also XML names, XML whose names hold `·`, and an anonymous
+    /// `owl:Ontology` root in RDF/XML.
+    #[test]
+    fn an_owl_file_is_read_as_what_it_holds() {
+        use crate::syntax::Node;
+        let rdf_type = crate::syntax::RDF_TYPE;
+        let doc = |uri: &str, text: &str| {
+            let mut ws = Workspace::default();
+            ws.open_doc(uri.into(), text.into(), 1);
+            ws.analysis(uri).unwrap()
+        };
+        let a = doc("file:///w/a.owl", "<urn:s> <urn:p> <urn:o> .\n");
+        assert_eq!(a.parsed.syntax, Syntax::Turtle);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(a.parsed.triples.len(), 1);
+        let a = doc("file:///w/a.owl", "<e:C·D xmlns:e=\"urn:ex:\"/>\n");
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(a.parsed.triples.len(), 1);
+        assert_eq!(&*a.parsed.triples[0].p, rdf_type);
+        assert!(matches!(&a.parsed.triples[0].o, Node::Iri(i) if &**i == "urn:ex:C·D"));
+        let a = doc(
+            "file:///w/a.owl",
+            "<owl:Ontology xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"><rdfs:label>My ontology</rdfs:label></owl:Ontology>\n",
+        );
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let t = &a.parsed.triples;
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(
+            t.iter()
+                .all(|x| matches!(x.s, Node::Blank(_)) && x.s == t[0].s)
+        );
+        assert!(t.iter().any(|t| &*t.p == rdf_type
+            && matches!(&t.o, Node::Iri(i) if &**i == "http://www.w3.org/2002/07/owl#Ontology")));
+        assert!(
+            t.iter()
+                .any(|t| &*t.p == "http://www.w3.org/2000/01/rdf-schema#label"
+                    && matches!(&t.o, Node::Literal { value, .. } if &**value == "My ontology"))
+        );
+        // A processing instruction and a comment before the root, with no
+        // space inside them: XML, not two Turtle IRIs.
+        let a = doc(
+            "file:///w/a.owl",
+            "<?build?>\n<!--ok-->\n<e:C xmlns:e=\"urn:ex:\"/>\n",
+        );
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let t = &a.parsed.triples;
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert_eq!(&*t[0].p, rdf_type);
+        assert!(matches!(&t[0].o, Node::Iri(i) if &**i == "urn:ex:C"));
+        // An `owl:Ontology` whose property is named as an OWL/XML element
+        // but has `rdf:resource`: RDF/XML.
+        let a = doc(
+            "file:///w/a.owl",
+            "<owl:Ontology xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:owl=\"http://www.w3.org/2002/07/owl#\" ><owl:Annotation rdf:resource=\"urn:x\"/></owl:Ontology>\n",
+        );
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let t = &a.parsed.triples;
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(
+            t.iter()
+                .any(|t| &*t.p == "http://www.w3.org/2002/07/owl#Annotation"
+                    && matches!(&t.o, Node::Iri(i) if &**i == "urn:x"))
+        );
+        // N-Triples with no space between the terms.
+        let a = doc("file:///w/a.owl", "<urn:s><urn:p><urn:o>.\n");
+        assert_eq!(a.parsed.syntax, Syntax::Turtle);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert_eq!(a.parsed.triples.len(), 1);
+    }
+
     #[test]
     fn normalize_uri_is_stable() {
         let dir = std::env::temp_dir().join("turtle lsp");
@@ -2443,7 +2608,7 @@ pub(crate) mod tests {
     #[test]
     fn jsonld_documents_are_rdf_and_parse_without_turtle_errors() {
         assert_eq!(
-            DocKind::detect(Some("json"), "file:///w/a.jsonld"),
+            DocKind::of(Some("json"), "file:///w/a.jsonld", ""),
             DocKind::Rdf(Syntax::JsonLd)
         );
         assert!(is_rdf_file(Path::new("/w/a.jsonld")) && !is_rdf_file(Path::new("/w/a.json")));
@@ -2572,21 +2737,21 @@ pub(crate) mod tests {
     #[test]
     fn sparql_documents_are_recognised_and_never_feed_the_index() {
         assert_eq!(
-            DocKind::detect(Some("sparql"), "file:///a.txt"),
+            DocKind::of(Some("sparql"), "file:///a.txt", ""),
             DocKind::Sparql
         );
         for id in [None, Some("turtle"), Some("plaintext")] {
             for name in ["a.rq", "a.sparql", "a.ru"] {
                 let uri = format!("file:///x/{name}");
-                assert_eq!(DocKind::detect(id, &uri), DocKind::Sparql, "{id:?} {name}");
+                assert_eq!(DocKind::of(id, &uri, ""), DocKind::Sparql, "{id:?} {name}");
             }
         }
         assert_eq!(
-            DocKind::detect(Some("trig"), "file:///a.rq"),
+            DocKind::of(Some("trig"), "file:///a.rq", ""),
             DocKind::Rdf(Syntax::TriG)
         );
         assert_eq!(
-            DocKind::detect(None, "file:///a.nq"),
+            DocKind::of(None, "file:///a.nq", ""),
             DocKind::Rdf(Syntax::NQuads)
         );
 
@@ -2670,6 +2835,50 @@ pub(crate) mod tests {
         assert!(ws.watched_dir(&root.0.join("sub")));
         assert!(!ws.watched_dir(&root.0.join("node_modules")));
         assert!(!ws.watched(&root.0.join("node_modules").join("x.json")));
+    }
+
+    /// A link in the workspace is not followed, as the scan does not follow
+    /// it: a file the watcher reports through a link to a file or a folder
+    /// outside the roots is not indexed, and neither is a link to a file
+    /// inside. Symbolic links need privileges on Windows: unix only, as the
+    /// other link tests.
+    #[cfg(unix)]
+    #[test]
+    fn a_watched_change_through_a_link_is_not_indexed_as_the_scan_does_not_follow_it() {
+        use std::os::unix::fs::symlink;
+        let root = TempDir::new("link-watch");
+        let outside = TempDir::new("link-watch-outside");
+        let target = write(&outside.0, "vocab.owl", "<urn:s> <urn:p> <urn:o> .\n");
+        write(&outside.0, "dir/q.rq", "SELECT * WHERE { ?s ?p ?o }\n");
+        let inside = write(&root.0, "real.ttl", TTL);
+        let vocab = root.0.join("vocab.owl");
+        symlink(&target, &vocab).unwrap();
+        symlink(outside.0.join("dir"), root.0.join("dir")).unwrap();
+        symlink(&inside, root.0.join("again.ttl")).unwrap();
+        let via_dir = root.0.join("dir/vocab.owl");
+        symlink(&target, outside.0.join("dir/vocab.owl")).unwrap();
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        assert_eq!(
+            Workspace::scan_roots(&ws.roots),
+            std::slice::from_ref(&inside)
+        );
+        let watched = [vocab.clone(), via_dir.clone(), root.0.join("again.ttl")];
+        for p in &watched {
+            assert!(ws.watched(p), "{}", p.display());
+            assert!(!ws.fits(p), "{}", p.display());
+        }
+        for change in [Change::Created, Change::Changed] {
+            let changes: Vec<_> = watched.iter().map(|p| (p.clone(), change)).collect();
+            ws.files_changed(&changes);
+            assert_eq!(ws.indexed_count(), 0, "{change:?}");
+        }
+        // The real file is indexed; queries through a link are not read.
+        ws.files_changed(&[(inside.clone(), Change::Created)]);
+        assert!(ws.is_indexed(&uri(&inside)));
+        assert_eq!(ws.indexed_count(), 1);
+        let _ = ws.sparql_documents();
+        ws.sparql_files_changed(&[root.0.join("dir/q.rq")]);
+        assert!(ws.sparql_documents().is_empty());
     }
 
     #[test]
@@ -3031,6 +3240,13 @@ pub(crate) mod tests {
                 && !ext(&mut ws, &files[2]).contains_key("one")
         );
         assert!(ext(&mut ws, &files[3]).is_empty());
+        // An `.owl` or `.rdf` name gets them too: its text may be Turtle.
+        for name in ["a/onto.owl", "a/DATA.RDF"] {
+            assert!(
+                ext(&mut ws, &root.0.join(name)).contains_key("one"),
+                "{name}"
+            );
+        }
 
         // Saving a prefixes.ttl without a change to what it declares re-parses nothing.
         assert!(ws.prefixes_changed(Some(&pf)).is_empty());
@@ -3339,6 +3555,53 @@ pub(crate) mod tests {
             range_length: None,
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn an_owl_document_takes_its_kind_from_its_text_at_each_change() {
+        let xml = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+            <rdf:Description rdf:about=\"http://example.org/a\">\
+            <rdf:type rdf:resource=\"http://example.org/C\"/>\
+            </rdf:Description></rdf:RDF>\n";
+        let ttl = "<http://example.org/a> a <http://example.org/C> , <http://example.org/D> .\n";
+        let mut ws = Workspace::default();
+        let uri = "file:///w/onto.owl";
+        // The web editor's language id for an `.owl` file.
+        ws.open_doc_in(uri.into(), xml.into(), 1, Some("xml"));
+        assert_eq!(ws.doc_kind(uri), Some(DocKind::Rdf(Syntax::RdfXml)));
+        let a = ws.analysis(uri).unwrap();
+        assert_eq!(
+            (a.parsed.syntax, a.parsed.triples.len()),
+            (Syntax::RdfXml, 1)
+        );
+        ws.change_doc(uri, 2, vec![full(ttl)], Encoding::Utf16);
+        assert_eq!(ws.doc_kind(uri), Some(DocKind::Rdf(Syntax::Turtle)));
+        let a = ws.analysis(uri).unwrap();
+        assert_eq!(
+            (a.parsed.syntax, a.parsed.triples.len()),
+            (Syntax::Turtle, 2)
+        );
+        ws.change_doc(uri, 3, vec![full(xml)], Encoding::Utf16);
+        assert_eq!(ws.analysis(uri).unwrap().parsed.syntax, Syntax::RdfXml);
+        // Emptied, or only white space: still RDF/XML, until Turtle is typed.
+        for (version, text) in [(4, ""), (5, " \n\t"), (6, ttl)] {
+            ws.change_doc(uri, version, vec![full(text)], Encoding::Utf16);
+            let want = if text == ttl {
+                Syntax::Turtle
+            } else {
+                Syntax::RdfXml
+            };
+            assert_eq!(ws.doc_kind(uri), Some(DocKind::Rdf(want)), "{text:?}");
+        }
+        // Opened empty: RDF/XML.
+        let empty = "file:///w/new.rdf";
+        ws.open_doc_in(empty.into(), String::new(), 1, Some("xml"));
+        assert_eq!(ws.doc_kind(empty), Some(DocKind::Rdf(Syntax::RdfXml)));
+        // A kind the caller names stays, whatever the text becomes.
+        let given = "file:///w/given.owl";
+        ws.open_doc_as(given.into(), ttl.into(), 1, Syntax::Turtle);
+        ws.change_doc(given, 2, vec![full(xml)], Encoding::Utf16);
+        assert_eq!(ws.doc_kind(given), Some(DocKind::Rdf(Syntax::Turtle)));
     }
 
     #[test]
@@ -4314,6 +4577,77 @@ pub(crate) mod tests {
         let n = keys as u32;
         assert!(all * 5 < full * n * 3, "{msg}; {keys} spliced {all:?}");
         assert!(first.as_millis() < 200, "{msg}");
+    }
+
+    /// Typing in a label in the middle of PATO (20 MB of RDF/XML, from
+    /// `test/corpus`), one character at a time, as the server does on each
+    /// keystroke: the analysis in full (RDF/XML is not spliced) with the
+    /// knowledge index's facts, then the diagnostics with the lints of
+    /// decision 8 (checked again in full: RDF/XML is not followed). On an
+    /// M-series laptop (load 1.7, medians of 7 keystrokes, three runs): 87
+    /// to 91 ms a keystroke, the analysis 77 to 81 ms of it (the parse about
+    /// 70, `timing_rdfxml_parse`) and the diagnostics 9 to 10 ms; the open
+    /// 103 to 131 ms. That is the cost per megabyte of a Turtle file
+    /// analysed in full (`timing_typing_in_the_middle_of_a_big_file_is_spliced`).
+    /// The bound leaves the room CI runners need (a Windows runner was 2.3
+    /// times slower there) and catches a keystroke gone badly wrong; past
+    /// it, a large open RDF/XML file would be analysed on save only.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn timing_a_keystroke_in_a_large_rdfxml_file() {
+        // Absent: skipped, but a failure in CI (`CI=true`).
+        let Some(path) = corpus_path("obo-pato.rdf") else {
+            return;
+        };
+        let text = std::fs::read_to_string(&path).unwrap();
+        let uri = "file:///w/obo-pato.owl";
+        let mut ws = Workspace::default();
+        let t = std::time::Instant::now();
+        ws.open_doc(uri.into(), text.clone(), 1);
+        let a = ws.analysis(uri).unwrap();
+        assert_eq!(a.parsed.syntax, Syntax::RdfXml);
+        assert!(a.parsed.errors.is_empty());
+        let first = kept_diagnostics(&mut ws, uri);
+        let open = t.elapsed();
+        // A label in the middle of the file: type after its first letter.
+        let mid = text[text.len() / 2..].find("<rdfs:label").unwrap() + text.len() / 2;
+        let label = mid + text[mid..].find('>').unwrap() + 2;
+        let line = text[..label].matches('\n').count() as u32;
+        let col0 = (label - text[..label].rfind('\n').map_or(0, |n| n + 1)) as u32;
+        let settings = crate::settings::Settings::default();
+        let inputs = DiagnosticInputs::new(&settings);
+        let (mut analysis, mut diagnostics, mut keystroke) = (Vec::new(), Vec::new(), Vec::new());
+        for (version, col) in (2..9).zip(col0..) {
+            let t = std::time::Instant::now();
+            ws.change_doc(
+                uri,
+                version,
+                vec![ranged((line, col), (line, col), "x")],
+                Encoding::Utf16,
+            );
+            let a = ws.analysis(uri).unwrap();
+            let analysed = t.elapsed();
+            let got = ws.diagnostics(uri, &a, Encoding::Utf16, &inputs);
+            let all = t.elapsed();
+            assert_eq!(got.len(), first.len());
+            analysis.push(analysed);
+            diagnostics.push(all - analysed);
+            keystroke.push(all);
+        }
+        let median = |v: &mut [std::time::Duration]| {
+            v.sort();
+            v[v.len() / 2]
+        };
+        let (analysis, diagnostics, keystroke) = (
+            median(&mut analysis),
+            median(&mut diagnostics),
+            median(&mut keystroke),
+        );
+        eprintln!(
+            "obo-pato.owl: open {open:?} ({} diagnostics); a keystroke {keystroke:?}: analysis {analysis:?}, diagnostics {diagnostics:?}",
+            first.len()
+        );
+        assert!(keystroke.as_millis() < 750, "{keystroke:?}");
     }
 }
 

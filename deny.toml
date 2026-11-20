@@ -22,8 +22,8 @@ ignore = [
     #     (src/ has none), so it never parses a document.
     # Re-check by 2027-01-22: drop both entries once oxrdfxml and sparesults release
     # a quick-xml >= 0.41, or when a new input path reaches either parser.
-    { id = "RUSTSEC-2026-0194", reason = "RDF/XML start tags capped at 64 KiB before parsing (src/imports/rdfxml.rs); no SERVICE handler, so sparesults never parses XML here; re-check 2027-01-22" },
-    { id = "RUSTSEC-2026-0195", reason = "RDF/XML start tags capped at 64 KiB before parsing (src/imports/rdfxml.rs); no SERVICE handler, so sparesults never parses XML here; re-check 2027-01-22" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml reads no user input: RDF/XML goes through our own scanner (src/rdfxml/xml.rs), and with no SERVICE handler sparesults never parses XML here; re-check 2027-01-22" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml reads no user input: RDF/XML goes through our own scanner (src/rdfxml/xml.rs), and with no SERVICE handler sparesults never parses XML here; re-check 2027-01-22" },
 ]
 
 [licenses]

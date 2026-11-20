@@ -1,5 +1,82 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **RDF/XML files (`.owl`, `.rdf`) are workspace files**, read-only. Their
+  content decides the syntax, so Protégé's default `.owl` is read as RDF/XML
+  and a `.owl` holding Turtle as Turtle. An empty one, or one of white space
+  only, is RDF/XML: no Turtle completion or formatting is offered in it until
+  Turtle is written there. `check`, `query`, reasoning, SHACL,
+  the graph view and the Query Results panel read them, and an `owl:imports`
+  of an ontology a workspace file states needs no catalog.
+- **Editor features inside RDF/XML**: hover, definition, references, the
+  reference lens, outline, folding and type hierarchy on the exact attribute
+  value or qualified name, and diagnostics: `xml-syntax` and `rdfxml-syntax`
+  with recovery, SHACL results, reasoning findings, `invalid-literal`,
+  `undescribed-term` and `deprecated-term`. VS Code, Neovim and the browser
+  editor attach to these files and keep them in their XML language.
+- **turtle-lsp's own RDF/XML parser**, which keeps the place of every term:
+  166/166 on the W3C RDF/XML suite, and the same graph as oxrdfxml on BFO, RO
+  and PATO (FOAF differs in two comments, where XML makes a line end in an
+  attribute value a space). A keystroke in PATO (20 MB) takes about 90 ms.
+  RDF 1.2 triple terms (`rdf:parseType="Triple"`, `rdf:annotation`,
+  `rdf:annotationNodeID`) are read under any `rdf:version`: their grammar has
+  no version condition, and RDF 1.2 leaves a missing or contrary announcement
+  to the parser. oxrdfxml drops a `parseType="Triple"` element without a word
+  unless the version is `1.2`. `its:dir` is read only under `1.2` or `1.2-basic`.
+  `rdfxml-syntax` errors where oxrdfxml reads on: the withdrawn `rdf:bagID`
+  (as `rdf:aboutEach`), `rdf:annotation` with `rdf:annotationNodeID` on one
+  element, and either on `parseType="Collection"`. `xml-syntax` errors: an
+  XML declaration that is not first, an empty prefixed namespace in XML 1.0,
+  and a namespace declaration Namespaces in XML reserves (`xml` or `xmlns`).
+  An import with one of these keeps every triple read around it and gets an
+  `import-truncated` warning that names the first.
+- **Imports name what they cannot read.** An import in OWL/XML, Functional or
+  Manchester syntax fails with a message naming the format and how to save it
+  as RDF/XML or Turtle in Protégé. A workspace file in those syntaxes gets
+  `unsupported-syntax`: an error when an import is read from it, else a
+  warning.
+  An RDF/XML import with an error part way through keeps what it could read
+  and gets an `import-truncated` warning with the line and column.
+
+### Changed
+
+- **`check .` reads `.owl` and `.rdf` files**, so a repository that holds
+  copies of other projects' ontologies can get new diagnostics and a
+  different exit code from them. Exit 1 where it was 0: an XML or RDF/XML
+  error (`xml-syntax`, `rdfxml-syntax`; an empty `.owl` or `.rdf` has no root
+  element), a `.owl` holding broken Turtle or
+  JSON-LD, an OWL/XML, Functional or Manchester file that an import is read
+  from, and with `--max-warnings 0` one that nothing imports. Exit 2 where it
+  was 0: a `.owl` or `.rdf` over 50 MB or not in UTF-8. Leave the exit 1
+  codes out with `--ignore` or `lint.ignore` in `turtle-lsp.json`. Exit 2 has
+  no opt-out: keep such files in a hidden folder or in `build/`, `dist/` or
+  `target/`, which `check .` does not read.
+- **An import that is not UTF-8 is not read** (any syntax, fetched, cached or
+  local); its `unresolved-import` says where the first bad byte is. It was
+  read with the bad bytes replaced.
+- **Nothing writes RDF/XML**: formatting, rename, completion, quick fixes and
+  `check --fix` leave RDF/XML alone; `format .` passes over it, and a
+  named `format onto.owl` says "not formatted: RDF/XML". A rename of a term
+  that an RDF/XML workspace file uses is refused and names the file. A `.owl`
+  or `.rdf` that holds Turtle or JSON-LD is read, formatted and fixed as that
+  syntax by the command line and by editors other than VS Code.
+- **VS Code registers formatting, rename, completion and code actions
+  dynamically** for every file but `.owl` and `.rdf`, so it lists no
+  turtle-lsp formatter for XML. Other editors get the same static
+  capabilities as before.
+- oxrdfxml is now only a test dependency.
+
+### Fixed
+
+- **Definition, hover and proof links into a catalog-mapped `.owl` import open
+  the right line.** They pointed at the lines of a converted copy.
+- An RDF/XML import with an error part way through lost everything after it
+  without a word; a Manchester `.owl` loaded as empty Turtle; an OWL/XML one
+  failed with an RDF/XML error; a single-quoted `<!ENTITY>` value failed.
+
 ## 0.19.0 — 2026-11-17
 
 ### Added

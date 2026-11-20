@@ -498,6 +498,11 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
         "JSON-LD c038 (expand and toRdf): Dublin Core has issued and publisher, not published",
     ),
     (
+        "rdf:foo",
+        3,
+        "RDF/XML rdfms-rdf-names-use warn-001 to warn-003 use a name in the rdf namespace that RDF does not define, to test the warning",
+    ),
+    (
         "rdfs:definedBy",
         2,
         "JSON-LD toRdf 0031: the property is rdfs:isDefinedBy",
@@ -517,7 +522,7 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
 /// The files `check --root tests/w3c` reads, as it finds them: RDF in any
 /// letter case, SPARQL only in lower case, no hidden folder.
 fn w3c_files(dir: &Path, root: &Path, out: &mut Vec<BatchFile>) {
-    const RDF_EXTENSIONS: &[&str] = &["ttl", "turtle", "trig", "nt", "nq", "jsonld"];
+    const RDF_EXTENSIONS: &[&str] = &["ttl", "turtle", "trig", "nt", "nq", "jsonld", "rdf", "owl"];
     const SPARQL_EXTENSIONS: &[&str] = &["rq", "sparql", "ru"];
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

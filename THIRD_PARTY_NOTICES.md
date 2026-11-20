@@ -87,7 +87,6 @@ which TurbOWL uses under the MIT licence; its copyright is in the row below.
 | [oxiri](https://github.com/oxigraph/oxiri) | 0.2.11 | MIT OR Apache-2.0 | Copyright (c) 2018 Oxigraph developers | binary, browser |
 | [oxiri](https://github.com/oxigraph/oxiri) | 0.3.1 | MIT OR Apache-2.0 | Copyright (c) 2018 Oxigraph developers | binary, browser |
 | [oxrdf](https://github.com/oxigraph/oxigraph/tree/main/lib/oxrdf) | 0.3.4 | MIT OR Apache-2.0 | Tpt | binary, browser |
-| [oxrdfxml](https://github.com/oxigraph/oxigraph/tree/master/lib/oxrdfxml) | 0.2.4 | MIT OR Apache-2.0 | Tpt | binary, browser |
 | [oxsdatatypes](https://github.com/oxigraph/oxigraph/tree/main/lib/oxsdatatypes) | 0.2.3 | MIT OR Apache-2.0 | Tpt | binary, browser |
 | [peg](https://github.com/kevinmehall/rust-peg) | 0.8.6 | MIT | Copyright (C) 2013 Kevin Mehall | binary, browser |
 | [peg-runtime](https://github.com/kevinmehall/rust-peg) | 0.8.6 | MIT | Copyright (C) 2013 Kevin Mehall | binary, browser |

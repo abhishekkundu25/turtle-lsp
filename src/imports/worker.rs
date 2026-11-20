@@ -27,6 +27,9 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 pub(super) struct Ontology {
     pub(super) analysis: Arc<Analysis>,
     pub(super) imports: Vec<String>,
+    /// Where and why the document has its first error, if it has one
+    /// ("line L, column C: why"): what its errors break is not loaded.
+    pub(super) truncated: Option<String>,
 }
 
 /// An import IRI containing this makes the resolver panic, in tests.
@@ -48,6 +51,7 @@ pub(super) fn failed(generation: u64, imports: &[String], why: &str) -> Done {
             .map(|i| (i.clone(), Status::Unresolved(why.to_string())))
             .collect(),
         loaded: vec![],
+        files: FxHashSet::default(),
     }
 }
 
@@ -108,6 +112,7 @@ pub(super) fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool)
     let mut seen: FxHashSet<String> = FxHashSet::default();
     let mut status = Vec::new();
     let mut loaded = Vec::new();
+    let mut files = Vec::new();
     // What this pass may fetch: more is for the next pass, with a note.
     let mut budget = Budget::pass();
     while let Some((iri, depth)) = queue.pop_front() {
@@ -120,17 +125,26 @@ pub(super) fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool)
         let st = if local.contains(norm(&iri)) {
             Status::Local
         } else {
-            match load(&iri, req, &catalog, memo, &mut budget) {
+            match load(&iri, req, &catalog, memo, &mut budget, &mut files) {
                 Ok((location, onto, fresh)) => {
                     if depth < MAX_DEPTH {
                         queue.extend(onto.imports.iter().map(|i| (i.clone(), depth + 1)));
                     }
+                    let st = match &onto.truncated {
+                        Some(why) => {
+                            let message = format!(
+                                "Import <{iri}> is loaded only in part: {location} has an error at {why}. What its errors break is not loaded"
+                            );
+                            Status::Truncated(location, message)
+                        }
+                        None => Status::Loaded(location),
+                    };
                     loaded.push(Loaded {
                         key: format!("{KEY_PREFIX}{iri}"),
                         facts: fresh.then(|| DocFacts::new(&onto.analysis)),
                         analysis: onto.analysis,
                     });
-                    Status::Loaded(location)
+                    st
                 }
                 Err(msg) => Status::Unresolved(msg),
             }
@@ -152,6 +166,7 @@ pub(super) fn resolve(job: &Job, memo: &mut Memo, superseded: &dyn Fn() -> bool)
         generation: job.generation,
         status,
         loaded,
+        files: files.iter().map(|f| canonical(f)).collect(),
     })
 }
 
@@ -206,6 +221,53 @@ mod tests {
                 "{st:?}"
             );
         }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The workspace files imports are read from, loaded or not, through
+    /// a catalog, a `file:` IRI and another import; not those outside the
+    /// workspace, nor what a cache or the web serves.
+    #[test]
+    fn the_files_imports_are_read_from_are_recorded_loaded_or_not() {
+        let root = tmp("files");
+        let ws = root.join("ws");
+        fs::create_dir_all(ws.join("v")).unwrap();
+        fs::write(
+            ws.join(CATALOG_FILE),
+            r#"<catalog><uri name="http://ex.com/a" uri="v/a.ttl"/><uri name="http://ex.com/f" uri="v/f.owl"/><uri name="http://ex.com/out" uri="../out.ttl"/></catalog>"#,
+        )
+        .unwrap();
+        // a (Turtle) imports b by its file IRI; f is OWL Functional.
+        let b = ws.join("v").join("b.ttl");
+        let b_iri = url::Url::from_file_path(&b).unwrap().to_string();
+        fs::write(
+            ws.join("v").join("a.ttl"),
+            format!("<http://ex.com/a> <http://www.w3.org/2002/07/owl#imports> <{b_iri}> .\n"),
+        )
+        .unwrap();
+        fs::write(&b, "<http://ex.com/b> a <http://ex.com/C> .\n").unwrap();
+        fs::write(ws.join("v").join("f.owl"), "Prefix(:=<http://ex.com/f#>)\n").unwrap();
+        fs::write(root.join("out.ttl"), "").unwrap();
+        let j = job(
+            &[
+                "http://ex.com/a",
+                "http://ex.com/f",
+                "http://ex.com/out",
+                "http://ex.com/web",
+            ],
+            &[],
+            vec![ws.clone()],
+            None,
+        );
+        let done = resolve(&j, &mut Memo::default(), &|| false).unwrap();
+        let mut files: Vec<PathBuf> = done.files.iter().cloned().collect();
+        files.sort();
+        let v = canonical(&ws.join("v"));
+        assert_eq!(files, [v.join("a.ttl"), v.join("b.ttl"), v.join("f.owl")]);
+        let uri = |p: &Path| path_to_uri(p).unwrap();
+        assert!(imports_file(&done.files, &uri(&ws.join("v").join("f.owl"))));
+        assert!(!imports_file(&done.files, &uri(&ws.join("f.owl"))));
+        assert!(!imports_file(&done.files, &uri(&root.join("out.ttl"))));
         fs::remove_dir_all(&root).unwrap();
     }
 

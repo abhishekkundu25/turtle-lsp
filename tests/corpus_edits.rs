@@ -1,7 +1,7 @@
-//! Every Turtle, TriG, N-Triples and N-Quads file of the public corpus,
-//! opened and then edited as a client edits it, must give what a fresh open
-//! of the edited text gives (`turtle_lsp::oracle`, which also checks each
-//! spliced analysis against a full one as it goes).
+//! Every Turtle, TriG, N-Triples, N-Quads and RDF/XML file of the public
+//! corpus, opened and then edited as a client edits it, must give what a
+//! fresh open of the edited text gives (`turtle_lsp::oracle`, which also
+//! checks each spliced analysis against a full one as it goes).
 //!
 //! Each file gets edits at fixed places, picked from its tokens near a
 //! quarter, the half and three quarters of the text, so a run is the same
@@ -17,6 +17,14 @@
 //!   then a character typed inside a string, after the hazard.
 //!
 //! Places a file lacks (a comment, a number) are left out for that file.
+//!
+//! An RDF/XML file (`.rdf`, opened as an `.owl` file, whose syntax its text
+//! gives) gets its own sessions, each analysed in full: at each place, a
+//! character typed before the nearest end tag and taken back, then that
+//! tag's `>` deleted and typed back; and once, a Turtle line put before
+//! the text and taken away, so the syntax turns to Turtle and back. A file
+//! over the workspace's 50 MB limit (GO) is left out: the editor never
+//! indexes it.
 //! The changes' positions are in UTF-8 for every other file and UTF-16 for
 //! the rest. Each shard prints how the analyses were parsed (the splice or
 //! why not), for the named files at the top of the corpus and for each
@@ -46,6 +54,9 @@ include!("support/corpus.rs");
 
 /// The shards run as separate tests, so the harness runs them side by side.
 const SHARDS: usize = 4;
+
+/// The workspace's file limit: a larger file is never indexed.
+const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 #[test]
 fn edited_corpus_matches_a_fresh_open_1() {
@@ -101,7 +112,12 @@ fn edited_corpus_matches_a_fresh_open(k: usize) {
         };
         let enc = [Encoding::Utf8, Encoding::Utf16][i % 2];
         let t0 = Instant::now();
-        for (session, batches, want) in sessions_for(&text, *syntax, enc) {
+        let sessions_of = if *syntax == Syntax::RdfXml {
+            xml_sessions(&text, enc)
+        } else {
+            sessions_for(&text, *syntax, enc)
+        };
+        for (session, batches, want) in sessions_of {
             sessions += 1;
             match oracle::check(*syntax, &text, batches, enc) {
                 Err(diff) => failures.push(format!("{name} ({session}, {enc:?}): {diff}")),
@@ -154,6 +170,10 @@ fn collect(dir: &Path, out: &mut Vec<(PathBuf, Syntax)>) {
             && s != Syntax::JsonLd
         {
             out.push((p, s));
+        } else if Syntax::by_content(&p.to_string_lossy())
+            && fs::metadata(&p).is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
+        {
+            out.push((p, Syntax::RdfXml));
         }
     }
 }
@@ -309,5 +329,43 @@ fn sessions_for(
             out.extend(e.done("dot after a number"));
         }
     }
+    out
+}
+
+/// The edit sessions for an RDF/XML file, each with the text it must leave
+/// (see the module doc).
+fn xml_sessions(text: &str, enc: Encoding) -> Vec<(&'static str, Vec<Batch>, String)> {
+    let mut out = Vec::new();
+    for at in PLACES {
+        let mid = text.len() * at.0 / 4;
+        let Some(tag) = text.as_bytes()[mid..]
+            .windows(2)
+            .position(|w| w == b"</")
+            .map(|i| mid + i)
+        else {
+            continue;
+        };
+        let mut e = Edited::new(text, enc);
+        e.insert(tag, "x");
+        e.send(true);
+        e.insert(tag + 1, "y");
+        e.send(false);
+        e.replace(tag..tag + 2, "");
+        e.send(true);
+        if let Some(gt) = e.text[tag..].find('>').map(|i| tag + i) {
+            e.replace(gt..gt + 1, "");
+            e.send(true);
+            e.insert(gt, ">");
+            e.send(true);
+        }
+        out.extend(e.done("xml keystrokes"));
+    }
+    let line = "@prefix ex: <http://example.org/> .\n";
+    let mut e = Edited::new(text, enc);
+    e.insert(0, line);
+    e.send(true);
+    e.replace(0..line.len(), "");
+    e.send(true);
+    out.extend(e.done("syntax flip"));
     out
 }

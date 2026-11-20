@@ -146,10 +146,12 @@ jobs:
           version: v0.12.6
       - run: npm ci
         timeout-minutes: 5
-      # The JSON-LD corpus, the three SHACL files that src/knowledge.rs reads and
-      # the SPARQL examples that tests/w3c_sparql.rs checks the lexer against:
-      # with CI=true the tests fail when they are absent. Downloaded again only
-      # when the source lists or checksums change.
+      # The JSON-LD corpus, the three SHACL files that src/knowledge.rs reads,
+      # the SPARQL examples that tests/w3c_sparql.rs checks the lexer against
+      # and the four RDF/XML files that src/rdfxml/grammar.rs compares with
+      # oxrdfxml (FOAF, BFO, RO, PATO; PATO is 21 MB): with CI=true the tests
+      # fail when they are absent. tests/corpus_edits.rs edits every file
+      # present. Downloaded again only when the source lists or checksums change.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test/corpus/jsonld
@@ -161,16 +163,20 @@ jobs:
             test/corpus/dcat-ap-shacl.ttl
             test/corpus/w3c-shacl.ttl
             test/corpus/sib-sparql-examples
-          key: corpus-files-v2-${{ hashFiles('tools/corpus/sources.tsv') }}
-      # fetch.sh with a source list of only those four rows; it fetches the
+            test/corpus/foaf.rdf
+            test/corpus/obo-bfo.rdf
+            test/corpus/obo-ro.rdf
+            test/corpus/obo-pato.rdf
+          key: corpus-files-v3-${{ hashFiles('tools/corpus/sources.tsv') }}
+      # fetch.sh with a source list of only those eight rows; it fetches the
       # JSON-LD corpus as well. Files already present are not downloaded again.
-      - name: Corpus (JSON-LD, Brick, DCAT-AP, SHACL, SPARQL examples)
+      - name: Corpus (JSON-LD, Brick, DCAT-AP, SHACL, SPARQL examples, RDF/XML)
         shell: bash
         timeout-minutes: 10
         run: |
           mkdir -p target
-          awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl" || $1 == "sib-sparql-examples"' tools/corpus/sources.tsv > target/corpus-sources.tsv
-          test "$(wc -l < target/corpus-sources.tsv)" -eq 4
+          awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl" || $1 == "sib-sparql-examples" || $1 == "foaf" || $1 == "obo-bfo" || $1 == "obo-ro" || $1 == "obo-pato"' tools/corpus/sources.tsv > target/corpus-sources.tsv
+          test "$(wc -l < target/corpus-sources.tsv)" -eq 8
           # One retry: w3.org and the other hosts throttle runners now and then.
           CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh ||
             { sleep 15; CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh; }

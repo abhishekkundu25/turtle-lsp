@@ -66,7 +66,8 @@ impl Naming {
     pub(crate) fn at(a: &Analysis, offset: u32, project: Arc<PrefixMap>) -> Naming {
         let own = match a.parsed.syntax {
             Syntax::JsonLd => context_prefixes(&a.source_index, offset),
-            _ => a
+            // RDF/XML declares none: its XML namespaces are not prefixes.
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => a
                 .parsed
                 .prefixes
                 .iter()

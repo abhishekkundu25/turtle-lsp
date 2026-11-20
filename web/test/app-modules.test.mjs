@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url"
 import { esc } from "../app/dom.js"
 import { lineStarts, offsetOf, positionAt, lineAt, applyEdits } from "../app/text.js"
 import { dirOf, nameOf, join, under, uriOf, ROOT } from "../app/paths.js"
-import { KNOWN, LIMITS, admit, picked, walkDropped, walkHandle, readTextCapped, limitsNote } from "../app/files.js"
+import { KNOWN, LIMITS, admit, picked, walkDropped, walkHandle, readTextCapped, limitsNote, readUtf8 } from "../app/files.js"
+import { languageOf } from "../app/editor-lsp.js"
 import { resolveIn, listen } from "./static-server.mjs"
 import { wanted, checkBudget, copyMonaco, WASM_GZIP_BUDGET } from "../build.mjs"
 
@@ -98,7 +99,65 @@ test("one set of limits: admit leaves out unknown extensions, big files and what
   assert.equal(admit(entries, { onlyKnown: false }).take.length, 4, "with any extension, only the big one is left out")
   assert.match(limitsNote(), /10 MB.*at most 1000/)
   assert.ok(KNOWN.test("x.TTL") && !KNOWN.test("x.md"))
+  for (const name of ["onto.owl", "data.rdf", "ONTO.OWL"]) assert.ok(KNOWN.test(name), name)
+  for (const name of ["data.xml", "onto.owx", "onto.ofn", "onto.omn"]) assert.ok(!KNOWN.test(name), name)
+  assert.match(limitsNote(), /RDF\/XML \(\.owl, \.rdf\)/)
   assert.deepEqual(picked([{ name: "a.ttl" }, { name: "b.ttl", webkitRelativePath: "dir/b.ttl" }]).map((e) => e.path), ["a.ttl", "dir/b.ttl"])
+})
+
+test("the toolbox's file picker accepts exactly the extensions a folder contributes", () => {
+  const html = fs.readFileSync(path.join(app, "toolbox.html"), "utf8")
+  const accept = html.match(/id="picker"[^>]*accept="([^"]*)"/)[1].split(",")
+  const listed = KNOWN.source.match(/\(([^)]*)\)/)[1].split("|").map((e) => `.${e}`)
+  assert.deepEqual(accept, listed)
+  assert.ok(accept.includes(".owl") && accept.includes(".rdf"), accept.join(","))
+})
+
+test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which the server's providers that read serve", () => {
+  for (const name of ["onto.owl", "dir/data.RDF"]) assert.equal(languageOf(name), "xml", name)
+  assert.equal(languageOf("carol.jsonld"), "json")
+  assert.equal(languageOf("a.ttl"), "turtle")
+  // The file tree's badge and the status bar name the language.
+  const editor = fs.readFileSync(path.join(app, "editor.js"), "utf8")
+  assert.match(editor, /const ICON = \{[^}]*\bxml: "XML"/)
+  assert.match(editor, /xml: "RDF\/XML" \}\[languageOf\(file\)\]/)
+  // connect() registers the server's features on its languages, JSON and XML;
+  // on XML, only those that read.
+  const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
+  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", "xml"\]\) \{\n\s*const writable = lang !== "xml"\n/)
+  const registered = (guard) => [...lsp.matchAll(new RegExp(`\\n\\s*${guard}monaco\\.languages\\.(register\\w+)\\(lang,`, "g"))].map((m) => m[1]).sort()
+  assert.deepEqual(registered("if \\(writable\\) "), [
+    "registerCodeActionProvider",
+    "registerCompletionItemProvider",
+    "registerDocumentFormattingEditProvider",
+    "registerDocumentSemanticTokensProvider",
+    "registerInlayHintsProvider",
+    "registerRenameProvider",
+  ])
+  assert.deepEqual(registered(""), [
+    "registerCodeLensProvider",
+    "registerDefinitionProvider",
+    "registerDocumentHighlightProvider",
+    "registerDocumentSymbolProvider",
+    "registerFoldingRangeProvider",
+    "registerHoverProvider",
+    "registerReferenceProvider",
+  ])
+})
+
+test("a local file is read as UTF-8, its byte order mark dropped, and refused with the offset of its first bad byte", async () => {
+  const blob = (...parts) => new Blob(parts.map((p) => (typeof p === "string" ? Buffer.from(p) : Uint8Array.from(p))))
+  assert.equal(await readUtf8(blob("ex:a ex:b \"é\" .\n")), 'ex:a ex:b "é" .\n')
+  assert.equal(await readUtf8(blob([0xef, 0xbb, 0xbf], "ex:a .")), "ex:a .", "the BOM is dropped, as file.text() drops it")
+  assert.equal(await readUtf8(blob("")), "")
+  const refused = (bytes) => readUtf8(bytes).then(() => assert.fail("read"), (e) => e.message)
+  assert.equal(await refused(blob("ex:a ", [0xe9], " .")), "not valid UTF-8 (first bad byte at offset 5)")
+  // The offset counts the BOM and characters of several bytes; a U+FFFD
+  // written in the file is not the bad byte.
+  assert.equal(await refused(blob([0xef, 0xbb, 0xbf], "é\uFFFD😀", [0xff])), "not valid UTF-8 (first bad byte at offset 12)")
+  // A sequence cut short, at the end and before more text.
+  assert.equal(await refused(blob("ab", [0xe2, 0x82])), "not valid UTF-8 (first bad byte at offset 2)")
+  assert.equal(await refused(blob("ab", [0xe2, 0x82], "c")), "not valid UTF-8 (first bad byte at offset 2)")
 })
 
 test("a dropped folder is walked with the limits: hidden folders and node_modules are not entered, unknown files count as skipped", async () => {
@@ -268,6 +327,36 @@ test("copyMonaco copies the editor without the unused services, with its licence
 const meta = (html) => html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/)?.[1]
 const directives = (csp) => Object.fromEntries(csp.split(";").map((d) => d.trim().split(/\s+/)).map(([name, ...values]) => [name, values]))
 
+// The text of each inline script: a `<script` tag, in any letter case, with
+// no `src` attribute, up to the next `</script>`. Found with indexOf, not a
+// regular expression: this reads our own pages, it filters no HTML.
+const inlineScripts = (html) => {
+  const lower = html.toLowerCase()
+  const out = []
+  for (let at = lower.indexOf("<script"); at >= 0; at = lower.indexOf("<script", at + 1)) {
+    const tagEnd = lower.indexOf(">", at)
+    assert.ok(tagEnd >= 0, "every script tag is closed")
+    const tag = lower.slice(at + "<script".length, tagEnd)
+    if (tag && !/^[\s/]/.test(tag)) continue // `<scripts>`, another element
+    const names = tag.split(/[\s/]+/).map((a) => a.split("=")[0])
+    if (names.includes("src")) continue
+    const end = lower.indexOf("</script", tagEnd)
+    assert.ok(end >= 0, "every inline script is closed")
+    out.push(html.slice(tagEnd + 1, end))
+    at = end
+  }
+  return out
+}
+
+test("inlineScripts finds every script without a src, whatever its attributes", () => {
+  assert.deepEqual(inlineScripts('<script type="module">a()</script>'), ["a()"])
+  assert.deepEqual(inlineScripts("<SCRIPT>b()</SCRIPT>"), ["b()"])
+  assert.deepEqual(inlineScripts('<script data-src="x.js">c()</script>'), ["c()"])
+  assert.deepEqual(inlineScripts('<script\ntype="module">d()</script>'), ["d()"])
+  assert.deepEqual(inlineScripts('<script type="module" src="app.js"></script><script src=x.js></script>'), [])
+  assert.deepEqual(inlineScripts("<scripts>e</scripts>"), [])
+})
+
 test("both pages carry a Content-Security-Policy, with the editor page's inline scripts allowed by hash", () => {
   for (const page of ["index.html", "toolbox.html"]) {
     const html = read("app", page)
@@ -283,10 +372,10 @@ test("both pages carry a Content-Security-Policy, with the editor page's inline 
   }
   assert.ok(directives(meta(read("app", "index.html")))["connect-src"].includes("https:"), "the fetch quick fix may read ontologies")
   const html = read("app", "index.html")
-  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${crypto.createHash("sha256").update(m[1]).digest("base64")}'`)
+  const hashes = inlineScripts(html).map((text) => `'sha256-${crypto.createHash("sha256").update(text).digest("base64")}'`)
   assert.equal(hashes.length, 2)
   for (const h of hashes) assert.ok(directives(meta(html))["script-src"].includes(h), `${h} is allowed`)
-  assert.equal(/<script>/.test(read("app", "toolbox.html")), false, "the toolbox has no inline script")
+  assert.deepEqual(inlineScripts(read("app", "toolbox.html")), [], "the toolbox has no inline script")
 })
 
 test("the editor page preloads every module editor.js imports, and nothing else, and the Monaco files it preloads are where the build puts them", () => {

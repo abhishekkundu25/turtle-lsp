@@ -7,6 +7,7 @@
 //! | [`syntax`] | Turtle, TriG, N-Triples and N-Quads lexer and parser | every feature |
 //! | [`sparql`] | SPARQL documents: tokens, structure, checks, formatting | `ide`, [`analysis`], [`query`], [`shacl`] |
 //! | [`jsonld`] | JSON-LD 1.1 frontend producing the same parse as Turtle | [`analysis`] |
+//! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle | [`analysis`], [`imports`] |
 //! | [`analysis`] | One document's parse, positions and per-IRI indexes | [`features`], `ide`, [`server`] |
 //! | `workspace` | Open documents, indexed files and project prefixes | [`server`], `ide`, [`batch`], [`cli`], [`features`], `diagnose`, [`imports`], [`jsonld`] |
 //! | [`knowledge`] | What the workspace says about each IRI | [`features`] |
@@ -29,8 +30,9 @@
 //! | `extensions` | The requests beyond the LSP standard: `turtle/graph`, "▶ Run query" | [`server`], [`features`] (the Run query lens) |
 //! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
 //!
-//! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `reasoning`,
-//! `vocab` and `workspace` are private to the crate: no consumer uses them.
+//! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `rdfxml`,
+//! `reasoning`, `vocab` and `workspace` are private to the crate: no consumer
+//! uses them.
 //!
 //! # Public interface
 //!
@@ -210,6 +212,7 @@ pub(crate) mod layout;
 pub mod oracle;
 pub mod query;
 pub mod rdf;
+pub(crate) mod rdfxml;
 pub(crate) mod reasoning;
 pub mod server;
 pub mod settings;
@@ -234,6 +237,7 @@ mod boundaries {
         ("src/sparql/spargebra_input.rs", LIBRARIES),
         ("src/rdf/", LIBRARIES),
         ("src/shacl/", LIBRARIES),
+        ("src/rdfxml/", "syntax rdfxml"),
     ];
     /// The core files that may name `extensions`: the router and the Run query lens.
     const EXTENSION_USERS: &[&str] = &["src/server.rs", "src/features/lens.rs"];

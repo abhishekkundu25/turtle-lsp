@@ -4,6 +4,7 @@
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import { isDeepStrictEqual } from "node:util"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { startServer, tempDir, uriOf, positionOf } from "./lsp-client.mjs"
@@ -157,10 +158,17 @@ test("a shared prefix can be renamed and then renamed back", async () => {
   }
   try {
     await save(await rename("prefixes.ttl", "ex:", "eg"))
-    const back = await rename("prefixes.ttl", "eg:", "ex")
     const expected = Object.fromEntries(
       Object.entries(shared).map(([name, edits]) => [name, edits.map((e) => e.replace(/ g$/, " x"))]),
     )
+    // The server reads the saved files after the watch notification, and a
+    // slow runner (Windows) answers the rename before it has read them all:
+    // ask again until it has, up to 5 s.
+    let back = await rename("prefixes.ttl", "eg:", "ex")
+    for (let i = 0; i < 100 && !isDeepStrictEqual(edited(back), expected); i++) {
+      await new Promise((r) => setTimeout(r, 50))
+      back = await rename("prefixes.ttl", "eg:", "ex")
+    }
     assert.deepEqual(edited(back), expected)
     await save(back)
     for (const [name, original] of Object.entries(saved)) assert.equal(text(name), original, name)

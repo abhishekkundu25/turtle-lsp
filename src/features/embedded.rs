@@ -387,9 +387,13 @@ impl Embedded<'_> {
 }
 
 /// Whether the document can embed queries the editor features map: Turtle
-/// and TriG (JSON-LD strings escape differently).
+/// and TriG (JSON-LD strings escape differently, and an RDF/XML literal is
+/// XML text).
 fn embeds(a: &Analysis) -> bool {
-    matches!(a.parsed.syntax, Syntax::Turtle | Syntax::TriG)
+    match a.parsed.syntax {
+        Syntax::Turtle | Syntax::TriG => true,
+        Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd | Syntax::RdfXml => false,
+    }
 }
 
 /// The query whose literal holds document offset `offset` between its quotes.

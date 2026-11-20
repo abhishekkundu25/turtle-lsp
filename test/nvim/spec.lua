@@ -13,7 +13,8 @@ local TIMEOUT = 10000
 
 -- The repository is the plugin under test: its plugin/ (file types, modelines,
 -- the reference-lens command) and lsp/turtle_lsp.lua (filetypes, root markers)
--- are the shipped files, not a copy. Only the server's command is replaced.
+-- are the shipped files, not a copy. Only the server's command is replaced,
+-- and each client's exit is recorded.
 local repo = vim.fs.dirname(vim.fs.dirname(fixtures))
 vim.opt.runtimepath:prepend(repo)
 vim.cmd("filetype on")
@@ -29,7 +30,14 @@ vim.api.nvim_create_autocmd("BufReadPre", {
     vim.opt_local.modeline = false
   end,
 })
-vim.lsp.config("turtle_lsp", { cmd = { server } })
+-- Each client's exit, by id: what Neovim's own exit report says.
+local exited = {}
+vim.lsp.config("turtle_lsp", {
+  cmd = { server },
+  on_exit = function(code, signal, id)
+    exited[id] = { code = code, signal = signal }
+  end,
+})
 vim.lsp.enable("turtle_lsp")
 
 local failed = 0
@@ -56,6 +64,23 @@ vim.notify = function(msg, level, ...)
     table.insert(client_errors, msg)
   end
   return orig_notify(msg, level, ...)
+end
+
+-- Remove from `errors`, after its first `from`, the report Neovim makes of
+-- the exit `e` of a client called `name`, if it makes one: one message, so
+-- another client's exit report stays.
+local function drop_exit_report(errors, from, name, e)
+  -- Neovim reports an exit unless it is code 0 with no signal or SIGTERM.
+  if not e or (e.code == 0 and (e.signal == 0 or e.signal == 15)) then
+    return
+  end
+  local report = string.format("Client %s quit with exit code %s and signal %s.", name, e.code, e.signal)
+  for i = from + 1, #errors do
+    if tostring(errors[i]):sub(1, #report) == report then
+      table.remove(errors, i)
+      return
+    end
+  end
 end
 
 local function open(path)
@@ -295,6 +320,189 @@ check("a .jsonld buffer (filetype jsonld) attaches with no diagnostics; a .json 
     assert(#d == 0, #d .. " diagnostics: " .. fmt(vim.list_slice(d, 1, 5)))
     assert(vim.filetype.match({ filename = "package.json" }) == "json")
   end)
+  vim.fn.delete(dir, "rf")
+  assert(ok, err)
+end)
+
+-- An RDF/XML file in a folder of its own: its own client, as for the .jsonld above.
+local owl_dir = vim.fn.tempname()
+vim.fn.mkdir(owl_dir, "p")
+local owl_file = owl_dir .. "/onto.owl"
+vim.fn.writefile({
+  '<?xml version="1.0"?>',
+  '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"',
+  '         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"',
+  '         xmlns:owl="http://www.w3.org/2002/07/owl#">',
+  '  <owl:Class rdf:about="http://example.org/Widget">',
+  "    <rdfs:comment>A thing with parts.</rdfs:comment>",
+  "  </owl:Class>",
+  '  <rdf:Description rdf:about="http://example.org/w1">',
+  '    <rdf:type rdf:resource="http://example.org/Widget"/>',
+  "  </rdf:Description>",
+  "</rdf:RDF>",
+}, owl_file)
+local owl_buf
+
+check("a .owl buffer keeps filetype xml, the client attaches and hover answers", function()
+  local b, c = open(owl_file)
+  owl_buf = b
+  assert(vim.bo[b].filetype == "xml", "filetype " .. vim.bo[b].filetype)
+  wait_diagnostics(b)
+  local r = request(b, "textDocument/hover", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, 'owl:Class rdf:about="http://example.org/Wid'),
+  })
+  assert(r and r.contents, "no hover")
+  local text = table.concat(vim.lsp.util.convert_input_to_markdown_lines(r.contents), "\n")
+  assert(text:find("A thing with parts.", 1, true), "hover: " .. text)
+  -- Neovim does not opt in to the registrations: formatting and rename are
+  -- static, and the server writes nothing in a .owl.
+  assert(c:supports_method("textDocument/formatting", b), "no formatting capability")
+  local edits = request(b, "textDocument/formatting", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    options = { tabSize = 2, insertSpaces = true },
+  })
+  assert(edits == nil or #edits == 0, "formatting edits in a .owl: " .. vim.inspect(edits))
+  local res = vim.lsp.buf_request_sync(b, "textDocument/rename", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, 'owl:Class rdf:about="http://example.org/Wid'),
+    newName = "ex:Thing",
+  }, TIMEOUT)
+  local answer = res and res[c.id]
+  local message = answer and answer.err and answer.err.message or vim.inspect(answer)
+  assert(message:find("RDF/XML document is not edited", 1, true), "rename in a .owl: " .. message)
+  -- An xml buffer by any other name gets no client.
+  local xml = owl_dir .. "/pom.xml"
+  vim.fn.writefile({ "<project/>" }, xml)
+  vim.cmd.edit(vim.fn.fnameescape(xml))
+  local other = vim.api.nvim_get_current_buf()
+  assert(vim.bo[other].filetype == "xml", "filetype " .. vim.bo[other].filetype)
+  vim.wait(200)
+  assert(#vim.lsp.get_clients({ bufnr = other }) == 0, "a client attached to pom.xml")
+  vim.api.nvim_buf_delete(other, { force = true })
+end)
+
+check("a Turtle buffer gets static formatting and rename with prepareRename", function()
+  local ttl, tc = open(people)
+  assert(tc:supports_method("textDocument/formatting", ttl), "no formatting in people.ttl")
+  assert(tc:supports_method("textDocument/rename", ttl), "no rename in people.ttl")
+  assert(tc:supports_method("textDocument/prepareRename", ttl), "no prepareRename in people.ttl")
+  local rename = tc.server_capabilities.renameProvider
+  assert(type(rename) == "table" and rename.prepareProvider == true, "renameProvider " .. vim.inspect(rename))
+  for _, method in ipairs({ "textDocument/formatting", "textDocument/rename", "textDocument/completion", "textDocument/codeAction" }) do
+    assert(#((tc.registrations or {})[method] or {}) == 0, method .. " registered dynamically")
+  end
+  local prepared = request(ttl, "textDocument/prepareRename", {
+    textDocument = vim.lsp.util.make_text_document_params(ttl),
+    position = pos_of(ttl, "ex:bo"),
+  })
+  assert(prepared, "prepareRename gave nothing on ex:bob")
+end)
+
+check("a .owl buffer's client comes back after vim.lsp.enable's FileType handler detaches it", function()
+  -- What vim.lsp.enable() runs when a server is enabled after startup, and
+  -- what a file type set again runs for one buffer.
+  vim.cmd("doautoall nvim.lsp.enable FileType")
+  vim.api.nvim_buf_call(owl_buf, function()
+    vim.cmd("doautocmd FileType xml")
+  end)
+  local back = vim.wait(TIMEOUT, function()
+    vim.wait(50)
+    return #vim.lsp.get_clients({ bufnr = owl_buf, name = "turtle_lsp" }) > 0
+  end, 20)
+  assert(back, "client not attached after FileType")
+end)
+
+check("a client's exit report is dropped only for that client's own exit", function()
+  local log = ". Check log for errors: lsp.log"
+  local errors = {
+    "an earlier error",
+    "Client turtle_lsp quit with exit code 1 and signal 0" .. log,
+    "Client other quit with exit code 1 and signal 0" .. log,
+    "Client turtle_lsp quit with exit code 2 and signal 0" .. log,
+    "Client turtle_lsp quit with exit code 1 and signal 0" .. log,
+  }
+  drop_exit_report(errors, 0, "turtle_lsp", { code = 1, signal = 0 })
+  local left = table.concat(errors, " || ")
+  assert(#errors == 4 and errors[1] == "an earlier error", left)
+  assert(errors[2]:find("^Client other ") and errors[3]:find("exit code 2 "), left)
+  assert(errors[4]:find("exit code 1 "), "the second report of the same exit stays: " .. left)
+  -- Code 0 and SIGTERM (15) are not reported: nothing is dropped.
+  drop_exit_report(errors, 0, "turtle_lsp", { code = 0, signal = 15 })
+  drop_exit_report(errors, 0, "turtle_lsp", nil)
+  assert(#errors == 4, table.concat(errors, " || "))
+  -- Only after `from`.
+  local before = { "Client turtle_lsp quit with exit code 1 and signal 0" .. log }
+  drop_exit_report(before, 1, "turtle_lsp", { code = 1, signal = 0 })
+  assert(#before == 1, "dropped a report from before")
+end)
+
+check("a .owl buffer's client that exits or is stopped does not come back", function()
+  -- No client attached: gone, after its detach has had time to act.
+  local function stays_gone(b, what)
+    local gone = vim.wait(TIMEOUT, function()
+      return #vim.lsp.get_clients({ bufnr = b, name = "turtle_lsp" }) == 0
+    end, 20)
+    assert(gone, what .. ": still attached")
+    vim.wait(500)
+    assert(#vim.lsp.get_clients({ bufnr = b, name = "turtle_lsp" }) == 0, what .. ": attached again")
+  end
+  local ok, err = pcall(function()
+    local c = vim.lsp.get_clients({ bufnr = owl_buf, name = "turtle_lsp" })[1]
+    assert(c and c.id ~= client.id, "the .owl buffer shares the workspace client")
+    -- The server exits on its own (as on a crash): the client is not restarted.
+    -- Neovim reports that exit when its code is not 0, as on Windows; that
+    -- one message is this check's own doing, not an error to surface.
+    local before = #client_errors
+    c.rpc.terminate()
+    stays_gone(owl_buf, "exited")
+    assert(vim.wait(TIMEOUT, function()
+      return exited[c.id] ~= nil
+    end, 20), "no exit recorded")
+    drop_exit_report(client_errors, before, c.name, exited[c.id])
+    -- Read again, the file gets a new client; stopped, it stays stopped.
+    vim.api.nvim_buf_call(owl_buf, function()
+      vim.cmd.edit()
+    end)
+    local back = vim.wait(TIMEOUT, function()
+      local cs = vim.lsp.get_clients({ bufnr = owl_buf, name = "turtle_lsp" })
+      return #cs > 0 and cs[1].initialized
+    end, 20)
+    assert(back, "no client after :edit")
+    vim.lsp.get_clients({ bufnr = owl_buf, name = "turtle_lsp" })[1]:stop()
+    stays_gone(owl_buf, "stopped")
+  end)
+  vim.api.nvim_buf_delete(owl_buf, { force = true })
+  vim.fn.delete(owl_dir, "rf")
+  assert(ok, err)
+end)
+
+check("a .OWL or .Rdf buffer gets the client in any letter case, with nofileignorecase", function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local was = vim.o.fileignorecase
+  vim.o.fileignorecase = false
+  local ok, err = pcall(function()
+    for _, name in ipairs({ "ONTO.OWL", "Data.Rdf" }) do
+      local file = dir .. "/" .. name
+      vim.fn.writefile({
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
+        '  <rdf:Description rdf:about="http://example.org/a"/>',
+        "</rdf:RDF>",
+      }, file)
+      -- Neovim's own detection gives these names no file type then; the
+      -- client starts by name.
+      local b, c = open(file)
+      wait_diagnostics(b)
+      c:stop()
+      local gone = vim.wait(TIMEOUT, function()
+        return c:is_stopped()
+      end, 20)
+      assert(gone, name .. ": client not stopped")
+      vim.api.nvim_buf_delete(b, { force = true })
+    end
+  end)
+  vim.o.fileignorecase = was
   vim.fn.delete(dir, "rf")
   assert(ok, err)
 end)

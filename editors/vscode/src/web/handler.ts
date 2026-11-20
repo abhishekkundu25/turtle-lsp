@@ -14,8 +14,12 @@
 // - Server requests (refreshes, progress, registrations, configuration) are
 //   answered by the host at once with null, as in the RDF Editor, and
 //   forwarded to the client under fresh ids. The client's answers are
-//   dropped, except to `workspace/configuration`: that answer reaches the
-//   server as a `didChangeConfiguration` holding it.
+//   dropped, except to `workspace/configuration`, which reaches the server
+//   as a `didChangeConfiguration` holding it, and to a registration. What
+//   the server asks while it starts waits for the `initialize` answer (the
+//   client ignores a registration before it). A restarted server registers
+//   again: a registration the client accepted since its `initialize` is not
+//   sent again, one it rejected or has not answered is.
 // - `exit` stops the server's timers; a new `initialize` starts a fresh
 //   server with the disk files (the client opens its documents again).
 // - A crash restarts the server through the host, which replays what it was
@@ -99,9 +103,16 @@ export function createHandler(engine: Engine | Promise<Engine>, post: (message: 
   const layers = new Layers()
   let uris: UriMap = uriMap([])
   let server: EmbeddedServer | null = null
-  // Server requests forwarded to the client: our id -> method.
-  const forwarded = new Map<string, string>()
+  // Server requests forwarded to the client: our id -> method, and for a
+  // registration, its ids and the set they join once the client accepts it.
+  const forwarded = new Map<string, { method: string; registrations?: { ids: string[]; into: Set<string> } }>()
   let forwards = 0
+  // While `initialize` runs, the server requests to forward after its answer.
+  let held: Json[] | null = null
+  // The registration ids the client accepted since its `initialize`. One it
+  // rejected or has not answered is sent again when the server asks again
+  // (after a restart).
+  let registered = new Set<string>()
   const queue: Item[] = []
   let pumping: Promise<void> | null = null
 
@@ -113,9 +124,17 @@ export function createHandler(engine: Engine | Promise<Engine>, post: (message: 
     diagnostics: (uri, diagnostics) => notifyClient("textDocument/publishDiagnostics", { uri, diagnostics }),
     notification: notifyClient,
     request(method, params) {
+      let registrations: { ids: string[]; into: Set<string> } | undefined
+      if (method === "client/registerCapability") {
+        params = newRegistrations(params)
+        if (params === null) return null
+        registrations = { ids: registrationIds(params), into: registered }
+      }
       const id = `turtle-web-${++forwards}`
-      forwarded.set(id, method)
-      post({ jsonrpc: "2.0", id, method, params: uris.toClient(params) })
+      forwarded.set(id, { method, registrations })
+      const message = { jsonrpc: "2.0", id, method, params: uris.toClient(params) }
+      if (held) held.push(message)
+      else post(message)
       return null
     },
     crash(e) {
@@ -128,6 +147,18 @@ export function createHandler(engine: Engine | Promise<Engine>, post: (message: 
             : `The Turtle language server crashed and was restarted with your files: ${e.message}`
       post({ jsonrpc: "2.0", method: "window/showMessage", params: { type: e.state === "restarted" ? MessageType.Warning : MessageType.Error, message } })
     },
+  }
+
+  // A registration's params without the registrations the client accepted; null when none is left.
+  function newRegistrations(params: unknown): unknown {
+    if (!isObject(params) || !Array.isArray(params.registrations)) return params
+    const fresh = params.registrations.filter((r) => !(isObject(r) && typeof r.id === "string" && registered.has(r.id)))
+    return fresh.length ? { ...params, registrations: fresh } : null
+  }
+
+  function registrationIds(params: unknown): string[] {
+    if (!isObject(params) || !Array.isArray(params.registrations)) return []
+    return params.registrations.flatMap((r) => (isObject(r) && typeof r.id === "string" ? [r.id] : []))
   }
 
   // Layer output to the server (nothing while there is none: `initialize` replays).
@@ -179,6 +210,8 @@ export function createHandler(engine: Engine | Promise<Engine>, post: (message: 
     end()
     uris = uriMap(foldersOf(p))
     layers.forgetEditor()
+    registered = new Set()
+    held = []
     try {
       const fresh = new EmbeddedServer(e, events)
       const result = await fresh.initialize(uris.toServer(withoutWatchers(p)))
@@ -187,6 +220,10 @@ export function createHandler(engine: Engine | Promise<Engine>, post: (message: 
       respond(id, { result: uris.toClient(result ?? null) })
     } catch (err) {
       fail(id, ErrorCodes.InternalError, `The Turtle language server did not start: ${(err as Error)?.message ?? err}`)
+    } finally {
+      const after = held
+      held = null
+      for (const message of after) post(message)
     }
   }
 
@@ -278,7 +315,10 @@ export function createHandler(engine: Engine | Promise<Engine>, post: (message: 
         if (!isId(id)) return
         const asked = forwarded.get(String(id))
         forwarded.delete(String(id))
-        if (asked === "workspace/configuration" && Array.isArray(data.result) && isObject(data.result[0])) {
+        if (asked?.registrations && !("error" in data)) {
+          for (const r of asked.registrations.ids) asked.registrations.into.add(r)
+        }
+        if (asked?.method === "workspace/configuration" && Array.isArray(data.result) && isObject(data.result[0])) {
           enqueue({ kind: "notify", method: "workspace/didChangeConfiguration", params: { settings: { turtle: data.result[0] } } })
         }
       } else if (method === "$/cancelRequest") {

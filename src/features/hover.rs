@@ -5,7 +5,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
 use crate::reasoning::{HOVER_WAIT, Inferred, Names, NoProof, Origin, Shared, Shown, Types};
 use crate::syntax::names::shorten;
-use crate::syntax::{Form, Iri, PrefixMap};
+use crate::syntax::{Form, Iri, PrefixMap, Syntax};
 use crate::vocab::{TermKind, VOCABS};
 use crate::workspace::uri_to_path;
 use lsp_types::*;
@@ -64,8 +64,14 @@ fn hover_with(
     }
 
     let r = a.ref_at(offset)?;
+    // The prefix of a QName in RDF/XML is an XML namespace's, not a
+    // declaration this document's prefixes hold.
+    let prefixes_written = match a.parsed.syntax {
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
+        Syntax::RdfXml => false,
+    };
     let text_label = match r.form {
-        Form::PName { prefix_len } => {
+        Form::PName { prefix_len } if prefixes_written => {
             // Cursor on the prefix part: describe the prefix.
             if offset <= r.span.start + prefix_len {
                 let name = a
@@ -91,7 +97,8 @@ fn hover_with(
             None
         }
         Form::A => Some("a (rdf:type)".to_string()),
-        Form::Iri => None,
+        // The text at an anchor is not the name: the label is the IRI's.
+        Form::Iri | Form::PName { .. } | Form::Anchor => None,
     };
     let prefixes = Scope::at(a, r.span.start);
     let label = text_label.unwrap_or_else(|| short(&r.iri, &prefixes));
@@ -576,5 +583,33 @@ mod tests {
             None,
         );
         assert!(defs.is_empty(), "{defs:?}");
+    }
+
+    /// Hover works in RDF/XML at an anchor, and the prefix of a QName there
+    /// is part of its IRI: the hover is the term's, never a Turtle prefix's.
+    #[test]
+    fn hover_in_rdfxml_is_the_term_s() {
+        use crate::features::rdfxml_fixture as fx;
+        use crate::knowledge::Source;
+        let uri = "file:///w/onto.owl";
+        let class = "http://example.org/A";
+        for a in [fx::read(uri), fx::written(uri, fx::TURTLE)] {
+            let a = Arc::new(a);
+            let mut k = Knowledge::default();
+            k.set(uri, Source::Open, a.clone());
+            for r in a.refs_of(class) {
+                if a.ref_at(r.span.start).is_none_or(|at| at.iri != class) {
+                    continue;
+                }
+                for offset in [r.span.start, r.span.start + 1] {
+                    let at = a.position(Encoding::Utf8, offset);
+                    let h = hover(&a, &k, Encoding::Utf8, at);
+                    let HoverContents::Markup(m) = h.unwrap().contents else {
+                        panic!("markup")
+                    };
+                    assert!(m.value.contains("A thing"), "{offset}: {}", m.value);
+                }
+            }
+        }
     }
 }
