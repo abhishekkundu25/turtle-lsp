@@ -1215,14 +1215,15 @@ mod tests {
     /// Every IRI in a workspace RDF/XML document's triples refuses a rename
     /// of it, whatever production gave it: `rdf:li`, `rdf:ID` against
     /// `xml:base`, a typed node element, the collection, resource and
-    /// literal parse types, reification, datatypes, and the vocabulary
+    /// literal parse types, reification, a triple term, datatypes, and the vocabulary
     /// these imply (`rdf:type`, `rdf:first`, `xsd:string`).
     #[test]
     fn every_iri_an_rdfxml_document_says_refuses_a_rename() {
         let (_, owl_uri) = in_w("onto.owl");
-        let owl_text = "<!DOCTYPE r [<!ENTITY m \"<e:in rdf:resource='urn:ex:inner'/>\">]>\n\
+        let owl_text = "<!DOCTYPE r [<!ENTITY m \"<e:in rdf:resource='urn:ex:inner'/>\">\
+            <!ENTITY q \"<rdf:Description rdf:about='urn:ex:qs'><e:qp rdf:resource='urn:ex:qo'/></rdf:Description>\">]>\n\
             <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:e=\"urn:ex:\"\n\
-            \x20   xml:base=\"http://example.org/base/\">\n\
+            \x20   xml:base=\"http://example.org/base/\" rdf:version=\"1.2\">\n\
             <e:T rdf:about=\"s\" e:attr=\"v\">\n\
             \x20 <e:p rdf:ID=\"st\" rdf:resource=\"o\"/>\n\
             \x20 <e:list rdf:parseType=\"Collection\"><e:Item rdf:about=\"i1\"/></e:list>\n\
@@ -1230,6 +1231,7 @@ mod tests {
             \x20 <e:xml rdf:parseType=\"Literal\"><b>y</b></e:xml>\n\
             \x20 <e:n rdf:datatype=\"http://www.w3.org/2001/XMLSchema#integer\">1</e:n>\n\
             \x20 &m;\n\
+            \x20 <e:quotes rdf:parseType=\"Triple\">&q;</e:quotes>\n\
             </e:T>\n\
             <rdf:Seq rdf:about=\"seq\"><rdf:li>a</rdf:li></rdf:Seq>\n\
             </rdf:RDF>\n";
@@ -1260,8 +1262,14 @@ mod tests {
             "http://www.w3.org/2001/XMLSchema#string",
             "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString",
             "urn:ex:inner",
+            // Only in a triple term.
+            "urn:ex:qo",
         ] {
             assert!(iris.iter().any(|i| *i == want), "{want}: {iris:?}");
+        }
+        // Read from an entity, after the reference that stands for it.
+        for gone in ["urn:ex:inner", "urn:ex:qo"] {
+            assert!(owl.refs_of(gone).next().is_none(), "{gone}");
         }
         let mut k = Knowledge::default();
         k.set(&owl_uri, Source::Disk, owl);
