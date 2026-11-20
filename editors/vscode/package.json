@@ -338,6 +338,12 @@
           "markdownDescription": "After an edit, parse only the statements around it instead of the whole file. The results are the same either way; turn it off if problems in a file you edit differ from those after reopening it, and please report the file.",
           "scope": "window"
         },
+        "turtle.rename.rdfXml": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Rename an IRI in the RDF/XML files (`.owl`, `.rdf`) that use it too, and let a rename start in one. Each use keeps its form. When one cannot be rewritten exactly (a use read from an entity, a character reference, vocabulary the syntax implies, a name whose new namespace has no prefix there), the whole rename is refused, with the file, line and reason. Off, a rename that would edit an RDF/XML file is refused. VS Code shows the RDF/XML edits in the refactor preview, to confirm them first.",
+          "scope": "window"
+        },
         "turtle.query.timeoutSeconds": {
           "type": "number",
           "default": 30,

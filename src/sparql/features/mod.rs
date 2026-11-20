@@ -115,7 +115,9 @@ pub fn prepare_rename(
 /// `textDocument/rename`. An `Err` is refused with its message. `prefix_file`
 /// as for [`definition`]; `others` is empty unless the cursor is on a term.
 /// The RDF documents to rename a term in come from `k` (as for the Turtle
-/// rename in `features::navigation`).
+/// rename in `features::navigation`), and so does whether the RDF/XML ones
+/// are edited (`rdfxml`).
+#[allow(clippy::too_many_arguments)]
 pub fn rename(
     q: &SparqlAnalysis,
     k: &Knowledge,
@@ -124,8 +126,9 @@ pub fn rename(
     new_name: &str,
     prefix_file: Option<Arc<Analysis>>,
     others: &[Arc<SparqlAnalysis>],
+    rdfxml: crate::features::navigation::RdfXml,
 ) -> Result<WorkspaceEdit, String> {
-    rename::rename(q, k, enc, pos, new_name, prefix_file, others)
+    rename::rename(q, k, enc, pos, new_name, prefix_file, others, rdfxml)
 }
 
 /// `textDocument/documentSymbol`.

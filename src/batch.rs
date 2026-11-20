@@ -48,7 +48,7 @@ const RENAME_CODES: [&str; 2] = ["unknown-term", lint::CODE];
 /// Diagnostic codes whose fixes rewrite a literal's value, so are unsafe too.
 const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 
-/// Why an RDF/XML file is not formatted: nothing writes RDF/XML.
+/// Why an RDF/XML file is not formatted: only a rename writes RDF/XML.
 const RDF_XML_NOT_FORMATTED: &str = "RDF/XML";
 
 /// One input file.
@@ -445,8 +445,8 @@ fn fix_all_in(
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
         let lines = LineIndexes::new(&files);
-        // Nothing writes RDF/XML: such a file is neither fixed nor edited by
-        // another file's fix.
+        // No fix writes RDF/XML (only an editor's rename does): such a file is
+        // neither fixed nor edited by another file's fix.
         let read_only: Vec<bool> = files.iter().map(|f| input.is_rdf_xml(&f.uri)).collect();
         for (f, _) in files
             .iter()
@@ -797,7 +797,7 @@ impl<'a> Input<'a> {
         }
         let a = self.ws.analysis(uri)?;
         if a.parsed.syntax == Syntax::RdfXml {
-            // Nothing writes RDF/XML, whatever it holds.
+            // No formatter writes RDF/XML, whatever it holds.
             return Some(Formatted {
                 guarantee: "same graph",
                 outcome: FormatOutcome::Refused(RDF_XML_NOT_FORMATTED.to_string()),

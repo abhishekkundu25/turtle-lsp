@@ -13,11 +13,19 @@ use super::{Doc, Session};
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::navigation;
 use crate::sparql::features as sparql_features;
-use crate::workspace::{find_prefix_file, path_to_uri, uri_to_path};
-use lsp_types::{DocumentHighlight, Location, Position, PrepareRenameResponse, WorkspaceEdit};
+use crate::workspace::{find_prefix_file, normalize_uri, path_to_uri, uri_to_path};
+use lsp_types::{
+    AnnotatedTextEdit, ChangeAnnotation, ChangeAnnotationIdentifier, DocumentChanges,
+    DocumentHighlight, Location, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
+    PrepareRenameResponse, TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
+};
 use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// The change annotation of a rename's edits in RDF/XML documents.
+pub(crate) const RDFXML_ANNOTATION: &str = "turtle-rdfxml";
 
 impl Session<'_> {
     /// `textDocument/definition`; `None` when there is no document at `uri`.
@@ -114,8 +122,9 @@ impl Session<'_> {
         uri: &str,
         pos: Position,
     ) -> Result<Option<PrepareRenameResponse>, String> {
+        let rdfxml = self.rdfxml();
         match self.doc(uri) {
-            Some(Doc::Rdf(a)) => navigation::prepare_rename(&a, self.enc, pos),
+            Some(Doc::Rdf(a)) => navigation::prepare_rename(&a, self.enc, pos, rdfxml),
             Some(Doc::Sparql(q)) => Ok(sparql_features::prepare_rename(&q, self.enc, pos)),
             None => Ok(None),
         }
@@ -134,15 +143,95 @@ impl Session<'_> {
         let Some((u, doc)) = self.find(uri) else {
             return Ok(None);
         };
-        match doc {
-            Doc::Rdf(a) => self.rdf_rename(&u, &a, pos, new_name).map(Some),
+        let rdfxml = self.rdfxml();
+        let edit = match doc {
+            Doc::Rdf(a) => self.rdf_rename(&u, &a, pos, new_name)?,
             Doc::Sparql(q) => {
                 let prefix_file = self.prefix_file_for(&u);
                 let others = self.sparql_others(&q, pos);
                 let k = self.ws.knowledge();
-                sparql_features::rename(&q, k, self.enc, pos, new_name, prefix_file, &others)
-                    .map(Some)
+                let enc = self.enc;
+                sparql_features::rename(&q, k, enc, pos, new_name, prefix_file, &others, rdfxml)?
             }
+        };
+        Ok(Some(self.annotated(edit)))
+    }
+
+    /// Whether a rename edits RDF/XML documents (`rename.rdfXml`).
+    fn rdfxml(&self) -> navigation::RdfXml {
+        if self.settings.rename_rdfxml {
+            navigation::RdfXml::Edit
+        } else {
+            navigation::RdfXml::Refuse
+        }
+    }
+
+    /// `edit` with each edit of an RDF/XML document marked by a change
+    /// annotation that asks the user to confirm it (LSP 3.16), for a client
+    /// that supports them ([`Session::with_change_annotations`]); a client
+    /// that does not, and an edit of no RDF/XML document, get it as it is.
+    fn annotated(&mut self, edit: WorkspaceEdit) -> WorkspaceEdit {
+        if !self.change_annotations {
+            return edit;
+        }
+        let Some(changes) = edit.changes.as_ref() else {
+            return edit;
+        };
+        // Each document: whether it is RDF/XML, and the version the client
+        // gave it when it is open (a closed file has none).
+        let docs: Vec<(bool, Option<i32>)> = {
+            let mut uris: Vec<&Uri> = changes.keys().collect();
+            uris.sort_by(|x, y| x.as_str().cmp(y.as_str()));
+            uris.iter()
+                .map(|u| {
+                    let rdfxml = self.doc(u.as_str()).is_some_and(|d| {
+                        matches!(d, Doc::Rdf(a) if a.parsed.syntax == crate::syntax::Syntax::RdfXml)
+                    });
+                    (rdfxml, self.ws.version(&normalize_uri(u.as_str())))
+                })
+                .collect()
+        };
+        if !docs.iter().any(|(rdfxml, _)| *rdfxml) {
+            return edit;
+        }
+        let mut changes: Vec<(Uri, Vec<TextEdit>)> =
+            edit.changes.unwrap_or_default().into_iter().collect();
+        changes.sort_by(|x, y| x.0.as_str().cmp(y.0.as_str()));
+        let id: ChangeAnnotationIdentifier = RDFXML_ANNOTATION.to_string();
+        let documents = changes
+            .into_iter()
+            .zip(docs)
+            .map(|((uri, edits), (rdfxml, version))| TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier { uri, version },
+                edits: edits
+                    .into_iter()
+                    .map(|text_edit| {
+                        if rdfxml {
+                            OneOf::Right(AnnotatedTextEdit {
+                                text_edit,
+                                annotation_id: id.clone(),
+                            })
+                        } else {
+                            OneOf::Left(text_edit)
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        WorkspaceEdit {
+            changes: None,
+            document_changes: Some(DocumentChanges::Edits(documents)),
+            change_annotations: Some(HashMap::from([(
+                id,
+                ChangeAnnotation {
+                    label: "Rename in RDF/XML".into(),
+                    needs_confirmation: Some(true),
+                    description: Some(
+                        "Edits RDF/XML documents (.owl, .rdf): check them before they are applied"
+                            .into(),
+                    ),
+                },
+            )])),
         }
     }
 
@@ -175,7 +264,9 @@ impl Session<'_> {
             file,
             file_of: &mut file_of,
         };
-        let mut edit = navigation::rename(a, self.ws.knowledge(), enc, pos, new_name, scope)?;
+        let rdfxml = self.rdfxml();
+        let k = self.ws.knowledge();
+        let mut edit = navigation::rename(a, k, enc, pos, new_name, scope, rdfxml)?;
         if let Some((old, new_iri)) = term? {
             let docs = self.ws.sparql_documents();
             sparql_features::rdf_term_rename(&old, &new_iri, &docs, enc, &mut edit)?;
@@ -206,7 +297,7 @@ impl Session<'_> {
         if let Some(a) = self.ws.analysis(&file_uri) {
             return Some(a);
         }
-        let text = std::fs::read_to_string(&file).ok()?;
+        let text = crate::workspace::read_text(&file)?;
         Some(Arc::new(Analysis::new(
             file_uri,
             &text,
@@ -231,7 +322,6 @@ mod tests {
     use super::*;
     use crate::settings::Settings;
     use crate::workspace::Workspace;
-    use lsp_types::TextEdit;
     use std::path::Path;
 
     const TTL: &str = "@prefix ex: <http://example.org/> .\nex:a ex:p ex:o .\n";
@@ -389,6 +479,176 @@ mod tests {
             apply(QUERY, edits_of(&edit, &rq)),
             QUERY.replace("ex:p", "ex:q")
         );
+    }
+
+    const OWL: &str = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n\
+        <rdf:Description rdf:about=\"urn:ex:s\"><ex:p rdf:resource=\"http://example.org/o\"/></rdf:Description>\n\
+        </rdf:RDF>\n";
+
+    /// A rename that edits an RDF/XML document marks those edits with a
+    /// change annotation that asks the user to confirm them, for a client
+    /// that takes change annotations: the whole edit is then document
+    /// changes, the Turtle and SPARQL ones plain. A client without them,
+    /// and a rename that edits no RDF/XML document, get plain changes.
+    #[test]
+    fn a_rename_that_edits_rdfxml_asks_to_confirm_it() {
+        let dir = Dir::new("rename-rdfxml");
+        let ttl = dir.write("data.ttl", TTL);
+        // A name whose URI escapes characters is found again all the same.
+        let owl = dir.write("my onto é.owl", OWL);
+        assert!(owl.contains("%20"), "{owl}");
+        let rq = dir.write("q.rq", QUERY);
+        // A closed file has no version.
+        let closed = dir.write("closed.owl", OWL);
+        let mut ws = workspace(&dir);
+        ws.index_paths(vec![dir.0.join("closed.owl")]);
+        ws.open_doc(ttl.clone(), TTL.into(), 3);
+        ws.open_doc(owl.clone(), OWL.into(), 4);
+        ws.open_doc(rq.clone(), QUERY.into(), 5);
+        let versions = HashMap::from([
+            (ttl.as_str(), Some(3)),
+            (owl.as_str(), Some(4)),
+            (rq.as_str(), Some(5)),
+            (closed.as_str(), None),
+        ]);
+        let settings = Settings::default();
+        let want_owl = OWL.replace("<ex:p ", "<ex:q ");
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let edit = s
+            .rename(&ttl, at(TTL, "ex:p", 3, false), "ex:q")
+            .unwrap()
+            .unwrap();
+        assert!(edit.document_changes.is_none() && edit.change_annotations.is_none());
+        let mut all = [ttl.as_str(), owl.as_str(), rq.as_str(), closed.as_str()];
+        all.sort();
+        assert_eq!(changed(&edit), all);
+        assert_eq!(apply(OWL, edits_of(&edit, &owl)), want_owl);
+
+        for from in [ttl.as_str(), rq.as_str(), owl.as_str()] {
+            let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false)
+                .with_change_annotations(true);
+            let text = match from {
+                f if f == ttl => TTL,
+                f if f == rq => QUERY,
+                _ => OWL,
+            };
+            let edit = s
+                .rename(from, at(text, "ex:p", 3, false), "ex:q")
+                .unwrap()
+                .unwrap();
+            assert!(edit.changes.is_none(), "{from}");
+            let notes = edit.change_annotations.as_ref().unwrap();
+            let note = &notes[RDFXML_ANNOTATION];
+            assert_eq!(note.needs_confirmation, Some(true));
+            assert_eq!(note.label, "Rename in RDF/XML");
+            let Some(DocumentChanges::Edits(docs)) = &edit.document_changes else {
+                panic!("{edit:?}")
+            };
+            let mut uris: Vec<&str> = docs.iter().map(|d| d.text_document.uri.as_str()).collect();
+            uris.sort();
+            assert_eq!(uris, all, "{from}");
+            for d in docs {
+                let uri = d.text_document.uri.as_str();
+                let rdfxml = uri == owl || uri == closed;
+                assert_eq!(d.text_document.version, versions[uri], "{uri}");
+                let mut plain = Vec::new();
+                for e in &d.edits {
+                    match e {
+                        OneOf::Right(a) => {
+                            assert!(rdfxml, "{e:?}");
+                            assert_eq!(a.annotation_id, RDFXML_ANNOTATION);
+                            plain.push(a.text_edit.clone());
+                        }
+                        OneOf::Left(t) => {
+                            assert!(!rdfxml, "{e:?}");
+                            plain.push(t.clone());
+                        }
+                    }
+                }
+                if rdfxml {
+                    assert_eq!(apply(OWL, &plain), want_owl);
+                }
+            }
+        }
+        // No RDF/XML edit: plain changes.
+        let mut s =
+            Session::new(&mut ws, Encoding::Utf16, &settings, false).with_change_annotations(true);
+        let edit = s
+            .rename(&ttl, at(TTL, "ex:a", 3, false), "ex:b")
+            .unwrap()
+            .unwrap();
+        assert!(edit.document_changes.is_none() && edit.change_annotations.is_none());
+        assert_eq!(changed(&edit), [ttl.as_str()]);
+    }
+
+    /// A closed file that starts with a byte order mark is read as the
+    /// client reads it, without the mark: a rename's edits land at the
+    /// columns the client sees, in RDF/XML and in Turtle, whose parser
+    /// would not read the mark at all.
+    #[test]
+    fn a_closed_file_with_a_byte_order_mark_is_edited_where_the_client_sees_it() {
+        let dir = Dir::new("rename-bom");
+        let rdf = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\"><rdf:Description rdf:about=\"http://example.org/w1\"><ex:partOf rdf:resource=\"http://example.org/w2\"/></rdf:Description></rdf:RDF>\n";
+        let ttl = "@prefix ex: <http://example.org/> . ex:w1 ex:partOf ex:w2 .\n";
+        let w = dir.write("w.rdf", &format!("\u{feff}{rdf}"));
+        let b = dir.write("b.ttl", &format!("\u{feff}{ttl}"));
+        let a_text = "@prefix ex: <http://example.org/> .\nex:w9 ex:partOf ex:w1 .\n";
+        let a = dir.write("a.ttl", a_text);
+        let mut ws = workspace(&dir);
+        ws.index_paths(vec![dir.0.join("w.rdf"), dir.0.join("b.ttl")]);
+        ws.open_doc(a.clone(), a_text.into(), 1);
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let edit = s
+            .rename(&a, at(a_text, "ex:w1", 3, true), "ex:w7")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            apply(rdf, edits_of(&edit, &w)),
+            rdf.replace("example.org/w1", "example.org/w7")
+        );
+        assert_eq!(
+            apply(ttl, edits_of(&edit, &b)),
+            ttl.replace("ex:w1", "ex:w7")
+        );
+    }
+
+    /// With `rename.rdfXml` off, a rename that would edit an RDF/XML
+    /// document is refused, from any document, and none starts in one.
+    #[test]
+    fn with_rename_rdfxml_off_rdfxml_is_not_edited() {
+        let dir = Dir::new("rename-rdfxml-off");
+        let ttl = dir.write("data.ttl", TTL);
+        let owl = dir.write("onto.owl", OWL);
+        let rq = dir.write("q.rq", QUERY);
+        let mut ws = workspace(&dir);
+        ws.open_doc(ttl.clone(), TTL.into(), 1);
+        ws.open_doc(owl.clone(), OWL.into(), 1);
+        ws.open_doc(rq.clone(), QUERY.into(), 1);
+        let (on, off) = (
+            Settings::default(),
+            Settings::from_layers([(
+                crate::settings::Layer::Client,
+                &serde_json::json!({"rename": {"rdfXml": false}}),
+            )]),
+        );
+        assert!(on.rename_rdfxml && !off.rename_rdfxml);
+        let shown = crate::features::navigation::shown(&owl);
+        for (from, text) in [(&ttl, TTL), (&rq, QUERY), (&owl, OWL)] {
+            let mut s = Session::new(&mut ws, Encoding::Utf16, &off, false);
+            let err = s
+                .rename(from, at(text, "ex:p", 3, false), "ex:q")
+                .unwrap_err();
+            assert_eq!(
+                err,
+                format!("can't rename in {shown}: an RDF/XML document is not edited")
+            );
+        }
+        let pos = at(OWL, "ex:p", 3, false);
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &off, false);
+        assert_eq!(s.prepare_rename(&owl, pos), Ok(None));
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &on, false);
+        assert!(s.prepare_rename(&owl, pos).unwrap().is_some());
     }
 
     #[test]

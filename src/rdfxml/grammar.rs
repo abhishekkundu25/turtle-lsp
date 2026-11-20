@@ -108,13 +108,16 @@
 //!   entity reference has its span, and the first reference stands for
 //!   them all, so references never overlap; the others are only in the
 //!   triples, which is where a rename looks for the IRIs an RDF/XML
-//!   document uses;
+//!   document uses. The name in an element's end tag repeats its start
+//!   tag's reference (IRI, role and form; no [`PrefixUse`]), unless the
+//!   element is empty, its end is implied by an error, or its name comes
+//!   from an entity;
 //! - the comments. No [`PrefixDecl`](crate::syntax::PrefixDecl): XML namespaces are scoped, and a
 //!   redeclared prefix is no mistake there;
 //! - blank nodes numbered in the order they first appear, so two parses of
 //!   one text are equal.
 
-use super::xml::{self, Attr, End, Event, Name, Ns, Refs, Scanner, Tag, Value};
+use super::xml::{self, Attr, End, Event, Name, Ns, Refs, Scanner, Tag};
 use crate::syntax::{
     BlankId, Direction, Form, Iri, Node, Parsed, PrefixUse, RDF, Ref, Role, Severity, Span,
     Statement, Syntax, SyntaxError, Triple, XSD, has_scheme,
@@ -135,23 +138,163 @@ const MIN_IRI_BYTES: usize = 1 << 20;
 /// Parse an RDF/XML document. `base` is the document's URL, against which
 /// relative IRIs resolve until an `xml:base` replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
-    let mut g = Grammar::new(text, base);
+    read(text, base, None).0
+}
+
+/// [`parse`], with the [`Use`]s of the IRIs `want` asks for.
+pub(super) fn uses(text: &str, base: Option<&str>, want: Want) -> (Parsed, Vec<Use>) {
+    let recorder = Recorder {
+        want,
+        uses: Vec::new(),
+        scopes: Vec::new(),
+        ends: Vec::new(),
+        element: None,
+    };
+    read(text, base, Some(recorder))
+}
+
+fn read(text: &str, base: Option<&str>, rec: Option<Recorder>) -> (Parsed, Vec<Use>) {
+    let mut g = Grammar::new(text, base, rec);
     let prolog = xml::Prolog::read(text);
     let mut scanner = Scanner::new(text, &prolog);
     loop {
         match scanner.next() {
             Event::Eof => break,
-            Event::Start(tag) => g.start(&tag),
-            Event::End(end) => g.end(end),
+            Event::Start(tag) => {
+                g.open_scope(&tag);
+                g.start(&tag);
+            }
+            Event::End(end) => {
+                g.end(end);
+                if let Some(r) = &mut g.rec {
+                    r.scopes.pop();
+                }
+            }
             Event::Text { span, text } => g.text(span, &text),
             Event::Pi(_, text) => g.pi(text),
         }
     }
     let (errors, comments) = scanner.finish();
-    g.finish(errors, comments)
+    let uses = g.rec.as_mut().map(|r| std::mem::take(&mut r.uses));
+    (g.finish(errors, comments), uses.unwrap_or_default())
 }
 
-type Base = Option<Rc<oxiri::Iri<String>>>;
+pub(super) type Base = Option<Rc<oxiri::Iri<String>>>;
+
+/// Which uses [`uses`] records.
+#[derive(Clone, Copy)]
+pub(super) enum Want {
+    /// Those of this IRI.
+    Iri(Iri),
+    /// Those whose span holds this offset, and the `xmlns` declaration whose
+    /// name does.
+    At(u32),
+}
+
+/// A place where the text names an IRI, as the grammar reads it: what a
+/// rename edits there, or why it cannot.
+pub(super) struct Use {
+    pub(super) iri: Iri,
+    /// The value (inside its quotes) or the name.
+    pub(super) span: Span,
+    pub(super) kind: UseKind,
+    /// The namespaces in scope there, by prefix (`""` for the default
+    /// namespace), sorted by prefix.
+    pub(super) scope: Vec<(String, Rc<str>)>,
+}
+
+pub(super) enum UseKind {
+    /// An attribute value read as an IRI: `rdf:about`, `rdf:resource`,
+    /// `rdf:datatype`, `rdf:type`, `rdf:annotation`.
+    Value {
+        base: Base,
+        /// The value, its references expanded.
+        text: String,
+        refs: Refs,
+        lead: Option<(Span, u32)>,
+        /// Read from an entity's replacement text: `span` is the reference's.
+        entity: bool,
+    },
+    /// `rdf:ID`.
+    Id {
+        base: Base,
+        refs: Refs,
+        entity: bool,
+    },
+    /// The name of a typed node element or a property element.
+    Element {
+        /// The namespace of the name.
+        ns: Rc<str>,
+        prefix_len: Option<u32>,
+        entity: bool,
+        /// Its end, once read.
+        end: Option<End>,
+    },
+    /// The name of a property attribute.
+    Attr {
+        ns: Rc<str>,
+        prefix_len: Option<u32>,
+        entity: bool,
+    },
+    /// `rdf:li`, which stands for `rdf:_n`.
+    Li,
+    /// The name of an `rdf:type` attribute.
+    TypeAttr,
+    /// The name of an `xmlns` or `xmlns:p` attribute (only for
+    /// [`Want::At`]).
+    Namespace,
+}
+
+/// What [`uses`] keeps while it reads.
+struct Recorder {
+    want: Want,
+    uses: Vec<Use>,
+    /// The namespace declarations of each open element.
+    scopes: Vec<Vec<(String, Rc<str>)>>,
+    /// The [`UseKind::Element`] of each state on the grammar's stack.
+    ends: Vec<Option<usize>>,
+    /// The element use the start tag being read records.
+    element: Option<usize>,
+}
+
+impl Recorder {
+    fn wants(&self, iri: Iri, span: Span) -> bool {
+        match self.want {
+            Want::Iri(i) => i == iri,
+            Want::At(offset) => span.contains(offset),
+        }
+    }
+
+    /// The namespaces in scope, by prefix; an empty one unbinds its prefix.
+    fn scope(&self) -> Vec<(String, Rc<str>)> {
+        let mut bound: FxHashMap<&str, &Rc<str>> = FxHashMap::default();
+        for (prefix, ns) in self.scopes.iter().flatten() {
+            bound.insert(prefix.as_str(), ns);
+        }
+        let mut out: Vec<(String, Rc<str>)> = bound
+            .into_iter()
+            .filter(|(_, ns)| !ns.is_empty())
+            .map(|(p, ns)| (p.to_string(), ns.clone()))
+            .collect();
+        out.sort();
+        out
+    }
+}
+
+/// How an IRI attribute value reads `raw`: resolved against `base`, or as
+/// it is when it has a scheme and no dot segment.
+pub(super) fn resolves(base: &Base, raw: &str) -> bool {
+    base.is_some() && (!has_scheme(raw) || raw.contains("/.") || raw.contains(":."))
+}
+
+/// The IRI an IRI attribute value `raw` names under `base`; `None` when it
+/// does not resolve.
+pub(super) fn read_iri(base: &Base, raw: &str) -> Option<String> {
+    match base {
+        Some(b) if resolves(base, raw) => resolve(b, raw).ok().map(|i| i.into_inner()),
+        _ => Some(raw.to_string()),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Version {
@@ -306,6 +449,11 @@ struct Grammar<'a> {
     in_triple: u32,
     /// Interned vocabulary.
     v: Vocab,
+    /// The uses [`uses`] records; `None` for [`parse`].
+    rec: Option<Recorder>,
+    /// For each state on the stack, the reference of its element's name,
+    /// which its end tag's name repeats.
+    names: Vec<Option<usize>>,
 }
 
 struct Vocab {
@@ -366,7 +514,7 @@ const RESERVED_ELEMENTS: [&str; 11] = [
 ];
 
 impl<'a> Grammar<'a> {
-    fn new(text: &'a str, document_base: Option<&str>) -> Grammar<'a> {
+    fn new(text: &'a str, document_base: Option<&str>, rec: Option<Recorder>) -> Grammar<'a> {
         let base = document_base
             .and_then(|b| oxiri::Iri::parse(b.to_string()).ok())
             .map(Rc::new);
@@ -400,6 +548,76 @@ impl<'a> Grammar<'a> {
             statement: 0,
             in_triple: 0,
             v,
+            rec,
+            names: Vec::new(),
+        }
+    }
+
+    /// Enter a start tag's namespace declarations, when recording.
+    fn open_scope(&mut self, tag: &Tag<'_>) {
+        let Some(r) = &mut self.rec else { return };
+        let mut decls = Vec::new();
+        for attr in &tag.attrs {
+            let raw = attr.name.raw;
+            let prefix = match raw.strip_prefix("xmlns") {
+                Some("") => "",
+                Some(p) if p.starts_with(':') => &p[1..],
+                _ => continue,
+            };
+            if let Want::At(offset) = r.want
+                && !attr.name.entity
+                && attr.name.span.contains(offset)
+            {
+                r.uses.push(Use {
+                    iri: self.v.none,
+                    span: attr.name.span,
+                    kind: UseKind::Namespace,
+                    scope: Vec::new(),
+                });
+            }
+            decls.push((prefix.to_string(), Rc::from(&*attr.value.text)));
+        }
+        r.scopes.push(decls);
+    }
+
+    /// Record a use of `iri` at `span`, when it is wanted; its index.
+    fn record(&mut self, iri: Iri, span: Span, kind: impl FnOnce() -> UseKind) -> Option<usize> {
+        let r = self.rec.as_mut()?;
+        if !r.wants(iri, span) {
+            return None;
+        }
+        let scope = r.scope();
+        r.uses.push(Use {
+            iri,
+            span,
+            kind: kind(),
+            scope,
+        });
+        Some(r.uses.len() - 1)
+    }
+
+    /// Record the use a name makes of `iri`: an element's or an attribute's.
+    fn record_name(&mut self, name: &Name<'_>, iri: Iri, element: bool) {
+        let Ns::Bound(ns) = &name.ns else { return };
+        let (ns, prefix_len, entity) = (ns.clone(), name.prefix_len, name.entity);
+        let i = self.record(iri, name.span, || {
+            if element {
+                UseKind::Element {
+                    ns,
+                    prefix_len,
+                    entity,
+                    end: None,
+                }
+            } else {
+                UseKind::Attr {
+                    ns,
+                    prefix_len,
+                    entity,
+                }
+            }
+        });
+        if element && let Some(r) = &mut self.rec {
+            r.element = i;
         }
     }
 
@@ -561,18 +779,17 @@ impl<'a> Grammar<'a> {
     /// An attribute value as an IRI, resolved against `base`, with its
     /// reference recorded. An IRI that does not resolve, or is not
     /// absolute, is reported and gives no triple.
-    fn iri_value(&mut self, base: &Base, v: &Value<'_>, role: Role) -> Iri {
+    fn iri_value(&mut self, base: &Base, attr: &Attr<'_>, role: Role) -> Iri {
+        let v = &attr.value;
         let raw: &str = &v.text;
         let iri = match base {
-            Some(b) if !has_scheme(raw) || raw.contains("/.") || raw.contains(":.") => {
-                match resolve(b, raw) {
-                    Ok(r) => self.intern(r.as_str(), v.span),
-                    Err(e) => {
-                        self.error(v.span, format!("not an IRI: {e}"));
-                        Some(self.intern_invalid(raw, v.span))
-                    }
+            Some(b) if resolves(base, raw) => match resolve(b, raw) {
+                Ok(r) => self.intern(r.as_str(), v.span),
+                Err(e) => {
+                    self.error(v.span, format!("not an IRI: {e}"));
+                    Some(self.intern_invalid(raw, v.span))
                 }
-            }
+            },
             _ => self
                 .intern(raw, v.span)
                 .inspect(|&iri| self.check_absolute(iri, v.span)),
@@ -586,6 +803,13 @@ impl<'a> Grammar<'a> {
             Form::Anchor
         };
         self.push_ref(v.span, iri, role, form);
+        self.record(iri, v.span, || UseKind::Value {
+            base: base.clone(),
+            text: v.text.to_string(),
+            refs: v.refs,
+            lead: v.lead,
+            entity: attr.name.entity,
+        });
         iri
     }
 
@@ -807,6 +1031,11 @@ impl<'a> Grammar<'a> {
             self.error(v.span, format!("rdf:ID {} is used twice", v.text));
         }
         self.push_ref(v.span, iri, Role::Subject, Form::Anchor);
+        self.record(iri, v.span, || UseKind::Id {
+            base: base.clone(),
+            refs: v.refs,
+            entity: attr.name.entity,
+        });
         iri
     }
 
@@ -814,12 +1043,14 @@ impl<'a> Grammar<'a> {
     fn property_attrs(&mut self, subject: &Node, a: &Attrs<'_, '_>, env: &Env) {
         for &(p, attr) in &a.props {
             self.name_ref(&attr.name, p, Role::Predicate);
+            self.record_name(&attr.name, p, false);
             let o = self.literal(&attr.value.text, env.lang, env.dir);
             self.emit(subject.clone(), p, o, attr.name.span, attr.value.span);
         }
         if let Some(attr) = a.type_ {
             self.name_ref(&attr.name, self.v.type_, Role::Predicate);
-            let o = self.iri_value(&env.base, &attr.value, Role::Object);
+            self.record(self.v.type_, attr.name.span, || UseKind::TypeAttr);
+            let o = self.iri_value(&env.base, attr, Role::Object);
             self.emit(
                 subject.clone(),
                 self.v.type_,
@@ -837,6 +1068,10 @@ impl<'a> Grammar<'a> {
         }
         let a = self.attrs(tag);
         let env = self.env_of(&a);
+        if let Some(r) = &mut self.rec {
+            r.element = None;
+        }
+        let refs_before = self.out.refs.len();
         match self.stack.last() {
             None if tag.name.is(RDF, "RDF") => {
                 let dir = self.own_dir(&a, &env);
@@ -866,6 +1101,17 @@ impl<'a> Grammar<'a> {
             }
             Some(State::Literal { .. }) => unreachable!("read by literal_start"),
         }
+        // One state was pushed: its element use, if recorded, and its
+        // name's reference, when the document writes the name.
+        if let Some(r) = &mut self.rec {
+            r.ends.push(r.element.take());
+        }
+        let name = (!tag.name.entity)
+            .then(|| {
+                (refs_before..self.out.refs.len()).find(|&i| self.out.refs[i].span == tag.name.span)
+            })
+            .flatten();
+        self.names.push(name);
     }
 
     fn node_elt(&mut self, tag: &Tag<'a>, a: &Attrs<'_, 'a>, env: Env, top: bool) {
@@ -900,7 +1146,7 @@ impl<'a> Grammar<'a> {
         let subject = if let Some(attr) = a.about {
             subject_span = attr.value.span;
             let refs = self.out.refs.len();
-            let iri = self.iri_value(&env.base, &attr.value, Role::Subject);
+            let iri = self.iri_value(&env.base, attr, Role::Subject);
             let own = !a.props.is_empty() || a.type_.is_some() || type_.is_some();
             if !top && !own && self.out.refs.len() > refs {
                 names = Some(refs);
@@ -937,6 +1183,7 @@ impl<'a> Grammar<'a> {
         self.property_attrs(&subject, a, &env);
         if let Some(t) = type_ {
             self.name_ref(name, t, Role::Object);
+            self.record_name(name, t, true);
             self.emit(
                 subject.clone(),
                 self.v.type_,
@@ -977,6 +1224,7 @@ impl<'a> Grammar<'a> {
             let li = format!("{RDF}_{li}");
             self.intern(&li, name.span).map(|iri| {
                 self.push_ref(name.span, iri, Role::Predicate, Form::Anchor);
+                self.record(iri, name.span, || UseKind::Li);
                 (iri, name.span)
             })
         } else if name.ns() == Some(RDF)
@@ -990,6 +1238,7 @@ impl<'a> Grammar<'a> {
         } else {
             self.name_iri(name).map(|iri| {
                 self.name_ref(name, iri, Role::Predicate);
+                self.record_name(name, iri, true);
                 (iri, name.span)
             })
         };
@@ -1005,7 +1254,7 @@ impl<'a> Grammar<'a> {
         // Its IRI is written, so it is a reference even where refused.
         let mut annotation = a.annotation.map(|attr| {
             (
-                self.iri_value(&env.base, &attr.value, Role::Subject),
+                self.iri_value(&env.base, attr, Role::Subject),
                 attr.value.span,
             )
         });
@@ -1072,7 +1321,7 @@ impl<'a> Grammar<'a> {
             ParseType::Default => {
                 let datatype = a
                     .datatype
-                    .map(|attr| self.iri_value(&env.base, &attr.value, Role::Datatype));
+                    .map(|attr| self.iri_value(&env.base, attr, Role::Datatype));
                 // emptyPropertyElt (RDF/XML 7.2.21): rdf:type is a
                 // property attribute too, and a refused one is still
                 // written: the object is the blank node, not "".
@@ -1085,7 +1334,7 @@ impl<'a> Grammar<'a> {
                         );
                     }
                     let (object, span) = if let Some(attr) = a.resource {
-                        let iri = self.iri_value(&env.base, &attr.value, Role::Object);
+                        let iri = self.iri_value(&env.base, attr, Role::Object);
                         (Node::Iri(iri), attr.value.span)
                     } else if let Some(attr) = a.node_id {
                         (Node::Blank(self.node_id(attr)), attr.value.span)
@@ -1191,6 +1440,23 @@ impl<'a> Grammar<'a> {
         let Some(state) = self.stack.pop() else {
             return;
         };
+        // The end tag's name names the element's IRI again.
+        if let Some(Some(i)) = self.names.pop()
+            && let Some(span) = end.name.filter(|_| !end.implied)
+        {
+            let start = &self.out.refs[i];
+            let same = |s: Span| &self.text[s.start as usize..s.end as usize];
+            if same(span) == same(start.span) {
+                let r = Ref { span, ..*start };
+                self.out.refs.push(r);
+            }
+        }
+        if let Some(r) = &mut self.rec
+            && let Some(Some(i)) = r.ends.pop()
+            && let UseKind::Element { end: e, .. } = &mut r.uses[i].kind
+        {
+            *e = Some(end);
+        }
         // The content: from the start tag's end to the end tag; an empty
         // element's is its tag.
         let content = |tag: Span| {
@@ -1838,8 +2104,11 @@ mod tests {
                 Form::Iri => assert_eq!(resolve(&base, s).unwrap().as_str(), r.iri.as_str()),
                 Form::PName { prefix_len } => {
                     assert_eq!(s.as_bytes()[prefix_len as usize], b':', "{s}");
-                    let use_ = p.prefix_uses.iter().find(|u| u.span == r.span).unwrap();
-                    assert_eq!(use_.name.as_str(), &s[..prefix_len as usize]);
+                    // An end tag's prefix is its start tag's use.
+                    if !text[..r.span.start as usize].ends_with("</") {
+                        let use_ = p.prefix_uses.iter().find(|u| u.span == r.span).unwrap();
+                        assert_eq!(use_.name.as_str(), &s[..prefix_len as usize]);
+                    }
                     assert!(
                         r.iri.as_str().ends_with(&s[prefix_len as usize + 1..]),
                         "{s}"
@@ -1884,6 +2153,72 @@ mod tests {
 
     /// A nested node element that only names an IRI (a collection item, or
     /// a property's object) is a use of it, not a description.
+    /// The name in an element's end tag is a reference too, with the start
+    /// tag's IRI, role and form: a rename edits it, so Find References and
+    /// highlights show it. An empty element, an end implied by an error, a
+    /// name from an entity and a name inside an XML literal give none.
+    #[test]
+    fn an_end_tag_names_its_element_iri() {
+        let text = format!(
+            "<!DOCTYPE r [<!ENTITY m \"<ex:q>1</ex:q>\">]>\n\
+             <rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\">\n\
+             <ex:C rdf:about=\"http://example.org/s\"><ex:p>1</ex:p><ex:e/>&m;\
+             <ex:x rdf:parseType=\"Literal\"><ex:in>t</ex:in></ex:x><ex:li rdf:parseType=\"Collection\"><ex:D/></ex:li></ex:C>\n\
+             </rdf:RDF>\n"
+        );
+        let p = parse(&text, None);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        spans_hold(&text, &p);
+        let refs = |local: &str| -> Vec<(String, Role, Form)> {
+            p.refs
+                .iter()
+                .filter(|r| r.iri.as_str() == format!("http://example.org/{local}"))
+                .map(|r| (at(&text, r.span).to_string(), r.role, r.form))
+                .collect()
+        };
+        let pname = Form::PName { prefix_len: 2 };
+        assert_eq!(
+            refs("C"),
+            [
+                ("ex:C".into(), Role::Object, pname),
+                ("ex:C".into(), Role::Object, pname)
+            ]
+        );
+        assert_eq!(
+            refs("p"),
+            [
+                ("ex:p".into(), Role::Predicate, pname),
+                ("ex:p".into(), Role::Predicate, pname)
+            ]
+        );
+        assert_eq!(refs("li").len(), 2);
+        assert_eq!(refs("e"), [("ex:e".into(), Role::Predicate, pname)]);
+        assert_eq!(refs("q"), [("&m;".into(), Role::Predicate, Form::Anchor)]);
+        assert_eq!(refs("in"), []);
+        assert_eq!(refs("D"), [("ex:D".into(), Role::Object, pname)]);
+        // The end tag's reference is the second, after its content's.
+        let c: Vec<u32> = p
+            .refs
+            .iter()
+            .filter(|r| r.iri.as_str() == "http://example.org/C")
+            .map(|r| r.span.start)
+            .collect();
+        assert_eq!(c[1] as usize, text.rfind("</ex:C>").unwrap() + 2);
+        // An end that an error implies: no end-tag reference.
+        let broken = format!(
+            "<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\">\n<ex:C rdf:about=\"http://example.org/s\">\n</rdf:RDF>\n"
+        );
+        let p = parse(&broken, None);
+        assert!(!p.errors.is_empty());
+        assert_eq!(
+            p.refs
+                .iter()
+                .filter(|r| r.iri.as_str() == "http://example.org/C")
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn a_nested_element_that_only_names_an_iri_is_an_object() {
         let text = concat!(

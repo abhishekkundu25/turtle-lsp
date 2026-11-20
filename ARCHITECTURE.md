@@ -14,7 +14,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `syntax` | Turtle, TriG, N-Triples and N-Quads lexer and parser; `syntax::names`, the rules for writing an IRI in Turtle; `syntax::sniff`, which syntax a text's start is in | every feature |
 | `sparql` | SPARQL documents: tokens, structure, checks, formatting; the SPARQL language features in `sparql::features` | `ide`, `analysis`, `query`, `shacl` |
 | `jsonld` | JSON-LD 1.1: a fault-tolerant JSON parser, context processing, expansion and conversion to the same parse as Turtle | `analysis` |
-| `rdfxml` | RDF/XML 1.1: a fault-tolerant XML scanner, with its limits on what the XML may ask for, and the RDF/XML grammar over it, into the same parse as Turtle with the exact span of every term | `analysis`, `imports` |
+| `rdfxml` | RDF/XML 1.1: a fault-tolerant XML scanner, with its limits on what the XML may ask for, and the RDF/XML grammar over it, into the same parse as Turtle with the exact span of every term; the rename planner (`rdfxml::rename`) over the same grammar | `analysis`, `imports`, `features` (rename) |
 | `analysis` | One document's parse, positions and per-IRI indexes | `features`, `ide`, `server` |
 | `workspace` | Open documents, indexed files and project prefixes; the file-kind table | `server`, `ide`, `batch`, `cli`, `features`, `diagnose`, `imports`, `jsonld` |
 | `knowledge` | What the workspace says about each IRI | `features` |
@@ -75,7 +75,8 @@ Inside the larger modules, these files hold one part each:
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
 | `src/server/workspace_diagnostics.rs` | The diagnostics of files that are not open |
-| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl` and `.rdf` out |
+| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl` and `.rdf` out (rename's takes them in) |
+| `src/rdfxml/rename.rs` | The edits that rename an IRI in an RDF/XML document, placed at the spans the grammar records for each use (`grammar::uses`), checked by parsing the edited text again, or why the rename is refused (file, line, reason) |
 
 ## One parse per document version
 
@@ -101,9 +102,25 @@ entity reference, `rdf:ID`, `rdf:li`, a name in the default namespace) is
 `Form::Anchor`: features that slice the text at a reference or write there
 (rename, quick fixes, refactorings, hover's quoted name, inlay hints,
 semantic tokens) leave it out. The syntax gates the writing:
-`features::writes` keeps RDF/XML read-only (no rename, quick fix,
-refactoring or formatting), and it gets no completion, splice, semantic
-tokens or inlay hints. A
+`features::writes` keeps RDF/XML read-only for quick fixes, refactorings,
+formatting and `check --fix`, and it gets no completion, splice, semantic
+tokens or inlay hints. Rename is the one writer of RDF/XML, and not
+through those references: `navigation::rename_term` asks `rdfxml::rename`
+for each RDF/XML document that names the IRI. The planner parses the text
+again with the grammar recording each use (an IRI attribute value with its
+base and entity, `rdf:ID`, an element name with its end tag, a property
+attribute name, with the namespaces in scope), writes each in its form,
+then parses the edited text and requires the same graph with the new IRI
+and no error. Anything else (a use from an entity, character references,
+an IRI a production implies) refuses the whole rename before anything is
+written. A document with a syntax error or `<!ATTLIST>` defaults is not
+edited at all, and `rdfxml::rename::blocked` makes it refuse any rename
+of an IRI its text may spell: the grammar may not read every use there.
+The grammar records an end tag's name as a reference of its element's IRI
+(`Analysis::is_end_tag`), so navigation and rename find it; the checks of
+a term's uses and the use counts leave it out. `rename.rdfXml` off restores the old
+refusal. `ide::Session` marks the RDF/XML edits with a change annotation
+that needs confirmation, for a client that takes them. A
 SPARQL document gets a `SparqlAnalysis` instead, with the same position
 helpers; SPARQL documents never feed the knowledge index and RDF
 features never run on them.

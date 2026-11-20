@@ -8,7 +8,9 @@
 //!   name, attribute value, text and entity reference, with its own limits
 //!   (nesting, DOCTYPE entities, entity expansion, errors);
 //! - [`grammar`]: the RDF/XML productions over [`xml`], into [`Parsed`],
-//!   with the exact span of every term, read on past each error.
+//!   with the exact span of every term, read on past each error;
+//! - [`rename`]: the edits that rename an IRI in a document, placed at the
+//!   spans the grammar reads, or why they cannot be made.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
 //! not RDF (OWL/XML, Functional, Manchester) gives no triples and one
@@ -16,7 +18,8 @@
 //! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
 //! `document_base` the base passed in, and `prefixes`, `graphs` and
 //! `tokens` stay empty (XML namespaces are scoped, not Turtle prefixes, and
-//! nothing edits RDF/XML). References are exact ([`Form::Iri`],
+//! no formatter edits RDF/XML; [`rename`] parses the text again for the
+//! spans it needs). References are exact ([`Form::Iri`],
 //! [`Form::PName`]) where the text spells the IRI, and
 //! [`Form::Anchor`] where it does not (an entity, `rdf:ID`, `rdf:li`, a
 //! name in the default namespace).
@@ -26,6 +29,7 @@
 //! [`Form::Anchor`]: crate::syntax::Form::Anchor
 
 mod grammar;
+pub(crate) mod rename;
 mod xml;
 
 use crate::syntax::sniff::Sniffed;
@@ -38,7 +42,7 @@ const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 /// document's URL, against which relative IRIs resolve until an `xml:base`
 /// replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
-    let Some(unread) = Sniffed::of(text).unread() else {
+    let Some(unread) = unread(text) else {
         return grammar::parse(text, base);
     };
     Parsed {
@@ -52,6 +56,13 @@ pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
         )],
         ..Parsed::default()
     }
+}
+
+/// Why `text` is not read: an OWL syntax that is not RDF. Its XML may
+/// still look like RDF/XML to the grammar, so what reads the text again
+/// ([`rename`]) asks this first.
+fn unread(text: &str) -> Option<String> {
+    Sniffed::of(text).unread()
 }
 
 #[cfg(test)]

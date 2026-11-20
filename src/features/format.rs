@@ -93,7 +93,7 @@ fn format_with<'t>(
             }
             return crate::jsonld::format::format(text, opts);
         }
-        // Nothing writes RDF/XML.
+        // No formatter writes RDF/XML (only a rename does).
         Syntax::RdfXml => return None,
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }

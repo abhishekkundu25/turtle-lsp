@@ -122,7 +122,7 @@ test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which the server
   assert.match(editor, /const ICON = \{[^}]*\bxml: "XML"/)
   assert.match(editor, /xml: "RDF\/XML" \}\[languageOf\(file\)\]/)
   // connect() registers the server's features on its languages, JSON and XML;
-  // on XML, only those that read.
+  // on XML, only those that read, and rename.
   const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
   assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", "xml"\]\) \{\n\s*const writable = lang !== "xml"\n/)
   const registered = (guard) => [...lsp.matchAll(new RegExp(`\\n\\s*${guard}monaco\\.languages\\.(register\\w+)\\(lang,`, "g"))].map((m) => m[1]).sort()
@@ -132,7 +132,6 @@ test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which the server
     "registerDocumentFormattingEditProvider",
     "registerDocumentSemanticTokensProvider",
     "registerInlayHintsProvider",
-    "registerRenameProvider",
   ])
   assert.deepEqual(registered(""), [
     "registerCodeLensProvider",
@@ -142,6 +141,7 @@ test("the RDF Editor opens .owl and .rdf files as Monaco's XML, which the server
     "registerFoldingRangeProvider",
     "registerHoverProvider",
     "registerReferenceProvider",
+    "registerRenameProvider",
   ])
 })
 

@@ -33,6 +33,7 @@ pub(crate) fn prepare_rename(
     Some(PrepareRenameResponse::Range(q.range(enc, span)))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn rename(
     q: &SparqlAnalysis,
     k: &Knowledge,
@@ -41,6 +42,7 @@ pub(crate) fn rename(
     new_name: &str,
     prefix_file: Option<Arc<Analysis>>,
     others: &[Arc<SparqlAnalysis>],
+    rdfxml: rdf::RdfXml,
 ) -> Result<WorkspaceEdit, String> {
     let offset = q.offset(enc, pos).ok_or("invalid position")?;
     let target = target_at(q, offset).ok_or("nothing to rename here")?;
@@ -62,7 +64,7 @@ pub(crate) fn rename(
                 .filter(|_| r.form != Form::A)
                 .ok_or("nothing to rename here")?;
             let new_iri = rdf::renamed_iri(old, new_name, &scope_at(q, r.span.start))?;
-            rdf::rename_term(k, enc, old, &new_iri, &mut changes)?;
+            rdf::rename_term(k, enc, old, &new_iri, rdfxml, &mut changes)?;
             sparql_term_edits(&with_others(q, others), old, &new_iri, enc, &mut changes)?;
         }
     }
