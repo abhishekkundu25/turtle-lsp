@@ -145,6 +145,9 @@ pub(crate) struct Value<'a> {
     pub(crate) span: Span,
     pub(crate) text: Cow<'a, str>,
     pub(crate) refs: Refs,
+    /// The reference to a declared entity the value starts with, in the
+    /// document, and the bytes of `text` its expansion gives.
+    pub(crate) lead: Option<(Span, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,6 +176,9 @@ pub(crate) struct End {
     /// Closed by an error (an end tag further out, or the end of the text),
     /// not by its own end tag.
     pub(crate) implied: bool,
+    /// The name in the end tag; `None` for an empty element and an implied
+    /// end.
+    pub(crate) name: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -320,6 +326,8 @@ pub(crate) struct Scanner<'a> {
     /// The entities being expanded, by [`Entity::index`]: a reference to
     /// one of them, met inside its own expansion, is not expanded.
     open: Vec<bool>,
+    /// The [`Value::lead`] of the attribute value being read.
+    lead: Option<(Span, u32)>,
     /// Inside an element deeper than [`MAX_DEPTH`]: its nesting count.
     skip: usize,
     roots: usize,
@@ -544,6 +552,7 @@ impl<'a> Scanner<'a> {
             budget: text.len().saturating_mul(EXPANSION_PER_BYTE) + MAX_ENTITY_BYTES,
             over_budget: false,
             open: vec![false; entities.len()],
+            lead: None,
             skip: 0,
             roots: 0,
             done: false,
@@ -713,6 +722,7 @@ impl<'a> Scanner<'a> {
             self.pending.push_back(Event::End(End {
                 span: here,
                 implied: true,
+                name: None,
             }));
         }
         self.skip = 0;
@@ -799,6 +809,7 @@ impl<'a> Scanner<'a> {
             self.pending.push_back(Event::End(End {
                 span: end,
                 implied: true,
+                name: None,
             }));
         }
     }
@@ -1313,6 +1324,7 @@ impl<'a> Scanner<'a> {
     /// reference, which is kept as written.
     fn decode(&mut self, start: usize, end: usize, mode: Mode) -> (Cow<'a, str>, Refs) {
         let raw: &'a str = &self.text[start..end];
+        self.lead = None;
         // Line ends are normalized in the document; a replacement text
         // already is, and a `\r` in it comes from a character reference.
         let document = self.frames.is_empty();
@@ -1432,8 +1444,12 @@ impl<'a> Scanner<'a> {
                 );
             }
             self.open[entity.index] = true;
+            let before = out.len();
             self.expand(&entity.text, Origin::Ref(here), mode, out, refs);
             self.open[entity.index] = false;
+            if j == 0 && document && mode == Mode::Attr {
+                self.lead = Some((here, (out.len() - before) as u32));
+            }
             *refs = Refs::Entity;
         }
         out.push_str(&raw[i..]);
@@ -1534,6 +1550,7 @@ impl<'a> Scanner<'a> {
                 } else {
                     Refs::Entity
                 },
+                lead: self.lead.take(),
             };
             // A set once a tag has many attributes, so a long tag stays linear.
             let twice = if attrs.len() < 16 {
@@ -1627,6 +1644,7 @@ impl<'a> Scanner<'a> {
             self.pending.push_back(Event::End(End {
                 span,
                 implied: false,
+                name: None,
             }));
         } else {
             self.stack.push(Open {
@@ -1798,6 +1816,7 @@ impl<'a> Scanner<'a> {
             self.pending.push_back(Event::End(End {
                 span: here,
                 implied: true,
+                name: None,
             }));
         }
         let open = self.stack.pop().expect("k is open");
@@ -1805,6 +1824,7 @@ impl<'a> Scanner<'a> {
         self.pending.push_back(Event::End(End {
             span,
             implied: false,
+            name: Some(name_span),
         }));
         None
     }
@@ -1876,7 +1896,13 @@ mod tests {
         assert_eq!(t.attrs[0].value.refs, Refs::Entity);
         let v = &t.attrs[0].value;
         assert_eq!(&text[v.span.start as usize..v.span.end as usize], "&ex;x");
+        // The entity the value starts with, and how much of the text it gives.
+        let (at, len) = v.lead.unwrap();
+        assert_eq!(&text[at.start as usize..at.end as usize], "&ex;");
+        assert_eq!(len as usize, "http://example.org/".len());
         assert_eq!(t.attrs[1].value.text, "<Ahttp://example.org/two%");
+        // A predefined entity first is no declared entity.
+        assert_eq!(t.attrs[1].value.lead, None);
         let Event::Text { text: body, .. } = s.next() else {
             panic!()
         };
@@ -1885,7 +1911,8 @@ mod tests {
             s.next(),
             Event::End(End {
                 span: Span::new(text.len() as u32 - 4, text.len() as u32),
-                implied: false
+                implied: false,
+                name: Some(Span::new(text.len() as u32 - 2, text.len() as u32 - 1)),
             })
         );
         assert_eq!(s.next(), Event::Eof);
