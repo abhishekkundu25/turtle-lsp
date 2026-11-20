@@ -362,7 +362,14 @@ fn implied(text: &str, base: Option<&str>, uses: &[Use], old: Iri) -> Option<Ref
         .min_by_key(|s| s.start)?;
     let start = unedited_offset(edits, at.start);
     let end = unedited_offset(edits, at.end).max(start);
-    let (start, end) = attribute_of(text, start, end);
+    let (start, mut end) = attribute_of(text, start, end);
+    // An empty span (where an empty collection ends): the tag there.
+    if end == start
+        && text[start as usize..].starts_with('<')
+        && let Some(i) = text[start as usize..].find('>')
+    {
+        end = start + i as u32 + 1;
+    }
     let shown: String = text[start as usize..end as usize]
         .lines()
         .next()
@@ -1391,6 +1398,13 @@ mod tests {
                 assert!(r.reason.contains(&format!("at `{by}")), "{local}: {r:?}");
             }
         }
+        // An empty collection implies rdf:nil where it ends.
+        let text = doc(
+            "<rdf:Description rdf:about=\"urn:ex:s\">\n<ex:list rdf:parseType=\"Collection\"></ex:list>\n</rdf:Description>",
+        );
+        let r = refused(&text, None, &format!("{RDF}nil"), "urn:ex:z");
+        assert_eq!((r.line, r.column), (4, Some(37)), "{r:?}");
+        assert!(r.reason.contains("at `</ex:list>`"), "{r:?}");
         // An edit earlier on the line does not move the column: the column
         // is the file's.
         let text = doc(
