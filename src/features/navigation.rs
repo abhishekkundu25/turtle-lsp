@@ -111,10 +111,14 @@ fn not_edited(uri: &str) -> String {
 }
 
 /// Why a rename cannot edit the RDF/XML document at `uri`: its file, the
-/// line and the reason.
+/// line (and column, when no text shows the place) and the reason.
 fn refused(uri: &str, r: rdfxml_rename::Refusal) -> String {
+    let column = r
+        .column
+        .map(|c| format!(", column {c}"))
+        .unwrap_or_default();
     format!(
-        "can't rename in {}: line {}: {}",
+        "can't rename in {}: line {}{column}: {}",
         shown(uri),
         r.line,
         r.reason
@@ -480,7 +484,7 @@ fn prepare_rdfxml_rename(
         }) => (span, iri, prefixes),
     };
     let range = a.range(enc, span);
-    let keeps = |name: &str| renamed_rdfxml_iri(&iri, name, &prefixes).as_deref() == Ok(&*iri);
+    let keeps = |name: &str| renamed_iri(&iri, name, &prefixes).as_deref() == Ok(&*iri);
     let written = &a.text[span.start as usize..span.end as usize];
     if keeps(written) {
         return Ok(Some(PrepareRenameResponse::Range(range)));
@@ -546,7 +550,7 @@ pub fn rename(
             None => return Err("nothing to rename here".into()),
             Some(rdfxml_rename::At::Namespace) => return Err(NAMESPACE_PREFIX.into()),
             Some(rdfxml_rename::At::Use { iri, prefixes, .. }) => {
-                let new = renamed_rdfxml_iri(&iri, new_name, &prefixes)?;
+                let new = renamed_iri(&iri, new_name, &prefixes)?;
                 (iri, new)
             }
         };
@@ -669,79 +673,69 @@ pub fn rename(
     })
 }
 
-/// [`renamed_iri`] for a rename started at `offset` of `a`: in JSON-LD,
-/// with the prefix terms of the context there, and `new_name` may also be
-/// an absolute IRI written as JSON-LD writes it (`http://...`); in RDF/XML,
-/// as [`renamed_rdfxml_iri`] with the namespaces in scope there.
+/// [`renamed_iri`] for a rename started at `offset` of `a`, with the
+/// prefixes in scope there: in JSON-LD, the prefix terms of the context
+/// there; in RDF/XML, the namespaces in scope (`""` the default one).
 pub(crate) fn renamed_iri_at(
     a: &Analysis,
     offset: u32,
     old: &str,
     new_name: &str,
 ) -> Result<String, String> {
-    let bare_iri = match a.parsed.syntax {
-        Syntax::JsonLd => true,
+    let prefixes = match a.parsed.syntax {
         Syntax::RdfXml => {
             let base = a.parsed.document_base.as_deref();
-            let prefixes = match rdfxml_rename::at(&a.text, base, offset) {
+            match rdfxml_rename::at(&a.text, base, offset) {
                 Ok(Some(rdfxml_rename::At::Use { prefixes, .. })) => prefixes,
                 _ => PrefixMap::default(),
-            };
-            return renamed_rdfxml_iri(old, new_name, &prefixes);
+            }
         }
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => false,
+        Syntax::JsonLd | Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+            jsonld::prefixes_at(a, offset)
+        }
     };
-    let prefixes = jsonld::prefixes_at(a, offset);
-    if bare_iri
-        && let Some((p, rest)) = new_name.split_once(':')
-        && !prefixes.contains_key(p)
-        && rest.starts_with("//")
-    {
-        return checked_iri(new_name.to_string());
-    }
     renamed_iri(old, new_name, &prefixes)
 }
 
-/// [`renamed_iri`] in an RDF/XML document, `prefixes` the namespaces in
-/// scope (`""` the default one): `new_name` may also be an absolute IRI as
-/// an attribute value writes it (`http://...`), when what comes before its
-/// first `:` is no prefix in scope.
-pub(crate) fn renamed_rdfxml_iri(
-    old: &str,
-    new_name: &str,
-    prefixes: &PrefixMap,
-) -> Result<String, String> {
-    if !new_name.starts_with('<')
-        && let Some((p, rest)) = new_name.split_once(':')
-        && !prefixes.contains_key(p)
-        && rest.starts_with("//")
-    {
-        return checked_iri(new_name.to_string());
-    }
-    renamed_iri(old, new_name, prefixes)
-}
-
-/// The IRI term `old` is renamed to, from `new_name` as the user typed it:
-/// `<full IRI>`, `prefix:local` (with `prefixes`), or a local name that
-/// replaces `old`'s after its last `#`, `/` or `:`. `Err` when the result is
-/// no valid absolute IRI (`foo bar`), which no document could hold.
+/// The IRI term `old` is renamed to, from `new_name` as the user typed it,
+/// read the same from every document: `<full IRI>`; a bare absolute IRI
+/// (one with `://`, or whose scheme is no prefix in `prefixes`);
+/// `prefix:local`; or a local name that replaces `old`'s after its last
+/// `#`, `/` or `:`. `Err` for an empty name, an undeclared prefix that is
+/// no scheme, and a result that is no valid absolute IRI (`foo bar`), which
+/// no document could hold.
 pub(crate) fn renamed_iri(
     old: &str,
     new_name: &str,
     prefixes: &PrefixMap,
 ) -> Result<String, String> {
-    let iri = if let Some(i) = new_name.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
+    let bracketed = new_name.strip_prefix('<').and_then(|s| s.strip_suffix('>'));
+    if bracketed.unwrap_or(new_name).trim().is_empty() {
+        return Err("the new name is empty".into());
+    }
+    let iri = if let Some(i) = bracketed {
         i.to_string()
+    } else if new_name.contains("://") {
+        new_name.to_string()
     } else if let Some((p, l)) = new_name.split_once(':') {
-        let ns = prefixes
-            .get(p)
-            .ok_or(format!("prefix '{p}:' is not declared"))?;
-        format!("{ns}{l}")
+        match prefixes.get(p) {
+            Some(ns) => format!("{ns}{l}"),
+            None if is_scheme(p) => new_name.to_string(),
+            None => return Err(format!("prefix '{p}:' is not declared")),
+        }
     } else {
         let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
         format!("{}{new_name}", &old[..cut])
     };
     checked_iri(iri)
+}
+
+/// Whether `s` is an IRI scheme: a letter, then letters, digits, `+`, `-`
+/// and `.` (RFC 3986, 3.1).
+fn is_scheme(s: &str) -> bool {
+    let mut c = s.chars();
+    c.next().is_some_and(|f| f.is_ascii_alphabetic())
+        && c.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 fn checked_iri(iri: String) -> Result<String, String> {
@@ -928,11 +922,76 @@ mod tests {
             let err = renamed_iri(old, bad, &prefixes).unwrap_err();
             assert!(err.contains("not a valid IRI"), "{bad}: {err}");
         }
+        // What comes before a `:` and is no prefix is a scheme: an
+        // absolute IRI, as `<...>` and anything with `://` are.
+        for (name, iri) in [
+            ("nope:x", "nope:x"),
+            ("urn:ex:x", "urn:ex:x"),
+            ("http://example.org/v#Thing", "http://example.org/v#Thing"),
+            ("ex://host/x", "ex://host/x"),
+        ] {
+            assert_eq!(renamed_iri(old, name, &prefixes).as_deref(), Ok(iri));
+        }
         assert!(
-            renamed_iri(old, "nope:x", &prefixes)
+            renamed_iri(old, "_x:y", &prefixes)
                 .unwrap_err()
-                .contains("not declared")
+                .contains("prefix '_x:' is not declared")
         );
+        // An empty name is no name.
+        for empty in ["", "  ", "<>"] {
+            let err = renamed_iri(old, empty, &prefixes).unwrap_err();
+            assert_eq!(err, "the new name is empty", "{empty:?}");
+        }
+    }
+
+    /// A new name reads the same from every kind of document: only the
+    /// prefixes in scope at the cursor differ.
+    #[test]
+    fn a_new_name_reads_the_same_from_every_origin() {
+        let ttl = turtle_doc(
+            &in_w("a.ttl").1,
+            "@prefix ex: <http://example.org/> .\nex:a ex:p ex:o .\n",
+        );
+        let owl_text = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n<rdf:Description rdf:about=\"http://example.org/a\"><ex:p rdf:resource=\"http://example.org/o\"/></rdf:Description>\n</rdf:RDF>\n";
+        let owl = Arc::new(Analysis::with_syntax(
+            in_w("a.owl").1,
+            owl_text,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        let json_text = "{\"@context\": {\"ex\": \"http://example.org/\"}, \"@id\": \"ex:a\", \"ex:p\": {\"@id\": \"ex:o\"}}\n";
+        let json = Arc::new(Analysis::with_syntax(
+            in_w("a.jsonld").1,
+            json_text,
+            Arc::default(),
+            true,
+            Syntax::JsonLd,
+        ));
+        let old = "http://example.org/a";
+        let docs = [
+            (&ttl, offset_of(&ttl.text, "ex:a", 3)),
+            (&owl, offset_of(owl_text, "example.org/a", 3)),
+            (&json, offset_of(json_text, "ex:a", 3)),
+        ];
+        for name in [
+            "b",
+            "ex:b",
+            "<http://example.com/b>",
+            "http://example.com/b",
+            "urn:ex:b",
+            "nope:b",
+            "",
+            "<>",
+            "a b",
+            "_x:b",
+        ] {
+            let got: Vec<Result<String, String>> = docs
+                .iter()
+                .map(|(a, at)| renamed_iri_at(a, *at, old, name))
+                .collect();
+            assert!(got.iter().all(|g| *g == got[0]), "{name:?}: {got:?}");
+        }
     }
 
     /// An import read without a cache is named by its IRI, and an IRI may
@@ -1766,7 +1825,7 @@ mod tests {
         assert_eq!(
             err,
             format!(
-                "can't rename in {}: line 9: no prefix in scope at ex:A is bound to a namespace of <http://example.com/B>, and a rename adds no xmlns declaration",
+                "can't rename in {}: line 9: no prefix in scope at ex:A is bound to <http://example.com/>, the namespace of <http://example.com/B>, and a rename adds no xmlns declaration",
                 owl_path.display()
             )
         );
@@ -1935,10 +1994,12 @@ mod tests {
         assert_eq!(renamed("ex:p", "o:r").unwrap(), tx.replace("<ex:p", "<o:r"));
         assert_eq!(renamed("ex:p", ":r").unwrap(), tx.replace("<ex:p", "<r"));
         assert_eq!(renamed("ex:p", "r").unwrap(), tx.replace("<ex:p", "<ex:r"));
+        // `zz` is no prefix: `zz:r` is an absolute IRI, in no namespace
+        // bound there.
         assert!(
             renamed("ex:p", "zz:r")
                 .unwrap_err()
-                .contains("prefix 'zz:' is not declared")
+                .contains("no prefix in scope at ex:p is bound to <zz:>")
         );
         assert!(
             renamed("ex:p", "a b")

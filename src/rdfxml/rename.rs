@@ -24,10 +24,12 @@ use crate::syntax::{Iri, Node, Parsed, PrefixMap, Span, Triple};
 use std::cmp::Reverse;
 
 /// Why a rename cannot edit a document, and the line (from 1) of the use
-/// that stops it.
+/// that stops it; its column (from 1, in characters) where no text of its
+/// own shows it (implied vocabulary).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Refusal {
     pub(crate) line: u32,
+    pub(crate) column: Option<u32>,
     pub(crate) reason: String,
 }
 
@@ -35,9 +37,60 @@ impl Refusal {
     fn at(text: &str, offset: u32, reason: String) -> Refusal {
         Refusal {
             line: line(text, offset),
+            column: None,
             reason,
         }
     }
+}
+
+/// The column (from 1, in characters) of `offset` in `text`.
+fn column(text: &str, offset: u32) -> u32 {
+    let end = (offset as usize).min(text.len());
+    let start = text[..end].rfind('\n').map_or(0, |i| i + 1);
+    text[start..end].chars().count() as u32 + 1
+}
+
+/// `start..end`, or the whole attribute when it is an attribute's value
+/// (`rdf:ID="st"` for `st`).
+fn attribute_of(text: &str, start: u32, end: u32) -> (u32, u32) {
+    let b = text.as_bytes();
+    let (s, e) = (start as usize, end as usize);
+    let Some(&q) = s.checked_sub(1).and_then(|i| b.get(i)) else {
+        return (start, end);
+    };
+    if !matches!(q, b'"' | b'\'') || b.get(e) != Some(&q) {
+        return (start, end);
+    }
+    let before = text[..s - 1].trim_end_matches([' ', '\t', '\n', '\r']);
+    let Some(before) = before.strip_suffix('=') else {
+        return (start, end);
+    };
+    let before = before.trim_end_matches([' ', '\t', '\n', '\r']);
+    let name = before
+        .rfind([' ', '\t', '\n', '\r', '<'])
+        .map_or(0, |i| i + 1);
+    if name == before.len() {
+        return (start, end);
+    }
+    (name as u32, end + 1)
+}
+
+/// The offset in `text` of offset `at` of `text` with `edits` (sorted,
+/// apart) applied: the start of an edit for an offset inside what it wrote.
+fn unedited_offset(edits: &[(Span, String)], at: u32) -> u32 {
+    let at = i64::from(at);
+    let mut shift: i64 = 0;
+    for (span, new) in edits {
+        let start = i64::from(span.start) + shift;
+        if at <= start {
+            break;
+        }
+        if at < start + new.len() as i64 {
+            return span.start;
+        }
+        shift += new.len() as i64 - i64::from(span.end - span.start);
+    }
+    (at - shift) as u32
 }
 
 /// The line (from 1) of `offset` in `text`. An edit writes no line break,
@@ -214,36 +267,57 @@ pub(crate) fn plan(
     if let Some(r) = unedited(text, &fresh) {
         return Err(r);
     }
-    // (line, written: 0 before implied: 1, reason)
-    let mut refused: Vec<(u32, u8, String)> = Vec::new();
+    // (line, written: 0 before implied: 1, column, reason)
+    let mut refused: Vec<(u32, u8, Option<u32>, String)> = Vec::new();
     let mut edits = Vec::new();
     for u in &uses {
         match edit(text, u, new) {
             Ok(e) => edits.extend(e),
-            Err(reason) => refused.push((line(text, u.span.start), 0, reason)),
+            Err(reason) => refused.push((line(text, u.span.start), 0, None, reason)),
         }
     }
     edits.sort_by_key(|(s, _)| (s.start, s.end));
     edits.dedup_by_key(|(s, _)| *s);
     let after = apply(text, &edits);
     let reparsed = grammar::parse(&after, base);
-    // What still names the old IRI: a production implies it.
+    // What still names the old IRI: a production implies it, at the
+    // element or attribute that shows where.
     if let Some(at) = reparsed
         .triples
         .iter()
         .filter_map(|t| naming(t, old))
         .min_by_key(|s| s.start)
     {
+        let start = unedited_offset(&edits, at.start);
+        let end = unedited_offset(&edits, at.end).max(start);
+        let (start, end) = attribute_of(text, start, end);
+        let shown: String = text[start as usize..end as usize]
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(60)
+            .collect();
+        let shown = if shown.is_empty() {
+            String::new()
+        } else {
+            format!(" at `{shown}`")
+        };
         refused.push((
-            line(&after, at.start),
+            line(text, start),
             1,
+            Some(column(text, start)),
             format!(
-                "the RDF/XML syntax implies <{old}> here, with no text of its own: the document cannot be rewritten to say <{new}>"
+                "the RDF/XML syntax implies <{old}>{shown}, with no text of its own: the document cannot be rewritten to say <{new}>"
             ),
         ));
     }
-    if let Some((line, _, reason)) = refused.into_iter().min_by_key(|r| (r.0, r.1)) {
-        return Err(Refusal { line, reason });
+    if let Some((line, _, column, reason)) = refused.into_iter().min_by_key(|r| (r.0, r.1)) {
+        return Err(Refusal {
+            line,
+            column,
+            reason,
+        });
     }
     if let Some(e) = reparsed.errors.first() {
         return Err(Refusal::at(
@@ -263,16 +337,25 @@ pub(crate) fn plan(
         .zip(reparsed.triples.iter().map(|t| renamed(t, old, old)))
         .position(|(want, got)| want != got);
     if changed.is_some() || parsed.triples.len() != reparsed.triples.len() {
-        let at = changed
-            .and_then(|i| reparsed.triples.get(i))
-            .map_or(after.len() as u32, |t| t.p_span.start);
-        return Err(Refusal::at(
-            &after,
-            at,
-            format!(
+        // The first triple that differs, else the first one that only
+        // one of the two texts gives; an edit writes no line break, so a
+        // line of either text is the same line.
+        let n = parsed.triples.len().min(reparsed.triples.len());
+        let at = match (changed, reparsed.triples.get(n)) {
+            (Some(i), _) => line(&after, reparsed.triples[i].p_span.start),
+            (None, Some(t)) => line(&after, t.p_span.start),
+            (None, None) => parsed
+                .triples
+                .get(n)
+                .map_or(1, |t| line(text, t.p_span.start)),
+        };
+        return Err(Refusal {
+            line: at,
+            column: None,
+            reason: format!(
                 "with <{new}> written here, the document would say something else than the rename means"
             ),
-        ));
+        });
     }
     Ok(edits)
 }
@@ -559,11 +642,15 @@ fn qname(
     if let Some(q) = others.iter().find_map(|(p, ns)| fits(p, ns)) {
         return Ok(q);
     }
-    Err(match new.strip_prefix(ns) {
-        Some(local) => format!("{local:?} is not an XML name, which the name {raw} must end with"),
-        None => format!(
-            "no prefix in scope at {raw} is bound to a namespace of <{new}>, and a rename adds no xmlns declaration"
-        ),
+    // The namespace `new` reads in: up to its last `#`, `/` or `:`.
+    let cut = new.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
+    let (namespace, local) = new.split_at(cut);
+    Err(if namespace == ns {
+        format!("{local:?} is not an XML name, which the name {raw} must end with")
+    } else {
+        format!(
+            "no prefix in scope at {raw} is bound to <{namespace}>, the namespace of <{new}>, and a rename adds no xmlns declaration"
+        )
     })
 }
 
@@ -806,8 +893,27 @@ mod tests {
         // Out of its scope: refused, at the first use that has none.
         let r = refused(&text, None, "http://example.org/A", "http://example.com/B");
         assert_eq!(r.line, 6, "{r:?}");
-        assert!(r.reason.contains("no prefix in scope at ex:A"), "{r:?}");
-        assert!(r.reason.contains("adds no xmlns"), "{r:?}");
+        assert_eq!(
+            r.reason,
+            "no prefix in scope at ex:A is bound to <http://example.com/>, the namespace of <http://example.com/B>, and a rename adds no xmlns declaration"
+        );
+        // A namespace bound only on another element: that namespace is
+        // named, not the local part.
+        let sibling = doc(
+            "<rdf:Description rdf:about=\"urn:ex:s\">\n<ex:q>w</ex:q>\n<c:p xmlns:c=\"http://example.org/c/\">v</c:p>\n</rdf:Description>",
+        );
+        let r = refused(
+            &sibling,
+            None,
+            "http://example.org/q",
+            "http://example.org/c/z",
+        );
+        assert_eq!(r.line, 4, "{r:?}");
+        assert!(
+            r.reason
+                .starts_with("no prefix in scope at ex:q is bound to <http://example.org/c/>,"),
+            "{r:?}"
+        );
         // A local part that is no XML name.
         let r = refused(&text, None, "http://example.org/p", "http://example.org/1p");
         assert!(r.reason.contains("\"1p\" is not an XML name"), "{r:?}");
@@ -1026,15 +1132,16 @@ mod tests {
              <ex:p rdf:ID=\"st\">1</ex:p>\n\
              </rdf:Description>",
         );
+        // (local name, line, column, why, what implies it)
         let cases = [
-            ("_1", 4, "rdf:li stands for"),
-            ("first", 7, "implies"),
-            ("nil", 7, "implies"),
-            ("Statement", 8, "implies"),
-            ("subject", 8, "implies"),
-            ("langString", 4, "implies"),
+            ("_1", 4, None, "rdf:li stands for", ""),
+            ("first", 7, Some(37), "implies", "<rdf:Description"),
+            ("nil", 7, Some(37), "implies", "<rdf:Description"),
+            ("Statement", 8, Some(7), "implies", "rdf:ID=\"st\"`"),
+            ("subject", 8, Some(7), "implies", "rdf:ID=\"st\"`"),
+            ("langString", 4, Some(9), "implies", "a"),
         ];
-        for (local, line, why) in cases {
+        for (local, line, column, why, by) in cases {
             let old = if local == "langString" {
                 // A plain literal: xsd:string.
                 "http://www.w3.org/2001/XMLSchema#string".to_string()
@@ -1044,6 +1151,25 @@ mod tests {
             let r = refused(&text, Some(URI), &old, "urn:ex:z");
             assert!(r.reason.contains(why), "{local}: {r:?}");
             assert_eq!(r.line, line, "{local}: {r:?}");
+            assert_eq!(r.column, column, "{local}: {r:?}");
+            if !by.is_empty() {
+                assert!(r.reason.contains(&format!("at `{by}")), "{local}: {r:?}");
+            }
+        }
+        // An edit earlier on the line does not move the column: the column
+        // is the file's.
+        let text = doc(
+            "<rdf:Description rdf:about=\"urn:ex:s\"><rdf:type rdf:resource=\"urn:ex:C\"/></rdf:Description><ex:C rdf:about=\"urn:ex:t\"/>",
+        );
+        let column =
+            text.find("ex:C rdf:about").unwrap() - text.rfind("\n<rdf:Description").unwrap();
+        for new in [
+            "http://example.org/kind",
+            "http://example.org/a-much-longer-kind",
+        ] {
+            let r = refused(&text, None, &format!("{RDF}type"), new);
+            assert_eq!((r.line, r.column), (3, Some(column as u32)), "{r:?}");
+            assert!(r.reason.contains("at `ex:C`"), "{r:?}");
         }
         // rdf:type: implied by a typed node element; as an attribute, syntax.
         let text = doc("<ex:C rdf:about=\"urn:ex:s\"/>");
@@ -1078,6 +1204,8 @@ mod tests {
             &format!("{RDF}Description"),
         );
         assert!(r.reason.contains("something else"), "{r:?}");
+        // One triple fewer: the line of the triple that goes, in the file.
+        assert_eq!(r.line, 3, "{r:?}");
         let text = doc("<rdf:Description rdf:about=\"urn:ex:s\" ex:p=\"v\"/>");
         let r = refused(&text, None, "http://example.org/p", &format!("{RDF}type"));
         assert_eq!(r.line, 3, "{r:?}");
