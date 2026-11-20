@@ -448,6 +448,9 @@ struct Grammar<'a> {
     v: Vocab,
     /// The uses [`uses`] records; `None` for [`parse`].
     rec: Option<Recorder>,
+    /// For each state on the stack, the reference of its element's name,
+    /// which its end tag's name repeats.
+    names: Vec<Option<usize>>,
 }
 
 struct Vocab {
@@ -543,6 +546,7 @@ impl<'a> Grammar<'a> {
             in_triple: 0,
             v,
             rec,
+            names: Vec::new(),
         }
     }
 
@@ -1064,6 +1068,7 @@ impl<'a> Grammar<'a> {
         if let Some(r) = &mut self.rec {
             r.element = None;
         }
+        let refs_before = self.out.refs.len();
         match self.stack.last() {
             None if tag.name.is(RDF, "RDF") => {
                 let dir = self.own_dir(&a, &env);
@@ -1093,10 +1098,17 @@ impl<'a> Grammar<'a> {
             }
             Some(State::Literal { .. }) => unreachable!("read by literal_start"),
         }
-        // One state was pushed: its element use, if recorded.
+        // One state was pushed: its element use, if recorded, and its
+        // name's reference, when the document writes the name.
         if let Some(r) = &mut self.rec {
             r.ends.push(r.element.take());
         }
+        let name = (!tag.name.entity)
+            .then(|| {
+                (refs_before..self.out.refs.len()).find(|&i| self.out.refs[i].span == tag.name.span)
+            })
+            .flatten();
+        self.names.push(name);
     }
 
     fn node_elt(&mut self, tag: &Tag<'a>, a: &Attrs<'_, 'a>, env: Env, top: bool) {
@@ -1425,6 +1437,17 @@ impl<'a> Grammar<'a> {
         let Some(state) = self.stack.pop() else {
             return;
         };
+        // The end tag's name names the element's IRI again.
+        if let Some(Some(i)) = self.names.pop()
+            && let Some(span) = end.name.filter(|_| !end.implied)
+        {
+            let start = &self.out.refs[i];
+            let same = |s: Span| &self.text[s.start as usize..s.end as usize];
+            if same(span) == same(start.span) {
+                let r = Ref { span, ..*start };
+                self.out.refs.push(r);
+            }
+        }
         if let Some(r) = &mut self.rec
             && let Some(Some(i)) = r.ends.pop()
             && let UseKind::Element { end: e, .. } = &mut r.uses[i].kind
@@ -2078,8 +2101,11 @@ mod tests {
                 Form::Iri => assert_eq!(resolve(&base, s).unwrap().as_str(), r.iri.as_str()),
                 Form::PName { prefix_len } => {
                     assert_eq!(s.as_bytes()[prefix_len as usize], b':', "{s}");
-                    let use_ = p.prefix_uses.iter().find(|u| u.span == r.span).unwrap();
-                    assert_eq!(use_.name.as_str(), &s[..prefix_len as usize]);
+                    // An end tag's prefix is its start tag's use.
+                    if !text[..r.span.start as usize].ends_with("</") {
+                        let use_ = p.prefix_uses.iter().find(|u| u.span == r.span).unwrap();
+                        assert_eq!(use_.name.as_str(), &s[..prefix_len as usize]);
+                    }
                     assert!(
                         r.iri.as_str().ends_with(&s[prefix_len as usize + 1..]),
                         "{s}"
@@ -2124,6 +2150,72 @@ mod tests {
 
     /// A nested node element that only names an IRI (a collection item, or
     /// a property's object) is a use of it, not a description.
+    /// The name in an element's end tag is a reference too, with the start
+    /// tag's IRI, role and form: a rename edits it, so Find References and
+    /// highlights show it. An empty element, an end implied by an error, a
+    /// name from an entity and a name inside an XML literal give none.
+    #[test]
+    fn an_end_tag_names_its_element_iri() {
+        let text = format!(
+            "<!DOCTYPE r [<!ENTITY m \"<ex:q>1</ex:q>\">]>\n\
+             <rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\">\n\
+             <ex:C rdf:about=\"http://example.org/s\"><ex:p>1</ex:p><ex:e/>&m;\
+             <ex:x rdf:parseType=\"Literal\"><ex:in>t</ex:in></ex:x><ex:li rdf:parseType=\"Collection\"><ex:D/></ex:li></ex:C>\n\
+             </rdf:RDF>\n"
+        );
+        let p = parse(&text, None);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        spans_hold(&text, &p);
+        let refs = |local: &str| -> Vec<(String, Role, Form)> {
+            p.refs
+                .iter()
+                .filter(|r| r.iri.as_str() == format!("http://example.org/{local}"))
+                .map(|r| (at(&text, r.span).to_string(), r.role, r.form))
+                .collect()
+        };
+        let pname = Form::PName { prefix_len: 2 };
+        assert_eq!(
+            refs("C"),
+            [
+                ("ex:C".into(), Role::Object, pname),
+                ("ex:C".into(), Role::Object, pname)
+            ]
+        );
+        assert_eq!(
+            refs("p"),
+            [
+                ("ex:p".into(), Role::Predicate, pname),
+                ("ex:p".into(), Role::Predicate, pname)
+            ]
+        );
+        assert_eq!(refs("li").len(), 2);
+        assert_eq!(refs("e"), [("ex:e".into(), Role::Predicate, pname)]);
+        assert_eq!(refs("q"), [("&m;".into(), Role::Predicate, Form::Anchor)]);
+        assert_eq!(refs("in"), []);
+        assert_eq!(refs("D"), [("ex:D".into(), Role::Object, pname)]);
+        // The end tag's reference is the second, after its content's.
+        let c: Vec<u32> = p
+            .refs
+            .iter()
+            .filter(|r| r.iri.as_str() == "http://example.org/C")
+            .map(|r| r.span.start)
+            .collect();
+        assert_eq!(c[1] as usize, text.rfind("</ex:C>").unwrap() + 2);
+        // An end that an error implies: no end-tag reference.
+        let broken = format!(
+            "<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\">\n<ex:C rdf:about=\"http://example.org/s\">\n</rdf:RDF>\n"
+        );
+        let p = parse(&broken, None);
+        assert!(!p.errors.is_empty());
+        assert_eq!(
+            p.refs
+                .iter()
+                .filter(|r| r.iri.as_str() == "http://example.org/C")
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn a_nested_element_that_only_names_an_iri_is_an_object() {
         let text = concat!(

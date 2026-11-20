@@ -93,7 +93,10 @@ impl Kept {
                 | Syntax::TriG
                 | Syntax::NTriples
                 | Syntax::NQuads
-                | Syntax::RdfXml => diagnostics::term_uses(a, k, a.parsed.refs.iter()),
+                | Syntax::RdfXml => {
+                    let uses = a.parsed.refs.iter().filter(|r| !a.is_end_tag(r));
+                    diagnostics::term_uses(a, k, uses)
+                }
             }
         } else {
             Default::default()
@@ -260,7 +263,8 @@ impl Kept {
         let b = w.bytes;
         let r0 = p.refs.partition_point(|r| r.span.start < b.start);
         let r1 = p.refs.partition_point(|r| r.span.start < b.new_end());
-        let (vocab, own) = diagnostics::term_uses(a, k, p.refs[r0..r1].iter());
+        let uses = p.refs[r0..r1].iter().filter(|r| !a.is_end_tag(r));
+        let (vocab, own) = diagnostics::term_uses(a, k, uses);
         for (v, new) in [(&mut self.vocab, vocab), (&mut self.own, own)] {
             let lo = v.partition_point(|f| f.span.start < b.start);
             let hi = v.partition_point(|f| f.span.start < b.end);
@@ -290,8 +294,11 @@ impl Kept {
                 .iter()
                 .map(|&i| a.parsed.refs[i as usize].span)
                 .collect();
-            let (vocab, own) =
-                diagnostics::term_uses(a, k, refs.iter().map(|&i| &a.parsed.refs[i as usize]));
+            let uses = refs
+                .iter()
+                .map(|&i| &a.parsed.refs[i as usize])
+                .filter(|r| !a.is_end_tag(r));
+            let (vocab, own) = diagnostics::term_uses(a, k, uses);
             for (v, new) in [(&mut self.vocab, vocab), (&mut self.own, own)] {
                 v.retain(|f| !spans.contains(&f.span));
                 v.extend(new);
