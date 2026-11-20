@@ -395,6 +395,7 @@ mod tests {
             pos,
             "http://other.org/b",
             scope,
+            crate::features::navigation::RdfXml::Edit,
         )
         .unwrap_err();
         assert!(e.contains("not written in a JSON string"), "{e}");

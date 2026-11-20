@@ -1,17 +1,20 @@
 //! The features that write a document or offer text to type: formatting,
-//! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) are
-//! read-only, and their editor keeps its own XML language, so the editor
-//! should not offer these features there.
+//! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) keep
+//! their editor's own XML language, and of these only rename edits them
+//! (`features::writes`), so the editor should not offer the other three
+//! there.
 //!
 //! By default the `initialize` result announces each one statically, for
 //! every document, and the server answers nothing that writes an RDF/XML
-//! document (no edits, no completions; rename says why). A client opts in to
-//! more with `"registerOutsideRdfXml": true` at the top level of its
-//! `initializationOptions` ([`OPT_IN`]): each of the four features that the
-//! client can register dynamically (`dynamicRegistration`) is then left out
-//! of the result and registered once the client is initialized, for
-//! [`selector`], which leaves RDF/XML files out. VS Code opts in, so that it
-//! lists no turtle-lsp formatter for XML files. The option is read once, at
+//! document but a rename (no formatting edits, no completions, no code
+//! actions). A client opts in to more with `"registerOutsideRdfXml": true`
+//! at the top level of its `initializationOptions` ([`OPT_IN`]): each of
+//! the four features that the client can register dynamically
+//! (`dynamicRegistration`) is then left out of the result and registered
+//! once the client is initialized, for [`selector`], which leaves RDF/XML
+//! files out, and rename for [`rename_selector`], which takes them in. VS
+//! Code opts in, so that it lists no turtle-lsp formatter for XML files.
+//! The option is read once, at
 //! `initialize`, and is not a setting: the settings ignore the key, and a
 //! configuration section that replaces `initializationOptions` later does
 //! not change it.
@@ -40,6 +43,11 @@ pub(crate) const LANGUAGES: [&str; 6] =
 /// JSON-LD files keep the editor's JSON language: they are matched by name.
 pub(crate) const JSONLD_PATTERN: &str = "**/*.jsonld";
 
+/// RDF/XML files keep the editor's XML language: they are matched by name.
+/// VS Code's client keeps a registered filter by this pattern
+/// (`RDFXML_PATTERN` in `editors/vscode/src/client.ts`, which a test checks).
+pub(crate) const RDFXML_PATTERN: &str = "**/*.{owl,rdf}";
+
 /// The documents the registered features apply to: every language of
 /// [`LANGUAGES`] and every `.jsonld` file, whatever its URI scheme.
 pub(crate) fn selector() -> Vec<DocumentFilter> {
@@ -53,6 +61,18 @@ pub(crate) fn selector() -> Vec<DocumentFilter> {
         .map(|l| filter(Some(l), None))
         .chain([filter(None, Some(JSONLD_PATTERN))])
         .collect()
+}
+
+/// The documents rename applies to: [`selector`]'s, and RDF/XML files,
+/// which a rename edits too (`rename.rdfXml`).
+pub(crate) fn rename_selector() -> Vec<DocumentFilter> {
+    let mut filters = selector();
+    filters.push(DocumentFilter {
+        language: None,
+        scheme: None,
+        pattern: Some(RDFXML_PATTERN.to_string()),
+    });
+    filters
 }
 
 pub(crate) fn completion() -> CompletionOptions {
@@ -119,8 +139,8 @@ impl Dynamic {
     }
 
     /// The registrations to send once the client is initialized: one per
-    /// dynamic feature, each with [`selector`] and the options its static
-    /// capability would have.
+    /// dynamic feature, each with [`selector`] ([`rename_selector`] for
+    /// rename) and the options its static capability would have.
     pub(crate) fn registrations(self) -> Vec<Registration> {
         [
             (
@@ -151,7 +171,11 @@ impl Dynamic {
         .into_iter()
         .filter(|(on, ..)| *on)
         .map(|(_, id, method, mut options)| {
-            options["documentSelector"] = json!(selector());
+            options["documentSelector"] = if method == "textDocument/rename" {
+                json!(rename_selector())
+            } else {
+                json!(selector())
+            };
             Registration {
                 id: id.into(),
                 method: method.into(),
@@ -234,8 +258,10 @@ mod tests {
         assert!(ignored_with.is_empty());
     }
 
+    /// Formatting, completion and code actions leave RDF/XML files out;
+    /// rename takes them too, by VS Code's pattern for them.
     #[test]
-    fn the_selector_leaves_rdfxml_files_out() {
+    fn the_selector_leaves_rdfxml_files_out_but_for_rename() {
         let all = Dynamic {
             formatting: true,
             rename: true,
@@ -245,13 +271,29 @@ mod tests {
         for r in all.registrations() {
             let options = r.register_options.unwrap();
             let filters = options["documentSelector"].as_array().unwrap();
-            assert_eq!(filters.len(), LANGUAGES.len() + 1, "{}", r.method);
-            for f in filters {
+            let rename = r.method == "textDocument/rename";
+            let rdfxml = json!({"pattern": RDFXML_PATTERN});
+            assert_eq!(filters.contains(&rdfxml), rename, "{}", r.method);
+            assert_eq!(
+                filters.len(),
+                LANGUAGES.len() + 1 + usize::from(rename),
+                "{}",
+                r.method
+            );
+            for f in filters.iter().filter(|f| **f != rdfxml) {
                 let text = f.to_string();
                 assert!(!text.contains("owl") && !text.contains("rdf") && !text.contains("xml"));
                 assert!(f.get("scheme").is_none(), "{text}");
             }
         }
+        // The pattern VS Code's client matches.
+        let client = include_str!("../../editors/vscode/src/client.ts");
+        assert!(
+            client.contains(&format!(
+                "export const RDFXML_PATTERN = \"{RDFXML_PATTERN}\""
+            )),
+            "editors/vscode/src/client.ts"
+        );
         // The options are those of the static capabilities.
         let rename = all.registrations().remove(1).register_options.unwrap();
         assert_eq!(rename["prepareProvider"], true);

@@ -21,9 +21,14 @@ pub mod symbols;
 
 use crate::syntax::Syntax;
 
-/// Whether the features that write text (quick fixes, refactorings,
-/// rename) may edit a document of `syntax`. RDF/XML is read-only: nothing
-/// writes XML, whatever form its references have.
+/// Whether the features that write text (formatting, quick fixes,
+/// refactorings, `check --fix`, the Turtle-family rename) may edit a
+/// document of `syntax`. RDF/XML is read-only for all of them, whatever form
+/// its references have. Rename is the one writer of RDF/XML, and not
+/// through this gate: `navigation::rename_term` edits an RDF/XML document
+/// only through `rdfxml::rename::plan`, which places each edit at the spans
+/// the RDF/XML grammar reads and refuses the rename when it cannot
+/// (`rename.rdfXml` turns it off).
 pub(crate) fn writes(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
