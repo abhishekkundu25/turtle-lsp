@@ -297,7 +297,7 @@ impl Session<'_> {
         if let Some(a) = self.ws.analysis(&file_uri) {
             return Some(a);
         }
-        let text = std::fs::read_to_string(&file).ok()?;
+        let text = crate::workspace::read_text(&file)?;
         Some(Arc::new(Analysis::new(
             file_uri,
             &text,
@@ -579,6 +579,38 @@ mod tests {
             .unwrap();
         assert!(edit.document_changes.is_none() && edit.change_annotations.is_none());
         assert_eq!(changed(&edit), [ttl.as_str()]);
+    }
+
+    /// A closed file that starts with a byte order mark is read as the
+    /// client reads it, without the mark: a rename's edits land at the
+    /// columns the client sees, in RDF/XML and in Turtle, whose parser
+    /// would not read the mark at all.
+    #[test]
+    fn a_closed_file_with_a_byte_order_mark_is_edited_where_the_client_sees_it() {
+        let dir = Dir::new("rename-bom");
+        let rdf = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\"><rdf:Description rdf:about=\"http://example.org/w1\"><ex:partOf rdf:resource=\"http://example.org/w2\"/></rdf:Description></rdf:RDF>\n";
+        let ttl = "@prefix ex: <http://example.org/> . ex:w1 ex:partOf ex:w2 .\n";
+        let w = dir.write("w.rdf", &format!("\u{feff}{rdf}"));
+        let b = dir.write("b.ttl", &format!("\u{feff}{ttl}"));
+        let a_text = "@prefix ex: <http://example.org/> .\nex:w9 ex:partOf ex:w1 .\n";
+        let a = dir.write("a.ttl", a_text);
+        let mut ws = workspace(&dir);
+        ws.index_paths(vec![dir.0.join("w.rdf"), dir.0.join("b.ttl")]);
+        ws.open_doc(a.clone(), a_text.into(), 1);
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        let edit = s
+            .rename(&a, at(a_text, "ex:w1", 3, true), "ex:w7")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            apply(rdf, edits_of(&edit, &w)),
+            rdf.replace("example.org/w1", "example.org/w7")
+        );
+        assert_eq!(
+            apply(ttl, edits_of(&edit, &b)),
+            ttl.replace("ex:w1", "ex:w7")
+        );
     }
 
     /// With `rename.rdfXml` off, a rename that would edit an RDF/XML

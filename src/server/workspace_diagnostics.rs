@@ -367,7 +367,7 @@ fn sparql_file(
     k: &Knowledge,
     job: &Job,
 ) -> Option<Vec<Diagnostic>> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::workspace::read_text(path)?;
     let external = prefixes.external_prefixes_for(uri);
     let q = SparqlAnalysis::new(uri.to_string(), &text, external);
     let inputs = DiagnosticInputs::new(&job.settings);
@@ -446,7 +446,7 @@ impl Server {
                 Err(msg) => Some(vec![super::internal_error_diagnostic(&msg)]),
             }
         } else if is_sparql_path(&path) {
-            let text = std::fs::read_to_string(&path).ok();
+            let text = crate::workspace::read_text(&path);
             text.map(|text| {
                 let external = self.ws.external_prefixes_for(uri);
                 let q = SparqlAnalysis::new(uri.to_string(), &text, external);
