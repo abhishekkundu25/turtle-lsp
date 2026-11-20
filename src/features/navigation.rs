@@ -2047,6 +2047,62 @@ mod tests {
     /// Definition, references, highlights, the type hierarchy and the
     /// reference lenses work in an RDF/XML document, and the prefix of a
     /// QName there is part of its IRI: no Turtle prefix to go to.
+    /// An end tag's name is a use like its start tag's: a rename starts
+    /// there and edits both, and references, highlights, definition and
+    /// hover find it.
+    #[test]
+    fn an_end_tag_is_a_use_of_its_element() {
+        let enc = Encoding::Utf8;
+        let (_, owl_uri) = in_w("end.owl");
+        let tx = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n\
+            <ex:C rdf:about=\"http://example.org/s\">\n<ex:p>1</ex:p>\n</ex:C>\n\
+            </rdf:RDF>\n";
+        let owl = Arc::new(Analysis::with_syntax(
+            owl_uri.clone(),
+            tx,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        let mut k = Knowledge::default();
+        k.set(&owl_uri, Source::Open, owl.clone());
+        let range_of = |needle: &str, plus: usize, len: usize| {
+            let o = offset_of(tx, needle, plus);
+            owl.range(enc, Span::new(o, o + len as u32))
+        };
+        for (local, start, end) in [("C", "<ex:C", "</ex:C>"), ("p", "<ex:p", "</ex:p>")] {
+            let at = owl.position(enc, offset_of(tx, end, 4));
+            let want = [range_of(start, 1, 4), range_of(end, 2, 4)];
+            let mut refs: Vec<Range> = references(&owl, &k, enc, at, true)
+                .into_iter()
+                .map(|l| l.range)
+                .collect();
+            refs.sort_by_key(|r| (r.start.line, r.start.character));
+            assert_eq!(refs, want, "{local}");
+            let lit: Vec<Range> = highlights(&owl, enc, at)
+                .into_iter()
+                .map(|h| h.range)
+                .collect();
+            assert_eq!(lit, want, "{local}");
+            assert!(
+                crate::features::hover::hover(&owl, &k, enc, at).is_some(),
+                "{local}"
+            );
+            assert_eq!(
+                prepare_rename(&owl, enc, at, RdfXml::Edit).unwrap(),
+                Some(PrepareRenameResponse::Range(want[1])),
+                "{local}"
+            );
+            let edit = renamed_at(&owl, &k, at, &format!("{local}2")).unwrap();
+            assert_eq!(
+                edited(&owl, &edit),
+                tx.replace(&format!("ex:{local}>"), &format!("ex:{local}2>"))
+                    .replace(&format!("<ex:{local} "), &format!("<ex:{local}2 ")),
+                "{local}"
+            );
+        }
+    }
+
     #[test]
     fn navigation_works_in_rdfxml() {
         let enc = Encoding::Utf8;

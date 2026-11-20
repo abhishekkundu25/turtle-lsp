@@ -785,16 +785,36 @@ pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Result<Option<A
     if let Some(r) = unedited(text, &fresh) {
         return Err(r);
     }
-    let Some(u) = uses.into_iter().min_by_key(|u| u.span.end - u.span.start) else {
-        return Ok(None);
-    };
-    if let UseKind::Namespace = u.kind {
-        return Ok(Some(At::Namespace));
-    }
+    let (span, u, all) =
+        match uses.into_iter().min_by_key(|u| u.span.end - u.span.start) {
+            Some(u) => {
+                if let UseKind::Namespace = u.kind {
+                    return Ok(Some(At::Namespace));
+                }
+                let (_, all) = grammar::uses(text, base, Want::Iri(u.iri));
+                (u.span, u, all)
+            }
+            // An end tag's name: the use of its start tag, at the end tag.
+            None => {
+                let Some(r) = fresh.refs.iter().find(|r| {
+                    r.span.contains(offset) && text[..r.span.start as usize].ends_with("</")
+                }) else {
+                    return Ok(None);
+                };
+                let (_, mut all) = grammar::uses(text, base, Want::Iri(r.iri));
+                let Some(i) = all.iter().position(|u| {
+                matches!(&u.kind, UseKind::Element { end: Some(e), .. } if e.name == Some(r.span))
+            }) else {
+                return Ok(None);
+            };
+                let u = all.swap_remove(i);
+                (r.span, u, all)
+            }
+        };
     // A use of this IRI that no edit can change refuses every rename of it.
-    let (_, all) = grammar::uses(text, base, Want::Iri(u.iri));
     if let Some(r) = all
         .iter()
+        .chain([&u])
         .filter_map(|w| Some((w.span.start, fixed(text, w)?)))
         .min_by_key(|(start, _)| *start)
         .map(|(start, why)| Refusal::at(text, start, why))
@@ -802,7 +822,7 @@ pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Result<Option<A
         return Err(r);
     }
     Ok(Some(At::Use {
-        span: u.span,
+        span,
         iri: u.iri,
         prefixes: u
             .scope
@@ -1655,6 +1675,7 @@ mod tests {
                 Err(r) => Some(("refused".into(), r.reason, None)),
             }
         };
+        let at_offset = |text: &str, offset: u32| at(text, Some(URI), offset);
         let ex = Some("http://example.org/".to_string());
         assert_eq!(
             on("ex:C", 1),
@@ -1680,6 +1701,25 @@ mod tests {
             on("<ex:p>", 2),
             Some(("ex:p".into(), "http://example.org/p".into(), ex.clone()))
         );
+        // An end tag's name: the element's IRI, at the end tag.
+        for (needle, plus) in [("</ex:p>", 2), ("</ex:p>", 6), ("</ex:C>", 4)] {
+            let name = &needle[2..needle.len() - 1];
+            let at = text.find(needle).unwrap() + plus;
+            let got = on(needle, plus);
+            assert_eq!(
+                got,
+                Some((
+                    name.into(),
+                    format!("http://example.org/{}", &name[3..]),
+                    ex.clone()
+                )),
+                "{needle}"
+            );
+            let Ok(Some(At::Use { span, .. })) = at_offset(&text, at as u32) else {
+                panic!("{needle}")
+            };
+            assert_eq!(span.start as usize, text.find(needle).unwrap() + 2);
+        }
         assert_eq!(
             on("xmlns:ex", 7),
             Some(("xmlns".into(), String::new(), None))
