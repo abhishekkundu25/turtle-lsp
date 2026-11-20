@@ -1565,11 +1565,31 @@ mod tests {
 
     /// [`difference`], unless the graphs differ only where `oxrdfxml` keeps
     /// the white space of an attribute value that XML 1.0 (3.3.3) makes
-    /// spaces: each triple only `oxrdfxml` has is one only ours has, with
-    /// that white space in its literal made spaces.
-    fn difference_past_normalization(ours: &Graph, theirs: &Graph) -> Option<String> {
-        let only_ours: Vec<_> = ours.iter().filter(|t| !theirs.contains(*t)).collect();
-        let only_theirs: Vec<_> = theirs.iter().filter(|t| !ours.contains(*t)).collect();
+    /// spaces: each triple only `oxrdfxml` has is, with its tabs and line
+    /// ends made spaces, a triple only ours has, each of ours used once,
+    /// whose object is the value of an attribute of `text` that holds a
+    /// tab or a line end (a character reference is not normalized).
+    fn difference_past_normalization(text: &str, p: &Parsed, theirs: &Graph) -> Option<String> {
+        let ours = &graph(p);
+        let normalized_values: FxHashSet<&str> = p
+            .triples
+            .iter()
+            .filter_map(|t| {
+                let Node::Literal { value, .. } = &t.o else {
+                    return None;
+                };
+                let (from, to) = (t.o_span.start as usize, t.o_span.end as usize);
+                let quote = text[..from].chars().next_back()?;
+                let quoted = matches!(quote, '"' | '\'') && text[to..].starts_with(quote);
+                let raw = &text[from..to];
+                (quoted && raw.contains(['\t', '\n', '\r'])).then_some(&**value)
+            })
+            .collect();
+        let mut only_ours: Vec<oxrdf::Triple> = ours
+            .iter()
+            .filter(|t| !theirs.contains(*t))
+            .map(|t| t.into_owned())
+            .collect();
         let normalized = |t: &oxrdf::TripleRef<'_>| -> Option<oxrdf::Triple> {
             let oxrdf::TermRef::Literal(l) = t.object else {
                 return None;
@@ -1578,6 +1598,9 @@ mod tests {
                 .value()
                 .replace("\r\n", " ")
                 .replace(['\t', '\n', '\r'], " ");
+            if !normalized_values.contains(value.as_str()) {
+                return None;
+            }
             let o = match l.language() {
                 Some(lang) => Literal::new_language_tagged_literal_unchecked(value, lang),
                 None => Literal::new_typed_literal(value, l.datatype()),
@@ -1588,15 +1611,51 @@ mod tests {
                 o,
             ))
         };
-        let explained = only_ours.len() == only_theirs.len()
-            && only_theirs.iter().all(|t| {
-                normalized(t).is_some_and(|n| only_ours.iter().any(|o| o.into_owned() == n))
-            });
-        if explained {
+        let explained = theirs.iter().filter(|t| !ours.contains(*t)).all(|t| {
+            let at = normalized(&t).and_then(|n| only_ours.iter().position(|o| *o == n));
+            at.map(|i| only_ours.swap_remove(i)).is_some()
+        });
+        if explained && only_ours.is_empty() {
             None
         } else {
             difference(ours, theirs)
         }
+    }
+
+    /// The oracle accepts a difference only where attribute-value
+    /// normalization explains it: not in element text, where a line end
+    /// stays, and each triple of ours explains one of `oxrdfxml`'s.
+    #[test]
+    fn only_attribute_normalization_explains_a_difference() {
+        let doc = |body: &str| {
+            format!(
+                r#"{HEAD}<rdf:Description rdf:about="urn:ex:s"{body}</rdf:Description></rdf:RDF>"#
+            )
+        };
+        let lit = |p: &str, v: &str| {
+            oxrdf::Triple::new(
+                NamedNode::new_unchecked("urn:ex:s"),
+                NamedNode::new_unchecked(format!("urn:ex:{p}")),
+                Literal::new_simple_literal(v),
+            )
+        };
+        // An attribute value with a line end: explained.
+        let text = doc(" e:p=\"a\nb\">");
+        let p = parse(&text, None);
+        let want = theirs(&text, None).unwrap();
+        assert!(want.contains(&lit("p", "a\nb")));
+        assert_eq!(difference_past_normalization(&text, &p, &want), None);
+        // Element text keeps its line end: a space in ours is no
+        // normalization.
+        let text = doc("><e:p>a b</e:p>");
+        let p = parse(&text, None);
+        let want = canonical([lit("p", "a\nb")]);
+        assert!(difference_past_normalization(&text, &p, &want).is_some());
+        // Two of theirs, one of ours.
+        let text = doc(" e:p=\"a\nb\" e:q=\"x\">");
+        let p = parse(&text, None);
+        let want = canonical([lit("p", "a\nb"), lit("p", "a\tb")]);
+        assert!(difference_past_normalization(&text, &p, &want).is_some());
     }
 
     /// Our parse of a text `oxrdfxml` reads without error: no error, and
@@ -2190,7 +2249,7 @@ mod tests {
             spans_hold(&text, &p);
             let want = theirs(&text, Some(&base)).unwrap_or_else(|e| panic!("{name}: {e}"));
             let ours = graph(&p);
-            if let Some(d) = difference_past_normalization(&ours, &want) {
+            if let Some(d) = difference_past_normalization(&text, &p, &want) {
                 panic!("{name}: {d}");
             }
             let known = CORPUS_KNOWN.iter().find(|k| k.0 == name);
@@ -2253,7 +2312,7 @@ mod tests {
         let Ok(want) = theirs(text, Some(BASE)) else {
             return false;
         };
-        if let Some(d) = difference_past_normalization(&graph(&p), &want) {
+        if let Some(d) = difference_past_normalization(text, &p, &want) {
             panic!("{what}: oxrdfxml reads it, and the graphs differ: {d}");
         }
         true
