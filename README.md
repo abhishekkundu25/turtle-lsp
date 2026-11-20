@@ -521,7 +521,8 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   `encoding` error, and an import that is not UTF-8 is not read. Files over
   50 MB are not read (the Gene Ontology's 118 MB `go.owl`): `check` reports
   them as it does any file over the limit. A keystroke in PATO (20 MB) takes
-  about 90 ms. The browser editor reads files up to 10 MB.
+  about 90 ms. The browser editor reads files up to 10 MB, in UTF-8 only:
+  it names a file it does not read and its first bad byte.
 - **XML as the spec reads it**: line ends and attribute values are
   normalized and internal entities expand, nested or holding markup, within
   limits that refuse entity bombs and external entities.
