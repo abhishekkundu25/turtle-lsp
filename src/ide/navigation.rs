@@ -491,7 +491,9 @@ mod tests {
     fn a_rename_that_edits_rdfxml_asks_to_confirm_it() {
         let dir = Dir::new("rename-rdfxml");
         let ttl = dir.write("data.ttl", TTL);
-        let owl = dir.write("onto.owl", OWL);
+        // A name whose URI escapes characters is found again all the same.
+        let owl = dir.write("my onto é.owl", OWL);
+        assert!(owl.contains("%20"), "{owl}");
         let rq = dir.write("q.rq", QUERY);
         let mut ws = workspace(&dir);
         ws.open_doc(ttl.clone(), TTL.into(), 1);

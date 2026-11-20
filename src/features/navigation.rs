@@ -1726,11 +1726,11 @@ mod tests {
         }
         // A use the document cannot be rewritten for refuses it all, and the
         // message names the file, the line and the reason.
-        let err = renamed_at(&owl, &k, at, "<http://other.org/B>").unwrap_err();
+        let err = renamed_at(&owl, &k, at, "<http://example.com/B>").unwrap_err();
         assert_eq!(
             err,
             format!(
-                "can't rename in {}: line 9: no prefix in scope at ex:A is bound to a namespace of <http://other.org/B>, and a rename adds no xmlns declaration",
+                "can't rename in {}: line 9: no prefix in scope at ex:A is bound to a namespace of <http://example.com/B>, and a rename adds no xmlns declaration",
                 owl_path.display()
             )
         );
@@ -1746,6 +1746,38 @@ mod tests {
         assert!(err.starts_with(&want), "{err}");
     }
 
+    /// An OWL/XML file (syntax `RdfXml`, read by no frontend) is no place
+    /// to start a rename, though its XML would read as RDF/XML names: it
+    /// would rename the term everywhere but there.
+    #[test]
+    fn no_rename_starts_in_an_owl_xml_file() {
+        let (_, owl_uri) = in_w("onto.owl");
+        let tx = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\">\n<Declaration><Class IRI=\"#A\"/></Declaration>\n</Ontology>\n";
+        let owl = Arc::new(Analysis::with_syntax(
+            owl_uri.clone(),
+            tx,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        assert!(owl.parsed.triples.is_empty() && owl.parsed.refs.is_empty());
+        let text = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<urn:ex:o> a owl:Ontology , owl:Class .\n";
+        let (_, a_uri) = in_w("a.ttl");
+        let mut k = Knowledge::default();
+        k.set(&a_uri, Source::Open, turtle_doc(&a_uri, text));
+        k.set(&owl_uri, Source::Open, owl.clone());
+        for needle in ["<Ontology", "<Class", "<Declaration"] {
+            let at = owl.position(Encoding::Utf8, offset_of(tx, needle, 2));
+            assert_eq!(
+                prepare_rename(&owl, Encoding::Utf8, at, RdfXml::Edit),
+                Ok(None),
+                "{needle}"
+            );
+            let err = renamed_at(&owl, &k, at, "Thing").unwrap_err();
+            assert_eq!(err, "nothing to rename here", "{needle}");
+        }
+    }
+
     /// A rename started in RDF/XML reads the new name with the namespaces
     /// in scope at the cursor; an invalid name edits nothing; an `xmlns`
     /// declaration is no place to rename a prefix. Renaming to the
@@ -1755,7 +1787,7 @@ mod tests {
         let (_, owl_uri) = in_w("onto.owl");
         let tx = "<!DOCTYPE rdf:RDF [<!ENTITY ex \"http://example.org/\">]>\n\
             <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\" xml:base=\"http://example.org/base\">\n\
-            <ex:C rdf:about=\"#a\" xmlns:o=\"http://other.org/\" xmlns=\"http://default.org/\"><ex:p rdf:resource=\"&ex;t\"/><ex:q rdf:ID=\"i\">1</ex:q><n>2</n></ex:C>\n\
+            <ex:C rdf:about=\"#a\" xmlns:o=\"http://example.com/\" xmlns=\"http://example.net/\"><ex:p rdf:resource=\"&ex;t\"/><ex:q rdf:ID=\"i\">1</ex:q><n>2</n></ex:C>\n\
             </rdf:RDF>\n";
         let owl = Arc::new(Analysis::with_syntax(
             owl_uri.clone(),

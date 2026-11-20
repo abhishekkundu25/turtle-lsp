@@ -62,7 +62,8 @@ pub(crate) fn plan(
     old: Iri,
     new: &str,
 ) -> Result<Vec<(Span, String)>, Refusal> {
-    if old == new {
+    // No IRI is used where no text is read (OWL/XML).
+    if old == new || super::unread(text).is_some() {
         return Ok(Vec::new());
     }
     let base = parsed.document_base.as_deref();
@@ -406,8 +407,10 @@ pub(crate) enum At {
 /// What a rename at `offset` of `text`, with document base `base`, starts
 /// on: `None` where nothing written names an IRI that a rename could change
 /// (`rdf:li`, a name or value read from an entity, `rdf:type` as an
-/// attribute name, anything that is no use).
+/// attribute name, anything that is no use), and anywhere in a text that
+/// [`super::parse`] does not read (OWL/XML).
 pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Option<At> {
+    super::unread(text).is_none().then_some(())?;
     let (_, uses) = grammar::uses(text, base, Want::At(offset));
     let u = uses
         .into_iter()
@@ -607,12 +610,12 @@ mod tests {
         assert_eq!(out, text.replace("ex:p", "ex:q"));
         // Another namespace: its prefix, in scope there.
         let text = doc(
-            "<ex:A rdf:about=\"urn:ex:s\" xmlns:o=\"http://other.org/\">\n<ex:p>x</ex:p>\n</ex:A>\n<ex:A/>",
+            "<ex:A rdf:about=\"urn:ex:s\" xmlns:o=\"http://example.com/\">\n<ex:p>x</ex:p>\n</ex:A>\n<ex:A/>",
         );
-        let out = renamed_ok(&text, None, "http://example.org/p", "http://other.org/q");
+        let out = renamed_ok(&text, None, "http://example.org/p", "http://example.com/q");
         assert_eq!(out, text.replace("ex:p", "o:q"));
         // Out of its scope: refused, at the first use that has none.
-        let r = refused(&text, None, "http://example.org/A", "http://other.org/B");
+        let r = refused(&text, None, "http://example.org/A", "http://example.com/B");
         assert_eq!(r.line, 6, "{r:?}");
         assert!(r.reason.contains("no prefix in scope at ex:A"), "{r:?}");
         assert!(r.reason.contains("adds no xmlns"), "{r:?}");
@@ -646,7 +649,7 @@ mod tests {
             &text,
             None,
             "http://example.org/label",
-            "http://other.org/name",
+            "http://example.com/name",
         );
         assert!(r.reason.contains("no prefix in scope at label"), "{r:?}");
     }
@@ -658,9 +661,9 @@ mod tests {
         assert_eq!(out, text.replace("ex:p=", "ex:q="));
         // An attribute takes no default namespace.
         let text = format!(
-            "<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns=\"http://other.org/\" xmlns:ex=\"http://example.org/\">\n<rdf:Description rdf:about=\"urn:ex:s\" ex:p=\"v\"/>\n</rdf:RDF>\n"
+            "<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns=\"http://example.com/\" xmlns:ex=\"http://example.org/\">\n<rdf:Description rdf:about=\"urn:ex:s\" ex:p=\"v\"/>\n</rdf:RDF>\n"
         );
-        let r = refused(&text, None, "http://example.org/p", "http://other.org/q");
+        let r = refused(&text, None, "http://example.org/p", "http://example.com/q");
         assert!(r.reason.contains("no prefix in scope at ex:p"), "{r:?}");
         // Two attributes with one name after it: refused by the check.
         let text = doc("<rdf:Description rdf:about=\"urn:ex:s\" ex:p=\"v\" ex:q=\"w\"/>");
@@ -673,7 +676,7 @@ mod tests {
         // A prefix redeclared inside: its names there are another IRI.
         let text = doc(
             "<rdf:Description rdf:about=\"urn:ex:s\"><ex:p>1</ex:p></rdf:Description>\n\
-             <rdf:Description rdf:about=\"urn:ex:t\" xmlns:ex=\"http://other.org/\"><ex:p>2</ex:p></rdf:Description>",
+             <rdf:Description rdf:about=\"urn:ex:t\" xmlns:ex=\"http://example.com/\"><ex:p>2</ex:p></rdf:Description>",
         );
         let out = renamed_ok(&text, None, "http://example.org/p", "http://example.org/q");
         assert_eq!(out, text.replacen("ex:p>", "ex:q>", 2));
@@ -686,9 +689,9 @@ mod tests {
         assert_eq!(out, text.replace("a:p>", "a:q>").replace("b:p>", "b:q>"));
         // A prefix declared on the element itself is in scope for its name.
         let text = doc(
-            "<rdf:Description rdf:about=\"urn:ex:s\"><o:p xmlns:o=\"http://other.org/\">1</o:p><ex:p>2</ex:p></rdf:Description>",
+            "<rdf:Description rdf:about=\"urn:ex:s\"><o:p xmlns:o=\"http://example.com/\">1</o:p><ex:p>2</ex:p></rdf:Description>",
         );
-        let r = refused(&text, None, "http://example.org/p", "http://other.org/p");
+        let r = refused(&text, None, "http://example.org/p", "http://example.com/p");
         assert!(r.reason.contains("no prefix in scope at ex:p"), "{r:?}");
     }
 
@@ -937,6 +940,17 @@ mod tests {
         assert_eq!(on("rdf:li", 2), None);
         assert_eq!(on(">1<", 1), None);
         assert_eq!(on("rdf:RDF", 2), None);
+    }
+
+    /// A text in an OWL syntax that is not RDF reads as no RDF/XML here
+    /// either, though its XML would give names.
+    #[test]
+    fn an_owl_xml_text_has_no_use() {
+        let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"><Declaration><Class IRI=\"#A\"/></Declaration></Ontology>\n";
+        assert!(at(text, Some(URI), 2).is_none());
+        let p = super::super::parse(text, Some(URI));
+        let owl = Iri::intern("http://www.w3.org/2002/07/owl#Ontology");
+        assert_eq!(plan(text, &p, owl, "urn:ex:z"), Ok(Vec::new()));
     }
 
     #[test]

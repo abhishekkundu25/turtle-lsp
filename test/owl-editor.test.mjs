@@ -264,6 +264,31 @@ describe("a client that does not register features dynamically", () => {
   })
 })
 
+describe("a .owl that is not open", () => {
+  let w, s
+  before(async () => {
+    w = workspace()
+    s = await startServer({ cwd: w.dir, rootUri: uriOf(w.dir), capabilities: { workspace: ANNOTATIONS } })
+  })
+  after(async () => {
+    await s.stop()
+    fs.rmSync(w.dir, { recursive: true, force: true })
+  })
+
+  test("is edited from the index by a rename in a Turtle file, with its edits to be confirmed", async () => {
+    s.open(w.data, DATA)
+    const inData = { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:Widg") }
+    const edit = await until(
+      () => attempt(s, "textDocument/rename", { ...inData, newName: "ex:Thing" }),
+      (r) => r.result?.documentChanges?.length === 2,
+    )
+    const byUri = Object.fromEntries((edit.result?.documentChanges ?? []).map((d) => [d.textDocument.uri, d.edits]))
+    assert.ok(byUri[w.onto]?.every((e) => e.annotationId), JSON.stringify(edit))
+    assert.equal(applyEdits(ONTO, byUri[w.onto]), ONTO_RENAMED)
+    assert.equal(applyEdits(DATA, byUri[w.data]), DATA_RENAMED)
+  })
+})
+
 describe("with rename.rdfXml off", () => {
   let w, s
   before(async () => {

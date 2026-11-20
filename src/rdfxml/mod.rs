@@ -42,7 +42,7 @@ const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 /// document's URL, against which relative IRIs resolve until an `xml:base`
 /// replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
-    let Some(unread) = Sniffed::of(text).unread() else {
+    let Some(unread) = unread(text) else {
         return grammar::parse(text, base);
     };
     Parsed {
@@ -56,6 +56,13 @@ pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
         )],
         ..Parsed::default()
     }
+}
+
+/// Why `text` is not read: an OWL syntax that is not RDF. Its XML may
+/// still look like RDF/XML to the grammar, so what reads the text again
+/// ([`rename`]) asks this first.
+fn unread(text: &str) -> Option<String> {
+    Sniffed::of(text).unread()
 }
 
 #[cfg(test)]
