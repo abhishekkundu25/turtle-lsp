@@ -977,10 +977,13 @@ fn applied(a: &Analysis, text: &str, enc: Encoding, edits: &[TextEdit]) -> Resul
     Ok(out)
 }
 
-/// A rename's `edits` of RDF/XML `text` (document `a`, parsed `before`
-/// when it has no errors): none in a document with errors, which is not
-/// edited; else the edited text is well-formed RDF/XML that gives the same
-/// graph, once `merge` reads the renamed IRI as the old one.
+/// The `edits` of RDF/XML `text` (document `a`, parsed `before` when it
+/// has no errors) by a rename that started in it and was not refused: it
+/// started at a reference of the parse (`merge`, the new IRI and the old
+/// one, is that reference's); it edits the document when the IRI changes;
+/// none in a document with errors, which is not edited; and the edited
+/// text is well-formed RDF/XML that gives the same graph, once `merge`
+/// reads the new IRI as the old one.
 fn rdfxml_rename_keeps_the_graph(
     a: &Analysis,
     text: &str,
@@ -989,8 +992,17 @@ fn rdfxml_rename_keeps_the_graph(
     edits: &[TextEdit],
     merge: Option<(Iri, Iri)>,
 ) -> Result<(), String> {
+    let Some((new, old)) = merge else {
+        return Err("started where the parse has no reference".into());
+    };
     if edits.is_empty() {
-        return Ok(());
+        return if new == old {
+            Ok(())
+        } else {
+            Err(format!(
+                "left the document it started in as it was (<{old}> to <{new}>)"
+            ))
+        };
     }
     let Some(before) = before else {
         return Err("edited an RDF/XML document with errors".into());
@@ -999,21 +1011,33 @@ fn rdfxml_rename_keeps_the_graph(
     keeps_the_graph(a, text, before, &after, merge)
 }
 
-/// A rename at a reference of RDF/XML `text`, which parses without errors,
-/// to a name of [`RENAMES`]: when it is not refused, the document's edits
-/// keep its graph (the mutated texts of `mutated_rdfxml` rarely parse
-/// without errors, and a document with errors is never edited).
-fn rdfxml_renames_keep_the_graph(rng: &mut Rng, text: &str, k: &mut Knowledge) {
+/// Renames in RDF/XML `text`, alone in a workspace, to names of
+/// [`RENAMES`], at its references and anywhere: each one that is not
+/// refused started at a reference and keeps the graph
+/// ([`rdfxml_rename_keeps_the_graph`]). The mutated texts of
+/// `mutated_rdfxml` rarely parse without errors, and a document with errors
+/// is never edited: these texts are the unmutated seeds, the OWL syntaxes
+/// among them.
+fn rdfxml_renames_keep_the_graph(rng: &mut Rng, text: &str) {
     let uri = doc_uri(Syntax::RdfXml);
-    let a = Analysis::with_syntax(uri.into(), text, Arc::default(), true, Syntax::RdfXml);
-    if !a.parsed.errors.is_empty() || a.parsed.refs.is_empty() {
-        return;
-    }
-    let a = Arc::new(a);
+    let a = Arc::new(Analysis::with_syntax(
+        uri.into(),
+        text,
+        Arc::default(),
+        true,
+        Syntax::RdfXml,
+    ));
+    let mut k = Knowledge::default();
     k.set(uri, Source::Open, a.clone());
-    for _ in 0..3 {
-        let r = &a.parsed.refs[rng.below(a.parsed.refs.len())];
-        let off = r.span.start + rng.below((r.span.end - r.span.start) as usize + 1) as u32;
+    let before = a.parsed.errors.is_empty().then_some(&a.parsed);
+    let refs = &a.parsed.refs;
+    for _ in 0..4 {
+        let off = if !refs.is_empty() && rng.below(2) == 0 {
+            let r = &refs[rng.below(refs.len())];
+            r.span.start + rng.below((r.span.end - r.span.start) as usize + 1) as u32
+        } else {
+            char_boundary(text, rng.below(text.len() + 1)) as u32
+        };
         let enc = if rng.below(2) == 0 {
             Encoding::Utf8
         } else {
@@ -1026,18 +1050,18 @@ fn rdfxml_renames_keep_the_graph(rng: &mut Rng, text: &str, k: &mut Knowledge) {
             file_of: &mut |_| None,
         };
         let rdfxml = navigation::RdfXml::Edit;
-        if let Ok(edit) = navigation::rename(&a, k, enc, pos, name, scope, rdfxml) {
+        if let Ok(edit) = navigation::rename(&a, &k, enc, pos, name, scope, rdfxml) {
             let edits = edits_to(Some(&edit), uri);
             let target = renamed(&a, off, name);
-            rdfxml_rename_keeps_the_graph(&a, text, enc, Some(&a.parsed), &edits, target)
-                .unwrap_or_else(|m| {
+            rdfxml_rename_keeps_the_graph(&a, text, enc, before, &edits, target).unwrap_or_else(
+                |m| {
                     panic!(
                         "renaming to {name:?} at {off} {m}\n  edits: {edits:?}\n  text: {text:?}"
                     )
-                });
+                },
+            );
         }
     }
-    k.remove(uri);
 }
 
 #[test]
@@ -3104,7 +3128,7 @@ fn mutated_rdfxml(k: usize) {
                 Syntax::RdfXml,
                 &mut base,
             );
-            rdfxml_renames_keep_the_graph(&mut Rng(seed ^ i as u64 ^ 0x5A17), source, &mut base);
+            rdfxml_renames_keep_the_graph(&mut Rng(seed ^ i as u64 ^ 0x5A17), source);
         }));
         if let Err(e) = r {
             panic!(
