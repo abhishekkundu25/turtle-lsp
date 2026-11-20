@@ -523,8 +523,9 @@ pub struct PrefixScope<'a> {
 /// Rename an IRI everywhere it occurs, or a prefix. A prefix a document
 /// declares itself is renamed in that document; one a prefixes.ttl declares is
 /// renamed there and in every document that takes it from there.
-/// `new_name` may be a local name (`robert`), a prefixed name (`ex:robert`)
-/// or a full IRI (`<http://...>`); each occurrence keeps its file's style.
+/// `new_name` may be a local name (`robert`), a prefixed name (`ex:robert`),
+/// a full IRI (`<http://...>`) or a bare absolute IRI ([`renamed_iri`]);
+/// each occurrence keeps its file's style.
 /// A JSON-LD term (or keyword alias) is renamed as a term
 /// ([`jsonld::term_rename`]). In an RDF/XML document, the IRI written at
 /// `pos` is renamed (the new name read with the namespaces in scope there);
