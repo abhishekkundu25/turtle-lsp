@@ -11,8 +11,12 @@
 //! name whose new namespace has no prefix in scope, and the IRIs a
 //! production implies. Then it checks its work: the edited text, parsed
 //! again, must give the same graph with the old IRI read as the new one,
-//! and no error; else it refuses. A document with a syntax error is
-//! refused whole. [`at`] says what a rename started at an offset renames.
+//! and no error; else it refuses. A document with a syntax error, or with
+//! default attribute values in its DOCTYPE, is refused whole, and
+//! [`blocked`] refuses it for any rename of an IRI its text may spell, as
+//! the grammar may not read every use there. [`at`] says what a rename
+//! started at an offset renames, or why every rename from there is
+//! refused.
 
 use super::grammar::{self, Base, Use, UseKind, Want, read_iri, resolves};
 use super::xml::{Refs, is_nc_name};
@@ -52,6 +56,141 @@ const CHAR_REFS: &str =
     "the value is written with character references, which a rename does not rewrite";
 const ENTITY_REFS: &str =
     "the value is written with entity references that a rename cannot rewrite one by one";
+const ATTLIST: &str = "the DOCTYPE gives attributes default values (<!ATTLIST>), which this reader does not add: the document is not edited";
+
+/// Why no rename edits `text` (parsed as `parsed`), whatever it names: its
+/// first syntax error, as a broken text may hide a use from the grammar,
+/// or a default attribute value its DOCTYPE declares, which this reader
+/// does not add to the elements.
+fn unedited(text: &str, parsed: &Parsed) -> Option<Refusal> {
+    if let Some(e) = parsed.errors.iter().min_by_key(|e| e.span.start) {
+        return Some(Refusal::at(
+            text,
+            e.span.start,
+            format!(
+                "the document has a syntax error ({}): it is not edited until it is fixed",
+                e.message()
+            ),
+        ));
+    }
+    attlist_default(text).map(|at| Refusal::at(text, at, ATTLIST.into()))
+}
+
+/// Where `text` declares an attribute list with a default value (a quoted
+/// value before the declaration's `>`); `#IMPLIED` and `#REQUIRED` add
+/// nothing.
+fn attlist_default(text: &str) -> Option<u32> {
+    let b = text.as_bytes();
+    let mut from = 0;
+    while let Some(i) = text[from..].find("<!ATTLIST") {
+        let start = from + i;
+        let mut j = start + "<!ATTLIST".len();
+        while j < b.len() && b[j] != b'>' {
+            if matches!(b[j], b'"' | b'\'') {
+                return Some(start as u32);
+            }
+            j += 1;
+        }
+        from = j;
+    }
+    None
+}
+
+/// Why a rename of `old` refuses an RDF/XML document that the grammar may
+/// not read in full ([`unedited`]) and whose text names `old` in some
+/// spelling ([`names`]): every use there or none. `None` for a text in an
+/// OWL syntax that is not RDF, which holds no RDF/XML use.
+pub(crate) fn blocked(text: &str, parsed: &Parsed, old: &str) -> Option<Refusal> {
+    if super::unread(text).is_some() {
+        return None;
+    }
+    let r = unedited(text, parsed)?;
+    let base = parsed.document_base.as_deref().map(|b| b.split('#').next());
+    (base == Some(old.split('#').next()) || names(text, old)).then_some(r)
+}
+
+/// Whether `text` may spell `old`, over-counting: the IRI itself, or its
+/// local name standing alone (after the last `#`, `/` or `:`, or after a
+/// quoted namespace or entity value the text writes), in the text or in it
+/// with character references and predefined entities expanded. An IRI
+/// with no local name (a namespace) may be spelled by any relative value.
+fn names(text: &str, old: &str) -> bool {
+    let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
+    if cut == old.len() {
+        return true;
+    }
+    let expanded = text.contains('&').then(|| unescaped(text));
+    let spells = |t: &str| {
+        t.contains(old)
+            || alone(t, &old[cut..])
+            || old[cut..]
+                .char_indices()
+                .skip(1)
+                .map(|(i, _)| cut + i)
+                .any(|i| {
+                    (t.contains(&format!("\"{}\"", &old[..i]))
+                        || t.contains(&format!("'{}'", &old[..i])))
+                        && alone(t, &old[i..])
+                })
+    };
+    spells(text) || expanded.as_deref().is_some_and(spells)
+}
+
+/// Whether `word` occurs in `t` with no name character on either side.
+fn alone(t: &str, word: &str) -> bool {
+    let name_char = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '\u{b7}');
+    t.match_indices(word).any(|(i, _)| {
+        !t[..i].chars().next_back().is_some_and(name_char)
+            && !t[i + word.len()..].chars().next().is_some_and(name_char)
+    })
+}
+
+/// `text` with its character references and predefined entities expanded.
+fn unescaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let semi = rest[..rest.len().min(12)].find(';');
+        let c = semi.and_then(|e| {
+            let name = &rest[1..e];
+            match name.strip_prefix('#') {
+                Some(n) => match n.strip_prefix('x') {
+                    Some(h) => u32::from_str_radix(h, 16).ok(),
+                    None => n.parse().ok(),
+                }
+                .and_then(char::from_u32),
+                None => predefined(name),
+            }
+        });
+        match (c, semi) {
+            (Some(c), Some(e)) => {
+                out.push(c);
+                rest = &rest[e + 1..];
+            }
+            _ => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character a predefined entity (`amp`, `lt`, `gt`, `apos`, `quot`)
+/// stands for.
+fn predefined(name: &str) -> Option<char> {
+    Some(match name {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "apos" => '\'',
+        "quot" => '"',
+        _ => return None,
+    })
+}
 
 /// The edits that make `text` (whose parse the workspace holds as
 /// `parsed`) name `new` wherever it names `old`, sorted, or why the
@@ -68,15 +207,8 @@ pub(crate) fn plan(
     }
     let base = parsed.document_base.as_deref();
     let (fresh, uses) = grammar::uses(text, base, Want::Iri(old));
-    if let Some(e) = fresh.errors.first() {
-        return Err(Refusal::at(
-            text,
-            e.span.start,
-            format!(
-                "the document has a syntax error ({}): it is not edited until it is fixed",
-                e.message()
-            ),
-        ));
+    if let Some(r) = unedited(text, &fresh) {
+        return Err(r);
     }
     // (line, written: 0 before implied: 1, reason)
     let mut refused: Vec<(u32, u8, String)> = Vec::new();
@@ -200,32 +332,74 @@ fn naming(t: &Triple, iri: Iri) -> Option<Span> {
     }
 }
 
-/// The edits of one use, or why it cannot be edited.
-fn edit(text: &str, u: &Use, new: &str) -> Result<Vec<(Span, String)>, String> {
+/// Why no edit of `u` names another IRI, whatever it is: a use read from
+/// an entity's replacement text, `rdf:li`, an `rdf:type` attribute name, a
+/// value written with references a rename does not rewrite, an element
+/// that is not closed.
+fn fixed(text: &str, u: &Use) -> Option<String> {
     match &u.kind {
         UseKind::Value { entity: true, .. }
         | UseKind::Id { entity: true, .. }
         | UseKind::Element { entity: true, .. }
-        | UseKind::Attr { entity: true, .. } => Err(FROM_ENTITY.into()),
-        UseKind::Li => Err(format!(
+        | UseKind::Attr { entity: true, .. } => Some(FROM_ENTITY.into()),
+        UseKind::Li => Some(format!(
             "rdf:li stands for <{}>, which no text names: the document cannot be rewritten to say another IRI there",
             u.iri
         )),
-        UseKind::TypeAttr => Err(
+        UseKind::TypeAttr => Some(
             "the attribute rdf:type is RDF/XML syntax: it cannot be written for another IRI".into(),
         ),
-        UseKind::Namespace => Ok(Vec::new()),
+        UseKind::Namespace | UseKind::Attr { .. } => None,
+        UseKind::Value {
+            text: value,
+            refs,
+            lead,
+            ..
+        } => match refs {
+            Refs::None => None,
+            Refs::Chars => Some(CHAR_REFS.into()),
+            Refs::Entity => {
+                let Some((r, n)) = lead.filter(|(r, _)| r.start == u.span.start) else {
+                    return Some(ENTITY_REFS.into());
+                };
+                let rest = &text[r.end as usize..u.span.end as usize];
+                if rest.is_empty() {
+                    let name = &text[r.start as usize + 1..r.end as usize - 1];
+                    return Some(format!(
+                        "the whole IRI comes from the entity &{name};: editing its declaration would change every use of the entity"
+                    ));
+                }
+                (rest.contains('&') || value.get(n as usize..) != Some(rest))
+                    .then(|| ENTITY_REFS.into())
+            }
+        },
+        UseKind::Id { refs, .. } => (*refs != Refs::None).then(|| CHAR_REFS.into()),
+        UseKind::Element { end, .. } => match end {
+            Some(e) if !e.implied => None,
+            _ => {
+                let raw = &text[u.span.start as usize..u.span.end as usize];
+                Some(format!(
+                    "<{raw}> is not closed: its end tag cannot change with it"
+                ))
+            }
+        },
+    }
+}
+
+/// The edits of one use, or why it cannot be edited.
+fn edit(text: &str, u: &Use, new: &str) -> Result<Vec<(Span, String)>, String> {
+    if let Some(why) = fixed(text, u) {
+        return Err(why);
+    }
+    match &u.kind {
         UseKind::Value {
             base,
             text: value,
             refs,
             lead,
             ..
-        } => value_edit(text, u, base, value, *refs, *lead, new),
-        UseKind::Id { base, refs, .. } => {
-            if *refs != Refs::None {
-                return Err(CHAR_REFS.into());
-            }
+        } => Ok(value_edit(text, u, base, value, *refs, *lead, new)),
+        UseKind::Id { base, .. } => {
             let local = new.rsplit_once('#').map(|(_, l)| l);
             match local {
                 Some(l)
@@ -247,17 +421,8 @@ fn edit(text: &str, u: &Use, new: &str) -> Result<Vec<(Span, String)>, String> {
             ..
         } => {
             let name = qname(text, u, ns, *prefix_len, true, new)?;
-            let raw = &text[u.span.start as usize..u.span.end as usize];
-            let end = match end {
-                Some(e) if !e.implied => e,
-                _ => {
-                    return Err(format!(
-                        "<{raw}> is not closed: its end tag cannot change with it"
-                    ));
-                }
-            };
             let mut out = vec![(u.span, name.clone())];
-            if let Some(n) = end.name {
+            if let Some(n) = end.and_then(|e| e.name) {
                 out.push((n, name));
             }
             Ok(out)
@@ -265,11 +430,12 @@ fn edit(text: &str, u: &Use, new: &str) -> Result<Vec<(Span, String)>, String> {
         UseKind::Attr { ns, prefix_len, .. } => {
             Ok(vec![(u.span, qname(text, u, ns, *prefix_len, false, new)?)])
         }
+        UseKind::Li | UseKind::TypeAttr | UseKind::Namespace => Ok(Vec::new()),
     }
 }
 
 /// The edit of an IRI attribute value whose text, references expanded, is
-/// `value`.
+/// `value`, which [`fixed`] passed.
 fn value_edit(
     text: &str,
     u: &Use,
@@ -278,41 +444,21 @@ fn value_edit(
     refs: Refs,
     lead: Option<(Span, u32)>,
     new: &str,
-) -> Result<Vec<(Span, String)>, String> {
+) -> Vec<(Span, String)> {
     let span = u.span;
     let quote = (span.start as usize)
         .checked_sub(1)
         .and_then(|i| text.as_bytes().get(i).copied())
         .unwrap_or(b'"');
-    match refs {
-        Refs::None => Ok(vec![(
-            span,
-            escaped(&written(value, base, u.iri.as_str(), new), quote),
-        )]),
-        Refs::Chars => Err(CHAR_REFS.into()),
-        Refs::Entity => {
-            let Some((r, n)) = lead.filter(|(r, _)| r.start == span.start) else {
-                return Err(ENTITY_REFS.into());
-            };
-            let name = &text[r.start as usize + 1..r.end as usize - 1];
-            let rest = &text[r.end as usize..span.end as usize];
-            if rest.is_empty() {
-                return Err(format!(
-                    "the whole IRI comes from the entity &{name};: editing its declaration would change every use of the entity"
-                ));
+    let w = written(value, base, u.iri.as_str(), new);
+    match (refs, lead) {
+        (Refs::Entity, Some((r, n))) => match w.strip_prefix(&value[..n as usize]) {
+            Some(local) if !local.is_empty() => {
+                vec![(Span::new(r.end, span.end), escaped(local, quote))]
             }
-            if rest.contains('&') || value.get(n as usize..) != Some(rest) {
-                return Err(ENTITY_REFS.into());
-            }
-            let head = &value[..n as usize];
-            let w = written(value, base, u.iri.as_str(), new);
-            Ok(match w.strip_prefix(head) {
-                Some(local) if !local.is_empty() => {
-                    vec![(Span::new(r.end, span.end), escaped(local, quote))]
-                }
-                _ => vec![(span, escaped(new, quote))],
-            })
-        }
+            _ => vec![(span, escaped(new, quote))],
+        },
+        _ => vec![(span, escaped(&w, quote))],
     }
 }
 
@@ -405,28 +551,39 @@ pub(crate) enum At {
 }
 
 /// What a rename at `offset` of `text`, with document base `base`, starts
-/// on: `None` where nothing written names an IRI that a rename could change
+/// on: `None` where nothing written names an IRI (text, a comment, the
+/// `rdf:RDF` name), and anywhere in a text that [`super::parse`] does not
+/// read (OWL/XML). `Err` where every rename from there is refused,
+/// whatever the new name: anywhere in a document that no rename edits
+/// ([`unedited`]), and on an IRI one of whose uses here no edit can change
 /// (`rdf:li`, a name or value read from an entity, `rdf:type` as an
-/// attribute name, anything that is no use), and anywhere in a text that
-/// [`super::parse`] does not read (OWL/XML).
-pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Option<At> {
-    super::unread(text).is_none().then_some(())?;
-    let (_, uses) = grammar::uses(text, base, Want::At(offset));
-    let u = uses
-        .into_iter()
-        .filter(|u| match &u.kind {
-            UseKind::Value { entity, .. }
-            | UseKind::Id { entity, .. }
-            | UseKind::Element { entity, .. }
-            | UseKind::Attr { entity, .. } => !entity,
-            UseKind::Namespace => true,
-            UseKind::Li | UseKind::TypeAttr => false,
-        })
-        .min_by_key(|u| u.span.end - u.span.start)?;
-    if let UseKind::Namespace = u.kind {
-        return Some(At::Namespace);
+/// attribute name, a value with character references), with the first of
+/// those uses.
+pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Result<Option<At>, Refusal> {
+    if super::unread(text).is_some() {
+        return Ok(None);
     }
-    Some(At::Use {
+    let (fresh, uses) = grammar::uses(text, base, Want::At(offset));
+    if let Some(r) = unedited(text, &fresh) {
+        return Err(r);
+    }
+    let Some(u) = uses.into_iter().min_by_key(|u| u.span.end - u.span.start) else {
+        return Ok(None);
+    };
+    if let UseKind::Namespace = u.kind {
+        return Ok(Some(At::Namespace));
+    }
+    // A use of this IRI that no edit can change refuses every rename of it.
+    let (_, all) = grammar::uses(text, base, Want::Iri(u.iri));
+    if let Some(r) = all
+        .iter()
+        .filter_map(|w| Some((w.span.start, fixed(text, w)?)))
+        .min_by_key(|(start, _)| *start)
+        .map(|(start, why)| Refusal::at(text, start, why))
+    {
+        return Err(r);
+    }
+    Ok(Some(At::Use {
         span: u.span,
         iri: u.iri,
         prefixes: u
@@ -434,7 +591,7 @@ pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Option<At> {
             .iter()
             .map(|(p, ns)| (p.clone(), ns.to_string()))
             .collect(),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -871,6 +1028,191 @@ mod tests {
         assert_eq!(r.line, 4);
     }
 
+    /// The line (from 1) of the first syntax error of `text`.
+    fn first_error_line(text: &str) -> u32 {
+        let p = grammar::parse(text, Some(URI));
+        let at = p.errors.iter().map(|e| e.span.start).min().unwrap();
+        line(text, at)
+    }
+
+    /// A document with a syntax error may hide a use from the grammar (an
+    /// element read as something else after an unclosed tag, a declaration
+    /// that is not closed, a broken attribute name): when its text names
+    /// the old IRI in any spelling, it blocks the rename, at its first
+    /// error. One that does not name it is no reason to refuse.
+    #[test]
+    fn a_broken_document_that_names_the_iri_blocks_a_rename() {
+        let foo = "http://example.org/Foo";
+        let cases = [
+            // A broken attribute name that holds the use.
+            (
+                format!(
+                    "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"{RDF}\">\n  <rdf:Description rdf:about=\"http://example.org/a\" rdf:typ'e=\"{foo}\"/>\n</rdf:RDF>\n"
+                ),
+                3,
+            ),
+            // An element not closed before the use.
+            (
+                doc(&format!(
+                    "<rdf:Description rdf:about=\"http://example.org/s\">\n<rdf:Description rdf:about=\"{foo}\"/>"
+                )),
+                3,
+            ),
+            (
+                doc(&format!(
+                    "<rdf:Description rdf:about=\"http://example.org/s\">\n<rdf:Description rdf:about=\"http://example.org/t\"><ex:p rdf:resource=\"{foo}\"/></rdf:Description>"
+                )),
+                3,
+            ),
+            // An XML declaration that is not closed.
+            (
+                format!(
+                    "<?xml version=\"1.0\n<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\">\n  <rdf:Description rdf:about=\"{foo}\"/>\n</rdf:RDF>\n"
+                ),
+                1,
+            ),
+            // An RDF/XML error: rdf:RDF inside rdf:RDF.
+            (
+                doc(&format!(
+                    "<rdf:RDF>\n<rdf:Description rdf:about=\"{foo}\"/>\n</rdf:RDF>"
+                )),
+                3,
+            ),
+            // Only the prefixed name.
+            (
+                doc("<rdf:Description rdf:about=\"http://example.org/s\">\n<ex:Foo/>"),
+                3,
+            ),
+            // Only an entity spelling, written with a character reference.
+            (
+                "<!DOCTYPE r [<!ENTITY ex \"http://example.org/\">]>\n".to_string()
+                    + &rooted(
+                        "<rdf:Description rdf:about=\"http://example.org/s\">\n<ex:p rdf:resource=\"&ex;F&#111;o\"/>",
+                    ),
+                3,
+            ),
+        ];
+        for (text, line) in &cases {
+            let p = grammar::parse(text, Some(URI));
+            assert!(!p.errors.is_empty(), "{text}");
+            let r = blocked(text, &p, foo).unwrap_or_else(|| panic!("not blocked:\n{text}"));
+            assert_eq!(r.line, *line, "{text}\n{r:?}");
+            assert_eq!(r.line, first_error_line(text), "{text}");
+            assert!(
+                r.reason.starts_with("the document has a syntax error ("),
+                "{r:?}"
+            );
+            // Not named there: no reason to refuse.
+            assert_eq!(
+                blocked(text, &p, "http://example.org/Other"),
+                None,
+                "{text}"
+            );
+            // A rename started anywhere in it is refused the same way.
+            for offset in [0, text.find(">\n").unwrap() as u32 + 3] {
+                match at(text, Some(URI), offset) {
+                    Err(got) => assert_eq!(got, r, "{text}"),
+                    Ok(_) => panic!("{offset}: not refused:\n{text}"),
+                }
+            }
+        }
+        // The local name stands alone: `Foobar` and `xFoo` are not it.
+        let text =
+            doc("<rdf:Description rdf:about=\"http://example.org/s\">\n<ex:Foobar/><ex:xFoo/>");
+        let p = grammar::parse(&text, Some(URI));
+        assert_eq!(blocked(&text, &p, foo), None);
+        // An IRI with no local name (a namespace): any broken document.
+        assert!(blocked(&text, &p, "http://example.org/other/").is_some());
+        // A document without an error is not blocked: it is planned.
+        let text = doc(&format!("<rdf:Description rdf:about=\"{foo}\"/>"));
+        assert_eq!(blocked(&text, &grammar::parse(&text, Some(URI)), foo), None);
+        // An OWL/XML text is not read, so it has no RDF/XML use to hide.
+        let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"><Declaration><Class IRI=\"http://example.org/Foo\"/></Declaration>\n";
+        let p = super::super::parse(text, Some(URI));
+        assert!(!p.errors.is_empty());
+        assert_eq!(blocked(text, &p, foo), None);
+    }
+
+    /// An `ATTLIST` default in the DOCTYPE gives elements attributes this
+    /// reader does not add (an `rdf:type`, an `xml:base`): a document that
+    /// declares one is not edited, and blocks a rename it names.
+    #[test]
+    fn attribute_defaults_block_a_rename() {
+        let foo = "http://example.org/Foo";
+        let text = format!(
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE rdf:RDF [ <!ATTLIST ex:p rdf:type CDATA \"{foo}\"> ]>\n{}",
+            rooted(&format!(
+                "<rdf:Description rdf:about=\"{foo}\"/>\n<ex:p rdf:about=\"http://example.org/k\"/>"
+            ))
+        );
+        let p = grammar::parse(&text, Some(URI));
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        for old in [foo, "http://example.org/p", "http://example.org/k"] {
+            let r = blocked(&text, &p, old).unwrap_or_else(|| panic!("{old}"));
+            assert_eq!(r.line, 2, "{old}");
+            assert!(r.reason.contains("<!ATTLIST"), "{r:?}");
+            assert_eq!(plan(&text, &p, Iri::intern(old), "urn:ex:z"), Err(r));
+        }
+        assert_eq!(blocked(&text, &p, "urn:ex:other"), None);
+        assert!(matches!(at(&text, Some(URI), 0), Err(r) if r.line == 2));
+        // Without a default value, an ATTLIST adds nothing.
+        for decl in ["#IMPLIED", "#REQUIRED"] {
+            let text = text.replace(&format!("CDATA \"{foo}\""), &format!("CDATA {decl}"));
+            let p = grammar::parse(&text, Some(URI));
+            assert_eq!(blocked(&text, &p, foo), None, "{decl}");
+            assert!(
+                plan(&text, &p, Iri::intern(foo), "urn:ex:z").is_ok(),
+                "{decl}"
+            );
+        }
+    }
+
+    /// Where every rename of the IRI at the cursor is refused, whatever the
+    /// new name, a rename is refused where it starts, with the reason of
+    /// the first such use of that IRI in the document: `rdf:type` gives
+    /// one answer as an element and as an attribute.
+    #[test]
+    fn a_rename_that_cannot_succeed_is_refused_where_it_starts() {
+        let refused_at = |text: &str, needle: &str, plus: usize| {
+            let offset = (text.find(needle).unwrap() + plus) as u32;
+            match at(text, Some(URI), offset) {
+                Err(r) => r,
+                Ok(_) => panic!("{needle}: not refused"),
+            }
+        };
+        let text = doc("<rdf:Description rdf:about=\"http://example.org/a\">\n\
+             <rdf:type rdf:resource=\"http://example.org/B\"/>\n\
+             <ex:p rdf:nodeID=\"b\" rdf:type=\"http://example.org/B\"/>\n\
+             </rdf:Description>");
+        let element = refused_at(&text, "<rdf:type", 3);
+        let attribute = refused_at(&text, "rdf:type=", 3);
+        assert_eq!(element, attribute);
+        assert_eq!(element.line, 5);
+        assert!(
+            element.reason.contains("rdf:type is RDF/XML syntax"),
+            "{element:?}"
+        );
+        // Character references, the whole IRI from an entity, a markup entity.
+        let text = "<!DOCTYPE r [<!ENTITY a \"http://example.org/a\"> <!ENTITY m \"<ex:q rdf:resource='urn:ex:o'/>\">]>\n"
+            .to_string()
+            + &rooted(
+                "<rdf:Description rdf:about=\"urn&#58;ex:s\">\n<ex:p rdf:resource=\"&a;\"/>&m;</rdf:Description>",
+            );
+        let r = refused_at(&text, "urn&#58;", 2);
+        assert!(r.reason.contains("character references"), "{r:?}");
+        let r = refused_at(&text, "&a;", 1);
+        assert!(
+            r.reason.contains("the whole IRI comes from the entity &a;"),
+            "{r:?}"
+        );
+        let r = refused_at(&text, "&m;", 1);
+        assert!(r.reason.contains("replacement text"), "{r:?}");
+        // rdf:li stands for rdf:_n.
+        let text = doc("<rdf:Seq rdf:about=\"urn:ex:q\"><rdf:li>1</rdf:li></rdf:Seq>");
+        let r = refused_at(&text, "rdf:li", 2);
+        assert!(r.reason.contains("rdf:li stands for"), "{r:?}");
+    }
+
     /// A parse the workspace holds that is not this text's (a Turtle text
     /// called RDF/XML): its uses are refused, never left out.
     #[test]
@@ -893,17 +1235,18 @@ mod tests {
         let on = |needle: &str, plus: usize| {
             let offset = (text.find(needle).unwrap() + plus) as u32;
             match at(&text, Some(URI), offset) {
-                Some(At::Use {
+                Ok(Some(At::Use {
                     span,
                     iri,
                     prefixes,
-                }) => Some((
+                })) => Some((
                     text[span.start as usize..span.end as usize].to_string(),
                     iri.to_string(),
                     prefixes.get("ex").cloned(),
                 )),
-                Some(At::Namespace) => Some(("xmlns".into(), String::new(), None)),
-                None => None,
+                Ok(Some(At::Namespace)) => Some(("xmlns".into(), String::new(), None)),
+                Ok(None) => None,
+                Err(r) => Some(("refused".into(), r.reason, None)),
             }
         };
         let ex = Some("http://example.org/".to_string());
@@ -935,9 +1278,14 @@ mod tests {
             on("xmlns:ex", 7),
             Some(("xmlns".into(), String::new(), None))
         );
-        // An entity, rdf:li, text and the rdf:RDF name: nothing to rename.
-        assert_eq!(on("&m;", 1), None);
-        assert_eq!(on("rdf:li", 2), None);
+        // An entity's use and rdf:li: refused there; text and the rdf:RDF
+        // name: nothing to rename.
+        let refused = |needle: &str, plus: usize| match on(needle, plus) {
+            Some((r, reason, None)) if r == "refused" => reason,
+            got => panic!("{needle}: {got:?}"),
+        };
+        assert_eq!(refused("&m;", 1), FROM_ENTITY);
+        assert!(refused("rdf:li", 2).starts_with("rdf:li stands for"));
         assert_eq!(on(">1<", 1), None);
         assert_eq!(on("rdf:RDF", 2), None);
     }
@@ -947,7 +1295,7 @@ mod tests {
     #[test]
     fn an_owl_xml_text_has_no_use() {
         let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"><Declaration><Class IRI=\"#A\"/></Declaration></Ontology>\n";
-        assert!(at(text, Some(URI), 2).is_none());
+        assert!(matches!(at(text, Some(URI), 2), Ok(None)));
         let p = super::super::parse(text, Some(URI));
         let owl = Iri::intern("http://www.w3.org/2002/07/owl#Ontology");
         assert_eq!(plan(text, &p, owl, "urn:ex:z"), Ok(Vec::new()));

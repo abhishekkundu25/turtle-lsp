@@ -11,7 +11,7 @@ use crate::syntax::names::is_pn_prefix;
 use crate::syntax::{Form, Iri, IriKey, Node, PrefixMap, Span, Syntax};
 use crate::workspace::{PREFIX_FILE, as_uri, uri_to_path};
 use lsp_types::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -107,6 +107,17 @@ fn not_edited(uri: &str) -> String {
     format!(
         "can't rename in {}: an RDF/XML document is not edited",
         shown(uri)
+    )
+}
+
+/// Why a rename cannot edit the RDF/XML document at `uri`: its file, the
+/// line and the reason.
+fn refused(uri: &str, r: rdfxml_rename::Refusal) -> String {
+    format!(
+        "can't rename in {}: line {}: {}",
+        shown(uri),
+        r.line,
+        r.reason
     )
 }
 
@@ -457,7 +468,8 @@ fn prepare_rdfxml_rename(
     enc: Encoding,
     offset: u32,
 ) -> Result<Option<PrepareRenameResponse>, String> {
-    let at = rdfxml_rename::at(&a.text, a.parsed.document_base.as_deref(), offset);
+    let at = rdfxml_rename::at(&a.text, a.parsed.document_base.as_deref(), offset)
+        .map_err(|r| refused(&a.uri, r))?;
     let (span, iri, prefixes) = match at {
         None => return Ok(None),
         Some(rdfxml_rename::At::Namespace) => return Err(NAMESPACE_PREFIX.into()),
@@ -529,7 +541,8 @@ pub fn rename(
             return Err(not_edited(&a.uri));
         }
         let base = a.parsed.document_base.as_deref();
-        let (old, new_iri) = match rdfxml_rename::at(&a.text, base, offset) {
+        let at = rdfxml_rename::at(&a.text, base, offset).map_err(|r| refused(&a.uri, r))?;
+        let (old, new_iri) = match at {
             None => return Err("nothing to rename here".into()),
             Some(rdfxml_rename::At::Namespace) => return Err(NAMESPACE_PREFIX.into()),
             Some(rdfxml_rename::At::Use { iri, prefixes, .. }) => {
@@ -671,7 +684,7 @@ pub(crate) fn renamed_iri_at(
         Syntax::RdfXml => {
             let base = a.parsed.document_base.as_deref();
             let prefixes = match rdfxml_rename::at(&a.text, base, offset) {
-                Some(rdfxml_rename::At::Use { prefixes, .. }) => prefixes,
+                Ok(Some(rdfxml_rename::At::Use { prefixes, .. })) => prefixes,
                 _ => PrefixMap::default(),
             };
             return renamed_rdfxml_iri(old, new_name, &prefixes);
@@ -783,6 +796,18 @@ pub(crate) fn rename_term(
                 .map(|(_, _, d)| &**d),
         );
     }
+    // A document the grammar may not read in full refuses a rename of an
+    // IRI its text may spell, though no use of it is read there.
+    let mut blocked = FxHashMap::default();
+    for (_, _, d) in k
+        .docs()
+        .filter(|(_, src, d)| *src != Source::External && d.parsed.syntax == Syntax::RdfXml)
+    {
+        if let Some(r) = rdfxml_rename::blocked(&d.text, &d.parsed, old) {
+            blocked.insert(d.uri.as_str(), r);
+            rdfxml_docs.push(&**d);
+        }
+    }
     rdfxml_docs.sort_by(|x, y| x.uri.cmp(&y.uri));
     rdfxml_docs.dedup_by(|x, y| x.uri == y.uri);
     if rdfxml == RdfXml::Refuse
@@ -792,16 +817,13 @@ pub(crate) fn rename_term(
     }
     // Every RDF/XML document is planned before anything is written.
     let mut rdfxml_changes = Vec::new();
-    if let Some(old) = Iri::get(old).filter(|_| !rdfxml_docs.is_empty()) {
-        for d in rdfxml_docs {
-            let edits = rdfxml_rename::plan(&d.text, &d.parsed, old, new_iri).map_err(|r| {
-                format!(
-                    "can't rename in {}: line {}: {}",
-                    shown(&d.uri),
-                    r.line,
-                    r.reason
-                )
-            })?;
+    for d in rdfxml_docs {
+        if let Some(r) = blocked.remove(d.uri.as_str()) {
+            return Err(refused(&d.uri, r));
+        }
+        if let Some(old) = Iri::get(old) {
+            let edits = rdfxml_rename::plan(&d.text, &d.parsed, old, new_iri)
+                .map_err(|r| refused(&d.uri, r))?;
             if !edits.is_empty() {
                 let edits: Vec<TextEdit> = edits
                     .into_iter()
@@ -1165,15 +1187,26 @@ mod tests {
         let anchored = Arc::new(Analysis::anchored("file:///w/b.ttl", text, Syntax::Turtle));
         assert_eq!(renamed(anchored), ["file:///w/a.ttl"]);
         // An RDF/XML document is edited from its own text instead, which
-        // here is no XML: nothing starts there, edits on or off
+        // here is no XML: nothing starts there, edits on or off, and with
+        // edits on, the syntax error says why
         // (`a_term_an_rdfxml_document_uses_is_renamed_there_too`).
         for syntax in [Syntax::Turtle, Syntax::RdfXml] {
             let anchored = Arc::new(Analysis::anchored("file:///w/b.ttl", text, syntax));
             for needle in ["ex:s", "ex:p", "example.org/o"] {
                 for rdfxml in [RdfXml::Edit, RdfXml::Refuse] {
                     let at = at(&anchored, needle);
-                    let got = prepare_rename(&anchored, Encoding::Utf8, at, rdfxml).unwrap();
-                    assert_eq!(got, None, "{syntax:?} {needle}");
+                    let got = prepare_rename(&anchored, Encoding::Utf8, at, rdfxml);
+                    if syntax == Syntax::RdfXml && rdfxml == RdfXml::Edit {
+                        let err = got.unwrap_err();
+                        assert!(
+                            err.starts_with(
+                                "can't rename in /w/b.ttl: line 1: the document has a syntax error"
+                            ),
+                            "{needle}: {err}"
+                        );
+                    } else {
+                        assert_eq!(got.unwrap(), None, "{syntax:?} {needle}");
+                    }
                 }
             }
         }
@@ -1503,7 +1536,7 @@ mod tests {
     /// whatever the form of the reference or prefix under the cursor:
     /// prepare-rename offers nothing and a rename sent anyway is refused,
     /// editing no other document. With edits on, a document whose text is
-    /// not RDF/XML (Turtle's, called RDF/XML) offers nothing either.
+    /// not RDF/XML (Turtle's, called RDF/XML) refuses with its syntax error.
     #[test]
     fn nothing_is_renamed_from_inside_rdfxml_with_rdfxml_edits_off() {
         let ttl = turtle_doc(
@@ -1536,9 +1569,11 @@ mod tests {
                 let at = owl.position(Encoding::Utf8, offset);
                 let got = prepare_rename(&owl, Encoding::Utf8, at, RdfXml::Refuse).unwrap();
                 assert_eq!(got, None, "{offset} in {text}");
+                // Turtle text is no XML: a syntax error refuses it there.
+                let broken = "can't rename in /w/onto.owl: line 1: the document has a syntax error";
                 if written {
-                    let got = prepare_rename(&owl, Encoding::Utf8, at, RdfXml::Edit).unwrap();
-                    assert_eq!(got, None, "{offset} in {text}");
+                    let got = prepare_rename(&owl, Encoding::Utf8, at, RdfXml::Edit).unwrap_err();
+                    assert!(got.starts_with(broken), "{offset} in {text}: {got}");
                 }
                 for k in [&k, &without] {
                     let err = rename(
@@ -1561,7 +1596,8 @@ mod tests {
                             file_of: &mut |_| None,
                         };
                         let err = rename(&owl, k, Encoding::Utf8, at, "z", scope, RdfXml::Edit);
-                        assert_eq!(err.unwrap_err(), "nothing to rename here");
+                        let err = err.unwrap_err();
+                        assert!(err.starts_with(broken), "{offset}: {err}");
                     }
                 }
             }
@@ -1744,6 +1780,85 @@ mod tests {
             owl_path.display()
         );
         assert!(err.starts_with(&want), "{err}");
+    }
+
+    /// A workspace RDF/XML document with a syntax error whose text names
+    /// the IRI blocks the rename, though the grammar reads no use of it
+    /// there (an element after an unclosed tag reads as something else):
+    /// from Turtle, from inside it, and with RDF/XML edits off.
+    #[test]
+    fn a_broken_rdfxml_document_that_names_the_iri_blocks_the_rename() {
+        let text = "@prefix ex: <http://example.org/> .\nex:s ex:p ex:A .\n";
+        let (_, a_uri) = in_w("a.ttl");
+        let ttl = turtle_doc(&a_uri, text);
+        let (owl_path, owl_uri) = in_w("b.owl");
+        let tx = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n  <rdf:Description rdf:about=\"http://example.org/s\">\n  <rdf:Description rdf:about=\"http://example.org/A\"/>\n</rdf:RDF>\n";
+        let owl = Arc::new(Analysis::with_syntax(
+            owl_uri.clone(),
+            tx,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        assert!(!owl.parsed.errors.is_empty());
+        let mut k = Knowledge::default();
+        k.set(&a_uri, Source::Open, ttl.clone());
+        k.set(&owl_uri, Source::Disk, owl.clone());
+        let at = ttl.position(Encoding::Utf8, offset_of(text, "ex:A", 3));
+        let err = renamed_at(&ttl, &k, at, "ex:Z").unwrap_err();
+        let want = format!(
+            "can't rename in {}: line 3: the document has a syntax error (",
+            owl_path.display()
+        );
+        assert!(err.starts_with(&want), "{err}");
+        let scope = PrefixScope {
+            file: None,
+            file_of: &mut |_| None,
+        };
+        assert_eq!(
+            rename(&ttl, &k, Encoding::Utf8, at, "ex:Z", scope, RdfXml::Refuse).unwrap_err(),
+            not_edited(&owl_uri)
+        );
+        // Started inside, on the use the grammar no longer reads.
+        let inside = owl.position(Encoding::Utf8, offset_of(tx, "example.org/A", 3));
+        assert_eq!(
+            prepare_rename(&owl, Encoding::Utf8, inside, RdfXml::Edit).unwrap_err(),
+            err
+        );
+        assert_eq!(renamed_at(&owl, &k, inside, "Z").unwrap_err(), err);
+        // An IRI its text does not name: renamed.
+        let at = ttl.position(Encoding::Utf8, offset_of(text, "ex:p", 3));
+        let edit = renamed_at(&ttl, &k, at, "q").unwrap();
+        assert_eq!(edited(&ttl, &edit), text.replace("ex:p", "ex:q"));
+    }
+
+    /// A rename that every new name would see refused gives its reason at
+    /// prepareRename, in the words rename uses: `rdf:type` written as an
+    /// element and as an attribute.
+    #[test]
+    fn prepare_rename_refuses_as_rename_would() {
+        let (owl_path, owl_uri) = in_w("t.owl");
+        let tx = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n  <rdf:Description rdf:about=\"http://example.org/a\">\n    <rdf:type rdf:resource=\"http://example.org/B\"/>\n    <ex:p rdf:nodeID=\"b\" rdf:type=\"http://example.org/B\"/>\n  </rdf:Description>\n</rdf:RDF>\n";
+        let owl = Arc::new(Analysis::with_syntax(
+            owl_uri.clone(),
+            tx,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        let mut k = Knowledge::default();
+        k.set(&owl_uri, Source::Open, owl.clone());
+        let want = format!(
+            "can't rename in {}: line 5: the attribute rdf:type is RDF/XML syntax: it cannot be written for another IRI",
+            owl_path.display()
+        );
+        for needle in ["<rdf:type", "rdf:type="] {
+            let at = owl.position(Encoding::Utf8, offset_of(tx, needle, 3));
+            let got = prepare_rename(&owl, Encoding::Utf8, at, RdfXml::Edit).unwrap_err();
+            assert_eq!(got, want, "{needle}");
+            let got = renamed_at(&owl, &k, at, "<http://example.org/kind>").unwrap_err();
+            assert_eq!(got, want, "{needle}");
+        }
     }
 
     /// An OWL/XML file (syntax `RdfXml`, read by no frontend) is no place
