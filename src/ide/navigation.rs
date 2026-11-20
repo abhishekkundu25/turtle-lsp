@@ -13,7 +13,7 @@ use super::{Doc, Session};
 use crate::analysis::{Analysis, Encoding, SparqlAnalysis};
 use crate::features::navigation;
 use crate::sparql::features as sparql_features;
-use crate::workspace::{find_prefix_file, path_to_uri, uri_to_path};
+use crate::workspace::{find_prefix_file, normalize_uri, path_to_uri, uri_to_path};
 use lsp_types::{
     AnnotatedTextEdit, ChangeAnnotation, ChangeAnnotationIdentifier, DocumentChanges,
     DocumentHighlight, Location, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
@@ -177,18 +177,21 @@ impl Session<'_> {
         let Some(changes) = edit.changes.as_ref() else {
             return edit;
         };
-        let rdfxml: Vec<bool> = {
+        // Each document: whether it is RDF/XML, and the version the client
+        // gave it when it is open (a closed file has none).
+        let docs: Vec<(bool, Option<i32>)> = {
             let mut uris: Vec<&Uri> = changes.keys().collect();
             uris.sort_by(|x, y| x.as_str().cmp(y.as_str()));
             uris.iter()
                 .map(|u| {
-                    self.doc(u.as_str()).is_some_and(|d| {
+                    let rdfxml = self.doc(u.as_str()).is_some_and(|d| {
                         matches!(d, Doc::Rdf(a) if a.parsed.syntax == crate::syntax::Syntax::RdfXml)
-                    })
+                    });
+                    (rdfxml, self.ws.version(&normalize_uri(u.as_str())))
                 })
                 .collect()
         };
-        if !rdfxml.contains(&true) {
+        if !docs.iter().any(|(rdfxml, _)| *rdfxml) {
             return edit;
         }
         let mut changes: Vec<(Uri, Vec<TextEdit>)> =
@@ -197,9 +200,9 @@ impl Session<'_> {
         let id: ChangeAnnotationIdentifier = RDFXML_ANNOTATION.to_string();
         let documents = changes
             .into_iter()
-            .zip(rdfxml)
-            .map(|((uri, edits), rdfxml)| TextDocumentEdit {
-                text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            .zip(docs)
+            .map(|((uri, edits), (rdfxml, version))| TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier { uri, version },
                 edits: edits
                     .into_iter()
                     .map(|text_edit| {
@@ -495,10 +498,19 @@ mod tests {
         let owl = dir.write("my onto é.owl", OWL);
         assert!(owl.contains("%20"), "{owl}");
         let rq = dir.write("q.rq", QUERY);
+        // A closed file has no version.
+        let closed = dir.write("closed.owl", OWL);
         let mut ws = workspace(&dir);
-        ws.open_doc(ttl.clone(), TTL.into(), 1);
-        ws.open_doc(owl.clone(), OWL.into(), 1);
-        ws.open_doc(rq.clone(), QUERY.into(), 1);
+        ws.index_paths(vec![dir.0.join("closed.owl")]);
+        ws.open_doc(ttl.clone(), TTL.into(), 3);
+        ws.open_doc(owl.clone(), OWL.into(), 4);
+        ws.open_doc(rq.clone(), QUERY.into(), 5);
+        let versions = HashMap::from([
+            (ttl.as_str(), Some(3)),
+            (owl.as_str(), Some(4)),
+            (rq.as_str(), Some(5)),
+            (closed.as_str(), None),
+        ]);
         let settings = Settings::default();
         let want_owl = OWL.replace("<ex:p ", "<ex:q ");
         let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
@@ -507,7 +519,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(edit.document_changes.is_none() && edit.change_annotations.is_none());
-        let mut all = [ttl.as_str(), owl.as_str(), rq.as_str()];
+        let mut all = [ttl.as_str(), owl.as_str(), rq.as_str(), closed.as_str()];
         all.sort();
         assert_eq!(changed(&edit), all);
         assert_eq!(apply(OWL, edits_of(&edit, &owl)), want_owl);
@@ -536,8 +548,9 @@ mod tests {
             uris.sort();
             assert_eq!(uris, all, "{from}");
             for d in docs {
-                let rdfxml = d.text_document.uri.as_str() == owl;
-                assert!(d.text_document.version.is_none());
+                let uri = d.text_document.uri.as_str();
+                let rdfxml = uri == owl || uri == closed;
+                assert_eq!(d.text_document.version, versions[uri], "{uri}");
                 let mut plain = Vec::new();
                 for e in &d.edits {
                     match e {
