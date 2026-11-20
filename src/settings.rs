@@ -193,6 +193,9 @@ pub struct Settings {
     /// Parse only the statements around an edit (the statement splice);
     /// off, every edit parses the whole document.
     pub(crate) parse_incremental: bool,
+    /// `rename.rdfXml`: a rename edits the RDF/XML documents (`.owl`,
+    /// `.rdf`) that use the IRI; off, it is refused when one does.
+    pub(crate) rename_rdfxml: bool,
     /// "Run query" stops a query after this long; `None` (0) for no limit.
     pub query_timeout: Option<Duration>,
     /// "Run query" keeps at most this many rows (or triples) of an answer;
@@ -239,6 +242,7 @@ impl Default for Settings {
             code_lens_references: true,
             diagnostics_workspace: false,
             parse_incremental: true,
+            rename_rdfxml: true,
             query_timeout: Some(QUERY_TIMEOUT),
             query_max_rows: Some(QUERY_MAX_ROWS),
             query_max_buffered_rows: Some(QUERY_MAX_BUFFERED_ROWS),
@@ -374,6 +378,8 @@ impl Settings {
             ["diagnostics", "workspace"] => set_bool(&mut self.diagnostics_workspace, v),
             // The file may set it: either way the results are the same.
             ["parse", "incremental"] => set_bool(&mut self.parse_incremental, v),
+            // The file may set it: a rename shows its edits before they apply.
+            ["rename", "rdfXml"] => set_bool(&mut self.rename_rdfxml, v),
             ["format", "lineWidth"] => {
                 if let Some(n) = v.as_u64().and_then(|n| u32::try_from(n).ok()) {
                     self.format_line_width = n;

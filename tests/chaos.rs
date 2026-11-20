@@ -919,8 +919,10 @@ fn renamed(a: &Analysis, off: u32, name: &str) -> Option<(Iri, Iri)> {
     let from = refs.partition_point(|r| r.span.end < off);
     let mut near = refs[from..].iter().take_while(|r| r.span.start <= off);
     let r = near.find(|r| inside(r.span))?;
+    // In RDF/XML the prefix of a name is part of its IRI.
     if let Form::PName { prefix_len } = r.form
         && off <= r.span.start + prefix_len
+        && a.parsed.syntax != Syntax::RdfXml
     {
         return None;
     }
@@ -952,6 +954,90 @@ fn keeps_the_graph(
         None => return Ok(()),
     };
     Err(format!("{wrong}: {}", first_difference(text, after)))
+}
+
+/// `text` (document `a`) with `edits` applied as they are: XML is not
+/// lexed as Turtle.
+fn applied(a: &Analysis, text: &str, enc: Encoding, edits: &[TextEdit]) -> Result<String, String> {
+    let mut spans = Vec::with_capacity(edits.len());
+    for e in edits {
+        match (a.offset(enc, e.range.start), a.offset(enc, e.range.end)) {
+            (Some(s), Some(t)) if s <= t => spans.push((s as usize, t as usize, &e.new_text)),
+            _ => return Err(format!("has an edit outside the text: {e:?}")),
+        }
+    }
+    spans.sort_by_key(|e| (e.0, e.1));
+    if let Some(w) = spans.windows(2).find(|w| w[0].1 > w[1].0) {
+        return Err(format!("has overlapping edits {:?} and {:?}", w[0], w[1]));
+    }
+    let mut out = text.to_string();
+    for (s, t, new) in spans.into_iter().rev() {
+        out.replace_range(s..t, new);
+    }
+    Ok(out)
+}
+
+/// A rename's `edits` of RDF/XML `text` (document `a`, parsed `before`
+/// when it has no errors): none in a document with errors, which is not
+/// edited; else the edited text is well-formed RDF/XML that gives the same
+/// graph, once `merge` reads the renamed IRI as the old one.
+fn rdfxml_rename_keeps_the_graph(
+    a: &Analysis,
+    text: &str,
+    enc: Encoding,
+    before: Option<&Parsed>,
+    edits: &[TextEdit],
+    merge: Option<(Iri, Iri)>,
+) -> Result<(), String> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let Some(before) = before else {
+        return Err("edited an RDF/XML document with errors".into());
+    };
+    let after = applied(a, text, enc, edits)?;
+    keeps_the_graph(a, text, before, &after, merge)
+}
+
+/// A rename at a reference of RDF/XML `text`, which parses without errors,
+/// to a name of [`RENAMES`]: when it is not refused, the document's edits
+/// keep its graph (the mutated texts of `mutated_rdfxml` rarely parse
+/// without errors, and a document with errors is never edited).
+fn rdfxml_renames_keep_the_graph(rng: &mut Rng, text: &str, k: &mut Knowledge) {
+    let uri = doc_uri(Syntax::RdfXml);
+    let a = Analysis::with_syntax(uri.into(), text, Arc::default(), true, Syntax::RdfXml);
+    if !a.parsed.errors.is_empty() || a.parsed.refs.is_empty() {
+        return;
+    }
+    let a = Arc::new(a);
+    k.set(uri, Source::Open, a.clone());
+    for _ in 0..3 {
+        let r = &a.parsed.refs[rng.below(a.parsed.refs.len())];
+        let off = r.span.start + rng.below((r.span.end - r.span.start) as usize + 1) as u32;
+        let enc = if rng.below(2) == 0 {
+            Encoding::Utf8
+        } else {
+            Encoding::Utf16
+        };
+        let pos = a.position(enc, off);
+        let name = RENAMES[rng.below(RENAMES.len())];
+        let scope = navigation::PrefixScope {
+            file: None,
+            file_of: &mut |_| None,
+        };
+        let rdfxml = navigation::RdfXml::Edit;
+        if let Ok(edit) = navigation::rename(&a, k, enc, pos, name, scope, rdfxml) {
+            let edits = edits_to(Some(&edit), uri);
+            let target = renamed(&a, off, name);
+            rdfxml_rename_keeps_the_graph(&a, text, enc, Some(&a.parsed), &edits, target)
+                .unwrap_or_else(|m| {
+                    panic!(
+                        "renaming to {name:?} at {off} {m}\n  edits: {edits:?}\n  text: {text:?}"
+                    )
+                });
+        }
+    }
+    k.remove(uri);
 }
 
 #[test]
@@ -1620,7 +1706,9 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             let _ = navigation::implementations(&a, docs, enc, pos);
             let _ = navigation::references(&a, docs, enc, pos, true);
             let _ = navigation::highlights(&a, enc, pos);
-            let _ = navigation::prepare_rename(&a, enc, pos);
+            for rdfxml in [navigation::RdfXml::Edit, navigation::RdfXml::Refuse] {
+                let _ = navigation::prepare_rename(&a, enc, pos, rdfxml);
+            }
             for item in hierarchy::prepare(&a, docs, enc, pos).into_iter().flatten() {
                 for up in hierarchy::supertypes(&item, docs, enc, Some(&a)) {
                     let _ = hierarchy::subtypes(&up, docs, enc, None);
@@ -1632,18 +1720,24 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
                 file_of: &mut |_| None,
             };
             let name = RENAMES[rng.below(RENAMES.len())];
-            if let Ok(edit) = navigation::rename(&a, docs, enc, pos, name, scope) {
+            let rdfxml = navigation::RdfXml::Edit;
+            if let Ok(edit) = navigation::rename(&a, docs, enc, pos, name, scope, rdfxml) {
                 let edits = edits_to(Some(&edit), doc_uri(syntax));
-                let graph = before.is_some() && syntax != Syntax::JsonLd;
-                let after = lexed
-                    .edit(&edits, |p| a.offset(enc, p), graph)
-                    .unwrap_or_else(|m| panic!("renaming to {name:?} {m}"));
                 // The IRI renamed is the one at the offset the rename reads `pos` as.
                 let target = a.offset(enc, pos).and_then(|at| renamed(&a, at, name));
-                if let Some(before) = before.as_ref().filter(|_| graph)
-                    && let Err(m) = keeps_the_graph(&a, text, before, &after, target)
-                {
-                    panic!("renaming to {name:?} {m}\n  edits: {edits:?}");
+                if syntax == Syntax::RdfXml {
+                    rdfxml_rename_keeps_the_graph(&a, text, enc, before.as_ref(), &edits, target)
+                        .unwrap_or_else(|m| panic!("renaming to {name:?} {m}\n  edits: {edits:?}"));
+                } else {
+                    let graph = before.is_some() && syntax != Syntax::JsonLd;
+                    let after = lexed
+                        .edit(&edits, |p| a.offset(enc, p), graph)
+                        .unwrap_or_else(|m| panic!("renaming to {name:?} {m}"));
+                    if let Some(before) = before.as_ref().filter(|_| graph)
+                        && let Err(m) = keeps_the_graph(&a, text, before, &after, target)
+                    {
+                        panic!("renaming to {name:?} {m}\n  edits: {edits:?}");
+                    }
                 }
             }
             // Positions past the end of a line or of the file, as clients sometimes send.
@@ -2596,7 +2690,8 @@ fn sparql_features_at_random(
             let _ = sparql_features::highlights(q, enc, at);
             let _ = sparql_features::prepare_rename(q, enc, at);
             let name = RENAMES[rng.below(RENAMES.len())];
-            if let Ok(edit) = sparql_features::rename(q, k, enc, at, name, None, others) {
+            let rdfxml = navigation::RdfXml::Edit;
+            if let Ok(edit) = sparql_features::rename(q, k, enc, at, name, None, others, rdfxml) {
                 edited(
                     &format!("renaming to {name:?}"),
                     &edits_to(Some(&edit), &q.uri),
@@ -3008,7 +3103,8 @@ fn mutated_rdfxml(k: usize) {
                 &text,
                 Syntax::RdfXml,
                 &mut base,
-            )
+            );
+            rdfxml_renames_keep_the_graph(&mut Rng(seed ^ i as u64 ^ 0x5A17), source, &mut base);
         }));
         if let Err(e) = r {
             panic!(
