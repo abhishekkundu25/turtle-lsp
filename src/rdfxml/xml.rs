@@ -867,7 +867,13 @@ impl<'a> Scanner<'a> {
             };
             let name = &text[at + 1..semi];
             match entities.get(name) {
-                Some(e) if e.markup && !e.refused && predefined(name).is_none() => {
+                // One being expanded stays in the text: `expand` reports it.
+                Some(e)
+                    if e.markup
+                        && !e.refused
+                        && !self.open[e.index]
+                        && predefined(name).is_none() =>
+                {
                     return Ok((at, semi, name, e));
                 }
                 _ => from = semi + 1,
@@ -2023,6 +2029,19 @@ mod tests {
             [
                 "the entity &note; puts `<` in an attribute value",
                 "the entity &note; refers to itself: it is not expanded"
+            ]
+        );
+        // The walk reads a quoted `<!--` as a comment, the scanner ends the
+        // declaration at the `>` before it: the reference met inside its
+        // own expansion is reported once and kept.
+        let text = "<!DOCTYPE r [<!ENTITY a \"<!X '<!--' >&a;-->\">]><r>&a;</r>";
+        let (ev, errors) = events(text);
+        assert_eq!(ev, ["<r>", "\"&a;-->\"", "</>"]);
+        assert_eq!(
+            messages(&errors),
+            [
+                "unknown markup after `<!`",
+                "the entity &a; refers to itself: it is not expanded"
             ]
         );
     }

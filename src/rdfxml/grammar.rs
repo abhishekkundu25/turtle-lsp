@@ -2662,7 +2662,7 @@ mod tests {
     /// reported, the rest of the references are kept as written, and the
     /// document is read on.
     #[test]
-    fn entity_expansion_work_is_bounded() {
+    fn timing_entity_expansion_work_is_bounded() {
         let mut ladder = String::from("<!ENTITY e0 \"\">");
         for i in 1..200 {
             write!(ladder, "<!ENTITY e{i} \"&e{0};&e{0};\">", i - 1).unwrap();
@@ -2715,6 +2715,19 @@ mod tests {
         assert!(p.triples.len() > 2048, "{}", p.triples.len());
         assert!(p.triples.len() <= text.len() * xml::EXPANSION_PER_BYTE / 10 + 10_000);
         assert!(lines_of(&p).contains(&"<urn:t> <urn:ex:q> \"after\"".to_string()));
+    }
+
+    /// A reference inside a CDATA section of a replacement text is text
+    /// when the entity is read as markup: no reference to itself.
+    #[test]
+    fn cdata_in_a_replacement_text_keeps_its_references_as_text() {
+        let text = format!(
+            r#"<!DOCTYPE r [<!ENTITY note "<e:p><![CDATA[&note;]]></e:p>">]>{HEAD}<rdf:Description rdf:about="urn:s">&note;</rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        spans_hold(&text, &p);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(lines_of(&p), ["<urn:s> <urn:ex:p> \"&note;\""]);
     }
 
     /// Every span made inside or after an entity reference is over the
