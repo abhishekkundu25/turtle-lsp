@@ -2625,14 +2625,15 @@ mod tests {
         spans_hold(&text, &p);
         assert!(!p.triples.is_empty());
         // A billion laughs in markup: refused past 64 KiB, and the text read
-        // stays within the budget.
+        // stays within the budget (`&a11;` is under the declaration limit:
+        // the budget stops it).
         let mut decl = String::from("<!DOCTYPE r [<!ENTITY a0 \"<e:p>x</e:p>\">");
         for i in 1..30 {
             write!(decl, "<!ENTITY a{i} \"&a{0};&a{0};\">", i - 1).unwrap();
         }
         let text = format!(
             r#"{decl}]>{HEAD}<rdf:Description rdf:about="urn:s">{}</rdf:Description></rdf:RDF>"#,
-            "&a12;&a29;".repeat(50)
+            "&a11;&a12;&a29;".repeat(50)
         );
         let started = Instant::now();
         let p = parse(&text, None);
@@ -2643,7 +2644,77 @@ mod tests {
             "{:?}",
             p.errors
         );
+        assert!(
+            p.errors
+                .iter()
+                .any(|e| e.message().contains("expansion is over its limit")),
+            "{:?}",
+            p.errors
+        );
+        assert!(p.triples.len() >= 2048, "{}", p.triples.len());
         assert!(p.triples.len() <= text.len() * xml::EXPANSION_PER_BYTE / 10 + 10_000);
+    }
+
+    /// The work of expanding entities is bounded, not only the text they
+    /// expand to: a ladder of entities over an empty one expands to
+    /// nothing in 2^n steps (28 levels took 5.6 s), in an attribute value,
+    /// in element text and in markup. Past the budget one error is
+    /// reported, the rest of the references are kept as written, and the
+    /// document is read on.
+    #[test]
+    fn entity_expansion_work_is_bounded() {
+        let mut ladder = String::from("<!ENTITY e0 \"\">");
+        for i in 1..200 {
+            write!(ladder, "<!ENTITY e{i} \"&e{0};&e{0};\">", i - 1).unwrap();
+        }
+        ladder += "<!ENTITY m \"<e:p>&e199;</e:p>\">";
+        for body in [
+            r#"<rdf:Description rdf:about="urn:s" e:p="a&e199;b"/>"#,
+            r#"<rdf:Description rdf:about="urn:s"><e:p>a&e199;b</e:p></rdf:Description>"#,
+            r#"<rdf:Description rdf:about="urn:s">&m;</rdf:Description>"#,
+        ] {
+            let text = format!(
+                r#"<!DOCTYPE r [{ladder}]>{HEAD}{body}<rdf:Description rdf:about="urn:t" e:q="after"/></rdf:RDF>"#
+            );
+            let started = Instant::now();
+            let p = parse(&text, None);
+            let took = started.elapsed();
+            spans_hold(&text, &p);
+            let budget: Vec<&str> = p
+                .errors
+                .iter()
+                .map(|e| e.message())
+                .filter(|m| m.contains("expansion"))
+                .collect();
+            assert_eq!(budget.len(), 1, "{body}: {:?}", p.errors);
+            assert!(
+                lines_of(&p).contains(&"<urn:t> <urn:ex:q> \"after\"".to_string()),
+                "{body}"
+            );
+            assert!(took < Duration::from_secs(1), "{body}: {took:?}");
+        }
+        // Entities within the declaration limit, used past the budget: the
+        // first uses expand, the rest are kept as written.
+        let mut decl = String::from("<!DOCTYPE r [<!ENTITY a0 \"<e:p>x</e:p>\">");
+        for i in 1..12 {
+            write!(decl, "<!ENTITY a{i} \"&a{0};&a{0};\">", i - 1).unwrap();
+        }
+        let text = format!(
+            r#"{decl}]>{HEAD}<rdf:Description rdf:about="urn:s">{}</rdf:Description><rdf:Description rdf:about="urn:t" e:q="after"/></rdf:RDF>"#,
+            "&a11;".repeat(50)
+        );
+        let p = parse(&text, None);
+        spans_hold(&text, &p);
+        let m: Vec<&str> = p.errors.iter().map(|e| e.message()).collect();
+        assert!(!m.iter().any(|m| m.contains("KiB")), "{m:?}");
+        assert_eq!(
+            m.iter().filter(|m| m.contains("expansion")).count(),
+            1,
+            "{m:?}"
+        );
+        assert!(p.triples.len() > 2048, "{}", p.triples.len());
+        assert!(p.triples.len() <= text.len() * xml::EXPANSION_PER_BYTE / 10 + 10_000);
+        assert!(lines_of(&p).contains(&"<urn:t> <urn:ex:q> \"after\"".to_string()));
     }
 
     /// Every span made inside or after an entity reference is over the

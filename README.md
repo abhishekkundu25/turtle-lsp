@@ -518,7 +518,10 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   highlighting. In VS Code a `.owl` opened with no folder does not start the
   extension.
 - **Limits**: only UTF-8 is read; a file in another encoding gets an
-  `encoding` error, and an import that is not UTF-8 is not read. Files over
+  `encoding` error, and an import that is not UTF-8 is not read. An XML
+  declaration that names another encoding is an `xml-syntax` error, except
+  in an ASCII file that names one extending ASCII (US-ASCII, ISO-8859-*,
+  windows-125*): its bytes read the same. Files over
   50 MB are not read (the Gene Ontology's 118 MB `go.owl`): `check` reports
   them as it does any file over the limit. A keystroke in PATO (20 MB) takes
   about 90 ms. The browser editor reads files up to 10 MB, in UTF-8 only:

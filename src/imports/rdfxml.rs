@@ -182,6 +182,14 @@ mod tests {
             Some("Gear \"wheel\"")
         );
         assert!(rdf_xml_to_ntriples(b"<rdf:RDF", "http://ex.com/").is_err());
+        // An ASCII file that declares an encoding extending ASCII reads the
+        // same in UTF-8: it is read whole, not truncated.
+        let latin = String::from_utf8(xml.to_vec())
+            .unwrap()
+            .replace("version=\"1.0\"", "version=\"1.0\" encoding=\"ISO-8859-1\"");
+        let (nt_latin, truncated) =
+            rdf_xml_to_ntriples(latin.as_bytes(), "http://ex.com/rx").unwrap();
+        assert_eq!((nt_latin.as_str(), truncated), (nt.as_str(), None));
         // A long start tag is read: no XML reader with a cost per tag that
         // grows faster than its size is left.
         let mut long = format!("<?xml version='1.0'?><rdf:RDF {RDF} ").into_bytes();

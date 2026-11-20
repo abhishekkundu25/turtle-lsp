@@ -42,9 +42,12 @@
 //! Limits: elements nest at most [`MAX_DEPTH`] deep (deeper ones are
 //! skipped, with one error); the DOCTYPE declares at most [`MAX_ENTITIES`]
 //! entities whose full expansions total at most [`MAX_ENTITY_BYTES`] (a
-//! recursive entity is not expanded); expanding entity references stops
-//! after [`EXPANSION_PER_BYTE`] bytes per byte of text (plus
-//! [`MAX_ENTITY_BYTES`]); and at most [`MAX_ERRORS`] errors are reported.
+//! recursive entity is not expanded, nor is a reference met inside its own
+//! expansion); expanding entity references stops after
+//! [`EXPANSION_PER_BYTE`] steps per byte of text (plus
+//! [`MAX_ENTITY_BYTES`]), each expansion costing its replacement text's
+//! length plus one, at any depth, so an entity that expands to nothing
+//! costs too; and at most [`MAX_ERRORS`] errors are reported.
 //! Every step consumes at least one byte of the document or of a
 //! replacement text, so a scan ends. Nesting is what bounds triple terms
 //! too: each level of one takes two elements, so they nest at most
@@ -63,7 +66,8 @@ pub(crate) const MAX_DEPTH: usize = 256;
 pub(crate) const MAX_ENTITIES: usize = 256;
 /// The expanded values of all declared entities, together.
 pub(crate) const MAX_ENTITY_BYTES: usize = 64 * 1024;
-/// Entity references expand to at most this many bytes per byte of text.
+/// Expanding entity references takes at most this many steps per byte of
+/// text: one per byte of replacement text read, and one per reference.
 pub(crate) const EXPANSION_PER_BYTE: usize = 16;
 /// Errors reported per document, scanner and grammar together.
 pub(crate) const MAX_ERRORS: usize = 100;
@@ -191,11 +195,11 @@ struct Open<'a> {
 
 /// An internal entity the DOCTYPE declares.
 pub(crate) struct Entity {
+    /// Its place in the declarations: [`Scanner::open`] is indexed by it.
+    index: usize,
     /// Its replacement text: character references expanded, entity
     /// references kept (XML 1.0, 4.5).
     text: Box<str>,
-    /// The bytes of its full expansion, at most.
-    size: usize,
     /// Its expansion holds `<`: used in content, it is read as markup.
     markup: bool,
     /// Recursive, or over [`MAX_ENTITY_BYTES`] (reported at its
@@ -204,6 +208,9 @@ pub(crate) struct Entity {
 }
 
 type Entities = FxHashMap<Box<str>, Entity>;
+
+/// A reference to an entity read as markup: `&`, `;`, its name, the entity.
+type MarkupRef<'a> = (usize, usize, &'a str, &'a Entity);
 
 /// What comes before the root element, read before the rest: where the
 /// root starts, the errors and comments before it, and the internal
@@ -247,6 +254,7 @@ struct Frame<'a> {
     /// The elements open when the entity started: it closes its own.
     depth: usize,
     name: &'a str,
+    index: usize,
 }
 
 /// Where a text to expand is.
@@ -293,9 +301,14 @@ pub(crate) struct Scanner<'a> {
     /// The entity declarations read, in order: name, its span, replacement
     /// text.
     declared: Vec<(&'a str, Span, Box<str>)>,
+    /// The steps of expansion taken, and the most allowed: see
+    /// [`EXPANSION_PER_BYTE`].
     expanded: usize,
     budget: usize,
     over_budget: bool,
+    /// The entities being expanded, by [`Entity::index`]: a reference to
+    /// one of them, met inside its own expansion, is not expanded.
+    open: Vec<bool>,
     /// Inside an element deeper than [`MAX_DEPTH`]: its nesting count.
     skip: usize,
     roots: usize,
@@ -416,9 +429,37 @@ fn walk(
     let b = text.as_bytes();
     let (mut size, mut markup, mut recursive) = (0usize, text.contains('<'), false);
     let mut from = 0;
-    while let Some(amp) = b[from..].iter().position(|&c| c == b'&').map(|p| from + p) {
+    while let Some(amp) = b[from..]
+        .iter()
+        .position(|&c| c == b'&' || c == b'<')
+        .map(|p| from + p)
+    {
         size = size.saturating_add(amp - from);
         from = amp + 1;
+        if b[amp] == b'<' {
+            // Read as markup, a comment, CDATA section or processing
+            // instruction holds no reference, to its end or to the end of
+            // the text, as the scanner reads it. As data (an attribute
+            // value) it does: a reference met inside its own expansion is
+            // caught there.
+            let (open, close): (&[u8], &[u8]) = match &b[amp..] {
+                r if r.starts_with(b"<!--") => (b"<!--", b"-->"),
+                r if r.starts_with(b"<![CDATA[") => (b"<![CDATA[", b"]]>"),
+                r if r.starts_with(b"<?") => (b"<?", b"?>"),
+                _ => {
+                    size = size.saturating_add(1);
+                    continue;
+                }
+            };
+            let body = amp + open.len();
+            let end = b[body..]
+                .windows(close.len())
+                .position(|w| w == close)
+                .map_or(b.len(), |p| body + p + close.len());
+            size = size.saturating_add(end - amp);
+            from = end;
+            continue;
+        }
         let Some(semi) = ref_end(b, amp) else {
             size = size.saturating_add(1);
             continue;
@@ -479,6 +520,7 @@ impl<'a> Scanner<'a> {
             expanded: 0,
             budget: text.len().saturating_mul(EXPANSION_PER_BYTE) + MAX_ENTITY_BYTES,
             over_budget: false,
+            open: vec![false; entities.len()],
             skip: 0,
             roots: 0,
             done: false,
@@ -544,14 +586,16 @@ impl<'a> Scanner<'a> {
             .collect();
         let (mut total, mut any_markup) = (0usize, false);
         let mut out = Entities::default();
-        for ((name, span, text), measured) in declared.into_iter().zip(measured) {
-            let (size, markup, refused) = match measured {
+        for (index, ((name, span, text), measured)) in
+            declared.into_iter().zip(measured).enumerate()
+        {
+            let (markup, refused) = match measured {
                 None => {
                     self.error(
                         span,
                         format!("the entity &{name}; refers to itself: it is not expanded"),
                     );
-                    (0, false, true)
+                    (false, true)
                 }
                 Some((size, _)) if total.saturating_add(size) > MAX_ENTITY_BYTES => {
                     self.error(
@@ -561,19 +605,19 @@ impl<'a> Scanner<'a> {
                             MAX_ENTITY_BYTES / 1024
                         ),
                     );
-                    (0, false, true)
+                    (false, true)
                 }
                 Some((size, markup)) => {
                     total += size;
-                    (size, markup, false)
+                    (markup, false)
                 }
             };
             any_markup |= markup;
             out.insert(
                 name.into(),
                 Entity {
+                    index,
                     text,
-                    size,
                     markup,
                     refused,
                 },
@@ -582,18 +626,45 @@ impl<'a> Scanner<'a> {
         (out, any_markup)
     }
 
+    /// One expansion of `entity`, referenced at `here`: false when the
+    /// budget is spent (reported once) or the entity is being expanded
+    /// already (reported at each reference). Otherwise it is charged.
+    fn may_expand(&mut self, name: &str, entity: &Entity, here: Span) -> bool {
+        if self.open[entity.index] {
+            self.error(
+                here,
+                format!("the entity &{name}; refers to itself: it is not expanded"),
+            );
+            return false;
+        }
+        let cost = entity.text.len() + 1;
+        if self.over_budget || self.expanded + cost > self.budget {
+            if !self.over_budget {
+                self.over_budget = true;
+                self.error(
+                    here,
+                    "entity expansion is over its limit: the rest of the references are not expanded",
+                );
+            }
+            return false;
+        }
+        self.expanded += cost;
+        true
+    }
+
     /// Read the replacement text of `entity`, referenced at `amp..=semi`,
     /// as markup.
     fn enter(&mut self, name: &'a str, entity: &'a Entity, amp: usize, semi: usize) {
         if self.frames.is_empty() {
             self.at = self.span(amp, semi + 1);
-            self.expanded += entity.size;
         }
+        self.open[entity.index] = true;
         self.frames.push(Frame {
             text: self.text,
             pos: semi + 1,
             depth: self.stack.len(),
             name,
+            index: entity.index,
         });
         self.text = &entity.text;
         self.b = self.text.as_bytes();
@@ -622,6 +693,7 @@ impl<'a> Scanner<'a> {
             }));
         }
         self.skip = 0;
+        self.open[frame.index] = false;
         self.text = frame.text;
         self.b = frame.text.as_bytes();
         self.pos = frame.pos;
@@ -712,14 +784,18 @@ impl<'a> Scanner<'a> {
     fn step(&mut self) -> Option<Event<'a>> {
         let start = self.pos;
         if self.b[start] != b'<' {
-            let mut end = self.find(start + 1, b"<").unwrap_or(self.b.len());
-            if let Some((amp, semi, name, entity)) = self.markup_ref(start, end) {
-                if amp == start {
-                    self.enter(name, entity, amp, semi);
-                    return None;
+            let end = match self.text_run(start) {
+                Err(end) => end,
+                Ok((amp, ..)) if amp > start => amp,
+                Ok((amp, semi, name, entity)) => {
+                    if self.may_expand(name, entity, self.span(amp, semi + 1)) {
+                        self.enter(name, entity, amp, semi);
+                        return None;
+                    }
+                    // Read as text: the reference is kept as written.
+                    semi + 1
                 }
-                end = amp;
-            }
+            };
             self.pos = end;
             return self.text_event(start, end);
         }
@@ -765,35 +841,39 @@ impl<'a> Scanner<'a> {
         })
     }
 
-    /// The first reference in content `start..end` to an entity read as
-    /// markup, within the expansion budget: `&`, `;`, its name and the
-    /// entity.
-    fn markup_ref(&self, start: usize, end: usize) -> Option<(usize, usize, &'a str, &'a Entity)> {
+    /// Where the content from `start` (not a `<`) ends: `Err` at the next
+    /// `<` or the end of the input, or `Ok` at the first reference to an
+    /// entity read as markup: `&`, `;`, its name and the entity. Only what
+    /// is passed over is read, so a run of references reads in linear time.
+    fn text_run(&self, start: usize) -> Result<MarkupRef<'a>, usize> {
+        let b = self.b;
         if !self.markup || self.skip > 0 || self.stack.is_empty() || self.over_budget {
-            return None;
+            return Err(self.find(start + 1, b"<").unwrap_or(b.len()));
         }
         let entities: &'a Entities = self.entities;
         let text: &'a str = self.text;
         let mut from = start;
-        while let Some(amp) = self.b[from..end]
+        while let Some(at) = b[from..]
             .iter()
-            .position(|&c| c == b'&')
+            .position(|&c| c == b'&' || c == b'<')
             .map(|p| from + p)
         {
-            from = amp + 1;
-            let Some(semi) = ref_end(&self.b[..end], amp) else {
+            if b[at] == b'<' {
+                return Err(at);
+            }
+            from = at + 1;
+            let Some(semi) = ref_end(b, at) else {
                 continue;
             };
-            let name = &text[amp + 1..semi];
+            let name = &text[at + 1..semi];
             match entities.get(name) {
                 Some(e) if e.markup && !e.refused && predefined(name).is_none() => {
-                    let fits = !self.frames.is_empty() || self.expanded + e.size <= self.budget;
-                    return fits.then_some((amp, semi, name, e));
+                    return Ok((at, semi, name, e));
                 }
                 _ => from = semi + 1,
             }
         }
-        None
+        Err(b.len())
     }
 
     fn bang(&mut self) -> Option<Event<'a>> {
@@ -899,9 +979,12 @@ impl<'a> Scanner<'a> {
             .then(|| Event::Pi(self.span(start, end), &self.text[start..end]))
     }
 
-    /// `<?xml version="1.0" encoding="..."?>`: only UTF-8 is read.
+    /// `<?xml version="1.0" encoding="..."?>`: only UTF-8 is read. A
+    /// document in ASCII may declare an encoding that extends ASCII: its
+    /// bytes mean the same in UTF-8.
     fn declaration(&mut self, start: usize, body: &str) {
-        if (start != 0 && start != 3) || !self.frames.is_empty() {
+        let first = (start == 0 || start == 3) && self.frames.is_empty();
+        if !first {
             self.error(
                 self.span(start, start + 5),
                 "the XML declaration is not at the start of the document",
@@ -913,15 +996,22 @@ impl<'a> Scanner<'a> {
             let q = rest.chars().next();
             if let Some(q @ ('"' | '\'')) = q {
                 let value = rest[1..].split(q).next().unwrap_or("");
-                if !matches!(
-                    value.to_ascii_lowercase().as_str(),
+                let value = value.to_ascii_lowercase();
+                let utf8 = matches!(
+                    value.as_str(),
                     "utf-8"
                         | "utf8"
                         | "unicode-1-1-utf-8"
                         | "unicode11utf8"
                         | "unicode20utf8"
                         | "x-unicode20utf8"
-                ) {
+                );
+                let extends_ascii = matches!(value.as_str(), "us-ascii" | "ascii" | "latin1")
+                    || value.starts_with("iso-8859-")
+                    || value.starts_with("windows-125");
+                // Only the first declaration is checked against the text, so
+                // many declarations cost no more than one.
+                if !utf8 && !(extends_ascii && first && self.b.is_ascii()) {
                     let at = start + 2 + i;
                     self.error(
                         self.span(at, at + 8),
@@ -1297,20 +1387,9 @@ impl<'a> Scanner<'a> {
                 }
                 Some(e) => e,
             };
-            // A reference in the document: its whole expansion counts once.
-            if document {
-                if self.over_budget || self.expanded + entity.size > self.budget {
-                    if !self.over_budget {
-                        self.over_budget = true;
-                        self.error(
-                            here,
-                            "entity references expand to too much text: the rest are not expanded",
-                        );
-                    }
-                    out.push_str(&raw[j..=semi]);
-                    continue;
-                }
-                self.expanded += entity.size;
+            if !self.may_expand(name, entity, here) {
+                out.push_str(&raw[j..=semi]);
+                continue;
             }
             if input && mode == Mode::Attr && entity.markup {
                 // XML 1.0, 3.1, "No < in Attribute Values".
@@ -1319,7 +1398,9 @@ impl<'a> Scanner<'a> {
                     format!("the entity &{name}; puts `<` in an attribute value"),
                 );
             }
+            self.open[entity.index] = true;
             self.expand(&entity.text, Origin::Ref(here), mode, out, refs);
+            self.open[entity.index] = false;
             *refs = Refs::Entity;
         }
         out.push_str(&raw[i..]);
@@ -1662,6 +1743,7 @@ impl<'a> Scanner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     fn events(text: &str) -> (Vec<String>, Vec<SyntaxError>) {
         let prolog = Prolog::read(text);
@@ -1874,6 +1956,98 @@ mod tests {
             }
             let (ev, _) = events(&t);
             assert!(ev.len() <= t.len() * 2 + 2, "{t:?}");
+        }
+    }
+
+    /// A run of references to a markup entity is read in time linear in
+    /// its length, in the document and in a replacement text (each return
+    /// from an entity searched the rest of the run for `<`: 160,000
+    /// references took 8 s).
+    #[test]
+    fn timing_markup_entity_runs_scan_in_linear_time() {
+        const N: usize = 160_000;
+        let text = format!(
+            "<!DOCTYPE r [<!ENTITY m \"<q>v</q>\">]><r>{}</r>",
+            "&m;".repeat(N)
+        );
+        let inner = format!(
+            "<!DOCTYPE r [<!ENTITY m \"<q>v</q>\"><!ENTITY run \"{}\">]><r>{}</r>",
+            "&m;".repeat(4000),
+            "&run;".repeat(4)
+        );
+        for (text, starts) in [(&text, N + 1), (&inner, 4 * 4000 + 1)] {
+            let started = Instant::now();
+            let (ev, errors) = events(text);
+            let took = started.elapsed();
+            eprintln!("{} bytes in {took:?}", text.len());
+            assert!(errors.is_empty(), "{:?}", errors.first());
+            assert_eq!(
+                ev.iter().filter(|e| e.starts_with("<q")).count() + 1,
+                starts
+            );
+            assert!(took < Duration::from_millis(500), "{took:?}");
+        }
+    }
+
+    /// A reference inside a CDATA section, a comment or a processing
+    /// instruction of a replacement text is no reference when the entity
+    /// is read as markup: such an entity does not refer to itself. As data
+    /// (in an attribute value) it does, and is reported there.
+    #[test]
+    fn markup_in_a_replacement_text_hides_its_references() {
+        let text = "<!DOCTYPE r [<!ENTITY note \"<p><![CDATA[&note;]]></p>\"><!ENTITY c \"<!-- &c; --><p>x</p>\"><!ENTITY pi \"<?t &pi; ?><p>y</p>\">]><r>&note;&c;&pi;</r>";
+        let (ev, errors) = events(text);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            ev,
+            [
+                "<r>",
+                "<p>",
+                "\"&note;\"",
+                "</>",
+                "<p>",
+                "\"x\"",
+                "</>",
+                "<?t &pi; ?>",
+                "<p>",
+                "\"y\"",
+                "</>",
+                "</>"
+            ]
+        );
+        let text = "<!DOCTYPE r [<!ENTITY note \"<p><![CDATA[&note;]]></p>\">]><r a='&note;'/>";
+        let (ev, errors) = events(text);
+        assert_eq!(ev[0], "<r a=\"<p><![CDATA[&note;]]></p>\"/>");
+        assert_eq!(
+            messages(&errors),
+            [
+                "the entity &note; puts `<` in an attribute value",
+                "the entity &note; refers to itself: it is not expanded"
+            ]
+        );
+    }
+
+    /// A document in ASCII means the same in any encoding that extends
+    /// ASCII, so declaring one is no error; other declarations are.
+    #[test]
+    fn an_ascii_document_may_declare_an_encoding_that_extends_ascii() {
+        for enc in ["ISO-8859-1", "us-ascii", "windows-1252", "iso-8859-15"] {
+            let text = format!("<?xml version=\"1.0\" encoding=\"{enc}\"?><r>x</r>");
+            let (ev, errors) = events(&text);
+            assert!(errors.is_empty(), "{enc}: {errors:?}");
+            assert_eq!(ev, ["<r>", "\"x\"", "</>"]);
+        }
+        for text in [
+            "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><r>é</r>",
+            "<?xml version=\"1.0\" encoding=\"UTF-16\"?><r>x</r>",
+            "<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><r>x</r>",
+        ] {
+            let (_, errors) = events(text);
+            assert_eq!(
+                messages(&errors),
+                ["only UTF-8 is read: the text is read as UTF-8"],
+                "{text}"
+            );
         }
     }
 }
