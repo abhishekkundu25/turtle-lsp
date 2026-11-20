@@ -99,7 +99,7 @@ pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Co
     let offset = offset as usize;
     match a.parsed.syntax {
         Syntax::JsonLd => return jsonld::complete(a, k, enc, offset),
-        // Nothing writes RDF/XML.
+        // No completion in RDF/XML: only a rename writes it.
         Syntax::RdfXml => return CompletionResponse::Array(vec![]),
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }

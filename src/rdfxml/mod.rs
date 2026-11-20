@@ -18,7 +18,8 @@
 //! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
 //! `document_base` the base passed in, and `prefixes`, `graphs` and
 //! `tokens` stay empty (XML namespaces are scoped, not Turtle prefixes, and
-//! nothing edits RDF/XML). References are exact ([`Form::Iri`],
+//! no formatter edits RDF/XML; [`rename`] parses the text again for the
+//! spans it needs). References are exact ([`Form::Iri`],
 //! [`Form::PName`]) where the text spells the IRI, and
 //! [`Form::Anchor`] where it does not (an entity, `rdf:ID`, `rdf:li`, a
 //! name in the default namespace).

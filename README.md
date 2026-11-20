@@ -51,7 +51,7 @@ the full W3C test suites and real public ontologies; see
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. The SPARQL queries of SHACL shapes (`sh:select`, `sh:ask`, `sh:construct`, `sh:update`) get SPARQL highlighting, completion and hover inside the string. See [SPARQL](#sparql).
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
-- **RDF/XML (`.owl`, `.rdf`)**: Protégé's files join the workspace, read-only: their terms count everywhere, `check`, `query`, reasoning, SHACL and the graph read them, and inside the file you get hover, definition, references, outline, folding and diagnostics at the exact attribute or name. Nothing writes RDF/XML: no formatting, rename, completion or quick fixes in it. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
+- **RDF/XML (`.owl`, `.rdf`)**: Protégé's files join the workspace: their terms count everywhere, `check`, `query`, reasoning, SHACL and the graph read them, and inside the file you get hover, definition, references, rename, outline, folding and diagnostics at the exact attribute or name. Rename is the only feature that writes RDF/XML: it edits each use in its own form, or refuses the whole rename and says where and why. No formatting, completion or quick fixes in it. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
 - **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)); W3C RDF/XML suite: 166/166 (`src/rdfxml/grammar.rs`).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` (default 2,000,000: the most triples one run validates, the shared triples and every dataset together) and `turtle.shacl.onType` (validate while typing; on by default). What validation could not check is reported, not passed over: a failed SHACL-SPARQL query or a check cut short is a `shacl-failure` warning, and a shape whose `sh:path` cannot be read is a `shacl-invalid-path` error.
 - **Reasoning** (on by default, with TurbOWL's default rules; `turtle.reasoning.rules` = `off` turns it off): TurbOWL, an OWL 2 RL reasoner, works out what the workspace and its imports imply, in the background after open, save and a pause in typing. Hover on a resource lists its inferred types under "Inferred", each with its proof: one W3C rule per step, each triple it rests on a link to its line. With `turtle.reasoning.diagnostics` on (off by default, since SHACL shapes often check the same rules), TurbOWL's findings, such as a member of two disjoint classes, are diagnostics on the term at fault, each triple of the proof a link to its line (`turbowl/<rule>`). `default` runs TurbOWL's default rules; `complete` runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples` (default 2,000,000) is the most triples a run reads; past it, reasoning is skipped with a note. It also bounds the inferred triples read for hover: past it, hover says the list may be incomplete. An edit stops the run going on, and a run stops after 10 s; either way hover keeps the last result, and a stop at the time limit is reported (once as a message, then in the log) until a run finishes. Edits to SPARQL files do not rerun reasoning.
@@ -487,7 +487,7 @@ and vocabulary lints listed there, each checked by hand.
 ## RDF/XML and Protégé files (`.owl`, `.rdf`)
 
 Protégé saves ontologies as RDF/XML by default, in `.owl` files. turtle-lsp
-reads `.owl` and `.rdf` files as workspace files, read-only.
+reads `.owl` and `.rdf` files as workspace files. Only a rename edits them.
 
 - **Which syntax**: the content decides, not the name. RDF/XML is read as
   RDF/XML; a `.owl` that holds Turtle or JSON-LD is read as that. An empty
@@ -509,11 +509,26 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   (`xml-syntax`, `rdfxml-syntax`), SHACL results, reasoning findings, and the
   lints that need no edit (`invalid-literal`, `undescribed-term`,
   `deprecated-term`).
-- **Nothing writes RDF/XML**: no formatting, rename, completion, quick fixes
-  or `check --fix` on RDF/XML; `format .` passes over it. A rename of a
-  term an RDF/XML workspace file uses is refused and names the file, so the
-  workspace never disagrees with itself. Edit these files in Protégé. A
-  `.owl` or `.rdf` that holds Turtle or JSON-LD is that syntax: `format`,
+- **Rename edits RDF/XML**: renaming an IRI, from any file, edits the
+  RDF/XML workspace files that use it too, and a rename can start inside
+  one (on an element or attribute name, an `rdf:about`, `rdf:resource` or
+  `rdf:datatype` value, or an `rdf:ID`). Each use keeps its form: a value
+  relative to its `xml:base` stays relative, `&ex;local` keeps its entity, a
+  name keeps its prefix (or takes another prefix in scope for the new
+  namespace), and an element's start and end tags change together. After
+  the edits, the file must give the same triples with the new IRI, or the
+  rename is refused. A use that cannot be rewritten exactly refuses the
+  whole rename, with the file, the line and the reason: a use read from an
+  entity's replacement text, a value with character references, an IRI
+  the syntax implies (`rdf:li`, `rdf:first`, `rdf:nil`, `rdf:Statement`),
+  a new namespace with no prefix in scope (a rename adds no `xmlns`), and a
+  file with a syntax error. Namespace prefixes (`xmlns:p`) are not renamed.
+  An editor that supports change annotations (VS Code) shows the RDF/XML
+  edits for you to confirm first. `rename.rdfXml: false` turns this off: a
+  rename that would edit an RDF/XML file is then refused and names it.
+- **Nothing else writes RDF/XML**: no formatting, completion, quick fixes
+  or `check --fix` on RDF/XML; `format .` passes over it. A `.owl` or
+  `.rdf` that holds Turtle or JSON-LD is that syntax: `format`,
   `check --fix` and editors that format it treat it as such (VS Code does
   not offer to format any `.owl` or `.rdf`).
 - **Editors**: VS Code, Neovim and the browser editor attach to `.owl` and
@@ -649,7 +664,7 @@ before `vim.lsp.enable`.
 
 `.owl` and `.rdf` buffers keep Neovim's `xml` file type; the plugin starts
 the same client for them, so hover, definition, references, outline and
-diagnostics work there; formatting gives no edits and a rename is refused. See
+diagnostics work there, and rename edits them; formatting gives no edits. See
 [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
 
 ### Reasoning, code lenses and queries in Neovim
@@ -768,7 +783,8 @@ JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
 default), `turtle.parse.incremental` (after an edit, parse only the
-statements around it; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
+statements around it; on by default), `turtle.rename.rdfXml` (a rename edits
+RDF/XML files too; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
 `turtle.query.maxBufferedRows` (for ▶ Run query), and `turtle.query.reasoning` (`off`, `default` or `complete`; off by default).
 With reasoning on, queries read the queried files plus external imports
 and everything TurbOWL infers, without a filter. Changing `query.*` settings
@@ -887,6 +903,9 @@ is also accepted.
 - **`parse.incremental`** (on by default) parses only the statements
   around an edit, in the editor; `false` parses the whole file on every
   edit. The command line always parses whole files.
+- **`rename.rdfXml`** (on by default) lets a rename edit the RDF/XML files
+  that use the IRI; `false` refuses such a rename instead. See
+  [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
 - **On the command line,** flags win over the file.
 - **In the editor,** the server reads the file in the first workspace folder,
   and again when it changes (if the editor reports file changes to the server).
