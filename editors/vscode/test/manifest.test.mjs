@@ -52,6 +52,7 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.codeLens.references": ["boolean", true],
     "turtle.diagnostics.workspace": ["boolean", false],
     "turtle.parse.incremental": ["boolean", true],
+    "turtle.rename.rdfXml": ["boolean", true],
     "turtle.query.timeoutSeconds": ["number", 30],
     "turtle.query.maxRows": ["integer", 1000],
     "turtle.query.maxBufferedRows": ["integer", 10000000],
@@ -140,7 +141,7 @@ test(".owl and .rdf files are read and watched, and the client attaches to them 
   for (const ext of [".owl", ".rdf"]) assert.ok(title.includes(`resourceExtname == ${ext}`), title)
 })
 
-test("the server's registered selector, in the client's schemes, leaves .owl and .rdf out", () => {
+test("the server's registered selector, in the client's schemes, leaves .owl and .rdf out but for rename", () => {
   // The selector src/server/registrations.rs sends: its languages and the JSON-LD pattern, no scheme.
   const rust = fs.readFileSync(new URL("../../../src/server/registrations.rs", import.meta.url), "utf8")
   const languages = JSON.parse(rust.match(/LANGUAGES: \[&str; \d+\] =\s*(\[[^\]]*\])/)[1])
@@ -152,6 +153,9 @@ test("the server's registered selector, in the client's schemes, leaves .owl and
     const selector = documentSelector(schemes)
     const narrowed = inSchemes(server, selector)
     assert.deepEqual(narrowed, selector.filter((f) => f.pattern !== RDFXML_PATTERN), schemes.join(", "))
+    // Rename's selector has the RDF/XML pattern too: it keeps every filter.
+    assert.equal(rust.match(/RDFXML_PATTERN: &str = "([^"]*)"/)[1], RDFXML_PATTERN)
+    assert.deepEqual(inSchemes([...server, { pattern: RDFXML_PATTERN }], selector), selector, schemes.join(", "))
   }
   // A registration without a selector (the watchers') stays as it is; a filter with a scheme too.
   const params = {

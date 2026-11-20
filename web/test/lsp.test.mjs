@@ -27,9 +27,19 @@ id:alice rdfs:label "Alice Smith"@en , "Alice Schmidt"@de .
 id:acme rdfs:label "ACME Corporation"@en .
 `,
   },
+  {
+    name: "terms.owl",
+    text: `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="https://toolbox.example.org/def/">
+  <rdf:Description rdf:about="https://toolbox.example.org/def/worksFor">
+    <ex:note>Who employs whom.</ex:note>
+  </rdf:Description>
+</rdf:RDF>
+`,
+  },
 ]
 const textOf = (name) => files.find((f) => f.name === name).text
-const lang = (name) => (/\.(rq|ru|sparql)$/.test(name) ? "sparql" : "turtle")
+const lang = (name) => (/\.(rq|ru|sparql)$/.test(name) ? "sparql" : /\.(owl|rdf)$/.test(name) ? "xml" : "turtle")
 
 let native, nativeRoot, wasm, dir
 before(async () => {
@@ -125,10 +135,19 @@ test("definition, references and highlights, across files", async () => {
   await same("textDocument/documentHighlight", at("people.rq", "?name", 2))
 })
 
-test("rename across files", async () => {
+test("rename across files, RDF/XML too", async () => {
   await same("textDocument/prepareRename", at("ontology.ttl", "ex:worksFor", 4))
   const edit = await same("textDocument/rename", { ...at("ontology.ttl", "ex:worksFor", 4), newName: "ex:employedBy" })
   assert.ok(Object.keys(edit.changes ?? {}).length >= 2 || (edit.documentChanges ?? []).length >= 2, JSON.stringify(edit))
+  const owl = edit.changes[`${WORK}/terms.owl`]
+  assert.deepEqual(owl.map((e) => e.newText), ["https://toolbox.example.org/def/employedBy"])
+  // From inside the RDF/XML file, at a name and at a value.
+  for (const [needle, name] of [["ex:note", "remark"], ["def/worksFor", "employedBy"]]) {
+    const prepared = await same("textDocument/prepareRename", at("terms.owl", needle, 2))
+    assert.ok(prepared, needle)
+    const edit = await same("textDocument/rename", { ...at("terms.owl", needle, 2), newName: name })
+    assert.ok(edit.changes[`${WORK}/terms.owl`].length > 0, JSON.stringify(edit))
+  }
 })
 
 test("formatting", async () => {
