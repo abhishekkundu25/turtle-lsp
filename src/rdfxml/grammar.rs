@@ -10,12 +10,22 @@
 //! `rdf:nodeID`, `rdf:resource`, `rdf:datatype`, `rdf:parseType`
 //! `Literal`, `Resource`, `Collection` and `Triple`, property attributes,
 //! `rdf:li`, `xml:base`, `xml:lang`, and the RDF 1.2 terms `rdf:version`,
-//! `rdf:annotation`, `rdf:annotationNodeID` and `its:dir`, which, as in
-//! `oxrdfxml`, only `rdf:version="1.2"` (or `1.2-basic`) turns on:
-//! - `its:dir` on a property element gives its text that direction; on any
-//!   element it gives the direction of the property attributes below it;
-//! - `rdf:parseType="Triple"` gives a triple term only under version 1.2,
-//!   and nothing otherwise.
+//! `rdf:annotation`, `rdf:annotationNodeID` and `its:dir`:
+//! - `its:dir` is read only under `rdf:version="1.2"` or `"1.2-basic"`, as
+//!   RDF 1.2 XML Syntax 5.1.2 says and `oxrdfxml` does: on a property
+//!   element it gives its text that direction; on any element it gives the
+//!   direction of the property attributes below it;
+//! - `rdf:annotation`, `rdf:annotationNodeID` and `rdf:parseType="Triple"`
+//!   give triple terms under any version, or none. Their productions
+//!   (6.2.15 to 6.2.22) do not depend on it, and RDF 1.2 Concepts (1.10,
+//!   2.1) makes the version an announcement that data may contradict.
+//!   `oxrdfxml` reads annotations so, but drops a `parseType="Triple"`
+//!   element without a word unless the version is 1.2; this parser reads
+//!   both alike;
+//! - a property element takes one of `rdf:annotation` and
+//!   `rdf:annotationNodeID`, and a `parseType="Collection"` one neither
+//!   (6.2.20); the withdrawn `rdf:bagID`, `rdf:aboutEach` and
+//!   `rdf:aboutEachPrefix` (6.2.4, `oldTerms`) are no attributes.
 //!
 //! Where the two depart, this parser follows the specifications. On these,
 //! `oxrdfxml` rejects the text:
@@ -45,17 +55,26 @@
 //!   literal;
 //! - an unknown `rdf:parseType` reads as `"Literal"` (7.2.20); `oxrdfxml`
 //!   gives no triple;
+//! - `rdf:parseType="Triple"` without `rdf:version="1.2"` gives its triple
+//!   term (see above); `oxrdfxml` gives no triple;
 //! - line ends are normalized (XML 1.0, 2.11) and so are attribute values
 //!   (3.3.3: white space becomes a space); `oxrdfxml` keeps `\r\n` in text
 //!   and line ends and tabs in attribute values. FOAF has two such values
 //!   (`CORPUS_KNOWN`).
+//!
+//! On these, `oxrdfxml` reads the text without error and this parser
+//! reports one (pinned by `oxrdfxml_reads_what_this_parser_reports`):
+//! `rdf:bagID`; `rdf:annotation` with `rdf:annotationNodeID`, or either on
+//! `parseType="Collection"`; an empty prefixed namespace in XML 1.0; an
+//! XML declaration after white space.
 //!
 //! Recovery: an RDF/XML error (code `rdfxml-syntax`) is reported at the
 //! attribute or name that causes it, and the element is read as far as it
 //! can be: an element whose name is no IRI gives no triple of its own but
 //! its content is read; of two attributes that cannot go together, the
 //! first in the order `rdf:about`, `rdf:ID`, `rdf:nodeID` (`rdf:resource`,
-//! `rdf:nodeID` on a property element) is kept; an IRI that does not
+//! `rdf:nodeID`, and `rdf:annotation`, `rdf:annotationNodeID`, on a
+//! property element) is kept; an IRI that does not
 //! resolve, or is not absolute, is kept as written in its reference, and a
 //! triple that names it (as subject, predicate, object or datatype) is
 //! dropped, as Turtle and `oxrdfxml` drop it. The IRIs one parse makes are
@@ -653,13 +672,8 @@ impl<'a> Grammar<'a> {
                     "annotation" => Some(&mut a.annotation),
                     "annotationNodeID" => Some(&mut a.annotation_node),
                     "type" => Some(&mut a.type_),
-                    "bagID" => {
-                        if !xml::is_nc_name(&attr.value.text) {
-                            self.error(attr.value.span, "rdf:bagID must be an XML NCName");
-                        }
-                        continue;
-                    }
-                    "aboutEach" | "aboutEachPrefix" | "li" | "RDF" => {
+                    // `oldTerms` (6.2.4) are withdrawn: no attribute.
+                    "aboutEach" | "aboutEachPrefix" | "bagID" | "li" | "RDF" => {
                         self.error(
                             n.span,
                             format!("rdf:{} is not an RDF/XML attribute", n.local()),
@@ -980,18 +994,6 @@ impl<'a> Grammar<'a> {
             })
         };
         let id = a.id.map(|attr| (self.id(attr, &env.base), attr.value.span));
-        let annotation = a.annotation.map(|attr| {
-            (
-                self.iri_value(&env.base, &attr.value, Role::Subject),
-                attr.value.span,
-            )
-        });
-        let annotation_node = a
-            .annotation_node
-            .map(|attr| (self.node_id(attr), attr.value.span));
-        if let Some(attr) = a.about {
-            self.error(attr.name.span, "rdf:about cannot be on a property element");
-        }
         let parse_type = match a.parse_type.map(|t| &*t.value.text) {
             None => ParseType::Default,
             Some("Literal") => ParseType::Literal,
@@ -1000,6 +1002,43 @@ impl<'a> Grammar<'a> {
             Some("Triple") => ParseType::Triple,
             Some(_) => ParseType::Other,
         };
+        // Its IRI is written, so it is a reference even where refused.
+        let mut annotation = a.annotation.map(|attr| {
+            (
+                self.iri_value(&env.base, &attr.value, Role::Subject),
+                attr.value.span,
+            )
+        });
+        // At most one of the two (`(annotationAttr | annotationNodeIDAttr)?`),
+        // and neither on a collection (6.2.20).
+        let mut annotation_node = a.annotation_node;
+        if let (Some(_), Some(attr)) = (a.annotation, annotation_node) {
+            self.error(
+                attr.name.span,
+                "rdf:annotation and rdf:annotationNodeID cannot be on one property element",
+            );
+            annotation_node = None;
+        }
+        if parse_type == ParseType::Collection {
+            for (attr, what) in [
+                (a.annotation, "rdf:annotation"),
+                (annotation_node.take(), "rdf:annotationNodeID"),
+            ] {
+                if let Some(attr) = attr {
+                    self.error(
+                        attr.name.span,
+                        format!(
+                            "{what} cannot be on a property element with rdf:parseType=\"Collection\""
+                        ),
+                    );
+                }
+            }
+            annotation = None;
+        }
+        let annotation_node = annotation_node.map(|attr| (self.node_id(attr), attr.value.span));
+        if let Some(attr) = a.about {
+            self.error(attr.name.span, "rdf:about cannot be on a property element");
+        }
         let prop = Prop {
             p,
             subject,
@@ -1242,9 +1281,9 @@ impl<'a> Grammar<'a> {
                 };
                 self.prop_triple(&prop, o, content(prop.tag));
             }
-            State::TripleProp { env, prop, triples } => {
+            State::TripleProp { prop, triples, .. } => {
                 self.in_triple -= 1;
-                if end.implied || env.version != Version::V12 {
+                if end.implied {
                     return;
                 }
                 if triples.len() != 1 {
@@ -1895,8 +1934,8 @@ mod tests {
             r#"><rdf:Description rdf:about="http://example.org/a" xml:lang="en" its:dir="rtl" ex:q="x"><ex:p its:dir="ltr">t</ex:p></rdf:Description></rdf:RDF>"#,
             r#" rdf:version="1.2-basic"><rdf:Description rdf:about="http://example.org/a" xml:lang="en" its:dir="ltr"><ex:p its:dir="rtl">t</ex:p></rdf:Description></rdf:RDF>"#,
             // Triple terms, annotated and not.
-            r#" rdf:version="1.2"><rdf:Description rdf:about="http://example.org/a"><ex:says rdf:parseType="Triple" rdf:annotation="http://example.org/r" rdf:annotationNodeID="n"><rdf:Description rdf:about="http://example.org/b"><ex:p rdf:resource="http://example.org/c"/></rdf:Description></ex:says></rdf:Description></rdf:RDF>"#,
-            r#"><rdf:Description rdf:about="http://example.org/a"><ex:says rdf:parseType="Triple"><rdf:Description rdf:about="http://example.org/b"><ex:p>x</ex:p></rdf:Description></ex:says><ex:q>y</ex:q></rdf:Description></rdf:RDF>"#,
+            r#" rdf:version="1.2"><rdf:Description rdf:about="http://example.org/a"><ex:says rdf:parseType="Triple" rdf:annotation="http://example.org/r"><rdf:Description rdf:about="http://example.org/b"><ex:p rdf:resource="http://example.org/c"/></rdf:Description></ex:says><ex:hears rdf:parseType="Triple" rdf:annotationNodeID="n"><rdf:Description rdf:about="http://example.org/b"><ex:p rdf:resource="http://example.org/c"/></rdf:Description></ex:hears></rdf:Description></rdf:RDF>"#,
+            r#" rdf:version="1.2"><rdf:Description rdf:about="http://example.org/a"><ex:says rdf:parseType="Triple"><rdf:Description rdf:about="http://example.org/b"><ex:p>x</ex:p></rdf:Description></ex:says><ex:q>y</ex:q></rdf:Description></rdf:RDF>"#,
             r#" rdf:version="1.2"><rdf:Description rdf:about="http://example.org/a"><ex:p rdf:annotationNodeID="n" rdf:ID="i" xml:lang="en">x</ex:p><ex:q rdf:annotation="http://example.org/r2" rdf:resource="http://example.org/o"/></rdf:Description></rdf:RDF>"#,
         ] {
             let text = format!("{head}{body}");
@@ -2056,6 +2095,18 @@ mod tests {
                     r#"{head}<rdf:Description rdf:about="http://example.org/a"><ex:p rdf:parseType="Other"><ex:b>x</ex:b></ex:p></rdf:Description></rdf:RDF>"#
                 ),
             ),
+            (
+                "rdf:parseType=\"Triple\" without rdf:version",
+                format!(
+                    r#"{head}<rdf:Description rdf:about="http://example.org/a"><ex:says rdf:parseType="Triple"><rdf:Description rdf:about="http://example.org/s"><ex:p rdf:resource="http://example.org/o"/></rdf:Description></ex:says></rdf:Description></rdf:RDF>"#
+                ),
+            ),
+            (
+                "rdf:parseType=\"Triple\" under rdf:version=\"1.2-basic\"",
+                format!(
+                    r#"{head}<rdf:Description rdf:about="http://example.org/a" rdf:version="1.2-basic"><ex:says rdf:parseType="Triple"><rdf:Description rdf:about="http://example.org/s"><ex:p rdf:resource="http://example.org/o"/></rdf:Description></ex:says></rdf:Description></rdf:RDF>"#
+                ),
+            ),
         ];
         for (name, text) in cases {
             let want = theirs(&text, None).unwrap_or_else(|e| panic!("{name}: oxrdfxml: {e}"));
@@ -2065,6 +2116,69 @@ mod tests {
                 difference(&graph(&p), &want).is_some(),
                 "{name}: the graphs agree now"
             );
+        }
+    }
+
+    /// Texts `oxrdfxml` reads without error where this parser reports one
+    /// (see the module doc): (name, text, the errors as code and text at
+    /// the span). Each must still be read by `oxrdfxml`, so the list
+    /// cannot go stale.
+    #[test]
+    fn oxrdfxml_reads_what_this_parser_reports() {
+        let head = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/">"#;
+        let v12 = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/" rdf:version="1.2">"#;
+        let cases = [
+            (
+                "rdf:bagID on a node element (RDF/XML 6.2.4)",
+                format!(
+                    r#"{head}<rdf:Description rdf:about="http://example.org/s" rdf:bagID="b"><ex:p rdf:resource="http://example.org/o"/></rdf:Description></rdf:RDF>"#
+                ),
+                vec![("rdfxml-syntax", "rdf:bagID")],
+            ),
+            (
+                "rdf:bagID on a property element (RDF/XML 6.2.4)",
+                format!(
+                    r#"{head}<rdf:Description rdf:about="http://example.org/s"><ex:p rdf:bagID="b" rdf:resource="http://example.org/o"/></rdf:Description></rdf:RDF>"#
+                ),
+                vec![("rdfxml-syntax", "rdf:bagID")],
+            ),
+            (
+                "rdf:annotation and rdf:annotationNodeID on one element (RDF 1.2 XML 6.2.22)",
+                format!(
+                    r#"{v12}<rdf:Description rdf:about="http://example.org/s"><ex:q rdf:annotation="http://example.org/a" rdf:annotationNodeID="b1" rdf:resource="http://example.org/o"/></rdf:Description></rdf:RDF>"#
+                ),
+                vec![("rdfxml-syntax", "rdf:annotationNodeID")],
+            ),
+            (
+                "rdf:annotation on parseType=\"Collection\" (RDF 1.2 XML 6.2.20)",
+                format!(
+                    r#"{v12}<rdf:Description rdf:about="http://example.org/s"><ex:d rdf:annotation="http://example.org/r" rdf:parseType="Collection"><rdf:Description rdf:about="http://example.org/i"/></ex:d></rdf:Description></rdf:RDF>"#
+                ),
+                vec![("rdfxml-syntax", "rdf:annotation")],
+            ),
+            (
+                "an empty prefixed namespace in XML 1.0 (Namespaces in XML 1.0, 3)",
+                format!(
+                    r#"<?xml version="1.0"?>{head}<rdf:Description rdf:about="http://example.org/s" xmlns:ex=""><rdf:value>v</rdf:value></rdf:Description></rdf:RDF>"#
+                ),
+                vec![("xml-syntax", "xmlns:ex")],
+            ),
+            (
+                "an XML declaration after white space (XML 1.0, 2.8)",
+                format!(
+                    r#"
+
+
+<?xml version="1.0"?>{head}<rdf:Description rdf:about="http://example.org/s"><ex:p>v</ex:p></rdf:Description></rdf:RDF>"#
+                ),
+                vec![("xml-syntax", "<?xml")],
+            ),
+        ];
+        for (name, text, errors) in cases {
+            theirs(&text, None).unwrap_or_else(|e| panic!("{name}: oxrdfxml: {e}"));
+            let p = parse(&text, None);
+            spans_hold(&text, &p);
+            assert_eq!(errors_at(&text, &p), errors, "{name}");
         }
     }
 
@@ -2907,6 +3021,140 @@ mod tests {
         assert_eq!(p.triples.len(), 1, "{:?}", p.triples);
         assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
         assert!(p.errors[0].message.contains("not an absolute IRI"));
+    }
+
+    /// The errors of a parse: their code and the text at their span.
+    fn errors_at<'t>(text: &'t str, p: &Parsed) -> Vec<(&'static str, &'t str)> {
+        p.errors
+            .iter()
+            .map(|e| (e.code, at(text, e.span)))
+            .collect()
+    }
+
+    const EX_HEAD: &str = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/""#;
+
+    /// RDF 1.2 XML Syntax 6.2.19: `rdf:parseType="Triple"` gives a triple
+    /// term whatever `rdf:version` says, as `rdf:annotation` gives one; a
+    /// version announcement only lets a parser warn early (RDF 1.2
+    /// Concepts 1.10).
+    #[test]
+    fn a_triple_term_is_read_whatever_the_version() {
+        for version in [
+            "",
+            r#" rdf:version="1.1""#,
+            r#" rdf:version="1.2-basic""#,
+            r#" rdf:version="1.2""#,
+        ] {
+            let text = format!(
+                r#"{EX_HEAD}{version}><rdf:Description rdf:about="http://example.org/a"><ex:q>sibling</ex:q><ex:says rdf:parseType="Triple"><rdf:Description rdf:about="http://example.org/s"><ex:p rdf:resource="http://example.org/o"/></rdf:Description></ex:says><ex:r rdf:annotation="http://example.org/n">x</ex:r></rdf:Description></rdf:RDF>"#
+            );
+            let p = parse(&text, None);
+            spans_hold(&text, &p);
+            assert_eq!(errors_at(&text, &p), [], "{version}");
+            assert_eq!(
+                lines_of(&p),
+                [
+                    r#"<http://example.org/a> <http://example.org/q> "sibling""#,
+                    r#"<http://example.org/a> <http://example.org/r> "x""#,
+                    "<http://example.org/a> <http://example.org/says> <<( <http://example.org/s> <http://example.org/p> <http://example.org/o> )>>",
+                    r#"<http://example.org/n> <http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies> <<( <http://example.org/a> <http://example.org/r> "x" )>>"#,
+                ],
+                "{version}"
+            );
+        }
+    }
+
+    /// RDF/XML 6.2.4 (`oldTerms`): `rdf:bagID`, `rdf:aboutEach` and
+    /// `rdf:aboutEachPrefix` were withdrawn; none is an attribute, on a node
+    /// or a property element. The element is read without it.
+    #[test]
+    fn withdrawn_rdf_attributes_are_errors() {
+        for (attr, value) in [
+            ("bagID", "bag1"),
+            ("aboutEach", "http://example.org/b"),
+            ("aboutEachPrefix", "http://example.org/"),
+        ] {
+            let text = format!(
+                r#"{EX_HEAD}><rdf:Description rdf:about="http://example.org/s" rdf:{attr}="{value}"><ex:p rdf:{attr}="{value}" rdf:resource="http://example.org/o"/></rdf:Description></rdf:RDF>"#
+            );
+            let p = parse(&text, None);
+            spans_hold(&text, &p);
+            let name = format!("rdf:{attr}");
+            assert_eq!(
+                errors_at(&text, &p),
+                [("rdfxml-syntax", &*name), ("rdfxml-syntax", &*name)],
+                "{attr}"
+            );
+            assert_eq!(
+                lines_of(&p),
+                ["<http://example.org/s> <http://example.org/p> <http://example.org/o>"],
+                "{attr}"
+            );
+        }
+    }
+
+    /// RDF 1.2 XML Syntax 6.2.15 to 6.2.22: a property element takes
+    /// `rdf:annotation` or `rdf:annotationNodeID`, not both
+    /// (`(annotationAttr | annotationNodeIDAttr)?`). The first is kept.
+    #[test]
+    fn both_annotation_attributes_are_an_error() {
+        let text = format!(
+            r#"{EX_HEAD} rdf:version="1.2"><rdf:Description rdf:about="http://example.org/s"><ex:q rdf:annotation="http://example.org/a" rdf:annotationNodeID="b1" rdf:resource="http://example.org/o"/></rdf:Description></rdf:RDF>"#
+        );
+        let p = parse(&text, None);
+        spans_hold(&text, &p);
+        assert_eq!(
+            errors_at(&text, &p),
+            [("rdfxml-syntax", "rdf:annotationNodeID")]
+        );
+        assert_eq!(
+            lines_of(&p),
+            [
+                "<http://example.org/a> <http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies> <<( <http://example.org/s> <http://example.org/q> <http://example.org/o> )>>",
+                "<http://example.org/s> <http://example.org/q> <http://example.org/o>",
+            ]
+        );
+    }
+
+    /// RDF 1.2 XML Syntax 6.2.20: `parseTypeCollectionPropertyElt` is
+    /// `set(idAttr?, parseCollection)`: no annotation. The list is read
+    /// without it. `Literal`, `Resource`, an unknown parse type (6.2.17,
+    /// 6.2.18, 6.2.21) and `Triple` (6.1) take one.
+    #[test]
+    fn a_collection_takes_no_annotation() {
+        for attr in [
+            r#"rdf:annotation="http://example.org/r""#,
+            r#"rdf:annotationNodeID="r""#,
+        ] {
+            let text = format!(
+                r#"{EX_HEAD} rdf:version="1.2"><rdf:Description rdf:about="http://example.org/s"><ex:d {attr} rdf:parseType="Collection"><rdf:Description rdf:about="http://example.org/i"/></ex:d></rdf:Description></rdf:RDF>"#
+            );
+            let p = parse(&text, None);
+            spans_hold(&text, &p);
+            let name = attr.split('=').next().unwrap();
+            assert_eq!(errors_at(&text, &p), [("rdfxml-syntax", name)], "{attr}");
+            let lines = lines_of(&p);
+            assert_eq!(lines.len(), 3, "{lines:?}");
+            assert!(lines.iter().all(|l| !l.contains("reifies")), "{lines:?}");
+        }
+        let node =
+            r#"<rdf:Description rdf:about="http://example.org/i"><ex:p>v</ex:p></rdf:Description>"#;
+        for (parse_type, content) in [
+            ("Literal", node),
+            ("Resource", "<ex:p>v</ex:p>"),
+            ("Other", node),
+            ("Triple", node),
+        ] {
+            let text = format!(
+                r#"{EX_HEAD} rdf:version="1.2"><rdf:Description rdf:about="http://example.org/s"><ex:d rdf:annotation="http://example.org/r" rdf:parseType="{parse_type}">{content}</ex:d></rdf:Description></rdf:RDF>"#
+            );
+            let p = parse(&text, None);
+            assert_eq!(errors_at(&text, &p), [], "{parse_type}");
+            assert!(
+                lines_of(&p).iter().any(|l| l.contains("reifies")),
+                "{parse_type}"
+            );
+        }
     }
 
     #[test]

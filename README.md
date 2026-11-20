@@ -490,7 +490,10 @@ Protégé saves ontologies as RDF/XML by default, in `.owl` files. turtle-lsp
 reads `.owl` and `.rdf` files as workspace files, read-only.
 
 - **Which syntax**: the content decides, not the name. RDF/XML is read as
-  RDF/XML; a `.owl` that holds Turtle or JSON-LD is read as that. A `.owl` in
+  RDF/XML; a `.owl` that holds Turtle or JSON-LD is read as that. An empty
+  `.owl` or `.rdf`, or one of white space only, is RDF/XML (no Turtle
+  completion or formatting until Turtle is written in it), and an XML file
+  with no root element is an `xml-syntax` error. A `.owl` in
   OWL/XML, Functional or Manchester syntax is not read: it gets one
   `unsupported-syntax` diagnostic that names the format and says how to save
   it as RDF/XML or Turtle in Protégé (File > Save as). It is an error when an
@@ -528,7 +531,14 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   it names a file it does not read and its first bad byte.
 - **XML as the spec reads it**: line ends and attribute values are
   normalized and internal entities expand, nested or holding markup, within
-  limits that refuse entity bombs and external entities.
+  limits that refuse entity bombs and external entities. Namespace
+  declarations follow Namespaces in XML: `xml` and `xmlns` keep their own,
+  and an empty prefixed one is an error in XML 1.0.
+- **RDF 1.2**: triple terms (`rdf:parseType="Triple"`, `rdf:annotation`,
+  `rdf:annotationNodeID`) are read under any `rdf:version` (their grammar
+  has no version condition; the version is an announcement); `its:dir` only
+  under `1.2` or `1.2-basic`. The withdrawn
+  `rdf:bagID`, `rdf:aboutEach` and `rdf:aboutEachPrefix` are errors.
 
 The parser is turtle-lsp's own, so it can place every term and go on after
 an error. It passes the W3C RDF/XML suite (166/166) and reads the same graph

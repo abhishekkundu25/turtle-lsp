@@ -1603,7 +1603,12 @@ impl Workspace {
     /// syntax its content gives counts as Turtle here, and a parse whose
     /// text turns out otherwise drops them ([`parse_files`]).
     pub(crate) fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
-        self.external_prefixes_as(uri, Syntax::of(None, uri, ""))
+        let syntax = if Syntax::by_content(uri) {
+            Syntax::Turtle
+        } else {
+            Syntax::of(None, uri, "")
+        };
+        self.external_prefixes_as(uri, syntax)
     }
 
     /// The project's prefixes where `uri` is, whatever its syntax: those a
@@ -3235,6 +3240,13 @@ pub(crate) mod tests {
                 && !ext(&mut ws, &files[2]).contains_key("one")
         );
         assert!(ext(&mut ws, &files[3]).is_empty());
+        // An `.owl` or `.rdf` name gets them too: its text may be Turtle.
+        for name in ["a/onto.owl", "a/DATA.RDF"] {
+            assert!(
+                ext(&mut ws, &root.0.join(name)).contains_key("one"),
+                "{name}"
+            );
+        }
 
         // Saving a prefixes.ttl without a change to what it declares re-parses nothing.
         assert!(ws.prefixes_changed(Some(&pf)).is_empty());
@@ -3571,6 +3583,20 @@ pub(crate) mod tests {
         );
         ws.change_doc(uri, 3, vec![full(xml)], Encoding::Utf16);
         assert_eq!(ws.analysis(uri).unwrap().parsed.syntax, Syntax::RdfXml);
+        // Emptied, or only white space: still RDF/XML, until Turtle is typed.
+        for (version, text) in [(4, ""), (5, " \n\t"), (6, ttl)] {
+            ws.change_doc(uri, version, vec![full(text)], Encoding::Utf16);
+            let want = if text == ttl {
+                Syntax::Turtle
+            } else {
+                Syntax::RdfXml
+            };
+            assert_eq!(ws.doc_kind(uri), Some(DocKind::Rdf(want)), "{text:?}");
+        }
+        // Opened empty: RDF/XML.
+        let empty = "file:///w/new.rdf";
+        ws.open_doc_in(empty.into(), String::new(), 1, Some("xml"));
+        assert_eq!(ws.doc_kind(empty), Some(DocKind::Rdf(Syntax::RdfXml)));
         // A kind the caller names stays, whatever the text becomes.
         let given = "file:///w/given.owl";
         ws.open_doc_as(given.into(), ttl.into(), 1, Syntax::Turtle);

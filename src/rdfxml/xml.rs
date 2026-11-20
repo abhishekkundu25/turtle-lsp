@@ -37,7 +37,12 @@
 //! What well-formed XML forbids and `oxrdfxml` (through quick-xml) reads
 //! anyway is reported and read the way it reads it: a second root element,
 //! a duplicate attribute (also two names with one namespace and local name,
-//! Namespaces in XML 6.3).
+//! Namespaces in XML 6.3), an XML declaration that is not first (after a
+//! byte order mark at most, 2.8), and an empty prefixed namespace in XML
+//! 1.0 (Namespaces in XML 1.0, 3: an undeclaration, as XML 1.1 reads it).
+//! A declaration Namespaces in XML reserves (3: `xml` to another
+//! namespace, another prefix or the default to `xml`'s or `xmlns`'s, any
+//! `xmlns:xmlns`) is reported and not applied.
 //!
 //! Limits: elements nest at most [`MAX_DEPTH`] deep (deeper ones are
 //! skipped, with one error); the DOCTYPE declares at most [`MAX_ENTITIES`]
@@ -220,6 +225,8 @@ pub(crate) struct Prolog {
     entities: Entities,
     /// Some entity holds markup.
     markup: bool,
+    /// The XML declaration says `version="1.1"`.
+    xml11: bool,
     pos: usize,
     errors: Vec<SyntaxError>,
     dropped: bool,
@@ -239,6 +246,7 @@ impl Prolog {
         Prolog {
             entities,
             markup,
+            xml11: s.xml11,
             pos: s.pos,
             errors: s.errors,
             dropped: s.dropped,
@@ -297,6 +305,9 @@ pub(crate) struct Scanner<'a> {
     markup: bool,
     /// Reading the prolog: the first DOCTYPE's entities are recorded.
     prolog: bool,
+    /// The XML declaration says `version="1.1"`: a prefix may be
+    /// undeclared (Namespaces in XML 1.1).
+    xml11: bool,
     doctypes: usize,
     /// The entity declarations read, in order: name, its span, replacement
     /// text.
@@ -316,6 +327,16 @@ pub(crate) struct Scanner<'a> {
     errors: Vec<SyntaxError>,
     dropped: bool,
     comments: Vec<Span>,
+}
+
+/// The value of the pseudo-attribute `name` in an XML declaration's
+/// `body`, as written between its quotes.
+fn pseudo_attr<'b>(body: &'b str, name: &str) -> Option<&'b str> {
+    let i = body.find(name)?;
+    let rest = body[i + name.len()..].trim_start();
+    let rest = rest.strip_prefix('=').unwrap_or(rest).trim_start();
+    let q = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    rest[1..].split(q).next()
 }
 
 fn is_space(c: u8) -> bool {
@@ -492,6 +513,7 @@ impl<'a> Scanner<'a> {
     pub(crate) fn new(text: &'a str, prolog: &'a Prolog) -> Scanner<'a> {
         let mut s = Scanner::start(text, &prolog.entities, prolog.markup);
         s.pos = prolog.pos.max(s.pos);
+        s.xml11 = prolog.xml11;
         s.errors.clone_from(&prolog.errors);
         s.dropped = prolog.dropped;
         s.comments.clone_from(&prolog.comments);
@@ -515,6 +537,7 @@ impl<'a> Scanner<'a> {
             entities,
             markup,
             prolog: false,
+            xml11: false,
             doctypes: 0,
             declared: Vec::new(),
             expanded: 0,
@@ -985,45 +1008,49 @@ impl<'a> Scanner<'a> {
             .then(|| Event::Pi(self.span(start, end), &self.text[start..end]))
     }
 
-    /// `<?xml version="1.0" encoding="..."?>`: only UTF-8 is read. A
-    /// document in ASCII may declare an encoding that extends ASCII: its
+    /// `<?xml version="1.0" encoding="..."?>`, first in the document or
+    /// right after its byte order mark (XML 1.0, 2.8): only UTF-8 is read.
+    /// A document in ASCII may declare an encoding that extends ASCII: its
     /// bytes mean the same in UTF-8.
     fn declaration(&mut self, start: usize, body: &str) {
-        let first = (start == 0 || start == 3) && self.frames.is_empty();
+        let bom = if self.text.starts_with('\u{FEFF}') {
+            3
+        } else {
+            0
+        };
+        let first = start == bom && self.frames.is_empty();
         if !first {
             self.error(
                 self.span(start, start + 5),
                 "the XML declaration is not at the start of the document",
             );
+        } else if let Some(v) = pseudo_attr(body, "version") {
+            self.xml11 = v == "1.1";
         }
-        if let Some(i) = body.find("encoding") {
-            let rest = body[i + 8..].trim_start();
-            let rest = rest.strip_prefix('=').unwrap_or(rest).trim_start();
-            let q = rest.chars().next();
-            if let Some(q @ ('"' | '\'')) = q {
-                let value = rest[1..].split(q).next().unwrap_or("");
-                let value = value.to_ascii_lowercase();
-                let utf8 = matches!(
-                    value.as_str(),
-                    "utf-8"
-                        | "utf8"
-                        | "unicode-1-1-utf-8"
-                        | "unicode11utf8"
-                        | "unicode20utf8"
-                        | "x-unicode20utf8"
+        if let Some(i) = body.find("encoding")
+            && let Some(value) = pseudo_attr(&body[i..], "encoding")
+        {
+            let value = value.to_ascii_lowercase();
+            let utf8 = matches!(
+                value.as_str(),
+                "utf-8"
+                    | "utf8"
+                    | "unicode-1-1-utf-8"
+                    | "unicode11utf8"
+                    | "unicode20utf8"
+                    | "x-unicode20utf8"
+            );
+            let extends_ascii = matches!(value.as_str(), "us-ascii" | "ascii" | "latin1")
+                || value.starts_with("iso-8859-")
+                || value.starts_with("windows-125");
+            // Only the first declaration is checked against the text, so
+            // many declarations cost no more than one.
+            if !utf8 && !(extends_ascii && first && self.b.is_ascii()) {
+                let at = start + 2 + i;
+                self.error(
+                    self.span(at, at + 8),
+                    "only UTF-8 is read: the text is read as UTF-8",
                 );
-                let extends_ascii = matches!(value.as_str(), "us-ascii" | "ascii" | "latin1")
-                    || value.starts_with("iso-8859-")
-                    || value.starts_with("windows-125");
-                // Only the first declaration is checked against the text, so
-                // many declarations cost no more than one.
-                if !utf8 && !(extends_ascii && first && self.b.is_ascii()) {
-                    let at = start + 2 + i;
-                    self.error(
-                        self.span(at, at + 8),
-                        "only UTF-8 is read: the text is read as UTF-8",
-                    );
-                }
             }
         }
     }
@@ -1555,7 +1582,7 @@ impl<'a> Scanner<'a> {
         }
         // This element's declarations apply to itself and its attributes.
         let ns_len = self.ns.len();
-        for (aname, _, value, _) in &attrs {
+        for (aname, aspan, value, _) in &attrs {
             let prefix = if *aname == "xmlns" {
                 ""
             } else if let Some(p) = aname.strip_prefix("xmlns:") {
@@ -1563,6 +1590,16 @@ impl<'a> Scanner<'a> {
             } else {
                 continue;
             };
+            if let Some((at, message)) = self.reserved(prefix, *aspan, value) {
+                self.error(at, message);
+                continue;
+            }
+            if !prefix.is_empty() && value.text.is_empty() && !self.xml11 {
+                self.error(
+                    *aspan,
+                    "an empty namespace undeclares a prefix only in XML 1.1",
+                );
+            }
             self.ns.push(prefix);
             self.scopes
                 .entry(prefix)
@@ -1642,6 +1679,33 @@ impl<'a> Scanner<'a> {
                     ),
                 );
             }
+        }
+    }
+
+    /// Namespaces in XML 1.0, 3: why the declaration of `prefix` (`""` for
+    /// the default namespace) to `value` is not applied, and where. `xml`
+    /// is bound to its namespace only, and no other prefix to it; `xmlns`
+    /// is never declared, and its namespace is bound to nothing.
+    fn reserved(
+        &self,
+        prefix: &str,
+        name: Span,
+        value: &Value<'_>,
+    ) -> Option<(Span, &'static str)> {
+        let uri: &str = &value.text;
+        if prefix == "xmlns" {
+            Some((name, "the prefix xmlns is never declared"))
+        } else if prefix == "xml" {
+            (uri != XML_NS).then_some((
+                value.span,
+                "the prefix xml is bound to http://www.w3.org/XML/1998/namespace only",
+            ))
+        } else if uri == XML_NS {
+            Some((value.span, "only the prefix xml is bound to this namespace"))
+        } else if uri == XMLNS_NS {
+            Some((value.span, "no prefix is bound to the xmlns namespace"))
+        } else {
+            None
         }
     }
 
@@ -1892,6 +1956,146 @@ mod tests {
         );
         let (ev, _) = events("<r a='x<b/>");
         assert_eq!(ev, ["<r a=\"x\">", "<b/>", "</>", "</?>"]);
+    }
+
+    /// The errors of a scan: their message and the text at their span.
+    fn errors_at(text: &str) -> Vec<(String, &str)> {
+        events(text)
+            .1
+            .iter()
+            .map(|e| {
+                let s = e.span;
+                (
+                    e.message().to_string(),
+                    &text[s.start as usize..s.end as usize],
+                )
+            })
+            .collect()
+    }
+
+    /// Namespaces in XML 1.0, 3 (No Prefix Undeclaring): a prefixed
+    /// declaration is not empty. XML 1.1 (Namespaces in XML 1.1) allows it,
+    /// and an empty default namespace is allowed in both. Either way the
+    /// prefix is undeclared.
+    #[test]
+    fn an_empty_prefixed_namespace_is_an_error_in_xml_1_0() {
+        const BODY: &str =
+            "<r xmlns:ex='http://example.org/'><a xmlns:ex=''><ex:b/></a><c xmlns=''/></r>";
+        let undeclare = "an empty namespace undeclares a prefix only in XML 1.1";
+        for decl in [
+            "",
+            "<?xml version=\"1.0\"?>",
+            "<?xml version='1.0' encoding='UTF-8'?>",
+        ] {
+            let text = format!("{decl}{BODY}");
+            assert_eq!(
+                errors_at(&text),
+                [(undeclare.to_string(), "xmlns:ex")],
+                "{decl}"
+            );
+        }
+        for decl in ["<?xml version=\"1.1\"?>", "\u{feff}<?xml version='1.1'?>"] {
+            let text = format!("{decl}{BODY}");
+            assert_eq!(errors_at(&text), [], "{decl}");
+        }
+        // Undeclared in both: the name has no namespace.
+        let text = format!("<?xml version=\"1.1\"?>{BODY}");
+        let prolog = Prolog::read(&text);
+        let mut s = Scanner::new(&text, &prolog);
+        let mut names = Vec::new();
+        loop {
+            match s.next() {
+                Event::Eof => break,
+                Event::Start(t) => names.push((t.name.raw, t.name.ns().map(str::to_string))),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            names,
+            [("r", None), ("a", None), ("ex:b", None), ("c", None)]
+        );
+    }
+
+    /// Namespaces in XML 1.0, 3 (Reserved Prefixes and Namespace Names):
+    /// `xml` is bound to its namespace only, which no other prefix (nor
+    /// the default) takes; `xmlns` is never declared, and its namespace is
+    /// bound to nothing. Such a declaration is not applied.
+    #[test]
+    fn reserved_namespaces_are_bound_only_to_their_prefixes() {
+        const XML: &str = "http://www.w3.org/XML/1998/namespace";
+        const XMLNS: &str = "http://www.w3.org/2000/xmlns/";
+        // Protégé declares `xml` to its own namespace: allowed.
+        assert_eq!(
+            errors_at(&format!("<r xmlns:xml='{XML}' xml:lang='en'/>")),
+            []
+        );
+        for (decl, at) in [
+            (format!("xmlns:x='{XML}'"), XML),
+            (format!("xmlns='{XML}'"), XML),
+            (
+                "xmlns:xml='http://example.org/'".to_string(),
+                "http://example.org/",
+            ),
+            (format!("xmlns:x='{XMLNS}'"), XMLNS),
+            (format!("xmlns='{XMLNS}'"), XMLNS),
+            (format!("xmlns:xmlns='{XMLNS}'"), "xmlns:xmlns"),
+            (
+                "xmlns:xmlns='http://example.org/'".to_string(),
+                "xmlns:xmlns",
+            ),
+        ] {
+            let text = format!("<r {decl}/>");
+            let errors = errors_at(&text);
+            assert_eq!(errors.len(), 1, "{decl}: {errors:?}");
+            assert_eq!(errors[0].1, at, "{decl}");
+        }
+        // Not applied: `x:lang` is in no namespace, `xml:lang` stays XML's.
+        let text = format!(
+            "<r xmlns:x='{XML}' xmlns:xml='http://example.org/' x:lang='en' xml:lang='fr'/>"
+        );
+        let prolog = Prolog::read(&text);
+        let mut s = Scanner::new(&text, &prolog);
+        let Event::Start(t) = s.next() else {
+            panic!("a start tag")
+        };
+        let ns: Vec<_> = t
+            .attrs
+            .iter()
+            .map(|a| (a.name.raw, a.name.ns().map(str::to_string)))
+            .collect();
+        assert_eq!(
+            ns[2..],
+            [("x:lang", None), ("xml:lang", Some(XML.to_string()))]
+        );
+    }
+
+    /// XML 1.0, 2.8: the XML declaration is the first thing in the
+    /// document, after a byte order mark at most.
+    #[test]
+    fn the_xml_declaration_is_at_the_start() {
+        for text in [
+            "<?xml version=\"1.0\"?><r/>",
+            "\u{feff}<?xml version=\"1.0\"?><r/>",
+        ] {
+            assert_eq!(errors_at(text), [], "{text:?}");
+        }
+        for text in [
+            "\n\n\n<?xml version=\"1.0\"?><r/>",
+            "   <?xml version=\"1.0\"?><r/>",
+            " <?xml version=\"1.0\"?><r/>",
+            "\u{feff} <?xml version=\"1.0\"?><r/>",
+            "<!-- c --><?xml version=\"1.0\"?><r/>",
+        ] {
+            let errors = errors_at(text);
+            assert_eq!(
+                errors,
+                [(
+                    "the XML declaration is not at the start of the document".to_string(),
+                    "<?xml"
+                )],
+                "{text:?}"
+            );
+        }
     }
 
     /// An error at unexpected text in the DOCTYPE spans its whole first

@@ -86,8 +86,18 @@ impl Syntax {
     /// starts ([`sniff::Sniffed`]): Turtle (N-Triples too) or JSON-LD when
     /// it is that, else RDF/XML. A text in an OWL syntax that is not RDF
     /// (OWL/XML, Functional, Manchester) is RDF/XML here too: the RDF/XML
-    /// frontend names it in an `unsupported-syntax` error.
+    /// frontend names it in an `unsupported-syntax` error. A text of white
+    /// space only (or nothing) is RDF/XML, as its `.owl` or `.rdf` name
+    /// says: it gets no Turtle completion or formatting until Turtle is
+    /// written in it.
     pub(crate) fn of_content(text: &str) -> Syntax {
+        let blank = text
+            .trim_start_matches('\u{feff}')
+            .trim_start_matches([' ', '\t', '\r', '\n'])
+            .is_empty();
+        if blank {
+            return Syntax::RdfXml;
+        }
         match sniff::Sniffed::of(text) {
             sniff::Sniffed::Turtle => Syntax::Turtle,
             sniff::Sniffed::JsonLd => Syntax::JsonLd,
@@ -104,7 +114,8 @@ impl Syntax {
     /// generic `turtle`) the name decides: its extension, or, for a name
     /// whose syntax its content gives ([`Syntax::by_content`]), `text`
     /// ([`Syntax::of_content`]); else Turtle. A caller that has no text yet
-    /// passes `""`, which reads as Turtle.
+    /// passes `""`, which reads as Turtle, but as RDF/XML for an `.owl` or
+    /// `.rdf` name.
     pub fn of(language_id: Option<&str>, uri: &str, text: &str) -> Syntax {
         match language_id.and_then(Syntax::from_language_id) {
             // `turtle` is what editors send when they lump RDF files together:
@@ -467,8 +478,18 @@ mod tests {
                 );
                 assert_eq!(Syntax::of(id, uri, turtle), Syntax::Turtle, "{uri} {id:?}");
                 assert_eq!(Syntax::of(id, uri, json), Syntax::JsonLd, "{uri} {id:?}");
-                // Nothing typed yet is Turtle.
-                assert_eq!(Syntax::of(id, uri, ""), Syntax::Turtle, "{uri} {id:?}");
+                // Nothing typed yet, or only white space, is RDF/XML, as
+                // the name says.
+                for blank in ["", " \n\t\r\n", "\u{feff}", "\u{feff}\n  "] {
+                    assert_eq!(
+                        Syntax::of(id, uri, blank),
+                        Syntax::RdfXml,
+                        "{uri} {id:?} {blank:?}"
+                    );
+                }
+                // White space then Turtle, past the sniff's reach, is Turtle.
+                let late = format!("{}{turtle}", " ".repeat(70 * 1024));
+                assert_eq!(Syntax::of(id, uri, &late), Syntax::Turtle, "{uri} {id:?}");
             }
             // A language id that names a syntax wins over the content.
             assert_eq!(Syntax::of(Some("trig"), uri, xml), Syntax::TriG);

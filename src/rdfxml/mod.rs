@@ -245,6 +245,31 @@ mod tests {
         assert_eq!(spliced.err(), Some(Fallback::Syntax));
     }
 
+    /// An empty `.owl` or `.rdf` file, or one of white space only, is
+    /// RDF/XML: no Turtle keyword is offered, nothing is formatted.
+    #[test]
+    fn an_empty_owl_file_is_rdfxml() {
+        let k = Knowledge::default();
+        for text in ["", "\n", "  \n\t\n"] {
+            for uri in [URI, "file:///w/data.rdf"] {
+                let a = Analysis::new(uri.into(), text, Arc::default(), true);
+                assert_eq!(a.parsed.syntax, Syntax::RdfXml, "{uri} {text:?}");
+                for line in [0, 1] {
+                    let pos = Position::new(line, 0);
+                    let got = completion::complete(&a, &k, Encoding::Utf8, pos);
+                    assert!(
+                        matches!(&got, CompletionResponse::Array(v) if v.is_empty()),
+                        "{uri} {text:?}: {got:?}"
+                    );
+                }
+                assert_eq!(
+                    format::formatting(&a, Encoding::Utf8, &format::Options::default()),
+                    []
+                );
+            }
+        }
+    }
+
     #[test]
     fn rdfxml_has_no_semantic_tokens_and_no_completion() {
         let a = rdfxml();
