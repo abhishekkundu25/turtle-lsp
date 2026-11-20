@@ -75,8 +75,9 @@ function clientOptions(
 ): LanguageClientOptions {
   return {
     documentSelector: setup.documentSelector,
-    // The settings, and the opt-in to formatting, rename, completion and code
-    // actions registered for every document but RDF/XML (not a setting).
+    // The settings, and the opt-in to formatting, completion and code actions
+    // registered for every document but RDF/XML, and rename for every
+    // document (not a setting).
     initializationOptions: { ...settingsFor(context, setup), [OPT_IN]: true },
     // Later changes reach the server as workspace/didChangeConfiguration.
     synchronize: { configurationSection: "turtle" },

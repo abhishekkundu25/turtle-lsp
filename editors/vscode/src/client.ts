@@ -23,9 +23,11 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as c
 export const JSONLD_PATTERN = "**/*.jsonld"
 
 // RDF/XML files keep VS Code's XML language too. The server reads them by
-// their content and does not write them: asked with OPT_IN, it registers
-// formatting, rename, completion and code actions for the other documents
-// only, so VS Code lists no turtle-lsp formatter for XML files.
+// their content, and only a rename writes them: asked with OPT_IN, it
+// registers formatting, completion and code actions for the other documents
+// only, so VS Code lists no turtle-lsp formatter for XML files, and rename
+// for these files too (its selector has this pattern; the server's
+// RDFXML_PATTERN in src/server/registrations.rs must equal it).
 export const RDFXML_PATTERN = "**/*.{owl,rdf}"
 
 /**

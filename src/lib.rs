@@ -78,6 +78,7 @@
 //! use turtle_lsp::features::hover::hover as _; // tests
 //! use turtle_lsp::features::inlay::inlay_hints as _; // tests
 //! use turtle_lsp::features::navigation::PrefixScope as _; // tests
+//! use turtle_lsp::features::navigation::RdfXml as _; // tests
 //! use turtle_lsp::features::navigation::definition as _; // tests
 //! use turtle_lsp::features::navigation::highlights as _; // tests
 //! use turtle_lsp::features::navigation::implementations as _; // tests
