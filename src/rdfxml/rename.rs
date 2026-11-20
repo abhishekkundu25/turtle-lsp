@@ -269,52 +269,28 @@ pub(crate) fn plan(
     if let Some(r) = unedited(text, &fresh) {
         return Err(r);
     }
-    // (line, written: 0 before implied: 1, column, reason)
-    let mut refused: Vec<(u32, u8, Option<u32>, String)> = Vec::new();
+    // (kind, line, column, reason). What refuses every new name comes
+    // first, as [`at`] gives it: a use no edit can change (0), then an IRI
+    // a production implies (1); then what refuses this one (2).
+    let mut refused: Vec<(u8, u32, Option<u32>, String)> = Vec::new();
     let mut edits = Vec::new();
     for u in &uses {
         match edit(text, u, new) {
             Ok(e) => edits.extend(e),
-            Err(reason) => refused.push((line(text, u.span.start), 0, None, reason)),
+            Err(reason) => {
+                let kind = if fixed(text, u).is_some() { 0 } else { 2 };
+                refused.push((kind, line(text, u.span.start), None, reason));
+            }
         }
     }
     edits.sort_by_key(|(s, _)| (s.start, s.end));
     edits.dedup_by_key(|(s, _)| *s);
     let after = apply(text, &edits);
     let reparsed = grammar::parse(&after, base);
-    // What still names the old IRI: a production implies it, at the
-    // element or attribute that shows where.
-    if let Some(at) = reparsed
-        .triples
-        .iter()
-        .filter_map(|t| naming(t, old))
-        .min_by_key(|s| s.start)
-    {
-        let start = unedited_offset(&edits, at.start);
-        let end = unedited_offset(&edits, at.end).max(start);
-        let (start, end) = attribute_of(text, start, end);
-        let shown: String = text[start as usize..end as usize]
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(60)
-            .collect();
-        let shown = if shown.is_empty() {
-            String::new()
-        } else {
-            format!(" at `{shown}`")
-        };
-        refused.push((
-            line(text, start),
-            1,
-            Some(column(text, start)),
-            format!(
-                "the RDF/XML syntax implies <{old}>{shown}, with no text of its own: the document cannot be rewritten to say <{new}>"
-            ),
-        ));
+    if let Some(r) = implied(text, base, &uses, old) {
+        refused.push((1, r.line, r.column, r.reason));
     }
-    if let Some((line, _, column, reason)) = refused.into_iter().min_by_key(|r| (r.0, r.1)) {
+    if let Some((_, line, column, reason)) = refused.into_iter().min_by_key(|r| (r.0, r.1)) {
         return Err(Refusal {
             line,
             column,
@@ -360,6 +336,52 @@ pub(crate) fn plan(
         });
     }
     Ok(edits)
+}
+
+/// Why `text` (with base `base`) still names `old` with each of its
+/// written uses `uses` renamed: a production implies it, at the element or
+/// attribute shown with its line and column in `text`. No new name changes
+/// that: the uses are renamed to `old` with a `Z` after it, a name each use
+/// that some edit can change takes (an XML name in the same namespace, an
+/// `rdf:ID` on the same base).
+fn implied(text: &str, base: Option<&str>, uses: &[Use], old: Iri) -> Option<Refusal> {
+    let probe = format!("{old}Z");
+    let mut edits: Vec<(Span, String)> = uses
+        .iter()
+        .filter_map(|u| edit(text, u, &probe).ok())
+        .flatten()
+        .collect();
+    edits.sort_by_key(|(s, _)| (s.start, s.end));
+    edits.dedup_by_key(|(s, _)| *s);
+    let reparsed = grammar::parse(&apply(text, &edits), base);
+    let edits = &edits;
+    let at = reparsed
+        .triples
+        .iter()
+        .filter_map(|t| naming(t, old))
+        .min_by_key(|s| s.start)?;
+    let start = unedited_offset(edits, at.start);
+    let end = unedited_offset(edits, at.end).max(start);
+    let (start, end) = attribute_of(text, start, end);
+    let shown: String = text[start as usize..end as usize]
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(60)
+        .collect();
+    let shown = if shown.is_empty() {
+        String::new()
+    } else {
+        format!(" at `{shown}`")
+    };
+    Some(Refusal {
+        line: line(text, start),
+        column: Some(column(text, start)),
+        reason: format!(
+            "the RDF/XML syntax implies <{old}>{shown}, with no text of its own: the document cannot be rewritten to name another IRI there"
+        ),
+    })
 }
 
 /// `text` with `edits` (sorted, apart) applied.
@@ -785,14 +807,16 @@ pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Result<Option<A
     if let Some(r) = unedited(text, &fresh) {
         return Err(r);
     }
-    let (span, u, all) =
+    // The use there: its span, and its index among all the uses of its IRI.
+    let (span, all, i) =
         match uses.into_iter().min_by_key(|u| u.span.end - u.span.start) {
             Some(u) => {
                 if let UseKind::Namespace = u.kind {
                     return Ok(Some(At::Namespace));
                 }
                 let (_, all) = grammar::uses(text, base, Want::Iri(u.iri));
-                (u.span, u, all)
+                let i = all.iter().position(|w| w.span == u.span);
+                (u.span, all, i)
             }
             // An end tag's name: the use of its start tag, at the end tag.
             None => {
@@ -801,23 +825,24 @@ pub(crate) fn at(text: &str, base: Option<&str>, offset: u32) -> Result<Option<A
                 }) else {
                     return Ok(None);
                 };
-                let (_, mut all) = grammar::uses(text, base, Want::Iri(r.iri));
-                let Some(i) = all.iter().position(|u| {
+                let (_, all) = grammar::uses(text, base, Want::Iri(r.iri));
+                let i = all.iter().position(|u| {
                 matches!(&u.kind, UseKind::Element { end: Some(e), .. } if e.name == Some(r.span))
-            }) else {
-                return Ok(None);
-            };
-                let u = all.swap_remove(i);
-                (r.span, u, all)
+            });
+                (r.span, all, i)
             }
         };
-    // A use of this IRI that no edit can change refuses every rename of it.
+    let Some(u) = i.map(|i| &all[i]) else {
+        return Ok(None);
+    };
+    // A use of this IRI that no edit can change refuses every rename of
+    // it, and so does an IRI a production implies.
     if let Some(r) = all
         .iter()
-        .chain([&u])
         .filter_map(|w| Some((w.span.start, fixed(text, w)?)))
         .min_by_key(|(start, _)| *start)
         .map(|(start, why)| Refusal::at(text, start, why))
+        .or_else(|| implied(text, base, &all, u.iri))
     {
         return Err(r);
     }
@@ -1593,6 +1618,14 @@ mod tests {
         }
     }
 
+    fn r_clone(r: &Refusal) -> Refusal {
+        Refusal {
+            line: r.line,
+            column: r.column,
+            reason: r.reason.clone(),
+        }
+    }
+
     /// Where every rename of the IRI at the cursor is refused, whatever the
     /// new name, a rename is refused where it starts, with the reason of
     /// the first such use of that IRI in the document: `rdf:type` gives
@@ -1637,6 +1670,31 @@ mod tests {
         let text = doc("<rdf:Seq rdf:about=\"urn:ex:q\"><rdf:li>1</rdf:li></rdf:Seq>");
         let r = refused_at(&text, "rdf:li", 2);
         assert!(r.reason.contains("rdf:li stands for"), "{r:?}");
+        // An IRI a production implies elsewhere in the document: refused
+        // where it is written, as rename refuses it, whatever the new name.
+        let text = doc(
+            "<rdf:Description rdf:about=\"urn:ex:t\">\n<rdf:type rdf:resource=\"urn:ex:D\"/>\n</rdf:Description>\n<ex:C rdf:about=\"urn:ex:s\"/>",
+        );
+        let r = refused_at(&text, "<rdf:type", 3);
+        assert!(r.reason.contains("implies"), "{r:?}");
+        assert_eq!((r.line, r.column), (6, Some(2)), "{r:?}");
+        let p = grammar::parse(&text, Some(URI));
+        for new in ["http://example.org/kind", "urn:ex:k"] {
+            assert_eq!(
+                plan(&text, &p, Iri::intern(&format!("{RDF}type")), new),
+                Err(r_clone(&r))
+            );
+        }
+        // Without the typed node, a rename starts there.
+        let text = text.replace("<ex:C rdf:about=\"urn:ex:s\"/>", "");
+        assert!(matches!(
+            at(
+                &text,
+                Some(URI),
+                (text.find("<rdf:type").unwrap() + 3) as u32
+            ),
+            Ok(Some(At::Use { .. }))
+        ));
     }
 
     /// A parse the workspace holds that is not this text's (a Turtle text
