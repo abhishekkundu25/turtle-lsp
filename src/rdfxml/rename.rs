@@ -53,7 +53,8 @@ fn line(text: &str, offset: u32) -> u32 {
 
 const FROM_ENTITY: &str = "the IRI is read from an entity's replacement text: editing the declaration would change every use of the entity";
 const CHAR_REFS: &str =
-    "the value is written with character references, which a rename does not rewrite";
+    "the value is written with character references (&#...;), which a rename does not rewrite";
+const WHITE_SPACE: &str = "the value holds a tab or a line break, which XML reads as a space: a rename does not rewrite it";
 const ENTITY_REFS: &str =
     "the value is written with entity references that a rename cannot rewrite one by one";
 const ATTLIST: &str = "the DOCTYPE gives attributes default values (<!ATTLIST>), which this reader does not add: the document is not edited";
@@ -152,7 +153,10 @@ fn unescaped(text: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let semi = rest[..rest.len().min(12)].find(';');
+        // `;` is one byte: an offset of it is a character boundary.
+        let semi = rest.as_bytes()[..rest.len().min(12)]
+            .iter()
+            .position(|&c| c == b';');
         let c = semi.and_then(|e| {
             let name = &rest[1..e];
             match name.strip_prefix('#') {
@@ -357,7 +361,9 @@ fn fixed(text: &str, u: &Use) -> Option<String> {
             ..
         } => match refs {
             Refs::None => None,
-            Refs::Chars => Some(CHAR_REFS.into()),
+            // Predefined entities only: XML escapes, which the value is
+            // written again with.
+            Refs::Chars => escapes(&text[u.span.start as usize..u.span.end as usize]),
             Refs::Entity => {
                 let Some((r, n)) = lead.filter(|(r, _)| r.start == u.span.start) else {
                     return Some(ENTITY_REFS.into());
@@ -369,7 +375,10 @@ fn fixed(text: &str, u: &Use) -> Option<String> {
                         "the whole IRI comes from the entity &{name};: editing its declaration would change every use of the entity"
                     ));
                 }
-                (rest.contains('&') || value.get(n as usize..) != Some(rest))
+                if let Some(why) = escapes(rest) {
+                    return Some(why);
+                }
+                (value.get(n as usize..) != Some(unescaped(rest).as_str()))
                     .then(|| ENTITY_REFS.into())
             }
         },
@@ -384,6 +393,29 @@ fn fixed(text: &str, u: &Use) -> Option<String> {
             }
         },
     }
+}
+
+/// Why attribute value text `raw` cannot be written again whole: a
+/// character reference (the user's spelling), white space that XML
+/// normalizes, or an entity a DOCTYPE declares. `None` when it holds
+/// predefined entities (`&amp;`, `&apos;`...) at most, which [`escaped`]
+/// writes again for the value's quotes.
+fn escapes(raw: &str) -> Option<String> {
+    if raw.contains("&#") {
+        return Some(CHAR_REFS.into());
+    }
+    if raw.contains(['\t', '\n', '\r']) {
+        return Some(WHITE_SPACE.into());
+    }
+    let mut rest = raw;
+    while let Some(i) = rest.find('&') {
+        let name = rest[i + 1..].split(';').next().unwrap_or("");
+        if predefined(name).is_none() {
+            return Some(ENTITY_REFS.into());
+        }
+        rest = &rest[i + 1..];
+    }
+    None
 }
 
 /// The edits of one use, or why it cannot be edited.
@@ -894,16 +926,52 @@ mod tests {
         let text = doc("<rdf:Description rdf:about=\"urn&#58;ex:s\"/>");
         let r = refused(&text, None, "urn:ex:s", "urn:ex:t");
         assert!(r.reason.contains("character references"), "{r:?}");
-        // An `&` written as `&amp;` is one too; one written into a value is escaped.
-        let text = doc("<rdf:Description rdf:about=\"urn:ex:s?a&amp;b\"/>");
-        assert!(
-            refused(&text, None, "urn:ex:s?a&b", "urn:ex:t")
-                .reason
-                .contains("character references")
-        );
+        // An `&` written into a value is escaped.
         let text = doc("<rdf:Description rdf:about=\"urn:ex:s\"/>");
         let out = renamed_ok(&text, None, "urn:ex:s", "urn:ex:t?a&b");
         assert!(out.contains("rdf:about=\"urn:ex:t?a&amp;b\""), "{out}");
+    }
+
+    /// The predefined entities (`&amp;`, `&apos;`...) are XML escapes, not
+    /// references a rename must keep: a value written with them is
+    /// rewritten whole, escaped again for its quotes, and a rename there
+    /// and back gives the bytes it started from.
+    #[test]
+    fn a_value_with_xml_escapes_is_renamed_and_back() {
+        for q in ['"', '\''] {
+            let text = "<!DOCTYPE r [<!ENTITY ex \"http://example.org/\">]>\n".to_string()
+                + &rooted(&format!(
+                    "<rdf:Description rdf:about={q}http://example.org/a{q}><ex:p rdf:resource={q}&ex;a{q}/></rdf:Description>"
+                ));
+            for name in [
+                "http://example.org/O'Bar",
+                "http://example.org/a&b",
+                "http://example.org/x?a=1&b='2'",
+            ] {
+                let there = renamed_ok(&text, None, "http://example.org/a", name);
+                assert!(!there.contains(&format!("example.org/a{q}")), "{there}");
+                let back = renamed_ok(&there, None, name, "http://example.org/a");
+                assert_eq!(back, text, "{q} {name}");
+            }
+        }
+        // A relative value under a base.
+        let text = format!(
+            "<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\" xml:base=\"http://example.org/base/onto\">\n<ex:C rdf:about=\"?a=1&amp;b=2\"/>\n</rdf:RDF>\n"
+        );
+        let out = renamed_ok(
+            &text,
+            None,
+            "http://example.org/base/onto?a=1&b=2",
+            "http://example.org/base/onto#q",
+        );
+        assert_eq!(out, text.replace("?a=1&amp;b=2", "#q"));
+        // A character reference is the user's spelling: not rewritten, and
+        // called what it is.
+        let text = doc("<rdf:Description rdf:about=\"urn:ex:a&#38;b\"/>");
+        let r = refused(&text, None, "urn:ex:a&b", "urn:ex:t");
+        assert!(r.reason.contains("character references (&#"), "{r:?}");
+        let text = doc("<rdf:Description rdf:about=\"urn:ex:a&amp;b\"/>");
+        assert!(renamed_in(&text, None, "urn:ex:a&b", "urn:ex:t").is_ok());
     }
 
     #[test]
@@ -1136,6 +1204,26 @@ mod tests {
     /// An `ATTLIST` default in the DOCTYPE gives elements attributes this
     /// reader does not add (an `rdf:type`, an `xml:base`): a document that
     /// declares one is not edited, and blocks a rename it names.
+    /// A reference cut short before a character of more than one byte is
+    /// read as text: the scan for its `;` never splits a character.
+    #[test]
+    fn a_broken_text_with_wide_characters_after_an_ampersand_is_read() {
+        assert_eq!(
+            unescaped("&amp;\u{e9}\u{e9}\u{e9}\u{e9}"),
+            "&\u{e9}\u{e9}\u{e9}\u{e9}"
+        );
+        assert_eq!(
+            unescaped("a&\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9};"),
+            "a&\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9};"
+        );
+        let text = doc(
+            "<rdf:Description rdf:about=\"http://example.org/s\">\n<ex:p>a&\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}</ex:p>",
+        );
+        let p = grammar::parse(&text, Some(URI));
+        assert!(!p.errors.is_empty());
+        assert!(blocked(&text, &p, "http://example.org/s").is_some());
+    }
+
     #[test]
     fn attribute_defaults_block_a_rename() {
         let foo = "http://example.org/Foo";
