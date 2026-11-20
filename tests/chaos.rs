@@ -2834,6 +2834,7 @@ fn rdfxml_corpus() -> Vec<String> {
 </rdf:RDF>
 "##
         ),
+        rdfxml_entity_shapes(),
     ];
     let files = sorted_files(&root().join("test/fixtures"), true)
         .into_iter()
@@ -2842,6 +2843,33 @@ fn rdfxml_corpus() -> Vec<String> {
         out.push(fs::read_to_string(p).unwrap());
     }
     out
+}
+
+/// Entities in the shapes that cost the scanner work: a ladder of 40
+/// entities over an empty one (each expanding to two of the one below), used
+/// low enough to stay cheap, so that a snippet `&e40;` dropped into it costs
+/// 2^41 steps without a bound on expansion work; and runs of references to
+/// markup entities (an element, a comment), which a scanner that searches
+/// on from each reference reads in quadratic time.
+fn rdfxml_entity_shapes() -> String {
+    let mut ladder = String::from("<!ENTITY e0 \"\">");
+    for i in 1..=40 {
+        ladder += &format!("<!ENTITY e{i} \"&e{0};&e{0};\">", i - 1);
+    }
+    format!(
+        r##"<!DOCTYPE rdf:RDF [{ladder}<!ENTITY m "<ex:q>v</ex:q>"><!ENTITY c "<!---->"><!ENTITY deep "<ex:r>&e8;</ex:r>">]>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/">
+  <rdf:Description rdf:about="http://example.org/s" ex:p="a&e8;b">
+    <ex:t>a&e8;b</ex:t>
+    &deep;
+    {}
+    {}
+  </rdf:Description>
+</rdf:RDF>
+"##,
+        "&m;".repeat(500),
+        "&c;".repeat(500),
+    )
 }
 
 /// FOAF from `test/corpus`, when it was downloaded (`npm run corpus`).
@@ -2868,6 +2896,10 @@ const RDFXML_SNIPPETS: &[&str] = &[
     "<!DOCTYPE rdf:RDF [<!ENTITY ex 'http://example.org/'>]>",
     "<!ENTITY a \"&b;\">",
     "<!ENTITY % p \"x\">",
+    "&e40;",
+    " ex:p=\"&e40;\"",
+    "&m;",
+    "&c;",
     " rdf:about=\"#x\"",
     " rdf:about=\"&ex;y\"",
     " rdf:resource=\"\"",
@@ -3314,6 +3346,37 @@ fn pathological_jsonld_nesting() {
     }
 }
 
+/// RDF/XML entities that cost work, at full size: a ladder of 200 entities
+/// over an empty one used in an attribute value, in text and in markup
+/// (2^200 steps unbounded), and a run of 300,000 references to a markup
+/// entity (27 s when each one searched the rest of the run).
+#[test]
+fn pathological_rdfxml_entities() {
+    let mut ladder = String::from("<!ENTITY e0 \"\">");
+    for i in 1..200 {
+        ladder += &format!("<!ENTITY e{i} \"&e{0};&e{0};\">", i - 1);
+    }
+    let head = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/"><rdf:Description rdf:about="http://example.org/s""#;
+    let cases = [
+        (
+            "entity ladder",
+            format!(
+                r#"<!DOCTYPE rdf:RDF [{ladder}<!ENTITY m "<ex:q>&e199;</ex:q>">]>{head} ex:p="&e199;"><ex:t>&e199;</ex:t>&m;</rdf:Description></rdf:RDF>"#
+            ),
+        ),
+        (
+            "markup entity run",
+            format!(
+                r#"<!DOCTYPE rdf:RDF [<!ENTITY c "<!---->">]>{head}>{}</rdf:Description></rdf:RDF>"#,
+                "&c;".repeat(300_000)
+            ),
+        ),
+    ];
+    for (what, text) in cases {
+        survive(what, text, Syntax::RdfXml, Duration::from_secs(10));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The harness itself.
 
@@ -3373,16 +3436,19 @@ fn corpora_are_sorted_and_cover_every_input_family() {
         "xml:lang",
         "its:dir",
         "<owl:Restriction>",
+        "<!ENTITY e40 \"&e39;&e39;\">",
+        "&m;&m;",
+        "&c;&c;",
     ] {
         assert!(
             xml.iter().any(|t| t.contains(needle)),
             "no {needle} in the RDF/XML corpus"
         );
     }
-    assert!(xml.len() >= 13, "{} RDF/XML inputs", xml.len());
+    assert!(xml.len() >= 14, "{} RDF/XML inputs", xml.len());
     // The documents written above (after the empty text and the empty
     // root) read whole, so their mutations start from triples.
-    for text in &xml[2..6] {
+    for text in &xml[2..7] {
         let p = parse_doc(text, Syntax::RdfXml, None, &PrefixMap::default());
         assert!(p.errors.is_empty(), "{:?}\n{text}", p.errors);
         assert!(p.triples.len() >= 2, "{text}");
