@@ -3,8 +3,10 @@
 //! ([`grammar::uses`]), or why they cannot be made.
 //!
 //! [`plan`] edits each use of the old IRI in its own form: an attribute
-//! value as it was written (relative against the base in scope when the new
-//! IRI is under it, `&e;local` when the new IRI extends the entity), a name
+//! value as it was written (a relative one as the shortest relative
+//! reference that resolves to the new IRI from the base in scope, in its
+//! own style when one does; `&e;local` when the new IRI extends the
+//! entity; written again whole, escaped for its quotes), a name
 //! with a prefix in scope, `rdf:ID` by its fragment. It refuses a use that
 //! no edit of its own text can change: one read from an entity's
 //! replacement text, one written with character references, `rdf:li`, a
@@ -18,9 +20,9 @@
 //! started at an offset renames, or why every rename from there is
 //! refused.
 
-use super::grammar::{self, Base, Use, UseKind, Want, read_iri, resolves};
+use super::grammar::{self, Base, Use, UseKind, Want, read_iri};
 use super::xml::{Refs, is_nc_name};
-use crate::syntax::{Iri, Node, Parsed, PrefixMap, Span, Triple};
+use crate::syntax::{Iri, Node, Parsed, PrefixMap, Span, Triple, has_scheme};
 use std::cmp::Reverse;
 
 /// Why a rename cannot edit a document, and the line (from 1) of the use
@@ -565,7 +567,7 @@ fn value_edit(
         .checked_sub(1)
         .and_then(|i| text.as_bytes().get(i).copied())
         .unwrap_or(b'"');
-    let w = written(value, base, u.iri.as_str(), new);
+    let w = written(value, base, new);
     match (refs, lead) {
         (Refs::Entity, Some((r, n))) => match w.strip_prefix(&value[..n as usize]) {
             Some(local) if !local.is_empty() => {
@@ -577,20 +579,117 @@ fn value_edit(
     }
 }
 
-/// The value to write for `new` where `raw` named `old`: relative the same
-/// way when `raw` was relative to the base and `new` is under it, else
-/// `new` in full.
-fn written(raw: &str, base: &Base, old: &str, new: &str) -> String {
-    if resolves(base, raw)
-        && !raw.is_empty()
-        && let Some(stem) = old.strip_suffix(raw)
-        && let Some(rel) = new.strip_prefix(stem)
-        && !rel.is_empty()
-        && read_iri(base, rel).as_deref() == Some(new)
-    {
-        return rel.to_string();
+/// The value to write for `new` where the value `raw` was: when `raw` is
+/// relative (no scheme), the shortest relative reference that resolves
+/// to `new` from `base` (RFC 3986), of `raw`'s style ([`Style`]) when one
+/// is; else, and when none resolves to it, `new` in full.
+fn written(raw: &str, base: &Base, new: &str) -> String {
+    let Some(b) = base.as_deref().filter(|_| !has_scheme(raw)) else {
+        return new.to_string();
+    };
+    let style = Style::of(raw);
+    let mut found = relatives(b, raw, new)
+        .into_iter()
+        .filter(|c| !has_scheme(c) && read_iri(base, c).as_deref() == Some(new))
+        .collect::<Vec<_>>();
+    found.sort_by_key(|c| (Style::of(c) != style, c.len()));
+    found.into_iter().next().unwrap_or_else(|| new.to_string())
+}
+
+/// The forms of a relative reference.
+#[derive(PartialEq, Eq)]
+enum Style {
+    /// `""`
+    Empty,
+    /// `#f`
+    Fragment,
+    /// `?q`
+    Query,
+    /// `//host/p`
+    Network,
+    /// `/p`
+    Absolute,
+    /// `../p`
+    Up,
+    /// `./p`, `.`
+    Dot,
+    /// `p`
+    Path,
+}
+
+impl Style {
+    fn of(r: &str) -> Style {
+        match r {
+            "" => Style::Empty,
+            "." => Style::Dot,
+            ".." => Style::Up,
+            _ if r.starts_with('#') => Style::Fragment,
+            _ if r.starts_with('?') => Style::Query,
+            _ if r.starts_with("//") => Style::Network,
+            _ if r.starts_with('/') => Style::Absolute,
+            _ if r.starts_with("../") => Style::Up,
+            _ if r.starts_with("./") => Style::Dot,
+            _ => Style::Path,
+        }
     }
-    new.to_string()
+}
+
+/// The relative references that may resolve to `new` from `base`, unchecked:
+/// none for another scheme or host; a network-path one only when `raw` is.
+fn relatives(base: &oxiri::Iri<String>, raw: &str, new: &str) -> Vec<String> {
+    let Ok(n) = oxiri::Iri::parse(new) else {
+        return Vec::new();
+    };
+    if n.scheme() != base.scheme() || n.authority() != base.authority() {
+        return Vec::new();
+    }
+    let query = n.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let fragment = n.fragment().map(|f| format!("#{f}")).unwrap_or_default();
+    let mut out = Vec::new();
+    if n.path() == base.path() {
+        if n.query() == base.query() {
+            out.push(fragment.clone());
+        }
+        if !query.is_empty() {
+            out.push(format!("{query}{fragment}"));
+        }
+    }
+    let path = n.path();
+    let tail = |p: &str| format!("{p}{query}{fragment}");
+    // From the base's folder: the longest common folder, then `../` for
+    // each folder of the base's below it.
+    let folder = &base.path()[..base.path().rfind('/').map_or(0, |i| i + 1)];
+    let common = folder
+        .char_indices()
+        .zip(path.chars())
+        .take_while(|((_, a), b)| a == b)
+        .filter(|((_, a), _)| *a == '/')
+        .last()
+        .map_or(0, |((i, _), _)| i + 1);
+    if common > 0 {
+        let ups = folder[common..].matches('/').count();
+        let rest = &path[common..];
+        if ups == 0 {
+            if rest.is_empty() {
+                out.push(tail("."));
+                out.push(tail("./"));
+            } else {
+                out.push(tail(rest));
+                out.push(tail(&format!("./{rest}")));
+            }
+        } else {
+            out.push(tail(&format!("{}{rest}", "../".repeat(ups))));
+        }
+    }
+    if path.starts_with('/') && !path.starts_with("//") {
+        out.push(tail(path));
+    }
+    if raw.starts_with("//")
+        && let Some(a) = n.authority()
+    {
+        out.push(tail(&format!("//{a}{path}")));
+    }
+    out
 }
 
 /// `s` as attribute value text between `quote`s.
@@ -826,14 +925,20 @@ mod tests {
             "http://example.org/base/next",
         );
         assert_eq!(out, text.replace("\"other\"", "\"next\""));
-        // Not under the same base: in full.
+        // On the same host, out of the base's folder: the shortest
+        // relative form.
         let out = renamed_ok(
             &text,
             Some(URI),
             "http://example.org/base/onto#a",
             "http://example.org/x#b",
         );
-        assert_eq!(out, text.replace("\"#a\"", "\"http://example.org/x#b\""));
+        assert_eq!(out, text.replace("\"#a\"", "\"/x#b\""));
+        // Another host or scheme: in full.
+        for new in ["http://example.com/base/onto#b", "urn:ex:b"] {
+            let out = renamed_ok(&text, Some(URI), "http://example.org/base/onto#a", new);
+            assert_eq!(out, text.replace("\"#a\"", &format!("\"{new}\"")));
+        }
         // A nested xml:base.
         let text = root(
             "<rdf:Description xml:base=\"http://example.org/inner/\" rdf:about=\"a\"/>\n<rdf:Description rdf:about=\"a\"/>",
@@ -849,6 +954,91 @@ mod tests {
         let text = doc("<ex:C rdf:about=\"#a\"/>");
         let out = renamed_ok(&text, Some(URI), &format!("{URI}#a"), &format!("{URI}#b"));
         assert_eq!(out, text.replace("\"#a\"", "\"#b\""));
+    }
+
+    /// One rule for every relative value: the shortest relative reference
+    /// that resolves to the new IRI from the base in scope, in the old
+    /// value's style when one is, else the new IRI in full. Each written
+    /// value is checked by resolving it.
+    #[test]
+    fn a_relative_value_is_written_as_the_shortest_one_that_resolves() {
+        let base = "http://example.org/base/onto";
+        let b: Base = Some(std::rc::Rc::new(
+            oxiri::Iri::parse(base.to_string()).unwrap(),
+        ));
+        // (old value, new IRI, value written)
+        let cases = [
+            ("", "http://example.org/base/onto#x", "#x"),
+            ("", "http://example.org/base/onto", ""),
+            ("", "http://example.org/base/other", "other"),
+            ("#a", "http://example.org/base/onto", ""),
+            ("#a", "http://example.org/base/onto?q=1", "?q=1"),
+            ("?q=1", "http://example.org/base/onto?q=2", "?q=2"),
+            ("./x", "http://example.org/base/y", "./y"),
+            ("./x", "http://example.org/base/sub/y", "./sub/y"),
+            (".", "http://example.org/base/sub/", "./sub/"),
+            (".", "http://example.org/base/", "."),
+            ("x", "http://example.org/base/", "."),
+            ("x", "http://example.org/base/sub/y", "sub/y"),
+            ("x", "http://example.org/base/a:b", "./a:b"),
+            ("x", "http://example.org/other/y", "/other/y"),
+            ("../x", "http://example.org/other/y", "../other/y"),
+            ("/x", "http://example.org/y", "/y"),
+            ("/x", "http://example.org/base/y", "/base/y"),
+            ("../x", "http://example.org/z", "../z"),
+            ("../x", "http://example.org/base/z", "z"),
+            ("../v#Widget", "http://example.org/v#Thing", "../v#Thing"),
+            ("#a", "http://example.org/x#b", "/x#b"),
+            ("//example.org/x", "http://example.org/y", "//example.org/y"),
+            ("x", "http://example.com/y", "http://example.com/y"),
+            (
+                "x",
+                "https://example.org/base/y",
+                "https://example.org/base/y",
+            ),
+            ("x", "urn:ex:y", "urn:ex:y"),
+            (
+                "http://example.org/base/x",
+                "http://example.org/base/y",
+                "http://example.org/base/y",
+            ),
+        ];
+        for (raw, new, want) in cases {
+            let got = written(raw, &b, new);
+            assert_eq!(got, want, "{raw:?} -> {new}");
+            assert_eq!(read_iri(&b, &got).as_deref(), Some(new), "{raw:?} -> {got}");
+        }
+        // In a document, a nested base: each value resolves to the new IRI.
+        let text = format!(
+            "<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:v=\"http://example.org/v#\" xml:base=\"http://example.org/a/b\">\n\
+             <rdf:Description xml:base=\"http://example.org/a/c/d\" rdf:about=\"../../v#Widget\"/>\n\
+             <rdf:Description rdf:about=\"/v#Widget\"/>\n<rdf:Description rdf:about=\"\"/>\n<rdf:Description rdf:about=\"./x\"/>\n</rdf:RDF>\n"
+        );
+        let out = renamed_ok(
+            &text,
+            None,
+            "http://example.org/v#Widget",
+            "http://example.org/v#Thing",
+        );
+        assert_eq!(
+            out,
+            text.replace("../../v#Widget", "../../v#Thing")
+                .replace("/v#Widget", "/v#Thing")
+        );
+        let out = renamed_ok(
+            &text,
+            None,
+            "http://example.org/a/b",
+            "http://example.org/a/b#top",
+        );
+        assert_eq!(out, text.replace("about=\"\"", "about=\"#top\""));
+        let out = renamed_ok(
+            &text,
+            None,
+            "http://example.org/a/x",
+            "http://example.org/a/y",
+        );
+        assert_eq!(out, text.replace("\"./x\"", "\"./y\""));
     }
 
     #[test]
