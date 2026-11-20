@@ -8,7 +8,9 @@
 //!   name, attribute value, text and entity reference, with its own limits
 //!   (nesting, DOCTYPE entities, entity expansion, errors);
 //! - [`grammar`]: the RDF/XML productions over [`xml`], into [`Parsed`],
-//!   with the exact span of every term, read on past each error.
+//!   with the exact span of every term, read on past each error;
+//! - [`rename`]: the edits that rename an IRI in a document, placed at the
+//!   spans the grammar reads, or why they cannot be made.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
 //! not RDF (OWL/XML, Functional, Manchester) gives no triples and one
@@ -26,6 +28,7 @@
 //! [`Form::Anchor`]: crate::syntax::Form::Anchor
 
 mod grammar;
+pub(crate) mod rename;
 mod xml;
 
 use crate::syntax::sniff::Sniffed;
