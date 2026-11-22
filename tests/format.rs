@@ -96,6 +96,7 @@ fn oxttl(src: &str, syntax: Syntax) -> Result<Vec<String>, String> {
             .collect::<Result<_, _>>()?,
         Syntax::JsonLd => unreachable!("oxttl reads no JSON-LD"),
         Syntax::RdfXml => unreachable!("oxttl reads no RDF/XML"),
+        Syntax::OwlFunctional => unreachable!("oxttl reads no OWL Functional syntax"),
     };
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut out = Vec::new();

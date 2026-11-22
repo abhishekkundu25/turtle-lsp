@@ -187,6 +187,8 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => (false, false),
         // Its prefixes are the XML namespaces of its qualified names.
         Syntax::RdfXml => (true, true),
+        // Not checked ([`Check::runs_on`]); its names are written as in Turtle.
+        Syntax::OwlFunctional => (false, false),
     };
     let mut found = undescribed_written(
         uses,

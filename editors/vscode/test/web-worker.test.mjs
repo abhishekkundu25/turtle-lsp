@@ -117,7 +117,7 @@ test("the features the server writes with are registered after the initialize an
   assert.ok(c.posted.indexOf(registrations()[0]) > c.posted.indexOf(r), "registered before the initialize answer")
   const regs = registrations()[0].params.registrations
   assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
-  for (const x of regs) assert.doesNotMatch(JSON.stringify(x.registerOptions.documentSelector), /owl|rdf|xml/)
+  for (const x of regs) assert.doesNotMatch(JSON.stringify(x.registerOptions.documentSelector), /owl|rdf|xml|ofn/)
   // A crash restarts the server, which registers again: the client accepted
   // them, so nothing is sent.
   c.send({ id: registrations()[0].id, result: null })

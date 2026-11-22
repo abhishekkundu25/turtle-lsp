@@ -25,9 +25,10 @@ pub(crate) enum Target {
 
 pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     // An XML namespace prefix is no Turtle prefix: in RDF/XML every
-    // reference is its IRI, whatever part of it the cursor is on.
+    // reference is its IRI, whatever part of it the cursor is on. An OWL
+    // Functional document has no references yet.
     match a.parsed.syntax {
-        Syntax::RdfXml => {
+        Syntax::RdfXml | Syntax::OwlFunctional => {
             let r = a.ref_at(offset)?;
             return Some((Target::Iri(r.iri), r.span));
         }
@@ -90,11 +91,17 @@ pub(crate) fn shown(uri: &str) -> String {
 
 /// Why a rename that would edit the document at `uri`, which
 /// [`super::writes`] refuses, is refused.
-fn not_edited(uri: &str) -> String {
-    format!(
-        "can't rename in {}: an RDF/XML document is not edited",
-        shown(uri)
-    )
+fn not_edited(a: &Analysis) -> String {
+    let what = match a.parsed.syntax {
+        Syntax::OwlFunctional => "an OWL Functional syntax document",
+        Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::JsonLd
+        | Syntax::RdfXml => "an RDF/XML document",
+    };
+    format!("can't rename in {}: {what} is not edited", shown(&a.uri))
 }
 
 fn loc(a: &Analysis, enc: Encoding, span: Span) -> Option<Location> {
@@ -462,7 +469,7 @@ pub fn rename(
     scope: PrefixScope,
 ) -> Result<WorkspaceEdit, String> {
     if !super::writes(a.parsed.syntax) {
-        return Err(not_edited(&a.uri));
+        return Err(not_edited(a));
     }
     let offset = a.offset(enc, pos).ok_or("invalid position")?;
     if let Some(t) = jsonld::term_at(a, offset) {
@@ -587,11 +594,16 @@ pub(crate) fn renamed_iri_at(
     new_name: &str,
 ) -> Result<String, String> {
     let prefixes = jsonld::prefixes_at(a, offset);
-    // An RDF/XML document is never renamed in ([`rename`] refuses); the new
-    // name is read as in Turtle.
+    // An RDF/XML or OWL Functional document is never renamed in
+    // ([`rename`] refuses); the new name is read as in Turtle.
     let bare_iri = match a.parsed.syntax {
         Syntax::JsonLd => true,
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => false,
+        Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::RdfXml
+        | Syntax::OwlFunctional => false,
     };
     if bare_iri
         && let Some((p, rest)) = new_name.split_once(':')
@@ -660,7 +672,7 @@ pub(crate) fn rename_term(
         .filter(|(_, src, _)| *src != Source::External)
     {
         match other.parsed.syntax {
-            Syntax::RdfXml => return Err(not_edited(&other.uri)),
+            Syntax::RdfXml | Syntax::OwlFunctional => return Err(not_edited(other)),
             Syntax::JsonLd => jsonld_docs.push(other),
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
                 turtle_docs.push(other)
@@ -671,10 +683,10 @@ pub(crate) fn rename_term(
         let names_old = k
             .docs()
             .filter(|(_, src, d)| *src != Source::External && rdfxml_names(d, old))
-            .map(|(_, _, d)| &d.uri)
-            .min();
-        if let Some(uri) = names_old {
-            return Err(not_edited(uri));
+            .map(|(_, _, d)| d)
+            .min_by(|x, y| x.uri.cmp(&y.uri));
+        if let Some(d) = names_old {
+            return Err(not_edited(d));
         }
     }
     let mut jsonld_changes = jsonld::Changes {
@@ -714,7 +726,8 @@ pub(crate) fn rename_term(
     Ok(())
 }
 
-/// Whether `a` is an RDF/XML document whose triples name `iri`, as subject,
+/// Whether `a` is a document that is not edited ([`super::writes`]: RDF/XML,
+/// OWL Functional syntax) whose triples name `iri`, as subject,
 /// predicate, object or datatype, or inside a triple term. Its references
 /// do not say it all: an entity reference stands for everything read from
 /// it, and a production implies vocabulary no name is written for.
@@ -727,7 +740,7 @@ fn rdfxml_names(a: &Analysis, iri: Iri) -> bool {
             Node::Blank(_) => false,
         }
     }
-    a.parsed.syntax == Syntax::RdfXml
+    !super::writes(a.parsed.syntax)
         && a.parsed
             .triples
             .iter()

@@ -11,7 +11,8 @@
 //!   with the exact span of every term, read on past each error.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
-//! not RDF (OWL/XML, Functional, Manchester) gives no triples and one
+//! not RDF (OWL/XML, Manchester, and Functional given as RDF/XML: a
+//! Functional `.owl` reaches `ofn` instead) gives no triples and one
 //! `unsupported-syntax` error that names it. What a [`Parsed`] of RDF/XML
 //! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
 //! `document_base` the base passed in, and `prefixes`, `graphs` and

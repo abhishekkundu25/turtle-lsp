@@ -79,9 +79,10 @@ fn an_open_document_has_the_diagnostics_check_reports() {
     }
 }
 
-/// An `.owl` or `.rdf` file's syntax is its content's, the same for the
-/// server, whatever language id the client sends (none, VS Code for the
-/// Web; `xml`, the web editor; `turtle`), and for `check`.
+/// An `.owl` or `.rdf` file's syntax is its content's, and a `.ofn` file's
+/// its name's, the same for the server, whatever language id the client
+/// sends (none, VS Code for the Web; `xml`, the web editor; `turtle`), and
+/// for `check`.
 #[test]
 fn an_owl_file_has_the_diagnostics_check_reports_whatever_its_content() {
     let xml = "<?xml version=\"1.0\"?>\n\
@@ -94,11 +95,16 @@ fn an_owl_file_has_the_diagnostics_check_reports_whatever_its_content() {
         </rdf:RDF>\n";
     let broken = xml.replace("</rdf:Description>\n</rdf:RDF>", "</rdf:Descr>\n</rdf:RDF>");
     let functional = "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>)\n";
+    let broken_functional = "Prefix(:=<http://example.org/>)\nOntology(SubClassOf(:A nope:B))\n";
+    let manchester = "Prefix: : <http://example.org/>\nOntology: <http://example.org/o>\n";
     let turtle = "@prefix ex: <http://example.org/> .\nex:a ex:b ex:c ; ex:d \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> , \"x\"^^<http://www.w3.org/2001/XMLSchema#integer> .\n";
     for (name, text, code) in [
         ("onto.owl", xml, None),
         ("broken.rdf", broken.as_str(), Some("xml-syntax")),
-        ("functional.owl", functional, Some("unsupported-syntax")),
+        ("functional.owl", functional, None),
+        ("broken.owl", broken_functional, Some("ofn-syntax")),
+        ("broken.ofn", broken_functional, Some("ofn-syntax")),
+        ("manchester.owl", manchester, Some("unsupported-syntax")),
         ("turtle.owl", turtle, Some("invalid-literal")),
     ] {
         let check = batched(name, text);

@@ -11,12 +11,20 @@
  * The workspace's RDF and SPARQL files: the `workspaceContains` activation
  * glob (test/manifest.test.mjs checks they are the same) and the extensions
  * of src/workspace/kinds.rs. `.owl` and `.rdf` (RDF/XML, or whatever syntax
- * their content has) are read and watched as workspace files.
+ * their content has) are read and watched as workspace files, and `.ofn`
+ * (OWL Functional syntax) is checked for errors.
  */
-export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf}"
+export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn}"
 
-/** The languages the extension contributes; the server handles each. */
+/** The languages the extension contributes that the server writes; the server handles each. */
 export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as const
+
+/**
+ * The languages the extension contributes that the server reads and never
+ * writes: `ofn`, OWL Functional syntax (`.ofn`), which it checks for errors.
+ * The server registers nothing that writes for them (src/server/registrations.rs).
+ */
+export const READ_ONLY_LANGUAGES = ["ofn"] as const
 
 // JSON-LD files keep VS Code's own JSON language (and its highlighting): the
 // server attaches to them by name, and detects JSON-LD from the extension.
@@ -41,7 +49,7 @@ export type DocumentFilter = { scheme: string; language: string } | { scheme: st
 /** The documents the server handles, in the URI `schemes` given. An untitled document has no file name. */
 export function documentSelector(schemes: readonly string[]): DocumentFilter[] {
   return [
-    ...LANGUAGES.flatMap((language) => schemes.map((scheme) => ({ scheme, language }))),
+    ...[...LANGUAGES, ...READ_ONLY_LANGUAGES].flatMap((language) => schemes.map((scheme) => ({ scheme, language }))),
     ...schemes
       .filter((s) => s !== "untitled")
       .flatMap((scheme) => [

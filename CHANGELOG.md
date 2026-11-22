@@ -4,6 +4,29 @@
 
 ### Added
 
+- **OWL Functional syntax (`.ofn`, and a `.owl` whose text is Functional)
+  is checked.** Functional syntax files are checked for errors; their
+  content is not yet read into the workspace. turtle-lsp's own parser
+  follows the grammar of the OWL 2 specification and reports each error at
+  its exact span with the code `ofn-syntax`: syntax errors that name what
+  was expected, an undeclared prefix, a prefix declared twice with two
+  IRIs, an IRI that is not absolute, a language tag that is not BCP 47, too
+  few operands (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a
+  cardinality that is not a non-negative integer, a `HasKey` with no
+  property, and `Import` or an ontology annotation after the axioms. The
+  parse goes on at the next axiom after an error. It reads what OWL API,
+  ROBOT and Protégé write (the standard prefixes declared again, `#`
+  comments, SWRL `DLSafeRule`): the OBO edit files of CL, UO, RO and HP
+  parse with no error (the parse of `hp-edit.owl`, 31 MB, takes about
+  30 ms; `check` on it about 0.4 s), and so do the 78 Functional-Syntax
+  inputs of the approved W3C OWL 2 test cases. `check`
+  reports these errors with the usual exit codes. VS Code gives `.ofn` the
+  language "OWL Functional Syntax" with highlighting, Neovim the file type
+  `ofn`, and the browser editor its own colouring; each shows the errors
+  and offers no formatting, rename, completion or code actions there. A
+  Functional document that an `owl:imports` is read from also gets an
+  `unsupported-syntax` error, as before: the import lacks its axioms.
+
 - **RDF/XML files (`.owl`, `.rdf`) are workspace files**, read-only. Their
   content decides the syntax, so Protégé's default `.owl` is read as RDF/XML
   and a `.owl` holding Turtle as Turtle. An empty one, or one of white space
@@ -35,9 +58,10 @@
   `import-truncated` warning that names the first.
 - **Imports name what they cannot read.** An import in OWL/XML, Functional or
   Manchester syntax fails with a message naming the format and how to save it
-  as RDF/XML or Turtle in Protégé. A workspace file in those syntaxes gets
+  as RDF/XML or Turtle in Protégé (for Functional: its axioms are not read
+  yet). A workspace file in OWL/XML or Manchester syntax gets
   `unsupported-syntax`: an error when an import is read from it, else a
-  warning.
+  warning. A Functional one gets its own `ofn-syntax` errors instead.
   An RDF/XML import with an error part way through keeps what it could read
   and gets an `import-truncated` warning with the line and column.
 
@@ -48,8 +72,9 @@
   different exit code from them. Exit 1 where it was 0: an XML or RDF/XML
   error (`xml-syntax`, `rdfxml-syntax`; an empty `.owl` or `.rdf` has no root
   element), a `.owl` holding broken Turtle or
-  JSON-LD, an OWL/XML, Functional or Manchester file that an import is read
-  from, and with `--max-warnings 0` one that nothing imports. Exit 2 where it
+  JSON-LD, an OWL/XML or Manchester file that an import is read
+  from, and with `--max-warnings 0` one that nothing imports. A `.ofn`, or a
+  Functional `.owl`, with an `ofn-syntax` error. Exit 2 where it
   was 0: a `.owl` or `.rdf` over 50 MB or not in UTF-8. Leave the exit 1
   codes out with `--ignore` or `lint.ignore` in `turtle-lsp.json`. Exit 2 has
   no opt-out: keep such files in a hidden folder or in `build/`, `dist/` or
@@ -57,15 +82,16 @@
 - **An import that is not UTF-8 is not read** (any syntax, fetched, cached or
   local); its `unresolved-import` says where the first bad byte is. It was
   read with the bad bytes replaced.
-- **Nothing writes RDF/XML**: formatting, rename, completion, quick fixes and
-  `check --fix` leave RDF/XML alone; `format .` passes over it, and a
-  named `format onto.owl` says "not formatted: RDF/XML". A rename of a term
+- **Nothing writes RDF/XML or OWL Functional syntax**: formatting, rename,
+  completion, quick fixes and `check --fix` leave them alone; `format .`
+  passes over them, and a named `format onto.owl` says "not formatted:
+  RDF/XML" (or "not formatted: OWL Functional syntax"). A rename of a term
   that an RDF/XML workspace file uses is refused and names the file. A `.owl`
   or `.rdf` that holds Turtle or JSON-LD is read, formatted and fixed as that
   syntax by the command line and by editors other than VS Code.
 - **VS Code registers formatting, rename, completion and code actions
-  dynamically** for every file but `.owl` and `.rdf`, so it lists no
-  turtle-lsp formatter for XML. Other editors get the same static
+  dynamically** for every file but `.owl`, `.rdf` and `.ofn`, so it lists no
+  turtle-lsp formatter for XML or OWL Functional syntax. Other editors get the same static
   capabilities as before.
 - oxrdfxml is now only a test dependency.
 

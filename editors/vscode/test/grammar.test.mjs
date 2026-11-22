@@ -1,5 +1,5 @@
-// Tokenizes Turtle, TriG, N-Triples, N-Quads and SPARQL with the extension's
-// TextMate grammars using the same engine VS Code uses (vscode-textmate +
+// Tokenizes Turtle, TriG, N-Triples, N-Quads, SPARQL and OWL Functional
+// syntax with the extension's TextMate grammars using the same engine VS Code uses (vscode-textmate +
 // oniguruma) and checks the scopes. The TriG, N-Triples and N-Quads grammars
 // include rules from Turtle's.
 import { test } from "node:test"
@@ -16,7 +16,7 @@ await oniguruma.loadWASM(wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wa
 const registry = new vsctm.Registry({
   onigLib: Promise.resolve({ createOnigScanner: (p) => new oniguruma.OnigScanner(p), createOnigString: (s) => new oniguruma.OnigString(s) }),
   loadGrammar: async (scope) => {
-    const file = { "source.turtle": "turtle", "source.trig": "trig", "source.ntriples": "ntriples", "source.nquads": "nquads", "source.sparql": "sparql" }[scope]
+    const file = { "source.turtle": "turtle", "source.trig": "trig", "source.ntriples": "ntriples", "source.nquads": "nquads", "source.sparql": "sparql", "source.ofn": "ofn" }[scope]
     if (!file) return null
     const name = `${file}.tmLanguage.json`
     return vsctm.parseRawGrammar(fs.readFileSync(new URL(`../syntaxes/${name}`, import.meta.url), "utf8"), name)
@@ -27,6 +27,7 @@ const trig = await registry.loadGrammar("source.trig")
 const ntriples = await registry.loadGrammar("source.ntriples")
 const nquads = await registry.loadGrammar("source.nquads")
 const sparql = await registry.loadGrammar("source.sparql")
+const ofn = await registry.loadGrammar("source.ofn")
 
 /** Map each token text on the given lines to its innermost scope. */
 function scopes(src, g = grammar) {
@@ -177,7 +178,7 @@ test("every contributed language has a grammar, and the client serves it", () =>
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
   const served = documentSelector(["file"]).map((f) => f.language)
   const ids = pkg.contributes.languages.map((l) => l.id)
-  assert.deepEqual(ids, ["turtle", "trig", "ntriples", "nquads", "sparql"])
+  assert.deepEqual(ids, ["turtle", "trig", "ntriples", "nquads", "sparql", "ofn"])
   for (const id of ids) {
     const g = pkg.contributes.grammars.find((x) => x.language === id)
     assert.ok(g && fs.existsSync(new URL(`../${g.path}`, import.meta.url)), `no grammar for ${id}`)
@@ -190,4 +191,28 @@ test("every contributed language has a grammar, and the client serves it", () =>
   const exts = Object.fromEntries(pkg.contributes.languages.map((l) => [l.id, l.extensions]))
   assert.deepEqual(exts.nquads, [".nq"])
   assert.deepEqual(exts.sparql, [".rq", ".sparql", ".ru"])
+})
+
+test("OWL Functional syntax: keywords, prefix declarations, IRIs, literals, comments", () => {
+  const src = [
+    "Prefix(ex:=<http://example.org/#a>)",
+    "# Class: ex:A",
+    'SubClassOf(Annotation(rdfs:label "a \\"b\\" #c"@en) ex:A ObjectMinCardinality(2 ex:p _:x))',
+    'DataPropertyAssertion(ex:dp ex:i "1"^^xsd:integer)',
+  ].join("\n")
+  const t = scopes(src, ofn)
+  const at = (text) => t.find(([x]) => x === text)?.[1]
+  assert.equal(at("Prefix"), "keyword.other.directive.prefix.ofn")
+  assert.equal(at("<http://example.org/#a>"), "markup.underline.link.iri.ofn")
+  assert.equal(at("# Class: ex:A"), "comment.line.number-sign.ofn")
+  assert.equal(at("SubClassOf"), "keyword.other.construct.ofn")
+  assert.equal(at("ObjectMinCardinality"), "keyword.other.construct.ofn")
+  assert.equal(at("\\\""), "constant.character.escape.ofn")
+  assert.equal(at("@en"), "constant.language.language-tag.ofn")
+  assert.equal(at("2"), "constant.numeric.integer.ofn")
+  assert.equal(at("_:x"), "variable.other.node-id.ofn")
+  assert.equal(at("^^"), "keyword.operator.datatype.ofn")
+  assert.equal(at("integer"), "entity.name.local.ofn")
+  // The "#" in the string starts no comment.
+  assert.ok(!t.some(([x, s]) => s.startsWith("comment") && x.includes("#c")), JSON.stringify(t))
 })

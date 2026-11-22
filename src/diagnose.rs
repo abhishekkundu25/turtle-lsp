@@ -13,6 +13,8 @@ use crate::imports::{self, Status};
 use crate::knowledge::Knowledge;
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
+use crate::syntax::Syntax;
+use crate::syntax::sniff::Sniffed;
 use lsp_types::Diagnostic;
 use std::sync::Arc;
 
@@ -122,7 +124,13 @@ fn compose(
         out.retain(|d| !needs_index(d));
     }
     if let Doc::Rdf(a) = doc {
-        soften_unsupported(&mut out, || (inputs.imported)(&a.uri));
+        if a.parsed.syntax == Syntax::OwlFunctional {
+            if (inputs.imported)(&a.uri) {
+                out.push(unread_import());
+            }
+        } else {
+            soften_unsupported(&mut out, || (inputs.imported)(&a.uri));
+        }
         out.extend(imports::diagnostics_with(a, enc, |iri| {
             (inputs.import_status)(iri)
         }));
@@ -142,9 +150,10 @@ fn compose(
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
 /// An `unsupported-syntax` error becomes a warning unless `imported` says
-/// an import is read from the document: a copy of an ontology in OWL/XML,
-/// Functional or Manchester syntax beside its RDF/XML or Turtle breaks
-/// nothing until something imports it.
+/// an import is read from the document: a copy of an ontology in OWL/XML
+/// or Manchester syntax beside its RDF/XML or Turtle breaks nothing until
+/// something imports it. (A document in OWL Functional syntax has its own
+/// diagnostics, and [`unread_import`] when something imports it.)
 fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
     let code = lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into());
     let Some(d) = out.iter_mut().find(|d| d.code.as_ref() == Some(&code)) else {
@@ -152,6 +161,20 @@ fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
     };
     if !imported() {
         d.severity = Some(lsp_types::DiagnosticSeverity::WARNING);
+    }
+}
+
+/// The error of an OWL Functional document that an import is read from:
+/// its syntax is checked, but its axioms are not read, so the import
+/// lacks them. The same error a Functional text gave before it was parsed.
+fn unread_import() -> Diagnostic {
+    let unread = Sniffed::Functional.unread().unwrap_or_default();
+    Diagnostic {
+        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+        code: Some(lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into())),
+        source: Some(diagnostics::SOURCE.to_string()),
+        message: format!("The document is imported, and it {unread}"),
+        ..Default::default()
     }
 }
 
@@ -216,6 +239,37 @@ mod tests {
         assert_eq!(at("unresolved-import") + 1, at("shacl-violation"));
         assert_eq!(at("shacl-violation") + 1, at("turbowl/cax-dw"));
         assert_eq!(codes.last(), Some(&"turbowl/cax-dw"));
+    }
+
+    #[test]
+    fn an_imported_functional_document_is_an_unread_import() {
+        let mut ws = Workspace::new(Vec::new(), Default::default());
+        let uri = "file:///work/o.ofn";
+        ws.open_doc(uri.into(), "Ontology(<http://example.org/o>)\n".into(), 1);
+        let a = ws.analysis(uri).unwrap();
+        let k = &*ws.knowledge_mut();
+        let settings = Settings::default();
+        let alone = document(
+            Doc::Rdf(&a),
+            k,
+            Encoding::Utf16,
+            &DiagnosticInputs::new(&settings),
+        );
+        assert!(alone.is_empty(), "{alone:?}");
+        let imported = DiagnosticInputs {
+            imported: &|u| u == uri,
+            ..DiagnosticInputs::new(&settings)
+        };
+        let d = document(Doc::Rdf(&a), k, Encoding::Utf16, &imported);
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(code(&d[0]), UNSUPPORTED_SYNTAX);
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert!(
+            d[0].message
+                .contains("whose axioms turtle-lsp does not read yet"),
+            "{}",
+            d[0].message
+        );
     }
 
     #[test]

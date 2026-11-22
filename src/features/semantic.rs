@@ -96,8 +96,9 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
     let p = &a.parsed;
     match p.syntax {
         Syntax::JsonLd => return jsonld_tokens(a, k, from, to),
-        // The editor's XML grammar colours RDF/XML.
-        Syntax::RdfXml => return Vec::new(),
+        // The editor's XML grammar colours RDF/XML. An OWL Functional parse
+        // has no references to colour yet.
+        Syntax::RdfXml | Syntax::OwlFunctional => return Vec::new(),
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     let wanted = |s: u32, e: u32| e > from && s <= to && s < e;

@@ -112,6 +112,27 @@ test("an .owl or .rdf file is read by its content: RDF/XML with blank nodes is d
   assert.equal(fileOf(res, "turtle.owl").format.status, "changed")
 })
 
+test("an .ofn file, or a Functional .owl, is checked for errors (ofn-syntax), never formatted or fixed, and gives no triples", () => {
+  const broken = "Prefix(:=<http://example.org/o#>)\nOntology(\nAnnotationAssertion(rdfs:label :A \" a \")\nSubClassOf(:A nope:B)\n)\n"
+  const files = [
+    { name: "onto.ofn", text: broken },
+    { name: "functional.owl", text: broken },
+    { name: "clean.ofn", text: "Ontology(<http://example.org/o>)\n" },
+  ]
+  const res = engine.call("analyse", { files })
+  assert.deepEqual(res.files.map((f) => f.kind), ["ofn", "ofn", "ofn"])
+  for (const name of ["onto.ofn", "functional.owl"]) {
+    const f = fileOf(res, name)
+    assert.deepEqual(f.format, { status: "refused", guarantee: "same graph", reason: "OWL Functional syntax" })
+    assert.deepEqual(f.diagnostics.map((d) => [d.code, d.range.start.line, d.range.start.character, d.message]), [["ofn-syntax", 3, 14, "Undeclared prefix 'nope:'"]])
+  }
+  assert.deepEqual(fileOf(res, "clean.ofn").diagnostics, [])
+  const fixed = engine.call("fix_all", { files })
+  for (const f of files) assert.equal(fixed.files.find((x) => x.name === f.name).text, f.text)
+  const q = engine.call("query", { files: [files[0], { name: "q.rq", text: "SELECT * WHERE { ?s ?p ?o }" }], query: "q.rq" })
+  assert.deepEqual(q.rows, [])
+})
+
 // --- query ---------------------------------------------------------------------
 
 // The sample workspace with `text` as q.rq, asked to run q.rq.

@@ -65,10 +65,11 @@ fn hover_with(
 
     let r = a.ref_at(offset)?;
     // The prefix of a QName in RDF/XML is an XML namespace's, not a
-    // declaration this document's prefixes hold.
+    // declaration this document's prefixes hold. An OWL Functional document
+    // has no references yet, so no hover reaches here.
     let prefixes_written = match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml => false,
+        Syntax::RdfXml | Syntax::OwlFunctional => false,
     };
     let text_label = match r.form {
         Form::PName { prefix_len } if prefixes_written => {
