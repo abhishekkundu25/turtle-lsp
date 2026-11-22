@@ -413,6 +413,8 @@ struct Prefix<'a> {
     iri: &'a str,
     valid: bool,
     declared: bool,
+    /// What its expansions are checked after: see [`context`].
+    context: &'static str,
 }
 
 /// Where the items of the ontology are.
@@ -458,6 +460,7 @@ impl<'a> Parser<'a> {
                     iri,
                     valid: true,
                     declared: false,
+                    context: context(iri),
                 };
                 (name, prefix)
             })
@@ -620,7 +623,9 @@ impl<'a> Parser<'a> {
         self.bump();
         self.expect(Kind::LParen, "'(' after 'Prefix'")?;
         let name = self.tok;
-        if name.kind != Kind::PName || !self.text_of(name).ends_with(':') {
+        // SPARQL's PNAME_NS: one ':', at the end.
+        let written = self.text_of(name);
+        if name.kind != Kind::PName || written.find(':') != Some(written.len() - 1) {
             return self.expected("a prefix name such as 'ex:'");
         }
         self.bump();
@@ -652,6 +657,7 @@ impl<'a> Parser<'a> {
             iri: value,
             valid,
             declared: true,
+            context: context(value),
         };
         match self.prefixes.get(prefix) {
             // Table 2's names are bound before; a declaration binds them
@@ -979,6 +985,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether `written`, `prefix` (a valid IRI) followed by `local`, is
+    /// an IRI; else report it at `span`. Only the local name is read, after
+    /// the prefix's [`context`], so the time is that of `local`, however
+    /// long the prefix.
     fn check_expansion(&mut self, written: &'a str, prefix: &str, local: &str, span: Span) {
         if let Some(why) = self.checked.get(written) {
             if let Some(why) = why.clone() {
@@ -986,11 +996,17 @@ impl<'a> Parser<'a> {
             }
             return;
         }
+        let name = &written[..written.len() - local.len() - 1];
+        let context = self.prefixes.get(name).map_or("a:", |p| p.context);
         self.buf.clear();
-        self.buf.push_str(prefix);
+        self.buf.push_str(context);
         self.buf.push_str(local);
         let why = why_not_iri(&self.buf).map(|why| {
-            format!("'{written}' expands to <{}>: {why}", shown(&self.buf)).into_boxed_str()
+            // The expansion as `shown` cuts it, from the first characters
+            // of the prefix only.
+            let mut full: String = prefix.chars().take(61).collect();
+            full.push_str(local);
+            format!("'{written}' expands to <{}>: {why}", shown(&full)).into_boxed_str()
         });
         if let Some(why) = &why {
             self.errors.error(span, why.to_string());
@@ -1176,6 +1192,43 @@ impl<'a> Parser<'a> {
                 );
             }
         }
+    }
+}
+
+/// A short IRI that ends in the same part of an IRI as `ns`, a valid
+/// IRI: `ns` followed by a local name is an IRI if and only if the context
+/// followed by it is one, and with the same error. A local name (SPARQL's
+/// `PN_LOCAL`) holds none of `/ ? # @ [ ]` and its `%` starts a whole
+/// `%XX`, and a valid `ns` ends in no part of one, so the local name
+/// extends the last part of `ns` and starts no other. Each part is checked
+/// one character at a time, so the characters of `ns`, all valid, change
+/// nothing, but for the authority's structure: its first `:` after any `@`
+/// starts the port (checked before the host), and a `]` ends an IP
+/// literal. The contexts keep those apart: host, port, after an IP
+/// literal, path, query and fragment.
+fn context(ns: &str) -> &'static str {
+    let Ok(iri) = oxiri::Iri::parse(ns) else {
+        return "a:";
+    };
+    if iri.fragment().is_some() {
+        return "a:#";
+    }
+    if iri.query().is_some() {
+        return "a:?";
+    }
+    match iri.authority() {
+        Some(authority) if iri.path().is_empty() => {
+            let host = authority
+                .split_once('@')
+                .map_or(authority, |(_, host)| host);
+            match host.rsplit_once(']') {
+                Some((_, "")) => "a://[::]",
+                Some(_) => "a://h:",
+                None if host.contains(':') => "a://h:",
+                None => "a://h",
+            }
+        }
+        _ => "a:",
     }
 }
 

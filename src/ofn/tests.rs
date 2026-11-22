@@ -636,6 +636,88 @@ fn iris_are_absolute_iris() {
     );
 }
 
+/// An abbreviated IRI is checked by its local name after its prefix's
+/// context, not as the whole expansion: the verdict and the message are
+/// those of the whole expansion, for a namespace that ends in each part of
+/// an IRI and local names with each character that changes the verdict.
+#[test]
+fn abbreviated_iris_are_checked_as_their_expansion() {
+    let namespaces = [
+        "urn:",
+        "urn:/",
+        "urn:x",
+        "http://",
+        "http://h",
+        "http://u@h",
+        "http://u:p@h",
+        "http://h:",
+        "http://h:8",
+        "http://u:p@h:8",
+        "http://[::1]",
+        "http://[::1]:",
+        "http://[::1]:8",
+        "http://[v1.x]",
+        "http://example.org/a",
+        "http://example.org/a:b/",
+        "http://example.org/a?",
+        "http://example.org/a?q",
+        "http://example.org/a?q#",
+        "http://example.org/a#",
+        "http://example.org/a#f",
+    ];
+    let locals = [
+        "x",
+        ":",
+        "::",
+        ":x",
+        ":80",
+        "x:80",
+        "x:y",
+        "80",
+        "8:0",
+        "%41",
+        "a.b",
+        "é",
+        "x·y",
+        "\u{F900}",
+        "\u{FFF0}",
+        "x\u{FFF0}",
+        "\u{1FFFE}",
+        "\u{EFFFD}",
+    ];
+    for ns in namespaces {
+        for local in locals {
+            let text = format!("Prefix(ex:=<{ns}>)\nOntology(Declaration(Class(ex:{local})))");
+            let full = format!("{ns}{local}");
+            let want: Vec<(String, String)> = match oxiri::Iri::parse(full.as_str()) {
+                Ok(_) => vec![],
+                Err(e) => vec![(
+                    format!("ex:{local}"),
+                    format!(
+                        "'ex:{local}' expands to <{}>: Invalid IRI: {e}",
+                        shown(&full)
+                    ),
+                )],
+            };
+            assert_eq!(errors(&text), want, "{text}");
+        }
+    }
+    // A long namespace is shown cut, as the whole expansion is.
+    let ns = format!("http://example.org/{}/", "a".repeat(100));
+    let text = format!("Prefix(ex:=<{ns}>)\nOntology(Declaration(Class(ex:x\u{FFF0})))");
+    let full = format!("{ns}x\u{FFF0}");
+    assert_eq!(
+        errors(&text),
+        [(
+            "ex:x\u{FFF0}".to_string(),
+            format!(
+                "'ex:x\u{FFF0}' expands to <{}>: Invalid IRI: Invalid IRI code point '\u{FFF0}'",
+                shown(&full)
+            )
+        )]
+    );
+}
+
 #[test]
 fn literals_are_checked() {
     for (body, want) in [
@@ -978,6 +1060,18 @@ fn the_document_has_one_ontology_after_its_prefixes() {
             "Prefix(ex:a=<http://example.org/>)\nOntology()",
             vec![("ex:a", "Expected a prefix name such as 'ex:', found 'ex:a'")],
         ),
+        // SPARQL's PNAME_NS: a ':' only at the end.
+        (
+            "Prefix(a:b:=<http://example.org/>)\nOntology(Declaration(Class(a:b:C)))",
+            vec![
+                ("a:b:", "Expected a prefix name such as 'ex:', found 'a:b:'"),
+                ("a:b:C", "Undeclared prefix 'a:'"),
+            ],
+        ),
+        (
+            "Prefix(::=<http://example.org/>)\nOntology()",
+            vec![("::", "Expected a prefix name such as 'ex:', found '::'")],
+        ),
         (
             "Prefix(ex:=ex:a)\nOntology()",
             vec![(
@@ -1271,6 +1365,41 @@ fn ofn_real_files() {
             text.len(),
             d.top().count(),
             d.nodes.len()
+        );
+    }
+}
+
+/// Checking abbreviated IRIs takes time linear in the text, valid or not,
+/// however long the namespace: a namespace of 40,000 bytes and 2,000
+/// distinct names, then four times both.
+#[test]
+fn timing_abbreviated_iris_with_a_long_namespace_check_in_linear_time() {
+    for bad in ["", "\u{FFF0}"] {
+        let make = |s: usize| {
+            let ns = format!("http://example.org/{}/", "a".repeat(40_000 * s));
+            let axioms: String = (0..2_000 * s)
+                .map(|k| format!("Declaration(Class(ex:c{k}{bad}))\n"))
+                .collect();
+            (format!("Prefix(ex:=<{ns}>)\nOntology({axioms})"), 2_000 * s)
+        };
+        let fastest = |text: &str| {
+            (0..3)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    let d = doc(text);
+                    (start.elapsed(), d.errors.len())
+                })
+                .min()
+                .unwrap()
+        };
+        let ((small, n_small), (big, n_big)) = (make(1), make(4));
+        let ((t_small, e_small), (t_big, e_big)) = (fastest(&small), fastest(&big));
+        let want = |n| if bad.is_empty() { 0 } else { n };
+        assert_eq!((e_small, e_big), (want(n_small), want(n_big)), "{bad:?}");
+        eprintln!("{bad:?}: {t_small:?} at 1x, {t_big:?} at 4x");
+        assert!(
+            t_big < t_small * 4 + std::time::Duration::from_millis(5),
+            "{bad:?}: {t_big:?} at 4x, {t_small:?} at 1x"
         );
     }
 }

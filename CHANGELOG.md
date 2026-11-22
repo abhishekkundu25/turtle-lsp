@@ -9,9 +9,10 @@
   content is not yet read into the workspace. turtle-lsp's own parser
   follows the grammar of the OWL 2 specification and reports each error at
   its exact span with the code `ofn-syntax`: syntax errors that name what
-  was expected, an undeclared prefix, a prefix declared twice with two
-  IRIs, an IRI that is not absolute, a language tag that is not BCP 47, too
-  few operands (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a
+  was expected, an undeclared prefix, a prefix name with a `:` before its
+  end (`Prefix(a:b:=…)`), a prefix declared twice with two IRIs, an IRI
+  that is not absolute, a language tag that is not BCP 47, too few operands
+  (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a
   cardinality that is not a non-negative integer, a `HasKey` with no
   property, and `Import` or an ontology annotation after the axioms. The
   parse goes on at the next axiom after an error. It reads what OWL API,
