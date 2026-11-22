@@ -130,7 +130,7 @@ check("a .owl file keeps VS Code's XML language and gets the server's hover, but
   await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 })
 
-check("a .ofn file is OWL Functional syntax: its errors are listed before and after it is opened, and the extension offers no hover, formatter, rename, completion or code actions there", async () => {
+check("a .ofn file is OWL Functional syntax: its errors are listed before and after it is opened, its terms hover, lead to their declaration and are outlined, and the extension offers no formatter, rename, completion or code actions there", async () => {
   // The browser reads the workspace's files: listed before it is opened.
   ok(!vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith("/onto.ofn")), "onto.ofn was opened")
   const errors = (d) => d.some((x) => codeOf(x) === "ofn-syntax")
@@ -139,8 +139,15 @@ check("a .ofn file is OWL Functional syntax: its errors are listed before and af
   ok(doc.languageId === "ofn", `language ${doc.languageId}`)
   const diags = await until("onto.ofn's error", () => vscode.languages.getDiagnostics(doc.uri), errors, 10_000)
   ok(fmt(diags) === "3:14 [ofn-syntax] Undeclared prefix 'nope:'", fmt(diags))
-  const text = hoverText(await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, posOf(doc, ":A))", 1)))
-  ok(text === "", `hover: ${JSON.stringify(text)}`)
+  // Its axioms are read: the label in hover, the declaration as the
+  // definition, the class in the outline.
+  const at = posOf(doc, ":A))", 1)
+  const text = await until("hover in onto.ofn", async () => hoverText(await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, at)), (t) => t.includes("Apple"), 10_000)
+  ok(text.includes("Apple"), `hover: ${JSON.stringify(text)}`)
+  const defs = locations(await vscode.commands.executeCommand("vscode.executeDefinitionProvider", doc.uri, posOf(doc, ":A \"Apple", 1)))
+  ok(defs.length === 1 && defs[0].endsWith("/onto.ofn"), `definition: ${JSON.stringify(defs)}`)
+  const symbols = await vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", doc.uri)
+  ok(JSON.stringify(symbols.map((x) => x.name)) === JSON.stringify(["prefixes", "http://example.org/o", ":A"]), `symbols: ${JSON.stringify(symbols.map((x) => x.name))}`)
   for (const method of ["textDocument/formatting", "textDocument/rename", "textDocument/completion", "textDocument/codeAction"]) {
     const feature = api.client().getFeature(method)
     ok(feature.getProvider(doc) === undefined, `${method}: a provider for onto.ofn`)

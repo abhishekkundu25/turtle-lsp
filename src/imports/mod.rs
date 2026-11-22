@@ -568,7 +568,10 @@ pub fn diagnostics_with<'s>(
     enc: Encoding,
     status: impl Fn(&str) -> Option<&'s Status>,
 ) -> Vec<Diagnostic> {
-    if !a.refs_by_iri.contains_key(OWL_IMPORTS) {
+    // A document with no `owl:imports` written has no import triple, but
+    // in OWL Functional syntax, which writes the keyword `Import`.
+    let functional = a.parsed.syntax == crate::syntax::Syntax::OwlFunctional;
+    if !functional && !a.refs_by_iri.contains_key(OWL_IMPORTS) {
         return vec![];
     }
     let p = preds();
@@ -692,7 +695,7 @@ pub use catalog::parse_catalog;
 pub(crate) use load::fs_policy;
 pub use load::sniff;
 pub(crate) use load::{fs_policy_path, is_network_path};
-pub use rdfxml::rdf_xml_to_ntriples;
+pub use rdfxml::{functional_to_ntriples, rdf_xml_to_ntriples};
 
 /// Whether web fetches may reach internal addresses: set by the environment
 /// (`fetch::ALLOW_PRIVATE_ENV`), never by a file of the workspace.
@@ -791,6 +794,29 @@ mod tests {
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::INFORMATION));
         assert_eq!(d[0].range.start.character, 31);
         assert_eq!(d[0].message, "nope");
+    }
+
+    /// An OWL Functional document writes `Import( … )`, no `owl:imports`:
+    /// its imports get their diagnostics all the same, at the IRI.
+    #[test]
+    fn the_imports_of_a_functional_document_are_diagnosed_at_their_iri() {
+        let text = "Ontology(<http://ex.com/me>\nImport(<http://ex.com/x>)\nImport(<http://ex.com/y>)\n)\n";
+        let a = Analysis::new("file:///d.ofn".into(), text, Arc::default(), false);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let missing = Status::Unresolved("nope".into());
+        let ok = Status::Loaded("/w/y.owl".into());
+        let d = diagnostics_with(&a, Encoding::Utf16, |i| {
+            Some(if i.ends_with('x') { &missing } else { &ok })
+        });
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].code, Some(NumberOrString::String(UNRESOLVED.into())));
+        assert_eq!(
+            (d[0].range.start, d[0].range.end),
+            (
+                lsp_types::Position::new(1, 7),
+                lsp_types::Position::new(1, 24)
+            )
+        );
     }
 
     #[test]

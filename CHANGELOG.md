@@ -5,28 +5,39 @@
 ### Added
 
 - **OWL Functional syntax (`.ofn`, and a `.owl` whose text is Functional)
-  is checked.** Functional syntax files are checked for errors; their
-  content is not yet read into the workspace. turtle-lsp's own parser
-  follows the grammar of the OWL 2 specification and reports each error at
-  its exact span with the code `ofn-syntax`: syntax errors that name what
-  was expected, an undeclared prefix, a prefix name with a `:` before its
-  end (`Prefix(a:b:=…)`), a prefix declared twice with two IRIs, an IRI
-  that is not absolute, a language tag that is not BCP 47, too few operands
-  (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a
-  cardinality that is not a non-negative integer, a `HasKey` with no
-  property, and `Import` or an ontology annotation after the axioms. The
-  parse goes on at the next axiom after an error. It reads what OWL API,
-  ROBOT and Protégé write (the standard prefixes declared again, `#`
-  comments, SWRL `DLSafeRule`): the OBO edit files of CL, UO, RO and HP
-  parse with no error (the parse of `hp-edit.owl`, 31 MB, takes about
-  30 ms; `check` on it about 0.4 s), and so do the 78 Functional-Syntax
-  inputs of the approved W3C OWL 2 test cases. `check`
-  reports these errors with the usual exit codes. VS Code gives `.ofn` the
-  language "OWL Functional Syntax" with highlighting, Neovim the file type
-  `ofn`, and the browser editor its own colouring; each shows the errors
-  and offers no formatting, rename, completion or code actions there. A
-  Functional document that an `owl:imports` is read from also gets an
-  `unsupported-syntax` error, as before: the import lacks its axioms.
+  is read**, read-only, as RDF/XML is. Its axioms become RDF triples by the
+  W3C mapping (OWL 2 Mapping to RDF Graphs, section 2: annotated axioms
+  with their `owl:Axiom` nodes, n-ary axioms, lists; SWRL rules as OWL API
+  writes them), so its terms count in other files (hover with their
+  labels, completion, no `unknown-term`), definition opens their
+  `Declaration`, references, highlights, the outline (each term once),
+  workspace symbols and folding work in it, and `query`, SHACL validation
+  and reasoning read its triples; `query` with `CONSTRUCT` prints them.
+  Its imports resolve like any other (workspace, catalog, `file:` IRI,
+  cache or web, whatever content type the server sends;
+  `text/owl-functional` is the registered one), and a fetched one is cached
+  as N-Triples. turtle-lsp's own parser follows the grammar of the OWL 2
+  specification and reports each error at its exact span with the code
+  `ofn-syntax`: syntax errors that name what was expected, an undeclared
+  prefix, a prefix name with a `:` before its end (`Prefix(a:b:=…)`), a
+  prefix declared twice with two IRIs, an IRI that is not
+  absolute, a language tag that is not BCP 47, too few operands
+  (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a cardinality
+  that is not a non-negative integer, a `HasKey` with no property, and
+  `Import` or an ontology annotation after the axioms. The parse goes on at
+  the next axiom after an error, and an axiom with an error gives no
+  triples. It reads what OWL API, ROBOT and Protégé write (the standard
+  prefixes declared again, `#` comments, SWRL `DLSafeRule`): the OBO edit
+  files of CL, UO, RO and HP parse with no error and give ROBOT's graph,
+  but for what OWL API writes otherwise (the parse and mapping of
+  `hp-edit.owl`, 31 MB, take about 60 ms; `check` on it about 0.1 s). The
+  78 Functional-Syntax inputs of the approved W3C OWL 2 test cases parse,
+  and the 57 with an RDF/XML text map to its graph but for 6 whose texts
+  differ. `check` reports the errors with the usual exit codes, and runs
+  the lints RDF/XML gets. VS Code gives `.ofn` the language "OWL Functional
+  Syntax" with highlighting, Neovim the file type `ofn`, and the browser
+  editor its own colouring; each gets these features and offers no
+  formatting, rename, completion or code actions there.
 
 - **RDF/XML files (`.owl`, `.rdf`) are workspace files**, read-only. Their
   content decides the syntax, so Protégé's default `.owl` is read as RDF/XML
@@ -57,14 +68,13 @@
   and a namespace declaration Namespaces in XML reserves (`xml` or `xmlns`).
   An import with one of these keeps every triple read around it and gets an
   `import-truncated` warning that names the first.
-- **Imports name what they cannot read.** An import in OWL/XML, Functional or
+- **Imports name what they cannot read.** An import in OWL/XML or
   Manchester syntax fails with a message naming the format and how to save it
-  as RDF/XML or Turtle in Protégé (for Functional: its axioms are not read
-  yet). A workspace file in OWL/XML or Manchester syntax gets
-  `unsupported-syntax`: an error when an import is read from it, else a
-  warning. A Functional one gets its own `ofn-syntax` errors instead.
-  An RDF/XML import with an error part way through keeps what it could read
-  and gets an `import-truncated` warning with the line and column.
+  as RDF/XML or Turtle in Protégé. A workspace file in OWL/XML or Manchester
+  syntax gets `unsupported-syntax`: an error when an import is read from
+  it, else a warning. An RDF/XML or Functional import with an error part
+  way through keeps what it could read and gets an `import-truncated`
+  warning with the line and column.
 
 ### Changed
 

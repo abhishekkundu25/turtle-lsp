@@ -12,7 +12,7 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 // is JSON-LD. `.owl` and `.rdf` are Monaco's own XML, with the server's
 // providers that read (connect): the server reads them as workspace RDF,
 // its syntax from the content. `.ofn` is OWL Functional syntax (`ofn`,
-// registerSyntax), which the server checks for errors and never writes.
+// registerSyntax), which the server reads as RDF and never writes.
 export function languageOf(path) {
   const ext = path.toLowerCase().split(".").pop()
   return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml", ofn: "ofn" }[ext] ?? "turtle"

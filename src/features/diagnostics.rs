@@ -350,19 +350,18 @@ impl Check {
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
                 true
             }
-            Syntax::RdfXml => self.runs_on_rdfxml(),
-            // Its parse holds errors and nothing else (no triples, no
-            // references, no prefixes): only they are reported.
-            Syntax::OwlFunctional => matches!(self, Check::Syntax),
+            // Read-only, as RDF/XML: the same checks.
+            Syntax::RdfXml | Syntax::OwlFunctional => self.runs_read_only(),
         }
     }
 
-    /// Whether the check runs on an RDF/XML document. Its syntax errors do
-    /// (`xml-syntax`, `rdfxml-syntax`, `unsupported-syntax`); SHACL results
+    /// Whether the check runs on an RDF/XML or OWL Functional document,
+    /// which nothing edits. Its syntax errors do (`xml-syntax`,
+    /// `rdfxml-syntax`, `unsupported-syntax`, `ofn-syntax`); SHACL results
     /// and reasoning findings come from outside these checks. Of the lints,
     /// those that need no edit (decision 8 of the RDF/XML plan), at the
     /// exact spans of its references; none offers a fix.
-    fn runs_on_rdfxml(self) -> bool {
+    fn runs_read_only(self) -> bool {
         match self {
             Check::Syntax => true,
             // `invalid-literal`, `undescribed-term` (its suggestion in the
@@ -774,7 +773,7 @@ pub(crate) fn term_uses<'a>(
 ) -> (Vec<Found>, Vec<Found>) {
     let mk = Found::new;
     let mut own = Vec::new();
-    let subjects_left_out = refs.clone().filter(|r| r.role != Role::Subject);
+    let subjects_left_out = refs.clone().filter(|r| !r.role.is_subject());
     let warned = own_deprecations(
         subjects_left_out.filter_map(|r| term_use(a, r)),
         &a.text,
@@ -1341,24 +1340,21 @@ mod tests {
             let a = Analysis::with_syntax(uri.into(), text, Arc::default(), true, Syntax::RdfXml);
             assert_eq!(codes(&a), want, "{text}");
         }
-        // A Functional `.owl` reaches its own frontend: its errors, and no
-        // `unsupported-syntax`.
-        let functional = "Prefix(:=<http://example.org/o#>)\nOntology(SubClassOf(:A nope:B))";
+        // A Functional `.owl` reaches its own frontend: its errors, no
+        // `unsupported-syntax`, and the lints RDF/XML gets, at the exact
+        // spans of its terms: here an `invalid-literal` after the error.
+        let functional = "Prefix(:=<http://example.org/o#>)\nOntology(SubClassOf(:A nope:B)\nDataPropertyAssertion(:d :a \"x\"^^xsd:integer))";
         let a = Analysis::new(uri.into(), functional, Arc::default(), true);
-        assert_eq!(codes(&a), ["ofn-syntax"]);
-        for check in Check::ALL {
-            assert_eq!(
-                check.runs_on(Syntax::OwlFunctional),
-                check == Check::Syntax,
-                "{check:?}"
-            );
-        }
+        assert_eq!(codes(&a), ["ofn-syntax", "invalid-literal"]);
+        let found = diagnostics_with(&a, &k, Encoding::Utf8, &opts);
+        assert_eq!(found[1].range.start, lsp_types::Position::new(2, 28));
         for check in Check::ALL {
             let on = matches!(
                 check,
                 Check::Syntax | Check::Literals | Check::UndescribedTerms | Check::TermUses
             );
             assert_eq!(check.runs_on(Syntax::RdfXml), on, "{check:?}");
+            assert_eq!(check.runs_on(Syntax::OwlFunctional), on, "{check:?}");
             assert!(check.runs_on(Syntax::Turtle), "{check:?}");
         }
 

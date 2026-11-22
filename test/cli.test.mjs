@@ -882,43 +882,35 @@ test("check: an unsupported-syntax .owl that a workspace file imports is an erro
   assert.equal(run(ws, ["check", "--ignore", "unsupported-syntax", "other.owl", "vendor/manchester.owl"]).code, 0)
 })
 
-test("check: a Functional ontology that a workspace file imports keeps its own diagnostics and an unsupported-syntax error (its axioms are not read); the import says why, through a catalog or a file: IRI", (t) => {
+test("check: a Functional ontology that a workspace file imports is read: the import resolves through a catalog or a file: IRI, its terms are described, and a broken one loads in part", (t) => {
   const catalog = `<?xml version="1.0"?>
 <catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
     <uri name="http://example.org/f" uri="vendor/functional.ofn"/>
 </catalog>
 `
   const app = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix f: <http://example.org/f#> .
 <http://example.org/app> a owl:Ontology ; owl:imports <http://example.org/f> .
+f:a a f:A .
 `
-  // Through the catalog ("… by catalog-v001.xml, which could not be loaded: …")
-  // or a file: IRI ("… could not be loaded from PATH: …").
-  const why = /app\.ttl:2:\d+: info\[unresolved-import\] .*could not be loaded.*: it holds OWL Functional syntax, whose axioms turtle-lsp does not read yet\. In Protégé/
-  const unread = (file) => new RegExp(`${file}:1:1: error\\[unsupported-syntax\\] The document is imported, and it holds OWL Functional syntax, whose axioms turtle-lsp does not read yet`)
   const ws = workspace(t, { "catalog-v001.xml": catalog, "app.ttl": app, "vendor/functional.ofn": FUNCTIONAL, "other.owl": BROKEN_FUNCTIONAL })
+  // Only the broken file's own errors: no unsupported-syntax, no
+  // unresolved import, and f:A is described.
   const r = run(ws, ["check"])
   assert.equal(r.code, 1, r.out + r.err)
-  assert.match(r.out, why)
-  assert.deepEqual(firstTwo(r).filter((l) => !l.startsWith("app.ttl")), ["other.owl:3:15: error[ofn-syntax]", "other.owl:4:14: error[ofn-syntax]", "vendor/functional.ofn:1:1: error[unsupported-syntax]"])
-  assert.match(r.out, unread("vendor/functional\\.ofn"))
-  // A clean Functional file that is imported still fails the check: the
-  // import lacks its axioms.
+  assert.deepEqual(firstTwo(r), ["other.owl:3:15: error[ofn-syntax]", "other.owl:4:14: error[ofn-syntax]"])
+  assert.doesNotMatch(r.out, /unsupported-syntax|unresolved-import|undescribed-term|unknown-term/)
   const app_only = run(ws, ["check", "app.ttl", "vendor/functional.ofn"])
-  assert.equal(app_only.code, 1, app_only.out + app_only.err)
-  assert.match(app_only.out, why)
-  assert.match(app_only.out, unread("vendor/functional\\.ofn"))
-  // `--ignore unsupported-syntax` hides it.
-  assert.equal(run(ws, ["check", "--ignore", "unsupported-syntax", "app.ttl", "vendor/functional.ofn"]).code, 0)
-  // Through a file: IRI to the broken .owl, without the catalog: the .owl
-  // is the imported one now, and the .ofn is not.
+  assert.equal(app_only.code, 0, app_only.out + app_only.err)
+  assert.equal(app_only.out, "")
+  // Through a file: IRI to the broken .owl, without the catalog: loaded up
+  // to what its errors break, and the importer says where.
   fs.rmSync(path.join(ws, "catalog-v001.xml"))
   const iri = pathToFileURL(path.join(fs.realpathSync(ws), "other.owl")).href
   fs.writeFileSync(path.join(ws, "app.ttl"), app.replace("<http://example.org/f>", `<${iri}>`))
-  const viaFile = run(ws, ["check"])
-  assert.equal(viaFile.code, 1, viaFile.out + viaFile.err)
-  assert.match(viaFile.out, why)
-  assert.match(viaFile.out, unread("other\\.owl"))
-  assert.doesNotMatch(viaFile.out, /functional\.ofn:.*unsupported-syntax/)
+  const viaFile = run(ws, ["check", "app.ttl"])
+  assert.match(viaFile.out, /app\.ttl:3:\d+: warning\[import-truncated\] Import <file:[^>]*other\.owl> is loaded only in part: .*other\.owl has an error at line 3, column 21: Undeclared prefix 'nope:'/)
+  assert.doesNotMatch(viaFile.out, /unsupported-syntax|unresolved-import/)
 })
 
 test("format: RDF/XML and Functional files in a folder are passed over without a word (exit 0); a named one is not formatted: RDF/XML, OWL Functional syntax (exit 2); an .owl that holds Turtle is Turtle", (t) => {

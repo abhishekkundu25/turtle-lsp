@@ -331,6 +331,36 @@ test("off: the diagnostics are exactly those without reasoning, and nothing runs
   }
 })
 
+test("an .ofn file's axioms and members are reasoned over; a finding in it shows at its axiom's line", async () => {
+  const ofn = `Prefix(ex:=<http://example.org/>)
+Ontology(<http://example.org/onto>
+Declaration(Class(ex:Cat))
+DisjointClasses(ex:Cat ex:Dog)
+ClassAssertion(ex:Cat ex:rex)
+ClassAssertion(ex:Dog ex:rex)
+)
+`
+  const w = await session(
+    { "onto.ofn": ofn, "a.ttl": `${HEAD}ex:tom a ex:Cat .\n` },
+    { initializationOptions: { ...ON, diagnostics: { workspace: true } } },
+  )
+  const a = w.uri("a.ttl")
+  try {
+    w.s.open(a, `${HEAD}ex:tom a ex:Cat , ex:Dog .\n`)
+    const found = turbowl(await until(w.s, a, (d) => turbowl(d).length > 0))
+    assert.deepEqual(found.map((d) => [d.code, d.range.start.line]), [["turbowl/cax-dw", 2]])
+    // The axiom is cited at its line in the .ofn file.
+    assert.match(found[0].message, /^onto\.ofn:4 {2}ex:Cat owl:disjointWith ex:Dog$/m)
+    // The member described in the .ofn file: its finding is the file's own,
+    // at an assertion of it.
+    const inOfn = turbowl(await until(w.s, w.uri("onto.ofn"), (d) => turbowl(d).length > 0))
+    assert.ok(inOfn.every((d) => d.code === "turbowl/cax-dw"), JSON.stringify(inOfn))
+    assert.ok(inOfn.every((d) => d.range.start.line >= 4 && d.range.start.line <= 5), JSON.stringify(inOfn))
+  } finally {
+    await w.end()
+  }
+})
+
 test("an .owl file's axioms and members are reasoned over; a finding in it shows at its element's line", async () => {
   const owl = `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"

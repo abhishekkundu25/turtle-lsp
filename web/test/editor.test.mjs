@@ -167,10 +167,10 @@ test("an .owl or .rdf file opens with Monaco's XML colouring, named RDF/XML, wit
   }
 })
 
-test("an .ofn file opens as OWL Functional syntax, coloured, with the server's errors as markers and no formatter", async () => {
+test("an .ofn file opens as OWL Functional syntax, coloured, with the server's errors as markers, its hover and no formatter", async () => {
   const { page, errors, close } = await open()
   try {
-    const ofn = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\nSubClassOf(:A nope:B)\n)\n"
+    const ofn = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\nSubClassOf(:A nope:B)\nAnnotationAssertion(rdfs:label :A \"Apple\")\n)\n"
     await page.locator("#files-input").setInputFiles([{ name: "onto.ofn", mimeType: "text/plain", buffer: Buffer.from(ofn) }])
     await item(page, "onto.ofn").waitFor()
     assert.equal(await item(page, "onto.ofn").locator(".fi").textContent(), "OFN")
@@ -189,6 +189,9 @@ test("an .ofn file opens as OWL Functional syntax, coloured, with the server's e
     )
     const markers = await page.evaluate((u) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(u) }).map((m) => [m.code, m.startLineNumber, m.startColumn, m.message]), uri)
     assert.deepEqual(markers, [["ofn-syntax", 4, 15, "Undeclared prefix 'nope:'"]])
+    // The server's hover on the class: its label, read from the axioms.
+    await at(page, "Class(:A", 7, "editor.action.showHover")
+    await page.locator(".monaco-hover", { hasText: "Apple" }).waitFor()
     const formats = await page.evaluate(() => window.monaco.editor.getEditors()[0].getAction("editor.action.formatDocument").isSupported())
     assert.equal(formats, false)
     await settled(page)

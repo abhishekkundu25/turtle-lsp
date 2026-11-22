@@ -8,7 +8,7 @@
 //! | [`sparql`] | SPARQL documents: tokens, structure, checks, formatting | `ide`, [`analysis`], [`query`], [`shacl`] |
 //! | [`jsonld`] | JSON-LD 1.1 frontend producing the same parse as Turtle | [`analysis`] |
 //! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle | [`analysis`], [`imports`] |
-//! | `ofn` | OWL 2 Functional-Style Syntax frontend: the errors of a document, at their spans, and no triples yet | [`analysis`] |
+//! | `ofn` | OWL 2 Functional-Style Syntax frontend: the axioms mapped to RDF (the W3C mapping) into the same parse as Turtle, with the exact span of every IRI, and the errors | [`analysis`], [`imports`] |
 //! | [`analysis`] | One document's parse, positions and per-IRI indexes | [`features`], `ide`, [`server`] |
 //! | `workspace` | Open documents, indexed files and project prefixes | [`server`], `ide`, [`batch`], [`cli`], [`features`], `diagnose`, [`imports`], [`jsonld`] |
 //! | [`knowledge`] | What the workspace says about each IRI | [`features`] |
@@ -99,6 +99,7 @@
 //! use turtle_lsp::features::symbols::workspace_symbols as _; // tests
 //! use turtle_lsp::imports::Status as _; // tests
 //! use turtle_lsp::imports::diagnostics_with as _; // tests
+//! use turtle_lsp::imports::functional_to_ntriples as _; // tests
 //! use turtle_lsp::imports::parse_catalog as _; // tests
 //! use turtle_lsp::imports::rdf_xml_to_ntriples as _; // tests
 //! use turtle_lsp::imports::sniff as _; // tests

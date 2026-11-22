@@ -382,13 +382,14 @@ check("a .owl buffer keeps filetype xml, the client attaches and hover answers",
   vim.api.nvim_buf_delete(other, { force = true })
 end)
 
-check("a .ofn buffer gets filetype ofn and the server's errors; nothing is written in it", function()
+check("a .ofn buffer gets filetype ofn, the server's errors, hover and definition; nothing is written in it", function()
   local file = owl_dir .. "/onto.ofn"
   local text = {
     "Prefix(:=<http://example.org/o#>)",
     "Ontology(<http://example.org/o>",
     "Declaration(Class(:A))",
     "SubClassOf(:A nope:B)",
+    'AnnotationAssertion(rdfs:label :A "Apple")',
     ")",
   }
   vim.fn.writefile(text, file)
@@ -411,12 +412,18 @@ check("a .ofn buffer gets filetype ofn and the server's errors; nothing is writt
   local answer = res and res[c.id]
   local message = answer and answer.err and answer.err.message or vim.inspect(answer)
   assert(message:find("OWL Functional syntax document is not edited", 1, true), "rename in a .ofn: " .. message)
-  -- No hover yet: its content is not read.
+  -- Its axioms are read: the label in hover, the declaration as definition.
   local h = request(b, "textDocument/hover", {
     textDocument = vim.lsp.util.make_text_document_params(b),
-    position = pos_of(b, ":A))"),
+    position = pos_of(b, "Class(:"),
   })
-  assert(h == nil, "hover in a .ofn: " .. vim.inspect(h))
+  assert(h and h.contents.value:find("Apple", 1, true), "hover in a .ofn: " .. vim.inspect(h))
+  local def = request(b, "textDocument/definition", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, "rdfs:label :"),
+  })
+  def = def and (def.range and { def } or def) or {}
+  assert(#def == 1 and def[1].range.start.line == 2 and def[1].range.start.character == 18, "definition in a .ofn: " .. vim.inspect(def))
   vim.api.nvim_buf_delete(b, { force = true })
 end)
 

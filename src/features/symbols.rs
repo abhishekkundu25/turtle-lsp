@@ -78,8 +78,11 @@ pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
         | Syntax::OwlFunctional => FxHashSet::default(),
     };
     // A subject is named as written, except in RDF/XML, where its span is
-    // an XML tag or attribute: there its IRI names it. An OWL Functional
-    // parse has no statements yet; its IRI would name it too.
+    // an XML tag or attribute, and in OWL Functional syntax, whose axioms
+    // name a term many times: there its IRI names it, shortened by the
+    // document's prefixes. A Functional document's statement has a subject
+    // where it defines its IRI (its declaration), so each term is listed
+    // once.
     let name = |iri: &Iri, span: Span| match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
             written(text, span).to_string()

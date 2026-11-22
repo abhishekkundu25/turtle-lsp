@@ -493,6 +493,33 @@ test("a path too deep to read is an error on its shape; a short one validates", 
   }
 })
 
+test("an .ofn file's data is validated against the shapes: closed, in workspace diagnostics; open, on save, at its assertion's object", async () => {
+  const ofn = (designation) => `Prefix(sd:=<https://ontology.example.com/plant/core/>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Ontology(
+ClassAssertion(sd:Asset <https://data.example.com/plant/obj/pump-08>)
+AnnotationAssertion(rdfs:label <https://data.example.com/plant/obj/pump-08> "Pump 08")
+DataPropertyAssertion(sd:designation <https://data.example.com/plant/obj/pump-08> "${designation}")
+)
+`
+  const w = await session({ initializationOptions: { diagnostics: { workspace: true } } }, { "data/pump-08.ofn": ofn("P08") })
+  const file = path.join(w.dir, "data", "pump-08.ofn")
+  const uri = uriOf(file)
+  try {
+    const closed = shacl(await until(w.s, uri, (d) => shacl(d).length > 0, 10000))
+    assert.deepEqual(closed.map((d) => [d.code, d.message]), [["shacl-violation", MESSAGE]])
+    // On the assertion of the value, line 6.
+    assert.equal(closed[0].range.start.line, 5, JSON.stringify(closed))
+    // Open with its own language id; a fix on disk clears it.
+    w.s.open(uri, ofn("P08"), "ofn")
+    w.s.change(uri, ofn("=P08"))
+    save(w.s, uri, file, ofn("=P08"))
+    await until(w.s, uri, (d) => shacl(d).length === 0, 10000)
+  } finally {
+    await w.end()
+  }
+})
+
 test("an .owl file's data is validated against the shapes: closed, in workspace diagnostics; open as XML, on save, at its element's line", async () => {
   const owl = (designation) => `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"

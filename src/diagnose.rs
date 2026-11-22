@@ -13,8 +13,6 @@ use crate::imports::{self, Status};
 use crate::knowledge::Knowledge;
 use crate::settings::Settings;
 use crate::sparql::features as sparql_features;
-use crate::syntax::Syntax;
-use crate::syntax::sniff::Sniffed;
 use lsp_types::Diagnostic;
 use std::sync::Arc;
 
@@ -124,13 +122,7 @@ fn compose(
         out.retain(|d| !needs_index(d));
     }
     if let Doc::Rdf(a) = doc {
-        if a.parsed.syntax == Syntax::OwlFunctional {
-            if (inputs.imported)(&a.uri) {
-                out.push(unread_import());
-            }
-        } else {
-            soften_unsupported(&mut out, || (inputs.imported)(&a.uri));
-        }
+        soften_unsupported(&mut out, || (inputs.imported)(&a.uri));
         out.extend(imports::diagnostics_with(a, enc, |iri| {
             (inputs.import_status)(iri)
         }));
@@ -146,14 +138,13 @@ fn compose(
 }
 
 /// The code of a document in an OWL syntax that is not read (the RDF/XML
-/// frontend's).
+/// frontend's: OWL/XML and Manchester; OWL Functional syntax is read).
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
 /// An `unsupported-syntax` error becomes a warning unless `imported` says
 /// an import is read from the document: a copy of an ontology in OWL/XML
 /// or Manchester syntax beside its RDF/XML or Turtle breaks nothing until
-/// something imports it. (A document in OWL Functional syntax has its own
-/// diagnostics, and [`unread_import`] when something imports it.)
+/// something imports it.
 fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
     let code = lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into());
     let Some(d) = out.iter_mut().find(|d| d.code.as_ref() == Some(&code)) else {
@@ -161,20 +152,6 @@ fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
     };
     if !imported() {
         d.severity = Some(lsp_types::DiagnosticSeverity::WARNING);
-    }
-}
-
-/// The error of an OWL Functional document that an import is read from:
-/// its syntax is checked, but its axioms are not read, so the import
-/// lacks them. The same error a Functional text gave before it was parsed.
-fn unread_import() -> Diagnostic {
-    let unread = Sniffed::Functional.unread().unwrap_or_default();
-    Diagnostic {
-        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-        code: Some(lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into())),
-        source: Some(diagnostics::SOURCE.to_string()),
-        message: format!("The document is imported, and it {unread}"),
-        ..Default::default()
     }
 }
 
@@ -241,12 +218,16 @@ mod tests {
         assert_eq!(codes.last(), Some(&"turbowl/cax-dw"));
     }
 
+    /// An OWL Functional document that an import is read from is read: it
+    /// has its own diagnostics and no `unsupported-syntax`, imported or not.
     #[test]
-    fn an_imported_functional_document_is_an_unread_import() {
+    fn an_imported_functional_document_is_read() {
         let mut ws = Workspace::new(Vec::new(), Default::default());
         let uri = "file:///work/o.ofn";
-        ws.open_doc(uri.into(), "Ontology(<http://example.org/o>)\n".into(), 1);
+        let text = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\nSubClassOf(:A nope:B)\n)\n";
+        ws.open_doc(uri.into(), text.into(), 1);
         let a = ws.analysis(uri).unwrap();
+        assert!(!a.parsed.triples.is_empty());
         let k = &*ws.knowledge_mut();
         let settings = Settings::default();
         let alone = document(
@@ -255,21 +236,14 @@ mod tests {
             Encoding::Utf16,
             &DiagnosticInputs::new(&settings),
         );
-        assert!(alone.is_empty(), "{alone:?}");
         let imported = DiagnosticInputs {
             imported: &|u| u == uri,
             ..DiagnosticInputs::new(&settings)
         };
         let d = document(Doc::Rdf(&a), k, Encoding::Utf16, &imported);
-        assert_eq!(d.len(), 1, "{d:?}");
-        assert_eq!(code(&d[0]), UNSUPPORTED_SYNTAX);
+        assert_eq!(d, alone);
+        assert_eq!(d.iter().map(code).collect::<Vec<_>>(), ["ofn-syntax"]);
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::ERROR));
-        assert!(
-            d[0].message
-                .contains("whose axioms turtle-lsp does not read yet"),
-            "{}",
-            d[0].message
-        );
     }
 
     #[test]

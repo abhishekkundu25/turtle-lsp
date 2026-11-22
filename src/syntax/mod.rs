@@ -44,9 +44,9 @@ pub enum Syntax {
     /// splice.
     RdfXml,
     /// OWL 2 Functional-Style Syntax (`.ofn`, the `ofn` language id, or a
-    /// `.owl` text that starts so). Its frontend checks the text and gives
-    /// its errors, and no triples yet: the document is not read into the
-    /// workspace. Nothing edits it, as RDF/XML.
+    /// `.owl` text that starts so). Its frontend checks the text and maps
+    /// its axioms to RDF triples by the W3C mapping. Nothing edits it, as
+    /// RDF/XML: it has no tokens, no formatting and no statement splice.
     OwlFunctional,
 }
 
@@ -176,6 +176,11 @@ impl Span {
 pub enum Role {
     /// Subject of a top-level statement: this is where a resource is described.
     Subject,
+    /// The subject of a statement that says more about a resource the
+    /// document introduces elsewhere: an OWL Functional axiom about a term
+    /// whose definition (its `Declaration`) is another axiom. Neither a
+    /// definition nor a use of the term.
+    About,
     Predicate,
     Object,
     Datatype,
@@ -191,6 +196,12 @@ impl Role {
     /// (the block holds the graph's triples). Definition goes here.
     pub(crate) fn is_definition(self) -> bool {
         matches!(self, Role::Subject | Role::Graph)
+    }
+
+    /// Where a statement says something about the resource, a definition
+    /// or not: not a use of it.
+    pub(crate) fn is_subject(self) -> bool {
+        matches!(self, Role::Subject | Role::About)
     }
 }
 

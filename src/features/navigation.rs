@@ -25,8 +25,8 @@ pub(crate) enum Target {
 
 pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     // An XML namespace prefix is no Turtle prefix: in RDF/XML every
-    // reference is its IRI, whatever part of it the cursor is on. An OWL
-    // Functional document has no references yet.
+    // reference is its IRI, whatever part of it the cursor is on. So in an
+    // OWL Functional document, which records no prefix uses.
     match a.parsed.syntax {
         Syntax::RdfXml | Syntax::OwlFunctional => {
             let r = a.ref_at(offset)?;
