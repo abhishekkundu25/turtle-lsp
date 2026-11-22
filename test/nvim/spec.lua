@@ -427,13 +427,13 @@ check("a .ofn buffer gets filetype ofn, the server's errors, hover and definitio
   vim.api.nvim_buf_delete(b, { force = true })
 end)
 
-check("a .ofn and a Functional .owl read no modelines: ' ex:' in their last lines raises no E518", function()
+check("a .ofn and a Functional .owl or .rdf read no modelines: ' ex:' in their last lines raises no E518", function()
   local text = {
     "Prefix(ex:=<http://example.org/>)",
     "Ontology(<http://example.org/o>",
     "SubClassOf(ex:Foo ex:Bar))",
   }
-  for _, name in ipairs({ "/modeline.ofn", "/modeline.owl" }) do
+  for _, name in ipairs({ "/modeline.ofn", "/modeline.owl", "/modeline.rdf" }) do
     local file = owl_dir .. name
     vim.fn.writefile(text, file)
     local ok, b = pcall(open, file)

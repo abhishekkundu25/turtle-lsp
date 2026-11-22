@@ -726,8 +726,14 @@ fn an_item_with_an_error_gives_nothing() {
         "ex:",
         "<http://example.org/o> ex:",
         "<http://example.org/o> <v>",
+        // An IRI not finished: the lexer ends it at the line end.
+        "<http://example.org/o\n",
+        "<http://example.org/o><http://example.org/v\n",
+        "<http://example.org/o> <http://example.org/v\n",
     ] {
-        let text = format!("{HEAD}Ontology({header} Declaration(Class(:A)) SubClassOf(:A :B))");
+        let text = format!(
+            "{HEAD}Ontology({header} Import(ex:i) Declaration(Class(:A)) SubClassOf(:A :B))"
+        );
         let want = ["Declaration(Class(:A))", "SubClassOf(:A :B)"];
         assert_eq!(mapped(&text), want, "{header}");
     }

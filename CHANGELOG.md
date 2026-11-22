@@ -40,7 +40,7 @@
   differ. `check` reports the errors with the usual exit codes, and runs
   the lints RDF/XML gets. VS Code gives `.ofn` the language "OWL Functional
   Syntax" with highlighting, Neovim the file type `ofn` (with no
-  modelines in `.ofn` and `.owl` files, where `ex:` reads as one), and the
+  modelines in `.ofn`, `.owl` and `.rdf` files, where `ex:` reads as one), and the
   browser editor its own colouring; each gets these features and offers no
   formatting, rename, completion or code actions that edit the file there
   (an editor with static capabilities, as Neovim, gets the "Fetch and

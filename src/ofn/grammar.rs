@@ -693,10 +693,22 @@ impl<'a> Parser<'a> {
         let start = self.tok.start;
         self.bump();
         let opened = self.expect(Kind::LParen, "'(' after 'Ontology'").is_ok();
-        if opened && token_in(self.tok.kind, Cat::Iri) {
-            self.doc.ontology_iri = self.header_iri();
-            if token_in(self.tok.kind, Cat::Iri) {
-                self.doc.version_iri = self.header_iri();
+        if opened {
+            let mut slots = 2;
+            while slots > 0 && token_in(self.tok.kind, Cat::Iri) {
+                let node = self.header_iri();
+                if slots == 2 {
+                    self.doc.ontology_iri = node;
+                } else {
+                    self.doc.version_iri = node;
+                }
+                slots -= 1;
+            }
+            // An IRI not finished (`<…` to the line end) in a slot still
+            // open is the header's IRI being typed: the header is broken,
+            // not an anonymous ontology, or one with no version IRI.
+            if slots > 0 && self.tok.kind == Kind::Bad && self.text_of(self.tok).starts_with('<') {
+                self.doc.header_broken = true;
             }
         }
         let level = self.parens;

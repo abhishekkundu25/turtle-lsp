@@ -721,7 +721,7 @@ also brings:
   `turtle`, `.nq` as `nquads`, `.ofn` as `ofn` and `.jsonld` as `jsonld`, so plain `.json`
   buffers stay unattached (`.trig`, `.nt`, `.rq` and `.sparql` it already
   knows; `.ru` stays Ruby);
-- no modelines in Turtle, TriG, SPARQL, `.ofn` and `.owl` files:
+- no modelines in Turtle, TriG, SPARQL, `.ofn`, `.owl` and `.rdf` files:
   `@prefix ex: <...>` or `SubClassOf(ex:A ex:B)` looks like one (" ex:")
   and would raise E518 on open.
 
