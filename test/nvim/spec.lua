@@ -427,6 +427,23 @@ check("a .ofn buffer gets filetype ofn, the server's errors, hover and definitio
   vim.api.nvim_buf_delete(b, { force = true })
 end)
 
+check("a .ofn and a Functional .owl read no modelines: ' ex:' in their last lines raises no E518", function()
+  local text = {
+    "Prefix(ex:=<http://example.org/>)",
+    "Ontology(<http://example.org/o>",
+    "SubClassOf(ex:Foo ex:Bar))",
+  }
+  for _, name in ipairs({ "/modeline.ofn", "/modeline.owl" }) do
+    local file = owl_dir .. name
+    vim.fn.writefile(text, file)
+    local ok, b = pcall(open, file)
+    assert(ok, name .. ": " .. tostring(b))
+    assert(vim.bo[b].modeline == false, name .. ": modeline on")
+    wait_diagnostics(b)
+    vim.api.nvim_buf_delete(b, { force = true })
+  end
+end)
+
 check("a Turtle buffer gets static formatting and rename with prepareRename", function()
   local ttl, tc = open(people)
   assert(tc:supports_method("textDocument/formatting", ttl), "no formatting in people.ttl")

@@ -261,7 +261,7 @@ test("with the setting on, an import is fetched once (following redirects) and t
   }
   const fetched = hits.slice(before)
   assert.deepEqual(fetched.map((h) => h.url), ["/old", "/onto.ttl"])
-  assert.match(fetched[0].accept, /^text\/turtle, application\/trig;q=0\.9, .*application\/ld\+json;q=0\.8, application\/rdf\+xml;q=0\.8$/)
+  assert.match(fetched[0].accept, /^text\/turtle, application\/trig;q=0\.9, .*application\/ld\+json;q=0\.8, application\/rdf\+xml;q=0\.8, text\/owl-functional;q=0\.7$/)
   assert.equal(fs.readdirSync(path.join(w.cache, "imports")).length, 1)
 
   // A new session, with or without the network: the cached copy is used.

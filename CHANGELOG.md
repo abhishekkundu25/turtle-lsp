@@ -15,18 +15,22 @@
   and reasoning read its triples; `query` with `CONSTRUCT` prints them.
   Its imports resolve like any other (workspace, catalog, `file:` IRI,
   cache or web, whatever content type the server sends;
-  `text/owl-functional` is the registered one), and a fetched one is cached
-  as N-Triples. turtle-lsp's own parser follows the grammar of the OWL 2
+  `text/owl-functional` is the registered one, and web requests ask for it
+  last), and a fetched one is cached as N-Triples. A Functional file's own
+  `Import`s are followed, in the editor as in `check`. turtle-lsp's own parser follows the grammar of the OWL 2
   specification and reports each error at its exact span with the code
   `ofn-syntax`: syntax errors that name what was expected, an undeclared
   prefix, a prefix name with a `:` before its end (`Prefix(a:b:=…)`), a
   prefix declared twice with two IRIs, an IRI that is not
   absolute, a language tag that is not BCP 47, too few operands
   (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a cardinality
-  that is not a non-negative integer, a `HasKey` with no property, and
-  `Import` or an ontology annotation after the axioms. The parse goes on at
-  the next axiom after an error, and an axiom with an error gives no
-  triples. It reads what OWL API, ROBOT and Protégé write (the standard
+  that is not a non-negative integer, a `HasKey` with no property, an
+  `rdf:PlainLiteral` that is not `"text@tag"` or `"text@"`, and `Import` or
+  an ontology annotation after the axioms. The parse goes on at the next
+  axiom after an error, and an axiom with an error gives no triples. The
+  mapping stops, with an error, past 16 bytes of IRIs, 2 triples or 16
+  bytes of literals per byte of text, so an annotated n-ary axiom, whose
+  annotations repeat for each pair, stays in proportion to its text. It reads what OWL API, ROBOT and Protégé write (the standard
   prefixes declared again, `#` comments, SWRL `DLSafeRule`): the OBO edit
   files of CL, UO, RO and HP parse with no error and give ROBOT's graph,
   but for what OWL API writes otherwise (the parse and mapping of
@@ -35,9 +39,12 @@
   and the 57 with an RDF/XML text map to its graph but for 6 whose texts
   differ. `check` reports the errors with the usual exit codes, and runs
   the lints RDF/XML gets. VS Code gives `.ofn` the language "OWL Functional
-  Syntax" with highlighting, Neovim the file type `ofn`, and the browser
-  editor its own colouring; each gets these features and offers no
-  formatting, rename, completion or code actions there.
+  Syntax" with highlighting, Neovim the file type `ofn` (with no
+  modelines in `.ofn` and `.owl` files, where `ex:` reads as one), and the
+  browser editor its own colouring; each gets these features and offers no
+  formatting, rename, completion or code actions that edit the file there
+  (an editor with static capabilities, as Neovim, gets the "Fetch and
+  cache" quick fix on an unresolved web import).
 
 - **RDF/XML files (`.owl`, `.rdf`) are workspace files**, read-only. Their
   content decides the syntax, so Protégé's default `.owl` is read as RDF/XML

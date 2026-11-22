@@ -585,15 +585,18 @@ as Functional syntax, read-only, as it reads RDF/XML.
   absolute IRI, a language tag that is not BCP 47, a string with an escape
   other than `\"` and `\\`, too few operands (`ObjectIntersectionOf` with
   one class expression, an empty `ObjectOneOf`), a cardinality that is not
-  a non-negative integer, a `HasKey` with no property, and `Import` or an
-  ontology annotation after the axioms.
+  a non-negative integer, a `HasKey` with no property, an
+  `rdf:PlainLiteral` that is not `"text@tag"` or `"text@"`, and `Import` or
+  an ontology annotation after the axioms.
 - **Imports**: an `owl:imports` of a Functional ontology resolves as any
   other (in the workspace, through a catalog, a `file:` IRI, the cache or
-  the web), and its `Import`s are followed. A fetched one is cached as
-  N-Triples. A Functional text is read as such whatever its name or content
-  type says (servers send `.owl` files as `application/rdf+xml` or
-  `text/plain`; the registered type is `text/owl-functional`). One with an
-  error loads in part, with an `import-truncated` warning.
+  the web), and a Functional file's own `Import`s are followed, in the
+  editor and in `check`. A fetched one is cached as N-Triples. A
+  Functional text is read as such whatever its name or content type says
+  (servers send `.owl` files as `application/rdf+xml` or `text/plain`; the
+  registered type is `text/owl-functional`, which a web request names last
+  in its `Accept` header). One with an error loads in part, with an
+  `import-truncated` warning.
 - **What OWL API writes**: `Prefix(owl:=…)` and the other standard
   prefixes, `#` comment lines, and SWRL rules (`DLSafeRule`) are read
   without error. The OBO edit files of CL, UO, RO and HP parse with no
@@ -601,8 +604,11 @@ as Functional syntax, read-only, as it reads RDF/XML.
   otherwise (`tests/ofn_oracle.rs`): the parse and mapping of
   `hp-edit.owl` (31 MB, 435,917 triples) take about 60 ms, and
   `turtle-lsp check` on it about 0.1 s and 300 MB.
-- **Nothing writes it**: no formatting, rename, completion, quick fixes or
-  `check --fix`; `format .` passes over it, and a named `format onto.ofn`
+- **Nothing writes it**: no formatting, rename, completion, quick fixes
+  that edit the file or `check --fix`. An editor with static capabilities
+  (Neovim) gets the quick fix "Fetch `<IRI>` and cache it" on an
+  unresolved web import, which edits nothing; VS Code asks for no code
+  actions in it. `format .` passes over it, and a named `format onto.ofn`
   says "not formatted: OWL Functional syntax". A rename of a term a
   Functional file uses is refused, naming the file.
 - **Editors**: VS Code gives `.ofn` files the language "OWL Functional
@@ -611,7 +617,8 @@ as Functional syntax, read-only, as it reads RDF/XML.
   Functional `.owl` keeps the editor's XML language.
 - **Limits**: constructs nest at most 256 deep (deeper is an error), a
   document reports at most 10,000 errors, and the mapping stops (with an
-  error) past 16 bytes of IRIs or 2 triples per byte of text.
+  error) past 16 bytes of IRIs, 2 triples or 16 bytes of literals per byte
+  of text (an annotated n-ary axiom repeats its annotations for each pair).
 
 The parser and the mapping are turtle-lsp's own; their departures from the
 W3C grammar and mapping are listed in `src/ofn/mod.rs` and
@@ -714,8 +721,9 @@ also brings:
   `turtle`, `.nq` as `nquads`, `.ofn` as `ofn` and `.jsonld` as `jsonld`, so plain `.json`
   buffers stay unattached (`.trig`, `.nt`, `.rq` and `.sparql` it already
   knows; `.ru` stays Ruby);
-- no modelines in Turtle, TriG and SPARQL files: `@prefix ex: <...>` looks
-  like one (" ex:") and would raise E518 on open.
+- no modelines in Turtle, TriG, SPARQL, `.ofn` and `.owl` files:
+  `@prefix ex: <...>` or `SubClassOf(ex:A ex:B)` looks like one (" ex:")
+  and would raise E518 on open.
 
 To change a setting, extend the config: for example
 `vim.lsp.config("turtle_lsp", { settings = { turtle = { format = { lineWidth = 80 } } } })`
@@ -801,11 +809,11 @@ vim.lsp.config("turtle_lsp", {
 })
 vim.lsp.enable("turtle_lsp")
 
--- "@prefix ex: <...>" and "PREFIX ex: <...>" look like a Vim modeline
--- (" ex:"), which raises E518 on open. Turn modelines off for Turtle, TriG
--- and SPARQL files.
+-- "@prefix ex: <...>", "PREFIX ex: <...>" and "SubClassOf(ex:A ex:B)" look
+-- like a Vim modeline (" ex:"), which raises E518 on open. Turn modelines
+-- off for Turtle, TriG, SPARQL, .ofn and .owl files.
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql" },
+  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql", "*.ofn", "*.owl" },
   callback = function() vim.opt_local.modeline = false end,
 })
 ```

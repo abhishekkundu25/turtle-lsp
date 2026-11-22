@@ -6,10 +6,12 @@
 vim.filetype.add({ extension = { ttl = "turtle", turtle = "turtle", nq = "nquads", jsonld = "jsonld", ofn = "ofn" } })
 
 -- "@prefix ex: <...>" and "PREFIX ex: <...>" look like a modeline (" ex:")
--- and raise E518 on open, so these files read no modelines.
+-- and raise E518 on open, so these files read no modelines. So does
+-- "SubClassOf(ex:A ex:B)" in OWL Functional syntax: a .ofn, or a .owl,
+-- whose syntax its text gives once read.
 vim.api.nvim_create_autocmd("BufReadPre", {
   group = vim.api.nvim_create_augroup("turtle_lsp_no_modeline", { clear = true }),
-  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql" },
+  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql", "*.ofn", "*.owl" },
   callback = function()
     vim.opt_local.modeline = false
   end,

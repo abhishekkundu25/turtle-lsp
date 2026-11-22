@@ -1506,3 +1506,23 @@ fn large(bytes: usize) -> String {
     out.push_str(")\n");
     out
 }
+
+/// An error the lexer raises right after an axiom's `)` (its token is read
+/// ahead) is after the axiom: the axiom stays whole.
+#[test]
+fn an_error_just_after_an_axiom_leaves_it_whole() {
+    for after in ["^", "@", "@12", "_:-x", "<urn:open", "\"open"] {
+        let text =
+            format!("Ontology(Declaration(Class(<urn:A>)){after} Declaration(Class(<urn:B>)))");
+        let d = doc(&text);
+        let first = d.top().next().unwrap();
+        assert_eq!(
+            at(&text, d.nodes[first].span),
+            "Declaration(Class(<urn:A>))"
+        );
+        assert!(
+            !d.broken.contains(&(first as u32)),
+            "{after}: the axiom before it is broken"
+        );
+    }
+}

@@ -816,7 +816,7 @@ impl<'a> Parser<'a> {
         let inside = self.errors.restart();
         self.errors.resume(inside.min(outer));
         let end = self.doc.nodes.get(i).map_or(0, |n| n.span.end);
-        let bad = r.is_err() || inside <= end || self.tainted;
+        let bad = r.is_err() || inside < end || self.tainted;
         if bad && i < self.doc.nodes.len() {
             self.doc.broken.push(i as u32);
         }

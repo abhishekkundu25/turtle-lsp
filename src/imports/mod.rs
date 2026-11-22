@@ -395,11 +395,20 @@ impl Imports {
             return None;
         }
         self.seen = seen;
+        // The documents that write the vocabulary, and every OWL Functional
+        // document: its `Ontology(…)` header and `Import(…)` are keywords,
+        // so no reference names `owl:Ontology` or `owl:imports` there.
+        let functional = k
+            .docs()
+            .filter(|(_, _, a)| a.parsed.syntax == crate::syntax::Syntax::OwlFunctional)
+            .map(|(id, src, _)| (id, src));
         let mut ids: Vec<_> = [OWL_IMPORTS, OWL_ONTOLOGY, OWL_VERSION_IRI]
             .iter()
             .flat_map(|p| k.docs_referencing(*p))
-            .filter(|(_, src, _)| *src != Source::External)
-            .map(|(id, _, _)| id)
+            .map(|(id, src, _)| (id, src))
+            .chain(functional)
+            .filter(|(_, src)| *src != Source::External)
+            .map(|(id, _)| id)
             .collect();
         ids.sort_unstable();
         ids.dedup();
@@ -1071,5 +1080,28 @@ mod tests {
         let done = imports.sync(&k, &[], false).unwrap();
         assert!(imports.apply(done, &mut k));
         assert!(imports.status("http://ex.com/other").is_none());
+    }
+
+    /// A Functional document writes its header and imports with keywords,
+    /// not the IRIs `owl:Ontology`, `owl:imports` and `owl:versionIRI`, so
+    /// no reference names them: its ontology and imports are found all the
+    /// same, and a Turtle import of its ontology is local.
+    #[test]
+    fn functional_ontologies_and_imports_are_found() {
+        let mut k = Knowledge::default();
+        let none = Arc::new(PrefixMap::default());
+        let lib = "Ontology(<http://ex.com/lib> <http://ex.com/lib/1.0>\nImport(<http://ex.com/absent>)\nDeclaration(Class(<http://ex.com/A>))\n)\n";
+        let app = format!("<http://ex.com/app> <{OWL_IMPORTS}> <http://ex.com/lib> .\n");
+        for (uri, text) in [("file:///lib.ofn", lib), ("file:///app.ttl", &app)] {
+            let a = Analysis::new(uri.into(), text, none.clone(), false);
+            assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+            k.set(uri, Source::Disk, Arc::new(a));
+        }
+        let mut imports = Imports::new();
+        imports.cache = None;
+        assert!(imports.sync(&k, &[], false).is_none());
+        let req = imports.last.clone().unwrap();
+        assert_eq!(req.imports, ["http://ex.com/absent", "http://ex.com/lib"]);
+        assert_eq!(req.local, ["http://ex.com/lib", "http://ex.com/lib/1.0"]);
     }
 }

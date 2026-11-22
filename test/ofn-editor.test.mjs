@@ -7,7 +7,8 @@
 // tokens or inlay hints. Nothing writes it: a client that opts in to the
 // dynamic registrations gets none of the writing features for it, a client
 // that does not gets empty answers, and a rename of a term it uses is
-// refused.
+// refused. Its header and its `Import`s are found as Turtle ones are: its
+// imports load, and its ontology is one a Turtle file imports.
 import { test, describe, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -177,5 +178,111 @@ describe("a closed OWL Functional file", () => {
       const d = await s.diagnosticsFor(uri, 15000)
       assert.deepEqual(shown(d), ERRORS, uri)
     }
+  })
+})
+
+// A Functional document writes its header and imports with the keywords
+// `Ontology` and `Import`, never the IRIs owl:Ontology or owl:imports: its
+// imports are followed all the same, and its ontology is one a Turtle file
+// may import.
+describe("the imports of OWL Functional documents", () => {
+  const CATALOG = `<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="http://example.org/dep" uri="node_modules/dep.ofn"/>
+  <uri name="http://example.org/tdep" uri="node_modules/tdep.ttl"/>
+  <uri name="http://example.org/later" uri="later.ofn"/>
+</catalog>
+`
+  // In a folder the index skips: only the imports read them.
+  const DEP = `Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Ontology(<http://example.org/dep>
+Declaration(Class(<http://example.org/One>))
+AnnotationAssertion(rdfs:label <http://example.org/One> "Thing one")
+)
+`
+  const TDEP = `@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<http://example.org/Two> rdfs:label "Thing two" .
+`
+  const APP = `Ontology(<http://example.org/app>
+Import(<http://example.org/dep>)
+Import(<http://example.org/tdep>)
+Import(<http://example.org/absent-a>)
+ClassAssertion(<http://example.org/One> <http://example.org/x>)
+ClassAssertion(<http://example.org/Two> <http://example.org/x>)
+)
+`
+  const LIB = `Ontology(<http://example.org/lib>
+Declaration(Class(<http://example.org/Three>))
+)
+`
+  const USER = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<http://example.org/user> a owl:Ontology ;
+    owl:imports <http://example.org/lib>, <http://example.org/later>, <http://example.org/absent-b> .
+`
+  const LATER = `Ontology(<http://example.org/later>
+Declaration(Class(<http://example.org/Four>))
+)
+`
+  let dir, s
+  const uri = (name) => uriOf(path.join(dir, name))
+  const unresolved = (d) => d.filter((x) => x.code === "unresolved-import").map((x) => x.message.match(/<([^>]*)>/)[1])
+  async function diagnosticsUntil(file, pred, ms = 10000) {
+    const end = Date.now() + ms
+    let last
+    while (Date.now() < end) {
+      last = await s.diagnosticsFor(uri(file), ms)
+      if (pred(last)) return last
+      await sleep(50)
+    }
+    assert.fail(`diagnostics never matched; last: ${JSON.stringify(last)}`)
+  }
+  async function hoverUntil(file, text, needle, want, ms = 10000) {
+    const end = Date.now() + ms
+    let last = ""
+    while (Date.now() < end) {
+      const h = await s.request("textDocument/hover", { textDocument: { uri: uri(file) }, position: positionOf(text, needle, 1) })
+      last = h?.contents?.value ?? ""
+      if (last.includes(want)) return last
+      await sleep(50)
+    }
+    assert.fail(`hover never showed ${JSON.stringify(want)}; last: ${last}`)
+  }
+  before(async () => {
+    dir = tempDir("turtle-ofn-imports-")
+    fs.mkdirSync(path.join(dir, "node_modules"))
+    fs.writeFileSync(path.join(dir, "catalog-v001.xml"), CATALOG)
+    fs.writeFileSync(path.join(dir, "node_modules", "dep.ofn"), DEP)
+    fs.writeFileSync(path.join(dir, "node_modules", "tdep.ttl"), TDEP)
+    fs.writeFileSync(path.join(dir, "app.ofn"), APP)
+    fs.writeFileSync(path.join(dir, "lib.ofn"), LIB)
+    fs.writeFileSync(path.join(dir, "user.ttl"), USER)
+    s = await startServer({ cwd: dir, rootUri: uriOf(dir), capabilities: DYNAMIC })
+    await s.request("workspace/symbol", { query: "" })
+  })
+  after(async () => {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("a Functional file's imports, Functional and Turtle, are loaded: hover and definition read them, and only the absent one is noted", async () => {
+    s.open(uri("app.ofn"), APP, "ofn")
+    const d = await diagnosticsUntil("app.ofn", (d) => unresolved(d).length > 0)
+    assert.deepEqual(unresolved(d), ["http://example.org/absent-a"])
+    await hoverUntil("app.ofn", APP, "<http://example.org/One>", "Thing one")
+    await hoverUntil("app.ofn", APP, "<http://example.org/Two>", "Thing two")
+    const def = await s.request("textDocument/definition", { textDocument: { uri: uri("app.ofn") }, position: positionOf(APP, "<http://example.org/One>", 1) })
+    assert.equal(def.length, 1, JSON.stringify(def))
+    assert.match(def[0].uri, /\/node_modules\/dep\.ofn$/)
+    assert.deepEqual(def[0].range.start, { line: 2, character: 18 })
+  })
+
+  test("a Turtle import of a workspace Functional ontology is resolved, and so is one whose catalog-mapped .ofn is created later", async () => {
+    s.open(uri("user.ttl"), USER)
+    const d = await diagnosticsUntil("user.ttl", (d) => unresolved(d).length > 0)
+    assert.deepEqual(unresolved(d), ["http://example.org/later", "http://example.org/absent-b"])
+    fs.writeFileSync(path.join(dir, "later.ofn"), LATER)
+    s.notify("workspace/didChangeWatchedFiles", { changes: [{ uri: uri("later.ofn"), type: 1 }] })
+    const after = await diagnosticsUntil("user.ttl", (d) => !unresolved(d).includes("http://example.org/later"))
+    assert.deepEqual(unresolved(after), ["http://example.org/absent-b"])
   })
 })

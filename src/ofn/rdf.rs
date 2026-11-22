@@ -29,6 +29,18 @@
 //! - a literal `"abc@en"^^rdf:PlainLiteral` is `"abc"@en` and
 //!   `"abc@"^^rdf:PlainLiteral` is `"abc"` (Table 1), the tag split at the
 //!   last `@`; a language tag is lowercased, as [`Node::Literal`] keeps it.
+//!   Any other `rdf:PlainLiteral` (no `@`, or a tag that is not a BCP 47
+//!   language tag) is an error at its quoted string, and its item gives
+//!   nothing: Table 1 has no row for it, and the datatype's definition
+//!   leaves it out of the lexical space ("An rdf:PlainLiteral lexical form
+//!   is a string of the form "abc@langTag" where "abc" is an arbitrary
+//!   (possibly empty) string, and "langTag" is either the empty string or
+//!   a (not necessarily lowercase) language tag", rdf:PlainLiteral, W3C
+//!   Recommendation 11 December 2012, section 3), where Structural
+//!   Specification section 5.7 needs it ("The lexical form of each literal
+//!   occurring in an OWL 2 DL ontology MUST belong to the lexical space of
+//!   the literal's datatype"). Mapped, `"Bonn"` would become a valid
+//!   `xsd:string` and `"Bonn@ x"` a literal with the tag ` x`;
 //!
 //! Departures (constructs the W3C mapping does not cover):
 //! - SWRL rules (`DLSafeRule`), which the grammar takes as OWL API writes
@@ -59,11 +71,13 @@
 //!
 //! Limits, so the triples stay in proportion to the text: the IRIs one
 //! parse makes total at most [`IRI_BYTES_PER_BYTE`] bytes per byte of text
-//! (a long prefix with many short local names), and the triples number at
-//! most [`TRIPLES_PER_BYTE`] per byte (the pairs of 2.3.2 repeat the
+//! (a long prefix with many short local names), the triples number at
+//! most [`TRIPLES_PER_BYTE`] per byte, and their literals total at most
+//! [`LITERAL_BYTES_PER_BYTE`] bytes per byte (the pairs of 2.3.2 repeat the
 //! annotations, so an annotated `SameIndividual` grows with the square of
-//! its text), each plus a floor. Past a limit, one error says so, and the
-//! item it is met in and every item after it give nothing.
+//! its text, in triples and in the bytes of each triple's own copy of an
+//! annotation's literal), each plus a floor. Past a limit, one error says
+//! so, and the item it is met in and every item after it give nothing.
 //!
 //! What the parse holds:
 //! - a [`Triple`] per triple: `p_span` at the IRI that gives the predicate
@@ -113,6 +127,12 @@ const MIN_IRI_BYTES: usize = 1 << 20;
 /// [`MIN_TRIPLES`].
 pub(crate) const TRIPLES_PER_BYTE: usize = 2;
 const MIN_TRIPLES: usize = 1 << 20;
+
+/// The literals of the triples of a parse total at most this many bytes
+/// per byte of text, plus [`MIN_LITERAL_BYTES`]: each triple owns its
+/// literal, and the pairs of section 2.3.2 repeat the annotations.
+pub(crate) const LITERAL_BYTES_PER_BYTE: usize = 16;
+pub(super) const MIN_LITERAL_BYTES: usize = 1 << 24;
 
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
 const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
@@ -245,15 +265,14 @@ pub(crate) fn map(text: &str, doc: Document, base: Option<&str>) -> Parsed {
         refs,
         statements,
         limit,
+        mut invalid,
         ..
     } = m;
-    let mut errors = doc.errors;
-    if let Some(e) = limit
-        && errors.len() < MAX_ERRORS
-    {
-        let at = errors.partition_point(|x| x.span.start <= e.span.start);
-        errors.insert(at, e);
-    }
+    let at =
+        invalid.partition_point(|x| limit.as_ref().is_none_or(|e| x.span.start <= e.span.start));
+    invalid.splice(at..at, limit);
+    invalid.truncate(MAX_ERRORS.saturating_sub(doc.errors.len()));
+    let errors = merge(doc.errors, invalid);
     Parsed {
         syntax: Syntax::OwlFunctional,
         prefixes: doc.prefixes,
@@ -264,6 +283,24 @@ pub(crate) fn map(text: &str, doc: Document, base: Option<&str>) -> Parsed {
         errors,
         ..Parsed::default()
     }
+}
+
+/// The errors `a` and `b`, each sorted by start, as one sorted list; of
+/// two at one start, `a`'s first.
+fn merge(a: Vec<SyntaxError>, b: Vec<SyntaxError>) -> Vec<SyntaxError> {
+    if b.is_empty() {
+        return a;
+    }
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let mut b = b.into_iter().peekable();
+    for e in a {
+        while let Some(x) = b.next_if(|x| x.span.start < e.span.start) {
+            out.push(x);
+        }
+        out.push(e);
+    }
+    out.extend(b);
+    out
 }
 
 /// A prefix name's binding, as the grammar keeps it.
@@ -312,8 +349,14 @@ struct Mapper<'a> {
     iri_bytes: usize,
     iri_budget: usize,
     triple_budget: usize,
+    /// The bytes of the literals of the triples so far.
+    literal_bytes: usize,
+    literal_budget: usize,
     /// The first limit met, reported once.
     limit: Option<SyntaxError>,
+    /// The `rdf:PlainLiteral`s outside its lexical space, one per item, in
+    /// text order.
+    invalid: Vec<SyntaxError>,
     blanks: FxHashMap<&'a str, BlankId>,
     next_blank: u32,
     triples: Vec<Triple>,
@@ -344,7 +387,10 @@ impl<'a> Mapper<'a> {
             iri_bytes: 0,
             iri_budget: text.len().saturating_mul(IRI_BYTES_PER_BYTE) + MIN_IRI_BYTES,
             triple_budget: text.len().saturating_mul(TRIPLES_PER_BYTE) + MIN_TRIPLES,
+            literal_bytes: 0,
+            literal_budget: text.len().saturating_mul(LITERAL_BYTES_PER_BYTE) + MIN_LITERAL_BYTES,
             limit: None,
+            invalid: Vec::new(),
             blanks: FxHashMap::default(),
             next_blank: 0,
             triples: Vec::new(),
@@ -534,26 +580,14 @@ impl<'a> Mapper<'a> {
     /// `"abc"` or `"abc"@tag`, any other its own literal).
     fn literal(&mut self, i: usize, string_end: u32) -> M<Node> {
         let n = self.doc.nodes[i];
-        let raw = &self.text[n.span.start as usize + 1..string_end as usize - 1];
-        let value: Box<str> = if raw.contains('\\') {
-            // The lexer let through `\"` and `\\` only.
-            let mut out = String::with_capacity(raw.len());
-            let mut chars = raw.chars();
-            while let Some(c) = chars.next() {
-                match c {
-                    '\\' => out.extend(chars.next()),
-                    c => out.push(c),
-                }
-            }
-            out.into()
-        } else {
-            raw.into()
-        };
+        let value: Box<str> = self.lexical(i, string_end).into();
         let v = self.v;
         if n.next as usize > i + 1 {
             let datatype = self.iri(i + 1)?;
             self.roles.insert(i as u32 + 1, Role::Datatype);
             if datatype == v.plain_literal {
+                // Its `@` was checked before the item was mapped
+                // ([`Mapper::invalid_literal`]).
                 let (lexical, tag) = value.rsplit_once('@').unwrap_or((&value, ""));
                 return Ok(lang_literal(v, lexical.into(), tag));
             }
@@ -574,6 +608,57 @@ impl<'a> Mapper<'a> {
                 dir: None,
             }),
         }
+    }
+
+    /// The lexical form of the literal at node `i`, its escapes read.
+    fn lexical(&self, i: usize, string_end: u32) -> std::borrow::Cow<'a, str> {
+        let start = self.doc.nodes[i].span.start as usize + 1;
+        let raw = &self.text[start..string_end as usize - 1];
+        if !raw.contains('\\') {
+            return raw.into();
+        }
+        // The lexer let through `\"` and `\\` only.
+        let mut out = String::with_capacity(raw.len());
+        let mut chars = raw.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => out.extend(chars.next()),
+                c => out.push(c),
+            }
+        }
+        out.into()
+    }
+
+    /// The error of the first `rdf:PlainLiteral` in item `item` that is not
+    /// of the form `"abc@langTag"`, at its quoted string (see the module
+    /// doc). Checked before the item is mapped, so an item with one gives
+    /// nothing and changes nothing.
+    fn invalid_literal(&mut self, item: usize) -> M<Option<SyntaxError>> {
+        let end = self.doc.nodes[item].next as usize;
+        for j in item..end {
+            let n = self.doc.nodes[j];
+            let NodeKind::Literal { string_end } = n.kind else {
+                continue;
+            };
+            if n.next as usize <= j + 1 || self.iri(j + 1)? != self.v.plain_literal {
+                continue;
+            }
+            let value = self.lexical(j, string_end);
+            let message = match value.rsplit_once('@') {
+                None => "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here".to_string(),
+                Some((_, "")) => continue,
+                Some((_, tag)) => match oxilangtag::LanguageTag::parse(tag) {
+                    Ok(_) => continue,
+                    Err(e) => format!(
+                        "Invalid language tag '{}' in an rdf:PlainLiteral: {e}",
+                        super::shown(tag)
+                    ),
+                },
+            };
+            let span = Span::new(n.span.start, string_end);
+            return Ok(Some(SyntaxError::new(span, message, Severity::Error, CODE)));
+        }
+        Ok(None)
     }
 
     /// A class expression, property expression, data range or SWRL
@@ -782,6 +867,17 @@ impl<'a> Mapper<'a> {
                 ),
             );
         }
+        if let Node::Literal { value, .. } = &o {
+            self.literal_bytes += value.len();
+            if self.literal_bytes > self.literal_budget {
+                return self.over(
+                    p_span,
+                    format!(
+                        "The axioms' literals are over {LITERAL_BYTES_PER_BYTE} bytes per byte of text: the axioms from here on are not read"
+                    ),
+                );
+            }
+        }
         self.triples.push(Triple {
             s,
             p,
@@ -891,6 +987,12 @@ impl<'a> Mapper<'a> {
                 continue;
             }
             self.prefixes_before(self.span(i).start);
+            // An annotation of the declaration may make it give nothing.
+            match self.invalid_literal(i) {
+                Ok(None) => {}
+                Ok(Some(_)) => continue,
+                Err(Over) => break,
+            }
             let entity = *self.children(i).last().unwrap();
             let iri_node = entity + 1;
             match self.iri(iri_node) {
@@ -932,6 +1034,14 @@ impl<'a> Mapper<'a> {
                 continue;
             }
             self.prefixes_before(self.span(i).start);
+            match self.invalid_literal(i) {
+                Ok(None) => {}
+                Ok(Some(e)) => {
+                    self.invalid.push(e);
+                    continue;
+                }
+                Err(Over) => return,
+            }
             let (triples, refs, blank) = (self.triples.len(), self.refs.len(), self.next_blank);
             self.statements.push(Statement {
                 span: self.span(i),

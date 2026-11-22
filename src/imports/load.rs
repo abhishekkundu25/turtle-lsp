@@ -274,9 +274,11 @@ pub(super) fn load(
 
 // ---- the web ----
 
-/// What a web import is asked for: its content types, best first.
+/// What a web import is asked for: its content types, best first. OWL
+/// Functional syntax, which is read too, last: a server with an RDF form
+/// of the same ontology sends that.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8";
+const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8, text/owl-functional;q=0.7";
 
 /// A fetched document, as [`parse`] reads it.
 struct Fetched {

@@ -333,6 +333,65 @@ fn literals_typed_tagged_plain_and_escaped() {
     }
 }
 
+/// An `rdf:PlainLiteral` whose lexical form is not `"abc@langTag"` (no
+/// `@`, or a tag that is not a language tag) has no row in Table 1: an
+/// error at its quoted string, its item gives nothing, and the items
+/// after it are mapped. The forms Table 1 maps still map (above).
+#[test]
+fn an_invalid_plain_literal_is_an_error_and_gives_nothing() {
+    for (string, message) in [
+        (
+            "\"Bonn@ x\"",
+            "Invalid language tag ' x' in an rdf:PlainLiteral",
+        ),
+        (
+            "\"Bonn@de-\"",
+            "Invalid language tag 'de-' in an rdf:PlainLiteral",
+        ),
+        (
+            "\"Bonn\"",
+            "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here",
+        ),
+    ] {
+        let text = in_ontology(&format!(
+            "SubClassOf(:A :B)\nAnnotationAssertion(rdfs:label :A {string}^^rdf:PlainLiteral)\nSubClassOf(:B :C)"
+        ));
+        let p = parse(&text, None);
+        assert_eq!(p.errors.len(), 1, "{string}: {:?}", p.errors);
+        let e = &p.errors[0];
+        assert_eq!(e.code, CODE);
+        assert!(
+            e.message().starts_with(message),
+            "{string}: {}",
+            e.message()
+        );
+        assert_eq!(at(&text, e.span), string);
+        let mapped: Vec<_> = p.statements.iter().map(|s| at(&text, s.span)).collect();
+        assert_eq!(
+            mapped,
+            [
+                "Ontology(<http://example.org/o>",
+                "SubClassOf(:A :B)",
+                "SubClassOf(:B :C)"
+            ],
+            "{string}"
+        );
+        assert!(
+            p.triples
+                .iter()
+                .all(|t| !matches!(t.o, Node::Literal { .. })),
+            "{string}"
+        );
+    }
+    // Among the grammar's errors, in text order.
+    let text = in_ontology(
+        "SubClassOf(:A nope:B)\nAnnotationAssertion(rdfs:label :A \"x\"^^rdf:PlainLiteral)\nSubClassOf(:A nope:C)",
+    );
+    let p = parse(&text, None);
+    let shown: Vec<_> = p.errors.iter().map(|e| at(&text, e.span)).collect();
+    assert_eq!(shown, ["nope:B", "\"x\"", "nope:C"], "{:?}", p.errors);
+}
+
 // ---- Table 2 and section 2.3: annotations ----
 
 /// Section 2.2's examples: an annotation, and an annotated annotation, on
@@ -719,9 +778,8 @@ fn the_mapping_stays_in_proportion_to_the_text() {
     assert!(mapped > 2 && mapped < 40, "{mapped}");
     assert!(p.triples.iter().all(|t| (t.statement as usize) < mapped));
     let operands: String = (0..2000).map(|i| format!(" :i{i}")).collect();
-    let annotations: String = (0..600)
-        .map(|i| format!("Annotation(:p \"{i}\")"))
-        .collect();
+    // IRI values: no literal bytes, so the triples meet their limit first.
+    let annotations: String = (0..600).map(|i| format!("Annotation(:p :v{i})")).collect();
     let text = in_ontology(&format!(
         "SubClassOf(:A :B)\nSameIndividual({annotations}{operands})\nSubClassOf(:B :C)"
     ));
@@ -738,6 +796,55 @@ fn the_mapping_stays_in_proportion_to_the_text() {
         ["Ontology(<http://example.org/o>", "SubClassOf(:A :B)"]
     );
     assert_eq!(p.triples.len(), 2);
+}
+
+/// The literals of an annotated n-ary axiom, whose annotations section
+/// 2.3.2 repeats per pair, count in bytes: the operands and the
+/// annotation's length grown together (the text ×2, the literals ×4
+/// unbounded) stay under the budget, past which one error says so.
+#[test]
+fn the_literal_bytes_stay_in_proportion_to_the_text() {
+    let literal_bytes = |p: &Parsed| -> usize {
+        p.triples
+            .iter()
+            .map(|t| match &t.o {
+                Node::Literal { value, .. } => value.len(),
+                _ => 0,
+            })
+            .sum()
+    };
+    // Under the budget, each pair has the annotation.
+    let p = clean(&in_ontology(
+        "SameIndividual(Annotation(rdfs:comment \"c\") :a :b :c)",
+    ));
+    assert_eq!(literal_bytes(&p), 2);
+    for s in [1, 2] {
+        let long = "x".repeat(400_000 * s);
+        let operands: String = (0..100 * s).map(|i| format!(" :i{i}")).collect();
+        let text = in_ontology(&format!(
+            "SubClassOf(:A :B)\nSameIndividual(Annotation(rdfs:comment \"{long}\"){operands})\nSubClassOf(:B :C)"
+        ));
+        let p = parse(&text, None);
+        let bytes = literal_bytes(&p);
+        assert!(
+            bytes <= text.len() * rdf::LITERAL_BYTES_PER_BYTE + rdf::MIN_LITERAL_BYTES,
+            "s={s}: {bytes} bytes of literals for {} of text",
+            text.len()
+        );
+        let limit: Vec<_> = p
+            .errors
+            .iter()
+            .filter(|e| e.message().contains("literals are over"))
+            .collect();
+        assert_eq!(limit.len(), 1, "s={s}: {:?}", p.errors.len());
+        assert_eq!(p.errors.len(), 1);
+        let mapped: Vec<_> = p.statements.iter().map(|s| at(&text, s.span)).collect();
+        assert_eq!(
+            mapped,
+            ["Ontology(<http://example.org/o>", "SubClassOf(:A :B)"],
+            "s={s}"
+        );
+    }
 }
 
 /// An `Import` or an ontology annotation after the axioms is an item with
