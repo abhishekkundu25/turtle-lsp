@@ -570,7 +570,8 @@ as Functional syntax.
   is one error. Besides the grammar of the [OWL 2
   specification](https://www.w3.org/TR/owl2-syntax/), it reports what the
   specification states that a parser can see: a prefix that is not
-  declared or is declared twice with two IRIs, an IRI that is not an
+  declared or is declared twice with two IRIs, a prefix name with a `:`
+  before its end, an IRI that is not an
   absolute IRI, a language tag that is not BCP 47, a string with an escape
   other than `\"` and `\\`, too few operands (`ObjectIntersectionOf` with
   one class expression, an empty `ObjectOneOf`), a cardinality that is not

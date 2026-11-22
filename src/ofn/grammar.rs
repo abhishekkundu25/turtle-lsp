@@ -442,7 +442,8 @@ struct Parser<'a> {
     prefixes: FxHashMap<&'a str, Prefix<'a>>,
     /// Why each IRI written so far is not one (`None`: it is), by its text.
     checked: FxHashMap<&'a str, Option<Box<str>>>,
-    /// An expansion being checked.
+    /// The IRI being checked for an expansion: its prefix's context and
+    /// the local name ([`context`]).
     buf: String,
     /// The text after the ontology is reported once.
     trailing: bool,
