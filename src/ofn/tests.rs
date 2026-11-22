@@ -586,6 +586,24 @@ fn a_prefix_is_declared_once_and_a_standard_one_may_be_bound_again() {
 }
 
 #[test]
+fn a_prefix_with_an_invalid_iri_binds_nothing_for_other_files() {
+    // The error is at the IRI; the document's prefixes, which other files
+    // read as bindings, leave the declaration out, so no file is offered
+    // `@prefix terms: <relative/>` or an IRI with a space.
+    for (iri, message) in [
+        ("<relative/>", "<relative/> is a relative IRI"),
+        ("<http://exa mple.org/>", "Invalid IRI: "),
+    ] {
+        let text = format!("Prefix(terms:={iri})\nPrefix(ex:=<http://example.org/>)\nOntology()");
+        let got = errors(&text);
+        assert_eq!(got.len(), 1, "{iri}: {got:?}");
+        assert!(got[0].0 == iri && got[0].1.starts_with(message), "{got:?}");
+        let names: Vec<_> = doc(&text).prefixes.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, ["ex"], "{iri}");
+    }
+}
+
+#[test]
 fn iris_are_absolute_iris() {
     for (body, want) in [
         (

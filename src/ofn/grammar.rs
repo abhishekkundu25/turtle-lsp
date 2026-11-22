@@ -647,13 +647,17 @@ impl<'a> Parser<'a> {
         let full = self.text_of(iri);
         let value = &full[1..full.len() - 1];
         let valid = self.check_iri(full, value, iri.span());
-        self.doc.prefixes.push(PrefixDecl {
-            name: prefix.to_string(),
-            iri: Iri::intern(value),
-            span,
-            name_span: name.span(),
-            iri_span: iri.span(),
-        });
+        // Only a valid binding is the document's: other files read these
+        // as namespaces to offer, and an invalid IRI is no namespace.
+        if valid {
+            self.doc.prefixes.push(PrefixDecl {
+                name: prefix.to_string(),
+                iri: Iri::intern(value),
+                span,
+                name_span: name.span(),
+                iri_span: iri.span(),
+            });
+        }
         let new = Prefix {
             iri: value,
             valid,
