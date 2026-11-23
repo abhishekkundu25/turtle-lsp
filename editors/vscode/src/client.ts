@@ -11,10 +11,11 @@
  * The workspace's RDF and SPARQL files: the `workspaceContains` activation
  * glob (test/manifest.test.mjs checks they are the same) and the extensions
  * of src/workspace/kinds.rs. `.owl` and `.rdf` (RDF/XML, or whatever syntax
- * their content has) are read and watched as workspace files, and so is
- * `.ofn` (OWL Functional syntax), whose axioms the server reads as RDF.
+ * their content has) are read and watched as workspace files, and so are
+ * `.ofn` (OWL Functional syntax) and `.owx` (OWL/XML), whose axioms the
+ * server reads as RDF.
  */
-export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn}"
+export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn,owx}"
 
 /** The languages the extension contributes that the server writes; the server handles each. */
 export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as const
@@ -32,11 +33,13 @@ export const READ_ONLY_LANGUAGES = ["ofn"] as const
 // server attaches to them by name, and detects JSON-LD from the extension.
 export const JSONLD_PATTERN = "**/*.jsonld"
 
-// RDF/XML files keep VS Code's XML language too. The server reads them by
-// their content and does not write them: asked with OPT_IN, it registers
-// formatting, rename, completion and code actions for the other documents
-// only, so VS Code lists no turtle-lsp formatter for XML files.
-export const RDFXML_PATTERN = "**/*.{owl,rdf}"
+// RDF/XML and OWL/XML files keep VS Code's XML language too (`.owx` through
+// the manifest's `files.associations` default, as VS Code's XML language does
+// not list it). The server reads them by their name and content and does not
+// write them: asked with OPT_IN, it registers formatting, rename, completion
+// and code actions for the other documents only, so VS Code lists no
+// turtle-lsp formatter for XML files.
+export const RDFXML_PATTERN = "**/*.{owl,rdf,owx}"
 
 /**
  * The `initializationOptions` key that asks the server for those
